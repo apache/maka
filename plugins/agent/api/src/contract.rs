@@ -1874,11 +1874,9 @@ pub enum RoomManageAction {
     },
     AddMembers {
         member_session_ids: Vec<String>,
-        #[serde(default)]
-        role: Option<String>,
     },
-    RemoveMember {
-        member_session_id: String,
+    RemoveMembers {
+        member_session_ids: Vec<String>,
     },
     React {
         message_id: String,
@@ -1926,8 +1924,8 @@ pub enum RoomManageResult {
     MembersAdded {
         added: Vec<String>,
     },
-    MemberRemoved {
-        removed: bool,
+    MembersRemoved {
+        removed: Vec<String>,
     },
     ReactionUpdated {
         message_id: String,

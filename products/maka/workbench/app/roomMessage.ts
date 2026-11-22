@@ -26,6 +26,30 @@ export function roomAuthorSession(message: AgentRoomMessage): string | null {
   return message.author.kind === 'session' ? message.author.execution.sessionId : null;
 }
 
+export function sameRoomAuthor(a: AgentRoomMessage, b: AgentRoomMessage): boolean {
+  if (a.author.kind !== b.author.kind) return false;
+  if (a.author.kind === 'human') return true;
+  return roomAuthorSession(a) === roomAuthorSession(b);
+}
+
+const GROUP_WINDOW_MS = 5 * 60 * 1000;
+
+/**
+ * True when `curr` continues `prev`'s message group (same author, within 5 minutes, same day,
+ * neither deleted, and `curr` is not starting a quoted reply).
+ */
+export function isGroupContinuation(
+  prev: AgentRoomMessage | undefined,
+  curr: AgentRoomMessage,
+): boolean {
+  if (!prev) return false;
+  if (prev.deletedAt || curr.deletedAt) return false;
+  if (curr.replyTo) return false;
+  if (!sameRoomAuthor(prev, curr)) return false;
+  if (roomDayKey(prev.at) !== roomDayKey(curr.at)) return false;
+  return curr.at >= prev.at && curr.at - prev.at < GROUP_WINDOW_MS;
+}
+
 /**
  * Detect an active @mention token at the caret.
  * Supports start-of-line, whitespace, punctuation, and CJK text immediately before '@'

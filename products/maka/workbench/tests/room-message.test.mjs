@@ -22,9 +22,7 @@ import test from 'node:test';
 import {
   extractInlineMentionIds,
   formatInlineMention,
-  roomAvatarColor,
-  roomDayKey,
-  roomDeliveryReasonKey,
+  isGroupContinuation,
   roomMentionAt,
   stripInlineMention,
 } from '../app/roomMessage.ts';
@@ -56,7 +54,11 @@ test('inline mention formatting, extraction, and stripping preserve surrounding 
   const tokenA = formatInlineMention('ma_alpha', 'Frontend [v2]');
   const tokenB = formatInlineMention('ma_beta', 'Backend');
   const draft =
-    '请 ' + tokenA + '改样式，并参考 [#设计群](maka://session/ma_room) 给 ' + tokenB + '对接口';
+    '请 ' +
+    tokenA +
+    '改样式，并参考 [详情](maka://session/ma_plain) 和 [#设计群](maka://session/ma_room) 给 ' +
+    tokenB +
+    '对接口';
 
   assert.deepEqual(extractInlineMentionIds(draft), ['ma_alpha', 'ma_beta']);
   const removed = stripInlineMention(draft, 'ma_alpha');
@@ -65,14 +67,38 @@ test('inline mention formatting, extraction, and stripping preserve surrounding 
   assert.deepEqual(extractInlineMentionIds(removed), ['ma_beta']);
 });
 
-test('room avatar color, day key, and localized delivery failure keys are deterministic', () => {
-  assert.equal(roomAvatarColor('ma_session_1'), roomAvatarColor('ma_session_1'));
-  assert.equal(roomDeliveryReasonKey('agent_room_hop_limit_reached'), 'Reason hop limit');
-  assert.equal(roomDeliveryReasonKey('agent_room_self_mention'), 'Reason self mention');
+test('isGroupContinuation groups same-author messages within 5 minutes and breaks on replies, gaps, or deletions', () => {
+  const baseAt = new Date(2026, 10, 22, 10, 0, 0).getTime();
+  const make = (overrides) => ({
+    id: 'm',
+    sequence: 1,
+    at: baseAt,
+    author: { kind: 'session', execution: { sessionId: 'alice', runId: 'r1', turnId: 't1' } },
+    content: { text: 'hi', attachments: [] },
+    replyTo: null,
+    mentions: [],
+    deliveries: [],
+    ...overrides,
+  });
+
+  const m1 = make({ id: 'm1', at: baseAt });
+  assert.equal(isGroupContinuation(undefined, m1), false);
+  assert.equal(isGroupContinuation(m1, make({ id: 'm2', at: baseAt + 60_000 })), true);
+  // Gap >= 5 minutes breaks group.
+  assert.equal(isGroupContinuation(m1, make({ id: 'm3', at: baseAt + 5 * 60_000 })), false);
+  // Different author breaks group.
   assert.equal(
-    roomDeliveryReasonKey('agent_room_reply_tool_unavailable'),
-    'Reason reply tool unavailable',
+    isGroupContinuation(m1, make({ id: 'm4', at: baseAt + 10_000, author: { kind: 'human' } })),
+    false,
   );
-  assert.equal(roomDeliveryReasonKey('unknown_custom_error'), null);
-  assert.match(roomDayKey(Date.UTC(2026, 10, 21, 12, 0, 0)), /^\d{4}-\d{2}-\d{2}$/);
+  // Quoted reply breaks group so reply context stays clearly anchored.
+  assert.equal(
+    isGroupContinuation(m1, make({ id: 'm5', at: baseAt + 10_000, replyTo: 'm0' })),
+    false,
+  );
+  // Deleted message breaks group.
+  assert.equal(
+    isGroupContinuation(m1, make({ id: 'm6', at: baseAt + 10_000, deletedAt: baseAt + 11_000 })),
+    false,
+  );
 });

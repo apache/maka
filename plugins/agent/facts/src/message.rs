@@ -104,13 +104,13 @@ impl MessageOrigin {
                 let reply = serde_json::json!({"sessionId": session_id, "replyTo": message_id});
                 let instruction = match language {
                     Language::ZhCn => format!(
-                        "若需查看更早的房间记录，调用 Read({read_room})（无 Read 权限时调用 SessionRead({session_read})）。向房间回复请调用 SessionSend，带上 {reply} 并在 message 中填写回复内容；若只需轻量确认收到（无需刷屏回复），可调用 SessionManage 的 room_react 添加表情（如 ✅ 或 👀）。仅在本会话中直接回复不会同步到房间。\n"
+                        "若需查看更早的房间记录，调用 Read({read_room})（无 Read 权限时调用 SessionRead({session_read})）。向房间回复请调用 SessionSend，带上 {reply} 并在 message 中填写回复内容；若只需轻量回应而无需刷屏正文，可调用 SessionManage 的 room_react 添加表情（如 👀 已看/在查、✅ 搞定/确认、🔥 赞同、🤔 有疑问）。仅在本会话中直接回复不会同步到房间。\n"
                     ),
                     Language::ZhTw => format!(
-                        "若需查看更早的房間紀錄，呼叫 Read({read_room})（無 Read 權限時呼叫 SessionRead({session_read})）。向房間回覆請呼叫 SessionSend，帶上 {reply} 並在 message 中填寫回覆內容；若只需輕量確認收到（無需洗版回覆），可呼叫 SessionManage 的 room_react 添加表情（如 ✅ 或 👀）。僅在本對話中直接回覆不會同步到房間。\n"
+                        "若需查看更早的房間紀錄，呼叫 Read({read_room})（無 Read 權限時呼叫 SessionRead({session_read})）。向房間回覆請呼叫 SessionSend，帶上 {reply} 並在 message 中填寫回覆內容；若只需輕量回應而無需洗版正文，可呼叫 SessionManage 的 room_react 添加表情（如 👀 已看/在查、✅ 搞定/確認、🔥 贊同、🤔 有疑問）。僅在本對話中直接回覆不會同步到房間。\n"
                     ),
                     _ => format!(
-                        "If you need earlier Room context, call Read({read_room}) (or SessionRead({session_read}) when Read is unavailable). Reply in the Room using SessionSend with {reply} and your response in message; for lightweight acknowledgement without posting a full reply, use SessionManage with room_react (e.g. ✅ or 👀). Answering only in this private session will not post to the Room.\n"
+                        "If you need earlier Room context, call Read({read_room}) (or SessionRead({session_read}) when Read is unavailable). Reply in the Room using SessionSend with {reply} and your response in message; for a lightweight acknowledgement without posting a prose reply, use SessionManage with room_react (e.g. 👀 seen/checking, ✅ done/agreed, 🔥 strong agree, 🤔 question). Answering only in this private session will not post to the Room.\n"
                     ),
                 };
                 header.push_str(&sender);

@@ -142,6 +142,7 @@ export function RoomView(props: {
       sidebarHover: sidebarHover.hover,
     }),
     closeNavigation,
+    inspecting: () => sideAgentId(),
     openAgent: openAgentFromRoom,
     openSettings: input.openSettings,
     openLink: resources.openLink,

@@ -19,11 +19,10 @@
 
 import {
   batch,
-  Clipboard,
   cleanup,
   createAnimatedValue,
+  Easing,
   effect,
-  platform,
   reduceMotion,
   Scroll,
   signal,
@@ -34,7 +33,7 @@ import {
   type JSX,
   type ScrollRef,
 } from 'nsh';
-import { Button, ContextMenu, Input, Menu, MenuItem } from 'nsh/base';
+import { Button, ContextMenu, Input, MenuItem } from 'nsh/base';
 import type {
   AgentCreated,
   AgentRoomHistoryPage,
@@ -44,7 +43,6 @@ import type {
   AgentSessionChanged,
   AgentWorkspaceSelection,
   HistoryPosition,
-  SettingsAssistantPreferences,
 } from '../../../../packages/plugin-sdk/src/index.js';
 import { createBrowsing } from './browsing';
 import { HostProvider, searchSessions, type Host, type Output } from './host';
@@ -68,20 +66,19 @@ import { ownTitleBar } from './chrome';
 import { WorkspacePicker } from './WorkspacePicker';
 import { ModalDialog, DialogHeader, DialogFooter } from './ModalDialog';
 import { LoadingIndicator } from './Loading';
-import { MarkdownBody } from './MarkdownBody';
 import { sessionIdFromLink } from './skillTokenText';
-import { HistoryAttachments } from './Attachments';
 import { ImageViewer } from './ImageViewer';
 import type { ImagePreview } from './ImageThumbnail';
 import { RoomComposer, type RoomComposerHandle } from './RoomComposer';
+import { RoomMessageRow } from './RoomMessageRow';
 import {
-  RoomDeliveryStrip,
+  RoomEmptySeating,
+  RoomHeaderControls,
   RoomMembersModal,
-  RoomPinnedBar,
-  RoomRosterBar,
-  RoomSearchPanel,
+  RoomWorkingFooter,
 } from './RoomPanels';
 import {
+  isGroupContinuation,
   roomAuthorSession,
   roomAvatarColor,
   roomAvatarInitial,
@@ -89,10 +86,10 @@ import {
   roomResult,
   workspaceTailName,
 } from './roomMessage';
-import { ProfileAvatar } from './ProfileAvatar';
+import { motionEnabled, ROOM_SPRING } from './roomMotion';
 
+type RoomManageOutput = Output<'agent', 'roomManage'>;
 const reasonText = (reason: unknown) => (reason instanceof Error ? reason.message : String(reason));
-const QUICK_REACTIONS = ['👍', '✅', '👀'] as const;
 
 export function createRoomPeople(host: Host) {
   const known = signal(new Map<string, AgentSession>());
@@ -147,11 +144,52 @@ export function createRoomPeople(host: Host) {
       remember(found);
     },
     async searchSessions(query: string) {
-      const sessions = await searchSessions(host, 'agent', query);
-      remember(sessions);
-      return sessions;
+      const found = await searchSessions(host, 'agent', query);
+      remember(found);
+      return found;
     },
   };
+}
+
+/** Mini overlapping avatar stack for a Room row in the left sidebar. */
+function SidebarRoomGlyph(props: { members: readonly AgentRoomMember[]; pinned: boolean }) {
+  const active = () => props.members.filter((m) => !m.unavailable).slice(0, 3);
+  return (
+    <If
+      when={active().length > 0}
+      else={
+        <Icon
+          name={props.pinned ? 'pin' : 'rooms'}
+          size={14}
+          color={props.pinned ? C.accent : C.muted}
+        />
+      }
+    >
+      <View style={{ flexDirection: 'row', alignItems: 'center', minWidth: 16 }}>
+        <Each of={active()} key={(m) => m.sessionId}>
+          {(member, idx) => (
+            <View
+              style={{
+                marginLeft: idx() === 0 ? 0 : -5,
+                width: 14,
+                height: 14,
+                borderRadius: 7,
+                backgroundColor: roomAvatarColor(member().sessionId),
+                borderWidth: 1,
+                borderColor: C.chrome,
+                alignItems: 'center',
+                justifyContent: 'center',
+              }}
+            >
+              <Text style={{ fontSize: 8, fontWeight: '600', color: '#FFFFFF' }}>
+                {roomAvatarInitial(member().title)}
+              </Text>
+            </View>
+          )}
+        </Each>
+      </View>
+    </If>
+  );
 }
 
 export function createRoomWorkspace(options: {
@@ -161,6 +199,7 @@ export function createRoomWorkspace(options: {
   active(): boolean;
   visible(): boolean;
   browser(): BrowserHeader;
+  inspecting?(): string | null;
   closeNavigation(): void;
   openAgent(id: string): void;
   openSettings(): void;
@@ -171,6 +210,7 @@ export function createRoomWorkspace(options: {
   const selected = signal(options.initial);
   const { known, remember, rememberParticipants, name, resolveNames, searchSessions } =
     createRoomPeople(host);
+  const roomMembersMap = signal(new Map<string, AgentRoomMember[]>());
   const error = signal('');
   const searchQuery = signal('');
   const roomFilter = signal<'all' | 'archived'>('all');
@@ -189,6 +229,14 @@ export function createRoomWorkspace(options: {
   let composer: RoomComposerHandle | null = null;
   let alive = true;
   let navigation = 0;
+
+  const recordRoomMembers = (roomId: string, items: readonly AgentRoomMember[]) => {
+    if (!alive) return;
+    rememberParticipants(items);
+    const next = new Map(roomMembersMap());
+    next.set(roomId, [...items]);
+    roomMembersMap.set(next);
+  };
 
   effect(() => {
     const sessions = browser.sessions();
@@ -278,7 +326,7 @@ export function createRoomWorkspace(options: {
             action: { kind: 'set_topic', topic },
           });
         } catch {
-          // Topic can still be edited in the Room header if setting it fails.
+          // Topic can still be edited in Room actions if setting it fails.
         }
       }
       remember([result.session]);
@@ -302,7 +350,8 @@ export function createRoomWorkspace(options: {
 
   const rename = async () => {
     const session = renaming();
-    if (!session || createBusy() || !renameTitle().trim()) return;
+    const next = renameTitle().trim();
+    if (!session || !next || createBusy()) return;
     createBusy.set(true);
     error.set('');
     try {
@@ -311,8 +360,9 @@ export function createRoomWorkspace(options: {
           await host.control('metadata', {
             sessionId: session.id,
             expectedRevision: session.revision,
-            title: renameTitle().trim(),
+            title: next,
             labels: session.labels,
+            pinned: session.pinned,
           })
         ).reply,
       );
@@ -413,8 +463,9 @@ export function createRoomWorkspace(options: {
     );
   };
 
-  const roomActions = (session: AgentSession) => (
+  const roomActions = (session: AgentSession, extra?: JSX.Element) => (
     <>
+      {extra}
       <RoomMenuItem
         label={tr('Rename room')}
         select={() => {
@@ -519,36 +570,28 @@ export function createRoomWorkspace(options: {
             </Button>
           </If>
         </View>
-        <View style={{ flexDirection: 'row', gap: 4 }}>
-          <Each of={['all', 'archived'] as const} key={(tab) => tab}>
-            {(tab) => (
-              <Button
-                accessibilityLabel={tab() === 'all' ? tr('Active rooms') : tr('Archived rooms')}
-                selected={roomFilter() === tab()}
-                onPress={() => roomFilter.set(tab())}
-                style={{
-                  flex: 1,
-                  paddingVertical: 5,
-                  borderRadius: 7,
-                  alignItems: 'center',
-                  backgroundColor: roomFilter() === tab() ? C.surface : 'transparent',
-                }}
-                hoverStyle={{ backgroundColor: C.surface }}
-                focusStyle={controlFocusStyle()}
-              >
-                <Text
-                  style={{
-                    ...captionTextStyle,
-                    color: roomFilter() === tab() ? C.text : C.muted,
-                  }}
-                >
-                  {tab() === 'all' ? tr('Active rooms') : tr('Archived rooms')}
-                </Text>
-              </Button>
-            )}
-          </Each>
-        </View>
-        <Scroll style={{ flex: 1, minHeight: 0 }} contentStyle={{ gap: 4, paddingTop: 4 }}>
+        <If when={roomFilter() === 'archived'}>
+          <Button
+            accessibilityLabel={tr('Back to active rooms')}
+            onPress={() => roomFilter.set('all')}
+            style={{
+              flexDirection: 'row',
+              alignItems: 'center',
+              gap: 6,
+              paddingHorizontal: 8,
+              paddingVertical: 5,
+              borderRadius: 8,
+              backgroundColor: C.surface,
+            }}
+            hoverStyle={{ backgroundColor: C.raised }}
+          >
+            <Icon name="back" size={12} color={C.secondary} />
+            <Text style={{ ...captionTextStyle, color: C.secondary }}>
+              {tr('Back to active rooms')}
+            </Text>
+          </Button>
+        </If>
+        <Scroll style={{ flex: 1, minHeight: 0 }} contentStyle={{ gap: 2, paddingTop: 2 }}>
           <Each of={filteredRooms()} key={(session) => session.id}>
             {(session) => (
               <ContextMenu
@@ -565,39 +608,30 @@ export function createRoomWorkspace(options: {
                       alignItems: 'center',
                       gap: 10,
                       paddingHorizontal: 10,
-                      paddingVertical: 9,
+                      paddingVertical: 8,
                       borderRadius: 10,
                       backgroundColor: selected() === session().id ? C.surface : 'transparent',
                     }}
                     hoverStyle={{ backgroundColor: C.surface }}
                     focusStyle={controlFocusStyle()}
                   >
-                    <Icon
-                      name={session().pinned ? 'pin' : 'symbol'}
-                      size={14}
-                      color={session().pinned ? C.accent : C.muted}
+                    <SidebarRoomGlyph
+                      members={roomMembersMap().get(session().id) ?? []}
+                      pinned={session().pinned}
                     />
-                    <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
-                      <Text
-                        style={[
-                          {
-                            ...bodyTextStyle,
-                            color: C.text,
-                            fontWeight: selected() === session().id ? '500' : '400',
-                          },
-                          { numberOfLines: 1 },
-                        ]}
-                      >
-                        {session().title}
-                      </Text>
-                      <If when={Boolean(session().workspace.path)}>
-                        <Text
-                          style={[{ ...captionTextStyle, color: C.muted }, { numberOfLines: 1 }]}
-                        >
-                          {workspaceTailName(session().workspace.path)}
-                        </Text>
-                      </If>
-                    </View>
+                    <Text
+                      style={[
+                        {
+                          ...bodyTextStyle,
+                          color: selected() === session().id ? C.text : C.secondary,
+                          flex: 1,
+                          minWidth: 0,
+                        },
+                        { numberOfLines: 1 },
+                      ]}
+                    >
+                      {session().title}
+                    </Text>
                     <If when={session().hasUnread && selected() !== session().id}>
                       <View
                         style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: C.accent }}
@@ -627,6 +661,26 @@ export function createRoomWorkspace(options: {
           <If when={browser.error()}>
             <Text style={{ ...captionTextStyle, color: C.warning }}>{browser.error()}</Text>
           </If>
+          <If when={roomFilter() === 'all'}>
+            <Button
+              accessibilityLabel={tr('Archived rooms')}
+              onPress={() => roomFilter.set('archived')}
+              style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                gap: 8,
+                paddingHorizontal: 10,
+                paddingVertical: 7,
+                marginTop: 6,
+                borderRadius: 8,
+              }}
+              hoverStyle={{ backgroundColor: C.surface }}
+              focusStyle={controlFocusStyle()}
+            >
+              <Icon name="archive" size={13} color={C.muted} />
+              <Text style={{ ...captionTextStyle, color: C.muted }}>{tr('Archived rooms')}</Text>
+            </Button>
+          </If>
         </Scroll>
         <Button
           accessibilityLabel={tr('Settings')}
@@ -654,36 +708,10 @@ export function createRoomWorkspace(options: {
   const content = () => (
     <HostProvider value={host}>
       <View style={{ flex: 1, minHeight: 0 }}>
-        <Header
-          title={title()}
-          browser={options.browser()}
-          commands={() => {}}
-          actions={
-            selected() && known().has(selected()!) ? (
-              <Menu
-                align="end"
-                offset={4}
-                margin={8}
-                popupStyle={floatingStyle()}
-                trigger={
-                  <Button
-                    accessibilityLabel={tr('Room actions')}
-                    style={controlStyle}
-                    hoverStyle={{ backgroundColor: C.surface }}
-                    focusStyle={controlFocusStyle()}
-                  >
-                    <Icon name="more" color={C.muted} />
-                  </Button>
-                }
-              >
-                {roomActions(known().get(selected()!)!)}
-              </Menu>
-            ) : undefined
-          }
-        />
         <If when={selected() === null}>
+          <Header title={title()} browser={options.browser()} commands={() => {}} />
           <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', gap: 16 }}>
-            <Icon name="symbol" size={32} color={C.muted} />
+            <Icon name="rooms" size={32} color={C.muted} />
             <Button
               accessibilityLabel={tr('New room')}
               onPress={newRoom}
@@ -700,11 +728,17 @@ export function createRoomWorkspace(options: {
             <RoomTimeline
               sessionId={id()}
               host={host}
-              visible={options.visible}
+              visible={() => options.active() && options.visible()}
+              title={title}
+              browser={options.browser}
+              inspecting={options.inspecting}
               workspacePath={() => known().get(id())?.workspace.path}
+              roomMenuItems={(extra) =>
+                known().has(id()) ? roomActions(known().get(id())!, extra) : extra
+              }
               name={name}
               resolveNames={resolveNames}
-              rememberParticipants={rememberParticipants}
+              rememberParticipants={(items) => recordRoomMembers(id(), items)}
               searchSessions={searchSessions}
               openAgent={options.openAgent}
               openLink={(target, restoreFocus) => options.openLink(id(), target, restoreFocus)}
@@ -744,45 +778,32 @@ export function createRoomWorkspace(options: {
               }}
             />
             <Input
-              accessibilityLabel={tr('Room topic (optional)')}
+              accessibilityLabel={tr('Room topic')}
               placeholder={tr('Room topic (optional)')}
               value={createTopic()}
               onChange={({ value }) => createTopic.set(value)}
               onSubmit={() => void submitCreate()}
               style={{
-                ...inputTextStyle,
+                ...captionTextStyle,
                 color: C.text,
                 backgroundColor: C.raised,
                 borderRadius: 8,
                 padding: 10,
               }}
             />
-            <View
-              style={{
-                flexDirection: 'row',
-                alignItems: 'center',
-                gap: 8,
-                paddingHorizontal: 10,
-                paddingVertical: 8,
-                borderRadius: 8,
-                backgroundColor: C.surface,
-              }}
-            >
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
               <Icon name="folder" size={14} color={C.muted} />
-              <Text
-                style={[{ ...captionTextStyle, color: C.secondary, flex: 1 }, { numberOfLines: 1 }]}
-              >
+              <Text style={{ ...captionTextStyle, color: C.secondary, flex: 1 }}>
                 {createWorkspaceLabel() || tr('Choose workspace')}
               </Text>
               <Button
                 accessibilityLabel={tr('Change workspace')}
-                disabled={createBusy()}
                 onPress={() => choosingWorkspace.set(true)}
-                style={{ ...controlStyle, minHeight: 24, paddingHorizontal: 8 }}
-                hoverStyle={{ backgroundColor: C.raised }}
+                style={controlStyle}
+                hoverStyle={{ backgroundColor: C.surface }}
               >
                 <Text style={{ ...captionTextStyle, color: C.accent }}>
-                  {tr('Change workspace')}
+                  {createWorkspace() ? tr('Change workspace') : tr('Choose workspace')}
                 </Text>
               </Button>
             </View>
@@ -932,10 +953,48 @@ export function createRoomWorkspace(options: {
   };
 }
 
+/** Apply an optimistic human reaction toggle to a message list, preserving insertion order. */
+function applyOptimisticReaction(
+  list: readonly AgentRoomMessage[],
+  messageId: string,
+  emoji: string,
+): { next: AgentRoomMessage[]; added: boolean } {
+  let added = false;
+  const next = list.map((msg) => {
+    if (msg.id !== messageId) return msg;
+    const current = msg.reactions ?? [];
+    const idx = current.findIndex((r) => r.emoji === emoji);
+    if (idx < 0) {
+      added = true;
+      return { ...msg, reactions: [...current, { emoji, actors: [{ kind: 'human' as const }] }] };
+    }
+    const entry = current[idx]!;
+    const hasHuman = entry.actors.some((a) => a.kind === 'human');
+    if (hasHuman) {
+      const remaining = entry.actors.filter((a) => a.kind !== 'human');
+      const reactions =
+        remaining.length === 0
+          ? current.filter((_, i) => i !== idx)
+          : current.map((r, i) => (i === idx ? { ...r, actors: remaining } : r));
+      return { ...msg, reactions };
+    }
+    added = true;
+    const reactions = current.map((r, i) =>
+      i === idx ? { ...r, actors: [...r.actors, { kind: 'human' as const }] } : r,
+    );
+    return { ...msg, reactions };
+  });
+  return { next, added };
+}
+
 export function RoomTimeline(props: {
   sessionId: string;
   host: Host;
   visible(): boolean;
+  title?(): string;
+  browser?(): BrowserHeader;
+  inspecting?(): string | null;
+  roomMenuItems?(extra?: JSX.Element): JSX.Element;
   workspacePath?(): string | undefined;
   name(id: string): string;
   resolveNames(ids: string[]): Promise<void>;
@@ -945,9 +1004,9 @@ export function RoomTimeline(props: {
   openLink(target: string, restoreFocus: () => boolean): Promise<void>;
   attach(handle: RoomComposerHandle | null): void;
 }) {
-  const openLink: typeof props.openLink = async (target, restoreFocus) => {
-    const id = sessionIdFromLink(target);
-    if (id !== undefined) props.openAgent(id);
+  const openLink = async (target: string, restoreFocus: () => boolean) => {
+    const sessionId = sessionIdFromLink(target);
+    if (sessionId) props.openAgent(sessionId);
     else await props.openLink(target, restoreFocus);
   };
 
@@ -959,33 +1018,37 @@ export function RoomTimeline(props: {
   const after = signal<string | null>(null);
   const unseenCount = signal(0);
   const highlightedId = signal<string | null>(null);
+  const highlightTick = signal(0);
+  const reactionBursts = signal(new Map<string, number>());
   const ready = signal(false);
   const error = signal('');
   const streamBroken = signal(false);
   const loadingEarlier = signal(false);
   const loadingNewer = signal(false);
   const atEnd = signal(true);
+  const throughSignal = signal(0);
   const viewer = signal<ImagePreview | null>(null);
-  const searchOpen = signal(false);
-  const pinnedOpen = signal(false);
   const membersOpen = signal(false);
   const editingTopic = signal(false);
   const topicDraft = signal('');
   const editingMessageId = signal<string | null>(null);
   const editDraft = signal('');
-  const profile = signal<Pick<SettingsAssistantPreferences, 'displayName' | 'avatar'> | null>(null);
-  const displayName = () => profile()?.displayName.trim() ?? '';
-  const rise = createAnimatedValue(reduceMotion() ? 0 : 8);
-  if (!reduceMotion()) void rise.spring(0, { stiffness: 320, damping: 30 });
 
+  const rise = createAnimatedValue(motionEnabled() ? 6 : 0);
+  const fade = createAnimatedValue(motionEnabled() ? 0.92 : 1);
+  if (motionEnabled()) {
+    void rise.spring(0, ROOM_SPRING.roomSwitch);
+    void fade.timing(1, { duration: 160, easing: Easing.out(Easing.cubic) });
+  }
+
+  const liveAddedIds = new Set<string>();
   let through = 0;
-  let watchRevision = 0;
+  let watchRevision: number | null = null;
   let alive = true;
   let scroll: ScrollRef | null = null;
   let stream: { next(): Promise<Output<'agent', 'watch'> | null>; close(): Promise<void> } | null =
     null;
   let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
-  let highlightTimer: ReturnType<typeof setTimeout> | undefined;
   let reconnectBackoff = 1000;
   let composer: RoomComposerHandle | null = null;
   let contentHeight = 0;
@@ -996,6 +1059,10 @@ export function RoomTimeline(props: {
   let reloadingState = false;
 
   const map = () => new Map(messages().map((message) => [message.id, message]));
+  const waitingMembers = () =>
+    members().filter(
+      (m) => !m.unavailable && (m.activity === 'waiting' || (m.pendingInteractions ?? 0) > 0),
+    );
 
   const read = async (position: HistoryPosition): Promise<AgentRoomHistoryPage> => {
     const result = await props.host.query('agent', 'history', {
@@ -1025,10 +1092,20 @@ export function RoomTimeline(props: {
     }
   };
 
-  const publish = (page: AgentRoomHistoryPage, mode: 'replace' | 'append' | 'prepend') => {
+  const publish = (
+    page: AgentRoomHistoryPage,
+    mode: 'replace' | 'append' | 'prepend',
+    markLive = false,
+  ) => {
     if (!alive) return;
     if (page.participants && page.participants.length > 0) {
       props.rememberParticipants?.(page.participants);
+    }
+    if (markLive) {
+      const existingIds = new Set(messages().map((m) => m.id));
+      for (const item of page.items) {
+        if (!existingIds.has(item.id)) liveAddedIds.add(item.id);
+      }
     }
     const merged = mode === 'replace' ? page.items : [...messages(), ...page.items];
     batch(() => {
@@ -1040,6 +1117,7 @@ export function RoomTimeline(props: {
       if (mode !== 'append') before.set(page.before ?? null);
       if (mode !== 'prepend') after.set(page.after ?? null);
       through = Math.max(through, page.through);
+      throughSignal.set(through);
       if (after() === null) unseenCount.set(0);
       ready.set(true);
     });
@@ -1060,14 +1138,14 @@ export function RoomTimeline(props: {
         return;
       }
       if (!last) {
-        publish(await read({ kind: 'tail' }), 'replace');
+        publish(await read({ kind: 'tail' }), 'replace', false);
         await refreshState();
         return;
       }
       let cursor = last;
       do {
         const page = await read({ kind: 'after_message', messageId: cursor });
-        publish(page, 'append');
+        publish(page, 'append', true);
         if (!page.after || !alive) break;
         cursor = page.after;
       } while (alive);
@@ -1078,22 +1156,36 @@ export function RoomTimeline(props: {
     return reading;
   };
 
-  // Re-fetch current visible window metadata (deliveryStates, reactions, edits, pins) without jumping scroll.
+  // Re-fetch ALL loaded messages (even across multiple earlier pages) so edits/deletes/reactions never go stale.
   const refreshVisibleMetadata = async () => {
-    const first = messages()[0]?.id;
+    const loaded = messages();
+    const first = loaded[0];
+    const last = loaded.at(-1);
     await refreshState();
-    if (!alive || !first) return;
+    if (!alive || !first || !last) return;
     try {
-      const page =
-        after() === null
-          ? await read({ kind: 'tail' })
-          : await read({ kind: 'message', messageId: first });
-      if (!alive) return;
-      if (page.participants && page.participants.length > 0) {
-        props.rememberParticipants?.(page.participants);
+      const updated = new Map<string, AgentRoomMessage>();
+      if (loaded.length <= 48 && after() === null) {
+        const page = await read({ kind: 'tail' });
+        if (!alive) return;
+        if (page.participants?.length) props.rememberParticipants?.(page.participants);
+        for (const item of page.items) updated.set(item.id, item);
+      } else {
+        const maxPages = Math.min(Math.ceil(loaded.length / 48) + 1, 8);
+        let position: HistoryPosition = { kind: 'message', messageId: first.id };
+        for (let i = 0; i < maxPages && alive; i++) {
+          const page = await read(position);
+          if (!alive) return;
+          if (page.participants?.length) props.rememberParticipants?.(page.participants);
+          for (const item of page.items) updated.set(item.id, item);
+          const pageLast = page.items.at(-1);
+          if (!pageLast || !page.after || pageLast.sequence >= last.sequence) break;
+          position = { kind: 'after_message', messageId: pageLast.id };
+        }
       }
-      const updated = new Map(page.items.map((item) => [item.id, item]));
-      messages.set(messages().map((item) => updated.get(item.id) ?? item));
+      if (updated.size > 0) {
+        messages.set(messages().map((item) => updated.get(item.id) ?? item));
+      }
     } catch {
       // Ignore transient refresh failures; next revision will reconcile.
     }
@@ -1142,19 +1234,20 @@ export function RoomTimeline(props: {
   };
 
   const flashHighlight = (messageId: string) => {
-    if (highlightTimer) clearTimeout(highlightTimer);
-    highlightedId.set(messageId);
-    highlightTimer = setTimeout(() => {
-      if (alive && highlightedId() === messageId) highlightedId.set(null);
-    }, 2400);
+    batch(() => {
+      highlightedId.set(messageId);
+      highlightTick.set(highlightTick() + 1);
+    });
   };
 
   const focusMessage = async (messageId: string) => {
     try {
-      atEnd.set(false);
-      publish(await read({ kind: 'around_message', messageId }), 'replace');
+      if (!map().has(messageId)) {
+        atEnd.set(false);
+        publish(await read({ kind: 'around_message', messageId }), 'replace');
+        scroll?.scrollTo({ y: 0, animated: !reduceMotion() });
+      }
       flashHighlight(messageId);
-      scroll?.scrollTo({ y: 0, animated: !reduceMotion() });
     } catch (reason) {
       if (alive) error.set(reasonText(reason));
     }
@@ -1206,14 +1299,17 @@ export function RoomTimeline(props: {
           if (update.through > through) {
             const delta = update.through - through;
             through = update.through;
-            watchRevision = Math.max(watchRevision, rev);
+            throughSignal.set(through);
+            watchRevision = rev;
             if (after() !== null) {
               unseenCount.set(unseenCount() + delta);
               await refreshState();
             } else {
               await refresh();
             }
-          } else if (rev > watchRevision) {
+          } else if (watchRevision === null) {
+            watchRevision = rev;
+          } else if (rev !== watchRevision) {
             watchRevision = rev;
             await refreshVisibleMetadata();
           }
@@ -1238,22 +1334,9 @@ export function RoomTimeline(props: {
   cleanup(() => {
     alive = false;
     if (reconnectTimer) clearTimeout(reconnectTimer);
-    if (highlightTimer) clearTimeout(highlightTimer);
+    rise.stop();
+    fade.stop();
     void closeStream();
-  });
-
-  effect(() => {
-    if (!props.visible()) return;
-    let current = true;
-    void props.host.query('settings', 'assistantPreferences', {}).then(
-      (settings) => {
-        if (alive && current) profile.set(settings);
-      },
-      () => {},
-    );
-    return () => {
-      current = false;
-    };
   });
 
   effect(() => {
@@ -1271,38 +1354,106 @@ export function RoomTimeline(props: {
       });
   });
 
-  const runManage = async (action: Record<string, unknown>) => {
-    try {
-      roomResult(
-        (await props.host.control('roomManage', { sessionId: props.sessionId, action })).reply,
-      );
-      await refreshVisibleMetadata();
-    } catch (reason) {
-      if (alive) error.set(reasonText(reason));
-    }
+  const patchMessage = (updated: AgentRoomMessage) => {
+    messages.set(messages().map((m) => (m.id === updated.id ? updated : m)));
   };
 
-  const toggleReaction = (messageId: string, emoji: string) =>
-    void runManage({ kind: 'react', messageId, emoji });
+  const toggleReaction = (messageId: string, emoji: string) => {
+    const snapshot = messages();
+    const { next, added } = applyOptimisticReaction(snapshot, messageId, emoji);
+    messages.set(next);
+    if (added && motionEnabled()) {
+      const key = messageId + ':' + emoji;
+      const bursts = new Map(reactionBursts());
+      bursts.set(key, (bursts.get(key) ?? 0) + 1);
+      reactionBursts.set(bursts);
+    }
+    void props.host
+      .control('roomManage', {
+        sessionId: props.sessionId,
+        action: { kind: 'react', messageId, emoji },
+      })
+      .then(({ reply }) => roomResult<RoomManageOutput>(reply))
+      .catch((reason) => {
+        if (alive) {
+          messages.set(snapshot);
+          error.set(reasonText(reason));
+        }
+      });
+  };
 
-  const togglePin = (messageId: string, pinned: boolean) =>
-    void runManage({ kind: pinned ? 'pin' : 'unpin', messageId });
+  const togglePin = (messageId: string, pinned: boolean) => {
+    messages.set(messages().map((m) => (m.id === messageId ? { ...m, pinned } : m)));
+    void props.host
+      .control('roomManage', {
+        sessionId: props.sessionId,
+        action: { kind: pinned ? 'pin' : 'unpin', messageId },
+      })
+      .then(({ reply }) => {
+        roomResult(reply);
+        return refreshState();
+      })
+      .catch((reason) => {
+        if (alive) {
+          error.set(reasonText(reason));
+          void refreshVisibleMetadata();
+        }
+      });
+  };
 
   const saveEdit = async () => {
     const id = editingMessageId();
     const nextText = editDraft().trim();
     if (!id || !nextText) return;
-    await runManage({ kind: 'edit_message', messageId: id, text: nextText });
-    editingMessageId.set(null);
-    editDraft.set('');
+    try {
+      const res = roomResult<RoomManageOutput>(
+        (
+          await props.host.control('roomManage', {
+            sessionId: props.sessionId,
+            action: { kind: 'edit_message', messageId: id, text: nextText },
+          })
+        ).reply,
+      );
+      if (res.kind === 'message_updated') patchMessage(res.message);
+      editingMessageId.set(null);
+      editDraft.set('');
+      void refreshState();
+    } catch (reason) {
+      if (alive) error.set(reasonText(reason));
+    }
   };
 
-  const deleteMessage = (messageId: string) =>
-    void runManage({ kind: 'delete_message', messageId });
+  const deleteMessage = (messageId: string) => {
+    void props.host
+      .control('roomManage', {
+        sessionId: props.sessionId,
+        action: { kind: 'delete_message', messageId },
+      })
+      .then(({ reply }) => {
+        const res = roomResult<RoomManageOutput>(reply);
+        if (res.kind === 'message_updated') patchMessage(res.message);
+        return refreshState();
+      })
+      .catch((reason) => {
+        if (alive) error.set(reasonText(reason));
+      });
+  };
 
   const saveTopic = async () => {
-    await runManage({ kind: 'set_topic', topic: topicDraft().trim() });
-    editingTopic.set(false);
+    try {
+      const res = roomResult<RoomManageOutput>(
+        (
+          await props.host.control('roomManage', {
+            sessionId: props.sessionId,
+            action: { kind: 'set_topic', topic: topicDraft().trim() },
+          })
+        ).reply,
+      );
+      if (res.kind === 'topic_updated') topic.set(res.topic);
+      editingTopic.set(false);
+    } catch (reason) {
+      if (alive) error.set(reasonText(reason));
+    }
   };
 
   const time = (at: number) =>
@@ -1315,524 +1466,223 @@ export function RoomTimeline(props: {
     const yesterdayKey = roomDayKey(Date.now() - 86_400_000);
     if (key === yesterdayKey) return tr('Yesterday');
     return new Date(at).toLocaleDateString(currentLocale(), {
-      year: 'numeric',
       month: 'short',
       day: 'numeric',
     });
   };
 
-  const hasHumanReacted = (actors: readonly { kind: string }[]) =>
-    actors.some((actor) => actor.kind === 'human');
-
-  return (
-    <View style={{ flex: 1, minHeight: 0, transform: [{ translateY: rise }] }}>
-      <RoomRosterBar
-        workspacePath={() => props.workspacePath?.()}
-        topic={topic}
-        members={members}
-        pinnedCount={() => pinnedMessages().length}
-        searchOpen={searchOpen}
-        pinnedOpen={pinnedOpen}
-        onToggleSearch={() => {
-          searchOpen.set(!searchOpen());
-          if (searchOpen()) pinnedOpen.set(false);
-        }}
-        onTogglePinned={() => {
-          pinnedOpen.set(!pinnedOpen());
-          if (pinnedOpen()) searchOpen.set(false);
-        }}
-        onOpenMembers={() => membersOpen.set(true)}
-        onEditTopic={() => {
+  const roomMenuExtras = () => (
+    <>
+      <RoomMenuItem
+        label={tr('Edit room topic')}
+        select={() => {
           topicDraft.set(topic());
           editingTopic.set(true);
         }}
-        onOpenAgent={props.openAgent}
       />
+      <RoomMenuItem label={tr('Room members')} select={() => membersOpen.set(true)} />
+    </>
+  );
 
-      <If when={pinnedOpen() && pinnedMessages().length > 0}>
-        <RoomPinnedBar
-          pinned={pinnedMessages}
-          name={props.name}
-          onJump={(id) => {
-            pinnedOpen.set(false);
-            void focusMessage(id);
-          }}
-          onUnpin={(id) => togglePin(id, false)}
-          onClose={() => pinnedOpen.set(false)}
+  return (
+    <View
+      style={{
+        flex: 1,
+        minHeight: 0,
+        opacity: fade,
+        transform: [{ translateY: rise }],
+      }}
+    >
+      <If when={Boolean(props.browser)}>
+        <Header
+          title={props.title?.() ?? tr('Rooms')}
+          subtitle={topic() || undefined}
+          browser={props.browser!()}
+          commands={() => {}}
+          actions={
+            <RoomHeaderControls
+              sessionId={props.sessionId}
+              host={props.host}
+              members={members}
+              pinned={pinnedMessages}
+              inspecting={() => props.inspecting?.() ?? null}
+              name={props.name}
+              onOpenAgent={props.openAgent}
+              onOpenMembers={() => membersOpen.set(true)}
+              onJump={(id) => void focusMessage(id)}
+              onUnpin={(id) => togglePin(id, false)}
+              menuItems={props.roomMenuItems?.(roomMenuExtras())}
+            />
+          }
         />
       </If>
 
-      <If when={searchOpen()}>
-        <RoomSearchPanel
-          sessionId={props.sessionId}
-          host={props.host}
-          name={props.name}
-          onJump={(id) => void focusMessage(id)}
-          onClose={() => searchOpen.set(false)}
-        />
-      </If>
-
-      <Scroll
-        accessibilityLabel={tr('Room messages')}
-        ref={(node) => {
-          scroll = node;
-        }}
-        style={{ flex: 1, minHeight: 0 }}
-        onScroll={(event) => {
-          scrollY = event.offset.y;
-          atEnd.set(event.offset.y >= event.contentSize.height - event.size.height - 48);
-        }}
-        contentStyle={{ paddingHorizontal: 24, paddingVertical: 20 }}
-      >
-        <View
-          style={{ width: '100%', maxWidth: 912, alignSelf: 'center', gap: 18 }}
-          onLayout={({ bounds }) => {
-            if (prependAnchor) {
-              scroll?.scrollTo({
-                y: prependAnchor.y + bounds.size.height - prependAnchor.height,
-                animated: false,
-              });
-              prependAnchor = null;
-            } else if (atEnd() && after() === null) scroll?.scrollToEnd({ animated: false });
-            contentHeight = bounds.size.height;
+      <View style={{ flex: 1, minHeight: 0, position: 'relative' }}>
+        <Scroll
+          accessibilityLabel={tr('Room messages')}
+          ref={(node) => {
+            scroll = node;
           }}
+          style={{ flex: 1, minHeight: 0 }}
+          onScroll={(event) => {
+            scrollY = event.offset.y;
+            atEnd.set(event.offset.y >= event.contentSize.height - event.size.height - 48);
+          }}
+          contentStyle={{ paddingHorizontal: 24, paddingVertical: 18 }}
         >
-          <If when={before()}>
-            <Button
-              accessibilityLabel={tr('Earlier messages')}
-              disabled={loadingEarlier()}
-              onPress={() => void earlier()}
-              style={{ ...controlStyle, alignSelf: 'center' }}
-              hoverStyle={{ backgroundColor: C.surface }}
-            >
-              <Text style={{ ...captionTextStyle, color: C.secondary }}>
-                {tr('Earlier messages')}
-              </Text>
-            </Button>
-          </If>
-
-          <If when={!ready()}>
-            <View style={{ padding: 24, alignItems: 'center' }}>
-              <LoadingIndicator />
-            </View>
-          </If>
-
-          <Each of={messages()} key={(message) => message.id}>
-            {(message, index) => {
-              const showDateDivider = () => {
-                if (index() === 0) return true;
-                const prev = messages()[index() - 1];
-                return !prev || roomDayKey(prev.at) !== roomDayKey(message().at);
-              };
-              const isDeleted = () => Boolean(message().deletedAt);
-              const isHighlighted = () => highlightedId() === message().id;
-              const isEditing = () => editingMessageId() === message().id;
-              const authorId = () => roomAuthorSession(message());
-
-              return (
-                <View style={{ gap: 10 }}>
-                  <If when={showDateDivider()}>
-                    <View
-                      style={{
-                        flexDirection: 'row',
-                        alignItems: 'center',
-                        gap: 12,
-                        paddingVertical: 4,
-                      }}
-                    >
-                      <View style={{ flex: 1, height: 1, backgroundColor: C.line }} />
-                      <Text style={{ ...captionTextStyle, color: C.muted }}>
-                        {dayLabel(message().at)}
-                      </Text>
-                      <View style={{ flex: 1, height: 1, backgroundColor: C.line }} />
-                    </View>
-                  </If>
-
-                  <ContextMenu
-                    offset={4}
-                    margin={8}
-                    popupStyle={floatingStyle()}
-                    trigger={
-                      <View
-                        selectable
-                        class="group"
-                        style={{
-                          flexDirection: 'row',
-                          gap: 12,
-                          paddingHorizontal: 8,
-                          paddingVertical: 6,
-                          borderRadius: 12,
-                          backgroundColor: isHighlighted() ? C.surface : 'transparent',
-                        }}
-                      >
-                        <If
-                          when={message().author.kind === 'human'}
-                          else={
-                            <Button
-                              accessibilityLabel={props.name(authorId()!)}
-                              onPress={() => props.openAgent(authorId()!)}
-                              style={{
-                                width: 30,
-                                height: 30,
-                                borderRadius: 15,
-                                backgroundColor: roomAvatarColor(authorId()!),
-                                alignItems: 'center',
-                                justifyContent: 'center',
-                              }}
-                            >
-                              <Text style={{ fontSize: 13, fontWeight: '600', color: '#FFFFFF' }}>
-                                {roomAvatarInitial(props.name(authorId()!))}
-                              </Text>
-                            </Button>
-                          }
-                        >
-                          <ProfileAvatar
-                            name={displayName()}
-                            avatar={profile()?.avatar}
-                            size={30}
-                          />
-                        </If>
-
-                        <View style={{ flex: 1, minWidth: 0, gap: 6 }}>
-                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                            <If
-                              when={message().author.kind === 'human'}
-                              else={
-                                <Button
-                                  accessibilityLabel={props.name(authorId()!)}
-                                  onPress={() => props.openAgent(authorId()!)}
-                                  style={{ paddingVertical: 2 }}
-                                >
-                                  <Text
-                                    style={{
-                                      ...captionTextStyle,
-                                      fontWeight: '600',
-                                      color: C.text,
-                                    }}
-                                  >
-                                    {props.name(authorId()!)}
-                                  </Text>
-                                </Button>
-                              }
-                            >
-                              <Text
-                                style={{ ...captionTextStyle, fontWeight: '600', color: C.text }}
-                              >
-                                {displayName() || tr('You')}
-                              </Text>
-                            </If>
-
-                            <Text style={{ ...captionTextStyle, color: C.muted }}>
-                              {time(message().at)}
-                            </Text>
-                            <If when={Boolean(message().editedAt) && !isDeleted()}>
-                              <Text style={{ ...captionTextStyle, color: C.muted }}>
-                                ({tr('Edited')})
-                              </Text>
-                            </If>
-                            <If when={Boolean(message().pinned)}>
-                              <Icon name="pin" size={11} color={C.accent} />
-                            </If>
-
-                            <View style={{ flex: 1 }} />
-
-                            <If when={!isDeleted()}>
-                              <View
-                                class={
-                                  platform.idiom === 'terminal'
-                                    ? undefined
-                                    : 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100'
-                                }
-                                style={{ flexDirection: 'row', alignItems: 'center', gap: 2 }}
-                              >
-                                <Each of={QUICK_REACTIONS} key={(e) => e}>
-                                  {(emoji) => (
-                                    <Button
-                                      accessibilityLabel={emoji()}
-                                      onPress={() => toggleReaction(message().id, emoji())}
-                                      style={{
-                                        ...controlStyle,
-                                        minHeight: 24,
-                                        paddingVertical: 2,
-                                        paddingHorizontal: 5,
-                                      }}
-                                      hoverStyle={{ backgroundColor: C.surface }}
-                                      focusStyle={controlFocusStyle()}
-                                    >
-                                      <Text style={{ fontSize: 12 }}>{emoji()}</Text>
-                                    </Button>
-                                  )}
-                                </Each>
-                                <Button
-                                  accessibilityLabel={tr('Reply to message')}
-                                  onPress={() => composer?.reply(message())}
-                                  style={{ ...controlStyle, minHeight: 24, paddingVertical: 2 }}
-                                  hoverStyle={{ backgroundColor: C.surface }}
-                                  focusStyle={controlFocusStyle()}
-                                >
-                                  <Icon name="undo" size={14} color={C.muted} />
-                                </Button>
-                              </View>
-                            </If>
-                          </View>
-
-                          <If when={message().replyTo}>
-                            <Button
-                              accessibilityLabel={tr('View replied message')}
-                              onPress={() => void focusMessage(message().replyTo!)}
-                              style={{
-                                borderLeftWidth: 2,
-                                borderLeftColor: C.line,
-                                paddingLeft: 10,
-                                paddingVertical: 3,
-                              }}
-                              hoverStyle={{ backgroundColor: C.surface }}
-                            >
-                              <Text
-                                style={[
-                                  { ...captionTextStyle, color: C.secondary },
-                                  { numberOfLines: 1 },
-                                ]}
-                              >
-                                {map().get(message().replyTo!)?.content.text ||
-                                  tr('View replied message')}
-                              </Text>
-                            </Button>
-                          </If>
-
-                          <If
-                            when={
-                              !isDeleted() &&
-                              message().mentions.length > 0 &&
-                              !message().content.text.includes('](maka://session/')
-                            }
-                          >
-                            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
-                              <Each of={message().mentions} key={(id) => id}>
-                                {(id) => (
-                                  <Button
-                                    accessibilityLabel={props.name(id())}
-                                    onPress={() => props.openAgent(id())}
-                                  >
-                                    <Text style={{ ...captionTextStyle, color: C.accent }}>
-                                      @{props.name(id())}
-                                    </Text>
-                                  </Button>
-                                )}
-                              </Each>
-                            </View>
-                          </If>
-
-                          <If when={isDeleted()}>
-                            <Text style={{ ...captionTextStyle, color: C.muted }}>
-                              {tr('Message deleted')}
-                            </Text>
-                          </If>
-
-                          <If when={!isDeleted() && isEditing()}>
-                            <View style={{ gap: 8 }}>
-                              <Input
-                                autoFocus
-                                accessibilityLabel={tr('Edit message')}
-                                value={editDraft()}
-                                onChange={({ value }) => editDraft.set(value)}
-                                onSubmit={() => void saveEdit()}
-                                style={{
-                                  ...inputTextStyle,
-                                  color: C.text,
-                                  backgroundColor: C.raised,
-                                  borderRadius: 8,
-                                  padding: 10,
-                                }}
-                              />
-                              <View style={{ flexDirection: 'row', gap: 8 }}>
-                                <Button
-                                  accessibilityLabel={tr('Save')}
-                                  onPress={() => void saveEdit()}
-                                  style={{ ...controlStyle, backgroundColor: C.surface }}
-                                >
-                                  <Text style={{ ...captionTextStyle, color: C.accent }}>
-                                    {tr('Save')}
-                                  </Text>
-                                </Button>
-                                <Button
-                                  accessibilityLabel={tr('Cancel')}
-                                  onPress={() => editingMessageId.set(null)}
-                                  style={controlStyle}
-                                >
-                                  <Text style={{ ...captionTextStyle, color: C.secondary }}>
-                                    {tr('Cancel')}
-                                  </Text>
-                                </Button>
-                              </View>
-                            </View>
-                          </If>
-
-                          <If
-                            when={!isDeleted() && !isEditing() && Boolean(message().content.text)}
-                          >
-                            <MarkdownBody
-                              selectable={false}
-                              row={() => ({
-                                key: message().id + ':' + String(message().editedAt ?? 0),
-                                messageId: message().id,
-                                field: 'body',
-                                role: message().author.kind === 'human' ? 'user' : 'assistant',
-                                text: message().content.text,
-                                prefix: true,
-                                closedAt: message().at,
-                              })}
-                              sourceId={message().id}
-                              sessionId={props.sessionId}
-                              openLink={openLink}
-                              userScroll={() => {}}
-                            />
-                          </If>
-
-                          <If when={!isDeleted() && message().content.attachments.length > 0}>
-                            <HistoryAttachments
-                              sessionId={props.sessionId}
-                              through={through}
-                              roomMessageId={message().id}
-                              attachments={message().content.attachments}
-                              preview={(image) => viewer.set(image)}
-                              userScroll={() => {}}
-                            />
-                          </If>
-
-                          <If when={!isDeleted() && (message().reactions?.length ?? 0) > 0}>
-                            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
-                              <Each of={message().reactions ?? []} key={(r) => r.emoji}>
-                                {(reaction) => (
-                                  <Button
-                                    accessibilityLabel={reaction().emoji}
-                                    onPress={() => toggleReaction(message().id, reaction().emoji)}
-                                    style={{
-                                      flexDirection: 'row',
-                                      alignItems: 'center',
-                                      gap: 4,
-                                      paddingHorizontal: 8,
-                                      paddingVertical: 2,
-                                      borderRadius: 10,
-                                      backgroundColor: hasHumanReacted(reaction().actors)
-                                        ? C.raised
-                                        : C.surface,
-                                      borderWidth: 1,
-                                      borderColor: hasHumanReacted(reaction().actors)
-                                        ? C.accent
-                                        : C.line,
-                                    }}
-                                    hoverStyle={{ backgroundColor: C.raised }}
-                                  >
-                                    <Text style={{ fontSize: 12 }}>{reaction().emoji}</Text>
-                                    <Text style={{ ...captionTextStyle, color: C.secondary }}>
-                                      {String(reaction().actors.length)}
-                                    </Text>
-                                  </Button>
-                                )}
-                              </Each>
-                            </View>
-                          </If>
-
-                          <If when={!isDeleted() && (message().deliveryStates?.length ?? 0) > 0}>
-                            <RoomDeliveryStrip
-                              states={message().deliveryStates!}
-                              name={props.name}
-                              onOpenAgent={props.openAgent}
-                              onJumpMessage={(id) => void focusMessage(id)}
-                            />
-                          </If>
-                        </View>
-                      </View>
-                    }
-                  >
-                    <If when={!isDeleted()}>
-                      <RoomMenuItem
-                        label={tr('Reply to message')}
-                        select={() => composer?.reply(message())}
-                      />
-                      <RoomMenuItem
-                        label={message().pinned ? tr('Unpin message') : tr('Pin message')}
-                        select={() => togglePin(message().id, !message().pinned)}
-                      />
-                      <If when={message().content.text}>
-                        <RoomMenuItem
-                          label={tr('Copy message')}
-                          select={() => {
-                            void Clipboard.writeText(message().content.text).catch((reason) => {
-                              if (alive) error.set(reasonText(reason));
-                            });
-                          }}
-                        />
-                      </If>
-                      <RoomMenuItem
-                        label={tr('Edit message')}
-                        select={() => {
-                          editDraft.set(message().content.text);
-                          editingMessageId.set(message().id);
-                        }}
-                      />
-                      <RoomMenuItem
-                        label={tr('Delete message')}
-                        danger
-                        select={() => deleteMessage(message().id)}
-                      />
-                    </If>
-                  </ContextMenu>
-                </View>
-              );
+          <View
+            style={{ width: '100%', maxWidth: 912, alignSelf: 'center' }}
+            onLayout={({ bounds }) => {
+              if (prependAnchor) {
+                scroll?.scrollTo({
+                  y: prependAnchor.y + bounds.size.height - prependAnchor.height,
+                  animated: false,
+                });
+                prependAnchor = null;
+              } else if (atEnd() && after() === null) scroll?.scrollToEnd({ animated: false });
+              contentHeight = bounds.size.height;
             }}
-          </Each>
+          >
+            <If when={before()}>
+              <Button
+                accessibilityLabel={tr('Earlier messages')}
+                disabled={loadingEarlier()}
+                onPress={() => void earlier()}
+                style={{ ...controlStyle, alignSelf: 'center', marginBottom: 12 }}
+                hoverStyle={{ backgroundColor: C.surface }}
+              >
+                <Text style={{ ...captionTextStyle, color: C.secondary }}>
+                  {tr('Earlier messages')}
+                </Text>
+              </Button>
+            </If>
 
-          <If when={after()}>
-            <Button
-              accessibilityLabel={tr('Newer messages')}
-              disabled={loadingNewer()}
-              onPress={() => void newer()}
-              style={{ ...controlStyle, alignSelf: 'center' }}
-              hoverStyle={{ backgroundColor: C.surface }}
-            >
-              <Text style={{ ...captionTextStyle, color: C.secondary }}>
-                {tr('Newer messages')}
-              </Text>
-            </Button>
-          </If>
-        </View>
-      </Scroll>
+            <If when={!ready()}>
+              <View style={{ padding: 24, alignItems: 'center' }}>
+                <LoadingIndicator />
+              </View>
+            </If>
 
-      <If when={(!atEnd() || after() !== null) && ready()}>
-        <Button
-          accessibilityLabel={tr('Latest')}
-          onPress={() => void latest()}
-          style={{
-            ...controlStyle,
-            alignSelf: 'center',
-            borderRadius: 14,
-            paddingHorizontal: 14,
-            paddingVertical: 6,
-            backgroundColor: unseenCount() > 0 ? C.accent : C.raised,
-            marginBottom: 10,
-          }}
-          hoverStyle={{ backgroundColor: C.surface }}
-        >
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-            <Icon name="down" color={unseenCount() > 0 ? C.background : C.secondary} />
-            <Text
-              style={{
-                ...captionTextStyle,
-                color: unseenCount() > 0 ? C.background : C.text,
+            <If when={ready() && messages().length === 0}>
+              <RoomEmptySeating
+                members={members}
+                onOpenAgent={props.openAgent}
+                onOpenMembers={() => membersOpen.set(true)}
+              />
+            </If>
+
+            <Each of={messages()} key={(message) => message.id}>
+              {(message, index) => {
+                const prev = () => (index() > 0 ? messages()[index() - 1] : undefined);
+                const showDate = () => {
+                  const p = prev();
+                  return !p || roomDayKey(p.at) !== roomDayKey(message().at);
+                };
+                const continuation = () => isGroupContinuation(prev(), message());
+                return (
+                  <RoomMessageRow
+                    sessionId={props.sessionId}
+                    through={throughSignal}
+                    message={message}
+                    isFirst={() => index() === 0}
+                    isContinuation={continuation}
+                    showDateDivider={showDate}
+                    dayLabel={dayLabel(message().at)}
+                    timeLabel={time(message().at)}
+                    isLive={() => liveAddedIds.has(message().id)}
+                    isHighlighted={() => highlightedId() === message().id}
+                    highlightTick={highlightTick}
+                    isEditing={() => editingMessageId() === message().id}
+                    editDraft={editDraft}
+                    setEditDraft={(v) => editDraft.set(v)}
+                    inspecting={() => props.inspecting?.() ?? null}
+                    repliedMessage={() =>
+                      message().replyTo ? map().get(message().replyTo!) : undefined
+                    }
+                    name={props.name}
+                    burstFor={(emoji) => reactionBursts().get(message().id + ':' + emoji) ?? 0}
+                    onReply={(msg) => composer?.reply(msg)}
+                    onJump={(id) => void focusMessage(id)}
+                    onReact={toggleReaction}
+                    onTogglePin={togglePin}
+                    onStartEdit={(msg) => {
+                      editingMessageId.set(msg.id);
+                      editDraft.set(msg.content.text);
+                    }}
+                    onSaveEdit={() => void saveEdit()}
+                    onCancelEdit={() => editingMessageId.set(null)}
+                    onDelete={deleteMessage}
+                    onOpenAgent={props.openAgent}
+                    onOpenLink={openLink}
+                    onPreviewImage={(image) => viewer.set(image)}
+                    onUserScroll={() => {}}
+                  />
+                );
               }}
-            >
-              {unseenCount() > 0
-                ? tr('New messages available') + ' (' + String(unseenCount()) + ')'
-                : tr('Latest')}
-            </Text>
+            </Each>
+
+            <If when={after()}>
+              <Button
+                accessibilityLabel={tr('Newer messages')}
+                disabled={loadingNewer()}
+                onPress={() => void newer()}
+                style={{ ...controlStyle, alignSelf: 'center', marginTop: 12 }}
+                hoverStyle={{ backgroundColor: C.surface }}
+              >
+                <Text style={{ ...captionTextStyle, color: C.secondary }}>
+                  {tr('Newer messages')}
+                </Text>
+              </Button>
+            </If>
+
+            <RoomWorkingFooter members={members} onOpenAgent={props.openAgent} />
           </View>
-        </Button>
-      </If>
+        </Scroll>
+
+        {/* Floating absolute Latest circular button (never shifts scroll height) */}
+        <If when={Boolean(after()) || !atEnd() || unseenCount() > 0}>
+          <Button
+            accessibilityLabel={tr('Latest')}
+            onPress={() => void latest()}
+            style={{
+              position: 'absolute',
+              right: 24,
+              bottom: 14,
+              minWidth: 34,
+              height: 34,
+              paddingHorizontal: unseenCount() > 0 ? 10 : 0,
+              borderRadius: 17,
+              backgroundColor: C.floating,
+              borderWidth: 1,
+              borderColor: C.line,
+              flexDirection: 'row',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: 4,
+            }}
+            hoverStyle={{ backgroundColor: C.raised }}
+            focusStyle={controlFocusStyle()}
+          >
+            <Icon name="latest" size={14} color={unseenCount() > 0 ? C.accent : C.secondary} />
+            <If when={unseenCount() > 0}>
+              <Text style={{ fontSize: 11.5, fontWeight: '600', color: C.accent }}>
+                {String(unseenCount())}
+              </Text>
+            </If>
+          </Button>
+        </If>
+      </View>
 
       <If when={error()}>
-        <View style={{ flexDirection: 'row', gap: 8, paddingHorizontal: 24, alignItems: 'center' }}>
+        <View
+          style={{
+            flexDirection: 'row',
+            gap: 8,
+            paddingHorizontal: 24,
+            paddingBottom: 4,
+            alignItems: 'center',
+          }}
+        >
           <Text style={{ ...captionTextStyle, color: C.warning, flex: 1 }}>{error()}</Text>
           <Button
             accessibilityLabel={tr('Retry')}
@@ -1851,6 +1701,7 @@ export function RoomTimeline(props: {
       <RoomComposer
         sessionId={props.sessionId}
         members={members}
+        waitingMembers={waitingMembers}
         name={props.name}
         resolveNames={props.resolveNames}
         message={(id) => map().get(id)}

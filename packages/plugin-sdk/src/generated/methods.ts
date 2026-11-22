@@ -1260,11 +1260,10 @@ export type AgentRoomManageInput_AgentRoomManageAction =
   | {
       kind: 'add_members';
       memberSessionIds: string[];
-      role?: string | null;
     }
   | {
-      kind: 'remove_member';
-      memberSessionId: string;
+      kind: 'remove_members';
+      memberSessionIds: string[];
     }
   | {
       kind: 'react';
@@ -1346,6 +1345,12 @@ export type AgentRoomSearchOutput_AgentRoomDeliveryState =
       sessionId: string;
       messageId: string;
       replyMessageId: string;
+    }
+  | {
+      kind: 'reacted';
+      sessionId: string;
+      messageId: string;
+      emoji: string;
     }
   | {
       kind: 'silent';
@@ -1611,7 +1616,6 @@ export type AgentSessionManageInput_AgentSessionManageAction =
       kind: 'room_members';
       add?: string[];
       remove?: string[];
-      role?: string | null;
     }
   | {
       kind: 'room_react';
@@ -1899,8 +1903,8 @@ export type AgentSessionManageOutput_AgentRoomManageResult =
       added: string[];
     }
   | {
-      kind: 'member_removed';
-      removed: boolean;
+      kind: 'members_removed';
+      removed: string[];
     }
   | {
       kind: 'reaction_updated';
@@ -1970,6 +1974,12 @@ export type AgentSessionManageOutput_AgentRoomDeliveryState =
       sessionId: string;
       messageId: string;
       replyMessageId: string;
+    }
+  | {
+      kind: 'reacted';
+      sessionId: string;
+      messageId: string;
+      emoji: string;
     }
   | {
       kind: 'silent';
@@ -2450,6 +2460,12 @@ export type AgentSessionReadOutput_AgentRoomDeliveryState =
       sessionId: string;
       messageId: string;
       replyMessageId: string;
+    }
+  | {
+      kind: 'reacted';
+      sessionId: string;
+      messageId: string;
+      emoji: string;
     }
   | {
       kind: 'silent';
@@ -4171,8 +4187,8 @@ export interface ServiceMethods {
             added: string[];
           }
         | {
-            kind: 'member_removed';
-            removed: boolean;
+            kind: 'members_removed';
+            removed: string[];
           }
         | {
             kind: 'reaction_updated';
@@ -7152,7 +7168,6 @@ export interface AgentSessionReadOutput_AgentRoomMember {
   pendingInteractions?: number;
   archived?: boolean;
   unavailable?: boolean;
-  role?: string | null;
   addedAt?: number | null;
 }
 export interface AgentSessionReadOutput_AgentTranscriptEntry {

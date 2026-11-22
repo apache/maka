@@ -115,7 +115,13 @@ pub enum RoomDeliveryState {
         message_id: String,
         reply_message_id: String,
     },
-    /// The mentioned Agent finished its run without posting a reply in the Room.
+    /// The mentioned Agent acknowledged the message with a Room reaction and finished without a prose reply.
+    Reacted {
+        session_id: String,
+        message_id: String,
+        emoji: String,
+    },
+    /// The mentioned Agent finished its run without posting a reply or reaction in the Room.
     Silent {
         session_id: String,
         message_id: String,
@@ -143,6 +149,7 @@ impl RoomDeliveryState {
             | Self::Working { session_id, .. }
             | Self::Waiting { session_id, .. }
             | Self::Replied { session_id, .. }
+            | Self::Reacted { session_id, .. }
             | Self::Silent { session_id, .. }
             | Self::Failed { session_id, .. }
             | Self::Stopped { session_id, .. }
@@ -184,8 +191,6 @@ pub struct RoomMember {
     pub archived: bool,
     #[serde(default)]
     pub unavailable: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub role: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub added_at: Option<u64>,
 }

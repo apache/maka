@@ -33,7 +33,7 @@ use maka_event_log::{
     writeback::{Notification, Prepared, Statement},
 };
 use rusqlite::{Connection, OptionalExtension, params};
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 #[derive(Clone)]
 pub struct RoomStore {
@@ -95,26 +95,24 @@ impl RoomStore {
         session: String,
         member_sessions: Vec<String>,
         at: UnixMillis,
-        role: Option<String>,
     ) -> AddMembersStatement {
         AddMembersStatement {
             owner: self.owner.clone(),
             session,
             member_sessions,
             at,
-            role: role.unwrap_or_else(|| "member".to_owned()),
         }
     }
 
-    pub fn remove_member_statement(
+    pub fn remove_members_statement(
         &self,
         session: String,
-        member_session: String,
-    ) -> RemoveMemberStatement {
-        RemoveMemberStatement {
+        member_sessions: Vec<String>,
+    ) -> RemoveMembersStatement {
+        RemoveMembersStatement {
             owner: self.owner.clone(),
             session,
-            member_session,
+            member_sessions,
         }
     }
 
@@ -142,7 +140,6 @@ impl RoomStore {
         &self,
         session: String,
         message_id: String,
-        actor: RoomActor,
         pinned: bool,
         at: UnixMillis,
     ) -> PinStatement {
@@ -150,7 +147,6 @@ impl RoomStore {
             owner: self.owner.clone(),
             session,
             message_id,
-            actor,
             pinned,
             at,
         }
@@ -399,8 +395,8 @@ impl Statement for PostStatement {
                 continue;
             }
             c.execute(
-                "INSERT OR IGNORE INTO agent_room_members(owner,session,member_session,added_at,role)
-                 SELECT ?1,?2,?3,?4,'member'
+                "INSERT OR IGNORE INTO agent_room_members(owner,session,member_session,added_at)
+                 SELECT ?1,?2,?3,?4
                  WHERE EXISTS(SELECT 1 FROM session_control s WHERE s.id=?3 AND NOT EXISTS(SELECT 1 FROM session_retirements d WHERE d.session_id=s.id AND d.remove_session=1))
                    AND NOT EXISTS(SELECT 1 FROM agent_rooms r WHERE r.owner=?1 AND r.session=?3)",
                 params![owner, session, member, at.0],
@@ -468,7 +464,6 @@ pub struct AddMembersStatement {
     session: String,
     member_sessions: Vec<String>,
     at: UnixMillis,
-    role: String,
 }
 
 impl Statement for AddMembersStatement {
@@ -480,11 +475,6 @@ impl Statement for AddMembersStatement {
         ensure_room_writable(c, &owner, &self.session)?;
         let mut added = Vec::new();
         let mut changed = false;
-        let role = if self.role.trim().is_empty() {
-            "member"
-        } else {
-            self.role.trim()
-        };
         for member in self.member_sessions {
             if member == self.session {
                 return Err(invalid("Cannot add a Room to itself as a member"));
@@ -503,8 +493,8 @@ impl Statement for AddMembersStatement {
                 return Err(StoreError::SessionNotFound);
             }
             let n = c.execute(
-                "INSERT OR IGNORE INTO agent_room_members(owner,session,member_session,added_at,role) VALUES(?,?,?,?,?)",
-                params![owner, self.session, member, self.at.0, role],
+                "INSERT OR IGNORE INTO agent_room_members(owner,session,member_session,added_at) VALUES(?,?,?,?)",
+                params![owner, self.session, member, self.at.0],
             )?;
             if n > 0 {
                 changed = true;
@@ -531,25 +521,32 @@ impl Statement for AddMembersStatement {
     }
 }
 
-pub struct RemoveMemberStatement {
+pub struct RemoveMembersStatement {
     owner: RunOwner,
     session: String,
-    member_session: String,
+    member_sessions: Vec<String>,
 }
 
-impl Statement for RemoveMemberStatement {
-    type Value = bool;
-    type Output = bool;
+impl Statement for RemoveMembersStatement {
+    type Value = Vec<String>;
+    type Output = Vec<String>;
 
-    fn execute(self, c: &Connection) -> Result<Prepared<bool>, StoreError> {
+    fn execute(self, c: &Connection) -> Result<Prepared<Vec<String>>, StoreError> {
         let owner = serde_json::to_string(&self.owner)?;
         ensure_room_writable(c, &owner, &self.session)?;
-        let changed = c.execute(
-            "DELETE FROM agent_room_members WHERE owner=? AND session=? AND member_session=?",
-            params![owner, self.session, self.member_session],
-        )? > 0;
+        let mut removed = Vec::new();
+        for member in self.member_sessions {
+            if c.execute(
+                "DELETE FROM agent_room_members WHERE owner=? AND session=? AND member_session=?",
+                params![owner, self.session, member],
+            )? > 0
+            {
+                removed.push(member);
+            }
+        }
+        let changed = !removed.is_empty();
         Ok(Prepared {
-            value: changed,
+            value: removed,
             changed,
             notification: if changed {
                 Notification::METADATA.with_sessions([self.session])
@@ -559,7 +556,7 @@ impl Statement for RemoveMemberStatement {
         })
     }
 
-    fn committed(value: bool) -> bool {
+    fn committed(value: Vec<String>) -> Vec<String> {
         value
     }
 
@@ -639,7 +636,6 @@ pub struct PinStatement {
     owner: RunOwner,
     session: String,
     message_id: String,
-    actor: RoomActor,
     pinned: bool,
     at: UnixMillis,
 }
@@ -659,14 +655,8 @@ impl Statement for PinStatement {
         }
         let changed = if self.pinned {
             c.execute(
-                "INSERT OR IGNORE INTO agent_room_pins(owner,session,message,pinned_by,pinned_at) VALUES(?,?,?,?,?)",
-                params![
-                    owner,
-                    self.session,
-                    self.message_id,
-                    self.actor.storage_key(),
-                    self.at.0
-                ],
+                "INSERT OR IGNORE INTO agent_room_pins(owner,session,message,pinned_at) VALUES(?,?,?,?)",
+                params![owner, self.session, self.message_id, self.at.0],
             )? > 0
         } else {
             c.execute(
@@ -744,6 +734,12 @@ impl Statement for EditMessageStatement {
                 self.message_id,
             ],
         )?;
+        enrich_messages(
+            c,
+            &owner,
+            &self.session,
+            std::slice::from_mut(&mut existing),
+        )?;
         Ok(Prepared {
             value: existing,
             changed: true,
@@ -812,6 +808,12 @@ impl Statement for DeleteMessageStatement {
         c.execute(
             "DELETE FROM agent_room_reactions WHERE owner=? AND session=? AND message=?",
             params![owner, self.session, self.message_id],
+        )?;
+        enrich_messages(
+            c,
+            &owner,
+            &self.session,
+            std::slice::from_mut(&mut existing),
         )?;
         Ok(Prepared {
             value: existing,
@@ -895,19 +897,84 @@ impl Query for WatchWatermark {
 
     fn execute(self, c: &Connection) -> Result<(u64, u64), StoreError> {
         let owner = serde_json::to_string(&self.0)?;
-        if !exists(c, &owner, &self.1)? {
-            return Err(StoreError::SessionNotFound);
-        }
-        let through = tail(c, &owner, &self.1)?;
-        let catalog_rev: i64 = c
+        let room_rev: Option<i64> = c
             .query_row(
-                "SELECT revision FROM agent_catalog_revision WHERE singleton=1",
-                [],
+                "SELECT revision FROM agent_rooms WHERE owner=? AND session=?",
+                params![owner, self.1],
                 |row| row.get(0),
             )
-            .optional()?
-            .unwrap_or(0);
-        Ok((through, unsigned(catalog_rev)?))
+            .optional()?;
+        let Some(room_rev) = room_rev else {
+            return Err(StoreError::SessionNotFound);
+        };
+        let through = tail(c, &owner, &self.1)?;
+        // Fingerprint ONLY this Room's revision + its own members' live/blocked/pending/terminal/title
+        // state so reactions or streaming in other Rooms never trigger cross-room refreshes.
+        let mut hash: u64 = 0xcbf29ce484222325;
+        let mix_u64 = |h: &mut u64, v: u64| {
+            for b in v.to_le_bytes() {
+                *h ^= u64::from(b);
+                *h = h.wrapping_mul(0x100000001b3);
+            }
+        };
+        let mix_bytes = |h: &mut u64, bytes: &[u8]| {
+            for &b in bytes {
+                *h ^= u64::from(b);
+                *h = h.wrapping_mul(0x100000001b3);
+            }
+            *h ^= 0xff;
+            *h = h.wrapping_mul(0x100000001b3);
+        };
+        mix_u64(&mut hash, unsigned(room_rev)?);
+        let mut stmt = c.prepare_cached(
+            "SELECT m.member_session,
+                    COALESCE(json_extract(s.configuration, '$.title'), s.id),
+                    COALESCE(s.archived, 0),
+                    EXISTS(SELECT 1 FROM agent_catalog_runs w WHERE w.owner=?1 AND w.session=m.member_session AND w.live=1),
+                    EXISTS(SELECT 1 FROM agent_catalog_runs w WHERE w.owner=?1 AND w.session=m.member_session AND w.live=1 AND w.blocked=1),
+                    (SELECT COUNT(*) FROM agent_interaction_pending p
+                        JOIN agent_interaction_requests q ON q.request=p.request
+                        JOIN agent_run_specs spec ON spec.run=q.run
+                        JOIN agent_catalog_runs r ON r.run=q.run
+                        WHERE p.session=m.member_session AND spec.owner=?1 AND r.live=1),
+                    COALESCE((SELECT r.admission_sequence FROM agent_catalog_runs r WHERE r.owner=?1 AND r.session=m.member_session ORDER BY r.admission_sequence DESC LIMIT 1), 0),
+                    COALESCE((SELECT r.stopped FROM agent_catalog_runs r WHERE r.owner=?1 AND r.session=m.member_session ORDER BY r.admission_sequence DESC LIMIT 1), 0),
+                    COALESCE((SELECT r.terminal FROM agent_catalog_runs r WHERE r.owner=?1 AND r.session=m.member_session ORDER BY r.admission_sequence DESC LIMIT 1), '')
+             FROM agent_room_members m
+             LEFT JOIN session_control s ON s.id=m.member_session
+               AND NOT EXISTS(SELECT 1 FROM session_retirements d WHERE d.session_id=s.id AND d.remove_session=1)
+             WHERE m.owner=?1 AND m.session=?2
+             ORDER BY m.member_session ASC",
+        )?;
+        let rows = stmt.query_map(params![owner, self.1], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, Option<String>>(1)?,
+                r.get::<_, i64>(2)?,
+                r.get::<_, i64>(3)?,
+                r.get::<_, i64>(4)?,
+                r.get::<_, i64>(5)?,
+                r.get::<_, i64>(6)?,
+                r.get::<_, i64>(7)?,
+                r.get::<_, String>(8)?,
+            ))
+        })?;
+        for row in rows {
+            let (id, title, archived, live, blocked, pending, seq, stopped, terminal) = row?;
+            mix_bytes(&mut hash, id.as_bytes());
+            if let Some(t) = title {
+                mix_bytes(&mut hash, t.as_bytes());
+            }
+            mix_u64(&mut hash, archived as u64);
+            mix_u64(&mut hash, live as u64);
+            mix_u64(&mut hash, blocked as u64);
+            mix_u64(&mut hash, pending as u64);
+            mix_u64(&mut hash, seq as u64);
+            mix_u64(&mut hash, stopped as u64);
+            mix_bytes(&mut hash, terminal.as_bytes());
+        }
+        // Mask to 53 bits so JSON -> JS number preserves exact equality.
+        Ok((through, hash & ((1u64 << 53) - 1)))
     }
 }
 
@@ -943,7 +1010,7 @@ impl Query for StateQuery {
             |row| row.get(0),
         )?;
         let members = load_members(c, &owner, &self.session)?;
-        let mut pinned = load_pinned_messages(c, &owner, &self.session)?;
+        let mut pinned = load_pinned_messages(c, &owner, &self.session, None)?;
         enrich_messages(c, &owner, &self.session, &mut pinned)?;
         Ok(RoomState {
             session_id: self.session,
@@ -982,7 +1049,7 @@ impl Query for ContextSnapshotQuery {
             .collect::<Result<Vec<_>, _>>()?;
         recent.reverse();
         let has_earlier = recent.first().is_some_and(|m| m.sequence > 1);
-        let mut pinned = load_pinned_messages(c, &owner, &self.session)?;
+        let pinned = load_pinned_messages(c, &owner, &self.session, Some(5))?;
 
         let mut member_ids = BTreeSet::new();
         for id in &self.extra_session_ids {
@@ -1001,7 +1068,6 @@ impl Query for ContextSnapshotQuery {
         if !extra.is_empty() {
             members.extend(resolve_participants(c, &owner, &extra, &HashMap::new())?);
         }
-        enrich_messages(c, &owner, &self.session, &mut pinned)?;
         Ok(RoomContextSnapshot {
             topic,
             members,
@@ -1037,8 +1103,9 @@ impl Query for SearchQuery {
             c.prepare_cached(
                 "SELECT m.body_json, m.edited_at, m.deleted_at
                  FROM agent_room_search s
-                 JOIN agent_room_messages m ON m.owner=s.owner AND m.session=s.session AND m.message=s.message
-                 WHERE s.owner=?1 AND s.session=?2 AND m.deleted_at IS NULL AND agent_room_search MATCH ?3
+                 JOIN agent_room_search_docs d ON d.doc_id=s.rowid
+                 JOIN agent_room_messages m ON m.owner=d.owner AND m.session=d.session AND m.message=d.message
+                 WHERE d.owner=?1 AND d.session=?2 AND m.deleted_at IS NULL AND agent_room_search MATCH ?3
                  ORDER BY m.sequence DESC LIMIT ?4",
             )?
             .query_map(params![owner, self.session, escaped, limit], decode_row)?
@@ -1238,21 +1305,17 @@ fn load_roster_meta(
     c: &Connection,
     owner: &str,
     session: &str,
-) -> Result<HashMap<String, (String, u64)>, StoreError> {
+) -> Result<HashMap<String, u64>, StoreError> {
     let mut map = HashMap::new();
     let mut stmt = c.prepare_cached(
-        "SELECT member_session, role, added_at FROM agent_room_members WHERE owner=? AND session=? ORDER BY added_at ASC, member_session ASC",
+        "SELECT member_session, added_at FROM agent_room_members WHERE owner=? AND session=? ORDER BY added_at ASC, member_session ASC",
     )?;
     let rows = stmt.query_map(params![owner, session], |row| {
-        Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, String>(1)?,
-            row.get::<_, i64>(2)?,
-        ))
+        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
     })?;
     for row in rows {
-        let (id, role, at) = row?;
-        map.insert(id, (role, unsigned(at)?));
+        let (id, at) = row?;
+        map.insert(id, unsigned(at)?);
     }
     Ok(map)
 }
@@ -1261,19 +1324,15 @@ fn load_members(c: &Connection, owner: &str, session: &str) -> Result<Vec<RoomMe
     let mut ordered_ids = Vec::new();
     let mut roster_meta = HashMap::new();
     let mut stmt = c.prepare_cached(
-        "SELECT member_session, role, added_at FROM agent_room_members WHERE owner=? AND session=? ORDER BY added_at ASC, member_session ASC",
+        "SELECT member_session, added_at FROM agent_room_members WHERE owner=? AND session=? ORDER BY added_at ASC, member_session ASC",
     )?;
     let rows = stmt.query_map(params![owner, session], |row| {
-        Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, String>(1)?,
-            row.get::<_, i64>(2)?,
-        ))
+        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
     })?;
     for row in rows {
-        let (id, role, at) = row?;
+        let (id, at) = row?;
         ordered_ids.push(id.clone());
-        roster_meta.insert(id, (role, unsigned(at)?));
+        roster_meta.insert(id, unsigned(at)?);
     }
     resolve_participants(c, owner, &ordered_ids, &roster_meta)
 }
@@ -1282,7 +1341,7 @@ fn resolve_participants(
     c: &Connection,
     owner: &str,
     ids: &[String],
-    roster_meta: &HashMap<String, (String, u64)>,
+    roster_meta: &HashMap<String, u64>,
 ) -> Result<Vec<RoomMember>, StoreError> {
     if ids.is_empty() {
         return Ok(Vec::new());
@@ -1340,8 +1399,7 @@ fn resolve_participants(
                 pending_interactions,
                 archived,
                 unavailable: false,
-                role: meta.map(|(r, _)| r.clone()),
-                added_at: meta.map(|(_, at)| *at),
+                added_at: meta.copied(),
             });
         } else {
             result.push(RoomMember {
@@ -1353,8 +1411,7 @@ fn resolve_participants(
                 pending_interactions: 0,
                 archived: false,
                 unavailable: true,
-                role: meta.map(|(r, _)| r.clone()),
-                added_at: meta.map(|(_, at)| *at),
+                added_at: meta.copied(),
             });
         }
     }
@@ -1373,17 +1430,30 @@ fn load_pinned_messages(
     c: &Connection,
     owner: &str,
     session: &str,
+    limit: Option<u32>,
 ) -> Result<Vec<RoomMessage>, StoreError> {
-    let mut stmt = c.prepare_cached(
-        "SELECT m.body_json, m.edited_at, m.deleted_at
-         FROM agent_room_pins p
-         JOIN agent_room_messages m ON m.owner=p.owner AND m.session=p.session AND m.message=p.message
-         WHERE p.owner=? AND p.session=? AND m.deleted_at IS NULL
-         ORDER BY p.pinned_at DESC, m.sequence DESC",
-    )?;
-    let items = stmt
-        .query_map(params![owner, session], decode_row)?
-        .collect::<Result<Vec<_>, _>>()?;
+    let items = if let Some(limit) = limit {
+        let mut stmt = c.prepare_cached(
+            "SELECT m.body_json, m.edited_at, m.deleted_at
+             FROM agent_room_pins p
+             JOIN agent_room_messages m ON m.owner=p.owner AND m.session=p.session AND m.message=p.message
+             WHERE p.owner=? AND p.session=? AND m.deleted_at IS NULL
+             ORDER BY p.pinned_at DESC, m.sequence DESC
+             LIMIT ?",
+        )?;
+        stmt.query_map(params![owner, session, limit], decode_row)?
+            .collect::<Result<Vec<_>, _>>()?
+    } else {
+        let mut stmt = c.prepare_cached(
+            "SELECT m.body_json, m.edited_at, m.deleted_at
+             FROM agent_room_pins p
+             JOIN agent_room_messages m ON m.owner=p.owner AND m.session=p.session AND m.message=p.message
+             WHERE p.owner=? AND p.session=? AND m.deleted_at IS NULL
+             ORDER BY p.pinned_at DESC, m.sequence DESC",
+        )?;
+        stmt.query_map(params![owner, session], decode_row)?
+            .collect::<Result<Vec<_>, _>>()?
+    };
     Ok(items)
 }
 
@@ -1409,13 +1479,13 @@ fn enrich_messages(
     let mut reaction_stmt = c.prepare_cached(
         "SELECT actor, emoji FROM agent_room_reactions WHERE owner=? AND session=? AND message=? ORDER BY at ASC, actor ASC",
     )?;
-    // Statement to find the first Room reply from a target session after a given sequence.
+    // Claim only explicit reply_to responses so a reply to message m2 never cross-attributes to m1.
     let mut reply_stmt = c.prepare_cached(
         "SELECT message FROM agent_room_messages
          WHERE owner=?1 AND session=?2 AND sequence>?3 AND deleted_at IS NULL
-           AND (reply_to=?4 OR json_extract(body_json, '$.author.execution.sessionId')=?5)
+           AND reply_to=?4
            AND json_extract(body_json, '$.author.execution.sessionId')=?5
-         ORDER BY CASE WHEN reply_to=?4 THEN 0 ELSE 1 END, sequence ASC
+         ORDER BY sequence ASC
          LIMIT 1",
     )?;
     let mut queue_stmt = c.prepare_cached(
@@ -1430,21 +1500,25 @@ fn enrich_messages(
 
     for msg in messages.iter_mut() {
         msg.pinned = pinned_set.contains(&msg.id);
-        // Reactions grouped by emoji preserving insertion order.
-        let mut by_emoji: BTreeMap<String, Vec<RoomActor>> = BTreeMap::new();
+        // Reactions grouped by emoji strictly preserving first-added insertion order.
+        let mut reaction_index: HashMap<String, usize> = HashMap::new();
+        let mut reactions: Vec<RoomReaction> = Vec::new();
         for row in reaction_stmt.query_map(params![owner, session, msg.id], |r| {
             Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
         })? {
             let (actor_key, emoji) = row?;
-            by_emoji
-                .entry(emoji)
-                .or_default()
-                .push(RoomActor::from_storage_key(&actor_key));
+            let actor = RoomActor::from_storage_key(&actor_key);
+            if let Some(&idx) = reaction_index.get(&emoji) {
+                reactions[idx].actors.push(actor);
+            } else {
+                reaction_index.insert(emoji.clone(), reactions.len());
+                reactions.push(RoomReaction {
+                    emoji,
+                    actors: vec![actor],
+                });
+            }
         }
-        msg.reactions = by_emoji
-            .into_iter()
-            .map(|(emoji, actors)| RoomReaction { emoji, actors })
-            .collect();
+        msg.reactions = reactions;
 
         // Derived delivery states from single-source-of-truth queue/run/room tables.
         let mut states = Vec::with_capacity(msg.deliveries.len());
@@ -1531,9 +1605,30 @@ fn enrich_messages(
                                             message_id: delivered_message_id.clone(),
                                         }
                                     } else if terminal.is_some() {
-                                        RoomDeliveryState::Silent {
-                                            session_id: target_session.clone(),
-                                            message_id: delivered_message_id.clone(),
+                                        if let Some(reacted_emoji) =
+                                            msg.reactions.iter().find_map(|r| {
+                                                r.actors
+                                                    .iter()
+                                                    .any(|a| {
+                                                        matches!(
+                                                            a,
+                                                            RoomActor::Session { session_id }
+                                                                if session_id == target_session
+                                                        )
+                                                    })
+                                                    .then(|| r.emoji.clone())
+                                            })
+                                        {
+                                            RoomDeliveryState::Reacted {
+                                                session_id: target_session.clone(),
+                                                message_id: delivered_message_id.clone(),
+                                                emoji: reacted_emoji,
+                                            }
+                                        } else {
+                                            RoomDeliveryState::Silent {
+                                                session_id: target_session.clone(),
+                                                message_id: delivered_message_id.clone(),
+                                            }
                                         }
                                     } else {
                                         RoomDeliveryState::Queued {
@@ -1651,4 +1746,362 @@ fn integer(value: u64) -> Result<i64, StoreError> {
 
 fn unsigned(value: i64) -> Result<u64, StoreError> {
     u64::try_from(value).map_err(|_| invalid("Room sequence cannot be negative"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use maka_agent_facts::{
+        durable::{ExecutionIdentity, RunId},
+        input::MessageInput,
+        room::RoomDelivery,
+    };
+
+    fn test_owner() -> RunOwner {
+        RunOwner {
+            deployment: uuid::Uuid::nil(),
+            namespace: maka_plugin_core::composition::InstanceId(vec![uuid::Uuid::nil()]),
+        }
+    }
+
+    fn open_db(max_version: Option<i64>) -> Connection {
+        let db = Connection::open_in_memory().unwrap();
+        db.pragma_update(None, "foreign_keys", "ON").unwrap();
+        let catalog: Vec<_> = maka_event_log::ROOT_MIGRATIONS
+            .iter()
+            .chain(crate::MIGRATIONS)
+            .copied()
+            .filter(|m| max_version.is_none_or(|cap| m.version <= cap))
+            .collect();
+        maka_event_log::migration::run(&db, &catalog).unwrap();
+        db
+    }
+
+    fn seed_session(db: &Connection, id: &str, title: &str) {
+        let cfg = serde_json::json!({ "title": title }).to_string();
+        db.execute(
+            "INSERT INTO session_control(id, fingerprint, revision, created_at, updated_at, archived, configuration)
+             VALUES(?1, 'fp', 1, 1, 1, 0, ?2)",
+            params![id, cfg],
+        )
+        .unwrap();
+    }
+
+    fn exec_id(session_id: &str) -> ExecutionIdentity {
+        ExecutionIdentity {
+            session_id: session_id.to_owned(),
+            run_id: RunId::new(),
+            turn_id: "t1".into(),
+        }
+    }
+
+    #[test]
+    fn reactions_preserve_insertion_order_and_replies_do_not_cross_attribute() {
+        let db = open_db(None);
+        let owner = test_owner();
+        seed_session(&db, "room_a", "Room A");
+        seed_session(&db, "room_b", "Room B");
+        seed_session(&db, "alice", "Alice");
+        seed_session(&db, "bob", "Bob");
+
+        CreateRoom {
+            owner: owner.clone(),
+            session: "room_a".into(),
+        }
+        .execute(&db)
+        .unwrap();
+        CreateRoom {
+            owner: owner.clone(),
+            session: "room_b".into(),
+        }
+        .execute(&db)
+        .unwrap();
+
+        // Post m1 & m2 both mentioning Alice; Alice replies explicitly to m2 only.
+        PostStatement {
+            owner: owner.clone(),
+            post: Post {
+                session: "room_a".into(),
+                id: "m1".into(),
+                at: UnixMillis(10),
+                author: RoomAuthor::Human,
+                content: MessageInput::from("first prompt".to_owned()),
+                reply_to: None,
+                mentions: vec!["alice".into()],
+                deliveries: vec![RoomDelivery::Accepted {
+                    session_id: "alice".into(),
+                    message_id: "d1".into(),
+                }],
+            },
+        }
+        .execute(&db)
+        .unwrap();
+        PostStatement {
+            owner: owner.clone(),
+            post: Post {
+                session: "room_a".into(),
+                id: "m2".into(),
+                at: UnixMillis(20),
+                author: RoomAuthor::Human,
+                content: MessageInput::from("second prompt".to_owned()),
+                reply_to: None,
+                mentions: vec!["alice".into()],
+                deliveries: vec![RoomDelivery::Accepted {
+                    session_id: "alice".into(),
+                    message_id: "d2".into(),
+                }],
+            },
+        }
+        .execute(&db)
+        .unwrap();
+        PostStatement {
+            owner: owner.clone(),
+            post: Post {
+                session: "room_a".into(),
+                id: "m3".into(),
+                at: UnixMillis(30),
+                author: RoomAuthor::Session {
+                    execution: exec_id("alice"),
+                },
+                content: MessageInput::from("reply to second".to_owned()),
+                reply_to: Some("m2".into()),
+                mentions: vec![],
+                deliveries: vec![],
+            },
+        }
+        .execute(&db)
+        .unwrap();
+
+        // Add multiple emojis from the same actor in reverse Unicode codepoint order: 🔥 then ✅ then 👍.
+        for (i, emoji) in ["🔥", "✅", "👍"].into_iter().enumerate() {
+            ReactStatement {
+                owner: owner.clone(),
+                session: "room_a".into(),
+                message_id: "m1".into(),
+                actor: RoomActor::Human,
+                emoji: emoji.into(),
+                add: Some(true),
+                at: UnixMillis(100 + i as i64),
+            }
+            .execute(&db)
+            .unwrap();
+        }
+
+        let page = Page {
+            owner: owner.clone(),
+            session: "room_a".into(),
+            through: None,
+            position: RoomPosition::Tail,
+            limit: 10,
+        }
+        .execute(&db)
+        .unwrap();
+        let m1 = page.items.iter().find(|m| m.id == "m1").unwrap();
+        let m2 = page.items.iter().find(|m| m.id == "m2").unwrap();
+        let emojis: Vec<&str> = m1.reactions.iter().map(|r| r.emoji.as_str()).collect();
+        assert_eq!(emojis, vec!["🔥", "✅", "👍"]);
+        assert!(
+            !matches!(
+                m1.delivery_states.first(),
+                Some(RoomDeliveryState::Replied { .. })
+            ),
+            "m3 replying to m2 must not cross-attribute to m1: {:?}",
+            m1.delivery_states
+        );
+        assert!(
+            matches!(
+                m2.delivery_states.first(),
+                Some(RoomDeliveryState::Replied { reply_message_id, .. }) if reply_message_id == "m3"
+            ),
+            "m2 should attribute explicit reply m3: {:?}",
+            m2.delivery_states
+        );
+
+        // WatchWatermark isolation: reacting in Room B must not perturb Room A's watermark.
+        PostStatement {
+            owner: owner.clone(),
+            post: Post {
+                session: "room_b".into(),
+                id: "mb1".into(),
+                at: UnixMillis(40),
+                author: RoomAuthor::Human,
+                content: MessageInput::from("room b hello".to_owned()),
+                reply_to: None,
+                mentions: vec![],
+                deliveries: vec![],
+            },
+        }
+        .execute(&db)
+        .unwrap();
+        let wm_a_before = WatchWatermark(owner.clone(), "room_a".into())
+            .execute(&db)
+            .unwrap();
+        ReactStatement {
+            owner: owner.clone(),
+            session: "room_b".into(),
+            message_id: "mb1".into(),
+            actor: RoomActor::Human,
+            emoji: "🔥".into(),
+            add: Some(true),
+            at: UnixMillis(200),
+        }
+        .execute(&db)
+        .unwrap();
+        let wm_a_after = WatchWatermark(owner.clone(), "room_a".into())
+            .execute(&db)
+            .unwrap();
+        assert_eq!(
+            wm_a_before, wm_a_after,
+            "Room B reaction must not churn Room A watch watermark"
+        );
+
+        // Multi-member add + remove deletes all requested IDs in one call.
+        AddMembersStatement {
+            owner: owner.clone(),
+            session: "room_a".into(),
+            member_sessions: vec!["alice".into(), "bob".into()],
+            at: UnixMillis(300),
+        }
+        .execute(&db)
+        .unwrap();
+        let removed = RemoveMembersStatement {
+            owner: owner.clone(),
+            session: "room_a".into(),
+            member_sessions: vec!["alice".into(), "bob".into()],
+        }
+        .execute(&db)
+        .unwrap()
+        .value;
+        assert_eq!(removed, vec!["alice", "bob"]);
+    }
+
+    #[test]
+    fn fts_uses_rowid_lookup_and_upgrade_0052_backfills_roster() {
+        // Start on schema v51 (pre-0052 Room overhaul), seed a 0040 Room with existing Agent author + accepted delivery.
+        let db = open_db(Some(51));
+        let owner = test_owner();
+        let owner_json = serde_json::to_string(&owner).unwrap();
+        seed_session(&db, "legacy_room", "Legacy Room");
+        seed_session(&db, "alice", "Alice");
+        seed_session(&db, "bob", "Bob");
+        db.execute(
+            "INSERT INTO agent_rooms(session, owner) VALUES('legacy_room', ?1)",
+            params![owner_json],
+        )
+        .unwrap();
+        let msg1 = serde_json::json!({
+            "id": "old1",
+            "sequence": 1,
+            "at": 1000,
+            "author": { "kind": "human" },
+            "content": { "text": "alpha bravo charlie" },
+            "replyTo": null,
+            "mentions": ["alice"],
+            "deliveries": [{ "kind": "accepted", "sessionId": "alice", "messageId": "q1" }]
+        });
+        let msg2 = serde_json::json!({
+            "id": "old2",
+            "sequence": 2,
+            "at": 2000,
+            "author": { "kind": "session", "execution": { "sessionId": "bob", "runId": "00000000-0000-0000-0000-000000000000", "turnId": "t1" } },
+            "content": { "text": "delta echo foxtrot" },
+            "replyTo": "old1",
+            "mentions": [],
+            "deliveries": []
+        });
+        db.execute(
+            "INSERT INTO agent_room_messages(owner, session, sequence, message, at, reply_to, body_json)
+             VALUES(?1, 'legacy_room', 1, 'old1', 1000, NULL, ?2)",
+            params![owner_json, msg1.to_string()],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO agent_room_messages(owner, session, sequence, message, at, reply_to, body_json)
+             VALUES(?1, 'legacy_room', 2, 'old2', 2000, 'old1', ?2)",
+            params![owner_json, msg2.to_string()],
+        )
+        .unwrap();
+
+        // Upgrade to 0052 and verify both alice (accepted delivery) & bob (agent author) are backfilled.
+        let full: Vec<_> = maka_event_log::ROOT_MIGRATIONS
+            .iter()
+            .chain(crate::MIGRATIONS)
+            .copied()
+            .collect();
+        maka_event_log::migration::run(&db, &full).unwrap();
+
+        let state = StateQuery {
+            owner: owner.clone(),
+            session: "legacy_room".into(),
+        }
+        .execute(&db)
+        .unwrap();
+        let member_ids: Vec<&str> = state
+            .members
+            .iter()
+            .map(|m| m.session_id.as_str())
+            .collect();
+        assert_eq!(member_ids, vec!["alice", "bob"]);
+
+        // Verify FTS search works on migrated row, updates cleanly on edit, and deletes by rowid (no full-table scan).
+        let hits = SearchQuery {
+            owner: owner.clone(),
+            session: "legacy_room".into(),
+            query: "bravo".into(),
+            limit: 10,
+        }
+        .execute(&db)
+        .unwrap();
+        assert_eq!(hits.len(), 1);
+
+        EditMessageStatement {
+            owner: owner.clone(),
+            session: "legacy_room".into(),
+            message_id: "old1".into(),
+            actor: RoomActor::Human,
+            text: "updated keyword zebra".into(),
+            at: UnixMillis(3000),
+        }
+        .execute(&db)
+        .unwrap();
+        assert!(
+            SearchQuery {
+                owner: owner.clone(),
+                session: "legacy_room".into(),
+                query: "bravo".into(),
+                limit: 10,
+            }
+            .execute(&db)
+            .unwrap()
+            .is_empty()
+        );
+        assert_eq!(
+            SearchQuery {
+                owner: owner.clone(),
+                session: "legacy_room".into(),
+                query: "zebra".into(),
+                limit: 10,
+            }
+            .execute(&db)
+            .unwrap()
+            .len(),
+            1
+        );
+
+        let plan: Vec<String> = db
+            .prepare(
+                "EXPLAIN QUERY PLAN DELETE FROM agent_room_search
+                 WHERE rowid = (SELECT doc_id FROM agent_room_search_docs WHERE owner=?1 AND session=?2 AND message=?3)",
+            )
+            .unwrap()
+            .query_map(params![owner_json, "legacy_room", "old1"], |r| r.get::<_, String>(3))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        let plan_str = plan.join(" | ");
+        assert!(
+            plan_str.contains("VIRTUAL TABLE INDEX 0:="),
+            "FTS rowid delete must seek by integer rowid (=), not full-scan: {plan_str}"
+        );
+    }
 }

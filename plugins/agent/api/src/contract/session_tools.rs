@@ -560,8 +560,6 @@ pub enum SessionManageAction {
         add: Vec<String>,
         #[serde(default)]
         remove: Vec<String>,
-        #[serde(default)]
-        role: Option<String>,
     },
     /// Add, remove, or toggle an emoji reaction on a Room message (e.g. ✅ or 👀).
     RoomReact {

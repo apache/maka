@@ -16471,7 +16471,29 @@ export const contracts: {
                   },
                   {
                     description:
-                      'The mentioned Agent finished its run without posting a reply in the Room.',
+                      'The mentioned Agent acknowledged the message with a Room reaction and finished without a prose reply.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'reacted',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                      emoji: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'messageId', 'emoji'],
+                  },
+                  {
+                    description:
+                      'The mentioned Agent finished its run without posting a reply or reaction in the Room.',
                     type: 'object',
                     properties: {
                       kind: {
@@ -16575,9 +16597,6 @@ export const contracts: {
                   unavailable: {
                     type: 'boolean',
                     default: false,
-                  },
-                  role: {
-                    type: ['string', 'null'],
                   },
                   addedAt: {
                     type: ['integer', 'null'],
@@ -25799,7 +25818,29 @@ export const contracts: {
                   },
                   {
                     description:
-                      'The mentioned Agent finished its run without posting a reply in the Room.',
+                      'The mentioned Agent acknowledged the message with a Room reaction and finished without a prose reply.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'reacted',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                      emoji: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'messageId', 'emoji'],
+                  },
+                  {
+                    description:
+                      'The mentioned Agent finished its run without posting a reply or reaction in the Room.',
                     type: 'object',
                     properties: {
                       kind: {
@@ -25903,9 +25944,6 @@ export const contracts: {
                   unavailable: {
                     type: 'boolean',
                     default: false,
-                  },
-                  role: {
-                    type: ['string', 'null'],
                   },
                   addedAt: {
                     type: ['integer', 'null'],
@@ -39537,10 +39575,6 @@ export const contracts: {
                           type: 'string',
                         },
                       },
-                      role: {
-                        type: ['string', 'null'],
-                        default: null,
-                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'memberSessionIds'],
@@ -39550,14 +39584,17 @@ export const contracts: {
                     properties: {
                       kind: {
                         type: 'string',
-                        const: 'remove_member',
+                        const: 'remove_members',
                       },
-                      memberSessionId: {
-                        type: 'string',
+                      memberSessionIds: {
+                        type: 'array',
+                        items: {
+                          type: 'string',
+                        },
                       },
                     },
                     additionalProperties: false,
-                    required: ['kind', 'memberSessionId'],
+                    required: ['kind', 'memberSessionIds'],
                   },
                   {
                     type: 'object',
@@ -39684,10 +39721,13 @@ export const contracts: {
                 properties: {
                   kind: {
                     type: 'string',
-                    const: 'member_removed',
+                    const: 'members_removed',
                   },
                   removed: {
-                    type: 'boolean',
+                    type: 'array',
+                    items: {
+                      type: 'string',
+                    },
                   },
                 },
                 additionalProperties: false,
@@ -40069,7 +40109,29 @@ export const contracts: {
                   },
                   {
                     description:
-                      'The mentioned Agent finished its run without posting a reply in the Room.',
+                      'The mentioned Agent acknowledged the message with a Room reaction and finished without a prose reply.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'reacted',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                      emoji: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'messageId', 'emoji'],
+                  },
+                  {
+                    description:
+                      'The mentioned Agent finished its run without posting a reply or reaction in the Room.',
                     type: 'object',
                     properties: {
                       kind: {
@@ -40523,7 +40585,29 @@ export const contracts: {
                   },
                   {
                     description:
-                      'The mentioned Agent finished its run without posting a reply in the Room.',
+                      'The mentioned Agent acknowledged the message with a Room reaction and finished without a prose reply.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'reacted',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                      emoji: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'messageId', 'emoji'],
+                  },
+                  {
+                    description:
+                      'The mentioned Agent finished its run without posting a reply or reaction in the Room.',
                     type: 'object',
                     properties: {
                       kind: {
@@ -40673,9 +40757,6 @@ export const contracts: {
                   unavailable: {
                     type: 'boolean',
                     default: false,
-                  },
-                  role: {
-                    type: ['string', 'null'],
                   },
                   addedAt: {
                     type: ['integer', 'null'],
@@ -41013,7 +41094,29 @@ export const contracts: {
                   },
                   {
                     description:
-                      'The mentioned Agent finished its run without posting a reply in the Room.',
+                      'The mentioned Agent acknowledged the message with a Room reaction and finished without a prose reply.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'reacted',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                      emoji: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'messageId', 'emoji'],
+                  },
+                  {
+                    description:
+                      'The mentioned Agent finished its run without posting a reply or reaction in the Room.',
                     type: 'object',
                     properties: {
                       kind: {
@@ -47324,10 +47427,6 @@ export const contracts: {
                         },
                         default: [],
                       },
-                      role: {
-                        type: ['string', 'null'],
-                        default: null,
-                      },
                     },
                     additionalProperties: false,
                     required: ['kind'],
@@ -48624,10 +48723,13 @@ export const contracts: {
                     properties: {
                       kind: {
                         type: 'string',
-                        const: 'member_removed',
+                        const: 'members_removed',
                       },
                       removed: {
-                        type: 'boolean',
+                        type: 'array',
+                        items: {
+                          type: 'string',
+                        },
                       },
                     },
                     additionalProperties: false,
@@ -49005,7 +49107,29 @@ export const contracts: {
                   },
                   {
                     description:
-                      'The mentioned Agent finished its run without posting a reply in the Room.',
+                      'The mentioned Agent acknowledged the message with a Room reaction and finished without a prose reply.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'reacted',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                      emoji: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'messageId', 'emoji'],
+                  },
+                  {
+                    description:
+                      'The mentioned Agent finished its run without posting a reply or reaction in the Room.',
                     type: 'object',
                     properties: {
                       kind: {
@@ -51230,9 +51354,6 @@ export const contracts: {
                     type: 'boolean',
                     default: false,
                   },
-                  role: {
-                    type: ['string', 'null'],
-                  },
                   addedAt: {
                     type: ['integer', 'null'],
                     format: 'uint64',
@@ -51594,7 +51715,29 @@ export const contracts: {
                   },
                   {
                     description:
-                      'The mentioned Agent finished its run without posting a reply in the Room.',
+                      'The mentioned Agent acknowledged the message with a Room reaction and finished without a prose reply.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'reacted',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                      emoji: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'messageId', 'emoji'],
+                  },
+                  {
+                    description:
+                      'The mentioned Agent finished its run without posting a reply or reaction in the Room.',
                     type: 'object',
                     properties: {
                       kind: {

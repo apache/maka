@@ -101,12 +101,15 @@ pub struct SessionReference {
     pub kind: SessionReferenceKind,
     pub label: String,
     pub session_id: String,
+    /// True only when written as an explicit `[@Name](maka://session/<id>)` mention token.
+    /// Plain `[Name](maka://session/<id>)` links remain navigable references without waking Agents.
+    pub explicit_mention: bool,
 }
 
 /// Extract [#Room](maka://session/<id>) and [@Conversation](maka://session/<id>) links.
 pub fn extract_session_references(text: &str) -> Vec<SessionReference> {
-    let mut found = Vec::new();
-    let mut seen = std::collections::HashSet::new();
+    let mut found: Vec<SessionReference> = Vec::new();
+    let mut seen: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     let bytes = text.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
@@ -156,26 +159,44 @@ pub fn extract_session_references(text: &str) -> Vec<SessionReference> {
             continue;
         };
         let candidate = text[id_start..id_start + rel_end].trim_end_matches('/');
-        if crate::interaction::entity_id(candidate).is_ok() && seen.insert(candidate.to_owned()) {
-            let (kind, clean_label) = if let Some(rest) = raw_label.strip_prefix('#') {
-                (SessionReferenceKind::Room, rest.trim().to_owned())
-            } else if let Some(rest) = raw_label.strip_prefix('@') {
-                (SessionReferenceKind::Conversation, rest.trim().to_owned())
-            } else {
-                (
-                    SessionReferenceKind::Conversation,
-                    raw_label.trim().to_owned(),
-                )
-            };
-            found.push(SessionReference {
-                kind,
-                label: if clean_label.is_empty() {
-                    candidate.to_owned()
+        if crate::interaction::entity_id(candidate).is_ok() {
+            let (kind, explicit_mention, clean_label) =
+                if let Some(rest) = raw_label.strip_prefix('#') {
+                    (SessionReferenceKind::Room, false, rest.trim().to_owned())
+                } else if let Some(rest) = raw_label.strip_prefix('@') {
+                    (
+                        SessionReferenceKind::Conversation,
+                        true,
+                        rest.trim().to_owned(),
+                    )
                 } else {
-                    clean_label
-                },
-                session_id: candidate.to_owned(),
-            });
+                    (
+                        SessionReferenceKind::Conversation,
+                        false,
+                        raw_label.trim().to_owned(),
+                    )
+                };
+            let label = if clean_label.is_empty() {
+                candidate.to_owned()
+            } else {
+                clean_label
+            };
+            if let Some(&idx) = seen.get(candidate) {
+                // Upgrade an earlier plain link if an explicit @mention for the same session appears later.
+                if explicit_mention && !found[idx].explicit_mention {
+                    found[idx].kind = kind;
+                    found[idx].explicit_mention = true;
+                    found[idx].label = label;
+                }
+            } else {
+                seen.insert(candidate.to_owned(), found.len());
+                found.push(SessionReference {
+                    kind,
+                    label,
+                    session_id: candidate.to_owned(),
+                    explicit_mention,
+                });
+            }
         }
         i = id_start + rel_end + 1;
     }
@@ -334,7 +355,23 @@ mod tests {
                 kind: SessionReferenceKind::Room,
                 label: "Reviewers".into(),
                 session_id: "ma_123".into(),
+                explicit_mention: false,
             }]
         );
+    }
+
+    #[test]
+    fn plain_session_link_is_not_an_explicit_mention_until_at_prefixed() {
+        let plain = extract_session_references("See [Details](maka://session/ma_alice) for logs");
+        assert_eq!(plain.len(), 1);
+        assert_eq!(plain[0].kind, SessionReferenceKind::Conversation);
+        assert!(!plain[0].explicit_mention);
+
+        let upgraded = extract_session_references(
+            "See [Details](maka://session/ma_alice), cc [@Alice](maka://session/ma_alice)",
+        );
+        assert_eq!(upgraded.len(), 1);
+        assert!(upgraded[0].explicit_mention);
+        assert_eq!(upgraded[0].label, "Alice");
     }
 }

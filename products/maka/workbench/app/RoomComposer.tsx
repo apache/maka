@@ -80,6 +80,7 @@ import {
   workspaceTailName,
 } from './roomMessage';
 import { LoadingIndicator } from './Loading';
+import { motionEnabled } from './roomMotion';
 
 export type RoomComposerHandle = { flush(): Promise<void>; reply(message: AgentRoomMessage): void };
 
@@ -105,6 +106,7 @@ const MAX_PICKER_ROWS = 8;
 export function RoomComposer(props: {
   sessionId: string;
   members(): readonly AgentRoomMember[];
+  waitingMembers?(): readonly AgentRoomMember[];
   name(id: string): string;
   resolveNames(ids: string[]): Promise<void>;
   message(id: string): AgentRoomMessage | undefined;
@@ -863,6 +865,60 @@ export function RoomComposer(props: {
         </Overlay>
       </If>
 
+      <If when={!error() && !pending() && (props.waitingMembers?.().length ?? 0) > 0}>
+        {() => {
+          const waiting = () => props.waitingMembers?.() ?? [];
+          const names = () =>
+            waiting()
+              .map((m) => m.title)
+              .join(', ');
+          return (
+            <View
+              style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                alignSelf: 'flex-start',
+                gap: 8,
+                paddingHorizontal: 12,
+                paddingVertical: 5,
+                borderRadius: 999,
+                backgroundColor: C.warning + '18',
+              }}
+            >
+              <View
+                style={{
+                  width: 6,
+                  height: 6,
+                  borderRadius: 3,
+                  backgroundColor: C.warning,
+                }}
+              />
+              <Text style={{ ...captionTextStyle, color: C.warning }}>
+                {tr('Waiting for your input', { names: names() })}
+              </Text>
+              <Button
+                accessibilityLabel={tr('Open to respond')}
+                onPress={() => {
+                  const first = waiting()[0];
+                  if (first) props.openAgent(first.sessionId);
+                }}
+                style={{
+                  paddingHorizontal: 8,
+                  paddingVertical: 2,
+                  borderRadius: 999,
+                  backgroundColor: C.warning + '24',
+                }}
+                hoverStyle={{ backgroundColor: C.warning + '36' }}
+              >
+                <Text style={{ ...captionTextStyle, fontWeight: '600', color: C.warning }}>
+                  {tr('Open to respond')}
+                </Text>
+              </Button>
+            </View>
+          );
+        }}
+      </If>
+
       <View
         ref={(node) => composerCard.set(node)}
         style={{ backgroundColor: C.card, borderRadius: 20, padding: 16, gap: 12 }}
@@ -900,9 +956,20 @@ export function RoomComposer(props: {
           </View>
         </If>
 
-        <If when={effectiveMentions().length > 0}>
+        <If
+          when={(() => {
+            const inline = new Set(extractInlineMentionIds(text()));
+            return extraMentions().some((id) => !inline.has(id));
+          })()}
+        >
           <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
-            <Each of={effectiveMentions()} key={(id) => id}>
+            <Each
+              of={(() => {
+                const inline = new Set(extractInlineMentionIds(text()));
+                return extraMentions().filter((id) => !inline.has(id));
+              })()}
+              key={(id) => id}
+            >
               {(id) => (
                 <Button
                   accessibilityLabel={tr('Remove mention {name}', { name: props.name(id()) })}
@@ -1034,6 +1101,7 @@ export function RoomComposer(props: {
             accessibilityLabel={tr('Send message')}
             onPress={() => void send()}
             disabled={!canSend()}
+            class={motionEnabled() ? 'transition-colors duration-150' : undefined}
             style={{
               width: 34,
               height: 34,
@@ -1042,6 +1110,7 @@ export function RoomComposer(props: {
               borderRadius: 17,
               backgroundColor: canSend() ? C.accent : C.surface,
             }}
+            activeStyle={motionEnabled() ? { transform: [{ scale: 0.92 }] } : undefined}
             focusStyle={controlFocusStyle()}
           >
             <If
@@ -1053,21 +1122,6 @@ export function RoomComposer(props: {
           </Button>
         </View>
       </View>
-
-      <If
-        when={
-          ready() &&
-          props.members().some((m) => !m.unavailable) &&
-          effectiveMentions().length === 0 &&
-          Boolean(text().trim()) &&
-          !error() &&
-          !pending()
-        }
-      >
-        <Text style={{ ...captionTextStyle, color: C.muted, paddingHorizontal: 12 }}>
-          {tr('No mentions notice')}
-        </Text>
-      </If>
 
       <If when={pending()}>
         <View style={{ backgroundColor: C.surface, borderRadius: 12, padding: 12, gap: 4 }}>

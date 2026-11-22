@@ -17,8 +17,8 @@
  * under the License.
  */
 
-import { batch, effect, signal, Text, View } from 'nsh';
-import { Button, Input } from 'nsh/base';
+import { effect, platform, signal, Text, View, type JSX } from 'nsh';
+import { Button, Input, Menu, Popover } from 'nsh/base';
 import type {
   AgentCreated,
   AgentRoomDeliveryState,
@@ -28,7 +28,7 @@ import type {
 } from '../../../../packages/plugin-sdk/src/index.js';
 import type { Host, Output } from './host';
 import { Icon } from './Icon';
-import { LoadingIndicator } from './Loading';
+import { LoadingIndicator, ShimmerText } from './Loading';
 import { ModalDialog, DialogHeader, DialogFooter } from './ModalDialog';
 import { tr } from './locale';
 import {
@@ -36,342 +36,341 @@ import {
   roomAvatarInitial,
   roomDeliveryReasonKey,
   roomResult,
-  workspaceTailName,
 } from './roomMessage';
+import { motionEnabled, popupMotionProps, useBreathingStyle } from './roomMotion';
 import {
   C,
   bodyTextStyle,
   captionTextStyle,
   controlFocusStyle,
   controlStyle,
+  floatingStyle,
   inputTextStyle,
+  textTooltip,
 } from './ui';
 
 type PresetSummary = Output<'agent', 'presets'>[number];
 type SearchMatch = Output<'agent', 'roomSearch'>['items'][number];
 
-/** Compact war-room status bar under the header: workspace badge, topic, live roster & attention banner. */
-export function RoomRosterBar(props: {
-  workspacePath(): string | undefined;
-  topic(): string;
+/** Single-line header controls: overlapping member avatars, overlay Pins & Search popovers, and actions menu. */
+export function RoomHeaderControls(props: {
+  sessionId: string;
+  host: Host;
   members(): readonly AgentRoomMember[];
-  pinnedCount(): number;
-  searchOpen(): boolean;
-  pinnedOpen(): boolean;
-  onToggleSearch(): void;
-  onTogglePinned(): void;
-  onOpenMembers(): void;
-  onEditTopic(): void;
+  pinned(): readonly AgentRoomMessage[];
+  inspecting(): string | null;
+  name(id: string): string;
   onOpenAgent(id: string): void;
+  onOpenMembers(): void;
+  onJump(messageId: string): void;
+  onUnpin(messageId: string): void;
+  menuItems?: JSX.Element;
 }) {
+  const pinnedOpen = signal(false);
+  const searchOpen = signal(false);
   const activeMembers = () => props.members().filter((m) => !m.unavailable);
-  const waitingMembers = () =>
-    activeMembers().filter((m) => m.activity === 'waiting' || (m.pendingInteractions ?? 0) > 0);
-  const workingCount = () => activeMembers().filter((m) => m.activity === 'working').length;
+  const shownMembers = () => activeMembers().slice(0, 5);
+  const overflowCount = () => Math.max(0, activeMembers().length - 5);
 
   return (
-    <View style={{ borderBottomWidth: 1, borderBottomColor: C.line, backgroundColor: C.panel }}>
-      <View
-        style={{
-          flexDirection: 'row',
-          alignItems: 'center',
-          gap: 10,
-          paddingHorizontal: 20,
-          paddingVertical: 8,
-          flexWrap: 'wrap',
-        }}
-      >
-        <If when={Boolean(props.workspacePath())}>
-          <View
-            style={{
-              flexDirection: 'row',
-              alignItems: 'center',
-              gap: 5,
-              paddingHorizontal: 8,
-              paddingVertical: 3,
-              borderRadius: 6,
-              backgroundColor: C.surface,
-            }}
-          >
-            <Icon name="folder" size={12} color={C.muted} />
-            <Text style={{ ...captionTextStyle, color: C.secondary }}>
-              {workspaceTailName(props.workspacePath()!)}
-            </Text>
-          </View>
-        </If>
-
-        <Button
-          accessibilityLabel={tr('Edit room topic')}
-          onPress={props.onEditTopic}
-          style={{
-            flex: 1,
-            minWidth: 120,
-            paddingHorizontal: 6,
-            paddingVertical: 3,
-            borderRadius: 6,
-          }}
-          hoverStyle={{ backgroundColor: C.surface }}
-          focusStyle={controlFocusStyle()}
-        >
-          <Text
-            style={[
-              {
-                ...captionTextStyle,
-                color: props.topic() ? C.secondary : C.muted,
-              },
-              { numberOfLines: 1 },
-            ]}
-          >
-            {props.topic() || tr('Room topic (optional)')}
-          </Text>
-        </Button>
-
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-          <Each of={activeMembers().slice(0, 6)} key={(m) => m.sessionId}>
-            {(member) => (
-              <Button
-                accessibilityLabel={member().title}
-                onPress={() => props.onOpenAgent(member().sessionId)}
+    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+      {/* Overlapping member avatar stack */}
+      <View style={{ flexDirection: 'row', alignItems: 'center', marginRight: 4 }}>
+        <Each of={shownMembers()} key={(m) => m.sessionId}>
+          {(member, index) => {
+            const isWorking = () => member().activity === 'working';
+            const isWaiting = () =>
+              member().activity === 'waiting' || (member().pendingInteractions ?? 0) > 0;
+            const isInspected = () => props.inspecting() === member().sessionId;
+            const workingPulse = useBreathingStyle(false);
+            const waitingPulse = useBreathingStyle(true);
+            const tip = () => {
+              const status = isWaiting()
+                ? tr('Delivery waiting')
+                : isWorking()
+                  ? tr('Delivery working')
+                  : null;
+              return status ? member().title + ' · ' + status : member().title;
+            };
+            return (
+              <View
                 style={{
-                  flexDirection: 'row',
-                  alignItems: 'center',
-                  gap: 5,
-                  paddingHorizontal: 7,
-                  paddingVertical: 3,
-                  borderRadius: 12,
-                  backgroundColor: member().activity === 'waiting' ? C.surface : 'transparent',
-                  borderWidth: 1,
-                  borderColor:
-                    member().activity === 'waiting'
-                      ? C.warning
-                      : member().activity === 'working'
-                        ? C.accent
-                        : C.line,
+                  position: 'relative',
+                  marginLeft: index() === 0 ? 0 : -6,
+                  zIndex: isInspected() ? 6 : 5 - index(),
                 }}
-                hoverStyle={{ backgroundColor: C.surface }}
-                focusStyle={controlFocusStyle()}
               >
-                <View
+                <If when={isWorking() && !isInspected()}>
+                  <View
+                    accessibilityElementsHidden
+                    style={[
+                      {
+                        position: 'absolute',
+                        top: -2,
+                        left: -2,
+                        right: -2,
+                        bottom: -2,
+                        borderRadius: 13,
+                        borderWidth: 1.5,
+                        borderColor: C.accent,
+                        pointerEvents: 'none',
+                      },
+                      workingPulse,
+                    ]}
+                  />
+                </If>
+                <Button
+                  accessibilityLabel={member().title}
+                  tooltip={textTooltip(tip)}
+                  onPress={() => props.onOpenAgent(member().sessionId)}
                   style={{
-                    width: 16,
-                    height: 16,
-                    borderRadius: 8,
+                    width: 22,
+                    height: 22,
+                    borderRadius: 11,
                     backgroundColor: roomAvatarColor(member().sessionId),
+                    borderWidth: 2,
+                    borderColor: isInspected() ? C.accent : C.background,
                     alignItems: 'center',
                     justifyContent: 'center',
                   }}
+                  hoverStyle={{ borderColor: C.accent }}
+                  focusStyle={controlFocusStyle()}
                 >
-                  <Text style={{ fontSize: 9, fontWeight: '600', color: '#FFFFFF' }}>
+                  <Text style={{ fontSize: 10, fontWeight: '600', color: '#FFFFFF' }}>
                     {roomAvatarInitial(member().title)}
                   </Text>
-                </View>
-                <Text
-                  style={[
-                    { ...captionTextStyle, color: C.text, maxWidth: 110 },
-                    { numberOfLines: 1 },
-                  ]}
-                >
-                  {member().title}
-                </Text>
-                <If when={member().activity === 'working'}>
-                  <LoadingIndicator size={10} color={C.accent} />
-                </If>
-                <If when={member().activity === 'waiting'}>
+                </Button>
+                <If when={isWaiting()}>
                   <View
-                    style={{
-                      width: 6,
-                      height: 6,
-                      borderRadius: 3,
-                      backgroundColor: C.warning,
-                    }}
+                    accessibilityElementsHidden
+                    style={[
+                      {
+                        position: 'absolute',
+                        right: -1,
+                        bottom: -1,
+                        width: 8,
+                        height: 8,
+                        borderRadius: 4,
+                        backgroundColor: C.warning,
+                        borderWidth: 1.5,
+                        borderColor: C.background,
+                        pointerEvents: 'none',
+                      },
+                      waitingPulse,
+                    ]}
                   />
                 </If>
-              </Button>
-            )}
-          </Each>
-
-          <Button
-            accessibilityLabel={tr('Members')}
-            onPress={props.onOpenMembers}
-            style={{
-              ...controlStyle,
-              flexDirection: 'row',
-              alignItems: 'center',
-              gap: 5,
-              paddingHorizontal: 8,
-              minHeight: 26,
-            }}
-            hoverStyle={{ backgroundColor: C.surface }}
-            focusStyle={controlFocusStyle()}
-          >
-            <Icon name="plus" size={13} color={C.secondary} />
-            <Text style={{ ...captionTextStyle, color: C.secondary }}>
-              {activeMembers().length > 0
-                ? String(activeMembers().length) +
-                  (workingCount() > 0 ? ' · ' + String(workingCount()) : '')
-                : tr('Members')}
+              </View>
+            );
+          }}
+        </Each>
+        <Button
+          accessibilityLabel={tr('Room members')}
+          tooltip={textTooltip(() => tr('Room members'))}
+          onPress={props.onOpenMembers}
+          style={{
+            marginLeft: shownMembers().length > 0 ? -4 : 0,
+            zIndex: 7,
+            minWidth: 22,
+            height: 22,
+            paddingHorizontal: overflowCount() > 0 ? 5 : 0,
+            borderRadius: 11,
+            backgroundColor: C.surface,
+            borderWidth: 1.5,
+            borderColor: C.background,
+            alignItems: 'center',
+            justifyContent: 'center',
+          }}
+          hoverStyle={{ backgroundColor: C.raised }}
+          focusStyle={controlFocusStyle()}
+        >
+          <If when={overflowCount() > 0} else={<Icon name="plus" size={11} color={C.secondary} />}>
+            <Text style={{ fontSize: 10, fontWeight: '600', color: C.secondary }}>
+              {'+' + String(overflowCount())}
             </Text>
-          </Button>
+          </If>
+        </Button>
+      </View>
 
-          <If when={props.pinnedCount() > 0}>
+      {/* Overlay Pinned popover (only when pins exist, with a quiet dot instead of noisy count) */}
+      <If when={props.pinned().length > 0}>
+        <Popover
+          open={pinnedOpen()}
+          onOpenChange={({ open }) => {
+            pinnedOpen.set(open);
+            if (open) searchOpen.set(false);
+          }}
+          placement="bottom"
+          align="end"
+          offset={6}
+          margin={10}
+          popupClass={
+            motionEnabled()
+              ? 'transition-all duration-150 ease-[cubic-bezier(0.18,0.82,0.24,1)]'
+              : undefined
+          }
+          {...popupMotionProps('down')}
+          popupStyle={{ ...floatingStyle(), width: 340, maxHeight: 360, padding: 12, gap: 8 }}
+          trigger={
             <Button
               accessibilityLabel={tr('Pinned messages')}
-              onPress={props.onTogglePinned}
+              tooltip={textTooltip(() => tr('Pinned messages'))}
               style={{
                 ...controlStyle,
-                flexDirection: 'row',
-                alignItems: 'center',
-                gap: 4,
-                paddingHorizontal: 8,
                 minHeight: 26,
-                backgroundColor: props.pinnedOpen() ? C.surface : 'transparent',
+                height: 26,
+                width: 26,
+                paddingHorizontal: 0,
+                position: 'relative',
+                backgroundColor: pinnedOpen() ? C.surface : 'transparent',
               }}
               hoverStyle={{ backgroundColor: C.surface }}
               focusStyle={controlFocusStyle()}
             >
-              <Icon name="pin" size={13} color={props.pinnedOpen() ? C.accent : C.secondary} />
-              <Text
+              <Icon name="pin" size={13} color={pinnedOpen() ? C.accent : C.muted} />
+              <View
+                accessibilityElementsHidden
                 style={{
-                  ...captionTextStyle,
-                  color: props.pinnedOpen() ? C.accent : C.secondary,
+                  position: 'absolute',
+                  top: 4,
+                  right: 4,
+                  width: 5,
+                  height: 5,
+                  borderRadius: 2.5,
+                  backgroundColor: C.accent,
                 }}
-              >
-                {String(props.pinnedCount())}
-              </Text>
+              />
             </Button>
-          </If>
+          }
+        >
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+            <Icon name="pin" size={12} color={C.accent} />
+            <Text style={{ ...captionTextStyle, fontWeight: '600', color: C.text, flex: 1 }}>
+              {tr('Pinned messages')}
+            </Text>
+          </View>
+          <View style={{ gap: 6 }}>
+            <Each of={props.pinned()} key={(m) => m.id}>
+              {(msg) => (
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                  <Button
+                    accessibilityLabel={msg().content.text || tr('View replied message')}
+                    onPress={() => {
+                      pinnedOpen.set(false);
+                      props.onJump(msg().id);
+                    }}
+                    style={{
+                      flex: 1,
+                      borderLeftWidth: 2,
+                      borderLeftColor: C.accent,
+                      paddingLeft: 8,
+                      paddingVertical: 4,
+                      borderRadius: 4,
+                    }}
+                    hoverStyle={{ backgroundColor: C.surface }}
+                  >
+                    <Text style={[{ ...captionTextStyle, color: C.text }, { numberOfLines: 2 }]}>
+                      {msg().content.text}
+                    </Text>
+                  </Button>
+                  <Button
+                    accessibilityLabel={tr('Unpin message')}
+                    onPress={() => props.onUnpin(msg().id)}
+                    style={{ ...controlStyle, minHeight: 22, width: 22, paddingHorizontal: 0 }}
+                    hoverStyle={{ backgroundColor: C.surface }}
+                  >
+                    <Icon name="close" size={11} color={C.muted} />
+                  </Button>
+                </View>
+              )}
+            </Each>
+          </View>
+        </Popover>
+      </If>
 
+      {/* Overlay Search popover (never pushes message timeline) */}
+      <Popover
+        open={searchOpen()}
+        onOpenChange={({ open }) => {
+          searchOpen.set(open);
+          if (open) pinnedOpen.set(false);
+        }}
+        placement="bottom"
+        align="end"
+        offset={6}
+        margin={10}
+        popupClass={
+          motionEnabled()
+            ? 'transition-all duration-150 ease-[cubic-bezier(0.18,0.82,0.24,1)]'
+            : undefined
+        }
+        {...popupMotionProps('down')}
+        popupStyle={{ ...floatingStyle(), width: 340, maxHeight: 380, padding: 10, gap: 8 }}
+        trigger={
           <Button
             accessibilityLabel={tr('Search messages')}
-            onPress={props.onToggleSearch}
+            tooltip={textTooltip(() => tr('Search messages'))}
             style={{
               ...controlStyle,
               minHeight: 26,
-              paddingHorizontal: 7,
-              backgroundColor: props.searchOpen() ? C.surface : 'transparent',
+              height: 26,
+              width: 26,
+              paddingHorizontal: 0,
+              backgroundColor: searchOpen() ? C.surface : 'transparent',
             }}
             hoverStyle={{ backgroundColor: C.surface }}
             focusStyle={controlFocusStyle()}
           >
-            <Icon name="search" size={14} color={props.searchOpen() ? C.accent : C.secondary} />
+            <Icon name="search" size={13} color={searchOpen() ? C.accent : C.muted} />
           </Button>
-        </View>
-      </View>
-
-      <If when={waitingMembers().length > 0}>
-        <View
-          style={{
-            flexDirection: 'row',
-            alignItems: 'center',
-            gap: 10,
-            paddingHorizontal: 20,
-            paddingVertical: 7,
-            backgroundColor: C.surface,
-            borderTopWidth: 1,
-            borderTopColor: C.line,
+        }
+      >
+        <RoomSearchPopoverBody
+          sessionId={props.sessionId}
+          host={props.host}
+          name={props.name}
+          onJump={(id) => {
+            searchOpen.set(false);
+            props.onJump(id);
           }}
+        />
+      </Popover>
+
+      <If when={Boolean(props.menuItems)}>
+        <Menu
+          align="end"
+          offset={4}
+          margin={8}
+          popupStyle={floatingStyle()}
+          trigger={
+            <Button
+              accessibilityLabel={tr('Room actions')}
+              style={{
+                ...controlStyle,
+                minHeight: 26,
+                height: 26,
+                width: 26,
+                paddingHorizontal: 0,
+              }}
+              hoverStyle={{ backgroundColor: C.surface }}
+              focusStyle={controlFocusStyle()}
+            >
+              <Icon name="more" size={14} color={C.muted} />
+            </Button>
+          }
         >
-          <Icon name="approval" size={14} color={C.warning} />
-          <Text style={{ ...captionTextStyle, color: C.warning, flex: 1 }}>
-            {tr('Waiting for your input', {
-              names: waitingMembers()
-                .map((m) => '@' + m.title)
-                .join(', '),
-            })}
-          </Text>
-          <Button
-            accessibilityLabel={tr('Open to respond')}
-            onPress={() => props.onOpenAgent(waitingMembers()[0]!.sessionId)}
-            style={{
-              ...controlStyle,
-              minHeight: 24,
-              paddingHorizontal: 10,
-              backgroundColor: C.raised,
-            }}
-            hoverStyle={{ backgroundColor: C.card }}
-            focusStyle={controlFocusStyle()}
-          >
-            <Text style={{ ...captionTextStyle, color: C.accent }}>{tr('Open to respond')}</Text>
-          </Button>
-        </View>
+          {props.menuItems}
+        </Menu>
       </If>
     </View>
   );
 }
 
-/** Expandable list of pinned Room conclusions with one-click jump. */
-export function RoomPinnedBar(props: {
-  pinned(): readonly AgentRoomMessage[];
-  name(id: string): string;
-  onJump(messageId: string): void;
-  onUnpin(messageId: string): void;
-  onClose(): void;
-}) {
-  return (
-    <View
-      style={{
-        borderBottomWidth: 1,
-        borderBottomColor: C.line,
-        backgroundColor: C.surface,
-        paddingHorizontal: 20,
-        paddingVertical: 10,
-        gap: 8,
-      }}
-    >
-      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-        <Icon name="pin" size={13} color={C.accent} />
-        <Text style={{ ...captionTextStyle, fontWeight: '600', color: C.text, flex: 1 }}>
-          {tr('Pinned messages')}
-        </Text>
-        <Button
-          accessibilityLabel={tr('Cancel')}
-          onPress={props.onClose}
-          style={{ ...controlStyle, minHeight: 22 }}
-        >
-          <Icon name="close" size={13} color={C.muted} />
-        </Button>
-      </View>
-      <Each of={props.pinned()} key={(m) => m.id}>
-        {(msg) => (
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-            <Button
-              accessibilityLabel={msg().content.text || tr('View replied message')}
-              onPress={() => props.onJump(msg().id)}
-              style={{
-                flex: 1,
-                borderLeftWidth: 2,
-                borderLeftColor: C.accent,
-                paddingLeft: 10,
-                paddingVertical: 4,
-              }}
-              hoverStyle={{ backgroundColor: C.raised }}
-            >
-              <Text style={[{ ...captionTextStyle, color: C.text }, { numberOfLines: 2 }]}>
-                {msg().content.text}
-              </Text>
-            </Button>
-            <Button
-              accessibilityLabel={tr('Unpin message')}
-              onPress={() => props.onUnpin(msg().id)}
-              style={{ ...controlStyle, minHeight: 22 }}
-              hoverStyle={{ backgroundColor: C.raised }}
-            >
-              <Icon name="close" size={12} color={C.muted} />
-            </Button>
-          </View>
-        )}
-      </Each>
-    </View>
-  );
-}
-
-/** Inline full-text search panel inside a Room. */
-export function RoomSearchPanel(props: {
+function RoomSearchPopoverBody(props: {
   sessionId: string;
   host: Host;
   name(id: string): string;
   onJump(messageId: string): void;
-  onClose(): void;
 }) {
   const query = signal('');
   const results = signal<SearchMatch[]>([]);
@@ -404,190 +403,293 @@ export function RoomSearchPanel(props: {
   });
 
   return (
-    <View
-      style={{
-        borderBottomWidth: 1,
-        borderBottomColor: C.line,
-        backgroundColor: C.surface,
-        paddingHorizontal: 20,
-        paddingVertical: 10,
-        gap: 8,
-      }}
-    >
-      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-        <Icon name="search" size={14} color={C.muted} />
+    <View style={{ gap: 8 }}>
+      <View
+        style={{
+          flexDirection: 'row',
+          alignItems: 'center',
+          gap: 6,
+          paddingHorizontal: 8,
+          height: 30,
+          borderRadius: 8,
+          backgroundColor: C.surface,
+        }}
+      >
+        <Icon name="search" size={13} color={C.muted} />
         <Input
-          autoFocus
-          accessibilityLabel={tr('Search messages…')}
+          autoFocus={platform.idiom !== 'terminal'}
+          accessibilityLabel={tr('Search messages')}
           placeholder={tr('Search messages…')}
           value={query()}
           onChange={({ value }) => query.set(value)}
-          style={{
-            ...inputTextStyle,
-            color: C.text,
-            flex: 1,
-            backgroundColor: C.raised,
-            borderRadius: 8,
-            paddingHorizontal: 10,
-            paddingVertical: 6,
-          }}
+          style={{ ...captionTextStyle, color: C.text, flex: 1 }}
         />
-        <Button
-          accessibilityLabel={tr('Cancel')}
-          onPress={props.onClose}
-          style={{ ...controlStyle, minHeight: 26 }}
-        >
-          <Icon name="close" size={14} color={C.muted} />
-        </Button>
+        <If when={loading()}>
+          <LoadingIndicator size={12} />
+        </If>
       </View>
-      <If when={loading()}>
-        <LoadingIndicator />
-      </If>
       <If when={Boolean(error())}>
         <Text style={{ ...captionTextStyle, color: C.warning }}>{error()}</Text>
       </If>
-      <If when={!loading() && Boolean(query().trim()) && results().length === 0 && !error()}>
-        <Text style={{ ...captionTextStyle, color: C.muted }}>{tr('No matching messages')}</Text>
+      <If when={!loading() && Boolean(query().trim()) && results().length === 0}>
+        <Text style={{ ...captionTextStyle, color: C.muted, paddingHorizontal: 4 }}>
+          {tr('No matching messages')}
+        </Text>
       </If>
-      <Each of={results().slice(0, 8)} key={(item) => item.message.id}>
-        {(item) => {
-          const author = () => {
-            const a = item().message.author;
-            return a.kind === 'human' ? tr('You') : props.name(a.execution.sessionId);
-          };
-          return (
-            <Button
-              accessibilityLabel={item().snippet}
-              onPress={() => {
-                props.onJump(item().message.id);
-                props.onClose();
-              }}
-              style={{
-                paddingHorizontal: 10,
-                paddingVertical: 7,
-                borderRadius: 8,
-                backgroundColor: C.raised,
-                gap: 2,
-              }}
-              hoverStyle={{ backgroundColor: C.card }}
-            >
-              <Text style={{ ...captionTextStyle, fontWeight: '600', color: C.secondary }}>
-                {author()}
-              </Text>
-              <Text style={[{ ...captionTextStyle, color: C.text }, { numberOfLines: 2 }]}>
-                {item().snippet}
-              </Text>
-            </Button>
-          );
-        }}
-      </Each>
+      <If when={results().length > 0}>
+        <View style={{ gap: 4 }}>
+          <Each of={results().slice(0, 8)} key={(m) => m.message.id}>
+            {(match) => (
+              <Button
+                accessibilityLabel={match().snippet}
+                onPress={() => props.onJump(match().message.id)}
+                style={{
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  gap: 6,
+                  paddingHorizontal: 8,
+                  paddingVertical: 5,
+                  borderRadius: 6,
+                }}
+                hoverStyle={{ backgroundColor: C.surface }}
+              >
+                <Text style={{ ...captionTextStyle, fontWeight: '600', color: C.secondary }}>
+                  {(() => {
+                    const author = match().message.author;
+                    return author.kind === 'human'
+                      ? tr('You')
+                      : props.name(author.execution.sessionId);
+                  })()}
+                </Text>
+                <Text
+                  style={[{ ...captionTextStyle, color: C.text, flex: 1 }, { numberOfLines: 1 }]}
+                >
+                  {match().snippet}
+                </Text>
+              </Button>
+            )}
+          </Each>
+        </View>
+      </If>
     </View>
   );
 }
 
-/** Derived execution strip under a Room message with @mentions. */
+/**
+ * Actionable-only delivery alerts on a Room message.
+ * Replies and reactions already speak for themselves on the timeline; working/queued
+ * belong to member presence. Only waiting / failed / rejected require human attention.
+ */
 export function RoomDeliveryStrip(props: {
   states: readonly AgentRoomDeliveryState[];
   name(id: string): string;
+  align?: 'left' | 'right';
   onOpenAgent(id: string): void;
-  onJumpMessage(id: string): void;
 }) {
+  const actionable = () =>
+    props.states.filter(
+      (s) => s.kind === 'waiting' || s.kind === 'failed' || s.kind === 'rejected',
+    );
+
   return (
-    <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, paddingTop: 2 }}>
-      <Each of={props.states} key={(st) => st.sessionId + ':' + st.kind}>
-        {(st) => {
-          const label = () => {
-            const s = st();
-            const who = '@' + props.name(s.sessionId);
-            switch (s.kind) {
-              case 'queued':
-                return who + ' · ' + tr('Delivery queued');
-              case 'working':
-                return who + ' · ' + tr('Delivery working');
-              case 'waiting':
-                return who + ' · ' + tr('Delivery waiting');
-              case 'replied':
-                return who + ' · ' + tr('Delivery replied');
-              case 'silent':
-                return who + ' · ' + tr('Delivery silent');
-              case 'failed':
-                return who + ' · ' + tr('Delivery failed');
-              case 'stopped':
-                return who + ' · ' + tr('Delivery stopped');
-              case 'rejected': {
-                const key = roomDeliveryReasonKey(s.reason);
-                return tr('Mention delivery failed: {reason}', {
-                  reason: key ? tr(key) : s.reason,
-                });
-              }
-            }
-          };
-          const tone = () => {
-            switch (st().kind) {
-              case 'waiting':
-              case 'silent':
-              case 'rejected':
-              case 'failed':
-                return C.warning;
-              case 'working':
-              case 'replied':
-                return C.accent;
-              default:
-                return C.muted;
-            }
-          };
-          const handlePress = () => {
-            const s = st();
-            if (s.kind === 'replied') props.onJumpMessage(s.replyMessageId);
-            else props.onOpenAgent(s.sessionId);
-          };
-          return (
-            <Button
-              accessibilityLabel={label()}
-              onPress={handlePress}
-              style={{
-                flexDirection: 'row',
-                alignItems: 'center',
-                gap: 5,
-                paddingHorizontal: 8,
-                paddingVertical: 3,
-                borderRadius: 8,
-                backgroundColor: C.surface,
-              }}
-              hoverStyle={{ backgroundColor: C.raised }}
-              focusStyle={controlFocusStyle()}
-            >
-              <If when={st().kind === 'working'}>
-                <LoadingIndicator size={10} color={C.accent} />
-              </If>
-              <If when={st().kind === 'waiting'}>
-                <Icon name="approval" size={11} color={C.warning} />
-              </If>
-              <If when={st().kind === 'replied'}>
-                <Icon name="statusSuccess" size={11} color={C.accent} />
-              </If>
-              <If when={st().kind === 'silent'}>
-                <Icon name="statusUnknown" size={11} color={C.warning} />
-              </If>
-              <If when={st().kind === 'failed' || st().kind === 'rejected'}>
-                <Icon name="statusError" size={11} color={C.warning} />
-              </If>
-              <If when={st().kind === 'stopped'}>
-                <Icon name="statusStopped" size={11} color={C.muted} />
-              </If>
-              <If when={st().kind === 'queued'}>
-                <Icon name="queue" size={11} color={C.muted} />
-              </If>
-              <Text style={{ ...captionTextStyle, color: tone() }}>{label()}</Text>
-            </Button>
-          );
+    <If when={actionable().length > 0}>
+      <View
+        style={{
+          flexDirection: 'row',
+          flexWrap: 'wrap',
+          justifyContent: props.align === 'right' ? 'flex-end' : 'flex-start',
+          gap: 6,
+          marginTop: 4,
         }}
-      </Each>
+      >
+        <Each of={actionable()} key={(s) => s.sessionId + ':' + s.kind}>
+          {(st) => {
+            const targetName = () => props.name(st().sessionId);
+            const label = () => {
+              const s = st();
+              switch (s.kind) {
+                case 'waiting':
+                  return tr('Delivery waiting');
+                case 'failed':
+                  return s.reason ?? tr('Delivery failed');
+                case 'rejected': {
+                  const key = roomDeliveryReasonKey(s.reason);
+                  return key ? tr(key) : s.reason;
+                }
+                default:
+                  return '';
+              }
+            };
+            const color = () => (st().kind === 'waiting' ? C.warning : C.danger);
+            return (
+              <Button
+                accessibilityLabel={targetName() + ': ' + label()}
+                onPress={() => props.onOpenAgent(st().sessionId)}
+                style={{
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  gap: 5,
+                  paddingHorizontal: 8,
+                  paddingVertical: 3,
+                  borderRadius: 999,
+                  backgroundColor: color() + '16',
+                }}
+                hoverStyle={{ backgroundColor: color() + '24' }}
+                focusStyle={controlFocusStyle()}
+              >
+                <View
+                  style={{
+                    width: 6,
+                    height: 6,
+                    borderRadius: 3,
+                    backgroundColor: color(),
+                  }}
+                />
+                <Text style={{ fontSize: 11.5, color: color() }}>
+                  {'@' + targetName() + ' · ' + label()}
+                </Text>
+              </Button>
+            );
+          }}
+        </Each>
+      </View>
+    </If>
+  );
+}
+
+/** Calm single-line organic presence indicator at the bottom of the timeline when Agents are working. */
+export function RoomWorkingFooter(props: {
+  members(): readonly AgentRoomMember[];
+  onOpenAgent(id: string): void;
+}) {
+  const working = () => props.members().filter((m) => !m.unavailable && m.activity === 'working');
+  const summary = () =>
+    tr('Members working', {
+      names: working()
+        .map((m) => m.title)
+        .join(', '),
+    });
+  return (
+    <If when={working().length > 0}>
+      <View
+        style={{
+          flexDirection: 'row',
+          alignItems: 'center',
+          gap: 8,
+          paddingTop: 4,
+          paddingLeft: 4,
+        }}
+      >
+        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+          <Each of={working().slice(0, 3)} key={(m) => m.sessionId}>
+            {(member, idx) => {
+              const pulse = useBreathingStyle(false);
+              return (
+                <Button
+                  accessibilityLabel={member().title}
+                  onPress={() => props.onOpenAgent(member().sessionId)}
+                  style={[
+                    {
+                      marginLeft: idx() === 0 ? 0 : -4,
+                      width: 18,
+                      height: 18,
+                      borderRadius: 9,
+                      backgroundColor: roomAvatarColor(member().sessionId),
+                      borderWidth: 1.5,
+                      borderColor: C.background,
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                    },
+                    pulse,
+                  ]}
+                >
+                  <Text style={{ fontSize: 9, fontWeight: '600', color: '#FFFFFF' }}>
+                    {roomAvatarInitial(member().title)}
+                  </Text>
+                </Button>
+              );
+            }}
+          </Each>
+        </View>
+        <ShimmerText text={summary()} style={captionTextStyle} />
+      </View>
+    </If>
+  );
+}
+
+/** Distinctive quiet seating table shown in a fresh, empty Room. */
+export function RoomEmptySeating(props: {
+  members(): readonly AgentRoomMember[];
+  onOpenAgent(id: string): void;
+  onOpenMembers(): void;
+}) {
+  const active = () => props.members().filter((m) => !m.unavailable);
+  return (
+    <View
+      style={{
+        alignItems: 'center',
+        justifyContent: 'center',
+        paddingVertical: 72,
+        gap: 14,
+      }}
+    >
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+        <If
+          when={active().length > 0}
+          else={
+            <Each of={[0, 1, 2]} key={(i) => i}>
+              {() => (
+                <Button
+                  accessibilityLabel={tr('Room members')}
+                  onPress={props.onOpenMembers}
+                  style={{
+                    width: 38,
+                    height: 38,
+                    borderRadius: 19,
+                    borderWidth: 1,
+                    borderStyle: 'dashed',
+                    borderColor: C.line,
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                  }}
+                  hoverStyle={{ backgroundColor: C.surface, borderColor: C.accent }}
+                >
+                  <Icon name="plus" size={14} color={C.muted} />
+                </Button>
+              )}
+            </Each>
+          }
+        >
+          <Each of={active().slice(0, 6)} key={(m) => m.sessionId}>
+            {(member) => (
+              <Button
+                accessibilityLabel={member().title}
+                tooltip={textTooltip(() => member().title)}
+                onPress={() => props.onOpenAgent(member().sessionId)}
+                style={{
+                  width: 38,
+                  height: 38,
+                  borderRadius: 19,
+                  backgroundColor: roomAvatarColor(member().sessionId),
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                }}
+                hoverStyle={{ opacity: 0.9 }}
+              >
+                <Text style={{ fontSize: 15, fontWeight: '600', color: '#FFFFFF' }}>
+                  {roomAvatarInitial(member().title)}
+                </Text>
+              </Button>
+            )}
+          </Each>
+        </If>
+      </View>
+      <Text style={{ ...captionTextStyle, color: C.muted }}>{tr('Take a seat hint')}</Text>
     </View>
   );
 }
 
-/** Modal to inspect/manage Room roster, add existing sessions, or spawn new Agents from Subagent Presets. */
+/** Modal for managing Room roster: add existing sessions, remove members, or spawn from Preset. */
 export function RoomMembersModal(props: {
   sessionId: string;
   workspacePath: string | undefined;
@@ -626,11 +728,10 @@ export function RoomMembersModal(props: {
   const memberIds = () => new Set(activeMembers().map((m) => m.sessionId));
   const addableSessions = () =>
     candidates()
-      .filter((s) => !s.archived && s.id !== props.sessionId && !memberIds().has(s.id))
-      .slice(0, 6);
+      .filter((s) => !s.archived && s.kind !== 'room' && !memberIds().has(s.id))
+      .slice(0, 8);
 
-  const addMember = async (memberId: string) => {
-    if (busy()) return;
+  const addMember = async (memberSessionId: string) => {
     busy.set(true);
     error.set('');
     try {
@@ -638,7 +739,7 @@ export function RoomMembersModal(props: {
         (
           await props.host.control('roomManage', {
             sessionId: props.sessionId,
-            action: { kind: 'add_members', memberSessionIds: [memberId] },
+            action: { kind: 'add_members', memberSessionIds: [memberSessionId] },
           })
         ).reply,
       );
@@ -650,8 +751,7 @@ export function RoomMembersModal(props: {
     }
   };
 
-  const removeMember = async (memberId: string) => {
-    if (busy()) return;
+  const removeMember = async (memberSessionId: string) => {
     busy.set(true);
     error.set('');
     try {
@@ -659,7 +759,7 @@ export function RoomMembersModal(props: {
         (
           await props.host.control('roomManage', {
             sessionId: props.sessionId,
-            action: { kind: 'remove_member', memberSessionId: memberId },
+            action: { kind: 'remove_members', memberSessionIds: [memberSessionId] },
           })
         ).reply,
       );
@@ -672,13 +772,12 @@ export function RoomMembersModal(props: {
   };
 
   const spawnPreset = async (preset: PresetSummary) => {
-    if (busy()) return;
     busy.set(true);
     error.set('');
     try {
       const workspace =
         useWorktree() && props.workspacePath
-          ? { kind: 'isolated_git' as const, path: props.workspacePath }
+          ? { kind: 'worktree' as const, path: props.workspacePath }
           : { kind: 'session' as const, sessionId: props.sessionId };
       const created = roomResult<AgentCreated>(
         (
@@ -699,7 +798,6 @@ export function RoomMembersModal(props: {
             action: {
               kind: 'add_members',
               memberSessionIds: [created.session.id],
-              role: preset.name,
             },
           })
         ).reply,

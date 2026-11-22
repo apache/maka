@@ -4842,6 +4842,12 @@ export type AgentRoomDeliveryState =
       replyMessageId: string;
     }
   | {
+      kind: 'reacted';
+      sessionId: string;
+      messageId: string;
+      emoji: string;
+    }
+  | {
       kind: 'silent';
       sessionId: string;
       messageId: string;
@@ -9080,7 +9086,6 @@ export interface AgentRoomMember {
   pendingInteractions?: number;
   archived?: boolean;
   unavailable?: boolean;
-  role?: string | null;
   addedAt?: number | null;
 }
 export interface AgentHistorySearch {

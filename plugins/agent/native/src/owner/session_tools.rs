@@ -1563,21 +1563,18 @@ impl Owner {
                     }
                 })
             }
-            SessionManageAction::RoomTopic { topic } => {
-                let res = self
-                    .room_manage(
-                        RoomManage {
-                            session_id,
-                            action: RoomManageAction::SetTopic { topic },
-                        },
-                        operation,
-                        scope,
-                    )
-                    .await
-                    .map_err(humanize_agent_error)?;
-                res.map_fixed(|result| SessionManageOutput::RoomUpdated { result })
-            }
-            SessionManageAction::RoomMembers { add, remove, role } => {
+            SessionManageAction::RoomTopic { topic } => self
+                .room_manage_mapped(
+                    RoomManage {
+                        session_id,
+                        action: RoomManageAction::SetTopic { topic },
+                    },
+                    scope,
+                    |result| SessionManageOutput::RoomUpdated { result },
+                )
+                .await
+                .map_err(humanize_agent_error),
+            SessionManageAction::RoomMembers { add, remove } => {
                 if !add.is_empty() && !remove.is_empty() {
                     return Err(
                         "Specify either add or remove in a single room_members action".into(),
@@ -1586,83 +1583,75 @@ impl Owner {
                 let action = if !add.is_empty() {
                     RoomManageAction::AddMembers {
                         member_session_ids: add,
-                        role,
                     }
-                } else if let Some(member_session_id) = remove.into_iter().next() {
-                    RoomManageAction::RemoveMember { member_session_id }
+                } else if !remove.is_empty() {
+                    RoomManageAction::RemoveMembers {
+                        member_session_ids: remove,
+                    }
                 } else {
                     return Err(
                         "room_members requires at least one session ID in add or remove".into(),
                     );
                 };
-                let res = self
-                    .room_manage(RoomManage { session_id, action }, operation, scope)
-                    .await
-                    .map_err(humanize_agent_error)?;
-                res.map_fixed(|result| SessionManageOutput::RoomUpdated { result })
+                self.room_manage_mapped(RoomManage { session_id, action }, scope, |result| {
+                    SessionManageOutput::RoomUpdated { result }
+                })
+                .await
+                .map_err(humanize_agent_error)
             }
             SessionManageAction::RoomReact {
                 message_id,
                 emoji,
                 add,
-            } => {
-                let res = self
-                    .room_manage(
-                        RoomManage {
-                            session_id,
-                            action: RoomManageAction::React {
-                                message_id,
-                                emoji,
-                                add,
-                            },
+            } => self
+                .room_manage_mapped(
+                    RoomManage {
+                        session_id,
+                        action: RoomManageAction::React {
+                            message_id,
+                            emoji,
+                            add,
                         },
-                        operation,
-                        scope,
-                    )
-                    .await
-                    .map_err(humanize_agent_error)?;
-                res.map_fixed(|result| SessionManageOutput::RoomUpdated { result })
-            }
+                    },
+                    scope,
+                    |result| SessionManageOutput::RoomUpdated { result },
+                )
+                .await
+                .map_err(humanize_agent_error),
             SessionManageAction::RoomPin { message_id, pinned } => {
                 let action = if pinned {
                     RoomManageAction::Pin { message_id }
                 } else {
                     RoomManageAction::Unpin { message_id }
                 };
-                let res = self
-                    .room_manage(RoomManage { session_id, action }, operation, scope)
-                    .await
-                    .map_err(humanize_agent_error)?;
-                res.map_fixed(|result| SessionManageOutput::RoomUpdated { result })
+                self.room_manage_mapped(RoomManage { session_id, action }, scope, |result| {
+                    SessionManageOutput::RoomUpdated { result }
+                })
+                .await
+                .map_err(humanize_agent_error)
             }
-            SessionManageAction::RoomEdit { message_id, text } => {
-                let res = self
-                    .room_manage(
-                        RoomManage {
-                            session_id,
-                            action: RoomManageAction::EditMessage { message_id, text },
-                        },
-                        operation,
-                        scope,
-                    )
-                    .await
-                    .map_err(humanize_agent_error)?;
-                res.map_fixed(|result| SessionManageOutput::RoomUpdated { result })
-            }
-            SessionManageAction::RoomDelete { message_id } => {
-                let res = self
-                    .room_manage(
-                        RoomManage {
-                            session_id,
-                            action: RoomManageAction::DeleteMessage { message_id },
-                        },
-                        operation,
-                        scope,
-                    )
-                    .await
-                    .map_err(humanize_agent_error)?;
-                res.map_fixed(|result| SessionManageOutput::RoomUpdated { result })
-            }
+            SessionManageAction::RoomEdit { message_id, text } => self
+                .room_manage_mapped(
+                    RoomManage {
+                        session_id,
+                        action: RoomManageAction::EditMessage { message_id, text },
+                    },
+                    scope,
+                    |result| SessionManageOutput::RoomUpdated { result },
+                )
+                .await
+                .map_err(humanize_agent_error),
+            SessionManageAction::RoomDelete { message_id } => self
+                .room_manage_mapped(
+                    RoomManage {
+                        session_id,
+                        action: RoomManageAction::DeleteMessage { message_id },
+                    },
+                    scope,
+                    |result| SessionManageOutput::RoomUpdated { result },
+                )
+                .await
+                .map_err(humanize_agent_error),
         }
     }
 }

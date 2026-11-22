@@ -109,6 +109,15 @@ impl Owner {
         _operation: &maka_plugin_core::operation::RecoveryRef,
         scope: &maka_capabilities::call::Scope,
     ) -> Result<NativeMutation<RoomManageResult>, String> {
+        self.room_manage_mapped(input, scope, |result| result).await
+    }
+
+    pub(super) async fn room_manage_mapped<T: serde::Serialize + std::marker::Send + 'static>(
+        self: &Arc<Self>,
+        input: RoomManage,
+        scope: &maka_capabilities::call::Scope,
+        map: impl FnOnce(RoomManageResult) -> T + std::marker::Send + 'static,
+    ) -> Result<NativeMutation<T>, String> {
         let session = self.scoped_session(scope, &input.session_id).await?;
         if session.archived {
             return Err("agent_session_unavailable".into());
@@ -135,18 +144,15 @@ impl Owner {
             RoomManageAction::SetTopic { topic } => {
                 let statement = room.set_topic_statement(input.session_id, topic);
                 let change = writer
-                    .prepare_result(|_| {
-                        Ok(MapStmt(statement, |topic| RoomManageResult::TopicUpdated {
-                            topic,
+                    .prepare_result(move |_| {
+                        Ok(MapStmt(statement, move |topic| {
+                            map(RoomManageResult::TopicUpdated { topic })
                         }))
                     })
                     .map_err(|error| error.to_string())?;
                 Ok(NativeMutation::Computed { change })
             }
-            RoomManageAction::AddMembers {
-                member_session_ids,
-                role,
-            } => {
+            RoomManageAction::AddMembers { member_session_ids } => {
                 let mut seen = HashSet::new();
                 let deduped: Vec<String> = member_session_ids
                     .into_iter()
@@ -155,22 +161,27 @@ impl Owner {
                 for id in &deduped {
                     self.scoped_session(scope, id).await?;
                 }
-                let statement = room.add_members_statement(input.session_id, deduped, at, role);
+                let statement = room.add_members_statement(input.session_id, deduped, at);
                 let change = writer
-                    .prepare_result(|_| {
-                        Ok(MapStmt(statement, |added| RoomManageResult::MembersAdded {
-                            added,
+                    .prepare_result(move |_| {
+                        Ok(MapStmt(statement, move |added| {
+                            map(RoomManageResult::MembersAdded { added })
                         }))
                     })
                     .map_err(|error| error.to_string())?;
                 Ok(NativeMutation::Computed { change })
             }
-            RoomManageAction::RemoveMember { member_session_id } => {
-                let statement = room.remove_member_statement(input.session_id, member_session_id);
+            RoomManageAction::RemoveMembers { member_session_ids } => {
+                let mut seen = HashSet::new();
+                let deduped: Vec<String> = member_session_ids
+                    .into_iter()
+                    .filter(|id| seen.insert(id.clone()))
+                    .collect();
+                let statement = room.remove_members_statement(input.session_id, deduped);
                 let change = writer
-                    .prepare_result(|_| {
-                        Ok(MapStmt(statement, |removed| {
-                            RoomManageResult::MemberRemoved { removed }
+                    .prepare_result(move |_| {
+                        Ok(MapStmt(statement, move |removed| {
+                            map(RoomManageResult::MembersRemoved { removed })
                         }))
                     })
                     .map_err(|error| error.to_string())?;
@@ -188,11 +199,11 @@ impl Owner {
                 let change = writer
                     .prepare_result(move |_| {
                         Ok(MapStmt(statement, move |present| {
-                            RoomManageResult::ReactionUpdated {
+                            map(RoomManageResult::ReactionUpdated {
                                 message_id: msg_id_out,
                                 emoji: emoji_out,
                                 present,
-                            }
+                            })
                         }))
                     })
                     .map_err(|error| error.to_string())?;
@@ -200,14 +211,14 @@ impl Owner {
             }
             RoomManageAction::Pin { message_id } => {
                 let msg_id_out = message_id.clone();
-                let statement = room.pin_statement(input.session_id, message_id, actor, true, at);
+                let statement = room.pin_statement(input.session_id, message_id, true, at);
                 let change = writer
                     .prepare_result(move |_| {
                         Ok(MapStmt(statement, move |pinned| {
-                            RoomManageResult::PinUpdated {
+                            map(RoomManageResult::PinUpdated {
                                 message_id: msg_id_out,
                                 pinned,
-                            }
+                            })
                         }))
                     })
                     .map_err(|error| error.to_string())?;
@@ -215,14 +226,14 @@ impl Owner {
             }
             RoomManageAction::Unpin { message_id } => {
                 let msg_id_out = message_id.clone();
-                let statement = room.pin_statement(input.session_id, message_id, actor, false, at);
+                let statement = room.pin_statement(input.session_id, message_id, false, at);
                 let change = writer
                     .prepare_result(move |_| {
                         Ok(MapStmt(statement, move |pinned| {
-                            RoomManageResult::PinUpdated {
+                            map(RoomManageResult::PinUpdated {
                                 message_id: msg_id_out,
                                 pinned,
-                            }
+                            })
                         }))
                     })
                     .map_err(|error| error.to_string())?;
@@ -232,11 +243,11 @@ impl Owner {
                 let statement =
                     room.edit_message_statement(input.session_id, message_id, actor, text, at);
                 let change = writer
-                    .prepare_result(|_| {
-                        Ok(MapStmt(statement, |message: RoomMessage| {
-                            RoomManageResult::MessageUpdated {
+                    .prepare_result(move |_| {
+                        Ok(MapStmt(statement, move |message: RoomMessage| {
+                            map(RoomManageResult::MessageUpdated {
                                 message: Box::new(message.into()),
-                            }
+                            })
                         }))
                     })
                     .map_err(|error| error.to_string())?;
@@ -246,11 +257,11 @@ impl Owner {
                 let statement =
                     room.delete_message_statement(input.session_id, message_id, actor, at);
                 let change = writer
-                    .prepare_result(|_| {
-                        Ok(MapStmt(statement, |message: RoomMessage| {
-                            RoomManageResult::MessageUpdated {
+                    .prepare_result(move |_| {
+                        Ok(MapStmt(statement, move |message: RoomMessage| {
+                            map(RoomManageResult::MessageUpdated {
                                 message: Box::new(message.into()),
-                            }
+                            })
                         }))
                     })
                     .map_err(|error| error.to_string())?;
@@ -457,10 +468,11 @@ impl Owner {
             execution: execution.clone(),
         });
 
-        // Merge explicit mentions with inline [@Name](maka://session/<id>) references from the body.
-        // Only '@' conversation mentions wake recipients; '#' room links stay read-only references.
+        // Merge explicit mentions with inline [@Name](maka://session/<id>) tokens from the body.
+        // Plain [Name](maka://session/<id>) links and '#' room links stay navigable references without waking Agents.
         for reference in extract_session_references(&input.message) {
             if reference.kind == SessionReferenceKind::Conversation
+                && reference.explicit_mention
                 && reference.session_id != input.session_id
             {
                 input.mentions.push(reference.session_id);
@@ -496,14 +508,18 @@ impl Owner {
             None => None,
         };
 
-        // Determine Agent-to-Agent hop count to prevent runaway mention ping-pong loops.
-        let hop_count = match caller_agent {
-            None => Some(0),
-            Some(execution) => Some(
-                self.caller_room_hop(&execution.session_id, &input.session_id)
-                    .await
-                    .map_or(1, |prev| prev.saturating_add(1)),
-            ),
+        // Only inspect durable steps for Agent-to-Agent hop count when this post actually wakes recipients.
+        let hop_count = if input.mentions.is_empty() {
+            None
+        } else {
+            match caller_agent {
+                None => Some(0),
+                Some(execution) => Some(
+                    self.caller_room_hop(&execution.session_id, &input.session_id)
+                        .await
+                        .map_or(1, |prev| prev.saturating_add(1)),
+                ),
+            }
         };
         let hop_limit_exceeded = hop_count.is_some_and(|h| h > MAX_ROOM_AGENT_HOPS);
 

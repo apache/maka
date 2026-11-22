@@ -437,23 +437,59 @@ async fn room_overhaul_roster_context_attachments_reactions_pins_edits_search_an
             .last()
             .unwrap()["content"]
             .to_string();
-        assert!(alice_prompt.contains("<room_context>"), "{alice_prompt}");
         assert!(alice_prompt.contains("Ship v2 safely"), "{alice_prompt}");
-        assert!(
-            alice_prompt.contains("Also mentioned in this message:"),
-            "{alice_prompt}"
-        );
-        assert!(alice_prompt.contains("Pinned notes:"), "{alice_prompt}");
+        assert!(alice_prompt.contains(&bob_id), "{alice_prompt}");
+        assert!(alice_prompt.contains("缓存边界"), "{alice_prompt}");
         let att_uri = format!("maka://session/{room}/attachments/{room_att_id}");
         assert!(alice_prompt.contains(&att_uri), "{alice_prompt}");
 
-        // Bob finishes WITHOUT posting back to Room -> derived deliveryState becomes "silent"!
+        // Bob acknowledges via SessionManage(room_react) without posting a prose reply ->
+        // commits atomically and resolves deliveryState to "reacted" (NOT "silent")!
         bob_resp
             .send(completion(
-                json!({"role": "assistant", "content": "I thought about it privately."}),
+                json!({
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [{
+                        "index": 0,
+                        "id": "call_bob_react",
+                        "type": "function",
+                        "function": {
+                            "name": "SessionManage",
+                            "arguments": json!({
+                                "sessionId": room,
+                                "action": {
+                                    "kind": "room_react",
+                                    "messageId": dispatch_id,
+                                    "emoji": "👀"
+                                }
+                            })
+                            .to_string()
+                        }
+                    }]
+                }),
+                "tool_calls",
+            ))
+            .map_err(|_| "bob react tool call lost")?;
+        let (bob_step2, bob_resp2) = provider.next().await?;
+        let bob_tool_res: Value = serde_json::from_str(
+            bob_step2["messages"]
+                .as_array()
+                .unwrap()
+                .last()
+                .unwrap()["content"]
+                .as_str()
+                .unwrap(),
+        )?;
+        assert_eq!(bob_tool_res["kind"], "room_updated", "{bob_tool_res}");
+        assert_eq!(bob_tool_res["result"]["kind"], "reaction_updated", "{bob_tool_res}");
+        assert_eq!(bob_tool_res["result"]["present"], true, "{bob_tool_res}");
+        bob_resp2
+            .send(completion(
+                json!({"role": "assistant", "content": "Reacted."}),
                 "stop",
             ))
-            .map_err(|_| "bob reply lost")?;
+            .map_err(|_| "bob final lost")?;
         quiescent_message(client, &bob_id, &deliveries[1]["messageId"]).await?;
 
         // Alice first reads the Room attachment via Read({ path: "maka://session/<room>/attachments/<id>" })!
@@ -476,10 +512,15 @@ async fn room_overhaul_roster_context_attachments_reactions_pins_edits_search_an
             ))
             .map_err(|_| "alice read att lost")?;
         let (alice_step2, alice_resp2) = provider.next().await?;
-        let step2_str = alice_step2["messages"].to_string();
+        let read_tool_reply = alice_step2["messages"]
+            .as_array()
+            .unwrap()
+            .last()
+            .unwrap()["content"]
+            .to_string();
         assert!(
-            step2_str.contains("data:image/png;base64,") || step2_str.contains("diagram.png"),
-            "Room attachment should be readable via Read: {step2_str}"
+            read_tool_reply.contains("data:image/png;base64,"),
+            "Room attachment Read tool result should return real PNG image bytes: {read_tool_reply}"
         );
 
         // Alice replies in the Room (also testing self-mention rejection!).
@@ -530,8 +571,8 @@ async fn room_overhaul_roster_context_attachments_reactions_pins_edits_search_an
             .map_err(|_| "alice final lost")?;
         quiescent_message(client, &alice_id, &deliveries[0]["messageId"]).await?;
 
-        // 5. Inspect Room history: verify derived deliveryStates (alice=replied, bob=silent, readonly=rejected)
-        //    and batch-resolved participants.
+        // 5. Inspect Room history: verify derived deliveryStates (alice=replied, bob=reacted, readonly=rejected),
+        //    Bob's 👀 reaction on dispatch_id, and plain links not waking Agents.
         let history = call(
             client,
             "agent",
@@ -547,8 +588,38 @@ async fn room_overhaul_roster_context_attachments_reactions_pins_edits_search_an
         let states = dispatch_row["deliveryStates"].as_array().unwrap();
         assert_eq!(states.len(), 3, "{dispatch_row}");
         assert_eq!(states[0]["kind"], "replied", "{dispatch_row}");
-        assert_eq!(states[1]["kind"], "silent", "{dispatch_row}");
+        assert_eq!(states[1]["kind"], "reacted", "{dispatch_row}");
+        assert_eq!(states[1]["emoji"], "👀", "{dispatch_row}");
         assert_eq!(states[2]["kind"], "rejected", "{dispatch_row}");
+        let reactions = dispatch_row["reactions"].as_array().unwrap();
+        assert!(
+            reactions.iter().any(|r| {
+                r["emoji"] == "👀"
+                    && r["actors"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|a| a["kind"] == "session" && a["sessionId"] == bob_id)
+            }),
+            "Bob's 👀 reaction should be visible on dispatch_id: {dispatch_row}"
+        );
+
+        // Plain [Details](maka://session/<id>) link (without '@') must NOT wake Agents.
+        let plain_link_post = call(
+            client,
+            "agent",
+            "send",
+            json!({
+                "sessionId": room,
+                "message": format!("Reference only: [Alice logs](maka://session/{alice_id})")
+            }),
+        )
+        .await?;
+        assert_eq!(plain_link_post["kind"], "posted");
+        assert!(
+            plain_link_post["deliveries"].as_array().unwrap().is_empty(),
+            "Plain markdown link without '@' must not wake Agent: {plain_link_post}"
+        );
         assert!(
             !history["page"]["participants"].as_array().unwrap().is_empty(),
             "{history}"
@@ -772,9 +843,8 @@ async fn room_hop_limit_circuit_breaker_and_cross_session_attachment_forwarding(
             } else if is_bob_read_tool && !bob_done {
                 let content_str = last["content"].to_string();
                 assert!(
-                    content_str.contains("data:image/png;base64,")
-                        || content_str.contains("evidence.png"),
-                    "Bob should read the copied Room attachment: {content_str}"
+                    content_str.contains("data:image/png;base64,"),
+                    "Bob Read tool result should return copied PNG bytes: {content_str}"
                 );
                 resp.send(completion(
                     json!({"role": "assistant", "content": "Seen."}),
