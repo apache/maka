@@ -1147,25 +1147,39 @@ impl ListState {
     /// moved as estimated sizes became real ones. The pin ends once the
     /// list is there and every item in the viewport is measured (nothing
     /// visible can move it any more).
+    #[cfg(test)]
     pub(super) fn follow_pin(&mut self, anchored: f32) -> Follow {
+        let (follow, check_settle) = self.follow_pin_step(anchored);
+        if check_settle && self.viewport_measured() {
+            self.pin = None;
+        }
+        follow
+    }
+
+    /// Advances a pinned list to its current target without dropping a
+    /// non-animated explicit pin yet. Returns `(follow, check_settle)`, where
+    /// `check_settle` is true when the caller may end the pin once the
+    /// viewport (including bound cells and nested parent-viewport lists) is
+    /// settled.
+    pub(super) fn follow_pin_step(&mut self, anchored: f32) -> (Follow, bool) {
         let Some(pin) = self.pin.clone() else {
-            return Follow::Stay;
+            return (Follow::Stay, false);
         };
         if self.viewport <= 0.0 {
-            return Follow::Stay;
+            return (Follow::Stay, false);
         }
         let (target, mut at, animating, automatic, mut nearest) = match pin {
-            Pin::Reading { .. } => return Follow::Stay,
+            Pin::Reading { .. } => return (Follow::Stay, false),
             Pin::WaitingForIdle { target, animated } => {
                 if self.interaction != Some(0) {
-                    return Follow::Stay;
+                    return (Follow::Stay, false);
                 }
                 let offset = self.target_offset(target);
                 self.pin(Some(target), offset, animated, true);
                 if !animated {
                     self.jump(offset);
                 }
-                return Follow::To { offset, animated };
+                return (Follow::To { offset, animated }, false);
             }
             Pin::Following {
                 target,
@@ -1176,7 +1190,7 @@ impl ListState {
             } => {
                 if automatic && !self.idle() {
                     self.wait_for_idle(target, animating);
-                    return Follow::Stay;
+                    return (Follow::Stay, false);
                 }
                 (target, at, animating, automatic, nearest)
             }
@@ -1206,24 +1220,25 @@ impl ListState {
                 automatic,
                 nearest,
             });
-            return follow;
+            return (follow, false);
         }
         let delta = offset - self.offset;
         if delta != 0.0 {
             self.jump(offset);
         }
-        self.pin = (automatic || !self.viewport_measured()).then_some(Pin::Following {
+        self.pin = Some(Pin::Following {
             target,
             at: offset,
             animating,
             automatic,
             nearest,
         });
-        if delta == 0.0 {
+        let follow = if delta == 0.0 {
             Follow::Stay
         } else {
             Follow::By(delta)
-        }
+        };
+        (follow, !automatic)
     }
 
     /// Whether a scroll command's target is still followed.
@@ -1320,15 +1335,32 @@ impl ListState {
         });
     }
 
-    /// Whether every item overlapping the viewport has its measured size.
-    fn viewport_measured(&self) -> bool {
+    /// Inclusive item range overlapping the current viewport.
+    pub(super) fn viewport_items(&self) -> Option<(u32, u32)> {
         let start = self.natural_offset();
         self.items_in(start, start + self.viewport)
-            .is_none_or(|(first, last)| {
-                self.sizes[first as usize..=last as usize]
-                    .iter()
-                    .all(|s| !s.is_nan())
-            })
+    }
+
+    /// Whether item `i` currently has a measured main-axis size.
+    pub(super) fn item_measured(&self, i: u32) -> bool {
+        self.sizes.get(i as usize).is_some_and(|s| !s.is_nan())
+    }
+
+    /// The ready cell key bound to item `i`, if any.
+    pub(super) fn ready_cell(&self, i: u32) -> Option<u32> {
+        let slot = *self.by_index.get(&i)?;
+        let slot = self.slots.get(slot as usize)?;
+        (slot.ready() == Some(i)).then_some(slot.cell)
+    }
+
+    /// Whether every item overlapping the viewport has its measured size.
+    #[cfg(test)]
+    fn viewport_measured(&self) -> bool {
+        self.viewport_items().is_none_or(|(first, last)| {
+            self.sizes[first as usize..=last as usize]
+                .iter()
+                .all(|s| !s.is_nan())
+        })
     }
 
     // --- Geometry ----------------------------------------------------------

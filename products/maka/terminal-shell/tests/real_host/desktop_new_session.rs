@@ -277,7 +277,7 @@ impl Desktop {
 
     fn timed_out(&self, stage: &str) -> ! {
         self.artifact("failure");
-        let rendered = [
+        let mut rendered: Vec<(&str, Vec<Bounds<nsh_terminal::Pixels>>)> = [
             "Focus message composer",
             "Send message",
             "Stop response",
@@ -287,7 +287,14 @@ impl Desktop {
             "Continue response",
             "Messages",
         ]
-        .map(|label| (label, self.controls(label)));
+        .into_iter()
+        .map(|label| (label, self.controls(label)))
+        .collect();
+        if let Some(requested) = stage.strip_prefix("no single control labelled ")
+            && !rendered.iter().any(|(label, _)| *label == requested)
+        {
+            rendered.push((requested, self.controls(requested)));
+        }
         let frame = self
             .frame
             .lock()
@@ -385,6 +392,15 @@ impl Desktop {
     async fn type_text(&self, text: &str) {
         self.replace_text(text).await;
         self.expect_text(text).await;
+    }
+
+    async fn wait_editor_cleared(&self) {
+        self.until("the composer did not clear after sending", || {
+            (self.controls("Send message").is_empty()
+                && self.platform.editor_text().as_deref() == Some(""))
+            .then_some(())
+        })
+        .await;
     }
 
     /// Enter does nothing until the typed draft can be sent.
@@ -736,7 +752,7 @@ async fn desktop_remembers_folders_without_restoring_unsent_drafts() {
             .is_empty()
     );
     assert_eq!(desktop.sessions().await.len(), 1);
-    desktop.replace_text("FRESH_AFTER_REOPEN").await;
+    desktop.type_text("FRESH_AFTER_REOPEN").await;
     desktop.submit().await;
     let request = desktop.request(&mut fixture).await;
     let body = request.body.to_string();
@@ -837,7 +853,7 @@ async fn desktop_new_conversation_preserves_an_owned_worktree() {
     client.close().await.unwrap();
     let desktop = Desktop::open(&fixture, &fixture.address).await;
     desktop.new_draft().await;
-    desktop.replace_text("SAME_OWNED_WORKTREE").await;
+    desktop.type_text("SAME_OWNED_WORKTREE").await;
     desktop.submit().await;
     let request = desktop.request(&mut fixture).await;
     assert!(request.body.to_string().contains("SAME_OWNED_WORKTREE"));
@@ -1415,6 +1431,7 @@ async fn desktop_creates_only_on_first_submission_and_preserves_the_confirmed_sn
     gate.arm();
     desktop.press("Send message").await;
     desktop.held(&gate).await;
+    desktop.wait_editor_cleared().await;
     let sessions = desktop.sessions().await;
     assert_eq!(sessions.len(), 2);
     let session = sessions
@@ -1423,7 +1440,7 @@ async fn desktop_creates_only_on_first_submission_and_preserves_the_confirmed_sn
         .unwrap()["id"]
         .as_str()
         .unwrap();
-    desktop.replace_text("NEXT_DESKTOP_DRAFT").await;
+    desktop.type_text("NEXT_DESKTOP_DRAFT").await;
     desktop
         .wait(
             "the next draft was not saved independently of the first send",
@@ -2769,7 +2786,8 @@ async fn desktop_steering_freezes_each_message_and_queue_is_one_shot() {
     gate.arm();
     desktop.press("Send message").await;
     desktop.held(&gate).await;
-    desktop.replace_text("Keep the sidebar compact.").await;
+    desktop.wait_editor_cleared().await;
+    desktop.type_text("Keep the sidebar compact.").await;
     desktop
         .wait(
             "next draft was not saved independently",

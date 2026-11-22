@@ -44761,6 +44761,7 @@ fn source_reading_keeps_its_place_under_an_unstyled_holder() {
                     id: source_id.into(),
                     source_len: 400,
                     projection_len: 400,
+                    provisional: false,
                     rows: vec![vec![0..400]].into(),
                 }))),
             },
@@ -44809,6 +44810,215 @@ fn source_reading_keeps_its_place_under_an_unstyled_holder() {
         item,
         MountItem::ScrollBy { id: 2, dy, .. } if *dy == px(48.0)
     )));
+}
+
+#[test]
+fn scroll_to_index_keeps_pin_until_nested_parent_list_and_provisional_projection_settle() {
+    let mut c = core();
+    add(
+        &mut c,
+        2,
+        Tag::List,
+        ROOT_ID,
+        &[("height", StyleValue::Number(400.0))],
+    );
+    apply(
+        &mut c,
+        vec![
+            Op::SetProp {
+                id: 2,
+                prop: Prop::Count(5),
+            },
+            Op::SetProp {
+                id: 2,
+                prop: Prop::EstimatedItemSize(px(100.0)),
+            },
+        ],
+    );
+    c.commit();
+
+    // Mount outer cells 0..=4. Cell 1 wraps a nested parent-viewport list whose
+    // content starts unmeasured and provisional (like a TextView waiting for its
+    // async parse worker while showing a literal fallback).
+    for (slot, (cell_id, body_id, height)) in [
+        (100, 200, Some(100.0)),
+        (101, 201, None),
+        (102, 202, Some(80.0)),
+        (103, 203, Some(200.0)),
+        (104, 204, Some(200.0)),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        add(&mut c, cell_id, Tag::Cell, 2, &[]);
+        apply(
+            &mut c,
+            vec![
+                Op::SetProp {
+                    id: cell_id,
+                    prop: Prop::Slot(CellSlot::Item(slot as u32)),
+                },
+                Op::SetProp {
+                    id: cell_id,
+                    prop: Prop::CellIndex(slot as u32),
+                },
+            ],
+        );
+        if let Some(h) = height {
+            add(
+                &mut c,
+                body_id,
+                Tag::View,
+                cell_id,
+                &[("height", StyleValue::Number(h))],
+            );
+        } else {
+            add(&mut c, body_id, Tag::List, cell_id, &[]);
+            apply(
+                &mut c,
+                vec![
+                    Op::SetProp {
+                        id: body_id,
+                        prop: Prop::ListViewport(crate::ListViewport::Parent),
+                    },
+                    Op::SetProp {
+                        id: body_id,
+                        prop: Prop::Count(1),
+                    },
+                    Op::SetProp {
+                        id: body_id,
+                        prop: Prop::EstimatedItemSize(px(40.0)),
+                    },
+                    Op::SetProp {
+                        id: body_id,
+                        prop: Prop::ListSourceRows(Some(Arc::new(crate::ListSourceRows {
+                            id: "reply-1".into(),
+                            source_len: 400,
+                            projection_len: 400,
+                            provisional: true,
+                            rows: vec![vec![0..400]].into(),
+                        }))),
+                    },
+                ],
+            );
+        }
+    }
+    c.commit();
+
+    // Jump to item 2 with a 12px leading viewOffset so item 1 overlaps the top of
+    // the viewport. Even though every outer cell has a current layout height, the
+    // pin must stay active while item 1's nested parent list is still provisional
+    // and unmeasured.
+    c.apply(Op::Command {
+        id: 2,
+        command: Command::ScrollToIndex {
+            index: 2,
+            animated: false,
+            automatic: false,
+            view_position: crate::geometry::Percentage(0.0),
+            view_offset: px(12.0),
+        },
+    })
+    .unwrap();
+    c.commit();
+    fn outer<M: TextEngine>(c: &Core<M>) -> &ListState {
+        let key = c.key(2).unwrap();
+        c.nodes[key as usize].list.as_ref().unwrap()
+    }
+    assert!(
+        outer(&c).pinned(),
+        "outer pin must stay active while nested parent list is unsettled"
+    );
+
+    // Stage 1: provisional literal row renders and expands item 1 to 300px.
+    add(&mut c, 300, Tag::Cell, 201, &[]);
+    add(
+        &mut c,
+        301,
+        Tag::View,
+        300,
+        &[("height", StyleValue::Number(300.0))],
+    );
+    apply(
+        &mut c,
+        vec![
+            Op::SetProp {
+                id: 300,
+                prop: Prop::Slot(CellSlot::Item(0)),
+            },
+            Op::SetProp {
+                id: 300,
+                prop: Prop::CellIndex(0),
+            },
+        ],
+    );
+    c.commit();
+    c.commit();
+    assert_eq!(outer(&c).offset, 100.0 + 300.0 - 12.0);
+    assert!(
+        outer(&c).pinned(),
+        "outer pin must stay active while nested ListSourceRows is provisional"
+    );
+
+    // Stage 2: async parse replaces the 1-row literal fallback with 2 parsed rows
+    // (temporarily shrinking item 1 before the second row is measured, then
+    // expanding to 150 + 140 = 290px).
+    apply(
+        &mut c,
+        vec![
+            Op::SetProp {
+                id: 201,
+                prop: Prop::Count(2),
+            },
+            Op::SetProp {
+                id: 201,
+                prop: Prop::ListSourceRows(Some(Arc::new(crate::ListSourceRows {
+                    id: "reply-1".into(),
+                    source_len: 400,
+                    projection_len: 400,
+                    provisional: false,
+                    rows: vec![vec![0..200], vec![200..400]].into(),
+                }))),
+            },
+            style_op(301, &[("height", StyleValue::Number(150.0))]),
+        ],
+    );
+    c.commit();
+    c.commit();
+    assert!(
+        outer(&c).pinned(),
+        "outer pin must stay active until all visible parsed rows are measured"
+    );
+
+    // Mount and measure the second parsed row (140px).
+    add(&mut c, 302, Tag::Cell, 201, &[]);
+    add(
+        &mut c,
+        303,
+        Tag::View,
+        302,
+        &[("height", StyleValue::Number(140.0))],
+    );
+    apply(
+        &mut c,
+        vec![
+            Op::SetProp {
+                id: 302,
+                prop: Prop::Slot(CellSlot::Item(1)),
+            },
+            Op::SetProp {
+                id: 302,
+                prop: Prop::CellIndex(1),
+            },
+        ],
+    );
+    c.commit();
+    c.commit();
+    assert_eq!(outer(&c).offset, 100.0 + 290.0 - 12.0);
+    assert!(
+        !outer(&c).pinned(),
+        "outer pin should release once nested rows and provisional state settle"
+    );
 }
 
 #[test]

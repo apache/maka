@@ -10738,7 +10738,7 @@ impl<M: TextEngine> Core<M> {
         // The last scroll command's target moves as its cells are
         // measured: the list follows it.
         let mut retarget = None;
-        match list.follow_pin(anchor) {
+        match self.follow_list_pin(key, anchor) {
             Follow::Stay => {}
             Follow::By(delta) => anchor += delta,
             Follow::To { offset, animated } => retarget = Some((offset, animated)),
@@ -10746,6 +10746,7 @@ impl<M: TextEngine> Core<M> {
 
         // The End key's commands, if any, are resolved below with the
         // rest (`Core::key_scrolled`).
+        let list = self.nodes[key as usize].list.as_mut().expect("list");
         list.key_ends.clear();
         // Scroll commands for the list, now that sizes are known: the
         // window follows a jump in this same commit. In its parent's
@@ -11229,6 +11230,112 @@ impl<M: TextEngine> Core<M> {
         if motion {
             self.move_list_cells(key, id, horizontal, anchor, placed);
         }
+    }
+
+    fn follow_list_pin(&mut self, key: Key, anchored: f32) -> Follow {
+        let (follow, check_settle) = self.nodes[key as usize]
+            .list
+            .as_mut()
+            .expect("list")
+            .follow_pin_step(anchored);
+        if check_settle && self.list_viewport_settled(key) {
+            self.nodes[key as usize]
+                .list
+                .as_mut()
+                .expect("list")
+                .unpin();
+        }
+        follow
+    }
+
+    fn list_cells_settled(&self, list: &ListState) -> bool {
+        let Some((first, last)) = list.viewport_items() else {
+            return true;
+        };
+        for i in first..=last {
+            if !list.item_measured(i) {
+                return false;
+            }
+            let Some(cell) = list.ready_cell(i) else {
+                return false;
+            };
+            if self.awaiting_renders.binary_search(&cell).is_ok() {
+                return false;
+            }
+            if self.nodes[cell as usize]
+                .layout
+                .is_some_and(|layout| self.layout.dirty(layout))
+            {
+                return false;
+            }
+        }
+        true
+    }
+
+    fn outer_list_slot(&self, outer_key: Key, mut key: Key) -> Option<CellSlot> {
+        while key != NO_KEY {
+            let parent = self.nodes[key as usize].parent;
+            if parent == outer_key {
+                return self.nodes[key as usize].slot;
+            }
+            key = parent;
+        }
+        None
+    }
+
+    fn list_viewport_settled(&self, key: Key) -> bool {
+        let Some(list) = self.nodes[key as usize].list.as_ref() else {
+            return true;
+        };
+        if !self.list_cells_settled(list) {
+            return false;
+        }
+        let Some((first, last)) = list.viewport_items() else {
+            return true;
+        };
+        if let Some(scroll) = self.nodes[key as usize].scroll.as_ref() {
+            for &dep_key in &scroll.dependents {
+                let in_viewport = match self.outer_list_slot(key, dep_key) {
+                    Some(CellSlot::Item(slot)) => {
+                        let Some(item) = list.slots.get(slot as usize).and_then(|s| s.ready())
+                        else {
+                            continue;
+                        };
+                        if item > last {
+                            continue;
+                        }
+                        item >= first
+                    }
+                    Some(CellSlot::Header) => true,
+                    _ => continue,
+                };
+                if self.displays_none(dep_key) {
+                    continue;
+                }
+                let dep_node = &self.nodes[dep_key as usize];
+                if !dep_node.created {
+                    if in_viewport {
+                        return false;
+                    }
+                    continue;
+                }
+                let Some(dep) = dep_node.list.as_ref() else {
+                    continue;
+                };
+                if dep.has_paced()
+                    || (dep.count > 0 && dep.viewport <= 0.0)
+                    || dep.source_rows.as_ref().is_some_and(|rows| {
+                        rows.provisional || rows.projection_len < rows.source_len
+                    })
+                {
+                    return false;
+                }
+                if !self.list_cells_settled(dep) {
+                    return false;
+                }
+            }
+        }
+        true
     }
 
     fn scroll_content_position(&self, key: Key) -> Option<usize> {

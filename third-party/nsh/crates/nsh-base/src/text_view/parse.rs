@@ -120,6 +120,7 @@ struct Work {
 #[derive(Clone, Copy)]
 pub(super) struct DocumentState {
     pub document: Signal<Projection>,
+    pub pending: Signal<bool>,
     source: Signal<Option<Request>>,
 }
 impl DocumentState {
@@ -156,6 +157,7 @@ pub(super) fn document(
 ) -> DocumentState {
     let owner = Owner::current();
     let document = signal(Projection::default());
+    let pending = signal(false);
     let source = signal(None::<Request>);
     let failure = signal(None::<SharedString>);
     effect(move || scope.emit(TextViewEvent::ParseError(failure.get())));
@@ -196,6 +198,7 @@ pub(super) fn document(
                 }
             });
             document.set(projection);
+            pending.set(false);
             shown.replace(Some(request.clone()));
             if replacement {
                 source.set(Some(request));
@@ -225,23 +228,29 @@ pub(super) fn document(
             document.set(request.literal());
             shown.replace(None);
         }
+        pending.set(true);
         if replacement {
             source.set(Some(request.clone()));
         }
         failure.set(None);
         if start {
             owner.run(move || {
-                spawn(worker(owner, work, shown, document, failure));
+                spawn(worker(owner, work, shown, document, pending, failure));
             });
         }
     });
-    DocumentState { document, source }
+    DocumentState {
+        document,
+        pending,
+        source,
+    }
 }
 async fn worker(
     owner: Owner,
     work: Stored<Work>,
     shown: Stored<Option<Request>>,
     document: Signal<Projection>,
+    pending: Signal<bool>,
     failure: Signal<Option<SharedString>>,
 ) {
     loop {
@@ -255,6 +264,7 @@ async fn worker(
             }
         });
         let Some(request) = request else {
+            pending.set(false);
             return;
         };
         let captured = request.clone();

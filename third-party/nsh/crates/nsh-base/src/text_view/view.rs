@@ -558,6 +558,7 @@ pub fn TextView(props: TextViewProps, cx: Scope<TextViewEvent>) -> impl IntoElem
                 rows.id = Arc::from(id.as_str());
                 rows.source_len = source.len() as u64;
                 rows.projection_len = projection.raw_len;
+                rows.provisional = parsed.pending.get() || projection.raw_len < rows.source_len;
                 if indices.len() == projection.blocks.len() {
                     rows.rows = projection.rows.clone();
                 } else {

@@ -453,8 +453,6 @@ async fn cell_notifications_deduplicate_child_knowledge_per_step_cut() -> TestRe
         let code = r#"
             await Promise.all([0,1,2,3].map(i => tools.Write({ path: "n" + i + ".txt", content: "v" + i })));
             for (let i = 0; i < 12; i++) notify("burst-note-" + i);
-            text("yield-now");
-            await yield_control();
             text("cell-done");
         "#;
         reply1
@@ -475,22 +473,11 @@ async fn cell_notifications_deduplicate_child_knowledge_per_step_cut() -> TestRe
             "expected exactly 1 cell child knowledge block for 12 same-cell notifications, got {knowledge_count}"
         );
 
-        // Extract cell_id and call wait so replay of step 2's FrozenNotifications is also exercised.
-        let cell_id = req2["messages"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .rev()
-            .find(|m| m["role"] == "tool")
-            .and_then(|m| m["content"].as_str())
-            .and_then(|s| {
-                let pos = s.rfind(r#""cell_id":""#)?;
-                let rest = &s[pos + 11..];
-                Some(rest[..rest.find('"')?].to_owned())
-            })
-            .ok_or("running cell_id missing")?;
+        // Run a follow-up tool call so step 3 replays step 2's FrozenNotifications
+        // without racing against an asynchronous FinalNotificationQueued from a
+        // background cell completing between step 2 and step 3.
         reply2
-            .send(tool_response("wait", json!({ "cell_id": cell_id, "yield_time_ms": 15000 })))
+            .send(tool_response("Write", json!({ "path": "step2.txt", "content": "ok" })))
             .map_err(|_| "provider closed")?;
 
         let (req3, reply3) = observed.recv().await.ok_or("third request missing")?;

@@ -378,13 +378,40 @@ impl Host {
                 },
             };
             let connection = {
-                let mut residency = self.residency.lock().unwrap();
-                if residency.paused || self.stop.is_cancelled() {
-                    continue;
+                let fast = {
+                    let mut residency = self.residency.lock().unwrap();
+                    if self.stop.is_cancelled() || cancel.is_cancelled() {
+                        break Ok(());
+                    }
+                    if !residency.paused {
+                        residency.connections += 1;
+                        residency.last_activity = tokio::time::Instant::now();
+                        Some(lifecycle::Connection { host: self.clone() })
+                    } else {
+                        None
+                    }
+                };
+                match fast {
+                    Some(connection) => connection,
+                    None => {
+                        // An idle probe temporarily pauses admission under access_gate while
+                        // checking shutdown_if_idle(). Wait for that fence to either cancel the
+                        // Host or resume admission instead of dropping an accepted client socket.
+                        let _gate = tokio::select! {
+                            biased;
+                            () = self.stop.cancelled() => break Ok(()),
+                            () = cancel.cancelled() => break Ok(()),
+                            gate = self.access_gate.lock() => gate,
+                        };
+                        let mut residency = self.residency.lock().unwrap();
+                        if residency.paused || self.stop.is_cancelled() || cancel.is_cancelled() {
+                            break Ok(());
+                        }
+                        residency.connections += 1;
+                        residency.last_activity = tokio::time::Instant::now();
+                        lifecycle::Connection { host: self.clone() }
+                    }
                 }
-                residency.connections += 1;
-                residency.last_activity = tokio::time::Instant::now();
-                lifecycle::Connection { host: self.clone() }
             };
             let host = self.clone();
             let origins = websocket
@@ -964,5 +991,151 @@ impl Host {
         } else {
             Err(errors.join("; "))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        application::{logs, transport::GATEWAY},
+        ipc::LocalListener,
+    };
+    use maka_event_log::{
+        ROOT_MIGRATIONS,
+        root::{RootNamespaces, RootOwner, private_directory},
+        root_store::RootStore,
+    };
+    use maka_packages::Package;
+    use serde_json::{Value, json};
+    use std::time::Duration;
+
+    fn test_package(id: &str, host: Value) -> Package {
+        Package::new(BTreeMap::from([(
+            "maka.extension.json".into(),
+            serde_json::to_vec(&json!({"schemaVersion":1,"id":id,"application":{"host":host}}))
+                .unwrap(),
+        )]))
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn serve_admits_client_connecting_during_idle_probe_pause() {
+        let dir = tempfile::tempdir().unwrap();
+        private_directory(dir.path()).unwrap();
+        let root = Arc::new(
+            RootOwner::create(
+                &dir.path().join("root"),
+                &RootNamespaces {
+                    ownership: dir.path().join("ownership"),
+                    control: dir.path().join("control"),
+                },
+            )
+            .unwrap(),
+        );
+        let store = Arc::new(RootStore::open(root, ROOT_MIGRATIONS).await.unwrap());
+        let contract = logs::contract();
+        let logs = test_package(
+            "test.logs",
+            json!({
+                "implementation":{"kind":"native","implementation":logs::HOST_LOGS},
+                "configuration":{"type":"object"},"imports":{},
+                "exports":{"HostLogs":{"contract":contract,"availability":"required"}}
+            }),
+        );
+        let gateway = test_package(
+            "test.gateway",
+            json!({
+                "implementation":{"kind":"native","implementation":GATEWAY},
+                "configuration":{"type":"object"},"exports":{},
+                "imports":{"hostLogs":{"contract":contract,"cardinality":{"kind":"one"}}}
+            }),
+        );
+        let consumer = Uuid::new_v4();
+        let deployment = Uuid::new_v4();
+        store
+            .commit_application(
+                deployment,
+                0,
+                serde_json::from_value(json!({"instances":{
+                    "logs":{"key":Uuid::new_v4(),"package":{"source":"pinned","package":logs.application_ref()},"usePackage":"host"},
+                    "gateway":{"key":consumer,"package":{"source":"pinned","package":gateway.application_ref()},"usePackage":"host",
+                        "bindings":{"hostLogs":[{"kind":"instance","path":["logs"],"export":"HostLogs"}]}}
+                }})).unwrap(),
+                vec![],
+                vec![logs, gateway],
+            )
+            .await
+            .unwrap();
+        let host = Host::open_with_options(
+            store,
+            deployment,
+            Default::default(),
+            None,
+            Configuration::PublicHost {
+                endpoints: serde_json::from_value(json!({
+                    "hostLogs":{"consumer":[consumer],"import":"hostLogs","grant":{"methods":["read"],"recovery":false}}
+                })).unwrap(),
+                native: Default::default(),
+                product_methods: Default::default(),
+            },
+            Options {
+                lifecycle_mode: LifecycleMode::Ephemeral,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        let epoch = host.epoch();
+        #[cfg(unix)]
+        let socket = dir.path().join("host.sock");
+        #[cfg(windows)]
+        let socket =
+            std::path::PathBuf::from(format!(r"\\.\pipe\maka-idle-pause-test-{}", Uuid::new_v4()));
+        let listener = LocalListener::bind(&socket).unwrap();
+        let cancel = CancellationToken::new();
+        let server = tokio::spawn({
+            let host = host.clone();
+            let cancel = cancel.clone();
+            async move { host.serve(listener, None, cancel).await }
+        });
+
+        // Hold access_gate and pause admission just like wait_until_idle does
+        // while probing Application::shutdown_if_idle().
+        let gate = host.access_gate.lock().await;
+        host.residency.lock().unwrap().paused = true;
+
+        let probe = tokio::spawn({
+            let socket = socket.clone();
+            async move { Client::status(&socket, Some(epoch)).await }
+        });
+
+        // Give serve() time to accept the socket and park behind access_gate.
+        // Before the fix, serve() dropped the socket immediately while paused,
+        // failing the client with Broken pipe / UnexpectedEof.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            !probe.is_finished(),
+            "client connected during an idle probe must wait for the gate instead of failing"
+        );
+
+        // Simulate shutdown_if_idle() returning Ok(false): resume admission.
+        host.residency.lock().unwrap().paused = false;
+        drop(gate);
+
+        let status = tokio::time::timeout(Duration::from_secs(5), probe)
+            .await
+            .expect("client status should complete after idle probe resumes")
+            .unwrap()
+            .expect("client connecting during an idle probe should succeed");
+        assert_eq!(status.epoch, epoch);
+
+        cancel.cancel();
+        tokio::time::timeout(Duration::from_secs(5), server)
+            .await
+            .expect("host server should stop after cancel")
+            .unwrap()
+            .unwrap();
     }
 }

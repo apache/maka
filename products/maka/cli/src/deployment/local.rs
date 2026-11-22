@@ -368,7 +368,15 @@ async fn observe_live(
         }
         Err(error) => return Err(error),
     };
-    let status = Client::status_stream(stream, Some(discovery.host_epoch)).await?;
+    let status = match Client::status_stream(stream, Some(discovery.host_epoch)).await {
+        Ok(status) => status,
+        Err(error) => {
+            if let Some(state) = target_gone(path, expected_root, &discovery).await? {
+                return Ok(state);
+            }
+            return Err(error.into());
+        }
+    };
     discovery.verify(&status)?;
     // The namespace is explicit CLI ownership. Library Hosts, installed
     // deployments and explicit generic selections retain their owners.
@@ -410,7 +418,16 @@ async fn observe_live(
             }
             Err(error) => return Err(error),
         };
-        Client::connect_stream(&discovery.endpoint, Some(discovery.host_epoch), stream).await?
+        match Client::connect_stream(&discovery.endpoint, Some(discovery.host_epoch), stream).await
+        {
+            Ok(client) => client,
+            Err(error) => {
+                if let Some(state) = target_gone(path, expected_root, &discovery).await? {
+                    return Ok(state);
+                }
+                return Err(error.into());
+            }
+        }
     };
     let startup_error = client.catalogue().startup_error().map(str::to_owned);
     let available = if code_changed || startup_error.is_some() {
@@ -608,6 +625,41 @@ async fn observe_live(
             }
             Err(error) => return Err(error.into()),
         }
+    }
+}
+
+/// Checks whether a Host that failed mid-handshake has already retired or been replaced.
+async fn target_gone(
+    path: &std::path::Path,
+    expected_root: &str,
+    discovery: &discovery::Discovery,
+) -> Result<Option<Live>, HostError> {
+    let discovery_path = path.to_owned();
+    match tokio::task::spawn_blocking(move || discovery::read(&discovery_path)).await? {
+        Err(error) if absent(&error) => return Ok(Some(Live::Missing)),
+        Err(error) => return Err(error.into()),
+        Ok(current) => {
+            if current.root_id != expected_root {
+                return Err("State Root changed during startup".into());
+            }
+            if current.host_epoch != discovery.host_epoch
+                || current.source != discovery.source
+                || current.generation != discovery.generation
+                || current.pid != discovery.pid
+            {
+                return Ok(Some(Live::Retired));
+            }
+        }
+    }
+    match ipc::connect(&discovery.endpoint).await {
+        Ok(stream) => {
+            drop(stream);
+            Ok(None)
+        }
+        Err(error) if error.downcast_ref::<io::Error>().is_some_and(absent) => {
+            Ok(Some(Live::Missing))
+        }
+        Err(error) => Err(error),
     }
 }
 

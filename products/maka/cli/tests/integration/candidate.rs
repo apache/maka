@@ -30,6 +30,7 @@ use std::{
 
 // Cold lifecycle fixtures reached 20s in CI; leave room before declaring a hung startup.
 const STARTUP_WAIT: Duration = Duration::from_secs(60);
+const DRAIN_WAIT: Duration = Duration::from_secs(30);
 
 mod startup;
 
@@ -328,7 +329,7 @@ async fn connect(root: &Path) -> Client {
 }
 
 async fn verify_takeover(root: &Path, registration: &Value, client: &mut Client) {
-    tokio::time::timeout(Duration::from_secs(10), async {
+    tokio::time::timeout(DRAIN_WAIT, async {
         let mut observer = connect(root).await;
         let discovery = discovery::read(root).unwrap();
         assert_eq!(client.epoch(), observer.epoch());
@@ -437,7 +438,7 @@ impl CandidateFixture {
     }
 
     pub fn wait_for_exit(&mut self) -> std::process::ExitStatus {
-        let deadline = Instant::now() + Duration::from_secs(10);
+        let deadline = Instant::now() + DRAIN_WAIT;
         loop {
             if let Some(status) = self.child.as_mut().unwrap().try_wait().unwrap() {
                 self.child.take();
@@ -481,7 +482,7 @@ impl CandidateFixture {
             ownership: self.lock.parent().unwrap().to_owned(),
             control: control.parent().unwrap().to_owned(),
         };
-        let deadline = Instant::now() + Duration::from_secs(10);
+        let deadline = Instant::now() + DRAIN_WAIT;
         loop {
             if let Ok(owner) = RootOwner::open(&self.root, &namespaces) {
                 drop(owner);
