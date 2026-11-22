@@ -46,10 +46,10 @@ pub(crate) mod terms;
 pub use find::{Find, FindPage, Found, Landmark};
 pub(crate) use index::{index_fact, index_sources};
 
-fn number(n: u64) -> Result<i64, StoreError> {
+pub(crate) fn number(n: u64) -> Result<i64, StoreError> {
     i64::try_from(n).map_err(|_| invalid("Recall value exceeds SQLite range"))
 }
-fn unsigned(n: i64) -> Result<u64, StoreError> {
+pub(crate) fn unsigned(n: i64) -> Result<u64, StoreError> {
     u64::try_from(n).map_err(|_| invalid("negative Recall source value"))
 }
 fn check(stop: &CancellationToken) -> Result<(), StoreError> {
@@ -93,6 +93,7 @@ pub struct FieldSpan {
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Message {
+    pub fact: maka_agent_facts::durable::FactId,
     pub message_id: String,
     pub position: RowPosition,
     pub run: RunId,
@@ -111,6 +112,13 @@ pub struct ExcludedTail {
     pub turn_id: String,
     pub covered_through: u64,
 }
+pub(crate) fn landmark_label(body: &str) -> String {
+    body[..body.floor_char_boundary(body.len().min(96))]
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect()
+}
+
 #[derive(Clone)]
 pub struct SearchQuery {
     pub terms: Vec<String>,

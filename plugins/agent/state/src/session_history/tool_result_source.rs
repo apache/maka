@@ -58,6 +58,7 @@ pub enum ToolResultSource {
     Returned(ReturnedToolSource),
     External { body: JsonSource },
     Direct(JsonSource),
+    Provider(JsonSource),
 }
 pub struct ReturnedToolSource {
     body: JsonSource,
@@ -168,13 +169,13 @@ impl ToolResultSource {
         match self {
             Self::Returned(returned) => Ok(Some(returned.fields(budget).await?)),
             Self::External { body } => Ok(Some(ToolResultFields::read(body, None, budget).await?)),
-            Self::Direct(_) => Ok(None),
+            Self::Direct(_) | Self::Provider(_) => Ok(None),
         }
     }
 
     pub async fn value(self, budget: Arc<dyn SourceBudget>) -> io::Result<JsonSource> {
         match self {
-            Self::Direct(source) => Ok(source),
+            Self::Direct(source) | Self::Provider(source) => Ok(source),
             source => {
                 source
                     .fields(budget.clone())
@@ -757,7 +758,7 @@ impl ToolResultReader {
                     returned = true;
                 }
             } else if json::text_eq(&kind, "provider", budget.clone()).await? {
-                source = present(output)?.source;
+                return Ok(ToolResultSource::Provider(present(output)?.source));
             } else if json::text_eq(&kind, "rejected", budget.clone()).await?
                 || json::text_eq(&kind, "outcome_unknown", budget.clone()).await?
             {

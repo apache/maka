@@ -131,7 +131,7 @@ export const en: Copy = {
     },
     releases: {
       title: 'Apache Releases',
-      body: 'Maka has not made an Apache release yet. When one exists, the signed source archive is the release; installers are convenience artifacts.',
+      body: 'The signed source archive is the Apache release; installers are convenience artifacts.',
       note: 'KEYS · SHA-512 · .asc',
     },
   },
@@ -158,9 +158,7 @@ export const en: Copy = {
     status: {
       h3: 'Current status',
       release: {
-        label: 'Apache release',
-        value: 'None yet. The first one appears here after its vote.',
-        note: 'NOT YET',
+        label: 'Latest release',
       },
       nightly: {
         label: 'Native CLI',
@@ -175,13 +173,14 @@ export const en: Copy = {
     },
     releases: {
       h2: 'Apache releases',
-      note: 'NO APACHE RELEASE YET',
-      p: 'Apache Maka (Incubating) has not made an Apache release. When the first one passes its vote, this section will list it: the source archive, its SHA-512 checksum and detached GPG signature from the ASF distribution directory, and the KEYS file the signature verifies against.',
-      distNote: 'Until then the distribution directory does not exist:',
+      p: 'The signed source archive is the Apache release. The archive link uses the ASF download service; download the checksum and signature from the ASF distribution directory.',
+      checksum: 'SHA-512',
+      signature: 'signature',
+      archiveNote: 'Older releases are archived at',
     },
     verify: {
       h2: 'Verify a release',
-      p: 'Every Apache release is verified the same way, and every reviewer on the vote does this before voting.',
+      p: 'The commands below verify the latest release. For an older release, change the version in the paths.',
       keys: 'Step 1: Import the release managers’ keys',
       signature: 'Step 2: Check the signature',
       checksum: 'Step 3: Check the checksum',

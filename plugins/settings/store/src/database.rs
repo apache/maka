@@ -34,11 +34,15 @@ static MIGRATIONS: &[Migration] = &[
         version: 1,
         description: "configuration",
         sql: include_str!("../migrations/0001_configuration.sql"),
+        configure: None,
+        data: None,
     },
     Migration {
         version: 2,
         description: "message predictions",
         sql: include_str!("../migrations/0002_message_predictions.sql"),
+        configure: None,
+        data: None,
     },
 ];
 

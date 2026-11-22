@@ -407,23 +407,24 @@ async fn watch_room(
         .durable
         .subscribe()
         .map_err(|error| error.to_string())?;
-    let mut delivered = None;
+    let mut delivered: Option<(u64, u64)> = None;
     loop {
         changes.borrow_and_update();
         history::authorize(owner, context.scope(), &input.session_id).await?;
-        let through = rooms
-            .capture(&input.session_id)
+        let watermark = rooms
+            .watch_watermark(&input.session_id)
             .await
             .map_err(|error| error.to_string())?;
+        let (through, revision) = watermark;
         if input.after > through {
             return Err("agent_cursor_invalid".into());
         }
-        if delivered != Some(through) {
+        if delivered != Some(watermark) {
             history::authorize(owner, context.scope(), &input.session_id).await?;
             context
-                .emit(encode(DeliveryPage::Room { through })?)
+                .emit(encode(DeliveryPage::Room { through, revision })?)
                 .await?;
-            delivered = Some(through);
+            delivered = Some(watermark);
         }
         tokio::select! {
             biased;

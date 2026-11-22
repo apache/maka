@@ -36,6 +36,7 @@ use tokio_util::sync::CancellationToken;
 
 #[derive(Clone)]
 pub(crate) struct Recall {
+    pub(super) authority: std::sync::OnceLock<std::sync::Weak<super::Owner>>,
     pub(super) store: Arc<maka_event_log::RootStore>,
     pub(super) durable: maka_agent_state::Store,
     pub(super) owner: RunOwner,
@@ -64,30 +65,12 @@ impl Recall {
     fn index(&self, call: &Scope) -> Result<RecallStore, ToolError> {
         RecallStore::new(self.data(call)?, self.owner.clone(), self.prefix.clone()).map_err(failed)
     }
-    async fn address(
-        &self,
-        call: &Scope,
-        session: &str,
-        cut: &maka_agent_state::session_history::HistoryCut,
-        anchor: &indexed::Message,
-    ) -> Result<maka_agent_facts::history::HistoryRowAddress, ToolError> {
-        let source = maka_agent_state::session_history::SessionHistory::new(
-            self.data(call)?,
-            self.owner.clone(),
-            session.to_owned(),
-        )
-        .item(cut, anchor.position.source_sequence)
-        .await
-        .map_err(failed)?
-        .ok_or_else(|| failed("Recall original source fact unavailable"))?;
-        if source.recorded.run != anchor.run {
-            return Err(failed("Recall source Run differs from the original anchor"));
-        }
-        Ok(maka_agent_facts::history::HistoryRowAddress::Live {
-            sequence: source.sequence,
-            fact: source.recorded.id,
+    fn address(anchor: &indexed::Message) -> maka_agent_facts::history::HistoryRowAddress {
+        maka_agent_facts::history::HistoryRowAddress::Live {
+            sequence: anchor.position.source_sequence,
+            fact: anchor.fact,
             item_index: anchor.position.item_index,
-        })
+        }
     }
     async fn check(&self, call: &Scope) -> Result<(), ToolError> {
         if call.cancellation.is_cancelled() || self.stop.is_cancelled() {
@@ -151,15 +134,93 @@ impl Recall {
         let scope = call.clone();
         self.worker(call, async move {
             recall.check(&scope).await?;
-            let found = index
-                .search(query, before, after, stop)
-                .await
-                .map_err(failed)?;
+            let found = match index.search(query, before, after, stop).await {
+                Ok(found) => found,
+                Err(maka_event_log::StoreError::SessionNotFound) => {
+                    return Err(failed("Recall Session unavailable"));
+                }
+                Err(error) => indexed::Batch {
+                    titles: vec![],
+                    hits: vec![],
+                    gaps: vec![format!("Conversation history unavailable: {error}")],
+                },
+            };
             recall.check(&scope).await?;
             Ok(found)
         })
         .await
     }
+    async fn facts(
+        &self,
+        call: &Scope,
+        query: &search::Query,
+    ) -> maka_agent_state::memory::recall::FactPage {
+        self.load_facts(call, query).await.unwrap_or_else(|reason| {
+            maka_agent_state::memory::recall::FactPage {
+                gaps: vec![reason],
+                ..Default::default()
+            }
+        })
+    }
+
+    async fn load_facts(
+        &self,
+        call: &Scope,
+        query: &search::Query,
+    ) -> Result<maka_agent_state::memory::recall::FactPage, String> {
+        use crate::contract::MemoryScope;
+        let owner = self
+            .authority
+            .get()
+            .and_then(std::sync::Weak::upgrade)
+            .ok_or("Memory owner unavailable")?;
+        owner
+            .memory_read_access(call, &MemoryScope::Personal)
+            .await?;
+        let personal = owner.memory_scope(MemoryScope::Personal).await?;
+        let session = call
+            .identity
+            .agent()
+            .map(|execution| &execution.session_id)
+            .or(query.session_id.as_ref());
+        let mut project_gap = None;
+        let project = if let Some(session_id) = session {
+            let requested = MemoryScope::Project {
+                session_id: session_id.clone(),
+            };
+            match owner.memory_scope(requested).await {
+                Ok(scope) => Some((scope, session_id.clone())),
+                Err(reason) => {
+                    project_gap = Some(reason);
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        let mut page = self
+            .data(call)
+            .map_err(|e| e.to_string())?
+            .query(maka_agent_state::memory::recall::SearchFacts {
+                personal,
+                project,
+                terms: query.terms.clone(),
+                after: query.facts_after.unwrap_or(0),
+                limit: query.limit.unwrap_or(16),
+                since: query.since,
+                until: query.until,
+            })
+            .await
+            .map_err(|e| e.to_string())?;
+        if let Some(reason) = project_gap {
+            page.gaps.push(reason);
+        }
+        owner
+            .memory_read_access(call, &MemoryScope::Personal)
+            .await?;
+        Ok(page)
+    }
+
     pub async fn query(
         self: &Arc<Self>,
         mut query: search::Query,
@@ -191,10 +252,7 @@ impl Recall {
             {
                 break;
             }
-            let address = self
-                .address(call, &hit.session.metadata.id, &hit.cut, &hit.anchor)
-                .await
-                .map_err(|e| e.to_string())?;
+            let address = Self::address(&hit.anchor);
             let session = match crate::service::summary_for(&self.data_source, hit.session) {
                 Ok(summary) => summary,
                 Err(reason) => {
@@ -217,6 +275,8 @@ impl Recall {
         }
         let stop = call.cancellation.child_token();
         let _guard = stop.clone().drop_guard();
+        let facts = self.facts(call, &query).await;
+        gaps.extend(facts.gaps);
         let terms = query.terms;
         let passages = self
             .worker(call, async move {
@@ -236,6 +296,8 @@ impl Recall {
             .map_err(|e| e.to_string())?;
         self.check(call).await.map_err(|e| e.to_string())?;
         Ok(RecallPage {
+            facts: facts.facts,
+            next_facts_after: facts.next,
             titles,
             passages,
             complete: gaps.is_empty(),
@@ -252,9 +314,7 @@ impl Recall {
         let found = self.batch(call, query, before, after).await?;
         let mut passages = Vec::with_capacity(found.hits.len());
         for hit in found.hits {
-            let address = self
-                .address(call, &hit.session.metadata.id, &hit.cut, &hit.anchor)
-                .await?;
+            let address = Self::address(&hit.anchor);
             passages.push(passage(
                 hit.session,
                 address,
@@ -267,10 +327,15 @@ impl Recall {
                 hit.has_more_after,
             )?);
         }
+        let facts = self.facts(call, query).await;
+        let mut gaps = found.gaps;
+        gaps.extend(facts.gaps);
         Ok(search::ResultSet {
+            facts: facts.facts,
+            next_facts_after: facts.next,
             passages,
-            searched_every_session: found.gaps.is_empty(),
-            gaps: found.gaps,
+            searched_every_session: gaps.is_empty(),
+            gaps,
         })
     }
     async fn more_result(
@@ -309,15 +374,10 @@ impl Recall {
                 Ok(context)
             })
             .await?;
-        let address = self
-            .address(
-                call,
-                &context.session.metadata.id,
-                &context.cut,
-                &context.anchor,
-            )
-            .await?;
+        let address = Self::address(&context.anchor);
         Ok(search::ResultSet {
+            facts: vec![],
+            next_facts_after: None,
             passages: vec![passage(
                 context.session,
                 address,
@@ -407,21 +467,26 @@ impl ToolPreparer for Recall {
             if cancellation.is_cancelled() {
                 return Err(ToolRejection::Cancelled);
             }
-            let input = match name.as_str() {
+            let (input, output_offset) = match name.as_str() {
                 "Recall" => {
                     let value: search::ToolQuery =
                         serde_json::from_value(input).map_err(invalid)?;
+                    let offset = value.output_offset;
                     let (query, before, after) = value.into_parts().map_err(invalid)?;
-                    Input::Search {
-                        query,
-                        before,
-                        after,
-                    }
+                    (
+                        Input::Search {
+                            query,
+                            before,
+                            after,
+                        },
+                        offset,
+                    )
                 }
                 "RecallMore" => {
                     let value: search::More = serde_json::from_value(input).map_err(invalid)?;
                     value.validate().map_err(invalid)?;
-                    Input::More(value)
+                    let offset = value.output_offset;
+                    (Input::More(value), offset)
                 }
                 "RecallMaterial" => {
                     return Err(ToolRejection::PreparationFailed {
@@ -475,20 +540,23 @@ impl ToolPreparer for Recall {
                         recall.check(call).await?;
                         let stop = call.cancellation.child_token();
                         let _guard = stop.clone().drop_guard();
-                        let found = recall
+                        recall
                             .worker(call, async move {
                                 tokio::task::spawn_blocking(move || {
-                                    preview::tool_passages(found, &stop).map_err(failed)
+                                    let found =
+                                        preview::tool_passages(found, &stop).map_err(failed)?;
+                                    let text = model_page(&found, output_offset.unwrap_or(0))?;
+                                    Ok(ToolSuccess::projected(
+                                        ToolOutput::Json(
+                                            serde_json::to_value(found).map_err(failed)?,
+                                        ),
+                                        DurableToolProjection::Text { text },
+                                    ))
                                 })
                                 .await
                                 .map_err(failed)?
                             })
-                            .await?;
-                        let text = found.render();
-                        Ok(ToolSuccess::projected(
-                            ToolOutput::Json(serde_json::to_value(found).map_err(failed)?),
-                            DurableToolProjection::Text { text },
-                        ))
+                            .await
                     }
                     .await;
                     request
@@ -507,6 +575,64 @@ impl ToolPreparer for Recall {
         })
     }
 }
+const CONTINUE: &str = "\nContinue with the same tool arguments and output_offset=";
+
+struct TextPage {
+    skip: usize,
+    budget: usize,
+    body: String,
+    more: bool,
+}
+
+impl std::fmt::Write for TextPage {
+    fn write_str(&mut self, chunk: &str) -> std::fmt::Result {
+        if self.skip >= chunk.len() {
+            self.skip -= chunk.len();
+            return Ok(());
+        }
+        let chunk = chunk.get(self.skip..).ok_or(std::fmt::Error)?;
+        self.skip = 0;
+        for (byte, ch) in chunk.char_indices() {
+            let width = match ch {
+                '"' | '\\' => 2,
+                c if c.is_ascii_control() => 6,
+                c => c.len_utf16(),
+            };
+            if width > self.budget {
+                self.body.push_str(&chunk[..byte]);
+                self.more = true;
+                return Err(std::fmt::Error);
+            }
+            self.budget -= width;
+        }
+        self.body.push_str(chunk);
+        Ok(())
+    }
+}
+
+fn model_page(result: &impl std::fmt::Display, offset: usize) -> Result<String, ToolError> {
+    use maka_agent_facts::read::MAX_PAGE_CHARS;
+    use std::fmt::Write;
+
+    // Reserve the JSON quotes and continuation marker before filling the page.
+    let mut page = TextPage {
+        skip: offset,
+        budget: MAX_PAGE_CHARS - 2 - CONTINUE.len() - 20,
+        body: String::new(),
+        more: false,
+    };
+    let rendered = write!(page, "{result}");
+    if page.more {
+        let next = offset + page.body.len();
+        write!(page.body, "{CONTINUE}{next}").expect("writing to String");
+    } else if rendered.is_err() || page.skip != 0 {
+        return Err(failed(
+            "Recall results changed. Restart without output_offset.",
+        ));
+    }
+    Ok(page.body)
+}
+
 fn failed(error: impl std::fmt::Display) -> ToolError {
     ToolError::Failed(error.to_string())
 }
@@ -577,3 +703,57 @@ fn passage(
 }
 mod material;
 mod preview;
+
+#[cfg(test)]
+mod pagination_tests {
+    use super::*;
+    use maka_agent_facts::archive::ArchivedPlaceholder;
+
+    #[test]
+    fn text_page_stops_formatting_after_the_window() {
+        struct LongResult;
+        impl std::fmt::Display for LongResult {
+            fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                out.write_str("标题")?;
+                out.write_str(&"x".repeat(maka_agent_facts::read::MAX_PAGE_CHARS))?;
+                panic!("rendered past the requested page")
+            }
+        }
+        assert!(
+            model_page(&LongResult, "标题".len())
+                .unwrap()
+                .starts_with("xxx")
+        );
+        assert!(model_page(&LongResult, 1).is_err());
+        assert!(model_page(&"short", 6).is_err());
+    }
+
+    #[test]
+    fn fresh_recall_pages_fit_the_archive_budget_and_preserve_all_text() {
+        let original = "数据库🌲\\\"\n".repeat(2200);
+        let mut offset = 0;
+        let mut joined = String::new();
+        loop {
+            let text = model_page(&original, offset).unwrap();
+            let pruned = ArchivedPlaceholder::prepare(
+                "event".into(),
+                "call".into(),
+                "Recall".into(),
+                &DurableToolProjection::Text { text: text.clone() },
+            )
+            .unwrap();
+            assert!(pruned.is_none());
+            let Some((body, next)) =
+                text.rsplit_once("\nContinue with the same tool arguments and output_offset=")
+            else {
+                joined.push_str(&text);
+                break;
+            };
+            joined.push_str(body);
+            offset = next.parse().unwrap();
+            assert_eq!(offset, joined.len());
+        }
+        assert_ne!(offset, 0);
+        assert_eq!(joined, original);
+    }
+}

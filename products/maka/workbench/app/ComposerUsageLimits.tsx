@@ -214,7 +214,10 @@ function ComposerUsagePopover(props: {
   );
 }
 
-export function ComposerUsageLimits(props: { backend: () => ComposerBackend }) {
+export function ComposerUsageLimits(props: {
+  backend: () => ComposerBackend;
+  model: () => string | null;
+}) {
   const observation = useUsageLimits(() =>
     platform.idiom === 'terminal' || !composerToolbar.usageLimits()
       ? null
@@ -225,7 +228,7 @@ export function ComposerUsageLimits(props: { backend: () => ComposerBackend }) {
     const result = observation()?.reading.result;
     return result?.kind === 'ready' ? result.limits : [];
   };
-  const summary = () => summarizeComposerUsage(limits(), usageNumber);
+  const summary = () => summarizeComposerUsage(limits(), usageNumber, props.model());
 
   return (
     <If when={composerToolbar.usageLimits() && summary() !== null}>

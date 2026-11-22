@@ -217,11 +217,12 @@ pub(super) struct RecoveryFailureAt(
     pub(super) RunId,
     pub(super) u64,
     pub(super) u64,
+    pub(super) bool,
 );
 impl Query for RecoveryFailureAt {
     type Output = Option<String>;
     fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
-        sql::recovery_failure_at(c, &self.0, &self.1, self.2, self.3, self.4)
+        sql::recovery_failure_at(c, &self.0, &self.1, self.2, self.3, self.4, self.5)
     }
 }
 

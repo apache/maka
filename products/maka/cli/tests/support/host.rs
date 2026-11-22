@@ -32,6 +32,7 @@ use tokio::{
 
 pub type Result<T> = std::result::Result<T, String>;
 
+#[allow(dead_code)]
 pub struct Sandbox {
     pub directory: tempfile::TempDir,
     pub root: PathBuf,
@@ -40,6 +41,7 @@ pub struct Sandbox {
     pub journal: PathBuf,
 }
 impl Sandbox {
+    #[allow(dead_code)]
     pub async fn new() -> Result<Self> {
         let directory = tempfile::tempdir().map_err(|error| error.to_string())?;
         tokio::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
@@ -62,22 +64,24 @@ impl Sandbox {
     }
 }
 
-pub fn command(sandbox: &Sandbox) -> Result<Command> {
-    let executable = std::env::var_os("CARGO_BIN_EXE_maka")
-        .ok_or("runner must supply runtime CARGO_BIN_EXE_maka")?;
+pub fn command_for(
+    executable: &std::path::Path,
+    home: &std::path::Path,
+    workspace: &std::path::Path,
+) -> Command {
     let mut command = Command::new(executable);
     command
         .env_clear()
-        .current_dir(&sandbox.workspace)
-        .env("HOME", &sandbox.home)
-        .env("USERPROFILE", &sandbox.home)
-        .env("XDG_CONFIG_HOME", sandbox.home.join("config"))
-        .env("XDG_DATA_HOME", sandbox.home.join("data"))
-        .env("XDG_STATE_HOME", sandbox.home.join("state"))
-        .env("XDG_CACHE_HOME", sandbox.home.join("cache"))
-        .env("CODEX_HOME", sandbox.home.join("codex"))
-        .env("CLAUDE_CONFIG_DIR", sandbox.home.join("claude"))
-        .env("ZDOTDIR", &sandbox.home)
+        .current_dir(workspace)
+        .env("HOME", home)
+        .env("USERPROFILE", home)
+        .env("XDG_CONFIG_HOME", home.join("config"))
+        .env("XDG_DATA_HOME", home.join("data"))
+        .env("XDG_STATE_HOME", home.join("state"))
+        .env("XDG_CACHE_HOME", home.join("cache"))
+        .env("CODEX_HOME", home.join("codex"))
+        .env("CLAUDE_CONFIG_DIR", home.join("claude"))
+        .env("ZDOTDIR", home)
         .env("LC_ALL", "en_US.UTF-8")
         // Keep public model metadata out of the loopback fixture catalog.
         .env("HTTPS_PROXY", "http://127.0.0.1:9")
@@ -86,7 +90,18 @@ pub fn command(sandbox: &Sandbox) -> Result<Command> {
     if let Some(path) = std::env::var_os("PATH") {
         command.env("PATH", path);
     }
-    Ok(command)
+    command
+}
+
+#[allow(dead_code)]
+pub fn command(sandbox: &Sandbox) -> Result<Command> {
+    let executable = std::env::var_os("CARGO_BIN_EXE_maka")
+        .ok_or("runner must supply runtime CARGO_BIN_EXE_maka")?;
+    Ok(command_for(
+        std::path::Path::new(&executable),
+        &sandbox.home,
+        &sandbox.workspace,
+    ))
 }
 
 /// The caller stores this slot before awaiting startup, so failure can still
@@ -97,11 +112,26 @@ pub struct Host {
     status: Option<ExitStatus>,
 }
 impl Host {
+    #[allow(dead_code)]
     pub fn spawn(sandbox: &Sandbox) -> Result<Self> {
-        let mut command = command(sandbox)?;
+        let command = command(sandbox)?;
+        Self::spawn_command(command, &sandbox.root)
+    }
+
+    #[allow(dead_code)]
+    pub fn spawn_with(
+        executable: &std::path::Path,
+        root: &std::path::Path,
+        home: &std::path::Path,
+        workspace: &std::path::Path,
+    ) -> Result<Self> {
+        Self::spawn_command(command_for(executable, home, workspace), root)
+    }
+
+    fn spawn_command(mut command: Command, root: &std::path::Path) -> Result<Self> {
         let mut child = command
             .args(["host", "serve", "--root"])
-            .arg(&sandbox.root)
+            .arg(root)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
@@ -178,6 +208,7 @@ impl Host {
         Ok(status)
     }
 
+    #[allow(dead_code)]
     pub async fn sigkill(&mut self) -> Result<()> {
         if let Some(status) = self.child.try_wait().map_err(|error| error.to_string())? {
             self.status = Some(status);

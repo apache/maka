@@ -362,8 +362,76 @@ jobs:
           if-no-files-found: error
           compression-level: 0
 
-  publish-npm:
+  compat-gate:
     needs: [prepare, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/ci-setup
+        with:
+          role: compat-gate
+          cache_role: root
+          dependencies: headless
+          javascript: "true"
+
+      - name: Verify immutable migration ledger
+        run: node scripts/ci.mjs check migrations
+
+      - name: Download built Linux x64 nightly archive
+        uses: actions/download-artifact@v8
+        with:
+          name: nightly-pkg-linux-x64-gnu
+          path: compat-pkg
+
+      - name: Extract release maka binary
+        id: extract-bin
+        run: |
+          mkdir -p compat-bin
+          tar -xzf compat-pkg/Maka-nightly-linux-x64.tar.gz -C compat-bin
+          bin_path="$(find compat-bin -maxdepth 3 -type f -name maka -perm -111 | head -n 1)"
+          if [[ -z "$bin_path" ]]; then
+            echo "::error::Could not find executable maka binary inside Maka-nightly-linux-x64.tar.gz"
+            exit 1
+          fi
+          echo "bin=$bin_path" >> "$GITHUB_OUTPUT"
+          "$bin_path" --version
+
+      - name: Build upgrade compatibility harness
+        run: cargo test --locked -p maka-cli --test upgrade_compat --no-run
+
+      - name: Produce candidate time capsule and verify self-roundtrip
+        run: |
+          node scripts/rust/compat-capsule.mjs produce \
+            --bin "${{ steps.extract-bin.outputs.bin }}" \
+            --out compat-capsule.tar.gz
+          node scripts/rust/compat-capsule.mjs verify \
+            --bin "${{ steps.extract-bin.outputs.bin }}" \
+            --capsule compat-capsule.tar.gz
+
+      - name: Verify upgrade from all retained historical time capsules
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          node scripts/rust/compat-capsule.mjs verify-release \
+            --bin "${{ steps.extract-bin.outputs.bin }}" \
+            --repo "$GITHUB_REPOSITORY"
+
+      - name: Upload verified candidate time capsule
+        uses: actions/upload-artifact@v7
+        with:
+          name: compat-capsule-candidate
+          path: compat-capsule.tar.gz
+          if-no-files-found: error
+          compression-level: 0
+
+  publish-npm:
+    needs: [prepare, build, compat-gate]
     if: inputs.publish_npm
     runs-on: ubuntu-latest
     environment: nightly
@@ -403,12 +471,13 @@ jobs:
             --provenance
 
   release:
-    needs: [prepare, build, publish-npm]
+    needs: [prepare, build, compat-gate, publish-npm]
     if: >-
       inputs.publish_release &&
       !cancelled() &&
       needs.prepare.result == 'success' &&
       needs.build.result == 'success' &&
+      needs.compat-gate.result == 'success' &&
       (needs.publish-npm.result == 'success' || needs.publish-npm.result == 'skipped')
     runs-on: ubuntu-latest
     environment: nightly
@@ -558,3 +627,41 @@ jobs:
             --latest=false \
             --title "Maka Nightly (${{ needs.prepare.outputs.version }})" \
             --notes-file release-notes.md
+
+  seal-capsule:
+    needs: [prepare, build, compat-gate, release]
+    if: >-
+      inputs.publish_release &&
+      !cancelled() &&
+      needs.release.result == 'success'
+    runs-on: ubuntu-latest
+    environment: nightly
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "26"
+
+      - name: Download verified candidate time capsule
+        uses: actions/download-artifact@v8
+        with:
+          name: compat-capsule-candidate
+          path: compat-capsule
+
+      - name: Publish time capsule to compat-capsules release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_COMMIT: ${{ needs.prepare.outputs.commit }}
+        run: |
+          short_sha="${RELEASE_COMMIT:0:9}"
+          node scripts/rust/compat-capsule.mjs publish \
+            --capsule compat-capsule/compat-capsule.tar.gz \
+            --repo "$GITHUB_REPOSITORY" \
+            --name "capsule-nightly-${{ needs.prepare.outputs.version }}-${short_sha}.tar.gz" \
+            --max-rolling 3

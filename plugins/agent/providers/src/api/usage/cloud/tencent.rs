@@ -175,6 +175,7 @@ impl Plan {
             _ => None,
         };
         Some(UsageLimit::Window {
+            models: Vec::new(),
             label: Some(label),
             period: monthly.then_some(UsagePeriod::Monthly),
             resets_at: self

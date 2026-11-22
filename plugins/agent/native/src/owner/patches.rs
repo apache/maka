@@ -142,7 +142,8 @@ impl Owner {
     pub async fn read_patch(&self, input: PatchRead, scope: &Scope) -> Result<PatchPage, String> {
         self.scoped_session(scope, &input.execution.session_id)
             .await?;
-        let ExecutionResult::Found { execution } = self.execution(input.execution).await? else {
+        let ExecutionResult::Found { execution } = self.execution(input.execution, scope).await?
+        else {
             return Ok(PatchPage::Unavailable);
         };
         let Some(patch) = self.patch_record(&execution).await? else {

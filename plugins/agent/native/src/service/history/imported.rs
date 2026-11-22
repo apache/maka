@@ -226,15 +226,13 @@ fn tool(chunk: &mut wire::Chunk, id: String, name: String, is_error: Option<bool
         }),
     });
 }
-pub(super) async fn row(
+async fn header<'a>(
     snapshot: &Snapshot,
-    message: &ImportedMessage,
+    message: &'a ImportedMessage,
     message_ordinal: u64,
     part_ordinal: u64,
-    address: HistoryRowAddress,
-    order: HistoryOrder,
     stop: &tokio_util::sync::CancellationToken,
-) -> Result<projection::Row, String> {
+) -> Result<(Header, &'a ContentRef), String> {
     let reference = message
         .parts
         .get(usize::try_from(part_ordinal).map_err(|_| "agent_history_part_invalid")?)
@@ -262,7 +260,22 @@ pub(super) async fn row(
         })
         .await
         .map_err(|error| error.to_string())?;
+    Ok((header, reference))
+}
+
+pub(super) async fn row(
+    snapshot: &Snapshot,
+    message: &ImportedMessage,
+    message_ordinal: u64,
+    part_ordinal: u64,
+    address: HistoryRowAddress,
+    order: HistoryOrder,
+    stop: &tokio_util::sync::CancellationToken,
+) -> Result<projection::Row, String> {
+    let (header, reference) =
+        header(snapshot, message, message_ordinal, part_ordinal, stop).await?;
     let mut row = projection::Row {
+        evidence_text: projection::EvidenceText::Unmapped,
         continuation: None,
         visible: true,
         chunk: wire::Chunk {

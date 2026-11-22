@@ -282,6 +282,22 @@ pub enum ModelSource {
     },
 }
 
+impl ModelSource {
+    /// The history index and displayed citation share these UTF-8 byte coordinates.
+    pub fn citation_text(&self) -> String {
+        match self {
+            Self::Url { url, title, .. } => title
+                .as_ref()
+                .map_or_else(|| url.clone(), |title| format!("[{title}]({url})")),
+            Self::Document {
+                title, filename, ..
+            } => filename
+                .as_ref()
+                .map_or_else(|| title.clone(), |file| format!("{title} ({file})")),
+        }
+    }
+}
+
 impl ModelStep {
     pub fn tool_calls(&self) -> impl Iterator<Item = &ModelToolCall> {
         self.parts.iter().filter_map(|part| match part {

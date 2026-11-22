@@ -123,6 +123,7 @@ impl DriverModel {
         reference: &ContentRef,
         language: maka_agent_facts::language::Language,
         vision: bool,
+        restricted: bool,
     ) -> Result<Option<(String, String, ToolOutput)>, RunError> {
         use maka_agent_state::session_history::tool_result_source::ToolResultReader;
         let result = async {
@@ -173,6 +174,15 @@ impl DriverModel {
             let display_budget = fields.display_budget_chars(budget.clone()).await?;
             let call_id = imported_identifier(call_id.source, budget.clone()).await?;
             let name = imported_identifier(name.source, budget.clone()).await?;
+            if restricted {
+                return Ok(Some((
+                    call_id,
+                    name,
+                    ToolOutput::Json(serde_json::json!({
+                        "gap": "Archived history output requires a fresh authorized read"
+                    })),
+                )));
+            }
             let address = maka_agent_facts::history::HistoryRowAddress::Imported {
                 path: path.to_vec(),
                 snapshot: snapshot.id(),

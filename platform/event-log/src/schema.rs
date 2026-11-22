@@ -27,21 +27,29 @@ pub const ROOT_MIGRATIONS: &[crate::migration::Migration] = &[
         version: 1,
         description: "runtime",
         sql: include_str!("../migrations/0001_runtime.sql"),
+        configure: None,
+        data: None,
     },
     crate::migration::Migration {
         version: 23,
         description: "plugin_data_live",
         sql: include_str!("../migrations/0023_plugin_data_live.sql"),
+        configure: None,
+        data: None,
     },
     crate::migration::Migration {
         version: 36,
         description: "deferred content release",
         sql: include_str!("../migrations/0036_pending_content_release.sql"),
+        configure: None,
+        data: None,
     },
     crate::migration::Migration {
         version: 42,
         description: "checkpoint repository",
         sql: include_str!("../migrations/0042_checkpoint_repository.sql"),
+        configure: None,
+        data: None,
     },
 ];
 

@@ -74,7 +74,29 @@ async fn uploaded(
     if image.record.artifact.source != maka_agent_facts::artifact::ArtifactSource::UserUpload {
         return Err("agent_image_source_invalid".into());
     }
+    material_access(owner, scope, session, &image.record.artifact.id).await?;
     Ok(image)
+}
+async fn material_access(
+    owner: &Owner,
+    scope: &Scope,
+    session: &str,
+    artifact: &str,
+) -> Result<(), String> {
+    if scope.identity.agent().is_some() {
+        owner
+            .memory_data(scope)?
+            .query(maka_agent_state::memory::recall::MaterialAccess {
+                scope: SessionScope {
+                    owner: owner.run_owner(),
+                    session: session.into(),
+                },
+                artifact: artifact.into(),
+            })
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 async fn historical(
     owner: &Owner,
@@ -84,7 +106,15 @@ async fn historical(
     offset: u64,
 ) -> Result<maka_agent_state::artifacts::ArtifactChunk, String> {
     if matches!(&selected.data, data::DataSource::Snapshot(_)) {
-        return snapshot_artifact(selected, reference, offset).await;
+        let image = snapshot_artifact(selected, reference, offset).await?;
+        material_access(
+            owner,
+            scope,
+            &image.record.artifact.session_id,
+            &image.record.artifact.id,
+        )
+        .await?;
+        return Ok(image);
     }
     let maka_agent_state::session_history::source_tree::SourceItem::Canonical(item) =
         &selected.item
@@ -114,6 +144,13 @@ async fn historical(
         .map_err(|error| error.to_string())?
         .ok_or("agent_image_unavailable")?;
     validate(&image)?;
+    material_access(
+        owner,
+        scope,
+        &image.record.artifact.session_id,
+        &image.record.artifact.id,
+    )
+    .await?;
     Ok(image)
 }
 async fn snapshot_artifact(
@@ -243,6 +280,7 @@ pub(crate) async fn attachment_image(
                 &scope.cancellation,
             )
             .await?;
+            ensure_visible(owner, scope, &tree, position).await?;
             let attachment = selected
                 .row
                 .chunk
@@ -311,6 +349,20 @@ fn describe(row: &mut projection::Row, (image, images, is_error): (bool, u32, bo
         result.images = images;
     }
 }
+async fn ensure_visible(
+    owner: &Owner,
+    scope: &Scope,
+    tree: &maka_agent_state::session_history::source_tree::SourceTree,
+    address: &wire::HistoryRowAddress,
+) -> Result<(), String> {
+    if scope.identity.agent().is_some() {
+        let rows = restrictions(owner, scope, tree, vec![address.clone()]).await?;
+        if rows.contains_key(address) {
+            return Err("Restricted memory source".into());
+        }
+    }
+    Ok(())
+}
 pub(crate) async fn tool_image(
     owner: &Owner,
     scope: &Scope,
@@ -328,6 +380,7 @@ pub(crate) async fn tool_image(
         &scope.cancellation,
     )
     .await?;
+    ensure_visible(owner, scope, &tree, &input.position).await?;
     let reference = stream::selected_image(&selected, input.image, &scope.cancellation).await?;
     let image = historical(owner, scope, &selected, &reference, input.offset).await?;
     authorize(owner, scope, &input.session_id).await?;

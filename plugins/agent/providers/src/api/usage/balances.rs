@@ -299,6 +299,7 @@ fn openrouter_key(key: OpenRouterKey) -> Result<UsageLimit, Error> {
         _ => None,
     };
     Ok(UsageLimit::Window {
+        models: Vec::new(),
         label,
         period,
         resets_at: None,

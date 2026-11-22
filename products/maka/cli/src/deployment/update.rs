@@ -140,7 +140,9 @@ impl Expected {
             super::policy::require_revision(&directory, revision).await?;
         }
         // Do not create a deployment database through update/reconcile.
-        let store::Installation::Installed(current) = store::read(&directory).await? else {
+        let store::Installation::Installed(current) =
+            store::read_for_update(&directory, &lease).await?
+        else {
             return Err("Host deployment is absent or incomplete".into());
         };
         let root = root::resolve(&current.root_path)?;

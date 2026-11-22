@@ -431,6 +431,7 @@ impl Owner {
                 })?,
         );
         let recall = Arc::new(recall::Recall {
+            authority: Default::default(),
             store: persistence.store().clone(),
             durable: durable.clone(),
             owner: run_owner,

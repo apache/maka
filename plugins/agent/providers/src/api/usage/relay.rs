@@ -259,6 +259,7 @@ fn window(
         return Err(invalid());
     }
     Ok(UsageLimit::Window {
+        models: Vec::new(),
         label: label.map(str::to_owned),
         period,
         resets_at,

@@ -28,6 +28,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use sha2::{Digest, Sha256};
 
 mod matching;
+pub mod recall;
 pub mod resolution;
 
 fn revision_value(value: i64) -> Result<MemoryRevision, StoreError> {

@@ -32,9 +32,13 @@ pub async fn read(
     request: ReadRequest,
     cancellation: &CancellationToken,
 ) -> Result<Output, ToolError> {
+    store
+        .check_memory_access(scope.clone(), id.clone())
+        .await
+        .map_err(failed)?;
     let stop = cancellation.clone();
     let result = store
-        .with_content(scope, id, move |record, reader| {
+        .with_content(scope.clone(), id.clone(), move |record, reader| {
             cancelled(&stop)?;
             if record.source != ArtifactSource::UserUpload {
                 return Err(failed("Attachment was not found in this Session"));
@@ -79,6 +83,7 @@ pub async fn read(
         .map_err(failed)?
         .ok_or_else(|| failed("Attachment was not found in this Session"))??;
     cancelled(cancellation)?;
+    store.check_memory_access(scope, id).await.map_err(failed)?;
     Ok(result)
 }
 

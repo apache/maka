@@ -19,10 +19,34 @@
 use super::*;
 use rusqlite::{OptionalExtension, params};
 use std::cmp::Ordering;
-pub(super) const COLUMNS: &str = "d.message,d.sequence,d.ordinal,d.run,d.turn,d.at,d.role,d.body,d.attachments,d.references_json,d.fields_json,d.origin_json";
+const ORIGINAL: &str = "LEFT JOIN agent_session_history h ON h.sequence=d.sequence
+ AND h.owner=d.owner AND h.session=d.session AND h.run=d.run";
+const COLUMNS: &str = concat!(
+    "d.message,d.sequence,d.ordinal,d.run,d.turn,d.at,d.role,d.body,d.attachments,d.references_json,d.fields_json,d.origin_json,
+ (SELECT json_group_array(json_array(start,end)) FROM (",
+    crate::memory::recall::restricted_spans_sql!(
+        "SELECT s.start,s.end FROM",
+        "s.namespace=d.owner AND s.fact=h.fact_id AND s.ordinal=d.ordinal",
+    ),
+    ")),
+ EXISTS(SELECT 1 FROM agent_memory_recall_outputs r WHERE r.owner=d.owner AND r.fact=h.fact_id),
+ h.fact_id"
+);
 pub(super) fn read_message(row: &rusqlite::Row<'_>) -> Result<Message, StoreError> {
     let get = |i| -> Result<String, StoreError> { Ok(row.get(i)?) };
+    let mut body: String = row.get(7)?;
+    let mut attachments = serde_json::from_str(&get(8)?)?;
+    if row.get::<_, bool>(13)? {
+        body.clear();
+        attachments = vec![];
+    } else if let spans = row.get::<_, String>(12)?
+        && spans != "[]"
+    {
+        crate::memory::recall::mask(&mut body, 0, &serde_json::from_str::<Vec<_>>(&spans)?);
+        attachments = vec![];
+    }
     Ok(Message {
+        fact: serde_json::from_value(serde_json::Value::String(get(14)?))?,
         message_id: get(0)?,
         position: RowPosition {
             source_sequence: unsigned(row.get(1)?)?,
@@ -32,8 +56,8 @@ pub(super) fn read_message(row: &rusqlite::Row<'_>) -> Result<Message, StoreErro
         turn_id: get(4)?,
         timestamp: unsigned(row.get(5)?)?,
         role: serde_json::from_str(&get(6)?)?,
-        body: get(7)?,
-        attachments: serde_json::from_str(&get(8)?)?,
+        body,
+        attachments,
         references: serde_json::from_str(&get(9)?)?,
         fields: serde_json::from_str(&get(10)?)?,
         origin: row
@@ -103,7 +127,7 @@ pub(super) fn context(c: &Connection, input: ReadContext) -> Result<Context, Sto
     }
     checked_cut(c, &store, &cut)?;
     let owner = store.key()?;
-    let mut statement=c.prepare_cached(&format!("SELECT {COLUMNS} FROM agent_recall_messages d WHERE d.owner=? AND d.session=? AND d.message=? AND d.sequence<=? AND NOT(d.session=COALESCE(?,'') AND d.turn=COALESCE(?,'') AND d.sequence>COALESCE(?,0))"))?;
+    let mut statement=c.prepare_cached(&format!("SELECT {COLUMNS} FROM agent_recall_messages d {ORIGINAL} WHERE d.owner=? AND d.session=? AND d.message=? AND d.sequence<=? AND NOT(d.session=COALESCE(?,'') AND d.turn=COALESCE(?,'') AND d.sequence>COALESCE(?,0))"))?;
     let mut rows = statement.query(params![
         owner,
         session,
@@ -158,7 +182,7 @@ fn neighbors(
         } else {
             (">", "ASC")
         };
-        let mut statement=c.prepare_cached(&format!("SELECT {COLUMNS} FROM agent_recall_messages d WHERE d.owner=? AND d.session=? AND d.turn=? AND d.sequence<=? AND (d.sequence,d.ordinal){comparison}(?,?) AND NOT(d.session=COALESCE(?,'') AND d.turn=COALESCE(?,'') AND d.sequence>COALESCE(?,0)) ORDER BY d.sequence {order},d.ordinal {order} LIMIT ?"))?;
+        let mut statement=c.prepare_cached(&format!("SELECT {COLUMNS} FROM agent_recall_messages d {ORIGINAL} WHERE d.owner=? AND d.session=? AND d.turn=? AND d.sequence<=? AND (d.sequence,d.ordinal){comparison}(?,?) AND NOT(d.session=COALESCE(?,'') AND d.turn=COALESCE(?,'') AND d.sequence>COALESCE(?,0)) ORDER BY d.sequence {order},d.ordinal {order} LIMIT ?"))?;
         let cap = size
             .checked_add(1)
             .ok_or_else(|| invalid("Recall context limit overflow"))?;
@@ -280,7 +304,7 @@ pub(super) fn search(c: &Connection, input: Search) -> Result<Batch, StoreError>
     let mut cursor = 0i64;
     loop {
         let sql = format!(
-            "SELECT {COLUMNS},d.session,d.id,d.folded FROM agent_recall_terms CROSS JOIN agent_recall_messages d ON d.id=agent_recall_terms.rowid CROSS JOIN session_control s ON s.id=d.session JOIN session_creations route ON route.session_id=s.id AND route.ready=1 AND route.visible=1 WHERE agent_recall_terms MATCH ? AND d.role<>'\"compaction\"' AND d.owner=? AND d.session>=? AND d.session<? AND substr(d.session,1,length(?))=? AND (? IS NULL OR d.session=?) AND (? IS NULL OR d.at>=?) AND (? IS NULL OR d.at<=?) AND NOT(d.session=COALESCE(?,'') AND d.turn=COALESCE(?,'') AND d.sequence>COALESCE(?,0)) AND agent_recall_terms.rowid>? AND NOT EXISTS(SELECT 1 FROM session_retirements retired WHERE retired.session_id=s.id AND retired.remove_session=1) ORDER BY agent_recall_terms.rowid LIMIT 128"
+            "SELECT {COLUMNS},d.session,d.id,d.folded FROM agent_recall_terms CROSS JOIN agent_recall_messages d ON d.id=agent_recall_terms.rowid {ORIGINAL} CROSS JOIN session_control s ON s.id=d.session JOIN session_creations route ON route.session_id=s.id AND route.ready=1 AND route.visible=1 WHERE agent_recall_terms MATCH ? AND d.role<>'\"compaction\"' AND d.owner=? AND d.session>=? AND d.session<? AND substr(d.session,1,length(?))=? AND (? IS NULL OR d.session=?) AND (? IS NULL OR d.at>=?) AND (? IS NULL OR d.at<=?) AND NOT(d.session=COALESCE(?,'') AND d.turn=COALESCE(?,'') AND d.sequence>COALESCE(?,0)) AND agent_recall_terms.rowid>? AND NOT EXISTS(SELECT 1 FROM session_retirements retired WHERE retired.session_id=s.id AND retired.remove_session=1) ORDER BY agent_recall_terms.rowid LIMIT 128"
         );
         let mut statement = c.prepare_cached(&sql)?;
         let since = query.since.map(number).transpose()?;
@@ -311,8 +335,8 @@ pub(super) fn search(c: &Connection, input: Search) -> Result<Batch, StoreError>
         while let Some(row) = rows.next()? {
             check(&stop)?;
             count += 1;
-            cursor = row.get(13)?;
-            let session: String = row.get(12)?;
+            cursor = row.get(16)?;
+            let session: String = row.get(15)?;
             if !cuts.contains_key(&session) && !gaps.contains_key(&session) {
                 let cut = crate::session_history::capture_at(c, &store.owner, &session, None)?;
                 match checked_cut(c, &store, &cut) {
@@ -337,7 +361,17 @@ pub(super) fn search(c: &Connection, input: Search) -> Result<Batch, StoreError>
             if message.fields.iter().all(|f| f.internal) {
                 continue;
             }
-            let text: String = row.get(14)?;
+            let text: String = if row
+                .get_ref(12)?
+                .as_str()
+                .map_err(|e| invalid(e.to_string()))?
+                == "[]"
+                && !row.get::<_, bool>(13)?
+            {
+                row.get(17)?
+            } else {
+                fold(&message.body)
+            };
             let (matched, score) = density(&text, &query.terms, &stop)?;
             if matched.is_empty() {
                 continue;

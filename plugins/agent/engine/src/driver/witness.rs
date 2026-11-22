@@ -822,11 +822,13 @@ mod tests {
         let store = Store::new(data.clone(), DriverDomain::new(data)?)?;
         let mut policy = policy_view(None);
         let empty = ContentBlob::new(vec![]);
+        let tool_selection = ContentBlob::json(&serde_json::json!({ "services": [] }))?;
         let input = ContentBlob::json(&RunInput::Message {
             content: "original provider recovery fixture".to_string().into(),
             request_fingerprint: None,
             source_messages: vec![],
         })?;
+        policy.spec.tool_selection = tool_selection.reference().clone();
         policy.spec.input = input.reference().clone();
         let spec = ContentBlob::json(&policy.spec)?;
         apply_policy_fact(
@@ -843,7 +845,7 @@ mod tests {
             Outcome::Success,
             false,
         );
-        let admission = Admission::new(policy.spec, at(), vec![empty, input]);
+        let admission = Admission::new(policy.spec, at(), vec![empty, tool_selection, input]);
         let run = admission.run();
         store.admit(admission).await?;
         let claim = store.claim(run).await?;

@@ -81,6 +81,9 @@ const distributionInputs = [
   'scripts/rust/licenses',
   'scripts/rust/nightly-manifest.mjs',
   'scripts/rust/package-nightly.mjs',
+  'scripts/rust/compat-capsule.mjs',
+  'scripts/rust/migration-lock.mjs',
+  'scripts/rust/migrations.lock.json',
   'scripts/install-nightly.sh',
 ];
 const bundledSkillInputs = ['skills/maka-generative-ui', 'skills/maka-plugin-authoring'];

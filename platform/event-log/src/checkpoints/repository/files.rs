@@ -189,11 +189,15 @@ impl FileRepository {
                     version: 1,
                     description: "checkpoint repository",
                     sql: include_str!("../../../migrations/repository/0001_repository.sql"),
+                    configure: None,
+                    data: None,
                 },
                 crate::migration::Migration {
                     version: 2,
                     description: "shared checkpoint heads",
                     sql: include_str!("../../../migrations/repository/0002_heads.sql"),
+                    configure: None,
+                    data: None,
                 },
             ],
         )?;

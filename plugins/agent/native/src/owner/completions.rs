@@ -169,6 +169,7 @@ impl Owner {
         session_id: &str,
         run: RunId,
         terminal: &Terminal,
+        model_read: bool,
     ) -> RunResult {
         use maka_agent_facts::{
             context::ModelPurpose,
@@ -180,11 +181,20 @@ impl Owner {
             return RunResult::default();
         };
         let collect_failures = *terminal == Terminal::Failed;
-        let recovery_diagnostic = if collect_failures {
-            view.recovery_failure_diagnostic()
-        } else {
-            None
-        };
+        let history = self
+            .durable
+            .session_history(view.spec.owner.clone(), session_id.to_owned());
+        let recovery_diagnostic =
+            if collect_failures && model_read && view.recovery_failure().is_some() {
+                match history.model_recovery_diagnostic(run).await {
+                    Ok(reason) => reason,
+                    Err(_) => return RunResult::default(),
+                }
+            } else if collect_failures {
+                view.recovery_failure_diagnostic()
+            } else {
+                None
+            };
         let mut reply: Option<String> = None;
         let mut external_reply: Option<(ExternalTaskId, String, Vec<String>)> = None;
         let mut external_has_content = false;
@@ -209,7 +219,22 @@ impl Owner {
             let Ok(page) = self.durable.history(run, start, (end - start) as u32).await else {
                 break;
             };
-            for record in page.into_iter().rev() {
+            let spans = if model_read {
+                let ids = page.iter().map(|record| record.id).collect();
+                let Ok(spans) = history.fact_body_restrictions(ids).await else {
+                    return RunResult::default();
+                };
+                spans
+            } else {
+                Default::default()
+            };
+            for (index, record) in page.into_iter().enumerate().rev() {
+                let visible = |mut text: String| {
+                    if let Some(spans) = spans.get(&index) {
+                        maka_agent_state::memory::recall::mask(&mut text, 0, spans);
+                    }
+                    text
+                };
                 match record.fact {
                     Fact::ModelObserved {
                         attempt,
@@ -246,53 +271,59 @@ impl Owner {
                                 continue;
                             }
                         }
-                        reply = Some(text.to_string());
+                        reply = Some(visible(text.to_string()));
                         break 'scan;
                     }
                     Fact::ExternalTaskObserved {
                         task,
                         output: Output::OutputDelta { message_id, text },
                         ..
-                    } => match &mut external_reply {
-                        Some((current_task, current_id, chunks))
-                            if *current_task == task && *current_id == message_id =>
-                        {
-                            if !text.trim().is_empty() {
-                                external_has_content = true;
+                    } => {
+                        let text = visible(text);
+                        match &mut external_reply {
+                            Some((current_task, current_id, chunks))
+                                if *current_task == task && *current_id == message_id =>
+                            {
+                                if !text.trim().is_empty() {
+                                    external_has_content = true;
+                                }
+                                chunks.push(text);
                             }
-                            chunks.push(text);
-                        }
-                        Some(_) => {
-                            if external_has_content {
-                                break 'scan;
+                            Some(_) => {
+                                if external_has_content {
+                                    break 'scan;
+                                }
+                                external_has_content = !text.trim().is_empty();
+                                external_reply = Some((task, message_id, vec![text]));
                             }
-                            external_has_content = !text.trim().is_empty();
-                            external_reply = Some((task, message_id, vec![text]));
+                            None => {
+                                external_has_content = !text.trim().is_empty();
+                                external_reply = Some((task, message_id, vec![text]));
+                            }
                         }
-                        None => {
-                            external_has_content = !text.trim().is_empty();
-                            external_reply = Some((task, message_id, vec![text]));
-                        }
-                    },
+                    }
                     Fact::RunTerminated {
                         terminal: Terminal::Failed,
                         diagnostic,
                     } if collect_failures && !external_has_content => {
-                        if let Some(diag) = recovery_diagnostic.clone().or(diagnostic) {
+                        if let Some(diag) = recovery_diagnostic
+                            .clone()
+                            .or_else(|| diagnostic.map(visible))
+                        {
                             push_failure(&mut failures, diag);
                         }
                     }
                     Fact::ModelInterrupted { diagnostic, .. }
                         if collect_failures && !external_has_content =>
                     {
-                        push_failure(&mut failures, diagnostic);
+                        push_failure(&mut failures, visible(diagnostic));
                     }
                     Fact::ExternalTaskClosed {
                         outcome: Terminal::Failed,
                         diagnostic: Some(diagnostic),
                         ..
                     } if collect_failures && !external_has_content => {
-                        push_failure(&mut failures, diagnostic);
+                        push_failure(&mut failures, visible(diagnostic));
                     }
                     _ => {}
                 }
@@ -558,7 +589,9 @@ impl Owner {
                                 }
                                 Notice::Finished {
                                     terminal: terminal.clone(),
-                                    result: self.run_result(&entry.session_id, run, terminal).await,
+                                    result: self
+                                        .run_result(&entry.session_id, run, terminal, true)
+                                        .await,
                                 }
                             }
                             (None, Some(reason)) if !state.stopped => {

@@ -44,12 +44,57 @@ pub(super) enum Body {
     Field(SourceField),
     Empty,
 }
+/// Positions of projected text in the authoritative Recall document.
+pub(super) enum EvidenceText {
+    Unmapped,
+    DisplayOnly,
+    ReturnedToolName,
+    Call { arguments: Option<u64> },
+    DisplayAndSource(SourceField),
+}
+impl EvidenceText {
+    fn call(name: &str, serialized_arguments: bool) -> Self {
+        Self::Call {
+            arguments: serialized_arguments
+                .then_some(name.len() as u64 + u64::from(!name.is_empty())),
+        }
+    }
+
+    pub(super) fn source_offset(&self, field: SourceField) -> Option<u64> {
+        match self {
+            Self::Call { .. } | Self::ReturnedToolName if field == SourceField::ToolName => Some(0),
+            Self::Call { arguments } if field == SourceField::Arguments => *arguments,
+            Self::DisplayAndSource(source) if *source == field => Some(0),
+            _ => None,
+        }
+    }
+
+    pub(super) fn display_offset(&self, view: wire::HistoryView) -> Option<u64> {
+        match self {
+            Self::Call { arguments } if view == wire::HistoryView::Text => *arguments,
+            Self::DisplayOnly if view == wire::HistoryView::Text => Some(0),
+            Self::DisplayAndSource(_) => Some(0),
+            _ => None,
+        }
+    }
+}
 pub(super) struct Row {
     pub chunk: Chunk,
     pub visible: bool,
     pub continuation: Option<wire::HistoryRowAddress>,
     pub body: Body,
+    pub evidence_text: EvidenceText,
     pub fields: Vec<(SourceField, Field)>,
+}
+impl Row {
+    pub(super) fn field_origin(&self, field: SourceField) -> Option<&wire::HistoryRowAddress> {
+        if field == SourceField::ToolName
+            && matches!(self.evidence_text, EvidenceText::ReturnedToolName)
+        {
+            return Some(&self.chunk.tool.as_ref()?.call.as_ref()?.position);
+        }
+        Some(&self.chunk.position)
+    }
 }
 pub(super) fn visible(fact: &Fact) -> bool {
     use maka_agent_facts::cells::CellEvent;
@@ -133,6 +178,7 @@ fn base(
             tool: None,
             attachments: Vec::new(),
         },
+        evidence_text: EvidenceText::Unmapped,
         body: Body::Empty,
         fields: Vec::new(),
     })
@@ -405,6 +451,7 @@ pub(super) async fn project(
     address: &wire::HistoryRowAddress,
     views: &mut std::collections::BTreeMap<RunId, maka_agent_state::fold::RunView>,
     run: RunProjection<'_>,
+    mask_evidence: bool,
     stop: &tokio_util::sync::CancellationToken,
 ) -> Result<Vec<Row>, String> {
     let RunProjection {
@@ -592,6 +639,9 @@ pub(super) async fn project(
                     } else {
                         SourceField::Body
                     };
+                    if *text_kind == TextKind::Text {
+                        row.evidence_text = EvidenceText::DisplayAndSource(field);
+                    }
                     text(&mut row, field, body);
                     if let ModelPart::Text { text: original, .. } = part {
                         row.fields[0].1 = Field::Text(original.clone());
@@ -619,11 +669,16 @@ pub(super) async fn project(
                         },
                     };
                     row.chunk.citation_anchor = *anchor;
+                    row.evidence_text = EvidenceText::DisplayAndSource(SourceField::Body);
                     let body = citation_body(&mut row.chunk, citation);
                     text(&mut row, SourceField::Body, body.into());
                     true
                 }
                 ModelPart::ToolCall { call } => {
+                    row.evidence_text = EvidenceText::call(
+                        &call.name,
+                        !matches!(call.input, ToolInput::Json(Value::String(_))),
+                    );
                     row.chunk.role = Role::ToolCall;
                     tool(
                         &mut row,
@@ -654,6 +709,9 @@ pub(super) async fn project(
                     is_error,
                     ..
                 } => {
+                    if !output.is_string() {
+                        row.evidence_text = EvidenceText::DisplayAndSource(SourceField::Result);
+                    }
                     row.chunk.role = Role::ToolResult;
                     tool(
                         &mut row,
@@ -872,6 +930,8 @@ pub(super) async fn project(
             let mut row = match event {
                 ExternalEffectEvent::Prepared { .. } => {
                     let mut row = base(item, turn, 0, Role::ToolCall, address)?;
+                    // The Recall index retains the descriptor's raw JSON formatting.
+                    row.evidence_text = EvidenceText::Call { arguments: None };
                     tool(&mut row, id, Some(descriptor.name.clone()), None);
                     let call = row
                         .chunk
@@ -895,6 +955,7 @@ pub(super) async fn project(
                     let (is_error, settlement) =
                         super::stream::external_result_metadata(reader, item, output, stop).await?;
                     let mut row = base(item, turn, 0, Role::ToolResult, address)?;
+                    row.evidence_text = EvidenceText::ReturnedToolName;
                     tool(&mut row, id, None, Some(is_error));
                     row.chunk
                         .tool
@@ -965,21 +1026,20 @@ pub(super) async fn project(
                     } else {
                         body.clone().into()
                     };
-                    text(
-                        &mut row,
-                        if thinking {
-                            SourceField::Thinking
-                        } else {
-                            SourceField::Body
-                        },
-                        body,
-                    );
+                    let field = if thinking {
+                        SourceField::Thinking
+                    } else {
+                        SourceField::Body
+                    };
+                    row.evidence_text = EvidenceText::DisplayAndSource(field);
+                    text(&mut row, field, body);
                 }
                 Output::ToolStart {
                     tool_call_id,
                     name,
                     input,
                 } => {
+                    row.evidence_text = EvidenceText::call(name, !input.is_string());
                     row.chunk.role = Role::ToolCall;
                     let id = super::super::delivery::executor_tool_id(
                         item.recorded.run,
@@ -1029,6 +1089,7 @@ pub(super) async fn project(
                     {
                         result.details = details.clone();
                     }
+                    row.evidence_text = EvidenceText::DisplayAndSource(SourceField::Result);
                     text(&mut row, SourceField::Result, body.clone().into());
                 }
                 Output::MessageStart { .. }
@@ -1088,6 +1149,7 @@ pub(super) async fn project(
             if let maka_agent_facts::context::CheckpointContent::Text(summary) =
                 compact.checkpoint.summary
             {
+                row.evidence_text = EvidenceText::DisplayOnly;
                 row.body = Body::Text(summary.into());
             }
             row.fields
@@ -1107,13 +1169,16 @@ pub(super) async fn project(
                 }
             ) {
                 reader
-                    .recovery_failure_at(item)
+                    .recovery_failure_for_reader(item, mask_evidence)
                     .await
                     .map_err(|error| error.to_string())?
             } else {
                 None
             };
             let mut row = base(item, turn, 0, Role::Failure, address)?;
+            if recovery.is_none() {
+                row.evidence_text = EvidenceText::DisplayAndSource(SourceField::FailureMessage);
+            }
             text(
                 &mut row,
                 SourceField::FailureMessage,
