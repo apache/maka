@@ -1404,10 +1404,6 @@ export function RoomTimeline(props: {
       });
   });
 
-  const patchMessage = (updated: AgentRoomMessage) => {
-    messages.set(messages().map((m) => (m.id === updated.id ? updated : m)));
-  };
-
   const clearReactionBurst = (messageId: string, emoji: string) => {
     const key = messageId + ':' + emoji;
     if (!reactionBursts().has(key)) return;
@@ -1446,6 +1442,8 @@ export function RoomTimeline(props: {
   };
 
   const togglePin = (messageId: string, pinned: boolean) => {
+    const target = messages().find((m) => m.id === messageId);
+    if (!target || target.deletedAt) return;
     messages.set(messages().map((m) => (m.id === messageId ? { ...m, pinned } : m)));
     void props.host
       .control('roomManage', {
@@ -1469,7 +1467,7 @@ export function RoomTimeline(props: {
     const nextText = editDraft().trim();
     if (!id || !nextText) return;
     try {
-      const res = roomResult<RoomManageOutput>(
+      roomResult<RoomManageOutput>(
         (
           await props.host.control('roomManage', {
             sessionId: props.sessionId,
@@ -1477,10 +1475,11 @@ export function RoomTimeline(props: {
           })
         ).reply,
       );
-      if (res.kind === 'message_updated') patchMessage(res.message);
       editingMessageId.set(null);
       editDraft.set('');
-      void refreshState();
+      // Re-read inside the serial queue instead of patching from the RPC snapshot so a late
+      // edit receipt can never overwrite a newer concurrent retraction or edit.
+      void runTimeline(() => refreshVisibleMetadata()).catch(() => {});
     } catch (reason) {
       if (alive) error.set(reasonText(reason));
     }
@@ -1493,9 +1492,8 @@ export function RoomTimeline(props: {
         action: { kind: 'delete_message', messageId },
       })
       .then(({ reply }) => {
-        const res = roomResult<RoomManageOutput>(reply);
-        if (res.kind === 'message_updated') patchMessage(res.message);
-        return refreshState();
+        roomResult<RoomManageOutput>(reply);
+        return runTimeline(() => refreshVisibleMetadata());
       })
       .catch((reason) => {
         if (alive) error.set(reasonText(reason));
@@ -1504,7 +1502,7 @@ export function RoomTimeline(props: {
 
   const saveTopic = async () => {
     try {
-      const res = roomResult<RoomManageOutput>(
+      roomResult<RoomManageOutput>(
         (
           await props.host.control('roomManage', {
             sessionId: props.sessionId,
@@ -1512,8 +1510,8 @@ export function RoomTimeline(props: {
           })
         ).reply,
       );
-      if (res.kind === 'topic_updated') topic.set(res.topic);
       editingTopic.set(false);
+      void refreshState();
     } catch (reason) {
       if (alive) error.set(reasonText(reason));
     }
