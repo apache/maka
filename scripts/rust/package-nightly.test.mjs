@@ -29,6 +29,7 @@ import {
   packNightlyNpmLaunchers,
   packNightlyNpmPlatform,
   renderInnoSetupScript,
+  windowsTarExecutable,
 } from './package-nightly.mjs';
 
 test('packageNightly packages linux-arm64-gnu with install.sh and all legal files', async (t) => {
@@ -168,4 +169,13 @@ test('maka-agent alias and @maka-agent/cli both invoke the native platform binar
     { encoding: 'utf8' },
   );
   assert.equal(output.trim(), 'maka-native:--hello world');
+});
+
+test('windowsTarExecutable resolves built-in System32 bsdtar rather than PATH tar', () => {
+  assert.equal(
+    windowsTarExecutable({ SystemRoot: 'D:\\Windows' }),
+    'D:\\Windows\\System32\\tar.exe',
+  );
+  assert.equal(windowsTarExecutable({ SYSTEMROOT: 'C:\\WINNT' }), 'C:\\WINNT\\System32\\tar.exe');
+  assert.equal(windowsTarExecutable({}), 'C:\\Windows\\System32\\tar.exe');
 });

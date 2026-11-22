@@ -32,7 +32,7 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join, resolve, win32 as win32Path } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseArgs, promisify } from 'node:util';
 import { npmSpawnOptions } from '../npm-spawn.mjs';
@@ -193,6 +193,12 @@ export function renderInnoSetupScript({ sourceDir, outputDir, setupBaseName, ver
     'end;',
     '',
   ].join('\r\n');
+}
+
+/** Resolve Windows's built-in bsdtar so Git Bash's GNU tar cannot shadow it on PATH. */
+export function windowsTarExecutable(env = process.env) {
+  const systemRoot = env.SystemRoot || env.SYSTEMROOT || env.WINDIR || env.windir || 'C:\\Windows';
+  return win32Path.join(systemRoot, 'System32', 'tar.exe');
 }
 
 function findIscc() {
@@ -379,7 +385,9 @@ export async function packageNightly({
       }
       const zipPath = join(outDir, info.archiveName);
       if (process.platform === 'win32') {
-        execFileSync('tar', ['-a', '-cf', zipPath, '-C', stage, 'Maka'], { stdio: 'inherit' });
+        execFileSync(windowsTarExecutable(), ['-a', '-cf', zipPath, '-C', stage, 'Maka'], {
+          stdio: 'inherit',
+        });
       } else {
         execFileSync('zip', ['-rq', zipPath, 'Maka'], { cwd: stage, stdio: 'inherit' });
       }
