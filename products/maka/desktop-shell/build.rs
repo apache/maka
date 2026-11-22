@@ -18,7 +18,16 @@
  */
 
 fn main() {
-    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+    let target_os = std::env::var("CARGO_CFG_TARGET_OS").expect("Cargo sets the target OS");
+    if target_os == "macos" {
+        let source = "src/appkit/notifications.m";
+        println!("cargo:rerun-if-changed={source}");
+        cc::Build::new()
+            .file(source)
+            .flag("-fobjc-arc")
+            .compile("maka_desktop_notifications");
+        println!("cargo:rustc-link-lib=framework=UserNotifications");
+    } else if target_os == "windows" {
         println!("cargo:rerun-if-changed=maka.ico");
         println!("cargo:rerun-if-changed=windows.rc");
         embed_resource::compile("windows.rc", embed_resource::NONE)

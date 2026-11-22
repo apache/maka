@@ -20,6 +20,7 @@
 //! The AppKit workbench follows the Root's admitted Host. Utility windows
 //! belong to that connection and close before a replacement client is loaded.
 
+mod notifications;
 mod permissions;
 
 use crate::{
@@ -106,6 +107,8 @@ pub fn run(first: Connection, root: Root, runtime: Runtime) -> Result<(), String
             &flags_changed,
         )
     };
+    // The notification center's delegate is weak. Install it before AppKit launches.
+    let notification_delegate = notifications::install(shell.events.clone());
     carry_out(requests, &runtime);
     let windows = permission_requests(&first);
     refuse_reloads(
@@ -142,6 +145,7 @@ pub fn run(first: Connection, root: Root, runtime: Runtime) -> Result<(), String
     let result = run_app_with_config(config, options, move |is_active| {
         active.send_replace(is_active);
     });
+    drop(notification_delegate);
     if let Some(monitor) = monitor {
         unsafe { objc2_app_kit::NSEvent::removeMonitor(&monitor) };
     }
@@ -345,8 +349,9 @@ fn carry_out(requests: Requests, runtime: &Runtime) {
     });
     runtime.spawn(async move {
         while let Some(call) = notices.recv().await {
-            call.resolve(JsonValue::Null);
-            eprintln!("maka-desktop-shell: the AppKit window posts no notifications");
+            // Finish each submission in order so an older update cannot replace a newer one.
+            let result = notifications::show(call.data()).await;
+            call.reply(result);
         }
     });
 }

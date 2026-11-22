@@ -8696,6 +8696,7 @@ name = "maka-desktop-shell"
 version = "0.3.0"
 dependencies = [
  "block2 0.6.2",
+ "cc",
  "dispatch2",
  "embed-resource",
  "libc",
@@ -8709,6 +8710,7 @@ dependencies = [
  "nsh-platform-linux",
  "nsh-platform-macos",
  "nsh-platform-windows",
+ "nsh-testing",
  "objc2-app-kit 0.3.2",
  "objc2-core-foundation",
  "objc2-core-graphics",
