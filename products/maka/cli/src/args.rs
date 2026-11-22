@@ -43,7 +43,7 @@ enum Command {
     Desktop(crate::desktop::Args),
     /// Open the NSH terminal shell (connects to or starts the selected Host).
     TerminalShell(maka_terminal_shell::entry::Args),
-    /// Execute a single headless Agent prompt to completion.
+    /// Run a headless Agent prompt, or continue, wait on or answer its Session.
     Run(crate::run::Args),
     /// Author, inspect and serve plugin applications.
     #[command(subcommand)]
