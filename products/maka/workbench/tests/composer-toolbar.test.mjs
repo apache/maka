@@ -185,6 +185,14 @@ test('summarizeComposerUsage picks hottest window with remainingPercent and form
   ];
   assert.equal(summarizeComposerUsage(groups, undefined, 'Gemini 4 Neon').remainingPercent, 92);
   assert.equal(summarizeComposerUsage(groups, undefined, 'Unknown').remainingPercent, 90);
+  const thirdParty = [
+    { kind: 'window', usedPercent: 8.11, models: ['Gemini 4 Neon'] },
+    { kind: 'window', usedPercent: 0, models: ['GPT-OSS 120B'] },
+  ];
+  assert.equal(
+    summarizeComposerUsage(thirdParty, undefined, 'GPT-OSS 120B (Medium)').remainingPercent,
+    100,
+  );
   const account = [...groups, { kind: 'window', usedPercent: 50 }];
   assert.equal(summarizeComposerUsage(account, undefined, 'Gemini 4 Neon').remainingPercent, 50);
 

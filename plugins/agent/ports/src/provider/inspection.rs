@@ -68,7 +68,7 @@ pub enum UsageLimit {
         #[serde(skip_serializing_if = "Option::is_none")]
         quantity: Option<UsageQuantity>,
         /// Display names of the models sharing this window; empty when it covers every model.
-        #[serde(skip_serializing_if = "Vec::is_empty")]
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
         models: Vec<String>,
     },
     Balance {

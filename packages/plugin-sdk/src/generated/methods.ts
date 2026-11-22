@@ -400,7 +400,7 @@ export type AgentExternalUsageLimitsOutput_UsageLimit =
       /**
        * Display names of the models sharing this window; empty when it covers every model.
        */
-      models: string[];
+      models?: string[];
     }
   | {
       kind: 'balance';

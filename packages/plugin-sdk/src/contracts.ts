@@ -11227,7 +11227,7 @@ export const contracts: {
                       },
                     },
                     additionalProperties: false,
-                    required: ['kind', 'usedPercent', 'models'],
+                    required: ['kind', 'usedPercent'],
                   },
                   {
                     type: 'object',

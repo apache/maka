@@ -65,7 +65,10 @@ export function summarizeComposerUsage(
     (entry): entry is Extract<UsageLimitEntry, { kind: 'window' }> => entry.kind === 'window',
   );
   const applicable = all.filter(
-    (entry) => !entry.models?.length || (model !== null && entry.models.includes(model)),
+    (entry) =>
+      !entry.models?.length ||
+      (model !== null &&
+        entry.models.some((name) => model === name || model.startsWith(`${name} (`))),
   );
   const windows = applicable.length ? applicable : all;
   if (windows.length) {
