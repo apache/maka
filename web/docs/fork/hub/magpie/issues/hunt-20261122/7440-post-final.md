@@ -1,0 +1,21 @@
+@yetone — verdict post, no patch: the report's experience is real, but the mechanism is relocation into magpie's own folders, not deletion — and "can't turn it off" is half right. Everything below is checked at upstream/main 700f4127e8044ac6dfbb0e0cc937e91c59a601ac, with the repo's own behavior tests run green at that commit.
+
+| The report says | What the code does |
+| --- | --- |
+| "deleted the ones in the original directory" | Nothing of the user's is deleted. An agent's own folder standing in the way of a library skill is moved whole into the backups (`setAside`, internal/library/skills.go:3030) and the library's takes its place as a link or a marked copy. A backup folder that holds skills is never pruned: "that is the only copy of it left" (internal/library/backup.go:94-97; `TestPruneKeepsSkillsSetAside` green at this commit). |
+| "you auto-transferred them" | A skill enters the library by a click (ImportSkill / ImportSkills / HandOverSkills, internal/gui/library.go:932-941) or by an enabled sync: a WebDAV/S3 bundle lands via `Put` every few minutes on the computer serving the gateway (internal/davsync/davsync.go:1287, 1707), and a Remote magpie's "Use its skills and prompts" fetches them in (`keepBorrowed`). What then runs on its own is the apply: magpie writes the library into every detected agent once at each start (internal/gui/app.go:618, unconditional), and while a skill is ticked for an agent, that agent's own same-files folder is set aside silently, every time (internal/library/skills.go:937-941 — a differing one asks via UseLibrarySkill/KeepAgentSkill, an identical one doesn't). That repeat is pinned as intended by the repo's own test: "what installed it puts a copy back into Claude Code: the library's takes its place again, the copy kept" (internal/library/own_skill_test.go:58-70, green at this commit). |
+| "can't turn it off" | Per skill there is: the page's per-agent ticks, `magpie library skill agents <name> none`, or `magpie library skill off-here <name>` — off on this computer alone, "a sync neither carries that nor turns it back on" (internal/cli/library_cli.go:40). The automatic add paths each have their switch too (the sync server in Settings, the per-remote borrow switch). Unticked, the apply takes out only entries magpie made (`ours` guard, internal/library/skills.go:812), never the user's. What doesn't exist is one switch that stops the startup apply of the library itself — that is a feature for you to take or leave, not something I can hand over as a fix. |
+| "every time I open it, it deletes my skills" | Every start applies the library again (app.go:618). If the skill is still ticked for that agent, a same-files folder the user puts back is set aside again — the loop the report felt. off-here / untick ends it. |
+| "unusable in zcode / can't change config" | Can't be checked from here. If zcode doesn't follow the links, per-agent copies exist: `magpie library skill how copy <agent>` (internal/cli/library_cli.go:51). Needs the reporter's details. |
+
+Where the originals are: magpie's settings folder, `backups/<when>/<agent>/skills/<name>` (backup.go:21) — moved whole, never pruned.
+
+Two real gaps, for you to weigh (why this is a verdict, not a patch):
+- no single switch that stops the startup apply of the library (app.go:618 runs it unconditionally; agent detection is presence-based);
+- the identical-files takeover is silent — the repo's own test pins it as intended, so I am not patching against the repo's contract; flagging it because it is what made this report read like a virus.
+
+@yingyewilldayou-dev — to pin your case down, please add: the magpie version, the OS, whether Library sync (backup/sync) is on and to where, the folder the skills disappeared from (~/.zcode/skills? ~/.agents/skills?), whether the entries left there are links, and what zcode shows for them. If the skills in the library are ones you never imported and never synced from another machine, say so — that would be a different report.
+
+Not verified: how zcode reads symlinked skills; which path brought the skills into the library on your machine (an import click, a synced bundle, or a borrow); the "config can't be changed" claim.
+
+AI use: analysis and verification written by GLM-5.3-Flash (ZCode) working for ggbdpq.
