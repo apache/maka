@@ -26,7 +26,12 @@ import { lstat, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs
 import { tmpdir } from 'node:os';
 import { PassThrough } from 'node:stream';
 import test from 'node:test';
-import { buildCli, rustTarget, stageDesktopBundle } from './build-cli.mjs';
+import {
+  buildCli,
+  linuxSystemLibraryRustflags,
+  rustTarget,
+  stageDesktopBundle,
+} from './build-cli.mjs';
 
 const manifest = [
   '[workspace]',
@@ -383,4 +388,32 @@ test('the Host app has a valid stable bundle signature', {
     first,
     'an unrelated product version must not change the Host privacy identity',
   );
+});
+
+test('linuxSystemLibraryRustflags exposes host system library dirs for zigbuild', () => {
+  const ubuntuX64 = (dir) => dir === '/usr/lib/x86_64-linux-gnu' || dir === '/usr/lib';
+  assert.deepEqual(linuxSystemLibraryRustflags('x86_64-unknown-linux-gnu', {}, ubuntuX64), {
+    CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS:
+      '-L native=/usr/lib/x86_64-linux-gnu -L native=/usr/lib',
+  });
+  assert.deepEqual(
+    linuxSystemLibraryRustflags(
+      'x86_64-unknown-linux-gnu',
+      { CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: '-C link-arg=-s -L native=/usr/lib' },
+      ubuntuX64,
+    ),
+    {
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS:
+        '-C link-arg=-s -L native=/usr/lib -L native=/usr/lib/x86_64-linux-gnu',
+    },
+  );
+  const ubuntuArm64 = (dir) => dir === '/usr/lib/aarch64-linux-gnu' || dir === '/usr/lib';
+  assert.deepEqual(linuxSystemLibraryRustflags('aarch64-unknown-linux-gnu', {}, ubuntuArm64), {
+    CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS:
+      '-L native=/usr/lib/aarch64-linux-gnu -L native=/usr/lib',
+  });
+  const fedora = (dir) => dir === '/usr/lib64' || dir === '/usr/lib';
+  assert.deepEqual(linuxSystemLibraryRustflags('x86_64-unknown-linux-gnu', {}, fedora), {
+    CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: '-L native=/usr/lib64 -L native=/usr/lib',
+  });
 });

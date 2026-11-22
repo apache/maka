@@ -18,7 +18,7 @@
  */
 
 import { execFileSync } from 'node:child_process';
-import { constants } from 'node:fs';
+import { constants, existsSync } from 'node:fs';
 import { release as osRelease } from 'node:os';
 import { parseArgs } from 'node:util';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -57,6 +57,27 @@ function developmentFeatures(env, platform, release) {
   return bridge ? ['--no-default-features'] : [];
 }
 
+const linuxMultiarchDirs = {
+  'x86_64-unknown-linux-gnu': '/usr/lib/x86_64-linux-gnu',
+  'aarch64-unknown-linux-gnu': '/usr/lib/aarch64-linux-gnu',
+};
+
+// Zig treats glibc-versioned targets as cross-compilation and excludes host system
+// library directories; pass native dirs so GTK/X11/Vulkan link while Zig keeps its
+// bundled glibc 2.28 stubs for libc.
+export function linuxSystemLibraryRustflags(triple, env = {}, exists = existsSync) {
+  const multiarch = linuxMultiarchDirs[triple];
+  const candidates =
+    multiarch && exists(multiarch) ? [multiarch, '/usr/lib'] : ['/usr/lib64', '/usr/lib'];
+  const dirs = candidates.filter((dir) => exists(dir));
+  if (!dirs.length) return {};
+  const key = `CARGO_TARGET_${triple.toUpperCase().replace(/-/g, '_')}_RUSTFLAGS`;
+  const existing = env[key]?.trim() ?? '';
+  const added = dirs.map((dir) => `-L native=${dir}`).filter((flag) => !existing.includes(flag));
+  if (!added.length) return {};
+  return { [key]: existing ? `${existing} ${added.join(' ')}` : added.join(' ') };
+}
+
 export async function compileCli({
   release = false,
   target,
@@ -65,9 +86,10 @@ export async function compileCli({
   repositoryRoot = root,
   env = process.env,
   platform = process.platform,
+  arch = process.arch,
   osRelease: releaseName = osRelease(),
 } = {}) {
-  const host = rustTarget(platform);
+  const host = rustTarget(platform, arch);
   const triple = target ?? host;
   const linuxRelease = release && target !== undefined && triple.includes('-linux-');
   if (linuxRelease && !/^(x86_64|aarch64)-unknown-linux-gnu$/u.test(triple)) {
@@ -96,6 +118,7 @@ export async function compileCli({
         ...env,
         RUSTC_WRAPPER: env.RUSTC_WRAPPER ?? '',
         RUSTC_WORKSPACE_WRAPPER: env.RUSTC_WORKSPACE_WRAPPER ?? '',
+        ...(triple === host ? linuxSystemLibraryRustflags(triple, env) : {}),
       }
     : env;
   const result = await cargoBuild(args, { cwd: repositoryRoot, env: buildEnv });
