@@ -1410,7 +1410,7 @@ async fn desktop_creates_only_on_first_submission_and_preserves_the_confirmed_sn
     desktop.new_draft().await;
     desktop.attach(&path).await;
     std::fs::write(&path, b"changed after selection").unwrap();
-    desktop.replace_text("FIRST_DESKTOP_MESSAGE").await;
+    desktop.type_text("FIRST_DESKTOP_MESSAGE").await;
     assert_eq!(desktop.sessions().await.len(), 1);
     gate.arm();
     desktop.press("Send message").await;
@@ -2149,7 +2149,7 @@ async fn desktop_edits_a_message_in_place_and_forks_only_when_sent() {
     desktop.expect_text("ORIGINAL_EDIT_MESSAGE").await;
     desktop.artifact("message-editor");
     assert_eq!(desktop.sessions().await.len(), 2);
-    desktop.replace_text("EDITED_IN_PLACE_MESSAGE").await;
+    desktop.type_text("EDITED_IN_PLACE_MESSAGE").await;
     assert_eq!(desktop.sessions().await.len(), 2);
     desktop.press("Send edited message in a fork").await;
     let edited = desktop.request(&mut fixture).await;
@@ -2681,7 +2681,7 @@ async fn desktop_side_pane_keeps_its_draft_separate_when_closed_and_reopened() {
         nsh_core::platform::Appearance::Dark,
     )
     .await;
-    desktop.replace_text("MAIN_DRAFT").await;
+    desktop.type_text("MAIN_DRAFT").await;
     let roots = desktop
         .client
         .query("agent", "directories", json!({"kind":"roots"}))
@@ -2708,7 +2708,7 @@ async fn desktop_side_pane_keeps_its_draft_separate_when_closed_and_reopened() {
     desktop.press("Actions for Side conversation").await;
     desktop.press("Open to the side").await;
     desktop.target_after(original).await;
-    desktop.replace_text("SIDE_DRAFT").await;
+    desktop.type_text("SIDE_DRAFT").await;
     desktop.press("Close side pane").await;
     desktop.press("Focus message composer").await;
     desktop.expect_text("MAIN_DRAFT").await;
