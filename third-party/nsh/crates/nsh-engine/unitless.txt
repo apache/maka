@@ -1,0 +1,15 @@
+# Public API of nsh-engine with bare floats that have no unit (docs/dev/geometry.md,
+# "Typed API"): one item path per line, then the reason.
+
+EngineControl::zoom(scale)                                       # a zoom scale factor
+perf::PerfSnapshot.commits                                       # a rate (commits per second)
+perf::PerfSnapshot.dropped                                       # a share of frames, 0..1
+perf::PerfSnapshot.engine_busy                                   # a percent of time
+perf::PerfSnapshot.fps                                           # a rate (frames per second)
+perf::PerfSnapshot.items                                         # a mean count
+perf::PerfSnapshot.max_fps                                       # a rate (frames per second)
+perf::PerfSnapshot.refresh_rate                                  # a rate (Hz)
+perf::ProcessSample.cpu                                          # a percent of one core's time
+perf::ProcessSample.gpu                                          # a percent of time
+shader::ShaderView::set_size(scale)                              # pixels per point (a display scale factor)
+shader_off::ShaderView::set_size(_scale)                              # pixels per point (a display scale factor)

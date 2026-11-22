@@ -19,34 +19,22 @@
 
 # maka.apache.org
 
-The podling website: a bilingual homepage and a downloads page, built with Astro and published through `.asf.yaml`. Docs, security policy, community, releases and architecture stay authoritative where they already live in this repository; the site links to them and copies nothing.
+A bilingual Astro homepage and download guide with an independent manifest and lockfile.
 
 ```sh
-npm --workspace @maka/website run dev    # http://localhost:4321/en/
-npm --workspace @maka/website run build  # website/dist
-npm --workspace @maka/website run test:dist
+just website-setup
+just website-dev
+just website-check
 ```
 
-## Content
+Commands can also be run from this directory with npm. Site dependency changes update `website/package-lock.json`.
 
-- The positioning sentence and homepage direction (Astryx Centered Hero) follow the consensus in [#4307](https://github.com/apache/maka/discussions/4307). Public download calls to action lead to approved releases, or the current release status until one is available. Contributor setup and testing instructions live in CONTRIBUTING; the site does not promote Nightly installers to general users. See the [ASF publication policy](https://www.apache.org/legal/release-policy.html#publication).
-- English and Chinese are one page each in `src/copy/`. Both share the `Copy` type in `src/copy/types.ts`, so a section, claim or link added to one language fails to type-check until the other has it too, and `test/site.test.mjs` asserts the built pages link the same documents. Yuhan Lei (@Astro-Han) keeps the two in sync.
-- Numbers on the homepage are drawn from the reports in [`docs/eval/`](../docs/eval/) and link to them. The reports own the numbers.
-- Fact-check cadence: the homepage is re-read against the product at every release, and whenever the positioning, the primary journey, platform support or the trust boundary changes. The README's *Get Maka* section, `SECURITY.md` and `docs/eval/` are the sources to check against.
-- Machine-readable entry points live in `public/`: page changes must update `sitemap.xml`, and authoritative document changes must update `llms.txt`. The latter links to raw Markdown in the repository rather than copying documentation into the site.
+Copy lives in `src/copy/`; both languages share one type and the built-page tests verify navigation, link previews, accessibility metadata and local asset loading. Product and contributor guidance links to the repository's maintained documents.
 
-## Design
+Machine-readable entry points live in `public/`: page changes must update `sitemap.xml`, and authoritative document changes must update `llms.txt`. The latter links to raw Markdown in the repository rather than copying documentation into the site.
 
-Colour, radius and surface tokens are the desktop app's defaults, copied by value from `apps/desktop/src/renderer/maka-tokens.css` into `src/styles/site.css`. The site follows the viewer's colour scheme until they pick one with the toggle in the top bar, which is remembered in that browser. Fonts are Geist and Geist Mono (SIL Open Font License 1.1), self-hosted from the `@fontsource-variable` packages the desktop app already depends on, with each package's OFL text published at `/licenses/<package>/LICENSE`; nothing loads from a third party. The logo is `apps/desktop/assets/app-icons/sky.png`, the same file the README uses. `src/assets/incubator.png` is the Apache Incubator logo as published at https://www.apache.org/logos/res/incubator/default.png, an ASF trademark used here as the Incubator branding guide asks; it is not edited.
+The design tokens live in `src/styles/site.css`. Geist and Geist Mono are self-hosted under the SIL Open Font License. `assets/logo.png` is the product mark; `src/assets/incubator.png` is the unmodified Apache Incubator logo from https://www.apache.org/logos/res/incubator/default.png, used as an ASF trademark.
 
-## Publishing
+After changing the hero, run `npm --prefix website run social-preview` from the repository root to regenerate the localized social images and their text manifest.
 
-`.github/workflows/website.yml` builds the site and pushes `website/dist` plus `LICENSE`, `NOTICE` and a site-only `.asf.yaml` as an orphan commit:
-
-| Trigger | Branch | Served at |
-| --- | --- | --- |
-| Push to `main` touching the site | `asf-site` | https://maka.apache.org |
-| Push of a release-candidate tag (`v*-rc*`) | `site/<tag>-staging` | https://maka-<tag>.staged.apache.org |
-| `workflow_dispatch` with a `stage` name | `site/<stage>-staging` | https://maka-<stage>.staged.apache.org |
-
-A `workflow_dispatch` without a `stage` name publishes only from `main`; any other ref fails instead of overwriting the live site. The published `.asf.yaml` carries just `publish: whoami: asf-site` and `staging: profile: ~, autostage: site/*`, the same layout Apache OpenDAL uses; the repository settings in the root `.asf.yaml` stay on `main`, the only branch asfyaml reads them from. Nothing else in the repository is published.
+`.github/workflows/website.yml` validates pull requests and publishes from main to `asf-site`. Release-candidate tags and explicit stage names publish to `site/<name>-staging`; non-main refs require a stage name. Only the built site, its license/notice and site configuration are published.

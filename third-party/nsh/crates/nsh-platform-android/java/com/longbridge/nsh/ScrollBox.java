@@ -1,0 +1,1562 @@
+package com.longbridge.nsh;
+
+import android.animation.ValueAnimator;
+import android.annotation.SuppressLint;
+import android.content.Context;
+import android.graphics.Canvas;
+import android.graphics.Rect;
+import android.os.Build;
+import android.view.MotionEvent;
+import android.view.ScaleGestureDetector;
+import android.view.VelocityTracker;
+import android.view.View;
+import android.view.ViewConfiguration;
+import android.view.ViewGroup;
+import android.view.ViewParent;
+import android.view.WindowInsets;
+import android.view.inputmethod.InputMethodManager;
+import android.widget.FrameLayout;
+import android.widget.HorizontalScrollView;
+import android.widget.OverScroller;
+import android.widget.ProgressBar;
+import android.widget.ScrollView;
+
+/**
+ * `<scroll>` and lists: a platform ScrollView (native fling and overscroll
+ * effect) whose content box is sized by the core, plus pull to refresh,
+ * paging and snapping, drag / momentum events and
+ * `keyboardShouldPersistTaps`.
+ */
+@SuppressLint("ViewConstructor")
+final class ScrollBox extends FrameLayout implements Node {
+    final Mounter mounter;
+    final int id;
+    final Decor decor = new Decor();
+
+    /** An outer box shadow draws outside the bounds, and compositing the
+     * view at alpha < 1 into the bounds-clipped offscreen buffer would cut
+     * it; such a view reports no overlapping rendering, so the alpha
+     * applies per draw op and the shadow fades with the content. */
+    @Override
+    public boolean hasOverlappingRendering() {
+        return !decor.hasOuterShadows();
+    }
+
+    /** The events it listens to, kinds below 64 ({@link Mounter#wants} has all). */
+    long events;
+    boolean horizontal;
+    int dismissMode; // 0 none, 1 on drag, 2 interactive
+    private FrameLayout scroller;
+    final Content content;
+    private final ProgressBar spinner;
+    private boolean refreshing;
+    /** Content offset while pulling or refreshing (px). */
+    private float pull;
+    private boolean pulling;
+    private float startY;
+    private boolean touching;
+    /** The down time of the touch whose DOWN this view took (-1: none yet). */
+    private long downTime = -1;
+    private final Runnable settled = this::settled;
+
+    // `ScrollBehavior`; offsets and lengths in dp.
+    private boolean paging, enabled = true, bounces = true, oneStep;
+    /** A JS responder inside keeps the touches (`onResponderGrant` returned true). */
+    boolean jsBlocked;
+    /** The pan of a view inside activated (`panActivation`): it keeps the touches. */
+    boolean gateBlocked;
+    private float snapInterval, deceleration;
+    private float[] snapOffsets = new float[0];
+    private int snapAlignment; // 0 start, 1 center, 2 end
+    private int keyboardTaps; // 0 never, 1 always, 2 handled
+    /** `contentInset` (px) and the room kept for the keyboard below it. */
+    private int insetTop, insetRight, insetBottom, insetLeft, keyboardPadding;
+    /**
+     * `scrollbarInset` (px): where the scroll bar keeps from the edges, the keyboard's room added below. Without
+     * one ({@code barSet} false) the bar keeps within the paddings, as the platform places it.
+     */
+    private int barTop, barRight, barBottom, barLeft;
+    private boolean barSet;
+
+    // The current gesture.
+    /** The user dragged the content. */
+    private boolean dragging;
+    /** The scroll view flung (or snapped) after the drag: gliding. */
+    private boolean flung, momentum;
+    /** This touch only dismisses the keyboard (`keyboardShouldPersistTaps`); -1: it does not. */
+    private int tapMode = -1;
+    /** Where this touch went down, and whether it moved past the slop since (a drag at an edge scrolls nothing). */
+    private float tapX, tapY;
+    private boolean tapMoved;
+    /**
+     * This view is dispatching a touch. The user's drag scrolls the content
+     * synchronously inside that call (a nested scroll view hands it the rest
+     * there too); commands, their glides, layout catching up (`payOwed`) and
+     * the host's handle scroll outside it. Only a scroll inside it is the
+     * user's drag, which takes the touches from the views inside.
+     */
+    private boolean dispatching;
+    /**
+     * Frames the platform scroll view drew. It draws again each frame while
+     * its overscroll effect (Android 12's stretch) relaxes, which moves no
+     * view: the test agent counts the frames as movement
+     * ({@link TestAgent#animating}), since a touch caught then only stops
+     * the stretch, and presses nothing.
+     */
+    int frames;
+
+    // The host's handle (`NshScrollHandle`, `NshView.watchScroll`).
+    /** The {@code nativeID} the host watches it by (null: none). */
+    String hostKey;
+    /** It was deleted, or its app stopped. */
+    boolean unmounted;
+    /** Hear every offset and content size change. */
+    final java.util.List<NshScrollListener> hostListeners = new java.util.concurrent.CopyOnWriteArrayList<>();
+    /** A smooth scroll of the host's may still be running. */
+    private boolean hostAnimating;
+
+    /** The scrolled content, sized by the core (`ScrollContent`). */
+    static final class Content extends Box {
+        int contentWidth, contentHeight;
+
+        Content(Context context, Mounter mounter, int id) {
+            super(context, mounter, id);
+        }
+
+        @Override
+        protected void onMeasure(int widthSpec, int heightSpec) {
+            int w = Math.max(contentWidth, MeasureSpec.getSize(widthSpec));
+            int h = Math.max(contentHeight, MeasureSpec.getSize(heightSpec));
+            super.onMeasure(MeasureSpec.makeMeasureSpec(w, MeasureSpec.EXACTLY), MeasureSpec.makeMeasureSpec(h, MeasureSpec.EXACTLY));
+        }
+    }
+
+    ScrollBox(Context context, Mounter mounter, int id) {
+        super(context);
+        this.mounter = mounter;
+        this.id = id;
+        setBackground(decor);
+        content = new Content(context, mounter, id);
+        spinner = new ProgressBar(context);
+        spinner.setIndeterminate(true);
+        spinner.setVisibility(GONE);
+        int size = Math.round(28 * mounter.density);
+        addView(spinner, new LayoutParams(size, size, android.view.Gravity.CENTER_HORIZONTAL | android.view.Gravity.TOP));
+        content.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or, ob) -> payOwed());
+        build();
+    }
+
+    @Override
+    public int nodeId() {
+        return id;
+    }
+
+    private void build() {
+        if (scroller != null) {
+            scroller.removeView(content);
+            removeView(scroller);
+            if (scroller instanceof ZScroll) {
+                content.setScaleX(1);
+                content.setScaleY(1);
+                content.setTranslationX(0);
+                content.setTranslationY(0);
+                mounter.zoom(id, 1);
+            }
+        }
+        scroller = zooms ? new ZScroll(getContext()) : horizontal ? new HScroll(getContext()) : new VScroll(getContext());
+        scroller.setOverScrollMode(bounces ? OVER_SCROLL_IF_CONTENT_SCROLLS : OVER_SCROLL_NEVER);
+        scroller.setPadding(insetLeft, insetTop, insetRight, insetBottom + keyboardPadding);
+        scroller.setClipToPadding(false);
+        // A scroll view inside another one scrolls first, then hands the
+        // rest to its parent (else the parent takes every drag along its axis).
+        scroller.setNestedScrollingEnabled(true);
+        scroller.setVerticalScrollBarEnabled(!horizontal);
+        scroller.setHorizontalScrollBarEnabled(horizontal);
+        scroller.addView(content, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        // The view or its content changed size: scroll what was clamped.
+        scroller.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or, ob) -> payOwed());
+        scroller.setOnScrollChangeListener((v, x, y, ox, oy) -> {
+            // Layout may clamp against a mixture of old and new pixel
+            // sizes. Report only after restoring the logical offset.
+            if (rescaling) return;
+            if (stickyCells.length > 0) pinSticky();
+            if (dispatching && touching && !dragging) {
+                dragging = true;
+                // The scroll view takes the touches from JS responders.
+                mounter.cancelTouches();
+                // Caught while gliding: the glide ended.
+                if (momentum) emit(Native.MOMENTUM_END);
+                momentum = false;
+                emit(Native.SCROLL_DRAG_START);
+            }
+            float d = mounter.density;
+            mounter.scroll(id, x / d, y / d, applied);
+            removeCallbacks(settled);
+            postDelayed(settled, 120);
+            if (x != ox || y != oy) for (NshScrollListener l : hostListeners) l.onScroll(x, y, x - ox, y - oy);
+        });
+        addView(scroller, 0, new LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT));
+    }
+
+    void configure(boolean horizontal, boolean indicator, int dismissMode) {
+        if (horizontal != this.horizontal) {
+            this.horizontal = horizontal;
+            build();
+        }
+        scroller.setVerticalScrollBarEnabled(indicator && !horizontal);
+        scroller.setHorizontalScrollBarEnabled(indicator && horizontal);
+        this.dismissMode = dismissMode;
+    }
+
+    void setContentSize(int width, int height) {
+        if (rescaling) {
+            rescaledContent = true;
+            requestLayout();
+        }
+        int oldWidth = content.contentWidth, oldHeight = content.contentHeight;
+        content.contentWidth = width;
+        content.contentHeight = height;
+        if (scroller instanceof ZScroll) {
+            // Exactly the core's size: the zoom scales it.
+            ((ZScroll) scroller).placeContent();
+        } else {
+            // Sized right away: scrolling in the same batch (anchoring, a
+            // jump to an item) is clamped to the content's current size.
+            int w = Math.max(width, scroller.getWidth()), h = Math.max(height, scroller.getHeight());
+            content.measure(MeasureSpec.makeMeasureSpec(w, MeasureSpec.EXACTLY), MeasureSpec.makeMeasureSpec(h, MeasureSpec.EXACTLY));
+            content.layout(0, 0, w, h);
+            content.requestLayout();
+        }
+        if (width != oldWidth || height != oldHeight) {
+            for (NshScrollListener l : hostListeners) l.onContentSizeChange(hostContentWidth(), hostContentHeight());
+        }
+    }
+
+    /** Sticky cells: node ids and their travel (px), from `StickyCells`. */
+    private int[] stickyCells = new int[0];
+    private float[] stickyStart = new float[0], stickyEnd = new float[0];
+
+    void setSticky(int[] cells, float[] start, float[] end) {
+        for (int old : stickyCells) {
+            boolean kept = false;
+            for (int c : cells) kept |= c == old;
+            View v = mounter.view(old);
+            if (!kept && v != null) {
+                if (horizontal) v.setTranslationX(0); else v.setTranslationY(0);
+            }
+            if (!kept && mounter.stickyHosts.get(old) == this) mounter.stickyHosts.remove(old);
+            mounter.forgetStickyOffset(old);
+        }
+        // A cell may be in a list in this scroll view's viewport: its
+        // animated offset finds this scroll view. Its offset is forgotten:
+        // the outputs after the batch bring back the ones still animated,
+        // so a cell whose offset became a number no longer adds the old one.
+        for (int c : cells) {
+            mounter.stickyHosts.put(c, this);
+            mounter.forgetStickyOffset(c);
+        }
+        stickyCells = cells;
+        stickyStart = start;
+        stickyEnd = end;
+        frontSticky();
+        pinSticky();
+    }
+
+    /** Keeps sticky cells above the others (also after new cells arrive). */
+    void frontSticky() {
+        for (int c : stickyCells) {
+            View v = mounter.view(c);
+            if (v != null && v.getParent() == content && content.indexOfChild(v) != content.getChildCount() - 1) {
+                v.bringToFront();
+            }
+        }
+    }
+
+    boolean hasSticky() {
+        return stickyCells.length > 0;
+    }
+
+    /** Moves the sticky cells with the scroll offset (and their animated offsets). */
+    void pinSticky() {
+        float offset = horizontal ? scroller.getScrollX() : scroller.getScrollY();
+        for (int i = 0; i < stickyCells.length; i++) {
+            View v = mounter.view(stickyCells[i]);
+            if (v == null) continue;
+            float extra = mounter.stickyOffset(stickyCells[i]);
+            float t = Math.max(0, Math.min(offset + extra - stickyStart[i], stickyEnd[i] - stickyStart[i]));
+            if (horizontal) v.setTranslationX(t); else v.setTranslationY(t);
+        }
+    }
+
+    /** Room below the content (keyboard avoidance), under `contentInset`. */
+    void setContentPaddingBottom(int px) {
+        keyboardPadding = px;
+        scroller.setPadding(insetLeft, insetTop, insetRight, insetBottom + keyboardPadding);
+    }
+
+    /** `ScrollBehavior` (lengths in dp). */
+    void setBehavior(boolean paging, float snapInterval, float[] snapOffsets, int snapAlignment, float deceleration,
+            boolean enabled, boolean bounces, float top, float right, float bottom, float left, int keyboardTaps,
+            boolean oneStep) {
+        this.paging = paging;
+        this.snapInterval = snapInterval;
+        this.snapOffsets = snapOffsets;
+        this.snapAlignment = snapAlignment;
+        this.deceleration = deceleration;
+        this.enabled = enabled;
+        this.bounces = bounces;
+        this.keyboardTaps = keyboardTaps;
+        this.oneStep = oneStep;
+        float d = mounter.density;
+        insetTop = Math.round(top * d);
+        insetRight = Math.round(right * d);
+        insetBottom = Math.round(bottom * d);
+        insetLeft = Math.round(left * d);
+        scroller.setOverScrollMode(bounces ? OVER_SCROLL_IF_CONTENT_SCROLLS : OVER_SCROLL_NEVER);
+        scroller.setPadding(insetLeft, insetTop, insetRight, insetBottom + keyboardPadding);
+    }
+
+    /** `scrollbarInset` (dp). */
+    void setBarInset(float top, float right, float bottom, float left) {
+        float d = mounter.density;
+        int t = Math.round(top * d), r = Math.round(right * d), b = Math.round(bottom * d), l = Math.round(left * d);
+        if (t == barTop && r == barRight && b == barBottom && l == barLeft) return;
+        barTop = t;
+        barRight = r;
+        barBottom = b;
+        barLeft = l;
+        barSet = t != 0 || r != 0 || b != 0 || l != 0;
+        scroller.invalidate();
+    }
+
+    /**
+     * Moves the platform's scroll bar of {@code v} from the track its paddings leave (`contentInset` and the
+     * keyboard's room) to the one `scrollbarInset` leaves, by mapping the canvas along the bar's axis and
+     * shifting it across, so that the bar keeps the platform's look and behavior. Returns the save count to
+     * restore after drawing the bars, or -1 when the tracks are the same.
+     *
+     * <p>The mapping scales the thumb along the axis too, its ends included; the inset is small next to the
+     * track, so the difference is too.
+     */
+    private int insetBars(View v, Canvas canvas, boolean horizontal) {
+        if (!barSet) return -1;
+        int padStart = horizontal ? v.getPaddingLeft() : v.getPaddingTop();
+        int padEnd = horizontal ? v.getPaddingRight() : v.getPaddingBottom();
+        int start = horizontal ? barLeft : barTop;
+        int end = horizontal ? barRight : barBottom + keyboardPadding;
+        // How far to move the bar across, towards the content: the horizontal bar sits at the bottom, the vertical
+        // one on the side the platform puts it (the left in a right-to-left layout).
+        int shift;
+        if (horizontal) {
+            shift = v.getPaddingBottom() - (barBottom + keyboardPadding);
+        } else if (barOnLeft(v)) {
+            shift = barLeft - v.getPaddingLeft();
+        } else {
+            shift = v.getPaddingRight() - barRight;
+        }
+        if (padStart == start && padEnd == end && shift == 0) return -1;
+        int length = horizontal ? v.getWidth() : v.getHeight();
+        float from = length - padStart - padEnd, to = length - start - end;
+        int save = canvas.save();
+        if (from <= 0 || to <= 0) {
+            // No room for it between the insets.
+            canvas.clipRect(0, 0, 0, 0);
+            return save;
+        }
+        float k = to / from;
+        if (horizontal) {
+            int x = v.getScrollX();
+            canvas.translate(x + start, shift);
+            canvas.scale(k, 1);
+            canvas.translate(-(x + padStart), 0);
+        } else {
+            int y = v.getScrollY();
+            canvas.translate(shift, y + start);
+            canvas.scale(1, k);
+            canvas.translate(0, -(y + padStart));
+        }
+        return save;
+    }
+
+    /** Whether the platform draws the vertical scroll bar of {@code v} on its left, as it does by default when RTL. */
+    private static boolean barOnLeft(View v) {
+        int position = v.getVerticalScrollbarPosition();
+        if (position == View.SCROLLBAR_POSITION_DEFAULT) {
+            return v.getLayoutDirection() == View.LAYOUT_DIRECTION_RTL;
+        }
+        return position == View.SCROLLBAR_POSITION_LEFT;
+    }
+
+    // --- Paging and snapping ---------------------------------------------
+
+    private boolean snaps() {
+        return paging || snapInterval > 0 || snapOffsets.length > 0;
+    }
+
+    /** The scroll view's own fling (px/s): snaps instead when snapping. */
+    private boolean fling(int velocity) {
+        flung = true;
+        if (!snaps()) return false;
+        snap(velocity);
+        return true;
+    }
+
+    /** Whether this view took the DOWN of the touch that went down at {@code downTime}. */
+    boolean took(long downTime) {
+        return this.downTime == downTime;
+    }
+
+    /** Whether a drag by ({@code dx}, {@code dy}) px along this view's axis has content to move. */
+    boolean scrolls(float dx, float dy) {
+        if (scroller == null || !enabled) return false;
+        if (horizontal) return Math.abs(dx) > Math.abs(dy) && scroller.canScrollHorizontally(dx < 0 ? 1 : -1);
+        return Math.abs(dy) > Math.abs(dx) && scroller.canScrollVertically(dy < 0 ? 1 : -1);
+    }
+
+    /** Glides to the snap point for a release at {@code velocity} (px/s). */
+    private void snap(int velocity) {
+        if (scroller instanceof ZScroll) return;
+        float d = mounter.density;
+        boolean h = horizontal;
+        float offset = (h ? scroller.getScrollX() : scroller.getScrollY()) / d;
+        float viewport = (h ? scroller.getWidth() : scroller.getHeight()) / d;
+        float length = (h ? content.getWidth() + scroller.getPaddingLeft() + scroller.getPaddingRight()
+                : content.getHeight() + scroller.getPaddingTop() + scroller.getPaddingBottom()) / d;
+        float v = velocity / d / 1000f;
+        // Where UIKit's deceleration would glide (velocity kept per ms).
+        float rate = deceleration > 0 ? deceleration : (snapInterval > 0 || snapOffsets.length > 0) ? 0.99f : 0.998f;
+        float projected = offset + v * rate / (1 - rate);
+        float target = snapTarget(offset, projected, v, viewport, length);
+        int px = Math.round(target * d);
+        if (scroller instanceof ScrollView) ((ScrollView) scroller).smoothScrollTo(0, px);
+        else ((HorizontalScrollView) scroller).smoothScrollTo(px, 0);
+    }
+
+    /** `ScrollBehavior::snap_target` (nsh-core), in dp. */
+    private float snapTarget(float offset, float projected, float velocity, float viewport, float content) {
+        float max = Math.max(0, content - viewport);
+        float[] points;
+        if (snapInterval > 0) {
+            float shift = snapAlignment == 1 ? (viewport - snapInterval) / 2 : snapAlignment == 2 ? viewport - snapInterval : 0;
+            int n = (int) Math.max(0, Math.ceil((max + shift) / snapInterval));
+            points = new float[n + 1];
+            for (int i = 0; i <= n; i++) points[i] = Math.max(0, Math.min(max, i * snapInterval - shift));
+        } else if (snapOffsets.length > 0) {
+            points = new float[snapOffsets.length];
+            for (int i = 0; i < points.length; i++) points[i] = Math.max(0, Math.min(max, snapOffsets[i]));
+        } else {
+            float page = Math.max(1, viewport);
+            int n = (int) Math.ceil(max / page);
+            points = new float[n + 1];
+            for (int i = 0; i <= n; i++) points[i] = Math.min(max, i * page);
+        }
+        final float slow = 0.3f; // dp per ms: slower releases settle at the nearest point
+        boolean step = oneStep || (paging && snapInterval <= 0 && snapOffsets.length == 0);
+        float from = step ? offset : projected;
+        Float target = null;
+        if (velocity > slow) {
+            for (float p : points) {
+                if (step ? p > from + 0.5f : p >= from - 0.5f) { target = p; break; }
+            }
+        } else if (velocity < -slow) {
+            for (int i = points.length - 1; i >= 0; i--) {
+                float p = points[i];
+                if (step ? p < from - 0.5f : p <= from + 0.5f) { target = p; break; }
+            }
+        } else {
+            for (float p : points) {
+                if (target == null || Math.abs(p - from) < Math.abs(target - from)) target = p;
+            }
+        }
+        return target != null ? target : velocity > 0 ? max : 0;
+    }
+
+    /** The platform scroll views, with `scrollable` and snapping. */
+    private final class VScroll extends ScrollView {
+        VScroll(Context context) {
+            super(context);
+        }
+
+        @Override
+        public boolean dispatchTouchEvent(MotionEvent e) {
+            if (!claim(this, e)) return super.dispatchTouchEvent(e);
+            // Handed over: the platform scroll view would start its own drag on this move and ask the
+            // views around not to intercept again, so it ends its touch here.
+            MotionEvent cancel = MotionEvent.obtain(e);
+            cancel.setAction(MotionEvent.ACTION_CANCEL);
+            super.dispatchTouchEvent(cancel);
+            cancel.recycle();
+            return false;
+        }
+
+        @Override
+        public boolean onInterceptTouchEvent(MotionEvent e) {
+            return enabled && !jsBlocked && !gateBlocked && super.onInterceptTouchEvent(e);
+        }
+
+        @SuppressLint("ClickableViewAccessibility")
+        @Override
+        public boolean onTouchEvent(MotionEvent e) {
+            if (!enabled || jsBlocked || gateBlocked) return false;
+            boolean up = beforeTouch(e);
+            boolean handled = super.onTouchEvent(e);
+            if (up) released();
+            return handled;
+        }
+
+        @Override
+        public void fling(int velocity) {
+            if (!ScrollBox.this.fling(velocity)) super.fling(velocity);
+        }
+
+        void stop() {
+            // Bypass snapping: a zero-velocity native fling replaces the
+            // previous scroller animation at its current position.
+            super.fling(0);
+        }
+
+        @Override
+        public void draw(Canvas canvas) {
+            super.draw(canvas);
+            frames++;
+        }
+
+        @Override
+        public void onDrawForeground(Canvas canvas) {
+            int save = insetBars(this, canvas, false);
+            super.onDrawForeground(canvas);
+            if (save >= 0) canvas.restoreToCount(save);
+        }
+    }
+
+    private final class HScroll extends HorizontalScrollView {
+        HScroll(Context context) {
+            super(context);
+        }
+
+        @Override
+        public boolean dispatchTouchEvent(MotionEvent e) {
+            if (!claim(this, e)) return super.dispatchTouchEvent(e);
+            // Handed over: the platform scroll view would start its own drag on this move and ask the
+            // views around not to intercept again, so it ends its touch here.
+            MotionEvent cancel = MotionEvent.obtain(e);
+            cancel.setAction(MotionEvent.ACTION_CANCEL);
+            super.dispatchTouchEvent(cancel);
+            cancel.recycle();
+            return false;
+        }
+
+        @Override
+        public boolean onInterceptTouchEvent(MotionEvent e) {
+            return enabled && !jsBlocked && !gateBlocked && super.onInterceptTouchEvent(e);
+        }
+
+        @SuppressLint("ClickableViewAccessibility")
+        @Override
+        public boolean onTouchEvent(MotionEvent e) {
+            if (!enabled || jsBlocked || gateBlocked) return false;
+            boolean up = beforeTouch(e);
+            boolean handled = super.onTouchEvent(e);
+            if (up) released();
+            return handled;
+        }
+
+        @Override
+        public void fling(int velocity) {
+            if (!ScrollBox.this.fling(velocity)) super.fling(velocity);
+        }
+
+        void stop() {
+            // Bypass snapping: a zero-velocity native fling replaces the
+            // previous scroller animation at its current position.
+            super.fling(0);
+        }
+
+        @Override
+        public void draw(Canvas canvas) {
+            super.draw(canvas);
+            frames++;
+        }
+
+        @Override
+        public void onDrawForeground(Canvas canvas) {
+            int save = insetBars(this, canvas, true);
+            super.onDrawForeground(canvas);
+            if (save >= 0) canvas.restoreToCount(save);
+        }
+    }
+
+    /** Where the touch that {@link #claim} is deciding went down; deciding while true. */
+    private float claimX, claimY;
+    private boolean claiming, yielded, owning;
+    /** Owning the drag: where the last move was, to tell when it reaches an edge. */
+    private float lastX, lastY;
+
+    /**
+     * A scroll view around this one along the same axis (a pager) intercepts the move that passes the
+     * touch slop before this view sees it. From the down, while this view has content to move, it asks
+     * the views around not to intercept; the first move past the slop decides: along the axis towards
+     * content this view keeps the drag, otherwise the views around get the next move (as ZScroll does).
+     * Returns whether this view gave the touch away: it no longer sees the touch.
+     */
+    private boolean claim(View scroller, MotionEvent e) {
+        ViewParent parent = scroller.getParent();
+        if (parent == null) return false;
+        if (yielded) {
+            int a = e.getActionMasked();
+            if (a == MotionEvent.ACTION_DOWN) yielded = false;
+            else {
+                if (a == MotionEvent.ACTION_UP || a == MotionEvent.ACTION_CANCEL) yielded = false;
+                return true;
+            }
+        }
+        switch (e.getActionMasked()) {
+            case MotionEvent.ACTION_DOWN:
+                claimX = e.getX();
+                claimY = e.getY();
+                owning = false;
+                claiming = enabled && !jsBlocked && !gateBlocked && (horizontal
+                        ? scroller.canScrollHorizontally(1) || scroller.canScrollHorizontally(-1)
+                        : scroller.canScrollVertically(1) || scroller.canScrollVertically(-1));
+                if (claiming) parent.requestDisallowInterceptTouchEvent(true);
+                break;
+            case MotionEvent.ACTION_MOVE:
+                if (owning) {
+                    // Holding the drag: at the edge it moves towards, the rest of the drag goes to
+                    // the views around (a pager's next page), as ZScroll does.
+                    float mx = e.getX() - lastX, my = e.getY() - lastY;
+                    lastX = e.getX();
+                    lastY = e.getY();
+                    float along = horizontal ? mx : my;
+                    boolean more = horizontal ? scroller.canScrollHorizontally(along < 0 ? 1 : -1)
+                            : scroller.canScrollVertically(along < 0 ? 1 : -1);
+                    if (along != 0 && !more) {
+                        owning = false;
+                        parent.requestDisallowInterceptTouchEvent(false);
+                        yielded = true;
+                        return true;
+                    }
+                    break;
+                }
+                if (!claiming) break;
+                float dx = e.getX() - claimX, dy = e.getY() - claimY;
+                int slop = ViewConfiguration.get(scroller.getContext()).getScaledTouchSlop();
+                if (Math.abs(dx) <= slop && Math.abs(dy) <= slop) break;
+                claiming = false;
+                if (!scrolls(dx, dy)) {
+                    parent.requestDisallowInterceptTouchEvent(false);
+                    yielded = true;
+                    return true;
+                }
+                owning = true;
+                lastX = e.getX();
+                lastY = e.getY();
+                break;
+            case MotionEvent.ACTION_UP:
+            case MotionEvent.ACTION_CANCEL:
+                claiming = false;
+                owning = false;
+                break;
+            default:
+                break;
+        }
+        return false;
+    }
+
+    /** Before the scroll view sees {@code e}: whether it ends the touch. */
+    private boolean beforeTouch(MotionEvent e) {
+        int action = e.getActionMasked();
+        boolean up = action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL;
+        if (up) flung = false;
+        return up;
+    }
+
+    /** The finger lifted off the scroll view (after its fling, if any). */
+    private void released() {
+        if (!dragging) return;
+        if (!flung && snaps()) {
+            snap(0);
+            flung = true;
+        }
+        emit(Native.SCROLL_DRAG_END);
+        if (flung) {
+            momentum = true;
+            emit(Native.MOMENTUM_START);
+        }
+    }
+
+    private void emit(int kind) {
+        if (!mounter.wants(id, kind)) return;
+        float d = mounter.density;
+        mounter.event(id, kind, null, 0, scroller.getScrollX() / d, scroller.getScrollY() / d);
+    }
+
+    /**
+     * Scrolls a descendant into the area above the bottom padding (the
+     * keyboard). `requestRectangleOnScreen` cannot: ScrollView ignores its
+     * padding when it decides whether a rectangle is visible.
+     */
+    /**
+     * Scrolls {@code v} (and {@code margin} px around it) into view, over
+     * {@code motion}: an animator from 0 to 1 the caller starts. False when
+     * there is nothing to scroll (the animator is left alone).
+     */
+    boolean reveal(View v, int margin, ValueAnimator motion) {
+        Rect r = new Rect(0, -margin, v.getWidth(), v.getHeight() + margin);
+        scroller.offsetDescendantRectToMyCoords(v, r);
+        int top = scroller.getScrollY();
+        int bottom = top + scroller.getHeight() - scroller.getPaddingBottom();
+        int dy = r.bottom > bottom ? Math.min(r.bottom - bottom, r.top - top) : Math.min(0, r.top - top);
+        if (dy == 0) return false;
+        if (!(scroller instanceof ScrollView)) {
+            scroller.scrollBy(0, dy);
+            return false;
+        }
+        int x = scroller.getScrollX();
+        motion.addUpdateListener(a -> scroller.scrollTo(x, top + Math.round(dy * (float) a.getAnimatedValue())));
+        return true;
+    }
+
+    /** Saved pixel target in the new density, until content and viewport are laid out. */
+    private boolean rescaling, rescaledContent;
+    private int rescaledX, rescaledY;
+
+    void rescale(float scale) {
+        rescaledX = Math.round((rescaling ? rescaledX : scroller.getScrollX() + owedX) * scale);
+        rescaledY = Math.round((rescaling ? rescaledY : scroller.getScrollY() + owedY) * scale);
+        rescaling = true;
+        rescaledContent = false;
+        owedX = owedY = 0;
+        removeCallbacks(settled);
+        // Native motion also uses pixels: end it before restoring the
+        // position, so an old fling cannot move it back on the next frame.
+        stopMotion();
+    }
+
+    private void stopMotion() {
+        if (scroller instanceof ZScroll) ((ZScroll) scroller).stop();
+        else if (scroller instanceof VScroll) ((VScroll) scroller).stop();
+        else if (scroller instanceof HScroll) ((HScroll) scroller).stop();
+    }
+
+    @Override
+    protected void onLayout(boolean changed, int l, int t, int r, int b) {
+        super.onLayout(changed, l, t, r, b);
+        if (!rescaling || !rescaledContent) return;
+        // Unlike a core scroll command, changing coordinate systems does
+        // not increment `applied`. A smaller content area may clamp this
+        // final offset; tell the core so virtual lists follow the result.
+        if (scroller instanceof ZScroll) ((ZScroll) scroller).scrollToPx(rescaledX, rescaledY, false);
+        else scroller.scrollTo(rescaledX, rescaledY);
+        // The zero-velocity native scroller must also start at this new
+        // position, rather than writing its pre-rescale position next frame.
+        stopMotion();
+        rescaling = false;
+        pinSticky();
+        float d = mounter.density;
+        mounter.scroll(id, scroller.getScrollX() / d, scroller.getScrollY() / d, applied);
+        postDelayed(settled, 120);
+    }
+
+    /** Scrolls the core asked for that were applied (reported with offsets). */
+    private int applied;
+
+    /**
+     * The part of the last {@code scrollByPx} or {@code scrollToPx} that the
+     * scroll view clamped (px): the view or its content is about to change
+     * size (e.g. while a layout animation resizes it, or a pager's pages
+     * arrive after the command) and catches up when it does, until the user
+     * scrolls.
+     */
+    private int owedX, owedY;
+
+    void scrollByPx(int dx, int dy) {
+        applied++;
+        if (rescaling) {
+            rescaledX += dx;
+            rescaledY += dy;
+            return;
+        }
+        int x = scroller.getScrollX() + dx + owedX, y = scroller.getScrollY() + dy + owedY;
+        scroller.scrollTo(x, y);
+        owedX = x - scroller.getScrollX();
+        owedY = y - scroller.getScrollY();
+    }
+
+    /** Pays what clamping kept back, as far as the current size allows. */
+    private void payOwed() {
+        if (rescaling || (owedX == 0 && owedY == 0)) return;
+        int x = scroller.getScrollX() + owedX, y = scroller.getScrollY() + owedY;
+        scroller.scrollTo(x, y);
+        owedX = x - scroller.getScrollX();
+        owedY = y - scroller.getScrollY();
+    }
+
+    void scrollToPx(int x, int y, boolean animated) {
+        applied++;
+        if (rescaling) {
+            rescaledX = x;
+            rescaledY = y;
+            return;
+        }
+        if (scroller instanceof ZScroll) {
+            owedX = owedY = 0;
+            ((ZScroll) scroller).scrollToPx(x, y, animated);
+            return;
+        }
+        // Where the scroll view can go now; the rest is owed until the
+        // content (or the view) grows to it (`payOwed`).
+        int maxX = Math.max(0, content.getWidth() - scroller.getWidth());
+        int maxY = Math.max(0, content.getHeight() - scroller.getHeight());
+        int toX = Math.max(0, Math.min(x, maxX)), toY = Math.max(0, Math.min(y, maxY));
+        owedX = x - toX;
+        owedY = y - toY;
+        if (scroller instanceof ScrollView) {
+            if (animated) ((ScrollView) scroller).smoothScrollTo(toX, toY);
+            else scroller.scrollTo(toX, toY);
+        } else {
+            if (animated) ((HorizontalScrollView) scroller).smoothScrollTo(toX, toY);
+            else scroller.scrollTo(toX, toY);
+        }
+    }
+
+    // --- The host's handle (`NshScrollHandle`) ---------------------------
+
+    int hostScrollX() {
+        return scroller.getScrollX();
+    }
+
+    int hostScrollY() {
+        return scroller.getScrollY();
+    }
+
+    int hostContentWidth() {
+        return Math.max(content.contentWidth, scroller.getWidth());
+    }
+
+    int hostContentHeight() {
+        return Math.max(content.contentHeight, scroller.getHeight());
+    }
+
+    int hostViewportWidth() {
+        return scroller.getWidth();
+    }
+
+    int hostViewportHeight() {
+        return scroller.getHeight();
+    }
+
+    /** Scrolls as the user would: not one of the core's scrolls (`applied`). */
+    void hostScrollBy(int dx, int dy, boolean animated) {
+        if (scroller instanceof ZScroll) {
+            ((ZScroll) scroller).scrollToPx(scroller.getScrollX() + dx, scroller.getScrollY() + dy, animated);
+        } else if (animated && scroller instanceof ScrollView) {
+            hostAnimating = true;
+            ((ScrollView) scroller).smoothScrollBy(dx, dy);
+        } else if (animated && scroller instanceof HorizontalScrollView) {
+            hostAnimating = true;
+            ((HorizontalScrollView) scroller).smoothScrollBy(dx, dy);
+        } else {
+            scroller.scrollBy(dx, dy);
+        }
+    }
+
+    /** Ends a fling or a smooth scroll where it is; nothing when at rest. */
+    void hostStop() {
+        if (!momentum && !hostAnimating) return;
+        hostAnimating = false;
+        if (scroller instanceof ZScroll) {
+            ((ZScroll) scroller).stop();
+        } else {
+            // The first empty smooth scroll replaces the animation with one
+            // that still runs (a scroll view that sees a touch down then
+            // takes the whole gesture, a horizontal scroll view inside never
+            // gets it); the second, within the platform's gap between
+            // animated scrolls, aborts it. A zero fling (`stopMotion`) would
+            // leave the running one.
+            for (int i = 0; i < 2; i++) {
+                if (scroller instanceof ScrollView) ((ScrollView) scroller).smoothScrollBy(0, 0);
+                else if (scroller instanceof HorizontalScrollView) ((HorizontalScrollView) scroller).smoothScrollBy(0, 0);
+            }
+        }
+        if (momentum) {
+            momentum = false;
+            emit(Native.MOMENTUM_END);
+        }
+    }
+
+    /** Scrolling came to rest (no API for it: no change for a moment). */
+    private void settled() {
+        hostAnimating = false;
+        if (touching) {
+            postDelayed(settled, 120);
+            return;
+        }
+        if (momentum) {
+            momentum = false;
+            emit(Native.MOMENTUM_END);
+        }
+        mounter.scrollEnded(id);
+        float d = mounter.density;
+        mounter.event(id, Native.SCROLL_END, null, 0, scroller.getScrollX() / d, scroller.getScrollY() / d);
+    }
+
+    // --- Zoom ------------------------------------------------------------
+
+    /** `ScrollBehavior` zoom settings. */
+    private boolean zooms, bouncesZoom = true, pinch = true, centerContent;
+    private float minZoom = 1, maxZoom = 1;
+
+    /** Pull to refresh: whether the spinner shows, where (dp) a pull refreshes and the room kept while refreshing. */
+    private boolean refreshIndicator = true;
+    private float refreshThreshold = 64, refreshInset = 56;
+
+    /** `refreshIndicator`: the app draws its own, {@code height} dp tall, in place of the spinner. */
+    void setRefresh(boolean own, float height) {
+        float inset = own ? height : 56;
+        boolean changed = refreshIndicator == own || inset != refreshInset;
+        refreshIndicator = !own;
+        refreshThreshold = own ? height : 64;
+        refreshInset = inset;
+        if (!changed) return;
+        if (own) {
+            spinner.setVisibility(GONE);
+        } else if (refreshing) {
+            spinner.setVisibility(VISIBLE);
+            spinner.setAlpha(1);
+        }
+        // A refresh in progress keeps the room of the indicator now showing.
+        if (refreshing && !pulling) animatePull(inset * mounter.density, null);
+    }
+
+    void setZoom(boolean zooms, float min, float max, boolean bouncesZoom, boolean pinch, boolean center) {
+        minZoom = min;
+        maxZoom = max;
+        this.bouncesZoom = bouncesZoom;
+        this.pinch = pinch;
+        centerContent = center;
+        if (zooms != this.zooms) {
+            this.zooms = zooms;
+            build();
+        } else if (scroller instanceof ZScroll) {
+            ZScroll z = (ZScroll) scroller;
+            z.setScale(Math.max(minZoom, Math.min(maxZoom, z.scale)), z.getWidth() / 2f, z.getHeight() / 2f);
+        }
+    }
+
+    /** `zoomTo` (content point in dp). */
+    void zoomTo(float scale, boolean hasCenter, float x, float y, boolean animated) {
+        if (!(scroller instanceof ZScroll)) return;
+        float d = mounter.density;
+        ((ZScroll) scroller).zoomTo(scale, hasCenter, x * d, y * d, animated);
+    }
+
+    /**
+     * A zoomable scroll view (UIScrollView's zooming, which Android lacks):
+     * the content is scaled around its top left corner and scrolled both
+     * ways by this view's own scroll offset. Pinches zoom around their focal
+     * point, drags (any number of fingers) pan and fling, and both bounce
+     * past the limits when allowed.
+     */
+    private final class ZScroll extends FrameLayout {
+        float scale = 1;
+        /** The pinch's scale without the rubber band beyond the limits. */
+        private float rawScale = 1;
+        private final ScaleGestureDetector detector;
+        private final OverScroller glide;
+        private VelocityTracker velocity;
+        private final int slop, minFling, maxFling;
+        private float downX, downY, lastX, lastY;
+        private boolean panning;
+        /** The touch went down on content that pans: the first drag past the slop is this view's to give away. */
+        private boolean deciding;
+        /** Panning at an edge, the drag outward is left to a scroll view around (a pager's next page). */
+        private boolean yielding;
+        private android.animation.ValueAnimator zoomAnimation;
+
+        ZScroll(Context context) {
+            super(context);
+            ViewConfiguration c = ViewConfiguration.get(context);
+            slop = c.getScaledTouchSlop();
+            minFling = c.getScaledMinimumFlingVelocity();
+            maxFling = c.getScaledMaximumFlingVelocity();
+            glide = new OverScroller(context);
+            detector = new ScaleGestureDetector(context, new ScaleGestureDetector.SimpleOnScaleGestureListener() {
+                @Override
+                public boolean onScaleBegin(ScaleGestureDetector d) {
+                    if (!pinch) return false;
+                    stop();
+                    rawScale = scale;
+                    startPan();
+                    return true;
+                }
+
+                @Override
+                public boolean onScale(ScaleGestureDetector d) {
+                    rawScale *= d.getScaleFactor();
+                    setScale(rubber(rawScale), d.getFocusX(), d.getFocusY());
+                    return true;
+                }
+            });
+            detector.setQuickScaleEnabled(false);
+        }
+
+        /** Beyond the limits a pinch meets growing resistance (or none goes there). */
+        private float rubber(float s) {
+            if (s > maxZoom) return bouncesZoom ? maxZoom * (float) Math.pow(s / maxZoom, 0.35) : maxZoom;
+            if (s < minZoom) return bouncesZoom ? minZoom * (float) Math.pow(s / minZoom, 0.35) : minZoom;
+            return s;
+        }
+
+        private float contentWidth() {
+            return content.contentWidth * scale;
+        }
+
+        private float contentHeight() {
+            return content.contentHeight * scale;
+        }
+
+        /** `centerContent`: where content narrower than the viewport starts. */
+        private float offsetX(float s) {
+            float free = getWidth() - getPaddingLeft() - getPaddingRight() - content.contentWidth * s;
+            return centerContent ? Math.max(0, free / 2) : 0;
+        }
+
+        private float offsetY(float s) {
+            float free = getHeight() - getPaddingTop() - getPaddingBottom() - content.contentHeight * s;
+            return centerContent ? Math.max(0, free / 2) : 0;
+        }
+
+        private int maxX() {
+            return (int) Math.max(0, getPaddingLeft() + contentWidth() + getPaddingRight() - getWidth());
+        }
+
+        private int maxY() {
+            return (int) Math.max(0, getPaddingTop() + contentHeight() + getPaddingBottom() - getHeight());
+        }
+
+        @Override
+        protected void onMeasure(int widthSpec, int heightSpec) {
+            setMeasuredDimension(MeasureSpec.getSize(widthSpec), MeasureSpec.getSize(heightSpec));
+            measureContent();
+        }
+
+        private void measureContent() {
+            content.measure(MeasureSpec.makeMeasureSpec(content.contentWidth, MeasureSpec.EXACTLY),
+                    MeasureSpec.makeMeasureSpec(content.contentHeight, MeasureSpec.EXACTLY));
+        }
+
+        @Override
+        protected void onLayout(boolean changed, int l, int t, int r, int b) {
+            layoutContent();
+        }
+
+        private void layoutContent() {
+            int x = getPaddingLeft(), y = getPaddingTop();
+            content.layout(x, y, x + content.contentWidth, y + content.contentHeight);
+            apply();
+        }
+
+        /** The core's content size changed. */
+        void placeContent() {
+            measureContent();
+            layoutContent();
+            scrollTo(clamp(getScrollX(), maxX()), clamp(getScrollY(), maxY()));
+        }
+
+        private void apply() {
+            // Around the top left (a Box resets its pivot when resized).
+            content.setPivotX(0);
+            content.setPivotY(0);
+            content.setScaleX(scale);
+            content.setScaleY(scale);
+            content.setTranslationX(offsetX(scale));
+            content.setTranslationY(offsetY(scale));
+        }
+
+        /** Zooms to {@code s} keeping the content under ({@code fx}, {@code fy}) (view px) in place. */
+        void setScale(float s, float fx, float fy) {
+            float px = (getScrollX() + fx - getPaddingLeft() - offsetX(scale)) / scale;
+            float py = (getScrollY() + fy - getPaddingTop() - offsetY(scale)) / scale;
+            place(s, px, py, fx, fy);
+        }
+
+        /** Zooms to {@code s} with content point ({@code px}, {@code py}) (unzoomed px) at ({@code fx}, {@code fy}). */
+        private void place(float s, float px, float py, float fx, float fy) {
+            boolean changed = s != scale;
+            scale = s;
+            apply();
+            int x = Math.round(px * s + getPaddingLeft() + offsetX(s) - fx);
+            int y = Math.round(py * s + getPaddingTop() + offsetY(s) - fy);
+            int sx = getScrollX(), sy = getScrollY();
+            scrollTo(clamp(x, maxX()), clamp(y, maxY()));
+            if (changed) {
+                mounter.zoom(id, s);
+                // The new scale goes out with an offset report.
+                if (sx == getScrollX() && sy == getScrollY()) {
+                    float d = mounter.density;
+                    mounter.scroll(id, getScrollX() / d, getScrollY() / d, applied);
+                }
+            }
+        }
+
+        private int clamp(int v, int max) {
+            return Math.max(0, Math.min(max, v));
+        }
+
+        void zoomTo(float target, boolean hasCenter, float x, float y, boolean animated) {
+            stop();
+            float to = Math.max(minZoom, Math.min(maxZoom, target));
+            float w = getWidth() / 2f, h = getHeight() / 2f;
+            float fromX = (getScrollX() + w - getPaddingLeft() - offsetX(scale)) / scale;
+            float fromY = (getScrollY() + h - getPaddingTop() - offsetY(scale)) / scale;
+            float toX = hasCenter ? x : fromX, toY = hasCenter ? y : fromY;
+            if (!animated) {
+                place(to, toX, toY, w, h);
+                return;
+            }
+            float from = scale;
+            zoomAnimation = android.animation.ValueAnimator.ofFloat(0, 1);
+            zoomAnimation.setDuration(300);
+            zoomAnimation.setInterpolator(new android.view.animation.DecelerateInterpolator(1.5f));
+            zoomAnimation.addUpdateListener(a -> {
+                float t = (float) a.getAnimatedValue();
+                place(from + (to - from) * t, fromX + (toX - fromX) * t, fromY + (toY - fromY) * t, w, h);
+            });
+            zoomAnimation.start();
+        }
+
+        void scrollToPx(int x, int y, boolean animated) {
+            stop();
+            int tx = clamp(x, maxX()), ty = clamp(y, maxY());
+            if (animated) {
+                glide.startScroll(getScrollX(), getScrollY(), tx - getScrollX(), ty - getScrollY(), 300);
+                postInvalidateOnAnimation();
+            } else {
+                scrollTo(tx, ty);
+            }
+        }
+
+        private void stop() {
+            if (!glide.isFinished()) glide.forceFinished(true);
+            if (zoomAnimation != null) {
+                zoomAnimation.cancel();
+                zoomAnimation = null;
+            }
+        }
+
+        /** The focal point of the fingers down (without one lifting now). */
+        private float focus(MotionEvent e, boolean x) {
+            int skip = e.getActionMasked() == MotionEvent.ACTION_POINTER_UP ? e.getActionIndex() : -1;
+            float sum = 0;
+            int n = 0;
+            for (int i = 0; i < e.getPointerCount(); i++) {
+                if (i == skip) continue;
+                sum += x ? e.getX(i) : e.getY(i);
+                n++;
+            }
+            return n > 0 ? sum / n : 0;
+        }
+
+        private void startPan() {
+            panning = true;
+            getParent().requestDisallowInterceptTouchEvent(true);
+        }
+
+        /** Follows the fingers; true once this view took the gesture. */
+        private boolean track(MotionEvent e) {
+            if (velocity == null) velocity = VelocityTracker.obtain();
+            velocity.addMovement(e);
+            detector.onTouchEvent(e);
+            float fx = focus(e, true), fy = focus(e, false);
+            switch (e.getActionMasked()) {
+                case MotionEvent.ACTION_DOWN:
+                    // A touch catches a glide.
+                    boolean gliding = !glide.isFinished();
+                    stop();
+                    panning = gliding;
+                    yielding = false;
+                    downX = lastX = fx;
+                    downY = lastY = fy;
+                    // A scroll view around (a pager) intercepts at the same slop, before this view sees the move.
+                    deciding = !panning && (maxX() > 0 || maxY() > 0);
+                    if (deciding) getParent().requestDisallowInterceptTouchEvent(true);
+                    break;
+                case MotionEvent.ACTION_POINTER_DOWN:
+                case MotionEvent.ACTION_POINTER_UP:
+                    lastX = fx;
+                    lastY = fy;
+                    if (pinch && e.getPointerCount() > 1) startPan();
+                    break;
+                case MotionEvent.ACTION_MOVE: {
+                    if (!panning) {
+                        float dx = fx - downX, dy = fy - downY;
+                        if (deciding && (Math.abs(dx) > slop || Math.abs(dy) > slop)) {
+                            deciding = false;
+                            if (!pans(dx, dy)) {
+                                // Nothing to move this way: the views around get the next move.
+                                getParent().requestDisallowInterceptTouchEvent(false);
+                                break;
+                            }
+                        }
+                        boolean along = (Math.abs(dx) > slop && (maxX() > 0 || bounces))
+                                || (Math.abs(dy) > slop && (maxY() > 0 || bounces));
+                        if (along && (maxX() > 0 || maxY() > 0 || scale != 1)) {
+                            startPan();
+                            lastX = fx;
+                            lastY = fy;
+                        }
+                    }
+                    if (panning) {
+                        float mx = lastX - fx, my = lastY - fy;
+                        boolean out = e.getPointerCount() == 1 && !detector.isInProgress()
+                                && (yielding ? !inward(mx) : handsOver(mx, my));
+                        if (out != yielding) {
+                            yielding = out;
+                            getParent().requestDisallowInterceptTouchEvent(!out);
+                        }
+                        // Handed over from the edge, not from the rubber band past it: a cancel does not spring back.
+                        if (out) scrollTo(clamp(getScrollX(), maxX()), getScrollY());
+                        panBy(out ? 0 : mx, my);
+                        lastX = fx;
+                        lastY = fy;
+                    }
+                    break;
+                }
+                default:
+                    break;
+            }
+            return panning;
+        }
+
+        /** Whether a finger's drag by ({@code dx}, {@code dy}) has content to move along its main axis. */
+        private boolean pans(float dx, float dy) {
+            if (Math.abs(dx) >= Math.abs(dy)) return dx < 0 ? getScrollX() < maxX() : getScrollX() > 0;
+            return dy < 0 ? getScrollY() < maxY() : getScrollY() > 0;
+        }
+
+        /** Whether a horizontal scroll by {@code mx} goes back into the content. */
+        private boolean inward(float mx) {
+            return mx > 0 ? getScrollX() < maxX() : mx < 0 && getScrollX() > 0;
+        }
+
+        /** Whether a scroll by ({@code mx}, {@code my}) pushes past a horizontal edge where a scroll view around can go on. */
+        private boolean handsOver(float mx, float my) {
+            if (Math.abs(mx) <= Math.abs(my)) return false;
+            if (mx > 0 ? getScrollX() < maxX() : getScrollX() > 0) return false;
+            for (ViewParent p = ScrollBox.this.getParent(); p != null; p = p.getParent()) {
+                if (p instanceof ScrollBox && ((ScrollBox) p).scrolls(-mx, -my)) return true;
+            }
+            return false;
+        }
+
+        /** Scrolls by a finger's move, resisting past the edges (or stopping there). */
+        private void panBy(float dx, float dy) {
+            int x = getScrollX(), y = getScrollY();
+            scrollTo(x + Math.round(resist(x, dx, maxX())), y + Math.round(resist(y, dy, maxY())));
+        }
+
+        private float resist(int at, float d, int max) {
+            float next = at + d;
+            if (next >= 0 && next <= max) return d;
+            if (!bounces) return Math.max(0, Math.min(max, next)) - at;
+            return d / 2;
+        }
+
+        /** The fingers lifted: settle the zoom, then bounce back or glide. */
+        private void release() {
+            panning = false;
+            float vx = 0, vy = 0;
+            if (velocity != null) {
+                velocity.computeCurrentVelocity(1000, maxFling);
+                vx = velocity.getXVelocity();
+                vy = velocity.getYVelocity();
+                velocity.recycle();
+                velocity = null;
+            }
+            if (scale > maxZoom || scale < minZoom) {
+                zoomBack();
+                return;
+            }
+            int x = getScrollX(), y = getScrollY(), mx = maxX(), my = maxY();
+            if (x < 0 || y < 0 || x > mx || y > my) {
+                glide.springBack(x, y, 0, mx, 0, my);
+                postInvalidateOnAnimation();
+            } else if (Math.hypot(vx, vy) > minFling) {
+                int over = bounces ? Math.round(48 * mounter.density) : 0;
+                glide.fling(x, y, Math.round(-vx), Math.round(-vy), 0, mx, 0, my, over, over);
+                flung = true;
+                postInvalidateOnAnimation();
+            }
+        }
+
+        /** A pinch ended beyond the limits: back to the nearest one. */
+        private void zoomBack() {
+            float to = Math.max(minZoom, Math.min(maxZoom, scale));
+            float from = scale, fx = lastX, fy = lastY;
+            float px = (getScrollX() + fx - getPaddingLeft() - offsetX(scale)) / scale;
+            float py = (getScrollY() + fy - getPaddingTop() - offsetY(scale)) / scale;
+            zoomAnimation = android.animation.ValueAnimator.ofFloat(0, 1);
+            zoomAnimation.setDuration(250);
+            zoomAnimation.setInterpolator(new android.view.animation.DecelerateInterpolator());
+            zoomAnimation.addUpdateListener(a -> {
+                float t = (float) a.getAnimatedValue();
+                place(from + (to - from) * t, px, py, fx, fy);
+            });
+            zoomAnimation.start();
+        }
+
+        @Override
+        public void computeScroll() {
+            if (glide.computeScrollOffset()) {
+                scrollTo(glide.getCurrX(), glide.getCurrY());
+                postInvalidateOnAnimation();
+            }
+        }
+
+        @Override
+        public boolean onInterceptTouchEvent(MotionEvent e) {
+            if (!enabled || jsBlocked || gateBlocked) return false;
+            return track(e);
+        }
+
+        @SuppressLint("ClickableViewAccessibility")
+        @Override
+        public boolean onTouchEvent(MotionEvent e) {
+            if (!enabled || jsBlocked || gateBlocked) return false;
+            boolean up = beforeTouch(e);
+            int action = e.getActionMasked();
+            // A down that reaches here was seen by the interception already.
+            if (action != MotionEvent.ACTION_DOWN) track(e);
+            if (up) {
+                if (action == MotionEvent.ACTION_UP) release();
+                else {
+                    panning = false;
+                    if (scale > maxZoom || scale < minZoom) zoomBack();
+                }
+                released();
+            }
+            return true;
+        }
+    }
+
+    // --- Pull to refresh -------------------------------------------------
+
+    private boolean canPull() {
+        return !horizontal && !zooms && (events & (1L << Native.REFRESH)) != 0 && scroller.getScrollY() == 0;
+    }
+
+    @Override
+    public boolean dispatchTouchEvent(MotionEvent e) {
+        int action = e.getActionMasked();
+        touching = action != MotionEvent.ACTION_UP && action != MotionEvent.ACTION_CANCEL;
+        if (action == MotionEvent.ACTION_DOWN) {
+            // The user scrolls now: what was owed no longer applies.
+            owedX = owedY = 0;
+            dragging = false;
+            tapMode = tapMode(e);
+            // "never": the touch goes on as usual; a tap only dismisses the keyboard (Mounter.keyboardTap).
+            if (tapMode == 0) mounter.startTapOnly(this);
+            tapX = e.getRawX();
+            tapY = e.getRawY();
+            tapMoved = false;
+        }
+        if (action == MotionEvent.ACTION_MOVE && tapMode >= 0) moved(e);
+        if (action == MotionEvent.ACTION_MOVE && dismissMode != 0) {
+            float slop = ViewConfiguration.get(getContext()).getScaledTouchSlop();
+            if (Math.abs(e.getY() - startY) > slop) hideKeyboard();
+        }
+        if (action == MotionEvent.ACTION_DOWN) startY = e.getY();
+        boolean handled;
+        dispatching = true;
+        try {
+            handled = super.dispatchTouchEvent(e);
+        } finally {
+            dispatching = false;
+        }
+        // For a pan around this view (Box.scrollTakes): a touch that a view
+        // above took never comes here, and leaves the time of an older one.
+        if (action == MotionEvent.ACTION_DOWN) downTime = handled ? e.getDownTime() : -1;
+        if (action == MotionEvent.ACTION_UP && tapMode == 2 && !dragging && !tapMoved
+                && !handlesTap(this, e.getX(), e.getY())) {
+            hideKeyboard();
+        }
+        if (!touching) {
+            if (tapMode == 0) mounter.endTapOnly(this);
+            tapMode = -1;
+        }
+        return handled;
+    }
+
+    private void moved(MotionEvent e) {
+        float slop = ViewConfiguration.get(getContext()).getScaledTouchSlop();
+        if (Math.hypot(e.getRawX() - tapX, e.getRawY() - tapY) > slop) tapMoved = true;
+    }
+
+    /** Whether the touch, ending with {@code up} (in a root's coordinates), is a tap: quick, and it moved nothing. */
+    boolean stillTap(MotionEvent up) {
+        moved(up);
+        return !dragging && !tapMoved && up.getEventTime() - up.getDownTime() < ViewConfiguration.getLongPressTimeout();
+    }
+
+    /**
+     * How a touch treats the keyboard ({@code keyboardShouldPersistTaps}):
+     * -1 when no input is focused, the keyboard is down (the back button
+     * hides it and leaves the input focused) or the touch is on an input,
+     * else the mode of the outermost scroll view that does not let taps
+     * through.
+     */
+    private int tapMode(MotionEvent e) {
+        if (mounter.focusedInput() == null || !keyboardShown() || inputAt(this, e.getX(), e.getY())) return -1;
+        for (ViewParent p = getParent(); p != null; p = p.getParent()) {
+            if (p instanceof ScrollBox && ((ScrollBox) p).keyboardTaps != 1) return -1;
+        }
+        return keyboardTaps == 1 ? -1 : keyboardTaps;
+    }
+
+    /**
+     * Whether the soft keyboard shows. Before Android 11 the window does not
+     * say: a focused input is taken to have it up.
+     */
+    private boolean keyboardShown() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return true;
+        WindowInsets insets = getRootWindowInsets();
+        return insets == null || insets.isVisible(WindowInsets.Type.ime());
+    }
+
+    /**
+     * Whether an input is under ({@code x}, {@code y}) of {@code group}: in
+     * any child there, topmost first, as a touch a child does not take goes
+     * on to the one below (a decoration over a field does not hide it).
+     */
+    private static boolean inputAt(ViewGroup group, float x, float y) {
+        for (int i = group.getChildCount() - 1; i >= 0; i--) {
+            View c = group.getChildAt(i);
+            if (c.getVisibility() != VISIBLE) continue;
+            float lx = localX(group, c, x), ly = localY(group, c, y);
+            if (lx < 0 || ly < 0 || lx >= c.getWidth() || ly >= c.getHeight()) continue;
+            if (c instanceof InputBox) return true;
+            if (c instanceof ViewGroup && inputAt((ViewGroup) c, lx, ly)) return true;
+        }
+        return false;
+    }
+
+    /** Whether something under ({@code x}, {@code y}) of {@code group} handles taps. */
+    private static boolean handlesTap(ViewGroup group, float x, float y) {
+        View v = childAt(group, x, y);
+        if (v == null) return false;
+        if (v.isClickable() || v.isLongClickable() || v instanceof InputBox || v instanceof android.widget.SeekBar) return true;
+        return v instanceof ViewGroup && handlesTap((ViewGroup) v, localX(group, v, x), localY(group, v, y));
+    }
+
+    /** The topmost visible child of {@code group} under ({@code x}, {@code y}). */
+    private static View childAt(ViewGroup group, float x, float y) {
+        for (int i = group.getChildCount() - 1; i >= 0; i--) {
+            View c = group.getChildAt(i);
+            if (c.getVisibility() != VISIBLE) continue;
+            float lx = localX(group, c, x), ly = localY(group, c, y);
+            if (lx >= 0 && ly >= 0 && lx < c.getWidth() && ly < c.getHeight()) return c;
+        }
+        return null;
+    }
+
+    private static float localX(ViewGroup group, View child, float x) {
+        return x + group.getScrollX() - child.getLeft() - child.getTranslationX();
+    }
+
+    private static float localY(ViewGroup group, View child, float y) {
+        return y + group.getScrollY() - child.getTop() - child.getTranslationY();
+    }
+
+    void hideKeyboard() {
+        // The focused field is usually outside this scroll view (a chat's composer below its list).
+        View focused = getRootView().findFocus();
+        if (focused == null) focused = mounter.focusedInput();
+        if (focused == null) return;
+        InputMethodManager imm = (InputMethodManager) getContext().getSystemService(Context.INPUT_METHOD_SERVICE);
+        imm.hideSoftInputFromWindow(focused.getWindowToken(), 0);
+        mounter.host.requestFocus();
+    }
+
+    @Override
+    public boolean onInterceptTouchEvent(MotionEvent e) {
+        if (refreshing || !canPull()) return false;
+        if (e.getActionMasked() == MotionEvent.ACTION_MOVE) {
+            float dy = e.getY() - startY;
+            float slop = ViewConfiguration.get(getContext()).getScaledTouchSlop();
+            if (dy > slop) {
+                pulling = true;
+                startY = e.getY();
+                return true;
+            }
+        }
+        return false;
+    }
+
+    @SuppressLint("ClickableViewAccessibility")
+    @Override
+    public boolean onTouchEvent(MotionEvent e) {
+        if (!pulling) return false;
+        float d = mounter.density;
+        switch (e.getActionMasked()) {
+            case MotionEvent.ACTION_MOVE:
+                // Resistance like a rubber band.
+                setPull(Math.max(0, (e.getY() - startY) * 0.5f));
+                if (refreshIndicator) {
+                    spinner.setVisibility(VISIBLE);
+                    spinner.setAlpha(Math.min(1, pull / (refreshThreshold * d)));
+                }
+                return true;
+            case MotionEvent.ACTION_UP:
+            case MotionEvent.ACTION_CANCEL:
+                pulling = false;
+                if (pull >= refreshThreshold * d) {
+                    setRefreshing(true);
+                    mounter.event(id, Native.REFRESH);
+                } else {
+                    animatePull(0, () -> spinner.setVisibility(GONE));
+                }
+                return true;
+        }
+        return true;
+    }
+
+    void setRefreshing(boolean on) {
+        if (on == refreshing) return;
+        refreshing = on;
+        float d = mounter.density;
+        if (on) {
+            if (refreshIndicator) {
+                spinner.setVisibility(VISIBLE);
+                spinner.setAlpha(1);
+            }
+            animatePull(refreshInset * d, null);
+        } else {
+            animatePull(0, () -> spinner.setVisibility(GONE));
+        }
+    }
+
+    private void setPull(float px) {
+        if (px == pull) return;
+        pull = px;
+        scroller.setTranslationY(px);
+        spinner.setTranslationY(Math.max(0, px / 2 - spinner.getHeight() / 2f));
+        // The pull is a translation, not a scroll: the offset stays 0.
+        mounter.pull(id, px / mounter.density);
+    }
+
+    private void animatePull(float to, Runnable end) {
+        android.animation.ValueAnimator a = android.animation.ValueAnimator.ofFloat(pull, to);
+        a.setDuration(250);
+        a.addUpdateListener(v -> setPull((float) v.getAnimatedValue()));
+        if (end != null) {
+            a.addListener(new android.animation.AnimatorListenerAdapter() {
+                @Override
+                public void onAnimationEnd(android.animation.Animator animation) {
+                    end.run();
+                }
+            });
+        }
+        a.start();
+    }
+}

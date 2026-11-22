@@ -1,0 +1,340 @@
+# What a user does and sees (compat/apps.rs): each case after its tap.
+# events-keyboard: both transitions bubble once, never to a sibling.
+tap id:case-events-keyboard
+expect Key route: none
+event id:keyboard-target onKeyDown key=Enter code=Enter defaultPrevented=false repeat=false
+expect Key route: target-down outer-down
+event id:keyboard-target onKeyUp key=Enter code=Enter defaultPrevented=false repeat=false
+expect Key route: target-down outer-down target-up outer-up
+covers [events] onKeyDown
+covers [events] onKeyUp
+# events-context-menu
+tap id:case-events-context-menu
+expect Menu: none
+listens id:menu onContextMenu
+# The secondary button over the view, with Shift and Command held.
+event id:menu onContextMenu position.x=5 position.y=7 modifiers.shift=true modifiers.platform=true pointerType=mouse
+expect Menu: at 5,7 page 25,71 meta shift by mouse
+# Over the view inside it, which does not listen: the view around it hears it.
+event id:inner onContextMenu position.x=30 position.y=12 modifiers.alt=true modifiers.control=true pointerType=mouse
+expect Menu: at 30,12 page 50,76 alt ctrl by mouse
+# The keyboard (Shift+F10, the Menu key) or a screen reader: no pointer, at
+# the view's bottom-start corner.
+event id:menu onContextMenu position.x=0 position.y=60 pointerType=null
+expect Menu: at 0,60 page 20,124 by keyboard
+covers [events] onContextMenu
+# events-gestures
+tap id:case-events-gestures
+expect Pan: none
+event id:drag onPanStart translationX=2 translationY=-3 velocityX=10 velocityY=0
+expect Pan: start 2,-3 v 10,0
+event id:drag onPanEnd translationX=40 translationY=5 velocityX=250.5 velocityY=-12
+expect Pan: start 2,-3 v 10,0; end 40,5 v 250.5,-12
+expect Cancelled: false
+event id:pinch onPinchStart scale=1.1 velocity=0.5
+expect Pinch: start 1.1 v 0.5
+event id:pinch onPinchEnd scale=2 velocity=-0.25
+expect Pinch: start 1.1 v 0.5; end 2 v -0.25
+event id:rotation onRotationStart rotation=0.1 velocity=1
+expect Rotation: start 0.1 v 1
+event id:rotation onRotationEnd rotation=1.5 velocity=0
+expect Rotation: start 0.1 v 1; end 1.5 v 0
+covers [events] onPanStart
+covers [events] onPanEnd
+covers [events] onPinchStart
+covers [events] onPinchEnd
+covers [events] onRotationStart
+covers [events] onRotationEnd
+# events-input
+tap id:case-events-input
+expect Focus: none
+event id:field onFocus
+expect Focus: focused
+type id:field Hi
+expect Keys: H i
+expect Text: Hi
+expect Selection: 2-2
+type id:field !
+expect Keys: H i !
+expect Text: Hi!
+expect Selection: 3-3
+key id:field Backspace
+expect Keys: H i ! Backspace
+event id:field onSelectionChange start=0 end=2
+expect Selection: 0-2
+# The caret moved: in the input and in the root view, where the input is
+# at 0,64.
+expect Caret: none
+event id:field onCaretMove
+expect Caret: bounds,pageBounds bounds page 0,64 0x0
+# Return submits what was typed.
+expect Submitted: nothing
+event id:field onSubmit text=Hi!
+expect Submitted: Hi!
+event id:field onBlur
+expect Focus: focused blurred
+# A multiline input's text wraps onto more lines as it is typed.
+expect Size: height,width numbers as tall
+type id:notes The quick brown fox jumps over the lazy dog
+expect Size: height,width numbers taller
+# The app changes what is typed; typing continues from its value.
+type id:upper ab
+expect Upper: AB
+prop id:upper value AB
+type id:upper c
+expect Upper: ABC
+# A masked input, a read-only one, and the colors of placeholders and
+# selections.
+prop id:secret masked true
+noprop id:field masked
+prop id:fixed readonly true
+noprop id:field readonly
+style id:secret placeholderColor #888888ff
+style id:secret selectionColor #ff6600ff
+style id:secret caretColor #0066ffff
+style id:pick selectionColor #00aa00ff
+# The selection the app sets.
+prop id:secret selectedRange start=0 end=2
+covers [nsh/base] Input
+covers [props] multiline
+covers [props] masked
+covers [props] readonly
+covers [styles] placeholderColor
+covers [styles] selectionColor
+covers [styles] caretColor
+covers [events] onFocus
+covers [events] onBlur
+covers [events] onKeyPress
+covers [events] onChange
+covers [events] onSubmit
+covers [events] onSelectionChange
+covers [events] onCaretMove
+# What the user pasted, reported; the input inserts nothing itself.
+prop id:paste pasteBehavior report
+expect Pasted: none
+event id:paste onPaste text=hello
+expect Pasted: hello html 0 files 0 uris 0
+expect Inserted: none
+# The app inserts a paste it allowed (`insertText`): the call is made
+# without throwing; what it inserts is the platforms' (nsh-testing's paste
+# tests check it headless).
+event id:paste onPaste text=insert:hi
+expect Pasted: insert:hi html 0 files 0 uris 0
+covers [events] onPaste
+prop id:paste pasteBehavior report
+covers [props] pasteBehavior
+covers [events] onContentSizeChange
+covers [props] selectedRange
+# events-layout
+tap id:case-events-layout
+expect Layout: 12,8 100x30
+frame id:box 12 8 100 30
+tap id:widen
+expect Layout: 12,8 200x30
+expect Lines: reported, an array
+covers [events] onLayout
+covers [events] onTextLayout
+# events-media
+tap id:case-events-media
+# The platform loads the image and reports it.
+expect Image:
+event id:image onLoadStart
+expect Image: start
+event id:image onProgress loaded=512 total=2048
+expect Image: start | progress 512/2048
+event id:image onLoad width=640 height=480
+expect Image: start | progress 512/2048 | load 640x480
+event id:image onLoadEnd
+expect Image: start | progress 512/2048 | load 640x480 | end
+event id:broken onError message="not found"
+expect Broken: error not found
+# The video loads, plays, buffers, ends and fails.
+event id:video onLoadStart
+expect Video: start
+event id:video onLoad duration=12.5 width=1920 height=1080
+expect Video: start | load 12.5s 1920x1080
+event id:video onProgress currentTime=3.25 duration=12.5
+expect Video: start | load 12.5s 1920x1080 | at 3.25/12.5
+event id:video onBuffer isBuffering=true
+event id:video onBuffer isBuffering=false
+expect Video: start | load 12.5s 1920x1080 | at 3.25/12.5 | buffering true | buffering false
+event id:video onEnd
+event id:video onError message="decode failed"
+expect Video: start | load 12.5s 1920x1080 | at 3.25/12.5 | buffering true | buffering false | end | error decode failed
+# The web view starts loading, navigates, loads, gets a message and fails.
+event id:web onLoadStart url=https://example.com/ title="" loading=true canGoBack=false canGoForward=false
+expect Web: start https://example.com/ "" loading true back false forward false
+event id:web onNavigationStateChange url=https://example.com/a title="Page A" loading=false canGoBack=true canGoForward=false
+event id:web onLoad url=https://example.com/a title="Page A" loading=false canGoBack=true canGoForward=false
+event id:web onMessage data="hello there"
+event id:web onError message="offline"
+expect Web: start https://example.com/ "" loading true back false forward false | nav https://example.com/a "Page A" loading false back true forward false | load https://example.com/a "Page A" loading false back true forward false | message hello there | error offline
+# It downloads a file, and another download fails.
+event id:web onDownload state=started id=d1 url=https://example.com/r.pdf filename=r.pdf path=/data/downloads/d1/r.pdf
+event id:web onDownload state=finished id=d1 url=https://example.com/r.pdf filename=r.pdf path=/data/downloads/d1/r.pdf bytes=2048
+event id:web onDownload state=failed id=d2 url=https://example.com/x.csv filename=x.csv path=/data/downloads/d2/x.csv message="network lost"
+expect Web: start https://example.com/ "" loading true back false forward false | nav https://example.com/a "Page A" loading false back true forward false | load https://example.com/a "Page A" loading false back true forward false | message hello there | error offline | download started r.pdf - - source=transfer reason=- code=- | download finished r.pdf 2048 - source=transfer reason=- code=- | download failed x.csv - network lost source=transfer reason=- code=-
+event id:web onDownload state=cancelled id=d3 url=https://example.com/c.csv filename=c.csv path=/data/downloads/d3/c.csv source=request reason=app
+expect Web: start https://example.com/ "" loading true back false forward false | nav https://example.com/a "Page A" loading false back true forward false | load https://example.com/a "Page A" loading false back true forward false | message hello there | error offline | download started r.pdf - - source=transfer reason=- code=- | download finished r.pdf 2048 - source=transfer reason=- code=- | download failed x.csv - network lost source=transfer reason=- code=- | download cancelled c.csv - - source=request reason=app code=-
+event id:web onDownload state=failed id=d5 url=https://example.com/export filename=export.csv source=none code=ERR_NSH_DOWNLOAD_DISCARDED
+expect Web: start https://example.com/ "" loading true back false forward false | nav https://example.com/a "Page A" loading false back true forward false | load https://example.com/a "Page A" loading false back true forward false | message hello there | error offline | download started r.pdf - - source=transfer reason=- code=- | download finished r.pdf 2048 - source=transfer reason=- code=- | download failed x.csv - network lost source=transfer reason=- code=- | download cancelled c.csv - - source=request reason=app code=- | download failed export.csv - - source=none reason=- code=ERR_NSH_DOWNLOAD_DISCARDED
+covers [nsh] Image
+covers [nsh] Video
+covers [nsh] WebView
+covers [events] onLoadStart
+covers [events] onProgress
+covers [events] onLoad
+covers [events] onLoadEnd
+covers [events] onError
+covers [events] onBuffer
+covers [events] onEnd
+covers [events] onMessage
+covers [events] onNavigationStateChange
+covers [events] onDownload
+# events-pointer
+tap id:case-events-pointer
+expect Press: none
+# A finger goes down and comes up.
+event id:press onPressDown
+expect Press: in
+event id:press onPressUp
+expect Press: in out
+# The mouse comes over, moves with Shift and Command held, then with
+# Option and Control, drags with the left button down (positions in the
+# view, fractions and outside it too), and leaves from where it was.
+listens id:hover onMouseEnter
+event id:hover onMouseEnter position.x=0 position.y=3
+expect Hover: in 0,3
+event id:hover onMouseMove position.x=5 position.y=7 modifiers.shift=true modifiers.platform=true
+expect Hover: move 5,7 page 25,128 meta shift
+event id:hover onMouseMove position.x=6 position.y=1 modifiers.alt=true modifiers.control=true
+expect Hover: move 6,1 page 26,122 alt ctrl
+event id:hover onMouseMove position.x=5.5 position.y=7.25 pressedButton=left
+expect Hover: move 5.5,7.25 page 25.5,128.25 left down
+event id:hover onMouseMove position.x=-2 position.y=0 pressedButton=left
+expect Hover: move -2,0 page 18,121 left down
+event id:hover onMouseLeave position.x=-2 position.y=0
+expect Hover: move -2,0 page 18,121 left down out -2,0
+# Files dragged over, away, back and dropped.
+event id:drop onFileDragEnter uris=file:///tmp/a.txt uris="file:///tmp/b%20c.png"
+expect Drop: enter 2: file:///tmp/a.txt file:///tmp/b%20c.png [text/plain image/png]
+event id:drop onFileDragLeave
+expect Drop: enter 2: file:///tmp/a.txt file:///tmp/b%20c.png [text/plain image/png] leave
+event id:drop onFileDrop uris=file:///tmp/a.txt uris="file:///tmp/b c.png" uris=file:///tmp/c.pdf
+expect Drop: dropped 3: file:///tmp/a.txt file:///tmp/b c.png file:///tmp/c.pdf [text/plain image/png application/pdf]
+# An assistive technology performs an action.
+event id:action onAccessibilityAction actionName=increment
+expect Action: increment
+event id:action onAccessibilityAction actionName=activate
+expect Action: activate
+# Tab reaches a view that takes presses, then moves on.
+listens id:key-focus onFocus
+listens id:key-focus onBlur
+event id:key-focus onFocus
+expect Key focus: focused
+event id:key-focus onBlur
+expect Key focus: focused blurred
+covers [events] onPressDown
+covers [events] onPressUp
+covers [events] onMouseEnter
+covers [events] onMouseMove
+covers [events] onMouseLeave
+covers [events] onFileDragEnter
+covers [events] onFileDragLeave
+covers [events] onFileDrop
+covers [events] onAccessibilityAction
+# events-scroll
+tap id:case-events-scroll
+expect Scroll: none
+# A drag, then a fling that glides on and comes to rest.
+event id:scroll onScrollDragStart x=0 y=0
+expect Steps: begin 0,0
+scroll id:scroll 0 120
+expect Scroll: 0,120 content 300x1000 size 300x200 zoom 1
+event id:scroll onScrollDragEnd x=0 y=120
+expect Steps: begin 0,0 | end 0,120
+event id:scroll onMomentumStart x=0 y=120
+expect Steps: begin 0,0 | end 0,120 | glide 0,120
+scroll id:scroll 0 300.5
+expect Scroll: 0,300.5 content 300x1000 size 300x200 zoom 1
+event id:scroll onMomentumEnd x=0 y=300.5
+expect Steps: begin 0,0 | end 0,120 | glide 0,120 | stop 0,300.5
+event id:scroll onScrollEnd x=0 y=300.5
+expect Steps: begin 0,0 | end 0,120 | glide 0,120 | stop 0,300.5 | rest 0,300.5
+covers [nsh] Scroll
+covers [events] onScroll
+covers [events] onScrollDragStart
+covers [events] onScrollDragEnd
+covers [events] onMomentumStart
+covers [events] onMomentumEnd
+covers [events] onScrollEnd
+# events-touch
+tap id:case-events-touch
+expect A:
+expect B:
+expect C:
+# A view takes the touches when they start and keeps them; its parent
+# captures them first and is asked first.
+touch start id:pad 5 6
+expect A: capstart | start 5,6 page 15,80 1/1 #1 at 16 number | askcap 1 | ask 15,80 | grant | rstart 5
+touch move 25 6
+expect A: capstart | start 5,6 page 15,80 1/1 #1 at 16 number | askcap 1 | ask 15,80 | grant | rstart 5 | capmove | move 25,6 page 35,80 | askmovecap 20,0 | rmove 25
+touch end 30 8
+expect A: capstart | start 5,6 page 15,80 1/1 #1 at 16 number | askcap 1 | ask 15,80 | grant | rstart 5 | capmove | move 25,6 page 35,80 | askmovecap 20,0 | rmove 25 | capend | end 0/1 | rend 30 | release
+# A responder that refuses to let go: the parent wanting the touches is
+# rejected.
+touch start id:keeper 4 4
+expect B: keeper grant
+touch move 34 4
+expect B: keeper grant | want 30,0 | request | reject
+touch end 34 4
+expect B: keeper grant | want 30,0 | request | reject | keeper release
+# A responder that lets go: the parent takes over, then the system cancels
+# the touch.
+touch start id:yielder 4 4
+expect C: yielder grant
+touch move 34 9
+expect C: yielder grant | want 30,5 at 34,295 of 1 | request | yielder terminate | parent grant
+touch cancel
+expect C: yielder grant | want 30,5 at 34,295 of 1 | request | yielder terminate | parent grant | capcancel | cancel | parent terminate
+covers [nsh] signal
+covers [events] onTouchStart
+covers [events] onTouchMove
+covers [events] onTouchEnd
+covers [events] onTouchCancel
+covers [events] onTouchStartCapture
+covers [events] onTouchMoveCapture
+covers [events] onTouchEndCapture
+covers [events] onTouchCancelCapture
+covers [events] onStartShouldSetResponder
+covers [events] onStartShouldSetResponderCapture
+covers [events] onMoveShouldSetResponder
+covers [events] onMoveShouldSetResponderCapture
+covers [events] onResponderGrant
+covers [events] onResponderReject
+covers [events] onResponderStart
+covers [events] onResponderMove
+covers [events] onResponderEnd
+covers [events] onResponderRelease
+covers [events] onResponderTerminate
+covers [events] onResponderTerminationRequest
+# An input method's composition: started, changed, the committed text
+# through onChange, then its end.
+tap id:case-events-composition
+listens id:compose onCompositionChange
+event id:compose onCompositionChange composing=true text=t
+expect Composition: composing [t]
+event id:compose onCompositionChange composing=true text=teng
+expect Composition: composing [teng]
+event id:compose onChange text=腾
+expect Committed: 腾
+event id:compose onCompositionChange composing=false text=""
+expect Composition: ended []
+covers [events] onCompositionChange
+# events-pinch
+tap id:case-events-pinch
+expect Pinch: none
+# The canvas asks the platform for touchpad pinches over it. (The payload
+# takes steps once nsh-compat's `event` builds it.)
+listens id:canvas onPinch
+covers [events] onPinch

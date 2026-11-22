@@ -1,0 +1,291 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+pub(crate) mod list;
+use crate::client::Client;
+use crate::{Error, configuration, history, projection::Projection, transport::Peer};
+
+use maka_agent_api::contract::{Created, Observation};
+use maka_capabilities::call::Attachments;
+use serde_json::json;
+use std::{
+    collections::HashMap,
+    path::Path,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
+use tokio::sync::{Mutex as AsyncMutex, OwnedMutexGuard};
+use tokio_util::sync::CancellationToken;
+pub(crate) struct Setup {
+    pub id: String,
+    pub options: Vec<configuration::Select>,
+}
+
+#[derive(Default)]
+pub(crate) struct Registry {
+    sessions: Mutex<HashMap<String, Arc<Session>>>,
+    creation: AsyncMutex<()>,
+}
+pub(crate) struct Session {
+    pub id: String,
+    pub gate: Arc<AsyncMutex<()>>,
+    pub preferences: AsyncMutex<configuration::Preferences>,
+    mcp: AsyncMutex<Option<crate::client::Subscription>>,
+    active: Mutex<Option<CancellationToken>>,
+    closed: AtomicBool,
+}
+pub(crate) struct Active {
+    session: Arc<Session>,
+    pub cancel: CancellationToken,
+    _guard: OwnedMutexGuard<()>,
+}
+impl Session {
+    fn new(id: String) -> Arc<Self> {
+        Arc::new(Self {
+            id,
+            gate: Arc::default(),
+            preferences: AsyncMutex::default(),
+            mcp: AsyncMutex::default(),
+            active: Mutex::default(),
+            closed: AtomicBool::new(false),
+        })
+    }
+    pub fn enter(self: &Arc<Self>, parent: &CancellationToken) -> Result<Active, Error> {
+        let guard = self
+            .gate
+            .clone()
+            .try_lock_owned()
+            .map_err(|_| "ACP session is busy")?;
+        let mut active = self.active.lock().unwrap();
+        if self.closed.load(Ordering::SeqCst) || parent.is_cancelled() {
+            return Err("ACP session is closed".into());
+        }
+        let cancel = parent.child_token();
+        *active = Some(cancel.clone());
+        Ok(Active {
+            session: self.clone(),
+            cancel,
+            _guard: guard,
+        })
+    }
+    pub fn cancel(&self) {
+        if let Some(cancel) = self.active.lock().unwrap().as_ref() {
+            cancel.cancel();
+        }
+    }
+}
+impl Drop for Active {
+    fn drop(&mut self) {
+        self.session.active.lock().unwrap().take();
+    }
+}
+impl Registry {
+    pub fn cancel_all(&self) {
+        for session in self.sessions.lock().unwrap().values() {
+            session.cancel();
+        }
+    }
+    /// The caller supplies the shutdown deadline; retain every gate until drained.
+    pub async fn drained(&self) -> Result<(), Error> {
+        let _creation = self.creation.lock().await;
+        let sessions: Vec<_> = self.sessions.lock().unwrap().values().cloned().collect();
+        let mut guards = Vec::with_capacity(sessions.len());
+        for session in sessions {
+            guards.push(session.gate.clone().lock_owned().await);
+            if let Some(lease) = session.mcp.lock().await.take() {
+                lease.close().await?;
+            }
+        }
+        Ok(())
+    }
+    pub fn get(&self, id: &str) -> Result<Arc<Session>, Error> {
+        self.sessions
+            .lock()
+            .unwrap()
+            .get(id)
+            .filter(|session| !session.closed.load(Ordering::SeqCst))
+            .cloned()
+            .ok_or_else(|| "ACP session is not open on this connection".into())
+    }
+    pub async fn create(
+        &self,
+        client: &Client,
+        peer: &Peer,
+        cwd: &Path,
+        servers: Vec<maka_agent_facts::configuration::mcp::ServerConfiguration>,
+    ) -> Result<Setup, Error> {
+        let cwd = list::directory(cwd)?;
+        let _creation = self.creation.lock().await;
+        if peer.stop.is_cancelled() {
+            return Err("ACP transport closed".into());
+        }
+        let path = cwd.to_str().ok_or("Workspace cwd must be valid UTF-8")?;
+        let Created::Created { session } = client.mutate("agent", "create", json!({"title":"New session","labels":[],"workspace":{"kind":"directory","path":path}}), Attachments::new()).await? else {
+            return Err("Host rejected session creation".into());
+        };
+        let id = session.id.clone();
+        let options =
+            configuration::options(client, &session, &configuration::Preferences::default())
+                .await?;
+        if peer.stop.is_cancelled() {
+            return Err("ACP transport closed".into());
+        }
+        let local = Session::new(id.clone());
+        *local.mcp.lock().await = crate::mcp::attach(client, &id, servers).await?;
+        self.sessions.lock().unwrap().insert(id.clone(), local);
+        Ok(Setup { id, options })
+    }
+    pub async fn resume(
+        &self,
+        client: &Client,
+        peer: &Peer,
+        id: &str,
+        cwd: &Path,
+        replay_history: bool,
+        servers: Vec<maka_agent_facts::configuration::mcp::ServerConfiguration>,
+    ) -> Result<Setup, Error> {
+        let cwd = list::directory(cwd)?;
+        let _creation = self.creation.lock().await;
+        let id = id.to_owned();
+        let existing = self.sessions.lock().unwrap().get(&id).cloned();
+        let local = existing.unwrap_or_else(|| Session::new(id.clone()));
+        let active = local.enter(&peer.stop)?;
+        let observation: Observation = client
+            .query("agent", "observe", json!({"sessionId":id}))
+            .await?;
+        let session = observation.session;
+        let workspace = Path::new(&session.workspace.path);
+        if workspace != cwd {
+            let (workspace, requested) = tokio::try_join!(
+                tokio::fs::canonicalize(workspace),
+                tokio::fs::canonicalize(&cwd)
+            )?;
+            if workspace != requested {
+                return Err("Resume cwd differs from Host session workspace".into());
+            }
+        }
+        if let Some(lease) = local.mcp.lock().await.take() {
+            lease.close().await?;
+        }
+        *local.mcp.lock().await = crate::mcp::attach(client, &id, servers).await?;
+        let observation: Observation = client
+            .query("agent", "observe", json!({"sessionId":id}))
+            .await?;
+        let session = observation.session;
+        list::ensure_idle(&session)?;
+        let options =
+            configuration::options(client, &session, &local.preferences.lock().await.clone())
+                .await?;
+        if replay_history {
+            peer.reset(&id);
+            replay(client, peer, &id, &active.cancel).await?;
+        }
+        if peer.stop.is_cancelled() {
+            return Err("ACP transport closed".into());
+        }
+        peer.synchronize(&session).await?;
+        peer.reset(&id);
+        self.sessions
+            .lock()
+            .unwrap()
+            .insert(id.clone(), local.clone());
+        Ok(Setup { id, options })
+    }
+    pub async fn list(
+        &self,
+        client: &Client,
+        cwd: Option<std::path::PathBuf>,
+        cursor: Option<String>,
+    ) -> Result<list::Page, Error> {
+        list::read(client, cwd, cursor).await
+    }
+    pub async fn close(&self, id: &str) -> Result<(), Error> {
+        let _creation = self.creation.lock().await;
+        let id = id.to_owned();
+        let session = self
+            .sessions
+            .lock()
+            .unwrap()
+            .get(&id)
+            .cloned()
+            .ok_or("ACP session is not open on this connection")?;
+        session.closed.store(true, Ordering::SeqCst);
+        session.cancel();
+        let _guard =
+            tokio::time::timeout(Duration::from_secs(20), session.gate.clone().lock_owned())
+                .await
+                .map_err(|_| "ACP session cancellation has not settled")?;
+        if let Some(lease) = session.mcp.lock().await.take() {
+            lease.close().await?;
+        }
+        self.sessions.lock().unwrap().remove(&id);
+        Ok(())
+    }
+    pub async fn set_config(
+        &self,
+        client: &Client,
+        peer: &Peer,
+        id: &str,
+        config_id: &str,
+        value: &str,
+    ) -> Result<Vec<configuration::Select>, Error> {
+        let local = self.get(id)?;
+        let _active = local.enter(&peer.stop)?;
+        let observation: Observation = client
+            .query("agent", "observe", json!({"sessionId":local.id}))
+            .await?;
+        list::ensure_idle(&observation.session)?;
+        let mut preferences = local.preferences.lock().await;
+        let options = configuration::set(
+            client,
+            &observation.session,
+            &mut preferences,
+            config_id,
+            value,
+        )
+        .await?;
+        drop(preferences);
+        peer.config(&local.id, options.clone()).await?;
+        Ok(options)
+    }
+}
+async fn replay(
+    client: &Client,
+    peer: &Peer,
+    id: &str,
+    cancel: &CancellationToken,
+) -> Result<(), Error> {
+    let observation: Observation = client
+        .query("agent", "observe", json!({"sessionId":id}))
+        .await?;
+    list::ensure_idle(&observation.session)?;
+    let chunks = history::read(client, id, Some(observation.through), None).await?;
+    let mut projection = Projection::default();
+    for chunk in chunks {
+        if cancel.is_cancelled() {
+            return Err("ACP replay cancelled".into());
+        }
+        for update in projection.chunk(&chunk)? {
+            peer.update(id, update).await?;
+        }
+    }
+    Ok(())
+}

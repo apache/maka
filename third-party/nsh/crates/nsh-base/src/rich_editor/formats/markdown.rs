@@ -1,0 +1,1246 @@
+//! Markdown (CommonMark with GFM's strikethrough, tables and task lists), read with
+//! the `markdown` crate's syntax tree and written as prosemirror-markdown
+//! writes: escaped text, marks opened and closed around runs, whitespace
+//! moved outside delimiters, fences longer than the code's backtick runs.
+//!
+//! Tables (the schema's types with table roles, `tables::table_role`)
+//! read from GFM pipe tables, the first row as header cells, and from
+//! HTML `<table>` blocks. A table GFM can express (a header row of header
+//! cells, no merged cells, each cell one paragraph without line breaks)
+//! is written as a pipe table; any other is written as its HTML, which
+//! reads back as it was.
+
+use std::{cell::Cell, collections::BTreeSet};
+
+use markdown::mdast;
+use serde_json::Value;
+
+use super::{DocFormat, DomParser, DomSerializer, FormatError, ParseOptions};
+use crate::{
+    mdast_tree::{Mdast, plain_text},
+    rich_editor::{
+        model::{Attrs, Fragment, Mark, Node, Schema},
+        tables::{TableRole, colspan, rowspan, table_node_types, table_role},
+    },
+};
+
+/// The schema's names for what Markdown expresses. The defaults are the
+/// starter schema's (`extensions::starter`); an app with other names maps
+/// them here. A construct whose type the schema lacks reads as its text.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct MarkdownNames {
+    /// Paragraphs (`paragraph`).
+    pub paragraph: String,
+    /// Headings (`heading`), their level in [`Self::heading_level`].
+    pub heading: String,
+    /// The heading level attribute (`level`).
+    pub heading_level: String,
+    /// Block quotes (`blockquote`).
+    pub blockquote: String,
+    /// Fenced and indented code (`codeBlock`).
+    pub code_block: String,
+    /// The code block's language attribute (`language`).
+    pub code_language: String,
+    /// Thematic breaks (`horizontalRule`).
+    pub horizontal_rule: String,
+    /// Hard line breaks (`hardBreak`).
+    pub hard_break: String,
+    /// Images (`image`, attributes `src`, `alt`, `title`).
+    pub image: String,
+    /// Bullet lists (`bulletList`).
+    pub bullet_list: String,
+    /// Ordered lists (`orderedList`).
+    pub ordered_list: String,
+    /// The ordered list's first number attribute (`start`).
+    pub list_start: String,
+    /// List items (`listItem`).
+    pub list_item: String,
+    /// Strong emphasis (`bold`).
+    pub strong: String,
+    /// Emphasis (`italic`).
+    pub emphasis: String,
+    /// Code spans (`code`).
+    pub code: String,
+    /// Links (`link`, attributes `href`, `title`).
+    pub link: String,
+    /// Strikethrough (`strike`).
+    pub strike: String,
+    /// GFM task lists (`taskList`).
+    pub task_list: String,
+    /// Their items (`taskItem`).
+    pub task_item: String,
+    /// A task item's checked attribute (`checked`).
+    pub task_checked: String,
+}
+
+impl Default for MarkdownNames {
+    fn default() -> Self {
+        Self {
+            paragraph: "paragraph".into(),
+            heading: "heading".into(),
+            heading_level: "level".into(),
+            blockquote: "blockquote".into(),
+            code_block: "codeBlock".into(),
+            code_language: "language".into(),
+            horizontal_rule: "horizontalRule".into(),
+            hard_break: "hardBreak".into(),
+            image: "image".into(),
+            bullet_list: "bulletList".into(),
+            ordered_list: "orderedList".into(),
+            list_start: "start".into(),
+            list_item: "listItem".into(),
+            strong: "bold".into(),
+            emphasis: "italic".into(),
+            code: "code".into(),
+            link: "link".into(),
+            strike: "strike".into(),
+            task_list: "taskList".into(),
+            task_item: "taskItem".into(),
+            task_checked: "checked".into(),
+        }
+    }
+}
+
+impl MarkdownNames {
+    fn node_names(&self) -> [&str; 12] {
+        [
+            &self.paragraph,
+            &self.heading,
+            &self.blockquote,
+            &self.code_block,
+            &self.horizontal_rule,
+            &self.hard_break,
+            &self.image,
+            &self.bullet_list,
+            &self.ordered_list,
+            &self.list_item,
+            &self.task_list,
+            &self.task_item,
+        ]
+    }
+
+    fn mark_names(&self) -> [&str; 4] {
+        [&self.strong, &self.emphasis, &self.code, &self.link]
+    }
+}
+
+/// Documents as Markdown, mapped to the schema by [`MarkdownNames`].
+#[derive(Debug, Clone, Default)]
+#[non_exhaustive]
+pub struct MarkdownFormat {
+    /// The schema's names for Markdown's constructs.
+    pub names: MarkdownNames,
+}
+
+impl MarkdownFormat {
+    /// A format with the schema's own names.
+    pub fn new(names: MarkdownNames) -> Self {
+        Self { names }
+    }
+
+    /// The node and mark types in `doc` that Markdown cannot express, by
+    /// name, sorted: what writing `doc` loses besides attributes Markdown
+    /// has no syntax for and whitespace it collapses.
+    pub fn losses(&self, doc: &Node) -> Vec<String> {
+        let mut lost = BTreeSet::new();
+        self.collect_losses(doc, &mut lost);
+        lost.into_iter().collect()
+    }
+
+    fn collect_losses(&self, node: &Node, lost: &mut BTreeSet<String>) {
+        for i in 0..node.child_count() {
+            let child = node.child(i);
+            let name = child.ty().name();
+            // Tables are written as GFM tables or as HTML.
+            let in_table = table_role(child.ty()).is_some();
+            if !child.is_text() && !in_table && !self.names.node_names().contains(&name) {
+                lost.insert(name.to_string());
+            }
+            for mark in child.marks() {
+                let m = mark.ty.name();
+                if !self.names.mark_names().contains(&m) && m != self.names.strike {
+                    lost.insert(m.to_string());
+                }
+            }
+            self.collect_losses(child, lost);
+        }
+    }
+}
+
+impl MarkdownFormat {
+    /// Writes blocks (or inline content, as one paragraph) as Markdown,
+    /// without a trailing newline: what a copied slice puts on the
+    /// clipboard.
+    pub fn serialize_fragment(&self, fragment: &Fragment) -> String {
+        Writer { names: &self.names }.fragment(fragment)
+    }
+
+    /// Reads Markdown into the blocks of a document of `schema`.
+    pub fn parse_fragment(&self, schema: &Schema, input: &str) -> Result<Fragment, FormatError> {
+        Ok(self.parse(schema, input)?.content().clone())
+    }
+}
+
+impl DocFormat for MarkdownFormat {
+    type Error = FormatError;
+
+    fn parse(&self, schema: &Schema, input: &str) -> Result<Node, FormatError> {
+        let root = markdown::to_mdast(input, &markdown::ParseOptions::gfm())
+            .map(Mdast)
+            .map_err(|e| FormatError::Markdown(e.to_string()))?;
+        let reader = Reader {
+            schema,
+            names: &self.names,
+            depth: Cell::new(0),
+        };
+        let mut blocks = reader.blocks(root.children().map(Vec::as_slice).unwrap_or(&[]))?;
+        if blocks.is_empty() {
+            blocks.push(reader.node(&self.names.paragraph, Attrs::new(), Vec::new())?);
+        }
+        let top = schema.top_node_type();
+        let doc = reader.node(top.name(), Attrs::new(), blocks)?;
+        doc.check()
+            .map_err(|e| FormatError::Schema(e.to_string()))?;
+        Ok(doc)
+    }
+
+    fn serialize(&self, doc: &Node) -> Result<String, FormatError> {
+        let writer = Writer { names: &self.names };
+        let mut out = writer.blocks(doc);
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        Ok(out)
+    }
+
+    fn is_lossless_for(&self, schema: &Schema) -> bool {
+        // Underlines, custom nodes and attributes beyond those mapped have
+        // no Markdown syntax; a schema without any of them still loses
+        // empty paragraphs and leading whitespace, which Markdown
+        // collapses, so no schema is lossless.
+        let _ = schema;
+        false
+    }
+}
+
+/// Reads mdast into the schema's nodes.
+struct Reader<'a> {
+    schema: &'a Schema,
+    names: &'a MarkdownNames,
+    /// How many `blocks` / `inlines` are being read around the current
+    /// node ([`MAX_DEPTH`]).
+    depth: Cell<usize>,
+}
+
+/// How deep blocks and inline content are read: deeper content is its text.
+/// The tree is read recursively, so without a bound a paste of thousands of
+/// nested quotes or lists ran the stack out (`TextView` bounds it the same
+/// way).
+const MAX_DEPTH: usize = 64;
+
+impl Reader<'_> {
+    fn has_node(&self, name: &str) -> bool {
+        self.schema.node_type(name).is_some()
+    }
+
+    fn node(&self, name: &str, attrs: Attrs, content: Vec<Node>) -> Result<Node, FormatError> {
+        self.schema
+            .node(name, Some(attrs), Fragment::from(content), Vec::new())
+            .map_err(|e| FormatError::Schema(e.to_string()))
+    }
+
+    fn mark(&self, name: &str, attrs: Attrs) -> Option<Mark> {
+        self.schema.mark_type(name)?;
+        self.schema.mark(name, Some(attrs)).ok()
+    }
+
+    // Whether the schema's paragraphs have `textAlign`.
+    fn aligns_paragraphs(&self) -> bool {
+        self.schema
+            .node_type(&self.names.paragraph)
+            .is_some_and(|t| t.spec().attrs.iter().any(|(name, _)| name == TEXT_ALIGN))
+    }
+
+    fn paragraph(&self, inline: Vec<Node>) -> Result<Node, FormatError> {
+        self.node(&self.names.paragraph, Attrs::new(), inline)
+    }
+
+    fn blocks(&self, nodes: &[mdast::Node]) -> Result<Vec<Node>, FormatError> {
+        if self.depth.get() >= MAX_DEPTH {
+            let text = plain_text(nodes);
+            let inline = self.text(text.trim(), Vec::new());
+            return Ok(vec![self.paragraph(inline)?]);
+        }
+        self.depth.set(self.depth.get() + 1);
+        let mut out = Vec::new();
+        let read = nodes.iter().try_for_each(|node| self.block(node, &mut out));
+        self.depth.set(self.depth.get() - 1);
+        read.map(|()| out)
+    }
+
+    fn block(&self, node: &mdast::Node, out: &mut Vec<Node>) -> Result<(), FormatError> {
+        let n = self.names;
+        match node {
+            mdast::Node::Paragraph(p) => {
+                let inline = self.inlines(&p.children, &[]);
+                out.push(self.paragraph(inline)?);
+            }
+            mdast::Node::Heading(h) => {
+                let inline = self.inlines(&h.children, &[]);
+                if self.has_node(&n.heading) {
+                    let mut attrs = Attrs::new();
+                    attrs.insert(n.heading_level.clone(), Value::from(h.depth));
+                    out.push(self.node(&n.heading, attrs, inline)?);
+                } else {
+                    out.push(self.paragraph(inline)?);
+                }
+            }
+            mdast::Node::Blockquote(q) => {
+                let inner = self.blocks(&q.children)?;
+                if self.has_node(&n.blockquote) {
+                    out.push(self.node(&n.blockquote, Attrs::new(), inner)?);
+                } else {
+                    out.extend(inner);
+                }
+            }
+            mdast::Node::Code(c) => {
+                let text = self.text(&c.value, Vec::new());
+                if self.has_node(&n.code_block) {
+                    let mut attrs = Attrs::new();
+                    if let Some(lang) = &c.lang {
+                        attrs.insert(n.code_language.clone(), Value::from(lang.as_str()));
+                    }
+                    out.push(self.node(&n.code_block, attrs, text)?);
+                } else {
+                    out.push(self.paragraph(text)?);
+                }
+            }
+            mdast::Node::ThematicBreak(_) => {
+                if self.has_node(&n.horizontal_rule) {
+                    out.push(self.node(&n.horizontal_rule, Attrs::new(), Vec::new())?);
+                }
+            }
+            mdast::Node::List(l) => {
+                let (name, attrs) = if l.ordered {
+                    let mut attrs = Attrs::new();
+                    attrs.insert(n.list_start.clone(), Value::from(l.start.unwrap_or(1)));
+                    (&n.ordered_list, attrs)
+                } else {
+                    (&n.bullet_list, Attrs::new())
+                };
+                let tasks =
+                    !l.ordered && self.has_node(&n.task_list) && self.has_node(&n.task_item);
+                if self.has_node(name) && self.has_node(&n.list_item) {
+                    // GFM task items (`- [x]`) make a task list; a run of
+                    // them inside a bullet list splits it there.
+                    let mut run: Option<bool> = None;
+                    let mut items = Vec::new();
+                    for item in &l.children {
+                        let checked = match item {
+                            mdast::Node::ListItem(i) if tasks => i.checked,
+                            _ => None,
+                        };
+                        if run.is_some_and(|task| task != checked.is_some()) {
+                            let list = if run == Some(true) {
+                                &n.task_list
+                            } else {
+                                name
+                            };
+                            out.push(self.node(list, attrs.clone(), std::mem::take(&mut items))?);
+                        }
+                        run = Some(checked.is_some());
+                        let children = item.children().map(Vec::as_slice).unwrap_or(&[]);
+                        let mut inner = self.blocks(children)?;
+                        if inner.is_empty() {
+                            inner.push(self.paragraph(Vec::new())?);
+                        }
+                        items.push(match checked {
+                            Some(done) => {
+                                let mut a = Attrs::new();
+                                a.insert(n.task_checked.clone(), Value::Bool(done));
+                                self.node(&n.task_item, a, inner)?
+                            }
+                            None => self.node(&n.list_item, Attrs::new(), inner)?,
+                        });
+                    }
+                    let list = if run == Some(true) {
+                        &n.task_list
+                    } else {
+                        name
+                    };
+                    out.push(self.node(list, attrs, items)?);
+                } else {
+                    for item in &l.children {
+                        out.extend(self.blocks(item.children().map(Vec::as_slice).unwrap_or(&[]))?);
+                    }
+                }
+            }
+            mdast::Node::Table(t) if table_node_types(self.schema).is_some() => {
+                out.push(self.table(t)?);
+            }
+            mdast::Node::Html(h)
+                if is_html_table(&h.value) && table_node_types(self.schema).is_some() =>
+            {
+                // A table written as HTML: read with the schema's rules.
+                let parsed =
+                    DomParser::from_schema(self.schema).parse(&h.value, &ParseOptions::default());
+                for i in 0..parsed.child_count() {
+                    out.push(parsed.child(i).clone());
+                }
+            }
+            mdast::Node::Html(h) => {
+                let text = self.text(&h.value, Vec::new());
+                out.push(self.paragraph(text)?);
+            }
+            other => match other.children() {
+                // Containers the schema does not know (tables, footnotes)
+                // keep their blocks; what has no children keeps its text.
+                Some(children) if children.iter().any(is_block) => {
+                    out.extend(self.blocks(children)?);
+                }
+                _ => {
+                    let inline = self.inlines(std::slice::from_ref(other), &[]);
+                    if !inline.is_empty() {
+                        out.push(self.paragraph(inline)?);
+                    }
+                }
+            },
+        }
+        Ok(())
+    }
+
+    // A GFM table: its first row of header cells, each cell a paragraph,
+    // rows short of the header's cells filled with empty ones.
+    fn table(&self, table: &mdast::Table) -> Result<Node, FormatError> {
+        let Some(types) = table_node_types(self.schema) else {
+            return Err(FormatError::Schema("the schema has no tables".into()));
+        };
+        let width = table.align.len().max(1);
+        let make = |e: crate::rich_editor::model::SchemaError| FormatError::Schema(e.to_string());
+        let mut rows = Vec::new();
+        for (i, row) in table.children.iter().enumerate() {
+            let ty = if i == 0 {
+                &types.header_cell
+            } else {
+                &types.cell
+            };
+            let cells_in = row.children().map(Vec::as_slice).unwrap_or(&[]);
+            let mut cells = Vec::new();
+            for j in 0..width {
+                let inline = match cells_in.get(j) {
+                    Some(cell) => {
+                        self.inlines(cell.children().map(Vec::as_slice).unwrap_or(&[]), &[])
+                    }
+                    None => Vec::new(),
+                };
+                // A column's alignment (`:---:`) is its paragraphs'
+                // `textAlign`, where the schema has it.
+                let mut attrs = Attrs::new();
+                if let Some(align) = table.align.get(j).and_then(|a| match a {
+                    mdast::AlignKind::Left => Some("left"),
+                    mdast::AlignKind::Center => Some("center"),
+                    mdast::AlignKind::Right => Some("right"),
+                    mdast::AlignKind::None => None,
+                }) && self.aligns_paragraphs()
+                {
+                    attrs.insert(TEXT_ALIGN.into(), Value::from(align));
+                }
+                let paragraph = self.node(&self.names.paragraph, attrs, inline)?;
+                cells.push(
+                    ty.create(None, Fragment::from(vec![paragraph]), Vec::new())
+                        .map_err(make)?,
+                );
+            }
+            rows.push(
+                types
+                    .row
+                    .create(None, Fragment::from(cells), Vec::new())
+                    .map_err(make)?,
+            );
+        }
+        types
+            .table
+            .create(None, Fragment::from(rows), Vec::new())
+            .map_err(make)
+    }
+
+    fn text(&self, text: &str, marks: Vec<Mark>) -> Vec<Node> {
+        if text.is_empty() {
+            Vec::new()
+        } else {
+            vec![self.schema.text(text, marks)]
+        }
+    }
+
+    fn inlines(&self, nodes: &[mdast::Node], marks: &[Mark]) -> Vec<Node> {
+        if self.depth.get() >= MAX_DEPTH {
+            return self.text(&plain_text(nodes), marks.to_vec());
+        }
+        self.depth.set(self.depth.get() + 1);
+        let mut out = Vec::new();
+        for node in nodes {
+            self.inline(node, marks, &mut out);
+        }
+        self.depth.set(self.depth.get() - 1);
+        out
+    }
+
+    fn with_mark(&self, marks: &[Mark], name: &str, attrs: Attrs) -> Vec<Mark> {
+        match self.mark(name, attrs) {
+            Some(mark) => mark.add_to_set(marks),
+            None => marks.to_vec(),
+        }
+    }
+
+    fn inline(&self, node: &mdast::Node, marks: &[Mark], out: &mut Vec<Node>) {
+        let n = self.names;
+        match node {
+            mdast::Node::Text(t) => out.extend(self.text(&t.value, marks.to_vec())),
+            mdast::Node::Html(h) => out.extend(self.text(&h.value, marks.to_vec())),
+            mdast::Node::InlineCode(c) => {
+                let marks = self.with_mark(marks, &n.code, Attrs::new());
+                out.extend(self.text(&c.value, marks));
+            }
+            mdast::Node::Strong(s) => {
+                let marks = self.with_mark(marks, &n.strong, Attrs::new());
+                out.extend(self.inlines(&s.children, &marks));
+            }
+            mdast::Node::Emphasis(e) => {
+                let marks = self.with_mark(marks, &n.emphasis, Attrs::new());
+                out.extend(self.inlines(&e.children, &marks));
+            }
+            mdast::Node::Delete(d) => {
+                let marks = self.with_mark(marks, &n.strike, Attrs::new());
+                out.extend(self.inlines(&d.children, &marks));
+            }
+            mdast::Node::Link(l) => {
+                let mut attrs = Attrs::new();
+                attrs.insert("href".into(), Value::from(l.url.as_str()));
+                attrs.insert(
+                    "title".into(),
+                    l.title.as_deref().map_or(Value::Null, Value::from),
+                );
+                let marks = self.with_mark(marks, &n.link, attrs);
+                out.extend(self.inlines(&l.children, &marks));
+            }
+            mdast::Node::Break(_) => {
+                match self
+                    .schema
+                    .node(&n.hard_break, None, Fragment::empty(), marks.to_vec())
+                {
+                    Ok(node) if self.has_node(&n.hard_break) => out.push(node),
+                    _ => out.extend(self.text("\n", marks.to_vec())),
+                }
+            }
+            mdast::Node::Image(i) => {
+                let mut attrs = Attrs::new();
+                attrs.insert("src".into(), Value::from(i.url.as_str()));
+                attrs.insert("alt".into(), Value::from(i.alt.as_str()));
+                attrs.insert(
+                    "title".into(),
+                    i.title.as_deref().map_or(Value::Null, Value::from),
+                );
+                match self
+                    .schema
+                    .node(&n.image, Some(attrs), Fragment::empty(), marks.to_vec())
+                {
+                    Ok(node) if self.has_node(&n.image) => out.push(node),
+                    _ => out.extend(self.text(&i.alt, marks.to_vec())),
+                }
+            }
+            other => match other.children() {
+                Some(children) => out.extend(self.inlines(children, marks)),
+                None => out.extend(self.text(&other.to_string(), marks.to_vec())),
+            },
+        }
+    }
+}
+
+// An HTML block holding a table.
+// The paragraph attribute a table column's alignment reads and writes.
+const TEXT_ALIGN: &str = "textAlign";
+
+// An HTML block holding a table.
+fn is_html_table(html: &str) -> bool {
+    html.trim_start()
+        .get(..6)
+        .is_some_and(|start| start.eq_ignore_ascii_case("<table"))
+}
+
+fn is_block(node: &mdast::Node) -> bool {
+    matches!(
+        node,
+        mdast::Node::Paragraph(_)
+            | mdast::Node::Heading(_)
+            | mdast::Node::Blockquote(_)
+            | mdast::Node::Code(_)
+            | mdast::Node::List(_)
+            | mdast::Node::ThematicBreak(_)
+            | mdast::Node::Table(_)
+            | mdast::Node::TableRow(_)
+            | mdast::Node::TableCell(_)
+    )
+}
+
+/// Writes documents as Markdown.
+struct Writer<'a> {
+    names: &'a MarkdownNames,
+}
+
+impl Writer<'_> {
+    /// A container's blocks, separated by blank lines.
+    fn blocks(&self, node: &Node) -> String {
+        self.fragment(node.content())
+    }
+
+    /// Blocks separated by blank lines, or inline content as one line.
+    fn fragment(&self, fragment: &Fragment) -> String {
+        if fragment.child_count() > 0 && fragment.child(0).is_inline() {
+            return self.inline(fragment);
+        }
+        let mut parts = Vec::new();
+        for i in 0..fragment.child_count() {
+            parts.push(self.block(fragment.child(i)));
+        }
+        parts.join("\n\n")
+    }
+
+    fn block(&self, node: &Node) -> String {
+        let n = self.names;
+        let name = node.ty().name();
+        if name == n.heading {
+            let level = node
+                .attrs()
+                .get(&n.heading_level)
+                .and_then(Value::as_u64)
+                .unwrap_or(1)
+                .clamp(1, 6);
+            format!(
+                "{} {}",
+                "#".repeat(level as usize),
+                self.inline(node.content())
+            )
+        } else if name == n.blockquote {
+            prefix_lines(&self.blocks(node), "> ", ">")
+        } else if name == n.code_block {
+            let text = node.text_content();
+            let fence = "`".repeat(longest_run(&text, '`').max(2) + 1);
+            let lang = node
+                .attrs()
+                .get(&n.code_language)
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            format!("{fence}{lang}\n{text}\n{fence}")
+        } else if name == n.horizontal_rule {
+            "---".into()
+        } else if name == n.bullet_list || name == n.ordered_list || name == n.task_list {
+            self.list(node, name == n.ordered_list)
+        } else if table_role(node.ty()) == Some(TableRole::Table) {
+            self.table(node)
+        } else if node.is_textblock() {
+            self.inline(node.content())
+        } else if node.is_leaf() {
+            String::new()
+        } else {
+            self.blocks(node)
+        }
+    }
+
+    // A pipe table when GFM can express it, else the table's HTML (one
+    // line, so it stays one HTML block).
+    fn table(&self, table: &Node) -> String {
+        match self.pipe_table(table) {
+            Some(text) => text,
+            None => DomSerializer::from_schema(table.ty().schema())
+                .serialize_node(table)
+                .replace('\n', " "),
+        }
+    }
+
+    fn pipe_table(&self, table: &Node) -> Option<String> {
+        let mut lines = Vec::new();
+        let mut width = None;
+        // Each column's alignment: its first row's cell's paragraph's.
+        let mut aligns = Vec::new();
+        for i in 0..table.child_count() {
+            let row = table.child(i);
+            let mut cells = Vec::new();
+            for j in 0..row.child_count() {
+                let cell = row.child(j);
+                let header = table_role(cell.ty()) == Some(TableRole::HeaderCell);
+                if header != (i == 0) || colspan(cell) != 1 || rowspan(cell) != 1 {
+                    return None;
+                }
+                let paragraph = cell.first_child()?;
+                if cell.child_count() != 1
+                    || paragraph.ty().name() != self.names.paragraph
+                    || (0..paragraph.child_count()).any(|k| !paragraph.child(k).is_text())
+                {
+                    return None;
+                }
+                let text = self.inline(paragraph.content());
+                if text.contains('\n') {
+                    return None;
+                }
+                if i == 0 {
+                    aligns.push(
+                        match paragraph.attrs().get(TEXT_ALIGN).and_then(Value::as_str) {
+                            Some("left") => ":---",
+                            Some("center") => ":---:",
+                            Some("right") => "---:",
+                            _ => "---",
+                        },
+                    );
+                }
+                cells.push(escape_cell_pipes(&text));
+            }
+            match width {
+                None => width = Some(cells.len()),
+                Some(w) if w != cells.len() => return None,
+                _ => {}
+            }
+            lines.push(format!("| {} |", cells.join(" | ")));
+            if i == 0 {
+                lines.push(format!("| {} |", aligns.join(" | ")));
+            }
+        }
+        (width? > 0).then(|| lines.join("\n"))
+    }
+
+    fn list(&self, node: &Node, ordered: bool) -> String {
+        let start = node
+            .attrs()
+            .get(&self.names.list_start)
+            .and_then(Value::as_u64)
+            .unwrap_or(1);
+        // A list whose items are one block each is tight; otherwise loose,
+        // so items' paragraphs read back as such either way.
+        let tight = (0..node.child_count()).all(|i| node.child(i).child_count() <= 1);
+        let mut items = Vec::new();
+        for i in 0..node.child_count() {
+            let child = node.child(i);
+            let marker = if ordered {
+                format!("{}. ", start + i as u64)
+            } else {
+                "- ".to_string()
+            };
+            let indent = " ".repeat(marker.len());
+            let marker = if child.ty().name() == self.names.task_item {
+                let done = child
+                    .attrs()
+                    .get(&self.names.task_checked)
+                    .and_then(Value::as_bool)
+                    == Some(true);
+                format!("{marker}[{}] ", if done { 'x' } else { ' ' })
+            } else {
+                marker
+            };
+            let body = self.blocks(node.child(i));
+            let mut item = String::new();
+            for (j, line) in body.split('\n').enumerate() {
+                if j == 0 {
+                    item.push_str(&marker);
+                } else {
+                    item.push('\n');
+                    if !line.is_empty() {
+                        item.push_str(&indent);
+                    }
+                }
+                item.push_str(line);
+            }
+            items.push(item);
+        }
+        items.join(if tight { "\n" } else { "\n\n" })
+    }
+
+    /// A textblock's inline content with its marks.
+    fn inline(&self, block: &Fragment) -> String {
+        let n = self.names;
+        let mut out = String::new();
+        let mut open: Vec<Mark> = Vec::new();
+        let mut line_start = true;
+        for i in 0..block.child_count() {
+            let child = block.child(i);
+            let mut marks: Vec<Mark> = child
+                .marks()
+                .iter()
+                .filter(|m| {
+                    let name = m.ty.name();
+                    name != n.code && (n.mark_names().contains(&name) || name == n.strike)
+                })
+                .cloned()
+                .collect();
+            let code = child.marks().iter().any(|m| m.ty.name() == n.code);
+            // Marks already open stay open: they go first, so `*a **b***`
+            // does not close and reopen the emphasis around `b`.
+            let keep = open
+                .iter()
+                .take_while(|m| marks.iter().any(|x| x.eq(m)))
+                .count();
+            marks.retain(|m| !open[..keep].iter().any(|o| o.eq(m)));
+            marks.splice(0..0, open[..keep].iter().cloned());
+            // Close the open marks this child does not continue, from the
+            // innermost, with trailing whitespace moved after them.
+            if keep < open.len() {
+                let trimmed = out.trim_end_matches([' ', '\t']).len();
+                let ws = out.split_off(trimmed);
+                for mark in open.drain(keep..).rev() {
+                    out.push_str(&self.close(&mark));
+                }
+                out.push_str(&ws);
+            }
+            let content = if let Some(text) = child.text() {
+                if code {
+                    code_span(text)
+                } else {
+                    escape(text, line_start)
+                }
+            } else if child.ty().name() == n.hard_break {
+                "\\\n".to_string()
+            } else if child.ty().name() == n.image {
+                let attr = |k: &str| {
+                    child
+                        .attrs()
+                        .get(k)
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string()
+                };
+                format!(
+                    "![{}]({})",
+                    escape(&attr("alt"), false),
+                    destination(&attr("src"), &attr("title"))
+                )
+            } else {
+                String::new()
+            };
+            if keep < marks.len() {
+                // Leading whitespace stays outside the delimiters, which
+                // must touch the text to open.
+                let trimmed = content.trim_start_matches([' ', '\t']);
+                out.push_str(&content[..content.len() - trimmed.len()]);
+                for mark in &marks[keep..] {
+                    out.push_str(&self.open(mark));
+                }
+                open.extend_from_slice(&marks[keep..]);
+                out.push_str(trimmed);
+            } else {
+                out.push_str(&content);
+            }
+            line_start = out.ends_with('\n');
+        }
+        let trimmed = out.trim_end_matches([' ', '\t']).len();
+        let ws = out.split_off(trimmed);
+        for mark in open.drain(..).rev() {
+            out.push_str(&self.close(&mark));
+        }
+        out.push_str(&ws);
+        out
+    }
+
+    fn open(&self, mark: &Mark) -> String {
+        let n = self.names;
+        let name = mark.ty.name();
+        if name == n.strong {
+            "**".into()
+        } else if name == n.emphasis {
+            "*".into()
+        } else if name == n.strike {
+            "~~".into()
+        } else if name == n.link {
+            "[".into()
+        } else {
+            String::new()
+        }
+    }
+
+    fn close(&self, mark: &Mark) -> String {
+        if mark.ty.name() == self.names.link {
+            let attr = |k: &str| {
+                mark.attrs
+                    .get(k)
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string()
+            };
+            format!("]({})", destination(&attr("href"), &attr("title")))
+        } else {
+            self.open(mark)
+        }
+    }
+}
+
+fn prefix_lines(text: &str, prefix: &str, empty: &str) -> String {
+    text.split('\n')
+        .map(|line| {
+            if line.is_empty() {
+                empty.to_string()
+            } else {
+                format!("{prefix}{line}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn longest_run(text: &str, c: char) -> usize {
+    let (mut best, mut run) = (0, 0);
+    for ch in text.chars() {
+        run = if ch == c { run + 1 } else { 0 };
+        best = best.max(run);
+    }
+    best
+}
+
+/// A code span whose fence is longer than the backtick runs inside, padded
+/// when the text starts or ends with a backtick.
+fn code_span(text: &str) -> String {
+    let fence = "`".repeat(longest_run(text, '`') + 1);
+    let pad = if text.starts_with('`') || text.ends_with('`') {
+        " "
+    } else {
+        ""
+    };
+    format!("{fence}{pad}{text}{pad}{fence}")
+}
+
+/// A link destination and title: angle brackets when the URL has spaces
+/// or parentheses, the title quoted with its quotes escaped.
+fn destination(url: &str, title: &str) -> String {
+    let url = if url.contains([' ', '(', ')', '<', '>']) || url.is_empty() {
+        format!("<{}>", url.replace('<', "\\<").replace('>', "\\>"))
+    } else {
+        url.to_string()
+    };
+    if title.is_empty() {
+        url
+    } else {
+        format!(
+            "{url} \"{}\"",
+            title.replace('\\', "\\\\").replace('"', "\\\"")
+        )
+    }
+}
+
+/// Escapes text so it reads back as the same text: the characters that
+/// open inline syntax everywhere, and what starts a block at a line's
+/// start (`#`, `>`, list markers, setext underlines).
+fn escape(text: &str, mut line_start: bool) -> String {
+    let mut out = String::with_capacity(text.len());
+    let chars: Vec<char> = text.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if line_start {
+            match c {
+                '#' | '>' | '-' | '+' | '=' => out.push('\\'),
+                d if d.is_ascii_digit() => {
+                    let end = chars[i..]
+                        .iter()
+                        .position(|c| !c.is_ascii_digit())
+                        .map_or(chars.len(), |p| i + p);
+                    if matches!(chars.get(end), Some('.' | ')')) {
+                        out.extend(&chars[i..end]);
+                        out.push('\\');
+                        out.push(chars[end]);
+                        i = end + 1;
+                        line_start = false;
+                        continue;
+                    }
+                }
+                _ => {}
+            }
+        }
+        match c {
+            '\\' | '*' | '_' | '`' | '[' | ']' | '<' | '~' | '|' => out.push('\\'),
+            '&' if chars
+                .get(i + 1)
+                .is_some_and(|c| c.is_ascii_alphanumeric() || *c == '#') =>
+            {
+                out.push('\\')
+            }
+            '!' if chars.get(i + 1) == Some(&'[') => out.push('\\'),
+            _ => {}
+        }
+        out.push(c);
+        line_start = c == '\n';
+        i += 1;
+    }
+    out
+}
+
+/// `text` with each pipe the inline writer left bare escaped (in code
+/// spans), so a GFM table cell ends only at its own pipes: pipes already
+/// escaped (after an odd run of backslashes) stay as they are.
+fn escape_cell_pipes(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut backslashes = 0;
+    for c in text.chars() {
+        if c == '|' && backslashes % 2 == 0 {
+            out.push('\\');
+        }
+        backslashes = if c == '\\' { backslashes + 1 } else { 0 };
+        out.push(c);
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::rich_editor::extensions::starter;
+
+    fn round_trip(md: &str) -> (Node, String) {
+        let schema = starter::schema();
+        let f = MarkdownFormat::default();
+        let doc = f.parse(&schema, md).unwrap();
+        let out = f.serialize(&doc).unwrap();
+        let again = f.parse(&schema, &out).unwrap();
+        assert!(doc.eq(&again), "not stable: {md:?} -> {out:?}");
+        (doc, out)
+    }
+
+    /// Deeply nested Markdown (pasted or set by the app) is read with a
+    /// bounded depth: deeper content is kept as text, and the tree is
+    /// dropped without recursion, so no input runs the stack out on a
+    /// thread of a common size.
+    #[test]
+    fn deeply_nested_markdown_is_read_without_running_the_stack_out() {
+        let deep = |depth: usize| {
+            // Each list item opens with its text: the starter schema's list
+            // items start with a paragraph.
+            let list: String = (0..depth / 10)
+                .map(|i| format!("{}- deep\n", "  ".repeat(i)))
+                .collect();
+            [format!("{}deep\n", "> ".repeat(depth)), list]
+        };
+        std::thread::Builder::new()
+            .stack_size(2 * 1024 * 1024)
+            .spawn(move || {
+                let schema = starter::schema();
+                let f = MarkdownFormat::default();
+                for md in deep(5_000) {
+                    let doc = f.parse(&schema, &md).unwrap();
+                    assert!(doc.text_content().contains("deep"), "{md:.20}");
+                    f.serialize(&doc).unwrap();
+                }
+                // Shallow nesting is read as before.
+                let doc = f.parse(&schema, "> > > quoted\n").unwrap();
+                assert_eq!(doc.child(0).child(0).child(0).ty().name(), "blockquote");
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    #[test]
+    fn blocks_round_trip() {
+        let md =
+            "# One\n\n### Three\n\n> quote\n>\n> more\n\n```rust\nfn x() {}\n```\n\n---\n\nend\n";
+        let (doc, out) = round_trip(md);
+        assert_eq!(out, md);
+        assert_eq!(doc.child(0).ty().name(), "heading");
+        assert_eq!(doc.child(1).attrs().get("level"), Some(&Value::from(3)));
+        assert_eq!(
+            doc.child(3).attrs().get("language"),
+            Some(&Value::from("rust"))
+        );
+        assert_eq!(doc.child(4).ty().name(), "horizontalRule");
+    }
+
+    #[test]
+    fn lists_round_trip() {
+        let (doc, out) = round_trip("- a\n- b\n  - nested\n\n3. three\n4. four\n");
+        assert_eq!(out, "- a\n\n- b\n\n  - nested\n\n3. three\n4. four\n");
+        assert_eq!(doc.child(0).ty().name(), "bulletList");
+        assert_eq!(doc.child(1).attrs().get("start"), Some(&Value::from(3)));
+    }
+
+    #[test]
+    fn task_lists_round_trip() {
+        let (doc, out) = round_trip("- a\n\n- [x] done\n- [ ] todo\n");
+        assert_eq!(doc.child(0).ty().name(), "bulletList");
+        let tasks = doc.child(1);
+        assert_eq!(tasks.ty().name(), "taskList");
+        assert_eq!(
+            tasks.child(0).attrs().get("checked"),
+            Some(&Value::Bool(true))
+        );
+        assert_eq!(
+            tasks.child(1).attrs().get("checked"),
+            Some(&Value::Bool(false))
+        );
+        assert!(out.ends_with("- [x] done\n- [ ] todo\n"), "{out:?}");
+    }
+
+    #[test]
+    fn marks_round_trip() {
+        let md = "**bold** and *it **both*** ``co`de`` ~~gone~~ [link](https://x.y \"T\")\n";
+        let (doc, out) = round_trip(md);
+        assert_eq!(out, md);
+        let para = doc.child(0);
+        assert!(para.child(0).marks().iter().any(|m| m.ty.name() == "bold"));
+    }
+
+    #[test]
+    fn hard_breaks_round_trip() {
+        let (doc, out) = round_trip("one\\\ntwo\n");
+        assert_eq!(out, "one\\\ntwo\n");
+        assert_eq!(doc.child(0).child(1).ty().name(), "hardBreak");
+    }
+
+    #[test]
+    fn whitespace_moves_outside_marks() {
+        let schema = starter::schema();
+        let bold = schema.mark("bold", None).unwrap();
+        let para = schema
+            .node(
+                "paragraph",
+                None,
+                Fragment::from(vec![
+                    schema.text("a", Vec::new()),
+                    schema.text(" b ", vec![bold]),
+                    schema.text("c", Vec::new()),
+                ]),
+                Vec::new(),
+            )
+            .unwrap();
+        let doc = schema
+            .node("doc", None, Fragment::from(vec![para]), Vec::new())
+            .unwrap();
+        assert_eq!(
+            MarkdownFormat::default().serialize(&doc).unwrap(),
+            "a **b** c\n"
+        );
+    }
+
+    #[test]
+    fn text_is_escaped() {
+        let schema = starter::schema();
+        let tricky = "# not *a* _heading_ [x](y) `z` <b> &amp; 1. \\ ~~s~~ ![i]";
+        let para = schema
+            .node(
+                "paragraph",
+                None,
+                Fragment::from(vec![schema.text(tricky, Vec::new())]),
+                Vec::new(),
+            )
+            .unwrap();
+        let doc = schema
+            .node("doc", None, Fragment::from(vec![para]), Vec::new())
+            .unwrap();
+        let f = MarkdownFormat::default();
+        let out = f.serialize(&doc).unwrap();
+        let again = f.parse(&schema, &out).unwrap();
+        assert_eq!(again.text_content(), tricky, "{out}");
+        for start in ["- item", "+ item", "> q", "12. x", "=", "3) y"] {
+            let p = schema
+                .node(
+                    "paragraph",
+                    None,
+                    Fragment::from(vec![schema.text(start, Vec::new())]),
+                    Vec::new(),
+                )
+                .unwrap();
+            let doc = schema
+                .node("doc", None, Fragment::from(vec![p]), Vec::new())
+                .unwrap();
+            let back = f.parse(&schema, &f.serialize(&doc).unwrap()).unwrap();
+            assert!(doc.eq(&back), "{start:?}");
+        }
+    }
+
+    #[test]
+    fn losses_are_reported() {
+        let schema = starter::schema();
+        let f = MarkdownFormat::default();
+        assert!(!f.is_lossless_for(&schema));
+        let underline = schema.mark("underline", None).unwrap();
+        let para = schema
+            .node(
+                "paragraph",
+                None,
+                Fragment::from(vec![schema.text("u", vec![underline])]),
+                Vec::new(),
+            )
+            .unwrap();
+        let doc = schema
+            .node("doc", None, Fragment::from(vec![para]), Vec::new())
+            .unwrap();
+        assert_eq!(f.losses(&doc), vec!["underline".to_string()]);
+        assert_eq!(f.serialize(&doc).unwrap(), "u\n");
+        let plain = f.parse(&schema, "plain").unwrap();
+        assert!(f.losses(&plain).is_empty());
+    }
+
+    #[test]
+    fn gfm_tables_round_trip() {
+        use crate::rich_editor::tables::test_util::schema;
+        let schema = schema();
+        let f = MarkdownFormat::default();
+        let md = "| a | **b** |\n| --- | --- |\n| c \\| d |  |\n";
+        let doc = f.parse(&schema, md).unwrap();
+        let table = doc.child(0);
+        assert_eq!(table.ty().name(), "table");
+        assert_eq!(table.child(0).child(0).ty().name(), "tableHeader");
+        assert_eq!(table.child(1).child(0).ty().name(), "tableCell");
+        assert_eq!(table.child(1).child(0).text_content(), "c | d");
+        let out = f.serialize(&doc).unwrap();
+        assert_eq!(out, md);
+        assert!(f.losses(&doc).is_empty());
+        // Rows short of cells are filled.
+        let doc = f.parse(&schema, "| a | b |\n| - | - |\n| c |\n").unwrap();
+        assert_eq!(doc.child(0).child(1).child_count(), 2);
+    }
+
+    #[test]
+    fn gfm_column_alignment_is_its_paragraphs_text_align() {
+        let schema = crate::rich_editor::tables::test_util::schema();
+        let schema = &schema;
+        let f = MarkdownFormat::default();
+        let md = "| a | b | c |\n| :--- | :---: | --- |\n| 1 | 2 | 3 |\n";
+        let doc = f.parse(schema, md).unwrap();
+        let align = |row: usize, col: usize| {
+            doc.child(0)
+                .child(row)
+                .child(col)
+                .child(0)
+                .attrs()
+                .get("textAlign")
+                .cloned()
+        };
+        assert_eq!(align(1, 0), Some(Value::from("left")));
+        assert_eq!(align(0, 1), Some(Value::from("center")));
+        assert_eq!(align(1, 2), Some(Value::Null));
+        assert_eq!(f.serialize(&doc).unwrap(), md);
+    }
+
+    #[test]
+    fn other_tables_are_written_as_html() {
+        use crate::rich_editor::tables::test_util::{doc, table, td, tds, tr};
+        let schema = crate::rich_editor::tables::test_util::schema();
+        let f = MarkdownFormat::default();
+        // Merged cells and no header row: GFM cannot hold them.
+        let d = doc(vec![table(vec![
+            tr(vec![tds("a", 2, 1)]),
+            tr(vec![td("c"), td("d")]),
+        ])]);
+        let out = f.serialize(&d).unwrap();
+        assert!(out.starts_with("<table"), "{out}");
+        let back = f.parse(&schema, &out).unwrap();
+        assert!(back.eq(&d), "{out}");
+        // Without tables in the schema, a pipe table keeps its text.
+        let plain = f
+            .parse(&starter::schema(), "| a | b |\n| - | - |\n| c | d |\n")
+            .unwrap();
+        assert!(plain.text_content().contains('c'));
+    }
+
+    #[test]
+    fn empty_input_is_one_paragraph() {
+        let schema = starter::schema();
+        let doc = MarkdownFormat::default().parse(&schema, "").unwrap();
+        assert_eq!(doc.child_count(), 1);
+    }
+}

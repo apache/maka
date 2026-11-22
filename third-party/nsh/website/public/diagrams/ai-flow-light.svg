@@ -1,0 +1,148 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"
+     viewBox="0 0 880 410" width="100%" role="img" aria-labelledby="t d">
+  <title id="t">From a prompt to native UI</title>
+  <desc id="d">Two layers separated by a trust boundary. On your server, a model writes a small TSX module; nsh build compiles it to QuickJS bytecode and nsh test runs it headless as a check; nsh publish signs it with a certified release key into an .nshpkg package. The package crosses the trust boundary when the app downloads it: the device trusts a root key it ships with, not the server or the network. On the device, NshTrust verifies the signature, the certificate, the revocation list and the build number; the module then runs in its own VM under the limits and capabilities the host set, and renders the platform's own views (UIKit, Android views, AppKit, GTK 4, Win32 with Direct2D, GPUI, HTML) inside an NshAppView, NshView, AppView or web page.</desc>
+
+  <defs>
+    <style>
+      :root{
+        --band:rgba(20,20,22,.035);
+        --band-line:rgba(20,20,22,.10);
+        --band-hi:rgba(90,122,18,.07);
+        --seam:rgba(20,20,22,.055);
+        --card:#ffffff;
+        --card-line:rgba(20,20,22,.16);
+        --card-hi:#f4f8e8;
+        --ink:#16171a;
+        --muted:#5f636a;
+        --line:rgba(20,20,22,.42);
+        --faint:rgba(20,20,22,.22);
+        --fill:rgba(20,20,22,.08);
+        --accent:#5a7a12;
+        --danger:#e5484d;
+      }
+
+      text{font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif}
+      .mono{font-family:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace}
+      .h1{fill:var(--ink);font-size:16px;font-weight:650}
+      .lede{fill:var(--muted);font-size:11.5px}
+      .layer{fill:var(--ink);font-size:12.5px;font-weight:650}
+      .layer-sub{fill:var(--muted);font-size:11px}
+      .seam-name{fill:var(--accent);font-size:12px;font-weight:650}
+      .name{fill:var(--ink);font-size:14px;font-weight:600}
+      .fact{fill:var(--ink);font-size:11.5px}
+      .note{fill:var(--muted);font-size:11px}
+      .tag{fill:var(--muted);font-size:10.5px;font-weight:600}
+      .edge{fill:var(--accent);font-size:11px;font-weight:600}
+      .claim{fill:var(--accent);font-size:11px;font-weight:600}
+
+      .band{fill:var(--band);stroke:var(--band-line);stroke-width:1}
+      .card{fill:var(--card);stroke:var(--card-line);stroke-width:1}
+      .seam{fill:var(--seam)}
+      .seam-edge{fill:none;stroke:var(--accent);stroke-width:1;stroke-dasharray:4 4;opacity:.6}
+      .flow{fill:none;stroke:var(--line);stroke-width:1.4}
+      .arrowhead{fill:var(--line)}
+      .token-halo{fill:var(--accent);opacity:.16}
+      .token-core{fill:var(--accent)}
+
+      .stage{animation:stage 9s linear infinite}
+      .stage-last{animation:stagelast 9s linear infinite}
+
+      @keyframes stage{
+        0%,8%{stroke:var(--accent);fill:var(--card-hi)}
+        13%,100%{stroke:var(--card-line);fill:var(--card)}
+      }
+      @keyframes stagelast{
+        0%,20%{stroke:var(--accent);fill:var(--card-hi)}
+        26%,100%{stroke:var(--card-line);fill:var(--card)}
+      }
+
+      @media (prefers-reduced-motion: reduce){
+        .stage,.stage-last{animation:none}
+        .token{display:none}
+      }
+    </style>
+
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="6.5" markerHeight="6.5" orient="auto">
+      <path class="arrowhead" d="M0,0 L10,5 L0,10 Z"/>
+    </marker>
+
+    <path id="route" fill="none" stroke="none" d="M272,135 L736,135 L736,315 L272,315"/>
+  </defs>
+
+  <text class="h1" x="24" y="30">From a prompt to native UI</text>
+  <text class="lede" x="24" y="50">A model writes a module. Your server checks and signs it. The app verifies it, runs it in a sandbox, and shows native views.</text>
+
+  <!-- layer bands -->
+  <rect class="band" x="160" y="72"  width="688" height="126" rx="12"/>
+  <rect class="band" x="160" y="218" width="688" height="160" rx="12"/>
+
+  <text class="layer"     x="24" y="131">Your server</text>
+  <text class="layer-sub" x="24" y="147">nsh CLI, or CI</text>
+  <text class="layer"     x="24" y="311">The device</text>
+  <text class="layer-sub" x="24" y="327">your native app</text>
+
+  <!-- the trust boundary -->
+  <path class="seam" d="M160,230 Q160,218 172,218 L836,218 Q848,218 848,230 L848,258 L160,258 Z"/>
+  <path class="seam-edge" d="M160,258 L848,258"/>
+  <text class="seam-name" x="180" y="243">trust boundary</text>
+  <text class="note" x="282" y="243">the app trusts a root key it ships with, not the server or the network</text>
+
+  <!-- flow -->
+  <path class="flow" d="M368,135 L406,135" marker-end="url(#arrow)"/>
+  <path class="flow" d="M600,135 L638,135" marker-end="url(#arrow)"/>
+  <path class="flow" d="M736,174 L736,274" marker-end="url(#arrow)"/>
+  <text class="edge" x="748" y="243">download</text>
+  <path class="flow" d="M640,315 L602,315" marker-end="url(#arrow)"/>
+  <path class="flow" d="M408,315 L370,315" marker-end="url(#arrow)"/>
+
+  <!-- the travelling token: it runs beneath the cards and shows in the handoffs -->
+  <g class="token">
+    <circle class="token-halo" r="9"/>
+    <circle class="token-core" r="4"/>
+    <animateMotion dur="9s" repeatCount="indefinite" rotate="0" calcMode="linear"
+                   keyPoints="0;0.0866;0.1227;0.2960;0.3321;0.4540;0.5460;0.6679;0.7040;0.8773;0.9134;1;1"
+                   keyTimes="0;0.06;0.12;0.22;0.28;0.38;0.48;0.58;0.64;0.74;0.80;0.86;1">
+      <mpath href="#route" xlink:href="#route"/>
+    </animateMotion>
+  </g>
+
+  <!-- server -->
+  <rect class="card stage" x="176" y="96" width="192" height="78" rx="9" style="animation-delay:0s"/>
+  <text class="name" x="196" y="121">A model writes TSX</text>
+  <text class="fact" x="196" y="141">a form, a chart, a booking card</text>
+  <text class="note mono" x="196" y="158">BookingCard.tsx</text>
+
+  <rect class="card stage" x="408" y="96" width="192" height="78" rx="9" style="animation-delay:-7.92s"/>
+  <text class="name" x="428" y="121">Build and check</text>
+  <text class="fact" x="428" y="141">bytecode, then a headless run</text>
+  <text class="note mono" x="428" y="158">nsh build · nsh test</text>
+
+  <rect class="card stage" x="640" y="96" width="192" height="78" rx="9" style="animation-delay:-6.48s"/>
+  <text class="name" x="660" y="121">Sign</text>
+  <text class="tag" x="816" y="121" text-anchor="end">Ed25519</text>
+  <text class="fact" x="660" y="141">with a certified release key</text>
+  <text class="note mono" x="660" y="158">nsh publish → .nshpkg</text>
+
+  <!-- device -->
+  <rect class="card stage" x="640" y="276" width="192" height="78" rx="9" style="animation-delay:-4.68s"/>
+  <text class="name" x="660" y="301">Verify</text>
+  <text class="tag mono" x="816" y="301" text-anchor="end">NshTrust</text>
+  <text class="fact" x="660" y="321">signature · certificate</text>
+  <text class="note" x="660" y="338">revocations · build number</text>
+
+  <rect class="card stage" x="408" y="276" width="192" height="78" rx="9" style="animation-delay:-3.24s"/>
+  <text class="name" x="428" y="301">Sandbox</text>
+  <text class="fact" x="428" y="321">own VM, limits the host set</text>
+  <text class="note" x="428" y="338">only the capabilities granted</text>
+
+  <rect class="card stage-last" x="176" y="276" width="192" height="78" rx="9" style="animation-delay:-1.8s"/>
+  <text class="name" x="196" y="301">Native views</text>
+  <text class="fact" x="196" y="321">the platform's own views</text>
+  <text class="note" x="196" y="338">on every platform</text>
+
+  <text class="claim" x="24" y="398">Delivered straight to the app: only verified code runs.</text>
+
+</svg>

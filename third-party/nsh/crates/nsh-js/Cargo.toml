@@ -1,0 +1,59 @@
+[package]
+name = "nsh-js"
+description = "QuickJS host: runtime setup, host APIs, op decoding and bytecode."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+readme.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = ["zlib", "crypto"]
+# The standard module `zlib`: deflate, gzip, brotli and zstd.
+zlib = ["quickjs-jit-stdlib/zlib", "quickjs-jit-stdlib/zlib-zstd"]
+# The standard module `crypto` and its globals (`crypto`, `Crypto`,
+# `SubtleCrypto`, `CryptoKey`): hashes, random values, Web Crypto.
+crypto = ["quickjs-jit-stdlib/crypto"]
+
+[dependencies]
+serde_json.workspace = true
+serde.workspace = true
+# The language data numbers and dates format with (English built in).
+nsh-i18n.workspace = true
+log.workspace = true
+nsh-core.workspace = true
+rustc-hash.workspace = true
+thiserror.workspace = true
+percent-encoding.workspace = true
+url.workspace = true
+quickjs-jit-stdlib.workspace = true
+
+# Native targets generate QuickJS bindings for Apple and Android targets.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+rquickjs = { workspace = true, features = ["bindgen"] }
+quickjs-jit-stdlib = { workspace = true, features = ["url"] }
+# The heap's allocator: the system's `malloc` (as QuickJS's own).
+libc.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "time", "net", "sync", "io-util", "macros"] }
+futures-util.workspace = true
+tokio-tungstenite.workspace = true
+
+# The browser uses the same QuickJS and portable standard library.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+rquickjs.workspace = true
+getrandom-stdlib.workspace = true
+
+[dev-dependencies]
+# The declarations tests read the specs' text (nsh-core `declarations`).
+nsh-core = { workspace = true, features = ["declarations"] }
+brotli.workspace = true
+flate2.workspace = true
+zstd.workspace = true
+# The typed API check reads the crate's public API.
+syn = { workspace = true, features = ["visit"] }
+nsh-base = { workspace = true, features = ["editor", "highlight", "plot", "rich-editor", "term"] }

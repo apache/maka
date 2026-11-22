@@ -1,0 +1,75 @@
+[package]
+name = "nsh-testing"
+description = "Headless tests of nsh apps: the driver that runs an app on an engine without a window and takes a user's steps on it, and the runner of nsh test."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+readme.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+# The headless driver alone: no QuickJS, so a Rust app's tests run its root
+# with none.
+default = ["live"]
+# The headless driver's network: `fetch` on ureq (`UreqNetwork`).
+live = ["dep:ureq"]
+# A real host's test agent (`agent`): `nsh test --target` steps on the app it
+# shows, through the platform's input. No QuickJS and no network: the dev
+# hosts link it.
+agent = ["dep:nsh-dev", "dep:serde", "dep:serde_json", "dep:base64"]
+# `nsh test`'s side: the `nsh/test` module, test files on an engine of their
+# own (`run_file`) and apps' headless runners (`runner`): QuickJS, which also
+# runs the web page's host module (`page_host`).
+js = ["live", "nsh-engine/js", "dep:nsh-dev", "dep:base64", "dep:dunce", "dep:rquickjs", "dep:serde", "dep:serde_json", "dep:tokio"]
+# Building entries in this process (`compile_tsx`, `tsx`, `compiler`): nsh's
+# bundler. Off in apps' headless runners, which `nsh` builds the entries for.
+bundle = ["js", "dep:nsh-bundler", "dep:nsh-js"]
+
+[dependencies]
+nsh-bundler = { workspace = true, features = ["bundle"], optional = true }
+# Tests compile shaders.
+nsh-core = { workspace = true, features = ["shader"] }
+nsh-engine.workspace = true
+nsh-js = { workspace = true, optional = true, features = ["zlib", "crypto"] }
+nsh-dev = { workspace = true, optional = true }
+base64 = { workspace = true, optional = true }
+crossbeam-channel.workspace = true
+dunce = { workspace = true, optional = true }
+log.workspace = true
+regex.workspace = true
+# The web page's host module of headless runs (`page_host`).
+rquickjs = { workspace = true, optional = true }
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+# The requests routes' JS functions answer, waiting for the test file's VM.
+tokio = { workspace = true, features = ["sync"], optional = true }
+ureq = { workspace = true, optional = true }
+url.workspace = true
+
+# The dev client the agent's `Tester` answers through (not the web's page,
+# which talks to the dev server in JS).
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+nsh-dev = { workspace = true, optional = true, features = ["client"] }
+# The headless driver's engines run what a native host does: WebSockets,
+# updates, SVG images, remote images and `fetch`. Native only: the web's
+# development runtime links the agent, and these features would pull
+# ureq and rustls (ring, getrandom 0.2) into WebAssembly.
+nsh-core = { workspace = true, features = ["websocket", "updater", "svg", "loader"] }
+nsh-engine = { workspace = true, features = ["net"] }
+
+[dev-dependencies]
+# `every_export_is_documented` reads the specs' text (nsh-core `declarations`).
+nsh-core = { workspace = true, features = ["declarations"] }
+# The fetch tests drive a VM's network by hand (`headless/net_fetch_tests.rs`).
+nsh-js = { workspace = true, features = ["zlib", "crypto"] }
+nsh-base = { workspace = true, features = ["editor", "highlight", "plot", "rich-editor", "term"] }
+
+[[test]]
+name = "testing"
+# It builds a test file's app in this process.
+required-features = ["bundle"]

@@ -18,10 +18,6 @@
  */
 
 import type { Copy } from './types';
-
-// The disclaimer is the first paragraph of DISCLAIMER-WIP word for word, so
-// the site, the READMEs and the release file all state it the same way. It
-// appears in English on every page, whatever the page language.
 export const incubatorDisclaimer =
   'Apache Maka is an effort undergoing incubation at The Apache Software Foundation (ASF), sponsored by the Apache Incubator PMC. Incubation is required of all newly accepted projects until a further review indicates that the infrastructure, communications, and decision-making process have stabilized in a manner consistent with other successful ASF projects. While incubation status is not necessarily a reflection of the completeness or stability of the code, it does indicate that the project has yet to be fully endorsed by the ASF.';
 
@@ -31,17 +27,19 @@ export const en: Copy = {
   siteName: 'Apache Maka (Incubating)',
   positioning:
     'Apache Maka (Incubating) is a high-performance agent workspace that keeps a complete record of everything it did.',
-  theme: { toDark: 'Switch to dark mode', toLight: 'Switch to light mode' },
+  theme: {
+    toDark: 'Switch to dark mode',
+    toLight: 'Switch to light mode',
+  },
   sceneAlt:
     'One turn of RuntimeEvents: the model speaks, runs a command, asks permission, you approve, it gets the result, edits a file, the turn ends.',
   nav: {
     docs: 'Docs',
     downloads: 'Downloads',
-    benchmarks: 'Benchmarks',
     community: 'Community',
     security: 'Security',
     asf: 'ASF',
-    getMaka: 'Release status',
+    getMaka: 'Get Maka',
     menu: 'Menu',
   },
   hero: {
@@ -50,16 +48,26 @@ export const en: Copy = {
       'keeps a complete record',
       ' of everything it did.',
     ],
-    lede: 'An agent harness exists to finish tasks. We hold it to one measure: how many it completes and at what cost. We publish every run: same model, same official verifier, full per-task record.',
-    releases: 'Release status',
-    contribute: 'Contribute',
-    fine: 'Apache Maka 0.2.0 (incubating) is released',
+    lede: 'A native Rust CLI and TUI, with public plugin capabilities and recoverable records of model interactions and tool effects.',
+    nightly: 'CLI distribution',
+    source: 'Build from source',
+    fine: 'Native previews are not ASF releases',
     architecture: 'Read the architecture',
   },
   scene: {
     events: [
-      { tone: 'mut', name: 'Text', label: 'Model says', detail: '"I\'ll rerun the failing test."' },
-      { tone: '', name: 'FunctionCall', label: 'Runs a command', detail: 'Bash · npm test' },
+      {
+        tone: 'mut',
+        name: 'Text',
+        label: 'Model says',
+        detail: '"I\'ll rerun the failing test."',
+      },
+      {
+        tone: '',
+        name: 'FunctionCall',
+        label: 'Runs a command',
+        detail: 'Shell · just test',
+      },
       {
         tone: 'warn',
         name: 'permissionRequest',
@@ -78,35 +86,28 @@ export const en: Copy = {
         label: 'Gets the result',
         detail: 'exit 1 · pruned, kept',
       },
-      { tone: 'dim', name: 'FunctionCall', label: 'Edits a file', detail: 'resume.ts' },
-      { tone: 'dim ok', name: 'endInvocation', label: 'Turn ends', detail: 'run completed' },
+      {
+        tone: 'dim',
+        name: 'FunctionCall',
+        label: 'Edits a file',
+        detail: 'resume.rs',
+      },
+      {
+        tone: 'dim ok',
+        name: 'endInvocation',
+        label: 'Turn ends',
+        detail: 'run completed',
+      },
     ],
     highWater: 'confirmed up to here',
     caption: 'one turn · seven RuntimeEvents · append-only',
     formula: 'State(t) = Project(Log[0…t])',
   },
-  measured: {
-    h2: 'Measured, not claimed. Recorded, not remembered.',
-    p: 'Two things the site can prove today: where Maka stands against other harnesses on the same model, and what the runtime actually writes down while it works.',
-  },
-  leaderboard: {
-    h3: 'Nine harnesses, one model, the official verifier',
-    p: 'Terminal-Bench 2.1 on DeepSeek V4 Flash, every task, scored by the official verifier. The ranking is descriptive; the per-task CSV ships with the report.',
-    more: 'Read the report',
-    caption: 'pass@1 · reasoning max · Maka cost per pass $0.026',
-  },
-  paired: {
-    h3: 'Head to head, same suite',
-    p: 'A paired single run against OpenCode on the same tasks. The gap holds up under an exact McNemar test on this suite, and cost per accepted task came out about the same.',
-    more: 'Read the paired report',
-    stat: '+13.5',
-    statSmall: 'pp · 68.5% vs 55.1%',
-  },
   host: {
     h3: 'One Runtime Host',
-    p: 'Desktop, TUI, CLI and Eval are thin clients of one execution authority.',
+    p: 'The CLI, TUI and plugins share one execution and permission boundary.',
     more: 'How the host works',
-    clients: ['Desktop', 'TUI / CLI', 'Eval'],
+    clients: ['CLI / TUI', 'Plugins'],
     core: 'Runtime Host',
     coreSmall: 'owns execution',
   },
@@ -116,45 +117,22 @@ export const en: Copy = {
     more: 'Log Is the Runtime',
   },
   get: {
-    h3: 'Releases and development',
-    p: 'Follow release progress or take part in development.',
-    contribute: {
-      title: 'Contribute to Maka',
-      body: 'The contributor guide covers development setup, testing and submitting changes.',
-      note: 'FOR CONTRIBUTORS',
+    h3: 'Get Maka',
+    p: 'Three paths, kept separate on purpose.',
+    nightly: {
+      title: 'Native CLI distribution',
+      body: 'A thin npm launcher selects the matching Rust executable.',
+      note: 'Preview',
+    },
+    source: {
+      title: 'Build from source',
+      body: 'Clone the repository, then run just setup and just run.',
+      note: 'APACHE-2.0',
     },
     releases: {
       title: 'Apache Releases',
       body: 'The signed source archive is the Apache release; installers are convenience artifacts.',
       note: 'KEYS · SHA-512 · .asc',
-    },
-  },
-  reads: {
-    h2: 'Reports and writing',
-    p: 'Everything the homepage claims links to a report or a document that owns the numbers.',
-    blogLog: {
-      cover: 'State(t) =\nProject(Log[0…t])',
-      small: 'docs/blogs',
-      h3: 'Log Is the Runtime',
-      meta: 'Kun Li · English / 中文',
-    },
-    blogTools: {
-      cover: 'Deferred\ntools',
-      small: 'docs/blogs',
-      h3: 'Beyond Function Calling: How Agents Reach the Real World',
-      meta: 'Kun Li · English / 中文',
-    },
-    nineArm: {
-      cover: '69 / 89',
-      small: 'docs/eval · nine-arm',
-      h3: 'Terminal-Bench 2.1, nine harnesses',
-      meta: 'Report and per-task CSV',
-    },
-    paired: {
-      cover: 'p = 0.0118',
-      small: 'docs/eval · paired',
-      h3: 'Maka vs OpenCode',
-      meta: 'Report and per-task CSV',
     },
   },
   footer: {
@@ -173,7 +151,7 @@ export const en: Copy = {
   },
   downloads: {
     title: 'Downloads',
-    lede: 'Download the Apache Maka source release and verify it before use.',
+    lede: 'The signed source archive is the release. Everything else on this page is a convenience build, and says so.',
     onThisPage: 'On this page',
     copy: 'Copy',
     copied: 'Copied',
@@ -181,6 +159,16 @@ export const en: Copy = {
       h3: 'Current status',
       release: {
         label: 'Latest release',
+      },
+      nightly: {
+        label: 'Native CLI',
+        value: 'Source-bound platform packages',
+        note: 'Preview',
+      },
+      source: {
+        label: 'Source',
+        value: 'apache/maka on GitHub, Apache License 2.0.',
+        note: 'APACHE-2.0',
       },
     },
     releases: {
@@ -197,11 +185,25 @@ export const en: Copy = {
       signature: 'Step 2: Check the signature',
       checksum: 'Step 3: Check the checksum',
     },
-    development: {
-      h2: 'Participate in development',
-      p: 'To contribute code or help with testing, read the contributor guide and follow the development mailing list. Development builds are not approved Apache releases.',
-      contribute: 'Contributor guide',
-      discuss: 'Development mailing list',
+    nightly: {
+      h2: 'Native CLI distribution',
+      note: 'Preview software, not an ASF release',
+      p: 'The Rust CLI is distributed as exact-version native platform packages. The npm launcher only selects and runs the executable; see the CLI distribution documentation for building and publishing.',
+      windows: 'macOS arm64, Linux x64 (glibc), Windows x64.',
     },
+    source: {
+      h2: 'Build from source',
+      prerequisites: [
+        'Rust stable, Node.js 26, npm 12.2.1 and just.',
+        'macOS needs Xcode Command Line Tools; Linux Computer Use needs the X11 development libraries.',
+      ],
+      clone: 'Step 1: Clone the repository',
+      build: 'Step 2: Install and build every workspace',
+      after: 'The contribution guide covers builds, validation and plugin development.',
+    },
+  },
+  features: {
+    h2: 'One native runtime',
+    p: 'Execution, permissions and durable state belong to one Rust Runtime Host.',
   },
 };

@@ -1,0 +1,61 @@
+{
+  "model": "gpt-6-luna",
+  "answers": [
+    {
+      "type": "predicate",
+      "name": "duplicate",
+      "probability": 1.0
+    },
+    {
+      "type": "choice",
+      "name": "route",
+      "choice": "billing",
+      "probabilities": [
+        {
+          "value": "billing",
+          "probability": 1.0
+        },
+        {
+          "value": "technical",
+          "probability": 0.0
+        }
+      ],
+      "confidence": 1.0
+    },
+    {
+      "type": "score",
+      "name": "urgency",
+      "score": 1.0,
+      "probabilities": [
+        {
+          "value": 0,
+          "label": "low",
+          "probability": 0.0
+        },
+        {
+          "value": 1,
+          "label": "medium",
+          "probability": 1.0
+        },
+        {
+          "value": 2,
+          "label": "high",
+          "probability": 0.0
+        }
+      ],
+      "confidence": 1.0
+    }
+  ],
+  "usage": {
+    "input_tokens": 422,
+    "input_tokens_details": {
+      "cached_tokens": 0,
+      "cache_write_tokens": 0
+    },
+    "output_tokens": 0,
+    "output_tokens_details": {
+      "reasoning_tokens": 0
+    },
+    "total_tokens": 422
+  }
+}

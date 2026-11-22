@@ -1,0 +1,48 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+[package]
+name = "maka-product-native"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+futures-util.workspace = true
+maka-agent-ports.workspace = true
+maka-agent-state.workspace = true
+maka-event-log.workspace = true
+maka-capabilities.workspace = true
+maka-plugin-core.workspace = true
+maka-config.workspace = true
+maka-model.workspace = true
+maka-network.workspace = true
+maka-providers.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+maka-computer-native.workspace = true
+maka-acp-native.workspace = true
+maka-agent-native.workspace = true
+maka-files-native.workspace = true
+maka-interactions-native.workspace = true
+maka-decisions-api-native.workspace = true
+maka-processes-native.workspace = true
+maka-host-runtime.workspace = true
+maka-settings-native.workspace = true
+maka-skills-native.workspace = true
+maka-web.workspace = true

@@ -1,0 +1,460 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+use super::*;
+#[cfg(any(unix, test))]
+use std::{
+    fs,
+    io::{self, Write},
+    path::Path,
+};
+
+#[cfg(unix)]
+pub(super) const HOST_AGENT: &str = "maka";
+#[cfg(any(unix, test))]
+const PROFILE: &str = "---
+name: maka
+description: Antigravity agent for Maka conversations
+mainAgent: true
+subagent: false
+tools: [search_web]
+---
+Use Maka MCP tools for workspace operations, session/Room coordination (`maka://session/<id>`), and automation. Pass `maka://` resource URIs directly to Maka's `Read` tool (via `mcp_maka_exec` or direct MCP tools) or use `Session*` tools.
+";
+
+#[cfg(unix)]
+pub(super) async fn host_agent_directory() -> Result<PathBuf, Error> {
+    let home = std::env::home_dir()
+        .ok_or_else(|| Error::Invalid("Cannot locate the account home for Antigravity".into()))?;
+    tokio::task::spawn_blocking(move || prepare_profile(&home))
+        .await
+        .map_err(|error| Error::Provider(format!("Antigravity agent setup task failed: {error}")))?
+        .map_err(|error| {
+            Error::Provider(format!(
+                "Cannot prepare the Maka Antigravity agent: {error}"
+            ))
+        })
+}
+
+#[cfg(any(unix, test))]
+fn prepare_profile(home: &Path) -> io::Result<PathBuf> {
+    let root = home.join(".maka/external-agents/antigravity/agent");
+    let agents = root.join(".agents/agents");
+    let profile = agents.join("maka.md");
+
+    match fs::read(&profile) {
+        Ok(current) if current == PROFILE.as_bytes() => return Ok(root),
+        Ok(_) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    fs::create_dir_all(&agents)?;
+    let mut staging = tempfile::NamedTempFile::new_in(&agents)?;
+    staging.write_all(PROFILE.as_bytes())?;
+    staging.persist(&profile)?;
+    Ok(root)
+}
+
+pub(super) async fn models(
+    config: &runtime::ResolvedCommand<'_>,
+    cwd: &str,
+    cancellation: CancellationToken,
+) -> Result<Value, Error> {
+    let stdout = read_command(config, cwd, &["models"], cancellation).await?;
+    let models = tokio::task::spawn_blocking(move || parse_models(&stdout))
+        .await
+        .map_err(|_| Error::Provider("agy model parser task failed".into()))??;
+    Ok(serde_json::json!({
+        "installation":{"kind":"available"},
+        "authentication":{"kind":"unknown","source":"agy models"},
+        "models":{"kind":"ok","models":models}
+    }))
+}
+
+pub(super) async fn usage_limits(
+    config: &runtime::ResolvedCommand<'_>,
+    cwd: &str,
+    cancellation: CancellationToken,
+) -> Result<Value, Error> {
+    let stdout = read_command(
+        config,
+        cwd,
+        &["-p", "/usage", "--output-format", "stream-json"],
+        cancellation,
+    )
+    .await?;
+    tokio::task::spawn_blocking(move || parse_usage(&stdout))
+        .await
+        .map_err(|_| Error::Provider("agy usage parser task failed".into()))?
+}
+
+fn parse_usage(stdout: &[u8]) -> Result<Value, Error> {
+    use maka_agent_api::external::ExternalUsageLimits;
+    use maka_agent_ports::provider::{UsageLimit, UsagePeriod};
+
+    #[derive(Deserialize)]
+    struct ResultEnvelope {
+        status: String,
+        num_turns: u64,
+        command: UsageCommand,
+    }
+    #[derive(Deserialize)]
+    struct UsageCommand {
+        name: String,
+        data: Groups,
+    }
+    #[derive(Deserialize)]
+    struct Groups {
+        groups: Vec<Group>,
+    }
+    #[derive(Deserialize)]
+    struct Group {
+        name: String,
+        description: Option<String>,
+        buckets: Vec<Bucket>,
+    }
+    #[derive(Deserialize)]
+    struct Bucket {
+        window: Window,
+        remaining_fraction: f64,
+        reset_time: Option<String>,
+        #[serde(default)]
+        disabled: bool,
+    }
+    #[derive(Deserialize)]
+    enum Window {
+        #[serde(rename = "weekly")]
+        Weekly,
+        #[serde(rename = "5h")]
+        FiveHours,
+    }
+    let invalid = || Error::Invalid("agy returned invalid usage limits".into());
+    let output = std::str::from_utf8(stdout).map_err(|_| invalid())?;
+    let mut result = None;
+    for line in output.lines() {
+        let mut event: Value = serde_json::from_str(line).map_err(|_| invalid())?;
+        if event["event"] == "result" {
+            if result.is_some() {
+                return Err(invalid());
+            }
+            result = Some(
+                serde_json::from_value::<ResultEnvelope>(event["result"].take())
+                    .map_err(|_| invalid())?,
+            );
+        }
+    }
+    let result = result.ok_or_else(invalid)?;
+    if result.status != "SUCCESS" || result.num_turns != 0 || result.command.name != "usage" {
+        return Err(invalid());
+    }
+    let mut limits = Vec::new();
+    for group in result.command.data.groups {
+        let label = group.name.trim();
+        if label.is_empty() || label.chars().any(char::is_control) {
+            return Err(invalid());
+        }
+        let models: Vec<String> = group
+            .description
+            .as_deref()
+            .and_then(|text| text.strip_prefix("Models within this group:"))
+            .into_iter()
+            .flat_map(|names| names.split(','))
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(Into::into)
+            .collect();
+        for bucket in group.buckets {
+            let period = UsagePeriod::Duration {
+                seconds: match bucket.window {
+                    Window::Weekly => 7 * 24 * 3600,
+                    Window::FiveHours => 5 * 3600,
+                },
+            };
+            if bucket.disabled {
+                limits.push(UsageLimit::Disabled {
+                    label: label.into(),
+                    period,
+                });
+            } else {
+                if !(0.0..=1.0).contains(&bucket.remaining_fraction) {
+                    return Err(invalid());
+                }
+                let resets_at = bucket
+                    .reset_time
+                    .map(|reset| {
+                        let timestamp: jiff::Timestamp = reset.parse().map_err(|_| invalid())?;
+                        u64::try_from(timestamp.as_second()).map_err(|_| invalid())
+                    })
+                    .transpose()?;
+                limits.push(UsageLimit::Window {
+                    label: Some(label.into()),
+                    period: Some(period),
+                    resets_at,
+                    used_percent: (1.0 - bucket.remaining_fraction) * 100.0,
+                    quantity: None,
+                    models: models.clone(),
+                });
+            }
+        }
+    }
+    serde_json::to_value(ExternalUsageLimits::Ready { limits }).map_err(|_| invalid())
+}
+
+async fn read_command(
+    config: &runtime::ResolvedCommand<'_>,
+    cwd: &str,
+    args: &[&str],
+    cancellation: CancellationToken,
+) -> Result<Vec<u8>, Error> {
+    use tokio::io::AsyncWriteExt;
+    if cancellation.is_cancelled() {
+        return Err(Error::Cancelled);
+    }
+    let mut command = config.command(cwd);
+    command.args(args);
+    let mut process = maka_process::pipe::spawn(command)
+        .await
+        .map_err(runtime::process_error)?;
+    let observed = async {
+        process
+            .stdin
+            .shutdown()
+            .await
+            .map_err(|_| Error::Provider("Could not close agy query input".into()))?;
+        let status = async {
+            process
+                .child
+                .wait()
+                .await
+                .map_err(|_| Error::CleanupUnconfirmed)
+        };
+        tokio::try_join!(
+            status,
+            query_output(&mut process.stdout, true),
+            query_output(&mut process.stderr, false),
+        )
+    };
+    let observed = tokio::select! {
+        biased;
+        () = cancellation.cancelled() => Err(Error::Cancelled),
+        result = tokio::time::timeout(runtime::SETUP_TIMEOUT, observed) => {
+            result.unwrap_or_else(|_| Err(Error::Provider("agy query timed out".into())))
+        }
+    };
+    let (status, stdout, _) = match observed {
+        Ok(value) => value,
+        Err(error) => {
+            process
+                .child
+                .terminate()
+                .await
+                .map_err(|_| Error::CleanupUnconfirmed)?;
+            tokio::time::timeout(std::time::Duration::from_secs(4), process.child.wait())
+                .await
+                .map_err(|_| Error::CleanupUnconfirmed)?
+                .map_err(|_| Error::CleanupUnconfirmed)?;
+            let drain = async {
+                let mut stdout_sink = tokio::io::sink();
+                let mut stderr_sink = tokio::io::sink();
+                tokio::try_join!(
+                    tokio::io::copy(&mut process.stdout, &mut stdout_sink),
+                    tokio::io::copy(&mut process.stderr, &mut stderr_sink),
+                )
+            };
+            tokio::time::timeout(std::time::Duration::from_secs(1), drain)
+                .await
+                .map_err(|_| Error::CleanupUnconfirmed)?
+                .map_err(|_| Error::CleanupUnconfirmed)?;
+            return Err(error);
+        }
+    };
+    if !status.success() {
+        // Native diagnostics may contain account information; they are never surfaced.
+        return Err(Error::Provider("agy query failed".into()));
+    }
+    Ok(stdout)
+}
+
+async fn query_output(
+    reader: &mut (impl tokio::io::AsyncRead + Unpin),
+    retain: bool,
+) -> Result<Vec<u8>, Error> {
+    use tokio::io::AsyncReadExt;
+    let mut result = Vec::new();
+    let mut buffer = [0; 8192];
+    let mut observed = 0usize;
+    loop {
+        let count = reader
+            .read(&mut buffer)
+            .await
+            .map_err(|_| Error::Provider("Could not read agy query output".into()))?;
+        if count == 0 {
+            return Ok(result);
+        }
+        observed += count;
+        if observed > runtime::MAX_MESSAGE_BYTES {
+            return Err(Error::Invalid(
+                "agy query output exceeds the 256 MiB observation budget".into(),
+            ));
+        }
+        if retain {
+            result.extend_from_slice(&buffer[..count]);
+        }
+    }
+}
+
+fn parse_models(bytes: &[u8]) -> Result<Vec<Value>, Error> {
+    let catalog = std::str::from_utf8(bytes)
+        .map_err(|_| Error::Invalid("agy models returned non-UTF-8 output".into()))?;
+    let mut rows = Vec::new();
+    let mut ids = std::collections::BTreeSet::new();
+    for row in catalog.lines() {
+        let (id, name) = row
+            .split_once('\t')
+            .filter(|(id, name)| !id.is_empty() && !name.is_empty() && !name.contains('\t'))
+            .ok_or_else(|| Error::Invalid("agy models returned a malformed TSV row".into()))?;
+        if !ids.insert(id) {
+            return Err(Error::Invalid("agy models returned duplicate IDs".into()));
+        }
+        rows.push((id, name));
+    }
+    // ACP accepts the base model and thought_level separately. Only collapse a
+    // family when the CLI actually lists multiple matching ID/name variants.
+    // A lone suffix can be part of a model's identity (e.g. GPT-OSS Medium).
+    let mut families: BTreeMap<_, Vec<_>> = BTreeMap::new();
+    for &(id, name) in &rows {
+        if let Some((base, label, effort)) = model_variant(id, name) {
+            families
+                .entry((base, label))
+                .or_default()
+                .push((id, effort));
+        }
+    }
+    families.retain(|(base, label), variants| {
+        variants.len() > 1
+            && !ids.contains(base)
+            && rows.iter().all(|(id, name)| {
+                let Some((prefix, effort)) = id.rsplit_once('-') else {
+                    return true;
+                };
+                prefix != *base
+                    || !EFFORTS.contains(&effort)
+                    || model_variant(id, name).is_some_and(|(_, candidate, _)| candidate == *label)
+            })
+    });
+    let mut emitted = std::collections::BTreeSet::new();
+    let mut models = Vec::new();
+    for (id, name) in rows {
+        if let Some((base, label, _)) = model_variant(id, name)
+            && let Some(variants) = families.get(&(base, label))
+        {
+            if !emitted.insert(base) {
+                continue;
+            }
+            let mut variants = variants.clone();
+            variants.sort_by_key(|(_, effort)| EFFORTS.iter().position(|level| level == effort));
+            models.push(serde_json::json!({
+                "id":base, "displayName":label,
+                "effortLevels":variants.iter().map(|(_, effort)| effort).collect::<Vec<_>>(),
+                "aliases":variants.iter().map(|(id, effort)| serde_json::json!({"id":id,"effort":effort})).collect::<Vec<_>>()
+            }));
+        } else {
+            models.push(serde_json::json!({"id":id,"displayName":name}));
+        }
+    }
+    Ok(models)
+}
+
+const EFFORTS: &[&str] = &[
+    "off", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
+];
+
+fn model_variant<'a>(id: &'a str, name: &'a str) -> Option<(&'a str, &'a str, &'a str)> {
+    let (base, effort) = id.rsplit_once('-')?;
+    let (label, suffix) = name.strip_suffix(')')?.rsplit_once(" (")?;
+    (!base.is_empty()
+        && !label.is_empty()
+        && EFFORTS.contains(&effort)
+        && suffix.eq_ignore_ascii_case(effort))
+    .then_some((base, label, effort))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn groups_only_proven_thinking_variants_and_preserves_single_or_unknown_models() {
+        let models = parse_models(b"opus-low\tOpus (Low)\nopus-medium\tOpus (Medium)\nopus-high\tOpus (High)\ngpt-oss-120b-medium\tGPT-OSS 120B (Medium)\ncustom-high\tDifferent model\ncustom-low\tCustom (Low)\n").unwrap();
+        assert_eq!(
+            models,
+            vec![
+                serde_json::json!({"id":"opus","displayName":"Opus","effortLevels":["low","medium","high"],
+                "aliases":[{"id":"opus-low","effort":"low"},{"id":"opus-medium","effort":"medium"},{"id":"opus-high","effort":"high"}]}),
+                serde_json::json!({"id":"gpt-oss-120b-medium","displayName":"GPT-OSS 120B (Medium)"}),
+                serde_json::json!({"id":"custom-high","displayName":"Different model"}),
+                serde_json::json!({"id":"custom-low","displayName":"Custom (Low)"}),
+            ]
+        );
+        assert!(parse_models(b"same\tOne\nsame\tTwo\n").is_err());
+    }
+
+    #[test]
+    fn antigravity_uses_one_static_agent_directory_in_maka() -> io::Result<()> {
+        let home = tempfile::tempdir()?;
+        let home = home.path();
+        let user_agents = home.join(".gemini/config/agents");
+        fs::create_dir_all(&user_agents)?;
+        fs::write(user_agents.join("mine.md"), "my own agent")?;
+
+        let root = home.join(".maka/external-agents/antigravity/agent");
+        assert_eq!(prepare_profile(home)?, root);
+        let profile = root.join(".agents/agents/maka.md");
+        let definition = fs::read_to_string(&profile)?;
+        assert!(definition.starts_with("---\nname: maka\n"));
+        assert_eq!(
+            definition.lines().find(|line| line.starts_with("tools:")),
+            Some("tools: [search_web]")
+        );
+        assert_eq!(prepare_profile(home)?, root);
+        assert_eq!(fs::read_to_string(profile)?, definition);
+        assert_eq!(
+            fs::read_to_string(user_agents.join("mine.md"))?,
+            "my own agent"
+        );
+        assert_eq!(fs::read_dir(user_agents)?.count(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn headless_usage_keeps_account_groups_and_disabled_windows() {
+        let output = br#"{"event":"command_result","command":{"name":"usage"}}
+{"event":"result","result":{"status":"SUCCESS","num_turns":0,"command":{"name":"usage","data":{"groups":[{"name":"Gemini Models","description":"Models within this group: Gemini 4 Neon, Orchestrator (Neon)","buckets":[{"window":"weekly","remaining_fraction":0,"reset_time":"2026-11-12T00:00:00Z"},{"window":"5h","remaining_fraction":0,"disabled":true}]},{"name":"Claude and GPT models","buckets":[{"window":"5h","remaining_fraction":0.75}]}]}}}}
+"#;
+        assert_eq!(
+            parse_usage(output).unwrap(),
+            json!({"kind":"ready","limits":[
+                {"kind":"window","label":"Gemini Models","period":{"kind":"duration","seconds":604800},"usedPercent":100.0,"resetsAt":1794441600u64,"models":["Gemini 4 Neon","Orchestrator (Neon)"]},
+                {"kind":"disabled","label":"Gemini Models","period":{"kind":"duration","seconds":18000}},
+                {"kind":"window","label":"Claude and GPT models","period":{"kind":"duration","seconds":18000},"usedPercent":25.0}
+            ]})
+        );
+    }
+}

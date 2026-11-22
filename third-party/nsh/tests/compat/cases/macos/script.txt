@@ -1,0 +1,259 @@
+# What a user does and sees (compat/apps.rs): each case after its tap.
+platform macos
+# desktop-props
+tap id:case-desktop-props
+expect Title bar
+expect Desktop: true desktop desktop
+prop id:bar desktop.windowDrag true
+prop id:body windowDrag false
+covers [props] desktop
+covers [props] desktop.windowDrag
+# mod-keymap-pass
+tap id:case-mod-keymap-pass
+expect Passed: 0 Focus: none
+# The binding hears Tab and the focus still moves, to the first view and on.
+key tab
+expect Passed: 1 Focus: first
+key tab
+expect Passed: 2 Focus: second
+covers [nsh] keymap
+# mod-keymap-focus
+tap id:case-mod-keymap-focus
+# The focus on no control: Return is the binding's.
+key enter
+expect Allows: 1 Denies: 0 Sends: 0
+# On Deny, Return and Space press it; Mod+Return still fires its binding.
+key tab
+key enter
+expect Allows: 1 Denies: 1 Sends: 0
+key space
+expect Allows: 1 Denies: 2 Sends: 0
+key mod+enter
+expect Allows: 1 Denies: 2 Sends: 1
+covers [nsh] keymap
+# mod-keymap-for-focus
+tap id:case-mod-keymap-for-focus
+# On the tile, Space is its forFocus binding's; Return still presses it.
+key tab
+key space
+expect Opens: 0 Flips: 1
+key enter
+expect Opens: 1 Flips: 1
+# On the next view, the tile's binding is gone: Space presses that view.
+key tab
+key space
+expect Opens: 1 Flips: 1
+covers [nsh] keymap
+# mod-standard-system
+tap id:case-mod-standard-system
+expect console.identity=true
+expect console.results=true
+expect os.identity=true
+expect os.metadata=true
+expect os.home=true
+expect process.identity=true
+expect process.environment=true
+expect process.dataDir=true
+expect process.logFile=true
+expect process.runDenied=true
+expect process.spawnDenied=true
+expect process.exitDenied=true
+expect process.nextTickInvalid=true
+expect process.nextTick=true
+log standard-system log
+log standard-system info
+log standard-system debug
+log standard-system warn
+log standard-system error
+covers [console] default
+covers [os] default
+covers [os] EOL
+covers [os] arch
+covers [os] homedir
+covers [os] platform
+covers [process] default
+covers [process] arch
+covers [process] platform
+covers [process] run
+covers [process] spawn
+covers [process] exit
+covers [process] nextTick
+covers [globals] process
+expect process.childConstructor=true
+covers [process] ChildProcess
+# mod-standard-files
+tap id:case-mod-standard-files
+# Files need a desktop; the app declares fs read and write in ${dataDir}.
+expect Data dir: true
+expect Made: true
+expect Read: hello files
+expect Bytes: true 11
+expect Stat: file true dir false size 11
+expect Lstat: dir true link false
+expect Listed: a.txt,drafts
+expect Entries: a.txt:file,drafts:dir
+expect Renamed: false true
+expect Removed: 0
+expect Missing: ENOENT
+# Outside the granted root, and what the app did not declare: refused,
+# with the capability the call needs.
+expect Outside: ERR_ACCESS_DENIED fs
+expect Escape: ERR_ACCESS_DENIED fs
+expect Socket: ERR_ACCESS_DENIED network
+expect Process: ERR_ACCESS_DENIED process
+covers [fs/promises] default
+covers [fs/promises] readFile
+covers [fs/promises] writeFile
+covers [fs/promises] readdir
+covers [fs/promises] exists
+covers [fs/promises] unlink
+covers [fs/promises] rmdir
+covers [fs/promises] mkdir
+covers [fs/promises] stat
+covers [fs/promises] lstat
+covers [fs/promises] rename
+covers [net] connect
+covers [process] run
+covers [process] default
+# base-dock
+tap id:case-base-dock
+# Two groups, the first 200 wide; each shows its tabs (in a row, 60
+# wide: `tabBarClass`, `tabClass`) and its displayed panel, the others
+# placed and hidden.
+expect Tab a*
+expect Tab b
+expect Tab c*
+expect Count a: 0
+expect Count c: 0
+# The other panels are placed but hidden (out of the layout): not shown.
+absent Count b: 0
+expect Layout h([a* b]:200 [c*])
+expect Active a+ c+
+frame parent:parent:parent:id:tab-b 60 0 60 24
+style parent:parent:parent:id:tab-a backgroundColor #336699ff
+prop parent:parent:parent:id:tab-b role tab
+# A press selects a tab: the layout comes back with it displayed.
+tap text:Tab b
+expect Layout h([a b*]:200 [c*])
+# Placed all along, it kept its state.
+expect Count b: 0
+expect Active a+ c+ a- b+
+tap text:Tab a
+expect Count a: 0
+tap id:inc-a
+expect Count a: 1
+# A drag of tab a (on a desktop, once it moves) over the middle of c's
+# group shows the drop indicator there; the release merges it into that
+# group, and the panel's content moves with it: its count is kept.
+touch start id:tab-a 10 12
+touch move 40 12
+touch move 290 150
+expect Drop into
+expect Preview a
+style parent:parent:parent:id:drop backgroundColor #ff0000ff
+touch end
+absent Drop into
+absent Preview a
+expect Layout h([b*]:200 [c a*])
+expect Count a: 1
+expect Removed none
+# The ref closes a panel (its group goes), and zooms the group of c.
+tap id:close-b
+expect Layout h([c a*])
+expect Removed b
+tap id:zoom-c
+expect Zoom a
+expect Count a: 1
+tap id:unzoom
+expect Zoom out
+covers [nsh/base] DockArea
+covers [props] DockArea.layout
+covers [props] DockArea.compact
+covers [props] DockArea.tabBarClass
+covers [props] DockArea.tabClass
+covers [props] DockArea.dropIndicatorClass
+covers [props] DockArea.renderTab
+covers [props] DockArea.renderPanel
+covers [props] DockArea.renderDropIndicator
+covers [props] DockArea.renderDragPreview
+covers [events] DockArea.onLayoutChange
+covers [events] DockArea.onPanelRemove
+covers [events] DockArea.onZoomChange
+covers [events] DockArea.onPanelActiveChange
+# mod-access-denied
+tap id:case-mod-access-denied
+# The app declares files only: the clipboard, the picker, opening URLs and
+# the network are refused. Each call's promise rejects with
+# ERR_ACCESS_DENIED, the capability and what was asked for; fetch with a
+# TypeError, as every failed fetch.
+tap id:run
+expect Clipboard: Error ERR_ACCESS_DENIED clipboard ""
+expect Clipboard denied: 7 of 7
+expect Picker: Error ERR_ACCESS_DENIED picker ""
+expect Picker files: Error ERR_ACCESS_DENIED picker ""
+expect Open: Error ERR_ACCESS_DENIED openUrl "https://example.com/docs"
+expect Image size: Error ERR_ACCESS_DENIED network "https://example.com/a.png"
+expect Image prefetch: Error ERR_ACCESS_DENIED network "https://example.com/b.png"
+expect Fetch: TypeError ERR_ACCESS_DENIED network "https://example.com/data"
+expect WebSocket: Error ERR_ACCESS_DENIED network "ws://example.com/feed"
+expect WebSocket credentials: Error ERR_ACCESS_DENIED network "ws://example.com/feed"
+expect Global WebSocket: error,1006,false
+covers [nsh] Clipboard
+covers [nsh] Picker
+covers [nsh] openUrl
+covers [nsh] Image
+# web-send-input
+tap id:case-web-send-input
+# The headless backend selects macOS props but delivers no trusted input.
+expect Input available: false
+tap id:send
+expect Sent input
+covers [nsh] WebView
+# material-composition
+tap id:case-material-composition
+expect Material composition
+prop id:material-surface macos.backdrop material=hudWindow blending=behindWindow state=followsWindowActiveState
+style id:material-surface glassTintColor #ff000080
+style id:material-surface glassEffect regular
+style id:material-surface mixBlendMode color
+tap id:material-restyle
+prop id:material-surface macos.backdrop material=hudWindow blending=behindWindow state=followsWindowActiveState
+style id:material-surface glassTintColor #ff000080
+tap id:material-change
+prop id:material-surface macos.backdrop material=sidebar state=inactive
+tap id:material-clear
+noprop id:material-surface macos.backdrop
+style id:material-surface backdropFilter blur(10)
+style id:material-surface glassEffect regular
+tap id:tint-change
+style id:material-surface glassTintColor #00ff0040
+tap id:tint-clear
+nostyle id:material-surface glassTintColor
+style id:material-surface glassEffect regular
+covers [props] macos
+covers [props] macos.backdrop
+covers [styles] glassTintColor
+# application-refused
+tap id:case-application-refused
+wait 300
+expect Minimized: unknown
+expect Launch at login: ERR_ACCESS_DENIED application
+covers [nsh/desktop] currentWindow
+# base-select-cover
+tap id:case-base-select-cover
+# The chosen row opens over its trigger (150 × 30 at 20, 300).
+tap text:CoverSelect
+expect Lime
+frame parent:scroll:label:Lime 20 300 150 30
+touch start text:Elsewhere 5 5
+touch end
+absent Lime
+# With `cover={false}`, below its trigger (at 20, 338), although an item
+# is chosen.
+tap text:BelowSelect
+expect Kiwi
+frame parent:scroll:label:Kiwi 20 368 150 30
+touch start text:Elsewhere 5 5
+touch end
+absent Kiwi
+covers [props] Select.cover

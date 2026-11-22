@@ -1,0 +1,287 @@
+import { platform, signal, Text, View } from "nsh";
+import { Menu, MenuItem, Pagination, type PaginationItemState } from "nsh/base";
+import { Appear, Button, Caption, Card, colors, DemoPage, density, desktop, Icon, menuItemLabel, menuItemLook, mono, Segmented, terminal, paginationArrows, paginationItemClass, LabeledToggle, ghostOutdent, menuPopup } from "../ui";
+
+// `nsh/base`'s `Pagination` owns which pages show (the first and the last,
+// the current one's neighbours, ellipses for the rest), the presses,
+// Previous and Next going disabled at the ends, the keyboard focus and the
+// navigation landmark; the page is the app's. The look is the gallery's,
+// in `itemClass`: quiet items, the current page lit as a primary button,
+// citrus under dark text (`selected:`), fading between pages with
+// `transition-colors`, the ends dimmed (`disabled:`); the items show the
+// page numbers and Previous / Next as chevrons (`paginationArrows`), so a
+// row fits a phone's width. The archive draws its own items (`renderItem`), for the
+// menu its ellipses open.
+// The rows of a page fade in when it changes. Nothing moves with reduced
+// motion.
+
+const pointer = platform.desktop;
+
+/** Every item's look (`paginationItemClass`): the current page `selected:`,
+ * the ends `disabled:`; outlined on a touch screen and in a compact pager. */
+const itemClass = paginationItemClass();
+const outlined = paginationItemClass({ outlined: true });
+/** The archive's items: 28 wide at least and narrower padding, so a row of nine with five-digit pages fits one line. */
+const tightItem = itemClass.replace("min-w-8", "min-w-7").replace("px-2", "px-1");
+
+/** `n` with thousands separators, the same on every platform. */
+const grouped = (n: number) => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+
+/** The pages an ellipsis menu lists: those it hides nearest the current page, at most 100. */
+function hiddenPages(start: number, end: number, current: number) {
+  const last = 100;
+  const [from, to] = end - start <= last ? [start, end] : start > current ? [start, start + last] : [end - last, end];
+  return Array.from({ length: to - from }, (_, i) => from + i);
+}
+
+/** An ellipsis that opens a menu of the pages it hides (`gpui-component`'s
+ * dropdown): up to 100 rows, so the menu scrolls (as the Menu demo's long
+ * menu), the arrow keys moving through its rows and into view. */
+function JumpMenu(props: { start: number; end: number; current: number; onPick: (page: number) => void }) {
+  const pages = () => hiddenPages(props.start, props.end, props.current);
+  const list = (
+    <Each of={pages()}>
+      {(page) => (
+        <MenuItem onSelect={() => props.onPick(page())} {...menuItemLook()}>
+          <Text style={{ ...menuItemLabel(), fontVariant: ["tabular-nums"] }}>{grouped(page())}</Text>
+        </MenuItem>
+      )}
+    </Each>
+  );
+  return (
+    <Menu
+      offset={4}
+      margin={8}
+      {...menuPopup({ minWidth: 80 })}
+      trigger={
+        <View
+          accessibilityLabel={`Pages ${grouped(props.start)} to ${grouped(props.end - 1)}`}
+          // The whole item, its padding too, opens the menu: 44 points on a touch screen.
+          class={`${pointer ? "min-w-8" : "min-w-11"} -mx-2 self-stretch items-center justify-center rounded-md px-2 hover:bg-hover`}
+        >
+          <Text style={{ color: colors.muted, fontSize: density.body }}>…</Text>
+        </View>
+      }
+    >
+      {list}
+    </Menu>
+  );
+}
+
+/**
+ * Pagination: search results with a count, a table's footer with its page
+ * size, a compact pager for a phone, and an archive of ten thousand pages
+ * with jump menus and an offline state.
+ */
+export function PaginationDemo() {
+  function Results() {
+    const total = 238;
+    const perPage = 10;
+    const pages = Math.ceil(total / perPage);
+    const page = signal(1);
+    const first = () => (page() - 1) * perPage + 1;
+    const last = () => Math.min(page() * perPage, total);
+    const rows = () => Array.from({ length: last() - first() + 1 }, (_, i) => first() + i);
+    return (
+      <Card title="Search results" subtitle={`“native shell”: ${total} results`}>
+        <View style={{ gap: 6, minHeight: pointer ? 260 : 320 }}>
+          <Each of={rows()} key={(n) => n}>
+            {(n, i) => (
+              <Appear index={i()}>
+                <View style={{ gap: 2, paddingVertical: 4 }}>
+                  <Text style={{ fontSize: density.body, fontWeight: "500", color: colors.accent }}>{`Result ${n()}: Native views for generated UI`}</Text>
+                  <Text style={{ fontSize: 12, color: colors.faint }}>{`docs.example.com/guide/${n()}`}</Text>
+                </View>
+              </Appear>
+            )}
+          </Each>
+        </View>
+        <View style={{ gap: 10, paddingTop: 10, borderTopWidth: 1, borderTopColor: colors.line, alignItems: pointer ? "flex-start" : "center" }}>
+          <Pagination
+            page={page()}
+            totalPages={pages}
+            // Seven pages where the card is wide, five in a phone-wide one,
+            // so the row and its chevrons fit on one line.
+            visiblePages={desktop() ? 7 : 5}
+            compact={!pointer}
+            accessibilityLabel="Search results pages"
+            previousAccessibilityLabel="Previous"
+            nextAccessibilityLabel="Next"
+            class={pointer ? "gap-0.5 flex-nowrap" : "items-center justify-between self-stretch"}
+            itemClass={pointer ? itemClass : outlined}
+            renderItem={paginationArrows}
+            onChange={({ page: next }) => page.set(next)}
+          >
+          <If when={!pointer}>
+            <Text style={{ fontSize: density.body, color: colors.muted, fontVariant: ["tabular-nums"] }}>{`${page()} / ${pages}`}</Text>
+          </If>
+          </Pagination>
+          {/* Full width: the caption's label grows, which a centered column would squeeze to nothing. */}
+          <View style={{ alignSelf: "stretch" }}>
+            <Caption label={`Showing ${first()}–${last()} of ${total}`} note={`page ${page()} of ${pages}`} />
+          </View>
+        </View>
+      </Card>
+    );
+  }
+
+  function TableFooter() {
+    const orders = 1284;
+    const sizes = ["10", "25", "50"] as const;
+    const size = signal<(typeof sizes)[number]>("25");
+    const page = signal(1);
+    const per = () => Number(size());
+    const pages = () => Math.ceil(orders / per());
+    const first = () => (page() - 1) * per() + 1;
+    const last = () => Math.min(page() * per(), orders);
+    const shown = () => Array.from({ length: Math.min(4, last() - first() + 1) }, (_, i) => first() + i);
+    return (
+      <Card title="Table footer" subtitle="Newest first; the first row stays in view">
+        <View style={{ gap: 2 }}>
+          <Each of={shown()} key={(n) => n}>
+            {(n) => (
+              <View style={{ flexDirection: "row", justifyContent: "space-between", paddingVertical: 6, borderBottomWidth: 1, borderBottomColor: colors.line }}>
+                <Text style={{ fontSize: density.body, color: colors.text, fontFamily: mono }}>{`#${20000 - n()}`}</Text>
+                <Text style={{ fontSize: density.body, color: colors.muted, fontVariant: ["tabular-nums"] }}>{`$${((n() * 37) % 900) + 20}.00`}</Text>
+              </View>
+            )}
+          </Each>
+          <Text style={{ fontSize: 12, color: colors.faint, paddingTop: 4 }}>{`and ${last() - first() + 1 - shown().length} more on this page`}</Text>
+        </View>
+        <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+            <Text style={{ fontSize: 12, color: colors.muted }}>Rows per page</Text>
+            <Segmented
+              size="small"
+              options={sizes.map((s) => ({ value: s, label: s }))}
+              value={size()}
+              onChange={(next) => {
+                // The row at the top stays on the page shown.
+                const row = first();
+                size.set(next);
+                page.set(Math.floor((row - 1) / Number(next)) + 1);
+              }}
+            />
+          </View>
+          <Pagination
+            page={page()}
+            totalPages={pages()}
+            accessibilityLabel="Orders pages"
+            previousAccessibilityLabel="Newer"
+            nextAccessibilityLabel="Older"
+            compact={!pointer}
+            class={pointer ? "gap-1" : "items-center justify-between self-stretch"}
+            itemClass={pointer ? itemClass : outlined}
+            renderItem={paginationArrows}
+            onChange={({ page: next }) => page.set(next)}
+          >
+          <If when={!pointer}>
+            <Text style={{ fontSize: density.body, color: colors.muted, fontVariant: ["tabular-nums"] }}>{`${page()} / ${pages()}`}</Text>
+          </If>
+          </Pagination>
+        </View>
+        <Caption label={`Rows ${grouped(first())}–${grouped(last())} of ${grouped(orders)}`} note={`${pages()} pages`} />
+      </Card>
+    );
+  }
+
+  function Compact() {
+    const chapters = ["Arrival", "The Harbor", "Old Maps", "Low Tide", "The Lighthouse", "Fog", "Signals", "The Crossing", "North Shore", "Embers", "Return", "Afterword"];
+    const page = signal(1);
+    return (
+      <Card title="Compact" subtitle="Previous, the page in words, Next: a reader on a phone">
+        <View style={{ gap: 4, paddingVertical: 8 }}>
+          <Text style={{ fontSize: 12, color: colors.faint, letterSpacing: 0.4 }}>{`CHAPTER ${page()}`}</Text>
+          <Text style={{ fontSize: 20, fontWeight: "600", color: colors.text }}>{chapters[page() - 1]}</Text>
+        </View>
+        <Pagination
+          compact
+          page={page()}
+          totalPages={chapters.length}
+          accessibilityLabel="Chapters"
+          previousAccessibilityLabel="Previous chapter"
+          nextAccessibilityLabel="Next chapter"
+          class="items-center justify-between"
+          itemClass={outlined}
+          renderItem={paginationArrows}
+          onChange={({ page: next }) => page.set(next)}
+        >
+          <Text style={{ fontSize: density.body, color: colors.muted, fontVariant: ["tabular-nums"] }}>{`${page()} / ${chapters.length}`}</Text>
+        </Pagination>
+      </Card>
+    );
+  }
+
+  function Archive() {
+    const pages = 10000;
+    const page = signal(5000);
+    // Five pages fit a two-column card's width at five-digit page numbers;
+    // more wrap to a second row.
+    const visible = signal<"5" | "7" | "9">("5");
+    const offline = signal(false);
+    const log = signal<string[]>([]);
+    const go = (next: number) => {
+      page.set(next);
+      log.set([`onChange({ page: ${next} })`, ...log()].slice(0, 3));
+    };
+    // The one pagination that draws its items: an ellipsis opens a menu of
+    // the pages it hides, numbers get separators, Previous and Next are
+    // chevrons. `renderItem` draws again every item whose state changed,
+    // which a page change is for most of them; classes cost less.
+    const draw = (item: PaginationItemState) => {
+      if (item.kind === "ellipsis") return <JumpMenu start={item.start!} end={item.end!} current={page()} onPick={go} />;
+      if (item.kind === "page") return <Text style={{ fontVariant: ["tabular-nums"] }}>{grouped(item.page)}</Text>;
+      // A terminal draws no icons: the chevrons are glyphs.
+      if (terminal) return <Text style={{ color: colors.muted }}>{item.kind === "previous" ? "‹" : "›"}</Text>;
+      return (
+        <View style={item.kind === "previous" ? { transform: [{ rotate: "180deg" }] } : undefined}>
+          <Icon name="chevron" size={14} tint={colors.text} />
+        </View>
+      );
+    };
+    return (
+      <Card
+        title="Ten thousand pages"
+        subtitle="An ellipsis opens the pages it hides"
+        right={<LabeledToggle label="Offline" value={offline()} onChange={(v) => offline.set(v)} />}
+      >
+        <If when={pointer}>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+            <Text style={{ fontSize: 12, color: colors.muted }}>Pages shown</Text>
+            <Segmented size="small" options={(["5", "7", "9"] as const).map((v) => ({ value: v, label: v }))} value={visible()} onChange={(v) => visible.set(v)} />
+          </View>
+        </If>
+        <Pagination
+          page={page()}
+          totalPages={pages}
+          visiblePages={Number(visible())}
+          disabled={offline()}
+          accessibilityLabel="Archive pages"
+          previousAccessibilityLabel="Previous archive page"
+          nextAccessibilityLabel="Next archive page"
+          compact={!pointer}
+          class={pointer ? "gap-0.5 flex-nowrap" : "items-center justify-between self-stretch"}
+          itemClass={pointer ? tightItem : outlined}
+          renderItem={draw}
+          onChange={({ page: next }) => go(next)}
+        >
+        <If when={!pointer}>
+          <Text style={{ fontSize: density.body, color: colors.muted, fontVariant: ["tabular-nums"] }}>{`${grouped(page())} / ${grouped(pages)}`}</Text>
+        </If>
+        </Pagination>
+        <View style={{ flexDirection: "row", gap: 8, ...ghostOutdent("left", "small") }}>
+          <Button label="First page" variant="ghost" size="small" disabled={offline() || page() === 1} onPress={() => go(1)} />
+          <Button label="Last page" variant="ghost" size="small" disabled={offline() || page() === pages} onPress={() => go(pages)} />
+        </View>
+        <Caption label={offline() ? "Offline: no presses, no focus, dimmed for screen readers" : `Page ${grouped(page())} of ${grouped(pages)}`} />
+        <View style={{ gap: 2, display: log().length ? "flex" : "none" }}>
+          <Each of={log()}>
+            {(line, i) => <Text style={{ fontSize: 12, fontFamily: mono, color: i() === 0 ? colors.text : colors.faint }}>{line()}</Text>}
+          </Each>
+        </View>
+      </Card>
+    );
+  }
+
+  return <DemoPage cards={[Results, TableFooter, Compact, Archive]} />;
+}

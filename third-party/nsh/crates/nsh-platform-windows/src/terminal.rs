@@ -1,0 +1,1351 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+//! A hidden Win32 surface, drawn by Direct2D for terminal graphics transport.
+//! Construct and pump it on one OLE UI thread; no window is shown.
+use std::{
+    cell::{Cell, RefCell},
+    ops::Range,
+    rc::Rc,
+    sync::{Arc, mpsc},
+    time::{Duration, Instant},
+};
+
+use nsh_terminal::{
+    Bounds, DevicePixels, FrameClock, FrameToken, InputAdmissions, NativeSurface, PlatformInput,
+    Points, PreparedFrame, Size, TextInputTarget,
+};
+use windows::Win32::{
+    System::Ole::{OleInitialize, OleUninitialize},
+    UI::WindowsAndMessaging::{
+        DestroyWindow, DispatchMessageW, MSG, PM_REMOVE, PeekMessageW, TranslateMessage, WM_QUIT,
+    },
+};
+
+use crate::{
+    AppOptions, AppView,
+    input::{KeyEvent, Modifiers, PointerEvent, PointerKind, WheelEvent},
+};
+
+#[derive(Default)]
+struct ClipboardState {
+    text: Option<String>,
+    pending: Option<String>,
+}
+type Clipboard = Rc<RefCell<ClipboardState>>;
+thread_local! { static CLIPBOARD: RefCell<Option<Clipboard>> = const { RefCell::new(None) }; }
+pub(crate) fn clipboard_write(text: &str) -> bool {
+    CLIPBOARD.with(|slot| {
+        if let Some(out) = &*slot.borrow() {
+            let mut state = out.borrow_mut();
+            state.text = Some(text.to_owned());
+            state.pending = Some(text.to_owned());
+            true
+        } else {
+            false
+        }
+    })
+}
+pub(crate) fn clipboard_read() -> Option<String> {
+    CLIPBOARD.with(|slot| {
+        slot.borrow()
+            .as_ref()
+            .and_then(|state| state.borrow().text.clone())
+    })
+}
+struct OleApartment;
+impl Drop for OleApartment {
+    fn drop(&mut self) {
+        // SAFETY: paired with initialization on this UI thread, after all native objects drop.
+        unsafe { OleUninitialize() };
+    }
+}
+struct ClipboardScope(Option<Clipboard>);
+impl ClipboardScope {
+    fn enter(value: Clipboard) -> Self {
+        Self(CLIPBOARD.with(|slot| slot.replace(Some(value))))
+    }
+}
+impl Drop for ClipboardScope {
+    fn drop(&mut self) {
+        CLIPBOARD.with(|slot| slot.replace(self.0.take()));
+    }
+}
+
+type PendingFence = (mpsc::Receiver<()>, Box<dyn FnOnce(Result<(), String>)>);
+
+/// UI-thread-owned native terminal renderer. Drop releases the engine and hidden HWND.
+pub struct TerminalSurface {
+    view: Rc<AppView>,
+    frames: RefCell<FrameClock>,
+    admissions: RefCell<InputAdmissions>,
+    on_frame: RefCell<Box<dyn FnMut(PreparedFrame)>>,
+    error: Rc<RefCell<Option<String>>>,
+    clipboard: Clipboard,
+    paused: Cell<bool>,
+    active: Cell<bool>,
+    closed: Cell<bool>,
+    focus_generation: Cell<u64>,
+    stamp: Cell<(u64, u64)>,
+    fence: RefCell<Option<PendingFence>>,
+    _ole: OleApartment,
+}
+impl TerminalSurface {
+    /// Creates an invisible native host with explicit application capabilities.
+    pub fn new(
+        config: nsh_engine::EngineConfig,
+        size: Size<DevicePixels>,
+        scale: f32,
+        on_frame: Box<dyn FnMut(PreparedFrame)>,
+        wake: Arc<dyn Fn() + Send + Sync>,
+    ) -> Result<Self, String> {
+        let mut frames = FrameClock::default();
+        frames.set_viewport(size, scale)?;
+        // SAFETY: initialized and released on this object's owning UI thread.
+        unsafe { OleInitialize(None) }.map_err(|e| e.to_string())?;
+        let ole = OleApartment;
+        let view = AppView::new(None, AppOptions::default()).map_err(|e| e.to_string())?;
+        let error = Rc::new(RefCell::new(None));
+        let out = error.clone();
+        view.surface()
+            .set_error_handler(Box::new(move |e| *out.borrow_mut() = Some(e.to_owned())));
+        *view.surface().terminal_wake.borrow_mut() = Some(wake);
+        view.surface().terminal_active.set(Some(true));
+        let mut env = view.surface().environment.get();
+        env.ctrl_for_command = true;
+        view.surface().environment.set(env);
+        let result = Self {
+            view,
+            frames: RefCell::new(frames),
+            admissions: RefCell::default(),
+            on_frame: RefCell::new(on_frame),
+            error,
+            clipboard: Rc::default(),
+            paused: Cell::new(false),
+            active: Cell::new(true),
+            closed: Cell::new(false),
+            stamp: Cell::new((0, 0)),
+            fence: RefCell::new(None),
+            focus_generation: Cell::new(0),
+            _ole: ole,
+        };
+        result.set_viewport(size, scale)?;
+        result.load_with_config(config);
+        if let Some(error) = result.take_error() {
+            return Err(error);
+        }
+        Ok(result)
+    }
+    fn scope(&self) -> ClipboardScope {
+        ClipboardScope::enter(self.clipboard.clone())
+    }
+    fn sync_focus(&self) -> Option<TextInputTarget> {
+        let generation = self.view.surface().terminal_focus_generation.get();
+        if self.focus_generation.replace(generation) != generation {
+            self.admissions.borrow_mut().focus(None);
+        }
+        let node = if self.paused.get()
+            || !self.active.get()
+            || self.closed.get()
+            || !self.view.surface().running()
+        {
+            None
+        } else {
+            crate::text_input::terminal_target(self.view.surface()).map(|(id, _)| id)
+        };
+        self.admissions.borrow_mut().focus(node)
+    }
+    fn pointer(
+        &self,
+        kind: PointerKind,
+        position: nsh_terminal::Point<Points>,
+        button: u8,
+        buttons: u8,
+        modifiers: nsh_terminal::Modifiers,
+        clicks: usize,
+    ) {
+        crate::input::pointer(
+            self.view.surface(),
+            PointerEvent {
+                kind,
+                x: position.x.0,
+                y: position.y.0,
+                button,
+                buttons,
+                pointer: 1,
+                touch: false,
+                pen: false,
+                time: self.view.surface().clock(),
+                modifiers: mods(modifiers),
+                clicks: clicks as u32,
+            },
+        );
+    }
+    fn key(&self, stroke: nsh_terminal::Keystroke, down: bool, repeat: bool) {
+        let key = nsh_core::keymap::Keystroke::parse(&stroke.key, nsh_core::platform::Os::Windows)
+            .ok()
+            .and_then(|k| k.key.virtual_key());
+        if down
+            && matches!(key, Some(0x0D | 0x1B))
+            && crate::text_input::terminal_is_composing(self.view.surface())
+        {
+            return;
+        }
+        let handled = key.is_some_and(|vk| {
+            crate::input::key(
+                self.view.surface(),
+                KeyEvent::synthetic(vk, down, repeat, mods(stroke.modifiers)),
+            )
+        });
+        if down
+            && !handled
+            && !stroke.modifiers.control
+            && !stroke.modifiers.platform
+            && let Some(text) = stroke.key_char
+        {
+            crate::text_input::char_input(self.view.surface(), &text);
+        }
+    }
+}
+impl NativeSurface for TerminalSurface {
+    fn set_selected_text_range(&self, range: Range<usize>) -> Result<(), String> {
+        let view =
+            crate::text_input::focused(self.view.surface()).ok_or("no focused native editor")?;
+        crate::text_input::terminal_validate_selection(self.view.surface(), &range)?;
+        let start = u32::try_from(range.start).map_err(|e| e.to_string())?;
+        let end = u32::try_from(range.end).map_err(|e| e.to_string())?;
+        crate::text_input::set_selection(&view, start, end);
+        Ok(())
+    }
+    fn is_active(&self) -> bool {
+        self.active.get() && !self.closed.get() && self.view.surface().running()
+    }
+    fn stop(&self) {
+        self.paused.set(true);
+        self.admissions.borrow_mut().focus(None);
+        self.frames.borrow_mut().revoke();
+        self.cancel_pointer();
+        self.view.stop();
+        let fence = self.fence.borrow_mut().take();
+        if let Some((_, done)) = fence {
+            done(Err("native app stopped before input fence".into()));
+        }
+    }
+    fn viewport_size(&self) -> Size<DevicePixels> {
+        self.frames.borrow().size()
+    }
+    fn scale_factor(&self) -> f32 {
+        self.frames.borrow().scale()
+    }
+    fn pressable_bounds(&self, label: &str) -> Vec<Bounds<Points>> {
+        pressable_bounds_in(self.view.surface(), label)
+    }
+    fn editor_text(&self) -> Option<String> {
+        crate::text_input::terminal_text(self.view.surface())
+    }
+    fn set_clipboard_text(&self, text: &str) {
+        self.clipboard.borrow_mut().text = Some(text.to_owned());
+        if !crate::system::set_clipboard_text(text) {
+            *self.error.borrow_mut() = Some("cannot set Windows clipboard".into());
+        }
+    }
+    fn drop_paths(&self, paths: Vec<std::path::PathBuf>, position: nsh_terminal::Point<Points>) {
+        if self.paused.get() || self.closed.get() || !self.view.surface().running() {
+            return;
+        }
+        if let Err(error) = self.set_active(true) {
+            *self.error.borrow_mut() = Some(error);
+            return;
+        }
+        crate::file_drop::terminal_drop(self.view.surface(), paths, position);
+    }
+    fn set_viewport(&self, size: Size<DevicePixels>, scale: f32) -> Result<(), String> {
+        if self.closed.get() {
+            return Err("terminal surface stopped".into());
+        }
+        self.frames.borrow_mut().set_viewport(size, scale)?;
+        self.cancel_pointer();
+        self.view
+            .surface()
+            .resized((size.width.0 as u32, size.height.0 as u32), scale);
+        self.stamp.set((0, 0));
+        Ok(())
+    }
+    fn pump_with_draw(&self, draw: bool) -> bool {
+        if self.closed.get() {
+            return false;
+        }
+        let _scope = self.scope();
+        let mut msg = MSG::default();
+        // SAFETY: dispatch only this UI thread's queued native messages.
+        unsafe {
+            while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
+                if msg.message == WM_QUIT {
+                    self.view.surface().terminal_quit.set(true);
+                } else {
+                    let _ = TranslateMessage(&msg);
+                    DispatchMessageW(&msg);
+                }
+            }
+        }
+        if self.view.surface().hwnd().is_invalid() {
+            self.view.surface().terminal_quit.set(true);
+            self.shutdown();
+            return false;
+        }
+        self.view.surface().drain();
+        if self.view.surface().wants_frames() {
+            self.view.surface().tick();
+            self.view.surface().drain();
+        }
+        let complete = self.fence.borrow().as_ref().map(|(rx, _)| rx.try_recv());
+        if let Some(result) = complete
+            && !matches!(result, Err(mpsc::TryRecvError::Empty))
+        {
+            let surface = self.view.surface();
+            surface.drain();
+            if result.is_err() {
+                if let Some((_, done)) = self.fence.borrow_mut().take() {
+                    done(Err("engine stopped before input fence".into()));
+                }
+            } else if crate::text_input::has_pending(surface) {
+                if surface.events_sent() > surface.events_handled() {
+                    let (tx, rx) = mpsc::channel();
+                    surface.control(|c| {
+                        c.flush(move |_| {
+                            let _ = tx.send(());
+                        });
+                    });
+                    if let Some((slot, _)) = self.fence.borrow_mut().as_mut() {
+                        *slot = rx;
+                    }
+                } else if let Some((_, done)) = self.fence.borrow_mut().take() {
+                    crate::text_input::disarm(surface);
+                    done(Err("pending input has no editable focus target".into()));
+                }
+            } else if surface.events_sent() > surface.events_handled() {
+                let (tx, rx) = mpsc::channel();
+                surface.control(|c| {
+                    c.flush(move |_| {
+                        let _ = tx.send(());
+                    });
+                });
+                if let Some((slot, _)) = self.fence.borrow_mut().as_mut() {
+                    *slot = rx;
+                }
+            } else if let Some((_, done)) = self.fence.borrow_mut().take() {
+                done(Ok(()));
+            }
+        }
+        if self.closed.get() {
+            return false;
+        }
+        self.sync_focus();
+        let surface = self.view.surface();
+        let stamp = (surface.whole_change(), surface.root.changes());
+        if !draw || !self.active.get() || stamp == self.stamp.get() {
+            return false;
+        }
+        if surface.native.needs_window_composition() {
+            *self.error.borrow_mut() = Some(
+                "Windows terminal capture cannot include externally composed web views or child windows".into(),
+            );
+            return false;
+        }
+        let scale = self.frames.borrow().scale();
+        let capture = crate::render::snapshot(surface, scale, None)
+            .map_err(|e| e.to_string())
+            .and_then(|pixels| {
+                let mut rgba = pixels.data;
+                for px in rgba.as_chunks_mut::<4>().0 {
+                    let a = px[3] as u32;
+                    let un = |v: u8| {
+                        (v as u32 * 255 + a / 2)
+                            .checked_div(a)
+                            .map_or(0, |q| q.min(255) as u8)
+                    };
+                    let (r, g, b) = (un(px[2]), un(px[1]), un(px[0]));
+                    px[0] = r;
+                    px[1] = g;
+                    px[2] = b;
+                }
+                self.frames.borrow_mut().prepare(rgba)
+            });
+        match capture {
+            Ok(frame) => {
+                self.stamp.set(stamp);
+                (self.on_frame.borrow_mut())(frame);
+                true
+            }
+            Err(e) => {
+                *self.error.borrow_mut() = Some(e);
+                false
+            }
+        }
+    }
+    fn dispatch_input(&self, input: PlatformInput) -> Result<(), String> {
+        if !self.is_active() || self.paused.get() {
+            return Err("terminal input is inactive".into());
+        }
+        let _scope = self.scope();
+        match input {
+            PlatformInput::KeyDown(e) => self.key(e.keystroke, true, e.is_held),
+            PlatformInput::KeyUp(e) => self.key(e.keystroke, false, false),
+            PlatformInput::MouseDown(e) => {
+                let b = button(e.button);
+                self.pointer(
+                    PointerKind::Down,
+                    e.position,
+                    b,
+                    1 << b,
+                    e.modifiers,
+                    e.click_count,
+                )
+            }
+            PlatformInput::MouseUp(e) => self.pointer(
+                PointerKind::Up,
+                e.position,
+                button(e.button),
+                0,
+                e.modifiers,
+                e.click_count,
+            ),
+            PlatformInput::MouseMove(e) => {
+                let b = e.pressed_button.map(button);
+                self.pointer(
+                    PointerKind::Move,
+                    e.position,
+                    b.unwrap_or(0),
+                    b.map_or(0, |b| 1 << b),
+                    e.modifiers,
+                    0,
+                )
+            }
+            PlatformInput::ScrollWheel(e) => {
+                let (dx, dy, precise) = match e.delta {
+                    nsh_terminal::ScrollDelta::Lines(p) => (-p.x * 40.0, -p.y * 40.0, false),
+                    nsh_terminal::ScrollDelta::Pixels(p) => (-p.x.0, -p.y.0, true),
+                };
+                crate::input::wheel(
+                    self.view.surface(),
+                    WheelEvent {
+                        x: e.position.x.0,
+                        y: e.position.y.0,
+                        dx,
+                        dy,
+                        precise,
+                        modifiers: mods(e.modifiers),
+                        time: self.view.surface().clock(),
+                    },
+                );
+            }
+        }
+        self.sync_focus();
+        Ok(())
+    }
+    fn set_active(&self, active: bool) -> Result<(), String> {
+        if self.closed.get() {
+            return Err("terminal surface stopped".into());
+        }
+        self.active.set(active);
+        self.view.surface().terminal_active.set(Some(active));
+        if !active {
+            self.cancel_pointer();
+            crate::text_input::terminal_composition(self.view.surface(), "", "", None, false)?;
+        }
+        crate::text_input::window_focus(self.view.surface(), active);
+        self.view.surface().activation_changed(active);
+        crate::system::lifecycle_changed(self.view.surface());
+        self.sync_focus();
+        Ok(())
+    }
+    fn cancel_pointer(&self) {
+        self.pointer(
+            PointerKind::Cancel,
+            Default::default(),
+            0,
+            0,
+            Default::default(),
+            0,
+        );
+        crate::input::cancel_keyboard_press(self.view.surface());
+    }
+    fn paste(&self, event: nsh_core::PasteEvent) -> bool {
+        if !self.paused.get()
+            && self.active.get()
+            && !self.closed.get()
+            && (self.sync_focus().is_some() || crate::text_input::is_armed(self.view.surface()))
+        {
+            let _scope = self.scope();
+            crate::text_input::terminal_paste(self.view.surface(), event);
+            true
+        } else {
+            false
+        }
+    }
+    fn load_with_config(&self, config: nsh_engine::EngineConfig) {
+        if self.closed.get() {
+            *self.error.borrow_mut() = Some("cannot load a closed terminal surface".into());
+            return;
+        }
+        self.view.surface().terminal_quit.set(false);
+        self.error.borrow_mut().take();
+        self.admissions.borrow_mut().focus(None);
+        self.frames.borrow_mut().revoke();
+        self.cancel_pointer();
+        let appearance = match config.environment.color_scheme {
+            nsh_engine::ColorScheme::Light => crate::Appearance::Light,
+            nsh_engine::ColorScheme::Dark => crate::Appearance::Dark,
+        };
+        crate::system::set_appearance(self.view.surface(), appearance);
+        self.view.load_with_config(config);
+        self.paused.set(false);
+        self.stamp.set((0, 0));
+        if let Err(e) = self.set_active(self.active.get()) {
+            *self.error.borrow_mut() = Some(e);
+        }
+    }
+    fn pause_input(&self, done: Box<dyn FnOnce(Result<(), String>)>) {
+        if self.closed.get() || !self.view.surface().running() {
+            done(Err("native engine is not running".into()));
+            return;
+        }
+        if self.fence.borrow().is_some() {
+            done(Err("input pause already pending".into()));
+            return;
+        }
+        self.paused.set(true);
+        self.cancel_pointer();
+        if let Err(error) =
+            crate::text_input::terminal_composition(self.view.surface(), "", "", None, false)
+        {
+            done(Err(error));
+            return;
+        }
+        self.admissions.borrow_mut().focus(None);
+        let (tx, rx) = mpsc::channel();
+        self.view.surface().control(|c| {
+            c.flush(move |_| {
+                let _ = tx.send(());
+            })
+        });
+        *self.fence.borrow_mut() = Some((rx, done));
+    }
+    fn resume_input(&self) {
+        if self.closed.get() || !self.view.surface().running() {
+            return;
+        }
+        self.paused.set(false);
+        self.sync_focus();
+    }
+    fn text_input_target(&self) -> Option<TextInputTarget> {
+        self.sync_focus()
+    }
+    fn apply_composition(
+        &self,
+        target: &TextInputTarget,
+        commit: &str,
+        preedit: &str,
+        selection: Option<Range<usize>>,
+        active: bool,
+    ) -> Result<bool, String> {
+        self.sync_focus();
+        if !self.admissions.borrow().accepts(target) {
+            return Ok(false);
+        }
+        let selection = selection
+            .map(|r| {
+                Ok::<_, String>(utf16_offset(preedit, r.start)?..utf16_offset(preedit, r.end)?)
+            })
+            .transpose()?;
+        crate::text_input::terminal_composition(
+            self.view.surface(),
+            commit,
+            preedit,
+            selection,
+            active,
+        )?;
+        Ok(true)
+    }
+    fn input_caret_bounds(&self) -> Option<Bounds<Points>> {
+        self.sync_focus()?;
+        crate::text_input::terminal_target(self.view.surface()).map(|(_, b)| b)
+    }
+    fn input_candidate_bounds(&self) -> Option<Bounds<Points>> {
+        self.sync_focus()?;
+        crate::text_input::terminal_candidate(self.view.surface())
+    }
+    fn take_clipboard_write(&self) -> Option<String> {
+        self.clipboard.borrow_mut().pending.take()
+    }
+    fn frame_is_current(&self, token: &FrameToken) -> bool {
+        self.view.surface().running() && self.frames.borrow().is_current(token)
+    }
+    fn mark_presented(&self, token: FrameToken) -> Result<(), String> {
+        if !self.view.surface().running() {
+            return Err("terminal surface stopped".into());
+        }
+        self.frames.borrow_mut().mark_presented(token)
+    }
+    fn take_error(&self) -> Option<String> {
+        self.error.borrow_mut().take()
+    }
+    fn is_quit_requested(&self) -> bool {
+        self.view.surface().terminal_quit.get() || self.view.surface().hwnd().is_invalid()
+    }
+    fn has_pending(&self) -> bool {
+        if self.closed.get() {
+            return false;
+        }
+        self.fence.borrow().is_some()
+            || crate::text_input::has_pending(self.view.surface())
+            || self.stamp.get()
+                != (
+                    self.view.surface().whole_change(),
+                    self.view.surface().root.changes(),
+                )
+    }
+    fn next_deadline(&self) -> Option<Instant> {
+        (!self.closed.get()).then(|| Instant::now() + Duration::from_millis(16))
+    }
+    fn shutdown(&self) {
+        if self.closed.replace(true) {
+            return;
+        }
+        self.admissions.borrow_mut().focus(None);
+        self.frames.borrow_mut().revoke();
+        self.view.stop();
+        let fence = self.fence.borrow_mut().take();
+        if let Some((_, done)) = fence {
+            done(Err("terminal surface stopped".into()));
+        }
+        let hwnd = self.view.surface().hwnd();
+        if !hwnd.is_invalid() {
+            // SAFETY: the hidden HWND and OLE apartment belong to this UI thread.
+            unsafe {
+                let _ = DestroyWindow(hwnd);
+            }
+        }
+    }
+}
+impl Drop for TerminalSurface {
+    fn drop(&mut self) {
+        self.shutdown();
+    }
+}
+fn button(b: nsh_terminal::MouseButton) -> u8 {
+    match b {
+        nsh_terminal::MouseButton::Left => 0,
+        nsh_terminal::MouseButton::Right => 1,
+        nsh_terminal::MouseButton::Middle => 2,
+    }
+}
+fn pressable_bounds_in(surface: &crate::surface::Surface, label: &str) -> Vec<Bounds<Points>> {
+    fn visit(view: &crate::view::NshView, label: &str, out: &mut Vec<Bounds<Points>>) {
+        let state = view.state();
+        if state.props.pointer_events == nsh_core::PointerEvents::None
+            || state.live.as_ref().is_some_and(|l| l.dying())
+            || crate::access::part(&state) == crate::access::Part::Hidden
+        {
+            return;
+        }
+        let pointer_events = state.props.pointer_events;
+        let pressable = pointer_events != nsh_core::PointerEvents::BoxNone
+            && !state.props.accessibility.state.disabled
+            && (state.events.contains(nsh_core::EventKind::Press)
+                || state.events.contains(nsh_core::EventKind::LongPress));
+        drop(state);
+        if pressable && crate::access::name_of(view).as_deref() == Some(label) {
+            let visible = view.visible_bounds();
+            if visible.size.width.0 > 0.0
+                && visible.size.height.0 > 0.0
+                && let Some((x, y, w, h)) = view.to_root().and_then(|m| {
+                    m.bounds(
+                        visible.origin.x.0,
+                        visible.origin.y.0,
+                        visible.size.width.0,
+                        visible.size.height.0,
+                    )
+                })
+            {
+                out.push(crate::geom::rect(x, y, w, h));
+            }
+        }
+        if pointer_events != nsh_core::PointerEvents::BoxOnly {
+            view.with_children(|children| {
+                for child in children {
+                    visit(child, label, out);
+                }
+            });
+        }
+    }
+    let mut out = Vec::new();
+    visit(&crate::navigation::focus_scope(surface), label, &mut out);
+    out
+}
+fn mods(m: nsh_terminal::Modifiers) -> Modifiers {
+    Modifiers {
+        shift: m.shift,
+        ctrl: m.control,
+        alt: m.alt,
+        meta: m.platform,
+    }
+}
+pub(crate) fn utf16_offset(text: &str, offset: usize) -> Result<usize, String> {
+    let mut units = 0;
+    for (byte, ch) in text.char_indices() {
+        if units == offset {
+            return Ok(byte);
+        }
+        units += ch.len_utf16();
+    }
+    if units == offset {
+        Ok(text.len())
+    } else {
+        Err("composition selection splits UTF-16 or exceeds preedit".into())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use nsh_core::{EventKind, ModalAnimation, ModalConfig, NodeId, ViewKind};
+
+    use super::{
+        Clipboard, ClipboardScope, clipboard_read, clipboard_write, pressable_bounds_in,
+        utf16_offset,
+    };
+    use crate::{geom::rect, navigation, surface::Surface, view::NshView};
+
+    #[cfg(feature = "js")]
+    #[test]
+    fn pixel_terminal_ignores_desktop_windows_and_tray_but_keeps_editing() {
+        use std::{
+            sync::Arc,
+            time::{Duration, Instant},
+        };
+
+        use nsh_core::{
+            Command, InputConfig, ModalAnimation, ModalConfig, MountItem, ROOT_ID,
+            desktop::{DesktopCommand, OpenWindow, Tray, WindowRequest},
+        };
+        use nsh_engine::{App, Bundle, EngineConfig};
+        use nsh_terminal::{DevicePixels, NativeSurface, size};
+        use windows::Win32::{
+            Foundation::{LPARAM, WPARAM},
+            UI::{Shell::NIN_SELECT, WindowsAndMessaging::IsWindowVisible},
+        };
+
+        use super::TerminalSurface;
+
+        let code = nsh_bundler::compile_module("TerminalIsolation.tsx", r#"
+            import { View, mount } from "nsh";
+            import { Input } from "nsh/base";
+            mount(() => <View style={{flex: 1, padding: 16}}><Input autoFocus defaultValue="terminal" style={{height: 40}} /></View>);
+        "#, &[]).unwrap();
+        let mut config = EngineConfig::new(App::Js(Bundle::source(code)));
+        config.ui_sets = vec![nsh_base::registry()];
+        let terminal = TerminalSurface::new(
+            config.clone(),
+            size(DevicePixels(320), DevicePixels(240)),
+            1.0,
+            Box::new(|frame| {
+                frame.submit().unwrap().complete().unwrap();
+            }),
+            Arc::new(|| {}),
+        )
+        .unwrap();
+        let until = |phase: &str, done: &mut dyn FnMut() -> bool| {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                terminal.pump_with_draw(true);
+                assert_eq!(terminal.take_error(), None);
+                if done() {
+                    break;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "{phase}: terminal did not settle; text={:?} target={:?} pending={} active={}",
+                    terminal.editor_text(),
+                    terminal.text_input_target(),
+                    terminal.has_pending(),
+                    terminal.is_active()
+                );
+                std::thread::yield_now();
+            }
+        };
+        until("initial autofocus", &mut || {
+            terminal.editor_text().as_deref() == Some("terminal")
+        });
+        let surface = terminal.view.surface();
+        let desktop = |id, command| {
+            surface.mounter.borrow_mut().apply(
+                surface,
+                &MountItem::Command {
+                    id,
+                    command: Command::Desktop(Box::new(command)),
+                },
+            )
+        };
+        let mut tray = Tray::default();
+        tray.click = 1;
+        let click = || {
+            crate::tray::message(
+                surface,
+                surface.hwnd(),
+                WPARAM(0),
+                LPARAM(NIN_SELECT as isize),
+            )
+        };
+        // A live desktop tray must deliver its native click even without Explorer.
+        surface.terminal_active.set(None);
+        desktop(ROOT_ID, DesktopCommand::SetTray(Some(tray.clone())));
+        let before = surface.events_sent();
+        click();
+        assert_eq!(surface.events_sent(), before + 1);
+        desktop(ROOT_ID, DesktopCommand::SetTray(None));
+
+        // Inactive is still a terminal, not a desktop surface.
+        let mut expected = String::from("terminal");
+        for (window, active) in [(2000, false), (2002, true)] {
+            surface.terminal_active.set(Some(active));
+            desktop(ROOT_ID, DesktopCommand::SetTray(Some(tray.clone())));
+            let before = surface.events_sent();
+            click();
+            assert_eq!(
+                surface.events_sent(),
+                before,
+                "terminal acquired a native tray"
+            );
+            desktop(ROOT_ID, DesktopCommand::Request(WindowRequest::Focus));
+            surface.mounter.borrow_mut().apply(
+                surface,
+                &MountItem::Create {
+                    id: window,
+                    kind: ViewKind::Modal,
+                },
+            );
+            let input = window + 1;
+            {
+                let mut mounter = surface.mounter.borrow_mut();
+                for item in [
+                    MountItem::Create {
+                        id: input,
+                        kind: ViewKind::Input,
+                    },
+                    MountItem::Input {
+                        id: input,
+                        config: Box::new(InputConfig {
+                            auto_focus: true,
+                            ..Default::default()
+                        }),
+                    },
+                    MountItem::InputValue {
+                        id: input,
+                        text: "secondary".into(),
+                        count: 0,
+                    },
+                    MountItem::Insert {
+                        parent: window,
+                        child: input,
+                        before: None,
+                    },
+                ] {
+                    mounter.apply(surface, &item);
+                }
+            }
+            let insert = || {
+                surface.mounter.borrow_mut().apply(
+                    surface,
+                    &MountItem::Insert {
+                        parent: ROOT_ID,
+                        child: window,
+                        before: None,
+                    },
+                );
+            };
+            // The platform can see an Insert earlier in the batch, or a
+            // later reinsertion of the same Window.open root.
+            if active {
+                insert();
+            }
+            desktop(
+                window,
+                DesktopCommand::OpenWindow(Box::new(OpenWindow::default())),
+            );
+            if !active {
+                insert();
+            }
+            surface.mounter.borrow_mut().end_batch(surface);
+            desktop(window, DesktopCommand::Request(WindowRequest::Focus));
+            surface.mounter.borrow_mut().apply(
+                surface,
+                &MountItem::Command {
+                    id: input,
+                    command: Command::Focus,
+                },
+            );
+            assert_eq!(
+                terminal.editor_text().as_deref(),
+                Some(expected.as_str()),
+                "rejected Window.open stole the terminal editor's focus"
+            );
+            assert!(
+                surface.windows.borrow().is_empty(),
+                "terminal opened a secondary HWND"
+            );
+            // SAFETY: the terminal owns this live HWND on the current UI thread.
+            assert!(
+                !unsafe { IsWindowVisible(surface.hwnd()) }.as_bool(),
+                "terminal exposed its buffer window"
+            );
+            let end = expected.encode_utf16().count();
+            terminal.set_selected_text_range(end..end).unwrap();
+            assert!(terminal.paste(nsh_core::PasteEvent::new("!")));
+            expected.push('!');
+            until("focus restored after ordinary Dialog", &mut || {
+                terminal.editor_text().as_deref() == Some(expected.as_str())
+            });
+        }
+        {
+            let _scope = terminal.scope();
+            surface.mounter.borrow_mut().apply(
+                surface,
+                &MountItem::Command {
+                    id: ROOT_ID,
+                    command: Command::SetClipboard("terminal transport".into()),
+                },
+            );
+        }
+        assert_eq!(
+            terminal.take_clipboard_write().as_deref(),
+            Some("terminal transport")
+        );
+        // A deleted rejected root can later be an ordinary Dialog. Reload
+        // clears the other rejected root's identity along with the old VM.
+        for (id, reload) in [(2000, false), (2002, true)] {
+            if reload {
+                terminal.load_with_config(config.clone());
+                expected = String::from("terminal");
+                until("reload editor", &mut || {
+                    terminal.editor_text().as_deref() == Some(expected.as_str())
+                });
+            } else {
+                let mut mounter = surface.mounter.borrow_mut();
+                mounter.apply(surface, &MountItem::Delete { id: id + 1 });
+                mounter.apply(surface, &MountItem::Remove { id });
+                mounter.apply(surface, &MountItem::Delete { id });
+                mounter.end_batch(surface);
+            }
+            {
+                let mut mounter = surface.mounter.borrow_mut();
+                for item in [
+                    MountItem::Create {
+                        id,
+                        kind: ViewKind::Modal,
+                    },
+                    MountItem::ModalConfig {
+                        id,
+                        config: ModalConfig {
+                            animation: ModalAnimation::None,
+                            ..Default::default()
+                        },
+                    },
+                    MountItem::Insert {
+                        parent: ROOT_ID,
+                        child: id,
+                        before: None,
+                    },
+                ] {
+                    mounter.apply(surface, &item);
+                }
+                mounter.end_batch(surface);
+            }
+            assert_eq!(
+                terminal.editor_text(),
+                None,
+                "ordinary Dialog on reused id {id} must still own the focus scope (reload={reload})"
+            );
+            {
+                let mut mounter = surface.mounter.borrow_mut();
+                mounter.apply(surface, &MountItem::Remove { id });
+                mounter.apply(surface, &MountItem::Delete { id });
+                mounter.end_batch(surface);
+            }
+            until("dialog close restores editor", &mut || {
+                terminal.editor_text().as_deref() == Some(expected.as_str())
+            });
+        }
+        terminal.set_selected_text_range(8..8).unwrap();
+        assert!(terminal.paste(nsh_core::PasteEvent::new("!")));
+        until("final paste", &mut || {
+            terminal.editor_text().as_deref() == Some("terminal!")
+        });
+
+        terminal.set_selected_text_range(0..9).unwrap();
+        assert!(terminal.paste(nsh_core::PasteEvent::new("a😀b")));
+        until("unicode paste", &mut || {
+            terminal.editor_text().as_deref() == Some("a😀b")
+        });
+        terminal.set_selected_text_range(1..3).unwrap();
+        let target = terminal.text_input_target().unwrap();
+        assert!(
+            terminal
+                .apply_composition(&target, "", "中文", Some(0..0), true)
+                .unwrap()
+        );
+        until("preedit starts", &mut || {
+            crate::text_input::terminal_is_composing(terminal.view.surface())
+                && !terminal.has_pending()
+        });
+        assert_eq!(terminal.editor_text().as_deref(), Some("a😀b"));
+        let candidate = terminal.input_candidate_bounds().unwrap();
+        assert_eq!(Some(candidate), terminal.input_caret_bounds());
+        assert!(candidate.size.height.0 > 0.0);
+        assert!(
+            terminal
+                .apply_composition(&target, "", "中文", Some(2..2), true)
+                .unwrap()
+        );
+        until("preedit caret moves", &mut || {
+            terminal
+                .input_caret_bounds()
+                .is_some_and(|caret| caret.origin.x.0 > candidate.origin.x.0)
+                && !terminal.has_pending()
+        });
+        assert_eq!(
+            terminal.input_candidate_bounds(),
+            Some(candidate),
+            "candidate window stays at the composition start"
+        );
+        assert!(
+            terminal
+                .apply_composition(&target, "", "", None, false)
+                .unwrap()
+        );
+        until(
+            "composition cancellation restores selected text",
+            &mut || terminal.editor_text().as_deref() == Some("a😀b") && !terminal.has_pending(),
+        );
+        assert_eq!(
+            terminal.input_candidate_bounds(),
+            terminal.input_caret_bounds()
+        );
+        terminal.set_selected_text_range(1..3).unwrap();
+        assert!(
+            terminal
+                .apply_composition(&target, "", "中文", None, true)
+                .unwrap()
+        );
+        assert!(
+            terminal
+                .apply_composition(&target, "中", "", None, false)
+                .unwrap()
+        );
+        until("composition commits once over selection", &mut || {
+            terminal.editor_text().as_deref() == Some("a中b") && !terminal.has_pending()
+        });
+        terminal.set_selected_text_range(1..2).unwrap();
+        {
+            let _scope = terminal.scope();
+            let mut stroke = nsh_terminal::Keystroke::default();
+            stroke.key = "c".into();
+            stroke.modifiers.control = true;
+            terminal.key(stroke, true, false);
+        }
+        let mut copied = None;
+        until("copy after composition fence", &mut || {
+            copied = terminal.take_clipboard_write();
+            copied.is_some()
+        });
+        assert_eq!(copied.as_deref(), Some("中"));
+        desktop(ROOT_ID, DesktopCommand::Quit);
+        assert!(terminal.is_quit_requested());
+        assert!(surface.running(), "the Host owns transport shutdown");
+        terminal.shutdown();
+    }
+
+    #[cfg(feature = "js")]
+    #[test]
+    fn session_end_preserves_the_hosts_loop_and_revokes_native_receipts() {
+        use std::{
+            cell::RefCell,
+            rc::Rc,
+            sync::Arc,
+            time::{Duration, Instant},
+        };
+
+        use nsh_engine::{Bundle, EngineConfig};
+        use nsh_terminal::{DevicePixels, FrameToken, NativeSurface, size};
+        use windows::Win32::{
+            Foundation::WPARAM,
+            UI::WindowsAndMessaging::{
+                DispatchMessageW, IsWindow, MSG, PM_NOREMOVE, PM_REMOVE, PeekMessageW,
+                SendMessageW, WM_ENDSESSION, WM_QUERYENDSESSION, WM_QUIT,
+            },
+        };
+        let code = nsh_bundler::compile_module("SessionEnd.tsx", r#"
+            import { View, lifecycle, mount } from "nsh";
+            import { Input } from "nsh/base";
+            mount(() => <View style={{flex: 1}}>
+                <View accessibilityLabel={lifecycle()} onPress={() => {}} style={{width: 120, height: 20}} />
+                <Input autoFocus defaultValue="session" style={{height: 40}} />
+            </View>);
+        "#, &[]).unwrap();
+        let mut config = EngineConfig::new(Bundle::source(code));
+        config.ui_sets = vec![nsh_base::registry()];
+        let frames = Rc::new(RefCell::new(None::<FrameToken>));
+        let captured = frames.clone();
+        let terminal = super::TerminalSurface::new(
+            config,
+            size(DevicePixels(320), DevicePixels(240)),
+            1.0,
+            Box::new(move |frame| {
+                let frame = frame.submit().unwrap().complete().unwrap();
+                captured.replace(Some(frame.token()));
+            }),
+            Arc::new(|| {}),
+        )
+        .unwrap();
+        let until = |label: &str, ready: &mut dyn FnMut() -> bool| {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                terminal.pump_with_draw(true);
+                assert_eq!(terminal.take_error(), None);
+                if ready() {
+                    break;
+                }
+                assert!(Instant::now() < deadline, "{label}");
+                std::thread::yield_now();
+            }
+        };
+        until("initial active input", &mut || {
+            !terminal.pressable_bounds("active").is_empty()
+                && terminal.text_input_target().is_some()
+                && frames.borrow().is_some()
+        });
+        let surface = terminal.view.surface();
+        let hwnd = surface.hwnd();
+        let send = |message, value| {
+            // SAFETY: only the test's live hidden window receives the session notification.
+            unsafe { SendMessageW(hwnd, message, Some(WPARAM(value)), None).0 }
+        };
+        assert_eq!(send(WM_QUERYENDSESSION, 0), 1);
+        terminal.set_active(true).unwrap();
+        until(
+            "session query backgrounds the app despite host activation",
+            &mut || !terminal.pressable_bounds("background").is_empty(),
+        );
+        assert_eq!(send(WM_ENDSESSION, 0), 0);
+        until(
+            "cancelled session end restores host activation",
+            &mut || !terminal.pressable_bounds("active").is_empty(),
+        );
+        let target = terminal.text_input_target().unwrap();
+        let token = frames.borrow().as_ref().unwrap().clone();
+        assert!(terminal.frame_is_current(&token));
+        assert_eq!(send(WM_QUERYENDSESSION, 0), 1);
+        assert_eq!(send(WM_ENDSESSION, 1), 0);
+        assert!(!surface.running());
+        assert!(
+            !terminal
+                .apply_composition(&target, "", "stale", None, true)
+                .unwrap()
+        );
+        assert!(terminal.text_input_target().is_none());
+        assert!(!terminal.frame_is_current(&token));
+        assert!(terminal.mark_presented(token).is_err());
+        // Dispatch the posted close ourselves so pump cannot consume and hide an unwanted WM_QUIT.
+        let mut message = MSG::default();
+        // SAFETY: this is the test window's owner thread and message queue.
+        unsafe {
+            assert!(
+                PeekMessageW(
+                    &mut message,
+                    Some(hwnd),
+                    crate::window::WM_NSH_CLOSE,
+                    crate::window::WM_NSH_CLOSE,
+                    PM_REMOVE
+                )
+                .as_bool()
+            );
+            assert_eq!(message.message, crate::window::WM_NSH_CLOSE);
+            DispatchMessageW(&message);
+            assert!(!IsWindow(Some(hwnd)).as_bool());
+            assert!(!PeekMessageW(&mut message, None, WM_QUIT, WM_QUIT, PM_NOREMOVE).as_bool());
+        }
+        assert!(!terminal.pump_with_draw(true));
+        assert!(terminal.is_quit_requested());
+    }
+
+    #[cfg(feature = "js")]
+    #[test]
+    fn multiline_preedit_measures_without_a_composition_listener() {
+        use std::{
+            sync::Arc,
+            time::{Duration, Instant},
+        };
+
+        use nsh_engine::{Bundle, EngineConfig};
+        use nsh_terminal::{DevicePixels, NativeSurface, size};
+        let code = nsh_bundler::compile_module("PreeditHeight.tsx", r#"
+            import { View, mount, signal } from "nsh";
+            import { Input } from "nsh/base";
+            mount(() => {
+                const edits = signal(0);
+                return <View style={{flex: 1}}>
+                    <View accessibilityLabel={`edits:${edits()}`} onPress={() => {}} style={{width: 120, height: 20}} />
+                    <Input multiline autoFocus defaultValue="seed" onChangeText={() => edits.update(n => n + 1)}
+                        style={{width: 120, minHeight: 28, maxHeight: 200}} />
+                </View>;
+            });
+        "#, &[]).unwrap();
+        let mut config = EngineConfig::new(Bundle::source(code));
+        config.ui_sets = vec![nsh_base::registry()];
+        let terminal = super::TerminalSurface::new(
+            config,
+            size(DevicePixels(320), DevicePixels(240)),
+            1.0,
+            Box::new(|frame| {
+                frame.submit().unwrap().complete().unwrap();
+            }),
+            Arc::new(|| {}),
+        )
+        .unwrap();
+        let height = || {
+            crate::text_input::focused(terminal.view.surface())
+                .map(|view| view.visible_bounds().size.height.0)
+        };
+        let until = |label: &str, ready: &mut dyn FnMut() -> bool| {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                terminal.pump_with_draw(true);
+                assert_eq!(terminal.take_error(), None);
+                if ready() && !terminal.has_pending() {
+                    break;
+                }
+                assert!(Instant::now() < deadline, "{label}; height={:?}", height());
+                std::thread::yield_now();
+            }
+        };
+        until("initial multiline input", &mut || {
+            height().is_some() && !terminal.pressable_bounds("edits:0").is_empty()
+        });
+        let before = height().unwrap();
+        terminal.set_selected_text_range(4..4).unwrap();
+        let target = terminal.text_input_target().unwrap();
+        assert!(
+            terminal
+                .apply_composition(&target, "", &"中".repeat(80), Some(0..0), true)
+                .unwrap()
+        );
+        until("preedit participates in auto height", &mut || {
+            height().is_some_and(|h| h > before)
+        });
+        assert_eq!(terminal.editor_text().as_deref(), Some("seed"));
+        assert!(!terminal.pressable_bounds("edits:0").is_empty());
+        assert!(
+            terminal
+                .apply_composition(&target, "", "", None, false)
+                .unwrap()
+        );
+        until("cancellation restores committed height", &mut || {
+            height() == Some(before)
+        });
+        assert_eq!(terminal.editor_text().as_deref(), Some("seed"));
+        assert!(!terminal.pressable_bounds("edits:0").is_empty());
+    }
+
+    #[test]
+    fn clipboard_transport_receipt_keeps_native_paste_text() {
+        let clipboard = Clipboard::default();
+        let _scope = ClipboardScope::enter(clipboard.clone());
+        assert!(clipboard_write("copied text"));
+        assert_eq!(
+            clipboard.borrow_mut().pending.take().as_deref(),
+            Some("copied text")
+        );
+        assert_eq!(clipboard_read().as_deref(), Some("copied text"));
+        assert!(clipboard.borrow_mut().pending.take().is_none());
+    }
+
+    #[test]
+    fn composition_selection_uses_utf16_not_utf8_offsets() {
+        let text = "a😀中";
+        assert_eq!(utf16_offset(text, 0), Ok(0));
+        assert_eq!(utf16_offset(text, 1), Ok(1));
+        assert_eq!(utf16_offset(text, 3), Ok(5));
+        assert_eq!(utf16_offset(text, 4), Ok(text.len()));
+        assert!(utf16_offset(text, 2).is_err());
+        assert!(utf16_offset(text, 5).is_err());
+    }
+
+    #[test]
+    fn pressable_bounds_respects_active_modal_and_disabled_state() {
+        let surface = Surface::new(Default::default());
+        surface.root.state_mut().frame = rect(0.0, 0.0, 800.0, 600.0);
+        let button = |parent: &NshView, id: NodeId, label: &str, y: f32| {
+            let view = NshView::new(id, ViewKind::View);
+            {
+                let mut state = view.state_mut();
+                state.frame = rect(10.0, y, 120.0, 32.0);
+                state.events.set(EventKind::Press, true);
+                state.props.accessibility.label = Some(label.into());
+            }
+            view.insert_before(parent, None);
+            view
+        };
+        let background = button(&surface.root, 2, "Focus message composer", 400.0);
+        assert_eq!(
+            pressable_bounds_in(&surface, "Focus message composer").len(),
+            1
+        );
+
+        background.state_mut().props.accessibility.state.disabled = true;
+        assert!(pressable_bounds_in(&surface, "Focus message composer").is_empty());
+        background.state_mut().props.accessibility.state.disabled = false;
+
+        let modal = NshView::new(3, ViewKind::Modal);
+        modal.state_mut().frame = rect(0.0, 0.0, 800.0, 600.0);
+        let confirm = button(&modal, 4, "Use this workspace folder", 200.0);
+        navigation::modal_config(
+            &surface,
+            &modal,
+            &ModalConfig {
+                animation: ModalAnimation::None,
+                ..Default::default()
+            },
+        );
+        navigation::present(&surface, &modal);
+        navigation::end_batch(&surface);
+
+        assert!(pressable_bounds_in(&surface, "Focus message composer").is_empty());
+        assert_eq!(
+            pressable_bounds_in(&surface, "Use this workspace folder").len(),
+            1
+        );
+        let _ = confirm;
+
+        navigation::dismiss(&surface, &modal);
+        navigation::end_batch(&surface);
+        assert_eq!(
+            pressable_bounds_in(&surface, "Focus message composer").len(),
+            1
+        );
+    }
+}

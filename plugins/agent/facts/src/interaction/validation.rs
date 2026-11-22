@@ -1,0 +1,553 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+use super::*;
+use crate::capability::FormInput;
+
+pub const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
+
+pub fn entity_id(value: &str) -> Result<(), &'static str> {
+    if value.is_empty()
+        || !value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
+    {
+        return Err("Invalid interaction entity identity");
+    }
+    Ok(())
+}
+
+impl ComputerAppIdentity {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        computer_app_identity(&self.application_id)
+    }
+}
+
+fn computer_app_identity(application_id: &str) -> Result<(), &'static str> {
+    if application_id.trim().is_empty()
+        || application_id.trim() != application_id
+        || application_id.contains('\0')
+    {
+        return Err("Invalid computer application identity");
+    }
+    Ok(())
+}
+
+impl ComputerAppDisplay {
+    pub fn validate(&self, platform: ComputerAppPlatform) -> Result<(), &'static str> {
+        if self.name.trim().is_empty() || self.name.contains('\0') {
+            return Err("Invalid computer application display name");
+        }
+        let absolute = match platform {
+            ComputerAppPlatform::Macos => self.app_path.starts_with('/'),
+            ComputerAppPlatform::Windows => windows_absolute(&self.app_path),
+        };
+        if !absolute || self.app_path.contains('\0') {
+            return Err("Computer application display path must be absolute");
+        }
+        if self
+            .warning
+            .as_ref()
+            .is_some_and(|warning| warning.trim().is_empty() || warning.contains('\0'))
+        {
+            return Err("Invalid computer application warning");
+        }
+        Ok(())
+    }
+}
+
+impl ComputerAppDecision {
+    pub fn validate_for(&self, allow_always: bool) -> Result<(), &'static str> {
+        if *self == Self::Always && !allow_always {
+            return Err("Persistent computer application approval was not offered");
+        }
+        Ok(())
+    }
+}
+
+impl ComputerAppActivity {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        for id in [
+            &self.execution.session_id,
+            &self.execution.turn_id,
+            &self.operation_id,
+        ] {
+            entity_id(id)?;
+        }
+        self.target.validate()?;
+        let GrantScope::ComputerApp { platform, .. } = &self.target.scope else {
+            return Err("Computer application activity requires an application scope");
+        };
+        self.display.validate(*platform)
+    }
+}
+
+impl GrantTarget {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        for id in [
+            &self.provider_id,
+            &self.contract_id,
+            &self.server_id,
+            &self.tool_name,
+        ] {
+            entity_id(id)?;
+        }
+        match (&self.capability, &self.scope) {
+            (
+                GrantCapability::Browser
+                | GrantCapability::BrowserDownload
+                | GrantCapability::BrowserUpload,
+                GrantScope::BrowserOrigin { origin },
+            ) => {
+                let url = url::Url::parse(origin).map_err(|_| "Invalid browser origin")?;
+                if !matches!(url.scheme(), "http" | "https")
+                    || url.origin().ascii_serialization() != *origin
+                {
+                    return Err("Browser scope must be a canonical HTTP origin");
+                }
+            }
+            (
+                GrantCapability::ComputerUse | GrantCapability::ComputerAudio,
+                GrantScope::Capability {},
+            ) => {}
+            (
+                GrantCapability::BrowserHistory,
+                GrantScope::BrowserProfile {
+                    browser_id,
+                    generation,
+                },
+            ) => {
+                if browser_id.is_empty() {
+                    return Err("Invalid browser profile identity");
+                }
+                entity_id(generation)?;
+            }
+            (GrantCapability::ComputerUse, GrantScope::ComputerApp { application_id, .. }) => {
+                computer_app_identity(application_id)?
+            }
+            (
+                GrantCapability::DesktopMcp | GrantCapability::Mcp,
+                GrantScope::McpTool {
+                    server_id,
+                    tool_name,
+                },
+            ) => {
+                entity_id(server_id)?;
+                entity_id(tool_name)?;
+            }
+            _ => return Err("Grant scope does not match capability"),
+        }
+        Ok(())
+    }
+}
+
+impl InteractionRequest {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        match self {
+            Self::SessionApproval {
+                tool_use_id,
+                basis,
+                session_id,
+                request_id,
+                answer,
+            } => {
+                if tool_use_id.is_empty() {
+                    return Err("Invalid interaction tool use identity");
+                }
+                basis.validate()?;
+                entity_id(session_id)?;
+                entity_id(request_id)?;
+                answer.validate()?;
+            }
+            Self::ServiceApproval {
+                tool_use_id,
+                tool_name,
+                service,
+                method,
+                binding,
+                through,
+            } => {
+                for value in [tool_use_id, tool_name, service, method, binding] {
+                    if value.is_empty() {
+                        return Err("Invalid service approval identity");
+                    }
+                }
+                if *through == 0 || *through > MAX_SAFE_INTEGER {
+                    return Err("Invalid service approval source fence");
+                }
+            }
+            Self::Permissions {
+                target,
+                tool_use_id,
+                basis,
+                request,
+            } => {
+                use crate::durable::AuthorizationObligation;
+                let disclosed = match target {
+                    AuthorizationObligation::Tool { tool } => {
+                        if tool.call.is_empty() || tool.call.contains('\0') {
+                            return Err("Invalid permission tool obligation");
+                        }
+                        true
+                    }
+                    AuthorizationObligation::Cell { operation, .. } => {
+                        if operation.is_nil() {
+                            return Err("Invalid permission Cell operation");
+                        }
+                        false
+                    }
+                    AuthorizationObligation::External { operation, .. } => {
+                        if operation.is_nil() {
+                            return Err("Invalid permission External operation");
+                        }
+                        true
+                    }
+                };
+                if tool_use_id.is_some() != disclosed {
+                    return Err("Permission display category differs from its typed obligation");
+                }
+                if let Some(id) = tool_use_id {
+                    entity_id(id)?;
+                }
+                basis.validate()?;
+                request.validate()?;
+            }
+            Self::Question {
+                tool_use_id,
+                questions,
+            } => {
+                if tool_use_id.is_empty() {
+                    return Err("Invalid interaction tool use identity");
+                }
+                question::validate_questions(questions)?;
+            }
+            Self::Form {
+                tool_use_id,
+                message,
+                requester,
+                fields,
+            } => {
+                if tool_use_id.is_empty() {
+                    return Err("Invalid interaction tool use identity");
+                }
+                FormInput {
+                    message: message.clone(),
+                    requester: requester.clone(),
+                    fields: fields.clone(),
+                }
+                .validate()?;
+            }
+            Self::ClientCapability {
+                tool_use_id,
+                target,
+                basis,
+            } => {
+                if tool_use_id.is_empty() || basis.is_some_and(|basis| basis.validate().is_err()) {
+                    return Err("Invalid interaction tool use identity");
+                }
+                target.validate()?;
+                if matches!(target.scope, GrantScope::ComputerApp { .. }) {
+                    return Err("Computer application consent requires a typed request");
+                }
+            }
+            Self::ComputerApp {
+                tool_use_id,
+                native_operation_id,
+                target,
+                basis,
+                display,
+                authority_revision,
+                ..
+            } => {
+                entity_id(tool_use_id)?;
+                entity_id(native_operation_id)?;
+                basis.validate()?;
+                target.validate()?;
+                let GrantScope::ComputerApp { platform, .. } = &target.scope else {
+                    return Err("Computer application consent requires an application scope");
+                };
+                display.validate(*platform)?;
+                if *authority_revision > MAX_SAFE_INTEGER {
+                    return Err("Invalid computer application authority revision");
+                }
+            }
+            Self::SystemPermission {
+                tool_use_id,
+                grants,
+                application,
+                application_location,
+            } => {
+                if tool_use_id.is_empty() {
+                    return Err("Invalid interaction tool use identity");
+                }
+                if grants.is_empty() {
+                    return Err("System permission request requires a grant");
+                }
+                if grants
+                    .iter()
+                    .enumerate()
+                    .any(|(index, grant)| grants[..index].contains(grant))
+                {
+                    return Err("Duplicate system permission grant");
+                }
+                if application.trim().is_empty()
+                    || application.trim() != application
+                    || application.chars().any(char::is_control)
+                {
+                    return Err("Invalid system permission application name");
+                }
+                if let Some(location) = application_location {
+                    location.bundle_url()?;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+impl InteractionOutcome {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.committed_at() > MAX_SAFE_INTEGER {
+            return Err("Invalid outcome timestamp");
+        }
+        if let Self::PermissionsDecision {
+            decision: PermissionDecision::Allow { permissions, .. },
+            ..
+        } = self
+        {
+            permissions
+                .validate()
+                .map_err(|_| "Invalid approved permissions")?;
+        }
+        if let Self::FormAnswer { result, .. } = self {
+            result.validate_values()?;
+        }
+        if let Self::QuestionAnswer { answers, .. } = self {
+            question::validate_answers(answers)?;
+        }
+        Ok(())
+    }
+
+    pub fn validate_for_request(&self, request: &InteractionRequest) -> Result<(), &'static str> {
+        request.validate()?;
+        self.validate()?;
+        match (request, self) {
+            (
+                InteractionRequest::Permissions { request, .. },
+                Self::PermissionsDecision { decision, .. },
+            ) => decision
+                .validate_for(&request.permissions)
+                .map_err(|_| "Approved permissions exceed the request"),
+            (
+                InteractionRequest::Question { questions, .. },
+                Self::QuestionAnswer { answers, .. },
+            ) => question::validate_answer_count(answers, questions),
+            (_, Self::Closure { .. })
+            | (InteractionRequest::SessionApproval { .. }, Self::SessionApprovalDecision { .. })
+            | (InteractionRequest::ServiceApproval { .. }, Self::ServiceApprovalDecision { .. })
+            | (InteractionRequest::SystemPermission { .. }, Self::SystemPermissionGranted { .. })
+            | (
+                InteractionRequest::ClientCapability { .. },
+                Self::ClientCapabilityDecision { .. },
+            ) => Ok(()),
+            (InteractionRequest::Form { fields, .. }, Self::FormAnswer { result, .. }) => {
+                result.validate_for_fields(fields)
+            }
+            (
+                InteractionRequest::ComputerApp { allow_always, .. },
+                Self::ComputerAppDecision { decision, .. },
+            ) => decision.validate_for(*allow_always),
+            _ => Err("Interaction outcome does not match request"),
+        }
+    }
+}
+
+impl InteractionAnswer {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if matches!(self, Self::Permissions { .. }) {
+            self.clone().into_outcome(MAX_SAFE_INTEGER).validate()?;
+        }
+        if let Self::Permissions {
+            decision: PermissionDecision::Allow { permissions, .. },
+        } = self
+        {
+            permissions
+                .validate()
+                .map_err(|_| "Invalid approved permissions")?;
+        }
+        if let Self::Form { result } = self {
+            result.validate()?;
+        }
+        if let Self::Question { answers } = self {
+            question::validate_answers(answers)?;
+        }
+        Ok(())
+    }
+    pub fn validate_for_request(&self, request: &InteractionRequest) -> Result<(), &'static str> {
+        request.validate()?;
+        self.validate()?;
+        match (self, request) {
+            (
+                Self::Permissions {
+                    decision:
+                        PermissionDecision::Allow {
+                            scope: PermissionScope::Once,
+                            ..
+                        },
+                },
+                InteractionRequest::Permissions {
+                    tool_use_id: None, ..
+                },
+            ) => Err("An Executor permission request requires Run or Session scope"),
+            (Self::Permissions { decision }, InteractionRequest::Permissions { request, .. }) => {
+                decision
+                    .validate_for(&request.permissions)
+                    .map_err(|_| "Approved permissions exceed the request")
+            }
+            (Self::Question { answers }, InteractionRequest::Question { questions, .. }) => {
+                question::validate_answer_count(answers, questions)
+            }
+            (Self::ClientCapability { .. }, InteractionRequest::ClientCapability { .. }) => Ok(()),
+            (Self::SessionApproval { .. }, InteractionRequest::SessionApproval { .. }) => Ok(()),
+            (Self::ServiceApproval { .. }, InteractionRequest::ServiceApproval { .. }) => Ok(()),
+            (Self::Form { result }, InteractionRequest::Form { fields, .. }) => {
+                result.validate_for_fields(fields)
+            }
+            (
+                Self::ComputerApp { decision },
+                InteractionRequest::ComputerApp { allow_always, .. },
+            ) => decision.validate_for(*allow_always),
+            (Self::ComputerAppCancel {}, InteractionRequest::ComputerApp { .. })
+            | (Self::SystemPermissionCancel {}, InteractionRequest::SystemPermission { .. }) => {
+                Ok(())
+            }
+            _ => Err("Interaction answer does not match request"),
+        }
+    }
+}
+
+impl InteractionRecord {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        for id in [
+            &self.execution.session_id,
+            &self.execution.turn_id,
+            &self.request_id,
+        ] {
+            entity_id(id)?;
+        }
+        if self.created_at > MAX_SAFE_INTEGER {
+            return Err("Invalid interaction creation timestamp");
+        }
+        self.request.validate()?;
+        if let InteractionRequest::Permissions {
+            target,
+            tool_use_id,
+            ..
+        } = &self.request
+        {
+            use crate::durable::AuthorizationObligation;
+            let expected = match target {
+                AuthorizationObligation::Tool { tool } => Some(crate::tool_call::tool_use_id(
+                    self.execution.run_id,
+                    &format!("{}:{}", tool.attempt, tool.call),
+                )),
+                AuthorizationObligation::Cell { .. } => None,
+                AuthorizationObligation::External { operation, .. } => Some(
+                    crate::tool_call::tool_use_id(self.execution.run_id, &operation.to_string()),
+                ),
+            };
+            if tool_use_id.as_deref() != expected.as_deref() {
+                return Err(
+                    "Permission display identity differs from its original execution obligation",
+                );
+            }
+        }
+        if let Some(outcome) = &self.outcome {
+            outcome.validate_for_request(&self.request)?;
+        }
+        Ok(())
+    }
+}
+
+impl SessionGrant {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        entity_id(&self.session_id)?;
+        self.target.validate()?;
+        if self.granted_at > MAX_SAFE_INTEGER
+            || self.basis.is_some_and(|basis| basis.validate().is_err())
+        {
+            return Err("Invalid grant timestamp");
+        }
+        Ok(())
+    }
+}
+
+fn windows_absolute(path: &str) -> bool {
+    fn drive(path: &str) -> bool {
+        let bytes = path.as_bytes();
+        bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && bytes[2] == b'\\'
+    }
+    fn unc(rest: &str) -> bool {
+        let mut parts = rest.split('\\');
+        matches!((parts.next(), parts.next()), (Some(server),Some(share))
+            if !server.is_empty()&&!share.is_empty()&&!matches!(server,"."|".."|"?")&&!matches!(share,"."|".."))
+    }
+    let path = path.replace('/', "\\");
+    if let Some(rest) = path.strip_prefix("\\\\?\\") {
+        return drive(rest)
+            || (rest
+                .as_bytes()
+                .get(..4)
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"UNC\\"))
+                && unc(&rest[4..]));
+    }
+    drive(&path) || path.strip_prefix("\\\\").is_some_and(unc)
+}
+
+impl SystemPermissionApplicationLocation {
+    pub fn bundle_url(&self) -> Result<url::Url, &'static str> {
+        if self.state_domain.len() != 64
+            || !self
+                .state_domain
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            return Err("Invalid system permission Host identity");
+        }
+        let url =
+            url::Url::parse(&self.file_url).map_err(|_| "Invalid permission application URL")?;
+        if url.scheme() != "file"
+            || url.host_str().is_some()
+            || url.query().is_some()
+            || url.fragment().is_some()
+        {
+            return Err("Permission application must be a local bundle URL");
+        }
+        let path = url.path().trim_end_matches('/');
+        if !path.starts_with('/')
+            || !path
+                .rsplit('.')
+                .next()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("app"))
+        {
+            return Err("Permission application must be an absolute app bundle");
+        }
+        Ok(url)
+    }
+}

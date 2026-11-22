@@ -1,0 +1,366 @@
+---
+title: macOS
+description: Run Rust and TSX NSH apps on macOS in AppKit windows, package them as .app bundles, embed them in a Mac app with AppView, and what differs on macOS.
+order: 13
+group: platforms
+---
+
+# macOS
+
+NSH apps also run as native Mac apps. The macOS backend renders them with AppKit views and Core Animation and lays out
+text with CoreText; the core, the reactive graph, the renderer, Taffy layout and the native modules are the
+same as on iOS and Android, so one app runs everywhere. On macOS, `os()` is `Os::MacOs` (`platform.os` is `"macos"`
+in TSX) and TSX's `desktop={{…}}` props apply. The window's title, a title bar of the app's own, the menu bar and
+context menus come from `nsh_core::element::desktop` in Rust ([Desktop title bars](./rust.md#desktop-title-bars)) and
+[`nsh/desktop`](../modules/nsh-desktop.md) in TSX.
+
+The macOS backend behaves like a desktop app: mouse, trackpad and keyboard input, resizable windows, dialogs
+over the window and a menu bar.
+
+## Requirements
+
+- **macOS 14** or later, where the app runs, or the later version the app names
+  ([Minimum system version](./packaging.md#minimum-system-version)).
+- Xcode's command line tools (`xcode-select --install`), to build Rust apps' runners and NSH's macOS runtime from a
+  checkout, and to package apps (`codesign`, `sips`). The distribution made with `cargo xtask dist` on a Mac ships the
+  runtime of TSX apps in `runtime/macos/`.
+
+## Running an app
+
+A Rust app runs from its directory:
+
+```sh
+nsh run --target macos         # the default on a Mac
+```
+
+`nsh` builds a debug runner with your crate and opens the app in a window, with its logs (`log::info!` and the rest)
+in the terminal; a change to the crate's Rust code builds the runner again and restarts the app. `cargo run` starts
+the same root from the crate's `src/main.rs`, which `nsh init --template rust` writes: [`run_app`](#embedding-in-a-mac-app)
+with `AppSource::Rust`.
+
+A TSX app names its entry:
+
+```sh
+nsh run App.tsx --target macos
+```
+
+The app opens in an AppKit window (1200×800 by default), with hot reload, logs in the terminal and the error overlay as
+on the other targets; Cmd+R reloads the latest build. The menu bar and the window show the app's name (nsh.json
+`"name"`, else its directory's). In a checkout, `nsh run` builds the development host
+(`nsh-macos-host`) first. Stopping `nsh run` closes the window, and closing the window ends `nsh run`. The host also
+runs a built bundle on its own:
+
+```sh
+nsh build my-app --release -o build
+dist/nsh/runtime/macos/nsh-macos-host --bundle build/bundle.nshc --window-size 1200x800   # in a checkout: target/debug/nsh-macos-host
+```
+
+`--window-size` is the window's initial size (TSX apps); the window can be resized. `--display <n>` (`nsh run` / `nsh test
+--target macos --display <n>`) centers it on display `n`: `1` is the primary display, the one with the menu bar.
+
+`nsh test --target macos` runs a TSX app's tests in macOS windows, on a secondary display when there is one (the main
+screen stays yours; `--display <n>` picks another): each app a test opens gets a window of its own, at the size the
+test asks for even on a display shorter than it, and
+the steps click, type and scroll with the system's input at the views their selectors name
+([Testing](./testing-and-trace.md#on-a-real-platform)). The apps run in the background: their windows show while the
+keyboard stays with the app you type in (`--foreground` lets them become the active app), and clicks reach the app's
+views as they do in the active window, under a hidden title bar too.
+
+### Performance monitor
+
+`--fps` (`AppOptions { fps: true, .. }` in a Rust app's `run_app`, `AppView::set_fps_monitor(true)` when embedding,
+`nsh run App.tsx --target macos --fps`, the host's `--fps`, a packaged TSX app's `open -a MyApp --args --fps`, the
+environment variable `NSH_FPS=1`, or the app's own `setFpsEnabled(true)`) shows a panel at the top right of the app that
+updates twice a second. A packaged TSX app can also set `NSHPerformanceMonitor` to `true` in its `Info.plist` to show
+the panel however the app is opened. Add this key through `nsh.json`'s `macos.infoPlist`
+([Packaging](./packaging.md#infoplist-keys-and-entitlements)). A packaged app can also take `NSH_FPS` from its
+`Info.plist`'s `LSEnvironment`.
+
+| Row | Measures |
+|---|---|
+| `FPS` | Frames shown over the last second: display refreshes in which the app changed (an idle app reads low; that is not slowness). `max` is what the main thread could keep up with, then the display's rate (120 Hz on ProMotion screens). |
+| `TICK` | The gaps between display refreshes as they arrived (mean, p95) and `gap`, the p95 gap between shown frames: one refresh (8.3 ms at 120 Hz) when nothing is late. |
+| `MAIN` | Main-thread time per frame (applying the engine's changes, drawing text and canvases, animations, input), its 95th percentile, and `drop`: the share of frames that took longer than one refresh. |
+| `JS` / `CORE` | Per commit: your code (handlers, timers, list rows) and NSH's core (layout, text, diffing); commits per second, native view changes per commit. |
+| `HOP` | How long changes wait between the engine thread and the main thread; how busy the engine thread is. |
+| `CPU` / `GPU` / `MEM` | The process: CPU (100% is one core), its GPU share, its memory footprint (Activity Monitor's figure). |
+
+The bars below are the last 120 frames' main-thread time against one refresh (the line): green within half of it, amber
+within it, red over. While the panel shows, the readings are also logged once a second (target `nsh::fps`, in the
+Linux backend's shape with macOS's frame phases `tick`, `drain` and `canvas`; milliseconds as mean/p50/p95/max), which
+`nsh test --fps -v` shows and `examples/gallery/tools/perf.py` reads. Measure release builds; the monitor costs nothing
+while it is off.
+
+A click on the panel collapses it to a pill with the frame rate alone, green, amber or red as the frames' 95th percentile
+main-thread time is within half of one refresh, within it, or over it (the bars' colors); another click expands it.
+VoiceOver reads it as a button with that value and presses it the same way. The panel takes the clicks on it and no
+others: the rest of the app gets the mouse as it does without it. The app sets how it shows with `setFpsMode`
+(`"expanded"`, `"collapsed"`, or `"hidden"`, which shows nothing while it still measures and logs; Rust:
+`set_fps_mode(FpsMode::Collapsed)`, `AppView::set_fps_mode` when embedding), now and whenever it shows later;
+`NSH_FPS=collapsed` or `NSH_FPS=hidden` start it so.
+
+## Packaging
+
+```sh
+nsh package --target macos [--run]           # a Rust app, from its directory
+nsh package App.tsx --target macos [--run]   # a TSX app
+```
+
+Writes an app bundle:
+
+```text
+.nsh/out/<Name>.app/Contents/
+  Info.plist
+  MacOS/<Name>               the executable: a Rust app's own runner, built with its crate; nsh's release runner for TSX
+  Resources/nsh/bundle.nshc  a TSX app, compiled
+  Resources/nsh/assets/…     the assets it imports (a Rust crate's `assets!()` too)
+  Resources/nsh/app.json     the window title, the app's appearance, its activation policy and nsh.json's window options
+  Resources/AppIcon.icns     the icon, when nsh.json names one (converted with sips)
+```
+
+The `.app` is signed ad hoc, so it runs on the Mac that built it. To distribute it, sign it with a Developer ID and
+notarize it. `--run` opens the app after packaging it.
+
+The app logs its warnings, its errors and its `console.log` and `console.info` lines to the unified log, with its id
+as the subsystem: Console shows them, and so does `log stream --predicate 'subsystem == "com.example.notes"'`. Its
+standard error gets them too: the terminal it was started from (`.nsh/out/<Name>.app/Contents/MacOS/<Name>`) or a file
+(`2> app.log`, `open --stderr app.log`) ([A packaged app's logs](./dev-server-and-debugging.md#a-packaged-apps-logs)).
+
+## Menu bar apps
+
+A menu bar app lives in the menu bar as its [tray icon](../modules/nsh-desktop.md#tray), outside the Dock and the app
+switcher (Cmd+Tab). nsh.json's `macos.activationPolicy` makes an app one:
+
+```json
+{
+  "macos": { "activationPolicy": "accessory" }
+}
+```
+
+| `activationPolicy` | The app |
+|---|---|
+| `"regular"` (the default) | A Dock icon, the menu bar while the app is active, a place in the app switcher. |
+| `"accessory"` | A menu bar app. Its windows show as a regular app's; its application menu stays out of sight, and the menu's shortcuts (Cmd+W, Cmd+Q) work while one of its windows is active. |
+
+The app is a menu bar app from launch, before its code runs, whichever way NSH starts it. `nsh package --target macos` writes
+`LSUIElement` into the package's `Info.plist` (set `macos.activationPolicy` rather than `LSUIElement` in
+[`macos.infoPlist`](./packaging.md#infoplist-keys-and-entitlements)) and the policy into its `app.json`, which the
+runner reads. `nsh run --target macos` starts the development host with `--activation-policy accessory`, the flag to
+give the host when you start it yourself, and so does `nsh test --target macos --foreground`; tests in the background
+(the default) run as before. `cargo run` starts a Rust app's own `main`, which says so in `run_app`'s options. The
+option is the macOS backend's, so a `main` that also builds for Windows and Linux, as `nsh init --template rust`
+writes it, sets it for macOS:
+
+```rust
+platform::AppOptions {
+    #[cfg(target_os = "macos")]
+    activation_policy: platform::ActivationPolicy::Accessory,
+    ..Default::default()
+}
+```
+
+The Dock's features come with its icon: `Notifications.setBadge`'s badge, `requestAttention()`'s bounce and reopening a
+hidden window from the Dock are a regular app's. A menu bar app shows its state in its tray (`Tray.set`'s icon and
+tooltip) and opens its window from there:
+
+```tsx
+import { mount } from "nsh";
+import { currentWindow, Tray } from "nsh/desktop";
+import icon from "./tray.svg";
+
+function App() {
+  // Closing the window hides it: the app keeps running in the menu bar.
+  const main = currentWindow();
+  main.set({ closeOnPress: false });
+  main.on("closePress", () => main.hide());
+  Tray.set({ icon, onClick: () => main.focus(), menu: [{ role: "quit" }] });
+  return <Inbox />;
+}
+
+mount(App);
+```
+
+A menu bar app often offers to open at login: when the user turns that on, `Application.setLaunchAtLogin(true)` registers the app
+bundle as a login item ([Opening at login](../modules/nsh-desktop.md#opening-at-login)).
+
+An app embedded with `AppView` takes part in the system's UI as its host app does (the host's `LSUIElement`, or
+`NSApplication.setActivationPolicy`).
+
+## Embedding in a Mac app
+
+The `nsh-platform-macos` crate (from the NSH repository) gives a Rust Mac app `AppView`: one NSH engine as an `NSView`.
+Each `AppView` is independent; several can run at once. It runs a Rust root, the root component of your crate:
+
+```rust
+use std::rc::Rc;
+use nsh_platform_macos::{
+    objc2::MainThreadMarker, objc2_app_kit::NSWindow, set_ui_sets, AppOptions, AppView, Root,
+};
+
+fn show(window: &NSWindow) -> Rc<AppView> {
+    // Once, before the first view: the UI sets the apps import (NSH's and your crate's).
+    set_ui_sets(vec![nsh_base::registry(), my_app::registry()]);
+    let mtm = MainThreadMarker::new().expect("main thread");
+    let view = AppView::new(mtm, AppOptions::default());
+    // register native components here, before loading
+    view.load(Root::of::<my_app::App>().into());
+    window.setContentView(Some(&view.view()));
+    // Keep the view while the window shows it; `stop` it when the window closes.
+    view
+}
+```
+
+`Root::tokens` gives the root its [theme](./rust.md#theme) (`nsh_base::Theme::from_json(json)?.into_tokens()`) and
+`Root::app_id` the id its data is kept under. A TSX bundle that `nsh build` wrote loads into the same view:
+
+```rust
+use nsh_platform_macos::{AppOptions, AppView, AssetBase, Bundle};
+
+let view = AppView::new(mtm, AppOptions {
+    asset_base: Some(AssetBase::Directory("app/assets".into())),
+    ..AppOptions::default()
+});
+let code = std::fs::read_to_string("app/bundle.js").expect("bundle");
+view.load(Bundle::source(code).into());
+```
+
+`AppView::load` replaces whatever ran; `stop` ends the app. `asset_base` tells it where `asset:/` URIs resolve
+(`AssetBase::Directory` or `AssetBase::Http`). Bytecode bundles (`bundle.nshc`) load with
+`unsafe { Bundle::bytecode(bytes) }`: bytecode is trusted input, so only load it from your own app's files.
+For an app that is only an NSH app, `run_app(source, options)` (`AppSource::Rust(root)` or `AppSource::Bundle(bundle)`) opens one `AppView` in a window with a standard menu
+(About, Hide, Quit, Edit, Minimize, Zoom, Enter Full Screen, Close), which the app can replace with
+`Menu.setApplicationMenu` ([`nsh/desktop`](../modules/nsh-desktop.md)), and runs until the window closes.
+By default, closing the window or choosing Quit stops the engine and returns from `run_app`;
+the caller can then finish cleanup or restart its executable.
+
+Set `AppOptions { keep_alive_on_close: true, ..Default::default() }` to keep the
+standalone session alive when its window closes. Closing hides the window;
+reopening from the Dock shows that same window and engine (a [menu bar app](#menu-bar-apps)
+shows it from its tray). For an explicit Exit
+or update restart, call `nsh_platform_macos::quit_app()` from any thread. It
+closes the retained window, stops the engine and returns from `run_app`.
+The app's own code quits the same way with `nsh_core::element::desktop::quit()` (TS: `Application.quit()`), while
+`current_window().close()` (`nsh_core::element::desktop`) follows the chosen window-close policy.
+`nsh_core::element::desktop::restart()` (TS: `Application.restart()`) quits the same way, and once the process has
+exited `run_app`'s runner starts the app again with the same arguments: inside an `.app` bundle through Launch Services
+(`open -n`), as when the user opens it.
+
+`AppOptions { transparent: true, ..Default::default() }` opens `run_app`'s window nonopaque with a clear
+background, so what the app leaves unpainted shows what is behind the window (a HUD panel, a
+[`macos={{ backdrop }}`](./styling.md#filters-and-blending) with `behindWindow`). This option defaults to `false`.
+For a custom Rust host it supplies an initial default: explicit main-window attributes and later window updates
+take precedence. Standard hosts leave this option false but can request transparency through their window
+configuration. A view's `behindWindow` material never makes the window transparent by itself.
+An embedded `AppView` does not change the window it is put in: make your own `NSWindow` nonopaque with a clear
+`backgroundColor` for the same look.
+
+
+`AppOptions::handoff` gives the address the app sets with [`UrlScheme.setUrl`](../modules/nsh.md#handoff) to the system,
+so Handoff continues it on the user's other devices. An address of the app's own scheme needs `<bundle id>.url` in the
+Info.plist's `NSUserActivityTypes`. `run_app` turns it on when the bundle declares that type (`nsh.json`
+`"handoff": true`).
+
+`AppOptions::notifications` hands the process's [notifications](../modules/nsh.md#notifications) to the app the view runs:
+its banners, presses and badge. It is off by default, so an embedded app's notifications are `unavailable` and your
+app's stay yours; `run_app` sets it.
+
+`AppOptions::login_item` gives the app `run_app` runs its [login item](../modules/nsh-desktop.md#opening-at-login): the
+app bundle's (`SMAppService.mainApp`). It is off by default and read by `run_app` alone, so an embedded app
+never launches at login; the runner of the apps `nsh package` builds sets it.
+
+`AppOptions::cache` (or `AppView::set_cache`, for the apps loaded next) sets where the apps keep their caches, the
+[images they download](./images-and-assets.md#kept-on-disk), and how much each keeps (`CacheOptions`: the system's
+cache directory and 256 MiB of images by default).
+
+`AppView::set_locale(Some(locale))` and `AppView::set_font_scale(Some(scale))` give the app your app's language and
+text size in place of the system's (`None` follows the system's again): `locale()`, `Intl`, `fontScale()` and text
+follow at once ([Device and environment](./device-and-environment.md#in-an-embedding-app)).
+
+`AppView::set_theme_overrides(Some(json))` puts your app's brand over the app's [theme](./tailwind.md#theme-tokens): a theme file
+in the format of `nsh.json`'s `"theme"`, whose tokens win over the app's of the same names in light and dark mode
+while the app's others stay; classes such as `bg-primary` restyle at once, and apps loaded later start with it
+(`None` gives the app its own theme back; a file that does not parse is an error and changes nothing).
+
+Native components are registered with `AppView::register_component`; see
+[Native components](./native-components.md#registering-on-macos-rust). `set_ui_sets(sets)` sets the UI sets every
+engine serves: NSH's (`nsh_base::registry()`) and your crates' (`my_app::registry()`, which `#[native_module]`
+makes), so the TSX a view loads imports your Rust components and modules too.
+
+## What differs on macOS
+
+The environment is a desktop's: the safe area and the keyboard height are 0, `idiom()` is the desktop
+(`platform.idiom` is `"desktop"`), `os_version()` (`platform.version`) is the macOS version, and dark mode follows the system's appearance live. See
+[Device and environment](./device-and-environment.md).
+
+Input is a desktop's: the mouse, the trackpad (scrolling with momentum, pinch and rotation) and the keyboard.
+Trackpad tap-to-click briefly shows the app’s `active:` feedback even when the press and release arrive together; press callbacks run at release. Reduced motion keeps immediate visual release.
+A zoomable scroll view zooms with a trackpad pinch or Control + wheel around the pointer, and scrolls both ways while
+zoomed.
+Selectable text is selected by dragging, double- and triple-clicking, and copied with Cmd+C. Escape, Option+Left,
+Cmd+[ and the mouse's back button close the newest dialog or go back in a stack (Escape in a focused field or web page
+only leaves it; a page gets these keys first, and keeps those it uses); a `Dialog` is a layer over the whole window
+that shows the app's popup and backdrop. Pages show their `header` at the top. A click anywhere in an `Input`, its padding too, puts the caret at the nearest
+point. `AlertDialog` shows an `NSAlert`: a sheet of the window the user is in, and, while that window is out of sight
+(a tray app's hidden main window, the app hidden, the window minimized or off every screen), an alert of its own in
+front of every window, which takes the app's input until it is answered while the app goes on running. Up to two alert
+actions show in a row
+(the cancel action leftmost, the last regular one the default for Return), more actions and an action sheet's actions
+stacked in their order with the cancel action last and no default; Escape chooses the cancel action.
+
+### Table accessibility
+
+VoiceOver and UI automation read `Table` and `Grid` as `AXTable`, `Row` as `AXRow`, and `Cell` and
+`ColumnHeader` as `AXCell`. The table exposes its mounted rows and columns, visible rows and cells, and headers.
+Row and cell indices follow tree order, starting at zero and including header rows, with each cell spanning one
+row and column. Column headers are linked from their table, column and cells. Rows with `onPress` keep their
+press action and their row role, and labels and text children remain available to accessibility clients.
+
+### Keyboard
+
+| Keys | Do |
+|---|---|
+| Return | In an `Input`, what `submitBehavior` says: submit (`onSubmit`), submit and leave the field, or a new line (multiline inputs) |
+| Return, keypad Enter, Space | Activate a focused view with `onPress` once on key-down; auto-repeat is consumed |
+| Shift+Return, Option+Return, Ctrl+Return | A new line in a multiline input whose return submits |
+| Tab, Shift+Tab (Ctrl too) | The next / previous field or pressable view in screen order, within the newest dialog; Option+Tab types a tab in a multiline input |
+| Escape | Leaves the focused field; else clears a text selection, then closes the newest dialog or goes back |
+| Option+Left, Cmd+[, mouse back button | Go back (not while a field has the focus: there Option+Left moves the caret) |
+| Option / Cmd + arrows, with Shift; Option+Delete, Cmd+Delete; Ctrl+A / E / K | Move, select and delete by word and line in a field, as in every Mac app |
+| Cmd+Z, Shift+Cmd+Z, Cmd+X / C / V / A | Undo, redo, cut, copy, paste, select all (a `masked` field refuses cut and copy); Cmd+A / Cmd+C select and copy selectable text |
+| Arrows; Page Up / Down, Space, Shift+Space, Option+Up / Down; Home / End, Cmd+Up / Down | Scroll the scroll view around the focused view or under the mouse by a line, a page, to the start / end (not while a field has the focus) |
+| Cmd+W, Cmd+M, Ctrl+Cmd+F, Cmd+H, Option+Cmd+H, Cmd+Q | Close, minimize, full screen, hide, hide others, quit (`nsh package` and `nsh run` apps' menus) |
+| Cmd+R | Reloads the latest build (`nsh run`) |
+
+The app's own shortcuts ([`keymap`](../modules/nsh.md#keymap)) come before these, except activation keys addressed to a focused pressable view, Quit, Hide,
+Minimize and Full Screen, which cannot be bound.
+
+While an input method is composing, its input keeps the keys before app shortcuts are matched, including
+`when: "always"` bindings. This also covers hosted native inputs implementing `NSTextInputClient`.
+Shortcuts resume once the composition ends.
+
+Shortcuts work with any keyboard layout (on a Cyrillic or Greek one, Cmd+C is the key that types C on a US layout).
+A return that commits an input method's composition (Chinese, Japanese, ...) never submits. `onKeyPress` reports
+what React Native reports: the typed text, `"Enter"`, `"Backspace"`, and `"Escape"`.
+
+Not supported, or different:
+
+- **`brightness()`** above 1 is not drawn. **`mixBlendMode`** and **backdrops** are drawn by Core Animation:
+  `mixBlendMode` as the view layer's compositing filter, `macos={{ backdrop: { material, blending, state } }}` as an
+  `NSVisualEffectView` below the view (any AppKit material and state, whether or not a `backdropFilter` is set), and
+  `glassTintColor` as `glassEffect`'s tint on macOS 26; before macOS 26 the blur stands in for glass. These are
+  compositor effects: the test agent's composited screenshots show them, but its in-process fallback cannot.
+  A `behindWindow` material shows the desktop only through a see-through window, requested by window attributes
+  or a custom host's `AppOptions::transparent`; the view's blending never enables transparency itself.
+- **Inputs**: content types and autofill, keyboard types, autocapitalization, letter spacing; input accessory views
+  are never shown (there is no software keyboard) and `keyboardShouldPersistTaps` is ignored.
+- **`WebView`'s `scrollable={false}`** keeps the mouse wheel and the trackpad from scrolling the page: they scroll
+  the app's scroll views around it, as on iOS. The page still scrolls with its keyboard (Space, the arrows) and its own
+  scripts, and trackpad swipes between its pages (`allowsBackForwardNavigationGestures`) stop as well.
+- **Accessibility**: custom `accessibilityActions`.
+- **The status bar** and **haptics** (no desktop equivalent).
+
+## See also
+
+- [CLI](./cli.md): `nsh run --target macos`, `nsh package --target macos`
+- [Packaging](./packaging.md)
+- [Platform-specific code](./platform-specific.md)

@@ -1,0 +1,743 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+//! Public application caller: an anchored authenticated session, no legacy operations.
+use super::{
+    Configuration, Publication, Status, VERSION,
+    protocol::{Connected, Opening, Request, Response, SessionControl},
+    websocket::channel_opener,
+};
+use crate::{
+    application::{
+        Result,
+        transport::{Call, Catalogue, HostEndpoint, Peer, Source, wire},
+    },
+    ipc::{self, LocalStream},
+};
+use maka_capabilities::call::Attachments;
+use maka_plugin_core::{composition::InstanceId, deployment::DeploymentRef};
+use serde_json::Value;
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    io,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, BufReader, ReadHalf, WriteHalf};
+use uuid::Uuid;
+
+pub trait ChannelIo: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static {}
+impl<S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static> ChannelIo for S {}
+
+pub type Channel = Box<dyn ChannelIo>;
+pub type LocalCall = Call<ReadHalf<BufReader<Channel>>, WriteHalf<BufReader<Channel>>>;
+pub type OpenChannel =
+    Arc<dyn Fn() -> futures_util::future::BoxFuture<'static, io::Result<Channel>> + Send + Sync>;
+
+#[derive(Clone)]
+enum Target {
+    Local(PathBuf),
+    Supplied {
+        open: OpenChannel,
+        client_instance: Option<Arc<str>>,
+    },
+}
+impl Target {
+    async fn open(&self) -> Result<Channel> {
+        match self {
+            Self::Local(address) => Ok(Box::new(
+                ipc::connect(address).await.map_err(|e| e.to_string())?,
+            )),
+            Self::Supplied { open, .. } => open().await.map_err(|error| error.to_string()),
+        }
+    }
+    fn client_instance(&self) -> Option<String> {
+        match self {
+            Self::Local(_) => None,
+            Self::Supplied {
+                client_instance, ..
+            } => client_instance.as_deref().map(str::to_owned),
+        }
+    }
+    fn is_remote(&self) -> bool {
+        matches!(
+            self,
+            Self::Supplied {
+                client_instance: Some(_),
+                ..
+            }
+        )
+    }
+    async fn owner_control(&self, epoch: Uuid, request: Request) -> Result<Response> {
+        if self.is_remote() {
+            return Err("Host control requires the local owner".into());
+        }
+        control_stream(self.open().await?, Some(epoch), request).await
+    }
+}
+
+#[derive(PartialEq)]
+enum Phase {
+    Ready,
+    Lost,
+    Closing,
+    Closed,
+}
+pub struct Client {
+    target: Target,
+    connected: Connected,
+    anchor: wire::Reader<Channel>,
+    phase: Phase,
+    peer: Option<DeploymentRef>,
+}
+impl Client {
+    pub async fn connect(address: &Path, epoch: Option<Uuid>) -> Result<Self> {
+        let anchor = ipc::connect(address)
+            .await
+            .map_err(|error| error.to_string())?;
+        Self::connect_stream(address, epoch, anchor).await
+    }
+    pub async fn connect_stream(
+        address: &Path,
+        epoch: Option<Uuid>,
+        anchor: LocalStream,
+    ) -> Result<Self> {
+        Self::open(
+            Target::Local(address.into()),
+            epoch,
+            Box::new(anchor),
+            Request::Connect,
+        )
+        .await
+    }
+    /// Only a trusted current-account launcher may approve an external UI source.
+    pub async fn connect_peer(
+        address: &Path,
+        epoch: Option<Uuid>,
+        source: DeploymentRef,
+        consumers: BTreeSet<InstanceId>,
+        endpoints: BTreeMap<String, HostEndpoint>,
+    ) -> Result<Self> {
+        let request = Request::ConnectPeer {
+            source,
+            consumers,
+            endpoints,
+        };
+        let anchor = ipc::connect(address)
+            .await
+            .map_err(|error| error.to_string())?;
+        Self::open(
+            Target::Local(address.into()),
+            epoch,
+            Box::new(anchor),
+            request,
+        )
+        .await
+    }
+    /// Open Host wire-ready channels. The optional identity binds remote sessions;
+    /// the server independently derives authority from ingress.
+    pub async fn connect_on(
+        open: OpenChannel,
+        epoch: Option<Uuid>,
+        client_instance: Option<Arc<str>>,
+    ) -> Result<Self> {
+        let target = Target::Supplied {
+            open,
+            client_instance,
+        };
+        let anchor = target.open().await?;
+        Self::open(target, epoch, anchor, Request::Connect).await
+    }
+
+    /// Connect with an active Bearer credential. Learn the Host epoch when none
+    /// is pinned; subsequent channels use the epoch from this admission.
+    pub async fn connect_websocket(
+        open_stream: OpenChannel,
+        bearer: Arc<str>,
+        client_instance: Arc<str>,
+        epoch: Option<Uuid>,
+    ) -> Result<Self> {
+        Self::connect_on(
+            channel_opener(open_stream, bearer),
+            epoch,
+            Some(client_instance),
+        )
+        .await
+    }
+
+    /// Finalize a pending credential on a wire-ready authenticated channel.
+    pub async fn finalize_access(
+        open: OpenChannel,
+        client_instance: Arc<str>,
+        epoch: Option<Uuid>,
+    ) -> Result<()> {
+        let mut pairing = open().await.map_err(|error| error.to_string())?;
+        wire::write(
+            &mut pairing,
+            &Opening {
+                version: VERSION,
+                epoch,
+                client_instance: Some(client_instance.to_string()),
+                request: Request::FinalizeAccess,
+            },
+        )
+        .await?;
+        match wire::Reader::new(pairing).read::<Response>().await? {
+            Response::Finalized(result) => result,
+            _ => Err("Host pairing response mismatch".into()),
+        }
+    }
+
+    async fn open(
+        target: Target,
+        epoch: Option<Uuid>,
+        mut anchor: Channel,
+        request: Request,
+    ) -> Result<Self> {
+        let peer = match &request {
+            Request::ConnectPeer {
+                source, consumers, ..
+            } => {
+                Peer::new(source.clone(), consumers.clone())?;
+                Some(source.clone())
+            }
+            _ => None,
+        };
+        wire::write(
+            &mut anchor,
+            &Opening {
+                client_instance: target.client_instance(),
+                version: VERSION,
+                epoch,
+                request,
+            },
+        )
+        .await?;
+        let mut anchor = wire::Reader::new(anchor);
+        let Response::Connected(mut connected) = anchor.read().await? else {
+            return Err("Host did not establish an application session".into());
+        };
+        if connected.version != VERSION
+            || connected.epoch.is_nil()
+            || connected.session.is_nil()
+            || epoch.is_some_and(|epoch| connected.epoch != epoch)
+        {
+            return Err("Host protocol or incarnation changed".into());
+        }
+        connected.source.validate()?;
+        connected.catalogue = connected.catalogue.checked().await?;
+        connected
+            .catalogue
+            .check_names(connected.consumers.keys())?;
+        Ok(Self {
+            target,
+            connected,
+            anchor,
+            phase: Phase::Ready,
+            peer,
+        })
+    }
+    pub fn catalogue(&self) -> &Catalogue {
+        &self.connected.catalogue
+    }
+    pub fn epoch(&self) -> Uuid {
+        self.connected.epoch
+    }
+    pub fn source(&self) -> &DeploymentRef {
+        &self.connected.source
+    }
+    pub fn ui_imports(&self) -> Option<&BTreeMap<String, Vec<String>>> {
+        self.connected.ui.as_ref().map(|ui| &ui.imports)
+    }
+    /// Capture the declared services of one UI instance without changing this session.
+    /// The original session owns the returned session's admission and cleanup.
+    pub fn bind_ui(
+        &self,
+        source: DeploymentRef,
+        instance: InstanceId,
+    ) -> futures_util::future::BoxFuture<'static, Result<Self>> {
+        let ready =
+            self.phase == Phase::Ready && self.peer.is_none() && self.connected.ui.is_none();
+        let target = self.target.clone();
+        let epoch = self.connected.epoch;
+        let owner = self.connected.session;
+        Box::pin(async move {
+            if !ready {
+                return Err("UI binding capture requires a ready owner session".into());
+            }
+            let anchor = target.open().await?;
+            let child = Self::open(
+                target,
+                Some(epoch),
+                anchor,
+                Request::ConnectUi {
+                    owner,
+                    source: source.clone(),
+                    instance: instance.clone(),
+                },
+            )
+            .await?;
+            if child.source() != &source
+                || child.connected.ui.as_ref().map(|ui| &ui.instance) != Some(&instance)
+            {
+                return Err("Host captured a different UI instance".into());
+            }
+            Ok(child)
+        })
+    }
+    /// Open inert custody for one exact captured endpoint. A caller retains this
+    /// Call through errors; reconnection never retries an unconfirmed mutation.
+    pub fn call(
+        &self,
+        endpoint: &str,
+        method: String,
+        input: Value,
+        resources: Attachments,
+    ) -> futures_util::future::BoxFuture<'static, Result<LocalCall>> {
+        let captured: Result<_> = (|| {
+            if self.peer.is_some() {
+                return Err("UI peer calls require the original checked caller and journal".into());
+            }
+            let selection = self.connected.catalogue.select(endpoint)?;
+            let consumer = self
+                .connected
+                .consumers
+                .get(endpoint)
+                .ok_or("Host endpoint missing")?
+                .clone();
+            let source = Source {
+                deployment: self.connected.source.clone(),
+                consumer,
+                mount: self.connected.session,
+                request: Uuid::new_v4(),
+            };
+            Ok((self.call_channel_opener()?, selection, source))
+        })();
+        Box::pin(async move {
+            let (opener, selection, source) = captured?;
+            let (reader, output) = tokio::io::split(opener.open().await?);
+            Ok(Call::new(
+                reader, output, selection, source, method, input, resources,
+            ))
+        })
+    }
+    /// Establish only the authenticated session channel. The native adapter retains
+    /// its original checked Source, Call and caller-side RecordedIntent.
+    pub async fn open_call_channel(&self) -> Result<BufReader<Channel>> {
+        self.call_channel_opener()?.open().await
+    }
+    /// Freeze only this already authenticated session's physical target. It owns
+    /// no anchor, caller approval, source, or operation token and cannot reconnect.
+    pub fn call_channel_opener(&self) -> Result<CallChannelOpener> {
+        if self.phase != Phase::Ready {
+            return Err("Host session control is not ready".into());
+        }
+        Ok(CallChannelOpener {
+            target: self.target.clone(),
+            epoch: self.connected.epoch,
+            session: self.connected.session,
+        })
+    }
+    fn ready_peer(&self) -> Result<&DeploymentRef> {
+        if self.phase != Phase::Ready {
+            return Err("Host session control is not ready".into());
+        }
+        self.peer
+            .as_ref()
+            .ok_or("Host-owned session cannot approve peer sources".into())
+    }
+    async fn control(&mut self, command: SessionControl) -> Result<Response> {
+        if self.phase != Phase::Ready {
+            return Err("Host session control is not ready".into());
+        }
+        wire::encode_bounded(&command, usize::MAX)?;
+        // Cancellation or a partial frame permanently fences further commands.
+        self.phase = Phase::Lost;
+        wire::write(&mut self.anchor.inner, &command).await?;
+        self.anchor.read().await
+    }
+    pub async fn epochs(&mut self) -> Result<BTreeMap<String, Option<Uuid>>> {
+        self.ready_peer()?;
+        match self.control(SessionControl::Epochs).await? {
+            Response::Epochs(result) => {
+                self.phase = Phase::Ready;
+                result
+            }
+            _ => Err("Host endpoint observation response mismatch".into()),
+        }
+    }
+    pub async fn capture(&mut self) -> Result<Catalogue> {
+        self.ready_peer()?;
+        match self.control(SessionControl::Capture).await? {
+            Response::Captured(result) => match result {
+                Ok(catalogue) => {
+                    let catalogue = catalogue.checked().await?;
+                    catalogue.check_names(self.connected.consumers.keys())?;
+                    self.phase = Phase::Ready;
+                    Ok(catalogue)
+                }
+                Err(error) => {
+                    self.phase = Phase::Ready;
+                    Err(error)
+                }
+            },
+            _ => Err("Host capture response mismatch".into()),
+        }
+    }
+    /// Refresh future calls within the original owner's endpoint selections.
+    /// Accepted calls retain their original custody and are never replayed.
+    pub async fn refresh(&mut self) -> Result<()> {
+        if self.phase != Phase::Ready || self.peer.is_some() || self.connected.ui.is_some() {
+            return Err("Host refresh requires a ready owner session".into());
+        }
+        match self.control(SessionControl::Refresh).await? {
+            Response::Refreshed(result) => {
+                let result = match result {
+                    Ok(catalogue) => {
+                        let catalogue = catalogue.checked().await?;
+                        catalogue.check_names(self.connected.consumers.keys())?;
+                        self.connected.catalogue = catalogue;
+                        Ok(())
+                    }
+                    Err(error) => Err(error),
+                };
+                self.phase = Phase::Ready;
+                result
+            }
+            _ => Err("Host refresh response mismatch".into()),
+        }
+    }
+    pub fn check_approval(
+        &self,
+        source: &DeploymentRef,
+        consumers: &BTreeSet<InstanceId>,
+        retain: &BTreeSet<u64>,
+        captured: &Option<Catalogue>,
+    ) -> Result<()> {
+        let peer = self.ready_peer()?;
+        source.validate()?;
+        if source.state_domain != peer.state_domain || source.deployment != peer.deployment {
+            return Err("foreign approval deployment".into());
+        }
+        if !consumers.is_empty() {
+            Peer::new(source.clone(), consumers.clone())?;
+        }
+        if consumers.is_empty() != captured.is_none() {
+            return Err("approval requires its captured endpoints".into());
+        }
+        if let Some(catalogue) = captured {
+            catalogue.validate()?;
+            catalogue.check_names(self.connected.consumers.keys())?;
+        }
+        wire::encode_bounded(
+            &SessionControl::Approve {
+                source: source.clone(),
+                consumers: consumers.clone(),
+                retain: retain.clone(),
+                captured: captured.clone(),
+            },
+            usize::MAX,
+        )?;
+        Ok(())
+    }
+    pub async fn approve(
+        &mut self,
+        source: DeploymentRef,
+        consumers: BTreeSet<InstanceId>,
+        retain: BTreeSet<u64>,
+        captured: Option<Catalogue>,
+    ) -> Result<()> {
+        self.check_approval(&source, &consumers, &retain, &captured)?;
+        match self
+            .control(SessionControl::Approve {
+                source: source.clone(),
+                consumers,
+                retain,
+                captured: captured.clone(),
+            })
+            .await?
+        {
+            Response::Approved {
+                source: actual,
+                result,
+            } if actual == source => {
+                if result.is_ok()
+                    && let Some(catalogue) = captured
+                {
+                    self.connected.catalogue = catalogue;
+                }
+                self.phase = Phase::Ready;
+                result
+            }
+            _ => Err("Host approval response mismatch".into()),
+        }
+    }
+    /// After a lost control observation, shut down this anchor without appending
+    /// a frame. Unix can still read its original cleanup acknowledgement; Windows
+    /// closes the whole pipe and returns an error unless that acknowledgement was
+    /// already buffered. EOF alone never confirms cleanup.
+    pub async fn close(&mut self) -> Result<()> {
+        if self.phase == Phase::Closed {
+            return Ok(());
+        }
+        if self.phase == Phase::Ready {
+            self.phase = Phase::Lost;
+            if wire::write(&mut self.anchor.inner, &SessionControl::Close)
+                .await
+                .is_ok()
+            {
+                self.phase = Phase::Closing;
+            }
+        }
+        if self.phase == Phase::Lost {
+            self.anchor
+                .inner
+                .shutdown()
+                .await
+                .map_err(|error| error.to_string())?;
+            self.phase = Phase::Closing;
+        }
+        loop {
+            match self.anchor.read::<Response>().await? {
+                Response::Closed => {
+                    self.phase = Phase::Closed;
+                    return Ok(());
+                }
+                // A cancelled control observer may have left its acknowledgement
+                // buffered. None substitutes for the final session cleanup.
+                Response::Epochs(_)
+                | Response::Captured(_)
+                | Response::Refreshed(_)
+                | Response::Approved { .. } => {}
+                _ => return Err("Host session cleanup remains unconfirmed".into()),
+            }
+        }
+    }
+    /// Close this local session and stop its Host when no other session remains.
+    /// A separate epoch-pinned channel also works after losing a control observer;
+    /// a partial frame on the original anchor must never receive another command.
+    pub async fn quit(&mut self) -> Result<()> {
+        self.request_quit(false).await
+    }
+
+    /// Close a desktop session, retiring a local candidate when it is the last client.
+    pub async fn quit_ephemeral(&mut self) -> Result<()> {
+        self.request_quit(true).await
+    }
+
+    async fn request_quit(&mut self, ephemeral_only: bool) -> Result<()> {
+        if self.target.is_remote() {
+            return Err("Host control requires the local owner".into());
+        }
+        if self.phase == Phase::Closed {
+            return Ok(());
+        }
+        self.phase = Phase::Lost;
+        match self
+            .target
+            .owner_control(
+                self.connected.epoch,
+                Request::Quit {
+                    session: self.connected.session,
+                    ephemeral_only,
+                },
+            )
+            .await?
+        {
+            Response::Closed => {
+                self.phase = Phase::Closed;
+                Ok(())
+            }
+            _ => Err("Host quit cleanup remains unconfirmed".into()),
+        }
+    }
+    /// Read this incarnation's live publication and its current source CAS witness.
+    pub async fn publication(&self) -> Result<Publication> {
+        if self.phase != Phase::Ready || self.peer.is_some() {
+            return Err("Host publication requires a ready local owner session".into());
+        }
+        match self
+            .target
+            .owner_control(self.connected.epoch, Request::Publication)
+            .await?
+        {
+            Response::Publication(result) => result,
+            _ => Err("Host publication response mismatch".into()),
+        }
+    }
+
+    /// Persist trusted configuration and apply it to this same Host incarnation.
+    /// A lost response must be retried with the same source and desired value.
+    /// Explicitly narrowed or rebound endpoints must clear their product method ownership.
+    pub async fn configure(
+        &self,
+        source: DeploymentRef,
+        previous: Configuration,
+        configuration: Configuration,
+    ) -> Result<()> {
+        if self.phase != Phase::Ready || self.peer.is_some() {
+            return Err("Host configuration requires a ready local owner session".into());
+        }
+        match self
+            .target
+            .owner_control(
+                self.connected.epoch,
+                Request::Configure {
+                    source,
+                    previous,
+                    configuration,
+                },
+            )
+            .await?
+        {
+            Response::Configured(result) => result,
+            _ => Err("Host configuration response mismatch".into()),
+        }
+    }
+    pub async fn prepare_access(
+        address: &Path,
+        epoch: Uuid,
+        principal: String,
+    ) -> Result<super::Pairing> {
+        match control(address, Some(epoch), Request::PrepareAccess { principal }).await? {
+            Response::Pairing(result) => result,
+            _ => Err("Host pairing response mismatch".into()),
+        }
+    }
+    pub async fn revoke_access(address: &Path, epoch: Uuid, credential: String) -> Result<bool> {
+        match control(address, Some(epoch), Request::RevokeAccess { credential }).await? {
+            Response::Revoked(result) => result,
+            _ => Err("Host revocation response mismatch".into()),
+        }
+    }
+    pub async fn status(address: &Path, epoch: Option<Uuid>) -> Result<Status> {
+        let stream = ipc::connect(address)
+            .await
+            .map_err(|error| error.to_string())?;
+        Self::status_stream(stream, epoch).await
+    }
+    pub async fn status_stream(stream: LocalStream, epoch: Option<Uuid>) -> Result<Status> {
+        match control_stream(stream, epoch, Request::Status).await? {
+            Response::Status(status) => Ok(status),
+            _ => Err("Host status response mismatch".into()),
+        }
+    }
+    pub async fn retire(address: &Path, epoch: Uuid) -> Result<bool> {
+        Self::retire_with_options(address, epoch, false, true).await
+    }
+    /// True confirms the retirement decision; force retirement can still be
+    /// cleaning up. The original Root lease remains held through actual drain.
+    pub async fn retire_with_options(
+        address: &Path,
+        epoch: Uuid,
+        interrupt: bool,
+        allow_idle_connections: bool,
+    ) -> Result<bool> {
+        match control(
+            address,
+            Some(epoch),
+            Request::Retire {
+                interrupt,
+                allow_idle_connections,
+                refuse_active_sessions: false,
+            },
+        )
+        .await?
+        {
+            Response::Retired(result) => result,
+            _ => Err("Host retirement response mismatch".into()),
+        }
+    }
+    /// Atomically retires the Host only when zero interactive sessions are
+    /// attached. With `interrupt = true`, active background runs are still
+    /// interrupted once the Host verifies no sessions are connected.
+    pub async fn retire_if_no_sessions(
+        address: &Path,
+        epoch: Uuid,
+        interrupt: bool,
+    ) -> Result<bool> {
+        match control(
+            address,
+            Some(epoch),
+            Request::Retire {
+                interrupt,
+                allow_idle_connections: false,
+                refuse_active_sessions: interrupt,
+            },
+        )
+        .await?
+        {
+            Response::Retired(result) => result,
+            _ => Err("Host retirement response mismatch".into()),
+        }
+    }
+}
+/// An immutable physical target captured from an authenticated Client. The
+/// embedding must fence native calls before detaching that Client's anchor.
+#[derive(Clone)]
+pub struct CallChannelOpener {
+    target: Target,
+    epoch: Uuid,
+    session: Uuid,
+}
+impl CallChannelOpener {
+    pub async fn open(&self) -> Result<BufReader<Channel>> {
+        let mut stream = self.target.open().await?;
+        wire::write(
+            &mut stream,
+            &Opening {
+                client_instance: self.target.client_instance(),
+                version: VERSION,
+                epoch: Some(self.epoch),
+                request: Request::Call {
+                    session: self.session,
+                },
+            },
+        )
+        .await?;
+        let mut reader = wire::Reader::new(stream);
+        if !matches!(reader.read::<Response>().await?, Response::Accepted) {
+            return Err("Host did not accept application channel".into());
+        }
+        Ok(reader.inner)
+    }
+}
+async fn control(address: &Path, epoch: Option<Uuid>, request: Request) -> Result<Response> {
+    let stream = ipc::connect(address)
+        .await
+        .map_err(|error| error.to_string())?;
+    control_stream(stream, epoch, request).await
+}
+async fn control_stream(
+    mut stream: impl AsyncRead + AsyncWrite + Unpin,
+    epoch: Option<Uuid>,
+    request: Request,
+) -> Result<Response> {
+    wire::write(
+        &mut stream,
+        &Opening {
+            client_instance: None,
+            version: VERSION,
+            epoch,
+            request,
+        },
+    )
+    .await?;
+    wire::Reader::new(stream).read().await
+}

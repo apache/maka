@@ -1,0 +1,61 @@
+---
+// shadcn/ui's Select: a trigger like an input that opens a listbox popup,
+// in the site's look (a native <select> pops up the system's list). The
+// root carries the value (`data-value`) and fires `change` (its `detail`
+// is `{ value }`) when the reader picks another; `lib/ui/select.ts` drives
+// it (WAI-ARIA select-only combobox: arrows, Home / End, typeahead,
+// Enter / Space, Escape).
+import type { HTMLAttributes } from 'astro/types';
+
+export interface SelectOption {
+  value: string;
+  label: string;
+}
+
+type Props = Omit<HTMLAttributes<'div'>, 'id'> & {
+  /** Prefix of the parts' ids; unique on the page. */
+  id: string;
+  options: SelectOption[];
+  value?: string;
+  /** The accessible name, or `labelledby` naming an element that holds it. */
+  label?: string;
+  labelledby?: string;
+  size?: 'default' | 'sm';
+  /** Classes of the trigger (its width, a monospace value). */
+  triggerClass?: string;
+};
+
+const { id, options, value = options[0]?.value, label, labelledby, size = 'default', triggerClass, ...rest } = Astro.props;
+const current = options.find((option) => option.value === value) ?? options[0];
+---
+<div data-slot="select" data-value={current?.value} {...rest}>
+  <button
+    type="button"
+    data-slot="select-trigger"
+    data-size={size}
+    class={triggerClass}
+    id={`${id}-trigger`}
+    role="combobox"
+    aria-haspopup="listbox"
+    aria-expanded="false"
+    aria-controls={`${id}-content`}
+    aria-label={label}
+    aria-labelledby={labelledby ? `${labelledby} ${id}-value` : undefined}
+  >
+    <span data-slot="select-value" id={`${id}-value`}>{current?.label}</span>
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg>
+  </button>
+  <div data-slot="select-content" id={`${id}-content`} role="listbox" tabindex="-1" aria-label={label} aria-labelledby={labelledby} hidden>
+    {options.map((option, i) => (
+      <div data-slot="select-item" role="option" id={`${id}-option-${i}`} data-value={option.value} aria-selected={String(option.value === current?.value)}>
+        <span data-slot="select-item-indicator"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5" /></svg></span>
+        <span data-slot="select-item-text">{option.label}</span>
+      </div>
+    ))}
+  </div>
+</div>
+
+<script>
+  import { initSelects } from '../../lib/ui/select';
+  initSelects();
+</script>

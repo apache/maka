@@ -16,7 +16,7 @@
 # under the License.
 
 name: Bug report
-description: Report a defect in Maka (Desktop, TUI/CLI, Runtime Host, or Eval)
+description: Report a defect in Maka (CLI, TUI, Runtime Host, or plugins)
 labels: ["bug"]
 body:
   - type: textarea
@@ -46,7 +46,7 @@ body:
       placeholder: |
         - Maka version or commit:
         - OS and version:
-        - Surface: Desktop / TUI / CLI / Runtime Host / Eval
+        - Surface: CLI / TUI / Runtime Host / plugin
         - Node.js version, if running from source:
     validations:
       required: true

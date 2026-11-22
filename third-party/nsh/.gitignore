@@ -1,0 +1,9 @@
+/target
+/examples/*/target
+out/
+.nsh/
+.DS_Store
+/dist
+/target-*
+/.claude/worktrees
+/crates/gpui/target

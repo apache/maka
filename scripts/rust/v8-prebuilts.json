@@ -1,0 +1,26 @@
+{
+  "fe18d3eef309b1290be27314a8152ec9cb508e09b2457923625b886be62ed537": {
+    "url": "https://github.com/apache/maka/releases/download/deps-v8-150.4.0-35e4d3471/v8-aarch64-apple-darwin-fe18d3eef309b1290be27314a8152ec9cb508e09b2457923625b886be62ed537.tar.gz",
+    "sha256": "415f8d06464db9b6ee623d6bc8f922b190306d16325b5eda67aaefa1d31cede8",
+    "verifiedBy": {
+      "commit": "35e4d34714dab0bd5aa91dc56346cc3665142c55",
+      "run": "https://github.com/apache/maka/actions/runs/36416679740"
+    }
+  },
+  "a0f69e4d9fd07e74aef7d310960378f95cb87e3445feeb767633b0a85a050ccc": {
+    "url": "https://github.com/apache/maka/releases/download/deps-v8-150.4.0-35e4d3471/v8-x86_64-unknown-linux-gnu-a0f69e4d9fd07e74aef7d310960378f95cb87e3445feeb767633b0a85a050ccc.tar.gz",
+    "sha256": "398f2f1e9bbc5fee01889aed30a93b5fbc5132584d2e294491a8825aa5eb9bd4",
+    "verifiedBy": {
+      "commit": "35e4d34714dab0bd5aa91dc56346cc3665142c55",
+      "run": "https://github.com/apache/maka/actions/runs/36416679740"
+    }
+  },
+  "a264772a3b45cade186788c3efff50370bf22de0f069a18eb6d33c4d18320c95": {
+    "url": "https://github.com/apache/maka/releases/download/deps-v8-150.4.0-35e4d3471/v8-x86_64-pc-windows-msvc-a264772a3b45cade186788c3efff50370bf22de0f069a18eb6d33c4d18320c95.tar.gz",
+    "sha256": "c4ce7a870a2a04eda5a7515695a146dda2ccba4cc24a7f871c44adbceddbe770",
+    "verifiedBy": {
+      "commit": "35e4d34714dab0bd5aa91dc56346cc3665142c55",
+      "run": "https://github.com/apache/maka/actions/runs/36416679740"
+    }
+  }
+}

@@ -1,0 +1,222 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+use super::sdk_error;
+use agent_client_protocol::{
+    self as sdk,
+    schema::ProtocolVersion,
+    v1::{self, schema as acp_v1},
+    v2::{self, schema as acp_v2},
+};
+use tokio::sync::mpsc;
+
+pub(super) async fn connect<C: sdk::ConnectTo<sdk::Client>>(
+    send: mpsc::Sender<Event>,
+    files: bool,
+    transport: impl FnMut() -> C + Clone + Send + 'static,
+) -> sdk::Result<()> {
+    sdk::Client
+        .protocol_connector()
+        .with_v1({
+            let send = send.clone();
+            move || v1(send.clone(), files)
+        })
+        .with_v2({
+            let send = send.clone();
+            move || v2(send.clone())
+        })
+        .connect_to(transport)
+        .await
+}
+
+pub(crate) enum Peer {
+    V1(v1::ConnectionTo<sdk::Agent>, acp_v1::InitializeResponse),
+    V2(v2::ConnectionTo<sdk::Agent>, acp_v2::InitializeResponse),
+}
+
+pub(crate) enum Event {
+    Initialized(Box<Peer>),
+    V1Update(Box<acp_v1::SessionNotification>),
+    V2Update(Box<acp_v2::UpdateSessionNotification>),
+    Read(
+        Box<acp_v1::ReadTextFileRequest>,
+        v1::Responder<acp_v1::ReadTextFileResponse>,
+    ),
+    Write(
+        Box<acp_v1::WriteTextFileRequest>,
+        v1::Responder<acp_v1::WriteTextFileResponse>,
+    ),
+    V1Permission(
+        Box<acp_v1::RequestPermissionRequest>,
+        v1::Responder<acp_v1::RequestPermissionResponse>,
+    ),
+    V2Permission(
+        Box<acp_v2::RequestPermissionRequest>,
+        v2::Responder<acp_v2::RequestPermissionResponse>,
+    ),
+    Stderr(Vec<u8>),
+}
+
+impl Event {
+    pub fn is_callback(&self) -> bool {
+        matches!(
+            self,
+            Self::Read(..) | Self::Write(..) | Self::V1Permission(..) | Self::V2Permission(..)
+        )
+    }
+
+    pub fn reject_busy(self) -> sdk::Result<()> {
+        self.reject_with(sdk::Error::new(
+            -32000,
+            "Another ACP client callback is pending",
+        ))
+    }
+
+    pub fn reject(self) -> sdk::Result<()> {
+        let error = sdk::Error::method_not_found().data("Client callback unavailable during setup");
+        self.reject_with(error)
+    }
+
+    fn reject_with(self, error: sdk::Error) -> sdk::Result<()> {
+        match self {
+            Self::Read(_, reply) => reply.respond_with_error(error),
+            Self::Write(_, reply) => reply.respond_with_error(error),
+            Self::V1Permission(_, reply) => reply.respond_with_error(error),
+            Self::V2Permission(_, reply) => reply.respond_with_error(error),
+            _ => Ok(()),
+        }
+    }
+}
+
+pub(super) fn v1(send: mpsc::Sender<Event>, _files: bool) -> impl sdk::ConnectTo<sdk::Agent> {
+    let (updates, reads, writes, permissions) =
+        (send.clone(), send.clone(), send.clone(), send.clone());
+    sdk::Client
+        .v1()
+        .name("maka-external-v1")
+        .on_receive_notification(
+            async move |input: acp_v1::SessionNotification, _| {
+                updates
+                    .send(Event::V1Update(Box::new(input)))
+                    .await
+                    .map_err(sdk_error)
+            },
+            sdk::on_receive_notification!(),
+        )
+        .on_receive_request(
+            async move |input: acp_v1::ReadTextFileRequest, reply, _| {
+                reads
+                    .send(Event::Read(Box::new(input), reply))
+                    .await
+                    .map_err(sdk_error)
+            },
+            sdk::on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |input: acp_v1::WriteTextFileRequest, reply, _| {
+                writes
+                    .send(Event::Write(Box::new(input), reply))
+                    .await
+                    .map_err(sdk_error)
+            },
+            sdk::on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |input: acp_v1::RequestPermissionRequest, reply, _| {
+                permissions
+                    .send(Event::V1Permission(Box::new(input), reply))
+                    .await
+                    .map_err(sdk_error)
+            },
+            sdk::on_receive_request!(),
+        )
+        .with_spawned(async move |peer| {
+            let initialized =
+                peer
+                    .send_request(
+                        acp_v1::InitializeRequest::new(ProtocolVersion::V1)
+                            .client_info(acp_v1::Implementation::new(
+                                "maka",
+                                env!("CARGO_PKG_VERSION"),
+                            ))
+                            .client_capabilities(
+                                acp_v1::ClientCapabilities::new()
+                                    .fs(acp_v1::FileSystemCapabilities::new()
+                                        .read_text_file(false)
+                                        .write_text_file(false))
+                                    .session(
+                                        acp_v1::ClientSessionCapabilities::new().config_options(
+                                            acp_v1::SessionConfigOptionsCapabilities::new()
+                                                .boolean(
+                                                    acp_v1::BooleanConfigOptionCapabilities::new(),
+                                                ),
+                                        ),
+                                    ),
+                            ),
+                    )
+                    .block_task()
+                    .await?;
+            if initialized.protocol_version != ProtocolVersion::V1 {
+                return Err(sdk_error("unsupported negotiated ACP version"));
+            }
+            send.send(Event::Initialized(Box::new(Peer::V1(peer, initialized))))
+                .await
+                .map_err(sdk_error)?;
+            std::future::pending::<sdk::Result<()>>().await
+        })
+}
+
+pub(super) fn v2(send: mpsc::Sender<Event>) -> impl sdk::ConnectTo<sdk::Agent> {
+    let (updates, permissions) = (send.clone(), send.clone());
+    sdk::Client
+        .v2()
+        .name("maka-external-v2")
+        .on_receive_notification(
+            async move |input: acp_v2::UpdateSessionNotification, _| {
+                updates
+                    .send(Event::V2Update(Box::new(input)))
+                    .await
+                    .map_err(sdk_error)
+            },
+            sdk::on_receive_notification!(),
+        )
+        .on_receive_request(
+            async move |input: acp_v2::RequestPermissionRequest, reply, _| {
+                permissions
+                    .send(Event::V2Permission(Box::new(input), reply))
+                    .await
+                    .map_err(sdk_error)
+            },
+            sdk::on_receive_request!(),
+        )
+        .with_spawned(async move |peer| {
+            let initialized = peer
+                .send_request(acp_v2::InitializeRequest::new(
+                    ProtocolVersion::V2,
+                    acp_v2::Implementation::new("maka", env!("CARGO_PKG_VERSION")),
+                ))
+                .block_task()
+                .await;
+            let initialized = initialized?;
+            send.send(Event::Initialized(Box::new(Peer::V2(peer, initialized))))
+                .await
+                .map_err(sdk_error)?;
+            std::future::pending::<sdk::Result<()>>().await
+        })
+}

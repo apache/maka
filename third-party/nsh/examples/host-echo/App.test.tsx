@@ -1,0 +1,31 @@
+// The app with its page's host (nsh.json `web.host`, `host.js`), which
+// headless `nsh test` runs as the page would: `nsh test examples/host-echo`.
+import { expect, open, test } from "nsh/test";
+
+test("calls reach the page's host and come back", async () => {
+  const app = await open("./App.tsx");
+  expect(app.shows("text:available: true")).toBe(true);
+  await app.press("label:call");
+  await app.waitFor('text:{"n":1}');
+});
+
+test("calls still reach the page's host when the page passes parameters", async () => {
+  // A page that serves the app's first data (`runModule({ params })`) keeps answering its calls.
+  const app = await open("./App.tsx", { host: { params: { conversation: "c-42" } } });
+  expect(app.shows("text:available: true")).toBe(true);
+  await app.press("label:call");
+  await app.waitFor('text:{"n":1}');
+});
+
+test("events reach host.on, those sent before the app started too", async () => {
+  const app = await open("./App.tsx");
+  // `createHost` sent one before the app ran, then one a second.
+  await app.waitFor("text:ticks: 1");
+  await app.waitFor("text:ticks: 2");
+});
+
+test("posts reach the page's host", async () => {
+  const app = await open("./App.tsx");
+  await app.press("label:post");
+  await app.waitFor('text:noted: {"n":2}');
+});

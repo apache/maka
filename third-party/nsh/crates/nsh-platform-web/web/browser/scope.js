@@ -1,0 +1,89 @@
+export { createHost } from "./host.js";
+export { createStandard } from "./standard.js";
+export { createResource } from "./resource.js";
+export { createLists } from "./list.js";
+export { Values } from "./values.js";
+export { createReactive } from "./reactive.js";
+export { createModules } from "./modules.js";
+export { createDom } from "./dom.js";
+export { createComponents } from "./components.js";
+export { createGestures } from "./gesture.js";
+export { createCanvas } from "./canvas.js";
+export { createAnimation } from "./animation.js";
+export { createNavigation } from "./navigation.js";
+export { createKeymap } from "./keymap.js";
+export { createEnvironment } from "./environment.js";
+export { createI18n } from "./i18n.js";
+export { installTesting } from "./testing.js";
+export { installFetch } from "./fetch.js";
+export { createHot } from "./hot.js";
+export { configureAddress } from "./address.js";
+
+
+// Public wrappers must share the app's Function/Error/Promise intrinsics.
+// `page.setWindowTitle` hands the main window's title to the player, which
+// titles the document with it.
+export function configureAPIs(nsh, modules, dom, active, env, page = {}) {
+  nsh.nextTick = (callback, ...args) => {
+    if (typeof callback !== "function") throw new TypeError("nextTick: callback must be a function");
+    queueMicrotask(() => { if (active()) callback(...args); });
+  };
+  const process = modules.exports.get("process");
+  if (process) { process.nextTick = nsh.nextTick; if (process.default) process.default.nextTick = nsh.nextTick; }
+  const desktop = modules.exports.get("nsh/desktop");
+  // The browser keeps its own window: the page is the main window, whose
+  // title is the page's title, as Rust's `main_window().set(..)` makes it;
+  // the browser places and sizes the page, so its other attributes go
+  // nowhere. `<Window>` renders nothing and `Window.open` throws, as on
+  // mobile.
+  const main = Object.freeze({
+    id: "main", main: true, parent: null,
+    state: () => null, titleBar: env.titleBar,
+    set(attributes) {
+      if (typeof attributes?.title === "string") page.setWindowTitle?.(attributes.title);
+    },
+    show() {}, hide() {}, focus() {}, close() {}, minimize() {}, restore() {},
+    setMode() {}, setBounds() {}, setPlacement() {}, center() {}, requestAttention() {},
+    on: () => () => {},
+  });
+  const Window = Object.assign(() => null, {
+    open() {
+      const error = new Error("Window.open: windows of the app's own open on the desktops (`isAvailable`)");
+      error.code = "ERR_FEATURE_UNAVAILABLE_ON_PLATFORM";
+      throw error;
+    },
+    get: id => (id === "main" ? main : null),
+  });
+  if (desktop) Object.assign(desktop, {
+    isAvailable: false, titleBar: env.titleBar,
+    Window, currentWindow: () => main, windows: () => [main], focusedWindow: () => null,
+    windowState: () => null, displays: () => [],
+    Menu: { setApplicationMenu() {}, popup: () => Promise.resolve() },
+    Tray: { set() {} },
+    GlobalShortcut: { register: () => Promise.resolve(false), unregister() {}, unregisterAll() {} },
+  });
+  for (const [name, tag] of Object.entries({View:"view",Text:"text",Scroll:"scroll",Overlay:"overlay",Image:"image",WebView:"webview",Video:"video",Shader:"shader"})) {
+    const Component = props => {const node = dom.rt.element(tag);dom.rt.spread(node,props);if ("children" in props) dom.rt.insert(node,()=>props.children);return node;};
+    nsh[name] = Object.assign(Component, nsh[name]);
+  }
+  nsh.nativeComponent = (name, spec = {}) => (props = {}) => {
+    const node = dom.rt.element("native");
+    dom.rt.prop(node, "component", name);
+    const own = new Set(spec.props ?? []), eventNames = new Set((spec.events ?? []).map(name => "on" + name[0].toUpperCase() + name.slice(1)));
+    const forwarded = new Proxy(props, { ownKeys: target => Reflect.ownKeys(target).filter(key => key !== "children" && !own.has(key) && !eventNames.has(key)), getOwnPropertyDescriptor: () => ({ configurable: true, enumerable: true }) });
+    dom.rt.spread(node, forwarded);
+    for (const key of own) dom.rt.bindProp(node, "$" + key, () => props[key]);
+    if (eventNames.size) dom.rt.prop(node, "onNativeEvent", event => {
+      const handler = props["on" + event.name[0].toUpperCase() + event.name.slice(1)];
+      if (typeof handler === "function") handler(event.data);
+    });
+    return node;
+  };
+  nsh.nativeModule = specifier => { const namespace = modules.exports.get(specifier); if (!namespace) throw new Error(`unknown native module ${specifier}`); return namespace; };
+
+  const mobile = modules.exports.get("nsh/mobile") ?? {};
+  mobile.InputAccessoryView = () => null; // Off-iOS behavior, in the app realm.
+  modules.exports.set("nsh/mobile", mobile);
+  const base = modules.exports.get("nsh/base");
+  if (base) base.Input = props => { const node = dom.rt.element("input"); dom.rt.spread(node, props); return node; };
+}

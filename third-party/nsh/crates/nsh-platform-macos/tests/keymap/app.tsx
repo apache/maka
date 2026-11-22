@@ -1,0 +1,88 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import { effect, Input as NativeInput, keymap, mount, signal, Text, View, type ViewRef } from "nsh";
+import { Input } from "nsh/base";
+
+function App() {
+  const card = signal<ViewRef | null>(null);
+  const escapes = signal(0);
+  const moves = signal(0);
+  const text = signal("");
+  const vault = signal<ViewRef | null>(null);
+  const interrupts = signal(0);
+  const nativeText = signal("");
+  const nativeCaret = signal(false);
+  effect(() => {
+    const within = vault();
+    if (within)
+      return keymap.bind("ctrl+c", () => interrupts.set(interrupts() + 1), {
+        when: "always",
+        within,
+        fallback: true,
+      });
+  });
+  const clear = () => text.set("");
+  effect(() => {
+    const within = card();
+    if (!within) return;
+    const stops = [
+      keymap.bind("ctrl+c", clear, { when: "always", within, fallback: true }),
+      keymap.bind("ctrl+a", () => moves.set(moves() + 1), { when: "always", within, fallback: true }),
+      keymap.bind("escape", () => escapes.set(escapes() + 1), { when: "always", within }),
+    ];
+    return () => stops.forEach((stop) => stop());
+  });
+  return <View style={{ flex: 1, paddingTop: 80 }}>
+    <View ref={(node) => card.set(node)}>
+      <Input
+        testID="inside"
+        value={text()}
+        style={{ height: 40 }}
+        onChange={({ value }) => text.set(value)}
+      />
+    </View>
+    <Input testID="outside" style={{ height: 40 }} />
+    <View ref={(node) => vault.set(node)}>
+      <Input testID="masked" masked style={{ height: 40 }} />
+    </View>
+    <Text>{`escapes: ${escapes()}, moves: ${moves()}`}</Text>
+    <Text>{`interrupts: ${interrupts()}`}</Text>
+    <NativeInput
+      testID="sink"
+      multiline
+      caret={false}
+      style={{ width: 1, height: 16, fontSize: 16 }}
+      onChangeText={(text) => nativeText.set(text)}
+      onCaretMove={({ bounds }) => nativeCaret.set(
+        bounds.size.height > 0
+          && bounds.origin.x >= 0 && bounds.origin.x <= 1
+          && bounds.origin.y >= 0 && bounds.origin.y < 16,
+      )}
+    />
+    <Text>{`native caret ${nativeText()}: ${nativeCaret()}`}</Text>
+    <Text testID="output" selectable>Model output</Text>
+    <View testID="area" selectable>
+      <Text>First paragraph</Text>
+      <Text>Second paragraph</Text>
+    </View>
+  </View>;
+}
+
+mount(App);

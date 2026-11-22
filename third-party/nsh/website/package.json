@@ -1,0 +1,39 @@
+{
+  "name": "native-shell-website",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "dev": "bun scripts/play.js --kill-dev && bunx --bun astro dev",
+    "build": "bun scripts/play.js && bunx --bun astro build && bunx pagefind --site dist",
+    "build:versions": "bun scripts/play.js && bun scripts/versions.js",
+    "preview": "bunx --bun astro preview",
+    "test": "bun test tests",
+    "play": "bun scripts/play.js",
+    "astro": "bunx --bun astro"
+  },
+  "dependencies": {
+    "@astrojs/markdown-remark": "^7.3.0",
+    "@codemirror/lang-javascript": "6",
+    "@codemirror/language": "6",
+    "@codemirror/state": "6",
+    "@codemirror/view": "6",
+    "@fontsource-variable/figtree": "^5.3.0",
+    "@lezer/highlight": "1",
+    "@pagefind/default-ui": "^1.5.2",
+    "@tailwindcss/vite": "^4.1.15",
+    "astro": "7.3.1",
+    "astro-pagefind": "^1.8.6",
+    "codemirror": "6",
+    "pagefind": "^1.5.2",
+    "shiki": "^4.4.3",
+    "tailwindcss": "^4.1.15",
+    "unist-util-visit": "^5.1.0"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.2",
+    "rehype-stringify": "^10.0.1",
+    "remark-parse": "^11.0.0",
+    "remark-rehype": "^11.1.2",
+    "typescript": "^5"
+  }
+}

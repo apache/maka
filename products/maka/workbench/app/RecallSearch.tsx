@@ -1,0 +1,547 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import { batch, cleanup, computed, inputAction, List, signal, Text, View } from 'nsh';
+import { Input } from 'nsh/base';
+import type { InputRef, ListRef } from 'nsh';
+import { Button } from 'nsh/base';
+import { keymap } from 'nsh';
+import type {
+  AgentRecallPage,
+  AgentRecallPassage,
+  AgentSession,
+  HistoryRowAddress,
+  RecallQuery,
+} from '../../../../packages/plugin-sdk/src/index.js';
+import { useHost } from './host';
+import { tr } from './locale';
+import { createText, errorText, renderText, UiError, type UiText } from './text';
+import { ModalDialog } from './ModalDialog';
+import {
+  C,
+  bodyTextStyle,
+  captionTextStyle,
+  compact,
+  controlFocusStyle,
+  controlHoverStyle,
+  controlStyle,
+  inputBorderRadius,
+} from './ui';
+
+export type RecallAnchor = { messageId: string; position: HistoryRowAddress; through: number };
+export type RecallTarget = {
+  sessionId: string;
+  anchor?: RecallAnchor;
+};
+type Request = {
+  id: number;
+  terms: RecallQuery['terms'];
+  /** The one conversation searched, or null for all of them. */
+  sessionId: string | null;
+  signature: string;
+  stream: { next(): Promise<AgentRecallPage | null>; close(): Promise<void> } | null;
+  closing: Promise<void> | null;
+};
+type Answer = { request: Request; page: AgentRecallPage };
+type SearchState =
+  | { kind: 'empty' }
+  | { kind: 'loading'; request: Request }
+  | { kind: 'failed'; request: Request; error: UiText }
+  | { kind: 'ready'; request: Request; page: AgentRecallPage };
+type Result =
+  | { kind: 'title'; session: AgentSession }
+  | { kind: 'passage'; passage: AgentRecallPassage };
+type Row =
+  | {
+      id: string;
+      kind: 'result';
+      request: number;
+      index: number;
+      result: Result;
+      /** Found within one conversation, so its title and folder go unsaid. */
+      within: boolean;
+    }
+  | { id: string; kind: 'gap'; reason: string };
+type Selection = { request: number; index: number };
+const SEARCH_PAUSE_MS = 250;
+
+function excerptRuns(passage: AgentRecallPassage) {
+  const runs: { text: string; matched: boolean }[] = [];
+  let end = 0;
+  for (const range of passage.highlights) {
+    if (range.start > end)
+      runs.push({ text: passage.excerpt.slice(end, range.start), matched: false });
+    runs.push({ text: passage.excerpt.slice(range.start, range.end), matched: true });
+    end = range.end;
+  }
+  if (end < passage.excerpt.length) runs.push({ text: passage.excerpt.slice(end), matched: false });
+  return runs;
+}
+
+export function RecallSearch(props: {
+  origin: string | null;
+  /** Start in the origin conversation only; the dialog can widen the search. */
+  within?: boolean;
+  open(origin: string | null, target: RecallTarget): Promise<boolean | void>;
+  close(): void;
+}) {
+  const host = useHost();
+  const origin = props.origin;
+  const query = signal('');
+  const within = signal(props.within === true && origin !== null);
+  const state = signal<SearchState>({ kind: 'empty' });
+  const selected = signal(0);
+  const opening = signal(false);
+  const openError = createText();
+  let alive = true;
+  let sequence = 0;
+  let wanted: Request | null = null;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let list: ListRef | undefined;
+  let input: InputRef | undefined;
+  let removeKeys = () => {};
+  const release = (request: Request) => {
+    if (!request.stream) return Promise.resolve();
+    return (request.closing ??= request.stream.close().catch((reason) => {
+      if (alive) openError.set(errorText(reason, 'Could not search conversations.'));
+    }));
+  };
+  const cancel = () => {
+    if (timer !== undefined) clearTimeout(timer);
+    timer = undefined;
+    const previous = wanted;
+    wanted = null;
+    if (previous) void release(previous);
+  };
+  cleanup(() => {
+    alive = false;
+    cancel();
+    removeKeys();
+  });
+  const answer = computed<Answer | null>(() => {
+    const current = state();
+    return current.kind === 'ready' ? current : null;
+  });
+  const results = computed<Result[]>(() => {
+    const current = answer();
+    return current
+      ? [
+          // Within one conversation a title match only names the open one.
+          ...(current.request.sessionId === null ? current.page.titles : []).map(
+            (session): Result => ({ kind: 'title', session }),
+          ),
+          ...current.page.passages.map(
+            (passage): Result => ({
+              kind: 'passage',
+              passage,
+            }),
+          ),
+        ]
+      : [];
+  });
+  const rows = computed<Row[]>(() => {
+    const current = answer();
+    if (!current) return [];
+    return [
+      ...results().map(
+        (result, index): Row => ({
+          id: `${current.request.id}:result:${index}`,
+          kind: 'result',
+          request: current.request.id,
+          index,
+          result,
+          within: current.request.sessionId !== null,
+        }),
+      ),
+      ...current.page.gaps.map(
+        (reason, index): Row => ({
+          id: `${current.request.id}:gap:${index}`,
+          kind: 'gap',
+          reason,
+        }),
+      ),
+    ];
+  });
+  const index = () => Math.min(selected(), Math.max(0, results().length - 1));
+  const partial = () => {
+    const current = state();
+    return current.kind === 'ready' && (!current.page.complete || current.page.gaps.length > 0);
+  };
+  const read = async (request: Request) => {
+    try {
+      request.stream = await host.subscribe('agent', 'recall', {
+        terms: request.terms,
+        session_id: request.sessionId,
+      });
+      if (!alive || wanted !== request) return;
+      const page = await request.stream.next();
+      if (!alive || wanted !== request) return;
+      if (page === null) throw new UiError('Conversation search ended without a result.');
+      state.set({ kind: 'ready', request, page });
+      if (page.titles.length || page.passages.length || page.gaps.length)
+        list?.scrollToIndex({ index: 0, animated: false });
+    } catch (reason) {
+      if (alive && wanted === request)
+        state.set({
+          kind: 'failed',
+          request,
+          error: errorText(reason, 'Could not search conversations.'),
+        });
+    } finally {
+      await release(request);
+    }
+  };
+  const search = (text: string, retry = false) => {
+    if (!alive || opening()) return;
+    const [first, ...rest] = text.trim().split(/\s+/);
+    const terms: RecallQuery['terms'] | null = first ? [first, ...rest] : null;
+    const sessionId = within() ? origin : null;
+    const signature = JSON.stringify([terms, sessionId]);
+    query.set(text);
+    if (!retry && signature === wanted?.signature) return;
+    cancel();
+    wanted = terms
+      ? { id: ++sequence, terms, sessionId, signature, stream: null, closing: null }
+      : null;
+    batch(() => {
+      state.set(wanted ? { kind: 'loading', request: wanted } : { kind: 'empty' });
+      selected.set(0);
+      openError.set('');
+    });
+    if (wanted) {
+      const request = wanted;
+      timer = setTimeout(
+        () => {
+          timer = undefined;
+          if (alive && wanted === request) void read(request);
+        },
+        retry ? 0 : SEARCH_PAUSE_MS,
+      );
+    }
+  };
+  const failure = () => {
+    const current = state();
+    return current.kind === 'failed' ? current : null;
+  };
+  const retry = (request: number | undefined) => {
+    const current = state();
+    if (alive && current.kind === 'failed' && current.request.id === request) search(query(), true);
+  };
+  const move = (delta: number) => {
+    if (!alive || opening() || state().kind !== 'ready' || !results().length) return;
+    const next = Math.max(0, Math.min(results().length - 1, index() + delta));
+    selected.set(next);
+    list?.scrollToIndex({
+      index: next,
+      animated: false,
+      viewPosition: delta > 0 ? 1 : 0,
+    });
+  };
+  const choose = async (selection: Selection) => {
+    const current = state();
+    if (!alive || opening() || current.kind !== 'ready' || current.request.id !== selection.request)
+      return;
+    const result = results()[selection.index];
+    if (!result) return;
+    const target: RecallTarget =
+      result.kind === 'title'
+        ? { sessionId: result.session.id }
+        : {
+            sessionId: result.passage.session.id,
+            anchor: {
+              messageId: result.passage.anchorMessageId,
+              position: result.passage.anchorPosition,
+              through: result.passage.through,
+            },
+          };
+    batch(() => {
+      selected.set(selection.index);
+      opening.set(true);
+      openError.set('');
+    });
+    try {
+      const opened = await props.open(origin, target);
+      if (alive && opened !== false) props.close();
+    } catch (reason) {
+      if (alive) openError.set(errorText(reason, 'Could not open the conversation.'));
+    } finally {
+      if (alive) opening.set(false);
+    }
+  };
+  const submit = () => {
+    const current = state();
+    if (current.kind === 'loading' && timer !== undefined) {
+      clearTimeout(timer);
+      timer = undefined;
+      if (wanted === current.request) void read(current.request);
+      return;
+    }
+    if (current.kind === 'ready') void choose({ request: current.request.id, index: index() });
+  };
+  const close = () => {
+    if (alive) props.close();
+  };
+  const widen = (value: boolean) => {
+    if (!alive || opening() || within() === value) return;
+    within.set(value);
+    search(query());
+    // Typing, the arrows and Escape stay with the search field.
+    input?.focus();
+  };
+  return (
+    <ModalDialog size="form" launcher onCancel={close} style={{ maxWidth: 640, flex: 1, gap: 12 }}>
+      <If
+        when={origin !== null}
+        else={
+          <Text style={{ ...captionTextStyle, color: C.muted }}>
+            {tr('Search every conversation you can read, including archived conversations.')}
+          </Text>
+        }
+      >
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+          <Each of={[true, false]} key={(value) => String(value)}>
+            {(value) => (
+              <Button
+                accessibilityLabel={value() ? tr('This conversation') : tr('All conversations')}
+                selected={within() === value()}
+                disabled={opening()}
+                onPress={inputAction(widen, value())}
+                style={{ ...controlStyle, paddingHorizontal: 10 }}
+                hoverStyle={controlHoverStyle()}
+                focusStyle={controlFocusStyle()}
+              >
+                <Text
+                  style={{
+                    ...captionTextStyle,
+                    color: within() === value() ? C.text : C.muted,
+                  }}
+                >
+                  {value() ? tr('This conversation') : tr('All conversations')}
+                </Text>
+              </Button>
+            )}
+          </Each>
+          <Text style={[{ ...captionTextStyle, flex: 1, color: C.muted }, { numberOfLines: 1 }]}>
+            {within() ? '' : tr('Including archived conversations.')}
+          </Text>
+        </View>
+      </If>
+      <Input
+        ref={(node) => {
+          input = node;
+          removeKeys();
+          const keys = [
+            keymap.bind('up', () => move(-1), {
+              when: 'always',
+              repeat: true,
+              within: node,
+            }),
+            keymap.bind('down', () => move(1), {
+              when: 'always',
+              repeat: true,
+              within: node,
+            }),
+            // One Escape closes the search, as its close button says; a
+            // text field alone would only lose the focus.
+            keymap.bind('escape', close, { when: 'always', within: node }),
+          ];
+          removeKeys = () => keys.forEach((remove) => remove());
+        }}
+        testID="recall-search"
+        accessibilityLabel={tr('Search conversation history')}
+        autoFocus
+        value={query()}
+        onChange={({ value: text }) => search(text)}
+        onSubmit={submit}
+        submitBehavior="submit"
+        readonly={opening()}
+        placeholder={within() ? tr('Search messages…') : tr('Search titles and messages…')}
+        style={{
+          color: C.text,
+          placeholderColor: C.muted,
+          height: compact() ? 32 : 40,
+          backgroundColor: C.background,
+          borderRadius: inputBorderRadius,
+          paddingHorizontal: 12,
+          fontSize: 14,
+        }}
+      />
+      <If when={state().kind === 'empty'}>
+        <Text style={{ ...bodyTextStyle, color: C.muted }}>
+          {tr('Type words to search conversation history.')}
+        </Text>
+      </If>
+      <If when={state().kind === 'loading'}>
+        <Text style={{ ...bodyTextStyle, color: C.muted }}>{tr('Searching conversations…')}</Text>
+      </If>
+      <If when={state().kind === 'failed'}>
+        <Text style={{ ...bodyTextStyle, color: C.danger }}>
+          {failure() ? renderText(failure()!.error) : ''}
+        </Text>
+        <Button
+          accessibilityLabel={tr('Retry')}
+          onPress={inputAction(retry, failure()?.request.id)}
+          style={controlStyle}
+          hoverStyle={controlHoverStyle()}
+          focusStyle={controlFocusStyle()}
+        >
+          <Text style={{ ...bodyTextStyle, color: C.accent }}>{tr('Retry')}</Text>
+        </Button>
+      </If>
+      <List
+        each={rows()}
+        estimatedItemSize={128}
+        ref={(node) => {
+          list = node;
+        }}
+        style={{ flex: 1, minHeight: 0, opacity: state().kind === 'ready' ? 1 : 0.5 }}
+        empty={
+          <If when={state().kind === 'ready'}>
+            <Text style={{ ...bodyTextStyle, color: C.muted }}>
+              {within()
+                ? tr('No matching messages.')
+                : tr('No matching conversations or messages.')}
+            </Text>
+          </If>
+        }
+      >
+        {(item) => (
+          <Each of={[item()]} key={(row: Row) => row.id}>
+            {(value) => {
+              const row = value();
+              if (row.kind === 'gap')
+                return (
+                  <View style={{ padding: 12 }}>
+                    <Text style={{ ...captionTextStyle, color: C.warning }}>{row.reason}</Text>
+                  </View>
+                );
+              const result = row.result;
+              const session = result.kind === 'title' ? result.session : result.passage.session;
+              const preview = result.kind === 'passage' ? excerptRuns(result.passage) : [];
+              const title = () => session.title || tr('Untitled conversation');
+              return (
+                <Button
+                  accessibilityLabel={
+                    result.kind === 'title'
+                      ? tr('Open conversation {title}', { title: title() })
+                      : tr('Open matching passage in {title}', { title: title() })
+                  }
+                  onPress={inputAction(choose, {
+                    request: row.request,
+                    index: row.index,
+                  })}
+                  disabled={opening() || state().kind !== 'ready'}
+                  selected={index() === row.index}
+                  style={{
+                    height: result.kind === 'title' || row.within ? 72 : 128,
+                    minWidth: 0,
+                    flexDirection: 'column',
+                    alignItems: 'stretch',
+                    justifyContent: 'center',
+                    padding: 12,
+                    gap: 4,
+                    borderRadius: 8,
+                    borderWidth: 1,
+                    borderColor: 'transparent',
+                    backgroundColor: index() === row.index ? C.raised : C.surface,
+                  }}
+                  hoverStyle={controlHoverStyle()}
+                  focusStyle={controlFocusStyle()}
+                >
+                  <If when={!row.within}>
+                    <View
+                      style={[
+                        { flexDirection: 'row', gap: 8, alignItems: 'center' },
+                        { pointerEvents: 'none' },
+                      ]}
+                    >
+                      <Text
+                        style={[
+                          {
+                            ...bodyTextStyle,
+                            flex: 1,
+                            color: C.text,
+                            fontWeight: '500',
+                          },
+                          { numberOfLines: 1, textOverflow: 'ellipsis' },
+                        ]}
+                      >
+                        {title()}
+                      </Text>
+                      <If when={session.archived}>
+                        <Text style={{ ...captionTextStyle, color: C.muted }}>
+                          {tr('Archived')}
+                        </Text>
+                      </If>
+                    </View>
+                    <Text
+                      style={[
+                        { ...captionTextStyle, color: C.muted },
+                        { pointerEvents: 'none', numberOfLines: 1, textOverflow: 'ellipsis' },
+                      ]}
+                    >
+                      {session.workspace.path}
+                    </Text>
+                  </If>
+                  <If when={result.kind === 'passage'}>
+                    <Text
+                      style={[
+                        { ...captionTextStyle, color: C.secondary },
+                        { pointerEvents: 'none', numberOfLines: 3, textOverflow: 'ellipsis' },
+                      ]}
+                    >
+                      <Each of={preview}>
+                        {(run) => (
+                          <Text
+                            style={
+                              run().matched
+                                ? {
+                                    backgroundColor: `${C.accent}33`,
+                                    color: C.text,
+                                    fontWeight: '600',
+                                  }
+                                : {}
+                            }
+                          >
+                            {run().text}
+                          </Text>
+                        )}
+                      </Each>
+                    </Text>
+                  </If>
+                </Button>
+              );
+            }}
+          </Each>
+        )}
+      </List>
+      <If when={partial()}>
+        <Text style={{ ...captionTextStyle, color: C.warning }}>
+          {tr('Search is incomplete. Available matches are shown.')}
+        </Text>
+      </If>
+      <If when={openError()}>
+        <Text style={{ ...bodyTextStyle, color: C.danger }}>{openError()}</Text>
+      </If>
+      <If when={opening()}>
+        <Text style={{ ...captionTextStyle, color: C.muted }}>{tr('Opening conversation…')}</Text>
+      </If>
+    </ModalDialog>
+  );
+}

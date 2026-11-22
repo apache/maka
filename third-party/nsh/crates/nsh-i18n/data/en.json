@@ -1,0 +1,87 @@
+{
+  "numbers": {
+    "decimal": ".",
+    "group": ",",
+    "minGrouping": 1,
+    "indian": false,
+    "minus": "-",
+    "percent": "%",
+    "currencyBefore": true,
+    "currencySpace": "",
+    "compactShort": [[3, "K"], [6, "M"], [9, "B"], [12, "T"]],
+    "compactLong": [[3, " thousand"], [6, " million"], [9, " billion"], [12, " trillion"]]
+  },
+  "dates": {
+    "hour12": false,
+    "padHour24": true,
+    "am": "AM",
+    "pm": "PM",
+    "periodFirst": false,
+    "periodSpace": " ",
+    "hourSuffix": "",
+    "numeric": [["day", "/"], ["month", "/"], ["year", ""]],
+    "shortYear2digit": false,
+    "text": [["day", " "], ["month", " "], ["year", ""]],
+    "textLong": null,
+    "weekdayFirst": true,
+    "weekdaySep": ", ",
+    "dateTimeSep": ", ",
+    "names": {
+      "months": [
+        "January",
+        "February",
+        "March",
+        "April",
+        "May",
+        "June",
+        "July",
+        "August",
+        "September",
+        "October",
+        "November",
+        "December"
+      ],
+      "monthsShort": ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"],
+      "weekdays": ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"],
+      "weekdaysShort": ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+    },
+    "cjk": false
+  },
+  "regions": {
+    "": {
+      "dates": {
+        "hour12": true,
+        "numeric": [["month", "/"], ["day", "/"], ["year", ""]],
+        "shortYear2digit": true,
+        "text": [["month", " "], ["day", ", "], ["year", ""]]
+      }
+    },
+    "US": {
+      "dates": {
+        "hour12": true,
+        "numeric": [["month", "/"], ["day", "/"], ["year", ""]],
+        "shortYear2digit": true,
+        "text": [["month", " "], ["day", ", "], ["year", ""]]
+      }
+    },
+    "PH": {
+      "dates": {
+        "hour12": true,
+        "numeric": [["month", "/"], ["day", "/"], ["year", ""]],
+        "shortYear2digit": true,
+        "text": [["month", " "], ["day", ", "], ["year", ""]]
+      }
+    },
+    "CA": {
+      "dates": {
+        "hour12": true,
+        "numeric": [["year", "-"], ["month", "-"], ["day", ""]],
+        "text": [["month", " "], ["day", ", "], ["year", ""]]
+      }
+    },
+    "AU": {"dates": {"hour12": true}},
+    "NZ": {"dates": {"hour12": true}},
+    "IN": {"numbers": {"indian": true}, "dates": {"hour12": true}},
+    "ZA": {"numbers": {"group": " ", "decimal": ","}}
+  }
+}

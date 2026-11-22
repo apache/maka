@@ -1,0 +1,12 @@
+---
+// shadcn/ui's Toggle: a two-state button (`aria-pressed`); the page's
+// script flips the attribute.
+import type { HTMLAttributes } from 'astro/types';
+type Props = Omit<HTMLAttributes<'button'>, 'type'> & {
+  variant?: 'default' | 'outline';
+  size?: 'default' | 'sm' | 'xs' | 'lg';
+  pressed?: boolean;
+};
+const { variant = 'default', size = 'default', pressed = false, ...rest } = Astro.props;
+---
+<button type="button" data-slot="toggle" data-variant={variant} data-size={size} aria-pressed={String(pressed)} {...rest}><slot /></button>

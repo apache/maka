@@ -18,7 +18,7 @@
  */
 
 /**
- * The text a README hero bakes in: the hero header of a built page, without
+ * The text a social preview bakes in: the hero header of a built page, without
  * the parts the render hides. The render records it beside the images and the
  * site test recomputes it, so committed heroes cannot outlive their copy.
  */
@@ -35,7 +35,7 @@ const entities = {
 };
 
 // The social preview image keeps the headline above the scene, so it has
-// this on top of what the README hero has.
+// this on top of what the social preview has.
 export function headlineText(html) {
   const [, headline] = html.match(/<h1 class="display">(.*?)<\/h1>/su) ?? [];
   if (!headline) throw new Error('no hero headline in the page');

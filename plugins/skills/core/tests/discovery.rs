@@ -1,0 +1,324 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+use maka_skills::{Catalog, DiscoveryFailure, HostCapabilities, Preferences, Source, scan};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fs,
+    path::Path,
+};
+use tokio_util::sync::CancellationToken;
+
+fn owner() -> maka_capabilities::call::Scope {
+    maka_capabilities::call::Issuer::default()
+        .issue(
+            maka_capabilities::call::Identity::Remote {
+                request_id: uuid::Uuid::new_v4(),
+            },
+            CancellationToken::new(),
+        )
+        .unwrap()
+}
+async fn view(
+    owner: &maka_capabilities::call::Scope,
+    path: &Path,
+) -> maka_capabilities::filesystem::ReadDirectory {
+    maka_capabilities::filesystem::ReadRoot::open(path)
+        .await
+        .unwrap()
+        .bind_scope(owner)
+}
+
+fn sources(
+    project: Option<&maka_capabilities::filesystem::ReadDirectory>,
+    home: Option<&maka_capabilities::filesystem::ReadDirectory>,
+) -> Vec<Source> {
+    use maka_skills::LocationId::{ProjectAgents, ProjectMaka, UserAgents, UserMaka};
+    [
+        (project, ProjectMaka),
+        (project, ProjectAgents),
+        (home, UserMaka),
+        (home, UserAgents),
+    ]
+    .into_iter()
+    .filter_map(|(root, id)| {
+        let access = root?;
+        Some(Source {
+            root: access.location(),
+            access: access.clone(),
+            directory: id.directory().into(),
+            scope: id.scope(),
+            source: id.source(),
+            reference_prefix: id.reference().into(),
+        })
+    })
+    .collect()
+}
+
+fn skill(path: &Path, name: &str, requirements: &str, body: &str) -> Vec<u8> {
+    fs::create_dir_all(path).unwrap();
+    let bytes = format!(
+        "---\r\nname: {name}\r\ndescription: local instructions\r\n{requirements}---\r\n{body}"
+    )
+    .into_bytes();
+    fs::write(path.join("SKILL.md"), &bytes).unwrap();
+    bytes
+}
+
+#[tokio::test]
+async fn discovery_reads_only_contained_regular_files_and_reports_source_failures() {
+    let temporary = tempfile::tempdir().unwrap();
+    let root = temporary.path().join("root");
+    let outside = temporary.path().join("outside");
+    skill(&root.join(".maka/skills/normal"), "Normal", "", "local");
+    skill(&root.join("store/linked"), "Linked", "", "inside");
+    skill(&outside.join("skills/leak"), "Leak", "", "outside");
+    directory_link(
+        &root.join("store/linked"),
+        &root.join(".maka/skills/inside"),
+    );
+    directory_link(
+        &root.join(".maka/skills/inside"),
+        &root.join(".maka/skills/chain"),
+    );
+    directory_link(
+        &outside.join("skills/leak"),
+        &root.join(".maka/skills/escape"),
+    );
+    directory_link(&outside, &root.join(".agents"));
+    let owner = owner();
+    let root_files = view(&owner, &root).await;
+    fs::create_dir_all(root.join(".maka/skills/large")).unwrap();
+    fs::File::create(root.join(".maka/skills/large/SKILL.md"))
+        .unwrap()
+        .set_len(1024 * 1024 + 1)
+        .unwrap();
+    #[cfg(unix)]
+    {
+        let linked_file = root.join(".maka/skills/linked-file");
+        fs::create_dir_all(&linked_file).unwrap();
+        std::os::unix::fs::symlink(
+            root.join(".maka/skills/normal/SKILL.md"),
+            linked_file.join("SKILL.md"),
+        )
+        .unwrap();
+        let pipe = root.join(".maka/skills/pipe");
+        fs::create_dir_all(&pipe).unwrap();
+        let status = std::process::Command::new("mkfifo")
+            .arg(pipe.join("SKILL.md"))
+            .status()
+            .unwrap();
+        assert!(status.success());
+    }
+    let snapshot = scan(&sources(Some(&root_files), None), &CancellationToken::new())
+        .await
+        .unwrap();
+    let ids: BTreeSet<_> = snapshot
+        .inventory
+        .iter()
+        .map(|skill| skill.location.id.as_str())
+        .collect();
+    assert_eq!(ids, BTreeSet::from(["chain", "inside", "normal"]));
+    let rejected = snapshot
+        .rejected
+        .iter()
+        .find(|skill| skill.location.id == "large")
+        .unwrap();
+    assert_eq!(
+        rejected.content_sha256,
+        maka_agent_facts::artifact::content_digest(&vec![0; 1024 * 1024 + 1])
+    );
+    for (relative, reason) in [
+        (".maka/skills/escape", DiscoveryFailure::BlockedPath),
+        (".agents/skills", DiscoveryFailure::BlockedPath),
+    ] {
+        assert!(
+            snapshot
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.path == root.join(relative)
+                    && diagnostic.reason == reason),
+            "{relative}: {:?}",
+            snapshot.diagnostics
+        );
+    }
+    #[cfg(unix)]
+    for relative in [".maka/skills/linked-file", ".maka/skills/pipe"] {
+        assert!(
+            snapshot
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.path == root.join(relative)
+                    && diagnostic.reason == DiscoveryFailure::BlockedPath)
+        );
+    }
+}
+
+#[cfg(unix)]
+fn directory_link(target: &Path, link: &Path) {
+    std::os::unix::fs::symlink(target, link).unwrap();
+}
+#[cfg(windows)]
+fn directory_link(target: &Path, link: &Path) {
+    // Junctions exercise Windows directory reparse boundaries without requiring
+    // Developer Mode or changing the machine's symlink privilege policy.
+    // mklink treats forward slashes as switches, unlike Rust filesystem APIs.
+    let link: std::path::PathBuf = link.components().collect();
+    let target: std::path::PathBuf = target.components().collect();
+    let output = std::process::Command::new("cmd")
+        .args(["/D", "/C", "mklink", "/J"])
+        .arg(link)
+        .arg(target)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[tokio::test]
+async fn same_named_skills_select_whole_directories_and_fall_back_after_removal() {
+    use maka_agent_facts::read::ReadInput;
+    let temporary = tempfile::tempdir().unwrap();
+    let project = temporary.path().join("project");
+    let home = temporary.path().join("home");
+    let editions = [
+        (
+            project.join(".maka/skills/project-maka"),
+            "project maka",
+            "project maka resource",
+        ),
+        (
+            project.join(".agents/skills/project-agents"),
+            "project agents",
+            "project agents resource",
+        ),
+        (
+            home.join(".maka/skills/user-maka"),
+            "user maka",
+            "user maka resource",
+        ),
+        (
+            home.join(".agents/skills/user-agents"),
+            "user agents",
+            "user agents resource",
+        ),
+    ];
+    for (path, body, resource) in &editions {
+        skill(path, "shared-review", "", body);
+        fs::create_dir_all(path.join("references")).unwrap();
+        fs::write(path.join("references/guide.md"), resource).unwrap();
+    }
+    let owner = owner();
+    let project_files = view(&owner, &project).await;
+    let home_files = view(&owner, &home).await;
+    let sources = sources(Some(&project_files), Some(&home_files));
+    let preferences = Preferences::Available(BTreeMap::new());
+    let host = HostCapabilities::default();
+    for (index, (path, body, resource)) in editions.iter().enumerate() {
+        let snapshot = scan(&sources, &CancellationToken::new()).await.unwrap();
+        let catalog = Catalog {
+            discovery: &snapshot,
+            preferences: &preferences,
+            host: &host,
+        };
+        assert_eq!(snapshot.inventory.len(), editions.len() - index);
+        assert_eq!(catalog.available().count(), 1);
+        let loaded = catalog.load("shared-review").unwrap();
+        assert_eq!(loaded.instructions, *body);
+        let (_, page) = loaded
+            .skill
+            .resources
+            .page(
+                &loaded.skill.location.reference,
+                &ReadInput {
+                    path: "references/guide.md".into(),
+                    offset: None,
+                    limit: None,
+                },
+            )
+            .unwrap();
+        assert_eq!(page.content, *resource);
+        assert!(
+            snapshot
+                .inventory
+                .iter()
+                .filter(|entry| entry.location.path != *path)
+                .all(|entry| entry.shadowed_by.as_deref()
+                    == Some(loaded.skill.location.reference.as_str()))
+        );
+        fs::remove_dir_all(path).unwrap();
+    }
+}
+
+#[tokio::test]
+async fn skill_with_unknown_frontmatter_loads_without_issues() {
+    let temporary = tempfile::tempdir().unwrap();
+    let project = temporary.path();
+    skill(
+        &project.join(".agents/skills/review"),
+        "review",
+        "disable-model-invocation: true\r\nextension: {modes: [review, audit]}\r\n",
+        "Review the change.",
+    );
+    let owner = owner();
+    let project_files = view(&owner, project).await;
+    let snapshot = scan(
+        &sources(Some(&project_files), None),
+        &CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+    let catalog = Catalog {
+        discovery: &snapshot,
+        preferences: &Preferences::Available(BTreeMap::new()),
+        host: &HostCapabilities::default(),
+    };
+    let loaded = catalog.load("review").unwrap();
+    assert_eq!(loaded.instructions, "Review the change.");
+    assert!(loaded.skill.document.issues.is_empty());
+}
+
+#[tokio::test]
+async fn bundled_generative_ui_skill_is_discoverable_and_loadable() {
+    let snapshot = maka_skills::scan_with_bundled(&[], &CancellationToken::new())
+        .await
+        .unwrap();
+    let preferences = Preferences::Available(BTreeMap::new());
+    let host = HostCapabilities::default();
+    let catalog = Catalog {
+        discovery: &snapshot,
+        preferences: &preferences,
+        host: &host,
+    };
+    let loaded = catalog.load("maka-generative-ui").unwrap();
+    assert_eq!(
+        loaded.skill.location.reference,
+        "bundled:maka-generative-ui"
+    );
+    assert!(
+        loaded.skill.document.issues.is_empty(),
+        "{:?}",
+        loaded.skill.document.issues
+    );
+    assert!(loaded.instructions.contains("```spec"));
+    assert!(loaded.instructions.contains("CLIENT-ONLY BOUNDARY"));
+}

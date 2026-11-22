@@ -1,0 +1,198 @@
+{
+  "dark": {
+    "card": {
+      "backgroundImage": "linear-gradient(180deg, #1f2228 0%, #1f2228 100%)",
+      "boxShadow": "0 1px 0 rgba(0,0,0,0.35)"
+    },
+    "inset": {
+      "boxShadow": "inset 0 1px 1px rgba(0,0,0,0.2)"
+    },
+    "field": {
+      "boxShadow": "none"
+    },
+    "raised": {
+      "backgroundColor": "#33353b",
+      "backgroundImage": "linear-gradient(180deg, #33353b 0%, #33353b 100%)",
+      "boxShadow": "inset 0 0 0 1px rgba(255,255,255,0.06), inset 0 1px 1px rgba(255,255,255,0.08), 0 1px 1px rgba(0,0,0,0.12)",
+      "borderColor": "rgba(0,0,0,0.5)"
+    },
+    "hover": {
+      "backgroundColor": "#383a40",
+      "backgroundImage": "linear-gradient(180deg, #383a40 0%, #383a40 100%)",
+      "boxShadow": "inset 0 0 0 1px rgba(255,255,255,0.07), inset 0 1px 1px rgba(255,255,255,0.09), 0 1px 1px rgba(0,0,0,0.12)",
+      "borderColor": "rgba(0,0,0,0.5)"
+    },
+    "pressed": {
+      "backgroundColor": "#2e3036",
+      "backgroundImage": "linear-gradient(180deg, #2e3036 0%, #2e3036 100%)",
+      "boxShadow": "inset 0 1px 1px rgba(0,0,0,0.18)",
+      "borderColor": "rgba(0,0,0,0.5)"
+    },
+    "light": {
+      "backgroundColor": "#c4ec6a",
+      "backgroundImage": "linear-gradient(180deg, #c4ec6a 0%, #c4ec6a 100%)",
+      "boxShadow": "inset 0 0 0 1px rgba(255,255,255,0.22), inset 0 1px 1px rgba(255,255,255,0.35), 0 1px 1px rgba(0,0,0,0.12)",
+      "borderColor": "rgba(40,60,0,0.55)"
+    },
+    "accent": {
+      "backgroundColor": "#c4ec6a",
+      "backgroundImage": "linear-gradient(180deg, #c4ec6a 0%, #c4ec6a 100%)",
+      "boxShadow": "inset 0 0 0 1px rgba(255,255,255,0.22), inset 0 1px 1px rgba(255,255,255,0.35), 0 1px 1px rgba(0,0,0,0.12)",
+      "borderColor": "rgba(40,60,0,0.55)"
+    },
+    "track": {
+      "boxShadow": "inset 0 1px 1px rgba(0,0,0,0.25)",
+      "borderColor": "#3d4046"
+    },
+    "fill": {
+      "backgroundImage": "linear-gradient(180deg, #c3ea6c 0%, #b4dc58 100%)",
+      "borderColor": "#8db536",
+      "boxShadow": "inset 0 1px 0 rgba(255,255,255,0.3)"
+    },
+    "knob": {
+      "backgroundColor": "#e4e5e8",
+      "backgroundImage": "linear-gradient(180deg, #eceef0 0%, #d6d8dc 100%)",
+      "boxShadow": "0 1px 1px rgba(0,0,0,0.45)",
+      "borderColor": "#c6c8cc"
+    },
+    "knobOn": {
+      "backgroundColor": "#ffffff",
+      "backgroundImage": "linear-gradient(180deg, #ffffff 0%, #f7f9f2 100%)",
+      "boxShadow": "0 1px 0 rgba(60,90,0,0.18)",
+      "borderColor": "#8db536"
+    },
+    "pill": {
+      "backgroundColor": "#33353b",
+      "backgroundImage": "linear-gradient(180deg, #33353b 0%, #33353b 100%)",
+      "boxShadow": "inset 0 0 0 1px rgba(255,255,255,0.06), inset 0 1px 1px rgba(255,255,255,0.08), 0 1px 1px rgba(0,0,0,0.12)",
+      "borderColor": "rgba(0,0,0,0.5)"
+    },
+    "thumb": {
+      "backgroundColor": "#33353b",
+      "backgroundImage": "linear-gradient(180deg, #33353b 0%, #33353b 100%)",
+      "boxShadow": "inset 0 0 0 1px rgba(255,255,255,0.06), inset 0 1px 1px rgba(255,255,255,0.08), 0 1px 1px rgba(0,0,0,0.12)",
+      "borderColor": "rgba(0,0,0,0.5)"
+    },
+    "on": {
+      "backgroundColor": "#4b4f57",
+      "backgroundImage": "linear-gradient(180deg, #4b4f57 0%, #4b4f57 100%)",
+      "boxShadow": "inset 0 0 0 1px rgba(255,255,255,0.10), inset 0 1px 1px rgba(255,255,255,0.12), 0 1px 1px rgba(0,0,0,0.12)",
+      "borderColor": "rgba(0,0,0,0.5)"
+    },
+    "chip": {
+      "boxShadow": "0 1px 0 rgba(0,0,0,0.3)"
+    },
+    "glass": {
+      "backgroundColor": "rgba(31,34,40,0.78)",
+      "boxShadow": "inset 0 1px 0 rgba(255,255,255,0.06), 0 1px 0 rgba(0,0,0,0.4)",
+      "borderColor": "#31343a",
+      "backdropFilter": "blur(20px)"
+    },
+    "menu": {
+      "backgroundColor": "#1f2228",
+      "boxShadow": "0 1px 0 rgba(0,0,0,0.4), 0 16px 32px -10px rgba(0,0,0,0.6)",
+      "borderColor": "#31343a"
+    },
+    "groove": {
+      "boxShadow": "0 1px 0 rgba(255,255,255,0.05)"
+    }
+  },
+  "light": {
+    "card": {
+      "backgroundImage": "linear-gradient(180deg, #ffffff 0%, #ffffff 100%)",
+      "boxShadow": "0 1px 0 rgba(10,15,25,0.04)"
+    },
+    "inset": {
+      "boxShadow": "inset 0 1px 1px rgba(10,15,25,0.03)"
+    },
+    "field": {
+      "boxShadow": "none"
+    },
+    "raised": {
+      "backgroundColor": "#f3f4f7",
+      "backgroundImage": "linear-gradient(180deg, #f3f4f7 0%, #f3f4f7 100%)",
+      "boxShadow": "inset 0 1px 0 #ffffff, inset 0 2px 0 rgba(255,255,255,0.6), 0 1px 0 rgba(10,15,25,0.05)",
+      "borderColor": "#cacbcd"
+    },
+    "hover": {
+      "backgroundColor": "#f8f8fb",
+      "backgroundImage": "linear-gradient(180deg, #f8f8fb 0%, #f8f8fb 100%)",
+      "boxShadow": "inset 0 1px 0 #ffffff, inset 0 2px 0 rgba(255,255,255,0.6), 0 1px 0 rgba(10,15,25,0.05)",
+      "borderColor": "#c6c7ca"
+    },
+    "pressed": {
+      "backgroundColor": "#edeef1",
+      "backgroundImage": "linear-gradient(180deg, #edeef1 0%, #edeef1 100%)",
+      "boxShadow": "inset 0 1px 1px rgba(10,15,25,0.10)",
+      "borderColor": "#c1c2c4"
+    },
+    "light": {
+      "backgroundColor": "#c6ef6a",
+      "backgroundImage": "linear-gradient(180deg, #c6ef6a 0%, #c6ef6a 100%)",
+      "boxShadow": "inset 0 1px 0 rgba(255,255,255,0.55), inset 0 -1px 0 rgba(60,90,0,0.12), 0 1px 0 rgba(60,90,0,0.14)",
+      "borderColor": "#9cc43a"
+    },
+    "accent": {
+      "backgroundColor": "#c6ef6a",
+      "backgroundImage": "linear-gradient(180deg, #c6ef6a 0%, #c6ef6a 100%)",
+      "boxShadow": "inset 0 1px 0 rgba(255,255,255,0.55), inset 0 -1px 0 rgba(60,90,0,0.12), 0 1px 0 rgba(60,90,0,0.14)",
+      "borderColor": "#9cc43a"
+    },
+    "track": {
+      "boxShadow": "inset 0 1px 1px rgba(10,15,25,0.05)",
+      "borderColor": "#cacbcd"
+    },
+    "fill": {
+      "backgroundImage": "linear-gradient(180deg, #a2d33c 0%, #8fc21f 100%)",
+      "borderColor": "#7fae17",
+      "boxShadow": "inset 0 1px 0 rgba(255,255,255,0.3)"
+    },
+    "knob": {
+      "backgroundColor": "#ffffff",
+      "backgroundImage": "linear-gradient(180deg, #ffffff 0%, #f2f3f6 100%)",
+      "boxShadow": "0 1px 0 rgba(10,15,25,0.08)",
+      "borderColor": "#c1c2c4"
+    },
+    "knobOn": {
+      "backgroundColor": "#ffffff",
+      "backgroundImage": "linear-gradient(180deg, #ffffff 0%, #f7f9f2 100%)",
+      "boxShadow": "0 1px 0 rgba(60,90,0,0.18)",
+      "borderColor": "#8fb536"
+    },
+    "pill": {
+      "backgroundColor": "#f3f4f7",
+      "backgroundImage": "linear-gradient(180deg, #f3f4f7 0%, #f3f4f7 100%)",
+      "boxShadow": "inset 0 1px 0 #ffffff, inset 0 2px 0 rgba(255,255,255,0.6), 0 1px 0 rgba(10,15,25,0.05)",
+      "borderColor": "#cacbcd"
+    },
+    "thumb": {
+      "backgroundColor": "#ffffff",
+      "backgroundImage": "linear-gradient(180deg, #ffffff 0%, #ffffff 100%)",
+      "boxShadow": "0 1px 2px rgba(10,15,25,0.10), 0 1px 0 rgba(10,15,25,0.04)",
+      "borderColor": "#c1c2c4"
+    },
+    "on": {
+      "backgroundColor": "#dbdce0",
+      "backgroundImage": "linear-gradient(180deg, #dbdce0 0%, #dbdce0 100%)",
+      "boxShadow": "inset 0 1px 0 rgba(255,255,255,0.35), 0 1px 0 rgba(10,15,25,0.05)",
+      "borderColor": "#c1c2c4"
+    },
+    "chip": {
+      "boxShadow": "inset 0 1px 0 rgba(255,255,255,0.65)"
+    },
+    "glass": {
+      "backgroundColor": "rgba(248,248,251,0.8)",
+      "boxShadow": "inset 0 1px 0 rgba(255,255,255,0.9), 0 1px 0 rgba(10,15,25,0.04)",
+      "borderColor": "#cacbcd",
+      "backdropFilter": "blur(20px)"
+    },
+    "menu": {
+      "backgroundColor": "#f8f8fb",
+      "boxShadow": "0 1px 0 rgba(10,15,25,0.04), 0 12px 28px -10px rgba(10,15,25,0.22)",
+      "borderColor": "#cacbcd"
+    },
+    "groove": {
+      "boxShadow": "0 1px 0 #ffffff"
+    }
+  }
+}

@@ -1,0 +1,58 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+[package]
+name = "maka-desktop-shell"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+maka-event-log.workspace = true
+maka-app-client.workspace = true
+maka-host-runtime.workspace = true
+maka-updater.workspace = true
+maka-workbench.workspace = true
+nsh-engine.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+uuid.workspace = true
+
+[build-dependencies]
+embed-resource = "3.0"
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+nsh-platform-linux.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+maka-wsl-bridge.workspace = true
+tokio = { workspace = true, features = ["process"] }
+nsh-platform-windows.workspace = true
+[target.'cfg(target_os = "macos")'.dependencies]
+nsh-platform-macos.workspace = true
+block2 = { version = "0.6.2", default-features = false, features = ["std"] }
+dispatch2 = { version = "0.3.1", default-features = false, features = ["std", "objc2"] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "objc2-core-foundation", "objc2-core-graphics", "NSApplication", "NSAttributedString", "block2", "NSBezierPath", "NSBitmapImageRep", "NSColor", "NSColorSpace", "NSActionCell", "NSCell", "NSControl", "NSCursor", "NSDraggingItem", "NSDraggingSession", "NSEvent", "NSFont", "NSGraphics", "NSGraphicsContext", "NSImage", "NSImageCell", "NSImageRep", "NSImageView", "NSPanel", "NSPasteboard", "NSOpenPanel", "NSResponder", "NSSavePanel", "NSScreen", "NSStringDrawing", "NSText", "NSTextField", "NSTrackingArea", "NSView", "NSWindow", "NSWorkspace"] }
+objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFArray", "CFCGTypes"] }
+objc2-core-graphics = { version = "0.3.2", default-features = false, features = ["std", "CGBitmapContext", "CGColorSpace", "CGContext", "CGDirectDisplay", "CGError", "CGImage", "CGRemoteOperation", "CGWindow"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "objc2-core-foundation", "NSArray", "NSBundle", "NSData", "NSDate", "NSDateFormatter", "NSDictionary", "NSError", "NSFormatter", "NSGeometry", "NSPathUtilities", "NSString", "NSURL", "NSUserDefaults", "NSValue"] }
+objc2-screen-capture-kit = { version = "0.3.2", default-features = false, features = ["std", "block2", "libc", "objc2-core-foundation", "objc2-core-graphics", "SCScreenshotManager", "SCShareableContent", "SCStream"] }

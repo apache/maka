@@ -1,0 +1,18 @@
+---
+import BaseLayout from '../layouts/BaseLayout.astro';
+import Nav from '../components/Nav.astro';
+import Playground from '../components/Playground.astro';
+import { url } from '../lib/site';
+---
+
+<BaseLayout
+  lang="en"
+  title="Playground"
+  description="Write an NSH app in the browser and see it run: compiled and run right in the page."
+  alternates={{ en: '/playground', 'zh-CN': '/zh-CN/playground' }}
+>
+  <Nav lang="en" currentPath={Astro.url.pathname} langHref={url('zh-CN/playground')} />
+  <main id="main" data-pagefind-ignore>
+    <Playground lang="en" />
+  </main>
+</BaseLayout>

@@ -1,0 +1,11 @@
+node_modules/
+dist/
+.astro/
+bun.lock
+bun.lockb
+# The WebAssembly player and demo bundles (`bun run play`).
+public/play/
+# Releases' builds and players (`bun run build:versions`).
+.versions/
+# Machine translations, taken at publish time (`src/lib/locales.ts`).
+translations/

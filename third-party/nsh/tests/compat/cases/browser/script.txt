@@ -1,0 +1,395 @@
+# What a user does and sees (compat/apps.rs): each case after its tap.
+platform web desktop
+fontscale 2
+# props-platform-web
+tap id:case-props-platform-web
+expect Link
+# `web={{…}}` wins over the prop set for every platform; `android={{…}}`
+# does not apply.
+prop id:link accessibilityLabel In a browser
+prop id:link elevation 0
+prop id:link backdropMaterial ultraThin
+covers [props] web
+# props-view-web-element
+tap id:case-props-view-web-element
+expect Notes
+# The element each is in a document where `role` cannot say it; the
+# heading's is its role.
+prop id:article web.element article
+prop id:date web.element time
+prop id:paragraph web.element p
+prop id:heading role header
+covers [props] web.element
+# props-text-scaling
+tap id:case-props-text-scaling
+# twice the default.
+style id:scaled fontSize 20
+style id:fixed fontSize 10
+style id:capped fontSize 15
+style id:field fontSize 20
+style id:field-fixed fontSize 10
+style id:field-capped fontSize 15
+covers [props] allowFontScaling
+covers [props] maxFontSizeMultiplier
+# props-media-webview-desktop
+tap id:case-props-media-webview-desktop
+prop id:page src https://example.com/
+prop id:page desktop.allowsBackForwardNavigationGestures true
+covers [props] desktop.allowsBackForwardNavigationGestures
+# base-popups-desktop
+tap id:case-base-popups-desktop
+# A press outside a popover on a desktop closes it, unless it says not to.
+expect StayBody
+touch start text:Elsewhere 5 5
+touch end
+wait 200
+expect StayBody
+expect Log: none
+covers [props] Popover.closeOnPressOutside
+# A menu at the right of its trigger, 7 points away, lined up by its end
+# but kept 5 points from the top.
+tap text:DeskMenu
+expect DeskItem
+frame parent:parent:parent:text:DeskItem 127 5 90 600
+covers [props] Menu.placement
+covers [props] Menu.align
+covers [props] Menu.offset
+covers [props] Menu.margin
+# Opened by a press, no item has the focus: a letter moves it to the item
+# it starts, which Return chooses.
+key d
+key enter
+expect Log: chose DeskItem
+absent DeskItem
+# A context menu where the secondary button went down, 3 points below it,
+# kept 9 points from the right edge.
+event text:RightClickArea onContextMenu pageX=390 pageY=200
+expect DeskCopy
+frame parent:parent:parent:text:DeskCopy 291 203 90 40
+covers [props] ContextMenu.offset
+covers [props] ContextMenu.margin
+# A context menu the app opens: below its trigger (200, 100, 120 × 30),
+# from its start, not at the window's corner.
+event text:DeskCopy onCancel
+absent DeskCopy
+tap text:ShowAppMenu
+expect ShownCopy
+frame parent:parent:parent:text:ShownCopy 200 130 90 40
+tap text:ShownCopy
+absent ShownCopy
+covers [props] ContextMenu.open
+# A tooltip after the pointer rested on its trigger for `delay`, gone when
+# the pointer leaves.
+event text:SlowTrigger onMouseEnter
+wait 1000
+absent SlowTip
+wait 1500
+expect SlowTip
+expect Log: tooltip true hover
+expect Tip: open
+event text:SlowTrigger onMouseLeave
+absent SlowTip
+expect Log: tooltip false hover
+expect Tip: closed
+covers [props] Tooltip.delay
+covers [events] Tooltip.onOpenChange
+covers [events] Tooltip.onOpen
+covers [events] Tooltip.onClose
+# An element's `tooltip`: shown after half a second, gone on a press, and
+# gone when the pointer leaves.
+event id:prop-tip onMouseEnter
+wait 700
+expect PropTip
+touch start id:prop-tip 5 5
+touch end
+absent PropTip
+event text:ElementTrigger onMouseEnter
+wait 700
+expect ElementTip
+event text:ElementTrigger onMouseLeave
+absent ElementTip
+covers [props] tooltip
+# base-popup-looks
+tap id:case-base-popup-looks
+# A popover is made with its starting looks and takes its own from its
+# first frame on; it says the side it went on.
+tap text:PopTrigger
+expect PopBody
+style parent:text:PopBody opacity 0
+style parent:text:PopBody backgroundColor #ff0000ff
+expect Side: popover bottom 40
+wait 100
+nostyle parent:text:PopBody opacity
+nostyle parent:text:PopBody backgroundColor
+# Closed, it stays with its ending looks through its 300 ms; then it is
+# gone and closed.
+tap text:PopTrigger
+style parent:text:PopBody opacity 0.5
+style parent:text:PopBody backgroundColor #0000ffff
+expect PopBody
+expect Life: popover open
+wait 500
+absent PopBody
+expect Life: popover closed
+covers [props] Popover.popupStartingClass
+covers [props] Popover.popupStartingStyle
+covers [props] Popover.popupEndingClass
+covers [props] Popover.popupEndingStyle
+covers [events] Popover.onPosition
+# A menu and its submenu, the same.
+tap text:MenuTrigger
+expect MenuNew
+style parent:parent:parent:text:MenuNew opacity 0
+style parent:parent:parent:text:MenuNew backgroundColor #ff0000ff
+expect Side: menu bottom
+wait 100
+nostyle parent:parent:parent:text:MenuNew opacity
+tap text:MenuShare
+expect MenuMail
+style parent:parent:parent:text:MenuMail opacity 0
+wait 100
+nostyle parent:parent:parent:text:MenuMail opacity
+# Choosing an item closes both, each with its ending looks.
+tap text:MenuMail
+style parent:parent:parent:text:MenuNew opacity 0.5
+style parent:parent:parent:text:MenuNew backgroundColor #0000ffff
+style parent:parent:parent:text:MenuMail opacity 0.5
+expect MenuNew
+wait 500
+absent MenuNew
+absent MenuMail
+expect Life: menu closed
+covers [props] Menu.popupStartingClass
+covers [props] Menu.popupStartingStyle
+covers [props] Menu.popupEndingClass
+covers [props] Menu.popupEndingStyle
+covers [events] Menu.onPosition
+# A context menu, the same.
+event text:LooksArea onContextMenu pageX=200 pageY=400
+expect CtxCopy
+style parent:parent:parent:text:CtxCopy opacity 0
+style parent:parent:parent:text:CtxCopy backgroundColor #ff0000ff
+expect Side: context bottom
+wait 100
+nostyle parent:parent:parent:text:CtxCopy opacity
+tap text:CtxCopy
+style parent:parent:parent:text:CtxCopy opacity 0.5
+style parent:parent:parent:text:CtxCopy backgroundColor #0000ffff
+wait 500
+absent CtxCopy
+expect Life: context closed
+covers [props] ContextMenu.popupStartingClass
+covers [props] ContextMenu.popupStartingStyle
+covers [props] ContextMenu.popupEndingClass
+covers [props] ContextMenu.popupEndingStyle
+covers [events] ContextMenu.onPosition
+# A tooltip the app shows and hides, the same.
+tap text:TipToggle
+expect TipBody
+style parent:text:TipBody opacity 0
+style parent:text:TipBody backgroundColor #ff0000ff
+wait 100
+nostyle parent:text:TipBody opacity
+tap text:TipToggle
+style parent:text:TipBody opacity 0.5
+style parent:text:TipBody backgroundColor #0000ffff
+wait 500
+absent TipBody
+expect Life: tooltip closed
+covers [props] Tooltip.startingClass
+covers [props] Tooltip.startingStyle
+covers [props] Tooltip.endingClass
+covers [props] Tooltip.endingStyle
+# base-select-desktop
+tap id:case-base-select-desktop
+# A list at the right of its trigger, 7 points away, lined up by its end
+# but kept 5 points from the top; its search field takes the keyboard at
+# once.
+tap text:SideSelect
+expect Desk: true triggerPress
+expect Kiwi
+frame parent:scroll:label:Kiwi 127 5 120 600
+prop below:scroll:label:Kiwi autoFocus true
+# A press outside closes it.
+touch start text:Elsewhere 5 5
+touch end
+expect Desk: false pressOutside
+absent Kiwi
+covers [props] Select.placement
+covers [props] Select.align
+covers [props] Select.offset
+covers [props] Select.margin
+# Below its trigger by default, lined up by its start: as wide as the
+# trigger (150) and as tall as its one row (30).
+tap text:WideSelect
+expect Lime
+frame parent:scroll:label:Lime 20 368 150 30
+touch start text:Elsewhere 5 5
+touch end
+absent Lime
+# base-dropdown-looks
+tap id:case-base-dropdown-looks
+# A select's list is made with its starting looks and takes its own from
+# its first frame on; closed, it stays with its ending looks through its
+# 300 ms, then it is gone and closed.
+tap text:SelectTrigger
+expect Kiwi
+style parent:scroll:label:Kiwi opacity 0
+style parent:scroll:label:Kiwi backgroundColor #ff0000ff
+wait 100
+nostyle parent:scroll:label:Kiwi opacity
+nostyle parent:scroll:label:Kiwi backgroundColor
+expect Life: select open
+tap text:SelectTrigger
+style parent:scroll:label:Kiwi opacity 0.5
+style parent:scroll:label:Kiwi backgroundColor #0000ffff
+expect Kiwi
+wait 500
+absent Kiwi
+expect Life: select closed
+covers [props] Select.popupStartingClass
+covers [props] Select.popupStartingStyle
+covers [props] Select.popupEndingClass
+covers [props] Select.popupEndingStyle
+# A combobox's list, the same.
+tap text:ComboTrigger
+expect Lime
+style parent:scroll:label:Lime opacity 0
+style parent:scroll:label:Lime backgroundColor #ff0000ff
+wait 100
+nostyle parent:scroll:label:Lime opacity
+tap text:ComboTrigger
+style parent:scroll:label:Lime opacity 0.5
+style parent:scroll:label:Lime backgroundColor #0000ffff
+wait 500
+absent Lime
+expect Life: combobox closed
+covers [props] Combobox.popupStartingClass
+covers [props] Combobox.popupStartingStyle
+covers [props] Combobox.popupEndingClass
+covers [props] Combobox.popupEndingStyle
+# A date picker's calendar, the same.
+tap text:DateTrigger
+expect Someday
+style parent:parent:parent:label:Someday opacity 0
+style parent:parent:parent:label:Someday backgroundColor #ff0000ff
+wait 100
+nostyle parent:parent:parent:label:Someday opacity
+tap text:DateTrigger
+style parent:parent:parent:label:Someday opacity 0.5
+style parent:parent:parent:label:Someday backgroundColor #0000ffff
+wait 500
+absent Someday
+expect Life: date picker closed
+covers [props] DatePicker.popupStartingClass
+covers [props] DatePicker.popupStartingStyle
+covers [props] DatePicker.popupEndingClass
+covers [props] DatePicker.popupEndingStyle
+
+# The browser-JS backend shares the app's brands and preserves queued jobs.
+tap id:case-runtime-identities
+expect Buffer brand: true
+expect Cleanup identity: true
+expect Callback error: TypeError
+expect Ticks: 0
+tap id:runtime-tick
+wait 20
+expect Ticks: 1
+# base-hover-card-desktop
+tap id:case-base-hover-card-desktop
+# Open once the pointer rested on the trigger for `openDelay`.
+event text:SlowMention onMouseEnter
+wait 1000
+absent SlowCard
+wait 1200
+expect SlowCard
+expect Log: card true hover
+# Off the trigger and onto the card within `closeDelay`: it stays.
+event text:SlowMention onMouseLeave
+event parent:text:SlowCard onMouseEnter
+wait 1000
+expect SlowCard
+# Off the card: closed `closeDelay` later.
+event parent:text:SlowCard onMouseLeave
+wait 1000
+expect SlowCard
+wait 1500
+absent SlowCard
+expect Log: card false hover
+# Escape closes it at once.
+event text:SlowMention onMouseEnter
+wait 2200
+expect SlowCard
+event parent:text:SlowCard onCancel
+absent SlowCard
+expect Log: card false cancel
+event text:SlowMention onMouseLeave
+covers [props] HoverCard.openDelay
+covers [props] HoverCard.closeDelay
+# Made with its starting looks, its own from its first frame on; closed,
+# it stays with its ending looks through its 300 ms, then it is gone.
+event text:LooksMention onMouseEnter
+expect LooksCard
+style parent:text:LooksCard opacity 0
+style parent:text:LooksCard backgroundColor #ff0000ff
+wait 100
+nostyle parent:text:LooksCard opacity
+nostyle parent:text:LooksCard backgroundColor
+expect Life: card open
+event text:LooksMention onMouseLeave
+wait 100
+style parent:text:LooksCard opacity 0.5
+style parent:text:LooksCard backgroundColor #0000ffff
+expect LooksCard
+wait 600
+absent LooksCard
+expect Life: card closed
+covers [props] HoverCard.popupStartingClass
+covers [props] HoverCard.popupStartingStyle
+covers [props] HoverCard.popupEndingClass
+covers [props] HoverCard.popupEndingStyle
+# base-popup-anchors-desktop
+tap id:case-base-popup-anchors-desktop
+# A trigger its popover's column stretches (20, 300, 200 × 30 around a
+# 20-point box): the popup is centered 4 points below the whole trigger,
+# not below the box around its content (which would put it at 20).
+tap id:stretched-trigger
+expect StretchBody
+frame parent:text:StretchBody 100 334 40 20
+covers [props] Popover.trigger
+covers [props] Popover.offset
+tap id:stretched-trigger
+absent StretchBody
+# An icon trigger 40 points wide by its minWidth (20, 338) around a
+# 16-point icon: the menu starts at the trigger's start (`align` "start"),
+# not the icon's (which would put it at 32).
+tap id:icon-trigger
+expect IconItem
+frame parent:parent:parent:text:IconItem 20 372 90 40
+covers [props] Menu.trigger
+covers [props] Menu.offset
+tap id:icon-trigger
+absent IconItem
+# base-tooltip-grace-period-desktop
+tap id:case-base-tooltip-grace-period-desktop
+# A tooltip after the pointer rested on its trigger for its delay.
+event text:FirstTrigger onMouseEnter
+wait 700
+expect FirstTip
+# The pointer comes to the next trigger while that tooltip is still up:
+# its tooltip shows at once, though its delay is a minute. (The grace
+# period after the pointer left, 300 ms, ends before the next step: each
+# step waits 300 ms of quiet first; the Rust and gallery tests check it.)
+event text:GraceTrigger onMouseEnter
+expect GraceTip
+event text:FirstTrigger onMouseLeave
+absent FirstTip
+# A second after the pointer left that one, past the grace period, a
+# trigger waits for its delay.
+event text:GraceTrigger onMouseLeave
+absent GraceTip
+wait 1000
+event text:WaitTrigger onMouseEnter
+wait 500
+absent WaitTip
+event text:WaitTrigger onMouseLeave

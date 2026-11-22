@@ -1,0 +1,237 @@
+{
+  "formatVersion": 1,
+  "ledgers": {
+    "root": {
+      "platform/event-log/migrations/0001_runtime.sql": {
+        "version": 1,
+        "sha384": "9e48a88958f25beabf8fcb376370d345a0d6e796c21a948d9c79af11f321b680ea2c468b02c039dc7aa90251f17f5fb5"
+      },
+      "platform/event-log/migrations/0023_plugin_data_live.sql": {
+        "version": 23,
+        "sha384": "90c4dd07cad1960ca8c90f7b52606950a712b1073424f82c176ca8bd0bf48c97cb943b1bfb394ebf9b098067ab1f6734"
+      },
+      "platform/event-log/migrations/0036_pending_content_release.sql": {
+        "version": 36,
+        "sha384": "5d25737a8caa1cb01f6f517857e545a82734ca1a4631347afae64d86e6a83363fe7ef7d908ba4e54d4e504c5be3557b7"
+      },
+      "platform/event-log/migrations/0042_checkpoint_repository.sql": {
+        "version": 42,
+        "sha384": "dd496b9df68a13f276b5c8291fa248b32f40d3f10f4e074128929993d11743d6114617ba30d6be2dc4781b67a1191bf7"
+      },
+      "plugins/agent/state/migrations/0002_agent.sql": {
+        "version": 2,
+        "sha384": "cc1d058e9b871d3ecdb844b7cd525dfa695cadbf0a70c2133def97d2f527089a198d3d433b0daa78bf214cf682a7f0c2"
+      },
+      "plugins/agent/state/migrations/0003_queue.sql": {
+        "version": 3,
+        "sha384": "eae360fdcc9026bf695916358c5cc074d1d7a033ec824960d433cd15129cc0a20162b0d9e4a4f1c82436ed9f1fd0fef4"
+      },
+      "plugins/agent/state/migrations/0004_interactions.sql": {
+        "version": 4,
+        "sha384": "db0c5f32f699383719091a9808b6f0cb5d633086188a2eac3017724001e60f3bc3324503d29b4e8f01943a3cffa426fa"
+      },
+      "plugins/agent/state/migrations/0005_artifacts.sql": {
+        "version": 5,
+        "sha384": "3e5ed02373975f0086e72b2d3bd826489306cd4f1a279233c341e74fc12854db371d35b9c47d01c5da3601ef2bff2884"
+      },
+      "plugins/agent/state/migrations/0006_session_history.sql": {
+        "version": 6,
+        "sha384": "3ac896644fa07321c794f94aeafc21997f60c2689f2ff80a4ed56bec74ba7779ce0bf38842f16eaeb81c04a6fb8698b1"
+      },
+      "plugins/agent/state/migrations/0007_session_catalog.sql": {
+        "version": 7,
+        "sha384": "3d6c2b37222867f17c505bc92f8c73b1f74817d57487874e8e657f454c3db0098148767d3285315d3702f73593458ecf"
+      },
+      "plugins/agent/state/migrations/0008_cells.sql": {
+        "version": 8,
+        "sha384": "f8b6d8af219bfc99a20bd8d44d43bb5c707aa1b5b093813e18789d09efd8d7dd4de2320ea7908501c7c4a617054d2373"
+      },
+      "plugins/agent/state/migrations/0009_computer.sql": {
+        "version": 9,
+        "sha384": "643bbd910e2d3a77d244c29e2152447c1df8449a90ab627ef15e79ce50c1009fdf5ecbb2674ed1241211cfd7e7460a4d"
+      },
+      "plugins/agent/state/migrations/0010_external_effects.sql": {
+        "version": 10,
+        "sha384": "a149cb9df7cecd0ca6a433c86b7e39bee3aa602fec3fc5a9eeddd04e1ee43d843b3cc404516ec9c324607c98a88fcf36"
+      },
+      "plugins/agent/state/migrations/0011_usage_recall.sql": {
+        "version": 11,
+        "sha384": "1c5efe4e80f8c51840f856b1f898c87fce84e73d269d93f089f8afcdd2ec95ffc322e2677c7c26e9b7861e737bd0d8e3"
+      },
+      "plugins/agent/state/migrations/0012_external_steering.sql": {
+        "version": 12,
+        "sha384": "69e4269ba5ab3c2e0a75444dfb5577faa8506943dedd510494f7df20b200a740d6ab222019b0fe5d61da3ea51e9eb215"
+      },
+      "plugins/agent/state/migrations/0013_history_snapshot.sql": {
+        "version": 13,
+        "sha384": "64ab70734b5b4a90aebb4fdfc9d5fd006cc820f9d4ef6d3b1fe31d4852f9d9e44b24149c850175a338123f3ea16964df"
+      },
+      "plugins/agent/state/migrations/0014_continuation.sql": {
+        "version": 14,
+        "sha384": "9de41bc45fed26cef00a7a7201aae8bd7fc580811fcd1784b8ee3a1efc9e0c23791f5a7c9d43498289e935a5636d0b73"
+      },
+      "plugins/agent/state/migrations/0016_snapshot_ingest.sql": {
+        "version": 16,
+        "sha384": "79f7eda27356f73b2f36930e6a69c36467c7218e313f1ca66625b3355d5942406f0f038a865c33c5dbb9f700927300cb"
+      },
+      "plugins/agent/state/migrations/0017_external_publication.sql": {
+        "version": 17,
+        "sha384": "b5050f1ac2473964f166edc8450389a5e6f93a62169cf6e6825fae9d427075b22e4818f1b081506e23018fe74bf3412c"
+      },
+      "plugins/agent/state/migrations/0018_snapshot_positions.sql": {
+        "version": 18,
+        "sha384": "e815beacc17f2209f95de9e94c4c03f63463e2acd1c0c56ce7896b1ad7261f5e93d93df67b5a19662cb3caadc0768354"
+      },
+      "plugins/agent/state/migrations/0019_snapshot_navigation.sql": {
+        "version": 19,
+        "sha384": "09041081692686f4bcc7410f01dfa021c5436649e2db16704869e2510e95a714ad7668cc12065911a1ceae08c845d9c6"
+      },
+      "plugins/agent/state/migrations/0020_diagnostics.sql": {
+        "version": 20,
+        "sha384": "be23453cf31481e3a443819a05962613e081495fe0542c34c7b85a47d796674f5b66743f4c7b7a9633ded02132afe5d8"
+      },
+      "plugins/agent/state/migrations/0021_snapshot_catalog.sql": {
+        "version": 21,
+        "sha384": "545ee6110490c2282699375bbd53e37adb148d0e90abe5b1edfb9218da937b20c5f288fa2ce9602d64e2a4c63b7cd068"
+      },
+      "plugins/agent/state/migrations/0022_read_indexes.sql": {
+        "version": 22,
+        "sha384": "6883c5de0315306e53deea3473e2468acaec1706f33294e08d7059906195de21b70f4620c9bfbaa1f7702d137a424be1"
+      },
+      "plugins/agent/state/migrations/0024_native_turn_fence.sql": {
+        "version": 24,
+        "sha384": "d229efaae075c6326e03499ebc7f3b2d710d4e1c37d3a23dcf8426c50fa366de7fc5ef7bae74e11b7977614037026484"
+      },
+      "plugins/agent/state/migrations/0025_snapshot_model_metadata.sql": {
+        "version": 25,
+        "sha384": "8be46c09bf9f4baca9a56c6cc986b2f08e41705aa55e2e0ce63200353981657251044c7d41b80dc5f433d395e7eb9a07"
+      },
+      "plugins/agent/state/migrations/0026_execution_fences.sql": {
+        "version": 26,
+        "sha384": "af3cf7b16639de4255ddb51b6f531ae299b4d7e432b8ca72a01024c700b27452a5415bdc70816651db717ad7bdd25245"
+      },
+      "plugins/agent/state/migrations/0027_material_reference_indexes.sql": {
+        "version": 27,
+        "sha384": "bb8ac7116afc103f36c4d196a2c95b6e8905c43156b8d4a8852b6cf3be2ffb513127d5f910845bfde27c9b5710ce4c58"
+      },
+      "plugins/agent/state/migrations/0028_ingest_content_reference_indexes.sql": {
+        "version": 28,
+        "sha384": "7d91a5c58a315a89d7206944e6119dd4fa2b2135d6432ca030f17e0e54359acbe79cc1a54ed6d21bcf0fe1332545bcc4"
+      },
+      "plugins/agent/state/migrations/0029_external_cleanup.sql": {
+        "version": 29,
+        "sha384": "c1b3f89b0d99f5e3f144150b0cf6057e731ca699050b50b6d647c67df4e0d1e2931eee106cd89b26940478c1e1f1aeb1"
+      },
+      "plugins/agent/state/migrations/0030_model_cleanup.sql": {
+        "version": 30,
+        "sha384": "f0535bd1a94c2148242c86ce053734b92e4d367064258f82983bed13066f095a5641556b90ccf620bb3cc5d019af3c85"
+      },
+      "plugins/agent/state/migrations/0031_imported_history_position.sql": {
+        "version": 31,
+        "sha384": "4fa2f154248b38cc69bae21167b7846a37bde8e50340603e53cf52d5e4a2cb5603fa2f99250b5a75d905ba18dd8659d1"
+      },
+      "plugins/agent/state/migrations/0032_compact_history_search.sql": {
+        "version": 32,
+        "sha384": "bea603d176aac5f9bf88578600a8740905767a9f9d023a0d6616e9654bfb90b38f928f81bcc646671bba0fd53d9ac23a"
+      },
+      "plugins/agent/state/migrations/0033_derived_snapshot_adoption.sql": {
+        "version": 33,
+        "sha384": "7bc49ab5fd576becbc48f274c49f490e8c493880bd6aa9813d63759efe3a52b719da8e49165481166975a5050f5b0498"
+      },
+      "plugins/agent/state/migrations/0034_snapshot_inventory_pages.sql": {
+        "version": 34,
+        "sha384": "8d222a12e1d9309e8f843ac5a65e5d8f5583a64b7c5d09a1df0029dee31f8557b85795ef3af6f360b4df826000a1373a"
+      },
+      "plugins/agent/state/migrations/0035_profile_content_owners.sql": {
+        "version": 35,
+        "sha384": "117a3bbab5988fe4f932fe0fae4d9d01097acb7c41afa15a80849a75714c39b256087d97aebfa344ff6b29b5726aca45"
+      },
+      "plugins/agent/state/migrations/0037_proactive_summary.sql": {
+        "version": 37,
+        "sha384": "0ddff6157699ad3e76f0f3c4fe9cfde5a2da941accf586f9b87da2ac8d8f1e42e42eee9da93da69f4f16f8e50f3136d6"
+      },
+      "plugins/agent/state/migrations/0038_subagent_presets.sql": {
+        "version": 38,
+        "sha384": "06c60b8dab3736ae83d59d2c08575fc47e1559b88832534ee0fec5746e24990f82a423dff6aa63e57e14ec4bc8ed0c58"
+      },
+      "plugins/agent/state/migrations/0039_external_catalog_messages.sql": {
+        "version": 39,
+        "sha384": "681d6e06366f01a8df64f7f7630b8cb0773a5d4ee39b5ad719152cc30ed5cef1d86a9a6e5824cf34215708c6d1a44dc6"
+      },
+      "plugins/agent/state/migrations/0040_rooms.sql": {
+        "version": 40,
+        "sha384": "a3a1722ade49e1ca30fe924a1539cfc150ea135e18a9151c903927853c9adf3da3141a2e11cd746a44cd66c62df5a095"
+      },
+      "plugins/agent/state/migrations/0041_history_tool_metadata.sql": {
+        "version": 41,
+        "sha384": "81d8b40a678170b8a7d5741d5ee3a77a5e844fe0980a52b55ee6b14583bfe8e8113f61039117456920ec20ea5621d9e9"
+      },
+      "plugins/agent/state/migrations/0043_memory.sql": {
+        "version": 43,
+        "sha384": "5e8d3fef14f7813d44b0aaa124a13dac56fa3d50a3eb2400dcb6e7efbfd15cbaf0a629d4f0b5c31e6a046281ed2a7074"
+      },
+      "plugins/agent/state/migrations/0044_memory_metadata.sql": {
+        "version": 44,
+        "sha384": "43c12cf6babe1ff26a592863d3536dc7b74b89f34dc7b9598c41bff725273ff366a81f6f49998f38bfa543530b4f46e5"
+      },
+      "plugins/agent/state/migrations/0045_memory_evidence.sql": {
+        "version": 45,
+        "sha384": "fa9623476df6ed70e64c170c1386e46d7e2318b24c316dc1a34e91f0cf9379d5f5f61d9a41d397384ff4043cecb4354d"
+      },
+      "plugins/agent/state/migrations/0046_memory_resolution.sql": {
+        "version": 46,
+        "sha384": "42c4dbc59eb8e59413812f3bc8871b901517ff7625eafc7f3dc2ea6bd0a9f1653805b1a08e07459030dc8b5e54fd01d5"
+      },
+      "plugins/agent/state/migrations/0047_missing_external_returns.sql": {
+        "version": 47,
+        "sha384": "78f63bfcf0dd168dabd77fb67ed984ab8058997cac2b0caf8fe2ca22bc12bad4d7c1876ccbf40f85326a1f3817de64c3"
+      },
+      "plugins/agent/state/migrations/0048_permission_grant_sources.sql": {
+        "version": 48,
+        "sha384": "ccb75b49c5aaffb15981730a70950efdc5db932937a30762ca332602ef94a51fb50838b5514a4d6b0f26f1ff575a0b36"
+      },
+      "plugins/agent/state/migrations/0049_session_removal_fk_indexes.sql": {
+        "version": 49,
+        "sha384": "09454dca11edfb2f6cac34321c38ee6d8f475040d9fa922e8c88648e3dd45cb1febb607b914ebea1eae6070376f93667"
+      },
+      "plugins/agent/state/migrations/0050_output_limit_continuations.sql": {
+        "version": 50,
+        "sha384": "f86a9cca29caef9fae4aee59a3184cb0429fe47a883d89abc7e98f5c495c3f1fa2adafa7212a3b44a5eb771edd040782"
+      },
+      "plugins/agent/state/migrations/0051_memory_recall.sql": {
+        "version": 51,
+        "sha384": "d26a002a58e4bf85dd7da2058117641014f77df905464d8cc220e130ffd62538769d7b7fdee0b44494d1f05ab96d2030"
+      },
+      "plugins/agent/state/migrations/0052_room_overhaul.sql": {
+        "version": 52,
+        "sha384": "28e5b10d41c45d63c3cb2e2a05e0e40e2ca3907cc973d024e607dd5d42ea3e9bff75dbd3f077d3f1e7e348cc9ebb7847"
+      }
+    },
+    "checkpoint-repository": {
+      "platform/event-log/migrations/repository/0001_repository.sql": {
+        "version": 1,
+        "sha384": "fe2f6d0f3c15b8ec96d857fb369f618f68c6cb5ff0cd43b69a60d55d1561f7f155e2c672650dcfa1755be8238b1f054f"
+      },
+      "platform/event-log/migrations/repository/0002_heads.sql": {
+        "version": 2,
+        "sha384": "a5171e87fb87fb89d2378e60bbe33beb922f498d706d9d1af5c106f2afeb22255f9ed80d86c02b8ea1869bf4bc623ebb"
+      }
+    },
+    "settings": {
+      "plugins/settings/store/migrations/0001_configuration.sql": {
+        "version": 1,
+        "sha384": "a9cbdc84e72b5282caa4b947710331fa2898691ccf279bf688125d2b44341c72606aa77d4c5602824b3bd325730dcc0f"
+      },
+      "plugins/settings/store/migrations/0002_message_predictions.sql": {
+        "version": 2,
+        "sha384": "416dafe8f3de289a5cd21611d3c3eaa278db58cf6a5a6d9fc8182748044be01eaa13e34cf24cb1a3201f26a269a9fc8f"
+      }
+    },
+    "deployment": {
+      "products/maka/cli/migrations/deployment/0001_deployment.sql": {
+        "version": 1,
+        "sha384": "e343252b6cfa048fbe3787b24a3194058743da5ab9c18b3368fc0112a01ec75d09249fd1e81f246b1a145f8c4d3cd713"
+      }
+    }
+  }
+}

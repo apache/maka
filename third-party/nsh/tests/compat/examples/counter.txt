@@ -1,0 +1,16 @@
+expect Current value
+expect Recent values: 0
+tap text:+1
+expect Recent values: 1
+tap text:+1
+expect Recent values: 2
+tap text:−1
+expect Recent values: 3
+expect • 2
+covers [nsh] mount
+covers [nsh] signal
+covers [nsh] View
+covers [nsh] Text
+covers [nsh:rt] bindProp
+covers [nsh:rt] each
+covers [events] onPress

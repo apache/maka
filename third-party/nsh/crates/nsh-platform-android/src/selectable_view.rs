@@ -1,0 +1,449 @@
+//! Selectable views (`ViewProps::selectable_view`) on the UI thread: the
+//! shared model ([`nsh_core::selection`]) behind `SelectableView.java`.
+//!
+//! Java owns the views, the gestures and the drawing; the model (which
+//! text, which offset, words, handles, what a copy gives) is Rust's, as on
+//! every backend, so it is not written twice. Each area with a selection
+//! holds one [`Area`] (a `long` handle in Java, from `nativeCreate` to
+//! `nativeDestroy`). Java hands over the texts' content when they change
+//! (`nativeSetTexts`) and their frames with every call (they move with
+//! scrolling); hit-testing calls back into Java (`SelectableView.offsetAt`
+//! turns the point into the text's content box and asks
+//! `TextLayouts.hitTest`, which the engine thread's
+//! `TextEngine::hit_test` runs too), all on the UI thread within the native
+//! call.
+//! Coordinates are the area's, in points (dp), origin at its top left.
+
+use std::cell::RefCell;
+
+use jni::{
+    JNIEnv,
+    objects::{
+        JBooleanArray, JClass, JFloatArray, JIntArray, JObject, JObjectArray, JString, JValue,
+    },
+    sys::{jboolean, jfloat, jint, jintArray, jlong, jstring},
+};
+use nsh_core::{
+    Points,
+    geometry::{Bounds, Point, bounds, point, px, size},
+    selection::{Handle, KeptRows, SelectionModel, SelectionTexts, reading_order, reorder},
+};
+
+/// The selection of one area and what it knows of the area's texts.
+#[derive(Default)]
+struct Area {
+    model: SelectionModel,
+    contents: Vec<String>,
+    /// The texts' view ids: their identity across `texts_changed`.
+    keys: Vec<u64>,
+    /// Which texts continue the one before them (`ViewProps::continues_text`).
+    continues: Vec<bool>,
+    frames: Vec<Bounds<Points>>,
+    /// The virtual list rows its ends are in, kept rendered.
+    kept: KeptRows,
+}
+
+/// The texts of an area for one native call: hit-tests ask the Java
+/// `SelectableView` (`this`).
+struct Texts<'a, 'local> {
+    contents: &'a [String],
+    keys: &'a [u64],
+    continues: &'a [bool],
+    frames: &'a [Bounds<Points>],
+    env: RefCell<&'a mut JNIEnv<'local>>,
+    this: &'a JObject<'local>,
+}
+
+impl SelectionTexts for Texts<'_, '_> {
+    fn len(&self) -> usize {
+        self.contents.len()
+    }
+
+    fn content(&self, i: usize) -> &str {
+        &self.contents[i]
+    }
+
+    fn frame(&self, i: usize) -> Bounds<Points> {
+        self.frames.get(i).copied().unwrap_or_default()
+    }
+
+    fn key(&self, i: usize) -> u64 {
+        self.keys.get(i).copied().unwrap_or(i as u64)
+    }
+
+    fn continues(&self, i: usize) -> bool {
+        self.continues.get(i).copied().unwrap_or(false)
+    }
+
+    fn copied(&self, i: usize, range: std::ops::Range<u32>) -> String {
+        // Java's text knows its hidden runs (`TextLayouts.shown`).
+        let mut env = self.env.borrow_mut();
+        let copied = env
+            .call_method(
+                self.this,
+                "copiedText",
+                "(III)Ljava/lang/String;",
+                &[
+                    JValue::Int(i as jint),
+                    JValue::Int(range.start as jint),
+                    JValue::Int(range.end as jint),
+                ],
+            )
+            .and_then(|v| v.l());
+        match copied {
+            Ok(s) if !s.is_null() => {
+                let s = JString::from(s);
+                env.get_string(&s).map(String::from).unwrap_or_default()
+            }
+            Ok(_) => String::new(),
+            Err(err) => {
+                if env.exception_check().unwrap_or(false) {
+                    let _ = env.exception_describe();
+                    let _ = env.exception_clear();
+                }
+                log::error!("selection copy failed: {err}");
+                String::new()
+            }
+        }
+    }
+
+    fn offset_at(&self, i: usize, p: Point<Points>) -> u32 {
+        let mut env = self.env.borrow_mut();
+        let offset = env
+            .call_method(
+                self.this,
+                "offsetAt",
+                "(IFF)I",
+                &[
+                    JValue::Int(i as jint),
+                    JValue::Float(p.x.0),
+                    JValue::Float(p.y.0),
+                ],
+            )
+            .and_then(|v| v.i());
+        match offset {
+            Ok(offset) => offset.max(0) as u32,
+            Err(err) => {
+                if env.exception_check().unwrap_or(false) {
+                    let _ = env.exception_describe();
+                    let _ = env.exception_clear();
+                }
+                log::error!("selection hit test failed: {err}");
+                0
+            }
+        }
+    }
+}
+
+/// The area behind a handle from `nativeCreate`.
+///
+/// # Safety
+///
+/// `handle` is live: created by `nativeCreate`, not yet destroyed, and
+/// used only on the UI thread.
+unsafe fn area<'a>(handle: jlong) -> &'a mut Area {
+    // SAFETY: the caller's contract.
+    unsafe { &mut *(handle as *mut Area) }
+}
+
+/// Frames as Java sends them: x, y, width, height per text (points).
+fn read_frames(env: &JNIEnv<'_>, frames: &JFloatArray<'_>, out: &mut Vec<Bounds<Points>>) {
+    out.clear();
+    let len = env.get_array_length(frames).unwrap_or(0).max(0) as usize;
+    let mut values = vec![0.0f32; len];
+    if env.get_float_array_region(frames, 0, &mut values).is_err() {
+        return;
+    }
+    out.extend(
+        values
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|f| bounds(point(px(f[0]), px(f[1])), size(px(f[2]), px(f[3])))),
+    );
+}
+
+/// Runs `f` with the area's model and its texts.
+fn with_texts<'local, R>(
+    env: &mut JNIEnv<'local>,
+    this: &JObject<'local>,
+    area: &mut Area,
+    f: impl FnOnce(&mut SelectionModel, &Texts<'_, 'local>) -> R,
+) -> R {
+    let Area {
+        model,
+        contents,
+        keys,
+        continues,
+        frames,
+        ..
+    } = area;
+    let texts = Texts {
+        contents,
+        keys,
+        continues,
+        frames,
+        env: RefCell::new(env),
+        this,
+    };
+    f(model, &texts)
+}
+
+/// A new area without a selection.
+#[unsafe(no_mangle)]
+extern "system" fn Java_com_longbridge_nsh_SelectableView_nativeCreate(
+    _: JNIEnv<'_>,
+    _: JClass<'_>,
+) -> jlong {
+    Box::into_raw(Box::<Area>::default()) as jlong
+}
+
+/// Frees an area's handle.
+#[unsafe(no_mangle)]
+extern "system" fn Java_com_longbridge_nsh_SelectableView_nativeDestroy(
+    _: JNIEnv<'_>,
+    _: JClass<'_>,
+    handle: jlong,
+) {
+    if handle != 0 {
+        // SAFETY: Java passes a handle it never uses again.
+        drop(unsafe { Box::from_raw(handle as *mut Area) });
+    }
+}
+
+/// The area's texts, in document order, are now these (content, view
+/// ids, whether each continues the one before, frames): the selection follows (`texts_changed`). Returns whether it
+/// changed.
+#[unsafe(no_mangle)]
+#[allow(clippy::too_many_arguments)]
+extern "system" fn Java_com_longbridge_nsh_SelectableView_nativeSetTexts<'local>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    handle: jlong,
+    this: JObject<'local>,
+    contents: JObjectArray<'local>,
+    keys: JIntArray<'local>,
+    continues: JBooleanArray<'local>,
+    frames: JFloatArray<'local>,
+) -> jboolean {
+    // SAFETY: Java passes its live handle, on the UI thread.
+    let area = unsafe { area(handle) };
+    let read = (|| -> jni::errors::Result<Vec<String>> {
+        let count = env.get_array_length(&contents)?;
+        let mut out = Vec::with_capacity(count as usize);
+        for i in 0..count {
+            let s: JString<'_> = env.get_object_array_element(&contents, i)?.into();
+            out.push(String::from(env.get_string(&s)?));
+            env.delete_local_ref(s)?;
+        }
+        Ok(out)
+    })();
+    match read {
+        Ok(contents) => area.contents = contents,
+        Err(err) => {
+            log::error!("cannot read the selectable view's texts: {err}");
+            area.contents.clear();
+        }
+    }
+    let len = env.get_array_length(&keys).unwrap_or(0).max(0) as usize;
+    let mut ids = vec![0; len];
+    if env.get_int_array_region(&keys, 0, &mut ids).is_err() {
+        ids.clear();
+    }
+    area.keys = ids.into_iter().map(|id| id as u32 as u64).collect();
+    let len = env.get_array_length(&continues).unwrap_or(0).max(0) as usize;
+    let mut flags = vec![0; len];
+    if env
+        .get_boolean_array_region(&continues, 0, &mut flags)
+        .is_err()
+    {
+        flags.clear();
+    }
+    area.continues = flags.into_iter().map(|flag| flag != 0).collect();
+    read_frames(&env, &frames, &mut area.frames);
+    // Frames for every text, even if Java's array falls short.
+    area.frames.resize(area.contents.len(), Bounds::default());
+    with_texts(&mut env, &this, area, |model, texts| {
+        model.texts_changed(texts)
+    }) as jboolean
+}
+
+/// What `nativeGesture`'s `kind` asks.
+const SELECT_WORD: jint = 0;
+const DRAG: jint = 1;
+const MOVE_START: jint = 2;
+const MOVE_END: jint = 3;
+const SELECT_ALL: jint = 4;
+const CLEAR: jint = 5;
+
+/// A gesture at (`x`, `y`) with the texts' current `frames`: select the
+/// word there (a long press), drag the focus there (the long press goes
+/// on), move the start or end handle there, select all, clear. Returns
+/// whether the selection changed.
+#[unsafe(no_mangle)]
+#[allow(clippy::too_many_arguments)]
+extern "system" fn Java_com_longbridge_nsh_SelectableView_nativeGesture<'local>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    handle: jlong,
+    this: JObject<'local>,
+    frames: JFloatArray<'local>,
+    kind: jint,
+    x: jfloat,
+    y: jfloat,
+) -> jboolean {
+    // SAFETY: Java passes its live handle, on the UI thread.
+    let area = unsafe { area(handle) };
+    read_frames(&env, &frames, &mut area.frames);
+    area.frames.resize(area.contents.len(), Bounds::default());
+    let at = point(px(x), px(y));
+    with_texts(&mut env, &this, area, |model, texts| match kind {
+        SELECT_WORD => model.select_word_at(texts, at),
+        DRAG => model.drag(texts, at),
+        MOVE_START => model.move_handle(texts, Handle::Start, at),
+        MOVE_END => model.move_handle(texts, Handle::End, at),
+        SELECT_ALL => model.select_all(texts),
+        CLEAR => model.clear(),
+        _ => false,
+    }) as jboolean
+}
+
+/// What each text has selected: (text, start, end) triples, UTF-16.
+#[unsafe(no_mangle)]
+extern "system" fn Java_com_longbridge_nsh_SelectableView_nativeRanges<'local>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    handle: jlong,
+    this: JObject<'local>,
+) -> jintArray {
+    // SAFETY: Java passes its live handle, on the UI thread.
+    let area = unsafe { area(handle) };
+    let ranges = with_texts(&mut env, &this, area, |model, texts| model.ranges(texts));
+    let ints: Vec<jint> = ranges
+        .iter()
+        .flat_map(|(i, r)| [*i as jint, r.start as jint, r.end as jint])
+        .collect();
+    ints_array(&env, &ints)
+}
+
+/// The selection's start and end (text, offset, text, offset), or an
+/// empty array without one.
+#[unsafe(no_mangle)]
+extern "system" fn Java_com_longbridge_nsh_SelectableView_nativeBounds(
+    env: JNIEnv<'_>,
+    _: JClass<'_>,
+    handle: jlong,
+) -> jintArray {
+    // SAFETY: Java passes its live handle, on the UI thread.
+    let area = unsafe { area(handle) };
+    let ints: Vec<jint> = match area.model.bounds() {
+        Some((start, end)) if !area.model.is_empty() => vec![
+            start.text as jint,
+            start.offset as jint,
+            end.text as jint,
+            end.offset as jint,
+        ],
+        _ => Vec::new(),
+    };
+    ints_array(&env, &ints)
+}
+
+/// The selected text, as a copy gives it.
+#[unsafe(no_mangle)]
+extern "system" fn Java_com_longbridge_nsh_SelectableView_nativeText<'local>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    handle: jlong,
+    this: JObject<'local>,
+) -> jstring {
+    // SAFETY: Java passes its live handle, on the UI thread.
+    let area = unsafe { area(handle) };
+    let text = with_texts(&mut env, &this, area, |model, texts| model.text(texts));
+    env.new_string(text)
+        .map_or(std::ptr::null_mut(), |s| s.into_raw())
+}
+
+fn ints_array(env: &JNIEnv<'_>, values: &[jint]) -> jintArray {
+    let Ok(array) = env.new_int_array(values.len() as i32) else {
+        return std::ptr::null_mut();
+    };
+    if env.set_int_array_region(&array, 0, values).is_err() {
+        return std::ptr::null_mut();
+    }
+    array.into_raw()
+}
+
+/// The order of the texts Java listed depth first (`SelectableView.collect`,
+/// in mount order), from its `runs`: for each view group, after its
+/// children's, a count of children and each child's frame and range of
+/// texts (`left, top, width, height, from, to`). The shared rule
+/// ([`reading_order`]) puts a virtual list's recycled cells in reading
+/// order. Returns the texts' original indices in their new order, or null
+/// when the order stays.
+#[unsafe(no_mangle)]
+extern "system" fn Java_com_longbridge_nsh_SelectableView_nativeReadingOrder<'local>(
+    env: JNIEnv<'local>,
+    _: JClass<'local>,
+    count: jint,
+    runs: JFloatArray<'local>,
+) -> jintArray {
+    let len = env.get_array_length(&runs).unwrap_or(0).max(0) as usize;
+    let mut data = vec![0.0; len];
+    if env.get_float_array_region(&runs, 0, &mut data).is_err() {
+        return std::ptr::null_mut();
+    }
+    let mut texts: Vec<jint> = (0..count.max(0)).collect();
+    let mut moved = false;
+    let mut at = 0;
+    while at < data.len() {
+        let n = data[at] as usize;
+        at += 1;
+        let Some(group) = data.get(at..at + n * 6) else {
+            break;
+        };
+        at += n * 6;
+        let group: Vec<_> = group
+            .as_chunks::<6>()
+            .0
+            .iter()
+            .map(|r| {
+                (
+                    bounds(point(px(r[0]), px(r[1])), size(px(r[2]), px(r[3]))),
+                    r[4] as usize..r[5] as usize,
+                )
+            })
+            .collect();
+        let start = group.first().map_or(0, |(_, r)| r.start);
+        if group.iter().all(|(_, r)| r.end <= texts.len())
+            && let Some(order) = reading_order(&group)
+        {
+            reorder(&mut texts, start, &order);
+            moved = true;
+        }
+    }
+    if moved {
+        ints_array(&env, &texts)
+    } else {
+        std::ptr::null_mut()
+    }
+}
+
+/// The view ids of the texts whose virtual list rows the engine is to keep
+/// rendered (`Native.keepRendered`): the selection's ends, when they
+/// changed since the last call (empty: none), else null.
+#[unsafe(no_mangle)]
+extern "system" fn Java_com_longbridge_nsh_SelectableView_nativeKept(
+    env: JNIEnv<'_>,
+    _: JClass<'_>,
+    handle: jlong,
+) -> jintArray {
+    // SAFETY: Java passes its live handle, on the UI thread.
+    let area = unsafe { area(handle) };
+    match area.kept.changed(&area.model) {
+        Some(keys) => ints_array(
+            &env,
+            &keys.into_iter().map(|k| k as jint).collect::<Vec<_>>(),
+        ),
+        None => std::ptr::null_mut(),
+    }
+}

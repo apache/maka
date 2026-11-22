@@ -1,0 +1,6 @@
+{
+  "name": "Controls acceptance",
+  "id": "com.longbridge.nsh.tests.controls",
+  "version": "1.0.0",
+  "theme": "../../../../../examples/nsh-gallery-ui/theme.json"
+}

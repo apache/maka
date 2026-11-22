@@ -1,31 +1,26 @@
 {
-  "name": "maka-agent",
-  "version": "0.2.2",
+  "name": "@maka-agent/cli",
+  "version": "0.3.0",
+  "description": "Unofficial experimental Maka Rust preview; not an ASF release or endorsement",
   "license": "Apache-2.0",
   "private": true,
   "type": "module",
-  "exports": {},
+  "engines": {
+    "node": ">=24.0.0"
+  },
   "bin": {
-    "maka": "./dist/cli.js"
+    "maka": "bin/maka.mjs"
   },
-  "maka": {
-    "managedRuntimeHostUpdateCompatibility": 1
-  },
-  "scripts": {
-    "clean": "node ../../scripts/clean-paths.mjs dist tsconfig.tsbuildinfo",
-    "build:workspace-deps": "npm --workspace @maka/core run build && npm --workspace @maka/storage run build && npm --workspace @maka/mcp run build && npm --workspace @maka/runtime run build && npm --workspace @maka/runtime-host run build && npm --workspace @maka/eval run build",
-    "build": "tsc -p tsconfig.json && node scripts/chmod-bin.mjs",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test:dist": "node --test \"dist/**/*.test.js\""
-  },
-  "dependencies": {
-    "@agentclientprotocol/sdk": "1.5.0",
-    "@earendil-works/pi-tui": "0.87.1",
-    "@maka/core": "0.1.0",
-    "@maka/eval": "0.1.0",
-    "@maka/mcp": "0.1.0",
-    "@maka/runtime": "0.1.0",
-    "@maka/runtime-host": "0.1.0",
-    "@maka/storage": "0.1.0"
+  "files": [
+    "bin",
+    "DISCLAIMER",
+    "LICENSE",
+    "NOTICE",
+    "README.md",
+    "README.zh-CN.md"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/M4n5ter/maka-agent.git"
   }
 }

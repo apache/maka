@@ -1,0 +1,620 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+//! Pure, disposable presentation of committed execution facts. Model context is
+//! a separate projection; retaining interrupted text here never accepts it there.
+mod compact;
+mod executor;
+mod import;
+mod message;
+pub mod navigation;
+pub mod shell;
+mod step;
+pub use step::reasoning::display_text as reasoning_text;
+mod tools;
+pub use tools::project_tool_boundary;
+mod user;
+use maka_agent_facts::durable::ExecutionIdentity;
+use maka_agent_facts::event::Fact;
+use maka_agent_facts::event::RunInput;
+use maka_agent_facts::event::StoredEvent;
+use maka_agent_facts::history::RowPosition;
+use maka_agent_facts::tool_output::ToolOutput;
+use message::timestamp;
+pub use message::tool_message_id;
+pub use message::{
+    Content, Hidden, Message, ModelIdentity, RunState, Thinking, ToolContent, ToolImage,
+    ToolMetadata, Visible,
+};
+
+#[derive(Debug, thiserror::Error)]
+pub enum ProjectionError {
+    #[error("invalid presentation fact: {0}")]
+    Invalid(&'static str),
+    #[error("presentation text exceeds its byte limit")]
+    TooLarge,
+    #[error("presentation timestamp or sequence exceeds the wire range")]
+    OutOfRange,
+    #[error("unsupported presentation content: {0}")]
+    Unsupported(&'static str),
+}
+
+#[derive(Debug, PartialEq)]
+pub struct Row {
+    /// Original emitting fact and its full row ordinal, before UI filtering.
+    pub position: RowPosition,
+    /// Chronological display anchor, independent of the committing fact.
+    pub order: RowPosition,
+    pub message: Message,
+}
+
+enum State {
+    Vacant,
+    Compact {
+        execution: ExecutionIdentity,
+        started_at: u64,
+    },
+    Active {
+        execution: ExecutionIdentity,
+        step: Option<Box<step::Step>>,
+    },
+    Ended {
+        execution: ExecutionIdentity,
+    },
+    Poisoned,
+}
+
+pub struct RunView {
+    executor: Option<executor::Execution>,
+    executor_orders: std::collections::BTreeMap<String, RowPosition>,
+    state: State,
+    last_sequence: u64,
+    tools: tools::Tools,
+    summary_attempt: Option<ModelIdentity>,
+    summary_start: Option<compact::SummaryStart>,
+}
+
+impl Default for RunView {
+    fn default() -> Self {
+        Self {
+            executor: None,
+            executor_orders: Default::default(),
+            state: State::Vacant,
+            last_sequence: 0,
+            tools: tools::Tools::new(),
+            summary_attempt: None,
+            summary_start: None,
+        }
+    }
+}
+
+impl RunView {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Input is one execution's strictly ordered, committed facts, with gaps
+    /// permitted for other sessions. Never feed the same fact twice.
+    pub fn push(&mut self, stored: &StoredEvent) -> Result<Vec<Row>, ProjectionError> {
+        self.push_with_tool_output(stored, None)
+    }
+
+    /// Successful T2 requires its caller-verified raw payload. Resolution and
+    /// identity/digest verification belong to the durable store, not this view.
+    pub fn push_with_tool_output(
+        &mut self,
+        stored: &StoredEvent,
+        resolved: Option<&ToolOutput>,
+    ) -> Result<Vec<Row>, ProjectionError> {
+        let result = self.apply(stored, resolved);
+        if result.is_err() {
+            self.state = State::Poisoned;
+        }
+        result
+    }
+
+    fn apply(
+        &mut self,
+        stored: &StoredEvent,
+        resolved: Option<&ToolOutput>,
+    ) -> Result<Vec<Row>, ProjectionError> {
+        let succeeds = matches!(
+            stored.event.fact,
+            Fact::ToolSettled {
+                outcome: maka_agent_facts::event::ToolOutcome::Succeeded { .. },
+                ..
+            }
+        );
+        if succeeds != resolved.is_some() {
+            return Err(ProjectionError::Invalid(
+                "tool payload does not match fact kind",
+            ));
+        }
+        if stored.sequence <= self.last_sequence {
+            return Err(ProjectionError::Invalid("non-increasing log sequence"));
+        }
+        let event = &stored.event;
+        let ts = timestamp(event)?;
+        RowPosition {
+            source_sequence: stored.sequence,
+            item_index: 0,
+        }
+        .validate()
+        .map_err(|_| ProjectionError::OutOfRange)?;
+        if let State::Ended { execution } = &self.state {
+            if execution.run_id != event.execution.run_id
+                || execution.session_id != event.execution.session_id
+            {
+                return Err(ProjectionError::Invalid("late fact belongs to another Run"));
+            }
+            let messages = match &event.fact {
+                Fact::ToolSettled { .. } => self.tools.boundary(event, ts, resolved)?,
+                Fact::ToolOperationObserved { .. }
+                | Fact::ToolNotified { .. }
+                | Fact::ToolYielded { .. } => tool_observation(event, ts),
+                _ => return Err(ProjectionError::Invalid("new action after terminal Run")),
+            };
+            self.last_sequence = stored.sequence;
+            return rows(stored.sequence, messages);
+        }
+        if let Some(messages) = self.compact(event, ts)? {
+            self.last_sequence = stored.sequence;
+            return rows(stored.sequence, messages);
+        }
+        let mut messages = Vec::new();
+        match &event.fact {
+            Fact::MessageImported { record, .. } => {
+                if !matches!(self.state, State::Vacant) {
+                    return Err(ProjectionError::Invalid("import inside execution"));
+                }
+                messages.extend(import::project(event, record, ts)?);
+                self.state = State::Ended {
+                    execution: event.execution.clone(),
+                };
+            }
+            Fact::RunOpened { input, .. } => {
+                if !matches!(self.state, State::Vacant) {
+                    return Err(ProjectionError::Invalid("duplicate execution opening"));
+                }
+                if let RunInput::Message {
+                    content,
+                    source_messages,
+                    ..
+                } = input
+                {
+                    if source_messages
+                        .iter()
+                        .any(|source| source.message.origin.is_some())
+                    {
+                        for source in source_messages {
+                            messages.push(user::project(
+                                &source.message.message_id,
+                                event.execution.run_id,
+                                &event.execution.turn_id,
+                                ts,
+                                &source.message.content,
+                                source.message.origin.as_ref(),
+                            )?);
+                        }
+                    } else {
+                        messages.push(user::project(
+                            if source_messages.len() == 1 {
+                                &source_messages[0].message.message_id
+                            } else {
+                                &event.id
+                            },
+                            event.execution.run_id,
+                            &event.execution.turn_id,
+                            ts,
+                            content,
+                            None,
+                        )?);
+                    }
+                } else if input.inherited_claim().is_none() {
+                    return Err(ProjectionError::Unsupported("Code execution"));
+                }
+                messages.push(Message {
+                    id: format!("{}:state", event.id),
+                    run_id: event.execution.run_id,
+                    model: None,
+                    turn_id: event.execution.turn_id.clone(),
+                    ts,
+                    content: Content::RunState {
+                        state: RunState::Running,
+                    },
+                });
+                self.state = State::Active {
+                    execution: event.execution.clone(),
+                    step: None,
+                };
+            }
+            fact => {
+                let State::Active { execution, step } = &mut self.state else {
+                    return Err(ProjectionError::Invalid("fact outside active execution"));
+                };
+                if execution.run_id != event.execution.run_id
+                    || execution.session_id != event.execution.session_id
+                {
+                    return Err(ProjectionError::Invalid("execution identity changed"));
+                }
+                match fact {
+                    Fact::ExecutorStarted { binding, .. } => {
+                        if step.is_some() || self.executor.is_some() {
+                            return Err(ProjectionError::Invalid("overlapping execution backends"));
+                        }
+                        self.executor = Some(executor::Execution::new(event, ts, binding));
+                    }
+                    Fact::ExecutorObserved { output } => {
+                        if let maka_agent_facts::executor::Output::MessageStart { message_id } =
+                            output
+                        {
+                            self.executor_orders.insert(
+                                executor_message_id(event.execution.run_id, message_id),
+                                RowPosition {
+                                    source_sequence: stored.sequence,
+                                    item_index: 0,
+                                },
+                            );
+                        }
+                        let emitted = self
+                            .executor
+                            .as_mut()
+                            .ok_or(ProjectionError::Invalid("executor output without start"))?
+                            .observe(event, ts, output)?;
+                        if let maka_agent_facts::executor::Output::MessageEnd { message_id } =
+                            output
+                            && emitted.is_empty()
+                        {
+                            self.executor_orders
+                                .remove(&executor_message_id(event.execution.run_id, message_id));
+                        }
+                        messages.extend(emitted);
+                    }
+                    Fact::ExecutorCompleted { message_id } => {
+                        messages.extend(
+                            self.executor
+                                .as_mut()
+                                .ok_or(ProjectionError::Invalid(
+                                    "executor completion without start",
+                                ))?
+                                .complete(event, ts, message_id.as_deref())?,
+                        );
+                    }
+                    Fact::MessageSteered { message, .. } => {
+                        if step.is_some() {
+                            return Err(ProjectionError::Invalid(
+                                "steering inside a model request",
+                            ));
+                        }
+                        messages.push(user::project(
+                            &message.message_id,
+                            event.execution.run_id,
+                            &event.execution.turn_id,
+                            ts,
+                            &message.content,
+                            message.origin.as_ref(),
+                        )?);
+                    }
+                    Fact::ModelRequested {
+                        step_id,
+                        attempt_id,
+                        model_id,
+                        item_acceptance,
+                        ..
+                    } => {
+                        if step.is_some() {
+                            return Err(ProjectionError::Invalid("overlapping model steps"));
+                        }
+                        *step = Some(Box::new(step::Step::new(
+                            ModelIdentity {
+                                step_id: *step_id,
+                                attempt_id: *attempt_id,
+                            },
+                            model_id.clone(),
+                            *item_acceptance,
+                        )));
+                    }
+                    Fact::ModelObserved {
+                        step_id,
+                        attempt_id,
+                        event: observation,
+                    } => {
+                        let step = step
+                            .as_mut()
+                            .ok_or(ProjectionError::Invalid("observation without request"))?;
+                        step.check_id(*step_id, *attempt_id)?;
+                        if let maka_agent_facts::model::recorded::ModelObservation::Part(record) =
+                            observation
+                        {
+                            step.observe(event, record);
+                            let obligation = matches!(
+                                record.part.as_ref(),
+                                maka_agent_facts::model::ModelPart::ToolCall { .. }
+                                    | maka_agent_facts::model::ModelPart::ToolResult { .. }
+                            );
+                            if step.item_acceptance || obligation {
+                                if let Some(text) = step.text(event, record, false)? {
+                                    messages.push(text);
+                                } else {
+                                    messages.extend(self.tools.accept_item(
+                                        event,
+                                        message::capture_time(record.started_at)?,
+                                        maka_agent_facts::durable::AgentStepLink {
+                                            run: event.execution.run_id,
+                                            step: *step_id,
+                                            attempt: *attempt_id,
+                                        },
+                                        &record.message_id,
+                                        record.part.as_ref(),
+                                        step.anchor(),
+                                        step.model(),
+                                    )?);
+                                }
+                            }
+                        }
+                    }
+                    Fact::ModelCompleted {
+                        step_id,
+                        attempt_id,
+                        output,
+                    } => {
+                        let completed = step
+                            .take()
+                            .ok_or(ProjectionError::Invalid("completion without request"))?;
+                        completed.check_id(*step_id, *attempt_id)?;
+                        let parts = output
+                            .parts
+                            .iter()
+                            .map(|part| completed.resolve(part))
+                            .collect::<Result<Vec<_>, _>>()?;
+                        let anchor = parts
+                            .iter()
+                            .rev()
+                            .find(|part| {
+                                matches!(
+                                    part.part.as_ref(),
+                                    maka_agent_facts::model::ModelPart::Text { .. }
+                                )
+                            })
+                            .map(|part| part.message_id.as_str());
+                        for part in &parts {
+                            if completed.presented(part.ordinal) {
+                                continue;
+                            }
+                            if let Some(text) = completed.text(event, part, false)? {
+                                messages.push(text);
+                            } else {
+                                messages.extend(self.tools.accept_item(
+                                    event,
+                                    message::capture_time(part.started_at)?,
+                                    maka_agent_facts::durable::AgentStepLink {
+                                        run: event.execution.run_id,
+                                        step: *step_id,
+                                        attempt: *attempt_id,
+                                    },
+                                    &part.message_id,
+                                    part.part.as_ref(),
+                                    anchor,
+                                    completed.model(),
+                                )?);
+                            }
+                        }
+                        if let (Some(input), Some(output_tokens)) =
+                            (output.usage.input_tokens, output.usage.output_tokens)
+                        {
+                            messages.push(Message {
+                                id: event.id.clone(),
+                                run_id: execution.run_id,
+                                model: Some(ModelIdentity {
+                                    step_id: *step_id,
+                                    attempt_id: *attempt_id,
+                                }),
+                                turn_id: execution.turn_id.clone(),
+                                ts,
+                                content: Content::TokenUsage {
+                                    input,
+                                    output: output_tokens,
+                                    cache_read: output.usage.cache_read_tokens,
+                                    cache_creation: output.usage.cache_write_tokens,
+                                    reasoning: output.usage.reasoning_tokens,
+                                },
+                            });
+                        }
+                    }
+                    Fact::ModelInterrupted {
+                        step_id,
+                        attempt_id,
+                        status,
+                        diagnostic,
+                        partial,
+                        ..
+                    } => {
+                        let interrupted = step
+                            .take()
+                            .ok_or(ProjectionError::Invalid("interruption without request"))?;
+                        interrupted.check_id(*step_id, *attempt_id)?;
+                        if let Some(partial) = partial {
+                            for source in &partial.parts {
+                                let part = interrupted.resolve(source)?;
+                                if interrupted.presented(part.ordinal) {
+                                    continue;
+                                }
+                                if let Some(text) = interrupted.text(
+                                    event,
+                                    part,
+                                    !matches!(
+                                        status,
+                                        maka_agent_facts::event::ModelInterruption::Cancelled
+                                            | maka_agent_facts::event::ModelInterruption::Steered
+                                    ),
+                                )? {
+                                    messages.push(text);
+                                } else {
+                                    messages.extend(self.tools.accept_item(
+                                        event,
+                                        message::capture_time(part.started_at)?,
+                                        maka_agent_facts::durable::AgentStepLink {
+                                            run: event.execution.run_id,
+                                            step: *step_id,
+                                            attempt: *attempt_id,
+                                        },
+                                        &part.message_id,
+                                        part.part.as_ref(),
+                                        interrupted.anchor(),
+                                        interrupted.model(),
+                                    )?);
+                                }
+                            }
+                        }
+                        if let Some(message) = diagnostic
+                            && !matches!(
+                                status,
+                                maka_agent_facts::event::ModelInterruption::Cancelled
+                                    | maka_agent_facts::event::ModelInterruption::Steered
+                            )
+                        {
+                            messages.push(Message {
+                                id: event.id.clone(),
+                                run_id: execution.run_id,
+                                model: Some(ModelIdentity {
+                                    step_id: *step_id,
+                                    attempt_id: *attempt_id,
+                                }),
+                                turn_id: execution.turn_id.clone(),
+                                ts,
+                                content: Content::ModelInterruption {
+                                    message: message.clone(),
+                                },
+                            });
+                        }
+                    }
+                    Fact::RunEnded { outcome } => {
+                        if let Some(executor) = self.executor.take() {
+                            messages.extend(executor.finish(event, ts));
+                        }
+                        if step.take().is_some()
+                            && matches!(outcome, maka_agent_facts::event::RunOutcome::Completed)
+                        {
+                            return Err(ProjectionError::Invalid(
+                                "completion with unfinished model",
+                            ));
+                        }
+                        if let Some(state) = RunState::from_outcome(outcome, ts) {
+                            messages.push(Message {
+                                id: event.id.clone(),
+                                run_id: execution.run_id,
+                                model: None,
+                                turn_id: execution.turn_id.clone(),
+                                ts,
+                                content: Content::RunState { state },
+                            });
+                        }
+                        self.state = State::Ended {
+                            execution: event.execution.clone(),
+                        };
+                    }
+                    Fact::ToolDispatched { .. }
+                    | Fact::ToolSettled { .. }
+                    | Fact::ToolRejected { .. } => {
+                        messages.extend(self.tools.boundary(event, ts, resolved)?);
+                    }
+                    Fact::RunOpened { .. } | Fact::MessageImported { .. } => unreachable!(),
+                    Fact::ContextCheckpointRecorded { .. }
+                    | Fact::ContextCompactionWaiting
+                    | Fact::ToolResultArchived { .. } => {}
+                    Fact::ToolOperationObserved { .. }
+                    | Fact::ToolNotified { .. }
+                    | Fact::ToolYielded { .. } => messages.extend(tool_observation(event, ts)),
+                }
+            }
+        }
+        self.last_sequence = stored.sequence;
+        let mut rows = rows(stored.sequence, messages)?;
+        for row in &mut rows {
+            if let Some(order) = self.executor_orders.remove(&row.message.id) {
+                row.order = order;
+            }
+        }
+        if matches!(self.state, State::Ended { .. }) {
+            self.executor_orders.clear();
+        }
+        Ok(rows)
+    }
+
+    /// Current executor output. Model preview is supplied by the active attempt,
+    /// independently of this committed-fact projection.
+    pub fn overlay(&self) -> Vec<Message> {
+        if let Some(executor) = &self.executor {
+            return executor.overlay();
+        }
+        Vec::new()
+    }
+}
+
+fn rows(source_sequence: u64, messages: Vec<Message>) -> Result<Vec<Row>, ProjectionError> {
+    messages
+        .into_iter()
+        .enumerate()
+        .map(|(index, message)| {
+            let position = RowPosition {
+                source_sequence,
+                item_index: u64::try_from(index).map_err(|_| ProjectionError::OutOfRange)?,
+            };
+            position
+                .validate()
+                .map_err(|_| ProjectionError::OutOfRange)?;
+            Ok(Row {
+                position,
+                order: position,
+                message,
+            })
+        })
+        .collect()
+}
+
+/// Native message IDs are local to one execution, unlike public presentation IDs.
+pub fn executor_message_id(run: maka_agent_facts::durable::RunId, message: &str) -> String {
+    format!("executor:{run}:{message}")
+}
+
+fn tool_observation(event: &maka_agent_facts::event::RuntimeEvent, ts: u64) -> Vec<Message> {
+    let content = match &event.fact {
+        Fact::ToolOperationObserved {
+            operation_id,
+            observation,
+        } => Content::ToolOperationObserved {
+            tool_use_id: tool_message_id(event.execution.run_id, operation_id),
+            observation: observation.clone(),
+        },
+        Fact::ToolNotified {
+            operation_id,
+            text,
+            model_text,
+        } => Content::ToolNotification {
+            tool_use_id: tool_message_id(event.execution.run_id, operation_id),
+            text: text.clone(),
+            model_text: model_text.clone(),
+        },
+        Fact::ToolYielded { operation_id } => Content::ToolYielded {
+            tool_use_id: tool_message_id(event.execution.run_id, operation_id),
+        },
+        _ => unreachable!("tool observation fact"),
+    };
+    vec![message::message(event, ts, event.id.clone(), content)]
+}

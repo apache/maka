@@ -1,0 +1,268 @@
+name: Rust application
+
+on:
+  # Pull requests test every change before it merges; main runs every three
+  # hours when it moved, instead of on every push, which only tested again what its pull request
+  # had, and saves the dependencies' caches pull requests restore.
+  schedule:
+    - cron: "0 */3 * * *"
+  pull_request:
+    # `closed` runs nothing, but it takes the pull request's concurrency group
+    # and so cancels its runs still queued or running once it merges or closes.
+    types: [opened, synchronize, reopened, ready_for_review, closed]
+    paths:
+      - "crates/nsh-bundler/**"
+      - "crates/nsh-cli/**"
+      - "crates/nsh-core/**"
+      - "crates/nsh-dev/**"
+      - "crates/nsh-engine/**"
+      - "crates/nsh-i18n/**"
+      - "crates/nsh-js/**"
+      - "crates/nsh-macros/**"
+      - "crates/nsh-base/**"
+      - "crates/nsh-package/**"
+      - "crates/nsh-updater/**"
+      - "crates/nsh-platform-linux/**"
+      - "crates/nsh-platform-android/**"
+      - "crates/nsh-platform-apple/**"
+      - "crates/nsh-platform-ios/**"
+      - "crates/nsh-platform-macos/**"
+      - "crates/nsh-platform-web/**"
+      - "crates/nsh-platform-windows/**"
+      - "crates/nsh-testing/**"
+      - "examples/counter/**"
+      - "examples/gallery/**"
+      - "examples/gallery-rs/**"
+      - "examples/rust-exports/**"
+      - "examples/post-editor/**"
+      - "examples/tasks/**"
+      - "examples/tasks-rs/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".cargo/**"
+      - "rust-toolchain.toml"
+      - ".github/workflows/rust-app.yml"
+      - ".github/actions/cargo/**"
+  merge_group:
+    types: [checks_requested]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rust-app-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  # CI builds each crate once: no incremental state and no debug info
+  # (faster builds, smaller caches; panics still name their file and line).
+  CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  # The toolchain file's iOS and Android targets are only the release's.
+  RUSTUP_TOOLCHAIN: stable
+
+jobs:
+  # Scheduled runs: only when main moved since the last one.
+  changed:
+    if: github.event_name == 'schedule'
+    permissions:
+      actions: read
+    uses: ./.github/workflows/changed.yml
+
+  check:
+    needs: changed
+    # Nothing for drafts or a pull request being closed, nor for a scheduled
+    # run when main has not changed since the last one.
+    if: ${{ !cancelled() && needs.changed.outputs.run != 'false' && (github.event_name != 'pull_request' || (github.event.action != 'closed' && !github.event.pull_request.draft)) }}
+    # Debounce (AGENTS.md "CI"): waits without a runner, so a newer
+    # push cancels this run before it takes one.
+    environment:
+      name: ci-debounce
+      deployment: false
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15, windows-latest]
+    # The Linux and Windows runs of a pull request from this repository run
+    # on the self-hosted runners; forks' pull requests, the scheduled runs
+    # (which save the dependencies' caches forks restore) and macOS run on
+    # GitHub's runners (docs/dev/tooling.md "Runners").
+    runs-on: ${{ (github.event_name != 'schedule' && !(github.event.pull_request && github.event.pull_request.head.repo.full_name != github.repository)) && (matrix.os == 'ubuntu-24.04' && fromJSON('["public", "Linux", "X64"]') || matrix.os == 'windows-latest' && fromJSON('["public", "Windows", "X64"]')) || matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v6
+      - name: Set up temporary files
+        run: |
+          mkdir -p "$RUNNER_TEMP/nsh-test-tmp"
+          echo "TMPDIR=$RUNNER_TEMP/nsh-test-tmp" >> "$GITHUB_ENV"
+      - name: Set up Windows compiler stack
+        if: runner.os == 'Windows'
+        run: echo "RUST_MIN_STACK=268435456" >> "$GITHUB_ENV"
+      - name: Install GTK 4 and GStreamer
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libgtk-4-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
+      - name: Setup Rust
+        if: runner.environment == 'github-hosted'
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      # The self-hosted runner is shared: install the toolchain without
+      # making it the machine's default (RUSTUP_TOOLCHAIN picks it).
+      - name: Setup Rust (self-hosted)
+        if: runner.environment == 'self-hosted'
+        shell: bash
+        run: |
+          bin="${CARGO_HOME:-$HOME/.cargo}/bin"
+          export PATH="$bin:$PATH"
+          command -v rustup || curl -fsSL https://sh.rustup.rs | sh -s -- -y --no-modify-path --default-toolchain none
+          rustup toolchain install stable --profile minimal -c clippy,rustfmt
+          echo "$bin" >> "$GITHUB_PATH"
+      # huacnlee/cargo, and the dependencies' builds: main's runs save
+      # them, pull requests restore them.
+      - name: Cargo
+        uses: ./.github/actions/cargo
+        with:
+          cache: rust-app
+      - name: Clippy
+        run: cargo clippy -p gallery-native --all-targets --locked -- -D warnings
+      # Without the optional features: no naga, wgpu, syntect, RaTeX, ropey,
+      # imara-diff; no `zlib` or `crypto` module.
+      - name: Check macOS without optional features
+        if: runner.os == 'macOS'
+        run: cargo clippy -p nsh-macos-app --locked --no-default-features --features js -- -D warnings
+      # The crate's unit tests; the app's tests are TypeScript (`nsh test`,
+      # the web job). On macOS also nsh-platform-apple's (the code the macOS
+      # and iOS backends share, empty elsewhere), which no other job runs:
+      # in one command with the gallery, its dependencies are built with the
+      # gallery's features, so nothing is built twice.
+      - name: Test the crate
+        run: cargo test -p gallery-native ${{ runner.os == 'macOS' && '-p nsh-platform-apple' || '' }} --locked
+      - name: Check the native dependency graph
+        run: |
+          cargo tree -p gallery-native --locked -e normal > "$RUNNER_TEMP/rust-app-dependencies.txt"
+          if grep -E 'nsh-js |rquickjs|quickjs-jit' "$RUNNER_TEMP/rust-app-dependencies.txt"; then
+            echo "The Rust executable unexpectedly links a JS runtime"
+            exit 1
+          fi
+
+  # The same crate compiled into the app's own web runtime: `nsh package
+  # --target web` builds it for wasm32 and publishes the site.
+  web:
+    needs: changed
+    # Nothing for drafts or a pull request being closed, nor for a scheduled
+    # run when main has not changed since the last one.
+    if: ${{ !cancelled() && needs.changed.outputs.run != 'false' && (github.event_name != 'pull_request' || (github.event.action != 'closed' && !github.event.pull_request.draft)) }}
+    # Debounce (AGENTS.md "CI"): waits without a runner, so a newer
+    # push cancels this run before it takes one.
+    environment:
+      name: ci-debounce
+      deployment: false
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      - name: Set up temporary files
+        run: |
+          mkdir -p "$RUNNER_TEMP/nsh-test-tmp"
+          echo "TMPDIR=$RUNNER_TEMP/nsh-test-tmp" >> "$GITHUB_ENV"
+      # QuickJS is C: bindgen needs libclang for the CLI; the web runtime's
+      # C code (zstd) clang and llvm-ar. The describe program links the gallery's crate,
+      # whose native entry (`cargo run`) uses GTK 4 on Linux.
+      - name: Install clang, LLVM, GTK 4, WebKitGTK and GStreamer
+        run: sudo apt-get update && sudo apt-get install -y clang llvm libclang-dev libgtk-4-dev libwebkitgtk-6.0-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      # huacnlee/cargo, and the dependencies' builds: main's runs save
+      # them, pull requests restore them.
+      - name: Cargo
+        uses: ./.github/actions/cargo
+        with:
+          cache: rust-app-web
+      - name: Build the command line
+        run: cargo build -p nsh-cli --locked
+      - name: Publish the Rust gallery for the web
+        run: |
+          # nsh.json "root": a Rust app, mounted with no QuickJS.
+          ./target/debug/nsh package examples/gallery-rs --target web -o target/rust-app-web
+          site="target/rust-app-web/Rust Gallery"
+          test -f "$site/index.html"
+          # The app's runtime registers the crate's UI set and root.
+          grep -q nsh_app_init "$site"/nsh.*.wasm
+          grep -q nsh_start_rust "$site"/nsh.*.wasm
+          if ls "$site"/app.*.nshc > /dev/null 2>&1 || grep -aq InternalError "$site"/nsh.*.wasm; then
+            echo "The Rust app's web runtime unexpectedly carries JS"
+            exit 1
+          fi
+      - name: Test the Rust app and check that it builds no JS engine, bundler or WebKitGTK
+        run: |
+          # `nsh` describes the app's crates with the generated `describe`
+          # program. Built for `nsh check`, it links no QuickJS, nsh-js,
+          # bundler, rolldown or Oxc. `nsh test` then builds the app's
+          # programs in `.nsh/rust` sharing their features with its runner
+          # (the hack), which adds QuickJS to `describe` on purpose, and runs
+          # the TypeScript tests (`examples/gallery-rs/*.test.tsx`) in the
+          # test runner (QuickJS, source maps) on entries `nsh` builds: no
+          # bundler or parser. Neither builds what only the hosts need: the
+          # app's crate uses `nsh-platform-linux`, whose web views (WebKitGTK,
+          # not installed here) the Linux host turns on.
+          check() {
+            cargo tree --manifest-path examples/gallery-rs/.nsh/rust/Cargo.toml \
+              -p "nsh-app-gallery-native-$1" -e normal --target all \
+              > "$RUNNER_TEMP/$1-dependencies.txt"
+            if grep -E "$2" "$RUNNER_TEMP/$1-dependencies.txt"; then
+              echo "The Rust app's $1 program unexpectedly links $3"
+              exit 1
+            fi
+          }
+          ./target/debug/nsh check examples/gallery-rs
+          check describe '(rquickjs|quickjs-jit|nsh-js|nsh-bundler|rolldown|oxc)([ _-]|$)' "a JS engine or the bundler"
+          ./target/debug/nsh test examples/gallery-rs
+          check test '(nsh-bundler|rolldown|oxc_parser)([ _-]|$)' "the bundler"
+          for program in describe test; do
+            check "$program" '(webkit6|soup3|javascriptcore6)([ _-]|$)' "WebKitGTK"
+          done
+      - name: Run the examples' tests
+        run: |
+          for app in counter gallery post-editor rust-exports tasks tasks-rs; do
+            ./target/debug/nsh test "examples/$app"
+          done
+      # NSH's generated declarations type-check themselves: apps skip
+      # checking them (`skipLibCheck`), which would hide a broken one.
+      - name: Type-check the generated declarations
+        run: ./target/debug/nsh check examples/counter -- --skipLibCheck false
+      # The same tests in the runner's Chrome, headless, with the browser's
+      # trusted input (`nsh test --target web`): those a real platform runs
+      # (real time). The slowest part of the job: main's scheduled runs only.
+      - name: Run the examples' tests in Chrome
+        if: github.event_name != 'pull_request'
+        run: |
+          ./target/debug/nsh test examples/counter --target web
+          for file in device dock form gestures hidden-focus hover links navigation network photos resizable shortcuts storage timers; do
+            ./target/debug/nsh test "examples/gallery/tests/$file.test.tsx" --target web
+          done
+          # This host drives a desktop mouse, not the file's held-finger case.
+          # The full file, including touch long press, also runs headless above.
+          ./target/debug/nsh test examples/gallery/tests/context-menu-press.test.tsx --target web --filter Shift+F10
+          ./target/debug/nsh test examples/gallery/tests/context-menu-press.test.tsx --target web --filter "a tap"
+          ./target/debug/nsh test examples/gallery/tests/data-table-interactions.test.tsx --target web --filter "column's classes style"
+          ./target/debug/nsh test examples/gallery/tests/environment.test.tsx --target web --filter appearance
+          ./target/debug/nsh test examples/gallery/tests/controls.test.tsx --target web --filter 'one-time code'
+          ./target/debug/nsh test examples/gallery/tests/overlays.test.tsx --target web --filter 'Escape cancels'
+          ./target/debug/nsh test examples/gallery/tests/rich-editor.test.tsx --target web --filter 'Backspace after the caret moves'
+          # Apps with Rust crates, in their hosts' runtime: a TSX app and a
+          # Rust app (its root).
+          ./target/debug/nsh test examples/rust-exports/App.test.tsx --target web
+          ./target/debug/nsh test examples/gallery-rs/App.test.tsx --target web
+          ./target/debug/nsh test examples/gallery-rs/shortcuts.test.tsx --target web
+      - name: Publish a TSX app with a Rust crate for the web
+        run: |
+          # A TSX entry runs in the browser; the app's Rust UI set is
+          # compiled into its browser-only runtime.
+          ./target/debug/nsh package examples/rust-exports --target web -o target/rust-exports-web
+          site="target/rust-exports-web/Rust Exports"
+          ls "$site"/app.*.js
+          node crates/nsh-platform-web/web/browser/package-size.mjs "$site" --require-browser
+          grep -q rust-exports/native "$site"/nsh.*.wasm

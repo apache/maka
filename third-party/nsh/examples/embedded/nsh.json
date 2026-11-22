@@ -1,0 +1,7 @@
+{
+  "name": "Embedded",
+  "id": "com.longbridge.nsh.embedded",
+  "version": "1.0.0",
+  "build": 1,
+  "capabilities": { "host": ["time", "tapped"], "openUrl": { "schemes": ["https"] } }
+}

@@ -1,0 +1,58 @@
+diff --git a/node_modules/pele/dist/core.d.ts b/node_modules/pele/dist/core.d.ts
+index f82cf7c..86f7e25 100644
+--- a/node_modules/pele/dist/core.d.ts
++++ b/node_modules/pele/dist/core.d.ts
+@@ -1,3 +1,4 @@
++type BrowserElement = typeof globalThis extends { HTMLElement: { prototype: infer T } } ? T : never;
+ import { type DiagramType, type MermaidType } from './detect.js';
+ import type { DiagramModel } from './models.js';
+ import { type MountOptions, type Mounted } from './mount.js';
+@@ -22,4 +23,4 @@ export declare function supports(text: string): boolean;
+ export type ParseOptions = Pick<RenderOptions, 'limit' | 'maxEdges' | 'config'>;
+ export declare function parse(text: string, options?: ParseOptions): ParsedDiagramModel;
+ export declare function render(source: string | DiagramModel, options?: RenderOptions): RenderResult;
+-export declare function mount(element: HTMLElement, text: string, options?: MountOptions): Mounted;
++export declare function mount(element: BrowserElement, text: string, options?: MountOptions): Mounted;
+diff --git a/node_modules/pele/dist/mount.d.ts b/node_modules/pele/dist/mount.d.ts
+index aefe9c4..e06c68b 100644
+--- a/node_modules/pele/dist/mount.d.ts
++++ b/node_modules/pele/dist/mount.d.ts
+@@ -1,10 +1,12 @@
++type BrowserNode = typeof globalThis extends { Node: { prototype: infer T } } ? T : never;
++type BrowserElement = typeof globalThis extends { HTMLElement: { prototype: infer T } } ? T : never;
+ import type { DiagramModel } from './models.js';
+ import type { RenderOptions, RenderResult } from './types.js';
+ import { type Zoom, type ZoomOptions } from './zoom.js';
+ export interface MountOptions extends RenderOptions {
+     onRender?: (result: RenderResult) => void;
+     zoom?: boolean | 'auto' | ZoomOptions;
+-    sanitize?: (svg: string) => Node;
++    sanitize?: (svg: string) => BrowserNode;
+     onError?: (error: unknown) => void;
+ }
+ export interface Mounted {
+@@ -20,4 +22,4 @@ export interface Engine {
+     parse(text: string, options: RenderOptions): DiagramModel;
+     render(model: DiagramModel, options: RenderOptions): RenderResult;
+ }
+-export declare function mountWith(engine: Engine, element: HTMLElement, text: string, options?: MountOptions): Mounted;
++export declare function mountWith(engine: Engine, element: BrowserElement, text: string, options?: MountOptions): Mounted;
+diff --git a/node_modules/pele/dist/zoom.d.ts b/node_modules/pele/dist/zoom.d.ts
+index 32b7937..9d84fcc 100644
+--- a/node_modules/pele/dist/zoom.d.ts
++++ b/node_modules/pele/dist/zoom.d.ts
+@@ -1,3 +1,4 @@
++type BrowserElement = typeof globalThis extends { HTMLElement: { prototype: infer T } } ? T : never;
+ export interface ZoomOptions {
+     always?: boolean;
+     maxScale?: number;
+@@ -30,7 +31,7 @@ export declare function frame(natural: {
+     width: number;
+     height: number;
+ }, scale: number, x: number, y: number): Frame;
+-export declare function enableZoom(element: HTMLElement, options?: ZoomOptions): Zoom;
+-export declare function zoomWith(element: HTMLElement, options: ZoomOptions, observe: boolean): Zoom & {
++export declare function enableZoom(element: BrowserElement, options?: ZoomOptions): Zoom;
++export declare function zoomWith(element: BrowserElement, options: ZoomOptions, observe: boolean): Zoom & {
+     resized(): void;
+ };

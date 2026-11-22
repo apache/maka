@@ -1,0 +1,285 @@
+# Opens every demo of the index in turn, in the index's order (`tap
+# text:<demo>` presses its row, `back` returns to the index), checks what
+# each shows when it opens and uses a few. Stocks, whose market ticks every
+# 50 ms, opens last; the DataTable's live quotes are turned off once seen.
+expect Gallery
+expect APPS
+expect ELEMENTS
+expect Stocks
+expect A live watchlist and a stock: candles, depth, the tape, a tick every 50 ms
+prop label:Stocks accessibilityLabel Stocks
+frame label:Stocks 1 1 356 60
+# Apps.
+tap text:AI Chat
+expect How can I help?
+expect A simulated assistant: every reply is scripted and streamed locally.
+back
+tap text:Photos
+expect Photo stream
+expect 1,000 photos
+expect Ridge 0001
+# Elements.
+back
+tap text:Text
+expect Spans and links
+expect ♥ 3
+expect nothing yet
+tap span:Privacy policy
+expect Privacy policy
+tap label:Like
+expect ♥ 4
+back
+tap text:Image
+expect Resize modes
+expect logo@2x.png, tinted natively
+back
+tap text:Scroll
+expect Settled on page 1
+expect Revenue · 1 of 5
+back
+tap text:List
+expect Viewable items (at least half shown)
+expect 90 items, 3 columns
+back
+tap text:Canvas
+expect Turbine 3 load
+expect 7,296 rpm
+back
+tap text:Shader
+expect Soft orbs of light that blend
+expect Sums of sines through a cosine palette
+back
+tap text:WebView
+expect Inline HTML, with messages both ways
+expect Post to the page
+back
+tap text:Button
+expect One main action; the others quieter
+tap text:Duplicate
+expect pressed Duplicate
+back
+tap text:Input
+expect How a drag dismisses the keyboard
+expect Submitting checks every field
+back
+tap text:Checkbox
+expect “Select all” shows a partial selection
+expect 3 of 4
+expect Showing 1,338 items
+tap text:Screenshots
+expect Screenshots: true
+expect 4 of 4
+expect Showing 1,650 items
+back
+tap text:Radio
+expect A plan picker: one of a small set, all in view
+expect Continue with Plus
+tap text:Team
+expect Plan: Team
+expect Continue with Team
+back
+tap text:Switch
+expect Two groups; two settings need another on
+expect A tap under the finger as values change
+back
+tap text:Tabs
+expect A section switcher: the app shows the selected one
+expect Visitors
+expect 12,480
+tap text:Members
+expect Tab: Members
+expect Grace Hopper
+back
+tap text:Select
+expect A choice from a list: the app owns the value
+expect Five orders in a sheet
+back
+tap text:Combobox
+expect Several values from a list: the app owns them
+expect Several, with search
+back
+tap text:DatePicker
+expect A date, a range, or a date and time
+expect Weekdays; clearable
+back
+tap text:Collapsible
+expect 212 GB of 256 GB used
+absent Keep originals
+tap text:Advanced
+expect Advanced: expanded
+expect Keep originals
+back
+tap text:Progress
+expect Transfers: the app owns the value
+expect 24 photos to send
+expect Preparing: its size is not known yet
+back
+tap text:NumberInput
+expect Typed or stepped: the app owns the value
+expect 1 to 8 per booking
+tap text:Lock seats
+expect Seats: locked
+expect Unlock seats
+back
+tap text:OtpInput
+expect Six digits, typed or pasted; a wrong one shakes
+expect The code is 246810
+back
+tap text:Slider
+expect Levels and a range: the app owns the value
+expect Media and alerts
+back
+tap text:Plot
+expect Each side summed out from the spread, as steps
+# The page makes its charts as they scroll near.
+scroll scroll:text:"Live price" 0 2400
+expect Bars per month, side by side or stacked
+back
+tap text:NavStack
+expect Native stack
+expect 0 presses popped
+expect Page options, pushed with nav.push
+tap text:Page sheet
+expect Close with the button, the back button (Android) or a swipe down (iOS sheets): it closes natively, then tells the app (onOpenChange).
+tap label:Close
+absent Close with the button, the back button (Android) or a swipe down (iOS sheets): it closes natively, then tells the app (onOpenChange).
+back
+tap text:Popover
+expect Share a document
+expect A field, a list and a switch, anchored to its button
+expect Where it goes
+back
+tap text:TextView
+expect CommonMark and GitHub's: tables, tasks, math, HTML
+expect Native Shell
+tap text:HTML
+expect An article page: sections, figures, lists, tables, code
+back
+tap text:Editor
+expect TypeScript
+expect Ln 1, Col 1
+back
+tap text:RichEditor
+expect Tab indents an item, Shift-Tab outdents it
+back
+tap text:DiffView
+expect +8 −8 · Change 1 of 5
+tap label:Next change
+expect +8 −8 · Change 2 of 5
+back
+tap text:DataTable
+expect Row 500,000
+expect Live
+tap label:Toggle live updates
+expect Paused
+back
+tap text:Menu
+expect Each menu a sheet; submenus take its place
+expect Nothing done yet
+tap text:File
+expect New document
+tap text:New window
+expect Done: New window
+back
+tap text:Tooltip
+expect Opened by the app
+expect Shown while pinned or while the pointer rests
+tap text:Pin the tooltip
+expect Shown while pinned or hovered
+expect Unpin the tooltip
+tap text:Unpin the tooltip
+absent Shown while pinned or hovered
+back
+tap text:Sheet
+expect Filter the results
+expect A draft: the footer applies it, closing discards
+expect A drawer
+back
+tap text:Resizable
+expect 120 to 360 pt
+expect Takes the room the others leave
+back
+tap text:Toast
+expect Kinds
+expect Each kind, with what to do next
+tap text:Copy the link
+expect Copied
+expect The link is on the clipboard (1)
+# The toasts' layer takes a back first: dismissed, the demo's page goes.
+tap text:Dismiss all
+absent Copied
+back
+tap text:Dock
+expect main.rs: 0 edits
+tap label:Edit main.rs
+expect main.rs: 1 edit
+# Styling.
+back
+tap text:Styles
+expect Continuous corners ease into the edges
+expect 44 · 6 · 28 · 0 pt, clockwise
+back
+tap text:Tailwind
+expect This screen, styled with classes
+expect Pressed 0×
+tap text:Pressed 0×
+expect Pressed 1×
+back
+tap text:Patterns
+expect Press feedback
+expect None yet
+tap text:Fades while pressed
+expect Fading tile
+tap text:Lights up while pressed
+expect Underlay tile
+tap label:Disable the third tile
+expect Takes no presses
+expect Open a sheet
+# Motion.
+back
+tap text:Animations
+expect Native motion
+expect Animated.stagger
+back
+tap text:Gestures
+expect Pan, pinch and rotation
+expect 0 taps
+prop label:"Tiny dot" hitSlop top=30 right=30 bottom=30 left=30
+tap label:Tiny dot
+expect 1 taps
+back
+tap text:Physics
+expect Drag me
+prop label:"Draggable card" accessibilityLabel Draggable card
+back
+tap text:Collapsing header
+expect 160 entries, by week
+expect WEEK 1
+expect Recent
+# Platform.
+back
+tap text:System
+expect Follows the window, insets and keyboard
+expect 390 × 844 pt
+back
+tap text:Storage
+expect Counted each time this demo opens
+expect setItem("launches", "1")
+back
+tap text:Standard APIs
+expect buffer · crypto · path · url · zlib
+expect fs/promises: create, write, read, list, inspect, rename, remove
+# Stocks, last: its market ticks every 50 ms.
+back
+tap text:Stocks
+expect Composite
+covers [props] accessibilityLabel
+covers [props] hitSlop
+covers [events] onPress
+covers [nsh] signal
+covers [nsh/base] createNavStack
+covers [nsh/base] NavStack
+covers [nsh/base] NavPage
+covers [nsh/base] Dialog
+covers [nsh/base] Button
+covers [nsh] Storage

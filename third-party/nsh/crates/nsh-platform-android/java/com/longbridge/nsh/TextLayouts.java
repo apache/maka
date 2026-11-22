@@ -1,0 +1,1202 @@
+package com.longbridge.nsh;
+
+import android.annotation.TargetApi;
+import android.graphics.Paint;
+import android.graphics.Typeface;
+import android.graphics.text.LineBreaker;
+import android.text.Layout;
+import android.text.PrecomputedText;
+import android.text.SpannableString;
+import android.text.Spanned;
+import android.text.StaticLayout;
+import android.text.TextPaint;
+import android.text.TextUtils;
+import android.text.style.AbsoluteSizeSpan;
+import android.text.style.ForegroundColorSpan;
+import android.text.style.LineHeightSpan;
+import android.text.style.MetricAffectingSpan;
+import android.text.TextDirectionHeuristic;
+import android.text.TextDirectionHeuristics;
+import android.text.style.AlignmentSpan;
+import android.text.style.StrikethroughSpan;
+import android.text.style.UnderlineSpan;
+import android.view.Gravity;
+import java.io.File;
+import java.io.FileOutputStream;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+
+/**
+ * Text typesetting for the engine thread (crates/nsh-platform-android/src/text.rs).
+ * Sizes cross the boundary in dp; layouts are made in px for drawing.
+ */
+final class TextLayouts {
+    /** Encoded alignment values shared with `text.rs` (`encode_align`). */
+    static final int ALIGN_AUTO = 0, ALIGN_LEFT = 1, ALIGN_CENTER = 2, ALIGN_RIGHT = 3, ALIGN_JUSTIFY = 4;
+
+    private TextLayouts() {}
+
+    /** Where registered font files are written (set by NshView). */
+    static volatile File cacheDir;
+
+    private static final class Face {
+        final int weight;
+        final boolean italic;
+        final Typeface typeface;
+        /** The font's file, for fallback chains of registered fonts. */
+        final File file;
+
+        Face(int weight, boolean italic, Typeface typeface, File file) {
+            this.weight = weight;
+            this.italic = italic;
+            this.typeface = typeface;
+            this.file = file;
+        }
+    }
+
+    private static final HashMap<String, List<Face>> FAMILIES = new HashMap<>();
+
+    /** Registers a font file; returns an error message, or null. */
+    static String registerFont(String family, byte[] data, int weight, boolean italic) {
+        try {
+            File dir = new File(cacheDir, "nsh-fonts");
+            dir.mkdirs();
+            File file = new File(dir, Integer.toHexString(java.util.Arrays.hashCode(data)) + ".ttf");
+            if (!file.exists()) {
+                try (FileOutputStream out = new FileOutputStream(file)) {
+                    out.write(data);
+                }
+            }
+            Typeface typeface = Typeface.createFromFile(file);
+            synchronized (FAMILIES) {
+                List<Face> faces = FAMILIES.computeIfAbsent(family, k -> new ArrayList<>());
+                for (Face face : faces) {
+                    if (file.equals(face.file)) return null;
+                }
+                faces.add(new Face(weight, italic, typeface, file));
+            }
+            // Resolutions made before this font existed are stale.
+            synchronized (RESOLVED) {
+                RESOLVED.clear();
+            }
+            return null;
+        } catch (Exception e) {
+            return String.valueOf(e);
+        }
+    }
+
+    /** Resolved typefaces by family, weight and italic. */
+    private static final HashMap<String, Typeface> RESOLVED = new HashMap<>();
+
+    /** The typeface of a family (registered, system or default) at a weight. */
+    static Typeface typeface(String family, int weight, boolean italic) {
+        String key = family + '/' + weight + (italic ? "i" : "");
+        synchronized (RESOLVED) {
+            Typeface cached = RESOLVED.get(key);
+            if (cached != null) return cached;
+        }
+        Typeface resolved = resolve(family, weight, italic);
+        synchronized (RESOLVED) {
+            RESOLVED.put(key, resolved);
+        }
+        return resolved;
+    }
+
+    /**
+     * The typeface of a `fontFamily` list (`"Brand, 'Noto Sans SC', sans-serif"`):
+     * the first family Android has, registered, generic or installed. When
+     * that one is registered, the list's registered families after it are
+     * its fallbacks for the characters it lacks (Android 10+), before the
+     * system's.
+     */
+    private static Typeface resolve(String family, int weight, boolean italic) {
+        List<Family> names = families(family);
+        for (int i = 0; i < names.size(); i++) {
+            Face face = registered(names.get(i).name, weight, italic);
+            if (face != null) {
+                Typeface chained = chained(face, names.subList(i + 1, names.size()), weight, italic);
+                if (chained != null) return chained;
+                // Exact faces are used as is; others are synthesized.
+                if (face.weight == weight && face.italic == italic) return face.typeface;
+                return weighted(face.typeface, face.weight, face.italic, weight, italic);
+            }
+            Typeface base = installed(names.get(i));
+            if (base != null) return weighted(base, 400, false, weight, italic);
+        }
+        return weighted(Typeface.DEFAULT, 400, false, weight, italic);
+    }
+
+    /**
+     * `base`, a face of `baseWeight` and `baseItalic`, at a weight and style.
+     * Android 9+ takes any weight. Before it, the default family takes the
+     * nearest of Roboto's named weights (thin, light, regular, medium, bold,
+     * black), and other faces get bold and italic synthesized only where
+     * they are lighter or upright, so a bold file is not thickened again.
+     */
+    static Typeface weighted(Typeface base, int baseWeight, boolean baseItalic, int weight, boolean italic) {
+        if (android.os.Build.VERSION.SDK_INT >= 28) return Typeface.create(base, clamp(weight), italic);
+        if (base == Typeface.DEFAULT) {
+            String named = robotoFamily(weight);
+            if (named != null) {
+                Typeface typeface = Typeface.create(named, italic ? Typeface.ITALIC : Typeface.NORMAL);
+                // A ROM without the alias gives its default: synthesize instead.
+                if (typeface != null && !typeface.equals(Typeface.DEFAULT)) return typeface;
+            }
+        }
+        boolean bold = weight >= 600 && baseWeight < 600;
+        boolean slanted = italic && !baseItalic;
+        if (!bold && !slanted) return base;
+        return Typeface.create(base, bold ? (slanted ? Typeface.BOLD_ITALIC : Typeface.BOLD) : Typeface.ITALIC);
+    }
+
+    /**
+     * Roboto's family alias nearest to a weight, as CSS matches a missing
+     * weight (lighter first below 400, heavier first from 500), or null
+     * where the regular face with or without bold is nearest (400, 600, 700).
+     */
+    private static String robotoFamily(int weight) {
+        if (weight < 250) return "sans-serif-thin";
+        if (weight < 350) return "sans-serif-light";
+        if (weight < 500) return null;
+        if (weight < 600) return "sans-serif-medium";
+        if (weight < 800) return null;
+        return "sans-serif-black";
+    }
+
+    /**
+     * The families of a `fontFamily` list, trimmed and unquoted, in order: a
+     * quoted name runs to its closing quote, commas and `\` escapes included
+     * (`'ACME, Inc'`, `"A\"B"`), as `nsh_core::font_families` reads it. A
+     * quoted name is always a family's name, never a generic family
+     * (`"serif"`), as in CSS.
+     */
+    private static List<Family> families(String list) {
+        List<Family> out = new ArrayList<>();
+        if (list == null) return out;
+        int i = 0, n = list.length();
+        while (i < n) {
+            while (i < n && Character.isWhitespace(list.charAt(i))) i++;
+            if (i >= n) break;
+            char c = list.charAt(i);
+            String name;
+            int comma;
+            boolean quoted = c == '"' || c == '\'';
+            if (quoted) {
+                // To the unescaped closing quote (or the end, unclosed); what
+                // follows it up to the next comma is not part of the name.
+                StringBuilder decoded = new StringBuilder();
+                int p = i + 1;
+                while (p < n) {
+                    char ch = list.charAt(p);
+                    if (ch == '\\') {
+                        p++;
+                        if (p < n) {
+                            decoded.append(list.charAt(p));
+                            p++;
+                        } else {
+                            decoded.append('\\');
+                        }
+                    } else if (ch == c) {
+                        p++;
+                        break;
+                    } else {
+                        decoded.append(ch);
+                        p++;
+                    }
+                }
+                name = decoded.toString().trim();
+                comma = list.indexOf(',', p);
+            } else {
+                comma = list.indexOf(',', i);
+                name = list.substring(i, comma < 0 ? n : comma).trim();
+            }
+            i = comma < 0 ? n : comma + 1;
+            if (!name.isEmpty()) out.add(new Family(name, quoted));
+        }
+        return out;
+    }
+
+    /** A family of a `fontFamily` list; `quoted` names are never generic. */
+    private static final class Family {
+        final String name;
+        final boolean quoted;
+
+        Family(String name, boolean quoted) {
+            this.name = name;
+            this.quoted = quoted;
+        }
+    }
+
+    /** The registered face of `family` nearest to the weight and style, or null. */
+    private static Face registered(String family, int weight, boolean italic) {
+        synchronized (FAMILIES) {
+            List<Face> faces = FAMILIES.get(family);
+            if (faces == null) return null;
+            Face best = null;
+            int bestScore = Integer.MAX_VALUE;
+            for (Face f : faces) {
+                int score = Math.abs(f.weight - weight) + (f.italic == italic ? 0 : 1000);
+                if (score < bestScore) {
+                    best = f;
+                    bestScore = score;
+                }
+            }
+            return best;
+        }
+    }
+
+    /** A generic or installed family's typeface, or null when Android has none. */
+    private static Typeface installed(Family name) {
+        String family = name.name;
+        // CSS generic families (`font-mono`, `font-serif`), unquoted.
+        switch (name.quoted ? "" : family) {
+            case "system-ui": case "sans-serif": case "ui-sans-serif": case "-apple-system":
+            case "BlinkMacSystemFont":
+                return Typeface.DEFAULT;
+            case "monospace": case "ui-monospace":
+                return Typeface.MONOSPACE;
+            case "serif": case "ui-serif":
+                return Typeface.SERIF;
+            default:
+                if (family.isEmpty()) return null;
+                Typeface typeface = Typeface.create(family, Typeface.NORMAL);
+                // A family Android does not have is its default typeface.
+                return typeface == null || typeface.equals(Typeface.DEFAULT) ? null : typeface;
+        }
+    }
+
+    /**
+     * `primary` with the registered families of `rest` as its fallbacks,
+     * then the system's (the first generic family of `rest`, else
+     * sans-serif); null before Android 10, when there is nothing to chain
+     * (no such families and a sans-serif system fallback), or when a font
+     * file does not load.
+     */
+    private static Typeface chained(Face primary, List<Family> rest, int weight, boolean italic) {
+        if (android.os.Build.VERSION.SDK_INT < 29 || primary.file == null) return null;
+        List<Face> others = new ArrayList<>();
+        String system = "sans-serif";
+        boolean generic = false;
+        for (Family family : rest) {
+            Face face = registered(family.name, weight, italic);
+            if (face != null && face.file != null && face != primary) {
+                others.add(face);
+            } else if (!generic && !family.quoted) {
+                switch (family.name) {
+                    case "monospace": case "ui-monospace": system = "monospace"; generic = true; break;
+                    case "serif": case "ui-serif": system = "serif"; generic = true; break;
+                    case "system-ui": case "sans-serif": case "ui-sans-serif": generic = true; break;
+                    default: break;
+                }
+            }
+        }
+        // A trailing generic family still sets the system fallback.
+        if (others.isEmpty() && system.equals("sans-serif")) return null;
+        try {
+            Typeface.CustomFallbackBuilder builder = new Typeface.CustomFallbackBuilder(fontFamily(primary));
+            for (Face face : others) builder.addCustomFallback(fontFamily(face));
+            builder.setSystemFallback(system);
+            builder.setStyle(new android.graphics.fonts.FontStyle(clamp(weight),
+                    italic ? android.graphics.fonts.FontStyle.FONT_SLANT_ITALIC
+                            : android.graphics.fonts.FontStyle.FONT_SLANT_UPRIGHT));
+            return builder.build();
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /** A registered face as a font family of one font (Android 10+). */
+    @TargetApi(29)
+    private static android.graphics.fonts.FontFamily fontFamily(Face face) throws java.io.IOException {
+        android.graphics.fonts.Font font = new android.graphics.fonts.Font.Builder(face.file)
+                .setWeight(clamp(face.weight))
+                .setSlant(face.italic ? android.graphics.fonts.FontStyle.FONT_SLANT_ITALIC
+                        : android.graphics.fonts.FontStyle.FONT_SLANT_UPRIGHT)
+                .build();
+        return new android.graphics.fonts.FontFamily.Builder(font).build();
+    }
+
+    private static int clamp(int weight) {
+        return Math.max(1, Math.min(1000, weight));
+    }
+
+    // Span ints: start, end, weight, flags, color, decoration color, family,
+    // font variant bits, decoration style, background color, background
+    // node. Floats: size, line height, letter spacing, decoration thickness,
+    // underline offset, background radius.
+    private static final int SPAN_INTS = 11;
+    private static final int SPAN_FLOATS = 8;
+    private static final int ITALIC = 1;
+    private static final int UNDERLINE = 2;
+    private static final int STRIKE = 4;
+    private static final int BACKGROUND = 16;
+    private static final int HIDDEN = 32;
+
+    static final class Prepared {
+        final CharSequence text;
+        final TextPaint paint;
+        final Layout.Alignment alignment;
+        final boolean justify;
+        /** A paragraph is aligned to its end (`textAlign: "right"` on left to
+         * right text): an {@code AlignmentSpan}, which {@link #alignment}
+         * does not show. */
+        final boolean endAligned;
+        final int maxLines;
+        final TextUtils.TruncateAt ellipsize;
+        final float density;
+        /** Natural width (px), computed once. */
+        private int desired = -1;
+        /** Recent layouts by width: measuring and the final layout reuse them. */
+        private final StaticLayout[] layouts = new StaticLayout[4];
+        private int next;
+
+        final TextDirectionHeuristic direction;
+
+        Prepared(CharSequence text, TextPaint paint, Layout.Alignment alignment, boolean justify,
+                 boolean endAligned, int maxLines, TextUtils.TruncateAt ellipsize, float density,
+                 TextDirectionHeuristic direction) {
+            this.direction = direction;
+            this.text = text;
+            this.paint = paint;
+            this.alignment = alignment;
+            this.justify = justify;
+            this.endAligned = endAligned;
+            this.maxLines = maxLines;
+            this.ellipsize = ellipsize;
+            this.density = density;
+        }
+
+        int desired() {
+            if (desired < 0) {
+                float w;
+                if (android.os.Build.VERSION.SDK_INT >= 29 && text instanceof PrecomputedText && singleParagraph()) {
+                    // Already measured: no shaping again.
+                    w = ((PrecomputedText) text).getWidth(0, text.length());
+                } else {
+                    w = Layout.getDesiredWidth(text, paint);
+                }
+                // Minikin gives each glyph half the letter spacing on both
+                // sides and trims the halves at line edges: a negative
+                // spacing (`tracking-tight`) makes a line wider than its sum
+                // of advances, and text laid out at that sum wraps.
+                desired = (int) Math.ceil(w + negativeSpacing());
+            }
+            return desired;
+        }
+
+        /** The largest negative letter spacing of any run, as positive px. */
+        private float negativeSpacing() {
+            float most = Math.max(0, -paint.getLetterSpacing() * paint.getTextSize());
+            if (text instanceof Spanned) {
+                Spanned spanned = (Spanned) text;
+                for (FontSpan f : spanned.getSpans(0, text.length(), FontSpan.class)) most = Math.max(most, -f.spacingPx);
+            }
+            return most;
+        }
+
+        private boolean singleParagraph() {
+            return TextUtils.indexOf(text, '\n') < 0;
+        }
+
+        StaticLayout layout(int widthPx) {
+            widthPx = Math.max(0, widthPx);
+            for (StaticLayout l : layouts) if (l != null && l.getWidth() == widthPx) return l;
+            // Break strategy and hyphenation match the PrecomputedText params,
+            // so the builder reuses its glyph measurements. LineBreaker's
+            // constants are the setters' type (Android Lint) and equal
+            // Layout's; javac inlines them, so API 26-28 never load the class.
+            StaticLayout.Builder b = StaticLayout.Builder.obtain(text, 0, text.length(), paint, widthPx)
+                    .setAlignment(alignment)
+                    .setTextDirection(direction)
+                    .setIncludePad(false)
+                    .setLineSpacing(0f, 1f)
+                    .setBreakStrategy(LineBreaker.BREAK_STRATEGY_SIMPLE)
+                    .setHyphenationFrequency(Layout.HYPHENATION_FREQUENCY_NONE);
+            if (android.os.Build.VERSION.SDK_INT >= 35) {
+                // `obtain` hands out pooled builders and does not reset these
+                // two: a TextView in an app targeting 35 or later leaves them
+                // on, and lines would then break by the glyphs' ink, wider
+                // than the advances the text was measured by ("Wor" / "k").
+                b.setUseBoundsForWidth(false);
+                b.setShiftDrawingOffsetForStartOverhang(false);
+            }
+            if (justify) b.setJustificationMode(LineBreaker.JUSTIFICATION_MODE_INTER_WORD);
+            if (maxLines > 0) {
+                b.setMaxLines(maxLines);
+                if (ellipsize != null) b.setEllipsize(ellipsize);
+            }
+            StaticLayout l = b.build();
+            layouts[next] = l;
+            next = (next + 1) % layouts.length;
+            return l;
+        }
+    }
+
+    static Object prepare(String text, int[] ints, float[] floats, String[] families, int align,
+                          int maxLines, int ellipsize, float density, int shadowColor, float shadowDx,
+                          float shadowDy, float shadowRadius, float[] attachments) {
+        SpannableString s = new SpannableString(text);
+        TextPaint paint = new TextPaint(Paint.ANTI_ALIAS_FLAG);
+        paint.density = density;
+        if ((shadowColor >>> 24) != 0) {
+            // A zero radius would remove the shadow layer.
+            paint.setShadowLayer(Math.max(0.01f, shadowRadius * density), shadowDx * density, shadowDy * density, shadowColor);
+        }
+        int spans = ints.length / SPAN_INTS;
+        // The span background being extended over neighboring runs.
+        Background background = null;
+        int backgroundStart = 0, backgroundEnd = 0;
+        android.graphics.Paint.FontMetrics metrics = new android.graphics.Paint.FontMetrics();
+        TextPaint measure = new TextPaint();
+        for (int i = 0; i < spans; i++) {
+            int o = i * SPAN_INTS;
+            int start = ints[o], end = Math.min(ints[o + 1], text.length());
+            if (start >= end) continue;
+            int weight = ints[o + 2], flags = ints[o + 3], color = ints[o + 4];
+            String family = ints[o + 6] >= 0 ? families[ints[o + 6]] : null;
+            float size = floats[i * SPAN_FLOATS] * density;
+            float lineHeight = floats[i * SPAN_FLOATS + 1] * density;
+            float spacing = floats[i * SPAN_FLOATS + 2] * density;
+            float thickness = floats[i * SPAN_FLOATS + 3] * density;
+            float offset = floats[i * SPAN_FLOATS + 4] * density;
+            Typeface typeface = typeface(family, weight, (flags & ITALIC) != 0);
+            if (i == 0) {
+                // Base metrics (empty lines, ellipsis) follow the first run.
+                paint.setTextSize(size);
+                paint.setTypeface(typeface);
+            }
+            int f = Spanned.SPAN_EXCLUSIVE_EXCLUSIVE;
+            s.setSpan(new AbsoluteSizeSpan(Math.round(size)), start, end, f);
+            s.setSpan(new ForegroundColorSpan(color), start, end, f);
+            s.setSpan(new FontSpan(typeface, spacing, features(ints[o + 7])), start, end, f);
+            if (lineHeight > 0) s.setSpan(new ExactLineHeight(lineHeight), start, end, Spanned.SPAN_INCLUSIVE_INCLUSIVE);
+            // StaticLayout does not draw decorations of precomputed text:
+            // TextBox draws these.
+            if ((flags & (UNDERLINE | STRIKE)) != 0) {
+                s.setSpan(new Decoration((flags & UNDERLINE) != 0, (flags & STRIKE) != 0, ints[o + 5], size,
+                        ints[o + 8], thickness, offset), start, end, f);
+            }
+            if ((flags & HIDDEN) != 0) s.setSpan(new Hidden(), start, end, f);
+            if ((flags & BACKGROUND) != 0) {
+                measure.setTypeface(typeface);
+                measure.setTextSize(size);
+                measure.getFontMetrics(metrics);
+                float radius = floats[i * SPAN_FLOATS + 5] * density;
+                float top = floats[i * SPAN_FLOATS + 6] * density;
+                float bottom = floats[i * SPAN_FLOATS + 7] * density;
+                if (background != null && background.same(ints[o + 9], ints[o + 10], radius, top, bottom) && backgroundEnd == start) {
+                    background.ascentPx = Math.max(background.ascentPx, -metrics.ascent);
+                    background.descentPx = Math.max(background.descentPx, metrics.descent);
+                } else {
+                    if (background != null) s.setSpan(background, backgroundStart, backgroundEnd, f);
+                    background = new Background(ints[o + 9], ints[o + 10], radius, top, bottom, -metrics.ascent, metrics.descent);
+                    backgroundStart = start;
+                }
+                backgroundEnd = end;
+            }
+        }
+        if (background != null) s.setSpan(background, backgroundStart, backgroundEnd, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        // Attachments (offset, width, height in dp, vertical alignment, how
+        // far below its top its own baseline is in dp or a negative number):
+        // placeholders of their size, placed in their line.
+        for (int i = 0; i + 4 < attachments.length; i += 5) {
+            int at = (int) attachments[i];
+            if (at < 0 || at >= text.length()) continue;
+            float baseline = attachments[i + 4];
+            s.setSpan(new Attachment(Math.round(attachments[i + 1] * density), Math.round(attachments[i + 2] * density),
+                    (int) attachments[i + 3], baseline < 0 ? -1 : Math.round(baseline * density)), at, at + 1,
+                    Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        }
+        // `encode` packs the writing direction and the layout direction in.
+        int writing = (align >> 4) & 3;
+        boolean rtlLayout = (align & 0x100) != 0;
+        align &= 15;
+        TextDirectionHeuristic direction = writing == 1 ? TextDirectionHeuristics.LTR
+                : writing == 2 ? TextDirectionHeuristics.RTL
+                : rtlLayout ? TextDirectionHeuristics.FIRSTSTRONG_RTL : TextDirectionHeuristics.FIRSTSTRONG_LTR;
+        // `auto` is the right side right to left (as on iOS).
+        if (align == ALIGN_AUTO && rtlLayout) align = ALIGN_RIGHT;
+        Layout.Alignment alignment = align == ALIGN_CENTER ? Layout.Alignment.ALIGN_CENTER : Layout.Alignment.ALIGN_NORMAL;
+        boolean endAligned = false;
+        if (align == ALIGN_LEFT || align == ALIGN_RIGHT) {
+            // Left and right are absolute, while Android's alignments follow
+            // each paragraph's direction: align each paragraph by its own.
+            int start = 0;
+            while (start <= text.length()) {
+                int end = text.indexOf('\n', start);
+                if (end < 0) end = text.length();
+                boolean rtl = direction.isRtl(text, start, end - start);
+                boolean normal = (align == ALIGN_LEFT) != rtl;
+                endAligned |= !normal;
+                int spanEnd = Math.min(end + 1, text.length());
+                if (spanEnd > start) {
+                    s.setSpan(new AlignmentSpan.Standard(normal ? Layout.Alignment.ALIGN_NORMAL : Layout.Alignment.ALIGN_OPPOSITE),
+                            start, spanEnd, Spanned.SPAN_PARAGRAPH);
+                }
+                start = end + 1;
+            }
+        }
+        TextUtils.TruncateAt truncate;
+        switch (ellipsize) {
+            case 1: truncate = TextUtils.TruncateAt.START; break;
+            case 2: truncate = TextUtils.TruncateAt.MIDDLE; break;
+            case 3: truncate = null; break;
+            default: truncate = TextUtils.TruncateAt.END;
+        }
+        // Glyphs are measured once here; every layout width reuses them.
+        // Android 8 has no PrecomputedText: each layout measures the spans
+        // again, with the same breaks (the core caches layouts per width).
+        CharSequence measured = s;
+        if (android.os.Build.VERSION.SDK_INT >= 28) {
+            PrecomputedText.Params params = new PrecomputedText.Params.Builder(paint)
+                    .setBreakStrategy(LineBreaker.BREAK_STRATEGY_SIMPLE)
+                    .setHyphenationFrequency(Layout.HYPHENATION_FREQUENCY_NONE)
+                    .setTextDirection(direction)
+                    .build();
+            measured = PrecomputedText.create(s, params);
+        }
+        return new Prepared(measured, paint, alignment, align == ALIGN_JUSTIFY, endAligned, maxLines, truncate, density,
+                direction);
+    }
+
+    /**
+     * A width in dp to whole pixels, down ({@code up} false) or up. Layout
+     * lands widths on device pixels (a text measured 64 pixels is 64 / 2.625
+     * dp), but a width that went through the layout's arithmetic (a box's
+     * width less its padding) comes back a hair off: 63.99999 pixels, which
+     * floored is a pixel narrower than the text and breaks its last word onto
+     * a line of its own. Within a thousandth of a pixel is that pixel.
+     */
+    private static int toPixels(float dp, float density, boolean up) {
+        float px = dp * density;
+        int nearest = Math.round(px);
+        if (Math.abs(px - nearest) < 1e-3f) return nearest;
+        return (int) (up ? Math.ceil(px) : Math.floor(px));
+    }
+
+    /** Size in dp, packed as two float bit patterns (width high). */
+    static long measure(Object prepared, float maxWidthDp) {
+        Prepared p = (Prepared) prepared;
+        int width = p.desired();
+        if (!Float.isNaN(maxWidthDp)) {
+            // Text that fits lays out as at its natural width: same layout.
+            width = Math.min(width, toPixels(maxWidthDp, p.density, false));
+        }
+        StaticLayout layout = p.layout(width);
+        // Without an ellipsis StaticLayout ignores maxLines: count the lines
+        // here (the view clips the rest).
+        int lines = layout.getLineCount();
+        if (p.maxLines > 0) lines = Math.min(lines, p.maxLines);
+        float max = 0;
+        for (int i = 0; i < lines; i++) max = Math.max(max, layout.getLineWidth(i));
+        // The negative letter spacing `desired()` adds back is not in the
+        // lines' widths: without it the box is too narrow for the line, and
+        // the final layout breaks it.
+        float w = (float) Math.ceil(Math.min(max + p.negativeSpacing(), width)) / p.density;
+        float h = layout.getLineTop(lines) / p.density;
+        return ((long) Float.floatToRawIntBits(w) << 32) | (Float.floatToRawIntBits(h) & 0xffffffffL);
+    }
+
+    /** The final layout, in px, for a box of the given dp size. */
+    static Object layout(Object prepared, float widthDp, float heightDp) {
+        Prepared p = (Prepared) prepared;
+        int width = toPixels(widthDp, p.density, true);
+        // Left-aligned LTR text that fits draws the same in a wider box:
+        // keep the measured layout. Not text a paragraph span aligns to the
+        // right: laid out at its natural width, it would stay on the left.
+        if (p.alignment == Layout.Alignment.ALIGN_NORMAL && !p.justify && !p.endAligned
+                && width >= p.desired()) {
+            StaticLayout natural = p.layout(p.desired());
+            if (natural.getParagraphDirection(0) == Layout.DIR_LEFT_TO_RIGHT) return natural;
+        }
+        return p.layout(width);
+    }
+
+    /** Floats per line of {@link #lines}. */
+    static final int LINE_FLOATS = 10;
+
+    /**
+     * The lines of a final layout (`onTextLayout`), in dp: start and end
+     * offsets (UTF-16), left, top, width, height, ascent, descent, cap
+     * height and x height, per line.
+     */
+    static float[] lines(Object layout, float density) {
+        if (!(layout instanceof Layout)) return new float[0];
+        Layout l = (Layout) layout;
+        int count = l.getLineCount();
+        float[] out = new float[count * LINE_FLOATS];
+        android.graphics.Rect bounds = new android.graphics.Rect();
+        TextPaint paint = new TextPaint(l.getPaint());
+        paint.getTextBounds("H", 0, 1, bounds);
+        float cap = bounds.height();
+        paint.getTextBounds("x", 0, 1, bounds);
+        float x = bounds.height();
+        for (int i = 0; i < count; i++) {
+            int o = i * LINE_FLOATS;
+            out[o] = l.getLineStart(i);
+            out[o + 1] = l.getLineEnd(i);
+            out[o + 2] = l.getLineLeft(i) / density;
+            out[o + 3] = l.getLineTop(i) / density;
+            out[o + 4] = l.getLineWidth(i) / density;
+            out[o + 5] = (l.getLineBottom(i) - l.getLineTop(i)) / density;
+            out[o + 6] = -l.getLineAscent(i) / density;
+            out[o + 7] = l.getLineDescent(i) / density;
+            out[o + 8] = cap / density;
+            out[o + 9] = x / density;
+        }
+        return out;
+    }
+
+    /**
+     * Where a final layout put its attachments, in text order: x, y (top
+     * left, dp) each, NaN for ones cut off (lines past the limit, an
+     * ellipsis).
+     */
+    static float[] attachments(Object layout, float density) {
+        if (!(layout instanceof Layout)) return new float[0];
+        Layout l = (Layout) layout;
+        CharSequence text = l.getText();
+        if (!(text instanceof Spanned)) return new float[0];
+        Spanned spanned = (Spanned) text;
+        Attachment[] spans = spanned.getSpans(0, text.length(), Attachment.class);
+        java.util.Arrays.sort(spans, (a, b) -> spanned.getSpanStart(a) - spanned.getSpanStart(b));
+        float[] out = new float[spans.length * 2];
+        int lines = l.getLineCount();
+        for (int i = 0; i < spans.length; i++) {
+            Attachment a = spans[i];
+            int at = spanned.getSpanStart(a);
+            int line = l.getLineForOffset(at);
+            boolean shown = lines > 0 && at < l.getLineEnd(lines - 1);
+            if (shown && l.getEllipsisCount(line) > 0) shown = at < l.getLineStart(line) + l.getEllipsisStart(line);
+            if (!shown) {
+                out[i * 2] = Float.NaN;
+                out[i * 2 + 1] = Float.NaN;
+                continue;
+            }
+            float x = l.getPrimaryHorizontal(at);
+            // Right to left, the placeholder extends left of its offset.
+            if (l.isRtlCharAt(at)) x -= a.width;
+            out[i * 2] = x / density;
+            out[i * 2 + 1] = (l.getLineBaseline(line) - a.ascent) / density;
+        }
+        return out;
+    }
+
+    // Hit testing of a final layout: the caret at a point, a caret's box and the
+    // boxes of a range (`TextEngine::hit_test`, `caret_rect` and `range_rects`).
+    // The engine thread asks through JNI in dp; the UI thread (TextBox,
+    // SelectableView, TestAgent) asks the same methods in px (`density` 1), so one
+    // implementation answers both. Coordinates are the layout's own, which is the
+    // content box: the layouts are made without padding and TextBox draws them
+    // translated to the box's corner.
+
+    /** A hit: the offset in the low 32 bits, bit 32 for a caret at the end of a wrapped line. */
+    private static long packHit(int offset, boolean upstream) {
+        return (upstream ? 1L << 32 : 0L) | (offset & 0xffffffffL);
+    }
+
+    /** The offset (UTF-16) of a {@link #hitTest} result. */
+    static int hitOffset(long hit) {
+        return (int) hit;
+    }
+
+    /**
+     * Whether a {@link #hitTest} result is the end of a wrapped line, on that
+     * line (`Affinity::Upstream`): its offset is the next line's start too.
+     */
+    static boolean hitUpstream(long hit) {
+        return (hit >>> 32) != 0;
+    }
+
+    /**
+     * The caret nearest ({@code x}, {@code y}) of a final layout, as {@link
+     * #hitOffset} and {@link #hitUpstream} read it: on the line at that height
+     * (the first above the text, the last below it), at the caret edge nearest x
+     * (bidirectional text in visual order). A point past the end of a wrapped
+     * line gives its end, upstream; a line that ends in a break character stops
+     * before it. {@code density}: px per unit of {@code x} and {@code y}.
+     */
+    static long hitTest(Object layout, float x, float y, float density) {
+        if (!(layout instanceof Layout)) return 0;
+        Layout l = (Layout) layout;
+        int lines = l.getLineCount();
+        if (lines == 0) return 0;
+        x *= density;
+        y *= density;
+        int line = l.getLineForVertical((int) y);
+        // Android's nearest caret. On a line that is not the text's last it stops
+        // before the line's last character (to Android the line's end is the next
+        // line's start), which also keeps it before a break character.
+        int offset = l.getOffsetForHorizontal(line, x);
+        int end = l.getLineEnd(line);
+        if (line < lines - 1 && end > l.getLineStart(line) && breakStart(l, line) == end
+                && l.isRtlCharAt(end - 1) == (l.getParagraphDirection(line) == Layout.DIR_RIGHT_TO_LEFT)) {
+            // A wrapped line whose last character is at the line's far edge: the
+            // end of the line, its other edge, is the nearer caret from past the
+            // character's middle on. Lines that end in the other direction keep
+            // Android's caret: the nearest one on screen.
+            float endX = wrappedEndX(l, line);
+            if (offset == l.getOffsetForHorizontal(line, endX)
+                    && Math.abs(x - endX) < Math.abs(x - l.getPrimaryHorizontal(offset))) {
+                return packHit(end, true);
+            }
+        }
+        return packHit(offset, false);
+    }
+
+    /**
+     * The caret at {@code offset} (UTF-16) of a final layout, a box without
+     * width as high as its line: x, y, height; empty without lines.
+     * {@code upstream}: at the end of a wrapped line, the caret on that line
+     * rather than at the start of the next. {@code density}: px per unit of the
+     * result.
+     */
+    static float[] caretRect(Object layout, int offset, boolean upstream, float density) {
+        if (!(layout instanceof Layout)) return new float[0];
+        Layout l = (Layout) layout;
+        if (l.getLineCount() == 0) return new float[0];
+        offset = Math.max(0, Math.min(offset, l.getText().length()));
+        int line = l.getLineForOffset(offset);
+        if (upstream && line > 0 && offset == l.getLineStart(line)) line--;
+        // Never after a break character; the end of a wrapped line is not an
+        // offset of its own to Android.
+        int at = Math.min(offset, breakStart(l, line));
+        float x = at == l.getLineEnd(line) && line < l.getLineCount() - 1
+                ? wrappedEndX(l, line)
+                : l.getPrimaryHorizontal(at);
+        int top = l.getLineTop(line);
+        return new float[] {x / density, top / density, (l.getLineBottom(line) - top) / density};
+    }
+
+    /**
+     * The boxes of the characters {@code start}..{@code end} (UTF-16) of a final
+     * layout, line high: per line one for each stretch of adjacent characters
+     * (bidirectional text splits a range), through the line's end where the
+     * range goes on past it; x, y, width, height each. Break characters and what
+     * an ellipsis replaced have none. {@code density}: px per unit of the result.
+     */
+    static float[] rangeRects(Object layout, int start, int end, float density) {
+        if (!(layout instanceof Layout)) return new float[0];
+        Layout l = (Layout) layout;
+        start = Math.max(0, start);
+        end = Math.min(end, l.getText().length());
+        int lines = l.getLineCount();
+        if (start >= end || lines == 0) return new float[0];
+        Boxes boxes = new Boxes();
+        for (int line = l.getLineForOffset(start); line < lines; line++) {
+            int lineStart = l.getLineStart(line);
+            if (lineStart >= end) break;
+            int a = Math.max(start, lineStart), b = Math.min(end, breakStart(l, line));
+            int first = boxes.count;
+            if (l.getEllipsisCount(line) > 0) {
+                int ellipsis = lineStart + l.getEllipsisStart(line);
+                addRuns(l, line, a, Math.min(b, ellipsis), boxes);
+                addRuns(l, line, Math.max(a, ellipsis + l.getEllipsisCount(line)), b, boxes);
+            } else {
+                addRuns(l, line, a, b, boxes);
+            }
+            boxes.merge(first);
+        }
+        return boxes.rects(density);
+    }
+
+    /**
+     * Where a line's break begins: its end, or before the character that ends
+     * it (a newline, a carriage return, a line or paragraph separator; "\r\n"
+     * as one). Carets stay before it.
+     */
+    private static int breakStart(Layout l, int line) {
+        int start = l.getLineStart(line), end = l.getLineEnd(line);
+        if (end <= start) return end;
+        CharSequence text = l.getText();
+        char c = text.charAt(end - 1);
+        if (c != '\n' && c != '\r' && c != '\u0085' && c != '\u2028' && c != '\u2029') return end;
+        return c == '\n' && end - 1 > start && text.charAt(end - 2) == '\r' ? end - 2 : end - 1;
+    }
+
+    /**
+     * The x of the end of a line that wrapped, past its last character and the
+     * white space that hangs after it: the far edge of the line in its
+     * paragraph's direction, as far from where Android starts the line as the
+     * line is wide.
+     */
+    private static float wrappedEndX(Layout l, int line) {
+        float width = l.getLineWidth(line);
+        float start = l.getPrimaryHorizontal(l.getLineStart(line));
+        return l.getParagraphDirection(line) == Layout.DIR_RIGHT_TO_LEFT ? start - width : start + width;
+    }
+
+    /**
+     * The carets of {@code offset} on a line: Android's primary and secondary
+     * ones, which differ where the direction changes (the end of one run, the
+     * start of the next). A wrapped line's end is one of its own.
+     */
+    private static float[] edges(Layout l, int line, int offset) {
+        if (offset == l.getLineEnd(line) && line < l.getLineCount() - 1) return new float[] {wrappedEndX(l, line)};
+        float primary = l.getPrimaryHorizontal(offset), secondary = l.getSecondaryHorizontal(offset);
+        return primary == secondary ? new float[] {primary} : new float[] {primary, secondary};
+    }
+
+    /** The boxes of the characters {@code a}..{@code b} of a line: one per run of one direction. */
+    private static void addRuns(Layout l, int line, int a, int b, Boxes out) {
+        float top = l.getLineTop(line), bottom = l.getLineBottom(line);
+        int i = a;
+        while (i < b) {
+            boolean rtl = l.isRtlCharAt(i);
+            int j = i + 1;
+            while (j < b && l.isRtlCharAt(j) == rtl) j++;
+            // The run's first character starts at one of the carets before it and its
+            // last ends at one of those after it: the left edge is the first's and the
+            // right edge the last's (the other way round right to left).
+            float[] before = edges(l, line, i), after = edges(l, line, j);
+            if (!addBox(rtl ? after : before, rtl ? before : after, top, bottom, out)
+                    && j == l.getLineEnd(line) && line < l.getLineCount() - 1) {
+                // A last run against the paragraph's direction does not end at the line's
+                // end: its far edge is among the carets before it.
+                float[] all = new float[before.length + after.length];
+                System.arraycopy(before, 0, all, 0, before.length);
+                System.arraycopy(after, 0, all, before.length, after.length);
+                addBox(all, all, top, bottom, out);
+            }
+            i = j;
+        }
+    }
+
+    /**
+     * Adds the narrowest box from one of {@code lefts} to one of {@code rights}:
+     * carets of other runs, which lie outside this one, make wider ones. False
+     * when there is none (no width).
+     */
+    private static boolean addBox(float[] lefts, float[] rights, float top, float bottom, Boxes out) {
+        float width = Float.MAX_VALUE, left = 0, right = 0;
+        for (float lo : lefts) {
+            for (float hi : rights) {
+                if (hi > lo && hi - lo < width) {
+                    width = hi - lo;
+                    left = lo;
+                    right = hi;
+                }
+            }
+        }
+        if (width == Float.MAX_VALUE) return false;
+        out.add(left, top, right, bottom);
+        return true;
+    }
+
+    /** Boxes being collected (left, top, right, bottom, px). */
+    private static final class Boxes {
+        float[] v = new float[16];
+        int count;
+
+        void add(float left, float top, float right, float bottom) {
+            if ((count + 1) * 4 > v.length) v = java.util.Arrays.copyOf(v, v.length * 2);
+            int o = count++ * 4;
+            v[o] = left;
+            v[o + 1] = top;
+            v[o + 2] = right;
+            v[o + 3] = bottom;
+        }
+
+        /** Joins the boxes from {@code first} on that touch (those of one line), left to right. */
+        void merge(int first) {
+            for (int i = first + 1; i < count; i++) {
+                for (int j = i; j > first && v[(j - 1) * 4] > v[j * 4]; j--) {
+                    for (int k = 0; k < 4; k++) {
+                        float t = v[j * 4 + k];
+                        v[j * 4 + k] = v[(j - 1) * 4 + k];
+                        v[(j - 1) * 4 + k] = t;
+                    }
+                }
+            }
+            int out = first;
+            for (int i = first; i < count; i++) {
+                // Runs measured from different carets meet within a rounding error.
+                if (out > first && v[i * 4] <= v[(out - 1) * 4 + 2] + 0.5f) {
+                    v[(out - 1) * 4 + 2] = Math.max(v[(out - 1) * 4 + 2], v[i * 4 + 2]);
+                } else {
+                    System.arraycopy(v, i * 4, v, out * 4, 4);
+                    out++;
+                }
+            }
+            count = out;
+        }
+
+        /** x, y, width, height of each box, in units of {@code density} px. */
+        float[] rects(float density) {
+            float[] out = new float[count * 4];
+            for (int i = 0; i < count; i++) {
+                int o = i * 4;
+                out[o] = v[o] / density;
+                out[o + 1] = v[o + 1] / density;
+                out[o + 2] = (v[o + 2] - v[o]) / density;
+                out[o + 3] = (v[o + 3] - v[o + 1]) / density;
+            }
+            return out;
+        }
+    }
+
+    /**
+     * A hidden run ({@code visibility: "hidden"}): laid out as shown, nothing
+     * of it drawn (its color emoji and shadow neither), left out of copies
+     * and screen readers ({@link #shown}).
+     */
+    static final class Hidden extends android.text.style.CharacterStyle
+            implements android.text.style.UpdateAppearance {
+        @Override
+        public void updateDrawState(TextPaint paint) {
+            paint.setColor(0);
+            paint.clearShadowLayer();
+            paint.bgColor = 0;
+        }
+    }
+
+    /**
+     * The characters {@code start..end} of a laid out text as a copy and a
+     * screen reader take them: without hidden runs and attachments'
+     * placeholders.
+     */
+    static String shown(CharSequence text, int start, int end) {
+        start = Math.max(0, Math.min(start, text.length()));
+        end = Math.max(start, Math.min(end, text.length()));
+        StringBuilder out = new StringBuilder(end - start);
+        Spanned spanned = text instanceof Spanned ? (Spanned) text : null;
+        int at = start;
+        while (at < end) {
+            int next = spanned == null ? end : spanned.nextSpanTransition(at, end, Hidden.class);
+            if (spanned == null || spanned.getSpans(at, next, Hidden.class).length == 0) {
+                for (int i = at; i < next; i++) {
+                    char c = text.charAt(i);
+                    if (c != '\uFFFC') out.append(c);
+                }
+            }
+            at = next;
+        }
+        return out.toString();
+    }
+
+    /**
+     * An attachment's placeholder: its size, placed in its line by its
+     * `verticalAlign` (as `AttachmentAlignments::ascent` in nsh-core places it, with
+     * the run's font metrics); the line grows to hold it. Draws nothing.
+     */
+    static final class Attachment extends android.text.style.ReplacementSpan {
+        /** `verticalAlign`: on the baseline, at the font's top, at its bottom, in the middle. */
+        static final int BASELINE = 0, TEXT_TOP = 1, TEXT_BOTTOM = 2, MIDDLE = 3;
+        final int width, height, align;
+        /** How far its top is above the baseline (px; negative: below), set by {@link #getSize}. */
+        int ascent;
+        /** The ascent and descent of the font around it (px, as {@link Paint.FontMetricsInt}), set by {@link #getSize}. */
+        int fontAscent, fontDescent;
+
+        /**
+         * `baseline`: how far below its top its own baseline is (px), which
+         * stands on the line's (the first baseline of the text in it); negative: it has none, and
+         * stands on its bottom edge.
+         */
+        Attachment(int width, int height, int align, int baseline) {
+            this.width = width;
+            this.height = height;
+            this.align = align;
+            this.ascent = baseline < 0 ? height : Math.min(baseline, height);
+        }
+
+        @Override
+        public int getSize(Paint paint, CharSequence text, int start, int end, Paint.FontMetricsInt fm) {
+            if (align != BASELINE) {
+                // The font around it, unrounded (as the other platforms read it).
+                Paint.FontMetrics font = paint.getFontMetrics();
+                switch (align) {
+                    case TEXT_TOP:
+                        ascent = Math.round(-font.ascent);
+                        break;
+                    case TEXT_BOTTOM:
+                        ascent = Math.round(height - font.descent);
+                        break;
+                    default: {
+                        android.graphics.Rect x = new android.graphics.Rect();
+                        paint.getTextBounds("x", 0, 1, x);
+                        ascent = Math.round((height - x.top) / 2f);
+                        break;
+                    }
+                }
+            }
+            Paint.FontMetricsInt own = paint.getFontMetricsInt();
+            fontAscent = own.ascent;
+            fontDescent = own.descent;
+            if (fm != null) {
+                fm.ascent = Math.min(own.ascent, -Math.max(0, ascent));
+                fm.top = Math.min(own.top, fm.ascent);
+                fm.descent = Math.max(own.descent, height - ascent);
+                fm.bottom = Math.max(own.bottom, fm.descent);
+                fm.leading = own.leading;
+            }
+            return width;
+        }
+
+        @Override
+        public void draw(android.graphics.Canvas canvas, CharSequence text, int start, int end, float x, int top, int y,
+                int bottom, Paint paint) {}
+    }
+
+    /** Typeface and letter spacing of a run. */
+    /** Underline / strikethrough of a run (drawn by {@link TextBox}). */
+    static final class Decoration {
+        final boolean underline, strike;
+        final int color;
+        final float sizePx;
+        /** 0 solid, 1 double, 2 dotted, 3 dashed, 4 wavy. */
+        final int style;
+        /** Px; 0 is the font's. */
+        final float thicknessPx;
+        /** Px below the baseline; NaN is the font's. */
+        final float offsetPx;
+
+        Decoration(boolean underline, boolean strike, int color, float sizePx, int style, float thicknessPx,
+                   float offsetPx) {
+            this.underline = underline;
+            this.strike = strike;
+            this.color = color;
+            this.sizePx = sizePx;
+            this.style = style;
+            this.thicknessPx = thicknessPx;
+            this.offsetPx = offsetPx;
+        }
+    }
+
+    /** A span background (`backgroundColor` on a nested text), drawn by
+     * {@code TextBox} behind each line's part of its characters, as tall as
+     * its fonts and the span's vertical padding. One covers the neighboring
+     * runs of one span. */
+    static final class Background {
+        final int color;
+        /** The span that set it: neighbors that look the same stay apart. */
+        final int node;
+        final float radiusPx;
+        /** Room above the fonts' ascent and below their descent. */
+        final float topPx, bottomPx;
+        float ascentPx, descentPx;
+
+        Background(int color, int node, float radiusPx, float topPx, float bottomPx, float ascentPx, float descentPx) {
+            this.color = color;
+            this.node = node;
+            this.radiusPx = radiusPx;
+            this.topPx = topPx;
+            this.bottomPx = bottomPx;
+            this.ascentPx = ascentPx;
+            this.descentPx = descentPx;
+        }
+
+        boolean same(int color, int node, float radiusPx, float topPx, float bottomPx) {
+            return this.color == color && this.node == node && this.radiusPx == radiusPx
+                    && this.topPx == topPx && this.bottomPx == bottomPx;
+        }
+    }
+
+    /** Android `letterSpacing` (em) for `spacing` and `fontSize` in matching units. */
+    static float letterSpacing(float spacing, float fontSize) {
+        return fontSize > 0f && spacing != 0f ? spacing / fontSize : 0f;
+    }
+
+    /** Horizontal {@link Gravity} for encoded `align` (`ALIGN_*`) and layout RTL flag. */
+    static int horizontalGravity(int align, boolean rtl) {
+        switch (align) {
+            case ALIGN_LEFT:
+                return Gravity.LEFT;
+            case ALIGN_CENTER:
+                return Gravity.CENTER_HORIZONTAL;
+            case ALIGN_RIGHT:
+                return Gravity.RIGHT;
+            default:
+                return rtl ? Gravity.RIGHT : Gravity.START;
+        }
+    }
+
+    /** OpenType feature settings for `fontVariant` bits (`nsh_core::FontVariant`), or null. */
+    static String features(int bits) {
+        if (bits == 0) return null;
+        StringBuilder b = new StringBuilder();
+        String[] tags = {"smcp", "onum", "lnum", "tnum", "pnum"};
+        for (int i = 0; i < tags.length; i++) {
+            if ((bits & (1 << i)) == 0) continue;
+            if (b.length() > 0) b.append(", ");
+            b.append('\'').append(tags[i]).append('\'');
+        }
+        return b.toString();
+    }
+
+    private static final class FontSpan extends MetricAffectingSpan {
+        private final Typeface typeface;
+        private final float spacingPx;
+        private final String features;
+
+        FontSpan(Typeface typeface, float spacingPx, String features) {
+            this.typeface = typeface;
+            this.spacingPx = spacingPx;
+            this.features = features;
+        }
+
+        private void apply(TextPaint paint) {
+            paint.setTypeface(typeface);
+            paint.setLetterSpacing(letterSpacing(spacingPx, paint.getTextSize()));
+            paint.setFontFeatureSettings(features);
+        }
+
+        @Override
+        public void updateMeasureState(TextPaint paint) {
+            apply(paint);
+        }
+
+        @Override
+        public void updateDrawState(TextPaint paint) {
+            apply(paint);
+        }
+    }
+
+    /** `lineHeight`: every line exactly this tall, extra space split around the glyphs. */
+    private static final class ExactLineHeight implements LineHeightSpan {
+        private final int height;
+
+        ExactLineHeight(float height) {
+            // To the nearest pixel, as a TextView's lineHeight in dp is
+            // (getDimensionPixelSize): rounded up, 21 dp at 2.625 is 56
+            // pixels, a third of a point taller than the design's line.
+            this.height = Math.max(1, Math.round(height));
+        }
+
+        @Override
+        public void chooseHeight(CharSequence text, int start, int end, int spanstartv, int lineHeight,
+                                 Paint.FontMetricsInt fm) {
+            int current = fm.descent - fm.ascent;
+            if (current <= 0) return;
+            Attachment[] attachments = text instanceof Spanned
+                    ? ((Spanned) text).getSpans(start, end, Attachment.class)
+                    : null;
+            if (attachments != null && attachments.length > 0) {
+                // A line holding attachments: the text's box (its font with
+                // the line height spread around it) joined with what each
+                // attachment reaches above and below the baseline, so the
+                // line grows only where one is taller (a replaced inline box
+                // in CSS) instead of being cut to the line height.
+                int ascent = 0, descent = 0;
+                for (Attachment a : attachments) {
+                    int extra = height - (a.fontDescent - a.fontAscent);
+                    int top = extra / 2;
+                    ascent = Math.min(ascent, Math.min(a.fontAscent - top, -Math.max(0, a.ascent)));
+                    descent = Math.max(descent, Math.max(a.fontDescent + extra - top, a.height - a.ascent));
+                }
+                fm.ascent = ascent;
+                fm.top = ascent;
+                fm.descent = descent;
+                fm.bottom = descent;
+                return;
+            }
+            int extra = height - current;
+            int top = extra / 2;
+            fm.ascent -= top;
+            fm.top = fm.ascent;
+            fm.descent += extra - top;
+            fm.bottom = fm.descent;
+        }
+    }
+}

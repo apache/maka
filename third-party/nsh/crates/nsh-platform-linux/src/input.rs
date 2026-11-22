@@ -1,0 +1,3262 @@
+//! Pointer input of a surface: hit testing, touches for the JS responder
+//! system, presses, hover / pressed states, cursors, native pan / pinch /
+//! rotation values, and routing wheel, touchpad and touchscreen scrolling
+//! to the scroll views.
+//!
+//! One `EventControllerLegacy` on the root, in the capture phase, sees
+//! every pointer event before the widgets under it. It never stops button,
+//! motion or touch events, so hosted native widgets (text fields) still get
+//! their clicks, focus and selection drags; presses, pans and scroll drags
+//! simply do not start on them, except that an `Input` listening to
+//! presses hears its own (a view around it does not). Wheel and touchpad
+//! scrolls it routes are stopped, unless they land on a native widget that
+//! scrolls itself.
+//!
+//! Hit testing walks the views itself rather than using `gtk_widget_pick`:
+//! GTK's picking knows nothing of `overflow: hidden` (the views clip in
+//! `snapshot`), hidden views or `box-only`. Points go into children through
+//! their allocation transforms (frame, scroll offset, shift, transform).
+//! Outside a view's bounds, only the area its descendants cover
+//! (`MountItem::Overflow`: a dropdown under its field) is looked into, as
+//! on iOS and Android. GTK still delivers events by its own picking, so
+//! presses, hovers and wheels GTK would send to a web view's page where
+//! nsh does not show it (clipped off, hidden) are kept from the page
+//! (`shields_page`), after nsh handled them.
+//!
+//! Presses follow React Native and the other backends: the innermost view
+//! listening to press events gets them (or the pressable text span under
+//! the pointer; how it looks while pressed is the app's `activeStyle`,
+//! applied by the core from the reported states); inside scroll
+//! views a touch reports `onPressDown` only after ~130 ms, as it may start a
+//! scroll. A move beyond 6 pt starts the innermost pan or scroll view that
+//! takes that direction (only touches drag scroll views: the mouse scrolls
+//! with the wheel, the touchpad, the keyboard and the indicator, and its
+//! drags go to pans, responders and text selection); beyond 10 pt the
+//! press is over.
+//!
+//! A view with a `panActivation` around the first pointer gates it
+//! ([`Gate`], `PanActivation::decide` on every move): the scroll views
+//! around the view wait until its pan fails, and never take the drag once
+//! it activates; the activation goes to JS with the move's touches
+//! (`TouchEvent::activated`), where the view becomes the responder.
+//!
+//! A scroll stays on the scroll view it began in (a touchpad gesture until
+//! it ends, mouse wheel notches while they come within 200 ms), as in
+//! browsers: inner views passing under the pointer do not take it over, and
+//! its view reaching an edge does not hand the rest to an outer one.
+//!
+//! Real and simulated input ([`simulate`]) share the same handlers, which
+//! take root coordinates and millisecond timestamps.
+//!
+//! The decisions over plain data (what a pointer going down may start, a
+//! press's events, hover changes, hit areas, pinches, wheel latching) are
+//! [`nsh_core::input`]'s, shared by the desktop backends.
+
+use std::{
+    cell::{Cell, RefCell},
+    rc::Rc,
+    time::Duration,
+};
+
+use gtk4::{self as gtk, gdk, gio, glib, glib::translate::ToGlibPtr, graphene, prelude::*};
+use nsh_core::{
+    Command, Cursor, EventKind, EventPayload, GestureValues, MouseButton, NodeId, PayloadValue,
+    PointerEvents, ROOT_ID, TouchEvent, TouchPhase, TouchPoint, ViewKind,
+    desktop::{ResizeEdge, WindowControl},
+    geometry::{Points, point},
+    input::{
+        self, Candidate, Gate, Grab, GrabOptions, HitArea, Link, PAN_SLOP, PRESS_SLOP, Pinch,
+        SCROLL_PRESS_DELAY, VelocityTracker, WheelLatch, WheelStep, ZOOM_IDLE, has_press, laid_out,
+        latch_holds, transforms,
+    },
+    tailwind::state::{HOVERED, PRESSED},
+};
+use rustc_hash::{FxHashMap, FxHashSet};
+
+use crate::{surface::Surface, view::NshView};
+
+/// The GTK keyboard owner followed by its NSH ancestors in `root`.
+pub(crate) fn focus_path(
+    surface: &Surface,
+    root: &NshView,
+    mut focus: Option<gtk::Widget>,
+) -> Vec<NodeId> {
+    let root_widget = root.upcast_ref::<gtk::Widget>();
+    if focus.as_ref().is_none_or(|f| f == root_widget) {
+        return Vec::new();
+    }
+    let mut path = Vec::new();
+    while let Some(widget) = focus {
+        if let Some(view) = widget.downcast_ref::<NshView>() {
+            path.push(view.id());
+            if view.id() == ROOT_ID && view != &surface.root {
+                return Vec::new();
+            }
+        }
+        if &widget == root_widget {
+            if root != &surface.root {
+                path.push(ROOT_ID);
+            }
+            return path;
+        }
+        focus = widget.parent();
+    }
+    // AppViews embedded in one GtkWindow share its native focus, but their
+    // node ids are local to their own engines. A sibling's path is not ours.
+    Vec::new()
+}
+
+type Press = input::Press<NshView>;
+
+/// A pinch / rotation in progress.
+#[derive(Clone)]
+struct Transform {
+    view: NshView,
+    pinch: bool,
+    rotation: bool,
+    scale: f32,
+    degrees: f32,
+}
+
+/// Two touchscreen fingers transforming a view.
+struct TwoFinger {
+    keys: [Key; 2],
+    pinch: Pinch,
+    transform: Transform,
+}
+
+/// Which device a pointer is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Key {
+    /// The mouse (or touchpad clicks).
+    Mouse,
+    /// A touchscreen finger, by its event sequence.
+    Touch(usize),
+}
+
+/// A background press tied to the native view where it began.
+struct WindowPress {
+    event: gdk::Event,
+    x: f32,
+    y: f32,
+    view: NshView,
+}
+
+/// Pointer state of one surface.
+#[derive(Default)]
+pub(crate) struct Input {
+    /// A draggable background press waiting to become a click or native drag.
+    window_press: RefCell<Option<WindowPress>>,
+    /// The root view of the window the event being handled happened in:
+    /// a window of the app's own (`Window.open`), or `None` for the
+    /// surface's root.
+    window_root: RefCell<Option<NshView>>,
+    /// A primary press on a view marked `windowControl`: its button acts
+    /// when the press is released over the same view.
+    control_press: RefCell<Option<(NshView, WindowControl)>>,
+    /// The pointers that are down.
+    pointers: RefCell<Vec<Pointer>>,
+    /// Two fingers pinching / rotating on the touchscreen.
+    two: RefCell<Option<TwoFinger>>,
+    /// A touchpad pinch.
+    pinch: RefCell<Option<Transform>>,
+    /// A pinch by Ctrl + mouse wheel, with the generation of its end timer.
+    zoom: RefCell<Option<(Transform, u64)>>,
+    /// A touchpad scroll gesture.
+    wheel: RefCell<Option<Wheel>>,
+    /// The scroll view mouse wheel notches go to while they keep coming,
+    /// whether they scroll horizontally, and when the last one came (ms).
+    latch: RefCell<Option<(NshView, bool, f64)>>,
+    /// The `onWheel` listener a scroll went to, which keeps the rest of it.
+    wheel_listener: RefCell<WheelLatch<NshView>>,
+    /// The `onPinch` listener a touchpad pinch went to, to its end, and the
+    /// scale it was at (GDK's is the gesture's own, from 1).
+    pinch_listener: RefCell<WheelLatch<NshView>>,
+    pinch_scale: std::cell::Cell<f32>,
+    /// Views that track `HOVERED` or listen to `onMouseEnter` /
+    /// `onMouseLeave` / `onMouseMove` (hover is only tested while there
+    /// are).
+    hover_tracked: RefCell<FxHashSet<NodeId>>,
+    /// Views listening to `onMouseMove`; other apps skip looking for
+    /// listeners on every move.
+    mouse_tracked: RefCell<FxHashSet<NodeId>>,
+    /// Views that are hovered now.
+    hovered: RefCell<Vec<NshView>>,
+    /// The link of a text the mouse is over, with its text view
+    /// ([`hover_link`]).
+    link_hovered: RefCell<Option<(NshView, nsh_core::TextLink)>>,
+    /// Native gesture values by view.
+    gestures: RefCell<FxHashMap<NodeId, (glib::WeakRef<NshView>, GestureValues)>>,
+    /// The JS responder blocks native scrolling and pans.
+    js_block: Cell<bool>,
+    /// Where the pointer last was (root coordinates), for events GTK
+    /// gives no position (wheels, touchpad gestures).
+    last: Cell<Option<(f32, f32)>>,
+    /// The modifier and button state of the last pointer or modifier key
+    /// event, for the mouse events of views the pointer comes over or
+    /// leaves.
+    last_state: Cell<Option<gdk::ModifierType>>,
+    /// The mouse button pressed and not yet released, as GDK's events or
+    /// a simulated press said (the side buttons have no state mask, and
+    /// simulated moves no state).
+    button: Cell<Option<MouseButton>>,
+    /// The last mouse press (time, root position, click count), for
+    /// counting double and triple clicks.
+    click: Cell<Option<(f64, f32, f32, u32)>>,
+    /// Next touch identifier.
+    next_id: Cell<u32>,
+    /// Next press generation (invalidates callbacks of earlier ones).
+    next_gen: Cell<u64>,
+}
+
+/// What a pointer is doing.
+#[derive(Debug, Clone, PartialEq)]
+enum Mode {
+    /// Not past the pan slop yet.
+    Idle,
+    /// Past it, with nothing to drag.
+    Free,
+    /// Dragging a pan view.
+    Pan(NshView),
+    /// Scrolling a scroll view, from where the drag began.
+    Scroll(NshView, (f32, f32)),
+    /// Dragging a scroll view's indicator as a scroll bar's thumb (the
+    /// mouse), from where the drag began.
+    Thumb(NshView, (f32, f32)),
+    /// One of two fingers pinching / rotating.
+    TwoFinger,
+}
+
+/// A pointer that is down.
+struct Pointer {
+    key: Key,
+    /// Touch identifier for JS.
+    id: u32,
+    /// Behaves like a finger (scroll drags, delayed press-in).
+    touch: bool,
+    x: f32,
+    y: f32,
+    start: (f32, f32),
+    time: f64,
+    velocity: VelocityTracker,
+    /// The innermost view under it when it went down.
+    target: NshView,
+    /// The views around it that listen to touches, target outwards.
+    path: Vec<NodeId>,
+    /// Its touches are reported to JS.
+    reporting: bool,
+    press: Option<Press>,
+    /// What a drag may start, innermost first.
+    candidates: Vec<(NshView, Candidate)>,
+    /// The undecided `panActivation` around it.
+    gate: Option<Gate>,
+    /// The view a second finger would pinch / rotate.
+    pinch: Option<NshView>,
+    /// Views that track `PRESSED` and are pressed by it.
+    pressed: Vec<NshView>,
+    mode: Mode,
+    /// It moved (a JS responder granted now took it from a native press).
+    moved: bool,
+    /// The modifier keys held when it went down (for JS touches).
+    modifiers: nsh_core::keymap::Modifiers,
+}
+
+/// A touchpad scroll gesture.
+struct Wheel {
+    view: NshView,
+    /// Accumulated deltas, for the velocity.
+    total: (f32, f32),
+    velocity: VelocityTracker,
+    /// When the fingers last moved (ms).
+    moved: f64,
+    /// Began with a hold (fingers resting) and has not scrolled yet.
+    held: bool,
+}
+
+// --- Installation and the views' hooks ----------------------------------------------
+
+/// Installs the event controllers on the surface's root view.
+pub(crate) fn install(surface: &Rc<Surface>) {
+    install_on(surface, &surface.root.clone(), None);
+}
+
+/// Handles the pointer events of `root`: the surface's root, or (`window`)
+/// the root view of a window of the app's own.
+pub(crate) fn install_on(surface: &Rc<Surface>, root: &NshView, window: Option<&NshView>) {
+    let legacy = gtk::EventControllerLegacy::new();
+    legacy.set_propagation_phase(gtk::PropagationPhase::Capture);
+    let weak = Rc::downgrade(surface);
+    let window = window.map(|w| w.downgrade());
+    legacy.connect_event(move |_, event| match weak.upgrade() {
+        Some(surface) => {
+            if surface.testing() && real_pointer(event.event_type()) {
+                // Under `nsh test --target linux` the agent's pointer
+                // (`simulate`) is the only one: the user's, moving over the
+                // window or resting on it, never changes what a test hovers
+                // or presses, and hosted widgets do not see it either.
+                return glib::Propagation::Stop;
+            }
+            *surface.input.window_root.borrow_mut() = window.as_ref().and_then(|w| w.upgrade());
+            handle(&surface, event)
+        }
+        None => glib::Propagation::Proceed,
+    });
+    root.add_controller(legacy);
+
+    // Crossing events do not reach legacy controllers.
+    let motion = gtk::EventControllerMotion::new();
+    let weak = Rc::downgrade(surface);
+    motion.connect_leave(move |_| {
+        // The real pointer leaving says nothing of the agent's.
+        if let Some(surface) = weak.upgrade().filter(|s| !s.testing()) {
+            // Where the mouse was last: GTK's leave carries no position.
+            let (x, y) = surface.input.last.get().unwrap_or_default();
+            set_hovered(&surface, Vec::new(), x, y);
+            hover_link(&surface, None, x, y);
+        }
+    });
+    root.add_controller(motion);
+}
+
+/// Whether events of type `ty` come from a real pointing device (mouse,
+/// touchpad, touchscreen), which a test ignores ([`Surface::testing`]).
+fn real_pointer(ty: gdk::EventType) -> bool {
+    use gdk::EventType as T;
+    matches!(
+        ty,
+        T::ButtonPress
+            | T::ButtonRelease
+            | T::MotionNotify
+            | T::EnterNotify
+            | T::LeaveNotify
+            | T::TouchBegin
+            | T::TouchUpdate
+            | T::TouchEnd
+            | T::TouchCancel
+            | T::Scroll
+            | T::TouchpadSwipe
+            | T::TouchpadPinch
+            | T::TouchpadHold
+    )
+}
+
+/// The app stopped: forgets its pointers, hovered views and gestures.
+pub(crate) fn reset(surface: &Surface) {
+    crate::file_drop::reset(surface);
+    let input = &surface.input;
+    input.window_press.borrow_mut().take();
+    input.control_press.borrow_mut().take();
+    input.pointers.borrow_mut().clear();
+    input.two.borrow_mut().take();
+    input.pinch.borrow_mut().take();
+    input.zoom.borrow_mut().take();
+    input.wheel.borrow_mut().take();
+    input.latch.borrow_mut().take();
+    input.wheel_listener.borrow_mut().clear();
+    input.pinch_listener.borrow_mut().clear();
+    input.hover_tracked.borrow_mut().clear();
+    input.mouse_tracked.borrow_mut().clear();
+    input.hovered.borrow_mut().clear();
+    input.link_hovered.borrow_mut().take();
+    input.last_state.set(None);
+    input.button.set(None);
+    input.gestures.borrow_mut().clear();
+    input.js_block.set(false);
+}
+
+/// `TrackStates`.
+pub(crate) fn track_states(surface: &Rc<Surface>, view: &NshView, states: u16) {
+    {
+        let mut s = view.state_mut();
+        s.tracked = states;
+        // The core keeps the states still reported and forgets the rest
+        // (`Core::update_tracking`): so do we, or a change it was not told
+        // about (the pointer leaving a view whose hover was tracked
+        // throughout) would never reach it. The focus is reported
+        // whatever is tracked, so it stays.
+        s.states &= input::reported_states(states);
+    }
+    update_hover_tracking(surface, view);
+}
+
+/// Whether hovering `view` matters: for its `hover:` styles (the
+/// `HOVERED` state) or its `onMouseEnter` / `onMouseLeave` /
+/// `onMouseMove`.
+fn hoverable(view: &NshView) -> bool {
+    let s = view.state();
+    input::hoverable(s.tracked, s.events)
+}
+
+fn update_hover_tracking(surface: &Surface, view: &NshView) {
+    let id = view.state().id;
+    if view.state().events.contains(EventKind::MouseMove) {
+        surface.input.mouse_tracked.borrow_mut().insert(id);
+    } else {
+        surface.input.mouse_tracked.borrow_mut().remove(&id);
+    }
+    let mut tracked = surface.input.hover_tracked.borrow_mut();
+    if hoverable(view) {
+        tracked.insert(id);
+    } else {
+        tracked.remove(&id);
+        // Not hovered as far as anyone knows: picked again if hovering it
+        // matters again under the pointer.
+        surface.input.hovered.borrow_mut().retain(|v| v != view);
+    }
+}
+
+/// Sets or clears interaction state `bit` of `view` and reports the
+/// states when they changed and the view tracks the bit.
+pub(crate) fn set_state(surface: &Surface, view: &NshView, bit: u16, on: bool) {
+    let (id, next) = {
+        let mut s = view.state_mut();
+        let Some(next) = input::next_states(s.tracked, s.states, bit, on) else {
+            return;
+        };
+        s.states = next;
+        (s.id, next)
+    };
+    surface.control(|c| c.set_states(id, next));
+}
+
+/// `Gestures`.
+pub(crate) fn gestures(surface: &Rc<Surface>, view: &NshView, values: GestureValues) {
+    let id = view.state().id;
+    let mut gestures = surface.input.gestures.borrow_mut();
+    if values.is_empty() {
+        gestures.remove(&id);
+    } else {
+        gestures.insert(id, (view.downgrade(), values));
+    }
+}
+
+/// Presses a control without a pointer, after its input path admitted it.
+/// Keyboard and accessibility activation share the same payload and order.
+pub(crate) fn activate(surface: &Surface, view: &NshView) {
+    let events = view.state().events;
+    for kind in [EventKind::PressDown, EventKind::PressUp, EventKind::Press] {
+        if events.contains(kind) {
+            surface.event(view.id(), kind, EventPayload::None);
+        }
+    }
+}
+
+/// The view's events changed (mouse handlers have it hovered, from the
+/// next mouse move).
+pub(crate) fn events_changed(surface: &Rc<Surface>, view: &NshView) {
+    update_hover_tracking(surface, view);
+    update_cursor(view);
+}
+
+/// The view's props changed.
+pub(crate) fn props_changed(_surface: &Rc<Surface>, _view: &NshView) {
+    // `pointerEvents`, `hitSlop` and `delayLongPress` are read from the state when a pointer goes down.
+}
+
+/// The view's style changed (cursor).
+pub(crate) fn style_changed(view: &NshView) {
+    update_cursor(view);
+}
+
+/// `SetJsResponder` / `ClearJsResponder`. Runs while the mounter applies a
+/// batch: it must not write animations (that borrows the mounter).
+pub(crate) fn command(surface: &Rc<Surface>, _id: NodeId, command: &Command) {
+    match command {
+        Command::SetJsResponder { block } => {
+            surface.input.js_block.set(*block);
+            let mut pointers = std::mem::take(&mut *surface.input.pointers.borrow_mut());
+            for p in &mut pointers {
+                // Granted on a move: the JS gesture takes over from the native
+                // press (a grant when the finger lands leaves inner presses be,
+                // as they would have won the negotiation in React Native).
+                if p.moved {
+                    cancel_press(surface, p);
+                    release_pressed(surface, p);
+                }
+                if *block && let Mode::Pan(view) = &p.mode {
+                    let view = view.clone();
+                    pan_end(surface, &view, p, false);
+                    p.mode = Mode::Free;
+                }
+            }
+            let mut current = surface.input.pointers.borrow_mut();
+            pointers.append(&mut current);
+            *current = pointers;
+        }
+        Command::ClearJsResponder => surface.input.js_block.set(false),
+        _ => {}
+    }
+}
+
+/// The CSS name of the pointer over a view, `None` to inherit its parent's.
+fn cursor_name(cursor: Cursor) -> Option<&'static str> {
+    Some(match cursor {
+        Cursor::Auto => return None,
+        Cursor::Default => "default",
+        Cursor::Pointer => "pointer",
+        Cursor::Text => "text",
+        Cursor::Wait => "wait",
+        Cursor::Progress => "progress",
+        Cursor::Help => "help",
+        Cursor::Crosshair => "crosshair",
+        Cursor::Move => "move",
+        Cursor::Grab => "grab",
+        Cursor::Grabbing => "grabbing",
+        Cursor::NotAllowed => "not-allowed",
+        Cursor::ZoomIn => "zoom-in",
+        Cursor::ZoomOut => "zoom-out",
+        Cursor::ColResize => "col-resize",
+        Cursor::RowResize => "row-resize",
+        Cursor::NwseResize => "nwse-resize",
+        Cursor::NeswResize => "nesw-resize",
+        Cursor::None => "none",
+    })
+}
+
+fn update_cursor(view: &NshView) {
+    set_cursor(view, false);
+}
+
+/// The cursor name of `view`, `over_link` when the mouse is on one of its
+/// pressable link spans.
+fn cursor_of(view: &NshView, over_link: bool) -> Option<&'static str> {
+    let (own, ibeam, is_text) = {
+        let s = view.state();
+        (
+            s.style.cursor,
+            shows_ibeam_state(view, &s),
+            s.text.is_some(),
+        )
+    };
+    // Only asked for views that are not text and would inherit.
+    let in_ibeam = || !is_text && view.parent_view().is_some_and(|p| shows_ibeam(&p));
+    choose_cursor(own, over_link, ibeam, in_ibeam)
+}
+
+/// The cursor name of a view whose own cursor is `own`: then, the mouse
+/// on a pressable link span of it (`over_link`), the pointer, which wins
+/// over the I-beam of selectable text (`ibeam`); a view inside text that
+/// shows the I-beam (`in_ibeam`: an attachment, such as a render's
+/// placeholder around a chip) the arrow, as `auto` over what is not text
+/// in CSS, rather than inheriting its text's I-beam. `None` inherits.
+fn choose_cursor(
+    own: Cursor,
+    over_link: bool,
+    ibeam: bool,
+    in_ibeam: impl FnOnce() -> bool,
+) -> Option<&'static str> {
+    cursor_name(own).or_else(|| {
+        if over_link {
+            Some("pointer")
+        } else if ibeam {
+            Some("text")
+        } else {
+            in_ibeam().then_some("default")
+        }
+    })
+}
+
+/// Whether text view `view` shows the I-beam of selectable text.
+fn shows_ibeam(view: &NshView) -> bool {
+    let s = view.state();
+    cursor_name(s.style.cursor).is_none() && shows_ibeam_state(view, &s)
+}
+
+fn shows_ibeam_state(view: &NshView, s: &crate::view::ViewState) -> bool {
+    s.text.is_some()
+        && (crate::text::selectable(s)
+            || (crate::selectable_view::takes_part(view)
+                && !crate::selectable_view::cursor_above(view)))
+}
+
+fn set_cursor(view: &NshView, over_link: bool) {
+    let name = cursor_of(view, over_link);
+    let current = view.cursor().and_then(|c| c.name());
+    if current.as_deref() != name {
+        view.set_cursor_from_name(name);
+    }
+}
+
+/// The root view events are picked in: the window's the event being
+/// handled happened in.
+/// Simulated input goes to the window whose root view is `root` (`None`:
+/// the surface's), as a real event in it would.
+#[cfg(feature = "dev")]
+pub(crate) fn set_event_root(surface: &Surface, root: Option<NshView>) {
+    *surface.input.window_root.borrow_mut() = root;
+}
+
+/// The window the event being handled happened in.
+pub(crate) fn event_window(surface: &Surface) -> Option<gtk::Window> {
+    event_root(surface).root().and_downcast::<gtk::Window>()
+}
+
+/// The root view of the window the event being handled (or the last one)
+/// happened in.
+pub(crate) fn event_root(surface: &Surface) -> NshView {
+    surface
+        .input
+        .window_root
+        .borrow()
+        .clone()
+        .unwrap_or_else(|| surface.root.clone())
+}
+
+// --- GDK events ---------------------------------------------------------------------
+
+fn handle(surface: &Rc<Surface>, event: &gdk::Event) -> glib::Propagation {
+    if surface.input_paused.get() {
+        return glib::Propagation::Stop;
+    }
+    pen_sample(event);
+    // Decided before nsh's own handling moves anything.
+    let shielded = shields_page(surface, event);
+    let propagation = dispatch(surface, event);
+    if shielded {
+        glib::Propagation::Stop
+    } else {
+        propagation
+    }
+}
+
+/// Whether `event` would reach a web view's page where nsh does not show
+/// it: GTK picks widgets by their allocations and knows nothing of
+/// `overflow: hidden`, `hidden` or `pointerEvents`, so without this a
+/// page clipped by a parent would take clicks, hovers and wheels outside
+/// what is drawn of it. nsh's own handling of the event goes on (the view
+/// actually under the pointer gets it); only the page is kept from it.
+fn shields_page(surface: &Surface, event: &gdk::Event) -> bool {
+    use gdk::EventType as T;
+    if !surface.native.has_pages() {
+        return false;
+    }
+    let buttons = gdk::ModifierType::BUTTON1_MASK
+        | gdk::ModifierType::BUTTON2_MASK
+        | gdk::ModifierType::BUTTON3_MASK;
+    let point = match event.event_type() {
+        T::ButtonPress | T::TouchBegin => root_point(&event_root(surface), event),
+        // Drags that started in the page stay with it.
+        T::MotionNotify if !event.modifier_state().intersects(buttons) => {
+            root_point(&event_root(surface), event)
+        }
+        T::Scroll => root_point(&event_root(surface), event).or_else(|| surface.input.last.get()),
+        _ => None,
+    };
+    let Some((x, y)) = point else {
+        return false;
+    };
+    let Some(page) = event_root(surface)
+        .pick(x as f64, y as f64, gtk::PickFlags::DEFAULT)
+        .and_then(|target| crate::native::page_of(&target))
+    else {
+        return false;
+    };
+    let shown = pick(&event_root(surface), x, y)
+        .and_then(|hit| hit.native)
+        .is_some_and(|native| native == page || native.is_ancestor(&page));
+    !shown
+}
+
+fn dispatch(surface: &Rc<Surface>, event: &gdk::Event) -> glib::Propagation {
+    use gdk::EventType as T;
+    let ty = event.event_type();
+    if matches!(ty, T::ButtonPress | T::TouchBegin) {
+        pointer_input(surface);
+    }
+    match ty {
+        T::ButtonPress
+        | T::ButtonRelease
+        | T::MotionNotify
+        | T::TouchBegin
+        | T::TouchUpdate
+        | T::TouchEnd
+        | T::TouchCancel
+        | T::Scroll
+        | T::TouchpadPinch
+        | T::TouchpadHold => {}
+        T::GrabBroken => {
+            surface.input.window_press.borrow_mut().take();
+            cancel_all(surface);
+            release_buttons(surface);
+            return glib::Propagation::Proceed;
+        }
+        T::KeyPress | T::KeyRelease => {
+            modifiers_changed(surface, event, ty == T::KeyPress);
+            return glib::Propagation::Proceed;
+        }
+        _ => return glib::Propagation::Proceed,
+    }
+    // Scroll and touchpad gesture events carry no position in GTK 4: they
+    // happen where the pointer is.
+    let point = match root_point(&event_root(surface), event) {
+        Some(p) => {
+            surface.input.last.set(Some(p));
+            Some(p)
+        }
+        None if matches!(ty, T::Scroll | T::TouchpadPinch | T::TouchpadHold) => {
+            surface.input.last.get()
+        }
+        None => None,
+    };
+    if !event.is_pointer_emulated() {
+        record_button(surface, event);
+    }
+    let Some((x, y)) = point else {
+        return glib::Propagation::Proceed;
+    };
+    let time = event.time() as f64;
+    let button = || event.downcast_ref::<gdk::ButtonEvent>().map(|b| b.button());
+    match ty {
+        // Touchscreens report touches; pointer events emulated from them
+        // would press twice.
+        T::ButtonPress | T::ButtonRelease | T::MotionNotify if event.is_pointer_emulated() => {}
+        // Window menus and double clicks keep their native handling.
+        T::ButtonPress if crate::chrome::press(surface, event, x, y) => {
+            // Native window actions may keep the release.
+            release_buttons(surface);
+            return glib::Propagation::Stop;
+        }
+        // A frameless window's resize edge: the window manager resizes it.
+        T::ButtonPress
+            if button() == Some(gdk::BUTTON_PRIMARY) && window_resize(surface, x, y).is_some() =>
+        {
+            if let (Some(edge), Some(window)) =
+                (window_resize(surface, x, y), event_window(surface))
+            {
+                crate::window::begin_resize(surface, &window, event, edge);
+            }
+            release_buttons(surface);
+            return glib::Propagation::Stop;
+        }
+        T::ButtonPress if button() == Some(gdk::BUTTON_PRIMARY) && window_drag(surface, x, y) => {
+            up(surface, Key::Mouse, x, y, time, true);
+            *surface.input.window_press.borrow_mut() =
+                pick(&event_root(surface), x, y).map(|hit| WindowPress {
+                    event: event.clone(),
+                    x,
+                    y,
+                    view: hit.view,
+                });
+            return glib::Propagation::Stop;
+        }
+        T::ButtonPress if button() == Some(gdk::BUTTON_PRIMARY) => {
+            *surface.input.control_press.borrow_mut() = window_control(surface, x, y);
+            down(surface, Key::Mouse, x, y, time, event.modifier_state())
+        }
+        T::ButtonPress
+            if button() == Some(gdk::BUTTON_SECONDARY)
+                && context_menu(surface, x, y, event.modifier_state()) =>
+        {
+            return glib::Propagation::Stop;
+        }
+        T::ButtonRelease if button() == Some(gdk::BUTTON_PRIMARY) => {
+            mouse_up(surface, x, y, event.modifier_state(), MouseButton::Left);
+            let pending = surface.input.window_press.borrow_mut().take();
+            if let Some(press) = pending {
+                let same_view = pick(&event_root(surface), press.x, press.y)
+                    .is_some_and(|hit| hit.view == press.view);
+                if !same_view || !window_drag(surface, press.x, press.y) {
+                    return glib::Propagation::Stop;
+                }
+                down(
+                    surface,
+                    Key::Mouse,
+                    press.x,
+                    press.y,
+                    press.event.time() as f64,
+                    press.event.modifier_state(),
+                );
+                up(surface, Key::Mouse, x, y, time, false);
+                return glib::Propagation::Stop;
+            }
+            up(surface, Key::Mouse, x, y, time, false);
+            // An app-drawn window button acts as the system's.
+            let pressed = surface.input.control_press.borrow_mut().take();
+            if let Some((view, control)) = pressed
+                && window_control(surface, x, y).is_some_and(|(v, _)| v == view)
+                && let Some(window) = event_window(surface)
+            {
+                // Not inside the event's handling: closing may destroy the
+                // window.
+                let weak = Rc::downgrade(surface);
+                glib::idle_add_local_once(move || {
+                    if let Some(surface) = weak.upgrade() {
+                        crate::window::control(&surface, &window, control);
+                    }
+                });
+            }
+        }
+        T::ButtonRelease => {
+            if let Some(button) = button().and_then(mouse_button) {
+                mouse_up(surface, x, y, event.modifier_state(), button);
+            }
+        }
+        T::MotionNotify => {
+            let pending = surface.input.window_press.borrow_mut().take();
+            if let Some(press) = pending {
+                if surface.root.drag_check_threshold(
+                    press.x as i32,
+                    press.y as i32,
+                    x as i32,
+                    y as i32,
+                ) {
+                    crate::chrome::begin_move(surface, &press.event);
+                    release_buttons(surface);
+                } else {
+                    *surface.input.window_press.borrow_mut() = Some(press);
+                }
+                return glib::Propagation::Stop;
+            }
+            let state = event.modifier_state();
+            surface.input.last_state.set(Some(state));
+            // `onMouseEnter` / `onMouseLeave` first (`motion` hovers), as
+            // in browsers; `onMouseMove` then goes to the views hovered.
+            motion(surface, Key::Mouse, x, y, time);
+            link_cursor(surface, x, y);
+            if event.device_tool().is_none()
+                && !event.device().is_some_and(|device| {
+                    matches!(
+                        device.source(),
+                        gdk::InputSource::Pen
+                            | gdk::InputSource::Touchscreen
+                            | gdk::InputSource::TabletPad
+                    )
+                })
+            {
+                mouse_moved(surface, x, y, state);
+            }
+        }
+        T::TouchBegin => down(
+            surface,
+            touch_key(event),
+            x,
+            y,
+            time,
+            event.modifier_state(),
+        ),
+        T::TouchUpdate => motion(surface, touch_key(event), x, y, time),
+        T::TouchEnd => up(surface, touch_key(event), x, y, time, false),
+        T::TouchCancel => up(surface, touch_key(event), x, y, time, true),
+        T::Scroll => {
+            if let Some(scroll) = event.downcast_ref::<gdk::ScrollEvent>() {
+                return scroll_event(surface, scroll, x, y, time);
+            }
+        }
+        T::TouchpadPinch | T::TouchpadHold => {
+            if let Some(pad) = event.downcast_ref::<gdk::TouchpadEvent>() {
+                let handled = if ty == T::TouchpadPinch {
+                    touchpad_pinch(surface, pad, x, y)
+                } else {
+                    touchpad_hold(surface, pad.gesture_phase(), x, y)
+                };
+                if handled {
+                    return glib::Propagation::Stop;
+                }
+            }
+        }
+        _ => {}
+    }
+    glib::Propagation::Proceed
+}
+
+/// A secondary click at `(x, y)` (root coordinates): the nearest view
+/// around the one under it that listens to `onContextMenu` hears it (true:
+/// the click is taken). Text fields are GTK's widgets, which show their
+/// own menu.
+fn context_menu(surface: &Rc<Surface>, x: f32, y: f32, state: gdk::ModifierType) -> bool {
+    let Some(hit) = pick(&event_root(surface), x, y) else {
+        return false;
+    };
+    for v in chain(&hit.view) {
+        let (id, listens, input) = {
+            let s = v.state();
+            (
+                s.id,
+                s.events.contains(EventKind::ContextMenu),
+                s.kind == ViewKind::Input,
+            )
+        };
+        if listens {
+            let (location_x, location_y) = local(surface, &v, x, y);
+            let event = nsh_core::ContextMenuEvent::new(
+                point(Points(location_x), Points(location_y)),
+                point(Points(x), Points(y)),
+                modifiers(state),
+                Some(nsh_core::PointerType::Mouse),
+            );
+            surface.event(id, EventKind::ContextMenu, EventPayload::ContextMenu(event));
+            return true;
+        }
+        if input {
+            return false;
+        }
+        if crate::text::selectable(&v.state()) || v.state().props.selectable_view {
+            // Text in a selectable view has the area's menu.
+            let target = crate::selectable_view::area_of(&v).unwrap_or(v);
+            return edit_menu(surface, &target, x, y);
+        }
+    }
+    false
+}
+
+/// A wheel by `(dx, dy)` (`lines`: notches, else points) at `(x, y)` (root
+/// coordinates), `step` of its scroll: the nearest view around the one
+/// under it that listens to `onWheel` hears it ([`input::wheel_listener`]),
+/// and one scroll stays where it went ([`WheelLatch`]: a view that took it
+/// keeps it while it keeps coming, a touchpad scroll until it stops; a
+/// scroll going on in a scroll view is only observed). Returns whether
+/// that view takes the wheel, so nothing scrolls natively.
+#[allow(clippy::too_many_arguments)]
+fn wheel_event(
+    surface: &Rc<Surface>,
+    x: f32,
+    y: f32,
+    lines: bool,
+    dx: f32,
+    dy: f32,
+    state: gdk::ModifierType,
+    step: WheelStep,
+) -> bool {
+    let moved = dx != 0.0 || dy != 0.0;
+    if !moved && step != WheelStep::End {
+        return false;
+    }
+    let input = &surface.input;
+    let scrolling = input.wheel.borrow().as_ref().is_some_and(|w| !w.held)
+        || match step {
+            WheelStep::Discrete {
+                horizontal, time, ..
+            } => input
+                .latch
+                .borrow()
+                .as_ref()
+                .is_some_and(|(view, h, last)| {
+                    latch_holds(*h, *last, horizontal, time) && view.is_mapped()
+                }),
+            _ => false,
+        };
+    let routed = input.wheel_listener.borrow_mut().route(
+        step,
+        moved,
+        scrolling,
+        |view| view.is_mapped() && view.state().events.contains(EventKind::Wheel),
+        || {
+            let hit = pick(&event_root(surface), x, y)?;
+            // A hosted widget scrolling itself (a web page, a text view)
+            // keeps it.
+            let native_scrolls = hit.native.as_ref().is_some_and(scrolls_itself);
+            let (view, takes) = input::wheel_listener(
+                chain(&hit.view),
+                |v| v.state().events.contains(EventKind::Wheel),
+                |v| v.kind() == ViewKind::Scroll,
+            )?;
+            let along = input::wheel_along(
+                view.state().props.pan_activation,
+                dx.abs() > dy.abs(),
+                state.contains(gdk::ModifierType::CONTROL_MASK),
+            );
+            Some((view, takes && along && !native_scrolls))
+        },
+    );
+    let Some((view, takes)) = routed else {
+        return false;
+    };
+    // Resting fingers held a scroll view without scrolling it: it lets go.
+    let held = input.wheel.borrow().as_ref().is_some_and(|w| w.held);
+    if takes
+        && held
+        && let Some(w) = input.wheel.borrow_mut().take()
+    {
+        crate::scroll::wheel_end(surface, &w.view, 0.0, 0.0);
+    }
+    if !moved {
+        return takes;
+    }
+    let (location_x, location_y) = local(surface, &view, x, y);
+    let delta = if lines {
+        nsh_core::WheelDelta::Lines(point(dx, dy))
+    } else {
+        nsh_core::WheelDelta::Points(point(Points(dx), Points(dy)))
+    };
+    let event = nsh_core::WheelEvent::new(
+        point(Points(location_x), Points(location_y)),
+        point(Points(x), Points(y)),
+        delta,
+        modifiers(state),
+    );
+    let id = view.state().id;
+    surface.event(id, EventKind::Wheel, EventPayload::Wheel(event));
+    takes
+}
+
+/// The edit menu of selectable text or a selectable view `target` (Copy,
+/// Select All, GTK's own labels), at `(x, y)` (root coordinates). Its
+/// items run the `clipboard.copy` / `selection.select-all` actions the
+/// target installs.
+fn edit_menu(surface: &Rc<Surface>, target: &NshView, x: f32, y: f32) -> bool {
+    let selected = if target.state().props.selectable_view {
+        crate::selectable_view::has_selection(surface, target)
+    } else {
+        crate::text::has_selection(target)
+    };
+    let p = event_root(surface)
+        .compute_point(target, &graphene::Point::new(x, y))
+        .unwrap_or_else(|| graphene::Point::new(x, y));
+    let model = edit_menu_model(selected);
+    let app = app_menu(surface, target);
+    if let Some((section, _)) = &app {
+        model.append_section(None, section);
+    }
+    let popover = gtk::PopoverMenu::from_model(Some(&model));
+    if let Some((_, actions)) = &app {
+        popover.insert_action_group("selection-menu", Some(actions));
+    }
+    popover.set_parent(target);
+    crate::key_focus::observe_popovers(surface, popover.upcast_ref());
+    popover.set_has_arrow(false);
+    popover.set_halign(gtk::Align::Start);
+    popover.set_position(gtk::PositionType::Bottom);
+    popover.set_pointing_to(Some(&gdk::Rectangle::new(p.x() as i32, p.y() as i32, 1, 1)));
+    popover.connect_closed(|menu| {
+        let menu = menu.clone();
+        glib::idle_add_local_once(move || menu.unparent());
+    });
+    popover.popup();
+    true
+}
+
+/// The app's items of a selectable view's menu (`selectionMenu`): a
+/// section of them and the `selection-menu` actions they run, each
+/// reporting its item's id as the root's `Menu` event. `None` without
+/// items (selectable text alone has none).
+fn app_menu(
+    surface: &Rc<Surface>,
+    target: &NshView,
+) -> Option<(gio::Menu, gio::SimpleActionGroup)> {
+    use nsh_core::desktop::MenuItem;
+    let items = target.state().props.selection_menu.clone();
+    if items.is_empty() {
+        return None;
+    }
+    let menu = gio::Menu::new();
+    let mut section = gio::Menu::new();
+    let actions = gio::SimpleActionGroup::new();
+    for (index, item) in items.iter().enumerate() {
+        match item {
+            MenuItem::Action(item) => {
+                let name = format!("item-{index}");
+                let action = gio::SimpleAction::new(&name, None);
+                action.set_enabled(item.enabled && item.id != 0);
+                let (weak, id) = (Rc::downgrade(surface), item.id);
+                action.connect_activate(move |_, _| {
+                    if let Some(surface) = weak.upgrade() {
+                        surface.event(
+                            nsh_core::ROOT_ID,
+                            EventKind::Menu,
+                            EventPayload::Map(vec![(
+                                "id",
+                                nsh_core::PayloadValue::Number(id as f64),
+                            )]),
+                        );
+                    }
+                });
+                actions.add_action(&action);
+                // No mnemonics in the app's labels.
+                let label = item.label.replace('_', "__");
+                section.append(Some(&label), Some(&format!("selection-menu.{name}")));
+            }
+            MenuItem::Separator => {
+                menu.append_section(None, &section);
+                section = gio::Menu::new();
+            }
+            MenuItem::Submenu { .. } => {}
+        }
+    }
+    menu.append_section(None, &section);
+    Some((menu, actions))
+}
+
+/// The edit menu's items (GTK's label with its mnemonic, action); Copy
+/// only with a selection.
+fn edit_menu_items(selected: bool) -> Vec<(String, &'static str)> {
+    let gtk = |s| glib::dgettext(Some("gtk40"), s).to_string();
+    let mut items = Vec::new();
+    if selected {
+        items.push((gtk("_Copy"), "clipboard.copy"));
+    }
+    items.push((gtk("Select _All"), "selection.select-all"));
+    items
+}
+
+fn edit_menu_model(selected: bool) -> gio::Menu {
+    let menu = gio::Menu::new();
+    for (label, action) in edit_menu_items(selected) {
+        menu.append(Some(&label), Some(action));
+    }
+    menu
+}
+
+/// The event's position in the root's coordinates (`None` for events of
+/// other surfaces, such as popovers of hosted widgets).
+fn root_point(root: &NshView, event: &gdk::Event) -> Option<(f32, f32)> {
+    let (x, y) = event.position()?;
+    let native = root.native()?;
+    if event.surface() != native.surface() {
+        return None;
+    }
+    let (sx, sy) = native.surface_transform();
+    let p = native.compute_point(
+        root,
+        &graphene::Point::new((x - sx) as f32, (y - sy) as f32),
+    )?;
+    Some((p.x(), p.y()))
+}
+
+fn touch_key(event: &gdk::Event) -> Key {
+    let sequence = event.event_sequence();
+    let ptr: *const gdk::ffi::GdkEventSequence = sequence.to_glib_none().0;
+    Key::Touch(ptr as usize)
+}
+
+/// How a scroll event scrolls.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum WheelInput {
+    /// A mouse wheel step: notches (`true`, scaled to the view) or
+    /// points.
+    Step { notches: bool },
+    /// A touchpad gesture moved by points.
+    Touchpad,
+    /// The touchpad gesture ended.
+    Stop,
+}
+
+fn scroll_event(
+    surface: &Rc<Surface>,
+    event: &gdk::ScrollEvent,
+    x: f32,
+    y: f32,
+    time: f64,
+) -> glib::Propagation {
+    let notches = WheelInput::Step { notches: true };
+    let (kind, mut dx, mut dy) = match event.direction() {
+        gdk::ScrollDirection::Up => (notches, 0.0, -1.0),
+        gdk::ScrollDirection::Down => (notches, 0.0, 1.0),
+        gdk::ScrollDirection::Left => (notches, -1.0, 0.0),
+        gdk::ScrollDirection::Right => (notches, 1.0, 0.0),
+        _ => {
+            let (dx, dy) = event.deltas();
+            let kind = if event.is_stop() {
+                WheelInput::Stop
+            } else if event.unit() == gdk::ScrollUnit::Wheel {
+                notches
+            } else {
+                WheelInput::Touchpad
+            };
+            (kind, dx as f32, dy as f32)
+        }
+    };
+    let modifiers = event.modifier_state();
+    // The axis the scroll views take it on: Shift turns a mouse's vertical
+    // notches horizontal (below), and the latch is kept on that axis.
+    let shifted = kind == notches && dx == 0.0 && modifiers.contains(gdk::ModifierType::SHIFT_MASK);
+    // A view listening to `onWheel` nearer than the scroll views under the
+    // pointer takes the wheel, Ctrl + wheel included (a canvas zooming).
+    let step = if kind == WheelInput::Stop {
+        WheelStep::End
+    } else {
+        WheelStep::Discrete {
+            horizontal: if shifted {
+                dy != 0.0
+            } else {
+                dx.abs() > dy.abs()
+            },
+            precise: kind == WheelInput::Touchpad,
+            time,
+        }
+    };
+    if wheel_event(surface, x, y, kind == notches, dx, dy, modifiers, step) {
+        return glib::Propagation::Stop;
+    }
+    // Mice have no pinch: Ctrl + wheel pinches, as it zooms on desktops.
+    if let WheelInput::Step { .. } = kind
+        && modifiers.contains(gdk::ModifierType::CONTROL_MASK)
+        && dy != 0.0
+        && wheel_zoom(surface, x, y, dy)
+    {
+        return glib::Propagation::Stop;
+    }
+    if shifted {
+        (dx, dy) = (dy, dx);
+    }
+    if wheel_input(surface, x, y, dx, dy, time, kind) {
+        glib::Propagation::Stop
+    } else {
+        glib::Propagation::Proceed
+    }
+}
+
+// --- Simulation ---------------------------------------------------------------------
+
+/// A simulated pointer action of the mouse ([`crate::synth`]), in root
+/// coordinates.
+#[cfg(feature = "dev")]
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Simulated {
+    /// A press at `(x, y)`.
+    Down(f32, f32),
+    /// A release at `(x, y)`.
+    Up(f32, f32),
+    /// The pointer moved to `(x, y)` with its button down (a drag).
+    Move(f32, f32),
+    /// A wheel / touchpad scroll at `(x, y)` by `(dx, dy)` points.
+    Wheel(f32, f32, f32, f32),
+    /// The pointer moved to `(x, y)` without a button (hover).
+    Hover(f32, f32),
+    /// The secondary button pressed at `(x, y)` (a context menu).
+    ContextMenu(f32, f32),
+}
+
+#[cfg(feature = "dev")]
+thread_local! {
+    /// The modifier keys a test holds down (`keyboard.down`), which its
+    /// simulated presses and hovers carry.
+    static HELD: std::cell::Cell<gdk::ModifierType> = const { std::cell::Cell::new(gdk::ModifierType::empty()) };
+}
+
+/// Holds (`down`) or lets go of `keys` for the simulated pointer.
+#[cfg(feature = "dev")]
+pub(crate) fn hold(keys: gdk::ModifierType, down: bool) {
+    HELD.with(|held| {
+        let mut now = held.get();
+        now.set(keys, down);
+        held.set(now);
+    });
+}
+
+/// A button or a finger went down: told before the press acts, so the
+/// focus it moves does not show (`focus-visible:`).
+fn pointer_input(surface: &Surface) {
+    surface.control(|c| c.set_input_modality(nsh_core::platform::InputModality::Pointer));
+}
+
+/// Feeds a simulated pointer action through the same path as real input.
+#[cfg(feature = "dev")]
+pub(crate) fn simulate(surface: &Rc<Surface>, action: Simulated) {
+    let time = glib::monotonic_time() as f64 / 1000.0;
+    let held = HELD.with(std::cell::Cell::get);
+    // Where the agent's pointer is, as real events record theirs
+    // (a key scroll under it, a leave).
+    let (Simulated::Down(x, y)
+    | Simulated::Up(x, y)
+    | Simulated::Move(x, y)
+    | Simulated::Wheel(x, y, ..)
+    | Simulated::Hover(x, y)
+    | Simulated::ContextMenu(x, y)) = action;
+    surface.input.last.set(Some((x, y)));
+    if matches!(action, Simulated::Down(..) | Simulated::ContextMenu(..)) {
+        pointer_input(surface);
+    }
+    match action {
+        Simulated::Down(x, y) => {
+            // Simulated drags carry no state: the button held is recorded.
+            surface.input.button.set(Some(MouseButton::Left));
+            down(surface, Key::Mouse, x, y, time, held);
+        }
+        Simulated::Up(x, y) => {
+            release_buttons(surface);
+            mouse_up(surface, x, y, held, MouseButton::Left);
+            up(surface, Key::Mouse, x, y, time, false);
+            // GTK never sees simulated input: a release on a hosted widget
+            // (a text field) focuses it, as a real click would.
+            if let Some(native) = pick(&event_root(surface), x, y).and_then(|hit| hit.native) {
+                focus_native(&native);
+            }
+        }
+        Simulated::Move(x, y) => {
+            // No state: the button held is the one `Down` recorded.
+            surface
+                .input
+                .last_state
+                .set(Some(gdk::ModifierType::empty()));
+            motion(surface, Key::Mouse, x, y, time);
+            link_cursor(surface, x, y);
+            mouse_moved(surface, x, y, gdk::ModifierType::empty());
+        }
+        Simulated::Wheel(x, y, dx, dy) => {
+            let step = WheelStep::Discrete {
+                horizontal: dx.abs() > dy.abs(),
+                precise: false,
+                time,
+            };
+            if !wheel_event(surface, x, y, false, dx, dy, held, step) {
+                let step = WheelInput::Step { notches: false };
+                wheel_input(surface, x, y, dx, dy, time, step);
+            }
+        }
+        Simulated::Hover(x, y) => {
+            surface.input.last_state.set(Some(held));
+            hover(surface, x, y);
+            link_cursor(surface, x, y);
+            mouse_moved(surface, x, y, held);
+        }
+        // A right click: the press opens the menu, the release follows,
+        // as a real one's does.
+        Simulated::ContextMenu(x, y) => {
+            context_menu(surface, x, y, held);
+            mouse_up(surface, x, y, held, MouseButton::Right);
+        }
+    }
+}
+
+/// Focuses `widget` or the first focusable widget inside it. A text
+/// field keeps its selection and caret, as a click into it does: its
+/// `grab_focus` selects all its text (`gtk-entry-select-on-focus`), which
+/// the keys typed next would replace.
+#[cfg(feature = "dev")]
+fn focus_native(widget: &gtk::Widget) {
+    if let Some(text) = text_inside(widget)
+        && text.grab_focus_without_selecting()
+    {
+        return;
+    }
+    if widget.grab_focus() {
+        return;
+    }
+    let mut child = widget.first_child();
+    while let Some(c) = child {
+        if c.is_focusable() && c.grab_focus() {
+            return;
+        }
+        focus_native(&c);
+        child = c.next_sibling();
+    }
+}
+
+/// `widget` if it is a `GtkText`, else the first inside it.
+#[cfg(feature = "dev")]
+fn text_inside(widget: &gtk::Widget) -> Option<gtk::Text> {
+    if let Some(text) = widget.downcast_ref::<gtk::Text>() {
+        return Some(text.clone());
+    }
+    let mut child = widget.first_child();
+    while let Some(c) = child {
+        if let Some(text) = text_inside(&c) {
+            return Some(text);
+        }
+        child = c.next_sibling();
+    }
+    None
+}
+
+// --- Hit testing --------------------------------------------------------------------
+
+/// Where the pointer last was (root coordinates).
+pub(crate) fn last_pointer(surface: &Surface) -> Option<(f32, f32)> {
+    surface.input.last.get()
+}
+
+/// Pressing `(x, y)` (root coordinates) drags the window: the nearest view
+/// that sets `windowDrag` says so, unless a text field, a hosted widget or
+/// a view with press or touch handlers is nearer.
+pub(crate) fn window_drag(surface: &Surface, x: f32, y: f32) -> bool {
+    let Some(hit) = pick(&event_root(surface), x, y) else {
+        return false;
+    };
+    if hit.native.is_some() {
+        return false;
+    }
+    for view in chain(&hit.view) {
+        let s = view.state();
+        if let Some(drag) = s.props.window_drag {
+            return drag;
+        }
+        if s.kind == ViewKind::Input || has_press(s.events) || s.events.contains(EventKind::Touch) {
+            return false;
+        }
+    }
+    false
+}
+
+/// The view marked `windowControl` pressing `(x, y)` (root coordinates)
+/// presses, and its button: the nearest view that sets it, unless a text
+/// field or a hosted widget is nearer.
+fn window_control(surface: &Surface, x: f32, y: f32) -> Option<(NshView, WindowControl)> {
+    let hit = pick(&event_root(surface), x, y)?;
+    if hit.native.is_some() {
+        return None;
+    }
+    for view in chain(&hit.view) {
+        let s = view.state();
+        if let Some(control) = s.props.window_control {
+            drop(s);
+            return Some((view, control));
+        }
+        if s.kind == ViewKind::Input {
+            return None;
+        }
+    }
+    None
+}
+
+/// The edge pressing `(x, y)` (root coordinates) resizes the window by:
+/// the nearest view that sets `windowResize`, unless a text field, a
+/// hosted widget or a view with press or touch handlers is nearer.
+fn window_resize(surface: &Surface, x: f32, y: f32) -> Option<ResizeEdge> {
+    let hit = pick(&event_root(surface), x, y)?;
+    if hit.native.is_some() {
+        return None;
+    }
+    for view in chain(&hit.view) {
+        let s = view.state();
+        if let Some(edge) = s.props.window_resize {
+            return Some(edge);
+        }
+        if s.kind == ViewKind::Input || has_press(s.events) || s.events.contains(EventKind::Touch) {
+            return None;
+        }
+    }
+    None
+}
+
+/// What is under a point.
+struct Hit {
+    /// The innermost view.
+    view: NshView,
+    /// The hosted native widget the point is on.
+    native: Option<gtk::Widget>,
+}
+
+/// The innermost view at `(x, y)` (root coordinates).
+fn pick(root: &NshView, x: f32, y: f32) -> Option<Hit> {
+    pick_in(root, graphene::Point::new(x, y))
+}
+
+fn pick_in(view: &NshView, p: graphene::Point) -> Option<Hit> {
+    if !view.is_visible() || !view.can_target() {
+        return None;
+    }
+    let (pe, in_slop, children) = {
+        let s = view.state();
+        if s.style.hidden || s.props.pointer_events == PointerEvents::None {
+            return None;
+        }
+        let clip = s.style.overflow_hidden
+            || matches!(
+                s.kind,
+                ViewKind::Scroll | ViewKind::Image | ViewKind::Stack | ViewKind::Input
+            );
+        let HitArea {
+            in_slop, children, ..
+        } = input::hit_area(
+            point(Points(p.x()), Points(p.y())),
+            s.frame.size,
+            s.props.hit_slop,
+            s.overflow,
+            clip,
+            laid_out(s.kind, s.id),
+        );
+        (s.props.pointer_events, in_slop, children)
+    };
+    let own = || (pe != PointerEvents::BoxNone && in_slop).then(|| hit(view, None));
+    if !children {
+        return own();
+    }
+    if pe != PointerEvents::BoxOnly {
+        let mut child = view.last_child();
+        while let Some(widget) = child {
+            child = widget.prev_sibling();
+            if !widget.is_visible() || !widget.can_target() {
+                continue;
+            }
+            let Some(cp) = view.compute_point(&widget, &p) else {
+                continue;
+            };
+            match widget.downcast_ref::<NshView>() {
+                Some(child) => {
+                    if let Some(hit) = pick_in(child, cp) {
+                        return Some(hit);
+                    }
+                }
+                // A hosted native widget.
+                None => {
+                    if let Some(native) =
+                        widget.pick(cp.x() as f64, cp.y() as f64, gtk::PickFlags::DEFAULT)
+                    {
+                        return Some(hit(view, Some(native)));
+                    }
+                }
+            }
+        }
+    }
+    own()
+}
+
+fn hit(view: &NshView, native: Option<gtk::Widget>) -> Hit {
+    Hit {
+        view: view.clone(),
+        native,
+    }
+}
+
+/// `view` and its ancestors, innermost first.
+fn chain(view: &NshView) -> Vec<NshView> {
+    let mut out = vec![view.clone()];
+    let mut current = view.parent_view();
+    while let Some(v) = current {
+        current = v.parent_view();
+        out.push(v);
+    }
+    out
+}
+
+/// A point in root coordinates in `view`'s.
+/// The cursor is per widget: a text with pressable link spans shows the
+/// pointer while the mouse at `(x, y)` (root coordinates) is on one, its
+/// own cursor elsewhere. The link under it hears the mouse come and go
+/// ([`hover_link`]).
+fn link_cursor(surface: &Surface, x: f32, y: f32) {
+    let Some(hit) = pick(&event_root(surface), x, y) else {
+        hover_link(surface, None, x, y);
+        return;
+    };
+    let view = &hit.view;
+    // `None`: no text with links (its own cursor stays).
+    let link = {
+        let s = view.state();
+        match &s.text {
+            Some(text) if !text.text.links.is_empty() => {
+                let (lx, ly) = local(surface, view, x, y);
+                Some(crate::text::char_at(&s, lx, ly).and_then(|i| text.text.link_at(i).copied()))
+            }
+            _ => None,
+        }
+    };
+    let Some(link) = link else {
+        hover_link(surface, None, x, y);
+        return;
+    };
+    set_cursor(view, link.is_some_and(|l| has_press(l.events)));
+    hover_link(surface, link.map(|l| (view.clone(), l)), x, y);
+}
+
+/// The mouse at `(x, y)` (root coordinates) is over `link` of a text view
+/// (none: no link): a link listening hears `onMouseEnter` when the mouse
+/// comes over its characters and `onMouseLeave` when it leaves them, as a
+/// view does (the core shows a link's hint, its URL, by them).
+fn hover_link(surface: &Surface, link: Option<(NshView, nsh_core::TextLink)>, x: f32, y: f32) {
+    let input = &surface.input;
+    let same = input.link_hovered.borrow().as_ref().map(|(_, l)| l.node)
+        == link.as_ref().map(|(_, l)| l.node);
+    if same {
+        return;
+    }
+    let state = input.last_state.get().unwrap_or(gdk::ModifierType::empty());
+    let old = input.link_hovered.replace(link.clone());
+    for (kind, hovered) in [(EventKind::MouseLeave, old), (EventKind::MouseEnter, link)] {
+        if let Some((view, l)) = hovered
+            && l.events.contains(kind)
+        {
+            let (lx, ly) = local(surface, &view, x, y);
+            let event = nsh_core::MouseEvent::new(
+                point(Points(lx), Points(ly)),
+                point(Points(x), Points(y)),
+                modifiers(state),
+                pressed_button(surface, state),
+            );
+            surface.event(l.node, kind, EventPayload::Mouse(with_pen(event)));
+        }
+    }
+}
+
+fn local(surface: &Surface, view: &NshView, x: f32, y: f32) -> (f32, f32) {
+    event_root(surface)
+        .compute_point(view, &graphene::Point::new(x, y))
+        .map_or((x, y), |p| (p.x(), p.y()))
+}
+
+fn gesture_values(surface: &Surface, view: &NshView, id: NodeId) -> GestureValues {
+    surface
+        .input
+        .gestures
+        .borrow()
+        .get(&id)
+        .filter(|(weak, _)| weak.upgrade().as_ref() == Some(view))
+        .map(|(_, values)| *values)
+        .unwrap_or_default()
+}
+
+// --- Pointers -----------------------------------------------------------------------
+
+fn take(surface: &Surface, key: Key) -> Option<Pointer> {
+    let mut pointers = surface.input.pointers.borrow_mut();
+    let i = pointers.iter().position(|p| p.key == key)?;
+    Some(pointers.swap_remove(i))
+}
+
+fn put(surface: &Surface, p: Pointer) {
+    surface.input.pointers.borrow_mut().push(p);
+}
+
+fn down(surface: &Rc<Surface>, key: Key, x: f32, y: f32, time: f64, modifiers: gdk::ModifierType) {
+    // A release we never saw (the window lost the grab).
+    if let Some(stale) = take(surface, key) {
+        finish(surface, stale, true);
+    }
+    let Some(hit) = pick(&event_root(surface), x, y) else {
+        return;
+    };
+    let input = &surface.input;
+    if input.pointers.borrow().is_empty() {
+        input.js_block.set(false);
+    }
+    let touch = key != Key::Mouse;
+    let native = hit.native.is_some();
+    let views = chain(&hit.view);
+    // The mouse drags an indicator as a scroll bar: its thumb follows the
+    // pointer, where a drag on the content moves the content with it.
+    let thumb = (!touch && !native)
+        .then(|| {
+            views.iter().find(|v| {
+                let (lx, ly) = local(surface, v, x, y);
+                crate::scroll::grabs_thumb(v, lx, ly)
+            })
+        })
+        .flatten();
+    if let Some(view) = thumb {
+        let id = input.next_id.get();
+        input.next_id.set(id.wrapping_add(1));
+        let mut p = Pointer {
+            key,
+            id,
+            touch,
+            x,
+            y,
+            start: (x, y),
+            time,
+            velocity: VelocityTracker::default(),
+            target: view.clone(),
+            path: Vec::new(),
+            reporting: false,
+            press: None,
+            candidates: Vec::new(),
+            gate: None,
+            pinch: None,
+            pressed: Vec::new(),
+            mode: Mode::Thumb(view.clone(), (x, y)),
+            moved: false,
+            modifiers: self::modifiers(modifiers),
+        };
+        p.velocity.add(time, point(Points(x), Points(y)));
+        crate::scroll::thumb_begin(surface, view);
+        put(surface, p);
+        return;
+    }
+    // A press clears a selection anywhere else; the mouse selects in the
+    // selectable view it presses in (`selectable_view.rs`).
+    let area = crate::selectable_view::pressed(surface, &hit.view, !touch, native);
+    // Mouse drags over selectable text or in a selectable view select it
+    // (`text.rs`) rather than pan.
+    let selects =
+        area.is_some() || (!touch && !native && crate::text::selectable(&hit.view.state()));
+    // The gate follows the first pointer only, as on the other platforms.
+    let first = input.pointers.borrow().is_empty();
+    let options = GrabOptions::new(touch, native, selects, first);
+    let mut grab = Grab::default();
+    for v in &views {
+        let s = v.state();
+        let link = Link::new(
+            s.id,
+            s.events,
+            s.tracked,
+            gesture_values(surface, v, s.id),
+            s.scroll.as_ref().map(|scroll| scroll.horizontal),
+            s.props.pan_activation,
+        );
+        grab.add(v, &link, options);
+    }
+    let Grab {
+        path,
+        candidates,
+        pinch,
+        pressed,
+        in_scroll,
+        gate,
+        ..
+    } = grab;
+    // A text field takes its own clicks, and GTK still gets them; the
+    // `Input` itself hears them as a press, after the focus GTK gives it
+    // (a combobox opens its list), but no view around it does.
+    let input_view = native && hit.view.state().kind == ViewKind::Input;
+    let press = if native && !input_view {
+        None
+    } else {
+        let clicks = if touch {
+            1
+        } else {
+            click_count(input, x, y, time)
+        };
+        let pressable = if input_view {
+            std::slice::from_ref(&hit.view)
+        } else {
+            &views[..]
+        };
+        find_press(surface, &hit.view, pressable, x, y)
+            .map(|p| p.clicked(self::modifiers(modifiers), clicks))
+    };
+    if let Some(area) = &area {
+        // Over a press target in the area a drag selects only once the
+        // press is over.
+        let over_press = press
+            .as_ref()
+            .is_some_and(|p| p.view == *area || p.view.is_ancestor(area));
+        crate::selectable_view::begin(surface, area, (x, y), time, modifiers, over_press);
+    }
+    let id = input.next_id.get();
+    input.next_id.set(id.wrapping_add(1));
+    let mut p = Pointer {
+        key,
+        id,
+        touch,
+        x,
+        y,
+        start: (x, y),
+        time,
+        velocity: VelocityTracker::default(),
+        target: hit.view,
+        reporting: !path.is_empty(),
+        path,
+        press,
+        candidates,
+        gate,
+        pinch,
+        pressed,
+        mode: Mode::Idle,
+        moved: false,
+        modifiers: self::modifiers(modifiers),
+    };
+    p.velocity.add(time, point(Points(x), Points(y)));
+    if p.reporting {
+        report(surface, TouchPhase::Start, &p, None);
+    }
+    for v in &p.pressed {
+        set_state(surface, v, PRESSED, true);
+    }
+    if touch && start_two_finger(surface, &mut p) {
+        put(surface, p);
+        return;
+    }
+    if let Some(press) = &mut p.press {
+        let generation = press.generation;
+        if touch && in_scroll {
+            after(
+                surface,
+                key,
+                generation,
+                SCROLL_PRESS_DELAY,
+                |surface, p| {
+                    if let Some(press) = &mut p.press {
+                        press_in(surface, press, (p.x, p.y));
+                    }
+                },
+            );
+        } else {
+            press_in(surface, press, (x, y));
+        }
+        if press.events.contains(EventKind::LongPress) {
+            let delay = press.long_delay.max(0.0) as u64;
+            after(surface, key, generation, delay, |surface, p| {
+                let Some(press) = &mut p.press else { return };
+                press_in(surface, press, (p.x, p.y));
+                press.long = true;
+                press_event(surface, press, EventKind::LongPress, (p.x, p.y));
+            });
+        }
+    }
+    put(surface, p);
+}
+
+fn motion(surface: &Rc<Surface>, key: Key, x: f32, y: f32, time: f64) {
+    if key == Key::Mouse {
+        hover(surface, x, y);
+    }
+    let Some(mut p) = take(surface, key) else {
+        return;
+    };
+    if p.x == x && p.y == y {
+        put(surface, p);
+        return;
+    }
+    p.x = x;
+    p.y = y;
+    p.time = time;
+    p.velocity.add(time, point(Points(x), Points(y)));
+    let moved = std::mem::replace(&mut p.moved, true);
+    if key == Key::Mouse && crate::selectable_view::dragged(surface, x, y) {
+        cancel_press(surface, &mut p);
+        release_pressed(surface, &mut p);
+    }
+    let (tx, ty) = (x - p.start.0, y - p.start.1);
+    let activated = Gate::step(&mut p.gate, &mut p.candidates, Points(tx), Points(ty));
+    // The view's JS responder takes the drag over: nothing native starts
+    // meanwhile.
+    if activated.is_some() && p.mode == Mode::Idle {
+        p.mode = Mode::Free;
+    }
+    if p.reporting {
+        report(surface, TouchPhase::Move, &p, activated);
+    }
+    if p.mode == Mode::TwoFinger {
+        put(surface, p);
+        two_finger_moved(surface);
+        return;
+    }
+    let distance = tx.hypot(ty);
+    // JS hears of the first move only now: give its responder a chance to
+    // take the gesture (and block native drags) before one starts.
+    let js_pending = p.reporting && !moved;
+    if p.mode == Mode::Idle && distance > PAN_SLOP.0 && !js_pending {
+        // While the gate decides, the candidates around it wait (the
+        // pointer stays idle and they are asked again on the next move).
+        if p.gate.is_none() {
+            p.mode = Mode::Free;
+        }
+        let started = if surface.input.js_block.get() {
+            None
+        } else {
+            input::startable(&p.candidates, p.gate.as_ref(), Points(tx), Points(ty)).cloned()
+        };
+        match started {
+            Some((view, Candidate::Pan { .. })) => {
+                p.gate = None;
+                pan_start(surface, &view, &p);
+                p.mode = Mode::Pan(view);
+            }
+            Some((view, Candidate::Scroll { .. })) => {
+                // The scroll view takes the touches over from JS.
+                if p.reporting {
+                    report(surface, TouchPhase::Cancel, &p, None);
+                    p.reporting = false;
+                }
+                p.gate = None;
+                crate::scroll::drag_begin(surface, &view);
+                p.mode = Mode::Scroll(view, (x, y));
+            }
+            None => {}
+        }
+    }
+    if matches!(p.mode, Mode::Pan(_) | Mode::Scroll(..)) || distance > PRESS_SLOP.0 {
+        cancel_press(surface, &mut p);
+        release_pressed(surface, &mut p);
+    }
+    match &p.mode {
+        Mode::Pan(view) => {
+            let view = view.clone();
+            pan_move(surface, &view, tx, ty);
+        }
+        Mode::Scroll(view, origin) => {
+            crate::scroll::drag_move(surface, view, x - origin.0, y - origin.1);
+        }
+        Mode::Thumb(view, origin) => {
+            crate::scroll::thumb_move(surface, view, x - origin.0, y - origin.1);
+        }
+        _ => {}
+    }
+    put(surface, p);
+}
+
+fn up(surface: &Rc<Surface>, key: Key, x: f32, y: f32, time: f64, cancelled: bool) {
+    let Some(mut p) = take(surface, key) else {
+        return;
+    };
+    p.x = x;
+    p.y = y;
+    p.time = time;
+    p.velocity.add(time, point(Points(x), Points(y)));
+    finish(surface, p, cancelled);
+}
+
+/// The pointer lifted (or was cancelled): ends what it did.
+fn finish(surface: &Rc<Surface>, mut p: Pointer, cancelled: bool) {
+    if p.reporting {
+        let phase = if cancelled {
+            TouchPhase::Cancel
+        } else {
+            TouchPhase::End
+        };
+        report(surface, phase, &p, None);
+    }
+    release_pressed(surface, &mut p);
+    if p.key == Key::Mouse {
+        crate::selectable_view::released(surface);
+    }
+    let mode = std::mem::replace(&mut p.mode, Mode::Free);
+    match mode {
+        Mode::TwoFinger => end_two_finger(surface),
+        Mode::Pan(view) => {
+            pan_move(surface, &view, p.x - p.start.0, p.y - p.start.1);
+            pan_end(surface, &view, &p, true);
+        }
+        Mode::Scroll(view, _) => {
+            let (vx, vy) = p.velocity.velocity();
+            crate::scroll::drag_end(surface, &view, vx, vy);
+        }
+        Mode::Thumb(view, _) => crate::scroll::thumb_end(surface, &view),
+        Mode::Idle | Mode::Free => {
+            if let Some(mut press) = p.press.take() {
+                let at = (p.x, p.y);
+                if cancelled {
+                    press_out(surface, &mut press, false, at);
+                } else {
+                    // A quick tap inside a scroll view: the press in now.
+                    press_in(surface, &mut press, at);
+                    let inside = released_inside(surface, &press.view, p.x, p.y);
+                    press_out(surface, &mut press, inside, at);
+                }
+            }
+        }
+    }
+}
+
+/// Cancels every pointer (the grab broke).
+fn cancel_all(surface: &Rc<Surface>) {
+    let pointers = std::mem::take(&mut *surface.input.pointers.borrow_mut());
+    for p in pointers {
+        // Each with the others gone: JS hears one cancel per finger.
+        finish(surface, p, true);
+    }
+}
+
+/// A pen's state at the latest pointer event: pressure (0 to 1) and tilt
+/// in degrees, `None` for a mouse.
+#[derive(Clone, Copy)]
+struct Pen {
+    pressure: f32,
+    tilt: (f32, f32),
+}
+
+thread_local! {
+    static PEN: std::cell::Cell<Option<Pen>> = const { std::cell::Cell::new(None) };
+}
+
+/// Keeps the pen state of `event`, when it is a mouse event: a tablet's
+/// pen drives the pointer, and its events carry the tool and its axes.
+fn pen_sample(event: &gdk::Event) {
+    use gdk::EventType as T;
+    if !matches!(
+        event.event_type(),
+        T::ButtonPress | T::ButtonRelease | T::MotionNotify
+    ) {
+        return;
+    }
+    let pen = event
+        .device_tool()
+        .filter(|tool| {
+            matches!(
+                tool.tool_type(),
+                gdk::DeviceToolType::Pen
+                    | gdk::DeviceToolType::Eraser
+                    | gdk::DeviceToolType::Pencil
+                    | gdk::DeviceToolType::Brush
+            )
+        })
+        .map(|_| {
+            let axis = |a| event.axis(a).unwrap_or(0.0) as f32;
+            Pen {
+                pressure: event
+                    .axis(gdk::AxisUse::Pressure)
+                    .map_or(0.5, |v| v.clamp(0.0, 1.0) as f32),
+                // GDK's tilt runs -1 to 1.
+                tilt: (
+                    axis(gdk::AxisUse::Xtilt) * 90.0,
+                    axis(gdk::AxisUse::Ytilt) * 90.0,
+                ),
+            }
+        });
+    PEN.set(pen);
+}
+
+/// `event` with the pen's state, when a pen sent the latest mouse event.
+fn with_pen(event: nsh_core::MouseEvent) -> nsh_core::MouseEvent {
+    match PEN.get() {
+        Some(pen) => event.with_pointer(
+            nsh_core::PointerType::Pen,
+            pen.pressure,
+            pen.tilt.0,
+            pen.tilt.1,
+        ),
+        None => event,
+    }
+}
+
+/// Sends the touches of the reporting pointers, `changed` being the one
+/// that `phase` is about (it is not in the list while it is handled), and
+/// the view whose pan activation fired with it.
+fn report(surface: &Surface, phase: TouchPhase, changed: &Pointer, activated: Option<NodeId>) {
+    let pen = PEN.get();
+    let points = {
+        let pointers = surface.input.pointers.borrow();
+        pointers
+            .iter()
+            .chain(std::iter::once(changed))
+            .filter(|p| p.reporting)
+            .map(|p| {
+                let is_changed = std::ptr::eq(p, changed);
+                let (lx, ly) = local(surface, &p.target, p.x, p.y);
+                TouchPoint {
+                    id: p.id,
+                    target: p.target.id(),
+                    // JS keeps a finger's path from its start.
+                    path: if phase == TouchPhase::Start && is_changed {
+                        p.path.clone()
+                    } else {
+                        Vec::new()
+                    },
+                    page: point(Points(p.x), Points(p.y)),
+                    location: point(Points(lx), Points(ly)),
+                    changed: is_changed,
+                    pointer_type: match (p.key == Key::Mouse, pen) {
+                        (true, Some(_)) => nsh_core::PointerType::Pen,
+                        (true, None) => nsh_core::PointerType::Mouse,
+                        (false, _) => nsh_core::PointerType::Touch,
+                    },
+                    pressure: match pen.filter(|_| p.key == Key::Mouse) {
+                        Some(pen)
+                            if !(is_changed
+                                && matches!(phase, TouchPhase::End | TouchPhase::Cancel)) =>
+                        {
+                            pen.pressure
+                        }
+                        _ => TouchPoint::default_pressure(phase, is_changed),
+                    },
+                    tilt_x: pen
+                        .filter(|_| p.key == Key::Mouse)
+                        .map_or(0.0, |pen| pen.tilt.0),
+                    tilt_y: pen
+                        .filter(|_| p.key == Key::Mouse)
+                        .map_or(0.0, |pen| pen.tilt.1),
+                }
+            })
+            .collect()
+    };
+    let event = TouchEvent {
+        phase,
+        timestamp: changed.time,
+        points,
+        modifiers: changed.modifiers,
+        activated,
+    };
+    surface.event(
+        ROOT_ID,
+        EventKind::Touch,
+        EventPayload::Touch(Box::new(event)),
+    );
+}
+
+/// Runs `f` on pointer `key` after `ms` unless its press `generation` ended.
+fn after(
+    surface: &Rc<Surface>,
+    key: Key,
+    generation: u64,
+    ms: u64,
+    f: impl FnOnce(&Rc<Surface>, &mut Pointer) + 'static,
+) {
+    let weak = Rc::downgrade(surface);
+    glib::timeout_add_local_once(Duration::from_millis(ms), move || {
+        let Some(surface) = weak.upgrade() else {
+            return;
+        };
+        let Some(mut p) = take(&surface, key) else {
+            return;
+        };
+        if p.press
+            .as_ref()
+            .is_some_and(|press| press.generation == generation)
+        {
+            f(&surface, &mut p);
+        }
+        put(&surface, p);
+    });
+}
+
+fn release_pressed(surface: &Surface, p: &mut Pointer) {
+    for v in p.pressed.drain(..) {
+        set_state(surface, &v, PRESSED, false);
+    }
+}
+
+// --- Presses ------------------------------------------------------------------------
+
+/// The press a pointer down at `(x, y)` on `target` starts: the pressable
+/// text span under it, else the innermost enabled view listening to
+/// presses.
+fn find_press(
+    surface: &Surface,
+    target: &NshView,
+    views: &[NshView],
+    x: f32,
+    y: f32,
+) -> Option<Press> {
+    let generation = surface.input.next_gen.get();
+    surface.input.next_gen.set(generation + 1);
+    {
+        let s = target.state();
+        if let Some(text) = &s.text
+            && !text.text.links.is_empty()
+        {
+            let (lx, ly) = local(surface, target, x, y);
+            let link = crate::text::char_at(&s, lx, ly).and_then(|i| text.text.link_at(i));
+            if let Some(link) = link
+                && has_press(link.events)
+            {
+                return Some(Press::new(
+                    target.clone(),
+                    link.node,
+                    link.events,
+                    s.props.long_press_delay,
+                    generation,
+                ));
+            }
+        }
+    }
+    nsh_core::input::pick_press(
+        views.iter().map(|v| {
+            let s = v.state();
+            (
+                v.clone(),
+                s.id,
+                s.events,
+                s.props.long_press_delay,
+                s.props.accessibility.state.disabled,
+            )
+        }),
+        generation,
+    )
+}
+
+/// Presses in: `onPressDown`, the first time. `at` is the pointer in root
+/// coordinates.
+fn press_in(surface: &Rc<Surface>, press: &mut Press, at: (f32, f32)) {
+    if let Some(kind) = press.press_in() {
+        press_event(surface, press, kind, at);
+    }
+}
+
+/// Ends a press: `onPressUp`, then `onPress` if `fire` (released inside)
+/// and it was no long press.
+fn press_out(surface: &Rc<Surface>, press: &mut Press, fire: bool, at: (f32, f32)) {
+    for kind in press.press_out(fire) {
+        press_event(surface, press, kind, at);
+    }
+}
+
+/// Sends `kind` of `press` with the pointer at `(x, y)` (root coordinates).
+fn press_event(surface: &Surface, press: &Press, kind: EventKind, (x, y): (f32, f32)) {
+    log::debug!(target: "nsh::input", "{} on {}", kind.prop_name(), press.node);
+    let (location_x, location_y) = local(surface, &press.view, x, y);
+    let event = nsh_core::PressEvent {
+        position: point(Points(location_x), Points(location_y)),
+        page_position: point(Points(x), Points(y)),
+        modifiers: press.modifiers,
+        clicks: press.clicks,
+    };
+    surface.event(press.target(kind), kind, EventPayload::Press(event));
+}
+
+fn cancel_press(surface: &Rc<Surface>, p: &mut Pointer) {
+    if let Some(mut press) = p.press.take() {
+        press_out(surface, &mut press, false, (p.x, p.y));
+    }
+}
+
+/// The modifier keys of GDK's `state`.
+pub(crate) fn modifiers(state: gdk::ModifierType) -> nsh_core::keymap::Modifiers {
+    nsh_core::keymap::Modifiers {
+        ctrl: state.contains(gdk::ModifierType::CONTROL_MASK),
+        alt: state.contains(gdk::ModifierType::ALT_MASK),
+        shift: state.contains(gdk::ModifierType::SHIFT_MASK),
+        cmd: state.contains(gdk::ModifierType::SUPER_MASK),
+    }
+}
+
+/// A mouse press's click count: 2 or 3 when it follows the last one
+/// quickly and close by, as GTK counts double clicks.
+fn click_count(input: &Input, x: f32, y: f32, time: f64) -> u32 {
+    let settings = gtk::Settings::default();
+    let interval = settings.as_ref().map_or(400, |s| s.gtk_double_click_time()) as f64;
+    let distance = settings
+        .as_ref()
+        .map_or(5, |s| s.gtk_double_click_distance()) as f32;
+    let count = match input.click.get() {
+        Some((t, cx, cy, n))
+            if time - t >= 0.0
+                && time - t <= interval
+                && (x - cx).abs() <= distance
+                && (y - cy).abs() <= distance =>
+        {
+            (n % 3) + 1
+        }
+        _ => 1,
+    };
+    input.click.set(Some((time, x, y, count)));
+    count
+}
+
+/// Whether a release at `(x, y)` (root coordinates) is on `view`, its hit
+/// slop and a small tolerance around them.
+fn released_inside(surface: &Surface, view: &NshView, x: f32, y: f32) -> bool {
+    let (lx, ly) = local(surface, view, x, y);
+    let s = view.state();
+    input::released_inside(
+        point(Points(lx), Points(ly)),
+        s.frame.size,
+        s.props.hit_slop,
+    )
+}
+
+// --- Pans ---------------------------------------------------------------------------
+
+fn pan_payload(surface: &Surface, id: NodeId, t: (f32, f32), v: (f32, f32)) -> EventPayload {
+    let (value_x, value_y) = surface.anim.borrow().pan_values(id);
+    EventPayload::Pan {
+        translation: point(Points(t.0), Points(t.1)),
+        velocity_x: v.0,
+        velocity_y: v.1,
+        value_x: value_x.map(Points),
+        value_y: value_y.map(Points),
+    }
+}
+
+fn pan_start(surface: &Rc<Surface>, view: &NshView, p: &Pointer) {
+    let (id, events) = {
+        let s = view.state();
+        (s.id, s.events)
+    };
+    surface.anim.borrow_mut().pan_began(id);
+    if events.contains(EventKind::PanStart) {
+        let payload = pan_payload(surface, id, (0.0, 0.0), p.velocity.velocity());
+        surface.event(id, EventKind::PanStart, payload);
+    }
+}
+
+fn pan_move(surface: &Rc<Surface>, view: &NshView, tx: f32, ty: f32) {
+    let id = view.state().id;
+    surface.anim.borrow_mut().pan_moved(id, tx, ty);
+    surface.write_animations();
+    surface.ensure_ticking();
+}
+
+/// Reports the end of a pan (`write`: the values may be written now; not
+/// while a batch is applied).
+fn pan_end(surface: &Rc<Surface>, view: &NshView, p: &Pointer, write: bool) {
+    let (id, events) = {
+        let s = view.state();
+        (s.id, s.events)
+    };
+    if write {
+        surface.write_animations();
+    }
+    if events.contains(EventKind::PanEnd) {
+        let t = (p.x - p.start.0, p.y - p.start.1);
+        let payload = pan_payload(surface, id, t, p.velocity.velocity());
+        surface.event(id, EventKind::PanEnd, payload);
+    }
+}
+
+// --- Pinch and rotation -------------------------------------------------------------
+
+fn transform_payload(key: &'static str, amount: f32) -> EventPayload {
+    EventPayload::Map(vec![
+        (key, PayloadValue::Number(amount as f64)),
+        ("velocity", PayloadValue::Number(0.0)),
+    ])
+}
+
+fn transform_view(surface: &Surface, view: &NshView) -> Transform {
+    let (id, events) = {
+        let s = view.state();
+        (s.id, s.events)
+    };
+    let (pinch, rotation) = transforms(&gesture_values(surface, view, id), events);
+    Transform {
+        view: view.clone(),
+        pinch,
+        rotation,
+        scale: 1.0,
+        degrees: 0.0,
+    }
+}
+
+fn transform_begin(surface: &Surface, t: &Transform) {
+    let (id, events) = {
+        let s = t.view.state();
+        (s.id, s.events)
+    };
+    {
+        let mut anim = surface.anim.borrow_mut();
+        if t.pinch {
+            anim.transform_began(id, false);
+        }
+        if t.rotation {
+            anim.transform_began(id, true);
+        }
+    }
+    if t.pinch && events.contains(EventKind::PinchStart) {
+        surface.event(id, EventKind::PinchStart, transform_payload("scale", 1.0));
+    }
+    if t.rotation && events.contains(EventKind::RotationStart) {
+        let payload = transform_payload("rotation", 0.0);
+        surface.event(id, EventKind::RotationStart, payload);
+    }
+}
+
+fn transform_move(surface: &Rc<Surface>, t: &Transform) {
+    let id = t.view.state().id;
+    {
+        let mut anim = surface.anim.borrow_mut();
+        if t.pinch {
+            anim.transform_moved(id, false, t.scale);
+        }
+        if t.rotation {
+            anim.transform_moved(id, true, t.degrees);
+        }
+    }
+    surface.write_animations();
+    surface.ensure_ticking();
+}
+
+fn transform_end(surface: &Surface, t: &Transform) {
+    let (id, events) = {
+        let s = t.view.state();
+        (s.id, s.events)
+    };
+    if t.pinch && events.contains(EventKind::PinchEnd) {
+        surface.event(id, EventKind::PinchEnd, transform_payload("scale", t.scale));
+    }
+    if t.rotation && events.contains(EventKind::RotationEnd) {
+        let payload = transform_payload("rotation", t.degrees);
+        surface.event(id, EventKind::RotationEnd, payload);
+    }
+}
+
+/// A second finger went down (`p`, not in the list yet): pinches /
+/// rotates the view either finger would, ending what the first one did.
+fn start_two_finger(surface: &Rc<Surface>, p: &mut Pointer) -> bool {
+    let other = {
+        let pointers = surface.input.pointers.borrow();
+        let mut touches = pointers.iter().filter(|o| o.touch);
+        match (touches.next(), touches.next()) {
+            (Some(o), None) => o.key,
+            _ => return false,
+        }
+    };
+    let Some(mut o) = take(surface, other) else {
+        return false;
+    };
+    let Some(view) = p.pinch.clone().or_else(|| o.pinch.clone()) else {
+        put(surface, o);
+        return false;
+    };
+    for q in [&mut *p, &mut o] {
+        cancel_press(surface, q);
+        release_pressed(surface, q);
+    }
+    match std::mem::replace(&mut o.mode, Mode::TwoFinger) {
+        Mode::Pan(pan) => pan_end(surface, &pan, &o, true),
+        Mode::Scroll(scroll, _) => crate::scroll::drag_end(surface, &scroll, 0.0, 0.0),
+        _ => {}
+    }
+    p.mode = Mode::TwoFinger;
+    let transform = transform_view(surface, &view);
+    transform_begin(surface, &transform);
+    *surface.input.two.borrow_mut() = Some(TwoFinger {
+        keys: [o.key, p.key],
+        pinch: Pinch::new(
+            point(Points(o.x), Points(o.y)),
+            point(Points(p.x), Points(p.y)),
+        ),
+        transform,
+    });
+    put(surface, o);
+    true
+}
+
+fn two_finger_moved(surface: &Rc<Surface>) {
+    let transform = {
+        let mut two = surface.input.two.borrow_mut();
+        let Some(t) = two.as_mut() else { return };
+        let positions = {
+            let pointers = surface.input.pointers.borrow();
+            let at = |key: Key| {
+                let p = pointers.iter().find(|p| p.key == key)?;
+                Some(point(Points(p.x), Points(p.y)))
+            };
+            at(t.keys[0]).zip(at(t.keys[1]))
+        };
+        let Some((a, b)) = positions else { return };
+        let (scale, rotation) = t.pinch.at(a, b);
+        t.transform.scale = scale;
+        t.transform.degrees = rotation.0.to_degrees();
+        t.transform.clone()
+    };
+    transform_move(surface, &transform);
+}
+
+/// A finger of the pair lifted: the gesture ends, the other finger does
+/// nothing more until it lifts.
+fn end_two_finger(surface: &Rc<Surface>) {
+    let Some(t) = surface.input.two.borrow_mut().take() else {
+        return;
+    };
+    for p in surface.input.pointers.borrow_mut().iter_mut() {
+        if t.keys.contains(&p.key) {
+            p.mode = Mode::Free;
+        }
+    }
+    transform_end(surface, &t.transform);
+}
+
+/// `onPinch` for a touchpad pinch event at `(x, y)` (root coordinates):
+/// the nearest view around the one under it that listens hears the pinch
+/// from its start to its end ([`WheelLatch`]). Returns whether that view
+/// takes it ([`input::wheel_listener`]: no view that pinches natively is
+/// nearer, nor is it one), so nothing pinches natively.
+fn pinch_event(surface: &Rc<Surface>, event: &gdk::TouchpadEvent, x: f32, y: f32) -> bool {
+    let input = &surface.input;
+    let (step, phase) = match event.gesture_phase() {
+        gdk::TouchpadGesturePhase::Begin => {
+            input.pinch_scale.set(1.0);
+            (WheelStep::Begin, nsh_core::PinchPhase::Start)
+        }
+        gdk::TouchpadGesturePhase::Update => (WheelStep::Continue, nsh_core::PinchPhase::Move),
+        _ => (WheelStep::End, nsh_core::PinchPhase::End),
+    };
+    let routed = input.pinch_listener.borrow_mut().route(
+        step,
+        true,
+        false,
+        |view| view.is_mapped() && view.state().events.contains(EventKind::Pinch),
+        || {
+            let hit = pick(&event_root(surface), x, y)?;
+            input::wheel_listener(
+                chain(&hit.view),
+                |v| v.state().events.contains(EventKind::Pinch),
+                |v| {
+                    let (id, events) = {
+                        let s = v.state();
+                        (s.id, s.events)
+                    };
+                    transforms(&gesture_values(surface, v, id), events).0
+                },
+            )
+        },
+    );
+    let Some((view, takes)) = routed else {
+        return false;
+    };
+    let delta = if phase == nsh_core::PinchPhase::Move {
+        let scale = event.pinch_scale() as f32;
+        let before = input.pinch_scale.get().max(0.01);
+        input.pinch_scale.set(scale);
+        scale / before - 1.0
+    } else {
+        0.0
+    };
+    let (location_x, location_y) = local(surface, &view, x, y);
+    let pinch = nsh_core::PinchEvent::new(
+        point(Points(location_x), Points(location_y)),
+        point(Points(x), Points(y)),
+        nsh_core::geometry::Percentage(delta),
+        phase,
+        modifiers(event.modifier_state()),
+    );
+    let id = view.state().id;
+    surface.event(id, EventKind::Pinch, EventPayload::Pinch(pinch));
+    takes
+}
+
+fn touchpad_pinch(surface: &Rc<Surface>, event: &gdk::TouchpadEvent, x: f32, y: f32) -> bool {
+    if pinch_event(surface, event, x, y) {
+        return true;
+    }
+    match event.gesture_phase() {
+        gdk::TouchpadGesturePhase::Begin => {
+            let Some(hit) = pick(&event_root(surface), x, y) else {
+                return false;
+            };
+            let view = chain(&hit.view).into_iter().find(|v| {
+                let s = v.state();
+                transforms(&gesture_values(surface, v, s.id), s.events) != (false, false)
+            });
+            let Some(view) = view else { return false };
+            let t = transform_view(surface, &view);
+            transform_begin(surface, &t);
+            *surface.input.pinch.borrow_mut() = Some(t);
+            true
+        }
+        gdk::TouchpadGesturePhase::Update => {
+            let t = {
+                let mut pinch = surface.input.pinch.borrow_mut();
+                let Some(t) = pinch.as_mut() else {
+                    return false;
+                };
+                t.scale = event.pinch_scale() as f32;
+                t.degrees += event.pinch_angle_delta().to_degrees() as f32;
+                t.clone()
+            };
+            transform_move(surface, &t);
+            true
+        }
+        _ => {
+            let Some(t) = surface.input.pinch.borrow_mut().take() else {
+                return false;
+            };
+            transform_end(surface, &t);
+            true
+        }
+    }
+}
+
+/// A Ctrl + wheel step of `dy` notches (negative: zooms in) at `(x, y)`:
+/// pinches the view under it that pinches, ending once the steps stop.
+/// Returns whether a view took it.
+fn wheel_zoom(surface: &Rc<Surface>, x: f32, y: f32, dy: f32) -> bool {
+    let input = &surface.input;
+    let generation = input.next_gen.get();
+    input.next_gen.set(generation + 1);
+    let current = input.zoom.borrow_mut().take();
+    let mut t = match current {
+        Some((t, _)) => t,
+        None => {
+            let Some(hit) = pick(&event_root(surface), x, y) else {
+                return false;
+            };
+            let view = chain(&hit.view).into_iter().find(|v| {
+                let s = v.state();
+                transforms(&gesture_values(surface, v, s.id), s.events).0
+            });
+            let Some(view) = view else { return false };
+            let mut t = transform_view(surface, &view);
+            t.rotation = false;
+            transform_begin(surface, &t);
+            t
+        }
+    };
+    t.scale *= input::zoom_factor(dy);
+    transform_move(surface, &t);
+    *input.zoom.borrow_mut() = Some((t, generation));
+    let weak = Rc::downgrade(surface);
+    glib::timeout_add_local_once(Duration::from_millis(ZOOM_IDLE), move || {
+        let Some(surface) = weak.upgrade() else {
+            return;
+        };
+        let ended = {
+            let mut zoom = surface.input.zoom.borrow_mut();
+            match zoom.as_ref() {
+                Some((_, g)) if *g == generation => zoom.take(),
+                _ => None,
+            }
+        };
+        if let Some((t, _)) = ended {
+            transform_end(&surface, &t);
+        }
+    });
+    true
+}
+
+// --- Hover --------------------------------------------------------------------------
+
+/// The mouse moved to `(x, y)`: updates `HOVERED` and raises
+/// `onMouseEnter` / `onMouseLeave` along the views under it.
+fn hover(surface: &Rc<Surface>, x: f32, y: f32) {
+    let input = &surface.input;
+    let views = pick(&event_root(surface), x, y)
+        .map(|hit| chain(&hit.view))
+        .unwrap_or_default();
+    // Reveal only the scroll thumb under the pointer, including in nested scroll views.
+    for v in views.iter().filter(|v| v.kind() == ViewKind::Scroll) {
+        let (lx, ly) = local(surface, v, x, y);
+        crate::scroll::hovered(surface, v, lx, ly);
+    }
+    if input.hover_tracked.borrow().is_empty() && input.hovered.borrow().is_empty() {
+        return;
+    }
+    let views = views.into_iter().filter(hoverable).collect();
+    set_hovered(surface, views, x, y);
+}
+
+/// The views under the mouse at `(x, y)` (root coordinates) are `views`
+/// (innermost first): those it left hear so from the inside out, then
+/// those it came over from the outside in, as with the DOM's
+/// `pointerleave` / `pointerenter`.
+fn set_hovered(surface: &Surface, views: Vec<NshView>, x: f32, y: f32) {
+    let old = std::mem::replace(&mut *surface.input.hovered.borrow_mut(), views.clone());
+    let (left, entered) = input::hover_changes(&old, &views);
+    let state = surface
+        .input
+        .last_state
+        .get()
+        .unwrap_or(gdk::ModifierType::empty());
+    for v in left {
+        set_state(surface, v, HOVERED, false);
+        mouse_event(surface, v, EventKind::MouseLeave, x, y, state);
+    }
+    for v in entered {
+        set_state(surface, v, HOVERED, true);
+        mouse_event(surface, v, EventKind::MouseEnter, x, y, state);
+    }
+}
+
+/// `view` is removed or deleted: it and the views inside it leave the hover
+/// without an `onMouseLeave`, and the keyboard focus at once (a removal
+/// animation keeps them in the tree), as a removed DOM element does. A
+/// removed view can outlive its component (a JS cycle through its ref),
+/// whose handlers must not run.
+pub(crate) fn removed(surface: &Surface, view: &NshView) {
+    crate::navigation::drop_focus(view);
+    let input = &surface.input;
+    let inside = |v: &NshView| v == view || v.is_ancestor(view);
+    if input
+        .link_hovered
+        .borrow()
+        .as_ref()
+        .is_some_and(|(v, _)| inside(v))
+    {
+        input.link_hovered.borrow_mut().take();
+    }
+    if input.hovered.borrow().is_empty() {
+        return;
+    }
+    let mut gone = Vec::new();
+    input.hovered.borrow_mut().retain(|v| {
+        if inside(v) {
+            gone.push(v.clone());
+            return false;
+        }
+        true
+    });
+    for v in &gone {
+        set_state(surface, v, HOVERED, false);
+    }
+}
+
+/// `onMouseMove` of the views under the mouse at `(x, y)` (root
+/// coordinates) and the views they are inside, inside out, each with the
+/// mouse in its own coordinates; `state` holds the modifiers and the
+/// buttons down. Real mouse motion and modifier changes only: content
+/// re-picking must not synthesize moves.
+///
+/// The hovered views are those views, as [`hover`] picked them at this
+/// position just before (listening to `onMouseMove` makes a view
+/// hoverable), so a move does not pick again.
+fn mouse_moved(surface: &Surface, x: f32, y: f32, state: gdk::ModifierType) {
+    if surface.input.mouse_tracked.borrow().is_empty() {
+        return;
+    }
+    let hovered = surface.input.hovered.borrow().clone();
+    for view in &hovered {
+        mouse_event(surface, view, EventKind::MouseMove, x, y, state);
+    }
+}
+
+/// `onMouseUp` of the views under the mouse at `(x, y)` (root coordinates)
+/// and the views they are inside, inside out, each with the mouse in it and
+/// the button that was released.
+fn mouse_up(surface: &Surface, x: f32, y: f32, state: gdk::ModifierType, button: MouseButton) {
+    let Some(hit) = pick(&event_root(surface), x, y) else {
+        return;
+    };
+    for view in chain(&hit.view) {
+        let id = {
+            let s = view.state();
+            if !s.events.contains(EventKind::MouseUp) {
+                continue;
+            }
+            s.id
+        };
+        let (location_x, location_y) = local(surface, &view, x, y);
+        let event = nsh_core::MouseEvent::released(
+            point(Points(location_x), Points(location_y)),
+            point(Points(x), Points(y)),
+            modifiers(state),
+            button,
+        );
+        surface.event(id, EventKind::MouseUp, EventPayload::Mouse(with_pen(event)));
+    }
+}
+
+/// A modifier key pressed or released while the mouse rests with no
+/// button down: the views under it that listen hear `onMouseMove` again
+/// where it is, with the modifiers as they are now (an editor underlines
+/// a definition while Control is held), as they would on the next move.
+fn modifiers_changed(surface: &Surface, event: &gdk::Event, pressed: bool) {
+    let Some(key) = event.downcast_ref::<gdk::KeyEvent>() else {
+        return;
+    };
+    let mask = match key.keyval() {
+        gdk::Key::Control_L | gdk::Key::Control_R => gdk::ModifierType::CONTROL_MASK,
+        gdk::Key::Shift_L | gdk::Key::Shift_R => gdk::ModifierType::SHIFT_MASK,
+        gdk::Key::Alt_L | gdk::Key::Alt_R | gdk::Key::Meta_L | gdk::Key::Meta_R => {
+            gdk::ModifierType::ALT_MASK
+        }
+        gdk::Key::Super_L | gdk::Key::Super_R => gdk::ModifierType::SUPER_MASK,
+        _ => return,
+    };
+    // A key event's state is the one before it.
+    let mut state = event.modifier_state();
+    state.set(mask, pressed);
+    surface.input.last_state.set(Some(state));
+    let Some((x, y)) = surface.input.last.get() else {
+        return;
+    };
+    if pressed_button(surface, state).is_none() {
+        mouse_moved(surface, x, y, state);
+    }
+}
+
+/// `kind` (`onMouseEnter`, `onMouseMove`, `onMouseLeave`) of `view`, if
+/// it listens, with the mouse at `(x, y)` (root coordinates) and `state`
+/// holding the modifiers and the buttons down.
+fn mouse_event(
+    surface: &Surface,
+    view: &NshView,
+    kind: EventKind,
+    x: f32,
+    y: f32,
+    state: gdk::ModifierType,
+) {
+    let (id, listens) = {
+        let s = view.state();
+        (s.id, s.events.contains(kind))
+    };
+    if !listens {
+        return;
+    }
+    let (location_x, location_y) = local(surface, view, x, y);
+    let event = nsh_core::MouseEvent::new(
+        point(Points(location_x), Points(location_y)),
+        point(Points(x), Points(y)),
+        modifiers(state),
+        pressed_button(surface, state),
+    );
+    surface.event(id, kind, EventPayload::Mouse(with_pen(event)));
+}
+
+/// The mouse button held down: the one `state` holds (GDK's button masks),
+/// else the one the backend recorded (a press GDK sent, whose button may
+/// have no mask, as the side buttons; or a simulated press, whose drags
+/// carry no state).
+fn pressed_button(surface: &Surface, state: gdk::ModifierType) -> Option<MouseButton> {
+    held_button(state).or(surface.input.button.get())
+}
+
+/// The mouse button GDK's button masks in `state` say is down.
+fn held_button(state: gdk::ModifierType) -> Option<MouseButton> {
+    [MouseButton::Left, MouseButton::Right, MouseButton::Middle]
+        .into_iter()
+        .find(|&button| state.contains(button_mask(button)))
+}
+
+/// GDK's mouse button `button`: 1 left, 2 middle, 3 right, 8 back and 9
+/// forward (4 to 7 are wheel steps on X11).
+fn mouse_button(button: u32) -> Option<MouseButton> {
+    Some(match button {
+        gdk::BUTTON_PRIMARY => MouseButton::Left,
+        gdk::BUTTON_MIDDLE => MouseButton::Middle,
+        gdk::BUTTON_SECONDARY => MouseButton::Right,
+        8 => MouseButton::Back,
+        9 => MouseButton::Forward,
+        _ => return None,
+    })
+}
+
+/// The mask of `button` in GDK's modifier state (none for the side
+/// buttons).
+fn button_mask(button: MouseButton) -> gdk::ModifierType {
+    match button {
+        MouseButton::Left => gdk::ModifierType::BUTTON1_MASK,
+        MouseButton::Middle => gdk::ModifierType::BUTTON2_MASK,
+        MouseButton::Right => gdk::ModifierType::BUTTON3_MASK,
+        MouseButton::Back | MouseButton::Forward => gdk::ModifierType::empty(),
+    }
+}
+
+/// Records the mouse button a press leaves down, and forgets it at its
+/// release; the state the mouse events of views the pointer comes over or
+/// leaves before it moves again report holds it from now on (a button
+/// event's state is the one before it).
+fn record_button(surface: &Surface, event: &gdk::Event) {
+    use gdk::EventType as T;
+    let ty = event.event_type();
+    if !matches!(ty, T::ButtonPress | T::ButtonRelease) {
+        return;
+    }
+    let Some(button) = event
+        .downcast_ref::<gdk::ButtonEvent>()
+        .and_then(|b| mouse_button(b.button()))
+    else {
+        return;
+    };
+    let input = &surface.input;
+    let pressed = ty == T::ButtonPress;
+    let mut state = event.modifier_state();
+    state.set(button_mask(button), pressed);
+    input.last_state.set(Some(state));
+    if pressed {
+        input.button.set(Some(button));
+    } else if input.button.get() == Some(button) {
+        input.button.set(None);
+    }
+}
+
+/// Forgets the mouse buttons held (the window lost the grab, or a
+/// simulated press ended).
+fn release_buttons(surface: &Surface) {
+    let input = &surface.input;
+    input.button.set(None);
+    if let Some(mut state) = input.last_state.get() {
+        let buttons = gdk::ModifierType::BUTTON1_MASK
+            | gdk::ModifierType::BUTTON2_MASK
+            | gdk::ModifierType::BUTTON3_MASK;
+        state.set(buttons, false);
+        input.last_state.set(Some(state));
+    }
+}
+
+// --- Wheel and touchpad scrolling ---------------------------------------------------
+
+/// Whether hosted widget `widget` (or one around it inside its view)
+/// scrolls by itself.
+fn scrolls_itself(widget: &gtk::Widget) -> bool {
+    let mut current = Some(widget.clone());
+    while let Some(w) = current {
+        if w.is::<NshView>() {
+            return false;
+        }
+        let ty = w.type_();
+        if ty.name().contains("WebView") {
+            // A page with `scrollable: false` leaves wheels to the
+            // scroll views around it.
+            return !w.has_css_class(crate::native::UNSCROLLABLE);
+        }
+        if ty.is_a(gtk::Scrollable::static_type()) || ty.is_a(gtk::ScrolledWindow::static_type()) {
+            return true;
+        }
+        current = w.parent();
+    }
+    false
+}
+
+/// The innermost scroll view at `(x, y)` that can move by `(dx, dy)`
+/// (nested views fall through to outer ones at their edges; `None` too
+/// when a hosted widget there scrolls itself). Scroll views along the
+/// wheel's axis take it: a vertical wheel over a carousel scrolls the page
+/// around it, as in browsers; horizontal views take vertical wheels only
+/// where nothing around scrolls vertically.
+fn scroll_target(surface: &Surface, x: f32, y: f32, dx: f32, dy: f32) -> Option<NshView> {
+    let hit = pick(&event_root(surface), x, y)?;
+    if hit.native.as_ref().is_some_and(scrolls_itself) {
+        return None;
+    }
+    input::scroll_target(
+        chain(&hit.view),
+        Points(dx),
+        Points(dy),
+        |v| v.state().scroll.as_ref().map(|s| s.horizontal),
+        |v| v.kind() == ViewKind::Scroll && crate::scroll::can_scroll(v, dx, dy),
+        crate::scroll::listens_to_scroll_intent,
+    )
+}
+
+/// Points one wheel notch scrolls a view `extent` points long, as
+/// GtkScrolledWindow does.
+fn notch(extent: f32) -> f32 {
+    extent.max(1.0).powf(2.0 / 3.0)
+}
+
+/// A scroll event at `(x, y)`; returns whether a scroll view took it.
+fn wheel_input(
+    surface: &Rc<Surface>,
+    x: f32,
+    y: f32,
+    dx: f32,
+    dy: f32,
+    time: f64,
+    kind: WheelInput,
+) -> bool {
+    let input = &surface.input;
+    match kind {
+        WheelInput::Step { notches } => {
+            if dx == 0.0 && dy == 0.0 {
+                return false;
+            }
+            // One scroll stays on its view, as in browsers: an inner view
+            // passing under the pointer does not take it over, and the view
+            // reaching its edge does not hand the rest to an outer one.
+            let horizontal = dx.abs() > dy.abs();
+            let latched = match &*input.latch.borrow() {
+                Some((view, h, last))
+                    if latch_holds(*h, *last, horizontal, time) && view.is_mapped() =>
+                {
+                    Some(view.clone())
+                }
+                _ => None,
+            };
+            let Some(view) = latched.or_else(|| scroll_target(surface, x, y, dx, dy)) else {
+                input.latch.borrow_mut().take();
+                return false;
+            };
+            *input.latch.borrow_mut() = Some((view.clone(), horizontal, time));
+            if crate::scroll::listens_to_scroll_intent(&view) {
+                surface.event(
+                    view.id(),
+                    EventKind::ScrollIntent,
+                    EventPayload::Map(vec![("intent", PayloadValue::Str("scroll".into()))]),
+                );
+            }
+            let (dx, dy) = if notches {
+                let s = view.state();
+                (
+                    dx * notch(s.frame.size.width.0),
+                    dy * notch(s.frame.size.height.0),
+                )
+            } else {
+                (dx, dy)
+            };
+            // Without a begin, the scroll module takes it as a mouse wheel:
+            // it settles (and snaps) by itself once the notches stop.
+            crate::scroll::wheel(surface, &view, dx, dy);
+            true
+        }
+        WheelInput::Touchpad => {
+            if dx == 0.0 && dy == 0.0 {
+                return input.wheel.borrow().is_some();
+            }
+            // After a hold the scroll goes where it points: the held view
+            // keeps it only if it scrolls that way.
+            let held = match &*input.wheel.borrow() {
+                Some(w) if w.held => Some(w.view.clone()),
+                _ => None,
+            };
+            if let Some(held) = held {
+                let target = scroll_target(surface, x, y, dx, dy);
+                if target.as_ref() == Some(&held) {
+                    *input.wheel.borrow_mut() = Some(new_wheel(held, time));
+                } else {
+                    input.wheel.borrow_mut().take();
+                    crate::scroll::wheel_end(surface, &held, 0.0, 0.0);
+                }
+            }
+            if input.wheel.borrow().is_none() {
+                let Some(view) = scroll_target(surface, x, y, dx, dy) else {
+                    return false;
+                };
+                *input.wheel.borrow_mut() = Some(new_wheel(view.clone(), time));
+                crate::scroll::wheel_begin(surface, &view);
+            }
+            let view = {
+                let mut wheel = input.wheel.borrow_mut();
+                let Some(w) = wheel.as_mut() else {
+                    return false;
+                };
+                w.total.0 += dx;
+                w.total.1 += dy;
+                w.velocity
+                    .add(time, point(Points(w.total.0), Points(w.total.1)));
+                w.moved = time;
+                w.view.clone()
+            };
+            crate::scroll::wheel(surface, &view, dx, dy);
+            true
+        }
+        WheelInput::Stop => {
+            let Some(w) = input.wheel.borrow_mut().take() else {
+                return false;
+            };
+            let (vx, vy) = release_velocity(&w.velocity, w.moved, time);
+            crate::scroll::wheel_end(surface, &w.view, vx, vy);
+            true
+        }
+    }
+}
+
+/// Fingers resting this long (ms) before they lift end the scroll without
+/// a glide.
+const FLING_PAUSE: f64 = 50.0;
+
+/// The speed the fingers had when they lifted at `time`. The stop event
+/// marks the end of the gesture, not a sample of its motion: counting the
+/// few ms between the last move and the lift as part of the flick would
+/// underestimate it (#2326).
+fn release_velocity(velocity: &VelocityTracker, moved: f64, time: f64) -> (f32, f32) {
+    if time - moved > FLING_PAUSE {
+        return (0.0, 0.0);
+    }
+    velocity.velocity()
+}
+
+fn new_wheel(view: NshView, time: f64) -> Wheel {
+    let mut velocity = VelocityTracker::default();
+    velocity.add(time, point(Points(0.0), Points(0.0)));
+    Wheel {
+        view,
+        total: (0.0, 0.0),
+        velocity,
+        moved: time,
+        held: false,
+    }
+}
+
+/// Fingers resting on the touchpad stop a glide; lifting them without
+/// scrolling ends that.
+fn touchpad_hold(surface: &Rc<Surface>, phase: gdk::TouchpadGesturePhase, x: f32, y: f32) -> bool {
+    let input = &surface.input;
+    if phase == gdk::TouchpadGesturePhase::Begin {
+        if input.wheel.borrow().is_some() {
+            return false;
+        }
+        let Some(hit) = pick(&event_root(surface), x, y) else {
+            return false;
+        };
+        let scroll = chain(&hit.view)
+            .into_iter()
+            .find(|v| v.kind() == ViewKind::Scroll);
+        let Some(view) = scroll else {
+            return false;
+        };
+        let mut wheel = new_wheel(view.clone(), 0.0);
+        wheel.held = true;
+        *input.wheel.borrow_mut() = Some(wheel);
+        crate::scroll::wheel_begin(surface, &view);
+        return true;
+    }
+    let held = input.wheel.borrow().as_ref().is_some_and(|w| w.held);
+    if !held {
+        return false;
+    }
+    if let Some(w) = input.wheel.borrow_mut().take() {
+        crate::scroll::wheel_end(surface, &w.view, 0.0, 0.0);
+    }
+    true
+}
+
+/// The closest file-drop listener under the pointer, within its modal root.
+pub(crate) fn file_drop_target(surface: &Surface, x: f32, y: f32) -> Option<NshView> {
+    let mut view = pick(&event_root(surface), x, y)?.view;
+    loop {
+        if view.state().events.contains(EventKind::FileDrop) {
+            return Some(view);
+        }
+        if view.kind() == ViewKind::Modal || view.id() == ROOT_ID {
+            return None;
+        }
+        view = view.parent_view()?;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn release_velocity_ignores_the_stop() {
+        use super::*;
+        // A flick from #2326: (time ms, dy points), lifted at 85 ms.
+        let moves = [
+            (0.0, 6.33),
+            (7.0, 8.96),
+            (15.0, 11.42),
+            (22.0, 13.88),
+            (29.0, 16.34),
+            (36.0, 17.57),
+            (50.0, 36.73),
+            (57.0, 18.10),
+            (64.0, 17.22),
+        ];
+        let mut v = VelocityTracker::default();
+        v.add(-7.0, point(Points(0.0), Points(0.0)));
+        let mut total = 0.0;
+        for (t, dy) in moves {
+            total += dy;
+            v.add(t, point(Points(0.0), Points(total)));
+        }
+        let (_, vy) = release_velocity(&v, 64.0, 85.0);
+        // Moves only: 146.55 points over 71 ms; the stop's sample made it 1.58.
+        assert!((vy / 1000.0 - 146.55 / 71.0).abs() < 0.01, "{vy}");
+        assert_eq!(
+            release_velocity(&v, 64.0, 64.0 + FLING_PAUSE + 1.0),
+            (0.0, 0.0)
+        );
+    }
+
+    use super::*;
+
+    #[test]
+    fn tests_ignore_the_real_pointer_only() {
+        use gdk::EventType as T;
+        for ty in [
+            T::MotionNotify,
+            T::ButtonPress,
+            T::ButtonRelease,
+            T::Scroll,
+            T::TouchBegin,
+            T::LeaveNotify,
+        ] {
+            assert!(real_pointer(ty), "{ty:?}");
+        }
+        // Keys and grabs still reach the app.
+        for ty in [T::KeyPress, T::KeyRelease, T::GrabBroken, T::FocusChange] {
+            assert!(!real_pointer(ty), "{ty:?}");
+        }
+    }
+
+    #[test]
+    fn edit_menu_items() {
+        let actions = |m: &gio::Menu| {
+            (0..m.n_items())
+                .map(|i| {
+                    m.item_attribute_value(i, "action", None)
+                        .and_then(|v| v.get::<String>())
+                        .unwrap_or_default()
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            actions(&edit_menu_model(true)),
+            ["clipboard.copy", "selection.select-all"]
+        );
+        // Nothing to copy: only Select All.
+        assert_eq!(actions(&edit_menu_model(false)), ["selection.select-all"]);
+    }
+
+    #[test]
+    fn cursors() {
+        assert_eq!(cursor_name(Cursor::Auto), None);
+        assert_eq!(cursor_name(Cursor::Default), Some("default"));
+        assert_eq!(cursor_name(Cursor::Pointer), Some("pointer"));
+        assert_eq!(cursor_name(Cursor::NotAllowed), Some("not-allowed"));
+        assert_eq!(cursor_name(Cursor::NwseResize), Some("nwse-resize"));
+        assert_eq!(cursor_name(Cursor::NeswResize), Some("nesw-resize"));
+    }
+
+    #[test]
+    fn links_and_attachments_win_over_the_ibeam() {
+        // Selectable text: the I-beam, the pointer over a pressable link.
+        assert_eq!(
+            choose_cursor(Cursor::Auto, false, true, || false),
+            Some("text")
+        );
+        assert_eq!(
+            choose_cursor(Cursor::Auto, true, true, || false),
+            Some("pointer")
+        );
+        // The text's own cursor wins everywhere.
+        assert_eq!(
+            choose_cursor(Cursor::Help, true, true, || false),
+            Some("help")
+        );
+        // A view inline in selectable text (a chip's placeholder, its
+        // margins): the arrow, not its text's I-beam; its own cursor first.
+        assert_eq!(
+            choose_cursor(Cursor::Auto, false, false, || true),
+            Some("default")
+        );
+        assert_eq!(
+            choose_cursor(Cursor::Pointer, false, false, || true),
+            Some("pointer")
+        );
+        // Elsewhere views inherit.
+        assert_eq!(choose_cursor(Cursor::Auto, false, false, || false), None);
+    }
+
+    #[test]
+    fn mouse_buttons() {
+        assert_eq!(mouse_button(1), Some(MouseButton::Left));
+        assert_eq!(mouse_button(2), Some(MouseButton::Middle));
+        assert_eq!(mouse_button(3), Some(MouseButton::Right));
+        // X11's wheel steps.
+        assert_eq!(mouse_button(4), None);
+        assert_eq!(mouse_button(7), None);
+        assert_eq!(mouse_button(8), Some(MouseButton::Back));
+        assert_eq!(mouse_button(9), Some(MouseButton::Forward));
+    }
+
+    #[test]
+    fn buttons_held_in_the_state() {
+        type M = gdk::ModifierType;
+        assert_eq!(held_button(M::empty()), None);
+        assert_eq!(held_button(M::CONTROL_MASK), None);
+        assert_eq!(
+            held_button(M::BUTTON1_MASK | M::SHIFT_MASK),
+            Some(MouseButton::Left)
+        );
+        assert_eq!(held_button(M::BUTTON2_MASK), Some(MouseButton::Middle));
+        assert_eq!(held_button(M::BUTTON3_MASK), Some(MouseButton::Right));
+        // The side buttons have no mask: the backend records them.
+        assert_eq!(button_mask(MouseButton::Back), M::empty());
+        assert_eq!(button_mask(MouseButton::Forward), M::empty());
+        for button in [MouseButton::Left, MouseButton::Middle, MouseButton::Right] {
+            assert_eq!(held_button(button_mask(button)), Some(button));
+        }
+    }
+
+    #[test]
+    fn a_removed_subtree_leaves_the_hover_without_a_word() {
+        use nsh_core::MountItem;
+
+        use crate::gtk_test::{apply, run, surface, view};
+
+        run(|| {
+            let surface = surface();
+            let create = |id| MountItem::Create {
+                id,
+                kind: ViewKind::View,
+            };
+            let insert = |parent, child| MountItem::Insert {
+                parent,
+                child,
+                before: None,
+            };
+            let track = |id| MountItem::TrackStates {
+                id,
+                states: HOVERED,
+            };
+            apply(
+                &surface,
+                &[
+                    create(2),
+                    create(4),
+                    create(6),
+                    track(2),
+                    track(4),
+                    track(6),
+                    insert(ROOT_ID, 2),
+                    insert(2, 4),
+                    insert(4, 6),
+                ],
+            );
+            let [outer, removed, inner] = [2, 4, 6].map(|id| view(&surface, id));
+            set_hovered(
+                &surface,
+                vec![inner.clone(), removed.clone(), outer.clone()],
+                0.0,
+                0.0,
+            );
+            assert_ne!(inner.state().states & HOVERED, 0);
+            // Kept alive (a JS cycle holds it): it and what it holds leave
+            // the hover, their states cleared.
+            apply(&surface, &[MountItem::Remove { id: 4 }]);
+            assert_eq!(
+                *surface.input.hovered.borrow(),
+                std::slice::from_ref(&outer)
+            );
+            for v in [&removed, &inner] {
+                assert_eq!(v.state().states & HOVERED, 0);
+            }
+            assert_ne!(outer.state().states & HOVERED, 0);
+        });
+    }
+
+    #[test]
+    fn wheel_notches_scale_with_the_view() {
+        assert!((notch(1000.0) - 100.0).abs() < 0.01);
+        assert_eq!(notch(0.0), 1.0);
+    }
+}

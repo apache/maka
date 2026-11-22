@@ -1,0 +1,23 @@
+---
+import BaseLayout from '../layouts/BaseLayout.astro';
+import Nav from '../components/Nav.astro';
+import Directory from '../components/Directory.astro';
+import SiteFooter from '../components/SiteFooter.astro';
+import { getDirectory } from '../lib/directory';
+import { url } from '../lib/site';
+
+const entries = await getDirectory();
+---
+
+<BaseLayout
+  lang="en"
+  title="Directory"
+  description="Community libraries, components, templates and tools for building Native Shell apps."
+  alternates={{ en: '/directory', 'zh-CN': '/zh-CN/directory' }}
+>
+  <Nav lang="en" currentPath={Astro.url.pathname} langHref={url('zh-CN/directory')} />
+  <main id="main">
+    <Directory entries={entries} lang="en" />
+  </main>
+  <SiteFooter lang="en" />
+</BaseLayout>

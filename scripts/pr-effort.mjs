@@ -33,7 +33,7 @@ const EFFORT_LABELS = ['effort/XS', 'effort/S', 'effort/M', 'effort/L', 'effort/
 const UNREAD_PATTERNS = [
   /(^|\/)(package-lock\.json|pnpm-lock\.yaml|yarn\.lock|Cargo\.lock|uv\.lock)$/,
   /(^|\/)THIRD_PARTY_(NOTICES|LICENSES)[^/]*$/,
-  /\.generated\.[cm]?[jt]sx?$/,
+  /\.generated\.(?:[cm]?[jt]sx?|rs)$/,
   /\.snapshot\.json$/,
   /\.min\.(js|css)$/,
   /\.(png|jpe?g|gif|ico|webp|woff2?|ttf|sqlite|zip|gz|pdf)$/,

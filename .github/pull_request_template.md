@@ -1,8 +1,5 @@
 ## Summary
 
-<!-- Check the target branch before submitting:
-https://github.com/apache/maka/blob/main/CONTRIBUTING.md#where-to-start -->
-
 <!-- The problem this solves and the outcome it produces. If the approach
 is not the obvious one, say why. -->
 
@@ -41,7 +38,12 @@ Tool(s) and scope:
 ## Checklist
 
 - [ ] Tests cover the change and fail without it
-- [ ] Lint, format, typecheck and the affected suites pass locally
+- [ ] Format, typecheck and the affected suites pass locally
+
+Does this PR entail a breaking change or persisted-data migration?
+
+- [ ] Yes — describe user/data impact, in-place migration, and `upgrade_compat.rs` coverage under Summary above
+- [ ] No
 
 Does this PR entail a change in behavior?
 

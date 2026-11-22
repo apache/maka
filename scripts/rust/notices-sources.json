@@ -1,0 +1,261 @@
+{
+  "yamux@0.13.10": [
+    "https://raw.githubusercontent.com/libp2p/rust-yamux/70db05dc63e8368bd0559a5ec0dba6e5fc2bdd41/LICENSE-APACHE",
+    "https://raw.githubusercontent.com/libp2p/rust-yamux/70db05dc63e8368bd0559a5ec0dba6e5fc2bdd41/LICENSE-MIT"
+  ],
+  "@pierre/trees@1.0.0": [
+    {
+      "file": "scripts/rust/licenses/pierre-vscode-icons.txt",
+      "source": "https://registry.npmjs.org/@pierre/vscode-icons/-/vscode-icons-0.0.9.tgz :: package/LICENSE.md"
+    }
+  ],
+  "crc32c@0.6.8": [
+    {
+      "file": "scripts/rust/licenses/declared-mit.txt",
+      "source": "https://github.com/zowens/crc32c/blob/254a861f7cc71bfe455e86f0e1d86e3c83c33390/Cargo.toml"
+    },
+    {
+      "file": "scripts/rust/licenses/crc32c-0.6.8-notice.txt",
+      "source": "https://github.com/zowens/crc32c/blob/254a861f7cc71bfe455e86f0e1d86e3c83c33390/src/combine.rs ; https://github.com/madler/zlib/blob/cacf7f1d4e3d44d871b605da3b647f07d718623f/zlib.h"
+    }
+  ],
+  "deno_native_certs@0.3.1": [
+    {
+      "file": "scripts/rust/licenses/declared-mit.txt",
+      "source": "https://github.com/denoland/deno_native_certs/blob/af63bfbea7d761ab286fa357bc38350b39ad2df0/Cargo.toml"
+    }
+  ],
+  "deno_tunnel@0.8.1": [
+    {
+      "file": "scripts/rust/licenses/declared-mit.txt",
+      "source": "https://github.com/denoland/deno_tunnel/blob/c0572b46beac220e105e69317ff9e207babc7f09/Cargo.toml"
+    }
+  ],
+  "derive-io@0.4.1": [
+    {
+      "file": "scripts/rust/licenses/declared-mit.txt",
+      "source": "https://github.com/mmastrac/derive-io/blob/69a023098378b66e8f8852173b65ca5762b201e2/crates/derive-io/Cargo.toml"
+    },
+    "https://www.apache.org/licenses/LICENSE-2.0.txt"
+  ],
+  "derive-io-macros@0.4.1": [
+    {
+      "file": "scripts/rust/licenses/declared-mit.txt",
+      "source": "https://github.com/mmastrac/derive-io/blob/69a023098378b66e8f8852173b65ca5762b201e2/crates/derive-io-macros/Cargo.toml"
+    },
+    "https://www.apache.org/licenses/LICENSE-2.0.txt"
+  ],
+  "fqdn@0.5.2": [
+    {
+      "file": "scripts/rust/licenses/declared-mit.txt",
+      "source": "https://github.com/Orange-OpenSource/fqdn/blob/a23fef8570522a3b98a79afc45322d6487166cd9/Cargo.toml"
+    }
+  ],
+  "intl_pluralrules@7.0.2": [
+    {
+      "file": "scripts/rust/licenses/declared-mit.txt",
+      "source": "https://github.com/zbraniecki/pluralrules/blob/d0715d5b7cca72e228d6e6c4de154bd30dfdd06a/intl_pluralrules/Cargo.toml"
+    }
+  ],
+  "rustls-tokio-stream@0.8.0": [
+    {
+      "file": "scripts/rust/licenses/declared-mit.txt",
+      "source": "https://github.com/denoland/rustls-tokio-stream/blob/c8a9239c987dbfa7b1eaed78d27935fe8272319c/Cargo.toml"
+    }
+  ],
+  "sys_traits_macros@0.1.0": [
+    {
+      "file": "scripts/rust/licenses/declared-mit.txt",
+      "source": "https://github.com/dsherret/sys_traits/blob/75cbf3ea478624cc78275b0264e78e9ae13ce3f5/macros/Cargo.toml"
+    }
+  ],
+  "sys_traits@0.1.29": [
+    {
+      "file": "scripts/rust/licenses/declared-mit.txt",
+      "source": "https://github.com/dsherret/sys_traits/blob/0b168a2935d4c398d38ea5d25af8f793858299b5/Cargo.toml"
+    }
+  ],
+  "selectors@0.38.0": [
+    {
+      "file": "scripts/rust/licenses/selectors-0.38.0.txt",
+      "source": "https://raw.githubusercontent.com/servo/stylo/572ecba2d1600e7c3d490586692a209faf703baa/selectors/lib.rs"
+    }
+  ],
+  "v8@150.4.0": [
+    "https://raw.githubusercontent.com/denoland/rusty_v8/5c15a6995c9bb4bacd3e341b59fff32c909c80bf/LICENSE",
+    "https://raw.githubusercontent.com/rust-lang/rust/4c4205163abcbd08948b3efab796c543ba1ea687/LICENSE-MIT",
+    "https://raw.githubusercontent.com/rust-lang/rust/4c4205163abcbd08948b3efab796c543ba1ea687/LICENSE-APACHE"
+  ],
+  "@workflow/serde@4.1.0": [
+    "https://raw.githubusercontent.com/vercel/workflow/4e435e03329c0b4f8dba9608e3fc6ea4058b67fa/LICENSE.md"
+  ],
+  "simd_helpers@0.1.0": [
+    {
+      "file": "scripts/rust/licenses/declared-mit.txt",
+      "source": "https://github.com/lu-zero/simd_helpers/blob/ca1a2f84aa386d758e98f8a609d990263932fb85/Cargo.toml"
+    }
+  ],
+  "zune-inflate@0.2.54": [
+    {
+      "file": "scripts/rust/licenses/declared-mit.txt",
+      "source": "https://github.com/etemesi254/zune-image/blob/69502ce83fdfecdd0beefd677e2abb3781b29d98/zune-inflate/Cargo.toml"
+    }
+  ],
+  "block@0.1.6": [
+    {
+      "file": "scripts/rust/licenses/declared-mit.txt",
+      "source": "https://github.com/SSheldon/rust-block/blob/47178790cfc9d4a8b092051d8b413b78bd31254a/Cargo.toml"
+    }
+  ],
+  "leak@0.1.2": [
+    {
+      "file": "scripts/rust/licenses/declared-mit.txt",
+      "source": "https://github.com/codyps/leak/blob/024bd1ccfa33aea1eff0026b0d8b676874b5e3d2/Cargo.toml"
+    }
+  ],
+  "leaky-cow@0.1.1": [
+    {
+      "file": "scripts/rust/licenses/declared-mit.txt",
+      "source": "https://github.com/notriddle/rust-leaky-cow/blob/88f4a8cd01ffc634d9f7642b97eb764a8dcd3760/Cargo.toml"
+    }
+  ],
+  "mac@0.1.1": [
+    {
+      "file": "scripts/rust/licenses/declared-mit.txt",
+      "source": "https://github.com/reem/rust-mac/blob/66afc663b68a65633ea165c742b5a9c6734581c2/Cargo.toml"
+    }
+  ],
+  "malloc_buf@0.0.6": [
+    {
+      "file": "scripts/rust/licenses/declared-mit.txt",
+      "source": "https://github.com/SSheldon/malloc_buf/blob/a7811e5f4c6f9685dd57ad9bfe34e9bf6b0ba4f9/Cargo.toml"
+    }
+  ],
+  "objc_exception@0.1.2": [
+    {
+      "file": "scripts/rust/licenses/declared-mit.txt",
+      "source": "https://github.com/SSheldon/rust-objc-exception/blob/c86ad3a52984461fc5c63980d12e8ceed847854c/Cargo.toml"
+    }
+  ],
+  "seahash@4.1.0": [
+    {
+      "file": "scripts/rust/licenses/declared-mit.txt",
+      "source": "https://crates.io/api/v1/crates/seahash/4.1.0/download"
+    }
+  ],
+  "pathfinder_geometry@0.5.1": [
+    {
+      "file": "scripts/rust/licenses/declared-mit.txt",
+      "source": "https://crates.io/api/v1/crates/pathfinder_geometry/0.5.1/download"
+    },
+    {
+      "file": "scripts/rust/licenses/pathfinder-geometry-0.5.1-notice.txt",
+      "source": "https://crates.io/api/v1/crates/pathfinder_geometry/0.5.1/download :: src/unit_vector.rs"
+    }
+  ],
+  "async-scoped@0.9.0": [
+    {
+      "file": "scripts/rust/licenses/declared-mit.txt",
+      "source": "https://github.com/rmanoka/async-scoped/blob/15fa11deb2a5d26fbd00d6cf26e97f73763ce2ba/Cargo.toml"
+    }
+  ],
+  "base-encode@0.3.1": [
+    {
+      "file": "scripts/rust/licenses/declared-mit.txt",
+      "source": "https://github.com/janispritzkau/rust-base-encode/blob/41bdeb57488beec4ed63180e848ce1e99fba227d/Cargo.toml"
+    }
+  ],
+  "escape-simd@0.1.0": [
+    {
+      "file": "scripts/rust/licenses/declared-mit.txt",
+      "source": "https://github.com/napi-rs/escape-simd/blob/4f54347555d2f520ac38b406cf69ff66d9570a57/Cargo.toml"
+    }
+  ],
+  "json-escape-simd@3.1.2": [
+    {
+      "file": "scripts/rust/licenses/declared-mit.txt",
+      "source": "https://github.com/napi-rs/escape-simd/blob/4f54347555d2f520ac38b406cf69ff66d9570a57/Cargo.toml"
+    }
+  ],
+  "typedmap@0.6.0": [
+    {
+      "file": "scripts/rust/licenses/declared-mit.txt",
+      "source": "https://github.com/kodieg/typedmap/blob/0168ea19785b159589adc2619bc6cac66bf9974f/Cargo.toml"
+    }
+  ],
+  "rolldown_plugin_asset_module@1.2.13": [
+    "https://raw.githubusercontent.com/rolldown/rolldown/f7de35f45bcd4cb8e4b6d8d11e74fbfb20b03127/LICENSE",
+    "https://raw.githubusercontent.com/rolldown/rolldown/f7de35f45bcd4cb8e4b6d8d11e74fbfb20b03127/THIRD-PARTY-LICENSE"
+  ],
+  "rolldown_plugin_chunk_import_map@1.2.13": [
+    "https://raw.githubusercontent.com/rolldown/rolldown/f7de35f45bcd4cb8e4b6d8d11e74fbfb20b03127/LICENSE",
+    "https://raw.githubusercontent.com/rolldown/rolldown/f7de35f45bcd4cb8e4b6d8d11e74fbfb20b03127/THIRD-PARTY-LICENSE"
+  ],
+  "rolldown_plugin_copy_module@1.2.13": [
+    "https://raw.githubusercontent.com/rolldown/rolldown/f7de35f45bcd4cb8e4b6d8d11e74fbfb20b03127/LICENSE",
+    "https://raw.githubusercontent.com/rolldown/rolldown/f7de35f45bcd4cb8e4b6d8d11e74fbfb20b03127/THIRD-PARTY-LICENSE"
+  ],
+  "rolldown_plugin_data_url@1.2.13": [
+    "https://raw.githubusercontent.com/rolldown/rolldown/f7de35f45bcd4cb8e4b6d8d11e74fbfb20b03127/LICENSE",
+    "https://raw.githubusercontent.com/rolldown/rolldown/f7de35f45bcd4cb8e4b6d8d11e74fbfb20b03127/THIRD-PARTY-LICENSE"
+  ],
+  "string_wizard@1.2.13": [
+    "https://raw.githubusercontent.com/rolldown/rolldown/f7de35f45bcd4cb8e4b6d8d11e74fbfb20b03127/LICENSE",
+    "https://raw.githubusercontent.com/rolldown/rolldown/f7de35f45bcd4cb8e4b6d8d11e74fbfb20b03127/THIRD-PARTY-LICENSE"
+  ],
+  "dwrote@0.11.5": [
+    {
+      "file": "scripts/rust/licenses/declared-mpl-2.0.txt",
+      "source": "https://github.com/servo/dwrote-rs/blob/5bbe910f7156213cdbaca4e1addfe85ea8b421ef/Cargo.toml ; https://www.mozilla.org/media/MPL/2.0/index.txt"
+    }
+  ],
+  "hexf-parse@0.2.1": [
+    {
+      "file": "scripts/rust/licenses/declared-cc0-1.0.txt",
+      "source": "https://github.com/lifthrasiir/hexf/blob/4225763d744183d720f575ae96d04161b4d08ea0/parse/Cargo.toml ; https://creativecommons.org/publicdomain/zero/1.0/legalcode.txt"
+    }
+  ],
+  "ast_node@5.0.0": ["https://www.apache.org/licenses/LICENSE-2.0.txt"],
+  "better_scoped_tls@1.0.1": ["https://www.apache.org/licenses/LICENSE-2.0.txt"],
+  "from_variant@3.0.0": ["https://www.apache.org/licenses/LICENSE-2.0.txt"],
+  "node_shim@0.35.0": [
+    "https://raw.githubusercontent.com/denoland/deno/fe7ed012d92c642fd8e5607ac5a45d517538b5c5/LICENSE.md"
+  ],
+  "swc_atoms@9.0.0": ["https://www.apache.org/licenses/LICENSE-2.0.txt"],
+  "swc_config_macro@1.0.1": ["https://www.apache.org/licenses/LICENSE-2.0.txt"],
+  "swc_ecma_ast@18.0.0": ["https://www.apache.org/licenses/LICENSE-2.0.txt"],
+  "swc_ecma_loader@17.0.0": ["https://www.apache.org/licenses/LICENSE-2.0.txt"],
+  "swc_ecma_transforms_macros@1.0.1": ["https://www.apache.org/licenses/LICENSE-2.0.txt"],
+  "swc_eq_ignore_macros@1.0.1": ["https://www.apache.org/licenses/LICENSE-2.0.txt"],
+  "swc_macros_common@1.0.1": ["https://www.apache.org/licenses/LICENSE-2.0.txt"],
+  "swc_visit@2.0.1": ["https://www.apache.org/licenses/LICENSE-2.0.txt"],
+  "sptr@0.3.2": [
+    {
+      "file": "scripts/rust/licenses/declared-mit.txt",
+      "source": "https://github.com/Gankra/sptr/blob/e59792814876b4948279ec3121921fbe827b1077/Cargo.toml"
+    },
+    "https://www.apache.org/licenses/LICENSE-2.0.txt"
+  ],
+  "swc_allocator@4.0.1": ["https://www.apache.org/licenses/LICENSE-2.0.txt"],
+  "string_enum@1.0.2": ["https://www.apache.org/licenses/LICENSE-2.0.txt"],
+  "swc_ecma_codegen_macros@2.0.2": ["https://www.apache.org/licenses/LICENSE-2.0.txt"],
+  "swc_common@17.0.1": ["https://www.apache.org/licenses/LICENSE-2.0.txt"],
+  "swc_config@3.1.2": ["https://www.apache.org/licenses/LICENSE-2.0.txt"],
+  "swc_ecma_codegen@20.0.2": ["https://www.apache.org/licenses/LICENSE-2.0.txt"],
+  "swc_ecma_lexer@26.0.0": ["https://www.apache.org/licenses/LICENSE-2.0.txt"],
+  "swc_ecma_parser@27.0.7": ["https://www.apache.org/licenses/LICENSE-2.0.txt"],
+  "swc_ecma_transforms_base@30.0.1": ["https://www.apache.org/licenses/LICENSE-2.0.txt"],
+  "swc_ecma_transforms_classes@30.0.0": ["https://www.apache.org/licenses/LICENSE-2.0.txt"],
+  "swc_ecma_transforms_proposal@30.0.0": ["https://www.apache.org/licenses/LICENSE-2.0.txt"],
+  "swc_ecma_transforms_react@33.0.0": ["https://www.apache.org/licenses/LICENSE-2.0.txt"],
+  "swc_ecma_transforms_typescript@33.0.0": ["https://www.apache.org/licenses/LICENSE-2.0.txt"],
+  "swc_ecma_utils@24.0.0": ["https://www.apache.org/licenses/LICENSE-2.0.txt"],
+  "swc_ecma_visit@18.0.1": ["https://www.apache.org/licenses/LICENSE-2.0.txt"],
+  "swc_ts_fast_strip@36.0.0": ["https://www.apache.org/licenses/LICENSE-2.0.txt"],
+  "libuv-sys-lite@1.48.4": [
+    {
+      "file": "scripts/rust/licenses/libuv-sys-lite-1.48.4-notice.txt",
+      "source": "https://github.com/nathanwhit/libuv-sys-lite/blob/b4e887d05625d32b63bb97842d7d978f4a7e4b17/crate/libuv-1.48.0-include/uv/tree.h ; https://github.com/libuv/libuv/blob/e9f29cb984231524e3931aa0ae2c5dae1a32884e/src/inet.c"
+    }
+  ]
+}

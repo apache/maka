@@ -1,0 +1,78 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+
+[package]
+name = "maka-workbench"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+build = "build.rs"
+
+[dependencies]
+base64 = "0.23.1"
+clipboard-rs = { version = "0.3.5", features = ["wayland"] }
+image = { version = "0.25", default-features = false, features = ["bmp", "png"] }
+open = "5.4.5"
+percent-encoding = "2.3.2"
+url = "2.5.8"
+usvg = { version = "0.46", default-features = false, features = ["text", "system-fonts"] }
+maka-agent-api.workspace = true
+maka-agent-facts.workspace = true
+maka-app-client.workspace = true
+maka-capabilities.workspace = true
+maka-event-log.workspace = true
+maka-host-runtime.workspace = true
+maka-plugin-core.workspace = true
+maka-packages.workspace = true
+maka-process.workspace = true
+maka-workspace-api.workspace = true
+maka-settings-native.workspace = true
+maka-ui-support.workspace = true
+nsh-core.workspace = true
+nsh-engine = { workspace = true, features = ["net"] }
+nsh-base.workspace = true
+reqwest = { workspace = true, features = ["multipart"] }
+tempfile.workspace = true
+regex.workspace = true
+serde_json.workspace = true
+serde.workspace = true
+tokio = { workspace = true, features = ["process"] }
+tokio-util.workspace = true
+unicode-segmentation.workspace = true
+uuid.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+clipboard-win = "5.4.1"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+image = { version = "0.25", default-features = false, features = ["tiff"] }
+objc2 = { version = "0.6.5", default-features = false, features = ["std"] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "objc2-core-foundation", "NSBitmapImageRep", "NSGraphics", "NSGraphicsContext", "NSImage", "NSImageRep", "NSPasteboard", "NSPasteboardItem", "NSWorkspace", "NSRunningApplication", "libc"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "objc2-core-foundation", "NSArray", "NSData", "NSDictionary", "NSGeometry", "NSString", "NSURL"] }
+
+[build-dependencies]
+cc = "1"
+maka-ui-build.workspace = true
+
+[dev-dependencies]
+nsh-testing = { path = "../../../third-party/nsh/crates/nsh-testing", default-features = false }
+nsh-bundler = { workspace = true, features = ["bundle"] }
+# The ui_types example writes the specs' TypeScript, which only this feature keeps.
+nsh-core = { workspace = true, features = ["declarations"] }
+nsh-js.workspace = true

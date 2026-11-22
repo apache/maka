@@ -1,0 +1,283 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import { effect, inputAction, keymap, signal, Text, View } from 'nsh';
+import type { InputRef, JSX } from 'nsh';
+import { Button, Input } from 'nsh/base';
+import type {
+  ComposerIntake,
+  ComposerViewInput,
+  UiActivation,
+  UiEmbeddedViewProps,
+} from '@maka-agent/plugin-sdk';
+
+function Composer(props: UiEmbeddedViewProps<ComposerViewInput<JSX.Element>, JSX.Element>) {
+  const input = props.input;
+  const editor = signal<InputRef | null>(null);
+  const selection = signal({ start: 0, end: 0 });
+  const focused = signal(false);
+  const composing = signal(false);
+  effect(() => {
+    input.session();
+    editor.set(null);
+    selection.set({ start: 0, end: 0 });
+    focused.set(false);
+    composing.set(false);
+  });
+  const blocked = () => input.blocked?.() || !input.active() || !input.session()?.editable();
+  const sendDisabled = () =>
+    blocked() ||
+    composing() ||
+    !!input.session()?.blockedReason() ||
+    (!input.session()?.draft().trim() &&
+      !input.session()?.attachments.files().length &&
+      !input.session()?.quotes().length);
+  const intake = async (source: ComposerIntake | (() => Promise<ComposerIntake>)) => {
+    const session = input.session();
+    const node = editor();
+    if (!session || !node || blocked() || composing()) return;
+    const text = session.draft();
+    const range = { ...selection() };
+    const insert = (value: string) => {
+      if (!value) return;
+      if (
+        input.session() !== session ||
+        editor() !== node ||
+        !focused() ||
+        composing() ||
+        session.draft() !== text ||
+        selection().start !== range.start ||
+        selection().end !== range.end
+      ) {
+        session.attachments.notify(new Error('The input changed. Paste again.'));
+        return;
+      }
+      const next = text.slice(0, range.start) + value + text.slice(range.end);
+      const caret = range.start + value.length;
+      session.changeDraft(next);
+      selection.set({ start: caret, end: caret });
+      node.setSelection(caret, caret);
+    };
+    try {
+      const selected = typeof source === 'function' ? await source() : source;
+      if (input.session() === session) session.attachments.intake(selected, insert);
+    } catch (error) {
+      session.attachments.reportError(error);
+    }
+  };
+  const drop = (event: { uris: string[] }) =>
+    intake({ kind: 'paste', uris: event.uris, files: [] });
+  input.dropFiles?.(drop);
+  return (
+    <View style={{ padding: 16, gap: 8, flexShrink: 0 }}>
+      {input.request}
+      <If when={input.session() === null}>
+        <Button accessibilityLabel="Choose workspace" onPress={input.chooseWorkspace}>
+          <Text>Choose workspace</Text>
+        </Button>
+      </If>
+      <Each of={input.session() ? [input.session()!] : []} key={(session) => session.sessionId}>
+        {(readSession) => {
+          const session = readSession();
+          const Picker = session.attachments.renderPicker;
+          return (
+            <View style={{ gap: 8 }}>
+              <Text>{session.workspace()}</Text>
+              <If when={session.error()}>
+                <Text>{session.error()}</Text>
+              </If>
+              <If when={session.notice()}>
+                <Text>{session.notice()}</Text>
+              </If>
+              <Input
+                ref={(node) => {
+                  editor.set(node);
+                  input.attach({
+                    focus: () => node.focus(),
+                    bindKey: (key, action, options) =>
+                      keymap.bind(key, action, { when: 'always', within: node, ...options }),
+                  });
+                }}
+                value={session.draft()}
+                readonly={blocked()}
+                multiline
+                autoFocus
+                submitBehavior="submit"
+                accessibilityLabel="Message composer"
+                placeholder="Message…"
+                onChange={({ value }) => {
+                  if (input.session() === session) session.changeDraft(value);
+                }}
+                onCompositionChange={(event) => {
+                  if (input.session() === session) composing.set(event.composing);
+                }}
+                onSelectionChange={(event) => {
+                  if (input.session() === session) selection.set({ ...event });
+                }}
+                onFocus={() => {
+                  if (input.session() === session) focused.set(true);
+                }}
+                onBlur={() => {
+                  if (input.session() === session) focused.set(false);
+                }}
+                onPaste={(event) => {
+                  if (input.session() !== session) return;
+                  if (event.uris.length || event.files.length)
+                    void intake(async () => ({
+                      kind: 'paste',
+                      uris: event.uris,
+                      files: await Promise.all(
+                        event.files.map(async (file) => ({
+                          name: file.name,
+                          mime: file.type,
+                          data: new Uint8Array(await file.arrayBuffer()),
+                        })),
+                      ),
+                    }));
+                  else if (!event.text) intake({ kind: 'clipboard' });
+                }}
+                onFileDrop={(event) => {
+                  if (input.session() === session) drop(event);
+                }}
+                onSubmit={(event) => {
+                  if (input.session() === session && !sendDisabled()) session.submit(event);
+                }}
+                style={{ minHeight: 64, maxHeight: 160 }}
+              />
+              <Picker
+                visible={session.attachments.picker()}
+                disabled={session.attachments.restoring()}
+                pathLabel="Attachment path"
+                pathPlaceholder="Absolute file path…"
+                uploadLabel="Upload selected file"
+                uploadingLabel="Uploading…"
+              />
+              <Each of={session.quotes()}>
+                {(quote, index) => (
+                  <View style={{ padding: 8, gap: 4 }}>
+                    <Text>{quote().label ?? 'Quote'}</Text>
+                    <Text style={{ numberOfLines: 3 }}>{quote().text}</Text>
+                    <Button
+                      accessibilityLabel="Remove quote"
+                      disabled={blocked()}
+                      onPress={() => session.removeQuote(index())}
+                    >
+                      <Text>Remove quote</Text>
+                    </Button>
+                  </View>
+                )}
+              </Each>
+              <Each of={session.attachments.files()} key={(file) => file.id}>
+                {(file) => (
+                  <View style={{ flexDirection: 'row', gap: 8 }}>
+                    <Text>{file().name}</Text>
+                    <Button
+                      accessibilityLabel={`Remove attachment ${file().name}`}
+                      onPress={inputAction(session.attachments.remove, {
+                        owner: session.sessionId,
+                        id: file().id,
+                      })}
+                    >
+                      <Text>Remove</Text>
+                    </Button>
+                  </View>
+                )}
+              </Each>
+              <Each of={session.attachments.rows()} key={(row) => row.id}>
+                {(row) => (
+                  <View style={{ gap: 4 }}>
+                    <Text>
+                      {row().name} ·{' '}
+                      {row().kind === 'unknown' ? 'Checking upload status…' : row().kind}
+                    </Text>
+                    <If when={row().error}>
+                      <Text>{row().error}</Text>
+                    </If>
+                    <If when={row().kind === 'failed'}>
+                      <Button
+                        accessibilityLabel={`Remove failed upload ${row().name}`}
+                        onPress={inputAction(session.attachments.remove, {
+                          owner: session.sessionId,
+                          id: row().id,
+                        })}
+                      >
+                        <Text>Remove failed upload</Text>
+                      </Button>
+                    </If>
+                  </View>
+                )}
+              </Each>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                {input.models}
+                <Button
+                  accessibilityLabel={
+                    session.attachments.picker() ? 'Close attachment picker' : 'Attach files'
+                  }
+                  disabled={blocked()}
+                  onPress={inputAction(session.attachments.open, {
+                    owner: session.sessionId,
+                    value: !session.attachments.picker(),
+                  })}
+                >
+                  <Text>Attach</Text>
+                </Button>
+                <Button
+                  accessibilityLabel={session.run() ? 'Queue message' : 'Send message'}
+                  disabled={sendDisabled()}
+                  onPress={inputAction(session.sendRendered, {
+                    owner: session.sessionId,
+                    text: session.draft(),
+                    backend: session.backend(),
+                    attachments: session.attachments.ids(),
+                    quotes: session.quotes(),
+                  })}
+                >
+                  <Text>{session.run() ? 'Queue message' : 'Send message'}</Text>
+                </Button>
+                <If when={session.run() !== null}>
+                  <Button
+                    accessibilityLabel="Stop response"
+                    disabled={session.stopping()}
+                    onPress={inputAction(session.stop, session.run())}
+                  >
+                    <Text>Stop</Text>
+                  </Button>
+                </If>
+              </View>
+              <If when={session.blockedReason()}>
+                <Text>{session.blockedReason()}</Text>
+              </If>
+              <If when={session.attachments.error() || session.attachments.notice()}>
+                <Text>{session.attachments.error() || session.attachments.notice()}</Text>
+              </If>
+            </View>
+          );
+        }}
+      </Each>
+    </View>
+  );
+}
+
+export function activate(): UiActivation<JSX.Element> {
+  return {
+    exports: {
+      composer: { kind: 'view', contract: 'maka.composer', render: Composer },
+    },
+  };
+}

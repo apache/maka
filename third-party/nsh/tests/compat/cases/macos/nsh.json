@@ -1,0 +1,19 @@
+{
+  "name": "API Macos",
+  "id": "com.example.api-macos",
+  "capabilities": {
+    "fs": {
+      "read": [
+        "${dataDir}"
+      ],
+      "write": [
+        "${dataDir}"
+      ]
+    },
+    "webview": {
+      "hosts": [],
+      "input": true
+    },
+    "homeDir": true
+  }
+}

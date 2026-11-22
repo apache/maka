@@ -1,0 +1,182 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import { effect, keymap, platform } from 'nsh';
+import { currentWindow, isAvailable } from 'nsh/desktop';
+import type { ComposerEditor } from './ComposerEditor';
+import type {
+  ComposerIntake,
+  ComposerPaste,
+  ComposerSession,
+  ComposerViewInput,
+} from '../../../../packages/plugin-sdk/src/composer-view.js';
+import { UiError } from './text';
+
+type Selection = { start: number; end: number };
+
+type Pending = NonNullable<ReturnType<NonNullable<ComposerViewInput['pending']>>>;
+type PasteOwner =
+  | Pick<ComposerSession, 'sessionId' | 'editable' | 'draft' | 'attachments'>
+  | Pending;
+const editable = (owner: PasteOwner) =>
+  'sessionId' in owner ? owner.editable() : !owner.sending();
+const report = (owner: PasteOwner, reason: unknown) => {
+  if ('sessionId' in owner) owner.attachments.reportError(reason);
+  else owner.reportError(reason);
+};
+
+type Target<Owner> = {
+  owner: Owner;
+  node: ComposerEditor;
+  text: string;
+  selection: Selection;
+};
+
+export function createComposerPaste<Owner extends PasteOwner>(options: {
+  owner(): Owner | null;
+  active(): boolean;
+  editor(owner: Owner): ComposerEditor | null;
+  selection(): Selection;
+  composing(): boolean;
+  dismiss(): void;
+}) {
+  const win = isAvailable && platform.idiom !== 'terminal' ? currentWindow() : null;
+  let focused: Owner | null = null;
+  let dropped: { target: Target<Owner>; text: string } | null = null;
+  const capture = (owner: Owner | null): Target<Owner> | null => {
+    if (
+      !owner ||
+      options.owner() !== owner ||
+      !options.active() ||
+      !editable(owner) ||
+      options.composing()
+    )
+      return null;
+    const node = options.editor(owner);
+    return node
+      ? { owner, node, text: owner.draft(), selection: { ...options.selection() } }
+      : null;
+  };
+  const unchanged = (target: Target<Owner>) => {
+    const current = capture(target.owner);
+    return (
+      current !== null &&
+      current.node === target.node &&
+      current.text === target.text &&
+      current.selection.start === target.selection.start &&
+      current.selection.end === target.selection.end
+    );
+  };
+  const insert = (target: Target<Owner>, text: string) => {
+    if (!text) return;
+    if (focused !== target.owner || !unchanged(target)) {
+      if (options.owner() === target.owner) {
+        const reason = new UiError('The input changed. Paste again.');
+        if ('sessionId' in target.owner) target.owner.attachments.notify(reason);
+        else target.owner.reportError(reason);
+      }
+      return;
+    }
+    target.node.replaceRange({
+      start: target.selection.start,
+      end: target.selection.end,
+      text,
+      expectedText: target.text,
+      expectedSelection: target.selection,
+    });
+  };
+  const intake = (
+    target: Target<Owner>,
+    input: ComposerIntake,
+    onText = (text: string) => insert(target, text),
+  ) => {
+    options.dismiss();
+    try {
+      if ('sessionId' in target.owner) {
+        target.owner.attachments.clearNotice();
+        target.owner.attachments.intake(input, onText);
+      } else target.owner.intake(input, onText);
+    } catch (reason) {
+      report(target.owner, reason);
+    }
+  };
+  const bindClipboard = () =>
+    effect(() => {
+      const owner = options.owner();
+      const node = owner && options.editor(owner);
+      if (!node || !owner || !options.active() || !editable(owner) || options.composing()) return;
+      // Pixel terminals render natively but retain Control-key shortcuts.
+      const controlKeys = keymap.label('mod+v') === keymap.label('ctrl+v');
+      const keys =
+        platform.idiom === 'terminal'
+          ? controlKeys
+            ? ['mod+v', 'alt+v', 'ctrl+alt+v']
+            : ['mod+v']
+          : platform.os === 'macos' && controlKeys
+            ? ['alt+v', 'ctrl+alt+v']
+            : [];
+      if (!keys.length) return;
+      const unbind = keys.map((key) =>
+        node.bindKey(key, () => {
+          const target = capture(owner);
+          if (target) intake(target, { kind: 'clipboard' });
+        }),
+      );
+      return () => unbind.forEach((remove) => remove());
+    });
+  const drop = (owner: Owner, event: { uris: string[] }) => {
+    const target = capture(owner);
+    if (!target) return;
+    const input: ComposerIntake = { kind: 'paste', uris: event.uris, files: [] };
+    if (platform.idiom === 'terminal') {
+      intake(target, input);
+      return;
+    }
+    win?.focus();
+    intake(target, input, (text) => {
+      if (!unchanged(target)) {
+        insert(target, text);
+        return;
+      }
+      dropped = { target, text };
+      // A fresh focus receipt is needed even if the background field kept focus.
+      target.node.blur();
+      target.node.focus();
+    });
+  };
+  return {
+    bindClipboard,
+    drop,
+    paste(owner: Owner, event: ComposerPaste) {
+      const target = capture(owner);
+      if (target) intake(target, { kind: 'paste', uris: event.uris, files: event.files });
+    },
+    focus(owner: Owner) {
+      if (options.owner() !== owner) return;
+      focused = owner;
+      const drop = dropped;
+      dropped = null;
+      if (drop?.target.owner !== owner) return;
+      insert(drop.target, drop.text);
+    },
+    blur(owner: Owner) {
+      if (focused === owner) focused = null;
+    },
+  };
+}

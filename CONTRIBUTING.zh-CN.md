@@ -17,80 +17,48 @@
   under the License.
 -->
 
-# 为 Maka 贡献代码
+# 参与贡献
 
-[![docs](https://img.shields.io/badge/docs-English-blue?logo=googletranslate&logoColor=white)](./CONTRIBUTING.md)
+[English](CONTRIBUTING.md)
 
-## 从哪里开始
+Bug 反馈与具体改进提案请提交 [Issues](https://github.com/apache/maka/issues)，开放式讨论使用 [Discussions](https://github.com/apache/maka/discussions)，安全漏洞请按 [SECURITY.md](SECURITY.md) 私密上报。在未分配的 Issue 下单独回复 `take` 即可认领，回复 `untake` 释放认领。
 
-**新功能从 `rust-preview` 开始开发，PR 也以该分支为目标。** 根据 [Discussion #6366](https://github.com/apache/maka/discussions/6366) 的决定，`main` 仅接受 0.2.x 的缺陷修复、安全修复、依赖更新、发版和文档工作。接手已有 issue 或 PR 前，先确认它针对哪套实现；`good first issue` 等标签不代表目标分支。
+涉及项目方向、社区治理与重大产品决策的话题请在 [dev@maka.apache.org](https://lists.apache.org/list.html?dev@maka.apache.org) 邮件列表讨论；具体实现细节直接在 PR 里交流即可。
 
-两个分支使用不同的实现。`rust-preview` 的环境配置和验证请按 [Rust 贡献指南](https://github.com/apache/maka/blob/rust-preview/CONTRIBUTING.zh-CN.md) 操作；下文的环境配置和开发命令适用于 TypeScript `main`。
+## 本地开发
 
-缺陷修复、模型供应商支持、测试、性能优化和文档最容易被合并。想找活干，从 [`help wanted`](https://github.com/apache/maka/issues?q=is%3Aissue+is%3Aopen+label%3A%22help+wanted%22) · [`good first issue`](https://github.com/apache/maka/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22) · [`bug`](https://github.com/apache/maka/issues?q=is%3Aissue+is%3Aopen+label%3Abug) · [`enhancement`](https://github.com/apache/maka/issues?q=is%3Aissue+is%3Aopen+label%3Aenhancement) 里挑一个，留言认领。提 issue 走 **Bug report** 或 **Feature request** 模板；安全问题走 [SECURITY.md](./SECURITY.md) 的私密流程，不要开公开 issue。提问、想法和还不成熟的提案发到 [Discussions](https://github.com/apache/maka/discussions)——它会自动进到大家的邮箱，比 issue 更容易被看到。
-
-若要自助认领一个尚未分配的 issue，请单独评论 `take`（评论正文只能是这个单词）；评论 `untake` 可以解除自己的认领。其他认领文字不会触发该工作流。
-
-项目方向、治理和重大产品决策在实施前于开发邮件列表 [`dev@maka.apache.org`](https://lists.apache.org/list.html?dev@maka.apache.org) 上公开讨论；实现层面的技术决策可以在 PR 中讨论。
-
-## 人类责任与 AI 归因
-
-每项贡献都有一名 human contributor of record：审阅工作、决定提交，并对准确性、来源和许可负责。Agent 可以自由 commit 和 push；最终的审查与合并决定始终由人做出。
-
-每个 PR 说明生成式工具是否有实质贡献，有则注明工具名称；翻译、措辞整理、自动补全和拼写修正不算。自动发送的消息必须表明身份。AI 创作了贡献中的实质部分时，在每个受影响的 commit 加上 `Generated-by: <tool>` trailer，并确保它在 squash 或 amend 后保留于最终 commit。
-
-## 审查
-
-向 `main` 提的每个 PR 都需要一位作者之外的 committer 给出 approval，且必需的 `test` 检查通过；[`.asf.yaml`](./.asf.yaml) 的分支保护强制执行这套机制。approval 在后续 push 后仍然有效——后续 commit 公开推送即可，改动超出已审查的范围时再请人重新看一遍。审查必须出自独立的人工判断——AI review 不算。一个改动是否重大、获得的审查是否足够，由维护者认定。
-
-## 来源与许可
-
-只提交你有权贡献的内容，记录第三方来源、许可和必要署名。贡献以 [Apache License 2.0](./LICENSE) 授权；AI 生成的实质内容遵循 [ASF 生成式工具指南](https://www.apache.org/legal/generative-tooling.html)。
-
-在 Grok 使用条款得到澄清前，请勿使用 Grok 生成对 Maka 的贡献。
-
-## 快速开始
-
-需要 Node `^22.19.0 || >=24.0.0`（不支持 Node 23：其 `node:sqlite` 缺少 `DatabaseSync.isTransaction`）和 npm `11.19.0`（见根 `package.json`）。开发 Desktop Direct Peer 或 Peer Mesh 还需要 Rust stable 1.98 或更高版本，以及 macOS 的 Xcode Command Line Tools 或 Windows 的 MSVC Build Tools。
+需要安装 Rust stable、Node.js 24+（CI 使用 26）、npm、`just`、`cargo-nextest`、`cargo-deny` 与 Python 3。Windows 环境需将 Git for Windows 自带的 `sh` 加入 `PATH`。
 
 ```sh
-git clone https://github.com/apache/maka.git
-cd maka
-npm install                 # 只在根目录装 —— 不要在某个 workspace 里跑
-npm run build               # 按依赖顺序构建全部 workspace
-npm --workspace @maka/core run test:dist
+just setup
+just run --help
+just check
 ```
 
-## 开发
+`just check` 会跑完全仓格式、类型、测试与许可证检查。日常修改单个 Rust crate 时，建议先跑定向测试快速验证：
 
 ```sh
-npm run dev          # 带 HMR 的桌面应用
-npm run dev:worktree # 带 HMR 的桌面应用，为当前工作树使用独立数据目录
-npm run cli:dev      # TUI；`npm run cli:dev -- run "…"` 非交互地跑一个 Turn
-npm test             # 全部 workspace，或：npm --workspace @maka/core run test:dist
+cargo nextest run -p <crate> --lib
 ```
 
-同时开发多个工作树或修改持久化数据格式时，可以使用 `dev:worktree`。首次运行使用独立的新配置，之后在同一工作树启动会复用该目录。目录位置和自定义参数见 [worktree development profiles](./apps/desktop/README.md#worktree-development-profiles)。
+本地 `just` 与 GitHub Actions 共用 [`scripts/ci.mjs`](scripts/ci.mjs) 中的测试套件定义。变更范围计算、V8 预编译缓存与原生打包说明见 [scripts/rust](scripts/rust/README.zh-CN.md#ci)。[官网](website/README.md)使用独立的 manifest 与锁文件。
 
-只有依赖都已构建好时，单独构建某个 workspace 才会成功——拿不准就从根目录构建。测试跑的是 `dist/` 里的编译产物，`test:dist` 覆盖的是最近一次构建的结果，跑之前先重新构建。根目录的 `npm test` 会把两步都做掉。
+## 代码与文档约定
 
-推送前先在本地对齐 CI：
+- 子模块统一采用 `name.rs` + `name/` 目录结构。单元测试紧挨实现放置，集成测试放在 `tests/`。
+- 测试外部可观测行为与关键失败边界，不写源码字符串断言、重复夹具或硬编码 `sleep`。
+- 校验放在系统边界，内部信任类型契约；用枚举表达闭合状态机，通过 `schemars` 生成协议 schema。
+- 持久化数据采用向前、只追加的 `maka_event_log::migration::Migration` 演进（由 `scripts/rust/migrations.lock.json` 锁定已发布迁移）。旧表或落盘 JSON 需要改形时在迁移内通过 SQL 或 `Migration::with_data` 就地重写，不在业务代码里堆历史兼容分支，也不靠外部脚本；Recall/FTS 等派生索引允许丢弃重建。新增或改动持久化功能/格式时同步更新 `products/maka/cli/tests/upgrade_compat.rs`。
+- 业务策略留在插件内，由 Host 统一管理准入控制、能力句柄与资源回收。
+- 协议字段与界面文案解耦；新增界面文案时同步补齐 `en`、`zh-CN`、`zh-TW` 三语词条。
+- 只在真正能帮读者省时间的地方写文档。已维护的中英文指南保持语义同步，字段级细节直接链向源码或生成好的 schema。
 
-```sh
-npm run lint
-npm run format:check
-npm run build
-npm run typecheck
-npx knip --workspace apps/desktop
-npx knip --workspace packages/ui
-```
+## 提交与评审
 
-架构说明见 [ARCHITECTURE.zh-CN.md](./ARCHITECTURE.zh-CN.md)；Eval 的命令与 contract 见 [`packages/eval`](./packages/eval)。
+PR 标题遵循 Conventional Commits，分支命名为 `<type>/<description>`。仓库采用 squash merge，PR 标题即最终合入的 commit 标题。按 [PR 模板](.github/pull_request_template.md)写明改动结果与实际跑过的验证，涉及界面改动时附上截图或录屏。
 
-## Pull Request
+每份贡献都必须有明确的人类负责人对代码质量、来源合规与 [Apache-2.0](LICENSE) 许可负责。引入或改编第三方代码时，严格保留原始版权声明并核对[源码来源记录](docs/code-origin-audit.md)与[许可证头规范](.github/ASF_SOURCE_HEADERS.md)。
 
-开 PR 时会自动填充 [`pull_request_template.md`](./.github/pull_request_template.md)；请在它的基础上填写，不要整段替换。
+若使用了生成式 AI 完成实质性的代码或文档编写，需在 PR 中注明工具名称，并在相关 commit 尾部保留 `Generated-by: <tool>` trailer（常规自动补全、拼写纠错和润色翻译不在此列）。
 
-分支名和标题遵循 [Conventional Commits](https://www.conventionalcommits.org/)：分支是 `<type>/<描述>`，标题是 `<type>(<scope>): <summary>`。本仓库用 squash 合并，标题会成为落到目标分支上的提交信息；`git log` 里能看到实际在用的 type 和 scope。
-
-界面改动请附改动前后的截图或录屏。描述写短，用你自己的话——如果需要很多段落，多半是这个 PR 太大了。
+Agent 可以提交代码和推送分支；合入受保护主干仍需通过 CI 检查并获得另一位人类 committer 的独立批准。

@@ -1,0 +1,3426 @@
+//! Scroll views without a toolkit: offsets, wheel / touchpad / touch /
+//! keyboard scrolling with momentum, snapping, paging, rubber banding,
+//! sticky cells, the indicator as a scroll bar, the refresh spinner's
+//! state, zooming, the core's scroll requests and scroll events.
+//!
+//! A scroll view moves along its main axis; a zoomable one
+//! (`maximumZoomScale` above `minimumZoomScale`) along both, zoomed by
+//! touchpad and touch pinches around the pointer ([`pinch`]) and by
+//! `zoomTo` ([`command`]), on the backends that draw zoomed content
+//! ([`ScrollState::can_zoom`]; elsewhere `zoomTo` and the zoom props are
+//! ignored). Its offset lives in [`ScrollState`] (`x` / `y`, 0 showing the
+//! start of the content inset; UIKit's zoomed `contentOffset`), which the
+//! backends keep in their views. Every change goes through one
+//! place, which shows the indicator, tells the backend
+//! ([`ScrollHost::moved`]: it places the children, pins the sticky cells
+//! and feeds the native scroll value in the same frame) and queues a
+//! report to the engine. Reports are coalesced to one per frame by the
+//! view's frame callback ([`ScrollHost::start_ticking`], which calls
+//! [`frame`]), which also runs glides, animated scrolls, the indicator's
+//! fade and the refresh spinner, and stops when none of them is left.
+//!
+//! Offsets are reported as UIKit's `contentOffset` (minus the leading
+//! content inset, clamped to the content), so lists see the same numbers
+//! as on iOS. Glides decelerate as UIKit does (velocity kept per
+//! millisecond: `behavior.deceleration`, 0.998 by default, 0.99 when
+//! snapping); snapping and paging use [`ScrollBehavior::snap_target`].
+//! Touch drags rubber-band past the edges when `bounces`; wheels and
+//! touchpads stop at the edges, as desktop scrolling does.
+//!
+//! Mirrored (right to left) horizontal lists keep their offsets left to
+//! right: the backends place each child at the mirror image of its frame,
+//! and drags, wheels and the indicator are mirrored here.
+//!
+//! The backends keep what their toolkits do: drawing the indicator and
+//! the spinner, the sticky cells' views, picking which view a key or a
+//! focused field scrolls, and the frame clock.
+
+use std::f32::consts::PI;
+
+use crate::{
+    Bounds, Command, EventKind, EventPayload, NodeId, Point, Points, ScrollBehavior, Size,
+    StickyCell,
+    geometry::{Axis, Percentage, Radians, point},
+};
+
+/// Below this release speed (points per ms) a drag does not glide.
+const MIN_GLIDE: f32 = 0.05;
+/// A glide stops below this speed (points per ms).
+const STOP: f32 = 0.01;
+/// A wheel without a gesture (a mouse) has settled after this many ms.
+const WHEEL_IDLE: f64 = 150.0;
+/// The indicator stays this long (ms) after the last scroll...
+const INDICATOR_HOLD: f64 = 700.0;
+/// ...then fades out in this long.
+const INDICATOR_FADE: f64 = 300.0;
+/// Duration of animated scrolls and bounces back (ms).
+const ANIMATION: f64 = 300.0;
+/// The release speed (points per ms) a settled mouse wheel snaps with:
+/// fast enough to move on to the next snap point.
+const WHEEL_SNAP: f32 = 0.6;
+/// Space between the indicator and the ends of the viewport.
+const INDICATOR_MARGIN: f32 = 2.0;
+/// The indicator's thickness.
+pub const INDICATOR_THICK: Points = Points(3.0);
+/// How close to its edge (points) a mouse press grabs the indicator,
+/// which is much thinner than a pointer is precise...
+const THUMB_GRAB: f32 = 12.0;
+/// ...and how far past its ends.
+const THUMB_SLOP: f32 = 4.0;
+
+/// A scroll offset, a move or a velocity (points, or points per ms) along
+/// both axes. Scroll views move along their main axis, the other staying
+/// 0; zoomable ones along both.
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
+struct Offset {
+    x: f32,
+    y: f32,
+}
+
+impl Offset {
+    const fn new(x: f32, y: f32) -> Self {
+        Self { x, y }
+    }
+
+    fn along(self, horizontal: bool) -> f32 {
+        if horizontal { self.x } else { self.y }
+    }
+
+    /// This offset with `v` along one axis.
+    fn with(self, horizontal: bool, v: f32) -> Self {
+        if horizontal {
+            Self::new(v, self.y)
+        } else {
+            Self::new(self.x, v)
+        }
+    }
+
+    fn lerp(self, to: Self, k: f32) -> Self {
+        Self::new(self.x + (to.x - self.x) * k, self.y + (to.y - self.y) * k)
+    }
+
+    /// The larger distance along an axis to `to`.
+    fn distance(self, to: Self) -> f32 {
+        (to.x - self.x).abs().max((to.y - self.y).abs())
+    }
+
+    /// `self` within `(min, max)`.
+    fn clamp(self, (min, max): (Self, Self)) -> Self {
+        Self::new(
+            self.x.clamp(min.x, max.x.max(min.x)),
+            self.y.clamp(min.y, max.y.max(min.y)),
+        )
+    }
+}
+
+impl std::ops::Add for Offset {
+    type Output = Self;
+
+    fn add(self, o: Self) -> Self {
+        Self::new(self.x + o.x, self.y + o.y)
+    }
+}
+
+/// What a scroll view is doing.
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
+enum Phase {
+    /// At rest.
+    #[default]
+    Idle,
+    /// A touch-style drag: `start` is the offset it began at, `moved` how
+    /// far the pointer went since (content follows it).
+    Drag { start: Offset, moved: Offset },
+    /// The mouse drags the indicator as a scroll bar's thumb, from offset
+    /// `start`.
+    Thumb { start: f32 },
+    /// Wheel or touchpad input: the last at `last` (ms), `total` points
+    /// so far; `gesture` for touchpads (begin / end), not mouse wheels.
+    Wheel {
+        last: f64,
+        total: f32,
+        gesture: bool,
+    },
+    /// Momentum after a fling: `velocity` points per ms at `last` (ms).
+    Glide { velocity: Offset, last: f64 },
+    /// An eased move from `from` to `to`, started at `start` (ms):
+    /// `momentum` for snapping after a fling (momentum events), `end` to
+    /// send `onScrollEnd` when it arrives.
+    Animate {
+        from: Offset,
+        to: Offset,
+        start: f64,
+        duration: f64,
+        momentum: bool,
+        end: bool,
+    },
+    /// An eased zoom from `from` to `to`, started at `start` (ms), the
+    /// content point (unzoomed) at viewport point `at` moving from `from_c`
+    /// to `to_c` meanwhile: `zoomTo`, or a pinch springing back within the
+    /// limits.
+    Zoom {
+        from: f32,
+        to: f32,
+        from_c: Offset,
+        to_c: Offset,
+        at: Offset,
+        start: f64,
+        duration: f64,
+    },
+}
+
+/// The running state of a scroll view: input phase, the indicator and
+/// the refresh spinner.
+#[derive(Debug, Default, Clone)]
+#[non_exhaustive]
+pub struct Live {
+    phase: Phase,
+    /// The view's frame callback runs.
+    ticking: bool,
+    /// The offset changed since it was last reported.
+    report: bool,
+    /// When the indicator was last shown (ms).
+    shown: f64,
+    /// [`ScrollHost::wake_after`] was asked and has not called back.
+    hold_timer: bool,
+    /// The indicator's opacity.
+    pub alpha: f32,
+    /// The refresh spinner shows.
+    pub refreshing: bool,
+    /// The spinner's angle.
+    pub spin: Radians,
+    /// [`ScrollHost::dark`] when the indicator was last shown, for
+    /// backends that pick its colors then.
+    pub dark: bool,
+    /// The zoom a pinch began at ([`pinch`]).
+    pinch_from: f32,
+    /// The zoom last reported to the engine (0: none yet).
+    reported_zoom: f32,
+    /// The zoom changed since the view was last moved.
+    rezoomed: bool,
+}
+
+/// Scroll position and extent of a scroll view.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct ScrollState {
+    /// Current offset (points; the viewport's top left in the zoomed
+    /// content).
+    pub x: Points,
+    /// Vertical offset.
+    pub y: Points,
+    /// Size of the scrollable content (unzoomed).
+    pub content: Size<Points>,
+    /// How far the content is zoomed (1 unless it zooms).
+    pub zoom: f32,
+    /// The backend draws, hit tests and pinches zoomed content: only then
+    /// does a view zoom ([`ScrollState::zooms`]).
+    pub can_zoom: bool,
+    /// Scrolls horizontally.
+    pub horizontal: bool,
+    /// Shows the scroll indicator.
+    pub indicator: bool,
+    /// How it scrolls (paging, snapping, insets...).
+    pub behavior: ScrollBehavior,
+    /// Scrolls the core asked for (`ScrollBy`, `scrollTo`) that were
+    /// applied: reported with each offset.
+    pub applied: u32,
+    /// The sticky cells: (cell, start, end).
+    pub sticky: Vec<StickyCell>,
+    /// A horizontal list laid out right to left: children are placed
+    /// mirrored (offsets stay left to right).
+    pub mirrored: bool,
+    /// Gestures, glides and the indicator.
+    pub live: Live,
+}
+
+impl Default for ScrollState {
+    fn default() -> Self {
+        Self {
+            x: Points::ZERO,
+            y: Points::ZERO,
+            content: Size::default(),
+            zoom: 1.0,
+            can_zoom: false,
+            horizontal: false,
+            indicator: false,
+            behavior: ScrollBehavior::default(),
+            applied: 0,
+            sticky: Vec::new(),
+            mirrored: false,
+            live: Live::default(),
+        }
+    }
+}
+
+/// A scroll view in a backend's view tree: what the logic here reads and
+/// does through it. Backends implement it over a view and its surface.
+pub trait ScrollHost {
+    /// Runs `f` with the view's scroll state and its size, or `None` when
+    /// it is no scroll view.
+    fn scroll<R>(&self, f: impl FnOnce(&ScrollState, Size<Points>) -> R) -> Option<R>;
+    /// Runs `f` with the view's scroll state, mutable, and its size.
+    fn scroll_mut<R>(&self, f: impl FnOnce(&mut ScrollState, Size<Points>) -> R) -> Option<R>;
+    /// The clock phases keep, in ms.
+    fn now(&self) -> f64;
+    /// Whether JS listens to `kind` on the view.
+    fn listens(&self, kind: EventKind) -> bool;
+    /// Sends `kind` on the view to the engine.
+    fn event(&self, kind: EventKind, payload: EventPayload);
+    /// Reports the view's offset (UIKit's `contentOffset`) to the engine
+    /// with the count of the core's scrolls applied.
+    fn report(&self, offset: Point<Points>, applied: u32);
+    /// Reports the view's zoom to the engine, before the offset it
+    /// changed ([`ScrollState::can_zoom`]'s backends).
+    fn report_zoom(&self, scale: f32) {
+        let _ = scale;
+    }
+    /// Tells the engine that a scroll key moved the view by `key_move`
+    /// (`EngineControl::key_scrolled`), once [`key_scroll`] started its
+    /// animation: a list follows its real end from End on.
+    fn key_scrolled(&self, key_move: KeyMove) {
+        let _ = key_move;
+    }
+    /// The offset or the zoom changed (`offset` is the one reported): the
+    /// children move, the sticky cells pin to it, native scroll values
+    /// follow.
+    fn moved(&self, offset: Point<Points>);
+    /// A vertical view is pulled `distance` past its top (0 once it is
+    /// back): its native pull value follows.
+    fn pulled(&self, distance: Points);
+    /// The children's placement changed (mirroring, insets).
+    fn relayout(&self);
+    /// The view draws again (the indicator, the spinner, the content).
+    fn redraw(&self);
+    /// Whether the view is in a window, where frames come.
+    fn attached(&self) -> bool;
+    /// Runs [`frame`] on every frame from now until it returns false.
+    fn start_ticking(&self);
+    /// Calls [`hold_ended`] on the view's thread after `ms` milliseconds.
+    fn wake_after(&self, ms: u64);
+    /// The scroll view came to rest (its drag and momentum ended, as it
+    /// sends `onScrollEnd`): the snapping animated values that follow it
+    /// settle ([`crate::animation::Animator::scroll_ended`]).
+    fn settled(&self) {}
+    /// Whether the surface is dark, kept in [`Live::dark`] when the
+    /// indicator shows.
+    fn dark(&self) -> bool {
+        false
+    }
+}
+
+// Pure logic. Lengths are points; velocities are points per ms, times ms.
+
+/// The rubber band of iOS: how far content dragged `over` points past an
+/// edge of a `dim`-point viewport moves.
+fn rubber(over: f32, dim: f32) -> f32 {
+    let dim = dim.max(1.0);
+    (1.0 - 1.0 / (over * 0.55 / dim + 1.0)) * dim
+}
+
+/// Position on a drag that went to `raw`, with `[min, max]` the limits, in
+/// a `dim`-point viewport: past them it rubber-bands when `bounces`.
+pub fn dragged(raw: Points, min: Points, max: Points, dim: Points, bounces: bool) -> Points {
+    Points(drag_position(raw.0, min.0, max.0, dim.0, bounces))
+}
+
+fn drag_position(raw: f32, min: f32, max: f32, dim: f32, bounces: bool) -> f32 {
+    if raw < min {
+        if bounces {
+            min - rubber(min - raw, dim)
+        } else {
+            min
+        }
+    } else if raw > max {
+        if bounces {
+            max + rubber(raw - max, dim)
+        } else {
+            max
+        }
+    } else {
+        raw
+    }
+}
+
+/// The deceleration rate: velocity kept per ms.
+pub fn rate(behavior: &ScrollBehavior) -> f32 {
+    if behavior.deceleration > 0.0 && behavior.deceleration < 1.0 {
+        behavior.deceleration
+    } else if behavior.snaps() || behavior.paging {
+        0.99
+    } else {
+        0.998
+    }
+}
+
+/// One step of a glide: `(distance, new velocity)` after `dt` ms at
+/// velocity `v` (points per ms), decaying exponentially by `rate` per ms.
+fn glide_step(v: f32, rate: f32, dt: f32) -> (f32, f32) {
+    let k = rate.powf(dt);
+    (v * (k - 1.0) / rate.ln(), v * k)
+}
+
+/// Where a glide at `velocity` (points per ms) from `offset` comes to
+/// rest, decelerating by `rate` ([`rate`]).
+pub fn projected(offset: Points, velocity: f32, rate: f32) -> Points {
+    Points(offset.0 - velocity / rate.ln())
+}
+
+/// How far a sticky cell from `start` to `end` (where the next one pushes
+/// it out) moves at `offset`.
+pub fn sticky_shift(offset: Points, start: Points, end: Points) -> Points {
+    Points((offset.0 - start.0).clamp(0.0, (end.0 - start.0).max(0.0)))
+}
+
+/// Cubic ease out of `t` (0 to 1).
+pub fn ease_out(t: f64) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    (1.0 - (1.0 - t).powi(3)) as f32
+}
+
+/// How long (ms) an eased move of `distance` that starts at `velocity`
+/// (points per ms, in its direction) takes: ease out starts at 3 ×
+/// distance / duration, which then matches the release.
+pub fn snap_duration(distance: Points, velocity: f32) -> f64 {
+    let (distance, v) = (distance.0, velocity);
+    if distance.abs() < 0.5 {
+        return 0.0;
+    }
+    if v * distance > 0.0 {
+        (3.0 * distance.abs() / v.abs()).clamp(180.0, 600.0) as f64
+    } else {
+        ANIMATION
+    }
+}
+
+/// How many ms the indicator still holds `since` ms after it was shown;
+/// `None` once it fades.
+pub fn indicator_hold_left(since: f64) -> Option<u64> {
+    (since < INDICATOR_HOLD).then(|| (INDICATOR_HOLD - since).ceil() as u64)
+}
+
+/// The indicator's opacity `since` ms after it was shown.
+pub fn indicator_alpha(since: f64) -> f32 {
+    if since < INDICATOR_HOLD {
+        1.0
+    } else {
+        (1.0 - (since - INDICATOR_HOLD) / INDICATOR_FADE).max(0.0) as f32
+    }
+}
+
+/// The indicator along the main axis: `(start, length)` in a viewport of
+/// `viewport` points showing `total` points at `offset`, or `None` when
+/// everything fits.
+pub fn indicator_span(viewport: Points, total: Points, offset: Points) -> Option<(Points, Points)> {
+    indicator_span_within(viewport, total, offset, Points::ZERO, Points::ZERO)
+}
+
+/// [`indicator_span`] along a track that keeps `before` points from the
+/// viewport's start and `after` from its end (the view's
+/// [`crate::ScrollBehavior::scrollbar_inset`] along its axis), so that the
+/// indicator stays clear of bars floating over the ends of the view.
+/// `None` also when the insets leave no room for it.
+pub fn indicator_span_within(
+    viewport: Points,
+    total: Points,
+    offset: Points,
+    before: Points,
+    after: Points,
+) -> Option<(Points, Points)> {
+    span(viewport.0, total.0, offset.0, before.0, after.0)
+        .map(|(start, len)| (Points(start), Points(len)))
+}
+
+fn span(viewport: f32, total: f32, offset: f32, before: f32, after: f32) -> Option<(f32, f32)> {
+    /// Short enough to see where it is in long lists, long enough to see.
+    const MIN_LENGTH: f32 = 32.0;
+    let (before, after) = (before.max(0.0), after.max(0.0));
+    let room = viewport - before - after;
+    if total <= viewport + 0.5 || room <= 4.0 * INDICATOR_MARGIN {
+        return None;
+    }
+    let track = room - 2.0 * INDICATOR_MARGIN;
+    let max = total - viewport;
+    // Overscrolling shrinks it, as on iOS.
+    let over = if offset < 0.0 {
+        -offset
+    } else {
+        (offset - max).max(0.0)
+    };
+    let len = (track * viewport / total - over).max(MIN_LENGTH).min(track);
+    let t = (offset / max).clamp(0.0, 1.0);
+    Some((before + INDICATOR_MARGIN + (track - len) * t, len))
+}
+
+/// How far the offset moves when the thumb moves by `d`: the thumb's
+/// `travel` (`track - length`) spans the whole scroll `range`.
+pub fn thumb_scroll(d: Points, range: Points, travel: Points) -> Points {
+    if travel.0 > 0.0 {
+        Points(d.0 * range.0 / travel.0)
+    } else {
+        Points(0.0)
+    }
+}
+
+/// A gesture or animation in flight when the core moves the content by
+/// `d` (`ScrollBy`) moves along, so that it continues from the content it
+/// was on.
+fn shifted(phase: Phase, d: Offset, horizontal: bool) -> Phase {
+    match phase {
+        Phase::Drag { start, moved } => Phase::Drag {
+            start: start + d,
+            moved,
+        },
+        Phase::Thumb { start } => Phase::Thumb {
+            start: start + d.along(horizontal),
+        },
+        Phase::Animate {
+            from,
+            to,
+            start,
+            duration,
+            momentum,
+            end,
+        } => Phase::Animate {
+            from: from + d,
+            to: to + d,
+            start,
+            duration,
+            momentum,
+            end,
+        },
+        other => other,
+    }
+}
+
+/// The spokes of the refresh spinner, as an activity indicator of eight
+/// spokes draws them: `progress` of them show while pulling, and they turn
+/// in whole spokes by `spin`. Each is its rotation and its opacity; a
+/// spoke is drawn pointing up from the spinner's center.
+pub fn spokes(progress: Percentage, spin: Radians) -> impl Iterator<Item = (Radians, f32)> {
+    const SPOKES: usize = 8;
+    let (progress, spin) = (progress.0, spin.0);
+    let shown = ((progress * SPOKES as f32).ceil() as usize).min(SPOKES);
+    let step = 2.0 * PI / SPOKES as f32;
+    let lead = (spin / step) as usize % SPOKES;
+    (0..shown).map(move |i| {
+        let fade = if progress < 1.0 {
+            0.8
+        } else {
+            1.0 - ((lead + SPOKES - i) % SPOKES) as f32 / SPOKES as f32 * 0.85
+        };
+        (Radians(i as f32 * step), fade)
+    })
+}
+
+// The reading order.
+
+/// Orders a view's children as they are on screen, the order Tab and
+/// screen readers go through a scroll view's content (and a list's cells,
+/// [`crate::ViewProps::screen_order`]) in: along `axis`, then across it. A
+/// list recycles its cells, so in the view tree they stay in the order
+/// they were made, not their rows'. `origin` is a child's frame origin;
+/// the sort is stable.
+pub fn reading_order<T>(axis: Axis, children: &mut [T], origin: impl Fn(&T) -> Point<Points>) {
+    if children.len() < 2 {
+        return;
+    }
+    let key = |child: &T| {
+        let at = origin(child);
+        match axis {
+            Axis::Horizontal => (at.x.0, at.y.0),
+            Axis::Vertical => (at.y.0, at.x.0),
+        }
+    };
+    children.sort_by(|a, b| {
+        let (a, b) = (key(a), key(b));
+        a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1))
+    });
+}
+
+// The state.
+
+impl ScrollState {
+    /// The largest offsets in a view of `size`.
+    pub fn max(&self, size: Size<Points>) -> Point<Points> {
+        let (x, y) = self.max_f(size);
+        point(Points(x), Points(y))
+    }
+
+    fn max_f(&self, size: Size<Points>) -> (f32, f32) {
+        let inset = self.behavior.content_inset;
+        let z = self.zoom;
+        (
+            (self.content.width.0 * z + inset.left.0 + inset.right.0 - size.width.0).max(0.0),
+            (self.content.height.0 * z + inset.top.0 + inset.bottom.0 - size.height.0).max(0.0),
+        )
+    }
+
+    /// The offset children are drawn at: the scroll offset less the
+    /// content inset (a zoomed view's children are scaled by
+    /// [`ScrollState::zoom`] first, and moved by [`ScrollState::centered`]).
+    pub fn origin(&self) -> Point<Points> {
+        let inset = self.behavior.content_inset;
+        point(self.x - inset.left, self.y - inset.top)
+    }
+
+    /// Whether the content zooms: its props ask for it
+    /// ([`ScrollBehavior::zooms`]) and the backend draws it
+    /// ([`ScrollState::can_zoom`]).
+    pub fn zooms(&self) -> bool {
+        self.can_zoom && self.behavior.zooms()
+    }
+
+    /// The room before zoomed content smaller than the viewport of a view
+    /// of `size`, which a zoomable view with `centerContent` centers it in
+    /// (viewport points; 0 for any other view).
+    pub fn centered(&self, size: Size<Points>) -> Point<Points> {
+        if !self.zooms() || !self.behavior.center_content {
+            return Point::default();
+        }
+        let inset = self.behavior.content_inset;
+        let free = |viewport: f32, content: f32| ((viewport - content * self.zoom) / 2.0).max(0.0);
+        point(
+            Points(free(
+                size.width.0 - inset.left.0 - inset.right.0,
+                self.content.width.0,
+            )),
+            Points(free(
+                size.height.0 - inset.top.0 - inset.bottom.0,
+                self.content.height.0,
+            )),
+        )
+    }
+
+    /// Where a point of the content (unzoomed, as the children's frames
+    /// are) shows in the viewport of a view of `size`.
+    pub fn to_viewport(&self, size: Size<Points>, content: Point<Points>) -> Point<Points> {
+        let (o, room) = (self.origin(), self.centered(size));
+        point(
+            Points(content.x.0 * self.zoom - o.x.0 + room.x.0),
+            Points(content.y.0 * self.zoom - o.y.0 + room.y.0),
+        )
+    }
+
+    /// The point of the content (unzoomed) at point `at` of the viewport
+    /// of a view of `size`.
+    pub fn to_content(&self, size: Size<Points>, at: Point<Points>) -> Point<Points> {
+        let (o, room) = (self.origin(), self.centered(size));
+        point(
+            Points((at.x.0 + o.x.0 - room.x.0) / self.zoom),
+            Points((at.y.0 + o.y.0 - room.y.0) / self.zoom),
+        )
+    }
+
+    /// The offset along the main axis.
+    fn offset(&self) -> f32 {
+        if self.horizontal { self.x.0 } else { self.y.0 }
+    }
+
+    /// The offset along both axes.
+    fn pos(&self) -> Offset {
+        Offset::new(self.x.0, self.y.0)
+    }
+
+    /// The rest limits, `(min, max)`, along both axes: along the main axis
+    /// ([`ScrollState::limits`]), the other staying at 0, except for a
+    /// zoomable view.
+    fn range(&self, size: Size<Points>) -> (Offset, Offset) {
+        let (min, max) = self.limits(size);
+        if self.zooms() {
+            let (mx, my) = self.max_f(size);
+            // The refresh room is above the content only.
+            let top = if self.horizontal { 0.0 } else { min };
+            (Offset::new(0.0, top), Offset::new(mx, my))
+        } else {
+            let zero = Offset::default();
+            let (mx, my) = self.max_f(size);
+            (
+                zero.with(self.horizontal, min),
+                Offset::new(mx, my).with(self.horizontal, max),
+            )
+        }
+    }
+
+    /// The content point (unzoomed) at point `at` of the viewport.
+    fn content_at(&self, size: Size<Points>, at: Offset) -> Offset {
+        let c = self.to_content(size, point(Points(at.x), Points(at.y)));
+        Offset::new(c.x.0, c.y.0)
+    }
+
+    /// The offset that shows content point `c` (unzoomed) at point `at` of
+    /// the viewport at the current zoom, within the limits.
+    fn showing(&self, size: Size<Points>, c: Offset, at: Offset) -> Offset {
+        let inset = self.behavior.content_inset;
+        let room = self.centered(size);
+        Offset::new(
+            c.x * self.zoom + room.x.0 - at.x + inset.left.0,
+            c.y * self.zoom + room.y.0 - at.y + inset.top.0,
+        )
+        .clamp(self.range(size))
+    }
+
+    /// Where the offset is headed: the end of a running animated scroll,
+    /// else the offset (a key repeat or a reveal continues from there).
+    fn goal(&self) -> f32 {
+        match self.live.phase {
+            Phase::Animate { to, .. } => to.along(self.horizontal),
+            _ => self.offset(),
+        }
+    }
+
+    /// The viewport's length along the main axis, in a view of `size`.
+    fn viewport(&self, size: Size<Points>) -> f32 {
+        if self.horizontal {
+            size.width.0
+        } else {
+            size.height.0
+        }
+    }
+
+    /// The leading content inset along the main axis.
+    fn lead(&self) -> f32 {
+        if self.horizontal {
+            self.behavior.content_inset.left.0
+        } else {
+            self.behavior.content_inset.top.0
+        }
+    }
+
+    /// The rest limits along the main axis (the top is lower while the
+    /// refresh spinner shows).
+    fn limits(&self, size: Size<Points>) -> (f32, f32) {
+        let max = self.max_f(size);
+        let min = if !self.horizontal && self.live.refreshing {
+            -self.behavior.refresh_inset().0
+        } else {
+            0.0
+        };
+        (min, if self.horizontal { max.0 } else { max.1 })
+    }
+
+    /// The offset reported to the engine and in events: UIKit's
+    /// `contentOffset`, within the content.
+    pub fn reported(&self, size: Size<Points>) -> Point<Points> {
+        let (mx, my) = self.max_f(size);
+        let inset = self.behavior.content_inset;
+        point(
+            Points(self.x.0.clamp(0.0, mx) - inset.left.0),
+            Points(self.y.0.clamp(0.0, my) - inset.top.0),
+        )
+    }
+
+    /// Whether the user can scroll the view of `size` by `delta` (wheel
+    /// deltas: positive moves the content up / left): it is enabled,
+    /// scrolls along that axis and is not at that edge yet. Input uses it
+    /// to pick which of nested scroll views a wheel moves.
+    pub fn can_scroll(&self, size: Size<Points>, delta: Point<Points>) -> bool {
+        let (dx, dy) = (delta.x.0, delta.y.0);
+        if !self.behavior.enabled {
+            return false;
+        }
+        if self.zooms() {
+            let ((min, max), p) = (self.range(size), self.pos());
+            let can = |d: f32, p: f32, min: f32, max: f32| {
+                (d > 0.0 && p < max - 0.5) || (d < 0.0 && p > min + 0.5)
+            };
+            return can(dx, p.x, min.x, max.x) || can(dy, p.y, min.y, max.y);
+        }
+        let (min, max) = self.limits(size);
+        if max <= min {
+            return false;
+        }
+        let d = if self.horizontal {
+            let d = if dx != 0.0 { dx } else { dy };
+            if self.mirrored && dx != 0.0 { -d } else { d }
+        } else {
+            dy
+        };
+        let pos = self.offset();
+        (d > 0.0 && pos < max - 0.5) || (d < 0.0 && pos > min + 0.5)
+    }
+
+    /// The indicator's rectangle in a view of `size` and how far it can
+    /// travel along its track, or `None` when the content fits.
+    pub fn thumb(&self, size: Size<Points>) -> Option<(Bounds<Points>, Points)> {
+        self.thumb_within(
+            size,
+            Bounds {
+                origin: Point::default(),
+                size,
+            },
+        )
+    }
+
+    /// [`ScrollState::thumb`] in a view of `size` of which the scroll
+    /// views and clips around it leave `visible` (view coordinates) in
+    /// sight: the indicator runs along the visible part's bottom (a
+    /// horizontal view) or right edge (a vertical one), so a scroll view
+    /// taller or wider than the one it is in keeps its bar in view. `None`
+    /// also when nothing of the view is visible.
+    pub fn thumb_within(
+        &self,
+        size: Size<Points>,
+        visible: Bounds<Points>,
+    ) -> Option<(Bounds<Points>, Points)> {
+        let (rect, travel) = self.thumb_f(size, visible)?;
+        Some((rect, Points(travel)))
+    }
+
+    /// The visible part's right and bottom edges in a view of `size`, or
+    /// `None` when none of it is visible.
+    fn visible_edges(size: Size<Points>, visible: Bounds<Points>) -> Option<(f32, f32)> {
+        let (w, h) = (size.width.0, size.height.0);
+        let left = visible.origin.x.0.max(0.0);
+        let top = visible.origin.y.0.max(0.0);
+        let right = (visible.origin.x.0 + visible.size.width.0).min(w);
+        let bottom = (visible.origin.y.0 + visible.size.height.0).min(h);
+        (right > left && bottom > top).then_some((right, bottom))
+    }
+
+    fn thumb_f(
+        &self,
+        size: Size<Points>,
+        visible: Bounds<Points>,
+    ) -> Option<(Bounds<Points>, f32)> {
+        const EDGE: f32 = 2.0;
+        // Zoomed content pans both ways, without a bar (as on the web).
+        if self.zooms() {
+            return None;
+        }
+        let thick = INDICATOR_THICK.0;
+        let (w, h) = (size.width.0, size.height.0);
+        let (right, bottom) = Self::visible_edges(size, visible)?;
+        let inset = self.behavior.content_inset;
+        let bar = self.behavior.scrollbar_inset.map(|v| v.0.max(0.0));
+        // Along the axis, from where the offset counts (the right of a
+        // mirrored view).
+        let (dim, total, offset, before, after) = if self.horizontal {
+            let (before, after) = if self.mirrored {
+                (bar.right, bar.left)
+            } else {
+                (bar.left, bar.right)
+            };
+            (
+                w,
+                self.content.width.0 + inset.left.0 + inset.right.0,
+                self.x.0,
+                before,
+                after,
+            )
+        } else {
+            (
+                h,
+                self.content.height.0 + inset.top.0 + inset.bottom.0,
+                self.y.0,
+                bar.top,
+                bar.bottom,
+            )
+        };
+        let (start, len) = span(dim, total, offset, before, after)?;
+        let (x, y, rw, rh) = if self.horizontal {
+            let x = if self.mirrored {
+                w - start - len
+            } else {
+                start
+            };
+            (x, bottom - bar.bottom - thick - EDGE, len, thick)
+        } else {
+            (right - bar.right - thick - EDGE, start, thick, len)
+        };
+        let rect = Bounds {
+            origin: point(Points(x), Points(y)),
+            size: Size {
+                width: Points(rw),
+                height: Points(rh),
+            },
+        };
+        Some((rect, dim - before - after - 2.0 * INDICATOR_MARGIN - len))
+    }
+
+    /// Whether a mouse press `at` a point (view coordinates) in a view of
+    /// `size` grabs the indicator, faded out or not: on the desktop it is a
+    /// scroll bar.
+    pub fn grabs_thumb(&self, size: Size<Points>, at: Point<Points>) -> bool {
+        self.grabs_thumb_within(
+            size,
+            Bounds {
+                origin: Point::default(),
+                size,
+            },
+            at,
+        )
+    }
+
+    /// [`ScrollState::grabs_thumb`] in a view of which `visible` is in
+    /// sight, the indicator placed as [`ScrollState::thumb_within`] places
+    /// it.
+    pub fn grabs_thumb_within(
+        &self,
+        size: Size<Points>,
+        visible: Bounds<Points>,
+        at: Point<Points>,
+    ) -> bool {
+        let (x, y) = (at.x.0, at.y.0);
+        if !self.indicator || !self.behavior.enabled {
+            return false;
+        }
+        let Some((rect, _)) = self.thumb_f(size, visible) else {
+            return false;
+        };
+        let Some((right, bottom)) = Self::visible_edges(size, visible) else {
+            return false;
+        };
+        // The edge the indicator runs along, moved in by its inset.
+        let bar = self.behavior.scrollbar_inset.map(|v| v.0.max(0.0));
+        let (along, across, start, len, edge) = if self.horizontal {
+            (
+                x,
+                y,
+                rect.origin.x.0,
+                rect.size.width.0,
+                bottom - bar.bottom,
+            )
+        } else {
+            (y, x, rect.origin.y.0, rect.size.height.0, right - bar.right)
+        };
+        (edge - THUMB_GRAB..=edge).contains(&across)
+            && (start - THUMB_SLOP..=start + len + THUMB_SLOP).contains(&along)
+    }
+
+    /// True when the indicator may draw something (it shows, or the view
+    /// is pulled down).
+    pub fn indicates(&self) -> bool {
+        (self.indicator && self.live.alpha > 0.0) || self.y.0 < 0.0
+    }
+
+    /// The refresh spinner's center in a view `width` wide and how far it
+    /// is pulled out (all of it while refreshing), when it shows (not when
+    /// the app draws its own); `refresh` is whether JS listens to
+    /// `onRefresh`.
+    pub fn spinner(&self, width: Points, refresh: bool) -> Option<(Point<Points>, Percentage)> {
+        let y = self.y.0;
+        let b = &self.behavior;
+        if self.horizontal
+            || y >= 0.0
+            || b.refresh_indicator.is_some()
+            || !(self.live.refreshing || refresh)
+        {
+            return None;
+        }
+        let progress = if self.live.refreshing {
+            1.0
+        } else {
+            (-y / b.refresh_threshold().0).min(1.0)
+        };
+        let cy = b.content_inset.top.0 - y - b.refresh_inset().0 / 2.0;
+        Some((point(width / 2.0, Points(cy)), Percentage(progress)))
+    }
+
+    /// Each sticky cell with how far it moves at the offset.
+    pub fn sticky_shifts(&self) -> impl Iterator<Item = (NodeId, Point<Points>)> + '_ {
+        self.sticky_shifts_with(|_| 0.0)
+    }
+
+    /// [`ScrollState::sticky_shifts`], a cell's animated offset
+    /// (`StickyCell::offset`) valued by `value` (the animation graph's).
+    pub fn sticky_shifts_with<'a>(
+        &'a self,
+        value: impl Fn(crate::animation::NodeId) -> f32 + 'a,
+    ) -> impl Iterator<Item = (NodeId, Point<Points>)> + 'a {
+        let offset = Points(self.offset() - self.lead());
+        self.sticky.iter().map(move |c| {
+            let extra = c.offset.map_or(0.0, &value);
+            let t = sticky_shift(Points(offset.0 + extra), c.start, c.end);
+            let zero = Points(0.0);
+            (
+                c.cell,
+                if self.horizontal {
+                    point(t, zero)
+                } else {
+                    point(zero, t)
+                },
+            )
+        })
+    }
+}
+
+// Accessors.
+
+fn phase(host: &impl ScrollHost) -> Phase {
+    host.scroll(|s, _| s.live.phase).unwrap_or(Phase::Idle)
+}
+
+fn set_phase(host: &impl ScrollHost, phase: Phase) {
+    host.scroll_mut(|s, _| s.live.phase = phase);
+}
+
+/// Whether the user may scroll the view.
+fn enabled(host: &impl ScrollHost) -> bool {
+    host.scroll(|s, _| s.behavior.enabled).unwrap_or(false)
+}
+
+/// Sends `kind` with the offset if JS listens to it.
+fn emit(host: &impl ScrollHost, kind: EventKind) {
+    if kind == EventKind::ScrollEnd {
+        host.settled();
+    }
+    if !host.listens(kind) {
+        return;
+    }
+    let offset = host.scroll(|s, size| s.reported(size)).unwrap_or_default();
+    host.event(kind, EventPayload::Scroll(offset));
+}
+
+/// Ends a glide or a snap a new input interrupts (`onMomentumEnd`,
+/// as UIKit sends when a drag catches a glide).
+fn interrupt(host: &impl ScrollHost) {
+    let momentum = matches!(
+        phase(host),
+        Phase::Glide { .. } | Phase::Animate { momentum: true, .. }
+    );
+    set_phase(host, Phase::Idle);
+    if momentum {
+        emit(host, EventKind::MomentumEnd);
+    }
+}
+
+// Moving.
+
+/// Moves the offset to `to` (not clamped: drags rubber band) and updates
+/// everything that follows it (and a zoom changed since the last move).
+fn moved_to(host: &impl ScrollHost, to: Offset) {
+    let moved = host.scroll_mut(|s, size| {
+        let rezoomed = std::mem::take(&mut s.live.rezoomed);
+        if s.pos() == to && !rezoomed {
+            return None;
+        }
+        // How far it is pulled past its top, when that changes.
+        let pulled =
+            (!s.horizontal && (s.y.0 < 0.0 || to.y < 0.0)).then(|| Points((-to.y).max(0.0)));
+        (s.x, s.y) = (Points(to.x), Points(to.y));
+        if s.indicator {
+            s.live.shown = host.now();
+            s.live.alpha = 1.0;
+            s.live.dark = host.dark();
+        }
+        s.live.report = true;
+        Some((s.reported(size), pulled))
+    });
+    let Some(Some((offset, pulled))) = moved else {
+        return;
+    };
+    host.moved(offset);
+    if let Some(distance) = pulled {
+        host.pulled(distance);
+    }
+    if host.attached() {
+        ensure_ticking(host);
+    } else {
+        // No frames draw it while detached: report now.
+        report(host);
+    }
+}
+
+/// [`moved_to`] `pos` along the main axis.
+fn moved_along(host: &impl ScrollHost, pos: f32) {
+    if let Some(to) = host.scroll(|s, _| s.pos().with(s.horizontal, pos)) {
+        moved_to(host, to);
+    }
+}
+
+fn report(host: &impl ScrollHost) {
+    let pending = host.scroll_mut(|s, size| {
+        if !std::mem::take(&mut s.live.report) {
+            return None;
+        }
+        // The zoom goes before the offset it changed: `onScroll` carries it
+        // (and the 1 a view that zooms no more is back at).
+        let known = s.zooms() || s.live.reported_zoom != 0.0;
+        let zoom = (known && s.zoom != s.live.reported_zoom).then(|| {
+            s.live.reported_zoom = s.zoom;
+            s.zoom
+        });
+        Some((s.reported(size), s.applied, zoom))
+    });
+    if let Some(Some((offset, applied, zoom))) = pending {
+        if let Some(zoom) = zoom {
+            host.report_zoom(zoom);
+        }
+        host.report(offset, applied);
+    }
+}
+
+/// Eases to `to` (clamped to the rest limits).
+fn animate_to(host: &impl ScrollHost, to: Offset, duration: f64, momentum: bool, end: bool) {
+    let Some((from, to)) = host.scroll(|s, size| (s.pos(), to.clamp(s.range(size)))) else {
+        return;
+    };
+    if from.distance(to) < 0.5 || duration <= 0.0 {
+        set_phase(host, Phase::Idle);
+        moved_to(host, to);
+        if momentum {
+            emit(host, EventKind::MomentumEnd);
+        }
+        if end {
+            emit(host, EventKind::ScrollEnd);
+        }
+        return;
+    }
+    set_phase(
+        host,
+        Phase::Animate {
+            from,
+            to,
+            start: host.now(),
+            duration,
+            momentum,
+            end,
+        },
+    );
+    ensure_ticking(host);
+}
+
+/// [`animate_to`] `to` along the main axis, the other where it is.
+fn animate_along(host: &impl ScrollHost, to: f32, duration: f64, momentum: bool, end: bool) {
+    if let Some(to) = host.scroll(|s, _| s.pos().with(s.horizontal, to)) {
+        animate_to(host, to, duration, momentum, end);
+    }
+}
+
+/// The user let go at `v` points per ms (positive: the offset grows):
+/// bounces back, snaps, glides or settles. Snapping uses `snap_velocity`
+/// (along the main axis) when it is not 0 (a settled mouse wheel).
+fn release(host: &impl ScrollHost, v: Offset, snap_velocity: f32) {
+    let Some((pos, (min, max), main, target)) = host.scroll(|s, size| {
+        let range = s.range(size);
+        let pos = s.pos();
+        let main = v.along(s.horizontal);
+        let lead = s.lead();
+        let dim = s.viewport(size);
+        let snap_velocity = if snap_velocity == 0.0 {
+            main
+        } else {
+            snap_velocity
+        };
+        let max = range.1.along(s.horizontal);
+        // Snap points are content offsets: UIKit's coordinates. Zoomed
+        // content does not snap.
+        let target = s
+            .behavior
+            .snap_target(
+                Points(s.offset() - lead),
+                projected(Points(s.offset()), main, rate(&s.behavior)) - Points(lead),
+                snap_velocity,
+                Points(dim),
+                Points(max + dim - lead),
+            )
+            .filter(|_| !s.zooms())
+            .map(|t| (pos.with(s.horizontal, t.0 + lead), t.0 + lead - s.offset()));
+        (pos, range, main, target)
+    }) else {
+        return;
+    };
+    let past = |p: f32, min: f32, max: f32| p < min - 0.5 || p > max + 0.5;
+    let room = |v: f32, p: f32, min: f32, max: f32| v > 0.0 && p < max || v < 0.0 && p > min;
+    if past(pos.x, min.x, max.x) || past(pos.y, min.y, max.y) {
+        animate_to(host, pos.clamp((min, max)), ANIMATION, false, true);
+    } else if let Some((target, distance)) = target {
+        let duration = snap_duration(Points(distance), main);
+        if duration > 0.0 {
+            emit(host, EventKind::MomentumStart);
+        }
+        animate_to(host, target, duration, duration > 0.0, true);
+    } else if v.x.abs().max(v.y.abs()) > MIN_GLIDE
+        && (room(v.x, pos.x, min.x, max.x) || room(v.y, pos.y, min.y, max.y))
+    {
+        set_phase(
+            host,
+            Phase::Glide {
+                velocity: v,
+                last: host.now(),
+            },
+        );
+        emit(host, EventKind::MomentumStart);
+        ensure_ticking(host);
+    } else {
+        set_phase(host, Phase::Idle);
+        emit(host, EventKind::ScrollEnd);
+    }
+}
+
+// The frame clock.
+
+fn ensure_ticking(host: &impl ScrollHost) {
+    let start = host.scroll_mut(|s, _| !std::mem::replace(&mut s.live.ticking, true));
+    if start == Some(true) {
+        host.start_ticking();
+    }
+}
+
+/// A physical pointer capture was lost. Stop its drag or thumb phase
+/// without release, snap, refresh or end callbacks; other motion is left alone.
+pub fn cancel_pointer(host: &impl ScrollHost) {
+    let cancelled = host.scroll_mut(|s, _| {
+        if !matches!(s.live.phase, Phase::Drag { .. } | Phase::Thumb { .. }) {
+            return false;
+        }
+        s.live.phase = Phase::Idle;
+        s.live.shown = host.now();
+        true
+    });
+    if cancelled == Some(true) {
+        host.redraw();
+        ensure_ticking(host);
+    }
+}
+
+/// One frame of the view's motion at `now` (ms); false when there is
+/// nothing left to do, and the frame callback stops.
+pub fn frame(host: &impl ScrollHost, now: f64) -> bool {
+    let left = tick(host, now);
+    if left == Left::Busy {
+        return true;
+    }
+    let wake = host.scroll_mut(|s, _| {
+        s.live.ticking = false;
+        match left {
+            // Nothing changes on screen until the hold ends: no frames until
+            // then, or following the end of a stream would draw every frame.
+            Left::Hold(ms) if !std::mem::replace(&mut s.live.hold_timer, true) => Some(ms),
+            _ => None,
+        }
+    });
+    if let Some(Some(ms)) = wake {
+        host.wake_after(ms);
+    }
+    false
+}
+
+/// The wait [`frame`] asked of [`ScrollHost::wake_after`] is over: the frames
+/// that fade the indicator start, or the wait does again if it was shown since.
+/// A view out of the window gets no frames: its indicator is gone when it returns.
+pub fn hold_ended(host: &impl ScrollHost) {
+    let attached = host.attached();
+    host.scroll_mut(|s, _| {
+        s.live.hold_timer = false;
+        if !attached {
+            s.live.alpha = 0.0;
+        }
+    });
+    if attached {
+        ensure_ticking(host);
+    }
+}
+
+/// What a scroll view has left to do after a frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Left {
+    Done,
+    Busy,
+    /// Only the indicator's hold, for this many ms.
+    Hold(u64),
+}
+
+/// Ends an owner's pending input or animated command without end callbacks.
+/// Preserve the existing frame registration: the platform may still have
+/// that callback queued, and a new motion before its next frame reuses it.
+pub fn stop_motion(host: &impl ScrollHost) {
+    set_phase(host, Phase::Idle);
+    report(host);
+}
+
+/// When the view's motion next comes to something (ms, the clock
+/// [`frame`] is given): a glide's or an eased move's end, a mouse wheel's
+/// rest; what a surface that draws no frames (a hidden window) runs
+/// [`frame`] at, so the scroll ends and reports it on time without
+/// frames. `None` while nothing runs that ends by itself (the indicator's
+/// fade and the refresh spinner only draw).
+pub fn deadline(host: &impl ScrollHost, now: f64) -> Option<f64> {
+    let (phase, rate) = host.scroll(|s, _| (s.live.phase, rate(&s.behavior)))?;
+    let end = match phase {
+        Phase::Glide { velocity, last } => {
+            // It slows below `STOP` then, or meets an edge before.
+            let speed = velocity.x.abs().max(velocity.y.abs());
+            if speed < STOP || !(0.0..1.0).contains(&rate) {
+                last
+            } else {
+                last + ((STOP / speed).ln() / rate.ln()).max(0.0) as f64
+            }
+        }
+        Phase::Animate {
+            start, duration, ..
+        }
+        | Phase::Zoom {
+            start, duration, ..
+        } => start + duration,
+        Phase::Wheel {
+            last,
+            gesture: false,
+            ..
+        } => last + WHEEL_IDLE,
+        _ => return None,
+    };
+    // A millisecond past it: a frame there finds it ended whatever the
+    // rounding.
+    Some(end.max(now) + 1.0)
+}
+
+/// The view left the window during its frames: it stops (a later move
+/// starts again) and reports where it is.
+pub fn detached(host: &impl ScrollHost) {
+    stop_motion(host);
+    host.scroll_mut(|s, _| s.live.ticking = false);
+}
+
+fn tick(host: &impl ScrollHost, now: f64) -> Left {
+    let Some((phase, pos, rate, (min, max), corrected)) = host.scroll_mut(|s, size| {
+        let (mx, my) = s.max_f(size);
+        let (cross, max) = if s.horizontal {
+            (&mut s.y, my)
+        } else {
+            (&mut s.x, mx)
+        };
+        let bounded = Points(cross.0.clamp(0.0, max));
+        let changed = *cross != bounded;
+        *cross = bounded;
+        s.live.report |= changed;
+        (
+            s.live.phase,
+            s.pos(),
+            rate(&s.behavior),
+            s.range(size),
+            changed.then(|| s.reported(size)),
+        )
+    }) else {
+        return Left::Done;
+    };
+    if let Some(offset) = corrected {
+        host.moved(offset);
+    }
+    match phase {
+        Phase::Glide { velocity, last } => {
+            let dt = (now - last).max(0.0) as f32;
+            // Each axis glides until it slows down or meets an edge; the
+            // glide ends when both have.
+            let axis = |v: f32, p: f32, min: f32, max: f32| {
+                let (d, v) = glide_step(v, rate, dt);
+                let next = p + d;
+                let stopped = v.abs() < STOP || next <= min || next >= max;
+                (next, if stopped { 0.0 } else { v }, stopped)
+            };
+            let (x, vx, stop_x) = axis(velocity.x, pos.x, min.x, max.x);
+            let (y, vy, stop_y) = axis(velocity.y, pos.y, min.y, max.y);
+            moved_to(host, Offset::new(x, y).clamp((min, max)));
+            if stop_x && stop_y {
+                set_phase(host, Phase::Idle);
+                emit(host, EventKind::MomentumEnd);
+                emit(host, EventKind::ScrollEnd);
+            } else {
+                set_phase(
+                    host,
+                    Phase::Glide {
+                        velocity: Offset::new(vx, vy),
+                        last: now,
+                    },
+                );
+            }
+        }
+        Phase::Animate {
+            from,
+            to,
+            start,
+            duration,
+            momentum,
+            end,
+        } => {
+            let t = (now - start) / duration;
+            let to = to.clamp((min, max));
+            moved_to(host, from.lerp(to, ease_out(t)));
+            if t >= 1.0 {
+                set_phase(host, Phase::Idle);
+                if momentum {
+                    emit(host, EventKind::MomentumEnd);
+                }
+                if end {
+                    emit(host, EventKind::ScrollEnd);
+                }
+            }
+        }
+        Phase::Zoom {
+            from,
+            to,
+            from_c,
+            to_c,
+            at,
+            start,
+            duration,
+        } => {
+            let t = (now - start) / duration;
+            let k = ease_out(t);
+            zoom_at(host, from + (to - from) * k, from_c.lerp(to_c, k), at);
+            if t >= 1.0 {
+                set_phase(host, Phase::Idle);
+            }
+        }
+        Phase::Wheel {
+            last,
+            total,
+            gesture: false,
+        } if now - last > WHEEL_IDLE => {
+            // A mouse wheel came to rest: snapping views move on to the
+            // next snap point in the wheel's direction.
+            set_phase(host, Phase::Idle);
+            let snaps = host
+                .scroll(|s, _| s.behavior.snaps() || s.behavior.paging)
+                .unwrap_or(false);
+            if snaps {
+                let v = if total.abs() >= 1.0 {
+                    total.signum() * WHEEL_SNAP
+                } else {
+                    0.0
+                };
+                release(host, Offset::default(), v);
+            } else {
+                moved_to(host, pos.clamp((min, max)));
+                emit(host, EventKind::ScrollEnd);
+            }
+        }
+        Phase::Idle | Phase::Thumb { .. } | Phase::Wheel { .. } if pos != pos.clamp((min, max)) => {
+            moved_to(host, pos.clamp((min, max)));
+        }
+        _ => {}
+    }
+    report(host);
+    let Some((left, redraw)) = host.scroll_mut(|s, _| {
+        let mut redraw = false;
+        let mut hold = None;
+        let mut busy = !matches!(
+            s.live.phase,
+            Phase::Idle
+                | Phase::Drag { .. }
+                | Phase::Thumb { .. }
+                | Phase::Wheel { gesture: true, .. }
+        );
+        if matches!(s.live.phase, Phase::Thumb { .. }) {
+            // A held thumb stays until it is let go (`thumb_end`).
+            s.live.shown = now;
+        } else if s.live.alpha > 0.0 {
+            let since = now - s.live.shown;
+            let alpha = indicator_alpha(since);
+            if alpha != s.live.alpha {
+                s.live.alpha = alpha;
+                redraw = true;
+            }
+            hold = indicator_hold_left(since);
+            busy |= alpha > 0.0 && hold.is_none();
+        }
+        if !s.horizontal
+            && s.offset() < 0.0
+            && s.live.refreshing
+            && s.behavior.refresh_indicator.is_none()
+        {
+            s.live.spin = Radians(((now / 1000.0) as f32 * 2.0 * PI) % (2.0 * PI));
+            redraw = true;
+            busy = true;
+        }
+        let left = match hold {
+            _ if busy => Left::Busy,
+            Some(ms) => Left::Hold(ms),
+            None => Left::Done,
+        };
+        (left, redraw)
+    }) else {
+        return Left::Done;
+    };
+    if redraw {
+        host.redraw();
+    }
+    left
+}
+
+// Mount items.
+
+/// `ScrollConfig`.
+pub fn config(
+    host: &impl ScrollHost,
+    horizontal: bool,
+    indicator: bool,
+    replaced: bool,
+    mirrored: bool,
+) {
+    let changed = host.scroll_mut(|s, _| {
+        let axis_changed = std::mem::replace(&mut s.horizontal, horizontal) != horizontal;
+        if axis_changed {
+            // Motion coordinates belong to the axis on which they began.
+            s.live.phase = Phase::Idle;
+        }
+        // The view shows its indicator only when it asks to, on either
+        // axis: a mouse without a horizontal wheel still moves a
+        // horizontal view with Shift + wheel, with the vertical wheel
+        // where nothing around scrolls vertically, and with the keys. A
+        // built-in bar of the app's (`replaced`) takes its place.
+        s.indicator = indicator && !replaced;
+        if !indicator {
+            s.live.alpha = 0.0;
+        }
+        let mirrored = mirrored && horizontal;
+        (
+            std::mem::replace(&mut s.mirrored, mirrored) != mirrored,
+            axis_changed,
+        )
+    });
+    if let Some((mirrored, axis)) = changed {
+        if mirrored || axis {
+            host.relayout();
+        }
+        if axis {
+            resized(host);
+        }
+    }
+}
+
+/// The viewport size changed. Offsets outside the new extent settle on
+/// the next frame, after the rest of the mount batch is applied.
+pub fn resized(host: &impl ScrollHost) {
+    let past = host.scroll(|s, size| {
+        let (mx, my) = s.max_f(size);
+        let cross = if s.horizontal {
+            s.y.0 < 0.0 || s.y.0 > my
+        } else {
+            s.x.0 < 0.0 || s.x.0 > mx
+        };
+        let (min, max) = s.limits(size);
+        cross || s.offset() < min || s.offset() > max + 0.5
+    });
+    if past == Some(true) {
+        ensure_ticking(host);
+    }
+}
+
+/// `ScrollContent`. Content that shrank below the offset pulls it back on
+/// the next frame, once the rest of the batch (the `ScrollBy` that keeps
+/// the visible content in place) is applied.
+pub fn content(host: &impl ScrollHost, content: Size<Points>) {
+    let Some((past, zooms)) = host.scroll_mut(|s, size| {
+        s.content = content;
+        let (p, (min, max)) = (s.pos(), s.range(size));
+        (
+            p.x > max.x.max(min.x) + 0.5 || p.y > max.y.max(min.y) + 0.5,
+            s.zooms(),
+        )
+    }) else {
+        return;
+    };
+    if zooms {
+        // Centered content moves with its size.
+        host.relayout();
+    }
+    if past {
+        ensure_ticking(host);
+    }
+    resized(host);
+    host.redraw();
+}
+
+/// `ScrollBy`: the core keeps the visible content in place (items above
+/// the viewport changed size); not clamped, the core knows its content.
+pub fn scroll_by(host: &impl ScrollHost, delta: Point<Points>) {
+    let (dx, dy) = (delta.x.0, delta.y.0);
+    let Some((pos, d)) = host.scroll_mut(|s, _| {
+        s.applied = s.applied.wrapping_add(1);
+        // The off axis would only push the content out of the viewport
+        // (zoomed content moves along both).
+        let d = if s.zooms() {
+            Offset::new(dx, dy)
+        } else {
+            Offset::default().with(s.horizontal, if s.horizontal { dx } else { dy })
+        };
+        s.live.phase = shifted(s.live.phase, d, s.horizontal);
+        s.live.report = true;
+        (s.pos(), d)
+    }) else {
+        return;
+    };
+    if d != Offset::default() {
+        moved_to(host, pos + d);
+    }
+    report(host);
+}
+
+/// `ScrollBehavior`.
+pub fn behavior(host: &impl ScrollHost, behavior: &ScrollBehavior) {
+    let Some((inset, refresh, held, zoom)) = host.scroll_mut(|s, _| {
+        // Zooming and centering place the children too.
+        let inset = s.behavior.content_inset != behavior.content_inset
+            || s.can_zoom
+                && (s.behavior.zooms() != behavior.zooms()
+                    || s.behavior.center_content != behavior.center_content);
+        let refresh = s.behavior.refresh_indicator != behavior.refresh_indicator;
+        s.behavior = behavior.clone();
+        // Within the new limits; back to 1 when it zooms no more.
+        let zoom = if s.zooms() {
+            limit_zoom(behavior, s.zoom, false)
+        } else {
+            1.0
+        };
+        if !behavior.enabled
+            && matches!(
+                s.live.phase,
+                Phase::Drag { .. } | Phase::Thumb { .. } | Phase::Wheel { .. }
+            )
+        {
+            s.live.phase = Phase::Idle;
+        }
+        // A refresh in progress keeps the room of the indicator now showing.
+        let held = (refresh
+            && !s.horizontal
+            && s.live.refreshing
+            && s.offset() < 0.0
+            && !matches!(s.live.phase, Phase::Drag { .. }))
+        .then(|| behavior.refresh_inset().0);
+        (inset, refresh, held, (zoom != s.zoom).then_some(zoom))
+    }) else {
+        return;
+    };
+    if let Some(zoom) = zoom {
+        zoom_to(host, zoom, None, false);
+    }
+    if inset {
+        host.relayout();
+        resized(host);
+    }
+    if refresh {
+        host.redraw();
+    }
+    if let Some(room) = held {
+        animate_along(host, -room, ANIMATION, false, false);
+    }
+}
+
+/// `Refreshing`: shows the spinner above the content (scrolling to it
+/// when at the top) or hides it.
+pub fn refreshing(host: &impl ScrollHost, refreshing: bool) {
+    let Some(Some((pos, dragging, inset))) = host.scroll_mut(|s, _| {
+        if s.horizontal || s.live.refreshing == refreshing {
+            return None;
+        }
+        s.live.refreshing = refreshing;
+        Some((
+            s.offset(),
+            matches!(s.live.phase, Phase::Drag { .. }),
+            s.behavior.refresh_inset().0,
+        ))
+    }) else {
+        return;
+    };
+    host.redraw();
+    if dragging {
+        return;
+    }
+    if refreshing && pos <= 0.5 {
+        animate_along(host, -inset, ANIMATION, false, false);
+    } else if !refreshing && pos < 0.0 {
+        animate_along(host, 0.0, ANIMATION, false, false);
+    }
+}
+
+/// `scrollTo`, `scrollToEnd` (the core resolves `scrollToIndex` and,
+/// usually, `scrollToEnd` into `scrollTo`) and `zoomTo`.
+pub fn command(host: &impl ScrollHost, command: &Command) {
+    if let Command::ZoomTo {
+        scale,
+        center,
+        animated,
+    } = *command
+    {
+        let center = center.map(|c| Offset::new(c.x.0, c.y.0));
+        return zoom_to(host, scale, center, animated);
+    }
+    let Some(Some((target, animated))) = host.scroll_mut(|s, size| {
+        let range = s.range(size);
+        let inset = s.behavior.content_inset;
+        let (target, animated) = match *command {
+            // Zoomed content goes to both; any other view along its axis.
+            Command::ScrollTo { x, y, animated } => (
+                if s.zooms() {
+                    Offset::new(x.0 + inset.left.0, y.0 + inset.top.0)
+                } else if s.horizontal {
+                    s.pos().with(true, x.0 + inset.left.0)
+                } else {
+                    s.pos().with(false, y.0 + inset.top.0)
+                },
+                animated,
+            ),
+            Command::ScrollToEnd { animated } => (
+                s.pos().with(s.horizontal, range.1.along(s.horizontal)),
+                animated,
+            ),
+            Command::ScrollToIndex { .. } => {
+                log::debug!("scroll: {command:?} is not supported");
+                return None;
+            }
+            _ => return None,
+        };
+        s.applied = s.applied.wrapping_add(1);
+        s.live.report = true;
+        Some((target.clamp(range), animated))
+    }) else {
+        return;
+    };
+    interrupt(host);
+    if animated {
+        animate_to(host, target, ANIMATION, false, true);
+    } else {
+        moved_to(host, target);
+    }
+    report(host);
+}
+
+// Zooming.
+
+/// `scale` within the zoom limits; past them by a rubber band while
+/// pinching (`rubber`) when `bouncesZoom`, as the web's.
+fn limit_zoom(b: &ScrollBehavior, scale: f32, rubber: bool) -> f32 {
+    let (min, max) = (b.min_zoom, b.max_zoom.max(b.min_zoom));
+    let band = |limit: f32| limit * (scale / limit).powf(0.3);
+    if scale > max {
+        if rubber && b.bounces_zoom {
+            band(max)
+        } else {
+            max
+        }
+    } else if scale < min {
+        if rubber && b.bounces_zoom {
+            band(min)
+        } else {
+            min
+        }
+    } else {
+        scale
+    }
+}
+
+/// Zooms the view to `scale` with content point `c` (unzoomed) at point
+/// `at` of its viewport, as far as the content's edges let it.
+fn zoom_at(host: &impl ScrollHost, scale: f32, c: Offset, at: Offset) {
+    let to = host.scroll_mut(|s, size| {
+        if s.zoom != scale {
+            s.zoom = scale;
+            s.live.rezoomed = true;
+        }
+        s.showing(size, c, at)
+    });
+    if let Some(to) = to {
+        moved_to(host, to);
+    }
+}
+
+/// `zoomTo`: `scale` (within the limits) with content point `center`
+/// (unzoomed) in the middle of the viewport, or the point there now.
+fn zoom_to(host: &impl ScrollHost, scale: f32, center: Option<Offset>, animated: bool) {
+    let Some(Some((from, to, at, now_c))) = host.scroll(|s, size| {
+        // One that zooms no more goes back to 1 ([`behavior`]).
+        if !s.zooms() && s.zoom == 1.0 {
+            log::debug!("scroll: zoomTo on a scroll view that does not zoom");
+            return None;
+        }
+        let to = if s.zooms() {
+            limit_zoom(&s.behavior, scale, false)
+        } else {
+            1.0
+        };
+        let at = Offset::new(size.width.0 / 2.0, size.height.0 / 2.0);
+        Some((s.zoom, to, at, s.content_at(size, at)))
+    }) else {
+        return;
+    };
+    interrupt(host);
+    let c = center.unwrap_or(now_c);
+    if animated && host.attached() && (to - from).abs() > 1e-4 {
+        zoom_eased(host, from, to, now_c, c, at);
+    } else {
+        zoom_at(host, to, c, at);
+        report(host);
+    }
+}
+
+/// Eases the zoom from `from` to `to`, the content point at `at` moving
+/// from `from_c` to `to_c`.
+fn zoom_eased(
+    host: &impl ScrollHost,
+    from: f32,
+    to: f32,
+    from_c: Offset,
+    to_c: Offset,
+    at: Offset,
+) {
+    set_phase(
+        host,
+        Phase::Zoom {
+            from,
+            to,
+            from_c,
+            to_c,
+            at,
+            start: host.now(),
+            duration: ANIMATION,
+        },
+    );
+    ensure_ticking(host);
+}
+
+/// Whether a pinch over the view zooms it: it zooms and is `zoomable`.
+pub fn pinches(host: &impl ScrollHost) -> bool {
+    host.scroll(|s, _| s.zooms() && s.behavior.pinch)
+        .unwrap_or(false)
+}
+
+/// A pinch (a touchpad's or two fingers') over the view
+/// ([`pinches`]) began: what moves stops.
+pub fn pinch_begin(host: &impl ScrollHost) {
+    interrupt(host);
+    host.scroll_mut(|s, _| s.live.pinch_from = s.zoom);
+}
+
+/// The pinch is at `scale` times the zoom it began at, around point `at`
+/// of the viewport, which stays on the same content point. Past the limits
+/// it rubber-bands when `bouncesZoom`, and stops at them otherwise.
+pub fn pinch(host: &impl ScrollHost, scale: f32, at: Point<Points>) {
+    let at = Offset::new(at.x.0, at.y.0);
+    let Some((to, c)) = host.scroll_mut(|s, size| {
+        let raw = s.live.pinch_from * scale;
+        let to = limit_zoom(&s.behavior, raw, true);
+        (to, s.content_at(size, at))
+    }) else {
+        return;
+    };
+    zoom_at(host, to, c, at);
+}
+
+/// The pinch around `at` ended: past the limits it springs back to them.
+pub fn pinch_end(host: &impl ScrollHost, at: Point<Points>) {
+    let at = Offset::new(at.x.0, at.y.0);
+    let Some((from, to, c)) = host.scroll(|s, size| {
+        (
+            s.zoom,
+            limit_zoom(&s.behavior, s.zoom, false),
+            s.content_at(size, at),
+        )
+    }) else {
+        return;
+    };
+    if (to - from).abs() > 1e-4 {
+        zoom_eased(host, from, to, c, c, at);
+    }
+}
+
+// Drags.
+
+/// A finger or pen drag starts scrolling the view (the mouse never drags
+/// content).
+pub fn drag_begin(host: &impl ScrollHost) {
+    if !enabled(host) {
+        return;
+    }
+    interrupt(host);
+    let start = host.scroll(|s, _| s.pos()).unwrap_or_default();
+    set_phase(
+        host,
+        Phase::Drag {
+            start,
+            moved: Offset::default(),
+        },
+    );
+    emit(host, EventKind::ScrollDragStart);
+}
+
+/// The drag moved by `delta` since the last move (content follows the
+/// pointer: positive scrolls toward the start).
+pub fn drag_move(host: &impl ScrollHost, delta: Point<Points>) {
+    drag(host, delta.x.0, delta.y.0, false);
+}
+
+/// The drag moved by `moved` since it began.
+pub fn drag_to(host: &impl ScrollHost, moved: Point<Points>) {
+    drag(host, moved.x.0, moved.y.0, true);
+}
+
+fn drag(host: &impl ScrollHost, dx: f32, dy: f32, since_begin: bool) {
+    let Phase::Drag { start, moved } = phase(host) else {
+        return;
+    };
+    let Some((pos, moved)) = host.scroll(|s, size| {
+        let (min, max) = s.range(size);
+        let d = if s.zooms() {
+            Offset::new(-dx, -dy)
+        } else if !s.horizontal {
+            Offset::new(0.0, -dy)
+        } else if s.mirrored {
+            Offset::new(dx, 0.0)
+        } else {
+            Offset::new(-dx, 0.0)
+        };
+        // Accumulated, not added to the offset: the rubber band applies to
+        // where the pointer went, not to where the content was.
+        let moved = if since_begin { d } else { moved + d };
+        let raw = start + moved;
+        let bounces = s.behavior.bounces;
+        let pos = Offset::new(
+            drag_position(raw.x, min.x, max.x.max(min.x), size.width.0, bounces),
+            drag_position(raw.y, min.y, max.y.max(min.y), size.height.0, bounces),
+        );
+        (pos, moved)
+    }) else {
+        return;
+    };
+    set_phase(host, Phase::Drag { start, moved });
+    moved_to(host, pos);
+}
+
+/// The drag ended with a velocity of `(vx, vy)` points per second: a
+/// glide follows.
+pub fn drag_end(host: &impl ScrollHost, vx: f32, vy: f32) {
+    if !matches!(phase(host), Phase::Drag { .. }) {
+        return;
+    }
+    let listens = host.listens(EventKind::Refresh);
+    let Some((v, refresh)) = host.scroll(|s, _| {
+        let v = if s.zooms() {
+            Offset::new(-vx / 1000.0, -vy / 1000.0)
+        } else {
+            let v = if !s.horizontal {
+                -vy
+            } else if s.mirrored {
+                vx
+            } else {
+                -vx
+            } / 1000.0;
+            Offset::default().with(s.horizontal, v)
+        };
+        let refresh = !s.horizontal
+            && !s.live.refreshing
+            && listens
+            && s.behavior.refreshes(Points(s.offset()));
+        (v, refresh)
+    }) else {
+        return;
+    };
+    set_phase(host, Phase::Idle);
+    emit(host, EventKind::ScrollDragEnd);
+    if refresh {
+        // Shown right away, as UIRefreshControl does; JS turns it off.
+        host.scroll_mut(|s, _| s.live.refreshing = true);
+        host.event(EventKind::Refresh, EventPayload::None);
+    }
+    release(host, v, 0.0);
+}
+
+// The indicator as a scroll bar.
+
+/// The mouse moved over the view: its indicator shows (and fades again
+/// once the mouse rests), as overlay scroll bars do, so that a mouse user
+/// sees it can scroll and where its scroll bar is.
+pub fn hovered(host: &impl ScrollHost) {
+    let shown = host.scroll_mut(|s, size| {
+        if s.thumb(size).is_none() || !s.indicator || !s.behavior.enabled {
+            return false;
+        }
+        s.live.shown = host.now();
+        if s.live.alpha == 1.0 {
+            return false;
+        }
+        s.live.alpha = 1.0;
+        s.live.dark = host.dark();
+        true
+    });
+    if shown != Some(true) {
+        return;
+    }
+    host.redraw();
+    ensure_ticking(host);
+}
+
+/// The mouse grabbed the view's indicator ([`ScrollState::grabs_thumb`]).
+pub fn thumb_begin(host: &impl ScrollHost) {
+    interrupt(host);
+    let grabbed = host.scroll_mut(|s, _| {
+        s.live.phase = Phase::Thumb { start: s.offset() };
+        s.live.shown = host.now();
+        s.live.alpha = 1.0;
+        s.live.dark = host.dark();
+    });
+    if grabbed.is_none() {
+        return;
+    }
+    host.redraw();
+    emit(host, EventKind::ScrollDragStart);
+}
+
+/// The grabbed indicator was dragged by `moved` since it was grabbed: the
+/// content moves the other way, so the thumb follows the pointer (a
+/// content drag moves the content with it).
+pub fn thumb_move(host: &impl ScrollHost, moved: Point<Points>) {
+    let (dx, dy) = (moved.x.0, moved.y.0);
+    let Phase::Thumb { start } = phase(host) else {
+        return;
+    };
+    let Some(Some(pos)) = host.scroll(|s, size| {
+        let (_, travel) = s.thumb(size)?;
+        let (min, max) = s.limits(size);
+        let d = if !s.horizontal {
+            dy
+        } else if s.mirrored {
+            -dx
+        } else {
+            dx
+        };
+        let d = thumb_scroll(Points(d), Points(max), travel).0;
+        Some((start + d).clamp(min, max.max(min)))
+    }) else {
+        return;
+    };
+    moved_along(host, pos);
+}
+
+/// The grabbed indicator was let go: it fades from now, snapping views
+/// settle on a snap point.
+pub fn thumb_end(host: &impl ScrollHost) {
+    if !matches!(phase(host), Phase::Thumb { .. }) {
+        return;
+    }
+    set_phase(host, Phase::Idle);
+    host.scroll_mut(|s, _| s.live.shown = host.now());
+    ensure_ticking(host);
+    emit(host, EventKind::ScrollDragEnd);
+    release(host, Offset::default(), 0.0);
+}
+
+// Wheels and touchpads.
+
+/// A wheel or touchpad scroll starts on the view (a touchpad gesture: it
+/// ends with [`wheel_end`]).
+pub fn wheel_begin(host: &impl ScrollHost) {
+    if !enabled(host) {
+        return;
+    }
+    interrupt(host);
+    set_phase(
+        host,
+        Phase::Wheel {
+            last: host.now(),
+            total: 0.0,
+            gesture: true,
+        },
+    );
+    emit(host, EventKind::ScrollDragStart);
+}
+
+/// Scrolls the view by `delta` (positive toward the end). Without
+/// [`wheel_begin`] it is a mouse wheel, which settles when idle.
+pub fn wheel(host: &impl ScrollHost, delta: Point<Points>) {
+    let (dx, dy) = (delta.x.0, delta.y.0);
+    if !enabled(host) {
+        return;
+    }
+    let (gesture, total) = match phase(host) {
+        Phase::Wheel { gesture, total, .. } => (gesture, total),
+        _ => {
+            interrupt(host);
+            (false, 0.0)
+        }
+    };
+    let Some((pos, total)) = host.scroll(|s, size| {
+        let (min, max) = s.range(size);
+        let d = if s.zooms() {
+            Offset::new(dx, dy)
+        } else if !s.horizontal {
+            Offset::new(0.0, dy)
+        } else if dx != 0.0 {
+            Offset::new(if s.mirrored { -dx } else { dx }, 0.0)
+        } else {
+            // Vertical wheels scroll horizontal views too.
+            Offset::new(dy, 0.0)
+        };
+        let pos = s.pos();
+        // Past an edge (the refresh space) wheels only move back.
+        let one =
+            |p: f32, d: f32, min: f32, max: f32| (p + d).clamp(min.min(p), max.max(min).max(p));
+        (
+            Offset::new(one(pos.x, d.x, min.x, max.x), one(pos.y, d.y, min.y, max.y)),
+            total + d.along(s.horizontal),
+        )
+    }) else {
+        return;
+    };
+    set_phase(
+        host,
+        Phase::Wheel {
+            last: host.now(),
+            total,
+            gesture,
+        },
+    );
+    moved_to(host, pos);
+    ensure_ticking(host);
+}
+
+/// The wheel scroll ended at a velocity of `(vx, vy)` points per second
+/// (0 for wheels without momentum).
+pub fn wheel_end(host: &impl ScrollHost, vx: f32, vy: f32) {
+    let Phase::Wheel { gesture, total, .. } = phase(host) else {
+        return;
+    };
+    let Some(v) = host.scroll(|s, _| {
+        let v = if s.zooms() {
+            return Offset::new(vx / 1000.0, vy / 1000.0);
+        } else if !s.horizontal {
+            vy
+        } else if vx != 0.0 {
+            if s.mirrored { -vx } else { vx }
+        } else {
+            vy
+        };
+        Offset::default().with(s.horizontal, v / 1000.0)
+    }) else {
+        return;
+    };
+    set_phase(host, Phase::Idle);
+    if gesture {
+        emit(host, EventKind::ScrollDragEnd);
+    }
+    let snap = if v == Offset::default() && total.abs() >= 1.0 {
+        total.signum() * WHEEL_SNAP
+    } else {
+        0.0
+    };
+    release(host, v, snap);
+}
+
+// The keyboard.
+
+/// Points an arrow key scrolls, as browsers do.
+pub const KEY_LINE: Points = Points(40.0);
+/// The share of the viewport a page key scrolls (the rest stays in view).
+const KEY_PAGE: f32 = 0.875;
+/// Duration of keyboard scrolls (ms); repeats retarget the running one.
+const KEY_ANIMATION: f64 = 200.0;
+
+/// Where a scroll key moves along an axis.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum KeyMove {
+    /// By this far (positive: towards the end).
+    Points(Points),
+    /// By this many viewports.
+    Pages(f32),
+    /// To the start.
+    Start,
+    /// To the end.
+    End,
+}
+
+impl KeyMove {
+    /// The direction it moves in: 1 towards the end, -1 towards the start.
+    pub fn sign(self) -> f32 {
+        match self {
+            KeyMove::Points(d) => d.0.signum(),
+            KeyMove::Pages(n) => n.signum(),
+            KeyMove::Start => -1.0,
+            KeyMove::End => 1.0,
+        }
+    }
+}
+
+/// What the key of Windows virtual key code `vk` scrolls (the codes the
+/// Windows and GPUI backends' keys carry): whether along the horizontal
+/// axis, and how. `ctrl` held leaves only Ctrl+Home / Ctrl+End, which go
+/// to the edges as in browsers; other Ctrl combinations are shortcuts.
+pub fn vk_key_move(vk: u16, shift: bool, ctrl: bool) -> Option<(bool, KeyMove)> {
+    const VK_SPACE: u16 = 0x20;
+    const VK_PRIOR: u16 = 0x21;
+    const VK_NEXT: u16 = 0x22;
+    const VK_END: u16 = 0x23;
+    const VK_HOME: u16 = 0x24;
+    const VK_LEFT: u16 = 0x25;
+    const VK_UP: u16 = 0x26;
+    const VK_RIGHT: u16 = 0x27;
+    const VK_DOWN: u16 = 0x28;
+    if ctrl {
+        return match vk {
+            VK_HOME => Some((false, KeyMove::Start)),
+            VK_END => Some((false, KeyMove::End)),
+            _ => None,
+        };
+    }
+    Some(match vk {
+        VK_UP => (false, KeyMove::Points(-KEY_LINE)),
+        VK_DOWN => (false, KeyMove::Points(KEY_LINE)),
+        VK_LEFT => (true, KeyMove::Points(-KEY_LINE)),
+        VK_RIGHT => (true, KeyMove::Points(KEY_LINE)),
+        VK_PRIOR => (false, KeyMove::Pages(-1.0)),
+        VK_NEXT => (false, KeyMove::Pages(1.0)),
+        VK_SPACE if shift => (false, KeyMove::Pages(-1.0)),
+        VK_SPACE => (false, KeyMove::Pages(1.0)),
+        VK_HOME => (false, KeyMove::Start),
+        VK_END => (false, KeyMove::End),
+        _ => return None,
+    })
+}
+
+/// The offset a key move from `base` aims at, within `[min, max]`.
+fn key_target(m: KeyMove, base: f32, viewport: f32, min: f32, max: f32) -> f32 {
+    let max = max.max(min);
+    match m {
+        KeyMove::Points(d) => base + d.0,
+        KeyMove::Pages(n) => base + n * (viewport * KEY_PAGE).max(KEY_LINE.0),
+        KeyMove::Start => min,
+        KeyMove::End => max,
+    }
+    .clamp(min, max)
+}
+
+/// Scrolls the view by the key move `m`, animated; a repeat continues
+/// from where the running scroll goes. With `flip`, a move by points goes
+/// the other way in a mirrored view (Left and Right follow what they show
+/// in a right-to-left list). Tells the host the key's move once the
+/// scroll started ([`ScrollHost::key_scrolled`]).
+pub fn key_scroll(host: &impl ScrollHost, m: KeyMove, flip: bool) {
+    let Some((base, viewport, min, max, flip)) = host.scroll(|s, size| {
+        let (min, max) = s.limits(size);
+        (s.goal(), s.viewport(size), min, max, flip && s.mirrored)
+    }) else {
+        return;
+    };
+    let moved = match m {
+        KeyMove::Points(d) if flip => KeyMove::Points(-d),
+        m => m,
+    };
+    let to = key_target(moved, base, viewport, min, max);
+    if host.listens(EventKind::ScrollIntent) {
+        let intent = match m {
+            KeyMove::Start => "start",
+            KeyMove::End => "end",
+            _ => "scroll",
+        };
+        host.event(
+            EventKind::ScrollIntent,
+            EventPayload::Map(vec![("intent", crate::PayloadValue::Str(intent.into()))]),
+        );
+    }
+    interrupt(host);
+    animate_along(host, to, KEY_ANIMATION, false, true);
+    // A list follows its real end from here on (rows never rendered are
+    // only estimated), and the other keys leave it. The key's own move,
+    // as the backends with a key scroll of their own report it.
+    host.key_scrolled(m);
+}
+
+/// Room kept around a view scrolled into view.
+const REVEAL_MARGIN: f32 = 16.0;
+
+/// How far a scroll view must move along an axis so that the span
+/// `[start, end)` (viewport coordinates) shows in `[0, viewport)`, with
+/// a margin; the start wins when the span does not fit.
+pub fn reveal_delta(start: Points, end: Points, viewport: Points) -> Points {
+    Points(reveal_by(start.0, end.0, viewport.0))
+}
+
+/// [`reveal_delta`] for a view that gets the focus: a span taller than
+/// the viewport that shows already stays where it is. It could only show
+/// in part anyway, and moving it would move what the pointer is on (a web
+/// view the height of its page, focused by a click near its end or by its
+/// context menu).
+pub fn reveal_focus_delta(start: Points, end: Points, viewport: Points) -> Points {
+    Points(reveal_focus_by(start.0, end.0, viewport.0))
+}
+
+fn reveal_by(start: f32, end: f32, viewport: f32) -> f32 {
+    let margin = REVEAL_MARGIN.min(viewport / 4.0);
+    if start < margin {
+        start - margin
+    } else if end > viewport - margin {
+        (end - (viewport - margin)).min(start - margin)
+    } else {
+        0.0
+    }
+}
+
+fn reveal_focus_by(start: f32, end: f32, viewport: f32) -> f32 {
+    if end - start > viewport && end > 0.0 && start < viewport {
+        0.0
+    } else {
+        reveal_by(start, end, viewport)
+    }
+}
+
+/// Scrolls the view (animated) so that the span of `len` points at
+/// `start` along its main axis (viewport coordinates, as measured now)
+/// shows, as iOS and Android do for the focused field; how far it moves
+/// (0 when it shows already). Backends call it on each scroll view around
+/// the field, innermost first, less what the inner ones moved.
+pub fn reveal(host: &impl ScrollHost, start: Points, len: Points) -> Points {
+    let (start, len) = (start.0, len.0);
+    let Some((base, pos, dim, min, max)) = host.scroll(|s, size| {
+        let (min, max) = s.limits(size);
+        (s.goal(), s.offset(), s.viewport(size), min, max)
+    }) else {
+        return Points(0.0);
+    };
+    // Pending animations count from where they are headed.
+    let start = start - (base - pos);
+    let delta = reveal_focus_by(start, start + len, dim);
+    let to = (base + delta).clamp(min, max.max(min));
+    if (to - base).abs() < 0.5 {
+        return Points(0.0);
+    }
+    interrupt(host);
+    animate_along(host, to, ANIMATION, false, true);
+    Points(to - base)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::EdgeInsets;
+
+    struct ExtentHost {
+        state: std::cell::RefCell<ScrollState>,
+        size: std::cell::Cell<Size<Points>>,
+        moved: std::cell::RefCell<Vec<Point<Points>>>,
+        pulls: std::cell::RefCell<Vec<Points>>,
+        reports: std::cell::RefCell<Vec<(Point<Points>, u32)>>,
+        ticks: std::cell::Cell<usize>,
+    }
+
+    impl ExtentHost {
+        fn new(x: f32, y: f32) -> Self {
+            Self {
+                state: std::cell::RefCell::new(ScrollState {
+                    x: Points(x),
+                    y: Points(y),
+                    ..scroll_state((900.0, 900.0), true)
+                }),
+                size: std::cell::Cell::new(sz(300.0, 400.0)),
+                moved: Default::default(),
+                pulls: Default::default(),
+                reports: Default::default(),
+                ticks: Default::default(),
+            }
+        }
+    }
+
+    impl ScrollHost for ExtentHost {
+        fn scroll<R>(&self, f: impl FnOnce(&ScrollState, Size<Points>) -> R) -> Option<R> {
+            Some(f(&self.state.borrow(), self.size.get()))
+        }
+        fn scroll_mut<R>(&self, f: impl FnOnce(&mut ScrollState, Size<Points>) -> R) -> Option<R> {
+            Some(f(&mut self.state.borrow_mut(), self.size.get()))
+        }
+        fn now(&self) -> f64 {
+            0.0
+        }
+        fn listens(&self, _: EventKind) -> bool {
+            false
+        }
+        fn event(&self, _: EventKind, _: EventPayload) {
+            panic!("extent changes must not send gesture callbacks")
+        }
+        fn report(&self, offset: Point<Points>, applied: u32) {
+            self.reports.borrow_mut().push((offset, applied));
+        }
+        fn moved(&self, offset: Point<Points>) {
+            self.moved.borrow_mut().push(offset);
+        }
+        fn pulled(&self, distance: Points) {
+            self.pulls.borrow_mut().push(distance);
+        }
+        fn relayout(&self) {}
+        fn redraw(&self) {}
+        fn attached(&self) -> bool {
+            true
+        }
+        fn start_ticking(&self) {
+            self.ticks.set(self.ticks.get() + 1);
+        }
+        fn wake_after(&self, _: u64) {}
+    }
+
+    #[test]
+    fn content_is_read_in_the_order_it_is_on_screen() {
+        // Recycled cells: made for rows 0 to 3, rows 0 and 1 scrolled
+        // away and their cells bound to rows 4 and 5.
+        let cells = [(0, 160.0), (1, 200.0), (2, 80.0), (3, 120.0)];
+        let mut vertical = cells;
+        reading_order(Axis::Vertical, &mut vertical, |c| {
+            point(Points(0.0), Points(c.1))
+        });
+        assert_eq!(vertical.map(|c| c.0), [2, 3, 0, 1]);
+        // Two columns read row by row; a horizontal list column by column.
+        let grid = [
+            (0, (50.0, 0.0)),
+            (1, (0.0, 40.0)),
+            (2, (0.0, 0.0)),
+            (3, (50.0, 40.0)),
+        ];
+        let at = |c: &(i32, (f32, f32))| point(Points(c.1.0), Points(c.1.1));
+        let mut rows = grid;
+        reading_order(Axis::Vertical, &mut rows, at);
+        assert_eq!(rows.map(|c| c.0), [2, 0, 1, 3]);
+        let mut columns = grid;
+        reading_order(Axis::Horizontal, &mut columns, at);
+        assert_eq!(columns.map(|c| c.0), [2, 1, 0, 3]);
+    }
+
+    fn scroll_state(content: (f32, f32), horizontal: bool) -> ScrollState {
+        ScrollState {
+            content: sz(content.0, content.1),
+            horizontal,
+            ..Default::default()
+        }
+    }
+
+    fn sz(w: f32, h: f32) -> Size<Points> {
+        crate::geometry::size(Points(w), Points(h))
+    }
+
+    fn pt(x: f32, y: f32) -> Point<Points> {
+        point(Points(x), Points(y))
+    }
+
+    #[test]
+    fn content_shrink_reconciles_the_old_axis_after_the_anchor_scroll() {
+        let host = ExtentHost::new(120.0, 70.0);
+        config(&host, false, false, false, false);
+        frame(&host, 0.0);
+        // Changing the scrolling direction does not discard a valid position.
+        assert_eq!(host.state.borrow().origin(), pt(120.0, 70.0));
+
+        content(&host, sz(300.0, 900.0));
+        scroll_by(&host, pt(0.0, 25.0));
+        assert_eq!(host.state.borrow().origin(), pt(120.0, 95.0));
+        frame(&host, 1.0);
+        assert_eq!(host.state.borrow().origin(), pt(0.0, 95.0));
+        assert_eq!(host.moved.borrow().last(), Some(&pt(0.0, 95.0)));
+        assert_eq!(host.reports.borrow().last(), Some(&(pt(0.0, 95.0), 1)));
+
+        // An old-axis rubber band must not leave the content displaced either.
+        let host = ExtentHost::new(-30.0, 70.0);
+        config(&host, false, false, false, false);
+        assert_eq!(host.ticks.get(), 1);
+        frame(&host, 0.0);
+        assert_eq!(host.state.borrow().origin(), pt(0.0, 70.0));
+        assert_eq!(host.moved.borrow().last(), Some(&pt(0.0, 70.0)));
+        assert_eq!(host.reports.borrow().last(), Some(&(pt(0.0, 70.0), 0)));
+    }
+
+    #[test]
+    fn changing_axis_ends_the_old_animation_without_moving_the_new_axis() {
+        let host = ExtentHost::new(120.0, 70.0);
+        command(
+            &host,
+            &Command::ScrollTo {
+                x: Points(240.0),
+                y: Points(0.0),
+                animated: true,
+            },
+        );
+        // An indicator-only change must preserve the running animation.
+        config(&host, true, false, false, false);
+        frame(&host, 150.0);
+        assert_eq!(host.state.borrow().origin(), pt(225.0, 70.0));
+        assert!(host.pulls.borrow().is_empty());
+
+        // No ScrollContent follows this configuration change.
+        config(&host, false, false, false, false);
+        frame(&host, 200.0);
+        assert_eq!(host.state.borrow().origin(), pt(225.0, 70.0));
+        command(
+            &host,
+            &Command::ScrollTo {
+                x: Points(0.0),
+                y: Points(170.0),
+                animated: true,
+            },
+        );
+        frame(&host, 300.0);
+        assert_eq!(host.state.borrow().origin(), pt(225.0, 170.0));
+    }
+
+    #[test]
+    fn viewport_growth_and_inset_changes_reconcile_the_current_extent() {
+        let host = ExtentHost::new(500.0, 70.0);
+        config(&host, false, false, false, false);
+        frame(&host, 0.0);
+        host.size.set(sz(800.0, 400.0));
+        resized(&host);
+        assert_eq!(host.state.borrow().origin(), pt(500.0, 70.0));
+        frame(&host, 1.0);
+        assert_eq!(host.state.borrow().origin(), pt(100.0, 70.0));
+        assert_eq!(host.moved.borrow().last(), Some(&pt(100.0, 70.0)));
+
+        let mut with_inset = ScrollBehavior::default();
+        with_inset.content_inset.right = Points(80.0);
+        behavior(&host, &with_inset);
+        config(&host, true, false, false, false);
+        command(
+            &host,
+            &Command::ScrollTo {
+                x: Points(170.0),
+                y: Points(0.0),
+                animated: false,
+            },
+        );
+        config(&host, false, false, false, false);
+        frame(&host, 2.0);
+        assert_eq!(host.state.borrow().origin(), pt(170.0, 70.0));
+
+        behavior(&host, &ScrollBehavior::default());
+        assert_eq!(host.state.borrow().origin(), pt(170.0, 70.0));
+        frame(&host, 3.0);
+        assert_eq!(host.state.borrow().origin(), pt(100.0, 70.0));
+        assert_eq!(host.moved.borrow().last(), Some(&pt(100.0, 70.0)));
+        assert_eq!(host.reports.borrow().last(), Some(&(pt(100.0, 70.0), 1)));
+    }
+
+    #[test]
+    fn range_changes_bound_the_last_animation_frame_without_a_scrollbar() {
+        let host = ExtentHost::new(0.0, 70.0);
+        config(&host, false, false, false, false);
+        command(
+            &host,
+            &Command::ScrollTo {
+                x: Points(0.0),
+                y: Points(500.0),
+                animated: true,
+            },
+        );
+        host.size.set(sz(300.0, 800.0));
+        resized(&host);
+        assert!(!frame(&host, 300.0));
+        assert_eq!(host.state.borrow().origin(), pt(0.0, 100.0));
+        assert_eq!(host.moved.borrow().last(), Some(&pt(0.0, 100.0)));
+        assert_eq!(host.reports.borrow().last(), Some(&(pt(0.0, 100.0), 1)));
+        assert!(host.pulls.borrow().is_empty());
+
+        // Retargeting the end keeps the original rubber-band bounce smooth.
+        let host = ExtentHost::new(0.0, -40.0);
+        config(&host, false, false, false, false);
+        command(
+            &host,
+            &Command::ScrollTo {
+                x: Points(0.0),
+                y: Points(0.0),
+                animated: true,
+            },
+        );
+        frame(&host, 150.0);
+        assert_eq!(host.state.borrow().origin(), pt(0.0, -5.0));
+        assert_eq!(*host.pulls.borrow(), vec![Points(5.0)]);
+        frame(&host, 300.0);
+        assert_eq!(host.state.borrow().origin(), pt(0.0, 0.0));
+        assert_eq!(*host.pulls.borrow(), vec![Points(5.0), Points::ZERO]);
+    }
+
+    #[test]
+    fn rubber_band_resists() {
+        assert_eq!(drag_position(50.0, 0.0, 100.0, 400.0, true), 50.0);
+        let over = drag_position(-100.0, 0.0, 100.0, 400.0, true);
+        assert!(over < 0.0 && over > -100.0, "{over}");
+        let more = drag_position(-400.0, 0.0, 100.0, 400.0, true);
+        assert!(more < over && more > -400.0 * 0.55);
+        assert_eq!(drag_position(-100.0, 0.0, 100.0, 400.0, false), 0.0);
+        assert_eq!(drag_position(300.0, 0.0, 100.0, 400.0, false), 100.0);
+        assert!(drag_position(150.0, 0.0, 100.0, 400.0, true) > 100.0);
+        let p = Points;
+        assert_eq!(dragged(p(50.0), p(0.0), p(100.0), p(400.0), true), p(50.0));
+        // Never more than 55% of the viewport.
+        assert!(rubber(1e6, 400.0) < 400.0);
+    }
+
+    #[test]
+    fn glide_integrates_to_projection() {
+        let rate = 0.998;
+        let (mut pos, mut v) = (0.0f32, 2.0f32);
+        for _ in 0..2000 {
+            let (d, nv) = glide_step(v, rate, 16.0);
+            pos += d;
+            v = nv;
+        }
+        let end = projected(Points(0.0), 2.0, rate).0;
+        assert!((pos - end).abs() < 1.0, "{pos} vs {end}");
+        // Frame rate does not change the path.
+        let (a, _) = glide_step(2.0, rate, 32.0);
+        let (b1, v1) = glide_step(2.0, rate, 16.0);
+        let (b2, _) = glide_step(v1, rate, 16.0);
+        assert!((a - (b1 + b2)).abs() < 1e-3);
+    }
+
+    #[test]
+    fn animated_sticky_offsets_stick_further_in() {
+        let mut s = scroll_state((320.0, 2000.0), false);
+        s.y = Points(150.0);
+        s.sticky = vec![
+            crate::StickyCell {
+                cell: 1,
+                start: Points(100.0),
+                end: Points(300.0),
+                offset: None,
+            },
+            crate::StickyCell {
+                cell: 2,
+                start: Points(100.0),
+                end: Points(300.0),
+                offset: Some(7),
+            },
+        ];
+        // Below a 56 pt header: the second sticks 56 further in.
+        let shifts: Vec<_> = s
+            .sticky_shifts_with(|n| if n == 7 { 56.0 } else { 0.0 })
+            .map(|(c, p)| (c, p.y.0))
+            .collect();
+        assert_eq!(shifts, [(1, 50.0), (2, 106.0)]);
+    }
+
+    #[test]
+    fn sticky_shift_clamps() {
+        let p = Points;
+        assert_eq!(sticky_shift(p(0.0), p(100.0), p(300.0)), p(0.0));
+        assert_eq!(sticky_shift(p(150.0), p(100.0), p(300.0)), p(50.0));
+        assert_eq!(sticky_shift(p(500.0), p(100.0), p(300.0)), p(200.0));
+        assert_eq!(sticky_shift(p(500.0), p(100.0), p(f32::INFINITY)), p(400.0));
+    }
+
+    #[test]
+    fn rates_follow_behavior() {
+        let mut b = ScrollBehavior::default();
+        assert_eq!(rate(&b), 0.998);
+        b.paging = true;
+        assert_eq!(rate(&b), 0.99);
+        b.deceleration = 0.95;
+        assert_eq!(rate(&b), 0.95);
+    }
+
+    #[test]
+    fn snapping_and_paging_targets() {
+        // Paging in a 400 point viewport over 1600 points of content: a
+        // slow release past half a page moves on, a fling moves one page.
+        let b = ScrollBehavior {
+            paging: true,
+            ..Default::default()
+        };
+        let r = rate(&b);
+        let pt = Points;
+        let t = b.snap_target(
+            pt(250.0),
+            projected(pt(250.0), 0.0, r),
+            0.0,
+            pt(400.0),
+            pt(1600.0),
+        );
+        assert_eq!(t, Some(pt(400.0)));
+        let t = b.snap_target(
+            pt(100.0),
+            projected(pt(100.0), 1.0, r),
+            1.0,
+            pt(400.0),
+            pt(1600.0),
+        );
+        assert_eq!(t, Some(pt(400.0)));
+        let t = b.snap_target(
+            pt(300.0),
+            projected(pt(300.0), -1.0, r),
+            -1.0,
+            pt(400.0),
+            pt(1600.0),
+        );
+        assert_eq!(t, Some(pt(0.0)));
+        let b = ScrollBehavior {
+            snap_interval: pt(100.0),
+            ..Default::default()
+        };
+        let t = b.snap_target(pt(140.0), pt(140.0), 0.0, pt(400.0), pt(1600.0));
+        assert_eq!(t, Some(pt(100.0)));
+        assert_eq!(
+            ScrollBehavior::default().snap_target(pt(140.0), pt(140.0), 0.0, pt(400.0), pt(1600.0)),
+            None
+        );
+    }
+
+    #[test]
+    fn indicator_geometry() {
+        assert_eq!(span(400.0, 400.0, 0.0, 0.0, 0.0), None);
+        let (s0, l0) = span(400.0, 1600.0, 0.0, 0.0, 0.0).unwrap();
+        assert_eq!(s0, 2.0);
+        assert!((l0 - 99.0).abs() < 0.01);
+        let (s1, l1) = span(400.0, 1600.0, 1200.0, 0.0, 0.0).unwrap();
+        assert!((s1 + l1 - 398.0).abs() < 0.01);
+        let (_, l2) = span(400.0, 1600.0, -50.0, 0.0, 0.0).unwrap();
+        assert!(l2 < l0);
+        assert_eq!(
+            indicator_span(Points(400.0), Points(1600.0), Points(0.0)),
+            Some((Points(s0), Points(l0)))
+        );
+        assert_eq!(indicator_alpha(0.0), 1.0);
+        assert_eq!(indicator_alpha(INDICATOR_HOLD + INDICATOR_FADE), 0.0);
+    }
+
+    #[test]
+    fn snap_durations() {
+        let p = Points;
+        assert_eq!(snap_duration(p(0.2), 1.0), 0.0);
+        assert_eq!(snap_duration(p(100.0), -1.0), ANIMATION);
+        assert_eq!(snap_duration(p(300.0), 1.0), 600.0);
+        assert_eq!(snap_duration(p(300.0), 3.0), 300.0);
+        assert_eq!(ease_out(1.0), 1.0);
+        assert_eq!(ease_out(2.0), 1.0);
+    }
+
+    #[test]
+    fn insets_clamp_and_report() {
+        let mut s = scroll_state((300.0, 1000.0), false);
+        let size = sz(300.0, 400.0);
+        s.behavior.content_inset = EdgeInsets {
+            top: Points(50.0),
+            bottom: Points(20.0),
+            ..Default::default()
+        };
+        assert_eq!(s.limits(size), (0.0, 670.0));
+        assert_eq!(s.max(size), pt(0.0, 670.0));
+        // The offset 0 shows the top inset: UIKit's contentOffset is -50.
+        assert_eq!(s.reported(size), pt(0.0, -50.0));
+        s.y = Points(900.0);
+        assert_eq!(s.reported(size), pt(0.0, 620.0));
+        // Children are drawn up by the offset, down by the inset.
+        assert_eq!(s.origin(), pt(0.0, 850.0));
+        // Refreshing lowers the top limit.
+        s.live.refreshing = true;
+        assert_eq!(s.limits(size).0, -56.0);
+        s.behavior.refresh_indicator = Some(Points(80.0));
+        assert_eq!(s.limits(size).0, -80.0);
+    }
+
+    #[test]
+    fn can_scroll_follows_edges_and_mirroring() {
+        let size = sz(300.0, 400.0);
+        let mut s = scroll_state((300.0, 1000.0), false);
+        s.behavior.enabled = true;
+        assert!(s.can_scroll(size, pt(0.0, 10.0)));
+        assert!(!s.can_scroll(size, pt(0.0, -10.0)));
+        s.y = Points(600.0);
+        assert!(!s.can_scroll(size, pt(0.0, 10.0)));
+        s.behavior.enabled = false;
+        assert!(!s.can_scroll(size, pt(0.0, -10.0)));
+
+        let size = sz(300.0, 100.0);
+        let mut row = scroll_state((1000.0, 100.0), true);
+        row.behavior.enabled = true;
+        row.mirrored = true;
+        // Right to left: content past the start is on the left.
+        assert!(row.can_scroll(size, pt(-10.0, 0.0)));
+        assert!(!row.can_scroll(size, pt(10.0, 0.0)));
+        // Vertical wheels move horizontal lists, unmirrored.
+        assert!(row.can_scroll(size, pt(0.0, 10.0)));
+    }
+
+    #[test]
+    fn scroll_by_moves_gestures_along() {
+        let y = |v: f32| Offset::new(0.0, v);
+        let drag = shifted(
+            Phase::Drag {
+                start: y(10.0),
+                moved: y(5.0),
+            },
+            y(30.0),
+            false,
+        );
+        assert_eq!(
+            drag,
+            Phase::Drag {
+                start: y(40.0),
+                moved: y(5.0)
+            }
+        );
+        let anim = Phase::Animate {
+            from: y(0.0),
+            to: y(100.0),
+            start: 1.0,
+            duration: 300.0,
+            momentum: false,
+            end: true,
+        };
+        let Phase::Animate { from, to, .. } = shifted(anim, y(-20.0), false) else {
+            panic!()
+        };
+        assert_eq!((from, to), (y(-20.0), y(80.0)));
+        assert_eq!(shifted(Phase::Idle, y(5.0), false), Phase::Idle);
+        assert_eq!(
+            shifted(Phase::Thumb { start: 10.0 }, y(30.0), false),
+            Phase::Thumb { start: 40.0 }
+        );
+    }
+
+    #[test]
+    fn thumb_follows_the_pointer() {
+        // The thumb's travel spans the scroll range: moving it by its
+        // whole travel scrolls to the end, and it ends that far along.
+        let p = Points;
+        let (s0, l0) = span(400.0, 1600.0, 0.0, 0.0, 0.0).unwrap();
+        let travel = 400.0 - 2.0 * INDICATOR_MARGIN - l0;
+        let end = thumb_scroll(p(travel), p(1200.0), p(travel)).0;
+        assert!((end - 1200.0).abs() < 0.01);
+        let (s1, _) = span(400.0, 1600.0, end, 0.0, 0.0).unwrap();
+        assert!((s1 - s0 - travel).abs() < 0.01);
+        assert!(thumb_scroll(p(-10.0), p(1200.0), p(travel)).0 < 0.0);
+        assert_eq!(thumb_scroll(p(10.0), p(1200.0), p(0.0)), p(0.0));
+    }
+
+    #[test]
+    fn thumb_is_grabbed_at_the_edge() {
+        let mut s = scroll_state((300.0, 1600.0), false);
+        s.indicator = true;
+        s.behavior.enabled = true;
+        let size = sz(300.0, 400.0);
+        let (rect, _) = s.thumb(size).unwrap();
+        assert_eq!(rect.origin.x.0, 300.0 - INDICATOR_THICK.0 - 2.0);
+        assert!(s.grabs_thumb(size, pt(295.0, 10.0)));
+        assert!(!s.grabs_thumb(size, pt(200.0, 10.0)));
+        assert!(!s.grabs_thumb(size, pt(295.0, 300.0)));
+    }
+
+    #[test]
+    fn thumb_keeps_clear_of_the_scrollbar_inset() {
+        // A list under a 100-point bar floating at its bottom and a 50-point
+        // one at its top: the thumb runs between them, as far as before.
+        let (s0, l0) = span(400.0, 1600.0, 0.0, 50.0, 100.0).unwrap();
+        assert_eq!(s0, 50.0 + INDICATOR_MARGIN);
+        let (s1, l1) = span(400.0, 1600.0, 1200.0, 50.0, 100.0).unwrap();
+        assert!((s1 + l1 - (300.0 - INDICATOR_MARGIN)).abs() < 0.01);
+        // Its length is the shorter track's share of what shows.
+        let (_, full) = span(400.0, 1600.0, 0.0, 0.0, 0.0).unwrap();
+        assert!(l0 < full && (l0 - 246.0 / 4.0).abs() < 0.01, "{l0}");
+        // No room left between the insets: no indicator.
+        assert_eq!(span(400.0, 1600.0, 0.0, 200.0, 195.0), None);
+        // Negative insets count as none.
+        assert_eq!(
+            span(400.0, 1600.0, 0.0, -10.0, 0.0),
+            span(400.0, 1600.0, 0.0, 0.0, 0.0)
+        );
+        assert_eq!(
+            indicator_span_within(
+                Points(400.0),
+                Points(1600.0),
+                Points(0.0),
+                Points(50.0),
+                Points(100.0)
+            ),
+            Some((Points(s0), Points(l0)))
+        );
+
+        // In a view: the thumb, its travel and where a press grabs it.
+        let mut s = scroll_state((300.0, 1600.0), false);
+        s.indicator = true;
+        s.behavior.enabled = true;
+        s.behavior.scrollbar_inset = EdgeInsets {
+            top: Points(50.0),
+            right: Points(8.0),
+            bottom: Points(100.0),
+            left: Points::ZERO,
+        };
+        let size = sz(300.0, 400.0);
+        let (rect, travel) = s.thumb(size).unwrap();
+        assert_eq!(rect.origin.x.0, 300.0 - 8.0 - INDICATOR_THICK.0 - 2.0);
+        assert_eq!(rect.origin.y.0, s0);
+        assert!((travel.0 - (400.0 - 150.0 - 2.0 * INDICATOR_MARGIN - l0)).abs() < 0.01);
+        assert!(s.grabs_thumb(size, pt(287.0, 60.0)));
+        assert!(!s.grabs_thumb(size, pt(295.0, 60.0)), "past its edge");
+        assert!(!s.grabs_thumb(size, pt(287.0, 20.0)), "above its track");
+
+        // A horizontal one moves up by the bottom inset and runs between
+        // the left and right ones, from the right when mirrored.
+        let mut s = scroll_state((900.0, 2000.0), true);
+        s.behavior.scrollbar_inset = EdgeInsets {
+            top: Points::ZERO,
+            right: Points(30.0),
+            bottom: Points(20.0),
+            left: Points(10.0),
+        };
+        let size = sz(300.0, 400.0);
+        let (rect, _) = s.thumb(size).unwrap();
+        assert_eq!(rect.origin.y.0, 400.0 - 20.0 - INDICATOR_THICK.0 - 2.0);
+        assert_eq!(rect.origin.x.0, 10.0 + INDICATOR_MARGIN);
+        s.mirrored = true;
+        let (rect, _) = s.thumb(size).unwrap();
+        assert_eq!(
+            rect.origin.x.0 + rect.size.width.0,
+            300.0 - 30.0 - INDICATOR_MARGIN
+        );
+    }
+
+    #[test]
+    fn thumb_stays_in_the_visible_part() {
+        // A horizontal scroll view 2000 tall in a viewport showing its rows
+        // 600 to 1000: the bar runs along the visible part's bottom, where
+        // a press grabs it, not along the view's own.
+        let mut s = scroll_state((900.0, 2000.0), true);
+        s.indicator = true;
+        s.behavior.enabled = true;
+        let size = sz(300.0, 2000.0);
+        let visible = Bounds::new(pt(0.0, 600.0), sz(300.0, 400.0));
+        let (rect, _) = s.thumb_within(size, visible).unwrap();
+        assert_eq!(rect.origin.y.0, 1000.0 - INDICATOR_THICK.0 - 2.0);
+        assert!(s.grabs_thumb_within(size, visible, pt(20.0, 997.0)));
+        assert!(!s.grabs_thumb_within(size, visible, pt(20.0, 1997.0)));
+        // Unclipped, it is the view's own bottom.
+        let (rect, _) = s.thumb(size).unwrap();
+        assert_eq!(rect.origin.y.0, 2000.0 - INDICATOR_THICK.0 - 2.0);
+        // Out of sight: no bar.
+        let hidden = Bounds::new(pt(0.0, 2100.0), sz(300.0, 400.0));
+        assert!(s.thumb_within(size, hidden).is_none());
+    }
+
+    #[test]
+    fn scroll_keys() {
+        assert_eq!(
+            vk_key_move(0x28, false, false),
+            Some((false, KeyMove::Points(KEY_LINE)))
+        );
+        assert_eq!(
+            vk_key_move(0x25, false, false),
+            Some((true, KeyMove::Points(-KEY_LINE)))
+        );
+        assert_eq!(
+            vk_key_move(0x20, true, false),
+            Some((false, KeyMove::Pages(-1.0)))
+        );
+        assert_eq!(
+            vk_key_move(0x24, false, true),
+            Some((false, KeyMove::Start))
+        );
+        assert_eq!(vk_key_move(0x28, false, true), None);
+        assert_eq!(vk_key_move(b'A' as u16, false, false), None);
+        assert_eq!(KeyMove::Start.sign(), -1.0);
+        assert_eq!(KeyMove::Pages(1.0).sign(), 1.0);
+        assert_eq!(
+            key_target(KeyMove::Points(Points(40.0)), 10.0, 400.0, 0.0, 1000.0),
+            50.0
+        );
+        assert_eq!(
+            key_target(KeyMove::Pages(1.0), 0.0, 400.0, 0.0, 1000.0),
+            350.0
+        );
+        assert_eq!(
+            key_target(KeyMove::Pages(-1.0), 100.0, 400.0, 0.0, 1000.0),
+            0.0
+        );
+        assert_eq!(key_target(KeyMove::End, 0.0, 400.0, 0.0, 1000.0), 1000.0);
+        assert_eq!(
+            key_target(KeyMove::Start, 500.0, 400.0, -56.0, 1000.0),
+            -56.0
+        );
+    }
+
+    #[test]
+    fn reveal_deltas() {
+        assert_eq!(reveal_by(100.0, 140.0, 400.0), 0.0);
+        assert_eq!(reveal_by(-30.0, 10.0, 400.0), -46.0);
+        assert_eq!(reveal_by(380.0, 420.0, 400.0), 36.0);
+        // Taller than the viewport: its start shows.
+        assert_eq!(reveal_by(200.0, 900.0, 400.0), 184.0);
+        // A focused one stays when some of it shows already; out of view,
+        // its start shows.
+        assert_eq!(reveal_focus_by(500.0, 1200.0, 400.0), 484.0);
+        assert_eq!(reveal_focus_by(-1200.0, -500.0, 400.0), -1216.0);
+        assert_eq!(reveal_focus_by(200.0, 900.0, 400.0), 0.0);
+        assert_eq!(reveal_focus_by(-2000.0, 300.0, 400.0), 0.0);
+        assert_eq!(reveal_focus_by(-2000.0, 900.0, 400.0), 0.0);
+        // One that fits the viewport, but not with both margins, still
+        // shows whole.
+        assert_eq!(reveal_focus_by(-100.0, 290.0, 400.0), -116.0);
+        assert_eq!(
+            reveal_focus_delta(Points(200.0), Points(900.0), Points(400.0)),
+            Points(0.0)
+        );
+        assert_eq!(
+            reveal_delta(Points(-30.0), Points(10.0), Points(400.0)),
+            Points(-46.0)
+        );
+    }
+
+    #[test]
+    fn spinner_spokes() {
+        assert_eq!(spokes(Percentage(0.3), Radians(0.0)).count(), 3);
+        assert!(spokes(Percentage(0.3), Radians(0.0)).all(|(_, a)| a == 0.8));
+        let all: Vec<_> = spokes(Percentage(1.0), Radians(0.0)).collect();
+        assert_eq!(all.len(), 8);
+        // The leading spoke is the brightest.
+        assert_eq!(all[0].1, 1.0);
+        assert_eq!(all[1].0, Radians(PI / 4.0));
+    }
+    #[test]
+    fn capture_loss_cancels_only_pointer_phases_without_callbacks() {
+        use std::cell::{Cell, RefCell};
+
+        struct Host {
+            state: RefCell<ScrollState>,
+            redraws: Cell<usize>,
+            ticks: Cell<usize>,
+        }
+        impl ScrollHost for Host {
+            fn scroll<R>(&self, f: impl FnOnce(&ScrollState, Size<Points>) -> R) -> Option<R> {
+                Some(f(&self.state.borrow(), sz(300.0, 400.0)))
+            }
+            fn scroll_mut<R>(
+                &self,
+                f: impl FnOnce(&mut ScrollState, Size<Points>) -> R,
+            ) -> Option<R> {
+                Some(f(&mut self.state.borrow_mut(), sz(300.0, 400.0)))
+            }
+            fn now(&self) -> f64 {
+                123.0
+            }
+            fn listens(&self, _: EventKind) -> bool {
+                true
+            }
+            fn event(&self, _: EventKind, _: EventPayload) {
+                panic!("capture loss must not send events")
+            }
+            fn report(&self, _: Point<Points>, _: u32) {
+                panic!("capture loss must not report motion")
+            }
+            fn moved(&self, _: Point<Points>) {
+                panic!("capture loss must not move content")
+            }
+            fn pulled(&self, _: Points) {
+                panic!("capture loss must not report a pull")
+            }
+            fn relayout(&self) {
+                panic!("capture loss must not relayout")
+            }
+            fn redraw(&self) {
+                self.redraws.set(self.redraws.get() + 1);
+            }
+            fn attached(&self) -> bool {
+                true
+            }
+            fn start_ticking(&self) {
+                self.ticks.set(self.ticks.get() + 1);
+            }
+            fn wake_after(&self, _: u64) {}
+        }
+        for phase in [
+            Phase::Drag {
+                start: Offset::new(0.0, 10.0),
+                moved: Offset::new(0.0, 20.0),
+            },
+            Phase::Thumb { start: 10.0 },
+        ] {
+            let mut state = scroll_state((300.0, 1600.0), false);
+            state.y = Points(90.0);
+            state.live.phase = phase;
+            let host = Host {
+                state: RefCell::new(state),
+                redraws: Cell::new(0),
+                ticks: Cell::new(0),
+            };
+            cancel_pointer(&host);
+            {
+                let state = host.state.borrow();
+                assert_eq!(state.live.phase, Phase::Idle);
+                assert_eq!(state.live.shown, 123.0);
+                assert_eq!(state.y, Points(90.0));
+                assert!(state.live.ticking);
+            }
+            assert_eq!((host.redraws.get(), host.ticks.get()), (1, 1));
+            cancel_pointer(&host);
+            assert_eq!((host.redraws.get(), host.ticks.get()), (1, 1));
+            let phase = Phase::Glide {
+                velocity: Offset::new(0.0, 1.0),
+                last: 20.0,
+            };
+            host.state.borrow_mut().live.phase = phase;
+            cancel_pointer(&host);
+            assert_eq!(host.state.borrow().live.phase, phase);
+            assert_eq!((host.redraws.get(), host.ticks.get()), (1, 1));
+        }
+    }
+
+    #[test]
+    fn refresh_follows_its_props() {
+        let mut s = scroll_state((300.0, 1000.0), false);
+        assert!(!s.behavior.refreshes(Points(-63.0)));
+        assert!(s.behavior.refreshes(Points(-64.0)));
+        // Pulled 32 of 64: half the spokes, centered in the 56 kept.
+        s.y = Points(-32.0);
+        assert_eq!(
+            s.spinner(Points(300.0), true),
+            Some((pt(150.0, 4.0), Percentage(0.5)))
+        );
+        // The app's own indicator, 100 tall: no spinner, a pull refreshes
+        // at its height, which refreshing keeps.
+        s.behavior.refresh_indicator = Some(Points(100.0));
+        assert!(!s.behavior.refreshes(Points(-64.0)));
+        assert!(s.behavior.refreshes(Points(-100.0)));
+        assert_eq!(s.behavior.refresh_inset(), Points(100.0));
+        assert_eq!(s.spinner(Points(300.0), true), None);
+    }
+
+    /// A vertical view 500 tall the tests drive by hand: the clock stays
+    /// at 0, frames run when called.
+    struct TestHost {
+        state: std::cell::RefCell<ScrollState>,
+        redraws: std::cell::Cell<u32>,
+        wakes: std::cell::RefCell<Vec<u64>>,
+        attached: std::cell::Cell<bool>,
+        frames: std::cell::Cell<bool>,
+        /// What it reported, in order: `zoom <scale>` and `scroll <x> <y>`.
+        reports: std::cell::RefCell<Vec<String>>,
+        /// The key moves it was told of, in order.
+        key_moves: std::cell::RefCell<Vec<KeyMove>>,
+    }
+
+    impl TestHost {
+        fn pulse(&self, now: f64) {
+            if self.frames.get() {
+                self.frames.set(frame(self, now));
+            }
+        }
+    }
+    impl TestHost {
+        fn new(state: ScrollState) -> Self {
+            Self {
+                state: std::cell::RefCell::new(state),
+                redraws: std::cell::Cell::new(0),
+                wakes: Default::default(),
+                attached: std::cell::Cell::new(true),
+                frames: Default::default(),
+                reports: Default::default(),
+                key_moves: Default::default(),
+            }
+        }
+    }
+
+    impl ScrollHost for TestHost {
+        fn scroll<R>(&self, f: impl FnOnce(&ScrollState, Size<Points>) -> R) -> Option<R> {
+            Some(f(&self.state.borrow(), sz(300.0, 500.0)))
+        }
+        fn scroll_mut<R>(&self, f: impl FnOnce(&mut ScrollState, Size<Points>) -> R) -> Option<R> {
+            Some(f(&mut self.state.borrow_mut(), sz(300.0, 500.0)))
+        }
+        fn now(&self) -> f64 {
+            0.0
+        }
+        fn listens(&self, _: EventKind) -> bool {
+            true
+        }
+        fn event(&self, _: EventKind, _: EventPayload) {}
+        fn report(&self, offset: Point<Points>, _: u32) {
+            let line = format!("scroll {} {}", offset.x.0, offset.y.0);
+            self.reports.borrow_mut().push(line);
+        }
+        fn report_zoom(&self, scale: f32) {
+            self.reports.borrow_mut().push(format!("zoom {scale}"));
+        }
+        fn key_scrolled(&self, key_move: KeyMove) {
+            self.key_moves.borrow_mut().push(key_move);
+        }
+        fn moved(&self, _: Point<Points>) {}
+        fn pulled(&self, _: Points) {}
+        fn relayout(&self) {}
+        fn redraw(&self) {
+            self.redraws.set(self.redraws.get() + 1);
+        }
+        fn attached(&self) -> bool {
+            self.attached.get()
+        }
+        fn start_ticking(&self) {
+            self.frames.set(true);
+        }
+        fn wake_after(&self, ms: u64) {
+            self.wakes.borrow_mut().push(ms);
+        }
+    }
+
+    #[test]
+    fn a_hold_that_ends_out_of_the_window_leaves_no_indicator() {
+        let host = TestHost::new(scroll_state((300.0, 1000.0), false));
+        host.scroll_mut(|s, _| {
+            s.indicator = true;
+            s.live.alpha = 1.0;
+            s.live.shown = 1000.0;
+            s.live.ticking = true;
+        });
+        assert!(!frame(&host, 1100.0));
+        host.attached.set(false);
+        hold_ended(&host);
+        let state = host.state.borrow();
+        assert_eq!(state.live.alpha, 0.0);
+    }
+
+    #[test]
+    fn the_indicators_hold_draws_no_frames() {
+        let host = TestHost::new(scroll_state((300.0, 1000.0), false));
+        host.scroll_mut(|s, _| {
+            s.indicator = true;
+            s.live.alpha = 1.0;
+            s.live.shown = 1000.0;
+            s.live.ticking = true;
+        });
+        // In the hold the frames end and one wake-up is asked for, however
+        // often new offsets start the frames again before it comes.
+        assert!(!frame(&host, 1100.0));
+        host.scroll_mut(|s, _| s.live.shown = 1200.0);
+        assert!(!frame(&host, 1200.0));
+        assert_eq!(*host.wakes.borrow(), [600]);
+        // A wake-up that finds it shown since waits for the rest of the hold.
+        hold_ended(&host);
+        host.pulse(1700.0);
+        assert_eq!(*host.wakes.borrow(), [600, 200]);
+        // The fade takes frames until it is gone.
+        hold_ended(&host);
+        host.pulse(2050.0);
+        assert_eq!(host.state.borrow().live.alpha, 0.5);
+        host.pulse(2200.0);
+        assert_eq!(host.state.borrow().live.alpha, 0.0);
+        assert_eq!(host.wakes.borrow().len(), 2);
+    }
+
+    #[test]
+    fn a_key_scroll_tells_the_host_every_key_move() {
+        let host = TestHost::new(scroll_state((300.0, 100_000.0), false));
+        key_scroll(&host, KeyMove::End, false);
+        key_scroll(&host, KeyMove::Pages(-1.0), false);
+        assert_eq!(
+            *host.key_moves.borrow(),
+            [KeyMove::End, KeyMove::Pages(-1.0)]
+        );
+        assert!(matches!(
+            host.state.borrow().live.phase,
+            Phase::Animate { .. }
+        ));
+
+        // A right-to-left row scrolls the other way, and the host still
+        // hears the key's own move.
+        let mut row = scroll_state((100_000.0, 500.0), true);
+        row.mirrored = true;
+        row.x = Points(1000.0);
+        let host = TestHost::new(row);
+        key_scroll(&host, KeyMove::Points(KEY_LINE), true);
+        assert_eq!(host.state.borrow().goal(), 1000.0 - KEY_LINE.0);
+        assert_eq!(*host.key_moves.borrow(), [KeyMove::Points(KEY_LINE)]);
+    }
+
+    #[test]
+    fn a_glide_and_an_eased_move_end_at_their_deadlines() {
+        let host = TestHost::new(scroll_state((300.0, 100_000.0), false));
+        assert_eq!(deadline(&host, 0.0), None);
+        for phase in [
+            Phase::Glide {
+                velocity: Offset::new(0.0, 2.0),
+                last: 0.0,
+            },
+            Phase::Animate {
+                from: Offset::default(),
+                to: Offset::new(0.0, 400.0),
+                start: 0.0,
+                duration: ANIMATION,
+                momentum: false,
+                end: true,
+            },
+        ] {
+            host.state.borrow_mut().y = Points(0.0);
+            host.state.borrow_mut().live.phase = phase;
+            let mut now = 0.0;
+            let mut frames = 0;
+            while let Some(next) = deadline(&host, now) {
+                now = next;
+                frame(&host, now);
+                frames += 1;
+                assert!(frames < 5, "{:?}", host.state.borrow().live.phase);
+            }
+            assert!(matches!(host.state.borrow().live.phase, Phase::Idle));
+            let y = host.state.borrow().y.0;
+            match phase {
+                // Where frames would have taken it.
+                Phase::Glide { .. } => assert!(
+                    (y - projected(Points(0.0), 2.0, 0.998).0).abs() < 6.0,
+                    "{y}"
+                ),
+                _ => assert_eq!(y, 400.0),
+            }
+        }
+    }
+
+    #[test]
+    fn indicator_follows_the_view_on_either_axis() {
+        let host = TestHost::new(scroll_state((300.0, 1000.0), false));
+        for horizontal in [false, true] {
+            config(&host, horizontal, true, false, false);
+            assert!(host.state.borrow().indicator);
+            // `scrollbar={false}` hides it, a horizontal view's too.
+            config(&host, horizontal, false, false, false);
+            assert!(!host.state.borrow().indicator);
+            // A built-in bar of the app's takes its place.
+            config(&host, horizontal, true, true, false);
+            assert!(!host.state.borrow().indicator);
+        }
+    }
+
+    #[test]
+    fn switching_indicators_while_refreshing_keeps_the_new_room() {
+        let host = TestHost::new(scroll_state((300.0, 1000.0), false));
+        let own = ScrollBehavior {
+            refresh_indicator: Some(Points(72.0)),
+            ..Default::default()
+        };
+        behavior(&host, &own);
+        refreshing(&host, true);
+        frame(&host, 1000.0);
+        assert_eq!(host.state.borrow().y, Points(-72.0));
+        // The app drops its own indicator: the spinner draws, in its room.
+        let redraws = host.redraws.get();
+        behavior(&host, &ScrollBehavior::default());
+        assert!(host.redraws.get() > redraws);
+        frame(&host, 1000.0);
+        assert_eq!(host.state.borrow().y, Points(-56.0));
+        // Unchanged props leave it where it is.
+        behavior(&host, &ScrollBehavior::default());
+        assert!(matches!(host.state.borrow().live.phase, Phase::Idle));
+    }
+
+    /// A view 300 × 500 over content of `content`, zooming from 0.5 to 4
+    /// on a backend that draws it.
+    fn zooming(content: (f32, f32)) -> TestHost {
+        let mut s = scroll_state(content, false);
+        s.can_zoom = true;
+        s.behavior.min_zoom = 0.5;
+        s.behavior.max_zoom = 4.0;
+        TestHost::new(s)
+    }
+
+    fn zoom_and_offset(host: &TestHost) -> (f32, f32, f32) {
+        let s = host.state.borrow();
+        (s.zoom, s.x.0, s.y.0)
+    }
+
+    fn zoom_to(scale: f32, center: Option<Point<Points>>, animated: bool) -> Command {
+        Command::ZoomTo {
+            scale,
+            center,
+            animated,
+        }
+    }
+
+    #[test]
+    fn only_a_backend_that_draws_zoomed_content_zooms() {
+        let host = zooming((300.0, 500.0));
+        host.state.borrow_mut().can_zoom = false;
+        command(&host, &zoom_to(2.0, None, false));
+        assert_eq!(zoom_and_offset(&host), (1.0, 0.0, 0.0));
+        assert!(host.reports.borrow().is_empty());
+        // Zoomed around the middle, the zoom reported before the offset.
+        host.state.borrow_mut().can_zoom = true;
+        command(&host, &zoom_to(2.0, None, false));
+        assert_eq!(zoom_and_offset(&host), (2.0, 150.0, 250.0));
+        assert_eq!(*host.reports.borrow(), ["zoom 2", "scroll 150 250"]);
+    }
+
+    #[test]
+    fn a_pinch_keeps_the_content_under_the_pointer_and_springs_back() {
+        let host = zooming((300.0, 500.0));
+        let size = sz(300.0, 500.0);
+        let at = pt(100.0, 120.0);
+        pinch_begin(&host);
+        pinch(&host, 2.0, at);
+        assert_eq!(zoom_and_offset(&host), (2.0, 100.0, 120.0));
+        {
+            let s = host.state.borrow();
+            assert_eq!(s.to_viewport(size, at), at);
+            assert_eq!(s.to_content(size, at), at);
+        }
+        // Past the limit with fingers: a rubber band, then back to 4.
+        pinch(&host, 6.0, at);
+        let banded = host.state.borrow().zoom;
+        assert!(banded > 4.0 && banded < 6.0, "{banded}");
+        pinch_end(&host, at);
+        frame(&host, ANIMATION);
+        // Content point (100, 120) stays at the pointer.
+        assert_eq!(zoom_and_offset(&host), (4.0, 300.0, 360.0));
+        assert!(matches!(host.state.borrow().live.phase, Phase::Idle));
+    }
+
+    #[test]
+    fn zoomed_content_pans_both_ways_without_a_bar() {
+        let host = zooming((300.0, 500.0));
+        host.state.borrow_mut().indicator = true;
+        let size = sz(300.0, 500.0);
+        assert!(!host.state.borrow().can_scroll(size, pt(10.0, 10.0)));
+        command(&host, &zoom_to(2.0, Some(pt(0.0, 0.0)), false));
+        // The top left corner as near the middle as the edges let it.
+        assert_eq!(zoom_and_offset(&host), (2.0, 0.0, 0.0));
+        let s = host.state.borrow().clone();
+        assert!(s.can_scroll(size, pt(10.0, 0.0)) && s.can_scroll(size, pt(0.0, 10.0)));
+        assert!(!s.can_scroll(size, pt(-10.0, -10.0)));
+        assert!(s.thumb(size).is_none());
+        wheel(&host, pt(30.0, 40.0));
+        assert_eq!(zoom_and_offset(&host), (2.0, 30.0, 40.0));
+        // It stops at the edges: 600 × 1000 of content in 300 × 500.
+        wheel(&host, pt(1000.0, 1000.0));
+        assert_eq!(zoom_and_offset(&host), (2.0, 300.0, 500.0));
+        // A fling glides along both axes.
+        wheel_begin(&host);
+        wheel(&host, pt(-10.0, -10.0));
+        wheel_end(&host, -1000.0, -500.0);
+        let mut now = 0.0;
+        while let Some(next) = deadline(&host, now) {
+            now = next;
+            frame(&host, now);
+        }
+        let (_, x, y) = zoom_and_offset(&host);
+        assert!(x < 280.0 && y < 480.0 && x < y, "{x} {y}");
+    }
+
+    #[test]
+    fn zoom_to_eases_to_the_point_it_centers() {
+        let host = zooming((300.0, 500.0));
+        command(&host, &zoom_to(2.0, Some(pt(100.0, 200.0)), true));
+        assert!(matches!(host.state.borrow().live.phase, Phase::Zoom { .. }));
+        assert_eq!(deadline(&host, 0.0), Some(ANIMATION + 1.0));
+        frame(&host, ANIMATION / 2.0);
+        let half = host.state.borrow().zoom;
+        assert!(half > 1.0 && half < 2.0, "{half}");
+        frame(&host, ANIMATION);
+        // (100, 200) at 2× is (200, 400): the middle (150, 250) less.
+        assert_eq!(zoom_and_offset(&host), (2.0, 50.0, 150.0));
+        // Beyond the limits: the limit.
+        command(&host, &zoom_to(10.0, None, false));
+        assert_eq!(host.state.borrow().zoom, 4.0);
+    }
+
+    #[test]
+    fn small_content_is_centered() {
+        let host = zooming((300.0, 500.0));
+        host.state.borrow_mut().behavior.center_content = true;
+        command(&host, &zoom_to(0.5, None, false));
+        let s = host.state.borrow();
+        let size = sz(300.0, 500.0);
+        assert_eq!(s.centered(size), pt(75.0, 125.0));
+        assert_eq!(s.to_viewport(size, pt(0.0, 0.0)), pt(75.0, 125.0));
+        assert_eq!(s.to_content(size, pt(75.0, 125.0)), pt(0.0, 0.0));
+        assert_eq!((s.x.0, s.y.0), (0.0, 0.0));
+    }
+
+    #[test]
+    fn new_limits_clamp_the_zoom_and_a_view_that_zooms_no_more_is_back_at_1() {
+        let host = zooming((300.0, 500.0));
+        command(&host, &zoom_to(3.0, None, false));
+        let mut b = host.state.borrow().behavior.clone();
+        b.max_zoom = 2.0;
+        behavior(&host, &b);
+        assert_eq!(host.state.borrow().zoom, 2.0);
+        b.max_zoom = 0.5;
+        behavior(&host, &b);
+        assert_eq!(zoom_and_offset(&host), (1.0, 0.0, 0.0));
+        frame(&host, 0.0);
+        let reports = host.reports.borrow();
+        assert_eq!(reports[reports.len() - 2..], ["zoom 1", "scroll 0 0"]);
+    }
+}

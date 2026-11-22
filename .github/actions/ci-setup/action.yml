@@ -1,0 +1,170 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+name: CI setup
+description: Prepare the selected worker and cache reusable Rust dependencies.
+inputs:
+  role:
+    description: Stable worker identity.
+    required: true
+  cache_role:
+    description: Compiler cache key owner (defaults to role).
+    default: ""
+  workspace:
+    description: Owning Cargo workspace.
+    default: root
+  dependencies:
+    description: Linux native dependency group.
+    default: ""
+  javascript:
+    description: Install locked npm dependencies.
+    default: "false"
+  compile:
+    description: Cache compiler outputs.
+    default: "true"
+  nextest:
+    description: Producer version for archive consumers; otherwise resolve latest.
+    default: ""
+outputs:
+  compiled_key:
+    description: Compiler cache key.
+    value: ${{ steps.keys.outputs.compiled }}
+  compiled_hit:
+    description: Whether the exact compiler cache was restored.
+    value: ${{ steps.compiled.outputs.cache-hit }}
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@v7
+      with:
+        node-version: "26"
+        package-manager-cache: false
+    - name: Update Rust
+      if: inputs.role != 'replay'
+      shell: bash
+      run: rustup update stable --no-self-update
+    - name: Select Rust tools
+      id: tools
+      shell: bash
+      env:
+        MAKA_CI_ROLE: ${{ inputs.role }}
+        MAKA_CI_WORKSPACE: ${{ inputs.workspace }}
+        MAKA_CI_NEXTEST: ${{ inputs.nextest }}
+      run: node scripts/ci/setup.mjs tool-list
+    - name: Install Rust tools
+      if: steps.tools.outputs.tools != ''
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        MAKA_CI_ROLE: ${{ inputs.role }}
+        MAKA_CI_NEXTEST: ${{ inputs.nextest }}
+      run: node scripts/ci/setup.mjs tools
+    - name: Install native dependencies
+      if: runner.os == 'Linux' && inputs.dependencies != ''
+      shell: bash
+      env:
+        MAKA_CI_DEPENDENCIES: ${{ inputs.dependencies }}
+      run: node scripts/ci/setup.mjs native
+    - name: Use lld linker on Linux
+      if: runner.os == 'Linux' && inputs.compile == 'true' && inputs.dependencies != ''
+      shell: bash
+      run: |
+        echo 'CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=clang' >> "$GITHUB_ENV"
+        echo 'CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS=-C link-arg=-fuse-ld=lld' >> "$GITHUB_ENV"
+    - name: Exclude Cargo paths from Windows Defender
+      if: runner.os == 'Windows' && inputs.compile == 'true'
+      shell: pwsh
+      run: |
+        Add-MpPreference -ExclusionPath "$env:GITHUB_WORKSPACE\target"
+        Add-MpPreference -ExclusionPath "$env:USERPROFILE\.cargo"
+    - name: Select libclang on Windows
+      if: runner.os == 'Windows' && inputs.compile == 'true'
+      shell: bash
+      run: echo 'LIBCLANG_PATH=C:\Program Files\LLVM\bin' >> "$GITHUB_ENV"
+    - name: Identify Cargo caches
+      id: keys
+      if: inputs.role != 'replay'
+      shell: bash
+      env:
+        MAKA_CI_ROLE: ${{ inputs.role }}
+        MAKA_CI_CACHE_ROLE: ${{ inputs.cache_role }}
+        MAKA_CI_WORKSPACE: ${{ inputs.workspace }}
+      run: node scripts/ci/setup.mjs keys
+    - name: Cache shared Cargo downloads
+      uses: actions/cache@v6
+      if: inputs.role != 'replay' && steps.keys.outputs.downloads_writer == 'true'
+      with:
+        path: |
+          ~/.cargo/registry/index
+          ~/.cargo/registry/cache
+          ~/.cargo/git/db
+          ~/.cargo/.rusty_v8
+        key: ${{ steps.keys.outputs.downloads }}
+        restore-keys: ${{ steps.keys.outputs.downloads_prefix }}
+        enableCrossOsArchive: true
+    - name: Restore shared Cargo downloads
+      uses: actions/cache/restore@v6
+      if: inputs.role != 'replay' && steps.keys.outputs.downloads_writer != 'true'
+      with:
+        path: |
+          ~/.cargo/registry/index
+          ~/.cargo/registry/cache
+          ~/.cargo/git/db
+          ~/.cargo/.rusty_v8
+        key: ${{ steps.keys.outputs.downloads }}
+        restore-keys: ${{ steps.keys.outputs.downloads_prefix }}
+        enableCrossOsArchive: true
+    - name: Restore reusable compiler outputs
+      uses: actions/cache/restore@v6
+      id: compiled
+      if: inputs.compile == 'true'
+      with:
+        path: |
+          target/CACHEDIR.TAG
+          target/**/.fingerprint
+          target/**/build
+          target/**/gn_out
+          target/**/deps/*.*
+          !target/**/deps/*.exe
+        key: ${{ steps.keys.outputs.compiled }}
+        restore-keys: ${{ steps.keys.outputs.compiled_prefix }}
+    - name: Stabilize third-party timestamps on exact cache hit
+      if: inputs.compile == 'true' && inputs.workspace == 'root' && steps.compiled.outputs.cache-hit == 'true'
+      shell: bash
+      run: node scripts/ci/setup.mjs stamp-third-party
+    - name: Clean vendored third-party outputs on fallback restore
+      if: inputs.compile == 'true' && inputs.workspace == 'root' && steps.compiled.outputs.cache-hit != 'true'
+      shell: bash
+      run: node scripts/ci/setup.mjs clean-third-party
+    - name: Stage prebuilt V8 archive
+      if: inputs.workspace == 'root' && inputs.role != 'replay' && steps.compiled.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: node scripts/ci/setup.mjs v8
+    - uses: actions/cache@v6
+      if: inputs.javascript == 'true'
+      with:
+        path: ~/.npm
+        key: npm-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+        restore-keys: npm-${{ runner.os }}-
+    - name: Install JavaScript dependencies
+      if: inputs.javascript == 'true'
+      shell: bash
+      run: |
+        npm install --global --no-audit --no-fund npm@latest
+        node scripts/setup.mjs

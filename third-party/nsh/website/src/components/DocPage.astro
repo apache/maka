@@ -1,0 +1,13 @@
+---
+import { render } from 'astro:content';
+import DocsLayout from '../layouts/DocsLayout.astro';
+import type { Page } from '../lib/sections';
+
+export interface Props { page: Page }
+const { page } = Astro.props;
+const { Content, headings } = await render(page.entry);
+---
+
+<DocsLayout page={page} headings={headings}>
+  <Content />
+</DocsLayout>

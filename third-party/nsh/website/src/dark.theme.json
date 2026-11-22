@@ -1,0 +1,161 @@
+{
+  "name": "allsum-dark",
+  "type": "dark",
+  "colors": {
+    "editor.background": "#191918",
+    "editor.foreground": "#e6e3dc"
+  },
+  "tokenColors": [
+    {
+      "settings": {
+        "foreground": "#e6e3dc",
+        "background": "#191918"
+      }
+    },
+    {
+      "name": "Comments",
+      "scope": [
+        "comment",
+        "punctuation.definition.comment"
+      ],
+      "settings": {
+        "foreground": "#7d7a72",
+        "fontStyle": "italic"
+      }
+    },
+    {
+      "name": "Keywords, storage, headings",
+      "scope": [
+        "keyword",
+        "storage",
+        "storage.type",
+        "storage.modifier",
+        "keyword.operator.word",
+        "keyword.operator.expression",
+        "keyword.operator.new",
+        "keyword.operator.logical.python",
+        "markup.heading",
+        "entity.name.section"
+      ],
+      "settings": {
+        "foreground": "#c4a7ff"
+      }
+    },
+    {
+      "name": "Operators (symbols) keep the code colour",
+      "scope": [
+        "keyword.operator"
+      ],
+      "settings": {
+        "foreground": "#e6e3dc"
+      }
+    },
+    {
+      "name": "Strings, regular expressions, escapes, insertions",
+      "scope": [
+        "string",
+        "string.regexp",
+        "constant.character.escape",
+        "markup.inserted"
+      ],
+      "settings": {
+        "foreground": "#9fd68a"
+      }
+    },
+    {
+      "name": "Numbers, constants, literals",
+      "scope": [
+        "constant",
+        "constant.numeric",
+        "constant.language",
+        "support.constant",
+        "variable.other.constant",
+        "entity.name.constant"
+      ],
+      "settings": {
+        "foreground": "#f5b27a"
+      }
+    },
+    {
+      "name": "Function and class names",
+      "scope": [
+        "entity.name",
+        "entity.name.function",
+        "entity.name.type",
+        "entity.name.class",
+        "entity.other.inherited-class",
+        "support.function",
+        "support.class",
+        "variable.function"
+      ],
+      "settings": {
+        "foreground": "#82b8ff"
+      }
+    },
+    {
+      "name": "Attributes, variables, parameters, properties, keys",
+      "scope": [
+        "entity.other.attribute-name",
+        "meta.object-literal.key",
+        "meta.mapping.key",
+        "support.type.property-name",
+        "variable.parameter",
+        "variable.language",
+        "variable.other.property",
+        "variable.other.object.property",
+        "variable.other.member",
+        "entity.name.tag.yaml",
+        "entity.name.tag.toml",
+        "support.type.property-name.toml",
+        "variable.other.normal.shell",
+        "variable.other.readwrite.shell"
+      ],
+      "settings": {
+        "foreground": "#f0c674"
+      }
+    },
+    {
+      "name": "Built-ins, types, tags",
+      "scope": [
+        "support.function.builtin",
+        "support.macro",
+        "support.type",
+        "support.type.primitive",
+        "support.type.builtin",
+        "storage.type.primitive",
+        "storage.type.numeric",
+        "entity.name.tag"
+      ],
+      "settings": {
+        "foreground": "#6fd3d8"
+      }
+    },
+    {
+      "name": "Deletions",
+      "scope": [
+        "markup.deleted"
+      ],
+      "settings": {
+        "foreground": "#f87171"
+      }
+    },
+    {
+      "name": "Bold",
+      "scope": [
+        "markup.bold"
+      ],
+      "settings": {
+        "fontStyle": "bold"
+      }
+    },
+    {
+      "name": "Italic",
+      "scope": [
+        "markup.italic"
+      ],
+      "settings": {
+        "fontStyle": "italic"
+      }
+    }
+  ]
+}

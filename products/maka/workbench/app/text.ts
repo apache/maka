@@ -1,0 +1,126 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import { cleanup, signal } from 'nsh';
+import { tr, type MessageKey } from './locale';
+import { message, type UiText, type UiTextValues } from './text-value';
+
+export { message, type UiText } from './text-value';
+
+export function renderText(value: UiText): string {
+  if (typeof value === 'string') return value;
+  return tr(
+    value.key,
+    value.values &&
+      Object.fromEntries(
+        Object.entries(value.values).map(([key, part]) => [
+          key,
+          typeof part === 'number' ? part : renderText(part),
+        ]),
+      ),
+  );
+}
+
+/** One text owner; its public read tracks both the original value and current locale. */
+export function createText() {
+  const value = signal<UiText>('');
+  const read = () => renderText(value());
+  read.set = (text: UiText) => value.set(text);
+  return read;
+}
+
+/** Brief action feedback; pending states and actionable errors keep their own owners. */
+export function createTransientText() {
+  const text = createText();
+  const set = text.set;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let alive = true;
+  cleanup(() => {
+    alive = false;
+    clearTimeout(timer);
+  });
+  text.set = (value: UiText) => {
+    if (!alive) return;
+    clearTimeout(timer);
+    set(value);
+    if (value !== '') timer = setTimeout(() => set(''), 4000);
+  };
+  return text;
+}
+
+export class UiError extends Error {
+  readonly text: UiText;
+  constructor(key: MessageKey, values?: UiTextValues) {
+    const text = message(key, values);
+    super(renderText(text));
+    this.text = text;
+  }
+}
+
+/** The original action is still being checked by its owner. */
+export class ActionPending extends Error {}
+
+export const errorMessage = (reason: unknown): string =>
+  reason instanceof Error ? reason.message : String(reason);
+
+export function isObservationCancelled(reason: unknown): boolean {
+  const detail = errorMessage(reason);
+  return detail === 'client subscription cancelled' || detail.endsWith('_observation_cancelled');
+}
+
+export function errorText(reason: unknown, fallback: MessageKey, values?: UiTextValues): UiText {
+  if (reason instanceof ActionPending) return '';
+  if (reason instanceof UiError) return reason.text;
+  const detail = errorMessage(reason);
+  if (!detail) return '';
+  if (isObservationCancelled(reason)) return message('Connection interrupted. Your draft is kept.');
+  switch (detail) {
+    case 'client journal still has active preparation':
+    case 'client operation ended before dispatch':
+      return '';
+    case 'agent_files_private':
+      return message('This conversation cannot read that path.');
+    case 'files_hard_link':
+      return message(
+        'This file has multiple hard links. Saving would break the link between them.',
+      );
+    case 'downloads_read_denied':
+      return message(
+        'Allow Maka to read Downloads in System Settings > Privacy & Security > Files and Folders.',
+      );
+    case 'selected_file_permission_denied':
+      return message(
+        'Maka does not have permission to read that file. Allow access in System Settings or save a copy to an accessible folder.',
+      );
+    case 'agent_observation_closed':
+    case 'agent_closed':
+      return message('Connection interrupted. Your draft is kept.');
+    case 'agent_store_unavailable':
+      return message('Conversation data is temporarily unavailable. Try reconnecting.');
+    case 'agent_catalog_unavailable':
+      return message('Conversation list is temporarily unavailable. Try reconnecting.');
+    case 'database connection closed before accepting the operation':
+      return message('Connection interrupted. Reconnect to continue; your draft is kept.');
+    default:
+      // The fallback names the action and the detail says why, so a model
+      // refusal and a lost connection do not read the same.
+      console.warn(fallback, detail);
+      return message('{message} {detail}', { message: message(fallback, values), detail });
+  }
+}

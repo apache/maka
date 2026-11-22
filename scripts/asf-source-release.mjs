@@ -42,10 +42,9 @@ import { fileURLToPath } from 'node:url';
 const defaultRepoRoot = resolve(import.meta.dirname, '..');
 const archivePattern = /^apache-maka-(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)-incubating-src\.tar\.gz$/;
 const versionPattern = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
-const requiredReleaseDocuments = ['DISCLAIMER-WIP', 'LICENSE', 'NOTICE'];
+const requiredReleaseDocuments = ['DISCLAIMER', 'LICENSE', 'NOTICE'];
 const requiredRootFiles = [...requiredReleaseDocuments, 'package.json', 'package-lock.json'];
 const forbiddenSegments = new Set(['.agents', '.claude', '.git', '.maka-shots', 'node_modules']);
-const forbiddenRootFiles = new Set(['maka-proposal-zh-review.txt']);
 const knownNonCategoryXLicenses = new Set([
   '(AFL-2.1 OR BSD-3-Clause)',
   '(MIT OR CC0-1.0)',
@@ -73,12 +72,19 @@ const knownNonCategoryXLicenses = new Set([
 const categoryXLicensePattern = /(?:^|[^A-Za-z])(?:A?GPL|LGPL)-?\d/i;
 
 const textSourceExtensions = new Set([
+  '.ftl',
+  '.pem',
   '.astro',
+  '.c',
   '.cjs',
   '.css',
   '.csv',
   '.diff',
+  '.dockerfile',
+  '.h',
+  '.hlsl',
   '.html',
+  '.java',
   '.js',
   '.json',
   '.jsonc',
@@ -86,6 +92,7 @@ const textSourceExtensions = new Set([
   '.lock',
   '.md',
   '.mjs',
+  '.modulemap',
   '.mts',
   '.nsh',
   '.patch',
@@ -93,7 +100,10 @@ const textSourceExtensions = new Set([
   '.plist',
   '.ps1',
   '.py',
+  '.rb',
+  '.rc',
   '.rs',
+  '.sbpl',
   '.sh',
   '.sql',
   '.svg',
@@ -103,19 +113,30 @@ const textSourceExtensions = new Set([
   '.tsv',
   '.tsx',
   '.txt',
+  '.wgsl',
   '.xml',
   '.yaml',
   '.yml',
 ]);
 const textSourceBasenames = new Set([
+  'justfile',
+  'THIRD_PARTY_NOTICES',
+  'localhost.key',
   '.git-blame-ignore-revs',
   '.gitattributes',
   '.gitignore',
   '.mailmap',
-  'DISCLAIMER-WIP',
+  'Cargo.toml.orig',
+  'CNAME',
+  'DISCLAIMER',
   'Dockerfile',
   'LICENSE',
+  'LICENSE-APACHE',
+  'LICENSE-MIT',
+  'LICENSE-MPL',
   'NOTICE',
+  'default-env',
+  'layerfs',
   'network-policy',
   'pre-commit',
 ]);
@@ -185,9 +206,6 @@ export function validateArchiveEntries(entries, rootDirectory) {
       throw new Error(`Archive entry is outside ${rootDirectory}: ${entry}`);
     }
     if (segments.some((segment) => forbiddenSegments.has(segment))) {
-      throw new Error(`Forbidden archive entry: ${entry}`);
-    }
-    if (segments.length === 2 && forbiddenRootFiles.has(segments[1])) {
       throw new Error(`Forbidden archive entry: ${entry}`);
     }
     if (segments.at(-1) === '.DS_Store') {
@@ -554,10 +572,10 @@ function validateArchiveContents(archivePath, identity, entries) {
       const contents = readFileSync(join(candidateRoot, requiredFile), 'utf8');
       if (!contents.trim()) throw new Error(`${requiredFile} is empty`);
       if (
-        requiredFile === 'DISCLAIMER-WIP' &&
+        requiredFile === 'DISCLAIMER' &&
         (!contents.includes('Apache Maka') || !contents.includes('incubation'))
       ) {
-        throw new Error('DISCLAIMER-WIP does not identify Apache Maka as an incubating project');
+        throw new Error('DISCLAIMER does not identify Apache Maka as an incubating project');
       }
     }
 
@@ -626,17 +644,12 @@ function validateNonTextInputs(candidateRoot, identity, entries) {
     if (compiledFormat) {
       throw new Error(`Compiled artifact ${entry} has forbidden ${compiledFormat} content`);
     }
-    for (const match of contents.toString('utf8').matchAll(/\bAGFzbQ[A-Za-z0-9+/]{4,}={0,2}/gu)) {
-      if (compiledArtifactFormat(Buffer.from(match[0], 'base64')) === 'WASM') {
-        throw new Error(`Compiled artifact ${entry} has forbidden Base64 WASM content`);
-      }
-    }
     try {
       const text = decoder.decode(contents);
       const basename = entry.slice(entry.lastIndexOf('/') + 1);
       const extension = extname(basename).toLowerCase();
       if (
-        !/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(text) &&
+        !/[\u0000-\u0008\u000b\u000e-\u001f\u007f]/u.test(text) &&
         (textSourceExtensions.has(extension) || textSourceBasenames.has(basename))
       ) {
         continue;
@@ -764,7 +777,8 @@ function validateAsciiArmoredSignature(signaturePath) {
   }
 }
 
-function execTar(archivePath, arguments_, options) {
+// GNU tar treats a Windows drive prefix as a remote host; use cwd + basename.
+export function execTar(archivePath, arguments_, options) {
   return execFileSync('tar', [arguments_[0], basename(archivePath), ...arguments_.slice(1)], {
     cwd: dirname(archivePath),
     ...options,

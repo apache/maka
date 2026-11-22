@@ -1,0 +1,268 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+use super::*;
+use maka_agent_facts::interaction::PermissionSource;
+use maka_host_runtime::shell::{
+    ControlErrorKind,
+    request::{parse_ref, require_ref},
+    stdin,
+};
+use maka_plugin_core::shell_run::ShellPatch;
+use maka_plugin_core::shell_run::ShellState;
+use maka_plugin_core::shell_run::ShellVisibility;
+use maka_plugin_core::shell_run::{ShellObservation, ShellRun};
+use serde_json::json;
+
+impl Processes {
+    pub(super) async fn read_model(
+        &self,
+        tool: &ToolCallContext,
+        id: &str,
+    ) -> Result<ShellObservation, ToolError> {
+        let session = &tool.execution.session_id;
+        if let Some(Ok(live)) = self
+            .resources
+            .get(session, id)
+            .and_then(|handle| handle.latest())
+            && live.state.active()
+            && live.visibility == ShellVisibility::Model
+            && live.id.starts_with(&self.prefix)
+        {
+            return Ok((*live).clone());
+        }
+        let record = self
+            .work_store(tool)?
+            .read_shell_run(session, id)
+            .await
+            .map_err(persistence)?
+            .filter(|record| {
+                record.visibility == ShellVisibility::Model && record.id.starts_with(&self.prefix)
+            })
+            .ok_or_else(|| failed("Process resource not found in this Session and provider"))?;
+        if let Some(update) = self
+            .resources
+            .get(session, id)
+            .and_then(|handle| handle.latest())
+        {
+            return prefer_live(record, update);
+        }
+        Ok(record.into())
+    }
+    pub(super) async fn project(
+        &self,
+        tool: &ToolCallContext,
+        mut record: ShellObservation,
+        compact: bool,
+    ) -> Result<Value, ToolError> {
+        if matches!(
+            record.state,
+            ShellState::Terminal {
+                observed_at: None,
+                ..
+            }
+        ) {
+            record.record = Arc::new(
+                self.work_store(tool)?
+                    .patch_shell_run(
+                        &record.session_id,
+                        &record.id,
+                        ShellPatch {
+                            observed_at: Some(maka_agent_authority::now()),
+                            ..Default::default()
+                        },
+                    )
+                    .await
+                    .map_err(persistence)?,
+            );
+            record.preview = None;
+        }
+        let mut snapshot = maka_presentation::shell::local_observation(record)
+            .map_err(persistence)?
+            .result;
+        if compact {
+            snapshot.output = None;
+        }
+        serde_json::to_value(snapshot).map_err(persistence)
+    }
+    pub(super) async fn control(
+        &self,
+        name: &str,
+        value: Value,
+        access: &dyn NativeCallAccess,
+        floor: &Sandbox,
+        cancellation: &CancellationToken,
+    ) -> Result<Value, ToolError> {
+        let tool = access.call();
+        let session = &tool.execution.session_id;
+        if name == "writeStdin" {
+            return self
+                .write(stdin::Input::parse(value)?, access, floor, cancellation)
+                .await;
+        }
+        let input: Reference = serde_json::from_value(value).map_err(failed)?;
+        let id = require_ref(&input.reference)?;
+        let mut record = self.read_model(tool, id).await?;
+        cancelled(cancellation)?;
+        if name == "read" {
+            return self.project(tool, record, false).await;
+        }
+        let applied = if let Some(mut handle) = self.resources.get(session, id) {
+            // Stop bypasses input backpressure and remains available after revocation.
+            let receipt = handle.stop_and_wait().await.map_err(worker_error)?;
+            record = (*handle.drained().await.map_err(worker_error)?).clone();
+            receipt.applied
+        } else {
+            if record.state.active() {
+                record = self.read_model(tool, id).await?;
+                if record.state.active() {
+                    return Err(ToolError::CleanupUnconfirmed(
+                        "Active process has no native owner".into(),
+                    ));
+                }
+            }
+            false
+        };
+        let mut value = self.project(tool, record, false).await?;
+        value["operation"] = json!({"kind":"stop","applied":applied});
+        Ok(value)
+    }
+    async fn write(
+        &self,
+        input: stdin::Input,
+        access: &dyn NativeCallAccess,
+        floor: &Sandbox,
+        cancellation: &CancellationToken,
+    ) -> Result<Value, ToolError> {
+        let tool = access.call();
+        let session = &tool.execution.session_id;
+        let id = parse_ref(&input.reference).expect("validated ref");
+        let mut record = self.read_model(tool, id).await?;
+        if !record.output.is_pty() {
+            return Err(failed("writeStdin requires a PTY process ref"));
+        }
+        let mut accepted_bytes = 0;
+        let mut resized = false;
+        let mut resize_changed = false;
+        let mut failure = None;
+        if let Some(mut handle) = self.resources.get(session, id) {
+            let gate = handle.control_gate();
+            let _guard = tokio::select! {
+                biased;
+                _ = cancellation.cancelled() => return Err(failed("PTY input cancelled before admission")),
+                guard = gate.lock() => guard,
+            };
+            record = (*handle.ready().await.map_err(worker_error)?).clone();
+            if record.state.active() {
+                if self.controllers.lock().unwrap().iter().any(|lease| {
+                    lease.controller.target.session_id == *session
+                        && lease.controller.target.reference == input.reference
+                        && !lease.cancellation.is_cancelled()
+                }) {
+                    return Err(failed("PTY is controlled by a connected user"));
+                }
+                let current = access.current().await?;
+                let basis = current.permission_basis();
+                if basis != record.permissions.basis {
+                    return Err(failed(
+                        "PTY launch permissions no longer match this Session; start a new terminal",
+                    ));
+                }
+                let required = &record.permissions.sandbox;
+                if !floor.contains(required).map_err(failed)? {
+                    return Err(failed(
+                        "PTY sandbox exceeds the current permission ceiling; start a new terminal",
+                    ));
+                }
+                if let Some(base) = access.file_approval_base() {
+                    let mut held = base.intersect(floor).map_err(failed)?;
+                    if let Sandbox::Managed { network, .. } = &mut held {
+                        // Keep the existing network PTY lifetime; file grants are scoped to the current call.
+                        *network = floor.network().clone();
+                    }
+                    if !held.contains(required).map_err(failed)? {
+                        for grant in access
+                            .permission_grants(access.target(), &basis, PermissionSource::Processes)
+                            .await?
+                        {
+                            held = held.with_grant(&grant.permissions, floor).map_err(failed)?;
+                        }
+                        if !held.contains(required).map_err(failed)? {
+                            return Err(failed(
+                                "PTY input requires the file permissions used to start it",
+                            ));
+                        }
+                    }
+                }
+                cancelled(cancellation)?;
+                let result =
+                    match handle.enqueue_control(input.data, input.size, cancellation.clone()) {
+                        Ok(receipt) => receipt.await,
+                        Err(error) => Err(error),
+                    };
+                match result {
+                    Ok(receipt) => {
+                        accepted_bytes = receipt.accepted_bytes;
+                        resized = receipt.resized;
+                        resize_changed = receipt.resize_changed;
+                        record = (*receipt.record).clone();
+                    }
+                    Err(error) => match error.kind {
+                        ControlErrorKind::Rejected => return Err(failed(error)),
+                        ControlErrorKind::Unknown => {
+                            return Err(ToolError::CleanupUnconfirmed(error.to_string()));
+                        }
+                        ControlErrorKind::Closed => {
+                            handle.stop();
+                            record = (*handle.drained().await.map_err(worker_error)?).clone();
+                            accepted_bytes = error.accepted_bytes.expect("known input closure");
+                            resized = error.resized.expect("known input closure");
+                            resize_changed = error.resize_changed.expect("known input closure");
+                            failure = Some(error.message);
+                        }
+                    },
+                }
+            }
+        } else if record.state.active() {
+            record = self.read_model(tool, id).await?;
+            if record.state.active() {
+                return Err(ToolError::CleanupUnconfirmed(
+                    "Active PTY has no native owner".into(),
+                ));
+            }
+        }
+        let mut value = self.project(tool, record, false).await?;
+        value["operation"] = json!({"kind":"pty_control", "acceptedBytes":accepted_bytes,
+            "requestedBytes":input.bytes,"resized":resized,"resizeChanged":resize_changed,"failure":failure});
+        Ok(value)
+    }
+}
+
+// SQL remains the durable authority; an equal revision may carry newer live output.
+pub(super) fn prefer_live(
+    durable: ShellRun,
+    update: Result<Arc<ShellObservation>, Arc<ShellError>>,
+) -> Result<ShellObservation, ToolError> {
+    let live = update.map_err(worker_error)?;
+    Ok(if live.revision >= durable.revision {
+        (*live).clone()
+    } else {
+        durable.into()
+    })
+}

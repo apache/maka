@@ -1,0 +1,390 @@
+# What a user does and sees (compat/apps.rs): each case after its tap.
+# mod-standard-access
+tap id:case-mod-standard-access
+# What the app did not declare rejects with ERR_ACCESS_DENIED; wrong uses
+# with a TypeError (a bad URL of the global WebSocket throws SyntaxError).
+expect Standard grants files=true tcp=true websocket=true global=true
+covers [fs/promises] default
+covers [fs/promises] readFile
+covers [fs/promises] writeFile
+covers [fs/promises] readdir
+covers [fs/promises] exists
+covers [fs/promises] unlink
+covers [fs/promises] rmdir
+covers [fs/promises] mkdir
+covers [fs/promises] stat
+covers [fs/promises] lstat
+covers [fs/promises] rename
+covers [fs/promises] readlink
+covers [net] default
+covers [net] connect
+covers [websocket] default
+covers [websocket] connect
+covers [globals] WebSocket
+covers [net] Socket
+covers [websocket] WebSocketConnection
+# mod-accessibility
+tap id:case-mod-accessibility
+# no screen reader and asks for no less motion.
+expect Screen reader: false
+expect Reduce motion: false
+expect Calls: not called
+tap id:call
+expect Calls: done
+covers [nsh] announce
+covers [nsh] setAccessibilityFocus
+covers [nsh] reduceMotion
+covers [nsh] screenReaderEnabled
+# mod-android
+tap id:case-mod-android
+# nsh/mobile's BackHandler does nothing there and the app runs on.
+expect Android: false
+expect Exit: function
+expect Calls: not called
+tap id:call
+expect Calls: done, remove function
+covers [nsh/mobile] BackHandler
+# mod-clipboard
+tap id:case-mod-clipboard
+# the headless runtime: writes go through, reads are promises that stay
+# pending (and none fails).
+expect Calls: not called
+expect Failed: none
+tap id:copy
+expect Calls: 5 promises
+wait 300
+expect Failed: none
+# text with its HTML (`Clipboard.write`) goes through as a write does.
+expect Write: not written
+tap id:copy-html
+expect Write: written
+covers [nsh] Clipboard
+# mod-i18n
+tap id:case-mod-i18n
+# en-US shows English; a missing key reads as its locale and key; German
+# formats with the data nsh.json lists, French (not listed) as English.
+expect Shown: en-US
+expect Hello: Hello
+expect Greet: Hello, Ada!
+expect Missing: en-US.missing
+expect Asked: 你好
+expect Locales: en zh zh-CN
+expect German: 1.234,5
+expect French: 1,234.5
+tap id:chinese
+expect Shown: zh-CN
+expect Hello: 你好
+expect Greet: 你好，Ada！
+tap id:device
+expect Shown: en-US
+expect Hello: Hello
+covers [nsh/i18n] t
+covers [nsh/i18n] setLocale
+covers [nsh/i18n] availableLocales
+# mod-picker
+tap id:case-mod-picker
+# a pick is a promise that never throws: options out of range reject it with
+# a RangeError; a pick no picker answers there stays pending.
+expect Picked: not picked
+tap id:pick
+expect Refused: rejected RangeError
+expect Picked: pending
+wait 300
+expect Picked: pending
+expect Files: not picked
+tap id:pick-files
+expect Files refused: rejected RangeError
+expect Size refused: rejected RangeError
+expect Files: pending
+covers [nsh] Picker
+# mod-share
+tap id:case-mod-share
+# no share sheet there: available() resolves false and show rejects as
+# unavailable, never as shared; content it refuses rejects first, by kind.
+expect Available: false
+expect Shown: not shown
+tap id:share
+expect Shown: rejected ERR_FEATURE_UNAVAILABLE_ON_PLATFORM
+expect Empty: rejected TypeError
+expect Local URL: rejected TypeError
+expect Many: rejected RangeError
+expect File: rejected ERR_ACCESS_DENIED
+expect Blank: rejected TypeError
+expect Long URL: rejected RangeError
+covers [nsh] Share
+# mod-speech
+tap id:case-mod-speech
+# nothing recognizes speech there: available() resolves false and a session
+# ends at once with "unavailable"; a lang that is no tag throws a RangeError.
+expect Available: false
+expect Speech: not started
+tap id:start
+expect Refused: threw RangeError
+expect Speech: end unavailable "" true
+covers [nsh] Speech
+# mod-audio
+tap id:case-mod-audio
+# nothing plays sound there: available() resolves false, a sound's load
+# rejects and a player's play() rejects as its error listener hears
+# "unavailable"; a volume out of range throws a RangeError.
+expect Available: false
+expect Sound: not loaded
+# an imported audio file is its URL
+expect Imported: asset:/sounds/click.wav
+tap id:play
+expect Refused: threw RangeError
+expect Sound: rejected ERR_FEATURE_UNAVAILABLE_ON_PLATFORM
+expect Bytes: rejected ERR_FEATURE_UNAVAILABLE_ON_PLATFORM
+expect Player: rejected, error unavailable, idle true 1.5
+covers [nsh] Sound
+covers [nsh] AudioPlayer
+# mod-notifications
+tap id:case-mod-notifications
+# nothing shows notifications there: the permission is unavailable and nothing
+# shows, the badge, close and closeAll do nothing (closeAll resolves with
+# nothing), and bad arguments reject.
+expect Permission: unknown
+tap id:notify
+expect Permission: unavailable unavailable
+expect Closed: undefined
+expect Refused: RangeError RangeError
+expect Shown: false false
+covers [nsh] Notifications
+# mod-app-info
+tap id:case-mod-app-info
+# `nsh build --release` of an app whose nsh.json has a version and build:
+# a release build, its information there before any module runs.
+expect App: com.example.api-modules API Modules
+expect Version: 1.2.3 build 7
+expect Development: false
+expect Early: 1.2.3
+covers [nsh] appInfo
+# mod-url-scheme
+tap id:case-mod-url-scheme
+# the domain claims `compat`: no link opened it, and the listener stops.
+# The app's own `setUrl` is no change of the address it did not make.
+expect Links: none
+expect Listener: listening
+expect Address: null
+expect Changes: none
+tap id:set-url
+expect Address: compat://orders/43, wrong TypeError TypeError TypeError
+expect Changes: none
+tap id:stop-links
+expect Listener: stopped
+covers [nsh] UrlScheme
+# mod-updater
+tap id:case-mod-updater
+# no packaged app: no package runs, no update (a channel's) or package is offered, there is nothing to
+# download, restart into or install on quit, and the shell has no packaged version.
+expect Running package: none
+expect Shell: none build none, packages false
+expect NSH version: semver
+expect Update: null
+expect Check: null
+expect Download: rejected
+expect Restart: rejected
+expect Install on quit: rejected
+covers [nsh/updater] checkForPackage
+covers [nsh/updater] checkForUpdate
+covers [nsh/updater] downloadPackage
+covers [nsh/updater] installOnQuit
+covers [nsh/updater] restartToPackage
+covers [nsh/updater] runningPackage
+covers [nsh/updater] shellInfo
+# mod-desktop
+tap id:case-mod-desktop
+# no title bar area, the main window is the only one, a window of the app's
+# own neither renders nor opens, the window, app and menu functions do
+# nothing, and a popup closes at once.
+expect Desktop: false
+expect Title bar: 0 0 0
+expect Window state: null displays 0
+expect Current: main true null state null
+expect Windows: main focused null get true null
+absent Inside a window
+expect Calls: not called
+expect Popup: not shown
+tap id:window
+expect Calls: window done, open ERR_FEATURE_UNAVAILABLE_ON_PLATFORM, close function
+tap id:menu
+expect Calls: menu done
+expect Popup: closed
+tap id:application
+expect Calls: application done, quit function, restart function, stop function
+covers [nsh/desktop] isAvailable
+covers [nsh/desktop] titleBar
+covers [nsh/desktop] windowState
+covers [nsh/desktop] displays
+covers [nsh/desktop] Window
+covers [nsh/desktop] currentWindow
+covers [nsh/desktop] windows
+covers [nsh/desktop] focusedWindow
+covers [nsh/desktop] Menu
+covers [nsh/desktop] Application
+# mod-device
+tap id:case-mod-device
+# iOS phone at 1 pixel per point, in the light scheme.
+expect Platform: ios
+expect OS: ios
+expect Idiom: phone
+expect Desktop: false
+expect Catalyst: false
+expect Version: 0.0
+expect Select: ios
+expect Select named: ios
+expect Select mobile: mobile
+expect Ratio: 1
+expect Font scale: 1
+expect Window: 390x844
+expect Size classes: compact regular
+expect Scheme: light
+expect Lifecycle: active
+expect Wakes: 0
+expect Time zone: UTC
+expect Intl local time: its zone
+expect Languages: en-US
+expect Regional: h12, week from 7, us, fahrenheit
+tap id:dark
+expect Scheme: dark
+absent Scheme: light
+tap id:system
+expect Scheme: light
+# openUrl: a promise for a web page, rejected with a TypeError for a
+# `javascript:` URL.
+expect Open: not opened
+tap id:open
+expect Open: function, refused TypeError
+covers [nsh] openUrl
+covers [nsh] platform
+covers [nsh] pixelRatio
+covers [nsh] colorScheme
+covers [nsh] setColorScheme
+covers [nsh] fontScale
+covers [nsh] windowSize
+covers [nsh] horizontalSizeClass
+covers [nsh] verticalSizeClass
+covers [nsh] lifecycle
+covers [nsh] wakeCount
+covers [nsh] localeSettings
+# mod-host-channel
+tap id:case-mod-host-channel
+# no embedding app: no parameters, posts go nowhere and calls reject at
+# once with ERR_FEATURE_UNAVAILABLE_ON_PLATFORM.
+expect Params: 0 object
+expect Calls: not called
+expect Call failed: none
+tap id:call
+expect Calls: function, post done
+expect Call failed: Error ERR_FEATURE_UNAVAILABLE_ON_PLATFORM
+covers [nsh] host
+# mod-ios
+tap id:case-mod-ios
+# the accessory view's content exists, and takes no room in its parent.
+expect iOS: true
+expect Accessory bar
+expect Rendered
+frame id:above 0 0 390 30
+frame id:below 0 30 390 30
+frame id:column 0 81 390 60
+covers [nsh/mobile] InputAccessoryView
+# mod-keymap
+tap id:case-mod-keymap
+# an Apple platform: Apple's symbols, and Command+Q kept by the platform.
+expect Label: ⇧⌘L
+expect Label F5: F5
+expect Label alt: ⌥↩
+expect Invalid: refused
+expect Kept: refused
+expect Bound: not bound
+tap id:bind
+expect Bound: function function
+covers [nsh] keymap
+# mod-mobile
+tap id:case-mod-mobile
+expect Mobile: true
+# The system's bar, in the frame the app's style gives it; the app owns
+# which tab is selected and follows the user's choice (`onChange`).
+expect Tab: 0
+frame id:tab-bar 0 784 390 60
+tap id:tab-next
+expect Tab: 1
+tap id:tab-rename
+frame id:tab-bar 0 784 390 60
+covers [nsh/mobile] isAvailable
+covers [nsh/mobile] TabBar
+covers [nsh/mobile] SegmentedControl
+# The system's switch shows the app's value, in its style's accent.
+expect Wi-Fi: true
+style id:wifi accentColor #34c759ff
+covers [nsh/mobile] Switch
+covers [styles] accentColor
+
+# The system's date and time picker shows the app's value.
+expect When: 2026-11-17T09:30
+covers [nsh/mobile] DateTimePicker
+# mod-haptics
+tap id:case-mod-haptics
+# every call goes through; a name Haptics does not know throws.
+expect Haptics: not called
+tap id:play
+expect Haptics: done, loud refused: TypeError
+covers [nsh/mobile] Haptics
+# mod-storage
+tap id:case-mod-storage
+# a key set twice keeps its last value, and a missing key reads null.
+expect Storage empty
+tap id:set
+expect Storage set: a=1,b=two missing=null
+tap id:remove
+expect Storage removed: a=1 missing=null
+tap id:clear
+expect Storage cleared: none missing=null
+# A value past the quota rejects with a code and is not kept.
+tap id:full
+expect Storage full: Error ERR_NSH_QUOTA_EXCEEDED kept=false
+covers [nsh] Storage
+# mod-host
+tap id:case-mod-host
+# no host on this platform: the call rejects at once with
+# ERR_FEATURE_UNAVAILABLE_ON_PLATFORM; the root's events reach the listener.
+expect Host available: false
+expect Host call: not called
+tap id:call
+expect Host call: rejected Error ERR_FEATURE_UNAVAILABLE_ON_PLATFORM
+event id:heard onHost type=event event=tick payload=1
+expect Host heard: [1]
+# Stopped, the listener hears no more.
+tap id:stop
+event id:heard onHost type=event event=tick payload=2
+wait 50
+expect Host heard: [1]
+covers [nsh] host
+# mod-web
+tap id:case-mod-web
+# No page here: a head renders nothing, before and after its props change.
+expect Title: Notes
+tap id:retitle
+expect Title: Q3 earnings
+covers [nsh/web] Head
+# mod-fps
+tap id:case-mod-fps
+# no performance monitor headless: it reports none, and the calls go through.
+expect Fps enabled: false
+expect Calls: not called
+tap id:toggle
+expect Calls: done
+expect Fps enabled: false
+covers [nsh] fpsEnabled
+covers [nsh] setFpsEnabled
+# mod-fps-mode
+tap id:case-mod-fps-mode
+expect Modes: not called
+tap id:modes
+expect Modes: done
+covers [nsh] setFpsMode
+# mod-perf-stats
+tap id:case-mod-perf-stats
+# no stats until the monitor measured a second.
+expect Fps: none
+covers [nsh] perfStats

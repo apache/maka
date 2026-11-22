@@ -1,0 +1,14 @@
+---
+import BaseLayout from '../layouts/BaseLayout.astro';
+import Nav from '../components/Nav.astro';
+import Home from '../components/Home.astro';
+import SiteFooter from '../components/SiteFooter.astro';
+import { homeAlternates, homeLanguages } from '../lib/home';
+import { url } from '../lib/site';
+---
+
+<BaseLayout lang="en" alternates={homeAlternates()}>
+  <Nav lang="en" currentPath={Astro.url.pathname} langHref={url('zh-CN')} languages={homeLanguages()} />
+  <Home lang="en" />
+  <SiteFooter lang="en" />
+</BaseLayout>

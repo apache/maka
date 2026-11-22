@@ -18,25 +18,73 @@
 [graph]
 targets = [
   "aarch64-apple-darwin",
+  "x86_64-apple-darwin",
   "aarch64-unknown-linux-gnu",
-  "x86_64-pc-windows-msvc",
   "x86_64-unknown-linux-gnu",
+  "x86_64-pc-windows-msvc",
 ]
 
+# Follow Apache OpenDAL's cargo-deny policy, with Maka's own dependency exceptions.
+# https://github.com/apache/opendal/blob/main/deny.toml
+# Blue Oak and Unicode data-file licenses are ASF Category A.
+# https://www.apache.org/legal/resolved.html#category-a
 [licenses]
 allow = [
+  "0BSD",
   "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
   "BSD-2-Clause",
   "BSD-3-Clause",
+  "BSL-1.0",
+  "BlueOak-1.0.0",
+  "CC0-1.0",
+  "CDLA-Permissive-2.0",
   "ISC",
   "MIT",
+  "MIT-0",
   "Unicode-3.0",
+  "Unicode-DFS-2016",
+  "Unlicense",
   "Zlib",
 ]
 confidence-threshold = 0.8
 
+# MPL sources are not vendored or included in Maka source releases. Binary
+# distributions must identify these components and provide their license/source.
+exceptions = [
+  # Native/platform dependencies; no MPL source is vendored.
+  { crate = "cooked-waker@5.0.0", allow = ["MPL-2.0"] },
+  { crate = "cssparser@0.36.0", allow = ["MPL-2.0"] },
+  { crate = "cssparser@0.37.0", allow = ["MPL-2.0"] },
+  { crate = "cssparser-macros@0.6.1", allow = ["MPL-2.0"] },
+  { crate = "cssparser-macros@0.7.1", allow = ["MPL-2.0"] },
+  { crate = "dtoa-short@0.3.5", allow = ["MPL-2.0"] },
+  { crate = "selectors@0.38.0", allow = ["MPL-2.0"] },
+  { crate = "smartstring@1.0.1", allow = ["MPL-2.0"] },
+  { crate = "option-ext@0.2.0", allow = ["MPL-2.0"] },
+  { crate = "uniffi@0.31.0", allow = ["MPL-2.0"] },
+  { crate = "uniffi_core@0.31.0", allow = ["MPL-2.0"] },
+  { crate = "uniffi_internal_macros@0.31.0", allow = ["MPL-2.0"] },
+  { crate = "uniffi_macros@0.31.0", allow = ["MPL-2.0"] },
+  { crate = "uniffi_meta@0.31.0", allow = ["MPL-2.0"] },
+  { crate = "uniffi_pipeline@0.31.0", allow = ["MPL-2.0"] },
+]
+
+[[licenses.clarify]]
+crate = "libuv-sys-lite@1.48.4"
+expression = "MIT AND BSD-2-Clause AND ISC"
+license-files = [{ path = "LICENSE", hash = 0xc2efc575 }]
+
 [sources]
-allow-git = ["https://github.com/webrtc-rs/webrtc"]
+allow-git = [
+  "https://github.com/microsoft/mxc",
+  "https://github.com/maka-agent/cua",
+  "https://github.com/proptest-rs/proptest",
+  "https://github.com/zed-industries/font-kit",
+  "https://github.com/zed-industries/scap",
+  "https://github.com/zed-industries/wasm_thread",
+  "https://github.com/zed-industries/xim-rs",
+]
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 unknown-git = "deny"
 unknown-registry = "deny"

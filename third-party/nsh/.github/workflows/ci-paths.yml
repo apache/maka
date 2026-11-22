@@ -1,0 +1,41 @@
+name: CI paths
+
+# The Rust workflows run only when what they build changes, listed crate by
+# crate in their `paths`. This checks those lists against the workspace's
+# dependency graph, so a crate a workflow tests can never be left out
+# (.github/ci/paths.py). It runs on every pull request, whatever it
+# changes: its job is the `check` main's ruleset requires, which a pull
+# request that runs no other workflow with that job (one touching only
+# `crates/gpui`) would otherwise never report. It takes seconds.
+
+on:
+  pull_request:
+    # `closed` runs nothing, but it takes the pull request's concurrency group
+    # and so cancels its runs still queued or running once it merges or closes.
+    types: [opened, synchronize, reopened, ready_for_review, closed]
+  merge_group:
+    types: [checks_requested]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-paths-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  # `cargo metadata --no-deps` only: no toolchain targets to install.
+  RUSTUP_TOOLCHAIN: stable
+
+jobs:
+  check:
+    # Nothing for drafts or a pull request being closed.
+    if: github.event_name != 'pull_request' || (github.event.action != 'closed' && !github.event.pull_request.draft)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      - name: Check the workflows' paths
+        run: |
+          python3 -c "import yaml" 2>/dev/null || pip install pyyaml
+          python3 .github/ci/paths.py

@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>nsh player</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #fff; overflow: hidden; }
+  @media (prefers-color-scheme: dark) { html, body { background: #000; } }
+  #app { position: fixed; inset: 0; }
+  #status { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+    font: 13px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; color: #8a8a8e; }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<div id="status">Loading…</div>
+<script type="module">
+  // Runs website demo `#<name>` (demos/<name>.js, an ES module compiled by
+  // `nsh build`) on the browser's JavaScript engine.
+  // `?theme=dark|light` overrides the system appearance.
+  //
+  // `?playground`: loads the runtime with the TSX compiler and runs the
+  // source the embedding page posts: `{ type: "run", source }`. It posts
+  // back `{ type: "ready" }` once loaded, `{ type: "compiled", error }`
+  // after each run (`error` null when it compiled and started), and `{ type:
+  // "runtime-error", message }` / `{ type: "log", level, message }` while
+  // the app runs.
+  // `cargo xtask web` writes the website gallery's runtime file names
+  // (nsh.<digest>.js / .wasm, nsh-syntaxes.<digest>.bin) for those below:
+  // the player shares them.
+  import { createPlayer } from "./nsh.js";
+
+  const status = document.getElementById("status");
+  const params = new URLSearchParams(location.search);
+  const playground = params.has("playground");
+  const theme = params.get("theme");
+  const post = (message) => parent !== window && parent.postMessage({ source: "nsh-player", ...message }, "*");
+  const options = {
+    dialogs: "viewport",
+    assetBase: new URL("assets/", location.href).href,
+    wasm: playground ? "./nsh-playground.wasm" : "./nsh.wasm",
+    data: { syntaxes: "./nsh-syntaxes.bin" },
+    onError: (message) => post({ type: "runtime-error", message }),
+    onLog: (level, message) => post({ type: "log", level, message }),
+  };
+  if (theme === "dark" || theme === "light") options.dark = theme === "dark";
+  // `?idiom=desktop` (or `phone`, `pad`): the device the app believes it
+  // runs on, whatever the frame's size and the pointer (the website's
+  // Mobile / Desktop switch).
+  const idiom = params.get("idiom");
+  if (idiom === "desktop" || idiom === "phone" || idiom === "pad") options.idiom = idiom;
+  if (options.dark) document.documentElement.style.background = "#000";
+
+  let loading;
+  const player = () => (loading ??= createPlayer(document.getElementById("app"), options).then((p) => (window.player = p)));
+
+  // Runs are asynchronous (the module loads in the app's realm): only the
+  // latest one reports, an earlier one a newer run replaced rejects.
+  let runs = 0;
+
+  async function start() {
+    const name = decodeURIComponent(location.hash.slice(1)) || "counter";
+    const run = ++runs;
+    status.textContent = "Loading…";
+    status.style.display = "";
+    try {
+      const p = await player();
+      if (run !== runs) return;
+      status.style.display = "none";
+      await p.runModule(new URL(`demos/${encodeURIComponent(name)}.js`, location.href).href);
+    } catch (err) {
+      if (run !== runs) return;
+      status.textContent = String(err.message ?? err);
+      status.style.display = "";
+    }
+  }
+
+  addEventListener("message", async (e) => {
+    const data = e.data ?? {};
+    // The embedding page can switch the appearance: postMessage({ theme }).
+    const t = data.theme;
+    if ((t === "dark" || t === "light") && window.player) {
+      document.documentElement.style.background = t === "dark" ? "#000" : "#fff";
+      window.player.setDark(t === "dark");
+    }
+    if (playground && data.type === "run" && typeof data.source === "string") {
+      const run = ++runs;
+      const p = await player();
+      status.style.display = "none";
+      try {
+        const error = await p.compileAndRun(data.source, data.name ?? "App.tsx");
+        if (run === runs) post({ type: "compiled", error });
+      } catch {
+        // It compiled and failed while it loaded: the player reported it
+        // (`onError`, a "runtime-error"), or a newer run replaced it.
+      }
+    }
+  });
+
+  if (playground) {
+    player().then(
+      () => {
+        status.textContent = "";
+        post({ type: "ready" });
+      },
+      (err) => {
+        status.textContent = String(err.message ?? err);
+      },
+    );
+  } else {
+    addEventListener("hashchange", start);
+    start();
+  }
+</script>
+</body>
+</html>

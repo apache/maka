@@ -1,0 +1,18 @@
+{
+  "repository": "https://github.com/denoland/deno",
+  "revision": "fe7ed012d92c642fd8e5607ac5a45d517538b5c5",
+  "registry_version": "0.247.0",
+  "files": {
+    "Cargo.toml": "7a2efb81bd6540558c8ec7a90c80332eb2715125351510d8ff4cdff961bbbb98",
+    "LICENSE.md": "f62497fffecc0852960c8d3e6934b9db86d16396e9b604072e923892cae3a588",
+    "README.md": "602ae5c6b550a036939fa535c8473cceb24e1c9e5b553dff53ac19a24943f004",
+    "keylog.rs": "5368da8759ed3f9c82904d5074f7af598d30195748dacb10e27aea58ac810080",
+    "lib.rs": "9782a9d89ac6054238f012edecf78f0a0552018039efe6bb2ee89eadbe400987",
+    "testdata/README": "09d80e3553cc3b2fe6ef31f8ae820069c5c9d8712346b55cd14bef11f2f7377a",
+    "testdata/example1_cert.der": "3ea2d517e098947dd247f372689d76e0274851ba643516bc3a8ac59361cdeac1",
+    "testdata/example1_prikey.der": "eff150befe8bd3263e82a2b2c29ab93223e7eb467b33f287e932500cd70b7b33",
+    "testdata/example2_cert.der": "bf7b1166a800d2223843f15ab6c34941b6c90cf029b1e25c4235eb0df0c641a3",
+    "testdata/example2_prikey.der": "630c692a1aa25ce2acfa70518c8288b6b18faa74318d1e2c78c02eaf67f64c49",
+    "tls_key.rs": "214972304856a809b084c1f6a460cf3135c3a4598456fde71c45fcc859c2667e"
+  }
+}

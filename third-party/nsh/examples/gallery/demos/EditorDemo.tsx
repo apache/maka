@@ -1,0 +1,876 @@
+import { type Bounds, cleanup, computed, type InputRef, List, Overlay, type Point, signal, Text, untracked, View, type ViewRef } from "nsh";
+import { Button, DockArea, type DockAreaRef, Editor, type EditorDecoration, type EditorDiagnostic, type EditorPosition, type EditorRange, type EditorRef, type EditorSearchResult, type EditorSelection, Menu, MenuItem, MenuSeparator, TextView, Input } from "nsh/base";
+import { isAvailable as hasMenus, Menu as NativeMenu, type MenuItem as NativeMenuItem } from "nsh/desktop";
+import { openUrl, platform, windowSize } from "nsh";
+import { keymap } from "nsh";
+import { Icon, type IconName } from "../icons";
+import { colors, handleThumb, inputLook, menuIndicator, menuItemLabel, menuItemLook, menuItemNote, menuItemSize, MenuLabel, MenuMark, menuSeparator, popupSurface, Tip, toggleGlyph, toggleLabel, toggleLook, menuPopup } from "../ui"
+import { SAMPLE } from "./lsp/sample";
+import { type CodeAction, type DocumentColor, LanguageServer, type Problem } from "./lsp/server";
+
+// `nsh/base`'s `Editor` draws its text, gutter, carets and matches itself
+// and keeps its own model (a rope, undo, folds, highlighting); what is
+// around it is the app's: the find bar is the app's `Input`s passing a
+// `search` and calling the ref, the status line reads the editor's events.
+// On the TypeScript sample a simulated language server (`./lsp/server`)
+// answers what the editor asks (a hover, a definition, code actions,
+// completions) a little later, as a real one does over its connection;
+// the other samples carry a linter's fixed diagnostics. What the server
+// answers is the app's to show: diagnostics and decorations are data the
+// editor draws, the hover card is an `Overlay` with a `TextView`, the code
+// actions a menu at the caret.
+
+type Language = "rust" | "typescript" | "python" | "json";
+
+/** Mod is Command on Apple platforms (a browser on a Mac too), Control
+ * elsewhere: what `keymap` calls `mod`. */
+const apple = keymap.label("mod+a").startsWith("⌘");
+
+/** A sample file of each language, with a linter's problems in it. */
+const SAMPLES: Record<Language, { text: string; diagnostics: EditorDiagnostic[] }> = {
+  rust: {
+    text: `use std::collections::HashMap;
+
+/// Counts the words of a text, most frequent first.
+fn word_counts(text: &str) -> Vec<(&str, usize)> {
+    let mut counts: HashMap<&str, usize> = HashMap::new();
+    for word in text.split_whitespace() {
+        *counts.entry(word).or_insert(0) += 1;
+    }
+    let mut sorted: Vec<_> = counts.into_iter().collect();
+    sorted.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
+    sorted
+}
+
+fn main() {
+    let unused = 42;
+    for (word, count) in word_counts("the quick fox jumps over the lazy dog the end") {
+        println!("{word}: {count}");
+    }
+}
+`,
+    diagnostics: [
+      {
+        range: { start: { line: 14, column: 8 }, end: { line: 14, column: 14 } },
+        severity: "warning",
+        message: "unused variable: `unused`",
+        source: "rustc",
+        code: "unused_variables",
+      },
+    ],
+  },
+  // The language server's file: its diagnostics are the server's.
+  typescript: { text: SAMPLE, diagnostics: [] },
+  python: {
+    text: `from dataclasses import dataclass
+
+
+@dataclass
+class Point:
+    x: float
+    y: float
+
+    def distance(self, other: "Point") -> float:
+        return ((self.x - other.x) ** 2 + (self.y - other.y) ** 2) ** 0.5
+
+
+def perimeter(points):
+    total = 0
+    for a, b in zip(points, points[1:] + points[:1]):
+        total += a.distance(b)
+    return total
+
+
+print(perimeter([Point(0, 0), Point(3, 0), Point(3, 4)]))
+`,
+    diagnostics: [
+      {
+        range: { start: { line: 12, column: 14 }, end: { line: 12, column: 20 } },
+        severity: "info",
+        message: "Missing type annotation for `points`",
+        source: "mypy",
+      },
+    ],
+  },
+  json: {
+    text: `{
+  "name": "gallery",
+  "version": "0.1.0",
+  "entry": "App.tsx",
+  "tailwind": {
+    "theme": "theme.json"
+  },
+  "capabilities": ["network", "storage"],
+  "debug": tru
+}
+`,
+    diagnostics: [
+      {
+        range: { start: { line: 8, column: 11 }, end: { line: 8, column: 14 } },
+        severity: "error",
+        message: "Value expected",
+        source: "json",
+      },
+    ],
+  },
+};
+
+
+const LANGUAGES = [
+  { value: "typescript", label: "TypeScript", file: "orders.ts" },
+  { value: "rust", label: "Rust", file: "main.rs" },
+  { value: "python", label: "Python", file: "shapes.py" },
+  { value: "json", label: "JSON", file: "nsh.json" },
+] as const;
+
+const fileOf = (language: Language) => LANGUAGES.find((l) => l.value === language)!.file;
+
+const SEVERITY = {
+  error: { label: "error", class: "bg-destructive" },
+  warning: { label: "warning", class: "bg-warn" },
+  info: { label: "info", class: "bg-info" },
+  hint: { label: "hint", class: "bg-muted-foreground" },
+} as const;
+
+const same = (a: EditorRange, b: EditorRange) =>
+  a.start.line === b.start.line && a.start.column === b.start.column && a.end.line === b.end.line && a.end.column === b.end.column;
+/** A terminal: no icons, and its lines read as words. */
+const terminal = platform.idiom === "terminal";
+const plural = (n: number, word: string) => `${n} ${word}${n === 1 || word === "info" ? "" : "s"}`;
+
+const pointer = platform.desktop;
+
+/** What the hover card shows. */
+interface HoverCard {
+  anchor: Bounds;
+  markdown: string | null;
+  diagnostics: EditorDiagnostic[];
+}
+
+/** A dot of a severity's color. */
+function Dot(props: { severity: EditorDiagnostic["severity"] }) {
+  return <View class={`mt-[5px] size-2 rounded-full ${SEVERITY[props.severity ?? "error"].class}`} />;
+}
+
+/** The hover card's docs: small type, the signature's code block without a
+ * box of its own inside the card's. */
+const HOVER_DOCS = {
+  root: "gap-1.5 text-xs text-popover-foreground",
+  paragraph: "text-xs",
+  codeBlock: "bg-transparent border-0 rounded-none p-0",
+  codeBlockScroll: "p-0",
+  codeBlockCode: "p-0 text-xs",
+};
+
+/** A small text button of the find bar, a toolbar's toggle
+ * (`toggleLook`): `on` lights it while what it toggles is on. */
+function Tool(props: { label: string; name: string; onPress: () => void; on?: boolean }) {
+  return (
+    <Button onPress={props.onPress} selected={props.on} accessibilityLabel={props.label} tooltip={<Tip label={props.label} />} {...toggleLook({ on: () => props.on, text: true, style: { paddingHorizontal: 6 } })}>
+      <Text style={{ ...toggleLabel(() => props.on), fontFamily: "monospace", fontSize: 11, fontWeight: "600" }}>{props.name}</Text>
+    </Button>
+  );
+}
+
+/** An icon button of the toolbar, a toolbar's toggle (`toggleLook`), its
+ * label for screen readers and as its tooltip: `on` lights it while what
+ * it toggles is on; `small` fits the status line. */
+function IconTool(props: { label: string; icon: IconName; onPress: () => void; on?: boolean; size?: "small"; word?: string }) {
+  const small = props.size === "small";
+  return (
+    <Button
+      onPress={props.onPress}
+      selected={props.on}
+      accessibilityLabel={props.label}
+      tooltip={<Tip label={props.label} />}
+      {...toggleLook({ on: () => props.on, text: terminal && !!props.word, size: small ? "small" : undefined, style: small && !terminal ? { minWidth: 20, height: 20 } : undefined })}
+    >
+      {/* A terminal has no icons: the tool is its word there, which the painter bands while on. */}
+      {terminal && props.word ? <Text>{props.word}</Text> : <Icon name={props.icon} {...toggleGlyph(() => props.on, { size: small ? "small" : undefined })} size={small ? 13 : 16} />}
+    </Button>
+  );
+}
+
+/** An item of a menu (`menuItemLook`): a check (`check`, a setting) or a
+ * dot (`dot`, one choice of a group) before its label while it is on, a
+ * shortcut at its end. An item without a mark keeps the marks' lane
+ * empty, so every label of the menu starts at one edge. */
+function Item(props: { label: string; onSelect: () => void; mark?: "check" | "dot"; checked?: boolean; shortcut?: string; keepOpen?: boolean }) {
+  return (
+    <MenuItem
+      onSelect={props.onSelect}
+      closeOnSelect={!props.keepOpen}
+      checked={props.mark ? !!props.checked : undefined}
+      role={props.mark === "dot" ? "menuitemradio" : undefined}
+      indicatorClass={menuIndicator}
+      indicator={props.mark ? <MenuMark kind={props.mark} size={menuItemSize.icon} tint={colors.accent} /> : <View style={{ width: menuItemSize.icon }} />}
+      {...menuItemLook()}
+    >
+      <Text style={menuItemLabel()}>{props.label}</Text>
+      <If when={pointer && props.shortcut}>
+        <Text style={menuItemNote()}>{keymap.label(props.shortcut!)}</Text>
+      </If>
+    </MenuItem>
+  );
+}
+
+/** How far a menu's labels start past a row's edge: the marks' lane and the row's gap (`menuItemLook`'s 8). */
+const markLane = () => (terminal ? 0 : menuItemSize.icon + 8);
+
+/** The find bar's inputs: the fields' shared well (`inputLook`), sharing its row. */
+const field = () => inputLook({ style: { flex: 1, minWidth: 100 } });
+
+/**
+ * Editor: `nsh/base`'s `Editor` with a sample file per language in a
+ * `DockArea`, its problems in a bottom dock (resized and hidden; a sheet
+ * at phone width) and a status line under them; the language, soft wrap
+ * and line numbers chosen from an options menu; a find bar of the app's
+ * own inputs, opened with Mod+F and closed with Escape (case, whole word
+ * and regular expression toggles, next and previous, replace and replace
+ * all through the ref); a context menu of editing commands. On the
+ * TypeScript sample a simulated language server: diagnostics after each
+ * pause in typing, hover cards with the symbol's signature and docs, go
+ * to definition (Mod-hover underlines, Mod-click and F12 go), quick fixes
+ * and refactorings (Mod+.), the colors of hex literals, completion (as you
+ * type, after `.`, Ctrl+Space) and inline completion (Tab).
+ */
+export function EditorDemo() {
+  const language = signal<Language>("typescript");
+  const softWrap = signal(false);
+  const lineNumbers = signal(true);
+  const finding = signal(false);
+  const query = signal("");
+  const replacement = signal("");
+  const caseSensitive = signal(false);
+  const wholeWord = signal(false);
+  const regex = signal(false);
+  const selections = signal<EditorSelection[]>([]);
+  const result = signal<EditorSearchResult>({ count: 0 });
+  const last = signal("—");
+  // Each sample's text as last edited, so switching back finds it as it was.
+  const texts: Partial<Record<Language, string>> = {};
+  let editor: EditorRef | undefined;
+  let area: DockAreaRef | undefined;
+  let toolbar: ViewRef | undefined;
+  // Whether the problems' dock shows (`onDockOpenChange`): open in the
+  // full presentation, none at first at compact width, where the area is
+  // less than 600 wide (a phone's window).
+  const problemsShown = signal(untracked(windowSize).width >= 600);
+  const server = new LanguageServer();
+  server.change(SAMPLE);
+  const found = signal<Problem[]>([]);
+  const literals = signal<DocumentColor[]>([]);
+  const hover = signal<HoverCard | null>(null);
+  // The declaration go to definition just went to, lit for a moment.
+  const flash = signal<EditorRange | null>(null);
+  const analyzing = signal(false);
+  const quickFixes = signal<{ anchor: Point; actions: CodeAction[] } | null>(null);
+  const typescript = () => language() === "typescript";
+
+  // The server's diagnostics and colors, asked for again after each pause
+  // in typing. The server keeps the TypeScript text while another sample
+  // is shown, so its answers stay good for when it comes back.
+  let lintTimer: ReturnType<typeof setTimeout> | undefined;
+  let version = 0;
+  const analyze = async () => {
+    const asked = ++version;
+    analyzing.set(true);
+    const [problems, colorsFound] = await Promise.all([server.diagnostics(), server.colors()]);
+    // An answer about an older text: a newer one is on its way.
+    if (asked !== version) return;
+    found.set(problems);
+    literals.set(colorsFound);
+    analyzing.set(false);
+  };
+  void analyze();
+  const changed = (value: string) => {
+    server.change(value);
+    analyzing.set(true);
+    clearTimeout(lintTimer);
+    lintTimer = setTimeout(analyze, 300);
+  };
+
+  // The problems of the sample shown: the server's, or the linter's fixed
+  // ones (which have no fixes).
+  const problems = computed<Problem[]>(() =>
+    typescript() ? found() : SAMPLES[language()].diagnostics.map((diagnostic) => ({ diagnostic, fixes: [] })),
+  );
+  const diagnostics = computed(() => problems().map((p) => p.diagnostic));
+  const count = (severity: EditorDiagnostic["severity"]) => diagnostics().filter((d) => (d.severity ?? "error") === severity).length;
+  // The lines edited since the sample, as version control marks them: in
+  // the gutter and the overview ruler's left lane.
+  const edited = signal(0);
+  const changes = computed<EditorDecoration[]>(() => {
+    edited();
+    const lang = language();
+    const before = SAMPLES[lang].text.split("\n");
+    const after = (texts[lang] ?? SAMPLES[lang].text).split("\n");
+    // One changed block: the lines between what the two texts start and
+    // end with alike.
+    let head = 0;
+    while (head < before.length && head < after.length && before[head] === after[head]) head++;
+    let tail = 0;
+    while (tail < before.length - head && tail < after.length - head && before[before.length - 1 - tail] === after[after.length - 1 - tail]) tail++;
+    const removed = before.length - head - tail;
+    const added = after.length - head - tail;
+    const mark = (start: number, end: number, color: string, placement?: "before"): EditorDecoration => ({
+      range: { start: { line: start, column: 0 }, end: { line: end, column: 0 } },
+      gutter: { class: color, placement },
+      overviewRuler: { lane: "left", class: color },
+    });
+    const out: EditorDecoration[] = [];
+    const modified = Math.min(removed, added);
+    if (modified > 0) out.push(mark(head, head + modified, "bg-amber-500"));
+    if (added > removed) out.push(mark(head + modified, head + added, "bg-green-500"));
+    // Deleted lines: a boundary where they were.
+    if (removed > added) out.push(mark(head + added, head + added, "bg-red-500", "before"));
+    return out;
+  });
+  const decorations = computed<EditorDecoration[]>(() => {
+    // The problems on the overview ruler's right lane.
+    const out: EditorDecoration[] = [
+      ...changes(),
+      ...diagnostics().map((d) => ({
+        range: d.range,
+        overviewRuler: { lane: "right" as const, class: (d.severity ?? "error") === "error" ? "bg-red-500" : "bg-amber-500" },
+      })),
+    ];
+    if (!typescript()) return out;
+    out.push(...literals().map(({ range, color }) => ({ range, style: { backgroundColor: `${color}40` } })));
+    const lit = flash();
+    if (lit) out.push({ range: lit, class: "bg-brand/25", lineClass: "bg-brand/10" });
+    return out;
+  });
+
+  const caret = () => {
+    const primary = selections().at(-1);
+    if (!primary) return "Ln 1, Col 1";
+    const more = selections().length > 1 ? ` · ${selections().length} carets` : "";
+    return `Ln ${primary.head.line + 1}, Col ${primary.head.column + 1}${more}`;
+  };
+  const matches = () => {
+    const r = result();
+    if (r.error) return "Invalid pattern";
+    if (!query()) return "";
+    if (r.count === 0) return "No results";
+    return r.current === undefined || r.current === null ? `${r.count} matches` : `${r.current + 1} of ${r.count}`;
+  };
+
+  // A code action: an editor command, or the server's edits applied as one
+  // edit undo takes back in one step.
+  const apply = (action: CodeAction) => {
+    if (!editor) return;
+    if (action.command) editor.run(action.command);
+    if (action.edits?.length) editor.edit(action.edits);
+    editor.focus();
+    last.set(action.title);
+  };
+
+  const showDefinition = (target: { name: string; range: EditorRange } | null) => {
+    if (!target || !editor) {
+      last.set("No definition found");
+      return;
+    }
+    const at = target.range.start;
+    editor.setSelections([{ anchor: at, head: at }]);
+    editor.revealPosition(at, true);
+    flash.set(target.range);
+    setTimeout(() => flash() === target.range && flash.set(null), 900);
+    last.set(`Definition of ${target.name} at ${at.line + 1}:${at.column + 1}`);
+  };
+
+  /** A menu of `actions`: the quick fixes, then the rest. */
+  const menuItems = (actions: CodeAction[]): NativeMenuItem[] => {
+    const fixes = actions.filter((a) => a.kind === "quickfix");
+    const rest = actions.filter((a) => a.kind !== "quickfix");
+    const item = (a: CodeAction): NativeMenuItem => ({ label: a.title, onSelect: () => apply(a) });
+    return [...fixes.map(item), ...(fixes.length > 0 && rest.length > 0 ? [{ type: "separator" } as const] : []), ...rest.map(item)];
+  };
+
+  const contextMenu = async (position: EditorPosition, x: number, y: number) => {
+    if (!hasMenus) return;
+    const fixes = typescript() ? (await server.codeActions({ start: position, end: position }, problems())).filter((a) => a.kind === "quickfix") : [];
+    const items: NativeMenuItem[] = [];
+    if (typescript()) {
+      items.push({ label: "Go to Definition", shortcut: "f12", onSelect: () => void server.definition(position).then(showDefinition) }, { type: "separator" });
+    }
+    if (fixes.length > 0) items.push(...menuItems(fixes), { type: "separator" });
+    items.push(
+      { label: "Cut", onSelect: () => editor?.run("cut") },
+      { label: "Copy", onSelect: () => editor?.run("copy") },
+      { label: "Paste", onSelect: () => editor?.run("paste") },
+      { label: "Select All", onSelect: () => editor?.run("selectAll") },
+      { type: "separator" },
+      { label: "Toggle Comment", onSelect: () => editor?.run("toggleComment") },
+      { label: "Fold All", onSelect: () => editor?.run("foldAll") },
+      { label: "Unfold All", onSelect: () => editor?.run("unfoldAll") },
+    );
+    void NativeMenu.popup(items, { x, y });
+  };
+
+  // Completion has no default keys: the app picks them.
+  keymap.bind("ctrl+space", () => editor?.showCompletions());
+
+  // The hover card stays while the pointer is over it, so its text can be
+  // selected and its fixes pressed: leaving the word closes it a moment
+  // later unless the pointer went onto the card.
+  let hoverAsked = 0;
+  let overCard = false;
+  let closeTimer: ReturnType<typeof setTimeout> | undefined;
+  const closeSoon = () => {
+    clearTimeout(closeTimer);
+    closeTimer = setTimeout(() => {
+      if (!overCard) hover.set(null);
+    }, 250);
+  };
+
+  cleanup(() => {
+    clearTimeout(lintTimer);
+    clearTimeout(closeTimer);
+  });
+
+  // A diagnostic code's page (a lint rule's), in the browser.
+  const openRule = async (href: string) => {
+    try {
+      if (!(await openUrl(href)).opened) last.set("No app opens links");
+    } catch (error) {
+      last.set(String(error));
+    }
+  };
+
+  const fixesFor = (d: EditorDiagnostic) => problems().find((p) => p.diagnostic.message === d.message && same(p.diagnostic.range, d.range))?.fixes ?? [];
+
+
+  // The keys, as the options menu lists them.
+  const tips = () =>
+    typescript()
+      ? [
+          `${keymap.label("ctrl+space")} completions (also as you type and after a dot)`,
+          "Tab takes the gray suggestion",
+          ...(pointer ? ["Hover for docs and problems", `Hold ${apple ? "⌘" : "Ctrl"} over a name to underline it`] : []),
+          `${keymap.label("f12")} or ${apple ? "⌘" : "Ctrl"}-click: go to definition`,
+          `${keymap.label("mod+.")} code actions`,
+        ]
+      : [`${keymap.label("mod+.")} code actions`, pointer ? "Right-click for commands" : "Long-press to select"];
+
+  // The find bar opens with Mod+F (the selection, when there is one,
+  // becomes its query) and closes with Escape or its close button, giving
+  // the focus back to the text.
+  const openFind = () => {
+    const primary = selections().at(-1);
+    if (primary && (primary.anchor.line !== primary.head.line || primary.anchor.column !== primary.head.column)) editor?.run("findWithSelection");
+    finding.set(true);
+  };
+  const closeFind = () => {
+    finding.set(false);
+    query.set("");
+    editor?.focus();
+  };
+  keymap.bind("mod+f", openFind);
+
+  /** The find bar, while it is open: an overlay under the toolbar's end,
+   * over the editor's first lines (the window's width at phone width);
+   * Escape closes it. */
+  function FindBar() {
+    return (
+      <Overlay anchor={toolbar} placement="bottom" align="end" offset={4} margin={8} onCancel={closeFind}>
+        <View
+          style={{ ...popupSurface(), gap: 4, width: Math.min(440, windowSize().width - 16) }}
+        >
+          <View class="flex-row items-center gap-0.5">
+            <Input
+              ref={(node: InputRef) => node.focus()}
+              value={query()}
+              onChange={({ value }) => query.set(value)}
+              onSubmit={() => editor?.run("findNext")}
+              submitBehavior="submit"
+              placeholder="Find"
+              accessibilityLabel="Find"
+              autoCapitalize="none"
+              autoCorrect={false}
+              {...field()}
+            />
+            <Text style={{ numberOfLines: 1 }} class="px-1 font-mono text-[11px] tabular-nums text-muted-foreground">
+              {matches()}
+            </Text>
+            <Tool label="Match case" name="Aa" on={caseSensitive()} onPress={() => caseSensitive.set(!caseSensitive())} />
+            <Tool label="Whole word" name="W" on={wholeWord()} onPress={() => wholeWord.set(!wholeWord())} />
+            <Tool label="Regular expression" name=".*" on={regex()} onPress={() => regex.set(!regex())} />
+            <IconTool label="Previous match" icon="arrow-up" onPress={() => editor?.run("findPrevious")} />
+            <IconTool label="Next match" icon="arrow-down" onPress={() => editor?.run("findNext")} />
+            <IconTool label="Close the find bar" icon="close" onPress={closeFind} />
+          </View>
+          <View class="flex-row items-center gap-0.5">
+            <Input
+              value={replacement()}
+              onChange={({ value }) => replacement.set(value)}
+              onSubmit={() => editor?.replace(replacement())}
+              submitBehavior="submit"
+              placeholder="Replace"
+              accessibilityLabel="Replace"
+              autoCapitalize="none"
+              autoCorrect={false}
+              {...field()}
+            />
+            <IconTool label="Replace" icon="replace" onPress={() => editor?.replace(replacement())} />
+            <IconTool
+              label="Replace all"
+              icon="replace-all"
+              onPress={async () => {
+                const n = (await editor?.replaceAll(replacement()))?.count ?? 0;
+                last.set(`Replaced ${n}`);
+              }}
+            />
+          </View>
+        </View>
+      </Overlay>
+    );
+  }
+
+  /** The editor of the sample shown. */
+  function Source() {
+    // A sample of its own per language: switching remounts the editor, so
+    // each keeps its undo history out of the others'.
+    return (
+      <View class="flex-1 bg-card">
+        {() => {
+          const lang = language();
+          const lsp = lang === "typescript";
+          return (
+            <Editor
+              ref={(r) => (editor = r)}
+              defaultValue={texts[lang] ?? SAMPLES[lang].text}
+              language={lang}
+              softWrap={softWrap()}
+              lineNumbers={lineNumbers()}
+              diagnostics={diagnostics()}
+              decorations={decorations()}
+              search={{ query: finding() ? query() : "", caseSensitive: caseSensitive(), wholeWord: wholeWord(), regex: regex() }}
+              accessibilityLabel={`${lang} source`}
+              completion={lsp}
+              completionTriggerCharacters={["."]}
+              inlineCompletionDelay={150}
+              onChange={({ value }) => {
+                texts[lang] = value;
+                edited.set(edited() + 1);
+                if (lsp) changed(value);
+              }}
+              onSelectionChange={({ selections: value }) => selections.set(value)}
+              onSearchChange={({ result: value }) => result.set(value)}
+              onFindWithSelection={({ query: value }) => {
+                query.set(value);
+                finding.set(true);
+              }}
+              onLineNumberPress={({ line }) => last.set(`Line ${line + 1} pressed`)}
+              onContextMenu={(e) => void contextMenu(e.position, e.x, e.y)}
+              onHover={async (e) => {
+                clearTimeout(closeTimer);
+                const asked = ++hoverAsked;
+                const answer = lsp ? await server.hover(e.position) : null;
+                if (asked !== hoverAsked) return;
+                hover.set(answer || e.diagnostics.length > 0 ? { anchor: e.pageBounds, markdown: answer?.markdown ?? null, diagnostics: e.diagnostics } : null);
+              }}
+              onHoverEnd={() => {
+                hoverAsked++;
+                closeSoon();
+              }}
+              onDefinitionRequest={async (e) => {
+                const target = lsp ? await server.definition(e.position) : null;
+                // Mod held over a name: underlined when it has a definition
+                // (the editor drops an answer to an older request).
+                if (e.trigger === "hover") {
+                  if (target) editor?.presentDefinitionLink(e.id, e.range);
+                } else showDefinition(target);
+              }}
+              onCodeActionRequest={async (e) => {
+                const actions = await server.codeActions(e.range, problems());
+                const page = e.bounds?.pageBounds;
+                if (!page) return;
+                const anchor = { x: page.origin.x, y: page.origin.y + page.size.height };
+                if (hasMenus) void NativeMenu.popup(menuItems(actions), anchor);
+                else quickFixes.set({ anchor, actions });
+              }}
+              onCompletionRequest={async (e) => {
+                const answer = await server.completion(e);
+                editor?.presentCompletions(e.id, answer.items, answer.incomplete);
+              }}
+              onCompletionAccept={(e) => last.set(`Completed ${e.item.label}`)}
+              onInlineCompletionRequest={async (e) => {
+                const suggestion = await server.inlineCompletion(e.position);
+                if (suggestion) editor?.presentInlineCompletion(e.id, suggestion);
+              }}
+              class="flex-1"
+            />
+          );
+        }}
+      </View>
+    );
+  }
+
+  /** The problems of the sample shown: pressing one puts the caret on it. */
+  function Problems() {
+    return (
+      // A list, not a column of every row: a long file has thousands of
+      // problems, and only those in view are made.
+      <If when={problems().length > 0} else={<Text class="px-3 py-2 text-xs text-muted-foreground">No problems</Text>}>
+        <List each={problems()} estimatedItemSize={24} class="flex-1" contentClass="py-1">
+          {(p) => (
+            <Button
+              onPress={() => {
+                const at = p().diagnostic.range.start;
+                editor?.setSelections([{ anchor: at, head: at }]);
+                editor?.revealPosition(at, true);
+                editor?.focus();
+              }}
+              accessibilityLabel={p().diagnostic.message}
+              class="flex-row gap-2 px-3 py-1 hover:bg-accent active:opacity-70"
+            >
+              <Dot severity={p().diagnostic.severity} />
+              <Text style={{ numberOfLines: 1 }} class="flex-1 text-xs text-foreground">
+                {p().diagnostic.message}
+              </Text>
+              <Text class="font-mono text-[11px] tabular-nums text-muted-foreground">{`${p().diagnostic.range.start.line + 1}:${p().diagnostic.range.start.column + 1}`}</Text>
+            </Button>
+          )}
+        </List>
+      </If>
+    );
+  }
+
+  // The toolbar menu shown: its trigger shows as selected while open.
+  const menuOpen = signal<"language" | "options" | null>(null);
+  return (
+    <View class="flex-1 bg-background">
+      {/* A terminal's 6pt is no column: its language menu would touch the line before it, so it keeps one. */}
+      <View
+        ref={(node: ViewRef) => (toolbar = node)}
+        class="h-10 flex-row items-center gap-0.5 border-b border-border px-1.5"
+        style={platform.idiom === "terminal" ? { paddingHorizontal: 8 } : undefined}
+      >
+        <Menu
+          offset={4}
+          margin={8}
+          {...menuPopup({ minWidth: 220 })}
+          onOpenChange={({ open }) => menuOpen.set(open ? "language" : null)}
+          trigger={
+            <View accessibilityLabel="Language" tooltip={<Tip label="Language" />} {...toggleLook({ on: () => menuOpen() === "language", text: true, style: { paddingHorizontal: 6 } })}>
+              <Icon name="code" {...toggleGlyph(false)} />
+              <Text style={{ ...toggleLabel(true), fontSize: 12 }}>{LANGUAGES.find((l) => l.value === language())!.label}</Text>
+            </View>
+          }
+        >
+          <Each of={LANGUAGES}>
+            {(l) => (
+              <Item
+                label={l().label}
+                mark="dot"
+                checked={language() === l().value}
+                onSelect={() => {
+                  hover.set(null);
+                  language.set(l().value);
+                }}
+              />
+            )}
+          </Each>
+        </Menu>
+        <View class="flex-1" />
+        <IconTool label="Find and replace" icon="search" on={finding()} onPress={() => (finding() ? closeFind() : openFind())} />
+        <Menu
+          align="end"
+          offset={4}
+          margin={8}
+          {...menuPopup({ minWidth: 256 })}
+          onOpenChange={({ open }) => menuOpen.set(open ? "options" : null)}
+          trigger={
+            <View accessibilityLabel="Editor options" tooltip={<Tip label="Editor options" />} {...toggleLook({ on: () => menuOpen() === "options" })}>
+              <Icon name="sliders" {...toggleGlyph(() => menuOpen() === "options")} />
+            </View>
+          }
+        >
+          <Item label="Soft wrap" mark="check" checked={softWrap()} keepOpen onSelect={() => softWrap.set(!softWrap())} />
+          <Item label="Line numbers" mark="check" checked={lineNumbers()} keepOpen onSelect={() => lineNumbers.set(!lineNumbers())} />
+          <Item label="Problems" mark="check" checked={problemsShown()} onSelect={() => area?.toggleDock("bottom")} />
+          <Item label="Find and Replace" shortcut="mod+f" onSelect={openFind} />
+          <MenuSeparator style={menuSeparator()} />
+          {/* Under the items' labels, past the marks' lane. */}
+          <View style={{ paddingLeft: markLane() }}>
+            <MenuLabel text={typescript() ? "TypeScript language server" : "Keys"} />
+          </View>
+          <Each of={tips()}>
+            {(tip) => <Text style={{ ...menuItemNote(), color: colors.muted, paddingLeft: (terminal ? 0 : 8) + markLane(), paddingRight: terminal ? 0 : 8, paddingVertical: 2 }}>{tip()}</Text>}
+          </Each>
+        </Menu>
+      </View>
+
+      <If when={finding()}>
+        <FindBar />
+      </If>
+
+      <View class="flex-1">
+        <DockArea
+          ref={(r) => (area = r)}
+          class="flex-1"
+          defaultLayout={{
+            center: { type: "tabs", panels: ["editor"] },
+            // Whole rows: the tab bar (28 and its rule), the list's padding (8) and six problems of 24, every
+            // one of the TypeScript sample's (an error, four warnings, an info), so none hides under the fold
+            // above the status bar.
+            bottom: { layout: { type: "tabs", panels: ["problems"] }, size: 29 + 8 + 6 * 24 },
+          }}
+          panels={[
+            { id: "editor", closable: false },
+            { id: "problems", closable: false },
+          ]}
+          onDockOpenChange={({ placement, open }) => placement === "bottom" && problemsShown.set(open)}
+          groupClass="flex-1 bg-card"
+          tabBarClass="flex-row border-b border-border"
+          contentClass="flex-1"
+          handleAccessibilityLabel="Resize the problems"
+          handleClass="basis-px bg-border"
+          handleThumbClass={handleThumb}
+          dockClass="bg-card"
+          sheetClass="h-72 rounded-t-2xl border-t border-border bg-card"
+          backdropClass="bg-scrim"
+          renderTab={(tab) => (
+            <View class="h-7 flex-row items-center gap-2 px-3">
+              <Text style={{ numberOfLines: 1 }} class={`text-xs font-medium ${tab.active ? "text-foreground" : "text-muted-foreground"}`}>
+                {tab.panel === "editor" ? fileOf(language()) : `Problems ${problems().length}`}
+              </Text>
+              <If when={tab.active}>
+                <View style={{ pointerEvents: "none" }} class="absolute bottom-0 left-3 right-3 h-0.5 rounded-full bg-brand" />
+              </If>
+            </View>
+          )}
+          renderPanel={(panel) => (panel.id === "editor" ? <Source /> : <Problems />)}
+        />
+      </View>
+
+      <If when={hover()}>
+        {(card) => (
+          <Overlay anchor={card().anchor} placement="top" align="start" offset={4} margin={8}>
+            <View
+              onMouseEnter={() => {
+                overCard = true;
+                clearTimeout(closeTimer);
+              }}
+              onMouseLeave={() => {
+                overCard = false;
+                closeSoon();
+              }}
+              testID="hover-card"
+              // A slim panel, as an editor's: one line per problem, its
+              // fixes as links under it, the docs below a hairline.
+              // The popup surface, the card's sections padded each.
+              // A width of its own: an overlay fits its content, which
+              // would leave the message's growing text no room.
+              style={{ ...popupSurface(), padding: 0, overflow: "hidden", maxWidth: Math.min(440, windowSize().width - 16) }}
+            >
+              <Each of={card().diagnostics}>
+                {(d) => (
+                  <View class="gap-0.5 px-2.5 py-1.5">
+                    <View class="flex-row gap-1.5">
+                      <Dot severity={d().severity} />
+                      <Text class="shrink text-xs text-popover-foreground">
+                        {d().message}
+                        <Text class="text-muted-foreground">{d().source ? `  ${d().source}` : ""}</Text>
+                      </Text>
+                      <If when={d().code}>
+                        {(code) => (
+                          <If when={d().codeDescription} else={<Text class="text-xs text-muted-foreground">{code()}</Text>}>
+                            {(description) => (
+                              <Button
+                                onPress={() => void openRule(description().href)}
+                                accessibilityLabel={`Open the description of ${code()}`}
+                                class="rounded-sm active:opacity-70"
+                              >
+                                <Text class="text-xs text-info hover:underline">{code()}</Text>
+                              </Button>
+                            )}
+                          </If>
+                        )}
+                      </If>
+                    </View>
+                    {/* A terminal starts its fixes' bands at the card's first column, as the code block's below. */}
+                    <View class="flex-row flex-wrap gap-x-3 pl-3.5" style={terminal ? { paddingLeft: 0 } : undefined}>
+                      <Each of={fixesFor(d())}>
+                        {(fix) => (
+                          <Button
+                            onPress={() => {
+                              apply(fix());
+                              hover.set(null);
+                            }}
+                            class="rounded-sm active:opacity-70"
+                          >
+                            <Text class="text-xs text-info hover:underline">{fix().title}</Text>
+                          </Button>
+                        )}
+                      </Each>
+                    </View>
+                  </View>
+                )}
+              </Each>
+              <If when={card().markdown}>
+                {(markdown) => (
+                  <TextView
+                    markdown={markdown()}
+                    selectable
+                    classes={HOVER_DOCS}
+                    class={`px-2.5 py-1.5 ${card().diagnostics.length > 0 ? "border-t border-border" : ""}`}
+                  />
+                )}
+              </If>
+            </View>
+          </Overlay>
+        )}
+      </If>
+
+      <If when={quickFixes()}>
+        {(menu) => (
+          <Overlay anchor={menu().anchor} placement="bottom" align="start" margin={8} onPressOutside={() => quickFixes.set(null)} onCancel={() => quickFixes.set(null)}>
+            <View role="menu" style={{ ...popupSurface(), minWidth: 224 }}>
+              <Each of={menu().actions}>
+                {(action) => (
+                  <Button
+                    onPress={() => {
+                      quickFixes.set(null);
+                      apply(action());
+                    }}
+                    {...menuItemLook()}
+                  >
+                    <Text style={menuItemLabel()}>{action().title}</Text>
+                  </Button>
+                )}
+              </Each>
+            </View>
+          </Overlay>
+        )}
+      </If>
+
+      {/* A terminal's status line reads as words two columns apart (12pt is one), its edges one column in, as a pager's. */}
+      <View class="h-7 flex-row items-center gap-3 overflow-hidden border-t border-border pl-2.5 pr-1" style={terminal ? { gap: 24, paddingHorizontal: 8 } : undefined}>
+        <Text style={{ numberOfLines: 1 }} class="font-mono text-[11px] tabular-nums text-foreground">
+          {caret()}
+        </Text>
+        <Text style={{ numberOfLines: 1 }} class="font-mono text-[11px] text-destructive">
+          {plural(count("error"), "error")}
+        </Text>
+        <Text style={{ numberOfLines: 1 }} class="font-mono text-[11px] text-warn">
+          {plural(count("warning"), "warning")}
+        </Text>
+        <Text style={{ numberOfLines: 1 }} class="font-mono text-[11px] text-info">
+          {plural(count("info"), "info")}
+        </Text>
+        {/* Nothing until there is something to say: a lone dash reads as debris. */}
+        <If when={last() !== "—"}>
+          <Text style={{ numberOfLines: 1 }} class="min-w-0 shrink font-mono text-[11px] text-muted-foreground">
+            {last()}
+          </Text>
+        </If>
+        <Text style={{ numberOfLines: 1 }} class="ml-auto min-w-0 shrink font-mono text-[11px] text-muted-foreground">
+          {typescript() && analyzing() ? "Analyzing…" : LANGUAGES.find((l) => l.value === language())!.label}
+        </Text>
+        <IconTool label="Toggle problems" word="Problems" icon="diagnostics" size="small" on={problemsShown()} onPress={() => area?.toggleDock("bottom")} />
+      </View>
+    </View>
+  );
+}

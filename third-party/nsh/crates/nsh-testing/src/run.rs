@@ -1,0 +1,1494 @@
+//! Runs a test file: its tests on an engine of their own (the test file's
+//! VM, serving `nsh/test`), one after the other, each app they open on a
+//! headless engine of its own ([`Headless`]), closed when the test ends.
+//!
+//! The test file is bundled under an entry made for it, which imports it
+//! (its `test` calls declare the tests) and then runs them
+//! ([`run_tests`], through the internal module `nsh/test/runner`). What the
+//! VM's calls need, the app's sets and how to build an entry, is the
+//! [`Session`] of the file being run: one at a time in a process.
+
+use std::{
+    collections::HashMap,
+    future::Future,
+    io::Write,
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex, MutexGuard},
+    task::Poll,
+    time::{Duration, Instant},
+};
+
+use crossbeam_channel::{Receiver, Sender};
+use nsh_core::{
+    ApproxTextEngine, Command, EventKind, EventPayload, MountBatch, MountItem, PayloadValue,
+    ROOT_ID,
+    element::{Callback, Registry, Root},
+    geometry::{Points, Size},
+    platform::{Idiom, Locale, LocaleSettings, Os},
+    prelude::timer,
+};
+use nsh_dev::protocol::TestIdiom;
+use nsh_engine::{
+    AppError, AppErrorKind, Bundle, Edges, Engine, EngineConfig, EngineControl, Environment,
+    MountSink,
+};
+
+use crate::{
+    MemoryStorage,
+    driver::{Driver, Host, Remote},
+    headless::{
+        DirectoryAssets, Headless, RecordingNetwork, StubNetwork, UreqNetwork, WAIT, print_batch,
+    },
+    module::{Case, Hook, Item, Launch, Mode, NetworkSetup, Platform, Suite},
+    page_host::PageHost,
+};
+
+/// Builds an entry ([`Entry`]; an app's may be its directory).
+pub type Compile = Arc<dyn Fn(&Path, Entry) -> Result<Built, String> + Send + Sync>;
+
+/// What [`Compile`] built.
+#[derive(Clone)]
+pub enum Built {
+    /// A bundle: its bytecode (without its source map), its source map, and
+    /// the directory its `asset:/` URLs are relative to
+    /// (`nsh_bundler::Bundle::asset_root`: the app's), which headless runs
+    /// read its assets from.
+    Js {
+        /// The bundle, without its source map.
+        bundle: Box<Bundle>,
+        /// Its source map.
+        source_map: Option<String>,
+        /// The directory its assets are named from.
+        asset_root: PathBuf,
+    },
+    /// The root of an app of Rust only (`nsh.json` `"root"`): what `open`
+    /// of the app starts.
+    Rust(Box<Root>),
+}
+
+/// What an entry [`Compile`] builds is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Entry {
+    /// An app's entry, which a test opens: built as `nsh run` builds it.
+    App,
+    /// The entry `nsh test` makes for a test file: built against the app's
+    /// sets and [`test_sets`](crate::test_sets).
+    TestFile,
+}
+
+/// Where batches are printed (`nsh test --trace`).
+pub type Output = Arc<Mutex<Box<dyn Write + Send>>>;
+
+/// How test files run: the app they test and what is shown of the run.
+#[derive(Clone)]
+pub struct TestRun {
+    /// The UI sets the app's hosts serve (the mobile UI, the app's crates'):
+    /// the apps tests open are built against them.
+    pub ui_sets: Vec<Registry>,
+    /// Builds the apps tests open and the entries made for test files
+    /// ([`compiler`](crate::compiler) in this process).
+    pub compile: Compile,
+    /// Where the entries made for test files go (`<app>/.nsh/test`).
+    pub work_dir: PathBuf,
+    /// Runs only the tests whose name contains this.
+    pub filter: Option<String>,
+    /// Prints each batch of the apps the tests open, under the step it came
+    /// in, and logs their commits' timings.
+    pub trace: Option<Output>,
+    /// Opens the apps on a real platform's host instead of a headless
+    /// engine (`nsh test --target`).
+    pub host: Option<StartHost>,
+    /// What [`TestRun::host`] runs the apps on: `open` fails
+    /// (`ERR_NSH_TEST_UNSUPPORTED`) on an option it cannot honor there,
+    /// rather than leaving it out. `None`: `open`'s options are not checked.
+    pub target: Option<HostTarget>,
+    /// The web page's host module (`nsh.json` `web.host`, exporting
+    /// `createHost(player)`): each app opened headless gets one of its own,
+    /// which answers its `nsh/host` calls and sends its events, and
+    /// `host.available()` is true. `None`: the apps have no host.
+    pub page_host: Option<PathBuf>,
+}
+
+/// Starts the app whose entry is the path on a real platform's host, as
+/// [`HostOptions`] say, once it connected (`nsh test --target`): what takes
+/// the test's steps.
+pub type StartHost =
+    Arc<dyn Fn(&Path, &HostOptions) -> Result<Box<dyn Host>, String> + Send + Sync>;
+
+/// The platform of `nsh test --target` ([`TestRun::target`]), which `open`
+/// checks its options against.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct HostTarget {
+    /// The target as `--target` names it (`"ios"`, `"macos"`, ...), which
+    /// failures name.
+    pub name: String,
+    /// The platform the apps run on there: `open`'s `platform` names it, a
+    /// desktop's on a desktop or the web, or is left out.
+    pub platform: Platform,
+    /// The host opens the app at `open`'s `width` and `height` (a desktop's
+    /// window, a browser's page); false where the app fills a device's
+    /// screen.
+    pub sized: bool,
+}
+
+/// How [`StartHost`] starts an app.
+#[derive(Clone, Default)]
+#[non_exhaustive]
+pub struct HostOptions {
+    /// The window's (viewport's) size in points: the headless phone's,
+    /// 390 × 844, unless `open` says.
+    pub size: Option<Size<Points>>,
+    /// The storage the app starts with, in place of its own
+    /// (`nsh_dev::DevServer::set_test_storage`).
+    pub storage: Vec<(String, String)>,
+    /// What answers the app's requests (`nsh_dev::DevServer::set_test_network`):
+    /// the test's routes, the network itself, or none.
+    pub network: Option<Arc<dyn nsh_dev::protocol::TestNetwork>>,
+    /// What the test fixes of the app's environment, and its clipboard
+    /// (`nsh_dev::DevServer::set_test_environment`).
+    pub environment: nsh_dev::protocol::TestEnvironment,
+    /// Traces the app (`nsh test --trace`, `nsh_dev::DevServer::set_test_trace`):
+    /// what prints the items of each batch it applied, a line each
+    /// (`nsh_dev::ClientEvent::Trace`), under the step it came in.
+    pub trace: Option<Arc<dyn Fn(Vec<String>) + Send + Sync>>,
+}
+
+impl std::fmt::Debug for HostOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HostOptions")
+            .field("size", &self.size)
+            .field("storage", &self.storage)
+            .field("network", &self.network.is_some())
+            .field("environment", &self.environment)
+            .field("trace", &self.trace.is_some())
+            .finish()
+    }
+}
+
+/// The test's side of a host's app's requests: they are kept (`requests()`),
+/// then answered from the routes, failed, or let through to the host's own
+/// network (`network: "live"`).
+struct HostRoutes {
+    requests: Arc<RecordingNetwork>,
+    /// Let through: the host's network makes them.
+    live: bool,
+}
+
+impl nsh_dev::protocol::TestNetwork for HostRoutes {
+    fn fetch(
+        &self,
+        request: nsh_dev::protocol::WireRequest,
+        mut reply: Box<dyn FnMut(nsh_dev::protocol::FetchReply) + Send>,
+    ) -> Box<dyn FnOnce() + Send> {
+        use nsh_dev::protocol::FetchReply;
+        use nsh_engine::{FetchEvent, HttpBody, HttpRequest, Network as _};
+        let request = HttpRequest {
+            method: request.method,
+            url: request.url,
+            headers: request.headers,
+            body: if request.body.is_empty() {
+                HttpBody::Empty
+            } else {
+                HttpBody::Bytes(request.body)
+            },
+            follow_redirects: request.follow_redirects,
+        };
+        if self.live {
+            self.requests.record(request);
+            reply(FetchReply::Pass);
+            return Box::new(|| {});
+        }
+        let task = self.requests.fetch(
+            request,
+            Box::new(move |event| match event {
+                FetchEvent::Head(head) => reply(FetchReply::Head {
+                    status: head.status,
+                    headers: head.headers,
+                    url: head.url,
+                }),
+                FetchEvent::Data(bytes) => reply(FetchReply::Data { bytes }),
+                FetchEvent::End => reply(FetchReply::End),
+                FetchEvent::Failed(message) => reply(FetchReply::Failed { message }),
+                FetchEvent::BodyWanted => {}
+            }),
+        );
+        Box::new(move || task.cancel())
+    }
+}
+
+/// How a test ended.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
+pub struct TestResult {
+    /// Its name, after the `describe` blocks it is in (`Cart › adds`).
+    pub name: String,
+    /// How long it took.
+    pub elapsed: Duration,
+    /// Whether it ran and passed.
+    pub status: TestStatus,
+    /// Why it failed (`None` unless its status is
+    /// [`TestStatus::Failed`]).
+    pub failure: Option<Failure>,
+}
+
+impl TestResult {
+    /// The result of a test that ran elsewhere (`cargo test`'s, which
+    /// `nsh test` reports with the app's TypeScript tests).
+    pub fn new(
+        name: impl Into<String>,
+        elapsed: Duration,
+        status: TestStatus,
+        failure: Option<Failure>,
+    ) -> TestResult {
+        TestResult {
+            name: name.into(),
+            elapsed,
+            status,
+            failure,
+        }
+    }
+}
+
+/// Whether a test ran and passed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum TestStatus {
+    /// It ran and passed.
+    Passed,
+    /// It ran and failed, or a hook it needed did.
+    Failed,
+    /// It did not run: `.skip`, or another test of the file is `.only`.
+    Skipped,
+    /// A test still to write (`test.todo`).
+    Todo,
+}
+
+/// Why a test failed.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Failure {
+    /// What was thrown.
+    pub message: String,
+    /// Where (the test file's positions), when an `Error` was thrown.
+    pub stack: Option<String>,
+    /// The texts on screen of the app it opened last, when it opened one.
+    pub screen: Option<Vec<String>>,
+}
+
+/// Runs the tests of the test file `file` as `run` says, calling `report`
+/// with each one's result as it ends: their results, or why the file could
+/// not run (it does not build, it throws as it loads).
+pub fn run_file(
+    run: &TestRun,
+    file: &Path,
+    report: &mut dyn FnMut(&TestResult),
+) -> Result<Vec<TestResult>, String> {
+    // One test file at a time in a process: the VM's calls find its session.
+    static RUNNING: Mutex<()> = Mutex::new(());
+    let _running = RUNNING.lock().unwrap_or_else(|e| e.into_inner());
+    let file = dunce::canonicalize(file).map_err(|e| format!("{}: {e}", file.display()))?;
+    let (bundle, source_map, asset_root) = compile_test_file(run, &file)?;
+    let (events, results) = crossbeam_channel::unbounded();
+    let session = Arc::new(Session {
+        dir: file.parent().unwrap_or(Path::new(".")).to_path_buf(),
+        run: run.clone(),
+        built: Mutex::new(HashMap::new()),
+        apps: Mutex::new(Vec::new()),
+        events: events.clone(),
+    });
+    *current() = Some(session.clone());
+    let ended = drive(
+        run,
+        bundle,
+        &asset_root,
+        &events,
+        &results,
+        source_map.as_deref(),
+        report,
+    );
+    *current() = None;
+    session.close_apps(0);
+    ended
+}
+
+/// Starts the test file's VM and collects what it reports until its tests
+/// ended.
+fn drive(
+    run: &TestRun,
+    bundle: Bundle,
+    asset_root: &Path,
+    events: &Sender<Event>,
+    results: &Receiver<Event>,
+    source_map: Option<&str>,
+    report: &mut dyn FnMut(&TestResult),
+) -> Result<Vec<TestResult>, String> {
+    let mut ui_sets = run.ui_sets.clone();
+    ui_sets.extend(crate::test_sets());
+    let config = EngineConfig {
+        // The sets' fonts load as the engine starts; what the test file
+        // imports is named from its app's directory.
+        assets: Some(Arc::new(DirectoryAssets::new(
+            asset_root.to_path_buf(),
+            set_files(&ui_sets),
+        ))),
+        ui_sets,
+        ..EngineConfig::new(bundle)
+    };
+    let images = Arc::new(Mutex::new(VmImages::default()));
+    let sink = VmSink {
+        events: events.clone(),
+        images: images.clone(),
+    };
+    let vm = Engine::start(config, || ApproxTextEngine, sink)
+        .map_err(|e| format!("the test file's engine did not start: {e}"))?;
+    images.lock().unwrap().start(vm.control());
+    let mut out = Vec::new();
+    loop {
+        match results.recv() {
+            Ok(Event::Result(mut result)) => {
+                if let (Some(failure), Some(map)) = (&mut result.failure, source_map) {
+                    failure.stack = failure
+                        .stack
+                        .take()
+                        .map(|stack| nsh_engine::symbolicate(map, &stack));
+                }
+                report(&result);
+                out.push(result);
+            }
+            Ok(Event::Done) => return Ok(out),
+            Ok(Event::Error(error)) => match error.kind {
+                AppErrorKind::Load | AppErrorKind::Stopped => return Err(error.to_string()),
+                _ => log::error!(target: "js", "{error}"),
+            },
+            Err(_) => return Err("the test file's engine stopped".into()),
+        }
+    }
+}
+
+/// The test file bundled under the entry made for it, and compiled: the
+/// VM's app, its source map and the directory its assets are named from.
+fn compile_test_file(
+    run: &TestRun,
+    file: &Path,
+) -> Result<(Bundle, Option<String>, PathBuf), String> {
+    let name = file
+        .file_name()
+        .map_or("test".into(), |n| n.to_string_lossy().into_owned());
+    std::fs::create_dir_all(&run.work_dir)
+        .map_err(|e| format!("{}: {e}", run.work_dir.display()))?;
+    // Canonical, as `file` is: their common directories are found.
+    let work_dir = dunce::canonicalize(&run.work_dir)
+        .map_err(|e| format!("{}: {e}", run.work_dir.display()))?;
+    let entry = entry_path(&work_dir, file);
+    let dir = entry.parent().unwrap_or(&work_dir);
+    std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let path = serde_json::to_string(&file.to_string_lossy().replace('\\', "/"))
+        .map_err(|e| e.to_string())?;
+    // The test file's import is the second line, which `test_file_of`
+    // reads back.
+    let code = format!(
+        "// Made by `nsh test`: runs the tests of {name}.\nimport {path};\nimport {{ run }} from \"{}\";\nrun();\n",
+        crate::module::RUNNER
+    );
+    write_whole(&entry, &code).map_err(|e| format!("{}: {e}", entry.display()))?;
+    let Built::Js {
+        bundle,
+        source_map: map,
+        asset_root,
+    } = (run.compile)(&entry, Entry::TestFile)?
+    else {
+        return Err(format!("{}: built as a Rust root", entry.display()));
+    };
+    let map = map.map(|map| readable_sources(&map, dir));
+    let bundle = match &map {
+        Some(map) => bundle.with_source_map(map.clone()),
+        None => *bundle,
+    };
+    Ok((bundle, map, asset_root))
+}
+
+/// Where the entry made for the test file `file` goes in `work_dir`: at
+/// the file's path below the nearest directory above `work_dir` that holds
+/// it (the app's for `<app>/.nsh/test`), so test files of one name in
+/// different directories never share an entry, which parallel runs of the
+/// app would write over each other's. With no such directory short of a
+/// filesystem root (`work_dir` elsewhere), in one named by a hash of the
+/// file's directory.
+fn entry_path(work_dir: &Path, file: &Path) -> PathBuf {
+    let relative = work_dir
+        .ancestors()
+        .filter(|dir| dir.parent().is_some())
+        .find_map(|dir| file.strip_prefix(dir).ok())
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| {
+            let mut hasher = std::hash::DefaultHasher::new();
+            std::hash::Hash::hash(&file.parent(), &mut hasher);
+            let dir = format!("{:016x}", std::hash::Hasher::finish(&hasher));
+            Path::new(&dir).join(file.file_name().unwrap_or(std::ffi::OsStr::new("test")))
+        });
+    let mut name = work_dir.join(relative).into_os_string();
+    name.push(".run.js");
+    name.into()
+}
+
+/// The test file the entry `entry` made for it imports
+/// ([`compile_test_file`]); `None` when `entry` is not such an entry.
+#[cfg(feature = "bundle")]
+pub(crate) fn test_file_of(entry: &Path) -> Option<PathBuf> {
+    let code = std::fs::read_to_string(entry).ok()?;
+    let mut lines = code.lines();
+    if !lines.next()?.starts_with("// Made by `nsh test`") {
+        return None;
+    }
+    let import = lines.next()?.strip_prefix("import ")?.strip_suffix(';')?;
+    serde_json::from_str::<String>(import)
+        .ok()
+        .map(PathBuf::from)
+}
+
+/// Writes `contents` to `path` so that a reader sees it whole, never cut
+/// short: into a file of this process's, then moved over `path`. The entry
+/// of a test file is the same path for every `nsh test` of the app (its
+/// `.nsh/test`): written in place, one run's truncation could be bundled by
+/// another running the same file at that moment, whose VM then loaded an
+/// empty module, never ran its tests and never ended, with nothing printed.
+fn write_whole(path: &Path, contents: &str) -> std::io::Result<()> {
+    static WRITES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = WRITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(format!(".{}-{n}.tmp", std::process::id()));
+    let temporary = path.with_file_name(name);
+    std::fs::write(&temporary, contents)?;
+    std::fs::rename(&temporary, path).inspect_err(|_| {
+        let _ = std::fs::remove_file(&temporary);
+    })
+}
+
+/// The source map `map` (of a bundle made in `dir`) with its sources
+/// relative to the current directory, as a terminal shows paths (else
+/// absolute): stacks name the test file as its author knows it.
+fn readable_sources(map: &str, dir: &Path) -> String {
+    let Ok(mut json) = serde_json::from_str::<serde_json::Value>(map) else {
+        return map.to_owned();
+    };
+    let cwd = std::env::current_dir().ok();
+    if let Some(sources) = json.get_mut("sources").and_then(|s| s.as_array_mut()) {
+        for source in sources {
+            let Some(path) = source.as_str() else {
+                continue;
+            };
+            let joined = dir.join(path);
+            let path = dunce::canonicalize(&joined).unwrap_or(joined);
+            let shown = cwd
+                .as_deref()
+                .and_then(|cwd| path.strip_prefix(cwd).ok())
+                .unwrap_or(&path);
+            *source = shown.to_string_lossy().replace('\\', "/").into();
+        }
+    }
+    json.to_string()
+}
+
+/// The files `sets` ship, by their path among an app's assets.
+fn set_files(sets: &[Registry]) -> Vec<(String, PathBuf)> {
+    sets.iter()
+        .flat_map(Registry::asset_files)
+        .map(|file| (file.path().to_owned(), PathBuf::from(file.source)))
+        .collect()
+}
+
+/// What the test file's VM reports.
+enum Event {
+    /// A test ended.
+    Result(TestResult),
+    /// Every test ended.
+    Done,
+    /// The VM's error: the test file failed to load, a callback threw.
+    Error(AppError),
+}
+
+/// The test file's VM renders nothing; its errors are the run's. It loads
+/// no images either: an `Image.getSize` / `Image.prefetch` of the test
+/// itself fails, as a headless app's does, rather than waiting forever.
+struct VmSink {
+    events: Sender<Event>,
+    images: Arc<Mutex<VmImages>>,
+}
+
+/// The test file's VM's control, and the image requests made before the
+/// sink had it (the VM starts before [`Engine::start`] returns).
+#[derive(Default)]
+struct VmImages {
+    control: Option<EngineControl>,
+    waiting: Vec<u32>,
+}
+
+impl VmImages {
+    fn answer(&mut self, id: u32) {
+        let Some(control) = &self.control else {
+            self.waiting.push(id);
+            return;
+        };
+        let fields = vec![
+            ("id", PayloadValue::Number(f64::from(id))),
+            (
+                "error",
+                PayloadValue::Str("headless runs load no images".into()),
+            ),
+        ];
+        control.dispatch_event(ROOT_ID, EventKind::ImageInfo, EventPayload::Map(fields));
+    }
+
+    fn start(&mut self, control: EngineControl) {
+        self.control = Some(control);
+        for id in std::mem::take(&mut self.waiting) {
+            self.answer(id);
+        }
+    }
+}
+
+impl MountSink for VmSink {
+    fn submit(&self, batch: MountBatch) {
+        for item in &batch.items {
+            if let MountItem::Command {
+                command: Command::ImageInfo { id, .. },
+                ..
+            } = item
+            {
+                self.images.lock().unwrap().answer(*id);
+            }
+        }
+    }
+
+    fn report(&self, error: &AppError) {
+        let _ = self.events.send(Event::Error(error.clone()));
+    }
+}
+
+/// An app a test opened: closed (`None`) when the test ends.
+pub(crate) type OpenApp = Arc<Mutex<Option<Box<dyn Driver>>>>;
+
+/// What `open` gives the test's `App`: the app, and on a headless engine
+/// its storage and the requests it made.
+pub(crate) type Opened = (
+    OpenApp,
+    Option<Arc<MemoryStorage>>,
+    Option<Arc<RecordingNetwork>>,
+);
+
+/// The test file being run, for its VM's calls.
+pub(crate) struct Session {
+    /// The test file's directory: `open`'s entries are relative to it.
+    dir: PathBuf,
+    run: TestRun,
+    /// The apps built so far, by entry.
+    built: Mutex<HashMap<PathBuf, Built>>,
+    /// The apps the running test opened, in order.
+    apps: Mutex<Vec<OpenApp>>,
+    events: Sender<Event>,
+}
+
+fn current() -> MutexGuard<'static, Option<Arc<Session>>> {
+    static CURRENT: Mutex<Option<Arc<Session>>> = Mutex::new(None);
+    CURRENT.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+impl Session {
+    /// The test file being run.
+    pub(crate) fn current() -> Result<Arc<Session>, String> {
+        current()
+            .clone()
+            .ok_or_else(|| "nsh/test runs in `nsh test` only".to_owned())
+    }
+
+    /// Starts the app at `entry` as `options` say, once it rendered.
+    pub(crate) fn open(&self, entry: &str, launch: Launch) -> Result<Opened, String> {
+        let path = self.dir.join(entry);
+        let path = dunce::canonicalize(&path).map_err(|e| format!("open({entry:?}): {e}"))?;
+        if let Some(start) = &self.run.host {
+            return self.open_on_host(entry, &path, launch, start);
+        }
+        let entry_dir = path.parent().unwrap_or(Path::new(".")).to_path_buf();
+        // A bundle's assets are named from its app's directory (an entry
+        // below it, `tests/SubApp.tsx`, too); a Rust root's files are its
+        // crates', by name.
+        let (app, dir) = match self.build(&path)? {
+            Built::Js {
+                bundle,
+                source_map,
+                asset_root,
+            } => {
+                let bundle = match source_map {
+                    Some(map) => bundle.with_source_map(map),
+                    None => *bundle,
+                };
+                (nsh_engine::App::Js(bundle), asset_root)
+            }
+            Built::Rust(root) => (nsh_engine::App::Rust(*root), entry_dir),
+        };
+        let clock = launch
+            .clock
+            .map_or_else(nsh_engine::Clock::system, nsh_engine::Clock::manual);
+        // Off the network unless the test asks: requests no route answers
+        // fail, and so do sockets and WebSockets.
+        let live = matches!(launch.network, NetworkSetup::Live);
+        let inner: Arc<dyn nsh_engine::Network> = match launch.network {
+            NetworkSetup::Live => Arc::new(UreqNetwork::new()),
+            NetworkSetup::Stub(routes) => {
+                Arc::new(StubNetwork::new(routes).with_clock(clock.clone()))
+            }
+            NetworkSetup::None => Arc::new(StubNetwork::default()),
+        };
+        let requests = RecordingNetwork::new(inner);
+        let locale = match &launch.locale {
+            Some(tag) => Some(
+                Locale::parse(tag)
+                    .ok_or_else(|| format!("open({entry:?}): {tag:?} is not a locale"))?,
+            ),
+            None => None,
+        };
+        let settings = launch.locale_settings.pins(&format!("open({entry:?})"))?;
+        let storage = MemoryStorage::new(launch.storage.0);
+        let files = set_files(&self.run.ui_sets);
+        let safe_area = launch.safe_area.unwrap_or_default();
+        let platform = launch.platform.unwrap_or_default();
+        // Loaded before the app starts, as the page's host is: what it
+        // sends meanwhile waits for the app.
+        let page_host = match &self.run.page_host {
+            Some(module) => Some(
+                PageHost::start(module, clock.clone())
+                    .map_err(|e| format!("open({entry:?}): {e}"))?,
+            ),
+            None => None,
+        };
+        let default = EngineConfig::new(app);
+        let mut config = EngineConfig {
+            viewport: nsh_core::Size::new(
+                launch.width.unwrap_or(default.viewport.width),
+                launch.height.unwrap_or(default.viewport.height),
+            ),
+            trace: self.run.trace.is_some(),
+            network: Some(requests.clone()),
+            refuse_connections: (!live).then(crate::failure::refuse_connections),
+            assets: Some(Arc::new(DirectoryAssets::new(dir, files))),
+            storage: Some(storage.clone()),
+            environment: Environment {
+                safe_area: Edges {
+                    top: safe_area.top,
+                    right: safe_area.right,
+                    bottom: safe_area.bottom,
+                    left: safe_area.left,
+                },
+                color_scheme: launch.color_scheme.unwrap_or_default().into(),
+                locale: locale.unwrap_or(Locale::EN_US),
+                // The locale's (it alone as the languages, its region's
+                // preferences) in UTC, but for what the test sets.
+                locale_settings: LocaleSettings::of(locale.unwrap_or(Locale::EN_US)),
+                reduce_motion: launch.reduced_motion.unwrap_or(false),
+                os: match platform {
+                    Platform::Ios => Os::Ios,
+                    Platform::Android => Os::Android,
+                    Platform::Macos => Os::MacOs,
+                    Platform::Windows => Os::Windows,
+                    Platform::Linux => Os::Linux,
+                    Platform::Web => Os::Web,
+                },
+                idiom: match platform {
+                    Platform::Ios | Platform::Android => Idiom::default(),
+                    _ => Idiom::Desktop,
+                },
+                host: page_host.is_some(),
+                ..Default::default()
+            },
+            ui_sets: self.run.ui_sets.clone(),
+            clock,
+            host: launch.host,
+            ..default
+        };
+        settings.apply(&mut config.environment);
+        // The link that launched it, there before the app's code runs.
+        let started = match &launch.url_scheme {
+            Some(url) => Headless::start_with_link(config, url),
+            None => Headless::start(config),
+        };
+        let mut app =
+            started.map_err(|e| format!("open({entry:?}): the engine did not start: {e}"))?;
+        if let Some(host) = page_host {
+            host.attach(app.engine().control());
+            let poster = host.clone();
+            app.on_host_post(move |name, args| poster.post(name, args));
+            app.on_host_call(move |id, name, args| host.call(id, name, args));
+        }
+        if let Some(out) = &self.run.trace {
+            let out = out.clone();
+            app.observe(move |step, batch| {
+                let mut out = out.lock().unwrap_or_else(|e| e.into_inner());
+                print_batch(&mut **out, step, batch);
+            });
+        }
+        // The entry as a terminal shows paths.
+        let shown = std::env::current_dir()
+            .ok()
+            .and_then(|cwd| path.strip_prefix(cwd).ok().map(Path::to_path_buf))
+            .unwrap_or_else(|| path.clone());
+        // `App` answers dialogs after each step, with the test's handler.
+        app.answer_dialogs_myself();
+        app.answer_picks_myself();
+        app.set_clipboard(launch.clipboard);
+        app.step(format!("open({})", shown.display()));
+        app.first_render()?;
+        let app: OpenApp = Arc::new(Mutex::new(Some(Box::new(app))));
+        self.apps
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(app.clone());
+        Ok((app, Some(storage), Some(requests)))
+    }
+
+    /// Starts the app at `path` (`entry` as the test names it) on a real
+    /// platform's host ([`TestRun::host`]), once it rendered.
+    fn open_on_host(
+        &self,
+        entry: &str,
+        path: &Path,
+        launch: Launch,
+        start: &StartHost,
+    ) -> Result<Opened, String> {
+        // What the test fixes of the environment, whatever the platform
+        // reports, and its clipboard (the app's calls never reach the
+        // machine's).
+        if let Some(tag) = &launch.locale
+            && Locale::parse(tag).is_none()
+        {
+            return Err(format!("open({entry:?}): {tag:?} is not a locale"));
+        }
+        let settings = launch.locale_settings.pins(&format!("open({entry:?})"))?;
+        check_launch(entry, &launch, self.run.target.as_ref())?;
+        // What the test gives is pinned, its defaults included; what it
+        // leaves out is the platform's.
+        let mut environment = nsh_dev::protocol::TestEnvironment::default();
+        let params = launch.host.params();
+        environment.host_params = (!params.is_empty()).then_some(params);
+        environment.clipboard = launch.clipboard.clone();
+        environment.locale = launch.locale.clone();
+        environment.time_zone = settings.time_zone.map(|z| z.as_str().to_owned());
+        environment.languages = settings
+            .languages
+            .map(|l| l.iter().map(|t| t.as_str().to_owned()).collect());
+        environment.hour_cycle = settings.hour_cycle.map(|c| c.name().to_owned());
+        environment.first_day_of_week = settings.first_day_of_week.map(|d| d.number());
+        environment.measurement_system = settings.measurement_system.map(|s| s.name().to_owned());
+        environment.temperature_unit = settings.temperature_unit.map(|u| u.name().to_owned());
+        environment.reduced_motion = launch.reduced_motion;
+        environment.safe_area = launch.safe_area.map(|safe_area| {
+            [
+                safe_area.top.0,
+                safe_area.right.0,
+                safe_area.bottom.0,
+                safe_area.left.0,
+            ]
+        });
+        // A manual clock: the host's engine runs on one, which the test
+        // moves (and the display's frames, as headless).
+        environment.clock =
+            launch
+                .clock
+                .map(|start| match start.duration_since(std::time::UNIX_EPOCH) {
+                    Ok(since) => since.as_secs_f64() * 1000.0,
+                    Err(before) => -before.duration().as_secs_f64() * 1000.0,
+                });
+        let manual_clock = environment.clock.is_some();
+        // The app's requests come to the test, as on a headless engine:
+        // answered from the routes, failed without any, or let through.
+        let (inner, live): (Arc<dyn nsh_engine::Network>, bool) = match launch.network {
+            NetworkSetup::Live => (Arc::new(StubNetwork::default()), true),
+            NetworkSetup::Stub(routes) => (Arc::new(StubNetwork::new(routes)), false),
+            NetworkSetup::None => (Arc::new(StubNetwork::default()), false),
+        };
+        // Its sockets and WebSockets reach the host's network only so too.
+        environment.live_network = live.then_some(true);
+        environment.idiom = launch_idiom(launch.platform);
+        let requests = RecordingNetwork::new(inner);
+        let storage: Vec<(String, String)> = launch.storage.0.into_iter().collect();
+        let size = match (launch.width, launch.height) {
+            (None, None) => None,
+            (w, h) => Some(Size::new(
+                w.unwrap_or(Points(390.0)),
+                h.unwrap_or(Points(844.0)),
+            )),
+        };
+        // The step a traced app's batches print under, as headless runs
+        // name them.
+        let shown = std::env::current_dir()
+            .ok()
+            .and_then(|cwd| path.strip_prefix(cwd).ok().map(Path::to_path_buf))
+            .unwrap_or_else(|| path.to_path_buf());
+        let step = Arc::new(Mutex::new(format!("open({})", shown.display())));
+        let trace = self.run.trace.clone().map(|out| {
+            let step = step.clone();
+            Arc::new(move |items: Vec<String>| {
+                let step = step.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                let mut out = out.lock().unwrap_or_else(|e| e.into_inner());
+                crate::trace::print_items(&mut **out, &step, &items);
+            }) as Arc<dyn Fn(Vec<String>) + Send + Sync>
+        });
+        let options = HostOptions {
+            size: size.or(Some(Size::new(Points(390.0), Points(844.0)))),
+            storage,
+            network: Some(Arc::new(HostRoutes {
+                requests: requests.clone(),
+                live,
+            })),
+            environment,
+            trace,
+        };
+        let host = start(path, &options).map_err(|e| format!("open({entry:?}): {e}"))?;
+        let remote = Remote::new(host, step, manual_clock);
+        remote.take(nsh_dev::protocol::TestStep::Ready {
+            timeout_ms: WAIT.as_millis() as u64 * 2,
+        })?;
+        // The appearance the test gives, light included; without one, the
+        // platform's.
+        if let Some(scheme) = launch.color_scheme {
+            remote.take(nsh_dev::protocol::TestStep::SetColorScheme {
+                dark: scheme == crate::module::ColorScheme::Dark,
+            })?;
+        }
+        let app: OpenApp = Arc::new(Mutex::new(Some(Box::new(remote))));
+        self.apps
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(app.clone());
+        Ok((app, None, Some(requests)))
+    }
+
+    /// The app at `path`, built once.
+    fn build(&self, path: &Path) -> Result<Built, String> {
+        if let Some(built) = self
+            .built
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(path)
+        {
+            return Ok(built.clone());
+        }
+        let built = (self.run.compile)(path, Entry::App)?;
+        self.built
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(path.to_path_buf(), built.clone());
+        Ok(built)
+    }
+
+    /// Closes the apps the test opened: the texts on screen of the last.
+    /// How many apps are open: a mark for [`Self::close_apps_since`].
+    fn open_apps(&self) -> usize {
+        self.apps.lock().unwrap_or_else(|e| e.into_inner()).len()
+    }
+
+    /// Closes the apps opened since `mark`, and returns the texts on
+    /// screen of the newest app open before (a failure's screen, which
+    /// may be an app a `beforeAll` opened).
+    async fn close_apps_since(self: &Arc<Self>, mark: usize) -> Option<Vec<String>> {
+        let session = self.clone();
+        nsh_core::prelude::blocking(move || session.close_apps(mark))
+            .await
+            .ok()
+            .flatten()
+    }
+
+    /// [`Self::close_apps_since`], on this thread.
+    fn close_apps(&self, mark: usize) -> Option<Vec<String>> {
+        let mut apps = self.apps.lock().unwrap_or_else(|e| e.into_inner());
+        let screen = apps.iter().rev().find_map(|app| {
+            let mut app = app.lock().unwrap_or_else(|e| e.into_inner());
+            app.as_mut()?.texts().ok()
+        });
+        let mark = mark.min(apps.len());
+        for app in apps.drain(mark..) {
+            drop(app.lock().unwrap_or_else(|e| e.into_inner()).take());
+        }
+        screen
+    }
+
+    fn wants(&self, name: &str) -> bool {
+        self.run.filter.as_deref().is_none_or(|f| name.contains(f))
+    }
+}
+
+/// Fails on what `launch` asks of an app on a real platform's host that
+/// `target` cannot honor, naming the option (`ERR_NSH_TEST_UNSUPPORTED`):
+/// a test runs as it says or not at all. Every other option reaches the
+/// host (storage, network, the environment, the clipboard, a manual clock,
+/// `host.params`).
+fn check_launch(entry: &str, launch: &Launch, target: Option<&HostTarget>) -> Result<(), String> {
+    let name = target.map_or("<target>", |t| t.name.as_str());
+    let unsupported =
+        |option: &str, why: &str| Err(crate::failure::unsupported(entry, option, name, why));
+    // The host's dev host plays no handlers of the test's: the launch
+    // parameters reach its engine, the handlers run headless.
+    if launch.host_handlers {
+        return unsupported(
+            "host.handlers",
+            "the test plays the embedding app's handlers in headless runs: run the test without --target",
+        );
+    }
+    if launch.module_fakes {
+        return unsupported(
+            "modules",
+            "the test's stand-ins answer the app's calls in headless runs: run the test without --target",
+        );
+    }
+    if launch.url_scheme.is_some() {
+        return unsupported(
+            "url",
+            "the system hands links to packaged apps: run the test without --target",
+        );
+    }
+    let Some(target) = target else {
+        return Ok(());
+    };
+    if !target.sized {
+        let given = [("width", launch.width), ("height", launch.height)];
+        if let Some((option, _)) = given.iter().find(|(_, v)| v.is_some()) {
+            return unsupported(
+                option,
+                "the app fills the device's screen, at the size the device has",
+            );
+        }
+    }
+    // A desktop's platform asks for a desktop (a mouse, hover, shortcuts),
+    // which every desktop target and the web are; a phone's names its own.
+    let desktop = |p: Platform| !matches!(p, Platform::Ios | Platform::Android);
+    if let Some(platform) = launch.platform
+        && platform != target.platform
+        && !(desktop(platform) && desktop(target.platform))
+    {
+        return unsupported(
+            "platform",
+            &format!(
+                "the app runs on {} there: a desktop's platform runs on the desktops and the web, \
+                 `ios` and `android` on their own; headless runs take any",
+                platform_name(target.platform)
+            ),
+        );
+    }
+    Ok(())
+}
+
+/// The idiom a host that measures its own (the web's page) starts the app
+/// in for `open`'s `platform`: a desktop's asks for a desktop at any size,
+/// as it gets on every other target; none and `"web"` leave the page to
+/// measure, as a real browser does.
+fn launch_idiom(platform: Option<Platform>) -> Option<TestIdiom> {
+    match platform? {
+        Platform::Macos | Platform::Windows | Platform::Linux => Some(TestIdiom::Desktop),
+        Platform::Ios | Platform::Android | Platform::Web => None,
+    }
+}
+
+/// `platform` as `open`'s `platform` names it.
+fn platform_name(platform: Platform) -> &'static str {
+    match platform {
+        Platform::Ios => "ios",
+        Platform::Android => "android",
+        Platform::Macos => "macos",
+        Platform::Windows => "windows",
+        Platform::Linux => "linux",
+        Platform::Web => "web",
+    }
+}
+
+/// Runs the tests the test file declared, in order, reporting each (the
+/// internal module's `run`, on the VM's thread).
+pub(crate) async fn run_tests() {
+    let Ok(session) = Session::current() else {
+        return;
+    };
+    let suite = crate::module::take_suite();
+    let run = Run {
+        only: suite.has_only(),
+        session,
+    };
+    run.suite(&suite, &Context::default()).await;
+    let _ = run.session.events.send(Event::Done);
+}
+
+/// A run of a test file's suite.
+struct Run {
+    session: Arc<Session>,
+    /// A test or a block of the file is `.only`.
+    only: bool,
+}
+
+/// Where a suite is: the blocks around it.
+#[derive(Clone, Default)]
+struct Context<'a> {
+    /// Their names, outermost first.
+    names: Vec<&'a str>,
+    /// Their `beforeEach` and `afterEach` hooks, outermost first.
+    hooks: Vec<(&'a [Hook], &'a [Hook])>,
+    /// One of them is `.skip`.
+    skipped: bool,
+    /// One of them is `.only`.
+    focused: bool,
+}
+
+impl Context<'_> {
+    /// The full name of `name` in it (`Cart › adds`).
+    fn name(&self, name: &str) -> String {
+        let mut names = self.names.clone();
+        names.push(name);
+        names.retain(|n| !n.is_empty());
+        names.join(" › ")
+    }
+}
+
+impl Suite {
+    /// It or what it holds is `.only`.
+    fn has_only(&self) -> bool {
+        self.items.iter().any(|item| match item {
+            Item::Test(case) => case.mode == Mode::Only,
+            Item::Suite(suite) => suite.mode == Mode::Only || suite.has_only(),
+        })
+    }
+}
+
+impl Run {
+    /// Whether `case` runs where `cx` is.
+    fn runs(&self, case: &Case, cx: &Context<'_>) -> bool {
+        !cx.skipped
+            && matches!(case.mode, Mode::Run | Mode::Only)
+            && (!self.only || cx.focused || case.mode == Mode::Only)
+            && self.session.wants(&cx.name(&case.name))
+    }
+
+    /// Whether a test of `suite` runs where `cx` is.
+    fn any_runs(&self, suite: &Suite, cx: &Context<'_>) -> bool {
+        let cx = cx.inside(suite);
+        suite.items.iter().any(|item| match item {
+            Item::Test(case) => self.runs(case, &cx),
+            Item::Suite(inner) => self.any_runs(inner, &cx),
+        })
+    }
+
+    /// Runs `suite` where `cx` is: its `beforeAll` hooks, its tests and
+    /// blocks in order, then its `afterAll` hooks, when any of its tests
+    /// runs.
+    fn suite<'a>(
+        &'a self,
+        suite: &'a Suite,
+        cx: &'a Context<'a>,
+    ) -> std::pin::Pin<Box<dyn Future<Output = ()> + 'a>> {
+        Box::pin(async move {
+            let inner = cx.inside(suite);
+            let runs = self.any_runs(suite, cx);
+            let mark = self.session.open_apps();
+            // A `beforeAll` that failed fails the tests that needed it.
+            let mut setup = None;
+            if runs {
+                for hook in &suite.before_all {
+                    if let Err(failure) = self.hook("beforeAll", hook).await {
+                        setup = Some(failure);
+                        break;
+                    }
+                }
+            }
+            for item in &suite.items {
+                match item {
+                    Item::Suite(child) => match &setup {
+                        // Its tests fail as this block's do.
+                        Some(failure) => self.fail_all(child, &inner, failure),
+                        None => self.suite(child, &inner).await,
+                    },
+                    Item::Test(case) => {
+                        let name = inner.name(&case.name);
+                        if self.runs(case, &inner) {
+                            match &setup {
+                                Some(failure) => {
+                                    self.report(name, Duration::ZERO, Err(failure.clone()))
+                                }
+                                None => self.case(case, name, &inner).await,
+                            }
+                        } else if case.mode == Mode::Todo && self.session.wants(&name) {
+                            self.skip(name, TestStatus::Todo);
+                        } else if self.session.wants(&name) {
+                            self.skip(name, TestStatus::Skipped);
+                        }
+                    }
+                }
+            }
+            if runs {
+                let start = Instant::now();
+                let mut failed = None;
+                for hook in &suite.after_all {
+                    if let Err(failure) = self.hook("afterAll", hook).await {
+                        failed.get_or_insert(failure);
+                    }
+                }
+                let screen = self.session.close_apps_since(mark).await;
+                if let Some(mut failure) = failed {
+                    failure.screen = failure.screen.or(screen);
+                    self.report(
+                        cx.name(&suite.name_or("afterAll")),
+                        start.elapsed(),
+                        Err(failure),
+                    );
+                }
+            } else {
+                self.session.close_apps_since(mark).await;
+            }
+        })
+    }
+
+    /// Reports every test of `suite` that would run as failed with
+    /// `failure` (a `beforeAll` around it failed).
+    fn fail_all(&self, suite: &Suite, cx: &Context<'_>, failure: &Failure) {
+        let cx = cx.inside(suite);
+        for item in &suite.items {
+            match item {
+                Item::Test(case) if self.runs(case, &cx) => {
+                    self.report(cx.name(&case.name), Duration::ZERO, Err(failure.clone()));
+                }
+                Item::Test(_) => {}
+                Item::Suite(inner) => self.fail_all(inner, &cx, failure),
+            }
+        }
+    }
+
+    /// Runs `case` (named `name`) with the `beforeEach` and `afterEach`
+    /// hooks around it, then closes the apps they opened.
+    async fn case(&self, case: &Case, name: String, cx: &Context<'_>) {
+        let start = Instant::now();
+        let mark = self.session.open_apps();
+        let mut failed = None;
+        'before: for (before, _) in &cx.hooks {
+            for hook in *before {
+                if let Err(failure) = self.hook("beforeEach", hook).await {
+                    failed = Some(failure);
+                    break 'before;
+                }
+            }
+        }
+        if failed.is_none()
+            && let Some(body) = &case.body
+        {
+            failed = run(body, case.timeout, "the test").await.err();
+        }
+        for (_, after) in cx.hooks.iter().rev() {
+            for hook in *after {
+                if let Err(failure) = self.hook("afterEach", hook).await {
+                    failed.get_or_insert(failure);
+                }
+            }
+        }
+        // The apps go before the next test starts, whatever this one left
+        // running.
+        let screen = self.session.close_apps_since(mark).await;
+        let outcome = match failed {
+            None => Ok(()),
+            Some(mut failure) => {
+                failure.screen = failure.screen.or(screen);
+                Err(failure)
+            }
+        };
+        self.report(name, start.elapsed(), outcome);
+    }
+
+    /// Runs `hook`, a `what` hook.
+    async fn hook(&self, what: &str, hook: &Hook) -> Result<(), Failure> {
+        run(&hook.body, hook.timeout, what)
+            .await
+            .map_err(|mut failure| {
+                failure.message = format!("{what}: {}", failure.message);
+                failure
+            })
+    }
+
+    fn report(&self, name: String, elapsed: Duration, outcome: Result<(), Failure>) {
+        let (status, failure) = match outcome {
+            Ok(()) => (TestStatus::Passed, None),
+            Err(failure) => (TestStatus::Failed, Some(failure)),
+        };
+        let _ = self.session.events.send(Event::Result(TestResult {
+            name,
+            elapsed,
+            status,
+            failure,
+        }));
+    }
+
+    fn skip(&self, name: String, status: TestStatus) {
+        let _ = self.session.events.send(Event::Result(TestResult {
+            name,
+            elapsed: Duration::ZERO,
+            status,
+            failure: None,
+        }));
+    }
+}
+
+impl<'a> Context<'a> {
+    /// The context of what `suite` holds.
+    fn inside(&self, suite: &'a Suite) -> Context<'a> {
+        let mut cx = self.clone();
+        cx.names.push(&suite.name);
+        cx.hooks.push((&suite.before_each, &suite.after_each));
+        cx.skipped |= suite.mode == Mode::Skip;
+        cx.focused |= suite.mode == Mode::Only;
+        cx
+    }
+}
+
+impl Suite {
+    /// `"<name> › <what>"`, or `what` for the file's.
+    fn name_or(&self, what: &str) -> String {
+        if self.name.is_empty() {
+            what.to_owned()
+        } else {
+            format!("{} › {what}", self.name)
+        }
+    }
+}
+
+/// Calls `body`, `what` (the test, a hook), bounded by `timeout`; the
+/// screen of the failure is the caller's.
+async fn run(body: &Callback, timeout: Duration, what: &str) -> Result<(), Failure> {
+    match within(timeout, body.call_async_traced(())).await {
+        Some(Ok(())) => Ok(()),
+        Some(Err(thrown)) => Err(Failure {
+            message: thrown.message,
+            stack: thrown.stack,
+            screen: None,
+        }),
+        None => Err(Failure {
+            message: format!("{what} did not end in {}", shown_duration(timeout)),
+            stack: None,
+            screen: None,
+        }),
+    }
+}
+
+/// `time` as a timeout is given: `30 s`, `250 ms`.
+fn shown_duration(time: Duration) -> String {
+    let ms = time.as_millis();
+    if ms.is_multiple_of(1000) {
+        format!("{} s", ms / 1000)
+    } else {
+        format!("{ms} ms")
+    }
+}
+
+/// `future`'s output, or `None` once `time` passed.
+async fn within<T>(time: Duration, future: impl Future<Output = T>) -> Option<T> {
+    let mut future = std::pin::pin!(future);
+    let mut delay = std::pin::pin!(timer(time));
+    std::future::poll_fn(|cx| {
+        if let Poll::Ready(value) = future.as_mut().poll(cx) {
+            return Poll::Ready(Some(value));
+        }
+        if delay.as_mut().poll(cx).is_ready() {
+            return Poll::Ready(None);
+        }
+        Poll::Pending
+    })
+    .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        failure::{UNSUPPORTED, code_of},
+        module::Entries,
+    };
+
+    fn launch() -> Launch {
+        Launch {
+            storage: Entries::default(),
+            network: NetworkSetup::None,
+            width: None,
+            height: None,
+            safe_area: None,
+            clipboard: None,
+            color_scheme: None,
+            locale: None,
+            locale_settings: Default::default(),
+            reduced_motion: None,
+            platform: None,
+            clock: None,
+            host: nsh_engine::HostChannel::new(),
+            host_handlers: false,
+            module_fakes: false,
+            url_scheme: None,
+        }
+    }
+
+    fn target(name: &str, platform: Platform, sized: bool) -> HostTarget {
+        HostTarget {
+            name: name.into(),
+            platform,
+            sized,
+        }
+    }
+
+    #[test]
+    fn open_rejects_the_options_a_target_cannot_honor() {
+        let ios = target("ios", Platform::Ios, false);
+        let macos = target("macos", Platform::Macos, true);
+        let web = target("web", Platform::Web, true);
+        let check =
+            |launch: &Launch, target: &HostTarget| check_launch("./App.tsx", launch, Some(target));
+
+        // What every target honors.
+        let mut plain = launch();
+        plain.clock = Some(std::time::SystemTime::UNIX_EPOCH);
+        plain.locale = Some("fr-FR".into());
+        plain.reduced_motion = Some(true);
+        assert_eq!(check(&plain, &ios), Ok(()));
+        assert_eq!(check(&plain, &macos), Ok(()));
+
+        // A launching link: only headless runs hand one over.
+        let mut linked = launch();
+        linked.url_scheme = Some("myapp://item/42".into());
+        let error = check(&linked, &macos).unwrap_err();
+        assert!(
+            error.contains("`url` is unsupported on --target macos"),
+            "{error}"
+        );
+        assert_eq!(code_of(&error), Some(UNSUPPORTED));
+
+        // A size: a desktop's window takes it, a device's screen does not.
+        let mut sized = launch();
+        sized.height = Some(Points(600.0));
+        assert_eq!(check(&sized, &macos), Ok(()));
+        let error = check(&sized, &ios).unwrap_err();
+        assert!(
+            error.starts_with("open(\"./App.tsx\"): `height` is unsupported on --target ios"),
+            "{error}"
+        );
+        assert_eq!(code_of(&error), Some(UNSUPPORTED));
+
+        // The platform: the target's own, a desktop's on a desktop or the
+        // web, or none.
+        let mut android = launch();
+        android.platform = Some(Platform::Android);
+        let error = check(&android, &ios).unwrap_err();
+        assert!(
+            error.contains("`platform` is unsupported on --target ios"),
+            "{error}"
+        );
+        assert!(error.contains("the app runs on ios there"), "{error}");
+        assert_eq!(code_of(&error), Some(UNSUPPORTED));
+        assert!(check(&android, &macos).is_err());
+        let mut own = launch();
+        own.platform = Some(Platform::Ios);
+        assert_eq!(check(&own, &ios), Ok(()));
+        let mut desktop = launch();
+        desktop.platform = Some(Platform::Macos);
+        assert_eq!(check(&desktop, &macos), Ok(()));
+        assert_eq!(check(&desktop, &web), Ok(()));
+        assert!(check(&desktop, &ios).is_err());
+
+        // The embedding app's handlers run headless, whatever the target.
+        let mut handlers = launch();
+        handlers.host_handlers = true;
+        let error = check_launch("./App.tsx", &handlers, None).unwrap_err();
+        assert_eq!(code_of(&error), Some(UNSUPPORTED), "{error}");
+
+        // So do the stand-ins of native modules.
+        let mut fakes = launch();
+        fakes.module_fakes = true;
+        let error = check(&fakes, &macos).unwrap_err();
+        assert!(
+            error.contains("`modules` is unsupported on --target macos"),
+            "{error}"
+        );
+        assert_eq!(code_of(&error), Some(UNSUPPORTED));
+    }
+
+    #[test]
+    fn a_desktop_platform_asks_the_page_for_the_desktop_idiom() {
+        for platform in [Platform::Macos, Platform::Windows, Platform::Linux] {
+            assert_eq!(
+                launch_idiom(Some(platform)),
+                Some(TestIdiom::Desktop),
+                "{platform:?}"
+            );
+        }
+        for platform in [Platform::Web, Platform::Ios, Platform::Android] {
+            assert_eq!(launch_idiom(Some(platform)), None, "{platform:?}");
+        }
+        assert_eq!(launch_idiom(None), None);
+        // As the page's `idiom` option names it.
+        let mut environment = nsh_dev::protocol::TestEnvironment::default();
+        environment.idiom = Some(TestIdiom::Desktop);
+        assert_eq!(
+            serde_json::to_value(&environment).unwrap(),
+            serde_json::json!({ "idiom": "desktop" })
+        );
+    }
+
+    #[test]
+    fn test_files_of_one_name_get_entries_by_their_paths() {
+        let app = Path::new("/home/me/app");
+        let work_dir = app.join(".nsh/test");
+        let core = entry_path(&work_dir, &app.join("src/core/typing.test.ts"));
+        assert_eq!(core, work_dir.join("src/core/typing.test.ts.run.js"));
+        // The steps of `nsh test <entry>`, written in the work directory.
+        assert_eq!(
+            entry_path(&work_dir, &work_dir.join("App.tsx.steps.test.ts")),
+            work_dir.join("App.tsx.steps.test.ts.run.js")
+        );
+        // A work directory beside the app.
+        assert_eq!(
+            entry_path(Path::new("/home/me/work"), &app.join("App.test.tsx")),
+            Path::new("/home/me/work/app/App.test.tsx.run.js")
+        );
+        // Sharing only the root with the work directory: by the directory's
+        // hash.
+        let elsewhere = Path::new("/srv/work");
+        let core = entry_path(elsewhere, &app.join("src/core/typing.test.ts"));
+        let state = entry_path(elsewhere, &app.join("src/state/typing.test.ts"));
+        assert_ne!(core, state);
+        assert_eq!(core.parent().unwrap().parent(), Some(elsewhere));
+        assert!(
+            core.ends_with("typing.test.ts.run.js"),
+            "{}",
+            core.display()
+        );
+        assert_eq!(
+            core,
+            entry_path(elsewhere, &app.join("src/core/typing.test.ts"))
+        );
+    }
+
+    /// Another `nsh test` of the app bundles the same entry while this one
+    /// writes it: it reads the entry whole, never cut short.
+    #[test]
+    fn a_test_entry_is_read_whole_while_it_is_written_again() {
+        let dir = std::env::temp_dir().join(format!("nsh-write-whole-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let entry = dir.join("App.test.tsx.run.js");
+        let code = "// Made by `nsh test`.\n".repeat(64);
+        write_whole(&entry, &code).unwrap();
+        let writer = {
+            let (entry, code) = (entry.clone(), code.clone());
+            std::thread::spawn(move || {
+                for _ in 0..2000 {
+                    write_whole(&entry, &code).unwrap();
+                }
+            })
+        };
+        for _ in 0..2000 {
+            assert_eq!(std::fs::read_to_string(&entry).unwrap(), code);
+        }
+        writer.join().unwrap();
+        let left: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(left, [std::ffi::OsString::from("App.test.tsx.run.js")]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+}

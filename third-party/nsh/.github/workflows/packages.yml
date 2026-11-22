@@ -1,0 +1,155 @@
+name: Packages
+
+# Publishing a stable release updates longbridge/homebrew-tap. Pull requests
+# install and test the generated formula without access to the tap token.
+# See docs/dev/tooling.md for HOMEBREW_TAP_TOKEN setup and safe reruns.
+
+on:
+  release:
+    types: [published]
+  pull_request:
+    # `closed` runs nothing, but it takes the pull request's concurrency group
+    # and so cancels its runs still queued or running once it merges or closes.
+    types: [opened, synchronize, reopened, ready_for_review, closed]
+    paths:
+      - ".github/workflows/packages.yml"
+      - ".github/packages/**"
+  merge_group:
+    types: [checks_requested]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Published stable release tag (e.g. v0.1.1); empty: latest"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  check:
+    name: Check Homebrew formula
+    runs-on: macos-15
+    timeout-minutes: 15
+    # Nothing for drafts or a pull request being closed.
+    if: (github.event_name != 'release' || !github.event.release.prerelease) && (github.event_name != 'pull_request' || (github.event.action != 'closed' && !github.event.pull_request.draft))
+    # Debounce (AGENTS.md "CI"): waits without a runner, so a newer
+    # push cancels this run before it takes one.
+    environment:
+      name: ci-debounce
+      deployment: false
+    env:
+      HOMEBREW_NO_AUTO_UPDATE: "1"
+      HOMEBREW_NO_ANALYTICS: "1"
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Test formula generation
+        run: python3 -m unittest discover -s .github/packages -v
+
+      - name: Generate the release formula
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag || github.event.release.tag_name }}
+        run: |
+          mkdir -p formula/sums
+          args=()
+          if [[ -n "$TAG" ]]; then args+=("$TAG"); fi
+          gh release view "${args[@]}" -R "$GITHUB_REPOSITORY" \
+            --json tagName,isDraft,isPrerelease > formula/release.json
+          TAG=$(jq -r .tagName formula/release.json)
+          gh release download "$TAG" -R "$GITHUB_REPOSITORY" -D formula/sums \
+            -p nsh-macos-arm64.tar.gz.sha256 -p nsh-linux-x86_64.tar.gz.sha256
+          python3 .github/packages/homebrew.py --release formula/release.json \
+            --sums formula/sums --repository "$GITHUB_REPOSITORY" --output formula/nsh.rb
+
+      - name: Verify both release archives
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG=$(jq -r .tagName formula/release.json)
+          mkdir -p "$RUNNER_TEMP/nsh-assets"
+          gh release download "$TAG" -R "$GITHUB_REPOSITORY" -D "$RUNNER_TEMP/nsh-assets" \
+            -p nsh-macos-arm64.tar.gz -p nsh-linux-x86_64.tar.gz
+          cd "$RUNNER_TEMP/nsh-assets"
+          shasum -a 256 -c "$GITHUB_WORKSPACE/formula/sums/nsh-macos-arm64.tar.gz.sha256"
+          shasum -a 256 -c "$GITHUB_WORKSPACE/formula/sums/nsh-linux-x86_64.tar.gz.sha256"
+
+      - name: Install and test the generated formula
+        run: |
+          test "$(uname -m)" = arm64
+          brew tap-new --no-git longbridge/tap
+          brew trust longbridge/tap
+          cp formula/nsh.rb "$(brew --repository)/Library/Taps/longbridge/homebrew-tap/Formula/nsh.rb"
+          brew style --formula longbridge/tap/nsh
+          brew audit --strict --formula longbridge/tap/nsh
+          brew install --formula longbridge/tap/nsh
+          brew test longbridge/tap/nsh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nsh-homebrew-formula
+          path: formula/
+          if-no-files-found: error
+
+  homebrew:
+    name: Update Homebrew tap
+    needs: check
+    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    # Serialize writers, including manual reruns, then check the tap's current
+    # version so an older run cannot overwrite a newer published formula.
+    concurrency:
+      group: homebrew-tap
+      cancel-in-progress: false
+      queue: max
+    steps:
+      - name: Check tap credentials
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          if [[ -z "$HOMEBREW_TAP_TOKEN" ]]; then
+            echo "::error::Set the HOMEBREW_TAP_TOKEN Actions secret in longbridge/nsh with Contents write access to longbridge/homebrew-tap. See docs/dev/tooling.md."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: nsh-homebrew-formula
+          path: formula
+
+      - uses: actions/checkout@v6
+        with:
+          repository: longbridge/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: homebrew-tap
+
+      - name: Update the formula without downgrading
+        run: |
+          python3 .github/packages/homebrew.py --release formula/release.json \
+            --sums formula/sums --repository "$GITHUB_REPOSITORY" \
+            --current homebrew-tap/Formula/nsh.rb --output nsh.rb
+          cmp formula/nsh.rb nsh.rb
+          cp nsh.rb homebrew-tap/Formula/nsh.rb
+          VERSION=$(jq -r .tagName formula/release.json)
+          cd homebrew-tap
+          git add Formula/nsh.rb
+          if git diff --cached --quiet; then
+            echo "the formula is already up to date"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git commit -m "nsh $VERSION" \
+            -m "Written by https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          git push

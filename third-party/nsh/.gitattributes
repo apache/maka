@@ -1,0 +1,4 @@
+# Text files are LF in every checkout, Windows included: rustfmt
+# (newline_style = "unix") and the tests expect it.
+* text=auto eol=lf
+

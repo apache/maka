@@ -27,29 +27,23 @@ updates:
     groups:
       minor-and-patch:
         patterns:
-          - '*'
+          - "*"
         update-types:
           - minor
           - patch
-    # Retained from when an in-house Code Mode transpiler used the typescript
-    # JS API (transpileModule, ScriptTarget, …) at runtime and had to stay on
-    # 5.9, since the 6.0+ native compiler removed those exports. That
-    # transpiler is gone — @ai-sdk/code-mode owns transpilation now, and no
-    # workspace pins typescript — so this ignore no longer has a subject.
-    # Dropping it is a dependency-policy call, not this refactor's to make.
-    ignore:
-      - dependency-name: 'typescript'
-        versions:
-          - '>=6.0.0'
+  - package-ecosystem: npm
+    directory: /website
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    labels: [dependencies]
 
   - package-ecosystem: github-actions
     directory: /
     schedule:
-      interval: weekly
-    open-pull-requests-limit: 10
+      interval: daily
     labels:
       - dependencies
     groups:
-      official-actions:
-        patterns:
-          - 'actions/*'
+      actions:
+        patterns: ["*"]

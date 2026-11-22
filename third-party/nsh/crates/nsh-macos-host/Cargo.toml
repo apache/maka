@@ -1,0 +1,22 @@
+[package]
+name = "nsh-macos-host"
+description = "Development host app (AppKit) that runs a nsh bundle on macOS."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+readme.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+log.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+nsh-base.workspace = true
+nsh-platform-macos = { workspace = true, features = ["dev"] }
+nsh-dev.workspace = true
+nsh-engine = { workspace = true, features = ["js"] }

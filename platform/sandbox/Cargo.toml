@@ -1,0 +1,66 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+[package]
+autotests = false
+name = "maka-sandbox"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+cap-fs-ext.workspace = true
+cap-std.workspace = true
+hex.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+uuid.workspace = true
+globset = "0.4.20"
+schemars.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+url = "2.5.8"
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+regex-syntax = "0.8.11"
+unicode-normalization = "0.1.26"
+
+[target.'cfg(windows)'.dependencies]
+# Keep the native ETW imports usable with both Windows linkers, as in Codex.
+tracelogging = "=1.2.4"
+flatbuffers.workspace = true
+mxc-sdk.workspace = true
+windows-sys = { version = "0.61.2", features = ["Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Wdk_Storage_FileSystem", "Win32_System_Registry", "Win32_System_StationsAndDesktops", "Win32_Graphics_Gdi", "Win32_Globalization", "Win32_Foundation", "Win32_Security_Authorization", "Win32_Security_Cryptography", "Win32_Storage_FileSystem", "Win32_System_SystemServices", "Win32_System_Threading", "Win32_System_JobObjects", "Win32_NetworkManagement_NetManagement", "Win32_NetworkManagement_WindowsFilteringPlatform", "Win32_System_Rpc"] }
+uuid = { workspace = true, features = ["v5"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+seccompiler = { version = "0.5.0", default-features = false }
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_NetworkManagement_NetManagement", "Win32_System_Threading", "Win32_System_StationsAndDesktops", "Win32_Graphics_Gdi"] }
+
+[[test]]
+name = "integration"
+path = "tests/integration/main.rs"

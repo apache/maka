@@ -1,0 +1,3070 @@
+use std::cell::Cell;
+
+use rustc_hash::FxHashMap;
+
+use super::{
+    driver::{Running, ease},
+    ops::{
+        AnimationId, AnimationOp, Composite, Driver, Easing, Extrapolate, MathOp, NodeId, Operand,
+        Output, highest_frame_rate,
+    },
+};
+
+/// Animations of composite steps get ids from here up (JS's are small).
+const LEAF_IDS: AnimationId = 0x8000_0000;
+
+/// How long a snapping `diffClamp` takes to reach its bound (seconds), as
+/// Flutter's floating app bar.
+const SNAP_SECONDS: f64 = 0.2;
+/// How far past an animation's end [`Graph::deadline`] is.
+const PAST_SECONDS: f64 = 0.001;
+
+/// The evaluated value of a node.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum AnimationValue {
+    /// A number.
+    Number(f32),
+    /// A color, `0xRRGGBBAA`.
+    Color(u32),
+}
+
+impl AnimationValue {
+    /// The number, or 0 for colors.
+    pub fn number(self) -> f32 {
+        match self {
+            AnimationValue::Number(n) => n,
+            AnimationValue::Color(_) => 0.0,
+        }
+    }
+}
+
+/// A finished (or interrupted) animation, to report back to JS; also the
+/// answer to an [`AnimationOp::Read`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Finished {
+    /// The animation (or the read request).
+    pub animation: AnimationId,
+    /// False if it was stopped or replaced before reaching its end.
+    pub finished: bool,
+    /// The node's value, for a read.
+    pub value: Option<f32>,
+}
+
+impl Finished {
+    /// The end of `animation`.
+    pub fn new(animation: AnimationId, finished: bool) -> Self {
+        Finished {
+            animation,
+            finished,
+            value: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+enum Node {
+    Value {
+        value: f32,
+        /// Added when evaluated (`setOffset`).
+        offset: f32,
+        velocity: f32,
+        running: Option<Running>,
+    },
+    Interpolate {
+        input: Input,
+        input_range: Vec<f32>,
+        output: Output,
+        extrapolate: (Extrapolate, Extrapolate),
+        easing: Easing,
+        /// Its breakpoints ascend (none below the one before, no NaN):
+        /// a segment is found by bisection.
+        ascending: bool,
+    },
+    DiffClamp {
+        input: Input,
+        /// Bounds, read at each evaluation (an upper bound below the lower
+        /// one is the lower one).
+        min: Arg,
+        max: Arg,
+        /// The input and output at the last evaluation.
+        state: Cell<Option<(f32, f32)>>,
+        /// Settles at the nearer bound when its scroll view rests.
+        snap: bool,
+        /// Its settling, while it runs.
+        snapping: Cell<Option<Snap>>,
+    },
+    Math {
+        op: MathOp,
+        a: Arg,
+        b: Arg,
+    },
+}
+
+/// A node another node reads: its id, and the slot it was last found in,
+/// so that evaluating reads it there without looking the id up (checked
+/// against the id: a slot is taken again once its node is released).
+#[derive(Debug, Clone)]
+struct Input {
+    id: NodeId,
+    slot: Cell<u32>,
+}
+
+impl Input {
+    fn new(id: NodeId) -> Input {
+        Input {
+            id,
+            slot: Cell::new(u32::MAX),
+        }
+    }
+}
+
+/// An operand of a math node: [`Operand`], its node an [`Input`].
+#[derive(Debug, Clone)]
+enum Arg {
+    Node(Input),
+    Const(f32),
+}
+
+impl From<Operand> for Arg {
+    fn from(operand: Operand) -> Arg {
+        match operand {
+            Operand::Node(id) => Arg::Node(Input::new(id)),
+            Operand::Const(c) => Arg::Const(c),
+        }
+    }
+}
+
+/// A `diffClamp` moving to a bound after its scroll view came to rest.
+#[derive(Debug, Clone, Copy)]
+struct Snap {
+    from: f32,
+    to: f32,
+    /// The scroll value that came to rest, and where: scrolling it again
+    /// ends the settling.
+    source: NodeId,
+    at: f32,
+    /// Its input at the last evaluation: a snapping `diffClamp` it reads
+    /// settles too and moves it meanwhile.
+    input: f32,
+    /// The first frame's time.
+    start: Option<f64>,
+    /// It arrived: the next evaluation takes in where its input went.
+    done: bool,
+}
+
+/// Nodes deeper than this are treated as cycles (JS bug) and evaluate to 0.
+const MAX_DEPTH: u32 = 64;
+
+/// All animation nodes of one surface.
+#[derive(Debug, Default, Clone)]
+pub struct Graph {
+    /// The live nodes, each in a slot of its own: as many slots as nodes
+    /// lived at once, not as ids were ever made (JS and the core each
+    /// count theirs up and never reuse one).
+    slots: Vec<Option<Slot>>,
+    /// The slots of the nodes, by id.
+    index: FxHashMap<NodeId, u32>,
+    /// Slots of released nodes, for the next nodes made.
+    free: Vec<u32>,
+    /// Value nodes with a running animation.
+    animating: Vec<NodeId>,
+    /// Running composite animations.
+    programs: Vec<Program>,
+    /// Ends of composite steps (and when they ended), for their programs.
+    leaf_ends: Vec<(Finished, f64)>,
+    next_leaf: AnimationId,
+    /// Values a composite step started in this frame.
+    started: Vec<NodeId>,
+    /// Values of each composite when it last started, for resets.
+    baselines: Vec<(u32, Vec<(NodeId, f32)>)>,
+    /// `diffClamp` nodes settling at a bound.
+    snaps: Vec<NodeId>,
+    /// Which state of the graph the nodes' evaluated values are of: a change to
+    /// the graph (an op, a value set, a frame) moves on to the next.
+    generation: u64,
+    /// The evaluation under way reached a node deeper than `MAX_DEPTH`:
+    /// what it gave stands for a cycle, not for a value to keep.
+    cut: Cell<bool>,
+}
+
+/// A node and its value as last evaluated.
+#[derive(Debug, Clone)]
+struct Slot {
+    id: NodeId,
+    node: Node,
+    /// The value evaluated, with the generation of the graph it is of: a
+    /// node read by many (the time, a shared track) is evaluated once a
+    /// frame, not once for each reader.
+    value: Cell<(u64, AnimationValue)>,
+}
+
+/// A running composite animation.
+#[derive(Debug, Clone)]
+struct Program {
+    id: AnimationId,
+    key: u32,
+    root: Step,
+    /// When it started (its first frame).
+    at: Option<f64>,
+    /// The highest frame rate its steps need ([`Composite::frame_rate`]),
+    /// asked for while it runs, delays included.
+    frame_rate: Option<f32>,
+}
+
+/// The state of one part of a composite animation.
+#[derive(Debug, Clone)]
+enum Step {
+    Run {
+        node: NodeId,
+        driver: Driver,
+        /// The animation once started.
+        leaf: Option<AnimationId>,
+    },
+    Sequence {
+        steps: Vec<Step>,
+        index: usize,
+        /// When the current step starts.
+        at: Option<f64>,
+    },
+    Parallel {
+        steps: Vec<Step>,
+        ends: Vec<Option<(bool, f64)>>,
+        stop_together: bool,
+        at: Option<f64>,
+    },
+    Delay {
+        ms: f32,
+        until: Option<f64>,
+    },
+    Loop {
+        template: Composite,
+        current: Box<Step>,
+        runs: u32,
+        iterations: Option<u32>,
+        reset: bool,
+        /// Values at the start, restored before each run with `reset`.
+        initial: Option<Vec<(NodeId, f32)>>,
+        /// When the current run starts.
+        at: Option<f64>,
+    },
+}
+
+/// How a step ended: completed (or stopped) and when.
+type End = (bool, f64);
+
+/// [`warn_out_of_range`](super::driver::warn_out_of_range) for every
+/// driver of a composite, and a delay that is not a number: once when it
+/// starts, not on each pass of a loop.
+fn warn_composite_out_of_range(spec: &Composite) {
+    match spec {
+        Composite::Run { driver, .. } => super::driver::warn_out_of_range(driver),
+        Composite::Sequence(children) | Composite::Parallel { children, .. } => {
+            children.iter().for_each(warn_composite_out_of_range);
+        }
+        Composite::Delay(ms) if ms.is_nan() => {
+            log::warn!("animation delay out of range (NaN): no delay");
+        }
+        Composite::Delay(_) => {}
+        Composite::Loop { child, .. } => warn_composite_out_of_range(child),
+    }
+}
+
+impl Step {
+    fn new(spec: &Composite) -> Step {
+        match spec {
+            Composite::Run { node, driver } => Step::Run {
+                node: *node,
+                driver: *driver,
+                leaf: None,
+            },
+            Composite::Sequence(children) => Step::Sequence {
+                steps: children.iter().map(Step::new).collect(),
+                index: 0,
+                at: None,
+            },
+            Composite::Parallel {
+                children,
+                stop_together,
+            } => Step::Parallel {
+                steps: children.iter().map(Step::new).collect(),
+                ends: vec![None; children.len()],
+                stop_together: *stop_together,
+                at: None,
+            },
+            // A NaN delay never ended (`at + NaN`): it is none. An infinite
+            // one is the app's to wait out.
+            Composite::Delay(ms) => Step::Delay {
+                ms: if ms.is_nan() { 0.0 } else { *ms },
+                until: None,
+            },
+            Composite::Loop {
+                child,
+                iterations,
+                reset,
+            } => Step::Loop {
+                template: (**child).clone(),
+                current: Box::new(Step::new(child)),
+                runs: 0,
+                iterations: *iterations,
+                reset: *reset,
+                initial: None,
+                at: None,
+            },
+        }
+    }
+
+    /// Runs as far as possible at `now`; a step that has not started yet
+    /// starts at `at` (the exact end of the step before it, possibly a
+    /// little in the past). `Some` once over.
+    fn advance(
+        &mut self,
+        g: &mut Graph,
+        now: f64,
+        at: f64,
+        finished: &mut Vec<Finished>,
+    ) -> Option<End> {
+        match self {
+            Step::Run { node, driver, leaf } => match *leaf {
+                None => {
+                    let id = g.next_leaf.max(LEAF_IDS);
+                    g.next_leaf = id.wrapping_add(1).max(LEAF_IDS);
+                    if !g.start(*node, id, *driver, Some(at), finished) {
+                        // The value is gone (released): the composite
+                        // cannot go on (a loop would spin forever).
+                        return Some((false, at));
+                    }
+                    g.started.push(*node);
+                    *leaf = Some(id);
+                    None
+                }
+                Some(id) => {
+                    let i = g.leaf_ends.iter().position(|(f, _)| f.animation == id)?;
+                    let (f, end) = g.leaf_ends.swap_remove(i);
+                    Some((f.finished, end))
+                }
+            },
+            Step::Sequence {
+                steps,
+                index,
+                at: start,
+            } => {
+                let mut at = *start.get_or_insert(at);
+                loop {
+                    let Some(step) = steps.get_mut(*index) else {
+                        return Some((true, at));
+                    };
+                    match step.advance(g, now, at, finished)? {
+                        (true, end) => {
+                            *index += 1;
+                            at = end;
+                            *start = Some(end);
+                        }
+                        (false, end) => return Some((false, end)),
+                    }
+                }
+            }
+            Step::Parallel {
+                steps,
+                ends,
+                stop_together,
+                at: start,
+            } => {
+                let at = *start.get_or_insert(at);
+                let mut interrupted = false;
+                for (step, end) in steps.iter_mut().zip(ends.iter_mut()) {
+                    if end.is_none() {
+                        *end = step.advance(g, now, at, finished);
+                        interrupted |= matches!(*end, Some((false, _)));
+                    }
+                }
+                if interrupted && *stop_together {
+                    for (step, end) in steps.iter_mut().zip(ends.iter()) {
+                        if end.is_none() {
+                            step.stop(g, finished);
+                        }
+                    }
+                    return Some((false, now));
+                }
+                let mut last = at;
+                for end in ends.iter() {
+                    let (_, t) = (*end)?;
+                    last = last.max(t);
+                }
+                Some((ends.iter().all(|e| matches!(e, Some((true, _)))), last))
+            }
+            Step::Delay { ms, until } => {
+                let until = *until.get_or_insert(at + *ms as f64 / 1000.0);
+                (now >= until).then_some((true, until))
+            }
+            Step::Loop {
+                template,
+                current,
+                runs,
+                iterations,
+                reset,
+                initial,
+                at: start,
+            } => {
+                if *reset && initial.is_none() {
+                    let mut nodes = Vec::new();
+                    template.nodes(&mut nodes);
+                    *initial = Some(
+                        nodes
+                            .into_iter()
+                            .filter_map(|n| Some((n, g.value(n)?)))
+                            .collect(),
+                    );
+                }
+                let mut at = *start.get_or_insert(at);
+                // Runs that take no time (zero durations) must not spin.
+                for _ in 0..64 {
+                    match current.advance(g, now, at, finished)? {
+                        (false, end) => return Some((false, end)),
+                        (true, end) => {
+                            *runs += 1;
+                            if iterations.is_some_and(|n| *runs >= n) {
+                                return Some((true, end));
+                            }
+                            if let Some(values) = initial {
+                                for &(node, value) in values.iter() {
+                                    g.set(node, value, finished);
+                                }
+                            }
+                            **current = Step::new(template);
+                            at = end;
+                            *start = Some(end);
+                        }
+                    }
+                }
+                None
+            }
+        }
+    }
+
+    /// When something in what runs now happens next (seconds; see
+    /// [`Graph::deadline`]): the end of the step that runs, `now` for one
+    /// that has to start or has ended.
+    fn deadline(&self, g: &Graph, now: f64) -> Option<f64> {
+        match self {
+            Step::Run { node, leaf, .. } => match *leaf {
+                Some(id) if g.running_id(*node) == Some(id) => {
+                    g.running(*node).map(|r| r.deadline(now))
+                }
+                _ => Some(now),
+            },
+            Step::Sequence { steps, index, .. } => {
+                steps.get(*index).map_or(Some(now), |s| s.deadline(g, now))
+            }
+            Step::Parallel { steps, ends, .. } => steps
+                .iter()
+                .zip(ends)
+                .filter(|(_, end)| end.is_none())
+                .filter_map(|(step, _)| step.deadline(g, now))
+                .reduce(f64::min),
+            Step::Delay { until, .. } => Some(until.unwrap_or(now)),
+            Step::Loop { current, .. } => current.deadline(g, now),
+        }
+    }
+
+    /// Whether what runs now never ends by itself: it runs in a loop
+    /// without a number of iterations (every unfinished part of a parallel
+    /// does).
+    fn endless(&self) -> bool {
+        match self {
+            Step::Run { .. } | Step::Delay { .. } => false,
+            Step::Sequence { steps, index, .. } => steps.get(*index).is_some_and(Step::endless),
+            Step::Parallel { steps, ends, .. } => {
+                let mut running = steps
+                    .iter()
+                    .zip(ends)
+                    .filter(|(_, end)| end.is_none())
+                    .peekable();
+                running.peek().is_some() && running.all(|(step, _)| step.endless())
+            }
+            Step::Loop {
+                iterations,
+                current,
+                ..
+            } => iterations.is_none() || current.endless(),
+        }
+    }
+
+    /// Stops what runs (values stay where they are).
+    fn stop(&mut self, g: &mut Graph, finished: &mut Vec<Finished>) {
+        match self {
+            Step::Run {
+                node,
+                leaf: Some(id),
+                ..
+            } => {
+                if g.running_id(*node) == Some(*id) {
+                    g.stop(*node, finished);
+                }
+            }
+            Step::Run { .. } | Step::Delay { .. } => {}
+            Step::Sequence { steps, index, .. } => {
+                if let Some(step) = steps.get_mut(*index) {
+                    step.stop(g, finished);
+                }
+            }
+            Step::Parallel { steps, ends, .. } => {
+                for (step, end) in steps.iter_mut().zip(ends.iter()) {
+                    if end.is_none() {
+                        step.stop(g, finished);
+                    }
+                }
+            }
+            Step::Loop { current, .. } => current.stop(g, finished),
+        }
+    }
+}
+
+impl Graph {
+    /// Applies an op. Interrupted animations are pushed to `finished`.
+    pub fn apply(&mut self, op: AnimationOp, finished: &mut Vec<Finished>) {
+        self.changed();
+        self.apply_op(op, finished);
+        self.route_leaf_ends(finished);
+        self.changed();
+    }
+
+    /// Values evaluated before now are of a graph that changed.
+    fn changed(&mut self) {
+        self.generation += 1;
+    }
+
+    /// Ends of composite steps go to their programs, not to JS.
+    fn route_leaf_ends(&mut self, finished: &mut Vec<Finished>) {
+        if finished.iter().any(|f| f.animation >= LEAF_IDS) {
+            // Interrupted: when does not matter (the program stops).
+            self.leaf_ends.extend(
+                finished
+                    .iter()
+                    .filter(|f| f.animation >= LEAF_IDS)
+                    .map(|&f| (f, 0.0)),
+            );
+            finished.retain(|f| f.animation < LEAF_IDS);
+        }
+    }
+
+    fn apply_op(&mut self, op: AnimationOp, finished: &mut Vec<Finished>) {
+        match op {
+            AnimationOp::CreateValue { node, value } => self.insert(
+                node,
+                Node::Value {
+                    value,
+                    offset: 0.0,
+                    velocity: 0.0,
+                    running: None,
+                },
+            ),
+            AnimationOp::CreateInterpolate {
+                node,
+                input,
+                input_range,
+                output,
+                extrapolate_left,
+                extrapolate_right,
+                easing,
+            } => self.insert(
+                node,
+                Node::Interpolate {
+                    input: Input::new(input),
+                    ascending: input_range.windows(2).all(|w| w[0] <= w[1]),
+                    input_range,
+                    output,
+                    extrapolate: (extrapolate_left, extrapolate_right),
+                    easing,
+                },
+            ),
+            AnimationOp::CreateDiffClamp {
+                node,
+                input,
+                min,
+                max,
+                snap,
+            } => self.insert(
+                node,
+                Node::DiffClamp {
+                    input: Input::new(input),
+                    min: min.into(),
+                    max: max.into(),
+                    state: Cell::new(None),
+                    snap,
+                    snapping: Cell::new(None),
+                },
+            ),
+            AnimationOp::CreateMath { node, op, a, b } => self.insert(
+                node,
+                Node::Math {
+                    op,
+                    a: a.into(),
+                    b: b.into(),
+                },
+            ),
+            AnimationOp::Set { node, value } => self.set(node, value, finished),
+            AnimationOp::Adjust {
+                node,
+                factor,
+                offset,
+            } => {
+                if let Some(value) = self.value(node) {
+                    self.set(node, value * factor + offset, finished);
+                }
+            }
+            AnimationOp::SetOutput { node, output } => {
+                if let Some(Node::Interpolate {
+                    input_range,
+                    output: current,
+                    ..
+                }) = self.node_mut(node)
+                    && output_len(&output) == input_range.len()
+                {
+                    *current = output;
+                }
+            }
+            AnimationOp::Start {
+                node,
+                animation,
+                driver,
+            } => {
+                super::driver::warn_out_of_range(&driver);
+                self.start(node, animation, driver, None, finished);
+            }
+            AnimationOp::StartComposite {
+                animation,
+                key,
+                spec,
+            } => {
+                warn_composite_out_of_range(&spec);
+                let mut nodes = Vec::new();
+                spec.nodes(&mut nodes);
+                let values = nodes
+                    .into_iter()
+                    .filter_map(|n| Some((n, self.value(n)?)))
+                    .collect();
+                match self.baselines.iter_mut().find(|(k, _)| *k == key) {
+                    Some(b) => b.1 = values,
+                    None => self.baselines.push((key, values)),
+                }
+                self.programs.push(Program {
+                    id: animation,
+                    key,
+                    root: Step::new(&spec),
+                    at: None,
+                    frame_rate: spec.frame_rate(),
+                });
+            }
+            AnimationOp::ResetComposite { key } => {
+                while let Some(i) = self.programs.iter().position(|p| p.key == key) {
+                    let mut program = self.programs.remove(i);
+                    program.root.stop(self, finished);
+                    finished.push(Finished {
+                        animation: program.id,
+                        finished: false,
+                        value: None,
+                    });
+                }
+                if let Some(i) = self.baselines.iter().position(|(k, _)| *k == key) {
+                    let (_, values) = self.baselines.swap_remove(i);
+                    for &(node, value) in &values {
+                        self.set(node, value, finished);
+                    }
+                    self.baselines.push((key, values));
+                }
+            }
+            AnimationOp::ReleaseComposite { key } => self.baselines.retain(|(k, _)| *k != key),
+            AnimationOp::Stop { node } => self.stop(node, finished),
+            AnimationOp::StopAnimation { animation } => {
+                if let Some(i) = self.programs.iter().position(|p| p.id == animation) {
+                    let mut program = self.programs.remove(i);
+                    program.root.stop(self, finished);
+                    finished.push(Finished::new(animation, false));
+                }
+            }
+            AnimationOp::Release { node } => {
+                self.stop(node, finished);
+                self.remove(node);
+            }
+            AnimationOp::SetOffset { node, offset: new } => {
+                if let Some(Node::Value { offset, .. }) = self.node_mut(node) {
+                    *offset = new;
+                }
+            }
+            AnimationOp::FlattenOffset { node } => {
+                if let Some(Node::Value { value, offset, .. }) = self.node_mut(node) {
+                    *value += std::mem::take(offset);
+                }
+            }
+            AnimationOp::ExtractOffset { node } => {
+                if let Some(Node::Value { value, offset, .. }) = self.node_mut(node) {
+                    *offset += std::mem::take(value);
+                }
+            }
+            AnimationOp::Read { node, request } => finished.push(Finished {
+                animation: request,
+                finished: true,
+                value: Some(self.eval(node).number()),
+            }),
+        }
+    }
+
+    /// Starts `driver` on value `node` (at `start`, or on the next tick),
+    /// replacing its animation. False if there is no such value.
+    fn start(
+        &mut self,
+        node: NodeId,
+        animation: AnimationId,
+        driver: Driver,
+        start: Option<f64>,
+        finished: &mut Vec<Finished>,
+    ) -> bool {
+        let Some(Node::Value {
+            value,
+            velocity,
+            running,
+            ..
+        }) = self.node_mut(node)
+        else {
+            return false;
+        };
+        let mut new = Running::new(animation, driver, *value, *velocity);
+        // Replacing one in motion, it goes on from that one's last frame,
+        // where `value` and `velocity` were taken: started on the next
+        // frame instead, a value retargeted on every frame (one following
+        // the pointer) would never move.
+        if let Some(start) = start.or_else(|| running.as_ref().and_then(Running::last_step)) {
+            new = new.starting_at(start);
+        }
+        if let Some(old) = running.replace(new) {
+            finished.push(Finished {
+                animation: old.id,
+                finished: false,
+                value: None,
+            });
+        }
+        if !self.animating.contains(&node) {
+            self.animating.push(node);
+        }
+        true
+    }
+
+    /// The animation running on value `node`.
+    fn running_id(&self, node: NodeId) -> Option<AnimationId> {
+        match self.node(node) {
+            Some(Node::Value {
+                running: Some(r), ..
+            }) => Some(r.id),
+            _ => None,
+        }
+    }
+
+    fn insert(&mut self, id: NodeId, node: Node) {
+        let slot = Slot {
+            id,
+            node,
+            value: Cell::new((u64::MAX, AnimationValue::Number(0.0))),
+        };
+        if let Some(&i) = self.index.get(&id) {
+            self.slots[i as usize] = Some(slot);
+            return;
+        }
+        let i = match self.free.pop() {
+            Some(i) => {
+                self.slots[i as usize] = Some(slot);
+                i
+            }
+            None => {
+                self.slots.push(Some(slot));
+                (self.slots.len() - 1) as u32
+            }
+        };
+        self.index.insert(id, i);
+    }
+
+    /// Releases node `id`; once most slots are free, the nodes move
+    /// together and give back what a crowd of nodes, since released, took.
+    fn remove(&mut self, id: NodeId) {
+        let Some(i) = self.index.remove(&id) else {
+            return;
+        };
+        self.slots[i as usize] = None;
+        self.free.push(i);
+        let live = self.index.len();
+        if self.slots.len() > 4 * live.max(16) {
+            // Readers find a moved input by its id, once, on their next
+            // evaluation.
+            self.slots.retain(Option::is_some);
+            self.slots.shrink_to(2 * live);
+            self.free.clear();
+            self.free.shrink_to(live);
+            for (i, slot) in self.slots.iter().enumerate() {
+                if let Some(slot) = slot {
+                    self.index.insert(slot.id, i as u32);
+                }
+            }
+            self.index.shrink_to(2 * live);
+        }
+    }
+
+    /// The slot of node `id`.
+    fn slot(&self, id: NodeId) -> Option<&Slot> {
+        let &i = self.index.get(&id)?;
+        self.slots[i as usize].as_ref()
+    }
+
+    /// The slot of the node `input` reads: where it was last, or found by
+    /// its id.
+    fn find(&self, input: &Input) -> Option<&Slot> {
+        if let Some(Some(slot)) = self.slots.get(input.slot.get() as usize)
+            && slot.id == input.id
+        {
+            return Some(slot);
+        }
+        let &i = self.index.get(&input.id)?;
+        input.slot.set(i);
+        self.slots[i as usize].as_ref()
+    }
+
+    fn node(&self, id: NodeId) -> Option<&Node> {
+        self.slot(id).map(|slot| &slot.node)
+    }
+
+    fn node_mut(&mut self, id: NodeId) -> Option<&mut Node> {
+        let &i = self.index.get(&id)?;
+        self.slots[i as usize].as_mut().map(|slot| &mut slot.node)
+    }
+
+    /// How many nodes the graph has room for, live or not.
+    #[cfg(test)]
+    fn storage(&self) -> usize {
+        self.slots
+            .capacity()
+            .max(self.index.capacity())
+            .max(self.free.capacity())
+    }
+
+    /// Sets a value directly (gestures, scroll offsets, JS `set`), stopping
+    /// its animation.
+    pub fn set(&mut self, node: NodeId, new: f32, finished: &mut Vec<Finished>) {
+        self.changed();
+        self.stop(node, finished);
+        self.route_leaf_ends(finished);
+        if let Some(Node::Value {
+            value, velocity, ..
+        }) = self.node_mut(node)
+        {
+            *value = new;
+            *velocity = 0.0;
+        }
+    }
+
+    fn stop(&mut self, node: NodeId, finished: &mut Vec<Finished>) {
+        if let Some(Node::Value {
+            running, velocity, ..
+        }) = self.node_mut(node)
+            && let Some(old) = running.take()
+        {
+            *velocity = 0.0;
+            finished.push(Finished {
+                animation: old.id,
+                finished: false,
+                value: None,
+            });
+        }
+        self.animating.retain(|&n| n != node);
+    }
+
+    /// The current value of a value node.
+    pub fn value(&self, node: NodeId) -> Option<f32> {
+        match self.node(node) {
+            Some(Node::Value { value, .. }) => Some(*value),
+            _ => None,
+        }
+    }
+
+    /// True while any animation runs (the platform keeps its frame clock on).
+    pub fn is_animating(&self) -> bool {
+        !self.animating.is_empty() || !self.programs.is_empty() || !self.snaps.is_empty()
+    }
+
+    /// The highest frame rate the running animations need, in Hz
+    /// ([`Driver::frame_rate`]): `None` as soon as one asks for the
+    /// screen's highest (or none runs). A composite asks for the highest
+    /// rate of its steps for as long as it runs; a snapping `diffClamp`
+    /// settling asks for the screen's highest. Platforms that can lower
+    /// their frame rate fold it with what else wants frames.
+    pub fn frame_rate(&self) -> Option<f32> {
+        if !self.snaps.is_empty() {
+            return None;
+        }
+        let drivers = self.animating.iter().map(|&node| match self.node(node) {
+            Some(Node::Value {
+                running: Some(r), ..
+            }) => r.frame_rate(),
+            _ => None,
+        });
+        let programs = self.programs.iter().map(|p| p.frame_rate);
+        drivers.chain(programs).reduce(highest_frame_rate).flatten()
+    }
+
+    /// True while an animation that ends by itself runs: as
+    /// [`Graph::is_animating`], without the composite animations that run
+    /// a loop with no end now (a spinner), which only stopping them ends.
+    /// What waits for the animations to end (a test's step) waits for
+    /// these.
+    pub fn is_finishing(&self) -> bool {
+        !self.snaps.is_empty()
+            || self.programs.iter().any(|p| !p.root.endless())
+            // The steps of composite animations are their programs'.
+            || self
+                .animating
+                .iter()
+                .any(|&node| self.running_id(node).is_some_and(|id| id < LEAF_IDS))
+    }
+
+    /// When the next animation that ends by itself ends (seconds, on the
+    /// clock [`Graph::tick`] is given), or `now` when one has to be
+    /// stepped to start: what a surface that draws no frames (a hidden
+    /// window) ticks the graph at, so animations end on time and report
+    /// it without frames. `None` while none runs, or only ones that loop
+    /// forever ([`Graph::is_finishing`]), which only frames move.
+    pub fn deadline(&self, now: f64) -> Option<f64> {
+        let leaves = self
+            .animating
+            .iter()
+            // The steps of composite animations are their programs'.
+            .filter(|&&node| self.running_id(node).is_some_and(|id| id < LEAF_IDS))
+            .filter_map(|&node| self.running(node).map(|r| r.deadline(now)));
+        let programs = self
+            .programs
+            .iter()
+            .filter(|p| !p.root.endless())
+            .filter_map(|p| match p.at {
+                None => Some(now),
+                Some(_) => p.root.deadline(self, now),
+            });
+        let snaps = self.snaps.iter().filter_map(|&node| match self.node(node) {
+            Some(Node::DiffClamp { snapping, .. }) => {
+                let snap = snapping.get()?;
+                Some(snap.start.map_or(now, |start| start + SNAP_SECONDS))
+            }
+            _ => None,
+        });
+        // A millisecond past it: a step there finds it ended whatever the
+        // rounding of the time elapsed.
+        leaves
+            .chain(programs)
+            .chain(snaps)
+            .reduce(f64::min)
+            .map(|t| t + PAST_SECONDS)
+    }
+
+    /// The animation running on value `node`.
+    fn running(&self, node: NodeId) -> Option<&Running> {
+        match self.node(node) {
+            Some(Node::Value { running, .. }) => running.as_ref(),
+            _ => None,
+        }
+    }
+
+    /// The scroll view whose scroll value is `source` came to rest (its
+    /// drag and momentum ended): every snapping `diffClamp` that follows it
+    /// and rests between its bounds settles at the nearer one, at `max`
+    /// only once its input reached `max` (a page scrolled less than a
+    /// bar's height shows the whole bar). True if one starts settling.
+    pub fn settle(&mut self, source: NodeId) -> bool {
+        self.changed();
+        let mut started = false;
+        let at = self.eval(source).number();
+        // In the order of their ids, as they were made.
+        let mut clamps: Vec<NodeId> = self
+            .slots
+            .iter()
+            .flatten()
+            .filter(|slot| matches!(slot.node, Node::DiffClamp { snap: true, .. }))
+            .map(|slot| slot.id)
+            .collect();
+        clamps.sort_unstable();
+        // Register moving nodes first, independent of their ids. Bound
+        // dependents then hold their output while those inputs settle.
+        for hold_bounds in [false, true] {
+            if hold_bounds && !started {
+                break;
+            }
+            for &i in &clamps {
+                let Some(Node::DiffClamp {
+                    input, min, max, ..
+                }) = self.node(i)
+                else {
+                    continue;
+                };
+                let input = input.id;
+                if !self.depends(input, source, 0) {
+                    continue;
+                }
+                let (min, max) = self.bounds(min, max, 0);
+                // Brings its output up to the input.
+                let out = self.eval(i).number();
+                let x = self.eval(input).number();
+                let bounded = out <= min || out >= max;
+                if bounded != hold_bounds {
+                    continue;
+                }
+                if hold_bounds && !self.snaps.iter().any(|&node| self.depends(input, node, 0)) {
+                    continue;
+                }
+                let to = if hold_bounds {
+                    out
+                } else if out - min >= (max - min) / 2.0 && x >= max {
+                    max
+                } else {
+                    min
+                };
+                if let Some(Node::DiffClamp { snapping, .. }) = self.node(i) {
+                    snapping.set(Some(Snap {
+                        from: out,
+                        to,
+                        source,
+                        at,
+                        input: x,
+                        start: None,
+                        done: false,
+                    }));
+                }
+                // Read from now on as settling.
+                self.changed();
+                if !self.snaps.contains(&i) {
+                    self.snaps.push(i);
+                }
+                started = true;
+            }
+        }
+        started
+    }
+
+    /// The current `min..=max` of a `diffClamp` (`max` no lower than `min`).
+    fn bounds(&self, min: &Arg, max: &Arg, depth: u32) -> (f32, f32) {
+        let value = |o: &Arg| match o {
+            Arg::Node(n) => self.eval_input(n, depth + 1).number(),
+            Arg::Const(c) => *c,
+        };
+        let min = value(min);
+        (min, value(max).max(min))
+    }
+
+    /// Whether `node` reads `source`, directly or through other nodes.
+    fn depends(&self, node: NodeId, source: NodeId, depth: u32) -> bool {
+        if node == source {
+            return true;
+        }
+        if depth > MAX_DEPTH {
+            return false;
+        }
+        match self.node(node) {
+            Some(Node::Interpolate { input, .. } | Node::DiffClamp { input, .. }) => {
+                self.depends(input.id, source, depth + 1)
+            }
+            Some(Node::Math { a, b, .. }) => [a, b].into_iter().any(|o| match o {
+                Arg::Node(n) => self.depends(n.id, source, depth + 1),
+                Arg::Const(_) => false,
+            }),
+            _ => false,
+        }
+    }
+
+    /// Moves the settling `diffClamp` nodes to `now`. True if one moved.
+    fn run_snaps(&mut self, now: f64) -> bool {
+        let mut changed = false;
+        let (index, slots) = (&self.index, &self.slots);
+        self.snaps.retain(|&node| {
+            let Some(Some(Slot {
+                node: Node::DiffClamp {
+                    state, snapping, ..
+                },
+                ..
+            })) = index.get(&node).map(|&i| &slots[i as usize])
+            else {
+                return false;
+            };
+            // Gone: its scroll view scrolled again.
+            let Some(mut snap) = snapping.get() else {
+                return false;
+            };
+            let start = *snap.start.get_or_insert(now);
+            let p = ((now - start) / SNAP_SECONDS).clamp(0.0, 1.0) as f32;
+            let out = snap.from + (snap.to - snap.from) * ease(Easing::EaseOut, p);
+            state.set(Some((snap.input, out)));
+            changed = true;
+            snap.done = p >= 1.0;
+            snapping.set(Some(snap));
+            !snap.done
+        });
+        changed
+    }
+
+    /// Advances all animations to `now` (seconds, monotonic). Completed
+    /// animations are pushed to `finished`. Returns true if a value changed.
+    pub fn tick(&mut self, now: f64, finished: &mut Vec<Finished>) -> bool {
+        self.changed();
+        let mut changed = false;
+        let mut i = 0;
+        while i < self.animating.len() {
+            let node = self.animating[i];
+            let (moved, done) = self.step_node(node, now, finished);
+            changed |= moved;
+            if done {
+                self.animating.swap_remove(i);
+            } else {
+                i += 1;
+            }
+        }
+        if !self.programs.is_empty() {
+            changed |= self.run_programs(now, finished);
+        }
+        if !self.snaps.is_empty() {
+            changed |= self.run_snaps(now);
+        }
+        self.changed();
+        changed
+    }
+
+    /// Steps the animation of `node` to `now`: `(value changed, ended)`.
+    /// Ends of composite steps go to `leaf_ends`, with their exact time.
+    fn step_node(&mut self, node: NodeId, now: f64, finished: &mut Vec<Finished>) -> (bool, bool) {
+        let Some(Node::Value {
+            value,
+            velocity,
+            running: running @ Some(_),
+            ..
+        }) = self
+            .index
+            .get(&node)
+            .and_then(|&i| self.slots[i as usize].as_mut())
+            .map(|slot| &mut slot.node)
+        else {
+            return (false, true);
+        };
+        let r = running.as_mut().expect("checked");
+        let (v, vel, done) = r.step(now);
+        let changed = v != *value;
+        *value = v;
+        *velocity = vel;
+        if done {
+            let end = Finished {
+                animation: r.id,
+                finished: true,
+                value: None,
+            };
+            if r.id >= LEAF_IDS {
+                self.leaf_ends.push((end, r.end_time(now)));
+            } else {
+                finished.push(end);
+            }
+            *running = None;
+        }
+        (changed, done)
+    }
+
+    /// Advances the composite animations; steps they start this frame are
+    /// stepped to `now` at once. Returns true if a value changed.
+    fn run_programs(&mut self, now: f64, finished: &mut Vec<Finished>) -> bool {
+        let mut changed = false;
+        for _ in 0..16 {
+            self.route_leaf_ends(finished);
+            let mut programs = std::mem::take(&mut self.programs);
+            programs.retain_mut(|p| {
+                let at = *p.at.get_or_insert(now);
+                match p.root.advance(self, now, at, finished) {
+                    Some((done, _)) => {
+                        finished.push(Finished {
+                            animation: p.id,
+                            finished: done,
+                            value: None,
+                        });
+                        false
+                    }
+                    None => true,
+                }
+            });
+            programs.append(&mut self.programs);
+            self.programs = programs;
+            let started = std::mem::take(&mut self.started);
+            if started.is_empty() {
+                break;
+            }
+            for node in started {
+                let (moved, done) = self.step_node(node, now, finished);
+                changed |= moved;
+                if done {
+                    self.animating.retain(|&n| n != node);
+                }
+            }
+        }
+        self.route_leaf_ends(finished);
+        if self.programs.is_empty() {
+            // Ends of steps no program waits for.
+            self.leaf_ends.clear();
+        }
+        changed
+    }
+
+    /// Evaluates any node.
+    pub fn eval(&self, node: NodeId) -> AnimationValue {
+        self.eval_depth(node, 0)
+    }
+
+    /// The value of `node` ([`Graph::eval_slot`]'s).
+    fn eval_depth(&self, node: NodeId, depth: u32) -> AnimationValue {
+        if depth > MAX_DEPTH {
+            self.cut.set(true);
+            return AnimationValue::Number(0.0);
+        }
+        match self.slot(node) {
+            Some(slot) => self.eval_slot(slot, depth),
+            None => AnimationValue::Number(0.0),
+        }
+    }
+
+    /// The value of the node `input` reads ([`Graph::eval_slot`]'s).
+    fn eval_input(&self, input: &Input, depth: u32) -> AnimationValue {
+        if depth > MAX_DEPTH {
+            self.cut.set(true);
+            return AnimationValue::Number(0.0);
+        }
+        match self.find(input) {
+            Some(slot) => self.eval_slot(slot, depth),
+            None => AnimationValue::Number(0.0),
+        }
+    }
+
+    /// The value of the node in `slot`, evaluated once for this generation
+    /// of the graph and kept (unless a cycle cut it short).
+    fn eval_slot(&self, slot: &Slot, depth: u32) -> AnimationValue {
+        let (generation, value) = slot.value.get();
+        if generation == self.generation {
+            return value;
+        }
+        let outer = self.cut.replace(false);
+        let value = self.compute(&slot.node, depth);
+        if !self.cut.get() {
+            slot.value.set((self.generation, value));
+        }
+        self.cut.set(outer || self.cut.get());
+        value
+    }
+
+    /// `node`'s value from its inputs' (`eval_input`'s).
+    fn compute(&self, node: &Node, depth: u32) -> AnimationValue {
+        match node {
+            Node::Value { value, offset, .. } => AnimationValue::Number(*value + *offset),
+            Node::Interpolate {
+                input,
+                input_range,
+                output,
+                extrapolate,
+                easing,
+                ascending,
+            } => interpolate(
+                self.eval_input(input, depth + 1).number(),
+                input_range,
+                output,
+                *extrapolate,
+                *easing,
+                *ascending,
+            ),
+            Node::DiffClamp {
+                input,
+                min,
+                max,
+                state,
+                snapping,
+                ..
+            } => {
+                let x = self.eval_input(input, depth + 1).number();
+                if let Some(mut snap) = snapping.get() {
+                    if self.eval_depth(snap.source, depth + 1).number() != snap.at {
+                        // Scrolled again: it follows the input from where
+                        // the settling left it.
+                        snapping.set(None);
+                    } else {
+                        // Its input moved with a snapping `diffClamp` it
+                        // reads, which settles too: it settles on.
+                        if let Some((_, out)) = state.get() {
+                            state.set(Some((x, out)));
+                        }
+                        snap.input = x;
+                        snapping.set((!snap.done).then_some(snap));
+                    }
+                }
+                let (min, max) = self.bounds(min, max, depth);
+                let out = match state.get() {
+                    None => x.clamp(min, max),
+                    Some((last, out)) => (out + x - last).clamp(min, max),
+                };
+                state.set(Some((x, out)));
+                AnimationValue::Number(out)
+            }
+            Node::Math { op, a, b } => {
+                let operand = |o: &Arg| match o {
+                    Arg::Node(n) => self.eval_input(n, depth + 1).number(),
+                    Arg::Const(c) => *c,
+                };
+                let (a, b) = (operand(a), operand(b));
+                AnimationValue::Number(match op {
+                    MathOp::Mod if b != 0.0 => ((a % b) + b) % b,
+                    MathOp::Mod => 0.0,
+                    MathOp::Add => a + b,
+                    MathOp::Sub => a - b,
+                    MathOp::Mul => a * b,
+                    MathOp::Div if b != 0.0 => a / b,
+                    MathOp::Div => 0.0,
+                })
+            }
+        }
+    }
+}
+
+/// How many outputs an interpolation has.
+fn output_len(output: &Output) -> usize {
+    match output {
+        Output::Numbers(v) => v.len(),
+        Output::Colors(v) => v.len(),
+    }
+}
+
+/// `x` through breakpoints `input` to `output`; `ascending` when the
+/// breakpoints ascend, so that the segment is found by bisection.
+fn interpolate(
+    x: f32,
+    input: &[f32],
+    output: &Output,
+    (left, right): (Extrapolate, Extrapolate),
+    easing: Easing,
+    ascending: bool,
+) -> AnimationValue {
+    let n = input.len().min(output_len(output));
+    if n == 0 {
+        return AnimationValue::Number(x);
+    }
+    let (first, last) = (input[0], input[n - 1]);
+    let extrapolate = if x < first { left } else { right };
+    if n == 1 || (x < first || x > last) && extrapolate != Extrapolate::Extend {
+        if extrapolate == Extrapolate::Identity && n > 1 {
+            return AnimationValue::Number(x);
+        }
+        let i = if n == 1 || x < first { 0 } else { n - 1 };
+        return match output {
+            Output::Numbers(v) => AnimationValue::Number(v[i]),
+            Output::Colors(v) => AnimationValue::Color(v[i]),
+        };
+    }
+    // Segment containing x (or the edge segment when extending).
+    // The first segment whose end is at or past `x`: by bisection where the
+    // breakpoints ascend (the same one), else one by one.
+    let seg = if ascending && !x.is_nan() {
+        input[1..n].partition_point(|&v| v < x).min(n - 2)
+    } else {
+        input[..n]
+            .windows(2)
+            .position(|w| x <= w[1])
+            .unwrap_or(n - 2)
+    };
+    let (a, b) = (input[seg], input[seg + 1]);
+    let t = if b == a { 0.0 } else { (x - a) / (b - a) };
+    // The curve applies within the range (extended segments stay linear).
+    let t = if easing != Easing::Linear && (0.0..=1.0).contains(&t) {
+        ease(easing, t)
+    } else {
+        t
+    };
+    match output {
+        Output::Numbers(v) => AnimationValue::Number(v[seg] + (v[seg + 1] - v[seg]) * t),
+        Output::Colors(v) => {
+            AnimationValue::Color(lerp_color(v[seg], v[seg + 1], t.clamp(0.0, 1.0)))
+        }
+    }
+}
+
+fn lerp_color(a: u32, b: u32, t: f32) -> u32 {
+    let mut out = 0u32;
+    for shift in [24, 16, 8, 0] {
+        let ca = ((a >> shift) & 0xff) as f32;
+        let cb = ((b >> shift) & 0xff) as f32;
+        out |= ((ca + (cb - ca) * t).round() as u32 & 0xff) << shift;
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::animation::{
+        driver::CHECK_SECONDS,
+        ops::{Driver, Easing},
+    };
+
+    /// [`super::interpolate`], its breakpoints' order found.
+    fn interpolate(
+        x: f32,
+        input: &[f32],
+        output: &Output,
+        extrapolate: (Extrapolate, Extrapolate),
+        easing: Easing,
+    ) -> AnimationValue {
+        let ascending = input.windows(2).all(|w| w[0] <= w[1]);
+        super::interpolate(x, input, output, extrapolate, easing, ascending)
+    }
+
+    const CLAMP: (Extrapolate, Extrapolate) = (Extrapolate::Clamp, Extrapolate::Clamp);
+
+    #[test]
+    fn interpolation_and_extrapolation() {
+        let out = Output::Numbers(vec![0.0, 10.0, 0.0]);
+        let r = [0.0, 1.0, 2.0];
+        assert_eq!(
+            interpolate(0.5, &r, &out, CLAMP, Easing::Linear),
+            AnimationValue::Number(5.0)
+        );
+        assert_eq!(
+            interpolate(1.5, &r, &out, CLAMP, Easing::Linear),
+            AnimationValue::Number(5.0)
+        );
+        assert_eq!(
+            interpolate(3.0, &r, &out, CLAMP, Easing::Linear),
+            AnimationValue::Number(0.0)
+        );
+        assert_eq!(
+            interpolate(
+                3.0,
+                &r,
+                &out,
+                (Extrapolate::Extend, Extrapolate::Extend),
+                Easing::Linear
+            ),
+            AnimationValue::Number(-10.0)
+        );
+        assert_eq!(
+            interpolate(
+                -1.0,
+                &r,
+                &out,
+                (Extrapolate::Identity, Extrapolate::Identity),
+                Easing::Linear
+            ),
+            AnimationValue::Number(-1.0)
+        );
+        let colors = Output::Colors(vec![0x0000_00ff, 0xff00_00ff]);
+        assert_eq!(
+            interpolate(0.5, &[0.0, 1.0], &colors, CLAMP, Easing::Linear),
+            AnimationValue::Color(0x8000_00ff)
+        );
+    }
+
+    /// A graph of value 1 and, from node 3 on, `ops` (each given its id).
+    fn graph_of(value: f32, ops: impl IntoIterator<Item = AnimationOp>) -> Graph {
+        let mut g = Graph::default();
+        let mut finished = Vec::new();
+        g.apply(AnimationOp::CreateValue { node: 1, value }, &mut finished);
+        for op in ops {
+            g.apply(op, &mut finished);
+        }
+        g
+    }
+
+    fn add(node: NodeId, a: NodeId, b: Operand) -> AnimationOp {
+        AnimationOp::CreateMath {
+            node,
+            op: MathOp::Add,
+            a: Operand::Node(a),
+            b,
+        }
+    }
+
+    /// A linear timing to `to` over a second, needing at most `hz`.
+    fn capped(to: f32, hz: Option<f32>) -> Driver {
+        Driver::Timing {
+            to,
+            duration_ms: 1000.0,
+            easing: Easing::Linear,
+            delay_ms: 0.0,
+            frame_rate: hz,
+        }
+    }
+
+    #[test]
+    fn frame_rates_fold_to_the_highest() {
+        let mut finished = Vec::new();
+        let values = (1..=5).map(|node| AnimationOp::CreateValue { node, value: 0.0 });
+        let mut g = graph_of(0.0, values);
+        // Nothing runs: no rate asked for.
+        assert_eq!(g.frame_rate(), None);
+        let start = |g: &mut Graph, node, hz, finished: &mut Vec<Finished>| {
+            g.apply(
+                AnimationOp::Start {
+                    node,
+                    animation: node,
+                    driver: capped(1.0, hz),
+                },
+                finished,
+            )
+        };
+        start(&mut g, 1, Some(30.0), &mut finished);
+        assert_eq!(g.frame_rate(), Some(30.0));
+        start(&mut g, 2, Some(60.0), &mut finished);
+        assert_eq!(g.frame_rate(), Some(60.0));
+        // One without a rate: the screen's highest.
+        start(&mut g, 3, None, &mut finished);
+        assert_eq!(g.frame_rate(), None);
+        g.apply(AnimationOp::Stop { node: 3 }, &mut finished);
+        g.apply(AnimationOp::Stop { node: 2 }, &mut finished);
+        assert_eq!(g.frame_rate(), Some(30.0));
+        // Not a rate: the screen's highest.
+        start(&mut g, 2, Some(0.0), &mut finished);
+        assert_eq!(g.frame_rate(), None);
+        g.apply(AnimationOp::Stop { node: 2 }, &mut finished);
+
+        // A composite asks for its steps' highest, through its delays too.
+        let run = |node, hz| Composite::Run {
+            node,
+            driver: capped(1.0, hz),
+        };
+        let spec = Composite::Loop {
+            child: Box::new(Composite::Sequence(vec![
+                run(4, Some(24.0)),
+                Composite::Delay(500.0),
+                run(5, Some(12.0)),
+            ])),
+            iterations: None,
+            reset: true,
+        };
+        assert_eq!(spec.frame_rate(), Some(24.0));
+        g.apply(AnimationOp::Stop { node: 1 }, &mut finished);
+        g.apply(
+            AnimationOp::StartComposite {
+                animation: 9,
+                key: 1,
+                spec,
+            },
+            &mut finished,
+        );
+        assert_eq!(g.frame_rate(), Some(24.0));
+        start(&mut g, 1, Some(30.0), &mut finished);
+        assert_eq!(g.frame_rate(), Some(30.0));
+        // A step without a rate makes the whole composite uncapped.
+        let uncapped = Composite::Parallel {
+            children: vec![run(4, Some(24.0)), run(5, None)],
+            stop_together: true,
+        };
+        assert_eq!(uncapped.frame_rate(), None);
+        assert_eq!(Composite::Delay(100.0).frame_rate(), None);
+    }
+
+    #[test]
+    fn shared_inputs_follow_every_change() {
+        // Three readers of one sum of the value: evaluated once for each
+        // state of the graph, and again after each change.
+        let mut g = graph_of(
+            1.0,
+            [
+                add(3, 1, Operand::Node(1)),
+                add(5, 3, Operand::Const(1.0)),
+                add(7, 3, Operand::Const(2.0)),
+                add(9, 5, Operand::Node(7)),
+            ],
+        );
+        let mut finished = Vec::new();
+        assert_eq!(g.eval(9), AnimationValue::Number(7.0));
+        assert_eq!(g.eval(5), AnimationValue::Number(3.0));
+        g.set(1, 2.0, &mut finished);
+        assert_eq!(g.eval(9), AnimationValue::Number(11.0));
+        g.apply(
+            AnimationOp::Start {
+                node: 1,
+                driver: Driver::Timing {
+                    to: 4.0,
+                    duration_ms: 1000.0,
+                    easing: Easing::Linear,
+                    delay_ms: 0.0,
+                    frame_rate: None,
+                },
+                animation: 1,
+            },
+            &mut finished,
+        );
+        g.tick(0.0, &mut finished);
+        g.tick(0.5, &mut finished);
+        assert_eq!(g.eval(3), AnimationValue::Number(6.0));
+        assert_eq!(g.eval(9), AnimationValue::Number(15.0));
+        // A node made after a value was read reads it anew.
+        g.apply(add(11, 9, Operand::Const(1.0)), &mut finished);
+        assert_eq!(g.eval(11), AnimationValue::Number(16.0));
+    }
+
+    #[test]
+    fn a_node_past_the_depth_limit_keeps_its_value_when_read_nearer() {
+        // A chain longer than `MAX_DEPTH`: its end stands for a cycle (0),
+        // and the nodes it read on the way still give their values.
+        let mut ops = Vec::new();
+        for k in 0..80u32 {
+            let input = if k == 0 { 1 } else { 1 + 2 * k };
+            ops.push(add(3 + 2 * k, input, Operand::Const(0.0)));
+        }
+        let g = graph_of(5.0, ops);
+        assert_eq!(g.eval(3 + 2 * 79), AnimationValue::Number(0.0));
+        assert_eq!(g.eval(3 + 2 * 10), AnimationValue::Number(5.0));
+        assert_eq!(g.eval(3 + 2 * 79), AnimationValue::Number(0.0));
+    }
+
+    #[test]
+    fn storage_follows_the_live_nodes_not_every_id_ever_made() {
+        // Ids are never reused: a long session makes and releases nodes
+        // under ever larger ids while few live at once, one of them (the
+        // value at 1) for the whole session.
+        let mut g = graph_of(7.0, []);
+        let mut f = Vec::new();
+        let mut live = std::collections::VecDeque::new();
+        let mut next: NodeId = 3;
+        let mut peak = 0;
+        for i in 0..50_000 {
+            g.apply(
+                AnimationOp::CreateValue {
+                    node: next,
+                    value: i as f32,
+                },
+                &mut f,
+            );
+            g.apply(add(next + 2, next, Operand::Node(1)), &mut f);
+            assert_eq!(g.eval(next + 2), AnimationValue::Number(i as f32 + 7.0));
+            live.push_back(next);
+            next += 4;
+            while live.len() > 8 {
+                let old = live.pop_front().unwrap();
+                g.apply(AnimationOp::Release { node: old + 2 }, &mut f);
+                g.apply(AnimationOp::Release { node: old }, &mut f);
+            }
+            peak = peak.max(1 + 2 * live.len());
+        }
+        assert!(
+            g.storage() <= 8 * peak,
+            "{} slots for at most {peak} live nodes",
+            g.storage()
+        );
+        assert_eq!(g.eval(1), AnimationValue::Number(7.0));
+        // Released nodes are gone, a live one still reads its inputs.
+        assert_eq!(g.value(3), None);
+        let last = *live.back().unwrap();
+        assert_eq!(g.eval(last + 2), AnimationValue::Number(49_999.0 + 7.0));
+    }
+
+    #[test]
+    fn a_reader_of_a_released_node_does_not_read_the_node_made_after_it() {
+        let mut g = graph_of(5.0, [add(3, 1, Operand::Const(1.0))]);
+        let mut f = Vec::new();
+        assert_eq!(g.eval(3), AnimationValue::Number(6.0));
+        g.apply(AnimationOp::Release { node: 1 }, &mut f);
+        // Made where the released one was.
+        g.apply(
+            AnimationOp::CreateValue {
+                node: 5,
+                value: 100.0,
+            },
+            &mut f,
+        );
+        assert_eq!(g.eval(3), AnimationValue::Number(1.0));
+        assert_eq!(g.eval(5), AnimationValue::Number(100.0));
+    }
+
+    /// A frame of many readers of shared inputs, as a vector animation's
+    /// canvases read its tracks: `cargo test --release -p nsh-core
+    /// bench_eval -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "benchmark"]
+    fn bench_eval_shared_inputs() {
+        // A time warp of 64 eased segments summed as a balanced tree, read
+        // by 2,000 interpolations of 50 breakpoints each.
+        let mut ops = Vec::new();
+        let mut parts = Vec::new();
+        let mut next = 3;
+        for s in 0..64 {
+            let a = s as f32 / 64.0;
+            ops.push(AnimationOp::CreateInterpolate {
+                node: next,
+                input: 1,
+                input_range: vec![a, a + 1.0 / 64.0],
+                output: Output::Numbers(vec![0.0, 1.0]),
+                extrapolate_left: Extrapolate::Clamp,
+                extrapolate_right: Extrapolate::Clamp,
+                easing: Easing::EaseInOut,
+            });
+            parts.push(next);
+            next += 2;
+        }
+        while parts.len() > 1 {
+            let mut sums = Vec::new();
+            for pair in parts.chunks(2) {
+                match pair {
+                    [a, b] => {
+                        ops.push(add(next, *a, Operand::Node(*b)));
+                        sums.push(next);
+                        next += 2;
+                    }
+                    [a] => sums.push(*a),
+                    _ => {}
+                }
+            }
+            parts = sums;
+        }
+        let warp = parts[0];
+        let readers: Vec<NodeId> = (0..2_000)
+            .map(|r| {
+                let node = next;
+                next += 2;
+                ops.push(AnimationOp::CreateInterpolate {
+                    node,
+                    input: warp,
+                    input_range: (0..50).map(|i| i as f32 * 64.0 / 49.0).collect(),
+                    output: Output::Numbers((0..50).map(|i| (i * r) as f32).collect()),
+                    extrapolate_left: Extrapolate::Clamp,
+                    extrapolate_right: Extrapolate::Clamp,
+                    easing: Easing::Linear,
+                });
+                node
+            })
+            .collect();
+        let mut g = graph_of(0.0, ops);
+        let mut finished = Vec::new();
+        let frames = 600;
+        let start = std::time::Instant::now();
+        let mut sum = 0.0;
+        for f in 0..frames {
+            g.set(1, f as f32 / frames as f32, &mut finished);
+            for &r in &readers {
+                sum += g.eval(r).number();
+            }
+        }
+        println!(
+            "{} readers of a shared warp: {:?} a frame ({sum})",
+            readers.len(),
+            start.elapsed() / frames
+        );
+    }
+
+    #[test]
+    fn bisection_finds_the_segment_a_scan_finds() {
+        // Ascending breakpoints with jumps (equal neighbours), read at and
+        // between each, past both ends and at no number, every way they
+        // extrapolate.
+        let input = [-3.0, -1.0, -1.0, 0.0, 0.5, 0.5, 0.5, 2.0, 7.0, 7.0];
+        let output = Output::Numbers((0..input.len()).map(|i| (i * i) as f32).collect());
+        let sides = [
+            Extrapolate::Clamp,
+            Extrapolate::Extend,
+            Extrapolate::Identity,
+        ];
+        let mut xs: Vec<f32> = input.to_vec();
+        xs.extend(input.windows(2).map(|w| (w[0] + w[1]) / 2.0));
+        xs.extend([
+            -10.0,
+            10.0,
+            f32::NAN,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            -0.0,
+        ]);
+        for left in sides {
+            for right in sides {
+                for &x in &xs {
+                    for n in 2..=input.len() {
+                        let (input, output) = (&input[..n], &output);
+                        let [a, b] = [true, false].map(|ascending| {
+                            super::interpolate(
+                                x,
+                                input,
+                                output,
+                                (left, right),
+                                Easing::EaseInOut,
+                                ascending,
+                            )
+                        });
+                        assert!(
+                            format!("{a:?}") == format!("{b:?}"),
+                            "at {x} of {n}: {a:?} against {b:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn breakpoints_out_of_order_are_read_one_by_one() {
+        let mut finished = Vec::new();
+        let mut g = of_value(1.5);
+        g.apply(
+            AnimationOp::CreateInterpolate {
+                node: 3,
+                input: 1,
+                input_range: vec![0.0, 2.0, 1.0, 3.0],
+                output: Output::Numbers(vec![0.0, 20.0, 10.0, 30.0]),
+                extrapolate_left: Extrapolate::Clamp,
+                extrapolate_right: Extrapolate::Clamp,
+                easing: Easing::Linear,
+            },
+            &mut finished,
+        );
+        // The first segment reaching 1.5 is 0..2, as before.
+        assert_eq!(g.eval(3), AnimationValue::Number(15.0));
+    }
+
+    /// A graph of value 1 (`value`).
+    fn of_value(value: f32) -> Graph {
+        let mut g = Graph::default();
+        g.apply(AnimationOp::CreateValue { node: 1, value }, &mut Vec::new());
+        g
+    }
+
+    /// Interpolations of many breakpoints, as tracks of a long vector
+    /// animation: `cargo test --release -p nsh-core bench_interpolate --
+    /// --ignored --nocapture`.
+    #[test]
+    #[ignore = "benchmark"]
+    fn bench_interpolate_many_breakpoints() {
+        let mut finished = Vec::new();
+        let mut g = of_value(0.0);
+        let n = 2_000;
+        for k in 0..200u32 {
+            g.apply(
+                AnimationOp::CreateInterpolate {
+                    node: 3 + 2 * k,
+                    input: 1,
+                    input_range: (0..n).map(|i| i as f32 / n as f32).collect(),
+                    output: Output::Numbers(
+                        (0..n).map(|i| ((i + k as usize) % 7) as f32).collect(),
+                    ),
+                    extrapolate_left: Extrapolate::Clamp,
+                    extrapolate_right: Extrapolate::Clamp,
+                    easing: Easing::Linear,
+                },
+                &mut finished,
+            );
+        }
+        let frames = 600;
+        let start = std::time::Instant::now();
+        let mut sum = 0.0;
+        for f in 0..frames {
+            g.set(1, f as f32 / frames as f32, &mut finished);
+            for k in 0..200 {
+                sum += g.eval(3 + 2 * k).number();
+            }
+        }
+        println!(
+            "200 interpolations of {n} breakpoints: {:?} a frame ({sum})",
+            start.elapsed() / frames
+        );
+    }
+
+    #[test]
+    fn an_interpolation_takes_other_outputs() {
+        let mut g = Graph::default();
+        let mut finished = Vec::new();
+        g.apply(
+            AnimationOp::CreateValue {
+                node: 1,
+                value: 1.0,
+            },
+            &mut finished,
+        );
+        g.apply(
+            AnimationOp::CreateInterpolate {
+                node: 2,
+                input: 1,
+                input_range: vec![0.0, 1.0],
+                output: Output::Colors(vec![0x0000_00ff, 0xff00_00ff]),
+                extrapolate_left: Extrapolate::Clamp,
+                extrapolate_right: Extrapolate::Clamp,
+                easing: Easing::Linear,
+            },
+            &mut finished,
+        );
+        g.apply(
+            AnimationOp::SetOutput {
+                node: 2,
+                output: Output::Colors(vec![0x0000_00ff, 0x00ff_00ff]),
+            },
+            &mut finished,
+        );
+        assert_eq!(g.eval(2), AnimationValue::Color(0x00ff_00ff));
+        // Another number of outputs than of inputs is refused.
+        g.apply(
+            AnimationOp::SetOutput {
+                node: 2,
+                output: Output::Colors(vec![0xffff_ffff]),
+            },
+            &mut finished,
+        );
+        assert_eq!(g.eval(2), AnimationValue::Color(0x00ff_00ff));
+    }
+
+    #[test]
+    fn derived_nodes_follow_animated_values() {
+        let mut g = Graph::default();
+        let mut finished = Vec::new();
+        g.apply(
+            AnimationOp::CreateValue {
+                node: 1,
+                value: 0.0,
+            },
+            &mut finished,
+        );
+        g.apply(
+            AnimationOp::CreateInterpolate {
+                node: 2,
+                input: 1,
+                input_range: vec![0.0, 100.0],
+                output: Output::Numbers(vec![1.0, 0.0]),
+                extrapolate_left: Extrapolate::Clamp,
+                extrapolate_right: Extrapolate::Clamp,
+                easing: Easing::Linear,
+            },
+            &mut finished,
+        );
+        g.apply(
+            AnimationOp::CreateMath {
+                node: 3,
+                op: MathOp::Mul,
+                a: Operand::Node(1),
+                b: Operand::Const(-1.0),
+            },
+            &mut finished,
+        );
+        g.apply(
+            AnimationOp::Start {
+                node: 1,
+                animation: 7,
+                driver: Driver::Timing {
+                    to: 100.0,
+                    duration_ms: 100.0,
+                    easing: Easing::Linear,
+                    delay_ms: 0.0,
+                    frame_rate: None,
+                },
+            },
+            &mut finished,
+        );
+        assert!(g.is_animating());
+        g.tick(0.0, &mut finished);
+        g.tick(0.05, &mut finished);
+        assert!((g.eval(2).number() - 0.5).abs() < 1e-4);
+        assert!((g.eval(3).number() + 50.0).abs() < 1e-3);
+        g.tick(0.2, &mut finished);
+        assert_eq!(
+            finished,
+            vec![Finished {
+                animation: 7,
+                finished: true,
+                value: None,
+            }]
+        );
+        assert!(!g.is_animating());
+        assert_eq!(g.value(1), Some(100.0));
+    }
+
+    #[test]
+    fn interrupting_reports_unfinished_and_keeps_velocity() {
+        let mut g = Graph::default();
+        let mut finished = Vec::new();
+        g.apply(
+            AnimationOp::CreateValue {
+                node: 1,
+                value: 0.0,
+            },
+            &mut finished,
+        );
+        let spring = |to| Driver::Spring {
+            to,
+            stiffness: 100.0,
+            damping: 10.0,
+            mass: 1.0,
+            velocity: None,
+            frame_rate: None,
+        };
+        g.apply(
+            AnimationOp::Start {
+                node: 1,
+                animation: 1,
+                driver: spring(100.0),
+            },
+            &mut finished,
+        );
+        g.tick(0.0, &mut finished);
+        g.tick(0.1, &mut finished);
+        g.apply(
+            AnimationOp::Start {
+                node: 1,
+                animation: 2,
+                driver: spring(0.0),
+            },
+            &mut finished,
+        );
+        assert_eq!(
+            finished,
+            vec![Finished {
+                animation: 1,
+                finished: false,
+                value: None,
+            }]
+        );
+        // A gesture takes over: stops the running animation.
+        g.set(1, 42.0, &mut finished);
+        assert_eq!(
+            finished.last(),
+            Some(&Finished {
+                animation: 2,
+                finished: false,
+                value: None,
+            })
+        );
+        assert_eq!(g.value(1), Some(42.0));
+        assert!(!g.is_animating());
+    }
+
+    /// A spring given a new target on every frame (a value that follows
+    /// the pointer, #632) still moves on each frame, as far as one that
+    /// keeps its target.
+    #[test]
+    fn a_spring_retargeted_every_frame_keeps_moving() {
+        let spring = |to| Driver::Spring {
+            to,
+            stiffness: 170.0,
+            damping: 26.0,
+            mass: 1.0,
+            velocity: None,
+            frame_rate: None,
+        };
+        let run = |retarget: bool| {
+            let mut g = Graph::default();
+            let mut finished = Vec::new();
+            g.apply(
+                AnimationOp::CreateValue {
+                    node: 1,
+                    value: 0.0,
+                },
+                &mut finished,
+            );
+            let mut trace = Vec::new();
+            for frame in 0..10u32 {
+                if frame == 0 || retarget {
+                    g.apply(
+                        AnimationOp::Start {
+                            node: 1,
+                            animation: frame + 1,
+                            driver: spring(100.0),
+                        },
+                        &mut finished,
+                    );
+                }
+                g.tick(f64::from(frame) / 60.0, &mut finished);
+                trace.push(g.value(1).unwrap());
+            }
+            trace
+        };
+        let steady = run(false);
+        let retargeted = run(true);
+        for (frame, (a, b)) in steady.iter().zip(&retargeted).enumerate() {
+            assert!(
+                (a - b).abs() < 0.5,
+                "frame {frame}: {steady:?} vs {retargeted:?}"
+            );
+        }
+    }
+
+    fn timing(to: f32, ms: f32) -> Driver {
+        Driver::Timing {
+            to,
+            duration_ms: ms,
+            easing: Easing::Linear,
+            delay_ms: 0.0,
+            frame_rate: None,
+        }
+    }
+
+    fn values(g: &mut Graph, f: &mut Vec<Finished>, nodes: &[NodeId]) {
+        for &node in nodes {
+            g.apply(AnimationOp::CreateValue { node, value: 0.0 }, f);
+        }
+    }
+
+    #[test]
+    fn affine_updates_use_the_live_base_and_composite_resets_restore_it() {
+        let mut g = Graph::default();
+        let mut f = Vec::new();
+        values(&mut g, &mut f, &[1, 2]);
+        g.set(1, 10.0, &mut f);
+        g.apply(
+            AnimationOp::Start {
+                node: 1,
+                animation: 7,
+                driver: timing(30.0, 100.0),
+            },
+            &mut f,
+        );
+        g.tick(0.0, &mut f);
+        g.tick(0.05, &mut f);
+        assert_eq!(g.value(1), Some(20.0));
+        let adjust = AnimationOp::Adjust {
+            node: 1,
+            factor: 2.0,
+            offset: 1.0,
+        };
+        g.apply(adjust, &mut f);
+        assert_eq!(g.value(1), Some(41.0));
+        assert_eq!(f, vec![Finished::new(7, false)]);
+        assert!(!g.is_animating());
+        g.apply(
+            AnimationOp::Adjust {
+                node: 1,
+                factor: 0.5,
+                offset: -0.5,
+            },
+            &mut f,
+        );
+        assert_eq!(g.value(1), Some(20.0));
+        g.apply(
+            AnimationOp::SetOffset {
+                node: 1,
+                offset: 3.0,
+            },
+            &mut f,
+        );
+        g.apply(
+            AnimationOp::Adjust {
+                node: 1,
+                factor: 2.0,
+                offset: 1.0,
+            },
+            &mut f,
+        );
+        assert_eq!((g.value(1), g.eval(1).number()), (Some(41.0), 44.0));
+
+        for (node, key) in [(1, 11), (2, 12)] {
+            let start = AnimationOp::StartComposite {
+                animation: key,
+                key,
+                spec: Composite::Run {
+                    node,
+                    driver: timing(100.0, 100.0),
+                },
+            };
+            g.apply(start, &mut f);
+        }
+        g.set(1, 99.0, &mut f);
+        g.apply(AnimationOp::ResetComposite { key: 11 }, &mut f);
+        assert_eq!(g.value(1), Some(41.0));
+    }
+
+    /// Ticks at 60 Hz from `from` to `to` seconds.
+    fn run(g: &mut Graph, f: &mut Vec<Finished>, from: f64, to: f64) {
+        let mut t = from;
+        while t <= to + 1e-9 {
+            g.tick(t, f);
+            t += 1.0 / 60.0;
+        }
+    }
+
+    /// Ticks only at the graph's deadlines from `from` (a surface that
+    /// draws no frames): the times it ticked at, and the animations that
+    /// finished at each.
+    fn run_to_deadlines(
+        g: &mut Graph,
+        f: &mut Vec<Finished>,
+        from: f64,
+    ) -> Vec<(f64, Vec<AnimationId>)> {
+        let mut t = from;
+        let mut ticks = Vec::new();
+        for _ in 0..100 {
+            let before = f.len();
+            g.tick(t, f);
+            ticks.push((
+                t,
+                f[before..]
+                    .iter()
+                    .filter(|e| e.finished)
+                    .map(|e| e.animation)
+                    .collect(),
+            ));
+            match g.deadline(t) {
+                Some(next) => t = next.max(t),
+                None => return ticks,
+            }
+        }
+        panic!("deadlines did not come to an end: {ticks:?}");
+    }
+
+    #[test]
+    fn deadlines_end_animations_on_time_without_frames() {
+        let mut g = Graph::default();
+        let mut f = Vec::new();
+        values(&mut g, &mut f, &[1, 2, 3]);
+        g.apply(
+            AnimationOp::Start {
+                node: 1,
+                animation: 1,
+                driver: timing(100.0, 250.0),
+            },
+            &mut f,
+        );
+        g.apply(
+            AnimationOp::StartComposite {
+                animation: 5,
+                key: 1,
+                spec: Composite::Sequence(vec![
+                    Composite::Run {
+                        node: 2,
+                        driver: timing(100.0, 100.0),
+                    },
+                    Composite::Delay(50.0),
+                    Composite::Run {
+                        node: 2,
+                        driver: timing(0.0, 100.0),
+                    },
+                ]),
+            },
+            &mut f,
+        );
+        // A spinner: only frames move it, and it gives no deadline.
+        g.apply(
+            AnimationOp::StartComposite {
+                animation: 7,
+                key: 2,
+                spec: Composite::Loop {
+                    child: Box::new(Composite::Run {
+                        node: 3,
+                        driver: timing(360.0, 1000.0),
+                    }),
+                    iterations: None,
+                    reset: true,
+                },
+            },
+            &mut f,
+        );
+        // Not started: tick now, which starts them.
+        assert_eq!(g.deadline(1000.0), Some(1000.0 + PAST_SECONDS));
+        let ticks = run_to_deadlines(&mut g, &mut f, 1000.0);
+        let ended = |id| {
+            ticks
+                .iter()
+                .find(|(_, ids)| ids.contains(&id))
+                .map(|(t, _)| t - 1000.0)
+        };
+        let near = |t: Option<f64>, want: f64| t.is_some_and(|t| (t - want).abs() < 0.01);
+        assert!(near(ended(1), 0.25), "{ticks:?}");
+        assert!(near(ended(5), 0.25), "{ticks:?}");
+        // The start, the first step's end, the delay's, the last.
+        assert!(ticks.len() <= 5, "{ticks:?}");
+        assert_eq!(g.value(1), Some(100.0));
+        assert_eq!(g.value(2), Some(0.0));
+        assert!(ended(7).is_none());
+        assert!(g.is_animating());
+    }
+
+    #[test]
+    fn a_spring_is_checked_until_it_settles() {
+        let mut g = Graph::default();
+        let mut f = Vec::new();
+        values(&mut g, &mut f, &[1]);
+        g.apply(
+            AnimationOp::Start {
+                node: 1,
+                animation: 1,
+                driver: Driver::Spring {
+                    to: 100.0,
+                    stiffness: 100.0,
+                    damping: 10.0,
+                    mass: 1.0,
+                    velocity: None,
+                    frame_rate: None,
+                },
+            },
+            &mut f,
+        );
+        let ticks = run_to_deadlines(&mut g, &mut f, 50.0);
+        let (end, _) = ticks
+            .iter()
+            .find(|(_, ids)| ids.contains(&1))
+            .expect("it settled");
+        // Every check a tenth of a second apart.
+        assert!(
+            ticks
+                .windows(2)
+                .skip(1)
+                .all(|w| (w[1].0 - w[0].0 - (CHECK_SECONDS + PAST_SECONDS)).abs() < 1e-9)
+        );
+        assert!(end - 50.0 < 3.0, "{ticks:?}");
+        assert_eq!(g.value(1), Some(100.0));
+        assert_eq!(g.deadline(*end), None);
+    }
+
+    #[test]
+    fn sequences_run_step_after_step_without_gaps() {
+        let mut g = Graph::default();
+        let mut f = Vec::new();
+        values(&mut g, &mut f, &[1, 2]);
+        g.apply(
+            AnimationOp::StartComposite {
+                animation: 5,
+                key: 1,
+                spec: Composite::Sequence(vec![
+                    Composite::Run {
+                        node: 1,
+                        driver: timing(100.0, 100.0),
+                    },
+                    Composite::Delay(50.0),
+                    Composite::Run {
+                        node: 2,
+                        driver: timing(10.0, 100.0),
+                    },
+                ]),
+            },
+            &mut f,
+        );
+        assert!(g.is_animating());
+        run(&mut g, &mut f, 0.0, 0.12);
+        assert_eq!(g.value(1), Some(100.0));
+        assert_eq!(g.value(2), Some(0.0));
+        // 100 ms run + 50 ms delay: the second run is halfway at 200 ms.
+        g.tick(0.2, &mut f);
+        let v = g.value(2).unwrap();
+        assert!((4.0..6.0).contains(&v), "{v}");
+        run(&mut g, &mut f, 0.2, 0.4);
+        assert_eq!(g.value(2), Some(10.0));
+        assert_eq!(
+            f,
+            vec![Finished {
+                animation: 5,
+                finished: true,
+                value: None,
+            }]
+        );
+        assert!(!g.is_animating());
+    }
+
+    #[test]
+    fn parallel_groups_stop_together_when_interrupted() {
+        let mut g = Graph::default();
+        let mut f = Vec::new();
+        values(&mut g, &mut f, &[1, 2]);
+        g.apply(
+            AnimationOp::StartComposite {
+                animation: 9,
+                key: 1,
+                spec: Composite::Parallel {
+                    children: vec![
+                        Composite::Run {
+                            node: 1,
+                            driver: timing(100.0, 1000.0),
+                        },
+                        Composite::Run {
+                            node: 2,
+                            driver: timing(100.0, 1000.0),
+                        },
+                    ],
+                    stop_together: true,
+                },
+            },
+            &mut f,
+        );
+        run(&mut g, &mut f, 0.0, 0.1);
+        // A gesture takes node 1: the group ends, node 2 stops too.
+        g.set(1, 0.0, &mut f);
+        assert!(f.is_empty(), "step ends are not reported to JS: {f:?}");
+        g.tick(0.12, &mut f);
+        assert_eq!(
+            f,
+            vec![Finished {
+                animation: 9,
+                finished: false,
+                value: None,
+            }]
+        );
+        let stopped = g.value(2).unwrap();
+        g.tick(0.5, &mut f);
+        assert_eq!(g.value(2), Some(stopped));
+        assert!(!g.is_animating());
+    }
+
+    /// A loop of parameters out of range warns once, when it starts, not on
+    /// each of its passes (up to 16 a frame for passes of no duration:
+    /// `run_programs` routes each pass's end in a round of its own).
+    #[test]
+    fn a_loop_out_of_range_warns_once() {
+        let mut g = Graph::default();
+        let mut f = Vec::new();
+        values(&mut g, &mut f, &[1]);
+        let warnings = || crate::animation::driver::WARNINGS.with(|n| n.get());
+        let before = warnings();
+        g.apply(
+            AnimationOp::StartComposite {
+                animation: 3,
+                key: 1,
+                spec: Composite::Loop {
+                    child: Box::new(Composite::Run {
+                        node: 1,
+                        driver: timing(1.0, f32::NAN),
+                    }),
+                    iterations: None,
+                    reset: false,
+                },
+            },
+            &mut f,
+        );
+        run(&mut g, &mut f, 0.0, 0.5);
+        assert_eq!(warnings() - before, 1);
+        assert_eq!(g.value(1), Some(1.0));
+    }
+
+    /// A NaN delay (`at + NaN` never came) is none.
+    #[test]
+    fn a_nan_delay_is_none() {
+        let mut g = Graph::default();
+        let mut f = Vec::new();
+        values(&mut g, &mut f, &[1]);
+        g.apply(
+            AnimationOp::StartComposite {
+                animation: 3,
+                key: 1,
+                spec: Composite::Sequence(vec![
+                    Composite::Delay(f32::NAN),
+                    Composite::Run {
+                        node: 1,
+                        driver: timing(10.0, 100.0),
+                    },
+                ]),
+            },
+            &mut f,
+        );
+        run(&mut g, &mut f, 0.0, 0.3);
+        assert_eq!(g.value(1), Some(10.0));
+        assert_eq!(
+            f,
+            vec![Finished {
+                animation: 3,
+                finished: true,
+                value: None,
+            }]
+        );
+    }
+
+    #[test]
+    fn loops_reset_and_count() {
+        let mut g = Graph::default();
+        let mut f = Vec::new();
+        values(&mut g, &mut f, &[1]);
+        g.apply(
+            AnimationOp::StartComposite {
+                animation: 3,
+                key: 1,
+                spec: Composite::Loop {
+                    child: Box::new(Composite::Run {
+                        node: 1,
+                        driver: timing(10.0, 100.0),
+                    }),
+                    iterations: Some(3),
+                    reset: true,
+                },
+            },
+            &mut f,
+        );
+        g.tick(0.0, &mut f);
+        g.tick(0.15, &mut f);
+        // The second run started over from 0.
+        let v = g.value(1).unwrap();
+        assert!(v < 10.0, "{v}");
+        run(&mut g, &mut f, 0.15, 0.5);
+        assert_eq!(g.value(1), Some(10.0));
+        assert_eq!(
+            f,
+            vec![Finished {
+                animation: 3,
+                finished: true,
+                value: None,
+            }]
+        );
+
+        // Forever, until stopped.
+        f.clear();
+        g.apply(
+            AnimationOp::StartComposite {
+                animation: 4,
+                key: 2,
+                spec: Composite::Loop {
+                    child: Box::new(Composite::Run {
+                        node: 1,
+                        driver: timing(20.0, 100.0),
+                    }),
+                    iterations: None,
+                    reset: true,
+                },
+            },
+            &mut f,
+        );
+        run(&mut g, &mut f, 1.0, 3.0);
+        assert!(f.is_empty());
+        g.apply(AnimationOp::StopAnimation { animation: 4 }, &mut f);
+        assert_eq!(
+            f,
+            vec![Finished {
+                animation: 4,
+                finished: false,
+                value: None,
+            }]
+        );
+        assert!(!g.is_animating());
+        // Back to where the forever loop started (10).
+        g.set(1, 7.0, &mut f);
+        g.apply(AnimationOp::ResetComposite { key: 2 }, &mut f);
+        assert_eq!(g.value(1), Some(10.0));
+    }
+
+    #[test]
+    fn endless_loops_do_not_finish() {
+        let forever = |node, ms| Composite::Loop {
+            child: Box::new(Composite::Run {
+                node,
+                driver: timing(360.0, ms),
+            }),
+            iterations: None,
+            reset: true,
+        };
+        let mut g = Graph::default();
+        let mut f = Vec::new();
+        values(&mut g, &mut f, &[1, 2, 3, 4]);
+        // A spinner alone animates, and never finishes.
+        g.apply(
+            AnimationOp::StartComposite {
+                animation: 1,
+                key: 1,
+                spec: forever(1, 900.0),
+            },
+            &mut f,
+        );
+        run(&mut g, &mut f, 0.0, 0.1);
+        assert!(g.is_animating() && !g.is_finishing());
+        // An animation of JS's beside it finishes.
+        g.apply(
+            AnimationOp::Start {
+                node: 2,
+                animation: 2,
+                driver: timing(1.0, 200.0),
+            },
+            &mut f,
+        );
+        assert!(g.is_finishing());
+        run(&mut g, &mut f, 0.1, 0.4);
+        assert!(g.is_animating() && !g.is_finishing());
+        // An entrance before a loop finishes, then the loop runs on; so
+        // does the part of a parallel that ends, beside one that loops.
+        for (animation, spec) in [
+            (
+                3,
+                Composite::Sequence(vec![
+                    Composite::Run {
+                        node: 3,
+                        driver: timing(1.0, 200.0),
+                    },
+                    forever(3, 500.0),
+                ]),
+            ),
+            (
+                4,
+                Composite::Parallel {
+                    children: vec![
+                        forever(4, 500.0),
+                        Composite::Run {
+                            node: 3,
+                            driver: timing(0.0, 200.0),
+                        },
+                    ],
+                    stop_together: true,
+                },
+            ),
+        ] {
+            g.apply(
+                AnimationOp::StartComposite {
+                    animation,
+                    key: animation,
+                    spec,
+                },
+                &mut f,
+            );
+            run(&mut g, &mut f, 1.0, 1.1);
+            assert!(g.is_finishing());
+            run(&mut g, &mut f, 1.1, 1.4);
+            assert!(g.is_animating() && !g.is_finishing());
+            g.apply(AnimationOp::StopAnimation { animation }, &mut f);
+        }
+    }
+
+    #[test]
+    fn diff_clamp_and_modulo() {
+        let mut g = Graph::default();
+        let mut f = Vec::new();
+        values(&mut g, &mut f, &[1]);
+        g.apply(
+            AnimationOp::CreateDiffClamp {
+                node: 2,
+                input: 1,
+                min: Operand::Const(0.0),
+                max: Operand::Const(50.0),
+                snap: false,
+            },
+            &mut f,
+        );
+        g.apply(
+            AnimationOp::CreateMath {
+                node: 3,
+                op: MathOp::Mod,
+                a: Operand::Node(1),
+                b: Operand::Const(360.0),
+            },
+            &mut f,
+        );
+        let mut at = |g: &mut Graph, v: f32| {
+            g.set(1, v, &mut f);
+            g.eval(2).number()
+        };
+        assert_eq!(at(&mut g, 0.0), 0.0);
+        assert_eq!(at(&mut g, 30.0), 30.0);
+        assert_eq!(at(&mut g, 200.0), 50.0);
+        // Scrolling back by 20 shows 20 of it again.
+        assert_eq!(at(&mut g, 180.0), 30.0);
+        assert_eq!(at(&mut g, 0.0), 0.0);
+        g.set(1, -30.0, &mut f);
+        assert_eq!(g.eval(3).number(), 330.0);
+    }
+
+    /// A `diffClamp` whose bounds are nodes clamps at their current values
+    /// and moves back right away when its input reverses at a bound
+    /// (#2033: a drag range that shrinks while dragging).
+    #[test]
+    fn diff_clamp_follows_dynamic_bounds() {
+        let mut g = Graph::default();
+        let mut f = Vec::new();
+        // 1: the drag, 2: min, 3: max.
+        values(&mut g, &mut f, &[1, 2, 3]);
+        g.set(3, 100.0, &mut f);
+        g.apply(
+            AnimationOp::CreateDiffClamp {
+                node: 4,
+                input: 1,
+                min: Operand::Node(2),
+                max: Operand::Node(3),
+                snap: false,
+            },
+            &mut f,
+        );
+        let drag = |g: &mut Graph, f: &mut Vec<Finished>, v: f32| {
+            g.set(1, v, f);
+            g.eval(4).number()
+        };
+        assert_eq!(drag(&mut g, &mut f, 80.0), 80.0);
+        // The range shrinks to 0..=60 while dragging: it clamps at once.
+        g.set(3, 60.0, &mut f);
+        assert_eq!(g.eval(4).number(), 60.0);
+        assert_eq!(drag(&mut g, &mut f, 120.0), 60.0);
+        // Dragging back moves back right away, by the drag's change.
+        assert_eq!(drag(&mut g, &mut f, 110.0), 50.0);
+        // A lower bound that rises clamps too.
+        g.set(2, 55.0, &mut f);
+        assert_eq!(g.eval(4).number(), 55.0);
+        // An upper bound below the lower one is the lower one.
+        g.set(3, 10.0, &mut f);
+        assert_eq!(drag(&mut g, &mut f, 200.0), 55.0);
+    }
+
+    /// A snapping `diffClamp` of value 1 in `0..=50` (node 2).
+    fn snapping(g: &mut Graph, f: &mut Vec<Finished>) {
+        values(g, f, &[1]);
+        g.apply(
+            AnimationOp::CreateDiffClamp {
+                node: 2,
+                input: 1,
+                min: Operand::Const(0.0),
+                max: Operand::Const(50.0),
+                snap: true,
+            },
+            f,
+        );
+    }
+
+    /// Scrolls value 1 to each of `offsets`, as frames of a scroll.
+    fn scroll(g: &mut Graph, f: &mut Vec<Finished>, offsets: &[f32]) {
+        for &o in offsets {
+            g.set(1, o, f);
+            g.eval(2);
+        }
+    }
+
+    #[test]
+    fn a_snapping_diff_clamp_settles_at_the_nearer_bound() {
+        let mut g = Graph::default();
+        let mut f = Vec::new();
+        snapping(&mut g, &mut f);
+        // Down 200, back up 10: 40 of 50 hidden, nearer to hidden.
+        scroll(&mut g, &mut f, &[0.0, 200.0, 190.0]);
+        assert_eq!(g.eval(2).number(), 40.0);
+        assert!(g.settle(1));
+        assert!(g.is_animating());
+        g.tick(1.0, &mut f);
+        assert_eq!(g.eval(2).number(), 40.0);
+        g.tick(1.1, &mut f);
+        let mid = g.eval(2).number();
+        assert!(mid > 40.0 && mid < 50.0, "{mid}");
+        g.tick(1.2, &mut f);
+        assert_eq!(g.eval(2).number(), 50.0);
+        assert!(!g.is_animating());
+        // Back up 30 from there: 20 hidden, nearer to shown.
+        scroll(&mut g, &mut f, &[160.0]);
+        assert_eq!(g.eval(2).number(), 20.0);
+        assert!(g.settle(1));
+        run(&mut g, &mut f, 2.0, 2.3);
+        assert_eq!(g.eval(2).number(), 0.0);
+        // It follows the scrolling from where it settled.
+        scroll(&mut g, &mut f, &[170.0]);
+        assert_eq!(g.eval(2).number(), 10.0);
+    }
+
+    #[test]
+    fn a_snapping_diff_clamp_hides_only_once_its_input_reached_max() {
+        let mut g = Graph::default();
+        let mut f = Vec::new();
+        snapping(&mut g, &mut f);
+        // A page scrolled 40 of a 50 bar: hiding it would leave a gap.
+        scroll(&mut g, &mut f, &[0.0, 40.0]);
+        assert!(g.settle(1));
+        run(&mut g, &mut f, 1.0, 1.3);
+        assert_eq!(g.eval(2).number(), 0.0);
+    }
+
+    #[test]
+    fn scrolling_again_ends_the_settling_where_it_is() {
+        let mut g = Graph::default();
+        let mut f = Vec::new();
+        snapping(&mut g, &mut f);
+        scroll(&mut g, &mut f, &[0.0, 200.0, 190.0]);
+        g.settle(1);
+        g.tick(1.0, &mut f);
+        g.tick(1.1, &mut f);
+        let at = g.eval(2).number();
+        // The finger moves the page down 5 before it ended.
+        scroll(&mut g, &mut f, &[195.0]);
+        assert_eq!(g.eval(2).number(), (at + 5.0).min(50.0));
+        g.tick(1.15, &mut f);
+        assert!(!g.is_animating());
+        assert_eq!(g.eval(2).number(), (at + 5.0).min(50.0));
+    }
+
+    #[test]
+    fn a_snapping_diff_clamp_of_a_snapping_one_settles_too() {
+        let mut g = Graph::default();
+        let mut f = Vec::new();
+        snapping(&mut g, &mut f);
+        // One of the first, in `0..=100`.
+        g.apply(
+            AnimationOp::CreateDiffClamp {
+                node: 3,
+                input: 2,
+                min: Operand::Const(0.0),
+                max: Operand::Const(100.0),
+                snap: true,
+            },
+            &mut f,
+        );
+        let at = |g: &Graph| (g.eval(2).number(), g.eval(3).number());
+        for o in [0.0, 200.0, 190.0] {
+            g.set(1, o, &mut f);
+            g.eval(3);
+        }
+        assert_eq!(at(&g), (40.0, 40.0));
+        // The first hides, past half; the second, short of half, shows.
+        assert!(g.settle(1));
+        g.tick(1.0, &mut f);
+        assert_eq!(at(&g), (40.0, 40.0));
+        g.tick(1.1, &mut f);
+        let (first, second) = at(&g);
+        assert!(first > 40.0 && first < 50.0, "{first}");
+        assert!(second > 0.0 && second < 40.0, "{second}");
+        g.tick(1.2, &mut f);
+        assert_eq!(at(&g), (50.0, 0.0));
+        assert!(!g.is_animating());
+        // Both follow the scrolling from there.
+        g.set(1, 180.0, &mut f);
+        assert_eq!(at(&g), (40.0, 0.0));
+        g.set(1, 185.0, &mut f);
+        assert_eq!(at(&g), (45.0, 5.0));
+
+        // The second stays at its lower bound while the first hides.
+        g.set(1, 180.0, &mut f);
+        assert_eq!(at(&g), (40.0, 0.0));
+        assert!(g.settle(1));
+        for now in [2.0, 2.1, 2.3] {
+            g.tick(now, &mut f);
+            assert_eq!(g.eval(3).number(), 0.0);
+        }
+        assert_eq!(at(&g), (50.0, 0.0));
+        assert!(!g.is_animating());
+        g.set(1, 170.0, &mut f);
+        assert_eq!(at(&g), (40.0, 0.0));
+        g.set(1, 175.0, &mut f);
+        assert_eq!(at(&g), (45.0, 5.0));
+    }
+
+    #[test]
+    fn a_bound_diff_clamp_holds_while_its_input_settles_regardless_of_node_order() {
+        for (first, second) in [(2, 3), (3, 2)] {
+            let mut g = Graph::default();
+            let mut f = Vec::new();
+            values(&mut g, &mut f, &[1]);
+            for (node, input, max) in [(first, 1, 50.0), (second, first, 10.0)] {
+                g.apply(
+                    AnimationOp::CreateDiffClamp {
+                        node,
+                        input,
+                        min: Operand::Const(0.0),
+                        max: Operand::Const(max),
+                        snap: true,
+                    },
+                    &mut f,
+                );
+            }
+            for y in [0.0, 40.0] {
+                g.set(1, y, &mut f);
+                g.eval(second);
+            }
+            assert_eq!(g.eval(second).number(), 10.0);
+            assert!(g.settle(1));
+            for now in [1.0, 1.1, 1.3] {
+                g.tick(now, &mut f);
+                assert_eq!(g.eval(second).number(), 10.0);
+            }
+            assert_eq!(g.eval(first).number(), 0.0);
+            assert!(!g.is_animating());
+            assert!(!g.settle(1));
+            g.set(1, 35.0, &mut f);
+            assert_eq!(g.eval(second).number(), 10.0);
+            g.set(1, 45.0, &mut f);
+            assert_eq!(g.eval(second).number(), 10.0);
+            g.set(1, 40.0, &mut f);
+            assert_eq!(g.eval(second).number(), 5.0);
+        }
+    }
+
+    #[test]
+    fn only_snapping_diff_clamps_of_the_scroll_value_settle() {
+        let mut g = Graph::default();
+        let mut f = Vec::new();
+        snapping(&mut g, &mut f);
+        values(&mut g, &mut f, &[3]);
+        // A plain one of the same value, a snapping one through a product.
+        g.apply(
+            AnimationOp::CreateDiffClamp {
+                node: 4,
+                input: 1,
+                min: Operand::Const(0.0),
+                max: Operand::Const(50.0),
+                snap: false,
+            },
+            &mut f,
+        );
+        g.apply(
+            AnimationOp::CreateMath {
+                node: 5,
+                op: MathOp::Mul,
+                a: Operand::Node(1),
+                b: Operand::Const(2.0),
+            },
+            &mut f,
+        );
+        g.apply(
+            AnimationOp::CreateDiffClamp {
+                node: 6,
+                input: 5,
+                min: Operand::Const(0.0),
+                max: Operand::Const(50.0),
+                snap: true,
+            },
+            &mut f,
+        );
+        for o in [0.0, 200.0, 190.0] {
+            g.set(1, o, &mut f);
+            for n in [2, 4, 6] {
+                g.eval(n);
+            }
+        }
+        // Another value's end settles nothing.
+        assert!(!g.settle(3));
+        assert!(g.settle(1));
+        run(&mut g, &mut f, 1.0, 1.3);
+        assert_eq!(g.eval(2).number(), 50.0);
+        assert_eq!(g.eval(4).number(), 40.0);
+        // Through the product too: 30 of 50 hidden (twice the 10 scrolled
+        // back), nearer to hidden.
+        assert_eq!(g.eval(6).number(), 50.0);
+        // At a bound, nothing moves.
+        assert!(!g.settle(1));
+    }
+
+    #[test]
+    fn interpolation_sides_and_easing() {
+        let out = Output::Numbers(vec![0.0, 100.0]);
+        let r = [0.0, 1.0];
+        let both = |l, r_| (l, r_);
+        assert_eq!(
+            interpolate(
+                -1.0,
+                &r,
+                &out,
+                both(Extrapolate::Clamp, Extrapolate::Extend),
+                Easing::Linear
+            ),
+            AnimationValue::Number(0.0)
+        );
+        assert_eq!(
+            interpolate(
+                2.0,
+                &r,
+                &out,
+                both(Extrapolate::Clamp, Extrapolate::Extend),
+                Easing::Linear
+            ),
+            AnimationValue::Number(200.0)
+        );
+        let eased = interpolate(
+            0.5,
+            &r,
+            &out,
+            both(Extrapolate::Clamp, Extrapolate::Clamp),
+            Easing::Curve(
+                crate::animation::ops::Curve::Quad,
+                crate::animation::ops::EaseMode::In,
+            ),
+        );
+        assert_eq!(eased, AnimationValue::Number(25.0));
+    }
+
+    #[test]
+    fn cycles_do_not_overflow() {
+        let mut g = Graph::default();
+        let mut f = Vec::new();
+        g.apply(
+            AnimationOp::CreateMath {
+                node: 1,
+                op: MathOp::Add,
+                a: Operand::Node(1),
+                b: Operand::Const(1.0),
+            },
+            &mut f,
+        );
+        let _ = g.eval(1);
+    }
+
+    #[test]
+    fn offsets_and_reads() {
+        let mut g = Graph::default();
+        let mut f = Vec::new();
+        values(&mut g, &mut f, &[1]);
+        g.set(1, 10.0, &mut f);
+        g.apply(
+            AnimationOp::SetOffset {
+                node: 1,
+                offset: 5.0,
+            },
+            &mut f,
+        );
+        assert_eq!(g.eval(1).number(), 15.0);
+        assert_eq!(g.value(1), Some(10.0));
+        // A drag starting from 0, on top of where the value was.
+        g.apply(AnimationOp::ExtractOffset { node: 1 }, &mut f);
+        assert_eq!((g.value(1), g.eval(1).number()), (Some(0.0), 15.0));
+        g.set(1, 3.0, &mut f);
+        g.apply(AnimationOp::FlattenOffset { node: 1 }, &mut f);
+        assert_eq!((g.value(1), g.eval(1).number()), (Some(18.0), 18.0));
+        g.apply(
+            AnimationOp::CreateMath {
+                node: 2,
+                op: MathOp::Mul,
+                a: Operand::Node(1),
+                b: Operand::Const(2.0),
+            },
+            &mut f,
+        );
+        g.apply(
+            AnimationOp::Read {
+                node: 2,
+                request: 40,
+            },
+            &mut f,
+        );
+        assert_eq!(
+            f,
+            [Finished {
+                animation: 40,
+                finished: true,
+                value: Some(36.0),
+            }]
+        );
+    }
+
+    #[test]
+    fn loops_end_when_their_values_are_released() {
+        let mut g = Graph::default();
+        let mut f = Vec::new();
+        values(&mut g, &mut f, &[1, 2]);
+        for (animation, key, node, spec) in [
+            // A loop that is animating its value when it goes.
+            (
+                3,
+                1,
+                1,
+                Composite::Run {
+                    node: 1,
+                    driver: timing(10.0, 100.0),
+                },
+            ),
+            // One waiting in a delay when it goes.
+            (
+                5,
+                2,
+                2,
+                Composite::Sequence(vec![
+                    Composite::Delay(100.0),
+                    Composite::Run {
+                        node: 2,
+                        driver: timing(10.0, 100.0),
+                    },
+                ]),
+            ),
+        ] {
+            g.apply(
+                AnimationOp::StartComposite {
+                    animation,
+                    key,
+                    spec: Composite::Loop {
+                        child: Box::new(spec),
+                        iterations: None,
+                        reset: true,
+                    },
+                },
+                &mut f,
+            );
+            run(&mut g, &mut f, 0.0, 0.5);
+            assert!(f.is_empty() && g.is_animating());
+            g.apply(AnimationOp::ReleaseComposite { key }, &mut f);
+            g.apply(AnimationOp::Release { node }, &mut f);
+            run(&mut g, &mut f, 0.5, 1.0);
+            assert_eq!(f, [Finished::new(animation, false)]);
+            assert!(!g.is_animating());
+            f.clear();
+        }
+    }
+}

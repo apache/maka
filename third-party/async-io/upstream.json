@@ -1,0 +1,23 @@
+{
+  "repository": "https://github.com/smol-rs/async-io",
+  "revision": "576b470ca3cadefdec8b169279df23c9a0a63495",
+  "registry_version": "2.6.0",
+  "files": {
+    "Cargo.toml": "b995db0d5def306a7a08eff23999894444fe89d2aae1e9968699cdb832692477",
+    "Cargo.toml.orig": "821925ff226a314d2fbf3ae8784beb7be7d326a48dc57baef56b02ebf81ebef9",
+    "LICENSE-APACHE": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
+    "LICENSE-MIT": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3",
+    "README.md": "6ab6d5bded7eec8339621031ef2dc038f5be38d8a12563f00076b87100197dbc",
+    "build.rs": "114f314a71b008f860a7f6564971c914206e7a1e2252e9fe7ff675d2f75220b3",
+    "src/os.rs": "bb7021d15d02cf6db3bae3673c59182daa67cbcbdc6f2480cfea28cad3bf8232",
+    "src/reactor.rs": "e3098ce59885cb213a75e584a2fb4f7c7a39a7e1f15040fc5064477ec65710ea",
+    "src/lib.rs": "8fbcbca068a140c7b3c06d9700031e1bad592ad3db6e58da3d41166bcd7afbbe",
+    "src/driver.rs": "a55c9715d9669e44e492c8b7958d120c49d0d9e5926e94e3761351e91397a346",
+    "src/os/unix.rs": "b53c06fa3a3aef7a47d7ef38a412123c28dcacf7b669cb0fbc88315261df53a5",
+    "src/os/windows.rs": "765afbfe7d52d285cef78a31daf33a69530c7538fe909ba0dcd4a9556ec18982",
+    "src/os/kqueue.rs": "1809c885491c7a8b14922762547d3b295ea3f0a462c0e375f9039093f7a84388",
+    "src/reactor/unix.rs": "729edd6c77859755bf4cb02023f1b7f47af8666aaa2e0c84fd5b5b9031860f50",
+    "src/reactor/windows.rs": "6d25a3a311e74ab537d2c782b4fdf4db1f69a9ecf297d5aa5432cbf6bc03937c",
+    "src/reactor/kqueue.rs": "9c7e1bebd71ec49934f6358e31aafd49936a695dec3103e3d57d5b8234cb14c7"
+  }
+}

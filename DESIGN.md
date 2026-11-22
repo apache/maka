@@ -1,57 +1,3 @@
----
-name: Maka
-description: A companion command center for completing real work with agents.
-colors:
-  brand-mark: "#71a8fd"
-  accent-light: "oklch(0.70 0.135 250)"
-  accent-dark: "oklch(0.74 0.15 250)"
-  primary: "oklch(0.48 0.135 250)"
-  accent-solid-dark: "oklch(0.76 0.15 250)"
-  on-accent-light: "#ffffff"
-  on-accent-dark: "#171717"
-  surface-raised-light: "oklch(1 0 0)"
-  surface-base-light: "oklch(0.975 0 0)"
-  surface-sunken-light: "oklch(0.945 0 0)"
-  ink-light: "oklch(0.17 0.005 286)"
-  surface-raised-dark: "oklch(0.205 0.004 286)"
-  surface-overlay-dark: "oklch(0.223 0.004 286)"
-  surface-base-dark: "oklch(0.18 0.004 286)"
-  surface-sunken-dark: "oklch(0.14 0.004 286)"
-  ink-dark: "oklch(0.95 0.004 286)"
-  success-light: "oklch(0.50 0.17 145)"
-  success-dark: "oklch(0.60 0.17 145)"
-  warning-light: "oklch(0.50 0.18 55)"
-  warning-dark: "oklch(0.66 0.18 55)"
-  destructive-light: "oklch(0.50 0.24 28)"
-  destructive-dark: "oklch(0.70 0.19 22)"
-typography:
-  display-1: { fontSize: "28px", fontWeight: 400, lineHeight: 1.4286 }
-  display-2: { fontSize: "25px", fontWeight: 400, lineHeight: 1.44 }
-  display-3: { fontSize: "22px", fontWeight: 400, lineHeight: 1.4545 }
-  heading-1: { fontSize: "20px", fontWeight: 600, lineHeight: 1.4 }
-  heading-2: { fontSize: "18px", fontWeight: 600, lineHeight: 1.5556 }
-  heading-3: { fontSize: "16px", fontWeight: 600, lineHeight: 1.5 }
-  heading-4: { fontSize: "14px", fontWeight: 600, lineHeight: 1.4286 }
-  heading-5: { fontSize: "12px", fontWeight: 600, lineHeight: 1.6667 }
-  body: { fontSize: "14px", fontWeight: 400, lineHeight: 1.4286 }
-  label: { fontSize: "14px", fontWeight: 500, lineHeight: 1.4286 }
-  supporting: { fontSize: "12px", fontWeight: 400, lineHeight: 1.6667 }
-  code: { fontSize: "14px", fontWeight: 400, lineHeight: 1.4286 }
-  badge-label: { fontSize: "12px", fontWeight: 500, lineHeight: 1.6667 }
-rounded:
-  control: "6px"
-  card: "10px"
-  container: "12px"
-  pill: "999px"
-spacing: { space-0-5: "2px", space-1: "4px", space-1-5: "6px", space-2: "8px", space-2-5: "10px", space-3: "12px", space-4: "16px", space-5: "20px", space-6: "24px", space-8: "32px", space-10: "40px", space-12: "48px", space-16: "64px" }
-components:
-  button-default: { typography: "{typography.label}", rounded: "{rounded.card}", padding: "8px 12px", height: "32px" }
-  button-primary-light: { backgroundColor: "{colors.primary}", textColor: "{colors.on-accent-light}", typography: "{typography.label}", rounded: "{rounded.card}", height: "32px" }
-  button-primary-dark: { backgroundColor: "{colors.accent-solid-dark}", textColor: "{colors.on-accent-dark}", typography: "{typography.label}", rounded: "{rounded.card}", height: "32px" }
-  input-default: { typography: "{typography.body}", rounded: "{rounded.card}", height: "32px" }
-  badge: { typography: "{typography.badge-label}", rounded: "{rounded.pill}", padding: "0 8px", height: "20px" }
-  card-default: { rounded: "{rounded.container}", padding: "12px" }
----
 <!--
   Licensed to the Apache Software Foundation (ASF) under one
   or more contributor license agreements.  See the NOTICE file
@@ -71,201 +17,77 @@ components:
   under the License.
 -->
 
-# Design System: Maka
+# UI Design Specification
 
-## 1. Overview
+Maka is a desktop and terminal workspace for directing and supervising agents. The layout stays quiet, native, and compact: spacious where users read or make decisions, dense where side-by-side comparison matters. Activity, permissions, failures, and artifacts remain inspectable inline without turning the window into a telemetry dashboard.
 
-**Creative North Star: "The Companion Command Center"**
+The [NSH design guide](third-party/nsh/website/docs/design-guides.md) sets the foundation; this document specifies Maka's rules on top of it. [`ui.tsx`](products/maka/workbench/app/ui.tsx) is the source of truth for design tokens—when prose and code diverge, update the wrong one in the same change. Terminal mode runs the same workbench on a character grid, gating desktop-only pixel geometry behind `platform.idiom === 'terminal'`.
 
-Maka is a desktop workspace for directing, supervising, and completing real work with agents. The task stays central; activity, permissions, failures, recovery, and generated work remain inspectable without turning the window into a monitoring dashboard.
+## Visual hierarchy
 
-The system is calm, native, and compact: spacious around reading and decisions, dense where comparison matters. Humanity comes from useful language and continuity, not simulated personality.
+- Every region has one focal point. An element earns its space only if it informs what the user does next.
+- Strip away accent colors and decoration: the primary task, active selection, and next action must still read clearly from layout and contrast alone.
 
-This document governs the default light and dark themes. Optional palettes may change canvas, ink, accent, and semantic colors, but must preserve their roles, contrast, and hierarchy.
+## Surfaces and borders
 
-**Authority:** `apps/desktop/src/renderer/astryx-theme/makaTheme.ts` owns type, neutral remaps, and theme-level component overrides; `apps/desktop/src/renderer/maka-tokens.css` owns product palettes, spacing, radii, and product motion; Astryx owns primitive geometry, states, and internal motion; product source owns Maka-specific compositions. Generated `apps/desktop/src/renderer/astryx-theme/maka.css` is not an editing authority. The bridge into Astryx is two files: `makaTheme.ts` remaps the neutral stack, the text/icon inks and the hairlines at the theme root, and `maka-tokens.css` bridges the accent family (and the one element-level exception, `.astryx-banner.info`) from an unlayered block. There is no container-scoped seam: a token that disagrees is fixed at the root, not shadowed under a selector.
+- Establish depth with surface fills (`background`, `surface`, `raised`) first, a hairline border second, and shadow last.
+- Use at most one separator per boundary—either a fill step, a border line, or a shadow, never two on the same edge.
+- In both light and dark themes, the sidebar sits one step below the main panel, while cards resting on the panel (composer, user bubbles, tool cards, code blocks) sit one step above (`card`, and `cardRaised` for interactive fills inside a card). Components inside the panel consume semantic region tokens from `ui.tsx` rather than raw palette steps.
+- Resting surfaces stay flat. Shadows are reserved for floating overlays (menus, popovers, modal dialogs) using one shared elevation recipe.
+- Avoid decorative gradients, glowing borders, neon accents, glassmorphism, sparkles, or ornamental "thinking" animations.
 
-Frontmatter is a snapshot of the current default theme. When it diverges from source or contract tests, source and tests win and this document must be refreshed.
+## Color and typography
 
-## 2. Surfaces
+- Foreground hierarchy uses `text`, `secondary`, and `muted`, reinforced by size, weight, and spacing.
+- A single accent color marks interactive affordances and current selection. Semantic status colors (`warning`, `danger`, `success`) appear only to communicate actual state.
+- Components read colors from `C`; literal color values belong only in theme definitions or data-driven content.
 
-Depth is a ladder, not a decoration. Every background resolves to one of four semantic tiers, each derived from `--background` with cumulative offsets — palettes override only `--background` and the ladder follows. Note that `--background` is the card fill, not the page color; older surface names are aliases onto these tiers, and `maka-tokens.css` is where that mapping lives.
+## Geometry and alignment
 
-| Tier | Token | Role |
-|---|---|---|
-| sunken | `--surface-sunken` | recessed chrome inside a plate |
-| base | `--surface-base` | shell floor: sidebar + canvas behind plates |
-| raised | `--surface-raised` | cards, content plates, reading surfaces |
-| overlay | `--surface-overlay` | menus, popovers, dialogs, toasts |
+- **Spacing scale**: `2, 4, 8, 12, 16, 24, 32`. Tighter spacing binds related parts: parts inside a control sit closer than sibling controls, and sibling controls closer than distinct groups.
+- **Corner radii**: `4` inline, `8` controls, `12` panels and popovers, `16`/`24` large cards and composer surfaces, `full` for circular buttons and pills. Nested corners stay concentric (`inner_radius = outer_radius - inset`).
+- **Control heights**: `24`, `28`, or `32` (default `32`). Containers own their padding; parents own the gap between children—never patch alignment drift with ad-hoc local margins.
+- **Shared axes**: Sibling elements snap to shared edges and centerlines; a 1 px misalignment between intended shared edges is a bug. In the composer (`radius 24`, `inset 8`, `32 pt` round buttons), the `+` icon aligns with the first character of the input, the send button sits equidistant from the right and bottom edges, toolbar items share one centerline, and the composer card aligns flush with both edges of the reading column. Icon buttons and disclosure rows extend `8 pt` outside the reading column so their glyphs land directly on the text edge.
 
-**The Height Rule.** Height maps monotonically to lightness in both modes, and reading surfaces always occupy the brightest tier of their mode. In light mode the ladder tops out at pure white, so `raised` and `overlay` share the fill and overlay separation hands off to the floating recipe (§5). Light mode "higher = darker" is permanently forbidden — it makes elevation shadows contradict the fill.
+## Interactive states
 
-**The Canvas Recedes Rule** (owner decision 2026-06-20). The canvas is gray; content surfaces are white. Shell floor is two colours: sidebar and canvas share `base`, content plates sit on `raised`. Contrast between canvas and plate is the primary separator.
+- Every interactive control implements hover, active/press, keyboard focus, disabled, and (where applicable) selected states via `ui.tsx`.
+- Hover-revealed actions must also appear on keyboard focus, reserve their layout slot while hidden, and remain reachable from the context menu.
+- Loading states match the exact bounding box of their ready state so transitions cause zero layout shift.
 
-**Paper.** `--surface-paper` sits outside the ladder on purpose and carries one value rather than a light/dark pair. It backs content whose contrast we neither author nor may invert: the sandboxed HTML-artifact iframe and the PDF embed, and QR codes, where dark-on-light is a scanning requirement rather than a preference. It is not a fifth tier and app chrome never uses it.
+## Window shell
 
-## 3. Ink
+The desktop shell forms an inverted L: the sidebar and top strip share the `chrome` base fill, framing a rounded `panel` (`radius 12`, `inset 8` on top, right, and bottom). The sidebar and main panel separate by fill step alone; side-by-side split panes inside the panel separate with a `1 px` `line`.
 
-Prose uses exactly two tiers — `--foreground` and `--muted-foreground` — which is Astryx's own shape. `--muted-foreground` is 68% ink in `oklch`, one mix for both modes, chosen so the default palette lands on Astryx's `--color-text-secondary` (`#525252` / `#a3a3a3`, 7.8:1 / 7.1:1) and so all eleven palettes clear WCAG AA in both modes **against `--background`** (and `--surface-raised`, which the two prose tiers are measured on) — the worst is onedark light at 5.0:1. Any new tier must hold that floor on every palette, which is exactly what the retired middle rung could not do.
+Window chrome occupies a single `32 pt` top row: window controls and the sidebar toggle sit above the sidebar (moving into the panel header when the sidebar collapses), while each pane header aligns on the same vertical center—showing title, workspace badge, and a trailing segmented view switcher without repeating the title elsewhere.
 
-- **The Two-Tier Reading Rule.** Prose is primary or muted. Hierarchy below that comes from size, weight and case — never a third grey. Neutral washes are surfaces, not extra text tiers. `--foreground-secondary` and `--foreground-dimmed` are retired and must not return, as a definition or as a call site (contract-tested). Both retirements are the same lesson: dimmed and secondary were both written as "80% ink" in different colorspaces and resolved 10.51:1 against 12.01:1, and secondary then forced muted down to 54% ink, where it failed AA in light mode on nine of the eleven palettes.
-- **The Tinted Surface Rule.** A tinted surface (`--color-*-muted`) is a different reading surface from `--background`, and the AA numbers in this section are measured against `--background`. On a 0.24 tint neither `--muted-foreground` nor `--accent-solid` holds the floor in dark mode on any palette — muted lands under 2.9:1 everywhere, and the solid accent under 3.75:1. Text on a tint is `--foreground`; hierarchy there comes from weight, not from a second ink tier. **A solid inverted surface takes one tier too, and for a structural reason rather than by analogy to the tint** — a toast body, an overlay scrim, anything Astryx wraps in `MediaTheme`. `--color-on-dark` and `--color-on-light` are one flat value each, shared by every inverted surface: a rung muted *against this plate* is not expressible with the tokens that exist, so the alternative to collapsing is not a second tier but an unmuted grey that ignores the surface it sits on. The measurement agrees rather than decides — on the error toast's `#AA071E` the muted rung reaches 2.99:1, where Astryx's own secondary lands too. The tier collapses via `onDark` / `onLight` in `makaTheme.ts` pointing text and icon secondary at the same on-color as primary: a deliberate deviation from upstream, not a repair of one. **The two halves of this rule are not evidence for each other.** A 0.24 tint over `--background` and a surface that has flipped its whole `color-scheme` are mechanically different situations that happen to reach the same answer; do not carry a conclusion from one to the other.
-- **The One Colorspace Rule.** Every derivation inside a token family uses one colorspace (`oklch` for ink, contract-tested). Mixing `srgb` and `oklch` derivations produces "same literal, different value" drift, and the ladder is where it bites hardest because its rungs only mean anything relative to each other.
-- **Astryx text/icon primary and secondary ARE this ladder.** `makaTheme.ts` tokens point `--color-text-primary` / `--color-icon-primary` at `--foreground` and `--color-text-secondary` / `--color-icon-secondary` at `--muted-foreground`, at the theme root. No bridge, no third value: `Text color="secondary"` and `color: var(--muted-foreground)` are the same grey everywhere in the app, except the deliberate inversions — the on-dark/on-light blocks and the four status banners, which re-declare the pair on the element itself. Pointing an Astryx token at a product var carries an obligation the next such alias inherits: the var must encode its own modes in its value (§8), or it stops following the surface it is painted on.
-- **`--color-text-disabled` is a deliberate exemption, not an oversight.** Astryx's `light-dark(#a3a3a3, #525252)` measures 2.52:1 / 2.29:1 — under the AA floor the two prose tiers hold. It stays: a disabled control read at prose contrast stops reading as disabled, and the versions of this token that clear 4.5:1 looked wrong beside the enabled rows they sit in. It is not prose and it is not a third tier; it is the one place the floor is traded for the state being legible *as a state*. Do not "fix" it, and do not cite it as precedent for another sub-AA value — an audit that finds it has found the exemption, not a bug.
-- **Links use the solid accent tier** (`--accent-solid`), never raw `--accent` — the accent identifies interaction, and the solid tier is the only accent variant that clears text contrast on every palette. A selection wash or outline is not link text and derives from `--accent` instead — deriving a surface from the link name lets a text-contrast rule silently govern a background.
+Sidebar navigation keeps core actions (`New conversation`, `Search conversations`) alongside user-pinned optional features (`Maka Bot`, `Automations`, `Rooms`) managed from a `More features` popover, and omits redundant filter entries such as `Waiting for you`. Navigation rows use `secondary` text and `muted` icons so conversation titles (`text`) stand out; selected rows use `raised` fill and `500` weight. A `Conversations` section header switches between project grouping and chronological order using the same `13 pt` caption scale as group headings and full-width `Show N more` rows. A fixed `16 pt` trailing slot holds the unread dot, active spinner, or hover `More` button so titles never shift horizontally.
 
-## 4. Borders
+## Conversation stream
 
-Three strengths, each a job, spaced at ~1.6× like the ink ladder:
+- Assistant prose renders directly on the reading column without avatars.
+- Inter-agent messages render inside tool activity rows rather than user speech bubbles, collapsed by default with expandable source links and payloads.
+- Each turn renders a single summary header from start to finish: `Working for 22s` while running, updating in place to `Worked for 37s · 2 thoughts · 3 tools` and auto-collapsing to the final answer on clean completion (unless the user manually toggled it). Turns that fail, stop, or pause for user input lead with their terminal status (`Stopped after 12s`) and stay expanded.
+- Consecutive internal steps between assistant messages fold into an activity group (`Read files, ran commands`). On desktop, turns use two unindented lanes: a `24 pt` leading icon lane aligned with the reading column's left edge, and a content lane to its right. Expanded steps sit one lane inward behind a vertical guide line under the group icon.
+- Step status occupies a fixed trailing slot and surfaces only errors, rejections, stops, or active spinners. Shell tool cards show the working directory once, prefix commands with `$`, label output only for `stderr`, and display exit codes only when non-zero.
 
-- `--border-soft` (6% ink): quiet separation inside a plate — rails, and the dividers between records in a record list that fills can't carry.
-- `--border` (10% ink): structural boundaries between regions.
-- `--border-strong` (16% ink): emphasis chrome — selected and active outlines, emphasized region boundaries, and the scrollbar thumb (§9). It is not "the border for when you're unsure," and it is not the general-purpose strong neutral: anything wanting a neutral *tint* at that weight takes `--foreground-alpha-16`. A hairline drawn with `background` is still a border and keeps it.
-- `--ring-soft` is a 1px ring drawn with box-shadow (`0 0 0 1px`) at the soft tier's own 6% alpha. It belongs to this chapter, not §5: a token is filed by the job it does, not by the CSS property it happens to use, and a shadow-shaped name on a border attracts call sites that wanted lift.
+## Floating overlays
 
-**The One Means Rule.** Each boundary picks one separator: a fill step, a line, or a shadow — never stacked on the same edge.
+Menus, selects, context menus, popovers, and modal dialogs are the only surfaces that combine a `line` border (`radius 12`) with drop shadow (`floatingStyle`, `menuRowStyle`, `ModalDialog.tsx`).
 
-**The Group Rule.** A settings section draws one line: the divider under its header. Rows are sorted by what a press does, not by what they list:
+- **Menus and popovers** — `floating` surface with `4 pt` inset and `32 pt` concentric rows (`radius 8`, hover/focus `floatingRaised`). Rows use three lanes: `16 pt` icon at `12 pt`, label at `36 pt`, and trailing check/switch/shortcut/chevron. Every command in a menu uses a distinct icon; destructive actions sit last in `danger`; commands that open a prompt end with `…`. Active choices show an `accent` checkmark (never radio buttons). Press outside or `Escape` dismisses; menus carry neither title bars nor close buttons.
+- **Dialogs** — `ModalDialog` centers over a scrim on `surface` fill (`inset 16`). Titles state the concrete action and target (`Delete “Roadmap”?`, weight `600`); body text adds only scope or consequence. Primary actions sit bottom-right (`Cancel` followed by a specific verb like `Delete` or `Save`—never generic `OK`/`Confirm`), with initial focus on `Cancel` for destructive prompts. `Escape` cancels; clicking the scrim dismisses lightweight launchers (command palette, search) but never discards form edits or active work.
+- **Tooltips** — `tooltipStyle` / `richTooltipStyle` in floating tokens without shadow or color inversion, the narrowest floating surface at `280 pt` and four lines of text at most: a hint folds, and what a longer one cannot say belongs inline. A hovered image is the one preview that sets its own width, up to `480 pt`. Menu rows never carry tooltips.
 
-- *Setting rows* (`SettingsRow`: a name, a helper line, one control) and *entry rows* (`SettingsEntryRow`: the whole row opens a detail or setup page, marked by a chevron — model connections, external agents, remote-access channels) carry no row dividers. The header divider, the gap between sections and the rows' own padding group them; a line under every row made a section's start read as one more row break. An entry row leads with a 32px icon tile — a full-bleed app icon as is, a bare brand mark on the neutral `.providerLogo` plate — and states status inline after its name as `StatusDot` + text.
-- *Record lists* — rows that carry their own actions or selection (archived tasks, projects, imported conversations, capability details) — keep `List hasDividers`. Several controls share each row, and the line is what bounds one record's actions from the next.
+## Settings pages
 
-The provider catalog (`provider-catalog-page.tsx`) is an entry list that still renders `List hasDividers`: it sits in the legacy app-shell closure, which the renderer architecture check closes to new dependencies, so it moves to `SettingsEntryRow` when it leaves that closure.
+All settings screens compose primitives from [`SettingsPage.tsx`](products/maka/workbench/app/SettingsPage.tsx) without custom per-page layouts:
 
-(Maintainer decision, #5888.)
+- Left rail selects the category; the panel header shows the category title (with Back navigation when nested) and at most one primary page action.
+- Grouped rows sit on `surface` over `background` with aligned left text edges: label on the left, control on the right, and helper copy only when the label alone would be ambiguous.
+- Switches and discrete pickers apply immediately; text inputs (names, keys, URLs, prompts) and coupled multi-field forms (server/model/proxy configs) commit via a sticky footer `Save` bar that appears once dirty. Navigating away with unsaved edits prompts for confirmation.
+- Pages load on mount and window focus without manual Refresh buttons; failed loads surface an inline `Retry` action and error reason. Healthy rows stay quiet; actionable issues highlight in `warning`.
 
-## 5. Elevation
+## Visual verification
 
-Default surfaces are flat. Depth comes first from the surface ladder, then a line, then shadow only when an element genuinely floats above the plane.
-
-- Three steps, named for their job: `--elevation-raised`, `--elevation-overlay`, `--elevation-drag`. Product CSS names these rather than the theme scale underneath — a shadow whose name means nothing at a call site is how the scale sat unused for months while one raw atom did all the work.
-- **The Floating Recipe.** Every portal surface (menu, popover, dialog, toast) is: `--surface-overlay` fill + `--border-soft` ring + `--elevation-overlay` + `overflow: hidden` + container radius. No portal invents its own mix, including Astryx's own shared layer surface — it is held to the recipe through a vendor patch that supplies a hook class and no values, on the terms recorded in `patches/README.md`. Tooltips are out of scope: a transient label is not a surface that holds content.
-- Dark mode relies on tone and rings before shadow. Neon edges and lifted-everything styling are forbidden.
-- Native shell vibrancy is allowed only in designated material; generic glassmorphism is not.
-
-**The One Working Plane Rule.** Dividers separate responsibilities; cards and shadows do not fragment the workspace into a dashboard grid.
-
-## 6. Radius
-
-Nothing interactive is square. One ladder, assigned monotonically by box height:
-
-| Radius | Maka tier | Astryx tier | Assign to |
-|---|---|---|---|
-| 6px | control | inner | chips, keycaps, nested inlays, and product-drawn compact controls |
-| 10px | surface | element | cards, rows-as-cards, list containers; Astryx `Button`, `Input`, `SegmentedControl` |
-| 12px | modal | container | modals, panels, portal surfaces; Astryx `Card`, `Dialog`, `DropdownMenu` |
-| 28px | chat | chat | the conversation surface as one shape: user bubble, composer dock. Sourced from Astryx's `--radius-chat` by `ChatMessageBubble` and `ChatComposer` themselves; product CSS never restates it. The assistant bubble is `ghost` and full-bleed, so it paints no corners and is squared under the Full-Bleed Rule: as a paint-containment boundary its radius would clip glyphs |
-| pill | pill | full | badges, pills, circular controls |
-
-- **The Two-Name Rule.** These are one ladder under two vocabularies, and the names never line up: Maka's `control` is Astryx's `inner`, Maka's `surface` is Astryx's `element`, Maka's `modal` is Astryx's `container`, Maka's `pill` is Astryx's `full`. Resolve a tier from the box, never from the token name that sounds right. **The px side is the authority and the Astryx name is an alias to it** — `makaTheme.ts` emits `--radius-element: var(--radius-surface)` and its three siblings, so an upstream rung change cannot move one name out from under the other, and the ladder cannot be half in px and half in rem (which the 16px-root note in that file is the reason to avoid). Both vocabularies are live in product CSS and both are correct to read; they resolve to the same number by construction rather than by coincidence. The chat rung is the one tier the product does not assign: `ChatMessageBubble` and `ChatComposer` both resolve `--radius-chat` on their own, which is why the bubble and the dock round together, and why setting a bubble radius or a non-default `density` in product code silently breaks the pair. Astryx's `--radius-page` carries the same 28px literal but is a different token with no Maka tier and no product consumer; reaching for it to match the chat surface is inventing a rung. It is emitted in px like the rest — it shipped as `1.75rem`, which is the same number at a 16px root and a different one the moment anything touches the root, and a ladder cannot have one rung that moves with the type scale.
-- **The Full-Bleed Rule.** `border-radius: 0` is legal only on true full-bleed rows — an element flush with its container on both sides. Radius and gap move together: if it has breathing room, it has corners.
-- **Proportional marks.** Product-drawn icon plates use ratio-owned radius (~25–27% of the box edge), recorded in prose because Stitch accepts only absolute units.
-
-## 7. Typography
-
-Use the system UI stack with explicit platform CJK fallbacks; Geist Variable is a late fallback. Code uses Geist Mono Variable, JetBrains Mono, then platform monospace. Chinese and Latin must read as one interface.
-
-- **Display 1–3:** rare large statements and empty-state anchors.
-- **Heading 1–6:** page, panel, section, and compact-title hierarchy, down to an 11px semibold rung.
-- **Body:** conversation and normal reading.
-- **Large:** body-sized lead-in copy at semibold — the only role above body that is not a heading.
-- **Label:** controls and interactive labels.
-- **Supporting:** metadata and compact secondary copy.
-- **Code:** code, paths, commands, identifiers, and machine evidence.
-
-**The Role, Not Axes Rule.** Choose an Astryx text role or a Maka role composed from it. Never assemble literal family, size, weight, or line height at a product call site.
-
-**The Four-Pixel Line Rule.** Text line boxes land on the 4px grid. Mono is technical, never decorative.
-
-**The One Measure Rule.** Line length is a typographic decision, so the app has one reading column and one token for it: `--maka-reading-measure`. The container holds it — a turn, the composer, a report — and no component carries a measure of its own, because a measure inside a component is one its container cannot override. Two measures on one column is what the reader sees as two right edges.
-
-## 8. Color Specification
-
-The palette is cool-neutral and quiet; color is generated to spec, not picked by eye.
-
-**The Mode Lives in the Value Rule.** A colour that differs between light and dark carries both sides in its own value — `light-dark(light, dark)`, declared once — and never in a `.dark` selector. This is not tidiness: Astryx inverts a surface by setting `color-scheme: dark` on it (every toast body, every overlay scrim), and a selector matched on `<html>` cannot follow. A token declared under `.dark` keeps the page's mode on a surface that just declared itself the other one, which is how the error toast came to paint light-mode grey prose on its red plate at 1.04:1. A `light-dark()` value resolves against whatever `color-scheme` is in force where it is *used*, so it follows the page and the inverted surface both — including for tokens nobody has thought to check. Two alphas have nowhere to express a mode and stay on `.dark`; a shadow is not an exception, since only its colour differs and the pair goes inside the recipe. `color-scheme` is set on `<html>` beside the class — before the first paint, and on every change — and Astryx's `<Theme>` re-declares it on its own wrapper from that class, so the app's subtree turns over on that React commit: one repaint later than the root, and as a whole rather than half at a time. The corollary for JavaScript: a token now reads back as a recipe, not a colour, so nothing may take `getPropertyValue('--x')` and treat the result as one — code that needs a colour reads `getComputedStyle` off whatever paints it — which is why `--background` is declared on `html` rather than `body`, so the Windows titlebar has a painted root to sample. That failure is silent in both directions: `CSS.supports('color', …)` accepts a `light-dark()` pair, and a canvas ignores the `fillStyle` assignment and keeps its default opaque black. Contract-tested over every token `makaTheme.ts` aliases and everything those transitively read.
-
-- **Brand mark** is fixed `#71a8fd`; it identifies Maka and is never the general CTA color.
-- **Interaction accent** follows the active palette for focus, selection, and live state; **links and accent-colored text use the solid tier** (§3). Astryx's own semantic components are the exception — `Badge` and `StatusDot` carry fixed literals inherited from the neutral theme and follow neither the palette nor the families below.
-- **Status families** — `--success`, `--warning`, `--destructive` — are generated, not picked: one lightness per mode, each hue keeping its own chroma, every member clearing AA. These are Astryx's three statuses, and Maka has no fourth: there is **no `--info` colour**. "Info" is a semantic slot, not a hue — an informational surface paints with the accent and so follows the user's palette instead of introducing a second blue that competes with it. `<Banner status="info">` needed a different mechanism to get there: `.astryx-banner.info` re-declares the tint and the text colour **on the banner element itself**, and a declaration on the element beats any ancestor's by proximity whatever the layer. The only token route left — re-pointing `--color-text-blue` / `--color-background-blue` at the root — would also repaint `Badge color="blue"`, which this section keeps literal. It is converged by listing that selector on the unlayered accent bridge in `maka-tokens.css` — the same block, so the 0.24 construction is spelled once — with `--foreground` as its text, per the Tinted Surface Rule (§3); the solid accent is left to the banner's icon and button. The residual contrast spread within a mode is hue physics — at equal lightness, yellow carries more luminance than red — and flattening it would abandon the shared-lightness premise that makes them a family. All three are declared in one block, each carrying both modes in its value, because when `--warning` last sat thirty lines from its siblings, it lost its dark value and dropped under AA unnoticed. A louder band at ~90% gamut chroma exists only for 8px status dots: dots must read at a glance, tinted surfaces must not shout. These are colors; what a state *means* is a separate vocabulary (§9).
-- **Tinted surfaces** are Astryx's own tokens: `--color-success-muted`, `--color-warning-muted`, `--color-error-muted` and `--color-accent-muted`. Product CSS reads those four names and nothing else; a hand-rolled `oklch(from var(--destructive) …)` at a call site is forbidden. **One rung, no border rung, no strong tier** — the shape upstream ships. All four are `oklch(from var(--{hue}) l c h / 0.24)`, the alpha the neutral theme's own pastels already sit at, so a Banner and a product row painted side by side read as one material. Same weight is not enough: they must be the same **construction**, because an opaque tint does not compose, and a tinted chip on a tinted panel then resolves to its parent's exact pixel and vanishes. The three status rungs are emitted by `makaTheme.ts`; `--color-accent-muted` needs the unlayered bridge in `maka-tokens.css` instead, because `maka.css` re-declares the accent pair at component level and a root rule in the same layer would lose. A border around any surface, tinted or not, is `--border`: the fill or the ink already states the status, and a second tinted edge repeating it is §4's One Means Rule. The five that tried it — the stat tile's four outline tones, the two tool-output edges, the sandbox and error copy buttons — are gone, and their status is carried by ink instead. The Maka `--{status}-wash` / `-wash-border` vocabulary this replaced was a second authority for the same surface — its two tiers and four rungs each grew a call site that disagreed with the rung beside it. Palette swatches are not tinted surfaces: a swatch's job is to show a palette's real colour, so its literals stay.
-- **The solid tier is deliberately not converged.** `--success` / `--warning` / `--destructive` remain Maka's names for status ink, dots and solid fills, while Astryx calls the same idea `--color-success` / `--color-warning` / `--color-error`. Only the tinted tier has one authority today. Converging the solid tier means moving status text, status dots and status buttons at once; it is a change of its own, not an omission from this one.
-- **Identity colors** (avatars, channel marks) live in one 4.2–4.8:1 contrast band; desaturation for muted states happens at constant OKLab lightness.
-
-**The Signal, Not Texture Rule.** Accent communicates action or state. Never use it as a background flood, gradient, glow, or substitute for hierarchy.
-
-## 9. Components
-
-Use Astryx primitives as the default seam. New work composes product meaning through published props, tokens, and stable `themeProps` extension points; internal-DOM overrides are acknowledged transitional states, not precedent.
-
-- **Controls:** Maka uses a 20/24/28/32/36/40px height ruler with 32px as the default; Astryx owns the 28/32/36px variants. Hover is restrained; press may use `scale(0.98)`; keyboard focus is always visible. At most one inverted (filled) element per control. Hover washes come in exactly two lanes: product rows and controls take `--state-hover-bg`; chrome that must stay in lockstep with Astryx internals takes `--color-overlay-hover`. Hand-mixed hover alphas are drift.
-- **Fields:** labels, descriptions, and validation belong to the field primitive; input focus belongs to its control. Keep disabled reasons discoverable through the owning control's tooltip; do not rebuild field chrome around a bare input.
-- **Badges and status:** Badge is 20px high and pill-shaped. Choose variants by meaning, not hue.
-- **Status vocabulary:** what a state means is named once, in `packages/ui/src/status-vocabulary.ts`, and every status dot resolves its color through it — a surface never maps its own domain state onto a color. The semantics are `success` (proven healthy), `active` (the system is working), `attention` (waiting on a person), `error` (broken now), `neutral` (a settled fact); collapsing `active` and `attention` is the mistake that vocabulary exists to prevent. It deliberately has no `info` — two callers meant opposite things by it. Note that Astryx's `Badge` and `StatusDot` render fixed inherited literals, so an Astryx `info` pill does not follow the palette; a dot's color does not come from the family in §8.
-- **Counters:** a count is one step smaller and quieter than its label (supporting role, muted ink, `tabular-nums`) and follows its parent's active state back to full ink. Never bolder than the label it counts.
-- **Scrollbars:** one app-wide recipe — a 6px pill (10px hit area, 2px transparent inset), thumb at `--border-strong`, one step darker on hover, no painted track. Surfaces may hide their own bars; none may restyle them.
-- **Cards:** Astryx Card uses container radius, 12px default padding, and no resting elevation. Astryx components own their geometry.
-- **Workspace:** conversation, tool activity, artifacts, browser state, and generated files stay connected to the task that produced them. Assistant messages remain quiet and avatar-free.
-- **Custom companion:** a desktop pet is the sole mascot exception: user-supplied, disabled by default, decorative, pointer-transparent, hidden from assistive technology, and reduced-motion aware. It never conveys required status or speaks for the agent.
-
-## 10. Empty & Loading States
-
-An absence and a wait are both states of real content, and both are composed from Astryx primitives — never hand-rolled.
-
-### Empty states: three tiers, one component
-
-Every empty state is Astryx `EmptyState`; the tiers are parameter combinations, not new components, wrappers, or product CSS re-creating its layout. The tier count is three and not arbitrary, because the component's props offer exactly two real steps — adding a description and adding an action. That is the spec's anti-inflation lock: a fourth tier is a component-change proposal, not a casual decision.
-
-| Tier | Use | `icon` | `description` | `actions` | `isCompact` |
-|---|---|---|---|---|---|
-| 1 inline | a section's local absence | no | no | no | yes |
-| 2 panel | a whole list/panel/inspector is empty | yes | yes | no | no |
-| 3 first-run | the page's reason to exist has not happened yet | yes | yes | exactly one | no |
-
-- **Tier 1 carries no icon.** Both reference systems converged on this independently: a local absence must not be amplified into an event — and it is what keeps three tiers three (an icon on tier 1 leaves only a description between it and tier 2).
-- **There is no tier 4.** No second button, no extra link, no help caption below the action. Anything else worth saying goes in `description`.
-- **No illustrations.** The `icon` slot takes an icon glyph only — never an illustration, large graphic, or brand mark.
-- **Search/filter empties always carry a clear action** (`ghost` + `sm`), on any tier. This is usability, not decoration: the user is in a state they caused themselves and must be able to exit. The canonical example is the MCP market's no-match state. Ghost/small because clearing is an exit, not the page's main action.
-- **Titles are noun phrases without a period**; `description` holds the full sentence and may echo the user's query. `headingLevel` follows the document-outline ladder (§9-adjacent; ratified in the typography chapter's hierarchy), never a pinned number.
-- The chat first-run hero is the sanctioned exception: a prompt-suggestion hero exceeds tier 3's single action by design and owns its layout; nothing else does.
-
-### Loading: reserve the ready geometry
-
-The loading state occupies the same box the ready content will occupy — loading is the same box in an unready state, not filler. The hard criterion: switching from loading to ready causes zero layout shift. This is screenshot-verifiable and reviewed as such.
-
-Three mutually exclusive forms, chosen by structural predictability — never by expected speed:
-
-| Form | When | Geometry |
-|---|---|---|
-| skeleton | structure predictable (known rows/cards) | bar heights encode type (10/12/16); row count is that surface's measured ready-state constant, never a global default — a one-row skeleton grows the page on arrival, which violates the criterion above |
-| spinner | structure unpredictable (single result, unknown-size body) | three placements only: inline (metadata icon size), page-centered large, or one quiet muted line inside a card (block-level unpredictable content only — lists always take skeletons) |
-| `isLoading` | busy buttons and pressable controls | the Astryx prop, always — no hand-swapped labels, icons, or disable-plus-spinner recreations |
-
-- One region never shows a skeleton and a spinner at the same time.
-- A state attribute nobody reads is worse than none — it convinces the next reader that feedback already exists. Wire state markers (`data-pending` and kin) to visible feedback or delete them.
-
-## 11. Do's and Don'ts
-
-### Do:
-
-- **Do** keep task, agent state, permissions, failures, recovery, and produced work obvious.
-- **Do** preserve generous reading space with compact controls and comparison-friendly density.
-- **Do** extend Astryx primitives and established Maka composition slots.
-- **Do** preserve keyboard focus, disabled reasons, loading and error states, and reduced-motion behavior.
-- **Do** keep optional palette inventories in source while preserving documented roles and contrast.
-
-### Don't (the forbidden list — some items are contract-tested, the rest are review-blocked):
-
-- **Don't** write a bare `oklch()` status color at a call site, or hand-roll a status tint — consume the families (§8).
-- **Don't** use `border-radius: 0` off a full-bleed row (§6).
-- **Don't** put an illustration in an empty-state icon slot, add anything past tier 3's single action, or ship a state attribute with no visible feedback (§10).
-- **Don't** hardcode `background: white` or any literal surface color — resolve a ladder tier (§2), or `--surface-paper` when the content's own contrast is not ours to control (foreign documents, QR codes) and inverting it would break the content rather than restyle it.
-- **Don't** put more than one inverted element in a single control.
-- **Don't** mix `srgb` and `oklch` derivations inside one token family (§3).
-- **Don't** make light mode's "higher" darker (§2), stack two separators on one edge (§4), or invent a portal recipe (§5).
-- **Don't** use generic AI gradients, glowing borders, sparkle, decorative "thinking," or default glassmorphism.
-- **Don't** personify the agent through mascots, fake emotion, excessive avatars, or chat ornament; the optional user-supplied pet is the only exception.
-- **Don't** turn every region into a card or every status into a colored pill.
-- **Don't** introduce another accent, spacing ruler, radius tier, icon system, text axis, reading measure, or parallel component path (§7).
-- **Don't** copy primitive internals, progress, versions, palette inventories, or surface inventories into this document.
+Inspect UI changes in the native desktop renderer across both light and dark themes at narrow and wide viewport widths. Shared-edge invariants belong in automated layout-bound assertions (such as `shell_shares_its_lines` in the desktop integration suite) rather than eyeball checks alone. On macOS, the offscreen test backend rasterizes Helvetica rather than SF Pro, so check optical text-to-icon centering in a real desktop window.

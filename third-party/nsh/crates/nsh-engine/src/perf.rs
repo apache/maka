@@ -1,0 +1,807 @@
+//! Performance monitoring: what a surface's frames and commits cost while it
+//! runs, for an on-screen monitor (`--fps`, `NSH_FPS=1`, the app's
+//! `setFpsEnabled`) or the app's own tooling.
+//!
+//! A [`PerfMonitor`] is shared by the two threads of a surface:
+//!
+//! - the **engine thread** records every wake-up that produced a commit
+//!   (the JS it ran and the core's apply, render and layout,
+//!   [`CommitTiming`]) and how long it was busy at all;
+//! - the **main thread** records the time it spends on the surface
+//!   ([`PerfMonitor::record_work`]: applying batches, ticking animations and
+//!   frame callbacks, handling input) and closes a frame at every display
+//!   refresh ([`PerfMonitor::vsync`]): a refresh in which something changed is
+//!   a frame the screen showed, and its cost is the main-thread work since
+//!   the previous refresh. It also reports how long a batch waited between
+//!   the engine handing it over and the main thread applying it
+//!   ([`PerfMonitor::record_latency`]).
+//!
+//! [`PerfMonitor::snapshot`] turns what was recorded into readings
+//! ([`PerfSnapshot`]); [`ProcessSampler`] reads the process' CPU and memory.
+//!
+//! Nothing is measured while no monitor is installed
+//! ([`crate::EngineControl::set_perf_monitor`]): the engine checks one
+//! `Option` per wake-up, the platforms one per frame.
+//!
+//! The readings follow gpui-kit's `gpui-fps` (the same idea, the same rows):
+//! the headline rate counts frames that reached the screen, `MAX` is derived
+//! from what a frame cost rather than counted (so the monitor never drives
+//! frames to find it), and the first frames, the cold ones, are not counted.
+
+use std::{collections::VecDeque, sync::Mutex, time::Duration};
+
+/// The environment variable that turns the performance monitor on at
+/// launch, whatever started the app (`NSH_FPS=1`), as Metal's
+/// `MTL_HUD_ENABLED=1` does its HUD.
+pub const ENV_VAR: &str = "NSH_FPS";
+
+/// Whether [`ENV_VAR`] asks for the performance monitor: set to anything
+/// but empty, `0` or `false`. The platforms turn their monitor on at launch
+/// when it does, as `--fps` (`AppOptions::fps`) does.
+pub fn enabled_by_env() -> bool {
+    std::env::var_os(ENV_VAR)
+        .is_some_and(|value| !matches!(value.to_str(), Some("" | "0" | "false")))
+}
+
+/// How the monitor shows at launch, as [`ENV_VAR`] names it: `collapsed`
+/// (the frame rate alone) or `hidden` (nothing on screen, still
+/// measuring); `None` for any other value, which shows it whole.
+pub fn mode_by_env() -> Option<nsh_core::FpsMode> {
+    match std::env::var(ENV_VAR).ok()?.as_str() {
+        "collapsed" => Some(nsh_core::FpsMode::Collapsed),
+        "hidden" => Some(nsh_core::FpsMode::Hidden),
+        _ => None,
+    }
+}
+
+/// The log target of the readings the platforms log once a second while
+/// the monitor runs (`--fps`). It is not `nsh::perf`, the timings of
+/// `--trace`, so a command line tells the two apart: `nsh run --fps` shows
+/// the panel and logs these lines only with `-v`.
+pub const LOG_TARGET: &str = "nsh::fps";
+
+/// The log target of startup milestones (`RUST_LOG=nsh::startup=info`).
+pub const STARTUP_LOG_TARGET: &str = "nsh::startup";
+
+/// Logs `first_frame <ms>` once per process, `<ms>` counted from the
+/// process's start: the platforms call it after their first presented
+/// frame (benchmarks read the line). Nothing where the start time is not
+/// known (only Linux reads it, from `/proc`, at 10 ms resolution).
+pub fn first_frame() {
+    static DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if DONE.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        return;
+    }
+    if let Some(ms) = since_process_start() {
+        log::info!(target: STARTUP_LOG_TARGET, "first_frame {ms:.0}");
+    }
+}
+
+/// Milliseconds since the process started: the system's uptime less the
+/// process's start (`/proc/self/stat`'s 22nd field, in 1/100 s ticks).
+fn since_process_start() -> Option<f64> {
+    #[cfg(target_os = "linux")]
+    {
+        let stat = std::fs::read_to_string("/proc/self/stat").ok()?;
+        // The command name may hold spaces: fields count from its `)`.
+        let rest = &stat[stat.rfind(')')? + 2..];
+        let start: f64 = rest.split(' ').nth(19)?.parse().ok()?;
+        let uptime = std::fs::read_to_string("/proc/uptime").ok()?;
+        let uptime: f64 = uptime.split(' ').next()?.parse().ok()?;
+        Some(((uptime - start / 100.0) * 1000.0).max(0.0))
+    }
+    #[cfg(not(target_os = "linux"))]
+    None
+}
+
+use nsh_core::time::Instant;
+
+/// Samples kept for the distributions (frames, commits).
+const CAPACITY: usize = 120;
+
+/// The window over which rates (frames, commits per second) are counted.
+const RATE_WINDOW: Duration = Duration::from_secs(1);
+
+/// Frames and commits not counted after the monitor is installed: the
+/// first ones after a start are cold (caches, fonts, the first layout) and
+/// are not what the app costs to run.
+const WARMUP: u32 = 4;
+
+/// What one engine wake-up that committed cost.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct CommitTiming {
+    /// The app's code: JS event handlers, timers, microtasks, list binds
+    /// and the decoding of what they rendered (or a Rust app's tasks): the
+    /// wake-up's time less [`CommitTiming::layout`].
+    pub js: Duration,
+    /// The core: applying the ops, rendering components, typesetting text,
+    /// layout and diffing into mount items.
+    pub layout: Duration,
+    /// Ops applied.
+    pub ops: u32,
+    /// Mount items produced.
+    pub items: u32,
+}
+
+/// Mean, 95th percentile and maximum of a set of durations.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Stat {
+    /// The mean.
+    pub mean: Duration,
+    /// The median.
+    pub p50: Duration,
+    /// The nearest sample at the 95th percentile.
+    pub p95: Duration,
+    /// The longest.
+    pub max: Duration,
+}
+
+impl Stat {
+    fn of(samples: impl Iterator<Item = Duration>) -> Stat {
+        let mut sorted: Vec<Duration> = samples.collect();
+        if sorted.is_empty() {
+            return Stat::default();
+        }
+        sorted.sort_unstable();
+        let sum: Duration = sorted.iter().sum();
+        let at = |q: f32| ((sorted.len() as f32 * q).ceil() as usize).clamp(1, sorted.len()) - 1;
+        let p95 = at(0.95);
+        Stat {
+            mean: sum / sorted.len() as u32,
+            p50: sorted[at(0.5)],
+            p95: sorted[p95],
+            max: sorted[sorted.len() - 1],
+        }
+    }
+}
+
+/// The process' resource use ([`ProcessSampler`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct ProcessSample {
+    /// CPU time over wall time across the last [`CPU_WINDOW`] or so, in
+    /// percent of one core (as `top` and Activity Monitor show it: 150 is
+    /// one and a half cores busy).
+    pub cpu: Option<f32>,
+    /// Memory the process owns, in bytes: the physical footprint on Apple
+    /// platforms (Activity Monitor's Memory column), the resident set
+    /// elsewhere.
+    pub memory: Option<u64>,
+    /// GPU time over wall time, in percent, where the platform tells it
+    /// per process (macOS).
+    pub gpu: Option<f32>,
+}
+
+/// What the app holds, as the engine read it after its last idle
+/// collection.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct MemorySample {
+    /// Bytes the JS heap holds (0 without a JS runtime).
+    pub js_heap: u64,
+    /// Live JS objects.
+    pub js_objects: u64,
+    /// Nodes alive in the core, the root included.
+    pub nodes: u64,
+    /// The node ids the core's id table has room for: far above `nodes`
+    /// when the ids of nodes that are gone still take room.
+    pub node_ids: u64,
+}
+
+/// What a [`PerfMonitor`] read, as of one moment.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct PerfSnapshot {
+    /// Frames shown per second over the last second: display refreshes in
+    /// which the surface changed. Low while the app is idle, which is not
+    /// slowness.
+    pub fps: f32,
+    /// What the main thread could keep up with: one over the mean frame
+    /// cost, capped at the display's rate when it is known.
+    pub max_fps: f32,
+    /// The rate the display link asks for (Hz: its period), once it ran.
+    pub refresh_rate: Option<f32>,
+    /// The gaps between refreshes as they were delivered, over the last
+    /// [`CAPACITY`]: a mean above one period means refreshes came late or
+    /// were skipped (a main thread busy when they were due).
+    pub tick_interval: Stat,
+    /// The gaps between shown frames over the last [`CAPACITY`] (long while
+    /// the app is idle, one period while it animates smoothly).
+    pub frame_interval: Stat,
+    /// Main-thread time per shown frame (applying batches, animations,
+    /// input), over the last [`CAPACITY`] frames.
+    pub frame: Stat,
+    /// Share of those frames that took longer than one refresh, in `0..=1`.
+    pub dropped: f32,
+    /// Commits per second over the last second.
+    pub commits: f32,
+    /// The app's code per commit.
+    pub js: Stat,
+    /// The core's work per commit.
+    pub layout: Stat,
+    /// Mean mount items per commit.
+    pub items: f32,
+    /// How long batches waited between the engine thread handing them over
+    /// and the main thread applying them.
+    pub latency: Stat,
+    /// The engine thread's busy time over the last second, in percent.
+    pub engine_busy: f32,
+    /// Main-thread cost of the retained frames, oldest first (for a trace).
+    pub frames: Vec<Duration>,
+    /// The process' resource use, as last given to [`PerfMonitor::set_process`].
+    pub process: ProcessSample,
+    /// What the app holds, as last given to [`PerfMonitor::set_memory`]:
+    /// none before the engine's first idle collection.
+    pub memory: Option<MemorySample>,
+}
+
+impl PerfSnapshot {
+    /// What apps read of it (`perfStats()`, [`nsh_core::element::perf_stats`]).
+    pub fn stats(&self) -> nsh_core::platform::PerfStats {
+        let mut stats = nsh_core::platform::PerfStats::new(self.fps);
+        stats.refresh_rate = self.refresh_rate;
+        stats.dropped = nsh_core::geometry::Percentage(self.dropped);
+        stats
+    }
+}
+
+/// Collects a surface's frame and commit timings. Shared by its engine
+/// thread and its main thread (`Arc`); see the module documentation.
+#[derive(Debug)]
+pub struct PerfMonitor {
+    inner: Mutex<Inner>,
+}
+
+#[derive(Debug)]
+struct Inner {
+    /// Main-thread work since the last refresh, and whether it changed
+    /// anything.
+    pending: Duration,
+    dirty: bool,
+    /// Shown frames: when, and their main-thread cost.
+    frames: VecDeque<(Instant, Duration)>,
+    frame_warmup: u32,
+    refresh: Option<f32>,
+    /// The previous refresh, and the gaps between refreshes as they were
+    /// delivered (a late or skipped one shows as a long gap).
+    last_vsync: Option<Instant>,
+    ticks: VecDeque<Duration>,
+    commits: VecDeque<(Instant, CommitTiming)>,
+    commit_warmup: u32,
+    latencies: VecDeque<Duration>,
+    /// Engine wake-ups: when they ended, and how long they were busy.
+    busy: VecDeque<(Instant, Duration)>,
+    process: ProcessSample,
+    memory: Option<MemorySample>,
+}
+
+impl Default for PerfMonitor {
+    fn default() -> Self {
+        PerfMonitor {
+            inner: Mutex::new(Inner {
+                pending: Duration::ZERO,
+                dirty: false,
+                frames: VecDeque::with_capacity(CAPACITY),
+                frame_warmup: WARMUP,
+                refresh: None,
+                last_vsync: None,
+                ticks: VecDeque::with_capacity(CAPACITY),
+                commits: VecDeque::with_capacity(CAPACITY),
+                commit_warmup: WARMUP,
+                latencies: VecDeque::with_capacity(CAPACITY),
+                busy: VecDeque::new(),
+                process: ProcessSample::default(),
+                memory: None,
+            }),
+        }
+    }
+}
+
+fn push<T>(queue: &mut VecDeque<T>, value: T) {
+    if queue.len() == CAPACITY {
+        queue.pop_front();
+    }
+    queue.push_back(value);
+}
+
+impl PerfMonitor {
+    /// An empty monitor.
+    pub fn new() -> PerfMonitor {
+        PerfMonitor::default()
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
+        self.inner.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Main thread: `cost` was spent on the surface; `dirty` if it changed
+    /// what the screen shows (a batch was applied, an animation stepped, a
+    /// scroll view moved).
+    pub fn record_work(&self, cost: Duration, dirty: bool) {
+        let mut inner = self.lock();
+        inner.pending += cost;
+        inner.dirty |= dirty;
+    }
+
+    /// Main thread: the display refreshed at `at`, `interval` after the
+    /// previous refresh (the display link's period). Closes the frame the
+    /// work since the previous refresh belongs to.
+    pub fn vsync(&self, at: Instant, interval: Duration) {
+        let mut inner = self.lock();
+        if interval > Duration::ZERO {
+            let rate = 1.0 / interval.as_secs_f32();
+            // Smoothed: a link's period is exact, a measured one jitters.
+            inner.refresh = Some(match inner.refresh {
+                Some(r) if (r - rate).abs() < r * 0.1 => r + (rate - r) * 0.1,
+                _ => rate,
+            });
+        }
+        if let Some(last) = inner.last_vsync.replace(at) {
+            let gap = at.duration_since(last);
+            // A pause (nothing wanted frames, the link stopped) is not a
+            // late refresh.
+            if gap < Duration::from_millis(100) {
+                push(&mut inner.ticks, gap);
+            }
+        }
+        let cost = std::mem::take(&mut inner.pending);
+        if !std::mem::take(&mut inner.dirty) {
+            return;
+        }
+        if inner.frame_warmup > 0 {
+            inner.frame_warmup -= 1;
+            return;
+        }
+        push(&mut inner.frames, (at, cost));
+    }
+
+    /// Main thread: a batch was applied `latency` after the engine handed
+    /// it over.
+    pub fn record_latency(&self, latency: Duration) {
+        let mut inner = self.lock();
+        // The first batches wait for the cold first frames.
+        if inner.frame_warmup == 0 {
+            push(&mut inner.latencies, latency);
+        }
+    }
+
+    /// Engine thread: a wake-up that committed.
+    pub fn record_commit(&self, timing: CommitTiming) {
+        let mut inner = self.lock();
+        if inner.commit_warmup > 0 {
+            inner.commit_warmup -= 1;
+            return;
+        }
+        push(&mut inner.commits, (Instant::now(), timing));
+    }
+
+    /// Engine thread: a wake-up was busy for `busy`.
+    pub fn record_busy(&self, busy: Duration) {
+        let now = Instant::now();
+        let mut inner = self.lock();
+        inner.busy.push_back((now, busy));
+        while inner
+            .busy
+            .front()
+            .is_some_and(|&(at, _)| now.duration_since(at) > RATE_WINDOW)
+        {
+            inner.busy.pop_front();
+        }
+    }
+
+    /// Stores the process' latest resource use ([`ProcessSampler`]), shown
+    /// with the next snapshots.
+    pub fn set_process(&self, sample: ProcessSample) {
+        self.lock().process = sample;
+    }
+
+    /// Engine thread: what the app holds, shown with the next snapshots.
+    pub fn set_memory(&self, sample: MemorySample) {
+        self.lock().memory = Some(sample);
+    }
+
+    /// The readings as of now.
+    pub fn snapshot(&self) -> PerfSnapshot {
+        let now = Instant::now();
+        let inner = self.lock();
+        let recent = |at: Instant| now.duration_since(at) <= RATE_WINDOW;
+        // `n` frames span `n - 1` intervals: the rate is measured over the
+        // span they cover, which keeps it right before the window fills.
+        let shown: Vec<Instant> = inner
+            .frames
+            .iter()
+            .map(|&(at, _)| at)
+            .filter(|&at| recent(at))
+            .collect();
+        let fps = match (shown.first(), shown.last()) {
+            (Some(&first), Some(&last)) if shown.len() >= 2 && last > first => {
+                // The span to now when the frames stopped: an app that went
+                // idle reads as fewer frames, not as its last burst.
+                let span = now.duration_since(first).max(last.duration_since(first));
+                (shown.len() - 1) as f32 / span.as_secs_f32()
+            }
+            _ => 0.0,
+        };
+        let frame = Stat::of(inner.frames.iter().map(|&(_, cost)| cost));
+        let budget = Duration::from_secs_f32(1.0 / inner.refresh.unwrap_or(60.0));
+        let dropped = match inner.frames.len() {
+            0 => 0.0,
+            n => {
+                inner
+                    .frames
+                    .iter()
+                    .filter(|&&(_, cost)| cost > budget)
+                    .count() as f32
+                    / n as f32
+            }
+        };
+        let max_fps = if frame.mean > Duration::ZERO {
+            let max = 1.0 / frame.mean.as_secs_f32();
+            inner.refresh.map_or(max, |r| max.min(r))
+        } else {
+            0.0
+        };
+        let commits = inner.commits.iter().filter(|&&(at, _)| recent(at)).count() as f32;
+        let items = match inner.commits.len() {
+            0 => 0.0,
+            n => {
+                inner
+                    .commits
+                    .iter()
+                    .map(|(_, c)| c.items as f32)
+                    .sum::<f32>()
+                    / n as f32
+            }
+        };
+        let busy: Duration = inner
+            .busy
+            .iter()
+            .filter(|&&(at, _)| recent(at))
+            .map(|&(_, d)| d)
+            .sum();
+        PerfSnapshot {
+            fps,
+            max_fps,
+            refresh_rate: inner.refresh,
+            tick_interval: Stat::of(inner.ticks.iter().copied()),
+            frame_interval: Stat::of(
+                inner
+                    .frames
+                    .iter()
+                    .zip(inner.frames.iter().skip(1))
+                    .map(|(&(a, _), &(b, _))| b.duration_since(a)),
+            ),
+            frame,
+            dropped,
+            commits,
+            js: Stat::of(inner.commits.iter().map(|(_, c)| c.js)),
+            layout: Stat::of(inner.commits.iter().map(|(_, c)| c.layout)),
+            items,
+            latency: Stat::of(inner.latencies.iter().copied()),
+            engine_busy: busy.as_secs_f32() / RATE_WINDOW.as_secs_f32() * 100.0,
+            frames: inner.frames.iter().map(|&(_, cost)| cost).collect(),
+            process: inner.process,
+            memory: inner.memory,
+        }
+    }
+}
+
+/// How much time a CPU reading spans at least: a rate over a shorter span
+/// is mostly the work that happened to run in it. Monitors sample from
+/// more than one place (a timer redrawing the panel, the frame that
+/// redraw makes), so two samples can be a frame apart, and a rate over
+/// that frame alone reads a core busy while the app idles.
+pub const CPU_WINDOW: Duration = Duration::from_secs(1);
+
+/// The shortest span a CPU reading is given over at all (before
+/// [`CPU_WINDOW`] has passed since the first sample).
+const CPU_MIN_SPAN: Duration = Duration::from_millis(250);
+
+/// Reads the process' CPU and memory use. CPU use is a rate: the CPU time
+/// over the wall time since the newest earlier sample at least
+/// [`CPU_WINDOW`] old (the oldest one until then), whenever and however
+/// often it is sampled; none until a quarter of a second has passed.
+#[derive(Debug)]
+pub struct ProcessSampler {
+    /// Earlier readings of the CPU time and when they were taken, oldest
+    /// first: the first is the newest at least [`CPU_WINDOW`] old.
+    readings: VecDeque<(Duration, Instant)>,
+}
+
+impl Default for ProcessSampler {
+    fn default() -> Self {
+        ProcessSampler::new()
+    }
+}
+
+impl ProcessSampler {
+    /// A sampler with no reading yet.
+    pub fn new() -> ProcessSampler {
+        ProcessSampler {
+            readings: VecDeque::new(),
+        }
+    }
+
+    /// The process' CPU and memory use now (GPU use is the platform's to
+    /// add).
+    pub fn sample(&mut self) -> ProcessSample {
+        let now = Instant::now();
+        ProcessSample {
+            cpu: cpu_time().and_then(|used| self.rate(used, now)),
+            memory: memory(),
+            gpu: None,
+        }
+    }
+
+    /// Records `used` CPU time at `now` and returns the rate over the
+    /// window, in percent of one core.
+    fn rate(&mut self, used: Duration, now: Instant) -> Option<f32> {
+        self.readings.push_back((used, now));
+        while self
+            .readings
+            .get(1)
+            .is_some_and(|(_, at)| now.duration_since(*at) >= CPU_WINDOW)
+        {
+            self.readings.pop_front();
+        }
+        let (base, at) = *self.readings.front()?;
+        let span = now.duration_since(at);
+        (span >= CPU_MIN_SPAN)
+            .then(|| used.saturating_sub(base).as_secs_f32() / span.as_secs_f32() * 100.0)
+    }
+}
+
+/// The CPU time (user and system) the process used so far.
+#[cfg(unix)]
+fn cpu_time() -> Option<Duration> {
+    let mut usage = std::mem::MaybeUninit::<libc::rusage>::uninit();
+    // SAFETY: `usage` is a buffer of the layout the call fills.
+    if unsafe { libc::getrusage(libc::RUSAGE_SELF, usage.as_mut_ptr()) } != 0 {
+        return None;
+    }
+    // SAFETY: a zero return means the call filled the buffer.
+    let usage = unsafe { usage.assume_init() };
+    let time = |t: libc::timeval| Duration::new(t.tv_sec as u64, t.tv_usec as u32 * 1000);
+    Some(time(usage.ru_utime) + time(usage.ru_stime))
+}
+
+#[cfg(windows)]
+fn cpu_time() -> Option<Duration> {
+    use windows_sys::Win32::{
+        Foundation::FILETIME,
+        System::Threading::{GetCurrentProcess, GetProcessTimes},
+    };
+    let zero = FILETIME {
+        dwLowDateTime: 0,
+        dwHighDateTime: 0,
+    };
+    let (mut created, mut exited, mut kernel, mut user) = (zero, zero, zero, zero);
+    // SAFETY: the pseudo handle of this process and four buffers the call fills.
+    let ok = unsafe {
+        GetProcessTimes(
+            GetCurrentProcess(),
+            &mut created,
+            &mut exited,
+            &mut kernel,
+            &mut user,
+        )
+    };
+    // FILETIME counts 100 ns.
+    let ticks = |t: FILETIME| (u64::from(t.dwHighDateTime) << 32) | u64::from(t.dwLowDateTime);
+    (ok != 0).then(|| Duration::from_nanos((ticks(kernel) + ticks(user)) * 100))
+}
+
+#[cfg(not(any(unix, windows)))]
+fn cpu_time() -> Option<Duration> {
+    None
+}
+
+/// The physical footprint (`task_info`'s `TASK_VM_INFO`): the dirty and
+/// compressed memory the process owns, what Activity Monitor shows and what
+/// the system judges it by under memory pressure (unlike the resident size,
+/// it leaves out the frameworks' clean pages every process maps). Mach's
+/// `task_info` is public on every Apple platform; libproc's
+/// `proc_pid_rusage`, which reads the same number, has no header in the iOS
+/// SDK, and App Store review can reject iOS apps for calls outside it.
+#[cfg(target_vendor = "apple")]
+fn memory() -> Option<u64> {
+    /// `struct task_vm_info` (`mach/task_info.h`) as far as
+    /// `phys_footprint`, the fields `TASK_VM_INFO_REV1_COUNT` covers; the
+    /// `libc` crate does not declare it.
+    #[repr(C)]
+    struct TaskVmInfo {
+        /// `virtual_size` to `compressed_lifetime`: two `integer_t`s and
+        /// seventeen `mach_vm_size_t`s, 144 bytes.
+        before: [u64; 18],
+        phys_footprint: u64,
+    }
+    unsafe extern "C" {
+        // The task's own port (`mach_init.h`, whose `mach_task_self()` is a
+        // macro reading it); the `libc` crate wraps it for macOS only.
+        static mach_task_self_: libc::mach_port_t;
+    }
+    const TASK_VM_INFO: libc::task_flavor_t = 22;
+    const _: () = assert!(std::mem::size_of::<TaskVmInfo>() == 152);
+    let words = std::mem::size_of::<TaskVmInfo>() / std::mem::size_of::<libc::natural_t>();
+    let mut count = words as libc::mach_msg_type_number_t;
+    let mut info = std::mem::MaybeUninit::<TaskVmInfo>::uninit();
+    // SAFETY: `mach_task_self_` is set before any code runs and never
+    // changes; `info` has room for `count` words, the most the call writes,
+    // and `count` says how many it wrote.
+    let status = unsafe {
+        libc::task_info(
+            mach_task_self_,
+            TASK_VM_INFO,
+            info.as_mut_ptr().cast::<libc::integer_t>(),
+            &mut count,
+        )
+    };
+    // SAFETY: success with every word asked for filled the whole buffer.
+    (status == libc::KERN_SUCCESS && count as usize == words)
+        .then(|| unsafe { info.assume_init() }.phys_footprint)
+}
+
+/// The resident set (`/proc/self/statm`'s second field, in pages).
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn memory() -> Option<u64> {
+    let statm = std::fs::read_to_string("/proc/self/statm").ok()?;
+    let pages: u64 = statm.split_whitespace().nth(1)?.parse().ok()?;
+    // SAFETY: a plain query of the page size.
+    let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+    Some(pages * u64::try_from(page).ok()?)
+}
+
+/// The working set (resident memory), as on Linux.
+#[cfg(windows)]
+fn memory() -> Option<u64> {
+    use windows_sys::Win32::System::{
+        ProcessStatus::{K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS},
+        Threading::GetCurrentProcess,
+    };
+    // SAFETY: all-integer struct, zero is a valid value.
+    let mut counters: PROCESS_MEMORY_COUNTERS = unsafe { std::mem::zeroed() };
+    counters.cb = std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32;
+    // SAFETY: the pseudo handle of this process and a buffer of the size `cb` names.
+    let ok = unsafe { K32GetProcessMemoryInfo(GetCurrentProcess(), &mut counters, counters.cb) };
+    (ok != 0).then_some(counters.WorkingSetSize as u64)
+}
+
+#[cfg(not(any(
+    target_vendor = "apple",
+    target_os = "linux",
+    target_os = "android",
+    windows
+)))]
+fn memory() -> Option<u64> {
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ms(ms: u64) -> Duration {
+        Duration::from_millis(ms)
+    }
+
+    #[test]
+    fn stat_of_samples() {
+        let stat = Stat::of((1..=20).map(ms));
+        assert_eq!(stat.mean, Duration::from_micros(10_500));
+        assert_eq!(stat.p50, ms(10));
+        assert_eq!(stat.p95, ms(19));
+        assert_eq!(stat.max, ms(20));
+        assert_eq!(Stat::of(std::iter::empty()), Stat::default());
+    }
+
+    #[test]
+    fn frames_are_refreshes_that_changed_something() {
+        let monitor = PerfMonitor::new();
+        let start = Instant::now();
+        let period = Duration::from_micros(8333);
+        for i in 0..(WARMUP + 10) {
+            monitor.record_work(ms(1), true);
+            // Work that changed nothing is part of the next frame's cost.
+            monitor.record_work(ms(1), false);
+            monitor.vsync(start + period * i, period);
+            // A refresh with nothing new is not a frame.
+            monitor.vsync(start + period * i + period / 2, period);
+        }
+        let snapshot = monitor.snapshot();
+        assert_eq!(snapshot.frames.len(), 10);
+        assert_eq!(snapshot.frame.mean, ms(2));
+        assert!((snapshot.refresh_rate.unwrap() - 120.0).abs() < 0.5);
+        // 2ms frames could run at 500 per second, but not on a 120 Hz display.
+        assert!((snapshot.max_fps - 120.0).abs() < 0.5);
+        assert_eq!(snapshot.dropped, 0.0);
+    }
+
+    #[test]
+    fn slow_frames_are_dropped_ones() {
+        let monitor = PerfMonitor::new();
+        let start = Instant::now();
+        let period = ms(16);
+        for i in 0..(WARMUP + 4) {
+            monitor.record_work(if i % 2 == 0 { ms(20) } else { ms(1) }, true);
+            monitor.vsync(start + period * i, period);
+        }
+        assert_eq!(monitor.snapshot().dropped, 0.5);
+    }
+
+    #[test]
+    fn commits_after_warmup() {
+        let monitor = PerfMonitor::new();
+        for _ in 0..(WARMUP + 3) {
+            monitor.record_commit(CommitTiming {
+                js: ms(1),
+                layout: ms(2),
+                ops: 3,
+                items: 4,
+            });
+        }
+        let snapshot = monitor.snapshot();
+        assert_eq!(snapshot.commits, 3.0);
+        assert_eq!(snapshot.js.mean, ms(1));
+        assert_eq!(snapshot.layout.p95, ms(2));
+        assert_eq!(snapshot.items, 4.0);
+    }
+
+    #[test]
+    fn process_sample_reads_memory() {
+        let mut sampler = ProcessSampler::new();
+        let first = sampler.sample();
+        assert_eq!(first.cpu, None);
+        #[cfg(any(target_vendor = "apple", target_os = "linux"))]
+        assert!(first.memory.is_some_and(|m| m > 0));
+        std::thread::sleep(CPU_MIN_SPAN);
+        #[cfg(unix)]
+        assert!(sampler.sample().cpu.is_some());
+    }
+
+    /// A sample a frame after another reads the rate over the window, not
+    /// over that frame: an idle app sampled by its panel's timer and again
+    /// by the frame that redraw makes is idle.
+    #[test]
+    fn cpu_is_a_rate_over_the_window() {
+        let mut sampler = ProcessSampler::new();
+        let start = Instant::now();
+        let at = |ms: u64| start + Duration::from_millis(ms);
+        let near = |rate: Option<f32>, expected: f64| {
+            rate.is_some_and(|r| (r as f64 - expected).abs() < 0.01)
+        };
+        assert_eq!(sampler.rate(ms(0), at(0)), None);
+        // Too short a span to say.
+        assert_eq!(sampler.rate(ms(5), at(10)), None);
+        assert!(near(sampler.rate(ms(50), at(500)), 10.0));
+        // Idle, then sampled twice 4ms apart, the second after a 4ms frame:
+        // about 10%, not the 100% of that frame alone.
+        assert!(near(sampler.rate(ms(100), at(1000)), 10.0));
+        assert!(near(
+            sampler.rate(ms(104), at(1004)),
+            104.0 / 1004.0 * 100.0
+        ));
+        // Past the window, older readings go: a busy second reads busy.
+        sampler.rate(ms(1100), at(2000));
+        assert!(near(sampler.rate(ms(2100), at(3000)), 100.0));
+    }
+
+    /// `task_info`'s footprint is the one `proc_pid_rusage` reported (the
+    /// two are read a moment apart, so they may differ by what was mapped
+    /// in between).
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn footprint_matches_proc_pid_rusage() {
+        let ours = super::memory().expect("task_info");
+        let mut info = std::mem::MaybeUninit::<libc::rusage_info_v2>::uninit();
+        // SAFETY: `info` is a buffer of exactly the layout `RUSAGE_INFO_V2`
+        // names, the only thing the call writes.
+        let status = unsafe {
+            libc::proc_pid_rusage(
+                std::process::id() as libc::c_int,
+                libc::RUSAGE_INFO_V2,
+                info.as_mut_ptr().cast::<libc::rusage_info_t>(),
+            )
+        };
+        assert_eq!(status, 0);
+        // SAFETY: a zero return means the call filled the buffer.
+        let theirs = unsafe { info.assume_init() }.ri_phys_footprint;
+        assert!(ours.abs_diff(theirs) < 8 << 20, "{ours} vs {theirs}");
+    }
+}

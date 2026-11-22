@@ -1,0 +1,3296 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import { createPendingRecovery } from '../../../../products/maka/workbench/app/pendingRecovery';
+import {
+  cleanup,
+  untracked,
+  computed,
+  effect,
+  inputAction,
+  signal,
+  Scroll,
+  Text,
+  View,
+  keymap,
+  windowSize,
+  platform,
+  type InputRef,
+  type ViewRef,
+  type Signal,
+  type JSX,
+} from 'nsh';
+import { Button, Dialog, TextView } from 'nsh/base';
+import { CompactComposer } from './CompactComposer';
+import { Window, isAvailable as desktopAvailable } from 'nsh/desktop';
+import { ComputerStageView } from './ComputerStageView';
+import { createComputerStage, type ComputerSnapshot } from './computerStageController';
+import type { ComputerFrameSource } from './computerFrames';
+import type { UiSubscription } from '../../../../packages/plugin-sdk/src/workbench.js';
+import { hasComposerContent } from '../../../../packages/plugin-sdk/src/composer-view.js';
+import { StageFloatingComposer } from '../../../../products/maka/workbench/app/StageFloatingComposer';
+import { ComposerUsageLimits } from '../../../../products/maka/workbench/app/ComposerUsageLimits';
+import type { WorkspacePullRequestTarget } from '../../../../packages/plugin-sdk/src/workspace-view.js';
+import {
+  backendName,
+  nativeModelSelection,
+} from '../../../../products/maka/workbench/app/modelSelection';
+import type { UiContext, UiHost } from '../../../../packages/plugin-sdk/src/workbench.js';
+import type { StagedFile } from 'maka/host';
+import type { ComposerIntake } from '../../../../packages/plugin-sdk/src/composer-view.js';
+import type {
+  AgentCompletionTarget,
+  AgentInteractionResult,
+  AgentSession,
+  AgentWorkspaceAccess,
+  SettingsAssistantPreferences,
+  SettingsPreferencesUpdated,
+  ModelSelection,
+  RunId,
+  UiTarget,
+} from '../../../../packages/plugin-sdk/src/generated/runtime.js';
+import {
+  composerViewContract,
+  workspaceViewContract,
+  settingsViewContract,
+  type WorkspaceViewHandle,
+  type ConversationShell,
+  type ConversationNavigationInput,
+  type ConversationSessionInput,
+  type ConversationPreviewInput,
+  type ConversationSessionHandle,
+  type ComposerSession,
+  type ComposerCompletionSource,
+  type ComposerFocusHandle,
+  type ComposerViewInput,
+} from '../../../../packages/plugin-sdk/src/workbench-views.js';
+import { delayed } from '../../../../products/maka/workbench/app/delayed';
+import {
+  createText,
+  createTransientText,
+  ActionPending,
+  UiError,
+  errorText,
+  errorMessage,
+  message as uiMessage,
+} from '../../../../products/maka/workbench/app/text';
+import {
+  currentLocale,
+  displayText,
+  tr,
+  type MessageKey,
+} from '../../../../products/maka/workbench/app/locale';
+import { loadDraft, searchSessions, type Host } from '../../../../products/maka/workbench/app/host';
+import { settingsValue } from '../../../../products/maka/workbench/app/settingsOperations';
+import {
+  bodyTextStyle,
+  C,
+  Header,
+  controlStyle,
+  controlHoverStyle,
+  controlFocusStyle,
+  textTooltip,
+  type BrowserHeader,
+} from '../../../../products/maka/workbench/app/ui';
+import { Conversation, type Control, type ConversationHandle } from './Conversation';
+import {
+  RecallSearch,
+  type RecallAnchor,
+  type RecallTarget,
+} from '../../../../products/maka/workbench/app/RecallSearch';
+import { createForeground } from '../../../../products/maka/workbench/app/activation';
+import { Icon } from '../../../../products/maka/workbench/app/Icon';
+import { Palette } from '../../../../products/maka/workbench/app/Palette';
+import type {
+  CommandEntry,
+  ComposerCommand,
+} from '../../../../products/maka/workbench/app/composerCommands';
+import { matchComposerCommand } from '../../../../products/maka/workbench/app/composerCommands';
+import { WorkspacePicker } from '../../../../products/maka/workbench/app/WorkspacePicker';
+import {
+  RecentWorkspaces,
+  type RecentWorkspace,
+} from '../../../../products/maka/workbench/app/RecentWorkspaces';
+import { ModelSelect } from '../../../../products/maka/workbench/app/ModelSelect';
+import { goalRejection } from '../../../../products/maka/workbench/app/sessionGoal';
+import { AppliedPresetDialog } from '../../../../products/maka/workbench/app/AppliedPresetDetails';
+import { GoalDialog } from '../../../../products/maka/workbench/app/GoalDialog';
+import { CompactDialog } from '../../../../products/maka/workbench/app/CompactDialog';
+import type {
+  ModelBackend,
+  ModelDetails,
+} from '../../../../products/maka/workbench/app/modelSelection';
+import {
+  InteractionComposer,
+  interactionOutcomeSummary,
+} from '../../../../products/maka/workbench/app/InteractionComposer';
+import type { ImagePreview } from '../../../../products/maka/workbench/app/ImageThumbnail';
+import {
+  createBrowsing,
+  type Browsing,
+  type BrowserWorkspace,
+} from '../../../../products/maka/workbench/app/browsing';
+import {
+  browserOrder,
+  groupConversations,
+  groupConversationsByTime,
+} from '../../../../products/maka/workbench/app/conversationGroups';
+import { workspaceSessions } from '../../../../products/maka/workbench/app/sessionNesting';
+import { sidebarPreferences } from '../../../../products/maka/workbench/app/sidebarPreferences';
+import {
+  WorkspaceBrowser,
+  type WorkspaceBrowserProps,
+} from '../../../../products/maka/workbench/app/WorkspaceBrowser';
+import { createBotWorkers } from '../../../../products/maka/workbench/app/botWorkers';
+import {
+  applicationMenu,
+  ownTitleBar,
+  PANEL_INSET,
+} from '../../../../products/maka/workbench/app/chrome';
+import {
+  performSessionAction,
+  type SessionAction,
+} from '../../../../products/maka/workbench/app/sessionLifecycle';
+import {
+  createTerminalInterrupt,
+  TerminalInterrupt,
+} from '../../../../products/maka/workbench/app/TerminalInterrupt';
+import { viewRuntimeContext } from '../../../../products/maka/workbench/app/plugins/viewContext';
+import { projectComposerAttachments } from '../../../../products/maka/workbench/app/composerSession';
+import { watchNotifications } from '../../../../products/maka/workbench/app/notifications';
+
+type OverlayTarget = {
+  sessionId: string | null;
+} & (
+  | { kind: 'commands' | 'workspaces' | 'sessions' }
+  // `within`: the search starts in the open conversation only.
+  | { kind: 'search'; within?: boolean }
+  | { kind: 'models'; focusOnClose?: 'composer' }
+  | { kind: 'settings'; model?: ModelSelection; page?: string }
+  | {
+      kind: 'goal';
+      objective?: string;
+      goal: import('../../../../packages/plugin-sdk/src/composer-view.js').ComposerGoal;
+    }
+  | { kind: 'compact'; owner: ConversationHandle; prompt?: string }
+  | {
+      kind: 'preset';
+      preset: NonNullable<AgentSession['appliedPreset']>;
+      backend?: AgentSession['backend'];
+    }
+);
+type Overlay = OverlayTarget & { instance: number };
+function unavailableSession(reason: unknown): boolean {
+  return (
+    reason === 'agent_session_unavailable' ||
+    (reason instanceof Error && reason.message === 'agent_session_unavailable')
+  );
+}
+type ActionContext = { instance: number | null; sessionId: string | null };
+type PendingFile = {
+  id: string;
+  name: string;
+  bytes: number;
+  imageUri: string | null;
+  file: StagedFile;
+};
+const sandboxModeOfAccess = {
+  read_only: 'read-only',
+  workspace_write: 'workspace-write',
+  danger_full_access: 'danger-full-access',
+} as const satisfies Record<
+  AgentWorkspaceAccess,
+  SettingsAssistantPreferences['defaultSandboxMode']
+>;
+const accessOfSandboxMode = {
+  'read-only': 'read_only',
+  'workspace-write': 'workspace_write',
+  'danger-full-access': 'danger_full_access',
+} as const satisfies Record<
+  SettingsAssistantPreferences['defaultSandboxMode'],
+  AgentWorkspaceAccess
+>;
+type PendingDraft = {
+  workspace: BrowserWorkspace;
+  workspaceLabel: string;
+  text: string;
+  backend: ModelBackend | null;
+  access: AgentWorkspaceAccess | null;
+  requests: boolean | null;
+  modelChosen: boolean;
+  files: PendingFile[];
+  target: { kind: 'creating'; operationId: string } | { kind: 'session'; sessionId: string } | null;
+  revision: number;
+};
+type SubmissionAttempt = object;
+type Submission =
+  | { kind: 'idle' }
+  | { kind: 'preparing'; attempt: SubmissionAttempt }
+  | {
+      kind: 'handing_off';
+      attempt: SubmissionAttempt;
+      sessionId: string;
+      task: 'pending' | 'settled';
+    }
+  | { kind: 'finishing'; attempt: SubmissionAttempt };
+export type ConversationWindow = {
+  workspace: Signal<WorkspaceViewHandle | null>;
+  sessions(): readonly string[];
+  command(id: string): void;
+  prompt?(sessionId: string, input: { text: string; mode: 'insert' | 'send' }): boolean;
+};
+
+// A pane opened beside the main one shares its catalog read and leaves the
+// window title, notifications, menu and app-wide shortcuts to the main pane.
+export function createConversationUi(
+  context: UiContext<UiHost, JSX.Element>,
+  host: Host,
+  window: ConversationWindow,
+  side?: { browsing: Browsing },
+) {
+  const runtime = context.runtime;
+  effect(() => currentLocale.set(context.locale()));
+  const shell = signal<ConversationShell | null>(null);
+  const bind = (next: ConversationShell) => {
+    if (shell() !== next) shell.set(next);
+  };
+  const browsing = side?.browsing ?? createBrowsing(host);
+  const foreground = createForeground();
+  const selected = () => shell()?.sessionId() ?? null;
+  const overlay = signal<Overlay | null>(null);
+  const reloading = () => runtime.reloading() || (shell()?.blocked() ?? false);
+  const workspace = window.workspace;
+  const requireWorkspace = () => {
+    const current = workspace();
+    if (!current) throw new UiError('Workspace preview is unavailable.');
+    return current;
+  };
+  const resources = {
+    shown: () => workspace()?.shown() ?? false,
+    fullscreen: () => workspace()?.fullscreen?.() ?? false,
+    setFullscreen: (value: boolean) => workspace()?.setFullscreen?.(value),
+    hide: () => workspace()?.hide(),
+    openFiles: (target: { sessionId: string }) => workspace()?.openFiles(target),
+    openChanges: (target: { sessionId: string; worktreePath?: string | null }) =>
+      workspace()?.openChanges ? workspace()!.openChanges!(target) : workspace()?.openFiles(target),
+    toggleStage: (target: { sessionId: string }) =>
+      workspace()?.toggleStage ? workspace()!.toggleStage!(target) : workspace()?.openFiles(target),
+    openLaunchpad: (target: { sessionId: string }) => workspace()?.openLaunchpad?.(target),
+    openPullRequest: (target: WorkspacePullRequestTarget) => workspace()?.openPullRequest?.(target),
+    activeWorktree: (sessionId: string) => workspace()?.activeWorktree?.(sessionId) ?? null,
+    selectWorktree: (target: { sessionId: string; worktreePath: string | null }) =>
+      workspace()?.selectWorktree?.(target),
+    sources: (sessionId: string) => workspace()?.sources?.(sessionId) ?? [],
+    attachOpener: (sessionId: string, node: { focus(): void }) =>
+      workspace()?.attachOpener(sessionId, node),
+    focused: () => workspace()?.focused() ?? false,
+  };
+  const sidebarExpanded = Object.assign(() => shell()?.sidebarShown() ?? false, {
+    set(expanded: boolean) {
+      if (expanded) shell()?.showSidebar();
+      else shell()?.hideSidebar();
+    },
+  });
+  const browserFocus = signal(false);
+  const error = createText();
+  const status = createTransientText();
+  const switching = signal(false);
+  const busy = signal(false);
+  const creatingFork = signal(false);
+  const working = delayed(() => switching() || creatingFork());
+  const controls = signal<any[]>([]);
+  const controlsKnown = signal(false);
+  const recovering = signal(false);
+  const recoveredFork = signal<{ id: string; title: string } | null>(null);
+  // Shown once, in the fork just opened from a conversation action, until the
+  // user leaves it: the switch is otherwise silent and the titles look alike.
+  const forkNotice = signal<{
+    id: string;
+    source: string;
+    title: string;
+  } | null>(null);
+  const handle = signal<ConversationHandle | null>(null);
+  const pending = signal<PendingDraft | null>(null);
+  const updatePending = (patch: Partial<Omit<PendingDraft, 'revision'>>) => {
+    const current = pending();
+    if (current) pending.set({ ...current, ...patch, revision: current.revision + 1 });
+  };
+  const replacePending = (next: PendingDraft | null) => {
+    const previous = pending();
+    pending.set(next);
+    for (const file of previous?.files ?? []) file.file.dispose();
+  };
+  cleanup(() => replacePending(null));
+  const recentWorkspaces = signal<RecentWorkspace[]>([]);
+  const recentKnown = signal(platform.idiom === 'terminal' || !!side);
+  const workspaceReady = signal(false);
+  const workspaceError = createText();
+  const recentOpen = signal(false);
+  let recentWrite = Promise.resolve();
+  const setRecentWorkspace = (path: string) => {
+    // Keep this window's writes and their full-list receipts in user-action order.
+    const write = recentWrite.then(async () => {
+      const recent = (await host.setRecentWorkspace(path)) as RecentWorkspace[];
+      if (!alive) return;
+      recentKnown.set(true);
+      recentWorkspaces.set(recent);
+    });
+    recentWrite = write.catch(() => {});
+    return write;
+  };
+  const rememberWorkspace = (workspace: BrowserWorkspace, path: string) => {
+    if (platform.idiom === 'terminal' || side || !path || workspace.kind === 'session') return;
+    void setRecentWorkspace(path).catch(report);
+  };
+  const pendingWorkspace = computed(() => pending()?.workspace ?? null);
+  const pendingWorkspaceLabel = computed(() => pending()?.workspaceLabel ?? '');
+  const pendingText = computed(() => pending()?.text ?? '');
+  const submission = signal<Submission>({ kind: 'idle' });
+  const pendingSending = computed(() => {
+    const current = submission();
+    return (
+      current.kind === 'preparing' ||
+      current.kind === 'finishing' ||
+      (current.kind === 'handing_off' && current.task === 'pending')
+    );
+  });
+  const pendingFiles = computed(() => pending()?.files ?? []);
+  const pendingIntake = signal<Promise<void> | null>(null);
+  const pendingFileBusy = () => pendingIntake() !== null;
+  const pendingPicker = signal(false);
+  const pendingAccess = computed(() => pending()?.access ?? null);
+  const defaultAccess = signal<AgentWorkspaceAccess | null>(null);
+  // Reads and writes of the Host default run in order, so an earlier read
+  // never replaces a later choice.
+  let defaultAccessTask = Promise.resolve();
+  const preferences = async () =>
+    (await host.query('settings', 'assistantPreferences', {})) as SettingsAssistantPreferences;
+  const refreshDefaultAccess = () => {
+    defaultAccessTask = defaultAccessTask.then(async () => {
+      try {
+        const value = await preferences();
+        if (alive) defaultAccess.set(accessOfSandboxMode[value.defaultSandboxMode]);
+      } catch (reason) {
+        report(reason);
+      }
+    });
+  };
+  // What the draft shows is what its conversation gets: submission applies it
+  // even when the Host default changed after it was read.
+  const draftAccess = () => pendingAccess() ?? defaultAccess();
+  // The composer's choice also becomes the Host default for later conversations.
+  const rememberDefaultAccess = (access: AgentWorkspaceAccess) => {
+    defaultAccess.set(access);
+    defaultAccessTask = defaultAccessTask.then(async () => {
+      try {
+        const current = await preferences();
+        const mode = sandboxModeOfAccess[access];
+        if (current.defaultSandboxMode === mode) return;
+        const result = settingsValue(
+          (
+            await host.settingsMutation('settings', 'updateAssistantPreferences', {
+              expectedRevision: current.revision,
+              mutation: { kind: 'default_sandbox', mode },
+            })
+          ).reply,
+        ) as SettingsPreferencesUpdated;
+        if (result.kind !== 'committed')
+          throw new UiError('The default sandbox setting could not be saved.');
+      } catch (reason) {
+        report(reason);
+        refreshDefaultAccess();
+      }
+    });
+  };
+  const pendingRequests = computed(() => pending()?.requests ?? null);
+  const pendingBackend = computed(() => pending()?.backend ?? null);
+  const pendingModelChosen = computed(() => pending()?.modelChosen ?? false);
+  const pendingModelDetails = signal<ModelDetails>({
+    kind: 'unavailable',
+    message: uiMessage('Choose a model.'),
+  });
+  const pendingModelInstance = signal<number | null>(null);
+  const pendingTarget = computed(() => pending()?.target ?? null);
+  const pendingCreated = computed(() => {
+    const target = pendingTarget();
+    return target?.kind === 'session' ? target.sessionId : null;
+  });
+  const pendingCreateAttempt = computed(() => {
+    const target = pendingTarget();
+    return target?.kind === 'creating' ? target.operationId : null;
+  });
+  const pendingHandoff = computed(() => {
+    const current = submission();
+    return current.kind === 'handing_off' ? current.sessionId : null;
+  });
+  const currentSubmission = (attempt: SubmissionAttempt) => {
+    const current = submission();
+    return alive && current.kind !== 'idle' && current.attempt === attempt ? current : null;
+  };
+  const settleSubmission = (attempt: SubmissionAttempt) => {
+    const current = currentSubmission(attempt);
+    if (!current) return;
+    submission.set(
+      current.kind === 'handing_off' ? { ...current, task: 'settled' } : { kind: 'idle' },
+    );
+  };
+  const pendingCreateUncertain = () => pendingCreateAttempt() !== null;
+  let pendingModelGeneration = 0;
+  const pendingDraftGeneration = signal(0);
+  let pendingDefaultEpoch = 0;
+  let pendingDefaultRead: Promise<void> | null = null;
+  const pendingModel = {
+    sessionId: 'pending',
+    backend: pendingBackend,
+    modelDetails: pendingModelDetails,
+    async refreshModel() {
+      const backend = pendingBackend();
+      const generation = ++pendingModelGeneration;
+      if (!backend) {
+        pendingModelDetails.set({
+          kind: 'unavailable',
+          message: uiMessage('Choose a model.'),
+        });
+        return;
+      }
+      pendingModelDetails.set({ kind: 'loading' });
+      try {
+        const result = await host.query('agent', 'model', { backend });
+        if (!alive || generation !== pendingModelGeneration) return;
+        pendingModelDetails.set(
+          result.kind === 'ready'
+            ? { kind: 'ready', choice: result.choice }
+            : {
+                kind: 'unavailable',
+                message: uiMessage('Model unavailable: {model}.', {
+                  model: backendName(backend),
+                }),
+              },
+        );
+      } catch (reason) {
+        if (alive && generation === pendingModelGeneration)
+          pendingModelDetails.set({
+            kind: 'unavailable',
+            message: errorText(reason, 'Could not load models.'),
+          });
+      }
+    },
+  };
+  let dropFiles: ((event: { uris: string[] }) => void) | null = null;
+  const fileDragging = signal(false);
+  let editor: ComposerFocusHandle | undefined;
+  const composerSession = computed(() => {
+    const owner = handle();
+    return owner && owner.sessionId === selected() ? projectComposerSession(owner, host) : null;
+  });
+  let compactInput: InputRef | undefined;
+  const focusComposer = () => (compactInput ?? editor)?.focus();
+  let browserRoot: ViewRef | undefined;
+  let alive = true;
+  let controlRead = 0;
+  let overlayInstance = 0;
+  let pendingReveal: {
+    sessionId: string;
+    anchor: RecallAnchor;
+    current(): boolean;
+    resolve(): void;
+    reject(reason: unknown): void;
+  } | null = null;
+  cleanup(() => {
+    alive = false;
+    pendingReveal?.reject(new UiError('Conversation navigation was cancelled.'));
+    pendingReveal = null;
+  });
+  const report = (reason: unknown) => {
+    if (alive) error.set(errorText(reason, 'Could not update the conversation.'));
+  };
+  const checkWorkspace = async () => {
+    const workspace = pendingWorkspace();
+    workspaceReady.set(false);
+    workspaceError.set('');
+    if (!workspace) return;
+    try {
+      if (workspace.kind === 'session') {
+        // The Host resolves a session's bound directory; no path is substituted.
+        await host.query('agent', 'listFiles', {
+          sessionId: workspace.sessionId,
+          path: null,
+          after: null,
+        });
+      } else {
+        await host.query('agent', 'directories', {
+          kind: 'children',
+          path: workspace.path,
+          after: null,
+        });
+      }
+      if (alive && pendingWorkspace() === workspace) workspaceReady.set(true);
+    } catch (reason) {
+      if (alive && pendingWorkspace() === workspace)
+        workspaceError.set(
+          uiMessage(
+            'This folder is unavailable or cannot be opened. Choose another location or retry.',
+          ),
+        );
+    }
+  };
+  effect(() => {
+    const workspace = pendingWorkspace();
+    if (platform.idiom !== 'terminal' && !side && workspace)
+      untracked(() => {
+        void checkWorkspace();
+      });
+  });
+  let observedSession: string | null = null;
+  let wasVisible = false;
+  const readPendingSession = async () => {
+    const id = pendingCreated();
+    if (!id) return null;
+    try {
+      return await host.query('agent', 'observe', { sessionId: id });
+    } catch (reason) {
+      if (!unavailableSession(reason)) throw reason;
+      if (pendingCreated() === id) updatePending({ target: null });
+      return null;
+    }
+  };
+
+  effect(() => {
+    const next = selected();
+    if (next !== observedSession) {
+      observedSession = next;
+      overlay.set(null);
+      error.set('');
+    }
+    const visible = shell()?.visible() ?? false;
+    const owner = handle();
+    if (visible && !wasVisible && owner?.sessionId === next)
+      void owner.refreshModel().catch(report);
+    wasVisible = visible;
+  });
+  const presentInteraction = (
+    original: { sessionId: string; requestId: string },
+    result: AgentInteractionResult,
+  ) => {
+    if (!alive || selected() !== original.sessionId) return false;
+    if (result.kind === 'recorded') {
+      const record = result.record;
+      if (
+        record.execution.sessionId === original.sessionId &&
+        record.requestId === original.requestId &&
+        record.outcome
+      ) {
+        error.set('');
+        status.set(interactionOutcomeSummary(record.outcome));
+        return true;
+      }
+      report(new UiError('The Host returned a different or incomplete original request outcome.'));
+    } else {
+      report(
+        new UiError('Answer was not accepted: {reason}. Refresh the request before trying again.', {
+          reason: result.reason,
+        }),
+      );
+    }
+    return false;
+  };
+  const refreshControls = async () => {
+    const reading = ++controlRead;
+    const originals = await host.pendingControls();
+    if (alive && reading === controlRead) {
+      controls.set(originals);
+      controlsKnown.set(true);
+    }
+  };
+  const switchSession = async (
+    id: string,
+    source: ActionContext = {
+      sessionId: selected(),
+      instance: overlay()?.instance ?? null,
+    },
+    anchor?: RecallAnchor,
+  ): Promise<boolean> => {
+    const current = () =>
+      alive && selected() === source.sessionId && (overlay()?.instance ?? null) === source.instance;
+    if (!current() || switching() || reloading()) return false;
+    if (forkNotice() && forkNotice()!.id !== id) forkNotice.set(null);
+    const owner = handle();
+    const sourceOverlay = overlay();
+    if (selected() === id) {
+      if (owner?.sessionId !== id) return false;
+      if (anchor) await owner.reveal(anchor, current);
+      return true;
+    }
+    switching.set(true);
+    try {
+      const revealed = anchor
+        ? new Promise<void>((resolve, reject) => {
+            pendingReveal = {
+              sessionId: id,
+              anchor,
+              current: () =>
+                alive && selected() === id && (overlay() === null || overlay() === sourceOverlay),
+              resolve,
+              reject,
+            };
+          })
+        : null;
+      const committed = await shell()!.openSession(id);
+      if (!committed) return false;
+      if (source.sessionId === null && pendingWorkspace())
+        pendingDraftGeneration.set(pendingDraftGeneration() + 1);
+      if (overlay() === sourceOverlay) overlay.set(null);
+      status.set('');
+      if (revealed) await revealed;
+      return alive && selected() === id;
+    } catch (reason) {
+      if (current() || (alive && selected() === id && overlay() === null)) report(reason);
+      return false;
+    } finally {
+      if (pendingReveal?.sessionId === id) pendingReveal = null;
+      if (alive) switching.set(false);
+    }
+  };
+  const controlLabels: Readonly<Partial<Record<string, MessageKey>>> = {
+    changeGoal: 'Update goal',
+    changeSession: 'Update conversation',
+    compact: 'Compact conversation',
+    continueRun: 'Continue response',
+    create: 'New conversation',
+    editQueue: 'Edit queued message',
+    fork: 'Fork conversation',
+    markBotRead: 'Mark conversation as read',
+    markRead: 'Mark conversation as read',
+    metadata: 'Update conversation',
+    openBot: 'Open Maka Bot',
+    respond: 'Submit response',
+    selectBackend: 'Change model',
+    setCompactionPrompt: 'Save compaction instructions',
+    stop: 'Stop response',
+    stopComputerApp: 'Stop computer access',
+    trustProjectMcp: 'Update project MCP access',
+  };
+  const notExecuted = (method: string) => {
+    const label = controlLabels[method];
+    return label
+      ? new UiError('{action} did not run. Try again.', { action: uiMessage(label) })
+      : new Error(`Conversation control ${method} did not run`);
+  };
+  const returned = (method: string, reply: any) => {
+    const receipt = reply?.receipt;
+    if (receipt?.kind === 'recorded' && receipt.outcome?.kind === 'unknown') {
+      console.warn(`Could not confirm conversation control ${method}:`, receipt.outcome.diagnostic);
+      const label = controlLabels[method];
+      if (label)
+        throw new UiError('Could not confirm the result of “{action}”.', {
+          action: uiMessage(label),
+        });
+      throw new Error(`Could not confirm conversation control ${method}`);
+    }
+    if (receipt?.kind === 'recorded' && receipt.outcome?.kind === 'not_executed')
+      throw notExecuted(method);
+    if (receipt?.kind !== 'recorded' || receipt.outcome?.kind !== 'returned')
+      throw new ActionPending();
+    const result = receipt.outcome.result;
+    if (result.kind === 'failure') throw new Error(result.diagnostic);
+    return result.value;
+  };
+  const control: Control = async (method, input) => {
+    const urgent = method === 'stop' || method === 'stopComputerApp';
+    if (!urgent && !controlsKnown()) throw new ActionPending();
+    const originals: any[] = urgent ? await host.pendingControls() : controls();
+    const unresolved = originals.find(
+      (original) =>
+        (original.method === method ||
+          (['metadata', 'changeSession', 'fork', 'setCompactionPrompt'].includes(method) &&
+            ['metadata', 'changeSession', 'fork', 'setCompactionPrompt'].includes(
+              original.method,
+            ))) &&
+        original.sessionId === (input.sessionId ?? null) &&
+        (method !== 'stop' || original.correlation.runId === input.runId) &&
+        (method !== 'continueRun' ||
+          (original.correlation.sourceRunId === input.sourceRunId &&
+            original.correlation.sourceHighWater === input.sourceHighWater)) &&
+        (method !== 'stopComputerApp' || original.correlation.operationId === input.operationId) &&
+        (method !== 'respond' || original.correlation.requestId === input.requestId),
+    );
+    if (unresolved || (!urgent && busy())) throw new ActionPending();
+    const pendingCreation = method === 'create' && pendingSending() && pendingWorkspace() !== null;
+    if (!urgent) {
+      busy.set(true);
+      creatingFork.set(method === 'fork');
+    }
+    try {
+      let result: any;
+      if (pendingCreation) {
+        const original = await host.beginControl(method, input);
+        updatePending({
+          target: { kind: 'creating', operationId: original.operationId },
+        });
+        for (;;) {
+          const event = await original.next();
+          if (event === null) throw new ActionPending();
+          if (event.kind === 'not_dispatched') {
+            updatePending({ target: null });
+            throw notExecuted(method);
+          }
+          if (event.kind === 'finished') {
+            if (
+              event.reply?.receipt?.kind === 'recorded' &&
+              event.reply.receipt.outcome?.kind === 'unknown'
+            )
+              updatePending({ target: null });
+            result = returned(method, event.reply);
+            updatePending({
+              target:
+                result.kind === 'created'
+                  ? { kind: 'session', sessionId: result.session.id }
+                  : null,
+            });
+            break;
+          }
+        }
+      } else result = returned(method, (await host.control(method, input)).reply);
+      if (method === 'respond' && result.kind === 'recorded') presentInteraction(input, result);
+      return result;
+    } finally {
+      await refreshControls().catch((reason) => {
+        controlsKnown.set(false);
+        report(reason);
+      });
+      if (!urgent && alive) {
+        busy.set(false);
+        creatingFork.set(false);
+      }
+    }
+  };
+  const closeOverlay = (instance: number) => {
+    if (!alive || overlay()?.instance !== instance) return false;
+    if (overlay()?.kind === 'sessions') browserFocus.set(false);
+    overlay.set(null);
+    return true;
+  };
+  const closeModels = (owner: ConversationHandle, instance: number) => {
+    const current = overlay();
+    if (
+      current?.kind !== 'models' ||
+      current.sessionId !== owner.sessionId ||
+      selected() !== owner.sessionId ||
+      handle() !== owner ||
+      !closeOverlay(instance)
+    )
+      return false;
+    if (current.focusOnClose === 'composer') owner.focus();
+    return true;
+  };
+  const open = (request: OverlayTarget) => {
+    const { sessionId } = request;
+    if (!alive || selected() !== sessionId) return;
+    if (!(shell()?.visible() ?? false) && !shell()?.dismissRoute()) return;
+    if (request.kind === 'sessions') {
+      resources.hide();
+      status.set('');
+      if (overlay()?.kind === 'sessions') {
+        browserFocus.set(true);
+        return;
+      }
+      if (shell()?.sidebarDocked()) {
+        overlay.set(null);
+        sidebarExpanded.set(true);
+        browserFocus.set(true);
+        return;
+      }
+    }
+    const target =
+      request.kind === 'models' && sessionId === null
+        ? { kind: 'settings' as const, sessionId }
+        : request;
+    if (target.kind === 'settings') {
+      overlay.set(null);
+      shell()?.openSettings(target.model, target.page);
+      return;
+    }
+    status.set('');
+    browserFocus.set(target.kind === 'sessions');
+    overlay.set({ ...target, instance: ++overlayInstance });
+  };
+  const toggleModels = ({
+    sessionId,
+    instance,
+  }: {
+    sessionId: string;
+    instance: number | null;
+  }) => {
+    if (!alive || selected() !== sessionId || handle()?.sessionId !== sessionId) return;
+    const current = overlay();
+    if (instance !== null) {
+      if (current?.kind === 'models' && current.sessionId === sessionId) closeOverlay(instance);
+    } else if (current?.kind !== 'models') open({ kind: 'models', sessionId });
+  };
+  const manageModels = ({ sessionId, instance }: { sessionId: string; instance: number }) => {
+    if (
+      alive &&
+      selected() === sessionId &&
+      handle()?.sessionId === sessionId &&
+      closeOverlay(instance)
+    )
+      open({ kind: 'settings', sessionId });
+  };
+  const chooseModel = async (
+    owner: ConversationHandle,
+    instance: number,
+    backend: ModelBackend,
+  ) => {
+    if (
+      !alive ||
+      selected() !== owner.sessionId ||
+      handle() !== owner ||
+      overlay()?.instance !== instance
+    )
+      throw new UiError('This model selection is no longer open.');
+    const result = await control('selectBackend', {
+      sessionId: owner.sessionId,
+      backend,
+    });
+    if (result.kind !== 'committed')
+      throw new UiError('Model selection rejected: {reason}', {
+        reason: result.reason ?? result.kind,
+      });
+    await owner.refresh();
+  };
+  const create = async (
+    workspace: BrowserWorkspace,
+    expectedSessionId = selected(),
+    workspaceLabel?: string,
+    remember = true,
+  ) => {
+    if (!alive || selected() !== expectedSessionId) return;
+    if (platform.idiom !== 'terminal') {
+      if (pendingSending() || pendingFileBusy() || pendingCreateUncertain()) return;
+      let recentWorkspace = workspace;
+      let label =
+        workspaceLabel ??
+        (workspace.kind === 'session'
+          ? (handle()?.workspace() ?? '')
+          : (workspace.path.split(/[\\/]/).filter(Boolean).at(-1) ?? ''));
+      if (workspace.kind === 'session') {
+        const observed = await host.query('agent', 'observe', { sessionId: workspace.sessionId });
+        if (!alive || selected() !== expectedSessionId) return;
+        label = observed.session.workspace.path;
+        if (!observed.session.workspace.worktree)
+          recentWorkspace = { kind: 'directory', path: label };
+      }
+      if (!(await shell()!.openSession(null)) || !alive || selected() !== null) return;
+      if (expectedSessionId === null && pendingWorkspace()) {
+        try {
+          await readPendingSession();
+        } catch (reason) {
+          report(reason);
+          return;
+        }
+        if (pendingCreated()) {
+          report(
+            new UiError(
+              'This conversation was already created. Finish sending it before changing workspaces.',
+            ),
+          );
+          return;
+        }
+        updatePending({ workspace, workspaceLabel: label });
+        if (remember) rememberWorkspace(recentWorkspace, label);
+        pendingDraftGeneration.set(pendingDraftGeneration() + 1);
+        pendingModelInstance.set(null);
+        overlay.set(null);
+        focusComposer();
+        return;
+      }
+      if (
+        pendingWorkspace() &&
+        (pendingText() ||
+          pendingFiles().length ||
+          pendingCreated() ||
+          pendingAccess() !== null ||
+          pendingRequests() !== null ||
+          pendingModelChosen())
+      ) {
+        overlay.set(null);
+        focusComposer();
+        return;
+      }
+      replacePending({
+        workspace,
+        workspaceLabel: label,
+        text: '',
+        backend: null,
+        access: null,
+        requests: null,
+        modelChosen: false,
+        files: [],
+        target: null,
+        revision: 0,
+      });
+      if (remember) rememberWorkspace(recentWorkspace, label);
+      pendingDraftGeneration.set(pendingDraftGeneration() + 1);
+      const generation = ++pendingDefaultEpoch;
+      pendingPicker.set(false);
+      pendingModelGeneration += 1;
+      pendingModelDetails.set({
+        kind: 'unavailable',
+        message: uiMessage('Choose a model.'),
+      });
+      pendingModelInstance.set(null);
+      refreshDefaultAccess();
+      pendingDefaultRead = host
+        .query('settings', 'connections', { kind: 'start' })
+        .then((page) => {
+          if (
+            !alive ||
+            pendingDefaultEpoch !== generation ||
+            pendingWorkspace() === null ||
+            pendingBackend() ||
+            page.kind !== 'ready' ||
+            !page.defaultTarget
+          )
+            return;
+          updatePending({
+            backend: { kind: 'model', ...page.defaultTarget, thinkingLevel: null },
+          });
+          return pendingModel.refreshModel();
+        })
+        .catch(report);
+      overlay.set(null);
+      focusComposer();
+      return;
+    }
+    const source = {
+      sessionId: expectedSessionId,
+      instance: overlay()?.instance ?? null,
+    };
+    try {
+      error.set('');
+      const result = await control('create', {
+        title: tr('New conversation'),
+        automaticTitle: true,
+        labels: [],
+        workspace,
+      });
+      if (!alive) return;
+      if (result.kind !== 'created')
+        throw new UiError('Conversation creation rejected: {reason}', {
+          reason: result.reason ?? result.kind,
+        });
+      await switchSession(result.session.id, source);
+      if (selected() === result.session.id)
+        open({
+          kind: 'models',
+          sessionId: result.session.id,
+          focusOnClose: 'composer',
+        });
+      await browsing.refresh();
+    } catch (reason) {
+      report(reason);
+    }
+  };
+  const newConversation = (sessionId: string | null) => {
+    if (!alive || selected() !== sessionId) return;
+    if (sessionId) void create({ kind: 'session', sessionId }, sessionId);
+    else if (pendingWorkspace()) focusComposer();
+    else open({ kind: 'workspaces', sessionId });
+  };
+  const removeSelected = async (sessionId: string) => {
+    if (pendingCreated() === sessionId) {
+      updatePending({ target: null });
+    }
+    const scope = browsing.scope();
+    if (scope.kind === 'workspace' && scope.sessionId === sessionId)
+      browsing.setScope({ kind: 'all' });
+    const owner = handle();
+    if (!alive || selected() !== sessionId || owner?.sessionId !== sessionId) return;
+    if (!(await shell()!.openSession(null)))
+      throw new UiError(
+        'The conversation was deleted, but its latest draft is not saved. Return to the draft to check its status.',
+      );
+  };
+  // Text a fork made to edit a message or regenerate a reply puts in its draft (and sends),
+  // taken once by its Conversation.
+  const prefills = new Map<
+    string,
+    { text: string; send: boolean; files?: StagedFile[]; first?: boolean }
+  >();
+  const abandonHandoff = (attempt: SubmissionAttempt, sessionId: string) => {
+    const current = currentSubmission(attempt);
+    if (current?.kind !== 'handing_off' || current.sessionId !== sessionId) return;
+    prefills.delete(sessionId);
+    submission.set({ kind: 'preparing', attempt });
+  };
+  const stagePending = (input: ComposerIntake, onText?: (text: string) => void) => {
+    const workspace = pendingWorkspace();
+    if (!workspace || pendingFileBusy() || pendingSending()) return;
+    const intake = host
+      .stageIntake(input)
+      .then((staged) => {
+        if (!alive || pendingWorkspace() !== workspace) {
+          if (staged.kind === 'files') {
+            for (const file of staged.files) file.dispose();
+          }
+          return;
+        }
+        if (staged.kind === 'text') {
+          if (staged.text) onText?.(staged.text);
+        } else {
+          updatePending({
+            files: [
+              ...pendingFiles(),
+              ...staged.files.map((file) => {
+                const metadata = file.metadata() as {
+                  name: string;
+                  bytes: number;
+                };
+                return {
+                  id: file.id,
+                  name: metadata.name,
+                  bytes: metadata.bytes,
+                  imageUri: file.imageUri(),
+                  file,
+                };
+              }),
+            ],
+          });
+        }
+        pendingPicker.set(false);
+        if (selected() === null && overlay() === null && (shell()?.visible() ?? false))
+          focusComposer();
+      })
+      .catch((reason) => {
+        if (alive && pendingWorkspace() === workspace)
+          error.set(errorText(reason, 'Could not attach the file.'));
+      })
+      .finally(() => {
+        if (alive) pendingIntake.set(null);
+      });
+    pendingIntake.set(intake);
+  };
+  const pendingComposer = computed(() => {
+    const generation = pendingDraftGeneration();
+    const workspace = pendingWorkspace();
+    const owns = () =>
+      alive &&
+      selected() === null &&
+      pendingWorkspace() === workspace &&
+      pendingDraftGeneration() === generation;
+    const confirmation = () => `${generation}/${pending()?.revision ?? 0}`;
+    return {
+      id: `pending/${generation}`,
+      completion: projectComposerCompletion(host, { kind: 'draft', workspace }),
+      draft: pendingText,
+      workspace: pendingWorkspaceLabel,
+      backend: pendingBackend,
+      modelDetails: pendingModelDetails,
+      permissions: {
+        id: `pending/${generation}`,
+        access: draftAccess,
+        requestPermissions: pendingRequests,
+        pending: pendingSending,
+        selectAccess: (access: AgentWorkspaceAccess) => {
+          if (owns() && !pendingSending() && pendingAccess() !== access) {
+            updatePending({ access });
+            rememberDefaultAccess(access);
+          }
+        },
+        selectRequests: (requests: boolean) => {
+          if (owns() && !pendingSending() && pendingRequests() !== requests) {
+            updatePending({ requests });
+          }
+        },
+      },
+      changeDraft: (text: string) => {
+        if (owns() && pendingText() !== text) {
+          updatePending({ text });
+        }
+      },
+      confirmation,
+      sending: pendingSending,
+      ready: () => workspaceReady() && !pendingCreateUncertain() && !pendingFileBusy(),
+      files: pendingFiles,
+      picking: pendingPicker,
+      openPicker: (open: boolean) => {
+        if (owns()) pendingPicker.set(open);
+      },
+      removeFile: (id: string) => {
+        if (!owns() || pendingSending()) return;
+        const removed = pendingFiles().find((file) => file.id === id);
+        if (!removed) return;
+        updatePending({
+          files: pendingFiles().filter((file) => file.id !== id),
+        });
+        removed.file.dispose();
+      },
+      intake(input: ComposerIntake, onText?: (text: string) => void) {
+        if (owns()) stagePending(input, onText);
+      },
+      reportError: report,
+      submit(text: string, expected?: string) {
+        const workspace = pendingWorkspace();
+        const staged = pendingFiles();
+        const files = staged.map((item) => item.file);
+        const access = draftAccess();
+        const requests = pendingRequests();
+        if (
+          !owns() ||
+          !workspace ||
+          !workspaceReady() ||
+          text !== pendingText() ||
+          (expected !== undefined && expected !== confirmation()) ||
+          (!text.trim() && files.length === 0) ||
+          pendingSending() ||
+          pendingFileBusy() ||
+          pendingCreateUncertain() ||
+          selected() !== null
+        )
+          return;
+        const attempt: SubmissionAttempt = {};
+        submission.set({ kind: 'preparing', attempt });
+        void (async () => {
+          try {
+            error.set('');
+            const requireUnchangedDraft = () => {
+              if (pendingText() !== text)
+                throw new UiError(
+                  'The draft changed before confirmation. Send again to confirm it.',
+                );
+            };
+            await pendingDefaultRead;
+            if (!alive || selected() !== null || pendingWorkspace() !== workspace) return;
+            requireUnchangedDraft();
+            const backend = pendingBackend();
+            if (!backend) {
+              pendingModelInstance.set(++overlayInstance);
+              return;
+            }
+            await pendingModel.refreshModel();
+            if (!alive || selected() !== null || pendingWorkspace() !== workspace) return;
+            requireUnchangedDraft();
+            if (pendingBackend() !== backend || pendingModelDetails().kind !== 'ready')
+              throw new UiError('Model unavailable: {model}. Choose another model.', {
+                model: backendName(backend),
+              });
+            let id = pendingCreated();
+            let sendFirst = true;
+            if (id) {
+              const previous = await readPendingSession();
+              id = pendingCreated();
+              if (id && previous) {
+                const history = await host.query('agent', 'history', {
+                  sessionId: id,
+                  through: previous.through,
+                  position: { kind: 'start' },
+                  view: 'conversation',
+                });
+                if (history.kind !== 'ready')
+                  throw new Error('Expected Agent conversation history.');
+                sendFirst = !history.chunks.some((row) => row.role === 'user');
+              }
+            }
+            const reusingSession = id !== null;
+            if (!id) {
+              const result = await control('create', {
+                title: tr('New conversation'),
+                automaticTitle: true,
+                labels: [],
+                workspace,
+                backend,
+              });
+              if (result.kind !== 'created')
+                throw new UiError('Conversation creation rejected: {reason}', {
+                  reason: result.reason ?? result.kind,
+                });
+              id = result.session.id as string;
+            }
+            requireUnchangedDraft();
+            if (reusingSession || access !== null || requests !== null) {
+              if (
+                !controlsKnown() ||
+                controls().some(
+                  (original) => original.sessionId === id && original.method === 'metadata',
+                )
+              )
+                throw new ActionPending();
+              const observed = await host.query('agent', 'observe', {
+                sessionId: id,
+              });
+              const session = observed.session;
+              const settings = {
+                access: access ?? session.permissions.access,
+                requestPermissions: requests ?? session.permissions.requestPermissions,
+              };
+              const permissionsChanged =
+                settings.access !== session.permissions.access ||
+                settings.requestPermissions !== session.permissions.requestPermissions;
+              if (permissionsChanged) {
+                const changed = await control('metadata', {
+                  sessionId: id,
+                  expectedRevision: session.revision,
+                  title: session.title,
+                  labels: session.labels,
+                  permissions: { settings, revokeGrants: false },
+                });
+                if (changed.kind !== 'committed')
+                  throw new UiError('Sandbox settings rejected: {reason}', {
+                    reason: changed.reason ?? changed.kind,
+                  });
+              }
+            }
+            if (reusingSession) {
+              const choice = await control('selectBackend', {
+                sessionId: id,
+                backend,
+              });
+              if (choice.kind !== 'committed')
+                throw new UiError('Model selection rejected: {reason}', {
+                  reason: choice.reason ?? choice.kind,
+                });
+            }
+            requireUnchangedDraft();
+            const stored = await loadDraft(host.session(id));
+            if (stored.revision > 0)
+              throw new UiError(
+                'The conversation draft changed. Open the conversation to review it.',
+              );
+            if (!currentSubmission(attempt)) return;
+            prefills.set(id, { text, send: sendFirst, files, first: true });
+            submission.set({ kind: 'handing_off', attempt, sessionId: id, task: 'pending' });
+            const switched = await switchSession(id, {
+              sessionId: null,
+              instance: null,
+            });
+            if (switched) {
+              await browsing.refresh();
+            } else {
+              abandonHandoff(attempt, id);
+            }
+          } catch (reason) {
+            if (currentSubmission(attempt)) report(reason);
+            else console.warn('Retired conversation submission failed', reason);
+          } finally {
+            settleSubmission(attempt);
+          }
+        })();
+      },
+    };
+  });
+  const usageComposer = () =>
+    composerSession() ?? (selected() === null && pendingWorkspace() ? pendingComposer() : null);
+  cleanup(() => {
+    prefills.clear();
+  });
+  const changeBrowsedSession = async (
+    action: SessionAction,
+    origin: string | null,
+    prefill?: { text: string; send: boolean },
+  ): Promise<boolean> => {
+    if (!alive || selected() !== origin || switching() || busy())
+      throw new UiError('This conversation action is no longer current.');
+    const owner = handle();
+    if (
+      action.kind === 'remove' &&
+      owner?.sessionId === action.session.id &&
+      !(await owner.flushDraft())
+    )
+      throw new UiError(
+        'The draft is not ready to save. Return to the conversation before deleting it.',
+      );
+    if (!alive || selected() !== origin || handle() !== owner)
+      throw new UiError('This conversation action is no longer current.');
+    const source = { sessionId: origin, instance: overlay()?.instance ?? null };
+    const result = await performSessionAction(control, action);
+    if (!alive) return false;
+    let opened = false;
+    if (result.kind === 'removed') await removeSelected(result.sessionId);
+    else if (result.kind === 'forked') {
+      if (prefill !== undefined) prefills.set(result.session.id, prefill);
+      opened = await switchSession(result.session.id, source);
+      if (!opened) prefills.delete(result.session.id);
+      else
+        forkNotice.set({
+          id: result.session.id,
+          source: action.session.id,
+          title: action.session.title || tr('Untitled conversation'),
+        });
+    } else if (handle()?.sessionId === result.session.id) await handle()!.refresh();
+    await browsing.refresh();
+    return opened;
+  };
+  const stop = ({ sessionId, runId }: { sessionId: string | null; runId: RunId | null }) => {
+    const owner = handle();
+    if (
+      !alive ||
+      !(shell()?.visible() ?? false) ||
+      overlay() ||
+      !owner ||
+      !owner.connected() ||
+      selected() !== sessionId ||
+      owner.sessionId !== sessionId ||
+      owner.run() !== runId
+    )
+      return;
+    void owner.stop(runId).catch(report);
+  };
+  const stopAction = () =>
+    inputAction(stop, {
+      sessionId: selected(),
+      runId: handle()?.run() ?? null,
+    });
+  const closeCommand = (context: ActionContext) =>
+    alive &&
+    selected() === context.sessionId &&
+    (context.sessionId === null || handle()?.sessionId === context.sessionId) &&
+    (context.instance === null ? overlay() === null : closeOverlay(context.instance));
+  const interrupt = createTerminalInterrupt({
+    session: handle,
+    blocked: () => overlay() !== null || !(shell()?.visible() ?? false),
+    report,
+    dismissOverlay: () => {
+      const current = overlay();
+      return current !== null ? closeOverlay(current.instance) : (shell()?.dismissRoute() ?? false);
+    },
+  });
+  const commandSessions = (context: ActionContext) => {
+    if (closeCommand(context)) open({ kind: 'search', sessionId: context.sessionId });
+  };
+  const commandFind = (context: ActionContext) => {
+    // With no conversation open, Find searches them all.
+    if (closeCommand(context))
+      open({
+        kind: 'search',
+        sessionId: context.sessionId,
+        within: handle() !== null,
+      });
+  };
+  const commandNew = (context: ActionContext) => {
+    if (closeCommand(context)) newConversation(context.sessionId);
+  };
+  // The Bot is one persistent Session per installation; the first open creates it
+  // in the current conversation's workspace, later opens return the same Session.
+  // `undefined` until the Host has answered; then the Bot Session or `null` for none.
+  const botSession = signal<string | null | undefined>(undefined);
+  const botWorkers = createBotWorkers(
+    host,
+    () => botSession() ?? null,
+    () => platform.idiom !== 'terminal',
+  );
+  const refreshBotSession = async () => {
+    const head = await host.query('agent', 'botOutbox', { limit: 0 });
+    if (alive) botSession.set(head.sessionId ?? null);
+    return head.sessionId ?? null;
+  };
+  void refreshBotSession().catch(() => {});
+  const commandBot = (context: ActionContext) => {
+    const sessionId = context.sessionId;
+    if (!closeCommand(context)) return;
+    void (async () => {
+      try {
+        error.set('');
+        // The Host decides whether the current Bot is still usable or a new one is needed;
+        // the cached id only serves presentation. It returns an existing Bot unchanged.
+        const result = await control('openBot', {});
+        if (!alive) return;
+        if (result.kind !== 'opened')
+          throw new UiError('Bot could not be opened: {reason}', {
+            reason: result.reason ?? result.kind,
+          });
+        botSession.set(result.sessionId);
+        await switchSession(result.sessionId, { sessionId, instance: null });
+        if (result.created) await browsing.refresh();
+      } catch (reason) {
+        report(reason);
+      }
+    })();
+  };
+  // An explicit start over: archives the current Bot and opens a new one. The new Bot starts
+  // empty; the old one's conversation stays readable, but its checklist and schedule stay behind.
+  const restartBot = async () => {
+    const current = botSession();
+    const owner = handle();
+    if (!alive || !current || owner?.sessionId !== current) return;
+    let observed = await host.query('agent', 'observe', { sessionId: current });
+    // Date the old Bot first, so the archived one is told apart from the new one.
+    const now = new Date();
+    const two = (value: number) => String(value).padStart(2, '0');
+    const stamp = `${two(now.getMonth() + 1)}-${two(now.getDate())} ${two(now.getHours())}:${two(now.getMinutes())}`;
+    const renamed = await control('metadata', {
+      sessionId: current,
+      expectedRevision: observed.session.revision,
+      title: `${observed.session.title} · ${stamp}`,
+      labels: observed.session.labels,
+    });
+    if (renamed.kind !== 'committed')
+      throw new UiError('The current Bot could not be renamed: {reason}', {
+        reason: renamed.reason ?? renamed.kind,
+      });
+    observed = await host.query('agent', 'observe', { sessionId: current });
+    const archived = await control('changeSession', {
+      sessionId: current,
+      expectedRevision: observed.session.revision,
+      action: 'archive',
+    });
+    if (archived.kind !== 'changed')
+      throw new UiError('The current Bot could not be archived: {reason}', {
+        reason: archived.reason ?? archived.kind,
+      });
+    const result = await control('openBot', {});
+    if (!alive) return;
+    if (result.kind !== 'opened')
+      throw new UiError('Bot could not be opened: {reason}', {
+        reason: result.reason ?? result.kind,
+      });
+    botSession.set(result.sessionId);
+    await switchSession(result.sessionId, { sessionId: current, instance: null });
+    await browsing.refresh();
+  };
+  const commandWorkspace = (context: ActionContext) => {
+    if (closeCommand(context)) open({ kind: 'workspaces', sessionId: context.sessionId });
+  };
+  const commandModels = (context: ActionContext) => {
+    if (!closeCommand(context)) return;
+    if (context.sessionId === null && pendingWorkspace()) {
+      pendingModelInstance.set(pendingModelInstance() === null ? ++overlayInstance : null);
+      return;
+    }
+    open({ kind: 'models', sessionId: context.sessionId });
+  };
+  const commandSettings = (context: ActionContext) => {
+    if (closeCommand(context)) open({ kind: 'settings', sessionId: context.sessionId });
+  };
+  const commandFiles = (context: ActionContext) => {
+    if (closeCommand(context) && context.sessionId)
+      resources.openFiles({ sessionId: context.sessionId });
+  };
+  const previewTerminal = async (sessionId: string, ref: string, restoreFocus: () => boolean) => {
+    if (!alive || selected() !== sessionId || overlay()) return;
+    browserFocus.set(false);
+    try {
+      await requireWorkspace().openAgentTerminal({ sessionId, ref }, restoreFocus);
+    } catch (reason) {
+      report(reason);
+    }
+  };
+  const openLink = async (sessionId: string, target: string, restoreFocus: () => boolean) => {
+    if (!alive || selected() !== sessionId || overlay()) return;
+    try {
+      await requireWorkspace().openLink(sessionId, target, restoreFocus);
+    } catch (reason) {
+      report(reason);
+    }
+  };
+  const commandLatest = (context: ActionContext & { turnId: string | null }) => {
+    if (closeCommand(context)) handle()?.jumpLatest(context.turnId);
+  };
+  const commandHistory = (context: ActionContext) => {
+    if (closeCommand(context)) handle()?.focusHistory();
+  };
+  const commandActivity = (context: ActionContext & { turnId: string | null }) => {
+    if (closeCommand(context)) handle()?.focusActivity(context.turnId);
+  };
+  const commandStop = (context: ActionContext & { runId: RunId | null }) => {
+    if (closeCommand(context) && handle()?.connected())
+      void handle()?.stop(context.runId).catch(report);
+  };
+  const commandQueue = (context: ActionContext) => {
+    if (!closeCommand(context)) return false;
+    const owner = handle();
+    if (!owner) return false;
+    owner.sendRendered({
+      owner: owner.sessionId,
+      text: owner.draft(),
+      backend: owner.backend(),
+      attachments: owner.attachments.ids(),
+      quotes: owner.quotes(),
+      delivery: 'queue',
+    });
+    owner.focus();
+    return true;
+  };
+  const pendingGoalError = createText();
+  const goalCreating = signal(false);
+  const pendingGoal: import('../../../../packages/plugin-sdk/src/composer-view.js').ComposerGoal = {
+    view: () => ({ enabled: true, current: null }),
+    pending: () => goalCreating() || pendingFileBusy(),
+    error: pendingGoalError,
+    change: async () => false,
+    async create(objective, tokenBudget) {
+      const workspace = pendingWorkspace();
+      if (
+        !workspace ||
+        !workspaceReady() ||
+        goalCreating() ||
+        pendingSending() ||
+        pendingFileBusy() ||
+        pendingCreateUncertain()
+      )
+        return false;
+      const generation = pendingDraftGeneration();
+      const draft = pendingText();
+      const files = pendingFiles().map((item) => item.file);
+      const access = draftAccess();
+      const requests = pendingRequests();
+      const owns = () =>
+        alive &&
+        selected() === null &&
+        pendingWorkspace() === workspace &&
+        pendingDraftGeneration() === generation;
+      const requireOwner = () => {
+        if (!owns()) throw new UiError('Conversation navigation was cancelled.');
+      };
+      const attempt: SubmissionAttempt = {};
+      goalCreating.set(true);
+      submission.set({ kind: 'preparing', attempt });
+      pendingGoalError.set('');
+      try {
+        await pendingDefaultRead;
+        requireOwner();
+        const backend = pendingBackend();
+        if (!backend) throw new UiError('Choose a model.');
+        await pendingModel.refreshModel();
+        requireOwner();
+        const model = pendingModelDetails();
+        if (pendingBackend() !== backend || model.kind !== 'ready')
+          throw new UiError('Choose a model.');
+        let id = pendingCreated();
+        const reusingSession = id !== null;
+        if (!id) {
+          const result = await control('create', {
+            title: tr('New conversation'),
+            automaticTitle: true,
+            labels: [],
+            workspace,
+            backend,
+          });
+          if (result.kind !== 'created')
+            throw new Error(`Goal conversation creation rejected: ${result.kind}`);
+          id = result.session.id as string;
+        }
+        requireOwner();
+        const session = (await host.query('agent', 'observe', { sessionId: id })).session;
+        const settings = {
+          access: access ?? session.permissions.access,
+          requestPermissions: requests ?? session.permissions.requestPermissions,
+        };
+        if (
+          settings.access !== session.permissions.access ||
+          settings.requestPermissions !== session.permissions.requestPermissions
+        ) {
+          const changed = await control('metadata', {
+            sessionId: id,
+            expectedRevision: session.revision,
+            title: session.title,
+            labels: session.labels,
+            permissions: { settings, revokeGrants: false },
+          });
+          if (changed.kind !== 'committed')
+            throw new Error(`Goal conversation permission update rejected: ${changed.kind}`);
+        }
+        requireOwner();
+        if (reusingSession) {
+          const chosen = await control('selectBackend', {
+            sessionId: id,
+            backend,
+          });
+          if (chosen.kind !== 'committed')
+            throw new Error(`Goal model selection rejected: ${chosen.kind}`);
+        }
+        const observed = (await host.query('agent', 'observe', { sessionId: id })).session;
+        requireOwner();
+        const prior = await host.query('agent', 'goal', { sessionId: id });
+        if (
+          prior.current &&
+          (prior.current.objective !== objective || prior.current.tokenBudget !== tokenBudget)
+        )
+          throw new UiError('Finish or cancel the current Goal before starting another.');
+        if (!prior.current) {
+          const created = await control('changeGoal', {
+            sessionId: id,
+            kind: 'create',
+            objective,
+            tokenBudget,
+            start: true,
+            approval: {
+              target: {
+                sessionId: id,
+                workspace: observed.workspace,
+                permissions: observed.permissions,
+                boundaryRevision: observed.boundaryRevision,
+                binding: observed.binding,
+              },
+              backend,
+            },
+          });
+          if (created.kind === 'conflict')
+            throw new UiError('The Goal changed. Review it and try again.');
+          if (created.kind === 'rejected') throw goalRejection(created.reason);
+        }
+        requireOwner();
+        const text = /^\s*\/goal(?:\s|$)/u.test(draft) ? '' : draft;
+        prefills.set(id, { text, send: false, files, first: true });
+        submission.set({ kind: 'handing_off', attempt, sessionId: id, task: 'pending' });
+        const switched = await switchSession(id, {
+          sessionId: null,
+          instance: overlay()?.instance ?? null,
+        });
+        if (!switched) {
+          abandonHandoff(attempt, id);
+          return false;
+        }
+        await browsing.refresh();
+        return true;
+      } catch (reason) {
+        console.warn('Goal start failed', reason);
+        if (owns() && currentSubmission(attempt))
+          pendingGoalError.set(errorText(reason, 'Could not start the goal.'));
+        return false;
+      } finally {
+        if (alive) {
+          goalCreating.set(false);
+          settleSubmission(attempt);
+        }
+      }
+    },
+  };
+  const commandGoal = async (context: ActionContext, objective?: string) => {
+    if (!closeCommand(context)) return false;
+    const goal = handle()?.goal ?? (pendingWorkspace() ? pendingGoal : null);
+    if (!goal) return false;
+    if (objective?.trim()) {
+      const owner = handle();
+      const accepted = await goal.create(objective.trim(), null);
+      if (!accepted && alive && selected() === context.sessionId && handle() === owner)
+        open({ kind: 'goal', sessionId: context.sessionId, goal, objective: objective.trim() });
+      return accepted;
+    }
+    open({ kind: 'goal', sessionId: selected(), goal });
+    return true;
+  };
+  const commandCompact = async (context: ActionContext, prompt?: string) => {
+    if (!closeCommand(context)) return false;
+    const owner = handle();
+    if (!owner) return false;
+    open({ kind: 'compact', sessionId: owner.sessionId, owner, prompt });
+    return true;
+  };
+  const ownedContributions = computed(
+    () =>
+      new Map(
+        runtime
+          .contributions()
+          .filter(
+            (item) => JSON.stringify(item.instance.instance) === JSON.stringify(context.instance),
+          )
+          .map((item) => [item.id, item]),
+      ),
+  );
+  const invokeCommand = ({
+    id,
+    sessionId,
+    argument,
+  }: {
+    id: string;
+    sessionId: string | null;
+    argument?: string;
+  }) => {
+    if (selected() !== sessionId) return;
+    const contribution = ownedContributions().get(id);
+    const originalOverlay = overlay();
+    if (contribution)
+      void runtime
+        .invoke(
+          contribution,
+          { sessionId, argument },
+          () => selected() === sessionId && overlay() === originalOverlay,
+        )
+        .catch(report);
+  };
+  const invokeOwn = (id: string, argument?: string) =>
+    invokeCommand({ id, sessionId: selected(), argument });
+  const changeTextSize = (step: number) => {
+    const settings = runtime.view(context.configuration.settings as UiTarget, settingsViewContract);
+    const command = runtime
+      .contributions()
+      .find(
+        (item) =>
+          item.id === 'appearanceTextSize' &&
+          JSON.stringify(item.instance.instance) === JSON.stringify(settings.instance.instance),
+      );
+    if (command)
+      void runtime
+        .invoke(command, {
+          sessionId: selected(),
+          argument: step > 0 ? '+1' : String(step),
+        })
+        .catch(report);
+  };
+  // A side pane binds its conversation's keys within itself, so they take
+  // over from the main pane's only while focus is there.
+  const unbindKeys: (() => void)[] = [];
+  const unbindEditorKeys: (() => void)[] = [];
+  cleanup(() => {
+    for (const unbind of [...unbindKeys.splice(0), ...unbindEditorKeys.splice(0)]) unbind();
+  });
+  const bindKeys = (within?: ViewRef, input?: ComposerFocusHandle) => {
+    if (input)
+      unbindEditorKeys.push(input.bindKey('ctrl+c', interrupt.interrupt, { fallback: true }));
+    const options = within ? { when: 'always' as const, within } : { when: 'always' as const };
+    const bind = (key: string, action: () => void) => {
+      const unbind = input ? input.bindKey(key, action) : keymap.bind(key, action, options);
+      (input ? unbindEditorKeys : unbindKeys).push(unbind);
+    };
+    bind('mod+p', () => invokeOwn('commands'));
+    if (ownTitleBar) bind('mod+f', () => invokeOwn('find'));
+    bind('mod+g', () => invokeOwn('models'));
+    bind('mod+l', () => invokeOwn('latest'));
+    bind('alt+up', () => invokeOwn('history-focus'));
+    bind('alt+down', () => invokeOwn('activity-focus'));
+    if (side) return;
+    bind('mod+o', () => invokeOwn('sessions'));
+    bind('mod+n', () => invokeOwn('new'));
+    if (ownTitleBar) {
+      bind('mod+shift+]', () => stepSession(1));
+      bind('mod+shift+[', () => stepSession(-1));
+    }
+  };
+  let sideKeys: ViewRef | undefined;
+  let paneRoot: ViewRef | undefined;
+  const computerViewport = signal({ width: 0, height: 0 });
+  if (!side) {
+    bindKeys();
+    watchNotifications({
+      sessions: browsing.sessions,
+      foreground,
+      open: (sessionId) => void selectBrowsed(sessionId, selected()),
+    });
+  }
+  const recoverControls = async () => {
+    if (recovering()) return;
+    recovering.set(true);
+    let responseConfirmed = false;
+    let failed = false;
+    try {
+      const originals = await host.pendingControls();
+      for (const original of originals) {
+        try {
+          const reply = await host.recoverControl(original.id);
+          if (!alive) return;
+          if (original.method === 'stop' && reply?.receipt?.kind === 'recorded') {
+            // Stop is idempotent for this Run. Keep the original receipt and let the user retry.
+            await host.dismissControl(original.id);
+            if (reply.receipt.outcome?.kind !== 'returned') {
+              failed = true;
+              report(new UiError('Maka could not confirm that the run stopped. Try Stop again.'));
+              continue;
+            }
+          }
+          if (reply?.receipt?.kind === 'recorded' && reply.receipt.outcome?.kind === 'unresolved')
+            continue;
+          if (
+            original.method === 'create' &&
+            original.id === pendingCreateAttempt() &&
+            reply?.receipt?.kind === 'recorded' &&
+            reply.receipt.outcome?.kind === 'unknown'
+          )
+            updatePending({ target: null });
+          const result = returned(original.method, reply);
+          if (
+            original.method === 'respond' &&
+            original.sessionId &&
+            original.correlation !== null &&
+            typeof original.correlation === 'object' &&
+            'requestId' in original.correlation &&
+            typeof original.correlation.requestId === 'string'
+          )
+            responseConfirmed =
+              presentInteraction(
+                {
+                  sessionId: original.sessionId,
+                  requestId: original.correlation.requestId,
+                },
+                result,
+              ) || responseConfirmed;
+          if (
+            original.method === 'changeSession' &&
+            result.kind === 'removed' &&
+            result.sessionId === original.sessionId
+          )
+            await removeSelected(result.sessionId);
+          if (original.method === 'fork' && result.kind === 'forked')
+            recoveredFork.set({
+              id: result.session.id,
+              title: result.session.title,
+            });
+          if (original.method === 'openBot' && result.kind === 'opened') {
+            botSession.set(result.sessionId);
+            await switchSession(result.sessionId);
+          }
+          if (original.method === 'create' && original.id === pendingCreateAttempt()) {
+            updatePending({
+              target:
+                result.kind === 'created'
+                  ? { kind: 'session', sessionId: result.session.id }
+                  : null,
+            });
+          } else if (original.method === 'create' && result.kind === 'created') {
+            await switchSession(result.session.id);
+            if (selected() === result.session.id && !result.session.backend)
+              open({
+                kind: 'models',
+                sessionId: result.session.id,
+                focusOnClose: 'composer',
+              });
+          }
+        } catch (reason) {
+          if (
+            original.method === 'create' &&
+            original.id === pendingCreateAttempt() &&
+            errorMessage(reason) === 'client operation ended before dispatch'
+          )
+            updatePending({ target: null });
+          if (!(reason instanceof ActionPending)) {
+            failed = true;
+            if ((original.sessionId ?? null) === selected()) report(reason);
+          }
+        }
+      }
+      const owner = handle();
+      if (owner && selected() === owner.sessionId) await owner.refresh();
+      await browsing.refresh();
+    } catch (reason) {
+      failed = true;
+      report(reason);
+    } finally {
+      await refreshControls().catch((reason) => {
+        failed = true;
+        controlsKnown.set(false);
+        report(reason);
+      });
+      if (alive) {
+        recovering.set(false);
+        if (!failed && !responseConfirmed && controls().length === 0) status.set('');
+      }
+    }
+  };
+  const openBrowsed = ({ id, origin }: { id: string; origin: string | null }) =>
+    selectBrowsed(id, origin);
+  const previewImage = (image: ImagePreview) => {
+    if (!alive || selected() !== image.source.read.sessionId || overlay()) return;
+    browserFocus.set(false);
+    try {
+      requireWorkspace().openImage(image);
+    } catch (reason) {
+      report(reason);
+    }
+  };
+  const closeSidebar = () => {
+    if (!alive || !(shell()?.visible() ?? false) || overlay()) return;
+    sidebarExpanded.set(false);
+    browserFocus.set(false);
+    handle()?.focus();
+  };
+  const sidebarShown = () =>
+    overlay()?.kind === 'sessions' || (sidebarExpanded() && (shell()?.sidebarDocked() ?? false));
+  const toggleSidebar = (request: { sessionId: string | null; expanded: boolean }) => {
+    if (
+      !alive ||
+      !(shell()?.visible() ?? false) ||
+      selected() !== request.sessionId ||
+      sidebarShown() !== request.expanded
+    )
+      return;
+    const current = overlay();
+    if (current && current.kind !== 'sessions') return;
+    if (!request.expanded) {
+      shell()?.sidebarHover?.(false);
+      open({ kind: 'sessions', sessionId: request.sessionId });
+      return;
+    }
+    if (current) closeOverlay(current.instance);
+    if (current?.kind === 'sessions') handle()?.focus();
+    else closeSidebar();
+  };
+  const navigationDocked = () =>
+    (shell()?.sidebarShown() ?? false) &&
+    (shell()?.sidebarDocked() ?? false) &&
+    overlay()?.kind !== 'sessions';
+  const browserHeader = (sessionId: string | null, foreground = false): BrowserHeader => ({
+    navigationDocked: navigationDocked(),
+    previewDocked: shell()?.previewDocked() ?? false,
+    expanded: sidebarShown(),
+    hidden: overlay()?.kind === 'sessions' && !foreground,
+    sidebarHover: (inside) => {
+      if (!overlay()) shell()?.sidebarHover?.(inside);
+    },
+    toggle: inputAction(toggleSidebar, { sessionId, expanded: sidebarShown() }),
+    close: shell()?.closePane,
+  });
+  // The bindings above take the same keys first; the menu shows and offers them.
+  if (!side)
+    applicationMenu({
+      newConversation: () => invokeOwn('new'),
+      chooseWorkspace: () => invokeOwn('workspace'),
+      sessions: () => invokeOwn('browse'),
+      search: () => invokeOwn('sessions'),
+      find: () => window.command('find'),
+      commands: () => window.command('commands'),
+      models: () => window.command('models'),
+      latest: () => window.command('latest'),
+      nextSession: () => stepSession(1),
+      previousSession: () => stepSession(-1),
+      settings: () => invokeOwn('settings'),
+      sidebarShown,
+      toggleSidebar: () => toggleSidebar({ sessionId: selected(), expanded: sidebarShown() }),
+      textSize: changeTextSize,
+    });
+  // The conversation below (1) or above (-1) the open one in the session browser.
+  // Kept here so the browser's collapsed workspaces outlive its unmounting
+  // and stepping between conversations skips them as the browser does.
+  const collapsedGroups = signal<ReadonlySet<string>>(new Set());
+  const expandedProjects = signal<ReadonlySet<string>>(new Set());
+  const foldedFamilies = signal<ReadonlySet<string>>(new Set());
+  const stepSession = (step: 1 | -1) => {
+    const current = overlay();
+    if (switching() || busy() || (current && current.kind !== 'sessions')) return;
+    const bot = botSession() ?? null;
+    const visible = workspaceSessions(
+      browsing.sessions(),
+      bot,
+      browsing.filter(),
+      platform.idiom !== 'terminal',
+    );
+    const byTime =
+      platform.idiom !== 'terminal' &&
+      browsing.filter() === 'all' &&
+      sidebarPreferences.sortMode() === 'time';
+    const rows = browserOrder(
+      byTime
+        ? groupConversationsByTime(visible)
+        : groupConversations(visible, browsing.projects(), false),
+      collapsedGroups(),
+      selected(),
+      platform.idiom === 'terminal' ? undefined : expandedProjects(),
+      platform.idiom === 'terminal' || browsing.filter() !== 'all' || byTime
+        ? undefined
+        : foldedFamilies(),
+    );
+    const index = rows.indexOf(selected() ?? '');
+    const next = rows[index === -1 ? 0 : index + step];
+    if (next && next !== selected()) void selectBrowsed(next, selected());
+  };
+  const selectBrowsed = async (id: string, origin: string | null) => {
+    const current = overlay();
+    const instance = current?.kind === 'sessions' ? current.instance : null;
+    await switchSession(id, {
+      sessionId: origin,
+      instance: current?.instance ?? null,
+    });
+    if (!alive || selected() !== id) return;
+    if (instance !== null) closeOverlay(instance);
+    browserFocus.set(false);
+    handle()?.focus();
+  };
+  const openRecalled = async (instance: number, origin: string | null, target: RecallTarget) => {
+    if (!alive || overlay()?.instance !== instance || selected() !== origin) return false;
+    const opened = await switchSession(
+      target.sessionId,
+      { sessionId: origin, instance },
+      target.anchor,
+    );
+    if (!opened || !alive || selected() !== target.sessionId) return false;
+    if (!target.anchor) handle()?.jumpLatest(null);
+    browserFocus.set(false);
+    return true;
+  };
+  const connectionLost = () => shell()?.connectionLost() ?? false;
+  const browserProps: WorkspaceBrowserProps = {
+    connectionLost,
+    docked: navigationDocked,
+    browsing,
+    selected,
+    switching: () => switching() || busy(),
+    focusRequest: browserFocus,
+    focusHandled: () => browserFocus.set(false),
+    attach: (node) => {
+      // Retain the identity across conditional unmount. Resize reads the
+      // native focus path from before that presentation change.
+      browserRoot = node;
+    },
+    close: closeSidebar,
+    collapse: (sessionId) => toggleSidebar({ sessionId, expanded: true }),
+    selectSession: selectBrowsed,
+    changeSession: async (action, origin) => {
+      await changeBrowsedSession(action, origin);
+    },
+    create,
+    newConversation: (sessionId) => invokeCommand({ id: 'new', sessionId }),
+    openBot: (sessionId) => invokeCommand({ id: 'bot', sessionId }),
+    botSession,
+    botWorkers: botWorkers.sessions,
+    settings: (sessionId) => invokeCommand({ id: 'settings', sessionId }),
+    search: (sessionId) => invokeCommand({ id: 'sessions', sessionId }),
+    canOpenBeside: () => !!shell()?.openBeside,
+    beside: () => shell()?.besideSessionIds?.() ?? [],
+    openBeside: (sessionId) => shell()?.openBeside?.(sessionId),
+    collapsedGroups,
+    expandedProjects,
+    foldedFamilies,
+  };
+  let wasDocked = shell()?.sidebarDocked();
+  let previousWidth = windowSize().width;
+  effect(() => {
+    const width = windowSize().width;
+    const docked = shell()?.sidebarDocked();
+    const current = overlay();
+    const visible = shell()?.visible() ?? false;
+    if (visible && docked && current?.kind === 'sessions') {
+      closeOverlay(current.instance);
+      sidebarExpanded.set(true);
+      browserFocus.set(true);
+    } else if (
+      visible &&
+      width < previousWidth &&
+      !docked &&
+      wasDocked &&
+      current === null &&
+      browserRoot &&
+      keymap.focusedWithin(browserRoot)
+    ) {
+      open({ kind: 'sessions', sessionId: selected() });
+    }
+    wasDocked = docked;
+    previousWidth = width;
+  });
+  void refreshControls().catch(report);
+  createPendingRecovery({
+    pending: () => !recentKnown(),
+    recover: async () => {
+      const recent = (await host.recentWorkspaces()) as RecentWorkspace[];
+      if (!alive || recentKnown()) return;
+      recentKnown.set(true);
+      recentWorkspaces.set(recent);
+      if (selected() === null && !pendingWorkspace() && overlay() === null && recent[0])
+        await create({ kind: 'directory', path: recent[0].path }, null, recent[0].path, false);
+    },
+  });
+  createPendingRecovery({
+    pending: () => !controlsKnown() || controls().length > 0,
+    blocked: () => recovering() || busy(),
+    recover: recoverControls,
+  });
+  // Whether the Host has no model connection, read each time the composer is
+  // shown again (back from Settings, too): the start pane then asks for one.
+  const noConnections = signal(false);
+  let connectionRead = 0;
+  effect(() => {
+    if (overlay() !== null || !(shell()?.visible() ?? false)) return;
+    const read = ++connectionRead;
+    void host
+      .query('settings', 'connections', { kind: 'start' })
+      .then((result) => {
+        if (!alive || read !== connectionRead || result.kind === 'changed') return;
+        noConnections.set(result.connections.length === 0 && result.next === null);
+      })
+      .catch(() => undefined);
+  });
+  const composerTarget = context.configuration.composer as UiTarget;
+  const ComposerView = (input: ComposerViewInput<JSX.Element>) =>
+    runtime.renderView(composerTarget, composerViewContract, input);
+  const commandCandidates = computed(() =>
+    runtime
+      .contributions()
+      .flatMap((contribution) => {
+        const declaration = contribution.declaration;
+        if (declaration.kind !== 'command') return [];
+        return [
+          {
+            contribution,
+            order: declaration.order,
+            metadata: {
+              id: contribution.key,
+              title: displayText(declaration.title),
+              detail: declaration.description
+                ? displayText(declaration.description)
+                : contribution.instance.path.join(' / '),
+              trigger:
+                declaration.trigger ??
+                `plugin:${contribution.instance.path.join(':')}:${contribution.id}`,
+              hint: declaration.hint
+                ? displayText(declaration.hint)
+                : declaration.shortcut
+                  ? keymap.label(declaration.shortcut)
+                  : undefined,
+              takesArgument: declaration.takesArgument,
+            },
+          },
+        ];
+      })
+      .sort((left, right) => {
+        if (left.order == null) return right.order == null ? 0 : 1;
+        if (right.order == null) return -1;
+        return left.order - right.order;
+      }),
+  );
+  const commands = (source: ActionContext): CommandEntry[] => {
+    const expectedOwner = handle();
+    const expectedRun = expectedOwner?.run() ?? null;
+    return commandCandidates().flatMap<CommandEntry>(({ contribution, metadata }) => {
+      if (!runtime.commandEnabled(contribution, { sessionId: source.sessionId })) return [];
+      return [
+        {
+          ...metadata,
+          async run(argument?: string) {
+            if (!closeCommand(source)) return false;
+            try {
+              return await runtime.invoke(
+                contribution,
+                { sessionId: source.sessionId, argument },
+                () =>
+                  selected() === source.sessionId &&
+                  overlay() === null &&
+                  (!['stop', 'queue'].includes(contribution.id) ||
+                    ownedContributions().get(contribution.id)?.key !== contribution.key ||
+                    (handle() === expectedOwner && expectedOwner?.run() === expectedRun)),
+              );
+            } catch (reason) {
+              report(reason);
+              return false;
+            }
+          },
+        },
+      ];
+    });
+  };
+  // Queue acts on the existing draft rather than consuming a slash command.
+  const composerCommands = computed(() =>
+    commands({ instance: null, sessionId: selected() }).filter(
+      (command): command is ComposerCommand =>
+        command.trigger !== undefined && command.id !== ownedContributions().get('queue')?.key,
+    ),
+  );
+  const sessionHandle: ConversationSessionHandle = {
+    title: () => handle()?.title() ?? null,
+    floatingComposer: () =>
+      selected() === null ? null : (
+        <StageFloatingComposer
+          title={() => handle()?.title() ?? tr('Untitled conversation')}
+          session={composerSession}
+          stop={() => stopAction()()}
+          exitFullscreen={() => resources.setFullscreen(false)}
+          transcript={() => {
+            const items = handle()?.recentMessages?.() ?? [];
+            if (items.length === 0) return null;
+            return (
+              <Scroll style={{ maxHeight: 248 }}>
+                <View style={{ paddingHorizontal: 8, paddingVertical: 8, gap: 12 }}>
+                  <Each of={items} key={(item) => item.id}>
+                    {(item) =>
+                      item().role === 'user' ? (
+                        <View
+                          style={{
+                            alignSelf: 'flex-end',
+                            maxWidth: '85%',
+                            paddingHorizontal: 12,
+                            paddingVertical: 8,
+                            borderRadius: 12,
+                            backgroundColor: C.card,
+                          }}
+                        >
+                          <Text style={{ ...bodyTextStyle, color: C.text }}>{item().text}</Text>
+                        </View>
+                      ) : (
+                        <View style={{ paddingHorizontal: 4 }}>
+                          <TextView selectable markdown={item().text} />
+                        </View>
+                      )
+                    }
+                  </Each>
+                </View>
+              </Scroll>
+            );
+          }}
+        />
+      ),
+    async kind(sessionId) {
+      const listed = browsing.sessions().find((session) => session.id === sessionId);
+      if (listed) return listed.kind;
+      return (await host.query('agent', 'observe', { sessionId })).session.kind;
+    },
+    async openBot() {
+      const result = await control('openBot', {});
+      if (result.kind !== 'opened')
+        throw new UiError('Bot could not be opened: {reason}', {
+          reason: result.reason ?? result.kind,
+        });
+      if (alive) botSession.set(result.sessionId);
+      if (result.created) await browsing.refresh();
+      return result.sessionId;
+    },
+    async leave() {
+      if (
+        (pendingSending() && pendingHandoff() === null) ||
+        pendingCreateUncertain() ||
+        (pendingHandoff() === selected() && pendingHandoff() !== null)
+      )
+        return false;
+      const owner = handle();
+      const origin = selected();
+      const originalOverlay = overlay();
+      const visible = shell()?.visible();
+      if (owner && !(await owner.flushDraft())) return false;
+      return (
+        alive &&
+        handle() === owner &&
+        selected() === origin &&
+        overlay() === originalOverlay &&
+        shell()?.visible() === visible
+      );
+    },
+  };
+  const computerSource = computed<ComputerFrameSource | null>(() => {
+    const sessionId = selected();
+    const service = context.services.computer?.[0];
+    if (
+      !desktopAvailable ||
+      !platform.desktop ||
+      platform.idiom === 'terminal' ||
+      !sessionId ||
+      !service
+    )
+      return null;
+    return {
+      sessionId,
+      service,
+      subscribe: () =>
+        service.subscribe('watchStage', { sessionId }) as Promise<UiSubscription<ComputerSnapshot>>,
+    };
+  });
+  const computerVisible = computed(() => {
+    const state = Window.get('main')?.state();
+    const surface = shell();
+    return (
+      platform.desktop &&
+      platform.idiom !== 'terminal' &&
+      state?.visible === true &&
+      !state.minimized &&
+      !reloading() &&
+      (surface?.paneVisible?.() ?? surface?.visible() ?? false)
+    );
+  });
+  const computer = createComputerStage({
+    source: computerSource,
+    visible: computerVisible,
+    report: (reason) => console.warn('Computer Stage:', reason),
+  });
+  const deliverPrompt = (input: { text: string; mode: 'insert' | 'send' }): boolean => {
+    const owner = handle();
+    const sid = selected();
+    if (!owner || !sid || !owner.editable()) return false;
+    if (input.mode === 'insert') {
+      const prev = owner.draft();
+      const sep =
+        prev.length === 0 || prev.endsWith('\n\n') ? '' : prev.endsWith('\n') ? '\n' : '\n\n';
+      owner.changeDraft(prev + sep + input.text);
+      owner.focus();
+      return true;
+    }
+    if (!owner.connected()) return false;
+    return owner.sendExternalPrompt(input.text);
+  };
+  const previewHandle = {
+    shown: resources.shown,
+    fullscreen: resources.fullscreen,
+    setFullscreen: resources.setFullscreen,
+    close: () => workspace()?.close(),
+    focused: resources.focused,
+    modalSuppressed: () => workspace()?.modalSuppressed() ?? false,
+  };
+  return {
+    sessionId: selected,
+    deliverPrompt,
+    focused: () => paneRoot !== undefined && keymap.focusedWithin(paneRoot),
+    command: invokeOwn,
+    browsing,
+    sessionHandle,
+    navigation(input: ConversationNavigationInput<JSX.Element>) {
+      bind(input.shell);
+      return (
+        <WorkspaceBrowser
+          {...browserProps}
+          openRooms={input.openRooms}
+          navigationMore={input.navigationMore}
+          pinSidebar={input.pinSidebar}
+          suppressSidebarHover={input.suppressSidebarHover}
+          holdSidebarHover={input.holdSidebarHover}
+        />
+      );
+    },
+    preview(input: ConversationPreviewInput) {
+      bind(input.shell);
+      input.attach(previewHandle);
+      const workspaceView = runtime.renderView(
+        context.configuration.workspace as UiTarget,
+        workspaceViewContract,
+        {
+          sessions: window.sessions,
+          directory: (id) => {
+            const found = browsing.sessions().find((session) => session.id === id);
+            return found?.workspace.worktree?.directory ?? found?.workspace.path;
+          },
+          prompt: (id, action) => window.prompt?.(id, action) ?? false,
+          blocked: () => reloading() || !(shell()?.visible() ?? false),
+          get docked() {
+            return input.docked;
+          },
+          get surface() {
+            return input.surface;
+          },
+          report,
+          attach: (next) => {
+            if (workspace() !== next) workspace.set(next);
+          },
+        },
+        {
+          get loading() {
+            return input.surface !== 'overlays';
+          },
+        },
+      );
+      return workspaceView;
+    },
+    session(input: ConversationSessionInput) {
+      if (input.firstMessage !== undefined)
+        prefills.set(input.shell.sessionId()!, { text: input.firstMessage, send: true });
+      bind(input.shell);
+      input.attach(sessionHandle);
+      const request = (
+        <View style={{ minHeight: 0, flexShrink: 1 }}>
+          <If when={selected() === null && workspaceError()}>
+            <View
+              style={{
+                marginBottom: 8,
+                flexDirection: 'row',
+                flexWrap: 'wrap',
+                alignItems: 'center',
+                justifyContent: 'center',
+                columnGap: 12,
+                rowGap: 4,
+              }}
+            >
+              <Text
+                tooltip={textTooltip(workspaceError)}
+                style={{ ...bodyTextStyle, color: C.secondary }}
+              >
+                {tr('Folder unavailable')}
+              </Text>
+              <View style={{ flexDirection: 'row', gap: 8 }}>
+                <Button
+                  accessibilityLabel={tr('Choose another folder…')}
+                  onPress={inputAction(() => recentOpen.set(true), null)}
+                  style={controlStyle}
+                  hoverStyle={controlHoverStyle()}
+                  focusStyle={controlFocusStyle()}
+                >
+                  <Text style={{ color: C.accent }}>{tr('Choose another folder…')}</Text>
+                </Button>
+                <Button
+                  accessibilityLabel={tr('Retry folder')}
+                  onPress={inputAction(() => {
+                    void checkWorkspace();
+                  }, null)}
+                  style={controlStyle}
+                  hoverStyle={controlHoverStyle()}
+                  focusStyle={controlFocusStyle()}
+                >
+                  <Text style={{ color: C.secondary }}>{tr('Retry folder')}</Text>
+                </Button>
+              </View>
+            </View>
+          </If>
+          <Each<ConversationHandle>
+            of={handle() ? [handle()!] : []}
+            key={(owner: ConversationHandle) => owner.sessionId}
+          >
+            {(item) => {
+              const owner = item();
+              return (
+                <View style={{ minHeight: 0, flexShrink: 1, gap: 8 }}>
+                  <Each
+                    of={owner.interactions().entries.slice(0, 1)}
+                    key={(entry) => entry.requestId}
+                  >
+                    {(entry) => (
+                      <InteractionComposer
+                        sessionId={owner.sessionId}
+                        requestId={entry().requestId}
+                        control={control}
+                        openBeside={shell()?.openBeside}
+                        focusComposer={focusComposer}
+                        confirming={() =>
+                          connectionLost() || !owner.connected() || busy() || !controlsKnown()
+                        }
+                      />
+                    )}
+                  </Each>
+                </View>
+              );
+            }}
+          </Each>
+          <If
+            when={
+              handle()?.reconnecting() ||
+              handle()?.executionWaitMessage() ||
+              handle()?.attachmentMetadataFailed()
+            }
+          >
+            <View
+              style={{
+                flexDirection: 'row',
+                flexWrap: 'wrap',
+                alignItems: 'center',
+                gap: 8,
+                paddingHorizontal: 12,
+                paddingVertical: 4,
+              }}
+            >
+              <If when={handle()?.reconnecting() || handle()?.executionWaitMessage()}>
+                <Text style={{ ...bodyTextStyle, flex: 1, color: C.muted }}>
+                  {handle()?.reconnecting()
+                    ? tr('Reconnecting updates… Your draft is kept.')
+                    : handle()?.executionWaitMessage()}
+                </Text>
+              </If>
+              <If when={handle()?.reconnecting()}>
+                <Button
+                  accessibilityLabel={tr('Reconnect updates')}
+                  onPress={() => handle()?.reconnect()}
+                  style={controlStyle}
+                >
+                  <Text style={{ color: C.accent }}>{tr('Retry')}</Text>
+                </Button>
+              </If>
+              <If when={handle()?.attachmentMetadataFailed()}>
+                <Button onPress={() => handle()?.retryAttachmentMetadata()} style={controlStyle}>
+                  <Text style={{ color: C.accent }}>{tr('Retry attachment metadata')}</Text>
+                </Button>
+              </If>
+            </View>
+          </If>
+          <If when={!connectionLost() && status()}>
+            <View
+              style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                gap: 8,
+                paddingHorizontal: 12,
+                paddingVertical: 4,
+                flexShrink: 0,
+              }}
+            >
+              <Text
+                style={[
+                  {
+                    ...bodyTextStyle,
+                    flex: 1,
+                    minWidth: 0,
+                    color: C.muted,
+                  },
+                  { userSelect: 'text' },
+                ]}
+              >
+                {status()}
+              </Text>
+              <Button
+                accessibilityLabel={tr('Dismiss action feedback')}
+                onPress={inputAction(() => status.set(''), null)}
+                style={{
+                  ...controlStyle,
+                  width: 32,
+                  height: 32,
+                  paddingHorizontal: 0,
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                }}
+                hoverStyle={controlHoverStyle()}
+                focusStyle={controlFocusStyle()}
+              >
+                <Icon name="close" color={C.muted} />
+              </Button>
+            </View>
+          </If>
+          <If
+            when={
+              !connectionLost() &&
+              (handle()?.connected() ?? true) &&
+              (error() || working() || forkNotice()?.id === selected())
+            }
+          >
+            <Scroll
+              accessibilityLabel={tr('Action feedback')}
+              style={{
+                minHeight: bodyTextStyle.lineHeight + 16,
+                flexShrink: 1,
+                backgroundColor: C.card,
+                // A card of its own on the desktop: square corners
+                // flush on the composer's rounded top read as notches.
+                ...(platform.idiom === 'terminal' ? {} : { borderRadius: 8, marginBottom: 8 }),
+              }}
+              contentStyle={{
+                paddingHorizontal: 16,
+                paddingVertical: 8,
+                gap: 8,
+              }}
+            >
+              <If when={error()}>
+                <Text style={[{ ...bodyTextStyle, color: C.danger }, { userSelect: 'text' }]}>
+                  {error()}
+                </Text>
+              </If>
+              <If when={working() && !error()}>
+                <Text style={{ ...bodyTextStyle, color: C.muted }}>
+                  {switching() ? tr('Saving draft before switching…') : tr('Creating fork…')}
+                </Text>
+              </If>
+              <If when={forkNotice()?.id === selected()}>
+                <View
+                  style={{
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    gap: 8,
+                  }}
+                >
+                  <Icon name="fork" color={C.secondary} />
+                  <Text
+                    style={{
+                      ...bodyTextStyle,
+                      flex: 1,
+                      color: C.muted,
+                    }}
+                  >
+                    {tr('This is a fork of {title}. The original conversation is unchanged.', {
+                      title: forkNotice()!.title,
+                    })}
+                  </Text>
+                  <Button
+                    onPress={inputAction(openBrowsed, {
+                      id: forkNotice()!.source,
+                      origin: selected(),
+                    })}
+                    style={controlStyle}
+                    hoverStyle={{ backgroundColor: C.cardRaised }}
+                    focusStyle={controlFocusStyle()}
+                  >
+                    <Text style={{ ...bodyTextStyle, color: C.accent }}>
+                      {tr('Back to original')}
+                    </Text>
+                  </Button>
+                </View>
+              </If>
+            </Scroll>
+          </If>
+        </View>
+      );
+      return (
+        <viewRuntimeContext.Provider value={runtime}>
+          <View
+            ref={(node) => {
+              paneRoot = node;
+              if (!side || sideKeys === node) return;
+              sideKeys = node;
+              if (!input.compact) {
+                bindKeys(node);
+                return;
+              }
+              unbindKeys.push(
+                keymap.bind(
+                  'escape',
+                  () => {
+                    if (overlay() !== null) return;
+                    if (handle()?.run() != null) stopAction()();
+                    else input.compact!.close();
+                  },
+                  { when: 'always', within: node },
+                ),
+              );
+            }}
+            onFileDrop={(event) => {
+              fileDragging.set(false);
+              dropFiles?.(event);
+            }}
+            onFileDragEnter={() => fileDragging.set(true)}
+            onFileDragLeave={() => fileDragging.set(false)}
+            style={
+              input.compact
+                ? { flexShrink: 1, minHeight: 0 }
+                : { flex: 1, minHeight: 0, position: 'relative' }
+            }
+          >
+            <If when={input.compact === undefined}>
+              <View
+                onLayout={({ bounds }) => computerViewport.set(bounds.size)}
+                style={{
+                  position: 'absolute',
+                  top: 32,
+                  bottom: 0,
+                  left: 0,
+                  right: 0,
+                  zIndex: 10,
+                  pointerEvents: 'box-none',
+                }}
+              >
+                <ComputerStageView
+                  controller={computer}
+                  source={computerSource}
+                  visible={computerVisible}
+                  viewport={computerViewport()}
+                  report={(reason) => console.warn('Computer Stage:', reason)}
+                />
+              </View>
+            </If>
+            <If when={input.compact !== undefined}>
+              <CompactComposer
+                session={composerSession}
+                stop={() => stopAction()()}
+                expand={input.compact!.expand}
+                chooseModel={() => shell()?.openSettings()}
+                attach={(node) => {
+                  compactInput = node;
+                }}
+              />
+            </If>
+            <If when={selected() === null && input.compact === undefined}>
+              <View>
+                <Header
+                  title=""
+                  commands={inputAction(invokeCommand, {
+                    id: 'commands',
+                    sessionId: null,
+                  })}
+                  browser={browserHeader(null)}
+                />
+              </View>
+            </If>
+            <Each of={selected() ? [selected()!] : []} key={(id: string) => id}>
+              {(id) => (
+                <Conversation
+                  chooseModel={() => open({ kind: 'models', sessionId: id() })}
+                  compact={input.compact !== undefined}
+                  client={host.session(id())}
+                  connectionLost={connectionLost}
+                  botSession={botSession}
+                  visible={() =>
+                    selected() === id() && overlay() === null && (shell()?.visible() ?? false)
+                  }
+                  foreground={input.compact ? () => true : foreground}
+                  control={control}
+                  continuationPending={() =>
+                    !controlsKnown() ||
+                    controls().some(
+                      (original) =>
+                        original.method === 'continueRun' && original.sessionId === id(),
+                    )
+                  }
+                  fork={async (action) => {
+                    await changeBrowsedSession(action, id());
+                  }}
+                  edit={(action, text, send) => changeBrowsedSession(action, id(), { text, send })}
+                  takePrefill={(available: boolean) => {
+                    const prefill = prefills.get(id()) ?? null;
+                    prefills.delete(id());
+                    const current = submission();
+                    const handoff =
+                      current.kind === 'handing_off' && current.sessionId === id() ? current : null;
+                    if (!available) {
+                      if (handoff) {
+                        submission.set({ kind: 'idle' });
+                        void shell()!.openSession(null).catch(report);
+                      }
+                      if (prefill)
+                        report(
+                          new UiError(
+                            'The draft changed before confirmation. Send again to confirm it.',
+                          ),
+                        );
+                      return null;
+                    }
+                    if (handoff) {
+                      pending.set(null);
+                      submission.set(
+                        handoff.task === 'pending'
+                          ? { kind: 'finishing', attempt: handoff.attempt }
+                          : { kind: 'idle' },
+                      );
+                    }
+                    return prefill;
+                  }}
+                  commands={inputAction(invokeCommand, {
+                    id: 'commands',
+                    sessionId: id(),
+                  })}
+                  browser={() => browserHeader(id())}
+                  files={
+                    workspace()
+                      ? inputAction(invokeCommand, {
+                          id: 'files',
+                          sessionId: id(),
+                        })
+                      : undefined
+                  }
+                  changes={
+                    workspace()
+                      ? inputAction(resources.openChanges, {
+                          sessionId: id(),
+                        })
+                      : undefined
+                  }
+                  stage={() =>
+                    workspace()
+                      ? {
+                          open: resources.shown(),
+                          toggle: () => resources.toggleStage({ sessionId: id() }),
+                        }
+                      : undefined
+                  }
+                  activeWorktree={() => resources.activeWorktree(id())}
+                  selectWorktree={(worktreePath) =>
+                    resources.selectWorktree({ sessionId: id(), worktreePath })
+                  }
+                  sources={() => resources.sources(id())}
+                  childSessions={() =>
+                    browsing.sessions().filter((s) => s.parentSessionId === id())
+                  }
+                  openChangesWithWorktree={
+                    workspace()
+                      ? (worktreePath) => resources.openChanges({ sessionId: id(), worktreePath })
+                      : undefined
+                  }
+                  openLaunchpad={
+                    workspace() ? () => resources.openLaunchpad({ sessionId: id() }) : undefined
+                  }
+                  openPullRequest={
+                    workspace()
+                      ? (target) => resources.openPullRequest({ sessionId: id(), ...target })
+                      : undefined
+                  }
+                  openPreset={(preset, backend) =>
+                    open({ kind: 'preset', sessionId: id(), preset, backend })
+                  }
+                  filesOpener={(node) => resources.attachOpener(id(), node)}
+                  previewImage={previewImage}
+                  previewTerminal={(ref, restoreFocus) => previewTerminal(id(), ref, restoreFocus)}
+                  openLink={(target, restoreFocus) => openLink(id(), target, restoreFocus)}
+                  knownSession={(sessionId) =>
+                    browsing.sessions().find((session) => session.id === sessionId)
+                  }
+                  openSessionBeside={
+                    shell()?.openBeside ??
+                    (side
+                      ? (sessionId) => {
+                          void shell()?.openSession(sessionId).catch(report);
+                        }
+                      : undefined)
+                  }
+                  openSessionHere={(sessionId) => {
+                    void shell()?.openSession(sessionId).catch(report);
+                  }}
+                  focusComposer={focusComposer}
+                  stopAction={stopAction}
+                  restartBot={restartBot}
+                  attach={(next) => {
+                    handle.set(next);
+                    const request = pendingReveal;
+                    if (request !== null && request.sessionId === next.sessionId) {
+                      pendingReveal = null;
+                      void next
+                        .reveal(request.anchor, request.current)
+                        .then(request.resolve, request.reject);
+                    }
+                  }}
+                  detach={(previous) => {
+                    if (handle() === previous) {
+                      handle.set(null);
+                    }
+                  }}
+                />
+              )}
+            </Each>
+            <If when={input.compact !== undefined}>{request}</If>
+            <If when={input.compact === undefined}>
+              <ComposerView
+                dropFiles={(drop) => {
+                  dropFiles = drop;
+                }}
+                fileDragging={fileDragging}
+                blocked={reloading}
+                active={() => overlay() === null && !reloading() && (shell()?.visible() ?? false)}
+                session={composerSession}
+                pending={() =>
+                  selected() === null && pendingWorkspace() ? pendingComposer() : null
+                }
+                stopAction={stopAction}
+                needsConnection={noConnections}
+                request={request}
+                attach={(node) => {
+                  for (const unbind of unbindEditorKeys.splice(0)) unbind();
+                  editor = node;
+                  bindKeys(side ? paneRoot : undefined, node);
+                }}
+                commands={composerCommands}
+                models={
+                  <>
+                    <If when={selected() === null && pendingWorkspace() !== null}>
+                      <ModelSelect
+                        owner={pendingModel}
+                        instance={pendingModelInstance}
+                        current={() => alive && selected() === null && pendingWorkspace() !== null}
+                        toggle={() =>
+                          pendingModelInstance.set(
+                            pendingModelInstance() === null ? ++overlayInstance : null,
+                          )
+                        }
+                        close={(instance) => {
+                          if (pendingModelInstance() !== instance) return false;
+                          pendingModelInstance.set(null);
+                          return true;
+                        }}
+                        manage={({ instance }) => {
+                          if (pendingModelInstance() !== instance) return;
+                          pendingModelInstance.set(null);
+                          shell()?.openSettings();
+                        }}
+                        select={async (_instance, backend) => {
+                          if (pendingSending()) return;
+                          updatePending({ backend, modelChosen: true });
+                          await pendingModel.refreshModel();
+                        }}
+                      />
+                    </If>
+                    <Each<ConversationHandle>
+                      of={handle() ? [handle()!] : []}
+                      key={(owner: ConversationHandle) => owner.sessionId}
+                    >
+                      {(item) => {
+                        const owner = item();
+                        return (
+                          <ModelSelect
+                            owner={owner}
+                            running={() => owner.run() !== null}
+                            instance={() => {
+                              const current = overlay();
+                              return current?.kind === 'models' &&
+                                current.sessionId === owner.sessionId
+                                ? current.instance
+                                : null;
+                            }}
+                            current={() => selected() === owner.sessionId && handle() === owner}
+                            toggle={toggleModels}
+                            close={(instance) => closeModels(owner, instance)}
+                            manage={manageModels}
+                            select={(instance, backend) => chooseModel(owner, instance, backend)}
+                          />
+                        );
+                      }}
+                    </Each>
+                  </>
+                }
+                chooseWorkspace={inputAction(invokeCommand, {
+                  id: 'workspace',
+                  sessionId: selected(),
+                })}
+                usageLimits={
+                  platform.idiom === 'terminal' ? undefined : (
+                    <ComposerUsageLimits
+                      backend={() => usageComposer()?.backend() ?? null}
+                      model={() => {
+                        const details = usageComposer()?.modelDetails();
+                        return details?.kind === 'ready' ? details.choice.label : null;
+                      }}
+                    />
+                  )
+                }
+                workspacePicker={
+                  platform.idiom === 'terminal' || side ? undefined : (
+                    <RecentWorkspaces
+                      path={() =>
+                        selected() === null
+                          ? pendingWorkspaceLabel()
+                          : (handle()?.workspace() ?? '')
+                      }
+                      recent={recentWorkspaces}
+                      open={recentOpen}
+                      changed={(open) => recentOpen.set(open)}
+                      disabled={() => pendingSending() || pendingFileBusy()}
+                      choose={(item) => {
+                        recentOpen.set(false);
+                        void create({ kind: 'directory', path: item.path }, selected(), item.path);
+                      }}
+                      browse={() => {
+                        recentOpen.set(false);
+                        invokeOwn('workspace');
+                      }}
+                    />
+                  )
+                }
+                settings={inputAction(invokeCommand, {
+                  id: 'settings',
+                  sessionId: selected(),
+                })}
+              />
+            </If>
+            <If when={recoveredFork()}>
+              <Button
+                onPress={inputAction(openBrowsed, {
+                  id: recoveredFork()!.id,
+                  origin: selected(),
+                })}
+                style={{ ...controlStyle, alignSelf: 'flex-start' }}
+                hoverStyle={controlHoverStyle()}
+                focusStyle={controlFocusStyle()}
+              >
+                <Text style={{ color: C.accent }}>
+                  {tr('Open recovered fork')} · {recoveredFork()!.title}
+                </Text>
+              </Button>
+            </If>
+            <Each
+              of={overlay() && overlay()!.kind !== 'models' ? [overlay()!] : []}
+              key={(value: Overlay) => value.instance}
+            >
+              {(value) => {
+                const current = value();
+                const close = inputAction(closeOverlay, current.instance);
+                if (current.kind === 'goal')
+                  return (
+                    <GoalDialog
+                      goal={current.goal}
+                      objective={current.objective}
+                      close={() => closeOverlay(current.instance)}
+                    />
+                  );
+                if (current.kind === 'preset')
+                  return (
+                    <AppliedPresetDialog
+                      preset={current.preset}
+                      backend={current.backend}
+                      close={() => closeOverlay(current.instance)}
+                    />
+                  );
+                if (current.kind === 'compact')
+                  return (
+                    <CompactDialog
+                      owner={current.owner}
+                      prompt={current.prompt}
+                      close={() => closeOverlay(current.instance)}
+                    />
+                  );
+                if (current.kind === 'search')
+                  return (
+                    <RecallSearch
+                      origin={current.sessionId}
+                      within={current.within}
+                      open={(origin, target) => openRecalled(current.instance, origin, target)}
+                      close={() => closeOverlay(current.instance)}
+                    />
+                  );
+                if (current.kind === 'sessions')
+                  return (
+                    <Dialog
+                      animation="none"
+                      onOpenChange={() => closeOverlay(current.instance)}
+                      style={{
+                        flex: 1,
+                        backgroundColor: C.scrim,
+                      }}
+                    >
+                      <View
+                        style={
+                          platform.idiom === 'terminal'
+                            ? { backgroundColor: C.background }
+                            : // The panel's inset keeps the header on the window controls' center line.
+                              { backgroundColor: C.chrome, paddingTop: PANEL_INSET }
+                        }
+                      >
+                        <Header
+                          title={current.sessionId === null ? '' : tr('Sessions')}
+                          commands={inputAction(invokeCommand, {
+                            id: 'commands',
+                            sessionId: current.sessionId,
+                          })}
+                          browser={browserHeader(current.sessionId, true)}
+                        />
+                      </View>
+                      <View
+                        style={{
+                          width: '100%',
+                          maxWidth: 640,
+                          flex: 1,
+                          minHeight: 0,
+                          backgroundColor: C.chrome,
+                        }}
+                      >
+                        <WorkspaceBrowser
+                          {...browserProps}
+                          close={() => closeOverlay(current.instance)}
+                        />
+                      </View>
+                    </Dialog>
+                  );
+                if (current.kind === 'workspaces')
+                  return (
+                    <WorkspacePicker
+                      instance={current.instance}
+                      current={() =>
+                        overlay()?.instance === current.instance && selected() === current.sessionId
+                      }
+                      close={closeOverlay}
+                      changed={() => {
+                        const owner = handle();
+                        if (
+                          alive &&
+                          selected() === current.sessionId &&
+                          owner?.sessionId === current.sessionId
+                        )
+                          void owner.refresh().catch(report);
+                        if (alive) void browsing.refresh().catch(report);
+                      }}
+                      create={(workspace, label) => create(workspace, current.sessionId, label)}
+                    />
+                  );
+                return (
+                  <Palette
+                    instance={current.instance}
+                    commands={commands({
+                      instance: current.instance,
+                      sessionId: current.sessionId,
+                    })}
+                    close={closeOverlay}
+                  />
+                );
+              }}
+            </Each>
+            <TerminalInterrupt state={interrupt} />
+          </View>
+        </viewRuntimeContext.Provider>
+      );
+    },
+    enabled(id: string) {
+      if (!shell() || reloading()) return false;
+      // A side pane holds one open conversation; navigation belongs to the main pane.
+      if (side && ['new', 'workspace', 'browse', 'sessions'].includes(id)) return false;
+      if (id === 'files') return handle() !== null && workspace() !== null;
+      if (id === 'bot') return true;
+      if (id === 'goal') return handle()?.goal.view()?.enabled ?? pendingWorkspace() !== null;
+      if (['compact', 'latest', 'history-focus', 'activity-focus'].includes(id))
+        return handle() !== null;
+      if (id === 'stop') return !!handle()?.connected() && handle()?.run() != null;
+      if (id === 'queue') {
+        const owner = handle();
+        return (
+          !!owner &&
+          owner.connected() &&
+          owner.editable() &&
+          owner.run() !== null &&
+          !owner.blockedReason() &&
+          hasComposerContent(owner.draft().trim(), owner.attachments.files(), owner.quotes()) &&
+          !matchComposerCommand(
+            commandCandidates().map((entry) => entry.metadata),
+            owner.draft(),
+          )
+        );
+      }
+      return true;
+    },
+    run(id: string, argument?: string) {
+      const source = {
+        instance: overlay()?.instance ?? null,
+        sessionId: selected(),
+      };
+      switch (id) {
+        case 'commands':
+          return open({ kind: 'commands', sessionId: selected() });
+        case 'browse':
+          return open({ kind: 'sessions', sessionId: selected() });
+        case 'sessions':
+          return commandSessions(source);
+        case 'find':
+          return commandFind(source);
+        case 'new':
+          return commandNew(source);
+        case 'bot':
+          return commandBot(source);
+        case 'workspace':
+          return commandWorkspace(source);
+        case 'models':
+          return commandModels(source);
+        case 'settings':
+          return commandSettings(source);
+        case 'files':
+          return commandFiles(source);
+        case 'goal':
+          return commandGoal(source, argument);
+        case 'compact':
+          return commandCompact(source, argument);
+        case 'latest':
+          return commandLatest({
+            ...source,
+            turnId: handle()?.activeTurn() ?? null,
+          });
+        case 'history-focus':
+          return commandHistory(source);
+        case 'activity-focus':
+          return commandActivity({
+            ...source,
+            turnId: handle()?.activityTurn() ?? null,
+          });
+        case 'stop':
+          return commandStop({
+            ...source,
+            runId: handle()?.run() ?? null,
+          });
+        case 'queue':
+          return commandQueue(source);
+      }
+    },
+    async prepareReload() {
+      if (pendingSending() || pendingCreateUncertain() || pendingHandoff())
+        throw new UiError('Finish or recover the pending action before reloading.');
+      await pendingIntake();
+      const owner = handle();
+      if (owner && !(await owner.flushDraft()))
+        throw new UiError(
+          'Draft could not be saved or restored. Its existing contents are preserved.',
+        );
+      if (!alive || handle() !== owner) throw new UiError('Conversation navigation was cancelled.');
+      return null;
+    },
+  };
+}
+
+function projectComposerCompletion(
+  host: Host,
+  target: AgentCompletionTarget,
+): ComposerCompletionSource {
+  return {
+    files:
+      target.kind === 'draft' && target.workspace === null
+        ? null
+        : (query, directory) =>
+            host.subscribe('agent', 'fileCandidates', {
+              target,
+              query,
+              ...(directory ? { directory } : {}),
+            }),
+    async sessions(query) {
+      const [rooms, conversations] = await Promise.all([
+        searchSessions(host, 'room', query),
+        searchSessions(host, 'agent', query),
+      ]);
+      return [...rooms, ...conversations];
+    },
+    skills: ({ query, backend }) =>
+      host.query('agent', 'skillCandidates', { target, backend, query }),
+    pathLabel: host.pathLabel,
+  };
+}
+
+function projectComposerSession(
+  owner: ConversationHandle,
+  host: Host,
+): ComposerSession<JSX.Element> {
+  return {
+    sessionId: owner.sessionId,
+    prediction: owner.prediction,
+    sends: owner.sends,
+    retrySend: owner.retrySend,
+    editSend: owner.editSend,
+    checkSend: owner.checkSend,
+    dismissSend: owner.dismissSend,
+    computerAccess: owner.computerAccess,
+    completion: projectComposerCompletion(host, { kind: 'session', sessionId: owner.sessionId }),
+    checklist: {
+      read: (offset, limit) =>
+        host.query('agent', 'checklist', {
+          sessionId: owner.sessionId,
+          offset,
+          ...(limit === undefined ? {} : { limit }),
+        }),
+      watch: (offset) =>
+        host.subscribe('agent', 'watchChecklist', {
+          sessionId: owner.sessionId,
+          offset,
+        }),
+    },
+    queue: {
+      sessionId: owner.queue.sessionId,
+      snapshot: owner.queue.snapshot,
+      running: owner.queue.running,
+      read: owner.queue.read,
+      change: owner.queue.change,
+    },
+    attachments: projectComposerAttachments(owner.attachments, host),
+    permissions: {
+      sessionId: owner.permissions.sessionId,
+      snapshot: owner.permissions.snapshot,
+      pending: owner.permissions.pending,
+      error: owner.permissions.error,
+      select: owner.permissions.select,
+    },
+    goal: owner.goal,
+    projectMcp: {
+      proposal: owner.projectMcp.proposal,
+      pending: owner.projectMcp.pending,
+      error: owner.projectMcp.error,
+      notice: owner.projectMcp.notice,
+      trust: owner.projectMcp.trust,
+      dismiss: owner.projectMcp.dismiss,
+    },
+    draft: owner.draft,
+    quotes: owner.quotes,
+    removeQuote: owner.removeQuote,
+    previewImage: owner.previewImage,
+    editable: owner.editable,
+    loading: owner.loading,
+    blockedReason: owner.blockedReason,
+    backend: owner.backend,
+    modelDetails: owner.modelDetails,
+    refreshModel: owner.refreshModel,
+    workspace: owner.workspace,
+    empty: owner.empty,
+    error: owner.error,
+    dismissError: owner.dismissError,
+    notice: owner.notice,
+    recovering: owner.recovering,
+    connected: owner.connected,
+    run: owner.run,
+    execution: owner.execution,
+    stopping: owner.stopping,
+    continuation: owner.continuation,
+    continuing: owner.continuing,
+    continueRun: owner.continueRun,
+    metrics: owner.metrics,
+    contextUsage: owner.contextUsage,
+    changeDraft: owner.changeDraft,
+    submit: owner.submit,
+    sendRendered: owner.sendRendered,
+    stop: owner.stop,
+  };
+}

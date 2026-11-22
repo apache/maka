@@ -1,0 +1,6 @@
+{
+  "version": "150.4.0",
+  "repository": "https://github.com/denoland/rusty_v8.git",
+  "revision": "5c15a6995c9bb4bacd3e341b59fff32c909c80bf",
+  "gnArgs": "v8_use_libm_trig_functions=false"
+}

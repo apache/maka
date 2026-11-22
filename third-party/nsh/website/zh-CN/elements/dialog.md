@@ -1,0 +1,302 @@
+---
+title: Dialog
+description: Dialog 组件：在所有内容之上的模态界面，用于全屏流程、sheet 和由应用设定样式的对话框。
+group: base
+demo: el-dialog
+---
+
+# Dialog
+
+Dialog 在应用其余内容之上、在它自己的原生窗口层中呈现内容：iOS 和 Mac Catalyst 上是一个被 present 的 view controller，Android 上是一个 Dialog，桌面平台和 Web 上是覆盖整个窗口的一层。它用于全屏流程、sheet 和对话框。系统自带的手势（下滑关闭 sheet、Android 返回键、Escape）都能正常工作，并在原生侧决定。Rust 用 `nsh_base::dialog()` 创建，TSX 用从 `nsh/base` 导入的 `<Dialog>`。
+
+Dialog 负责行为，外观交给应用：它的样式设定弹出层（包含子元素的视图）的样式，在 TSX 中 `backdropClass` / `backdropStyle` 在它后面加一层背景。
+
+在 macOS 上，关闭对话框后，键盘焦点会回到打开前的输入框或控件，包括 `Editor` 和 `RichEditor`，前提是该控件仍在当前作用域中可见。如果其他控件已经取得焦点，则保留它的焦点。
+
+```rust tabs
+use nsh_base::{button, dialog};
+use nsh_core::prelude::*;
+
+/// A blue button with a white label.
+fn primary(label: &'static str, on_press: impl Fn() + 'static) -> impl IntoElement {
+    button()
+        .on_press(on_press)
+        .items_center()
+        .rounded_lg()
+        .bg(rgb(0x2563eb))
+        .px_4()
+        .py_3()
+        .active(|s| s.opacity(0.7))
+        .child(text(label).font_weight(FontWeight::SEMIBOLD).text_color(white()))
+}
+
+fn example() -> impl IntoElement {
+    let open = signal(false);
+    view()
+        .flex_1()
+        .justify_center()
+        .p_6()
+        .child(primary("Open", move || open.set(true)))
+        .child(when(open, move || {
+            dialog()
+                .presentation(ModalPresentation::PageSheet)
+                .on_cancel(move || open.set(false))
+                .flex_1()
+                .bg(white())
+                .child(
+                    view()
+                        .flex_1()
+                        .px_5()
+                        .pt_safe_area_plus(px(20.0))
+                        .pb_safe_area_plus(px(20.0))
+                        .gap_3()
+                        .child(text("A sheet").text_2xl().font_weight(FontWeight::BOLD))
+                        .child(primary("Close", move || open.set(false))),
+                )
+        }))
+}
+```
+
+```tsx tabs
+import { signal, Text, View } from "nsh";
+import { Button, Dialog } from "nsh/base";
+
+function Example() {
+  const open = signal(false);
+  return (
+    <View style={{ flex: 1, justifyContent: "center", padding: 24 }}>
+      <Button onPress={() => open.set(true)} class="items-center rounded-lg bg-blue-600 px-4 py-3 active:opacity-70">
+        <Text class="font-semibold text-white">Open</Text>
+      </Button>
+      <Dialog open={open()} presentation="pageSheet" onOpenChange={(e) => open.set(e.open)} class="flex-1 bg-white">
+        <View
+          style={{
+            flex: 1,
+            gap: 12,
+            paddingHorizontal: 20,
+            paddingTop: "calc(env(safe-area-inset-top) + 20px)",
+            paddingBottom: "calc(env(safe-area-inset-bottom) + 20px)",
+          }}
+        >
+          <Text style={{ fontSize: 24, fontWeight: "700" }}>A sheet</Text>
+          <Button onPress={() => open.set(false)} class="items-center rounded-lg bg-blue-600 px-4 py-3 active:opacity-70">
+            <Text class="font-semibold text-white">Close</Text>
+          </Button>
+        </View>
+      </Dialog>
+    </View>
+  );
+}
+```
+
+在 TSX 中，`open` 不为 `false` 时显示，变为 `false` 时关闭。在 Rust 中，它在视图中时呈现，离开视图时消失，所以由 `when` 持有它。无论哪种方式，它都会给内容提供 dialog 的安全区域 inset，供其内部的 [`env(safe-area-inset-*)`](./safe-area.md) 变量和 `safeAreaInsets()`（Rust 组件中为 `cx.insets()`）读取。[`Button`](./button.md) 同样来自 `nsh/base`，是由应用设定样式的按压目标。
+
+`nsh_core::prelude` 中也有一个较旧的、已弃用的 `dialog` 函数：像上面那样按名称导入 `nsh_base::dialog`，显式导入会取代它。如果需要系统提示框或操作表，请使用 [`AlertDialog`](./alert-dialog.md)。
+
+## 属性
+
+| 属性 | Rust | 类型 | 默认值 | 说明 |
+|---|---|---|---|---|
+| `open` | 打开期间位于视图中（`when(open, ..)`） | `boolean` | `true` | 为 true 时显示。 |
+| `animation` | `.animation(ModalAnimation::Fade)` | `"slide" \| "fade" \| "none"` | `"slide"` | 出现和离开的方式。 |
+| `transitionShader` | `.transition_shader(TransitionShader::new(program))` | `{ source: string; uniforms?: Record<string, ShaderUniform>; duration?: number }` | 无 | 通过一个 WGSL 着色器出现和离开，取代它的 `animation`：`shade(uv)` 以 `sample_from` 读取后面的内容、以 `sample_to` 读取对话框，`nsh.progress` 在 `duration` 毫秒内（默认 350）从 0 走到 1，关闭时从 1 回到 0。系统要求减少动态效果时，它使用自己的 `animation`。见 [Shader](./shader.md)。 |
+| `presentation` | `.presentation(ModalPresentation::PageSheet)` | `"fullScreen" \| "pageSheet" \| "formSheet"` | `"fullScreen"` | 在 iOS 上的形式：`fullScreen` 以透明背景覆盖整个屏幕；`pageSheet` 和 `formSheet` 是系统 sheet，下面的内容保持可见（在大屏上 `formSheet` 是一个更小的居中 sheet）。 |
+| `closeOnEscape` | `.close_on_escape(..)` | `boolean` | `true` | Escape 和 Android 返回键在原生侧关闭它。 |
+| `closeOnBackdropPress` | `.close_on_backdrop_press(..)` | `boolean` | `true` | 按下背景层时关闭它。 |
+| `closeOnSwipe` | `.close_on_swipe(..)` | `boolean` | `true` | 下滑 sheet（iOS、手机浏览器）时在原生侧关闭它。 |
+| `detents` | `.detents(vec![SheetDetent::Medium, SheetDetent::Large])` | `SheetDetent[]` | `[]` | iOS sheet（`pageSheet`、`formSheet`）停靠的高度，取值和 [`Sheet`](./sheet.md) 的 `SheetDetent` 一样：`"medium"`（约半屏）、`"large"`、以点为单位的 `{ height }`，或占 large 高度比例的 `{ fraction }`。不设时为系统的全高。见[半屏 sheet](#半屏-sheet)。 |
+| `detent` | `.detent(..)` | `SheetDetent` | | 停靠的档位：值变化时移到该档。用户拖到别处而 app 不跟时，sheet 停在用户拖到的那档。 |
+| `defaultDetent` | `.default_detent(..)` | `SheetDetent` | 最小的一档 | 没有 `detent` 时打开所在的档位。 |
+| `grabber` | `.grabber(..)` | `boolean` | `false` | 在 sheet 顶部显示系统抓手。 |
+| `largestUndimmedDetent` | `.largest_undimmed_detent(..)` | `SheetDetent` | 无 | 在这一档及以下，sheet 后面的内容不变暗，并且可以接收触摸。 |
+| `statusBar` | `.status_bar(..)` | `{ foreground?, hidden?, animated? }` | 无 | iOS 和 Android：对话框打开期间的状态栏，位于页面的设置之上（[状态栏](../modules/nsh-base.md#status-bar)）。 |
+| `accessibilityLabel` | `.label(..)` | `string` | 无 | 焦点进入对话框时读屏软件读出的名字：它的标题。 |
+| `accessibilityDescription` | `.accessibility_description(..)` | `string` | 无 | 读屏软件在名字之后读出的内容：它的说明文字。 |
+| `role` | `.role(AccessibilityRole::AlertDialog)` | `"dialog" \| "alertdialog"` | `"dialog"` | 对读屏软件而言它是什么：请用户确认某件事、或告诉用户紧急情况的对话框用 `"alertdialog"`。 |
+| `onOpen` | `.on_open(..)` | `() => void` | | 已完全出现。 |
+| `onClose` | `.on_close(..)` | `() => void` | | 已离开：用户关闭了它，或应用移除了它。 |
+| `onCancel` | `.on_cancel(..)` | `() => void` | | 用户尝试关闭它（Escape、返回、按下背景层、下滑），无论 `closeOn*` 是否允许关闭。 |
+| `onDetentChange` | `.on_detent_change(..)` | `(e: { detent: SheetDetent }) => void` | | 用户把 sheet 移到了另一档（拖动、抓手、在边缘滚动、读屏）。 |
+| `onOpenChange` | `.on_cancel(..)` | `(e: { open: boolean; reason: "cancel" \| "backdropPress" \| "swipe" }) => void` | | 用户关闭了它：在这里同步 `open`。在 Rust 中，由 `on_cancel` 把对话框移出视图。 |
+| `class`、`style` | `Styled` 方法 | `string`、`StyleProp<ViewStyle>` | | 弹出层：包含子元素的视图。 |
+| `backdropClass`、`backdropStyle` | 铺满对话框的子视图 | `string`、`StyleProp<ViewStyle>` | | 铺满 dialog、位于弹出层后面的背景层，设置其中之一时出现。 |
+| `children` | `.child(..)` | `JSX.Element` | | 内容。 |
+
+| `ios` 键 | Rust | 类型 | 默认值 | 说明 |
+|---|---|---|---|---|
+| `supportedOrientations` | `.supported_orientations(..)` | `("portrait" \| "portrait-upside-down" \| "landscape" \| "landscape-left" \| "landscape-right")[]` | 与呈现者相同 | dialog 允许的方向。`landscape-left` 是设备顺时针转动、主屏幕一侧在左边（UIKit 的 `landscapeLeft`）。 |
+
+| `android` 键 | Rust | 类型 | 默认值 | 说明 |
+|---|---|---|---|---|
+| `statusBarTranslucent` | `.status_bar_translucent(..)` | `boolean` | `false` | 内容延伸到状态栏下方；否则从状态栏下方开始。 |
+
+## 无障碍
+
+读屏软件把对话框当作一个整体：焦点进入时先说出这是一个对话框和它的名字，再读里面的内容。把标题作为它的名字：TSX 中是
+`accessibilityLabel`，Rust 中是 `.label(..)`；把说明文字作为它的描述：`accessibilityDescription`、
+`.accessibility_description(..)`，读屏软件紧接着名字读出它，用户在走到按钮之前就知道对话框说的是什么。请用户确认某件事（例如删除）的对话框是警示对话框：`role="alertdialog"`、
+`.role(AccessibilityRole::AlertDialog)`。各平台按自己的对话框呈现这个角色：macOS 上是 VoiceOver 的对话框，iOS 上是以标题命名的语义分组，
+Windows 上是 UI Automation 的对话框窗格，Linux 上是 AT-SPI 的对话框，Web 上是带 `aria-modal` 的 dialog。
+
+```rust tabs
+dialog()
+    .role(AccessibilityRole::AlertDialog)
+    .label("Delete this item?")
+    .accessibility_description("This can't be undone.")
+    .on_cancel(move || confirm.set(false))
+    .child(card())
+```
+
+```tsx tabs
+<Dialog
+  open={confirm()}
+  role="alertdialog"
+  accessibilityLabel="Delete this item?"
+  accessibilityDescription="This can't be undone."
+  onOpenChange={(e) => confirm.set(e.open)}
+>
+  …
+</Dialog>
+```
+
+## 打开与关闭
+
+对话框的状态属于应用。用户关闭 dialog（Escape、Android 返回键、按下背景层、下滑 sheet）时，它在原生侧关闭并通知应用，由应用把状态改成一致：TSX 中是 `onOpenChange({ open: false, reason })`，Rust 中是 `on_cancel`。在 TSX 中，`open` 一直为 `true` 时 dialog 保持关闭，`open` 从 `false` 变为 `true` 时再次打开。
+
+由于主线程从不等待应用代码，每个 `closeOn*` 标志都在用户操作时由原生侧读取。要在关闭前先确认，把这些标志设为 `false`：此时用户的尝试会调用 `onCancel`，由应用自己关闭对话框（TSX 中把 `open` 设为 `false`，Rust 中把它移出视图）：
+
+```rust tabs
+dialog()
+    .presentation(ModalPresentation::PageSheet)
+    .close_on_escape(false)
+    .close_on_backdrop_press(false)
+    .close_on_swipe(false)
+    .on_cancel(move || ask_to_discard.set(true))
+    .flex_1()
+    .bg(white())
+    .child(form())
+```
+
+```tsx tabs
+<Dialog
+  open={open()}
+  presentation="pageSheet"
+  closeOnEscape={false}
+  closeOnBackdropPress={false}
+  closeOnSwipe={false}
+  onCancel={() => askToDiscard.set(true)}
+  class="flex-1 bg-white"
+>
+  …
+</Dialog>
+```
+
+每次尝试都会调用 `onCancel`，无论这些标志是否允许关闭。
+
+## 半屏 sheet
+
+在 iOS 上，带 `detents` 的 `pageSheet` 或 `formSheet` dialog 停在这些高度：用户按系统的方式在各档之间拖动，拖过最小一档时，若 `closeOnSwipe` 允许就关闭。里面放 [`NavStack`](./nav-stack.md) 时，推进的页面带系统的导航头、返回键和侧滑返回，都在 sheet 内：
+
+```rust tabs
+dialog()
+    .presentation(ModalPresentation::PageSheet)
+    .detents(vec![SheetDetent::Medium, SheetDetent::Large])
+    .detent(move || Some(detent.get()))
+    .on_detent_change(move |d: &SheetDetent| detent.set(*d))
+    .grabber(true)
+    .on_cancel(move || open.set(false))
+    .flex_1()
+    .child(nav_stack().flex_1().child(nav_page().key("settings").child(settings())))
+```
+
+```tsx tabs
+<Dialog
+  open={open()}
+  presentation="pageSheet"
+  detents={["medium", "large"]}
+  detent={detent()}
+  onDetentChange={(e) => detent.set(e.detent)}
+  grabber
+  onOpenChange={(e) => open.set(e.open)}
+  class="flex-1"
+>
+  <NavStack state={pages} class="flex-1">
+    {(route) => <NavPage title={route}>…</NavPage>}
+  </NavStack>
+</Dialog>
+```
+
+`detent` 的值变化时 sheet 移过去，如上用 `onDetentChange` 跟随用户的拖动；app 不跟的拖动不会被撤销，sheet 停在用户拖到的那档。
+
+内容按 sheet 所停的高度排版。其他平台忽略 detents，dialog 保持它在那里的形式；需要在所有平台上都按档位停靠的底部 sheet，请用 [`Sheet`](./sheet.md)。
+
+## 带背景层的对话框
+
+默认 `fullScreen` 形式的 dialog 显示应用绘制的内容：这里是一层变暗的背景和居中的卡片。按下背景层即关闭：
+
+```rust tabs
+when(confirm, move || {
+    dialog()
+        .animation(ModalAnimation::Fade)
+        .on_cancel(move || confirm.set(false))
+        .flex_1()
+        .child(
+            // 背景层：按下即关闭对话框。
+            view()
+                .absolute()
+                .inset_0()
+                .bg(rgba(0x00000066))
+                .on_press(move || confirm.set(false)),
+        )
+        .child(
+            view()
+                .m(auto())
+                .w_80()
+                .gap_3()
+                .rounded_2xl()
+                .bg(white())
+                .p_5()
+                .child(text("删除这一项？").text_xl().font_weight(FontWeight::BOLD))
+                .child(
+                    button()
+                        .on_press(remove)
+                        .items_center()
+                        .rounded_lg()
+                        .bg(rgb(0xdc2626))
+                        .px_4()
+                        .py_3()
+                        .active(|s| s.opacity(0.7))
+                        .child(text("删除").font_weight(FontWeight::SEMIBOLD).text_color(white())),
+                ),
+        )
+})
+```
+
+```tsx tabs
+<Dialog
+  open={confirm()}
+  animation="fade"
+  onOpenChange={({ open }) => confirm.set(open)}
+  backdropClass="bg-black/40"
+  class="m-auto w-80 gap-3 rounded-2xl bg-white p-5"
+>
+  <Text style={{ fontSize: 20, fontWeight: "700" }}>删除这一项？</Text>
+  <Button onPress={remove} class="items-center rounded-lg bg-red-600 px-4 py-3 active:opacity-70">
+    <Text class="font-semibold text-white">删除</Text>
+  </Button>
+</Dialog>
+```
+
+如果需要系统提示框或操作表，请使用 `nsh/base` 的 [`AlertDialog`](./alert-dialog.md)。
+
+## ref 方法
+
+无。
+
+## 平台说明
+
+- iOS 和 Mac Catalyst：`presentation` 决定形式。`fullScreen` 以透明背景覆盖整个屏幕；`pageSheet` 和 `formSheet` 是带系统背景的系统 sheet，下滑时跟随手指（`closeOnSwipe`）。sheet 停在它的 `detents` 上，设了 `grabber` 时带系统抓手；自定义高度需要 iOS 16，iOS 15 上取 medium 和 large 中较近的一档。
+- Android：dialog 铺满窗口，显示应用的弹出层和背景层。返回键首先交给最上层的 dialog，然后才是导航栈和 `BackHandler` 监听器。
+- 桌面平台（macOS、Windows、Linux、GPUI）和 Web：dialog 是覆盖整个窗口的透明层，显示应用的弹出层和背景层。Escape 是一次关闭尝试。
+- `detents`、`detent`、`defaultDetent`、`grabber`、`largestUndimmedDetent` 和 `onDetentChange` 属于 iOS：Android、桌面平台和 Web 没有系统 sheet，会忽略它们（请用 [`Sheet`](./sheet.md)）。
+- `supportedOrientations` 属于 iOS，`statusBarTranslucent` 属于 Android。设置 `statusBarTranslucent` 之前，Android dialog 的内容从状态栏下方开始。

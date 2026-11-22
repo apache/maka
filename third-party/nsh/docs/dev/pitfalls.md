@@ -1,0 +1,968 @@
+# Verified constraints and pitfalls
+
+Things that were found the hard way. Read the section of the area you change before changing it.
+
+## QuickJS and the runtime
+
+- **QuickJS microtasks are run by the host.** Call `Host::run_jobs()` after every call from Rust into JS. `setTimeout` / `console` are our own;
+  `queueMicrotask`, `WeakRef` and `FinalizationRegistry` are built into QuickJS-NG.
+- **`Host::run_jobs()` is also the end of the turn for unhandled rejections** (`rejections.rs`): QuickJS's rejection
+  tracker reports a promise rejected without a handler and one that gets a handler later; the host holds the first
+  kind until the job queue is drained, then reports those still unhandled (`Host::set_rejection_handler`, else a
+  `js` error log). A handler attached later in the same turn makes no report, as in browsers. A promise the host
+  settles or reads natively without `then` (the bundle's evaluation promise, a stream's) is marked handled
+  (`JS_PromiseMarkAsHandled`), or it is reported. Interrupts are uncatchable and reject nothing; rejections while
+  the heap ran out are dropped, the VM stops with that report.
+- **The JS object graph must stay reachable from a GC root.** The renderer holds the root node, which holds its children's
+  objects and each node its handlers (`dom.rs`, reported by the classes' GC marks). Without that the whole rendered app (nodes,
+  handlers, signals) is an isolated cycle that idle GC collects, and taps stop working. `nsh test App.tsx` runs the steps of stdin after 1.2s of idling
+  for that; `crates/nsh-engine/tests/engine/counter.rs` is the regression test.
+- **Nodes are released by GC, not by Remove.** A memo may keep removed nodes and insert them again, so `Remove` only detaches;
+  `Release` (queued by the node's finalizer) frees the node and its native view.
+- **`nsh_js::BUNDLE_NAME` (`bundle.js`)** is the module name of every bundle and is how stacks are matched for symbolication; `BYTECODE_VERSION`
+  names the QuickJS-NG release and revision, `BC_VERSION` and the byte order, never the binding. The native
+  targets use `quickjs-jit` and must build the same QuickJS-NG as the CLI that compiles their bytecode (the web
+  runs no QuickJS). Tests hold it to the linked release, the bytecode's format byte and the `-sys` versions
+  in `Cargo.lock` (`ENGINES`): update them together when upgrading either.
+- **Encoded operations' codes** (`ANIMATION_*`, `CV_*`) come from `nsh_core::js` (`protocol.rs`, `canvas.rs`): never write a code's value
+  by hand in `nsh-js`.
+- **rquickjs converts `Option::None` to `undefined`, not `null`**: compare native results with `== null` in JS.
+- **`on*` props are event handlers to the renderer** (held on the node, sent to the core as a listener flag): settings must not
+  be named `on...` on host elements (`List` sends `loadMoreThreshold` as `loadMoreThreshold`).
+- **There is no error boundary**: hot component proxies catch what a component throws, report it and render nothing until the
+  fix (`nsh-js` `hot.rs`).
+- **Hot proxies return accessors**, not nodes: runtime code that inspects what a component returned (`NavStack` looks for a
+  `<NavPage>`, `navigation.rs`) must accept an accessor.
+
+## Core and layout
+
+- **Text nodes outside `<Text>`** (e.g. a string child of a `<View>`) create no native view and take no part in layout. A `<Text>`
+  nested in `<Text>` is a span without a native view; the whole block is merged into one `AttributedText`.
+- **`TextSpan` offsets are UTF-16**, like NSAttributedString / Android Spannable.
+- **Never re-insert a native child that is already in place.** `Insert` of a mounted view is a move: the platform takes it
+  out of the window for a moment, which ends its touches and its focus (an Android input loses the keyboard). Child diffs
+  (Rust components' `reconcile_children`) move only the children out of order, from the end, with `before` anchors.
+- **Taffy 0.15 custom measure callbacks must delegate to `taffy::compute_leaf_layout`** and only compute the content size. Returning the
+  content size directly skips resolving the leaf's own style (width / height / padding / min / max), so leaves such as
+  `<Image style={{width: 48}}>` end up with a zero size.
+- **Taffy 0.15's rounding pass is off; the core rounds layouts itself** (`rounded`, `Core::layout_origin`, the frame walk). Taffy rounds
+  absolutely positioned nodes through their containing block's list of "hoisted" children, which it leaves stale: a childless node keeps
+  the absolute child it last laid out, a hidden subtree's are never filled, a containing block served from the cache keeps its old ones.
+  A freed node still listed made the next pass panic (`invalid SlotMap key`), a hidden one kept its former layout, and an incremental
+  layout could round a node from stale values (a frame one point off from a layout from scratch). The core reaches every node through
+  its parent, its containing block (there is no `position: static`), and sums the origins from the root down, in Taffy's order, so the
+  `f32` sums and the rounding are Taffy's to the bit (`--trace` output is unchanged).
+- **Layout rounds to device pixels, not whole points** (`round`, `rounded` and `ceil_to_pixel` in `core/mod.rs`, at the
+  environment's `pixelRatio`). Android's densities are not whole numbers (2.625 on a 420 dpi phone), and its views sit on whole
+  pixels, each frame rounded in its parent (`Mounter.frame`): rounded to whole points, a box 4 points down (10.5 pixels) and 30
+  tall was 78 pixels while a child as tall was 79, so a scroll view cut the child's last row of pixels off; and a text measured
+  21⅓ points (56 pixels) laid out at 22 (58), the 2 pixels below its last line. Text measurements are rounded up to a device
+  pixel (`MeasureCache` holds the ratio and drops its sizes when the ratio changes, which lays everything out again); at one
+  pixel per point this is Taffy's rounding, but for a value within a 64th of a half, which rounds up. Android's `lineHeight` is a whole number of pixels, rounded to the
+  nearest as a TextView's dp line height is (`ExactLineHeight`): rounded up, 21 points at 2.625 were 56 pixels, a third of
+  a point per line taller than the design. Sizes and offsets are counted in whole pixels before they become points
+  (`pixel`, `span`): `round(to) - round(from)` in points differs in its last bits with where the edges are, and a 28 point
+  row at 2.625 (73.5 pixels) has every other edge on a half pixel, which an `f32`'s hair rounds either way. As a scroll
+  moved DataTable's body a pixel, every frame in it was sent again (460–1000 mount items a frame on a Pixel 10 Pro instead
+  of 3); a half pixel is snapped first, so it always rounds up.
+- **The core keeps its own layout tree** (`core/layout_tree.rs`: Taffy's algorithms over the core's nodes through Taffy's low-level
+  traits, as `TaffyTree` runs them, call for call). `TaffyTree::mark_dirty` stops at the first node whose cache is already empty, taking
+  its ancestors for dirty too; nodes of a `display: none` subtree and absolutely positioned ones always have empty caches while the nodes
+  above keep theirs, so a view moved in there kept its former layout. `LayoutTree::mark_dirty` clears every cache up to the root, and the
+  tree keeps no hoisted children (only Taffy's rounding pass reads them). The frame walk also gives everything under a `display: none`
+  view an empty frame and its texts an empty content box (`emit_frames_in`, `flush_text`): a hidden subtree is never read.
+- **Relayout boundaries are flex items whose size nothing inside can change** (`LayoutTree::is_boundary`): fixed points both ways, a
+  flex basis of `auto`, `flexShrink: 0`, no baseline alignment. A change inside stops dirtying there and the item is laid out again with
+  what its parent gave it last (`relayout_boundaries`, before the main pass); only when what it gives back differs (overflow, say) is
+  its parent dirtied. Each condition is needed: a percentage basis resolves against a parent of no definite size as `auto` (its
+  content), and shrinking is floored at the content's automatic minimum, so either let the content change the size (the layout
+  consistency harness found the first). Growing is fine: it takes the free space the parent and siblings leave. A restyled node always
+  dirties its parent (`set_style`), a boundary included. Boundaries' frames are emitted after the passes (`commit_round`).
+- **A changed text dirties nothing when it measures as before** (`LayoutTree::measures_as_before`, from `rebuild_text`): every
+  layout above a leaf was computed from the leaf's answers to the inputs it was asked (Taffy calls it under measuring passes and for
+  its final size), so the leaf keeps those answers since its cache was last cleared (`LayoutNode::measured`, at most eight: more come
+  of layouts at many sizes) and measures them again; all the same, and only the text is mounted again. The record is cleared with the
+  cache, never alone: an answer dropped while a layout above still holds what it was computed from would let a change through
+  unseen. Texts with attachments always relayout (their views are placed by the text's final layout).
+- **List cells are independent Taffy roots** (not children of the list's Taffy node; their width follows the list's cross axis): scrolling only
+  relays out dirty cells and only emits frames for relaid cell subtrees; when the main tree is clean, `compute_layout` and the frame walk of the
+  main tree are skipped.
+- **Taffy defaults are CSS semantics**; `Style::default()` switches to RN semantics: column, flexShrink 0, alignContent flex-start (stored as `normal` and
+  resolved per display by `style::resolve_normal_alignment`, so grids keep CSS's `normal`), position relative,
+  and min sizes 0 (an unset or `auto` `minWidth` / `minHeight` is 0). Taffy's `auto` minimum is CSS's automatic minimum size (the
+  min-content size); text has no cheap min-content and reports its natural width, so `flex: 1` text in a row could not shrink and
+  overflowed instead of wrapping. Yoga has no automatic minimum.
+- **`MountItem::Insert` positions by sibling (`before`), not by index**: platforms insert their own subviews into containers
+  (`UIRefreshControl` at the bottom, scroll indicators), which would shift indices.
+- **Platforms clamp scroll offsets to the content**: UIKit clamps `contentOffset` when `contentSize` shrinks, Android's
+  ScrollView clamps `scrollBy` to the child's current size. The core grows the content before a `ScrollBy` and scrolls
+  before shrinking it; Android sizes the content view at once in `setContentSize` (not at the next layout pass). What
+  a `scrollBy` or `scrollTo` (a command, an initial `contentOffset`) could not reach yet is owed on Android and paid as
+  the content grows (`ScrollBox.payOwed`), until the user scrolls: a pager's pages arriving after its offset.
+- **Scroll reports can predate the core's own scrolls**: each report carries how many `ScrollBy` / list `ScrollTo` the view
+  has applied (`EngineControl::scroll(.., applied)`), and the core adds the ones still pending; otherwise a stale offset
+  moves the window (and fires `onLoadMore`) backwards.
+- **Unbound list cells still show their last item**: the core moves them out of sight (never with a NaN frame: cells that
+  were never placed are skipped; UIKit throws on NaN geometry). Out of sight is not out of reach: the backends'
+  accessibility trees go by props, not frames, and a browser keeps such a cell in its accessibility tree, as a Tab
+  stop and for test-id lookups. The core hides them too (`Core::set_spare`) until it places them again.
+- **Tailwind variant order decides between variants**, not their order in the string: `odd:bg-a last:bg-b` gives an odd last row
+  `bg-a` (Tailwind sorts `odd` after `last`), exactly as in CSS.
+
+## Bundler and toolchain
+
+- **Shared target directories can reuse another worktree's older API.** Cargo can mark a path crate `Fresh`
+  when its artifact was built in another checkout and the current checkout's source mtimes are older. In ticket
+  20, `cargo check` used metadata containing the terminal performance API while `cargo test` reused an rlib
+  whose dep-info did not even list `perf.rs`; both had the requested `dev` and `run-app` features. Check verbose
+  Cargo output and the selected artifact's dep-info before changing feature gates. Validate independent worktrees
+  with their own default target directories; product code should not add build inputs to compensate for shared
+  artifacts.
+
+- **rquickjs must not enable the `full` feature.** It pulls in `dyn-load` (dlopen2), which does not compile for iOS / Catalyst. iOS targets
+  have no prebuilt bindings and need the `bindgen` feature (and libclang).
+- **Use `oxc_sourcemap` 9.x** (matching rolldown / oxc 0.153): source maps are composed with rolldown's types, so never mix in
+  another version's.
+- **Our plugin's own compile errors** are kept in `NshPlugin.error` and shown directly (clean code frame + relative path) instead of rolldown's
+  wrapped report.
+- **rolldown CommonJS chunks define reassigned exports as non-configurable getters**: a module run again fills a fresh
+  `exports` object and the hot runtime forwards the importers' object to it.
+- **`nsh run` installs the host by copying to a temporary file and renaming it**: overwriting in place an executable that another session is
+  running makes the kernel SIGKILL the newly launched process for a code signature mismatch.
+- **Development hosts never restore windows**: `nsh run` launches the Catalyst host with `-ApplePersistenceIgnoreState YES`;
+  after a crash, macOS would otherwise show a modal "reopen windows?" alert over it.
+- **IPAs are zipped with `ditto -c -k --norsrc --keepParent`**: `--sequesterRsrc` adds `__MACOSX/` resource forks.
+- **Float fields of the dev protocol decode through `nsh_dev::protocol`'s `float`** (`deserialize_with`): rolldown turns
+  on serde_json's `arbitrary_precision`, which feature unification can carry into a host's build, and then a number
+  with a fraction inside an internally tagged enum (every message, `TestStep`, `SceneQuery`) is buffered as a map
+  `{"$serde_json::private::Number": "390.5"}` that a plain `f32` / `f64` field rejects ("invalid type: map, expected
+  f64"); integers decode either way. A new float field in a message takes the same attribute.
+
+## iOS, UIKit and Mac Catalyst
+
+- **A constant newer than the deployment target (iOS 15) stops the app before `main`**: `objc2-ui-kit` exposes it as a
+  `pub static`, so naming it is a strong import that dyld binds at launch, used or not ("Symbol not found"). Classes and
+  methods are looked up at run time and are safe to guard by version; constants are not. `input.rs` looks the iOS 17
+  text content types up with `dlsym` and leaves `textContentType` unset without them. To check a binary, compare
+  `dyld_info -imports` with the exports of the oldest runtime.
+- **An input's `pointerEvents` is UIKit's, not `NshView`'s**: inputs are a plain container around a text view, with no
+  `hitTest:` of NSH's, so `none` / `box-none` turn the container's user interaction off (`set_view_props`); it can still
+  become the first responder and take typed text. Without it a hidden input (the `Editor`'s sink at its caret) takes
+  the touches of whatever lies under it. A JS responder that blocks also cancels the `PressRecognizer`s of the views
+  around it (`set_js_responder`): they keep tracking a finger a descendant took, and its lift was a press on them.
+
+- **Retained navigation tabs hide the stack's container or an ancestor, not the navigation controller's view**:
+  check the entire ancestor chain before a stack updates a shared system tab bar, including from transition
+  callbacks. Visibility changes synchronize the newly visible stack after the batch. `TabBar.hidden` and the
+  visible stack's request are independent reasons: each updates its own state, and either keeps the bar hidden.
+
+- **A standalone `UITabBar` can establish its natural height before its native component host is sized** (verified on
+  the iOS 27 simulator). Flexible-height autoresizing then adds the host's height to that initial height. In
+  `system_tab_bar.rs`, fill the immediate host's bounds exactly during layout, and report intrinsic height with
+  `sizeThatFits` at the laid-out width. `sizeToFit` changes the frame and must not run on selection updates.
+
+- **Pressed-style observers must leave ancestor clicks working**: a view with only `activeStyle` / `active:`
+  has a `PressRecognizer` to report its pressed state, but yields the click to the nearest ancestor with press
+  handlers. `handled_deeper` counts handlers and pressable text spans; a style-only recognizer ends as failed
+  after reporting its state, so it does not compete with the ancestor's recognizer.
+
+- **UIFont and CTFont are toll-free bridged**: the text engine gets system fonts with `UIFont::systemFontOfSize_weight` and uses them as
+  CTFonts (verified by rendering). CoreText attributes must use CT keys (colors are CGColors), not UIKit's NSForegroundColor.
+- **Catalyst's Mac idiom does not support `UIRefreshControl`** (attaching one throws `_UICatalystUnsupportedMacIdiomBehavior`): in the Mac
+  idiom the pull is detected in the scroll delegate and shown with a spinner + contentInset; iOS uses the native control unless the
+  app draws its own indicator (`refreshIndicator`), which `UIRefreshControl` cannot give way to: then it takes the Mac idiom's way,
+  without the spinner (`Mounter::sync_refresh`, on the events and on each behavior).
+- **A `UIRefreshControl`'s superview is not always its scroll view**: under a large title iOS 26 moves it into an untagged
+  container, so its superview's tag is 0. The control carries its scroll view's id as its own tag (`refresh_control`), and a
+  pull only refreshes when that scroll view still holds this very control (`Mounter::refresh_pulled`), so a control of a
+  deleted or replaced view reports nothing, even where a new view took its id.
+- **A large title collapses over a scroll view at the top of a lower header** (verified on the iOS 27 simulator):
+  UIKit reads that content as scrolled. It keeps a scroll view at its top only when the scroll view's safe area
+  changes. A stack laid out in the frame its first screen arrives leaves the bar at an inline title's height
+  (`sizeThatFits` gives the large one). `fit_large_title` sizes the bar when a stack shows a screen whose content is
+  at its top. A scroll view on screen that starts to adjust its insets (`contentInsetAdjustmentBehavior` automatic)
+  keeps its offset under the header. The mounter moves it to its top when it switches.
+- **Mac idiom custom pull to refresh**: on release, the system's bounce already targets the old inset (back to 0), so changing only
+  `contentInset` hides the spinner; once refreshing starts, the offset is animated to the top inset plus the refresh room on the next main-queue turn. Synthetic
+  tests need continuous scroll events with phases (began / changed / ended); plain wheel events never overscroll.
+- **Set backgrounds on `layer.backgroundColor`, not `UIView.backgroundColor`**: views with `drawRect:` (`TextView`) paint the latter into their
+  contents bitmap, where corners cannot round it.
+- **Styles arrive before frames** (new views have a zero size): a shared radius goes straight to the layer (Core Animation clamps it itself);
+  only paths, shadow paths, the content view and the image layer depend on the size, and they are rebuilt on `Frame` while `Decor::sized()`
+  is true. Scaling radii by the CSS rule at a zero size once turned every rounded corner square.
+- **An input's insertion precedes its first frame and content box in a mount batch**: UIKit may draw an inserted
+  `UITextField` before the later `InputContent` sets its text insets, briefly placing text against the leading edge.
+  The iOS mounter pre-reads a newly created input's `Frame` and `InputContent` from that batch and applies both while
+  its container is still detached; do not defer or reorder its `Insert`, which would break `autoFocus`.
+- **A view's first style does not transition**: a mounting tree's views are styled after they are added to the window, so
+  `window().is_some()` alone animates the first style from the defaults (a pill's corners growing out of a square). The
+  mounter only transitions a view it has styled before (`Slot::styled`), as `nsh_core`'s `transition::restyle` and
+  Android's mounter do.
+- **Property changes on standalone `CALayer`s animate implicitly for 0.25s** (a UIView's own layer does not): wrap changes to shape / image
+  layers in `CATransaction.setDisableActions(true)`.
+- **Box-shadow geometry needs explicit animations of its own**: iOS transitions animate the view's `cornerRadius`, but the
+  shadow layer's `shadowPath`, the mask's `path` and the content clip layer's corners have no implicit action: set beside an
+  animating radius they jump to the new shape and the shadow's edge detaches from the background for the whole transition.
+  Set them through `interaction::animate_geometry`, which animates from the presented (mid-animation) value; quiet
+  decoration updates still apply at once.
+- **Core Animation always draws `border` above sublayers**, while CSS borders are below children: non-clipping views use a stroke layer below
+  the children; when clipping both look the same, so the layer's own border is used.
+- **A UIScrollView's sublayers scroll with its content** (`bounds.origin` is the scroll offset), so scroll views cannot use shape layers / masks.
+- **UIKit callbacks may fire synchronously while the Mounter applies a batch** (e.g. setting `contentOffset` triggers `scrollViewDidScroll`):
+  when `EventTarget::with_mounter` cannot borrow, it defers to the next main-queue turn; never `borrow_mut` directly.
+- **Views with a transform must not set `frame`**: always use `bounds` + `center`, keeping the bounds origin (a scroll view's bounds origin is
+  its scroll offset).
+- **Catalyst**: `UIDeviceFamily` must include 6 (Mac idiom), otherwise the UI is scaled to 77%. Under Catalyst the container extends below the
+  title bar, so overlays are constrained to `safeAreaLayoutGuide`. UIDevice reports "iPad" under Catalyst. Use the UIScene lifecycle
+  (`UIScreen.mainScreen` and `UIWindow initWithFrame` are deprecated). The window size is fixed to 390×844 through `sizeRestrictions`.
+- Methods in `define_class!` that return `Retained<T>` need `#[unsafe(method_id(...))]`. Classes UIKit instantiates by name (AppDelegate,
+  SceneDelegate) cannot have ivars; keep their state in statics or thread locals.
+- **A paste the input's delegate refuses crashes the app at the next undo** (iOS 26, `UITextField` and `UITextView`):
+  UIKit's `paste:` asks the delegate later, after it registered the paste's undo step, and undoing it replaces a
+  range the text never had (`NSMutableRLEArray` out of bounds). Inserting other text from the delegate during that
+  paste crashes the same way. An input with `maxLength` therefore pastes by itself (`input::paste_text`): it clips the
+  text, asks the delegate and calls `insertText:`, whose undo is right.
+- **UIKit passes nil where `UITextInput` declares a position or range nonnull** (a secondary click on selectable text
+  with nothing selected moves a nil position): a method a class defines with `define_class!` takes these as `Option`,
+  since a `&T` is a null reference then and objc2's debug-build nil check on messaging it aborts the app.
+- **UIKit implements the `UITextInputTraits` setters of `UITextField` by message forwarding**: objc2's debug-build signature
+  check cannot find them on the class and panics, so `input.rs` sends them with a raw `objc_msgSend`.
+- **objc2 crates are used with `default-features = false`** and an explicit feature list in the root `Cargo.toml` (one feature per
+  header): the defaults link CloudKit, CoreData, CoreImage, CoreLocation, Metal, ... into every app (each one costs dyld time at
+  launch). When a method is missing after using a new API, enable the header feature named in its `#[cfg(feature = ...)]`; check
+  `otool -L` on a release `nsh-ios-app` afterwards (only UIKit, Foundation, CoreFoundation, CoreGraphics, CoreText, QuartzCore, ImageIO).
+- **`TextView` uses `UIViewContentMode::Redraw`**: list cells can get their text before their frame; without redrawing on
+  resize the text stays drawn at zero size.
+- **UINavigationController breaks transitions started during another one**: stack changes that arrive while
+  `transitionCoordinator()` is set wait for the transition's end (`didShow`, or the coordinator's completion: a modal
+  presented or dismissed over the stack sets the coordinator too and never reaches `didShow`) and are applied on the next
+  main-queue turn (the coordinator outlives those callbacks); only pages the controller actually had count as popped by
+  the user.
+- **A navigation bar shown again by a pop rests too high in a stack below the top of the window**: in a stack whose
+  view starts under the status bar (the app pads its root by the safe area), UIKit keeps the bar a few points down
+  (10 pt on an iPad). Popping a screen that hid the header slides the bar back in at the stack's very top, with the
+  screen's safe area to match, and UIKit moves neither until the screen's view is laid out again, which no pass during
+  the transition does (in `willShow`, alongside the transition, or of the navigation view). `didShow` asks for that
+  layout of the shown screen's view; `tests/header` checks it (`nsh test --target ios`).
+- **UIKit installs its own interactive-pop delegate while loading a navigation controller's view**: assigning NSH's
+  delegate when the stack is created can be overwritten. Bind the current recognizer in `didShow`, after UIKit has
+  configured the screen, so hidden headers use NSH's mounted `popOnSwipe` / `popOnBack` policy too. Verify the gesture
+  with real system edge input; the in-process test agent does not start UIKit's interactive pop.
+- **`UIAlertController` asserts when its presentation controller's delegate is set**; a popover action sheet (iPad, Mac) hides
+  its cancel action and runs it on a tap outside, so sheets without one get a hidden, untitled cancel answering "dismissed" (`null`).
+- **Catalyst: a mouse drag does not scroll a UIScrollView** (Mac behavior); test scrolling with trackpad-style scroll wheel
+  events (with phases), which also produce drag and momentum callbacks. Mouse drags do reach views as touches.
+- **Catalyst: the Mac idiom moves a navigation bar's contents into the window's toolbar** (`UINavigationBar.behavioralStyle`
+  resolves to `.mac`; macOS 26 does it even with the scene's `titlebar.toolbar` nil): the back button sits next to the traffic
+  lights, the title is gone (or is the window's) and the header's colors do not apply. Stacks' bars (and the bar measuring
+  the header height) set `preferredBehavioralStyle = .pad` (iOS 16+) to stay in the window, and standalone apps hide the
+  window's title and toolbar (`UITitlebar`, which objc2 does not declare: `app.rs` sends its setters by name), so the title
+  bar is a transparent strip over the in-window header, like iOS's status bar; apps embedding NSH on Catalyst should hide
+  theirs the same way. The core's estimate of a header (the bar's height plus the safe area's top) can still miss what UIKit
+  lays out, which showed the screen's root view in a band under the bar: screens report the top of their controller view's
+  safe area (the bottom of whatever bar UIKit shows) as their header (`Core::set_screen_header`), and the stack's bar gets
+  the screen's appearance as well as its navigation item.
+- **Catalyst's Mac idiom presents page / form sheets as macOS sheets** at a default size wider than a 390pt window: they get
+  the window's size as `preferredContentSize`. Standalone apps have a white root view (UIKit windows are black).
+- **iOS clamps shared corner radii itself** (`rounded-full` is 9999): Core Animation does not reliably clamp a `cornerRadius`
+  over half the short side, so `decor.rs` clamps it and clamps again when the size changes.
+- **iOS, a side bar's safe area reaches past the bar**: a strip the device keeps along one side of the screen (a
+  foldable's vertical bar) is an inset of the window, and `UINavigationController` passes that inset to the screens it
+  shows without asking whether the stack still reaches the bar, so a stack laid out in a column well clear of it gives
+  its screens the bar's whole width of trailing safe area anyway: UIKit parks scroll indicators that far in from the
+  edge, and `safeAreaInsets()` reads that wide inside the module. `clip_side_safe_area` takes the surplus back with a
+  negative `additionalSafeAreaInsets` worked out from the window and the stack's frame alone. Deriving what UIKit
+  granted by subtracting the compensation already applied looks equivalent and cannot heal: UIKit floors a safe area at
+  zero, so after an overshoot that subtraction returns the value already applied, for good.
+- **iPadOS 26, the window controls' corner**: `safeAreaInsets` leaves out the controls a windowed app has at its
+  top-leading corner; the safe-area layout region with horizontal corner adaptation
+  (`edgeInsetsForLayoutRegion:`) covers them, and also pads both sides alike for the display's rounded corners
+  (left and right 9pt on an iPad Pro 11-inch in full screen, where `safeAreaInsets` has 0; in a window, left 66pt
+  for the controls and right 9.5pt for the window's corner). `RootView::safe_area` takes the region's inset only on
+  a side it insets further than the other, so full screen and iPhone keep `safeAreaInsets`.
+
+- **iOS, dismissing a modal that presents another**: `dismissViewControllerAnimated` called on a controller that is
+  itself presenting one (a `Sheet` is a transparent modal over the modal it is in) dismisses only that one, and the outer
+  modal stays on screen with its content already gone: a blank screen when a sheet and its modal close together.
+  `ModalHost::dismiss` dismisses through `presentingViewController`, which takes the modal and everything above it.
+
+- **iOS, presses near the top of the window**: UIKit attaches tap recognizers to the window that skip `UIControl`s, and a
+  press is a gesture recognizer, not a control. On iOS 26+ the window's `_UIDoubleTapInteraction` (a single-tap
+  recognizer over the top 64 pt, `cancelsTouchesInView`, never simultaneous, action disabled) recognized first and
+  prevented every press there, so a navigation bar's back button did nothing (seen on an iPhone foldable simulator; a
+  real tap through XCUITest reproduced it). The navigation bar has one of its own (iOS 27 simulator): it prevented
+  every press of the views an app puts in the header's slots, which the bar wraps in custom bar button items.
+  `PressRecognizer` is not preventable by tap recognizers on a `UIWindow` or a `UINavigationBar` (`press.rs`,
+  `is_system_tap`); edge-gesture gates are not taps and still cancel presses. That interaction is also the status bar's
+  tap, which scrolls the scroll views under it to their top: a press it did not prevent still scrolled the page back
+  to its top (opening a menu from the header did). Those taps wait for the press to fail
+  (`shouldBeRequiredToFailByGestureRecognizer:`), so a press takes its tap and a tap where nothing is pressed still
+  scrolls to the top.
+- **iOS, a tap recognizer on a view around pressables**: a `UITapGestureRecognizer` recognizes on release, where a
+  press ends too, and prevents the `PressRecognizer`s of the views inside its view: `cancelsTouchesInView = false`
+  leaves the views their touches, not the other recognizers their turn. The tap that focuses a `focusable` view
+  that takes no presses took every press inside it that way (a row's ⋯ button opened no menu, for a real tap on the
+  simulator as for a test's). `FocusTap` (`native_view.rs`) prevents no recognizer
+  (`canPreventGestureRecognizer:`), and fails on a touch on a stop inside its view, which takes the focus itself.
+- **iOS, a hardware keyboard's keys** reach the first responder as presses (`pressesBegan:withEvent:`) before
+  UIKit's text system acts on them: a text input that does not call `super` for a press neither moves its caret,
+  inserts a line break nor types it, and must not call `super` for that key's release either. A held key's press
+  comes once (the text system repeats on its own), so a binding that repeats needs a timer of its own
+  (`keymap.rs`). A press's `responder` is the first responder it went to: presses bubbling up to the root view from
+  an input were matched there already.
+
+- **iOS, the screen scale**: a `UIView` that draws nothing itself keeps a `contentScaleFactor` of 1 on a 3x screen, and a
+  drawn one raises it while zoomed, so neither is the screen's scale. Images decoded at it came out at a third of their
+  pixels and blurred; the scale is the trait collection's `displayScale` (`Mounter::display_scale`).
+
+- **iOS, ProMotion**: a `CADisplayLink` left at its default fires at 60 Hz on a 120 Hz iPhone, so native
+  animations, `scrollValue` bindings and JS frames moved at half the rate of the system's own scrolling. Both links ask
+  for the screen's `maximumFramesPerSecond` (`animation.rs` `full_rate`); an iPhone grants more than 60 Hz only to
+  apps whose `Info.plist` sets `CADisableMinimumFrameDurationOnPhone` (`nsh package`, the development host; embedding
+  apps set it themselves, `website/docs/ios.md`). iPads ignore the key.
+- **iOS, secondary clicks**: `buttonMaskRequired` only holds touches that have buttons. A finger has none, so a tap
+  recognizer requiring the secondary button recognized every tap, and as a tap recognizer it cancelled the presses inside
+  (a `ContextMenu`'s trigger opened its menu instead of pressing). The `onContextMenu` recognizer allows only
+  `UITouchTypeIndirectPointer` touches (`mount.rs`).
+- **iOS, VoiceOver's increment / decrement**: VoiceOver calls `accessibilityIncrement` / `accessibilityDecrement`
+  (swipe up / down) only on elements with `UIAccessibilityTraitAdjustable`, so an element with those actions gets the
+  trait on top of its role's (`native_view.rs` `traits`; an image with them is announced as an adjustable image). It
+  reads the element's value as soon as the call returns, while the new value comes from the engine thread in a later
+  batch: a step whose value arrives after VoiceOver read the old one announces the new one (`NshView::late_step_value`),
+  one that arrives before it asked is read by VoiceOver itself.
+- **iOS, a `UIVisualEffectView` takes its shape through `maskView` only**: UIKit's documentation of
+  `UIVisualEffectView` says a mask on the layer of an effect view, or of one of its superviews, breaks the effect.
+  UIKit copies the mask view when it is set, so changing the mask view's geometry afterwards does nothing: a new size
+  or shape needs the mask view set again. A backdrop blur or glass with unequal corner radii gets a new mask view,
+  configured whole before it is set, whenever its size or radii change (`visual.rs` `set_backdrop`); one with a
+  single radius uses the layer's corners. A view with `overflow: hidden` and unequal radii still masks its own layer
+  (`decor.rs`), which is its effect view's superview: the case the documentation names, not changed yet.
+
+## Android
+
+- **Android, responders inside pressable views**: a view that takes no press of its own (a `RichEditor`'s selection
+  handle) leaves the touch to the nearest pressable ancestor, which keeps tracking it: it raised its long press while a
+  finger held the handle and its press on the lift. `SetJsResponder` with a block ends the presses of the ancestors
+  (`Box.cancelPress`, `Pressable.cancel`), as iOS cancels their `PressRecognizer`s. A floating `ActionMode` keeps its
+  content rect within the view that started it: started from an editor's sink (a sliver at the caret) it sat on the
+  caret whatever the rect said, over the selection's start handle, and took that handle's touches; it starts from the
+  root view (`InputBox.openEditMenu`).
+- **Android, API levels and lint**: hosts that compile the Java runtime run Android Lint over it (NewApi,
+  WrongConstant), while NSH's own build runs only javac. A class or helper reached only behind `SDK_INT >= N` carries
+  `@TargetApi(N)`, as `Backdrop` does; a guard lint cannot see through (a helper that returns the check) is written at
+  the call site; an `int` setter typed with another class's constants takes those constants.
+- **Android, accessibility state changes**: a service reads an `AccessibilityDelegate`'s node only when it queries
+  it, and nothing tells it that a new delegate says something else. A screen reader's double tap is the app's press:
+  `A11y.performAccessibilityAction` takes `ACTION_CLICK`, so the framework sends no `TYPE_VIEW_CLICKED`, and the new
+  state arrives batches later. What TalkBack does with each event (its compositor rules): on a `TYPE_VIEW_CLICKED`
+  it queries the source node again and says its checked state, else its selected state, else expanded / collapsed
+  (from the node, not the event's flags), with a tick and a vibration, and the click stops reading from the top; it
+  says no checked state for a node with a state description, so a checked change must change the description, as a
+  `CompoundButton`'s does since API 30. On a content change of type `STATE_DESCRIPTION` (64) it says the node's
+  state description when the node or an ancestor has the accessibility focus; it reads the description through
+  androidx's node compat, which before API 30 is the extras entry
+  `androidx.view.accessibility.AccessibilityNodeInfoCompat.STATE_DESCRIPTION_KEY`, so the type and the entry work
+  from API 26. A seek bar's or progress bar's state description change says its range when it has no description
+  (a `RANGE_TYPE_FLOAT` range is said as the number, a percentage only for `RANGE_TYPE_PERCENT`). A content change
+  of an undefined type only refreshes its copy of the node. `A11y.changed` sends one of them after the new delegate
+  is installed (`A11yChanges`): a click only within a second of TalkBack's click on the view or an ancestor (a
+  change the app makes alone is not a click; a keyboard Enter goes through `performClick`, which sends the
+  framework's own click), state descriptions at once (as `View.setStateDescription`: the framework's merged
+  content changes come from the views' common ancestor, which has no focus), refreshes through
+  `notifySubtreeAccessibilityStateChanged` (merged by the framework). Sending while
+  `AccessibilityManager.isEnabled()` is false throws on the main thread.
+- **Android, JNI**: cache classes and method ids in `JNI_OnLoad`; wrap every call from the (permanently attached) engine thread in
+  a local frame (`java::with_env`), or local references pile up.
+- **Android, text**: `StaticLayout` ignores `maxLines` without an ellipsis (clip mode counts lines itself and the view clips);
+  build layouts from `PrecomputedText` with the same break strategy / hyphenation / text direction as its params, or it
+  measures again. A layout of precomputed text does not draw `UnderlineSpan` / `StrikethroughSpan` (even ones set after
+  `create`): runs carry a `TextLayouts.Decoration` marker and `TextBox` draws the lines. `Layout.Alignment` is relative to each
+  paragraph's direction: absolute left / right alignment sets an `AlignmentSpan` per paragraph from its resolved direction.
+  `StaticLayout.Builder.obtain` hands out pooled builders and, on Android 15, does not reset `useBoundsForWidth` or
+  `shiftDrawingOffsetForStartOverhang`; a `TextView` (an `Input`'s `EditText`) of an app targeting 35 or later turns them
+  on, and a layout from such a builder breaks lines by the glyphs' ink, wider than the advances text is measured by
+  ("Wor" / "k"): `TextLayouts` sets both to false on every builder (`examples/gallery/tests/text-bounds.test.tsx`, on a
+  device with `--target android`).
+- **Android, text hit testing**: `Layout.getOffsetForHorizontal` stops before the last cluster of a wrapped (non-last)
+  line, so a hit past its end is snapped to the line's end (`TextLayouts.hitTest`, upstream); `getSelectionPath` adds
+  margin rectangles when a range ends at a wrapped line's end, so range boxes come from the run's carets
+  (`TextLayouts.rangeRects`), not from the path.
+- **Android, view properties set every frame**: `setAlpha`, `setTranslationX`, `setScaleX`, `setRotation` and the like
+  return early on an unchanged value, `setCameraDistance` does not: it invalidates the view on every call. Animated
+  values and transitions write a view's whole transform each frame, so `Mounter.setPerspective` sets it only when it
+  moves (it was a fifth of the UI thread's time on the gallery's Animations demo).
+- **Android, shadows moved by fractions of a pixel**: Skia caches a shadow's blurred mask keyed on the subpixel part
+  of its position, so a view moved by a fractional offset each frame blurs its shadows again every frame (on the GPU,
+  each into a new render target, slow on PowerVR). `StackBox`'s push / pop slides move by whole pixels; going back to
+  the gallery's index ran at about half the frame rate before (#519).
+- **Android, hidden views lose their display lists**: HWUI drops the display list of a RenderNode no longer drawn,
+  and `setVisibility` tells every view under the one that changes, whose background `Drawable.setVisible` calls
+  `invalidateSelf`. A whole screen hidden and shown again therefore records all of its views again (22–36 ms for the
+  gallery's index on a Pixel 10 Pro). `StackBox` keeps drawing the screen a pop reveals at alpha 0 while it is
+  `INVISIBLE` (which still keeps it out of touches, accessibility and focus), and `Decor.setVisible` does not
+  invalidate (#519).
+- **Android, focusing a view that is not shown**: `requestFocus` fails on a view that is not shown, and a page's
+  `focus()` (from a timer of the render, say) can arrive in the batch that pushes it, the engine merging a wake-up's
+  commits into one batch, whose commands run before `finishNavigation` places the page (a transition shader also
+  keeps it `INVISIBLE` while it runs). `Mounter` keeps such a request (`PendingFocus`) and tries it again at the
+  batch's end and on each frame until the view is shown, or gives it up after 3 s (#2323). The frames come from a
+  `Choreographer` callback, posted only while a request waits, not from the host's `ViewTreeObserver`: a dialog's
+  content shows in the dialog's own window, whose tree the host's observer never hears from, while `Choreographer`
+  frames reach every window of the thread.
+- **Android, opacity animations and outer box shadows**: at alpha < 1 with overlapping rendering (the default) HWUI composites the view into an offscreen buffer clipped to its bounds, cutting the outer box shadows the `Decor` draws outside them: the shadow vanishes for the whole animation and pops back when it ends. Decor-bearing views therefore report `hasOverlappingRendering() == false` while they carry outer shadows (the alpha then applies per draw op and the shadow fades with the content), at the cost of overlapping content inside such a view blending imprecisely while it fades.
+- **Android, JNI event maps intern their keys from a fixed list** (`Java_com_longbridge_nsh_Native_eventMap`): a new payload key must be
+  added there or it is dropped silently.
+- **Android, inputs' `pointerEvents`**: `InputBox` is a `FrameLayout`, not a `Box`: it keeps `pointerEvents` itself and
+  refuses touches in `dispatchTouchEvent` for `none` / `box-none`, and `TouchTracker.deepest` reads it as a `Box`'s.
+- **Android, inputs**: `EditText` reconfiguration (input type, filters, single line) sets the same text again and fires
+  `afterTextChanged`: only text that differs from the last known one counts as an edit, or JS values are rejected as stale.
+  Soft keyboards edit through the input connection (`KeyConnection`: composing text, commits, deletes), hardware keys arrive
+  as key events; both feed `onKeyPress`. A hardware Enter reports its down and its up — act on the down only and consume the up, or the up advances
+  focus again in the next field; blur by focusing the (focusable, highlight-free) `NshView`, as `clearFocus()` hands focus to the
+  first focusable view; set the typeface after the input type (password types reset it to monospace). The composition
+  (`onCompositionChange`) is read from the composing span (`BaseInputConnection.getComposingSpanStart` / `End`) after every
+  edit, connection call and batch end, since keyboards start and end it in many ways (`setComposingRegion` included); a
+  value JS sets meanwhile waits for its end (`setText` restarts the keyboard, which commits the pre-edit text), and is
+  never applied from inside the text watcher.
+- **Android, input selection after attachment**: a navigation screen can be measured while detached. `TextView` then
+  caches disabled cursor controllers because its root has no window parameters; attachment alone does not refresh
+  them, and another `requestLayout` may reuse the text layout. `InputBox` reapplies the current break strategy on
+  attachment when a text layout already exists, discarding it so the next measure refreshes the controllers with a
+  valid window. Keep this on every attachment, including reattachment. Do not replace the text or enable
+  `textIsSelectable` to force a refresh: those affect selection, input-method state or focus/keyboard behavior.
+  Regression checks must cold-start the Android host and long-press a four-line input inside `NavStack`, with explicit
+  `lineHeight` and height updated by `onContentSizeChange` ([reproduction](https://github.com/longbridge/nsh/issues/409));
+  hot reload can hide the failure. Also check removal/reattachment, editing and the native selection menu.
+- **Android, keyboard avoidance**: the keyboard's height becomes bottom padding of the scroll around the focused input, and
+  `ScrollBox.reveal` scrolls it into view; `requestRectangleOnScreen` cannot, as ScrollView ignores its padding when it decides
+  whether a rectangle is visible. `NshView` is a scroll container (`setScrollContainer(true)`) so that windows without a soft
+  input mode resize instead of panning: the system picks the mode at the first layout, before the app's content is mounted,
+  and a mode set from code afterwards is overridden. Windows that ask for `adjustPan` are left to the system.
+- **Android, the keyboard a gesture drives has no duration**: the back swipe that dismisses the keyboard (predictive back,
+  seen on Android 16) moves it by hand, and its `WindowInsetsAnimation` reports `getDurationMillis()` as -1. `KeyboardAnimation` takes the
+  keyboard's curve and duration from timed moves only: -1 kept as the duration makes `ValueAnimator.setDuration` throw
+  when the next input is focused in a scroll view (`Mounter.revealFocused`).
+- **Android, passive press feedback**: `activeStyle` / `active:` and `android.ripple` observe a touch without
+  consuming it. The root's `TouchTracker` feeds style-only views through `Pressable`; `Box` and leaf views take
+  clicks for their press handlers or text spans. Feedback is cancelled when scrolling, panning, pinching or rotation
+  takes over, so a styled child leaves its parent's overlay or menu trigger clickable. The walk up from the touched
+  view stops at the first press handler, or at a text only when the finger is on one of its pressable spans (as
+  iOS's `handled_deeper` checks the link at the touch), so a card around plain text still shows its pressed style.
+  While feedback shows, the root claims the gesture as a clickable view would: Android sends the release only to
+  the view that took the down, and the release is what ends the feedback.
+- **Android, a pan view over a scroll view**: a `Box` that handles nothing leaves the down untaken, and Android then
+  offers it to the views under it: a scroll view the box lies over (a chat's composer over its messages) took the
+  drag and scrolled, and the box's pan never activated. A `Box` with a `panActivation` takes the down, as UIKit's hit
+  test gives the touch to the topmost view. Having taken the down from the views around it, the box hands its touch to
+  the nearest pressable `Box` around it (`Box.forwardTap`, in that box's coordinates) until its gate activates or the
+  finger passes the touch slop, so a tap presses that box as UIKit's press recognizers around a view do.
+- **Android, drags that start on a child**: a pannable `Box` intercepts the move that exceeds the slop and starts its pan right
+  there; that intercepted move never reaches its `onTouchEvent`, so starting the pan there is what makes a quick flick (few moves)
+  pan and end at all.
+- **Android, `Dialog` content placement**: `Box.place` lays a view out at its core frame directly, so the status bar offset of a
+  non-translucent `Dialog` (no `statusBarTranslucent`) is a content view inside the Android dialog's container, not an offset applied to the root's layout; the dialog
+  copies the activity's bar appearance (light / dark icons).
+- **Android, nested scrolling**: scroll views enable nested scrolling, or an outer vertical ScrollView intercepts every vertical
+  drag meant for an inner one.
+- **Android, a zoomed scroll view in a pager**: `HorizontalScrollView` intercepts a move past the touch slop before the
+  child sees it, with the same slop as `ZScroll`, so the pager took every horizontal drag of a zoomed image. `ZScroll`
+  asks its parents not to intercept from the down (`requestDisallowInterceptTouchEvent`) while it has content to pan and
+  gives that back when the drag has nothing to move or pushes past an edge a scroll view around can go on from.
+- **Android, safe area**: `NshView` reports only the parts of the system bars / keyboard that overlap it (like UIKit's
+  `safeAreaInsets`), so embedded views below a toolbar get no top inset. Overlays use the same overlap (`topInset()`).
+- **Android, dev assets come over plain HTTP**, which apps block by default (API 28+): the dev host APK and `nsh-dev.aar` set
+  `usesCleartextTraffic`; the release AAR does not.
+- **Android, activities**: create the decor view (`getDecorView()`) before asking for the insets controller; apps draw edge to edge
+  and get the system bars through `safeArea()`.
+- **Android, the back key without `OnBackInvokedCallback`** (below 13, or `enableOnBackInvokedCallback` off): the window
+  sends `KEYCODE_BACK` down the focus path, then the activity's `onKeyDown` / `onKeyUp` take it (`onBackPressed`), so an
+  unfocused view only hears it through `View.addOnUnhandledKeyEventListener` (API 28+, called by the decor view between
+  the two, whatever has focus). A listener that takes the down gets the press's repeats and its release directly, before
+  any view (`ViewRootImpl`'s `UnhandledKeyManager`), so the focus path never sees them: `NshView` hands them to
+  `KeyDispatch` for the raw `onKeyUp`.
+- **Android, the back key with `OnBackInvokedCallback`** (13 and later, the packaged manifest's default): the window turns
+  the release into `onBackInvoked` / `onBackCancelled` before any view (`ViewRootImpl`'s `doOnBackKeyEvent`). Android 13
+  to 15 send the views neither the down nor the up; from Android 15 QPR1 the window sends the down on and, after the
+  callback, the up marked cancelled; Android 16 QPR2's `predictiveBackStopKeycodeBackForwarding` flag keeps both from the
+  views again. `KeyDispatch` reports the release at the callback, from the down it saw, and not again for that key-up
+  (`BackRelease`); `NshView` taking the key never doubles its callback, as the cancelled up does not go back (seen on an
+  Android 16 emulator, both settings; the version boundaries are AOSP's source).
+- **Android 8 (API 26 and 27) lacks three things the runtime uses from API 28**, and gets each another way, checked with
+  `Build.VERSION.SDK_INT` so Android 9 and later draw as before:
+  - Weights: `Typeface.create(family, weight, italic)` is API 28. The default family takes the nearest of Roboto's
+    aliases (`sans-serif-thin`, `-light`, `-medium`, `-black`, with `BOLD` for 600 and 700); other faces get bold and
+    italic synthesized only where the face is lighter or upright (`TextLayouts.weighted`).
+  - Text measurement: `PrecomputedText` is API 28; `prepare` hands `StaticLayout` the spanned text itself, which measures
+    it again for each width with the same breaks.
+  - Shadows: a hardware canvas ignores `Paint.setShadowLayer` on shapes (text keeps its shadows) before API 28.
+    `Decor` draws box shadows with the same code into a software bitmap of the smallest box with the same corners and
+    stretches it in nine slices (`drawShadowSlices`, shared through an 8 MiB LRU); a `<Canvas>` drawing that sets a
+    shadow is replayed into a software bitmap of the view.
+  Animated images other than GIFs (which play from a `Movie`) show their first frame there (`AnimatedImageDrawable` is
+  API 28).
+- **Android 9, GIFs cannot play from an `AnimatedImageDrawable`**: its later frames decode on hwui's `AnimatedImageTh`, and
+  reading the source bytes there (`ByteArrayStream::read`, `SkGIFFrameContext`) needs a JNIEnv that thread does not have: the
+  process aborts with "Failed to get JNIEnv for JavaVM". Any `ImageDecoder` source backed by memory hits it; animated WebP does
+  not. Below API 30 a GIF plays from `android.graphics.Movie` (`MovieDrawable`): each view decodes its own, on the thread
+  that draws it.
+- **Android widgets**: `MediaPlayer.setPlaybackParams` starts playback (set the rate only while playing) and a paused player draws nothing until
+  it seeks; `WebView` JavaScript bridge calls arrive on a binder thread (post to the UI thread).
+- **Android, negative letter spacing**: Minikin adds half the spacing on both sides of each glyph and trims the halves at line edges,
+  so a line is wider than its sum of advances; `TextLayouts.Prepared.desired` adds the largest negative spacing back, or text laid
+  out at its natural width wraps (`tracking-tight`).
+
+- **Android, a hardware keyboard's keys** go to the input method first, then down the window's views
+  (`dispatchKeyEvent`, the parents before the focused view): `NshView`, which holds the focus when no input does,
+  sees every key meant for the views inside it. Keys with Control come as `dispatchKeyShortcutEvent` first, where a
+  text field selects all, copies and pastes, so the app's shortcuts are matched there too.
+- **Android, arrow keys while no view of the app has the focus**: Android's directional search (`FocusFinder`) starts
+  from the focused view and takes only views past its edge in the key's direction. While no view of the app has the
+  focus, `NshView` or a dialog's container holds it, and a standalone app's `NshView` and a dialog's container fill
+  their window, so from them nothing qualifies and an arrow does nothing. A tap clears a focus that is not focusable
+  in touch mode (`enterTouchMode`: the root comes before its descendants, so it is not the ancestor that takes the
+  focus) and leaves the window without one. The first navigation key after it leaves touch mode in `ViewRootImpl`
+  (`checkForLeavingTouchModeAndConsume`), which consumes the key when it has to pick a focus itself
+  (`restoreDefaultFocus`, which gives it to the root). The root's touch-mode listener runs before that check and
+  takes the focus when nothing holds it (`NshView.keyboardFocus`, the `keyboardFocus` of `ModalHost`'s container;
+  without it a dialog's first arrow after a tap only focused the container), and a focused view group that comes
+  before its descendants keeps the focus there. The arrow therefore reaches `KeyDispatch`, which moves the focus to
+  the first stop on screen (`ArrowEntry`, #2361). An embedded `NshView` can have host views beside it and host scroll
+  views around it, which Android's handling of an unconsumed arrow reaches (`focusSearch` from `NshView`, a host
+  `ScrollView`'s `arrowScroll`): `KeyDispatch.elsewhere` asks the same and leaves such an arrow to the host.
+
+## Linux, GTK
+
+- **OpenGL on NVIDIA's driver gives wgpu an adapter but no device**: wgpu 29 makes a compute pipeline for its
+  validation of indirect calls when it opens a device, and the GL context it gets lacks compute shaders, so the device
+  fails (`Features(BUFFER_STORAGE | COMPUTE_SHADER | DYNAMIC_ARRAY_SIZE)`); with that validation off it opens, but
+  reads its uniforms and pictures as zero. `nsh_engine::shader::Renderer::new` goes on to Vulkan, which draws them
+  (`nsh-engine`'s shader tests, an RTX 3060 Ti on 615.78).
+- **inotify reports reads** (`Access` events), FSEvents does not: file watchers (`nsh dev`, `cargo run`'s xtask) ignore
+  `Access` events, or the build's own reads of the sources start the next build, forever. inotify also reports paths
+  under the watched one as given: watch a canonical path (a `..` in it makes every path look like a dot entry).
+- **GDK frame times are microseconds** (`FrameClock::frame_time`); `nsh_anim::Graph::tick` takes seconds and the
+  scroll and transition code milliseconds: convert at each call site.
+- **AT-SPI reads widgets, not what NSH draws**: a view `snapshot` skips (`visibility: hidden`) is still presented, with
+  its subtree, until its accessible state is `Hidden` (`access.rs`); GTK's AT-SPI bridge then leaves out the widget
+  and its subtree (`gtk_accessible_should_present`; checked with an AT-SPI client on GTK 4.14).
+- **A text view ignores CSS `line-height`**: only labels apply it. An `Input`'s lines get their height from the view's
+  `pixels-above-lines`, `pixels-below-lines` and `pixels-inside-wrap` (`text_input.rs`'s `set_line_box`), which also keep
+  the caret at the font's height. These are added to a line's own height, so a line in a taller fallback font (CJK) comes
+  out taller than `lineHeight` by the difference. In a label a fallback font moves the line's baseline down instead, so
+  a multiline placeholder is placed by its baseline (`placeholder_lift`).
+- **A text view draws its caret with its own node's `caret-color`**, not its `text` child's: a rule that hides the caret
+  has to name `textview` as well (`nsh-composing`).
+
+- **A widget's accessible role is effectively fixed** once its AT context is realized: GTK refuses to change it (with a
+  critical), and nothing tells whether it is. Roles are decided when the view is created, from the batch that creates
+  it (`access::prepare`); a later change detaches the view and puts it back.
+- **`gtk_snapshot_append_repeating_radial_gradient` does not repeat** on GTK 4.22: append a
+  `gsk::RepeatingRadialGradientNode` made with its constructor.
+- **Bitmap fonts (color emoji) describe their strike's size**: a run's font description from
+  `describe_with_absolute_size` names the bitmap size, not the size asked for; set the absolute size again before the
+  main thread loads the font by description.
+- **GDK decodes only PNG, JPEG and TIFF by itself**; GIF and WebP need gdk-pixbuf loaders many systems lack, so the
+  `image` crate decodes them (their first frame).
+- **GTK 4.22 damages a translation with a whole `dx` and a fractional `dy` wrongly**: `gsk_transform_node_diff` tests
+  `floorf (dy) != dy` (fixed upstream to `==`) and translates the damage by the truncated offsets, so the pixels of
+  what moved or shrank under a fractionally scrolled view stay on screen. `view.rs` places children at whole points
+  and moves a remaining translation off that path (`placement`). Check damage on screen (`import -window root`, `grim`),
+  not with `shot`, which renders a fresh frame; `GSK_DEBUG=full-redraw` tells a damage bug from a drawing one.
+- **GSK's cairo renderer paints text outside its node's bounds**: a text node is bounded by the unhinted ink, cairo
+  draws the glyphs hinted with the baseline on the pixel grid, a pixel or so beyond. A view with text (or a text field)
+  adds a clear node `TEXT_OVERHANG` around its bounds that changes with each `NshView::changed`, so its damage covers
+  that (`ViewState::draw_overhang`).
+- **WebKitGTK hands back keys a page did not use, except arrows**: `PageClientImpl::doneWithKeyEvent` puts unused key
+  presses back into GTK (so the window's bubble-phase controllers see Escape), but always keeps arrow keys, so Alt+Left
+  never reaches the window from a focused page. `native/web.rs` takes the history keys in a capture-phase controller on
+  the web view.
+- **WebKitGTK's `decide-policy` does not say which frame a navigation is for** (`WebKitNavigationAction` has no main
+  frame flag, and subframe navigations come through it too): a policy decided there applies to frames as well.
+- **GTK delivers pointer events by allocation**, ignoring NSH's clipping (`overflow: hidden` in `snapshot`), `hidden`
+  and `pointerEvents`: a hosted widget (a web view's page) gets clicks and wheels outside what is drawn of it unless
+  the root's capture controller stops them (`input.rs`'s `shields_page`).
+- **GTK sizes a window only as it shows it, and drops the size while it is hidden**: a window maps, and may take the
+  focus, a frame before it has a size (its width reads 0 until then), and showing it again need not allocate the
+  root again when its size is the one it had. The main window's state reads it shown once it is sized
+  (`window::report_once_sized`, from its `map`), and an app whose window starts hidden is laid out at the window's
+  default size (`window::launch_hidden`).
+- **Tiling window managers ignore the host's `--window-size`** (the window's default size): a test's screenshots have the size
+  the window got, and so does `app.setViewport` (it resizes on X11 and floating windows).
+
+## iOS, the test agent's input
+
+- **Touches made in process do not move the first responder**: a made-up tap on a text field leaves the keyboard's
+  focus where it was, so the agent focuses the input a tap lands in itself (as KIF does).
+- **`insertText:` skips the delegate of `UITextField` and `UITextView`** (no `shouldChangeCharactersInRange`, so no
+  `maxLength`; `input::paste_text`, the agent's paste too, asks it first):
+  typing goes through `UIKeyboardImpl`, which asks it, as the software keyboard does. Keys typed faster than a
+  controlled input's value comes back lose characters, so keys come at a typist's pace.
+- **A finger at rest still moves**: a scroll view measures its speed from the moves that change its offset, so a drag
+  that stops sending events, or keeps reporting the same spot, before it lifts keeps its last velocity and flings. A
+  resting finger trembles a fraction of a point (`agent.rs`). A drag whose path leaves the scroll view moves it much
+  further than the finger.
+- **Interactive back needs system-delivered touches**: the agent's IOHID drags can start UIKit's navigation
+  gestures in the simulator. Test with `app.drag` from an element at the leading edge; `app.back()` exercises
+  the back button instead. On iOS 26 a leading-edge drag can be recognized by
+  `interactiveContentPopGestureRecognizer`, so both it and `interactivePopGestureRecognizer` need the stack's
+  permission delegate after the navigation view has loaded. A scroll view's glide or bounce is not a Core
+  Animation animation: `isDecelerating` says it moves, and a tap during it only stops it.
+- **Interactive back and editing**: the outgoing page remains attached while the finger moves, so removing its
+  input only ends editing after the pop. The stack's gesture delegate ends editing after the permission, root and
+  transition guards allow the gesture. `didShowViewController:` restores that editor if its page returns after
+  cancellation and no other control took focus. Rejected gestures keep focus. The regression observes `onBlur` while the
+  root's system-delivered touch is still down, rather than checking only after the page has detached.
+- **Interactive back and responders**: both pop recognizers sit on the navigation view, around every page, and
+  on iOS 26 the content one begins from a rightward drag anywhere in the page, so a drawing canvas's stroke would pop
+  its page while the responder still got the moves. A responder that blocks native gestures (`SetJsResponder`'s
+  `block`) turns them off until it lets go, as it does the pans of the scroll views around it
+  (`mount.rs` `set_js_responder`); turning a recognizer off also cancels a pop that began before the grant arrived.
+- **A hardware keyboard's keys are IOHID keyboard events** (`IOHIDEventCreateKeyboardEvent`, usage page 7) handed to
+  UIKit the way touches are: they become presses, key commands and typing as a real keyboard's do. Modifiers are
+  keys of their own (left Control, Shift, Option, Command), down before the key and up after it.
+- **A menu's backdrop covers the header**: on a touch screen a menu is a sheet over a backdrop on the whole window,
+  so a tap at the header's back button lands on the backdrop and closes the menu (`backdropPress`) instead of going
+  back from a submenu. iOS has no back key, so while the app listens to going back the agent's `back` is VoiceOver's
+  escape gesture on the surface (`RootView`'s `accessibilityPerformEscape`), which the core takes as the back button.
+- **`-[UIApplication _enqueueHIDEvent:]` takes an `IOHIDEventRef`**: objc2's debug type checks reject an object
+  pointer, so the argument has the `^{__IOHIDEvent=}` encoding.
+
+## Android, the test agent's input
+
+- **Ctrl+key presses are shortcuts first**: the window's input stage (`ViewRootImpl`) offers them as
+  `dispatchKeyShortcutEvent` before the key event, and a `TextView` selects all only there; key events dispatched
+  to the views directly skip it, so the agent offers them as shortcuts itself.
+- **A view's motion is not observable as one value**: scroll views fling with a private `OverScroller` and views
+  animate with `ViewPropertyAnimator`s, so the agent compares a signature of every shown view's place, offset,
+  scroll position and opacity between looks.
+- **A drag's events carry the time they are due, not the time they are dispatched**: a touchscreen stamps each
+  sample when the finger was there, and views compute velocity from those stamps (`VelocityTracker`). A busy UI
+  thread (an emulator's software renderer) takes the scheduled events late and close together; stamped with the
+  dispatch time, the swipe's rest before it lifts looked like motion, the scroll view flung (backwards too), and a
+  step's gestures undid each other until scrolling a view into view gave up.
+- **A scroll view that takes a gesture from a child scrolls from the move that passed the slop**: when the finger
+  lands on a view that takes the touch (a field, a button), `ScrollView.onInterceptTouchEvent` takes the gesture at
+  the first move past the touch slop, and what the finger moved up to that event is lost; from a bare spot its own
+  `onTouchEvent` loses only the slop. A swipe that eased out jumped a quarter of its length or more in its first
+  frame, all of it lost on a field. The agent's swipes ease in and out, a quarter frame apart as a drag's samples,
+  so their first moves stay within the slop and each loses about the slop wherever it lands.
+
+- **Screenshots are copied from the windows' surfaces** (`PixelCopy`, `TestAgent.screenshot`): a view tree drawn
+  into a software `Canvas` holds only what the CPU draws, without `TextureView`s (video), `RenderEffect` filters, the
+  backdrop's blur (it draws a `RenderNode`, on hardware canvases only) and hardware layers. A copy holds the last frame
+  the window drew, so the agent invalidates the windows and waits for their next frame first (a frame commit callback,
+  two Choreographer frames on API 28); the copy is reported on a thread of its own, as the main thread runs the
+  request. A `<modal>` is a dialog window of its own (`ModalHost`), so the activity's copy holds none of it: the
+  agent copies each shown modal's window and the system alert's and places them over it, bottom to top. The dim
+  behind a dialog is the compositor's layer between the windows: the agent fills the picture so far with black at
+  the dialog's `dimAmount` (`FLAG_DIM_BEHIND`) before placing the dialog's copy over it. A window without a surface
+  (an activity stopped behind the lock screen of a phone) is drawn into a bitmap, the views as the CPU draws them.
+
+## macOS, AppKit
+
+- **A view's display link follows the window to another screen but keeps the frame rates it was asked for**: one
+  resumed while the window was on a 60 Hz screen (range 60–60) and kept running by a looping animation or the
+  performance monitor drew at 60 Hz after the window moved to a 120 Hz built-in screen (measured, macOS 26, a 120 Hz
+  built-in screen and a 60 Hz external one). `Surface::follow_screen` asks for the range again when the screen's
+  `maximumFramesPerSecond` differs from the one it was made for.
+
+- **The unified log stores about 1 KB of an entry's text** (iOS too): a `%{public}s` message of 1010 bytes came back
+  whole from `log show` and one of 1016 bytes cut (measured, macOS 26.6), so `nsh_platform_apple::unified_log` logs
+  in entries of at most 960 bytes, split between lines. A packaged app opened from Finder, the Dock or the Home screen
+  has stderr on `/dev/null`, which is why its lines go there. In a non-interactive zsh (scripts, agents' shells) `log`
+  is zsh's builtin, which `/etc/zshrc` disables only for interactive shells: call `/usr/bin/log`.
+
+- **From macOS 27 AppKit decides whether a menu item shows its image, and typically hides it**: `setImage:` alone
+  shows nothing, SF Symbols included. `NSMenuItem.preferredImageVisibility` `.visible` asks for it (the SDK's
+  `NSMenuItem.h`); `chrome::set_icon` sets it, by `msg_send!` behind `respondsToSelector:` as objc2-app-kit has no
+  binding and older systems no property.
+
+- **TextKit 2 has no rect for text it has not laid out**: an `NSTextView` lays out only the text near its visible part,
+  and `firstRectForCharacterRange:actualRange:` answers `NSZeroRect` for the rest, so input methods open their
+  candidates at the screen's bottom-left corner (macOS 27.2, a standalone probe). A point-wide input, as the editors'
+  sinks, wraps a line per character and soon holds such text. `TextArea` answers its visible part instead
+  (`text_input.rs`).
+
+- **Closing a window synchronously calls its delegate**, which stops the surface and clears its mounter.
+  Commands applied while the mounter is borrowed defer window closure to the next main-queue turn
+  (`system.rs`, `ExitApp`), so teardown can borrow the mounter again.
+
+- **Changing `FullSizeContentView` can leave the content at its old size after `setStyleMask:` returns**:
+  a hidden title bar then leaves a strip of window background until the next resize. `chrome::apply_title_bar`
+  reconciles the content view's size with `contentRectForFrameRect:` on the next main-queue turn, using the window's
+  current frame and style (including any later title bar change in the same batch).
+
+- **From macOS 26 a window with a toolbar has larger corners than one with only a title bar** (seen on 26.6), even an
+  empty `NSToolbar` in `UnifiedCompact`; the radius is the system's and no API sets it. A hidden title bar of the app's
+  height therefore centers the traffic lights itself instead of selecting a toolbar style (`chrome::TrafficLights`).
+  AppKit lays the buttons out again whenever the title bar does (each live-resize frame, a screen change, leaving full
+  screen), so they are placed again from their `NSViewFrameDidChangeNotification`s, which arrive inside that layout,
+  before anything is drawn.
+
+- **`contentLayoutRect` lags the frame while a window resizes**: read in the resize (the root view's new size), it is
+  still laid out for the old frame, so the frame's height minus its top is the bar plus the change in height (a
+  400-pt bar after growing a window, none after shrinking it), and it stays so until something measures again.
+  `chrome::update_area` reads a toolbar's height from the title bar view around the window's buttons, which has
+  the bar's height whatever the window's, and uses `contentLayoutRect` only without one; a measure from it runs
+  again on the next main-queue turn, once AppKit has laid the window out, since the root view's size may not change
+  again to trigger one.
+
+- A layer-backed `NSView`'s layer belongs to AppKit: moving or resizing the view sets its layer's anchor point,
+  position and transform again. `NshView::place` sets the frame first, then anchor (top left), position, transform and
+  opacity, every time; a transform set elsewhere is lost on the next move.
+- Layer contents sit below every sublayer of the view: a fill sublayer (differing corners, gradients) would hide
+  content drawn into the view's own layer, so text and canvases draw into a content sublayer (`zPosition` between the
+  decoration behind the view and its children).
+- `setBoundsOrigin:` (scrolling) marks every `drawRect:` view below it for display (`NS_viewVisibleRectDidChange`),
+  clipped or not, on every scroll step; plain sublayers drawn by a delegate are not affected (`view.rs`).
+- Trackpad scroll events come at about the display's rate but not in step with it: applied as they come, frames move
+  twice or not at all while the frame rate reads 120. Resample them at display frames by their timestamps (`scroll.rs`).
+- `NSEvent.timestamp` is on `CACurrentMediaTime`'s clock (`systemUptime`); a `CGEvent` made without a source has
+  timestamp 0 until set (nanoseconds). `NSWindow.sendEvent:` drops synthesized momentum-phase scroll events: scripts
+  hand them to the view under the pointer.
+- Clipping a layer (`masksToBounds`, a mask) clips its shadow too: a view that clips its children and casts a shadow
+  moves the children into a container that clips, and keeps the shadow on its own layer.
+- `NSView`'s display link fires only while some of the view's window shows on a screen: not while the window is
+  hidden (ordered out, or never shown), minimized, wholly covered or off every screen, or the screen is locked. A
+  surface's one link drives all of its windows, so a link made from the root of a hidden main window (a tray app's,
+  `window.defaultVisible: false`) gave the app's other windows no frames at all: made from the hidden window's view
+  it fired 0 times in a second, from a shown window's 126, and in a `Window.open` window a trackpad scroll froze
+  under the fingers and jumped into place when the gesture ended (`settle`), and animations did not run. The link is
+  made from a window that shows and made again when that one hides (`window::link_root`, `macos.md` "Frames"). What
+  ends an animation must not wait for frames, or transitions never end there: the surface keeps their deadlines with
+  a one-shot timer (`Surface::keep_deadline`, docs/dev/animation.md "Deadlines"), never by ticking at a fixed rate,
+  which would add a second clock beside the link's while the window shows.
+- **A window that is not key gives a left press only to a view that accepts the first mouse**; any other press just
+  makes the window key. A hidden title bar's empty toolbar lies over the content's top, and on macOS 15 its
+  `NSToolbarView` is what `hitTest:` finds across the title bar's whole width (macOS 26 finds the content there):
+  it does not accept the first mouse, so in a window that never becomes key (a background test host) a press there
+  is lost, while a key window hands it on to the content under it. The test hosts' window does that too
+  (`window.rs` `NshWindow`).
+- `window.sendEvent:` delivers an event without making it `NSApp.currentEvent`, and synthesized mouse moves only arrive
+  when the window accepts mouse moved events; a window-less `CGEvent`'s location is in screen coordinates. The test
+  agent's input posts to the application's queue (`synth.rs`).
+- `CALayer.backgroundFilters` (iOS's backdrop blur) do nothing in AppKit windows, `layerUsesCoreImageFilters` or
+  not, and Core Image is not even loaded (`CIFilter` is missing) unless something links it. Backdrop blur is an
+  `NSVisualEffectView` with withinWindow blending; it needs `wantsLayer` set when created, or it has no layer to order
+  and clip until AppKit makes one.
+- `NSView.hitTest:` works on frames: it ignores layer transforms and hidden layers, and does not look into subviews
+  outside their superview's frame. The root's `hitTest:` lets NSH's own picking decide inside the surface
+  (`input.rs` `native_at`), or a hosted web view gets clicks on what NSH draws over it.
+- `-[NSCursor set]` costs ~2.5–3.5 ms per call on macOS 26 with a customized pointer size or color (it renders the
+  cursor image again, `_AXFMouseCursorGenerator`), even for the cursor already set; and a view's default
+  `cursorUpdate:`, which AppKit calls after views move or are added, sets the arrow. Set the cursor only when it
+  changes while the mouse is still (`input::set_cursor_at`), and answer `cursorUpdate:` with NSH's cursor: a scroll
+  that mounts rows ten times a second otherwise spends a third of those frames setting the same cursor.
+- AppKit's geometry (`hitTest:`, `convertPoint:` / `convertRect:`, `visibleRect`) follows bounds, not a
+  `sublayerTransform`: while a scroll offset is only the container layer's transform, AppKit places every view
+  below it at the last committed offset. Commit it first (`scroll::commit_pending` on a press,
+  `scroll::commit_ancestors` before a conversion); clip and pick by NSH's own placed frames and
+  `scroll::bounds_origin`. A view's logical frame (`ViewState::frame`) misses its sticky shift and RTL mirroring:
+  clip spaces are the placed frames (`ns().frame()`).
+- In `define_class!` methods, an early `return` of a `bool` or `Option<Retained<_>>` does not compile (the macro wraps
+  the return type): write the body as one expression.
+- VoiceOver reads views, not layers: `visibility: hidden` hides only the view's layer (an `NSView`'s own `hidden` is
+  the navigation's, for screens under the top one), so `access.rs` takes such a view and its subtree out as it does
+  for `accessibilityElementsHidden`. `setAccessibilityChildren:` cannot be undone: `nil` leaves the view without
+  children instead of AppKit's again, so a subtree shown again stayed out of reach; `NshView` answers
+  `accessibilityChildren` itself (none while hidden or grouped, else `NSView`'s).
+- An `NSTextField` or `NSSecureTextField` subclass that overrides `accessibilityRole` and forwards to `super`
+  exposes `AXUnknown` to an external accessibility client (checked on macOS 27). Return `AXTextField` explicitly
+  for ordinary inputs; editable combo boxes keep `AXComboBox`. The secure field still supplies its
+  `AXSecureTextField` subrole and masked value. A direct getter call is not the same as an external AX query:
+  even a plain `NSTextField` returns `AXUnknown` directly while exposing `AXTextField` externally.
+- In-process screenshots (`cacheDisplayInRect:`, `renderInContext:`) ignore `maskedCorners`, `shadowPath`, Core Image
+  filters and cut masks at the mask layer's bounds; they show no backdrop blur, sheets or `AVPlayerLayer` content, and
+  `renderInContext:` no `WKWebView` pages either (`cacheDisplayInRect:` shows them: WebKit draws them for it). Pages
+  and dialogs that leave as images take their live web views and videos along (`native::lend`). They also draw a
+  layer's own `border` unevenly around rounded corners (the outer edge on the corner curve, the inner one circular),
+  which a window draws evenly. The test agent's screenshots are the window server's instead (next item).
+- `CARenderer` (`rendererWithMTLTexture:options:`) renders only a layer tree in a context of its own: given a window's
+  content layer it rendered it offscreen and left the window's content blank on screen (macOS 27), so it cannot take a
+  picture of a shown window. It also renders nothing unless the layer is set inside a committed `CATransaction`.
+- `CGWindowListCreateImage` / `CGWindowListCreateImageFromArray` take pictures of the app's own windows without the
+  Screen Recording permission (`CGPreflightScreenCaptureAccess()` false, macOS 27): the window server's composite,
+  backdrop blur included. They are deprecated and gone from the SDK's headers since macOS 15 (still exported: look
+  them up with `dlsym`). The array lists window numbers as raw values (no CFNumbers, no callbacks), frontmost first.
+  The picture lags the last `CATransaction` commit by a frame or two: flush and wait (50 ms) before taking it.
+- `screencapture -l` needs the Screen Recording permission and fails ("could not create image from window") without
+  it; while the screen is locked a full-screen capture is black.
+- `NSApplication.activate()` only asks since macOS 14, and macOS turns it down after a click on the app's status item
+  (macOS 27.2, a user's clicks over Screen Sharing): asked from the item's action at once, 100 ms later, or as
+  `focus()` does after a JS round trip, the app stayed inactive and the keyboard with the app in front, in a plain
+  AppKit accessory app and in an NSH one (an NSH regular app did the same under synthetic input).
+  `activateIgnoringOtherApps:YES` (deprecated in macOS 14) activated it, as Tauri, winit, Qt's `raise()` and GPUI call
+  it to focus a window; `focus()` uses it, `show()` and new windows ask (`window::activation`).
+- **A sheet of a window out of sight is never seen**, and its completion handler waits for the window:
+  `beginSheetModalForWindow:` on a hidden window (a tray app's main window, `defaultVisible: false`), a minimized one or
+  one off every screen shows nothing until that window shows. Open and save panels then show in a window of their own
+  (`beginWithCompletionHandler:`); `NSAlert` shows on its own only app-modal (`runModal`), as Electron's message boxes
+  do without a visible parent (electron/electron#22671). How that modal loop is entered and ended, so the app's batches
+  go on while it shows, is in `system::run_alone` and its neighbours' comments (`tests/native/window_alert.rs`).
+- While the screen is locked an app cannot become active (`activateIgnoringOtherApps:` does nothing), its windows are
+  occluded and the display link stops; events posted to the app's own queue, `sendEvent:` and in-process drawing
+  keep working. `CGSessionCopyCurrentDictionary`'s `CGSSessionScreenIsLocked` (present only while locked) and
+  `kCGSSessionOnConsoleKey` tell it (`system::screen_locked`). Not yet verified on a locked machine: that a lock posts
+  `NSApplicationDidChangeOcclusionStateNotification` only after the session dictionary says locked (else a test's
+  `lifecycle()` reads `background` until the next environment change), and that `WKWebView` takes a press handed to
+  `mouseDown:` directly in an inactive app outside `sendInput` (`agent::mouse`).
+
+## Windows, Win32
+
+- **Git checks files out with CRLF** (`core.autocrlf=true`, Git for Windows' default), and `.rustfmt.toml`'s
+  `newline_style = "unix"` then makes `cargo +nightly fmt --all` rewrite every line of every file it touches. The
+  repository's `.gitattributes` forces LF; a checkout made before it needs `git add --renormalize .` (or a fresh
+  clone).
+- **rustc and clippy overflow their stack on the `windows` crate** (its generated bindings are huge): set
+  `RUST_MIN_STACK=268435456` when a build or clippy run dies with a stack overflow.
+- **Thread-local COM objects released inside `ExitProcess` end the process with a stray exit code**: the main thread's
+  thread-local destructors run after the graphics DLLs and their driver threads are gone. `run_app` runs the window on
+  a thread of its own and joins it, so the devices, font faces and bitmaps cached per thread go at a plain thread exit.
+- **GPU drivers start worker threads for every Direct3D 11 device** (about 28 on NVIDIA, 15 on AMD) unless it is made
+  with `D3D11_CREATE_DEVICE_PREVENT_INTERNAL_THREADING_OPTIMIZATIONS` (`gfx.rs`). NSH draws with a device from one
+  thread, so they only contend with the UI threads; with a device on each of several threads, windows missed hundreds
+  of frames a minute and CPU went up several times on NVIDIA and Intel. Microsoft calls the flag "not recommended for
+  general use": it is meant for apps that call Direct3D from a single thread, which NSH does (video decoding takes
+  Direct3D's multithread lock and stays valid; the flag changes no thread safety).
+- **A hidden window can stay the foreground window**: hiding the foreground window (`SW_HIDE`) leaves
+  `GetForegroundWindow` returning it until another window takes the foreground, so a window's state reads it focused
+  only while it is shown (`window_state.rs`).
+- **Win32 timers tick at ~15.6 ms** (the default timer resolution) and wake-ups come late on a loaded machine: tests
+  must not assume two timers a few milliseconds apart run in separate turns (chain them instead), and a test's waits
+  need slack.
+- **Child windows cover everything a window draws** (the "airspace" limit): web views are WebView2 composition
+  controllers in the window's DirectComposition tree for this reason (`compose.rs`); native components that bring an
+  `HWND` of their own still cover NSH content (one that brings a composition visual instead,
+  `NativeComponent::visual`, is stacked in order). Offscreen drawings of the window have no web views or composed
+  components: the test agent's screenshots capture them (`PrintWindow` with `PW_RENDERFULLCONTENT`).
+- **`IDCompositionVisual::AddVisual(visual, TRUE, NULL)` puts the visual below all its siblings**, not on top: to
+  stack bottom to top, insert each one above the one added before it (`compose.rs`).
+- **A focused WebView2 page has the keyboard in a window of its own** (`Chrome_WidgetWin_0`, a child of the
+  surface's window): the surface's window gets no keys until it takes the focus back, so alerts and dialogs take it
+  (`native::take_keyboard`), and the test agent's typing and keys post to that window while it has the focus. A
+  `MoveFocus` right after the click needs a few hundred milliseconds before typed characters reach the page.
+- **`std::fs::canonicalize` returns verbatim paths** (`\\?\C:\…`), which rolldown and path prefix comparisons do not
+  take: the bundler and the CLI canonicalize with `dunce::canonicalize`, which keeps plain paths when they are valid;
+  capability checks, trusted anchors and grant roots all go through `nsh_core::access::canonicalize`, which does the
+  same, so both sides of a containment check have one form.
+- **Git Bash sets `LANG`** whatever the user's settings: the Windows backend's locale is the user's regional format
+  (`GetUserDefaultLocaleName`) and ignores `LANG` / `LC_*`, as Windows programs do.
+- **A `:` in a package's asset path is dangerous**: joined onto the assets directory, a `C:` segment replaces it and
+  `name:stream` writes an NTFS alternate data stream. `nsh-package` refuses paths with `:`, as with `\` or `..`.
+- **Sizing or showing a window can paint it before the call returns**: `SetWindowPos` sends `WM_SIZE` when the size
+  changes, where NSH's windows draw at once (for a resize not to show stale pixels), and `window::show` calls
+  `UpdateWindow`, which paints what is invalid. A desktop command runs in the middle of `Surface::apply`, before the
+  batch's animated values are written (`Surface::write_animations`, once the batches are applied), so
+  `Surface::apply` writes them before each one. Without that, a window growing to its content (`sizeToContent`) as
+  it opened drew a view entering with a motion as its style is while hidden, then at the motion's start, and showed
+  the first frame while the second waited for room in its swap chain: the content flashed. Only the views' values
+  are written early: registered components' animated props (`set_animated_number`, `set_animated_color`) still reach
+  them after the batches (`native::component_animated`), so a component that draws in its view
+  (`NativeComponent::draw`) draws such a frame without the values its batch set.
+- **The client and the non-client area are tracked for leaves apart** (`TrackMouseEvent`'s `TME_LEAVE` without and
+  with `TME_NONCLIENT`), and a view marked `windowDrag`, `windowControl` or `windowResize` is non-client area inside
+  the app's content (`HTCAPTION`, `HTCLOSE`, `HTLEFT`, ...): moving between one and an ordinary view posts the leave
+  of the area left, which arrives after the other area's move. Taken as leaving the window, it cleared the hover that
+  move had just set. A leave message therefore only looks where the pointer is now (`GetCursorPos`, `WindowFromPoint`,
+  the window's own answer to `WM_NCHITTEST`, and the client rectangle, since the system's title bar answers
+  `HTCAPTION` as a drag region does), and the views hear a move there or a leave; the decisions are
+  `chrome::Tracking::step`'s, over plain data. A leave message never arms tracking: `TrackMouseEvent` posts a leave at
+  once when the system does not have the pointer in the area yet (it has not taken the moves still queued, although
+  `GetCursorPos` has), and posted messages are retrieved before input, so leaves would follow one another ahead of
+  every input message. A leave that keeps the hover with neither area tracked (the pointer came back before the moves
+  were dispatched) starts a one-shot timer instead: `WM_TIMER` comes only once no input is queued, and it arms the
+  area the pointer is in or ends the hover. A non-client move arms its tracking again at another hit test code, which
+  may end it. A look that finds the pointer in the area the views are hovered in already tells them nothing (the move
+  there did), so a recheck whose tracking the system ends at once stays quiet. The system's move or size loop
+  (`WM_ENTERSIZEMOVE` to `WM_EXITSIZEMOVE`) ends whatever tracking is armed at once: a leave that reported a move
+  there and asked for a recheck, whose tracking the loop ended again, made a loop of NSH's own that told the views a
+  move with the button held at the recheck timer's rate, for a press they never heard. While the loop runs, and as a
+  precaution while a press on a `windowDrag` view holds the capture (`chrome::hold_press`; it counts only while the
+  primary button is down or input is queued, so a press whose release went to another window after a lost
+  foreground is let go), leaves and rechecks neither report nor arm tracking. The hold's end (`WM_EXITSIZEMOVE`, the
+  press released, cancelled or lost, or `WM_ACTIVATE` deactivating the window) asks for one recheck, which tells the
+  views where the pointer is even in the area they hovered (the hover may have moved to another view there), without
+  the buttons of the press they never heard, unless a move came first. A border's hit test code counts as the app's
+  content only where a view answers it (`windowResize`), not where the window's frame does.
+
+## Web, browsers
+
+- **Firefox and older WebKit ignore an import map added after the first module script**: Firefox 153 rejected
+  the development host's bare `nsh` import, and iOS 18.3 Safari reported "Module name, 'nsh' does not resolve to a
+  valid URL". A `document.open()` does not reset this state; a dynamic `import()` from a classic script also
+  starts module loading. The realm bootstrap is therefore a self-contained generated classic script: it builds
+  the namespaces before `runtime.js` installs one complete map and loads `realm.js`, the first module. This also
+  covers namespace imports without relying on multiple import maps. Regenerate `bootstrap.js` with the command
+  in `docs/dev/web.md`; a module-mode minifier removes its strict directive, so the publisher restores the
+  directive before loading the result as a classic script.
+- **WebKit does not hand a `<link rel=preload as=fetch>` still in flight to the `fetch` of the same URL**: the
+  `fetch` downloads the file again, and only once the preload has finished does it come from the HTTP cache (iOS 26.5
+  Safari: the wasm twice in 4 of 11 cold loads on Wi-Fi, each time the runtime asked before the preload was done;
+  Chromium hands it over). The published page starts its downloads with `fetch` in a head script instead
+  (`web::page`, `fetches`).
+- **A scroll view's smooth wheel and key scrolling is nsh's glide, which no browser call cancels**: `wheel` and the
+  scroll keys are prevented and `scrollSmoothly` moves the view on animation frames, so an instant `scrollTo` lasted
+  one frame and the glide's next one put its offset back (Chromium 141: a 900 px wheel notch, `scrollTo(0)` 50 ms
+  later, then 778, 848, … 900). Commands stop the glide first (`stopGlide`) and `op_sb` moves it. A `scrollTo` to
+  where the view already is, instant or smooth, sends neither `scroll` nor `scrollend` (Chromium 152): `stopGlide`
+  sends the `onScrollEnd` of the scroll it stops then. Headless Chrome (141, 155) scrolls a wheel's delta at once by
+  itself: the scroll that animates there is the glide.
+- **Fractional scroll targets can move less than half a CSS pixel**: at DPR 2, Chromium rounds a target of 40.4
+  to 40.5. A half-pixel stationary tolerance therefore ends the scroll early and duplicates `onScrollEnd`.
+  `stopGlide` compares clamped offsets exactly; a quiet-period fallback covers targets rounded back to the
+  current offset, for which the browser emits no `scrollend`.
+- **A blocking `wheel` listener holds the page's scrolling only over the box of the element that has it**: a
+  descendant shown in the top layer (a dialog over the window, `dialogs: "viewport"`) outside the root's box got
+  `wheel` events that were not cancelable, and the page scrolled under it although the root's listener prevented
+  them (headless Chrome 156: `cancelable: false`, `scrollY` 300 after a 300 px wheel). The layer has a blocking
+  listener of its own (`raise`).
+- **A clip with `corner-shape` corners breaks the backdrop filters inside it**: under a view with `overflow: clip`
+  (or `hidden`), a radius and `corner-shape: superellipse(…)`, a descendant's `backdrop-filter` showed nothing, or
+  blurred its whole box with its `mask-image` ignored (Chrome 156, headed and headless alike; the gallery's
+  "Progressive blur", inside continuous-cornered cards). Either one alone is fine, as are circular corners. A clipping
+  view with continuous corners (`nsh-curve-clip`) takes circular corners of its radius while a backdrop-filtered view
+  (`nsh-backdrop`) is inside it (`nsh.js`, `placeCorners`).
+- **The async clipboard writes only PNG images**: a `ClipboardItem` of `image/jpeg` or `image/webp` is rejected
+  (Chrome 156; the clipboard kept what it held), and Safari writes only within the user's gesture, which an `await`
+  before `clipboard.write` loses. `writeClipboardImage` (`nsh.js`) starts the write at once with a promise of the
+  PNG, the image encoded again when it is another format, and logs a failure with a warning. It decodes a `data:` URI
+  itself: the `connect-src` of a published page whose app restricts `network` refuses `fetch` of `data:` URIs.
+- **Canvas `measureText` gives color emoji their 1x advance, the DOM draws them at the screen's pixel ratio**:
+  Apple Color Emoji at 14px measures 18 px on canvas and draws 14 at DPR 2 (16.8 at 1.25; Chrome 156 on macOS;
+  emulating the ratio over the DevTools protocol does not show it, `--force-device-scale-factor` does), so a line of
+  22 emoji was laid out 88 px too wide. Emoji clusters are measured in the DOM (`text.rs`, `emoji_excess`).
+- **A field paints an input method's marks on its composing text whatever its colors**: an editor's sink (transparent
+  text, no caret, 1 px wide) showed a bar at the caret while composing (Chrome 156, `Input.imeSetComposition`). A
+  field that shows nothing is `opacity: 0` (`encode/input.rs`, `shows_nothing`); it keeps the focus and the input
+  method.
+- **`tabular-nums` does not stop a font kerning its digits**: a font without a `tnum` feature (its digits already of
+  one width) keeps its `kern` pairs, so Arial (macOS) and Liberation Sans, Chrome's `sans-serif` on Linux, draw `11`
+  1.48 px narrower than two `1`s at 20 px (Chrome 156: `$1,111.11` summed 89 from its characters, drawn 84.53). A
+  figure's width adds each adjacent pair's kerning to its characters' (`css::figure_width`).
+- **Marking text tells an `NSTextView`'s delegate nothing but the selection** (macOS 27, `setMarkedText:`): no
+  `textDidChange:`, also for a field's editor, though `shouldChangeText` and `didChangeText` run. What follows the text
+  has to look on selection changes too (`text_input.rs`, `composition_changed`), or a label placeholder stays under the
+  composition and `onCompositionChange` never fires. Dropping marked text is the same, and so is its `editing` flag.
+- **AppKit's caret is as tall as a line fragment**, and a fragment with a minimum line height holds the extra space above
+  the text (15 pt system font, 24 pt lines: `NSTextInsertionIndicator` 24 tall, text 18 tall at the fragment's bottom). A
+  fragment of the font's height with `lineSpacing`, and half of it as the container's inset, gives a caret as tall as
+  the text and text in the middle of the same 24 pt lines (`LineBox`).
+
+## Testing on simulators and emulators
+
+- **A manual clock stands still while a finger holds**: it moves with the frames the app asks for, and a held finger
+  asks for none, so a hold the app times itself (a `ContextMenu` on a touch screen) never came due on a real
+  platform. The agent's long press moves the clock by the hold, as the headless driver's does.
+- **iOS simulator: launch apps only after `simctl bootstatus -b`**; apps launched while the simulator boots are sent to the
+  background when SpringBoard comes up.
+- **Synthetic clicks on the Simulator / Catalyst windows go to whatever macOS window is on top at that point**: floating windows
+  of other apps (e.g. a Slack huddle bar at window level 1001) silently swallow clicks over a band of the app. When a tap does
+  nothing, list the windows at the point (`CGWindowListCopyWindowInfo`) before suspecting hit testing.
+- **Not supported / not verifiable here**: keeping left and right unswapped right to left (left / right always swap right to left);
+  after switching direction at runtime UIKit keeps an existing back button's chevron; Android has no skew transforms
+  (as in React Native); Android's stylus handwriting mode (on by default on recent
+  emulators) intercepts taps on inputs — turn it off with `adb shell settings put secure stylus_handwriting_enabled 0`.
+
+- **Windows RichEdit**: never set `TXTBIT_ADVANCEDINPUT` on a windowless RichEdit host; msftedit aborts (0x40000015) on focus. Enable TSF with `EM_SETEDITSTYLE SES_USECTF` instead.
+- **Windows RichEdit draws by GDI's DPI**: `TxDrawD2D` turns its client pixels into the target's units with the window DC's DPI (`richedit::dpi`, the system's DPI in a per-monitor aware process), not with the target's own DPI. On a monitor of another scale than the system's the two differ, and the text was drawn scaled from the target's origin, out of the field (typed text invisible, caret and placeholder in place). `InputState::record` scales the recording by `richedit::target_scale`.
+- **Windows RichEdit invalidates while it draws**: `TxDrawD2D` and the client-rectangle updates around it call `TxInvalidateRect` inside the window's `WM_PAINT`; a paint asked for there never comes back as another `WM_PAINT`, which left the surface waiting forever (typed text not shown until something else repainted). The field ignores what RichEdit invalidates while it is drawn (`Editor::drawing`), and `Surface::paint` asks again, once the frame is done, for what was requested during it.

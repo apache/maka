@@ -1,0 +1,40 @@
+name: Changed
+
+# Called first by the checks' workflows: a scheduled run on main goes on only
+# when main moved since the workflow's last scheduled run, so the runs every
+# three hours take no runner while nothing merges. Other events always go on.
+
+on:
+  workflow_call:
+    outputs:
+      run:
+        description: "'true' when the calling workflow's checks should run"
+        value: ${{ jobs.changed.outputs.run }}
+
+permissions:
+  actions: read
+
+jobs:
+  changed:
+    runs-on: ubuntu-24.04
+    outputs:
+      run: ${{ steps.check.outputs.run }}
+    steps:
+      # The last scheduled run of the calling workflow that was not
+      # cancelled (`github.workflow` is the caller's); this one is still
+      # in progress, so it is not among them.
+      - name: Compare with the last scheduled run
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          WORKFLOW: ${{ github.workflow }}
+        run: |
+          last=$(gh run list --workflow "$WORKFLOW" --event schedule --branch main --status completed --limit 20 \
+            --json headSha,conclusion --jq '[.[] | select(.conclusion != "cancelled")][0].headSha // ""')
+          if [[ "$last" == "$GITHUB_SHA" ]]; then
+            echo "main has not changed since the last scheduled run ($last)"
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi

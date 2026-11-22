@@ -1,0 +1,32 @@
+{
+  "numbers": {
+    "decimal": ".",
+    "group": ",",
+    "minGrouping": 1,
+    "indian": true,
+    "minus": "-",
+    "percent": "%",
+    "currencyBefore": true,
+    "currencySpace": "",
+    "compactShort": [[3, " हज़ार"], [5, " लाख"], [7, " क॰"], [9, " अ॰"]],
+    "compactLong": []
+  },
+  "dates": {
+    "hour12": true,
+    "padHour24": true,
+    "am": "am",
+    "pm": "pm",
+    "periodFirst": false,
+    "periodSpace": " ",
+    "hourSuffix": "",
+    "numeric": [["day", "/"], ["month", "/"], ["year", ""]],
+    "shortYear2digit": false,
+    "text": null,
+    "textLong": null,
+    "weekdayFirst": true,
+    "weekdaySep": ", ",
+    "dateTimeSep": ", ",
+    "names": null,
+    "cjk": false
+  }
+}

@@ -1,0 +1,3 @@
+# Public API of nsh-engine with bare floats for lengths, angles and fractions, to migrate to
+# nsh_core::geometry (docs/dev/geometry.md, "Typed API" and "Migration"). This list
+# only shrinks: a pull request that types an item removes its line.

@@ -1,0 +1,893 @@
+//! Typed native events: what the `on_*` methods of elements hand their
+//! listeners, decoded from the platform's [`EventPayload`].
+
+use std::{borrow::Cow, cell::RefCell, rc::Weak, sync::Arc};
+
+use super::{builder::Listener, task::Executor};
+use crate::{
+    Bounds, ContextMenuEvent, EventPayload, JsonValue, MouseEvent, PayloadValue, PinchEvent, Point,
+    Points, PressEvent, Size, TouchEvent, WheelEvent,
+    geometry::{DevicePixels, Radians},
+};
+
+/// Local files or directories dropped on an element (`on_file_drop`).
+#[derive(Debug, Clone, PartialEq, Default)]
+#[non_exhaustive]
+pub struct FileDropEvent {
+    /// Absolute `file:` URLs in platform order; encoded filenames are preserved.
+    pub uris: Vec<String>,
+    /// The MIME type of each of `uris`, in their order, by the file's name
+    /// (TS: `mimeTypes`): `""` when the name says none (a directory, no
+    /// extension), as the DOM's `File.type`.
+    pub mime_types: Vec<String>,
+    /// Where the files were let go, in the window's coordinates (TS:
+    /// `pagePosition`), on backends that know it (Linux).
+    pub page_position: Option<Point<Points>>,
+}
+
+/// Local files or directories a drag offers to an element while it enters
+/// (`on_file_drag_enter`); nothing has been dropped yet, and no file has
+/// been read.
+#[derive(Debug, Clone, PartialEq, Default)]
+#[non_exhaustive]
+pub struct FileDragEvent {
+    /// Absolute `file:` URLs in platform order; encoded filenames are preserved.
+    pub uris: Vec<String>,
+    /// The MIME type of each of `uris`, as [`FileDropEvent::mime_types`].
+    pub mime_types: Vec<String>,
+}
+
+/// The MIME types of the files `uris` name, in their order.
+fn mime_types(uris: &[String]) -> Vec<String> {
+    uris.iter()
+        .map(|uri| crate::platform::file_mime_type(uri).to_owned())
+        .collect()
+}
+
+/// A scroll view moved (`on_scroll`): the offset, and the sizes it moves in.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ScrollEvent {
+    /// The content offset (TS: `contentOffset`).
+    pub offset: Point<Points>,
+    /// The content's size (TS: `contentSize`).
+    pub content_size: Size<Points>,
+    /// The scroll view's size (TS: `layoutMeasurement`).
+    pub size: Size<Points>,
+    /// How far a zooming scroll view is zoomed (1: not zoomed; the content
+    /// sizes are the zoomed ones).
+    pub zoom_scale: f32,
+}
+
+impl Default for ScrollEvent {
+    fn default() -> Self {
+        Self {
+            offset: Point::default(),
+            content_size: Size::default(),
+            size: Size::default(),
+            zoom_scale: 1.0,
+        }
+    }
+}
+
+/// User scrolling requested before the offset changes (`on_scroll_intent`),
+/// including when the scroll view is already at a boundary.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ScrollIntent {
+    /// Move to the start (Home).
+    Start,
+    /// Move to the end (End).
+    End,
+    /// Other scrolling, or the start of a drag.
+    #[default]
+    Scroll,
+}
+
+/// A drag (`on_pan_start` / `on_pan_end`): translation since it started and
+/// velocity, in points (per second).
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct PanEvent {
+    /// The system cancelled the drag rather than releasing it.
+    pub cancelled: bool,
+    /// The translation.
+    pub translation: Point<Points>,
+    /// Horizontal velocity.
+    pub velocity_x: f32,
+    /// Vertical velocity.
+    pub velocity_y: f32,
+    /// The bound horizontal animated value now (`Interactive::pan`; the
+    /// values an app binds are of any quantity).
+    pub value_x: Option<f32>,
+    /// The bound vertical animated value now.
+    pub value_y: Option<f32>,
+}
+
+/// A pinch or a rotation: its amount and velocity. A pinch's amount is
+/// its scale (`GestureEvent<f32>`), a rotation's an angle
+/// (`GestureEvent<Radians>`).
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct GestureEvent<T = f32> {
+    /// The scale (pinches) or the rotation (rotations).
+    pub value: T,
+    /// Per second.
+    pub velocity: f32,
+}
+
+/// An input's selection (UTF-16 units; equal for a caret).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Selection {
+    /// Start.
+    pub start: u32,
+    /// End.
+    pub end: u32,
+}
+
+/// The selection of a selectable view changed
+/// ([`Interactive::on_text_selection_change`](super::Interactive::on_text_selection_change)).
+#[derive(Debug, Clone, Default, PartialEq)]
+#[non_exhaustive]
+pub struct TextSelectionEvent {
+    /// The selected text, as a copy gives it; empty when nothing is
+    /// selected.
+    pub text: String,
+    /// Where it starts in the copy of the whole view (what a select all
+    /// would copy), in UTF-16 code units, when the platform knows it.
+    pub start: Option<u32>,
+    /// The box around the selected text in the view's coordinates (its
+    /// border box), when something is selected and the platform knows it:
+    /// a bar of actions on the selection goes above it.
+    pub bounds: Option<Bounds<Points>>,
+    /// The same box in the view's root view (the surface, or the dialog
+    /// around it), as of the event:
+    /// [`crate::overlay::OverlayAnchor::Bounds`] places an overlay against
+    /// it.
+    pub page_bounds: Option<Bounds<Points>>,
+}
+
+/// Where an input's caret is (`on_caret_move`): what opens at it (an `@`
+/// mention's suggestions) is placed with it.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+#[non_exhaustive]
+pub struct CaretEvent {
+    /// The caret in the input's coordinates (its border box), its own
+    /// scrolling applied: as wide as the platform draws it, as tall as its
+    /// line. Empty when the platform could not place it.
+    pub bounds: Bounds<Points>,
+    /// The caret in its root view's coordinates (the surface, or the dialog
+    /// around the input), as of the event:
+    /// [`crate::overlay::OverlayAnchor::Bounds`] places an overlay against it.
+    pub page_bounds: Bounds<Points>,
+}
+
+/// An input method's composition in an input (`on_composition_change`):
+/// the text being composed (pinyin before a character is chosen, kana
+/// before conversion), not yet the input's text.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct Composition {
+    /// A composition is in progress.
+    pub composing: bool,
+    /// The text being composed, empty once the composition ends.
+    pub text: String,
+}
+
+/// Where a web view is (`on_navigation_state_change`, `on_load`).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct WebNavigation {
+    /// The page's URL.
+    pub url: String,
+    /// Its title.
+    pub title: String,
+    /// Still loading.
+    pub loading: bool,
+    /// `go_back` would do something.
+    pub can_go_back: bool,
+    /// `go_forward` would do something.
+    pub can_go_forward: bool,
+}
+
+/// A video loaded (`on_load`): its length in seconds and size in pixels.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct VideoInfo {
+    /// Seconds.
+    pub duration: f32,
+    /// Its frames' size in pixels, as decoded (GPUI's images' sizes are
+    /// [`DevicePixels`] too).
+    pub size: Size<DevicePixels>,
+}
+
+/// A video played on (`on_progress`).
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct VideoProgress {
+    /// Seconds played.
+    pub current_time: f32,
+    /// Seconds in all.
+    pub duration: f32,
+}
+
+/// An image's download went on (`Image::on_progress`): bytes so far and in
+/// all (0 when the server does not say).
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct ImageProgress {
+    /// Bytes loaded.
+    pub loaded: f64,
+    /// Bytes in all, 0 when unknown.
+    pub total: f64,
+}
+
+/// A web view download started, finished, failed or was cancelled
+/// (`WebView::on_download`, the core's `onDownload` payload).
+pub(crate) fn web_download(p: &EventPayload) -> Option<Cow<'_, crate::webview::WebDownload>> {
+    let EventPayload::Map(entries) = p else {
+        return None;
+    };
+    let text = |key: &str| match entries.iter().find(|(k, _)| *k == key) {
+        Some((_, PayloadValue::Str(value))) => Some(value.clone()),
+        _ => None,
+    };
+    let number = |key: &str| match entries.iter().find(|(k, _)| *k == key) {
+        Some((_, PayloadValue::Number(n))) => Some(*n),
+        _ => None,
+    };
+    let state = crate::webview::WebDownloadState::parse(text("state")?.as_str())?;
+    let id = text("id")?;
+    // Only a running download can be cancelled by its event.
+    let handle = (state == crate::webview::WebDownloadState::Started)
+        .then(|| download_handle(id.clone()))
+        .flatten();
+    Some(Cow::Owned(crate::webview::WebDownload {
+        state,
+        id,
+        url: text("url")?,
+        filename: text("filename")?,
+        path: std::path::PathBuf::from(text("path")?),
+        bytes: number("bytes").map(|n| n.max(0.0) as u64),
+        message: text("message"),
+        source: text("source")
+            .as_deref()
+            .and_then(crate::webview::WebDownloadSource::parse)
+            .unwrap_or_default(),
+        code: text("code"),
+        reason: text("reason").as_deref().and_then(cancel_reason),
+        handle,
+    }))
+}
+
+fn cancel_reason(name: &str) -> Option<crate::webview::CancelReason> {
+    use crate::webview::CancelReason;
+    match name {
+        "app" => Some(CancelReason::App),
+        "timeout" => Some(CancelReason::Timeout),
+        "teardown" => Some(CancelReason::Teardown),
+        "noListener" => Some(CancelReason::NoListener),
+        _ => None,
+    }
+}
+
+thread_local! {
+    /// The web view a download event is being dispatched to: its node and
+    /// the executor that reaches it. Set only while its listener runs, so
+    /// the event's handle cannot be made anywhere else.
+    static DOWNLOAD_TARGET: RefCell<Option<(crate::NodeId, Weak<Executor>)>> =
+        const { RefCell::new(None) };
+}
+
+/// Makes `node` the target of the download events dispatched while it
+/// lives (the previous target is restored when it drops).
+pub(crate) struct DownloadTarget {
+    previous: Option<(crate::NodeId, Weak<Executor>)>,
+}
+
+impl Drop for DownloadTarget {
+    fn drop(&mut self) {
+        DOWNLOAD_TARGET.with(|target| {
+            *target.borrow_mut() = self.previous.take();
+        });
+    }
+}
+
+/// Sets the web view a download event dispatched now belongs to.
+pub(crate) fn download_target(node: crate::NodeId, executor: Weak<Executor>) -> DownloadTarget {
+    let previous = DOWNLOAD_TARGET.with(|target| target.borrow_mut().replace((node, executor)));
+    DownloadTarget { previous }
+}
+
+/// The handle of download `id` of the web view being dispatched to, or
+/// `None` outside a download event's dispatch.
+fn download_handle(id: String) -> Option<crate::webview::DownloadHandle> {
+    DOWNLOAD_TARGET.with(|target| {
+        target
+            .borrow()
+            .clone()
+            .map(|(node, executor)| crate::webview::DownloadHandle::new(node, executor, id))
+    })
+}
+
+/// A web view's page asked to download a file
+/// (`WebView::on_download_pending`).
+pub(crate) fn web_download_pending(
+    p: &EventPayload,
+) -> Option<Cow<'_, crate::webview::WebDownloadPending>> {
+    let EventPayload::Json(value) = p else {
+        return None;
+    };
+    let id = value.get("id")?.as_str()?.to_owned();
+    let handle = download_handle(id.clone())?;
+    Some(Cow::Owned(crate::webview::WebDownloadPending {
+        id,
+        url: value.get("url")?.as_str()?.to_owned(),
+        filename: value.get("filename")?.as_str()?.to_owned(),
+        source: value
+            .get("source")
+            .and_then(|v| v.as_str())
+            .and_then(crate::webview::WebDownloadSource::parse)
+            .unwrap_or_default(),
+        mime_type: value
+            .get("mime_type")
+            .and_then(|v| v.as_str())
+            .map(str::to_owned),
+        bytes: value.get("bytes").and_then(|v| {
+            v.as_u64().or_else(|| {
+                v.as_f64()
+                    .filter(|n| n.is_finite() && *n >= 0.0 && n.fract() == 0.0)
+                    .map(|n| n as u64)
+            })
+        }),
+        method: value
+            .get("method")
+            .and_then(|v| v.as_str())
+            .map(str::to_owned),
+        handle: Some(handle),
+    }))
+}
+
+/// An event of a registered native component (`on_native_event`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct NativeEvent {
+    /// Its name (`regionChange`).
+    pub name: Arc<str>,
+    /// Its data.
+    pub data: JsonValue,
+}
+
+/// Where the core placed an overlay (`Overlay::on_position`).
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct OverlayPosition {
+    /// The side of the anchor it went on.
+    pub placement: crate::overlay::Placement,
+    /// Its frame in the root view.
+    pub bounds: Bounds<Points>,
+    /// The room on that side, inside the safe area less the margin.
+    pub available: Size<Points>,
+}
+
+/// Why a hint asks to show or hide (`Overlay::on_hint_show` /
+/// `on_hint_hide`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum HintReason {
+    /// The pointer rested on its anchor, or left or pressed it.
+    #[default]
+    Pointer,
+    /// The keyboard focus came to its anchor, or left it.
+    Focus,
+    /// Escape was pressed while it was shown.
+    Escape,
+    /// It left the view.
+    View,
+}
+
+impl HintReason {
+    /// Its name in an event's payload.
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Pointer => "pointer",
+            Self::Focus => "focus",
+            Self::Escape => "escape",
+            Self::View => "view",
+        }
+    }
+}
+
+pub(crate) fn hint_reason(p: &EventPayload) -> Option<Cow<'_, HintReason>> {
+    Some(Cow::Owned(match string(p, "reason") {
+        Some("focus") => HintReason::Focus,
+        Some("escape") => HintReason::Escape,
+        Some("view") => HintReason::View,
+        _ => HintReason::Pointer,
+    }))
+}
+
+/// A field of a map payload.
+fn field<'a>(payload: &'a EventPayload, key: &str) -> Option<&'a PayloadValue> {
+    match payload {
+        EventPayload::Map(entries) => entries.iter().find(|(k, _)| *k == key).map(|(_, v)| v),
+        _ => None,
+    }
+}
+
+fn number(payload: &EventPayload, key: &str) -> f32 {
+    match field(payload, key) {
+        Some(PayloadValue::Number(n)) => *n as f32,
+        _ => 0.0,
+    }
+}
+
+fn flag(payload: &EventPayload, key: &str) -> bool {
+    matches!(field(payload, key), Some(PayloadValue::Bool(true)))
+}
+
+fn string<'a>(payload: &'a EventPayload, key: &str) -> Option<&'a str> {
+    match field(payload, key) {
+        Some(PayloadValue::Str(s)) => Some(s),
+        _ => None,
+    }
+}
+
+fn point_field(payload: &EventPayload, key: &str) -> Point<Points> {
+    match field(payload, key) {
+        Some(PayloadValue::Point(p)) => *p,
+        _ => Point::default(),
+    }
+}
+
+fn size_field(payload: &EventPayload, key: &str) -> Size<Points> {
+    match field(payload, key) {
+        Some(PayloadValue::Size(s)) => *s,
+        _ => Size::default(),
+    }
+}
+
+fn bounds_field(payload: &EventPayload, key: &str) -> Bounds<Points> {
+    match field(payload, key) {
+        Some(PayloadValue::Bounds(b)) => *b,
+        _ => Bounds::default(),
+    }
+}
+
+/// How a typed event comes out of a payload (`None`: not this event's).
+pub(crate) type Decode<T> = for<'a> fn(&'a EventPayload) -> Option<Cow<'a, T>>;
+
+/// `listener` as a listener of raw payloads: it runs with what `decode`
+/// makes of each payload.
+pub(crate) fn typed<T: ?Sized + ToOwned + 'static>(
+    listener: Listener<T>,
+    decode: Decode<T>,
+) -> Listener<EventPayload> {
+    listener.wrap(move |inner, payload: &EventPayload| {
+        if let Some(value) = decode(payload) {
+            inner(&value);
+        }
+    })
+}
+
+/// A sheet's new detent (`{ detent }`, [`crate::SheetDetent::change_payload`]).
+pub(crate) fn sheet_detent(p: &EventPayload) -> Option<Cow<'_, crate::SheetDetent>> {
+    let EventPayload::Json(value) = p else {
+        return None;
+    };
+    crate::SheetDetent::from_json(value.get("detent")?).map(Cow::Owned)
+}
+
+/// Events without data.
+pub(crate) fn unit(_: &EventPayload) -> Option<Cow<'_, ()>> {
+    Some(Cow::Owned(()))
+}
+
+pub(crate) fn overlay_position(p: &EventPayload) -> Option<Cow<'_, OverlayPosition>> {
+    use crate::overlay::Placement;
+    let placement = match string(p, "placement")? {
+        "top" => Placement::Top,
+        "left" => Placement::Left,
+        "right" => Placement::Right,
+        _ => Placement::Bottom,
+    };
+    Some(Cow::Owned(OverlayPosition {
+        placement,
+        bounds: bounds_field(p, "bounds"),
+        available: size_field(p, "available"),
+    }))
+}
+
+/// Where a press went down, in the root view (`Overlay::on_press_outside`).
+pub(crate) fn page_point(p: &EventPayload) -> Option<Cow<'_, Point<Points>>> {
+    Some(Cow::Owned(point_field(p, "pagePosition")))
+}
+
+pub(crate) fn layout(p: &EventPayload) -> Option<Cow<'_, Bounds<Points>>> {
+    match *p {
+        EventPayload::Layout(frame) => Some(Cow::Owned(frame)),
+        _ => None,
+    }
+}
+
+pub(crate) fn text(p: &EventPayload) -> Option<Cow<'_, str>> {
+    match p {
+        EventPayload::Text { text, .. } => Some(Cow::Borrowed(text)),
+        _ => None,
+    }
+}
+
+pub(crate) fn key(p: &EventPayload) -> Option<Cow<'_, str>> {
+    string(p, "key").map(Cow::Borrowed)
+}
+
+pub(crate) fn action(p: &EventPayload) -> Option<Cow<'_, str>> {
+    string(p, "actionName").map(Cow::Borrowed)
+}
+
+pub(crate) fn message(p: &EventPayload) -> Option<Cow<'_, str>> {
+    match p {
+        EventPayload::Error { message } => Some(Cow::Borrowed(message)),
+        _ => string(p, "message").map(Cow::Borrowed),
+    }
+}
+
+pub(crate) fn data(p: &EventPayload) -> Option<Cow<'_, str>> {
+    string(p, "data").map(Cow::Borrowed)
+}
+
+/// An error's message when its `code` says the platform has no such
+/// feature (`ERR_FEATURE_UNAVAILABLE_ON_PLATFORM`).
+pub(crate) fn unavailable(p: &EventPayload) -> Option<Cow<'_, str>> {
+    (string(p, "code") == Some(crate::element::codes::UNAVAILABLE))
+        .then(|| message(p))
+        .flatten()
+}
+
+/// An error's message when its `code` says the web view's web content
+/// process ended (`ERR_NSH_WEBVIEW_TERMINATED`).
+pub(crate) fn terminated(p: &EventPayload) -> Option<Cow<'_, str>> {
+    (string(p, "code") == Some(crate::element::codes::WEBVIEW_TERMINATED))
+        .then(|| message(p))
+        .flatten()
+}
+
+pub(crate) fn selection(p: &EventPayload) -> Option<Cow<'_, Selection>> {
+    Some(Cow::Owned(Selection {
+        start: number(p, "start") as u32,
+        end: number(p, "end") as u32,
+    }))
+}
+
+/// The selection of a selectable view (`text`, `start`).
+pub(crate) fn selected_text(p: &EventPayload) -> Option<Cow<'_, TextSelectionEvent>> {
+    let start = match field(p, "start") {
+        Some(PayloadValue::Number(n)) if *n >= 0.0 => Some(*n as u32),
+        _ => None,
+    };
+    let optional_bounds = |key| match field(p, key) {
+        Some(PayloadValue::Bounds(b)) => Some(*b),
+        _ => None,
+    };
+    Some(Cow::Owned(TextSelectionEvent {
+        text: string(p, "text").unwrap_or_default().to_owned(),
+        start,
+        bounds: optional_bounds("bounds"),
+        page_bounds: optional_bounds("pageBounds"),
+    }))
+}
+
+pub(crate) fn paste(p: &EventPayload) -> Option<Cow<'_, crate::PasteEvent>> {
+    match p {
+        EventPayload::Paste(paste) => Some(Cow::Borrowed(paste)),
+        _ => None,
+    }
+}
+
+pub(crate) fn caret(p: &EventPayload) -> Option<Cow<'_, CaretEvent>> {
+    Some(Cow::Owned(CaretEvent {
+        bounds: bounds_field(p, "bounds"),
+        page_bounds: bounds_field(p, "pageBounds"),
+    }))
+}
+
+pub(crate) fn composition(p: &EventPayload) -> Option<Cow<'_, Composition>> {
+    Some(Cow::Owned(Composition {
+        composing: flag(p, "composing"),
+        text: string(p, "text").unwrap_or_default().to_owned(),
+    }))
+}
+
+pub(crate) fn size(p: &EventPayload) -> Option<Cow<'_, Size<Points>>> {
+    Some(Cow::Owned(crate::geometry::size_pt(
+        number(p, "width"),
+        number(p, "height"),
+    )))
+}
+
+/// An image's own size, in pixels.
+pub(crate) fn pixel_size(p: &EventPayload) -> Option<Cow<'_, Size<DevicePixels>>> {
+    Some(Cow::Owned(match *p {
+        EventPayload::Image(size) => size,
+        _ => Size::new(
+            DevicePixels(number(p, "width").round() as i32),
+            DevicePixels(number(p, "height").round() as i32),
+        ),
+    }))
+}
+
+pub(crate) fn scroll(p: &EventPayload) -> Option<Cow<'_, ScrollEvent>> {
+    Some(Cow::Owned(match *p {
+        EventPayload::Scroll(offset) => ScrollEvent {
+            offset,
+            ..ScrollEvent::default()
+        },
+        _ => ScrollEvent {
+            offset: point_field(p, "offset"),
+            content_size: size_field(p, "contentSize"),
+            size: size_field(p, "size"),
+            zoom_scale: match field(p, "zoomScale") {
+                Some(PayloadValue::Number(n)) => *n as f32,
+                _ => 1.0,
+            },
+        },
+    }))
+}
+
+pub(crate) fn scroll_intent(p: &EventPayload) -> Option<Cow<'_, ScrollIntent>> {
+    Some(Cow::Owned(match string(p, "intent")? {
+        "start" => ScrollIntent::Start,
+        "end" => ScrollIntent::End,
+        "scroll" => ScrollIntent::Scroll,
+        _ => return None,
+    }))
+}
+
+pub(crate) fn offset(p: &EventPayload) -> Option<Cow<'_, Point<Points>>> {
+    Some(Cow::Owned(match *p {
+        EventPayload::Scroll(offset) => offset,
+        _ => point_field(p, "offset"),
+    }))
+}
+
+pub(crate) fn pan(p: &EventPayload) -> Option<Cow<'_, PanEvent>> {
+    match *p {
+        EventPayload::Pan {
+            translation,
+            velocity_x,
+            velocity_y,
+            value_x,
+            value_y,
+        }
+        | EventPayload::PanCancelled {
+            translation,
+            velocity_x,
+            velocity_y,
+            value_x,
+            value_y,
+        } => Some(Cow::Owned(PanEvent {
+            cancelled: matches!(p, EventPayload::PanCancelled { .. }),
+            translation,
+            velocity_x,
+            velocity_y,
+            value_x: value_x.map(|v| v.0),
+            value_y: value_y.map(|v| v.0),
+        })),
+        _ => None,
+    }
+}
+
+pub(crate) fn pinch(p: &EventPayload) -> Option<Cow<'_, GestureEvent>> {
+    Some(Cow::Owned(GestureEvent {
+        value: number(p, "scale"),
+        velocity: number(p, "velocity"),
+    }))
+}
+
+pub(crate) fn rotation(p: &EventPayload) -> Option<Cow<'_, GestureEvent<Radians>>> {
+    Some(Cow::Owned(GestureEvent {
+        value: Radians(number(p, "rotation")),
+        velocity: number(p, "velocity"),
+    }))
+}
+
+pub(crate) fn touch(p: &EventPayload) -> Option<Cow<'_, TouchEvent>> {
+    match p {
+        EventPayload::Touch(touch) => Some(Cow::Borrowed(touch)),
+        _ => None,
+    }
+}
+
+pub(crate) fn navigation(p: &EventPayload) -> Option<Cow<'_, WebNavigation>> {
+    Some(Cow::Owned(WebNavigation {
+        url: string(p, "url").unwrap_or_default().to_owned(),
+        title: string(p, "title").unwrap_or_default().to_owned(),
+        loading: flag(p, "loading"),
+        can_go_back: flag(p, "canGoBack"),
+        can_go_forward: flag(p, "canGoForward"),
+    }))
+}
+
+pub(crate) fn video(p: &EventPayload) -> Option<Cow<'_, VideoInfo>> {
+    Some(Cow::Owned(VideoInfo {
+        duration: number(p, "duration"),
+        size: Size::new(
+            DevicePixels(number(p, "width").round() as i32),
+            DevicePixels(number(p, "height").round() as i32),
+        ),
+    }))
+}
+
+pub(crate) fn progress(p: &EventPayload) -> Option<Cow<'_, VideoProgress>> {
+    Some(Cow::Owned(VideoProgress {
+        current_time: number(p, "currentTime"),
+        duration: number(p, "duration"),
+    }))
+}
+
+pub(crate) fn image_progress(p: &EventPayload) -> Option<Cow<'_, ImageProgress>> {
+    let number = |key| match field(p, key) {
+        Some(PayloadValue::Number(n)) => *n,
+        _ => 0.0,
+    };
+    Some(Cow::Owned(ImageProgress {
+        loaded: number("loaded"),
+        total: number("total"),
+    }))
+}
+
+pub(crate) fn buffering(p: &EventPayload) -> Option<Cow<'_, bool>> {
+    Some(Cow::Owned(flag(p, "isBuffering")))
+}
+
+pub(crate) fn native(p: &EventPayload) -> Option<Cow<'_, NativeEvent>> {
+    match p {
+        EventPayload::Native { name, data } => Some(Cow::Owned(NativeEvent {
+            name: name.clone(),
+            data: data.clone(),
+        })),
+        _ => None,
+    }
+}
+
+/// `onMouseEnter`, `onMouseMove` and `onMouseLeave`'s payload; an event
+/// sent without one (an embedder's, a script's) still reaches the
+/// listener, at no known position.
+/// A press's (`on_press`, `on_long_press`, `on_press_down`,
+/// `on_press_up`): the default where the platform reported none.
+pub(crate) fn press(p: &EventPayload) -> Option<Cow<'_, PressEvent>> {
+    match p {
+        EventPayload::Press(e) => Some(Cow::Borrowed(e)),
+        _ => Some(Cow::Owned(PressEvent::default())),
+    }
+}
+
+pub(crate) fn mouse(p: &EventPayload) -> Option<Cow<'_, MouseEvent>> {
+    match p {
+        EventPayload::Mouse(e) => Some(Cow::Borrowed(e)),
+        _ => Some(Cow::Owned(MouseEvent::default())),
+    }
+}
+
+pub(crate) fn context_menu(p: &EventPayload) -> Option<Cow<'_, ContextMenuEvent>> {
+    match p {
+        EventPayload::ContextMenu(e) => Some(Cow::Borrowed(e)),
+        _ => None,
+    }
+}
+
+pub(crate) fn touchpad_pinch(p: &EventPayload) -> Option<Cow<'_, PinchEvent>> {
+    match p {
+        EventPayload::Pinch(e) => Some(Cow::Borrowed(e)),
+        _ => None,
+    }
+}
+
+pub(crate) fn key_event(p: &EventPayload) -> Option<Cow<'_, crate::KeyEvent>> {
+    match p {
+        EventPayload::Key(event) => Some(Cow::Borrowed(event)),
+        _ => None,
+    }
+}
+pub(crate) fn wheel(p: &EventPayload) -> Option<Cow<'_, WheelEvent>> {
+    match p {
+        EventPayload::Wheel(e) => Some(Cow::Borrowed(e)),
+        _ => None,
+    }
+}
+
+pub(crate) fn file_drop(p: &EventPayload) -> Option<Cow<'_, FileDropEvent>> {
+    match p {
+        EventPayload::FileDrop(uris) => Some(Cow::Owned(FileDropEvent {
+            uris: uris.clone(),
+            mime_types: mime_types(uris),
+            page_position: None,
+        })),
+        EventPayload::FileDropAt {
+            uris,
+            page_position,
+        } => Some(Cow::Owned(FileDropEvent {
+            uris: uris.clone(),
+            mime_types: mime_types(uris),
+            page_position: Some(*page_position),
+        })),
+        _ => None,
+    }
+}
+
+pub(crate) fn file_drag(p: &EventPayload) -> Option<Cow<'_, FileDragEvent>> {
+    match p {
+        EventPayload::FileDrop(uris) | EventPayload::FileDropAt { uris, .. } => {
+            Some(Cow::Owned(FileDragEvent {
+                uris: uris.clone(),
+                mime_types: mime_types(uris),
+            }))
+        }
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn a_cancelled_pan_preserves_its_final_values() {
+        use crate::{EventPayload, Points, geometry::point};
+        let payload = EventPayload::PanCancelled {
+            translation: point(Points(4.0), Points(150.0)),
+            velocity_x: 0.0,
+            velocity_y: 900.0,
+            value_x: None,
+            value_y: Some(Points(150.0)),
+        };
+        let event = super::pan(&payload).unwrap();
+        assert!(event.cancelled);
+        assert_eq!(event.translation, point(Points(4.0), Points(150.0)));
+        assert_eq!(event.value_y, Some(150.0));
+        assert_eq!(event.velocity_y, 900.0);
+    }
+
+    #[test]
+    fn file_drop_requires_the_file_payload() {
+        assert!(super::file_drop(&crate::EventPayload::None).is_none());
+        let uris = vec!["file:///tmp/a%20b".into(), "file:///tmp/empty/".into()];
+        assert_eq!(
+            super::file_drop(&crate::EventPayload::FileDrop(uris.clone()))
+                .unwrap()
+                .uris,
+            uris
+        );
+    }
+
+    #[test]
+    fn file_drags_and_drops_type_each_offered_file_by_its_name() {
+        use crate::{EventPayload, Points, geometry::point};
+        let uris: Vec<String> = vec![
+            "file:///tmp/a%20b.png".into(),
+            "file:///tmp/c.JPG".into(),
+            "file:///tmp/folder/".into(),
+        ];
+        let types = ["image/png", "image/jpeg", ""];
+        let offered = EventPayload::FileDrop(uris.clone());
+        let drag = super::file_drag(&offered).unwrap();
+        assert_eq!(drag.uris, uris);
+        assert_eq!(drag.mime_types, types);
+        let at = EventPayload::FileDropAt {
+            uris: uris.clone(),
+            page_position: point(Points(3.0), Points(4.0)),
+        };
+        let drop = super::file_drop(&at).unwrap();
+        assert_eq!(drop.mime_types, types);
+        assert_eq!(drop.page_position, Some(point(Points(3.0), Points(4.0))));
+        assert!(super::file_drag(&EventPayload::None).is_none());
+    }
+
+    #[test]
+    fn composition_reads_its_state_and_text() {
+        use crate::{EventPayload, PayloadValue};
+        let composing = EventPayload::Map(vec![
+            ("composing", PayloadValue::Bool(true)),
+            ("text", PayloadValue::Str("teng".into())),
+        ]);
+        let c = super::composition(&composing).unwrap();
+        assert!(c.composing);
+        assert_eq!(c.text, "teng");
+        let ended = EventPayload::Map(vec![
+            ("composing", PayloadValue::Bool(false)),
+            ("text", PayloadValue::Str(String::new())),
+        ]);
+        assert_eq!(
+            super::composition(&ended).unwrap().into_owned(),
+            super::Composition::default()
+        );
+    }
+}

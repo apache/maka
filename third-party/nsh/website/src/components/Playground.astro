@@ -1,0 +1,226 @@
+---
+// The playground: a TSX editor beside a phone running it. The page compiles
+// and runs the code in the browser (`play/index.html?playground`, the
+// runtime with nsh's JSX compiler); nothing is sent to a server.
+import { readdirSync } from 'node:fs';
+import { join } from 'node:path';
+import { BASE, type Lang } from '../lib/site';
+import { frameBar, hasPlayer } from '../lib/demo.js';
+import Button from './ui/Button.astro';
+import Select from './ui/Select.astro';
+import Toggle from './ui/Toggle.astro';
+
+export interface Props {
+  lang?: Lang;
+}
+
+const { lang = 'en' } = Astro.props;
+const zh = lang === 'zh-CN';
+const demos = readdirSync(join(process.cwd(), 'demos'))
+  .filter((f) => f.endsWith('.tsx'))
+  .map((f) => f.slice(0, -4))
+  .sort((a, b) => (a === 'counter' ? -1 : b === 'counter' ? 1 : a.localeCompare(b)));
+const player = `${BASE}play/index.html?playground&theme=dark`;
+const t = zh
+  ? {
+      title: '在线试用',
+      intro: '在浏览器里编写 NSH 应用：代码直接在本页编译并立即运行。',
+      example: '示例',
+      run: '运行',
+      share: '分享',
+      copied: '链接已复制',
+      reset: '重置',
+      output: '输出',
+      clear: '清空',
+      empty: '没有输出。console.log 和错误会显示在这里。',
+      compiled: '已编译并运行',
+      loading: '正在加载运行时…',
+      dark: '深色',
+      live: '运行中',
+      noPlayer: '播放器尚未构建：运行 bun run dev（或 cargo xtask web）后刷新。',
+      note: '只能导入 nsh 的模块（nsh、nsh/*）；无网络、无相对导入。',
+    }
+  : {
+      title: 'Playground',
+      intro: 'Write an NSH app in the browser: the page compiles it and runs it right away.',
+      example: 'Example',
+      run: 'Run',
+      share: 'Share',
+      copied: 'Link copied',
+      reset: 'Reset',
+      output: 'Output',
+      clear: 'Clear',
+      empty: 'No output. console.log calls and errors show up here.',
+      compiled: 'Compiled and running',
+      loading: 'Loading the runtime…',
+      dark: 'Dark',
+      live: 'Live',
+      noPlayer: 'The player is not built: run bun run dev (or cargo xtask web) and reload.',
+      note: 'Imports are nsh’s modules only (nsh, nsh/*); no network, no relative imports.',
+    };
+---
+
+<section class="playground" data-playground data-player={player} data-has-player={hasPlayer() ? '' : undefined} data-copy={JSON.stringify(t)}>
+  <header class="playground__head">
+    <div>
+      <h1>{t.title}</h1>
+      <p>{t.intro}</p>
+    </div>
+  </header>
+
+  <div class="playground__toolbar">
+    <div class="playground__field">
+      <span id="pg-example-label">{t.example}</span>
+      <Select
+        id="pg-example"
+        size="sm"
+        labelledby="pg-example-label"
+        class="playground__example"
+        options={demos.map((name) => ({ value: name, label: `${name}.tsx` }))}
+        data-example
+      />
+    </div>
+    <span class="playground__status" data-status aria-live="polite"></span>
+    <div class="playground__actions">
+      <Toggle variant="outline" size="sm" pressed data-dark>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.985 12.486a9 9 0 1 1-9.473-9.472c.405-.022.617.46.402.803a6 6 0 0 0 8.268 8.268c.344-.215.825-.004.803.401" /></svg>
+        {t.dark}
+      </Toggle>
+      <Button variant="secondary" size="sm" data-reset>{t.reset}</Button>
+      <Button variant="secondary" size="sm" data-share>{t.share}</Button>
+      <Button size="sm" data-run title="Ctrl / ⌘ + Enter">{t.run}</Button>
+    </div>
+  </div>
+
+  <div class="playground__body">
+    <div class="playground__editor" data-editor></div>
+    <div class="playground__side">
+      <div class="playground__stage">
+        <div class="phone" style="--phone-w:390;--phone-h:844">
+          <Fragment set:html={frameBar('App.tsx', hasPlayer() ? t.live : '')} />
+          <div class="phone__screen">
+            {hasPlayer()
+              ? <iframe data-frame allow="clipboard-write" title={t.title} width="390" height="844"></iframe>
+              : <div class="phone__placeholder"><p class="phone__placeholder-title">{t.noPlayer}</p></div>}
+          </div>
+        </div>
+      </div>
+      <div class="playground__output">
+        <div class="playground__output-head">
+          <span>{t.output}</span>
+          <Button variant="ghost" size="xs" data-clear>{t.clear}</Button>
+        </div>
+        <div class="playground__log" data-log><p class="playground__empty">{t.empty}</p></div>
+      </div>
+    </div>
+  </div>
+  <p class="playground__note">{t.note}</p>
+</section>
+
+<script>
+  import { mountPlayground } from '../lib/playground-client';
+  for (const el of document.querySelectorAll<HTMLElement>('[data-playground]')) mountPlayground(el);
+</script>
+
+<style is:global>
+  .playground {
+    max-width: 1440px;
+    margin: 0 auto;
+    padding: 2.25rem clamp(1rem, 3vw, 2.5rem) 2.5rem;
+  }
+  .playground__head h1 { margin: 0; font-size: 1.75rem; letter-spacing: -0.02em; }
+  .playground__head p { margin: 0.35rem 0 0; color: var(--muted-foreground); max-width: 46rem; }
+  .playground__toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.75rem;
+    margin: 1.25rem 0 0.75rem;
+  }
+  .playground__field { display: inline-flex; align-items: center; gap: 0.5rem; font-size: 0.85rem; color: var(--muted-foreground); }
+  .playground__example { width: 14rem; font-family: var(--font-mono); }
+  .playground__status { min-width: 0; max-width: 40ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.8rem; color: var(--muted-foreground); }
+  .playground__status[data-kind="error"] { color: var(--destructive); }
+  .playground__status[data-kind="ok"] { color: var(--success); }
+  .playground__actions { margin-left: auto; display: flex; align-items: center; gap: 0.5rem; }
+  .playground__body {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 1rem;
+    height: calc(100vh - 13rem);
+    min-height: 34rem;
+  }
+  .playground__editor {
+    min-width: 0;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-surface);
+    overflow: hidden;
+    background: var(--code-bg);
+    box-shadow: var(--finish-inset);
+  }
+  .playground__editor .cm-editor { height: 100%; font-size: 13px; }
+  .playground__editor .cm-scroller { font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace); line-height: 1.6; }
+  .playground__editor .cm-focused { outline: none; }
+  .playground__side { display: flex; flex-direction: column; gap: 0.75rem; min-height: 0; width: calc(390px * 0.72 + 20px); }
+  .playground__stage { display: flex; justify-content: center; }
+  .playground__stage .phone { --phone-scale: 0.72; }
+  .playground__output {
+    flex: 1;
+    min-height: 6rem;
+    display: flex;
+    flex-direction: column;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-card);
+    overflow: hidden;
+    background: var(--finish-card-bg);
+    box-shadow: var(--finish-flat);
+  }
+  .playground__output-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.35rem 0.75rem;
+    border-bottom: 1px solid var(--line);
+    font-size: 0.72rem;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--faint);
+  }
+  .playground__log {
+    flex: 1;
+    overflow: auto;
+    padding: 0.5rem 0.75rem;
+    font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+    font-size: 0.75rem;
+    line-height: 1.5;
+  }
+  .playground__log pre { margin: 0 0 0.4rem; white-space: pre-wrap; word-break: break-word; font: inherit; }
+  .playground__log [data-level="error"] { color: var(--destructive); }
+  .playground__log [data-level="warn"] { color: var(--warning); }
+  .playground__empty { margin: 0; color: var(--muted-foreground); font-family: inherit; }
+  .playground__note { margin: 0.75rem 0 0; font-size: 0.8rem; color: var(--muted-foreground); }
+
+  /* Syntax colors from the site's code tokens: they follow the theme. */
+  .playground .tok-keyword { color: var(--code-keyword); }
+  .playground .tok-string, .playground .tok-string2 { color: var(--code-string); }
+  .playground .tok-comment { color: var(--code-comment); font-style: italic; }
+  .playground .tok-number, .playground .tok-bool, .playground .tok-atom { color: var(--code-number); }
+  .playground .tok-typeName, .playground .tok-className { color: var(--code-type); }
+  .playground .tok-propertyName { color: var(--code-property); }
+  .playground .tok-variableName2, .playground .tok-definition { color: var(--code-fn); }
+  .playground .tok-tagName { color: var(--code-keyword); }
+  .playground .tok-attributeName { color: var(--code-type); }
+  .playground .cm-gutters { background: var(--code-bg); border-right: 1px solid var(--line); color: var(--faint); }
+  .playground .cm-activeLine, .playground .cm-activeLineGutter { background: color-mix(in srgb, var(--foreground) 4%, transparent); }
+  .playground .cm-content { caret-color: var(--citrus); color: var(--code-fg); }
+  .playground .cm-selectionBackground, .playground .cm-focused .cm-selectionBackground { background: color-mix(in srgb, var(--selection) 30%, transparent) !important; }
+
+  @media (max-width: 900px) {
+    .playground__body { grid-template-columns: 1fr; height: auto; }
+    .playground__editor { height: 28rem; }
+    .playground__side { width: auto; }
+    .playground__output { min-height: 10rem; }
+    .playground__actions { margin-left: 0; flex-wrap: wrap; }
+  }
+</style>

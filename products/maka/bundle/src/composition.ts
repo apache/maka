@@ -1,0 +1,719 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import {
+  contracts,
+  type AgentConfiguration,
+  type AcpExecutorConfiguration,
+  type SkillLibraryConfiguration,
+  type WorkspaceProcessConfiguration,
+  type WorkspaceWebConfiguration,
+  type ComputerConfiguration,
+  type WorkspaceDecisionsApiConfiguration,
+  type CompositionInput,
+  type CompositionNode,
+  type PackageRef,
+  type UiTarget,
+  type Target as BindingTarget,
+} from '../../../../packages/plugin-sdk/src/index.js';
+export { installation } from './installation.js';
+export const packageNames = [
+  'workbench',
+  'conversations',
+  'composer',
+  'calculator',
+  'applications',
+  'quick-library',
+  'screenshot',
+  'symbols',
+  'dictation',
+  'clipboard-history',
+  'file-search',
+  'host-logs',
+  'recovery-gateway',
+  'host-deployment-manager',
+  'deployment-gateway',
+  'settings',
+  'settings-authentication',
+  'settings-setup',
+  'receipts',
+  'gateway',
+  'agent',
+  'forms',
+  'questions',
+  'workspace-files',
+  'workspace-processes',
+  'protocol-processes',
+  'acp-executor',
+  'skills',
+  'workspace-computer',
+  'workspace-web',
+  'workspace-decisions-api',
+] as const;
+export type PackageName = (typeof packageNames)[number];
+export const instanceNames = [
+  ...packageNames,
+  'host-deployment-gateway',
+  'workbench-ui',
+  'conversations-ui',
+  'composer-ui',
+  'calculator-ui',
+  'applications-ui',
+  'quick-library-ui',
+  'screenshot-ui',
+  'symbols-ui',
+  'dictation-ui',
+  'clipboard-history-ui',
+  'file-search-ui',
+  'settings-ui',
+  'workspace-files-ui',
+] as const;
+export type InstanceName = (typeof instanceNames)[number];
+type ExecutorInstanceName = `acp-${string}`;
+export interface AcpExecutor {
+  name: string;
+  configuration: AcpExecutorConfiguration;
+}
+export interface CompositionConfiguration {
+  locale: string;
+  packages: Record<PackageName, PackageRef>;
+  keys: Record<InstanceName, string> & Partial<Record<ExecutorInstanceName, string>>;
+  agent: AgentConfiguration;
+  processes?: WorkspaceProcessConfiguration;
+  web?: WorkspaceWebConfiguration;
+  computer?: ComputerConfiguration;
+  decisions_api?: WorkspaceDecisionsApiConfiguration;
+  acpExecutors?: AcpExecutor[];
+  executorProcesses?: WorkspaceProcessConfiguration;
+  skills?: SkillLibraryConfiguration;
+  hostDeployment: string;
+}
+/** The launcher assigns identities without knowing the product's instance structure. */
+export function installationNames(
+  configuration: Pick<CompositionConfiguration, 'acpExecutors'>,
+): string[] {
+  return [
+    ...new Set([
+      ...instanceNames,
+      ...(configuration.acpExecutors ?? []).map((e) => `acp-${e.name}`),
+    ]),
+  ];
+}
+interface Endpoint {
+  consumer: string[];
+  import: string;
+  grant: { methods: string[]; recovery: boolean };
+}
+interface NativeGrant {
+  origin: string[];
+  consumer: string[];
+  provider: string[];
+  export: string;
+  methods: string[];
+  recovery: boolean;
+}
+interface ApplicationSources {
+  host: CompositionInput;
+  deployment: string;
+  endpoints: Record<string, Endpoint>;
+  native: NativeGrant[];
+}
+
+const defaultUi = {
+  'workbench-ui': {
+    package: 'workbench',
+    views: {
+      navigation: { instance: 'conversations-ui', id: 'navigation' },
+      session: { instance: 'conversations-ui', id: 'session' },
+      preview: { instance: 'conversations-ui', id: 'preview' },
+      rooms: { instance: 'conversations-ui', id: 'rooms' },
+      settings: { instance: 'settings-ui', id: 'Settings' },
+    },
+  },
+  'conversations-ui': {
+    package: 'conversations',
+    views: {
+      composer: { instance: 'composer-ui', id: 'composer' },
+      workspace: { instance: 'workspace-files-ui', id: 'workspace' },
+      settings: { instance: 'settings-ui', id: 'Settings' },
+    },
+  },
+  'composer-ui': { package: 'composer', views: {} },
+  'calculator-ui': { package: 'calculator', views: {} },
+  'applications-ui': { package: 'applications', views: {} },
+  'quick-library-ui': { package: 'quick-library', views: {} },
+  'screenshot-ui': { package: 'screenshot', views: {} },
+  'symbols-ui': { package: 'symbols', views: {} },
+  'dictation-ui': { package: 'dictation', views: {} },
+  'clipboard-history-ui': { package: 'clipboard-history', views: {} },
+  'file-search-ui': { package: 'file-search', views: {} },
+  'settings-ui': { package: 'settings', views: {} },
+  'workspace-files-ui': { package: 'workspace-files', views: {} },
+} as const;
+type DefaultUiName = keyof typeof defaultUi;
+type UiAliases = Record<DefaultUiName, string>;
+type UiBindings = NonNullable<CompositionNode['bindings']>;
+const defaultUiNames = Object.keys(defaultUi) as DefaultUiName[];
+const defaultUiAliases = Object.fromEntries(
+  defaultUiNames.map((name) => [name, name]),
+) as UiAliases;
+const settingsUiImports = [
+  'agent',
+  'settings',
+  'authentication',
+  'setup',
+  'management',
+  'receipts',
+  'skills',
+  'web',
+];
+const workspaceUiImports = ['agent', 'terminal'];
+
+function defaultUiValues(name: DefaultUiName, aliases: UiAliases) {
+  const views: Readonly<Record<string, { instance: DefaultUiName; id: string }>> =
+    defaultUi[name].views;
+  return Object.fromEntries(
+    Object.entries(views).map(([slot, view]) => [
+      slot,
+      { path: [aliases[view.instance]], id: view.id },
+    ]),
+  );
+}
+
+function defaultUiNode(
+  name: DefaultUiName,
+  packages: Record<PackageName, PackageRef>,
+  key: string,
+  aliases: UiAliases,
+): CompositionNode {
+  return {
+    key,
+    package: { source: 'pinned', package: packages[defaultUi[name].package] },
+    usePackage: 'ui',
+    configuration: { values: defaultUiValues(name, aliases) },
+    bindings: {},
+  };
+}
+
+const selectUiBindings = (bindings: UiBindings, imports: readonly string[]): UiBindings =>
+  Object.fromEntries(
+    imports.flatMap((name) => (bindings[name] === undefined ? [] : [[name, bindings[name]]])),
+  );
+
+function settingsComposition(configuration: CompositionConfiguration) {
+  const { packages, keys } = configuration;
+  const local = (name: InstanceName, exportName: string): BindingTarget => ({
+    kind: 'instance',
+    path: [name],
+    export: exportName,
+  });
+  const node = (
+    name: PackageName,
+    values: Record<string, unknown> = {},
+    bindings: Record<string, BindingTarget[]> = {},
+    identity: InstanceName = name,
+  ): CompositionNode => ({
+    key: keys[identity],
+    package: { source: 'pinned', package: packages[name] },
+    usePackage: 'host',
+    configuration: { values },
+    bindings,
+  });
+  const host: CompositionInput = {
+    ui: { path: ['workbench-ui'], id: 'root' },
+    instances: {
+      ...Object.fromEntries(
+        defaultUiNames.map((name) => [
+          name,
+          defaultUiNode(name, packages, keys[name], defaultUiAliases),
+        ]),
+      ),
+      'host-deployment-manager': node('host-deployment-manager'),
+      'host-logs': node('host-logs'),
+      'host-deployment-gateway': node(
+        'deployment-gateway',
+        {},
+        {
+          management: [local('host-deployment-manager', 'Management')],
+          receipts: [local('receipts', 'Receipts')],
+        },
+        'host-deployment-gateway',
+      ),
+      settings: node('settings', {
+        locale: configuration.locale,
+        workspaceLocations: {
+          agent: 'agent',
+          skills: configuration.skills ? 'skills' : null,
+          processes: configuration.processes ? 'workspace-processes' : null,
+        },
+      }),
+      'settings-authentication': node('settings-authentication'),
+      'settings-setup': node('settings-setup'),
+      receipts: node('receipts'),
+      'recovery-gateway': node(
+        'recovery-gateway',
+        {},
+        {
+          receipts: [local('receipts', 'Receipts')],
+        },
+      ),
+      gateway: node(
+        'gateway',
+        {},
+        {
+          hostLogs: [local('host-logs', 'HostLogs')],
+          settings: [local('settings', 'Settings')],
+          authentication: [local('settings-authentication', 'Authentication')],
+          setup: [local('settings-setup', 'Setup')],
+        },
+      ),
+    },
+  };
+  const expose = (consumer: InstanceName, name: string, methods: string[], recovery: boolean) => ({
+    consumer: [keys[consumer]],
+    import: name,
+    grant: { methods, recovery },
+  });
+  const endpoints: Record<string, Endpoint> = {
+    management: expose(
+      'host-deployment-gateway',
+      'management',
+      [
+        'read',
+        'readUi',
+        'watch',
+        'instances',
+        'setEnabled',
+        'readSettings',
+        'configure',
+        'configureBatch',
+        'bindingCandidates',
+        'packageSettings',
+        'editComposition',
+        'readDocument',
+        'replace',
+        'install',
+        'installSource',
+        'installUrl',
+        'readPackage',
+        'exportPackage',
+        'replaceSource',
+      ],
+      false,
+    ),
+    receipts: expose('recovery-gateway', 'receipts', ['read'], true),
+    settings: expose(
+      'gateway',
+      'settings',
+      Object.keys(contracts.settings.interface.methods),
+      true,
+    ),
+    authentication: expose(
+      'gateway',
+      'authentication',
+      Object.keys(contracts.settingsAuthentication.interface.methods),
+      true,
+    ),
+    setup: expose('gateway', 'setup', Object.keys(contracts.settingsSetup.interface.methods), true),
+  };
+  return { host, endpoints, local, node, expose };
+}
+/** Keys and deployment belong to the installation, not to a build or shell. */
+export function composition(configuration: CompositionConfiguration): ApplicationSources {
+  const source = agentComposition(configuration);
+  const bindings: Record<string, BindingTarget[]> = {
+    ...source.host.instances.gateway!.bindings,
+    management: [
+      { kind: 'instance' as const, path: ['host-deployment-manager'], export: 'Management' },
+    ],
+    receipts: [{ kind: 'instance' as const, path: ['receipts'], export: 'Receipts' }],
+  };
+  source.host.instances['conversations-ui']!.bindings = bindings;
+  source.host.instances['settings-ui']!.bindings = selectUiBindings(bindings, settingsUiImports);
+  source.host.instances['workspace-files-ui']!.bindings = selectUiBindings(
+    bindings,
+    workspaceUiImports,
+  );
+  return source;
+}
+
+function agentComposition(configuration: CompositionConfiguration): ApplicationSources {
+  const { keys } = configuration;
+  const { host, endpoints, local, node, expose } = settingsComposition(configuration);
+  const executors = configuration.acpExecutors ?? [];
+  if (
+    new Set(executors.map((e) => e.name)).size !== executors.length ||
+    executors.some((e) => !/^[a-zA-Z][a-zA-Z0-9._:-]*$/.test(e.name))
+  )
+    throw new Error('ACP backends require valid distinct executor names');
+  if (configuration.agent.executors?.length)
+    throw new Error('The standard composition selects executor imports through acpExecutors');
+  if (executors.length && !configuration.executorProcesses)
+    throw new Error('ACP backends require an explicit executorProcesses installation ceiling');
+  const executorPath = (name: string): ExecutorInstanceName => `acp-${name}`;
+  const computerMethods = [
+    ...new Set(
+      configuration.agent.tools
+        .filter((tool) => tool.target.kind === 'import' && tool.target.name === 'computer')
+        .map((tool) => tool.method),
+    ),
+  ];
+  if (computerMethods.length && !configuration.computer)
+    throw new Error('Computer tools require an explicit native installation');
+  if (computerMethods.some((method) => !['evaluate', 'reset'].includes(method)))
+    throw new Error('Model Computer tools select only evaluate and reset');
+  if (computerMethods.length)
+    host.instances['workspace-computer'] = node('workspace-computer', {
+      ...configuration.computer,
+    });
+  const webMethods = [
+    ...new Set(
+      configuration.agent.tools
+        .filter((tool) => tool.target.kind === 'import' && tool.target.name === 'web')
+        .map((tool) => tool.method),
+    ),
+  ];
+  if (webMethods.length && !configuration.web)
+    throw new Error('Web tools require an explicit network installation ceiling');
+  if (webMethods.some((method) => method !== 'fetch' && method !== 'search'))
+    throw new Error('Model Web tools select only fetch and search');
+  const uiMethods = [
+    ...new Set(
+      configuration.agent.tools
+        .filter((tool) => tool.target.kind === 'import' && tool.target.name === 'ui')
+        .map((tool) => tool.method),
+    ),
+  ];
+  const asksForms = configuration.agent.tools.some(
+    (tool) => tool.target.kind === 'import' && tool.target.name === 'forms',
+  );
+  const asksQuestions = configuration.agent.tools.some(
+    (tool) => tool.target.kind === 'import' && tool.target.name === 'questions',
+  );
+  const fileMethods = [
+    ...new Set(
+      configuration.agent.tools
+        .filter((tool) => tool.target.kind === 'import' && tool.target.name === 'files')
+        .map((tool) => tool.method),
+    ),
+  ];
+  const processMethods = [
+    ...new Set(
+      configuration.agent.tools
+        .filter((tool) => tool.target.kind === 'import' && tool.target.name === 'processes')
+        .map((tool) => tool.method),
+    ),
+  ];
+  const skillMethods = [
+    ...new Set(
+      configuration.agent.tools
+        .filter((tool) => tool.target.kind === 'import' && tool.target.name === 'skills')
+        .map((tool) => tool.method),
+    ),
+  ];
+  if (configuration.agent.skillLibrary != null && configuration.agent.skillLibrary !== 'skills')
+    throw new Error('Skill input preparation selects the skills Library import');
+  const skillCalls = [
+    ...new Set([
+      ...skillMethods,
+      ...(configuration.agent.skillLibrary ? ['prepare', 'search', 'candidates'] : []),
+    ]),
+  ];
+  if (skillCalls.length && !configuration.skills)
+    throw new Error('Skill tools require explicitly selected skill collections');
+  if (skillMethods.some((method) => method !== 'search' && method !== 'load'))
+    throw new Error('Model skill tools select only search and load');
+  if (processMethods.length && !configuration.processes)
+    throw new Error(
+      'Process tools require an explicit installation filesystem and network ceiling',
+    );
+  host.instances.agent = node(
+    'agent',
+    {
+      ...configuration.agent,
+      locale: configuration.locale,
+      executors: executors.map((e, member) => ({
+        name: e.name,
+        import: 'executors',
+        member,
+        ...(configuration.executorProcesses?.setupDirectory
+          ? { setup: { import: 'executorSetups', member } }
+          : {}),
+      })),
+      // These imports bind known native v1 contracts. Freeze presentation in
+      // the configuration; tool names and response shapes cannot opt into it.
+      tools: configuration.agent.tools.map((tool) => {
+        if (tool.target.kind === 'import' && tool.target.name === 'web')
+          return {
+            ...tool,
+            input: 'web' as const,
+            ...(tool.presentation === undefined
+              ? { presentation: `maka.workspace.Web@1/${tool.method}` }
+              : {}),
+          };
+        if (tool.target.kind === 'import' && tool.target.name === 'skills')
+          return { ...tool, input: 'skill' as const };
+        if (
+          tool.target.kind === 'import' &&
+          tool.target.name === 'processes' &&
+          tool.method === 'execute'
+        )
+          tool = { ...tool, input: 'shell' };
+        if (tool.presentation !== undefined) return tool;
+        const contract =
+          tool.target.kind === 'import' &&
+          tool.target.name === 'files' &&
+          ['read', 'write', 'edit', 'applyPatch'].includes(tool.method)
+            ? 'maka.workspace.Files'
+            : tool.target.kind === 'import' &&
+                tool.target.name === 'processes' &&
+                ['execute', 'read', 'writeStdin', 'stop'].includes(tool.method)
+              ? 'maka.workspace.Processes'
+              : null;
+        return contract ? { ...tool, presentation: `${contract}@1/${tool.method}` } : tool;
+      }),
+    },
+    {
+      ...(executors.length
+        ? {
+            ...(configuration.executorProcesses?.setupDirectory
+              ? {
+                  executorSetups: executors.map((e) => ({
+                    kind: 'instance' as const,
+                    path: [executorPath(e.name)],
+                    export: 'setup',
+                  })),
+                }
+              : {}),
+            executors: executors.map((e) => ({
+              kind: 'instance' as const,
+              path: [executorPath(e.name)],
+              export: 'executor',
+            })),
+          }
+        : {}),
+      ...(configuration.agent.tools.some(
+        (tool) => tool.target.kind === 'import' && tool.target.name === 'settings',
+      )
+        ? { settings: [local('settings', 'Settings')] }
+        : {}),
+      ...(computerMethods.length ? { computer: [local('workspace-computer', 'computer')] } : {}),
+      ...(webMethods.length ? { web: [local('workspace-web', 'web')] } : {}),
+      ...(skillCalls.length ? { skills: [local('skills', 'skills')] } : {}),
+      ...(uiMethods.length ? { ui: [local('host-deployment-manager', 'Management')] } : {}),
+      ...(asksForms ? { forms: [local('forms', 'forms')] } : {}),
+      ...(asksQuestions ? { questions: [local('questions', 'questions')] } : {}),
+      ...(fileMethods.length ? { files: [local('workspace-files', 'files')] } : {}),
+      ...(processMethods.length ? { processes: [local('workspace-processes', 'processes')] } : {}),
+    },
+  );
+  if (asksForms || executors.length) host.instances.forms = node('forms');
+  if (asksQuestions) host.instances.questions = node('questions');
+  if (fileMethods.length || executors.length)
+    host.instances['workspace-files'] = node('workspace-files');
+  if (executors.length) {
+    host.instances['protocol-processes'] = node('protocol-processes', {
+      ...configuration.executorProcesses!,
+      sessionOwner: [keys.agent],
+    });
+    for (const executor of executors) {
+      host.instances[executorPath(executor.name)] = {
+        ...node(
+          'acp-executor',
+          { ...executor.configuration },
+          {
+            processes: [local('protocol-processes', 'protocol')],
+            files: [local('workspace-files', 'files')],
+            forms: [local('forms', 'forms')],
+          },
+        ),
+        key: keys[executorPath(executor.name)]!,
+      };
+    }
+  }
+  if (configuration.processes)
+    host.instances['workspace-processes'] = node(
+      'workspace-processes',
+      {
+        ...configuration.processes,
+        sessionOwner: [keys.agent],
+      },
+      configuration.web && processMethods.includes('health')
+        ? { web: [local('workspace-web', 'web')] }
+        : {},
+    );
+  host.instances.gateway!.bindings!.agent = [local('agent', 'agent')];
+  if (computerMethods.length) {
+    host.instances.gateway!.bindings!.computer = [local('workspace-computer', 'computer')];
+    endpoints.computer = expose(
+      'gateway',
+      'computer',
+      ['watchStage', 'watchFrames', 'readFrame', 'presentTarget'],
+      false,
+    );
+  }
+  if (configuration.processes)
+    host.instances.gateway!.bindings!.terminal = [local('workspace-processes', 'terminal')];
+  if (configuration.web) {
+    host.instances['workspace-web'] = node('workspace-web', { ...configuration.web });
+    host.instances.gateway!.bindings!.web = [local('workspace-web', 'web')];
+    Object.assign(endpoints, {
+      web: expose('gateway', 'web', ['snapshot', 'save', 'saveKey', 'deleteKey', 'checkKey'], true),
+    });
+  }
+  if (configuration.decisions_api) {
+    host.instances['workspace-decisions-api'] = node('workspace-decisions-api', {
+      ...configuration.decisions_api,
+    });
+    host.instances.gateway!.bindings!.decisions_api = [
+      local('workspace-decisions-api', 'decisions_api'),
+    ];
+    Object.assign(endpoints, {
+      decisions_api: expose(
+        'gateway',
+        'decisions_api',
+        ['snapshot', 'save', 'credential', 'evaluate'],
+        true,
+      ),
+    });
+  }
+  if (configuration.skills) {
+    host.instances.skills = node('skills', { ...configuration.skills });
+    host.instances.gateway!.bindings!.skills = [local('skills', 'skills')];
+    Object.assign(endpoints, {
+      skills: expose(
+        'gateway',
+        'skills',
+        [
+          'list',
+          'read',
+          ...(configuration.skills.manage ? ['discoverSource', 'install', 'update', 'delete'] : []),
+          ...(configuration.skills.preferences ? ['setPreference'] : []),
+        ],
+        !!(configuration.skills.manage || configuration.skills.preferences),
+      ),
+    });
+  }
+  Object.assign(endpoints, {
+    agent: expose('gateway', 'agent', Object.keys(contracts.agent.interface.methods), true),
+    hostLogs: expose('gateway', 'hostLogs', ['read', 'watch'], false),
+  });
+  if (configuration.processes) {
+    Object.assign(endpoints, {
+      terminal: expose(
+        'gateway',
+        'terminal',
+        Object.keys(contracts.terminal.interface.methods),
+        true,
+      ),
+    });
+  }
+  const native: NativeGrant[] = [
+    ...executors.flatMap((executor) => [
+      ...(configuration.executorProcesses?.setupDirectory
+        ? [
+            {
+              origin: [keys.agent],
+              consumer: [keys.agent],
+              provider: [keys[executorPath(executor.name)]!],
+              export: 'setup',
+              methods: ['setup'],
+              recovery: true,
+            },
+          ]
+        : []),
+      {
+        origin: [keys.agent],
+        consumer: [keys.agent],
+        provider: [keys[executorPath(executor.name)]!],
+        export: 'executor',
+        methods: ['execute'],
+        recovery: true,
+      },
+      ...[
+        {
+          provider: keys['protocol-processes'],
+          export: 'protocol',
+          methods: [
+            'run',
+            'input',
+            ...(configuration.executorProcesses?.setupDirectory ? ['launch'] : []),
+          ],
+        },
+        { provider: keys['workspace-files'], export: 'files', methods: ['read', 'write'] },
+        { provider: keys.forms, export: 'forms', methods: ['ask'] },
+      ].map((grant) => ({
+        ...grant,
+        origin: [keys[executorPath(executor.name)]!],
+        consumer: [keys[executorPath(executor.name)]!],
+        provider: [grant.provider],
+        recovery: true,
+      })),
+    ]),
+    ...(computerMethods.length
+      ? [
+          {
+            origin: [keys.agent],
+            consumer: [keys.agent],
+            provider: [keys['workspace-computer']],
+            export: 'computer',
+            methods: ['state'],
+            recovery: true,
+          },
+        ]
+      : []),
+    ...(webMethods.length
+      ? [
+          {
+            origin: [keys.agent],
+            consumer: [keys.agent],
+            provider: [keys['workspace-web']],
+            export: 'web',
+            methods: ['capture'],
+            recovery: true,
+          },
+        ]
+      : []),
+    ...(configuration.agent.skillLibrary
+      ? [
+          {
+            origin: [keys.agent],
+            consumer: [keys.agent],
+            provider: [keys.skills],
+            export: 'skills',
+            methods: ['prepare', 'search', 'candidates'],
+            recovery: false,
+          },
+        ]
+      : []),
+    ...(processMethods.includes('health') && configuration.web
+      ? [
+          {
+            origin: [keys.agent],
+            consumer: [keys['workspace-processes']],
+            provider: [keys['workspace-web']],
+            export: 'web',
+            methods: ['probe'],
+            recovery: true,
+          },
+        ]
+      : []),
+  ];
+  return { host, deployment: configuration.hostDeployment, endpoints, native };
+}

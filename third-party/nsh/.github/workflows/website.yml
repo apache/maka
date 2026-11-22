@@ -1,0 +1,299 @@
+name: Website
+
+# Builds the documentation site with its live demos (the WebAssembly runtime,
+# `cargo xtask web`) and publishes it to GitHub Pages at nsh.dev, every
+# version of it (`website/scripts/versions.js`): the latest release at /, main
+# at /versions/main, earlier releases at /versions/<tag>
+# (`website/public/CNAME`). App Stories (/apps) come from the reviewed
+# catalog in longbridge/nsh-showcases, whose own workflow dispatches this one
+# after each merge and its weekly star refresh. Languages other than English
+# and Chinese come from longbridge/nsh-website-translates, also at publish time.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "website/**"
+      - "skills/**"
+      - "examples/tasks/**"
+      - "examples/tasks-rs/**"
+      - "crates/**"
+      - "examples/gallery/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".cargo/**"
+      - "rust-toolchain.toml"
+      - ".github/workflows/website.yml"
+      - ".github/actions/cargo/**"
+  pull_request:
+    # `closed` runs nothing, but it takes the pull request's concurrency group
+    # and so cancels its runs still queued or running once it merges or closes.
+    types: [opened, synchronize, reopened, ready_for_review, closed]
+    # Only the site and the web runtime: Rust application's `web` job builds
+    # the web runtime for every change to the crates, and main's deployment
+    # builds the site after a merge (.github/ci/paths.py).
+    paths:
+      - "website/**"
+      - "skills/**"
+      - "examples/tasks/**"
+      - "examples/tasks-rs/**"
+      - "crates/nsh-platform-web/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".cargo/**"
+      - "rust-toolchain.toml"
+      - ".github/workflows/website.yml"
+      - ".github/actions/cargo/**"
+  merge_group:
+    types: [checks_requested]
+  # A release puts its documentation at the root. (The release the Release
+  # workflow publishes with GITHUB_TOKEN starts no workflow itself.)
+  workflow_run:
+    workflows: [Release]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Pages takes one deployment at a time; queue rather than cancel, so the
+# latest push always ends up deployed.
+concurrency:
+  group: pages-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}
+
+env:
+  # CI builds each crate once: no incremental state and no debug info
+  # (faster builds, smaller caches; panics still name their file and line).
+  CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  # The toolchain file's iOS and Android targets are only the release's.
+  RUSTUP_TOOLCHAIN: stable
+  # `cargo xtask web` builds the command line with the release profile, as a
+  # tool that bundles the demos and packages the gallery: their output does
+  # not depend on link-time optimization, which made it the longest build of
+  # the job. The published binaries are the Release workflow's. The `web`
+  # profile, which inherits `release`, keeps the manifest's settings, so the
+  # runtime the pages load is built as before.
+  CARGO_PROFILE_RELEASE_LTO: "off"
+  CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+  CARGO_PROFILE_WEB_LTO: "fat"
+  CARGO_PROFILE_WEB_CODEGEN_UNITS: "1"
+
+jobs:
+  build:
+    # Nothing for drafts or a pull request being closed.
+    if: (github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success') && (github.event_name != 'pull_request' || (github.event.action != 'closed' && !github.event.pull_request.draft))
+    # Debounce (AGENTS.md "CI"): waits without a runner, so a newer
+    # push cancels this run before it takes one.
+    environment:
+      name: ci-debounce
+      deployment: false
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # The releases' tags and content (`website/scripts/versions.js`).
+          fetch-depth: 0
+
+      # The web runtime's C code (zstd): clang compiles it for wasm32 (llvm-ar
+      # archives it); bindgen needs libclang for the host build of the nsh CLI.
+      - name: Install clang and LLVM
+        if: runner.environment == 'github-hosted'
+        run: sudo apt-get update && sudo apt-get install -y clang llvm libclang-dev
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      # No cache of its own: a pull request's would be one more entry per
+      # pull request in the repository's cache storage, crowding out the
+      # dependencies' builds; the download takes seconds.
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+          no-cache: true
+
+      # huacnlee/cargo, and the dependencies' builds: main's runs save
+      # them, pull requests restore them.
+      - name: Cargo
+        uses: ./.github/actions/cargo
+        with:
+          cache: website
+
+      - name: Test browser scroll indicator behavior
+        run: node --test crates/nsh-platform-web/web/scroll.test.mjs
+
+      - name: Test the player's dialogs, input and host channel
+        run: node --test crates/nsh-platform-web/web/nsh.test.mjs
+
+      - name: Test viewport dialogs across iframe boundaries
+        run: node --test crates/nsh-platform-web/web/viewport-browser.test.mjs
+
+      - name: Test apps' realms when the page moves its player
+        run: node --test crates/nsh-platform-web/web/realm-browser.test.mjs
+
+      - name: Test touch drags handed from zoomable views in a browser
+        run: node --test crates/nsh-platform-web/web/touch-browser.test.mjs
+
+      - name: Test svg() currentColor in a browser
+        run: node --test crates/nsh-platform-web/web/svg-browser.test.mjs
+
+      - name: Test the reading order of scroll content in a browser
+        run: node --test --test-name-pattern "reading order" crates/nsh-platform-web/web/scroll-browser.test.mjs
+
+      # Only the emoji test for now: summed tabular digits measure wider than
+      # Chrome on Linux draws them (the file's first test).
+      - name: Test emoji measurement against what Chrome draws
+        run: node --test --test-name-pattern emoji crates/nsh-platform-web/web/text-browser.test.mjs
+
+      - name: Check the generated classic browser bootstrap
+        run: cargo run -p nsh-bundler --example browser_bootstrap -- --check
+
+      - name: Test browser JavaScript bindings against Wasm
+        env:
+          AR_wasm32_unknown_unknown: llvm-ar
+        run: |
+          cargo build -p nsh-platform-web --target wasm32-unknown-unknown --no-default-features --features browser-tests --profile web
+          NSH_BROWSER_WASM=target/wasm32-unknown-unknown/web/nsh_platform_web.wasm node --expose-gc --test crates/nsh-platform-web/web/browser/*.test.mjs
+
+      - name: Install browser test engines
+        env:
+          RUNNER_ENVIRONMENT: ${{ runner.environment }}
+        run: |
+          python3 -m venv "$RUNNER_TEMP/nsh-browser-tests"
+          "$RUNNER_TEMP/nsh-browser-tests/bin/pip" install playwright==1.62.0
+          # The browsers' system libraries come with them on GitHub's
+          # runners; a self-hosted one has them installed.
+          deps=--with-deps
+          [[ "$RUNNER_ENVIRONMENT" == github-hosted ]] || deps=
+          "$RUNNER_TEMP/nsh-browser-tests/bin/python" -m playwright \
+            install $deps chromium firefox webkit
+
+      # One Wasm build, serial engines: keep Chromium's interaction coverage
+      # and still report the other engines if one lifecycle suite fails.
+      - name: Test browser module lifecycle and interaction
+        run: |
+          status=0
+          script=crates/nsh-platform-web/web/browser/browser-check.py
+          wasm=target/wasm32-unknown-unknown/web/nsh_platform_web.wasm
+          for browser in chromium firefox webkit; do
+            suite=lifecycle
+            if [ "$browser" = chromium ]; then suite=all; fi
+            "$RUNNER_TEMP/nsh-browser-tests/bin/python" "$script" \
+              --browser "$browser" --suite "$suite" --wasm "$wasm" || status=1
+          done
+          exit "$status"
+
+      - name: Upload browser test failure diagnostics
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-tests
+          path: .nsh/browser-tests/
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 7
+
+      # The published site requires the catalog (NSH_REQUIRE_SHOWCASES).
+      - name: Check out the App Stories catalog
+        uses: actions/checkout@v6
+        with:
+          repository: longbridge/nsh-showcases
+          ref: main
+          path: .showcases
+          persist-credentials: false
+
+      - name: Install the catalog's dependencies
+        working-directory: .showcases
+        run: bun install --frozen-lockfile
+
+      - name: Install website dependencies
+        working-directory: website
+        run: bun install
+
+      # `build` runs `cargo xtask web` first: nsh.wasm, the player and every
+      # demo in website/demos, into website/public/play, and the gallery
+      # published with `nsh package --target web` into play/gallery.
+      - name: Build website
+        working-directory: website
+        env:
+          NSH_REQUIRE_PLAY: "1"
+          NSH_REQUIRE_SHOWCASES: "1"
+          SHOWCASES_DIR: ${{ github.workspace }}/.showcases
+          AR_wasm32_unknown_unknown: llvm-ar
+          GITHUB_TOKEN: ${{ github.token }}
+        run: bun run build
+
+      - name: Test website
+        working-directory: website
+        env:
+          SHOWCASES_DIR: ${{ github.workspace }}/.showcases
+        run: bun run test
+
+      # Each release's pages and player are built once and kept here, again
+      # when the site itself changes (the script's digest of it).
+      - name: Restore the releases' builds
+        if: github.event_name != 'pull_request' && github.event_name != 'merge_group'
+        uses: actions/cache/restore@v4
+        with:
+          path: website/.versions
+          key: website-versions-${{ github.run_id }}
+          restore-keys: website-versions-
+
+      # Machine translations, for the root only; none yet is fine.
+      - name: Take the machine translations
+        if: github.event_name != 'pull_request' && github.event_name != 'merge_group'
+        run: |
+          git clone --depth=1 https://github.com/longbridge/nsh-website-translates website/translations
+          rm -rf website/translations/.git
+
+      # The published site, after the tests of main's own build: main again
+      # at /versions/main, the releases from their tags (whose pages are as
+      # they were released, links included).
+      - name: Build every version
+        if: github.event_name != 'pull_request' && github.event_name != 'merge_group'
+        working-directory: website
+        env:
+          NSH_REQUIRE_SHOWCASES: "1"
+          SHOWCASES_DIR: ${{ github.workspace }}/.showcases
+          AR_wasm32_unknown_unknown: llvm-ar
+          NSH_REQUIRE_RELEASES: "1"
+          GITHUB_TOKEN: ${{ github.token }}
+        run: bun scripts/versions.js
+
+      - name: Save the releases' builds
+        if: github.event_name != 'pull_request' && github.event_name != 'merge_group'
+        uses: actions/cache/save@v4
+        with:
+          path: website/.versions
+          key: website-versions-${{ github.run_id }}
+
+      # A report, not a gate: a Gallery over its budget never stops the
+      # site from being published.
+      - name: Check standalone Gallery code size
+        continue-on-error: true
+        run: node crates/nsh-platform-web/web/browser/package-size.mjs website/public/play/gallery --require-browser --brotli-budget=5000000
+
+      - uses: actions/configure-pages@v5
+        if: github.event_name != 'pull_request' && github.event_name != 'merge_group'
+
+      - uses: actions/upload-pages-artifact@v3
+        if: github.event_name != 'pull_request' && github.event_name != 'merge_group'
+        with:
+          path: website/dist
+
+  deploy:
+    if: github.event_name != 'pull_request' && github.event_name != 'merge_group'
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

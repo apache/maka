@@ -1,0 +1,216 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+use super::*;
+use serde::Deserialize;
+
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub(super) enum Creation {
+    Session {
+        configuration: serde_json::Value,
+        created_at: u64,
+    },
+    Plugin {
+        origin: super::family::Origin,
+        configuration: serde_json::Value,
+        created_at: u64,
+    },
+}
+
+impl Creation {
+    /// Pin every existing dependency and every destination attachment, including
+    /// unpublished bundle history identities. Session guards are acquired before
+    /// reading current attachments; binding guards use the shared global order.
+    pub(super) fn pin_inputs(
+        &self,
+        id: &str,
+    ) -> Result<(Vec<String>, Vec<maka_sandbox::workspace::BindingRef>), StoreError> {
+        let mut sessions = std::collections::BTreeSet::from([id.to_owned()]);
+        let mut configurations = Vec::new();
+        match self {
+            Self::Session { configuration, .. } => configurations.push(configuration),
+            Self::Plugin {
+                origin,
+                configuration,
+                ..
+            } => {
+                sessions.extend(origin.dependencies()?);
+                configurations.push(configuration);
+            }
+        }
+        let bindings = configurations
+            .into_iter()
+            .map(crate::workspace_bindings::attached)
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .flatten()
+            .collect();
+        Ok((sessions.into_iter().collect(), bindings))
+    }
+
+    // A retry's wall clock is not request identity. All semantic inputs are.
+    pub(super) fn identity(&self) -> Result<serde_json::Value, StoreError> {
+        let mut value = serde_json::to_value(self)?;
+        value
+            .as_object_mut()
+            .expect("tagged command")
+            .remove("created_at");
+        value
+            .as_object_mut()
+            .expect("tagged command")
+            .remove("stage");
+        Ok(value)
+    }
+}
+
+impl RootStore {
+    pub async fn session(&self, id: &str) -> Result<SessionStore, StoreError> {
+        self.require_open()?;
+        crate::sessions::validate_id(id)?;
+        let id = id.to_owned();
+        let query_id = id.clone();
+        let available: bool = self.log.connection.read(move |connection| {
+            Ok(connection.query_row("SELECT EXISTS(SELECT 1 FROM session_creations WHERE session_id=? AND ready=1 AND visible=1)", rusqlite::params![query_id], |row| row.get(0))?)
+        }).await?;
+        if !available {
+            return Err(StoreError::SessionNotFound);
+        }
+        Ok(self.handle(id))
+    }
+
+    /// Session configuration and publication commit atomically.
+    pub async fn create_session<T: Serialize>(
+        &self,
+        id: &str,
+        fingerprint: &str,
+        configuration: &T,
+        now: u64,
+    ) -> Result<SessionStore, StoreError> {
+        self.require_open()?;
+        crate::sessions::validate_id(id)?;
+        crate::sessions::validate_time(now)?;
+        if fingerprint.is_empty() {
+            return Err(StoreError::InvalidTransition(
+                "invalid session fingerprint".into(),
+            ));
+        }
+        let configuration = serde_json::to_value(configuration)?;
+        creation::validate_configuration(&configuration)?;
+        let bindings = crate::workspace_bindings::attached(&configuration)?
+            .into_iter()
+            .collect::<Vec<_>>();
+        let log = pin_sessions(self.log.clone(), &self.gates, &[id.to_owned()], &bindings).await?;
+        if let Some(rejection) = creation::commit(&log, id, fingerprint, configuration, now).await?
+        {
+            return Err(StoreError::SessionCreationRejected(rejection));
+        }
+        Ok(self.handle(id.to_owned()))
+    }
+
+    pub(super) async fn finish_creation(
+        &self,
+        id: &str,
+        fingerprint: &str,
+        command: Creation,
+    ) -> Result<(), StoreError> {
+        // A rejected command must publish before a retry can reevaluate mutable inputs.
+        let _creation = self
+            .gates
+            .write([gates::Key::Creation(id.to_owned())])
+            .await?;
+        let (sessions, bindings) = command.pin_inputs(id)?;
+        let log = pin_sessions(self.log.clone(), &self.gates, &sessions, &bindings).await?;
+        let log = log.scoped(Arc::new(_creation));
+        self.finish_pinned_creation(id, fingerprint, command, &log)
+            .await
+    }
+
+    pub(super) async fn finish_pinned_creation(
+        &self,
+        id: &str,
+        fingerprint: &str,
+        command: Creation,
+        log: &EventLog,
+    ) -> Result<(), StoreError> {
+        self.require_open()?;
+        let query_id = id.to_owned();
+        let (ready, failure): (i64, Option<String>) = self
+            .log
+            .connection
+            .read(move |db| {
+                {
+                    Ok(db.query_row(
+                        "SELECT ready,failure FROM session_creations WHERE session_id=?",
+                        rusqlite::params![query_id],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )?)
+                }
+            })
+            .await?;
+        if ready == 1 {
+            return Ok(());
+        }
+        if let Some(failure) = failure {
+            return Err(StoreError::SessionCreationRejected(serde_json::from_str(
+                &failure,
+            )?));
+        }
+        let outcome = match command {
+            Creation::Session {
+                configuration,
+                created_at,
+            } => creation::commit(log, id, fingerprint, configuration, created_at).await?,
+            command => super::family::commit(self, log, command).await?,
+        };
+        log.connection
+            .write(
+                creation::WritePublication {
+                    id: id.to_owned(),
+                    rejection: outcome.clone(),
+                },
+                self.log.commits.notice(),
+            )
+            .await?;
+        match outcome {
+            Some(rejection) => Err(StoreError::SessionCreationRejected(rejection)),
+            None => Ok(()),
+        }
+    }
+
+    pub(super) async fn recover_creations(&self) -> Result<(), StoreError> {
+        loop {
+            let page: Vec<(String, String, String)> = self.log.connection.read(|connection| {
+                Ok(connection.prepare_cached("SELECT session_id, fingerprint, command FROM session_creations WHERE ready=0 AND session_id=creation_id ORDER BY session_id LIMIT 64")?.query_map(rusqlite::params![], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?.collect::<Result<Vec<_>, _>>()?)
+            }).await?;
+            if page.is_empty() {
+                return Ok(());
+            }
+            for (id, fingerprint, command) in page {
+                match self
+                    .finish_creation(&id, &fingerprint, serde_json::from_str(&command)?)
+                    .await
+                {
+                    Ok(()) | Err(StoreError::SessionCreationRejected(_)) => {}
+                    Err(error) => return Err(error),
+                }
+            }
+        }
+    }
+}

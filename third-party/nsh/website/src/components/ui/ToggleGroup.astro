@@ -1,0 +1,26 @@
+---
+// shadcn/ui's ToggleGroup. `type="single"` is a radio group (its items are
+// radios, `aria-checked`), `multiple` a group of toggles (`aria-pressed`).
+// Variants `default`, `outline` and `segmented` (the look of Tabs: a track
+// and a raised thumb); `spacing` is the gap between items in Tailwind's
+// spacing steps (0 joins them, as shadcn's default). Items size from the
+// group (`size`).
+import type { HTMLAttributes } from 'astro/types';
+type Props = HTMLAttributes<'div'> & {
+  type?: 'single' | 'multiple';
+  variant?: 'default' | 'outline' | 'segmented';
+  size?: 'default' | 'sm' | 'xs' | 'lg';
+  spacing?: number;
+};
+const { type = 'single', variant = 'default', size = 'default', spacing = 0, style, ...rest } = Astro.props;
+const gap = variant === 'segmented' ? undefined : `--gap: calc(var(--spacing) * ${spacing})`;
+---
+<div
+  data-slot="toggle-group"
+  data-variant={variant}
+  data-size={size}
+  data-spacing={variant === 'segmented' ? undefined : spacing}
+  role={type === 'single' ? 'radiogroup' : 'group'}
+  style={[gap, style].filter(Boolean).join(';') || undefined}
+  {...rest}
+><slot /></div>

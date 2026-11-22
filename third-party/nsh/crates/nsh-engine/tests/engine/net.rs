@@ -1,0 +1,267 @@
+//! `net`'s sockets through an engine: the module is the runtime's Rust
+//! registry (its JS face and declarations come from its spec); its grant
+//! and limits are checked in the call, which rejects at once; its
+//! connections and reads and writes are core tasks.
+
+use std::{
+    io::{Read, Write},
+    net::TcpListener,
+    time::{Duration, Instant},
+};
+
+use crossbeam_channel::Receiver;
+use nsh_core::{ApproxTextEngine, MountBatch, Size};
+use nsh_engine::{Bundle, Engine, EngineConfig, Environment};
+
+use crate::{ChannelSink, rust_classes::shown};
+
+/// The app `body` (after `report`, which shows `done <text>`), allowed the
+/// sockets of `capabilities`.
+fn start(body: &str, capabilities: &str) -> (Engine, Receiver<MountBatch>) {
+    static APPS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let dir = std::env::temp_dir().join(format!(
+        "nsh-net-{}-{}",
+        std::process::id(),
+        APPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let entry = dir.join("App.tsx");
+    std::fs::write(
+        &entry,
+        format!(
+            r#"import {{ mount, signal, Text }} from "nsh";
+import net, {{ connect }} from "net";
+const shown = signal("waiting");
+const report = (text) => shown.set(`done ${{text}}`);
+{body}
+mount(() => <Text>{{shown()}}</Text>);
+"#
+        ),
+    )
+    .unwrap();
+    let bundled = nsh_bundler::bundle(&nsh_bundler::BundleOptions {
+        entry,
+        minify: false,
+        split: false,
+        ui_sets: Vec::new(),
+        ..Default::default()
+    })
+    .unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+    let bundle = Bundle::source(bundled.code)
+        .with_capabilities_json(Some(capabilities))
+        .unwrap();
+    let (tx, rx) = crossbeam_channel::unbounded();
+    let config = EngineConfig {
+        app: nsh_engine::App::Js(bundle),
+        viewport: Size::new(nsh_core::geometry::px(400.0), nsh_core::geometry::px(300.0)),
+        trace: false,
+        content_culling: false,
+        network: None,
+        websocket: None,
+        refuse_connections: None,
+        filesystem: None,
+        assets: None,
+        chunk_loader: None,
+        environment: Environment::default(),
+        header_heights: (nsh_core::Points(44.0), nsh_core::Points(96.0)),
+        limits: nsh_engine::Limits::default(),
+        ui_sets: Vec::new(),
+        runtime: None,
+        support_dir: None,
+        cache: nsh_engine::CacheOptions::off(),
+        storage: None,
+        clock: Default::default(),
+        context: Default::default(),
+        pinned: Default::default(),
+        clipboard: None,
+        host: Default::default(),
+        picker: None,
+        speech: None,
+        audio: None,
+        windows: None,
+        login_item: None,
+        data_dir: None,
+    };
+    (
+        Engine::start(config, || ApproxTextEngine, ChannelSink(tx)).unwrap(),
+        rx,
+    )
+}
+
+fn sockets(port: u16) -> String {
+    format!(r#"{{"network":{{"sockets":["127.0.0.1:{port}"]}}}}"#)
+}
+
+#[test]
+fn a_socket_round_trips_bytes_and_rejects_past_its_limits() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let peer = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        let mut bytes = [0; 4];
+        stream.read_exact(&mut bytes).unwrap();
+        assert_eq!(&bytes, b"ping");
+        stream.write_all(b"pong").unwrap();
+    });
+    let (_engine, rx) = start(
+        &format!(
+            r#"(async () => {{
+  const socket = await net.connect({{ host: "127.0.0.1", port: {port} }});
+  if (net.connect !== connect) throw Error("default and named exports differ");
+  if (await socket.read(0) !== null) throw Error("a zero read is null");
+  const refused = (p) => p.then(() => "done", (e) => `${{e.constructor.name}}:${{e.code}}`);
+  if (await refused(socket.read(1048577)) !== "RangeError:ERR_OUT_OF_RANGE") throw Error("the read limit rejects");
+  if (await refused(socket.write("x".repeat(1048577))) !== "RangeError:ERR_OUT_OF_RANGE") throw Error("the write limit rejects");
+  await socket.write("ping");
+  const data = await socket.read();
+  if (!(data instanceof Uint8Array) || String.fromCharCode(...data) !== "pong") throw Error("bad reply");
+  if (await socket.read() !== null) throw Error("expected the end");
+  socket.close();
+  report("ok");
+}})().catch((e) => report(String(e)));"#
+        ),
+        &sockets(port),
+    );
+    assert_eq!(shown(&rx, "done"), "done ok");
+    peer.join().unwrap();
+}
+
+#[test]
+fn a_socket_not_granted_rejects_with_access_denied() {
+    for capabilities in [
+        "{}".to_owned(),
+        r#"{"network":{"hosts":["*"]}}"#.to_owned(),
+        sockets(10),
+    ] {
+        let (_engine, rx) = start(
+            r#"try {
+  connect({ host: "127.0.0.1", port: 9 }).then(() => report("connected"), (e) =>
+    report(`${e.constructor.name} ${e.code} ${e.permission} ${e.resource}`));
+} catch { report("threw"); }"#,
+            &capabilities,
+        );
+        assert_eq!(
+            shown(&rx, "done"),
+            "done Error ERR_ACCESS_DENIED network 127.0.0.1:9",
+            "{capabilities}"
+        );
+    }
+}
+
+#[test]
+fn closing_a_socket_ends_a_pending_read_and_write() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    // The peer never reads, so the kernel's buffers fill and writes wait.
+    let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+    let peer = std::thread::spawn(move || {
+        let (_stream, _) = listener.accept().unwrap();
+        let _ = done_rx.recv_timeout(Duration::from_secs(10));
+    });
+    let (_engine, rx) = start(
+        &format!(
+            r#"(async () => {{
+  const s = await connect({{ host: "127.0.0.1", port: {port} }});
+  const chunk = "x".repeat(1048576);
+  const writes = [];
+  for (let i = 0; i < 5; i++) writes.push(s.write(chunk).then(() => "sent", (e) => e.code));
+  const read = s.read();
+  await new Promise((r) => setTimeout(r, 50));
+  s.close();
+  const results = await Promise.all(writes);
+  // The fifth is past the 4 MiB that may wait; close ends the others.
+  report(`${{results[4] === "ERR_NSH_QUOTA_EXCEEDED"}} ${{await read}} ${{results.includes("ERR_SOCKET_CLOSED")}}`);
+}})().catch((e) => report(String(e)));"#
+        ),
+        &sockets(port),
+    );
+    let start = Instant::now();
+    assert_eq!(shown(&rx, "done"), "done true null true");
+    assert!(start.elapsed() < Duration::from_secs(3));
+    done_tx.send(()).unwrap();
+    peer.join().unwrap();
+}
+
+#[test]
+fn sockets_are_capped_per_vm_and_a_closed_one_frees_its_place() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (_engine, rx) = start(
+        &format!(
+            r#"(async () => {{
+  const pending = [];
+  for (let i = 0; i < 32; i++) pending.push(connect({{ host: "127.0.0.1", port: {port} }}));
+  const capped = await connect({{ host: "127.0.0.1", port: {port} }})
+    .then(() => false, (e) => e.code === "ERR_NSH_QUOTA_EXCEEDED");
+  const all = await Promise.all(pending);
+  all[0].close();
+  const again = await connect({{ host: "127.0.0.1", port: {port} }});
+  again.close();
+  report(`${{capped}} reused`);
+}})().catch((e) => report(String(e)));"#
+        ),
+        &sockets(port),
+    );
+    assert_eq!(shown(&rx, "done"), "done true reused");
+    drop(listener);
+}
+
+#[test]
+fn dropping_the_engine_closes_its_sockets() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (tx, peer_rx) = std::sync::mpsc::channel();
+    let peer = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        let mut byte = [0];
+        tx.send(stream.read(&mut byte)).unwrap();
+    });
+    let (engine, rx) = start(
+        &format!(
+            r#"connect({{ host: "127.0.0.1", port: {port} }}).then((s) => {{
+  globalThis.socket = s;
+  s.read().catch(() => {{}});
+  report("connected");
+}}, (e) => report(String(e)));"#
+        ),
+        &sockets(port),
+    );
+    assert_eq!(shown(&rx, "done"), "done connected");
+    drop(engine);
+    assert_eq!(
+        peer_rx
+            .recv_timeout(Duration::from_secs(3))
+            .unwrap()
+            .unwrap(),
+        0
+    );
+    peer.join().unwrap();
+}
+
+#[test]
+fn connection_failures_carry_nodes_error_codes() {
+    // A port nothing listens on: bound, then closed again.
+    let port = TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let (_engine, rx) = start(
+        &format!(
+            r#"connect({{ host: "127.0.0.1", port: {port} }}).then(() => report("connected"), (e) =>
+  report(`${{e.constructor.name}} ${{e.code}} ${{e.syscall}} ${{e.address}} ${{e.port === {port}}} ${{e.message.startsWith("connecting to 127.0.0.1:{port} failed")}}`));"#
+        ),
+        &sockets(port),
+    );
+    assert_eq!(
+        shown(&rx, "done"),
+        "done Error ECONNREFUSED connect 127.0.0.1 true true"
+    );
+}

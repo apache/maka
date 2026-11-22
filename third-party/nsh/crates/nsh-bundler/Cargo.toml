@@ -1,0 +1,63 @@
+[package]
+name = "nsh-bundler"
+description = "JS bundler: rolldown + nsh's JSX compiler; the compiler alone without feature `bundle`."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+readme.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = ["bundle"]
+# Bundling apps (rolldown), development bundles, assets and `.nsh/types`.
+# Without it only `compile_module` is left, which also builds for
+# WebAssembly (the website's playground).
+bundle = [
+  "dep:anyhow",
+  "dep:nsh-js",
+  "dep:rolldown",
+  "dep:rolldown_common",
+  "dep:rolldown_error",
+  "dep:rolldown_sourcemap",
+  "dep:string_wizard",
+  "dep:nsh-i18n",
+  "dep:imagesize",
+  "dep:resvg",
+  "nsh-core/svg",
+  "dep:ttf-parser",
+  "dep:tokio",
+  "oxc/minifier",
+]
+
+[[example]]
+name = "browser_bootstrap"
+required-features = ["bundle"]
+
+[dependencies]
+dunce.workspace = true
+anyhow = { workspace = true, optional = true }
+oxc.workspace = true
+rolldown = { workspace = true, optional = true }
+rolldown_common = { workspace = true, optional = true }
+rolldown_error = { version = "=1.2.13", optional = true }
+rolldown_sourcemap = { version = "=1.2.13", optional = true }
+string_wizard = { workspace = true, optional = true }
+oxc_sourcemap.workspace = true
+imagesize = { workspace = true, optional = true }
+# SVG imports are read with the XML parser usvg uses (`resvg::usvg::roxmltree`).
+resvg = { workspace = true, optional = true }
+ttf-parser = { workspace = true, optional = true }
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "net", "sync", "fs"], optional = true }
+nsh-core.workspace = true
+# The app's theme (`nsh.json` `"theme"`): its tokens are classes.
+nsh-base = { workspace = true, features = ["editor", "emoji-picker", "highlight", "plot", "rich-editor", "term"] }
+nsh-js = { workspace = true, optional = true, features = ["zlib", "crypto"] }
+serde_json.workspace = true
+log.workspace = true
+# The app's translations and the language data it ships (nsh.json `locales`).
+nsh-i18n = { workspace = true, features = ["build"], optional = true }

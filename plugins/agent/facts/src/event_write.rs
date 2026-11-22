@@ -1,0 +1,375 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+use crate::durable::ExecutionIdentity;
+
+use crate::artifact::{Artifact, content_digest};
+use crate::event::{CommitError, Fact, RuntimeEvent, ToolOutcome};
+use crate::tool_output::{RawToolResultRef, ToolOutput, ToolSuccess, encode_raw_tool_result};
+use std::{sync::Arc, time::SystemTime};
+
+/// One checked transaction submission: successful facts cannot omit their bytes.
+#[derive(Clone, Debug)]
+pub struct EventWrite {
+    composition: Option<crate::composition::CompositionEvidence>,
+    quote: Option<crate::pricing::Quote>,
+    event: Arc<RuntimeEvent>,
+    raw_payload: Option<Arc<[u8]>>,
+    projection_artifacts: Vec<ProjectionArtifactWrite>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ProjectionArtifactWrite {
+    artifact: Artifact,
+    bytes: Arc<[u8]>,
+}
+
+impl ProjectionArtifactWrite {
+    pub(crate) fn new(artifact: Artifact, bytes: Vec<u8>) -> Self {
+        Self {
+            artifact,
+            bytes: bytes.into(),
+        }
+    }
+    pub fn artifact(&self) -> &Artifact {
+        &self.artifact
+    }
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+    pub fn evidence(&self) -> crate::artifact::ArtifactEvidence {
+        crate::artifact::ArtifactEvidence {
+            id: self.artifact.id.clone(),
+            bytes: self.bytes.len() as u64,
+            digest: content_digest(&self.bytes),
+        }
+    }
+}
+
+impl EventWrite {
+    pub fn plain(event: RuntimeEvent) -> Result<Self, CommitError> {
+        if let Fact::ToolDispatched {
+            operation_id, call, ..
+        }
+        | Fact::ToolRejected {
+            operation_id, call, ..
+        } = &event.fact
+            && let crate::tool_call::ToolOrigin::Provider { link } = &call.origin
+            && (link.run != event.execution.run_id
+                || *operation_id != format!("{}:{}", link.attempt, call.tool_call_id))
+        {
+            return Err(CommitError::Rejected(
+                "tool obligation identity differs from its Run or original attempt".into(),
+            ));
+        }
+        match &event.fact {
+            Fact::ModelCompleted { output, .. } => {
+                let mut ids = std::collections::HashSet::new();
+                let mut ordinals = std::collections::HashSet::new();
+                for part in &output.parts {
+                    let ordinal = match part {
+                        crate::model::recorded::CompletionPart::Own(record) => {
+                            if record.message_id.is_empty() {
+                                return Err(CommitError::Rejected(
+                                    "empty model message identity".into(),
+                                ));
+                            }
+                            if let crate::model::ModelPart::ToolCall { call } = record.part.as_ref()
+                                && !ids.insert(call.id.as_str())
+                            {
+                                return Err(CommitError::Rejected("duplicate tool call".into()));
+                            }
+                            record.ordinal
+                        }
+                        crate::model::recorded::CompletionPart::Ref(reference) => {
+                            if reference.event_id.is_empty() {
+                                return Err(CommitError::Rejected(
+                                    "empty model part reference".into(),
+                                ));
+                            }
+                            reference.ordinal
+                        }
+                    };
+                    if !ordinals.insert(ordinal) {
+                        return Err(CommitError::Rejected("duplicate model part ordinal".into()));
+                    }
+                }
+            }
+            Fact::ToolDispatched {
+                title,
+                presentation,
+                ..
+            } => {
+                if let Some(title) = title {
+                    title
+                        .validate()
+                        .map_err(|reason| CommitError::Rejected(reason.into()))?;
+                }
+                if let Some(key) = presentation {
+                    crate::display::validate_presentation(key)
+                        .map_err(|reason| CommitError::Rejected(reason.into()))?;
+                }
+            }
+            Fact::ToolNotified {
+                operation_id,
+                text,
+                model_text,
+            } if operation_id.is_empty()
+                || text.trim().is_empty()
+                || model_text.trim().is_empty() =>
+            {
+                return Err(CommitError::Rejected(
+                    "invalid Code Mode notification".into(),
+                ));
+            }
+            Fact::MessageImported { .. } => {
+                return Err(CommitError::Rejected(
+                    "imported history requires Session import admission".into(),
+                ));
+            }
+            Fact::ExecutorStarted { binding, settings } => binding
+                .validate()
+                .and_then(|()| settings.validate())
+                .map_err(|reason| CommitError::Rejected(reason.into()))?,
+            Fact::ExecutorObserved { output } => output
+                .validate()
+                .map_err(|reason| CommitError::Rejected(reason.into()))?,
+            Fact::ExecutorCompleted {
+                message_id: Some(id),
+            } if id.is_empty() || id.chars().any(char::is_control) => {
+                return Err(CommitError::Rejected(
+                    "invalid final executor message identity".into(),
+                ));
+            }
+            _ => {}
+        }
+        let operation = match &event.fact {
+            Fact::ToolOperationObserved { observation, .. } => Some(observation.as_ref()),
+            Fact::ToolSettled {
+                outcome:
+                    ToolOutcome::Unknown {
+                        operation: Some(operation),
+                        ..
+                    },
+                ..
+            } => Some(operation.as_ref()),
+            _ => None,
+        };
+        if let Some(operation) = operation {
+            operation
+                .reference
+                .validate()
+                .map_err(|error| CommitError::Rejected(error.to_string()))?;
+        }
+        if let Fact::RunOpened { input, .. } = &event.fact {
+            input
+                .validate_inheritance(&event.execution)
+                .map_err(|reason| CommitError::Rejected(reason.into()))?;
+        }
+        if let Fact::RunOpened {
+            input:
+                crate::input::RunInput::Continuation {
+                    request_fingerprint,
+                    ..
+                },
+            ..
+        } = &event.fact
+            && !crate::archive::valid_projection_digest(request_fingerprint)
+        {
+            return Err(CommitError::Rejected(
+                "invalid continuation request fingerprint".into(),
+            ));
+        }
+        if let Fact::RunOpened {
+            input:
+                crate::input::RunInput::Message {
+                    content,
+                    source_messages,
+                    ..
+                },
+            ..
+        } = &event.fact
+        {
+            crate::message::validate_sources(content, source_messages)
+                .map_err(|message| CommitError::Rejected(message.into()))?;
+            for source in source_messages {
+                if let Some(intent) = &source.submitted_intent {
+                    crate::input::validate_selection_session(
+                        &intent.input_selection_sources,
+                        &event.execution.session_id,
+                    )
+                    .map_err(|message| CommitError::Rejected(message.into()))?;
+                }
+            }
+        }
+        if let Fact::MessageSteered { message, source } = &event.fact {
+            crate::event::validate_steered_source(message, source, &event.execution.session_id)
+                .map_err(|message| CommitError::Rejected(message.into()))?;
+        }
+        if let Fact::RunOpened {
+            configuration: Some(configuration),
+            ..
+        } = &event.fact
+            && let Some(prompt) = &configuration.system_prompt
+        {
+            prompt
+                .validate()
+                .map_err(|message| CommitError::Rejected(message.into()))?;
+        }
+        if let Fact::ToolResultArchived { placeholder } = &event.fact {
+            placeholder
+                .validate()
+                .map_err(|message| CommitError::Rejected(message.into()))?;
+        }
+        if let Fact::ModelRequested {
+            effective_source_digest: Some(digest),
+            ..
+        } = &event.fact
+            && !crate::archive::valid_projection_digest(digest)
+        {
+            return Err(CommitError::Rejected(
+                "invalid effective source digest".into(),
+            ));
+        }
+        if let Fact::ModelRequested {
+            context: Some(context),
+            ..
+        } = &event.fact
+        {
+            context
+                .validate()
+                .map_err(|message| CommitError::Rejected(message.into()))?;
+        }
+        if let Fact::ContextCheckpointRecorded { checkpoint } = &event.fact {
+            checkpoint
+                .validate()
+                .map_err(|message| CommitError::Rejected(message.into()))?;
+        }
+        if matches!(
+            event.fact,
+            Fact::ToolSettled {
+                outcome: ToolOutcome::Succeeded { .. },
+                ..
+            }
+        ) {
+            return Err(CommitError::Rejected(
+                "successful tool fact requires its raw payload".into(),
+            ));
+        }
+        Ok(Self {
+            composition: None,
+            quote: None,
+            event: Arc::new(event),
+            raw_payload: None,
+            projection_artifacts: Vec::new(),
+        })
+    }
+
+    /// Identity and capture time are supplied once and preserved across exact retries.
+    pub fn tool_success(
+        id: String,
+        recorded_at: SystemTime,
+        execution: ExecutionIdentity,
+        operation_id: String,
+        success: ToolSuccess,
+    ) -> Result<(Self, ToolOutput), CommitError> {
+        let is_error = success.is_error;
+        let success = success
+            .into_durable(&id, recorded_at, &execution)
+            .map_err(|message| CommitError::Rejected(message.into()))?;
+        let output = success.output;
+        let bytes = encode_raw_tool_result(&output)
+            .map_err(|message| CommitError::Rejected(message.into()))?;
+        let raw = RawToolResultRef {
+            bytes: bytes.len() as u64,
+            digest: content_digest(&bytes),
+        };
+        Ok((
+            Self {
+                composition: None,
+                quote: None,
+                event: Arc::new(RuntimeEvent {
+                    id,
+                    recorded_at,
+                    execution,
+                    fact: Fact::ToolSettled {
+                        operation_id,
+                        outcome: ToolOutcome::Succeeded {
+                            raw,
+                            model_projection: success.projection,
+                            artifacts: success
+                                .artifacts
+                                .iter()
+                                .map(ProjectionArtifactWrite::evidence)
+                                .collect(),
+                            is_error,
+                        },
+                    },
+                }),
+                raw_payload: Some(bytes.into()),
+                projection_artifacts: success.artifacts,
+            },
+            output,
+        ))
+    }
+
+    pub fn into_event(self) -> RuntimeEvent {
+        Arc::unwrap_or_clone(self.event)
+    }
+
+    pub fn event(&self) -> &RuntimeEvent {
+        &self.event
+    }
+    pub fn with_composition(
+        mut self,
+        composition: impl Into<crate::composition::CompositionEvidence>,
+    ) -> Result<Self, CommitError> {
+        if !matches!(self.event.fact, Fact::ModelRequested { .. }) {
+            return Err(CommitError::Rejected(
+                "request composition requires a model request".into(),
+            ));
+        }
+        self.composition = Some(composition.into());
+        Ok(self)
+    }
+    pub fn composition(&self) -> Option<&crate::composition::CompositionEvidence> {
+        self.composition.as_ref()
+    }
+    pub fn with_quote(mut self, quote: crate::pricing::Quote) -> Result<Self, CommitError> {
+        let Fact::ModelRequested { model_id, .. } = &self.event.fact else {
+            return Err(CommitError::Rejected(
+                "model quote requires a model request".into(),
+            ));
+        };
+        quote
+            .validate(model_id)
+            .map_err(|error| CommitError::Rejected(error.into()))?;
+        self.quote = Some(quote);
+        Ok(self)
+    }
+    pub fn quote(&self) -> Option<&crate::pricing::Quote> {
+        self.quote.as_ref()
+    }
+    pub fn raw_payload(&self) -> Option<&[u8]> {
+        self.raw_payload.as_deref()
+    }
+    pub fn projection_artifacts(&self) -> &[ProjectionArtifactWrite] {
+        &self.projection_artifacts
+    }
+}

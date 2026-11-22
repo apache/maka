@@ -1,0 +1,594 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+//! Canonical interaction facts. The store owns append-only outcome commitment.
+use maka_sandbox::grant;
+use serde::{Deserialize, Serialize};
+mod approval;
+mod decode;
+mod question;
+
+mod validation;
+use crate::capability::{FormField, FormRequester, FormResult};
+pub use approval::{ApprovalAllow, ComputerAppApproval, PermissionApproval, SessionApprovalAnswer};
+pub use question::{InteractionQuestion, QuestionOption};
+pub use validation::{MAX_SAFE_INTEGER, entity_id};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum GrantCapability {
+    Browser,
+    /// File download consent for a browser origin, independent of page access.
+    BrowserDownload,
+    /// Read the browser profile's browsing history, independent of page access.
+    BrowserHistory,
+    /// File upload consent for a browser origin, independent of reads and downloads.
+    BrowserUpload,
+    ComputerUse,
+    ComputerAudio,
+    DesktopMcp,
+    Mcp,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ComputerAppPlatform {
+    Macos,
+    Windows,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ComputerAppIdentity {
+    pub platform: ComputerAppPlatform,
+    pub application_id: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ComputerAppRisk {
+    Low,
+    High,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ComputerAppDisplay {
+    pub name: String,
+    pub app_path: String,
+    pub risk: Option<ComputerAppRisk>,
+    pub warning: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ComputerAppActivity {
+    pub execution: crate::durable::ExecutionIdentity,
+    pub operation_id: String,
+    pub target: GrantTarget,
+    pub display: ComputerAppDisplay,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ComputerAppDecision {
+    Once,
+    Session,
+    Always,
+    Deny,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum GrantScope {
+    BrowserOrigin {
+        origin: String,
+    },
+    /// One selected browser profile generation; never an origin or app-wide grant.
+    BrowserProfile {
+        browser_id: String,
+        generation: String,
+    },
+    Capability {},
+    McpTool {
+        server_id: String,
+        tool_name: String,
+    },
+    ComputerApp {
+        platform: ComputerAppPlatform,
+        application_id: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GrantTarget {
+    pub provider_id: String,
+    pub contract_id: String,
+    pub server_id: String,
+    pub tool_name: String,
+    pub capability: GrantCapability,
+    pub scope: GrantScope,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Decision {
+    Allow,
+    Deny,
+}
+
+/// A macOS privacy grant (TCC) that the Host process itself needs before native
+/// Computer Use can run. This is operating-system state the user changes in
+/// System Settings, not a Maka grant; the Host observes it and commits the outcome.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SystemPermissionGrant {
+    /// System Settings > Privacy & Security > Accessibility.
+    Accessibility,
+    /// System Settings > Privacy & Security > Screen & System Audio Recording.
+    ScreenRecording,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ClosureReason {
+    Steered,
+    RunStopped,
+    RunTerminal,
+    ProducerCancelled,
+    TimedOut,
+    HostRestarted,
+    ProviderDisconnected,
+}
+
+impl ClosureReason {
+    pub const TIMED_OUT_MESSAGE: &'static str = "No one approved this request in time";
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, schemars::JsonSchema)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum InteractionRequest {
+    /// Human consent for the exact decision proposed for a child interaction.
+    SessionApproval {
+        tool_use_id: String,
+        basis: maka_sandbox::workspace::PermissionBasis,
+        session_id: String,
+        request_id: String,
+        answer: SessionApprovalAnswer,
+    },
+    /// Consent for one already journaled service call; never a service grant.
+    ServiceApproval {
+        tool_use_id: String,
+        tool_name: String,
+        service: String,
+        method: String,
+        binding: String,
+        through: u64,
+    },
+    Permissions {
+        target: crate::durable::AuthorizationObligation,
+        #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<String>")]
+        tool_use_id: Option<String>,
+        basis: maka_sandbox::workspace::PermissionBasis,
+        request: PermissionRequest,
+    },
+    Question {
+        tool_use_id: String,
+        questions: Vec<InteractionQuestion>,
+    },
+    Form {
+        tool_use_id: String,
+        message: String,
+        requester: FormRequester,
+        fields: Vec<FormField>,
+    },
+    ClientCapability {
+        tool_use_id: String,
+        target: GrantTarget,
+        /// Agent-owned approvals expire with this original permission boundary.
+        /// Unbound capabilities are explicit; Agent-owned capabilities capture a full binding stamp.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        basis: Option<maka_sandbox::workspace::PermissionBasis>,
+    },
+    ComputerApp {
+        tool_use_id: String,
+        native_operation_id: String,
+        target: GrantTarget,
+        basis: maka_sandbox::workspace::PermissionBasis,
+        display: ComputerAppDisplay,
+        allow_always: bool,
+        authority_revision: u64,
+    },
+    /// Missing operating-system grants the waiting tool call needs. The producer
+    /// polls the real grant state and commits `SystemPermissionGranted` itself;
+    /// the user can only cancel.
+    SystemPermission {
+        tool_use_id: String,
+        /// Distinct missing grants.
+        #[schemars(length(min = 1))]
+        grants: Vec<SystemPermissionGrant>,
+        /// The application name the operating system lists in its settings.
+        #[schemars(length(min = 1))]
+        application: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        application_location: Option<SystemPermissionApplicationLocation>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SystemPermissionApplicationLocation {
+    pub file_url: String,
+    pub state_domain: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, schemars::JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum InteractionAnswer {
+    SessionApproval {
+        decision: Decision,
+    },
+    ServiceApproval {
+        decision: Decision,
+    },
+    Permissions {
+        decision: PermissionDecision,
+    },
+    Question {
+        answers: Vec<Option<String>>,
+    },
+    Form {
+        #[serde(flatten)]
+        result: FormResult,
+    },
+    ClientCapability {
+        decision: Decision,
+    },
+    ComputerApp {
+        decision: ComputerAppDecision,
+    },
+    ComputerAppCancel {},
+    SystemPermissionCancel {},
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, schemars::JsonSchema)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum InteractionOutcome {
+    SessionApprovalDecision {
+        decision: Decision,
+        committed_at: u64,
+    },
+    ServiceApprovalDecision {
+        decision: Decision,
+        committed_at: u64,
+    },
+    PermissionsDecision {
+        decision: PermissionDecision,
+        committed_at: u64,
+    },
+    QuestionAnswer {
+        answers: Vec<Option<String>>,
+        committed_at: u64,
+    },
+    FormAnswer {
+        #[serde(flatten)]
+        result: FormResult,
+        committed_at: u64,
+    },
+    ClientCapabilityDecision {
+        decision: Decision,
+        committed_at: u64,
+    },
+    ComputerAppDecision {
+        decision: ComputerAppDecision,
+        committed_at: u64,
+    },
+    /// Producer-committed once every requested system grant is present; no answer maps here.
+    SystemPermissionGranted { committed_at: u64 },
+    Closure {
+        reason: ClosureReason,
+        committed_at: u64,
+    },
+}
+
+impl InteractionOutcome {
+    pub fn is_approval_refusal(&self) -> bool {
+        matches!(
+            self,
+            Self::SessionApprovalDecision {
+                decision: Decision::Deny,
+                ..
+            } | Self::ServiceApprovalDecision {
+                decision: Decision::Deny,
+                ..
+            } | Self::PermissionsDecision {
+                decision: PermissionDecision::Deny,
+                ..
+            } | Self::ClientCapabilityDecision {
+                decision: Decision::Deny,
+                ..
+            } | Self::ComputerAppDecision {
+                decision: ComputerAppDecision::Deny,
+                ..
+            } | Self::Closure { .. }
+        )
+    }
+    pub fn committed_at(&self) -> u64 {
+        match self {
+            Self::QuestionAnswer { committed_at, .. }
+            | Self::SessionApprovalDecision { committed_at, .. }
+            | Self::ServiceApprovalDecision { committed_at, .. }
+            | Self::PermissionsDecision { committed_at, .. }
+            | Self::FormAnswer { committed_at, .. }
+            | Self::ClientCapabilityDecision { committed_at, .. }
+            | Self::ComputerAppDecision { committed_at, .. }
+            | Self::SystemPermissionGranted { committed_at }
+            | Self::Closure { committed_at, .. } => *committed_at,
+        }
+    }
+}
+
+impl InteractionAnswer {
+    pub fn into_outcome(self, committed_at: u64) -> InteractionOutcome {
+        match self {
+            Self::SessionApproval { decision } => InteractionOutcome::SessionApprovalDecision {
+                decision,
+                committed_at,
+            },
+            Self::ServiceApproval { decision } => InteractionOutcome::ServiceApprovalDecision {
+                decision,
+                committed_at,
+            },
+            Self::Permissions { decision } => InteractionOutcome::PermissionsDecision {
+                decision,
+                committed_at,
+            },
+            Self::Question { answers } => InteractionOutcome::QuestionAnswer {
+                answers,
+                committed_at,
+            },
+            Self::ClientCapability { decision } => InteractionOutcome::ClientCapabilityDecision {
+                decision,
+                committed_at,
+            },
+            Self::ComputerApp { decision } => InteractionOutcome::ComputerAppDecision {
+                decision,
+                committed_at,
+            },
+            Self::ComputerAppCancel {} | Self::SystemPermissionCancel {} => {
+                InteractionOutcome::Closure {
+                    reason: ClosureReason::ProducerCancelled,
+                    committed_at,
+                }
+            }
+            Self::Form { result } => InteractionOutcome::FormAnswer {
+                result,
+                committed_at,
+            },
+        }
+    }
+
+    pub fn matches_outcome(&self, outcome: &InteractionOutcome) -> bool {
+        match (self, outcome) {
+            (
+                Self::SessionApproval { decision: left },
+                InteractionOutcome::SessionApprovalDecision {
+                    decision: right, ..
+                },
+            ) => left == right,
+            (
+                Self::ServiceApproval { decision: left },
+                InteractionOutcome::ServiceApprovalDecision {
+                    decision: right, ..
+                },
+            ) => left == right,
+            (
+                Self::Permissions { decision: left },
+                InteractionOutcome::PermissionsDecision {
+                    decision: right, ..
+                },
+            ) => left == right,
+            (
+                Self::Question { answers: left },
+                InteractionOutcome::QuestionAnswer { answers: right, .. },
+            ) => left == right,
+            (
+                Self::ClientCapability { decision: left },
+                InteractionOutcome::ClientCapabilityDecision {
+                    decision: right, ..
+                },
+            ) => left == right,
+            (
+                Self::ComputerApp { decision: left },
+                InteractionOutcome::ComputerAppDecision {
+                    decision: right, ..
+                },
+            ) => left == right,
+            (
+                Self::ComputerAppCancel {} | Self::SystemPermissionCancel {},
+                InteractionOutcome::Closure {
+                    reason: ClosureReason::ProducerCancelled,
+                    ..
+                },
+            ) => true,
+            (Self::Form { result: left }, InteractionOutcome::FormAnswer { result: right, .. }) => {
+                left == right
+            }
+            _ => false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct InteractionRecord {
+    pub execution: crate::durable::ExecutionIdentity,
+    pub request_id: String,
+    pub created_at: u64,
+    pub request: InteractionRequest,
+    #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<InteractionOutcome>")]
+    pub outcome: Option<InteractionOutcome>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SessionGrant {
+    pub session_id: String,
+    pub target: GrantTarget,
+    pub granted_at: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub basis: Option<maka_sandbox::workspace::PermissionBasis>,
+}
+
+/// The Host supplies the real operation description; it is display information,
+/// not authority inferred from a command string or a plugin-supplied Session ID.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PermissionScope {
+    Once,
+    Run,
+    Session,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(tag = "decision", rename_all = "snake_case", deny_unknown_fields)]
+pub enum PermissionDecision {
+    Deny,
+    Allow {
+        permissions: grant::Permissions,
+        scope: PermissionScope,
+    },
+}
+impl PermissionDecision {
+    pub fn validate_for(&self, requested: &grant::Permissions) -> Result<(), maka_sandbox::Error> {
+        requested.validate()?;
+        if let Self::Allow { permissions, .. } = self
+            && !requested.contains(permissions)?
+        {
+            return Err(maka_sandbox::Error::Invalid(
+                "approved permissions exceed the request".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PermissionRequest {
+    pub reason: String,
+    pub command: Option<PermissionCommand>,
+    pub permissions: grant::Permissions,
+    /// Network access granted for this request covers only later requests from
+    /// the same source; filesystem access covers all of them. Requests stored
+    /// before sources were recorded decode as Web, the only source that could
+    /// be granted network access then.
+    #[serde(default = "PermissionSource::web")]
+    pub source: PermissionSource,
+}
+
+/// The tool family whose authority raised a permission request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PermissionSource {
+    Processes,
+    Web,
+    Files,
+}
+
+impl PermissionSource {
+    fn web() -> Self {
+        Self::Web
+    }
+
+    /// The part of a grant from this source that covers a request from
+    /// `requester`. Network access stays with its source because a Web grant
+    /// lets the Host fetch named origins, while a process grant opens sockets
+    /// for a child process that holds local credentials.
+    pub fn share(
+        self,
+        requester: Self,
+        mut permissions: grant::Permissions,
+    ) -> Option<grant::Permissions> {
+        if self != requester {
+            permissions.network = maka_sandbox::Network::Denied;
+        }
+        (!permissions.filesystem.is_empty() || permissions.network != maka_sandbox::Network::Denied)
+            .then_some(permissions)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PermissionCommand {
+    pub command: String,
+    pub cwd: String,
+}
+
+impl PermissionRequest {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.reason.trim().is_empty() || self.reason.contains('\0') {
+            return Err("Permission request requires a reason");
+        }
+        if let Some(command) = &self.command
+            && (command.command.trim().is_empty()
+                || command.command.contains('\0')
+                || !std::path::Path::new(&command.cwd).is_absolute()
+                || command.cwd.contains('\0'))
+        {
+            return Err("Invalid permission command description");
+        }
+        self.permissions
+            .validate()
+            .map_err(|_| "Invalid additional permissions")?;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn requests_stored_before_sources_decode_as_web() {
+        let request: PermissionRequest = serde_json::from_value(serde_json::json!({
+            "reason": "Allow Web access to https://example.com",
+            "command": null,
+            "permissions": {"filesystem": [], "network": "allowed"}
+        }))
+        .unwrap();
+        assert_eq!(request.source, PermissionSource::Web);
+    }
+}

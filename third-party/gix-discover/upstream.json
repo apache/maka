@@ -1,0 +1,21 @@
+{
+  "repository": "https://github.com/GitoxideLabs/gitoxide",
+  "revision": "dd39fb66e3b1551c9fe849043e39b357a9799ca1",
+  "path_in_vcs": "gix-discover",
+  "registry_version": "0.57.1",
+  "registry_checksum": "4a0875f4e5408713fcf92265973cc38bf9dc5a93384ce218beba0572b7785a03",
+  "files": {
+    "Cargo.toml": "b1c522e1d134b6a2ff1f8dfa5fcbf17668e9b49ae9807da44552d364bf3a28de",
+    "Cargo.toml.orig": "e9b7055cbe46285ded3c5a67325ee2bfe3a6140a221976d7e02c45c268e164b1",
+    "LICENSE-APACHE": "0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594",
+    "LICENSE-MIT": "f9c4c77baa3828004ee54b8a4f2db2e88ed44a6237a493965bf551fac0fcb62d",
+    "src/is.rs": "5754e05453565bb2e6c5835ded9451fb418efe3906fb1febaa9c21e63b095ab7",
+    "src/lib.rs": "14bd38edba6b9a98336defa0e9234085b73cf9d6a6323af374dd1731a4cfd042",
+    "src/parse.rs": "47f461c5026d6f86a31e164b29f37685f117461747a5fc9f4ebcf13b37f3ff5e",
+    "src/path.rs": "73fc2655950ebac5078f0ab0f3ebdbf8004afe2978fb6950390fda53f9ae9bba",
+    "src/repository.rs": "80f4455475f3ee6212b3d18ce2dd10ea95561ea31f58d6ccfc65e65b194ad5e6",
+    "src/upwards/mod.rs": "decfc071f94d393e0a5b20c98e6b38d45d5d60918477c88ef95a660c04b89a97",
+    "src/upwards/types.rs": "64fbf7994424e39af1fd7721877beedc0e0d842887f4175723effeb723a23c80",
+    "src/upwards/util.rs": "6c32312d940ccf937919e77b11ee869e2af24de491c6eae9ec44d96b4a340c60"
+  }
+}

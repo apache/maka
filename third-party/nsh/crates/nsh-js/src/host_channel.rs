@@ -1,0 +1,896 @@
+//! `nsh/host`: the app's side of the message channel with the embedding
+//! app (`nsh_core::host_channel`; the engine's `HostChannel` is the
+//! embedding app's side).
+//!
+//! `host.params` is the embedding app's launch parameters, made once per
+//! VM from [`HostBridge::params`]. `host.on(name, listener)` hears the
+//! embedding app's events: the engine hands each to [`deliver`], which
+//! calls the listeners of its name, or keeps it in the VM's inbox until a
+//! listener of that name is added (a job then delivers what was kept, at
+//! the end of the turn that added it). `host.call(name, data)` is a
+//! promise the embedding app's answer settles ([`settle`], by the call's
+//! id); `host.post(name, data)` hands data over without one. Data crosses
+//! as JSON values converted natively (no `JSON` in JS), and the limits are
+//! checked here: names ([`check_name`]), the depth and size of data
+//! (`protocol::to_json`), the calls waiting at once
+//! ([`MAX_PENDING_CALLS`]) and the events kept ([`HostInbox`]).
+//!
+//! A call never throws: what fails rejects it, with the `code`s of
+//! `nsh_core::host_channel`'s errors (`ERR_ACCESS_DENIED` for a name
+//! `capabilities.host` does not grant, `ETIMEDOUT`, `ERR_NSH_QUOTA_EXCEEDED`
+//! past [`MAX_PENDING_CALLS`], `ERR_NSH_HOST_ERROR` for the embedding app's
+//! own error); wrong arguments reject with a `TypeError` or `RangeError`.
+//! `post` is synchronous: it throws for a wrong or refused name, and a
+//! post without an embedding app is dropped without a word. Without an SDK
+//! channel, calls and posts go to the platform's host
+//! (`nsh_core::Command::HostCall` / `HostPost`), where it has one.
+
+use std::{
+    cell::{Cell, RefCell},
+    ffi::c_int,
+    rc::Rc,
+    time::Duration,
+};
+
+use nsh_core::{
+    JsonValue,
+    element::{IntoThrown, JsError},
+    host_channel::{HostBridge, HostInbox, MAX_PENDING_CALLS, ModuleFake, check_name},
+};
+use rquickjs::qjs;
+use rustc_hash::FxHashMap;
+
+use crate::web::js::{
+    self, Args, Ctx, Deferred, R, Raw, Throw, UNDEFINED, V, closure, native, type_error,
+};
+
+/// A listener of the embedding app's events.
+struct Listener {
+    id: u32,
+    name: String,
+    f: V,
+}
+
+/// A native call and its deadline on the app's clock.
+struct PendingCall {
+    deferred: Deferred,
+    name: String,
+    timeout: f64,
+    deadline: Option<nsh_core::time::Instant>,
+}
+
+/// A context's side of the channel.
+#[derive(Default)]
+pub(crate) struct HostChannel {
+    /// The listeners, oldest first.
+    listeners: RefCell<Vec<Listener>>,
+    next: Cell<u32>,
+    /// The events no listener heard yet.
+    inbox: RefCell<HostInbox>,
+    /// The calls waiting for the embedding app's answers, by id.
+    calls: RefCell<FxHashMap<u64, PendingCall>>,
+    next_call: Cell<u64>,
+}
+
+impl HostChannel {
+    /// Frees the listeners and the calls' promises (the state is
+    /// unregistered).
+    pub(crate) fn free_all(&self) {
+        let listeners = std::mem::take(&mut *self.listeners.borrow_mut());
+        drop(listeners);
+        let calls = std::mem::take(&mut *self.calls.borrow_mut());
+        drop(calls);
+    }
+}
+
+fn channel<'a>(cx: Ctx) -> &'a HostChannel {
+    // SAFETY: a projection of the state's field, by shared reference.
+    unsafe { &(*crate::state::state(cx)).host_channel }
+}
+
+/// The engine's bridge to the embedding app, if this VM has one.
+fn bridge(cx: Ctx) -> Option<Rc<dyn HostBridge>> {
+    crate::dom::shared(cx).host_bridge.borrow().clone()
+}
+
+/// A message name argument of `what`, checked.
+fn name_arg(cx: Ctx, v: Raw, what: &str) -> R<String> {
+    // SAFETY: an inline tag check.
+    if !unsafe { qjs::JS_IsString(v) } {
+        return Err(type_error(cx, &format!("{what}: the name is a string")));
+    }
+    let name = js::to_string(cx, v)?;
+    check_name(&name).map_err(|e| type_error(cx, &format!("{what}: {e}")))?;
+    Ok(name)
+}
+
+/// `v` as JSON (`undefined`: `null`); throws a `RangeError` for data
+/// nested too deep or too large.
+fn to_json(cx: Ctx, v: Raw) -> R<JsonValue> {
+    if js::is_undefined(v) {
+        return Ok(JsonValue::Null);
+    }
+    // SAFETY: a context reference and a dup for the converter.
+    let rcx = unsafe { rquickjs::Ctx::from_raw(std::ptr::NonNull::new_unchecked(cx)) };
+    let value = unsafe { rquickjs::Value::from_raw(rcx, qjs::JS_DupValue(cx, v)) };
+    crate::protocol::to_json(&value).map_err(|_| Throw)
+}
+
+/// JSON as a JS value.
+fn from_json(cx: Ctx, json: &JsonValue) -> V {
+    V::own(cx, crate::host::json_to_js(cx, json))
+}
+
+/// The JS error of `error`: its class, message and `code` / ... fields.
+fn error(cx: Ctx, error: JsError) -> V {
+    crate::classes::error_value(cx, &error.into_thrown())
+}
+
+/// Throws `e`.
+fn throw(cx: Ctx, e: JsError) -> Throw {
+    js::throw(cx, error(cx, e))
+}
+
+/// Whether a native SDK channel is configured alongside the platform.
+pub(crate) fn available(cx: Ctx) -> bool {
+    bridge(cx).is_some_and(|b| b.available())
+}
+
+/// Adds the SDK channel to the existing capability-gated platform module.
+/// Platform calls (notably the web player) keep the registry's transport.
+pub(crate) fn extend(cx: Ctx, host: Raw) -> Raw {
+    let obj = V::own(cx, host);
+    let made = (|| -> R<V> {
+        let platform_call = js::get(cx, obj.raw(), "call")?;
+        let call = closure(cx, vec![platform_call], |cx, captures, args| {
+            if available(cx) {
+                return match start_call(cx, args) {
+                    Ok(promise) => Ok(promise),
+                    Err(Throw) => js::rejected_with_exception(cx),
+                };
+            }
+            let arguments: Vec<_> = (0..args.len()).map(|i| args.get(i)).collect();
+            js::call(cx, captures[0].raw(), UNDEFINED, &arguments)
+        })?;
+        js::define(cx, obj.raw(), "call", call, true)?;
+        let platform_on = js::get(cx, obj.raw(), "on")?;
+        let on = closure(cx, vec![platform_on], |cx, captures, args| {
+            let native_on = js::function(cx, c"on", on, 2)?;
+            let arguments = [args.get(0), args.get(1)];
+            let native_off = js::call(cx, native_on.raw(), UNDEFINED, &arguments)?;
+            let platform_off = js::call(cx, captures[0].raw(), UNDEFINED, &arguments)?;
+            let off = closure(cx, vec![native_off, platform_off], |cx, values, _| {
+                js::call(cx, values[0].raw(), UNDEFINED, &[])?;
+                js::call(cx, values[1].raw(), UNDEFINED, &[])?;
+                Ok(V::undefined())
+            })?;
+            crate::keymap::undo_with_owner(cx, &off);
+            Ok(off)
+        })?;
+        js::define(cx, obj.raw(), "on", on, true)?;
+        let params = bridge(cx)
+            .map(|b| b.params())
+            .filter(JsonValue::is_object)
+            .unwrap_or_else(|| JsonValue::Object(Default::default()));
+        js::define(cx, obj.raw(), "params", from_json(cx, &params), true)?;
+        // Without an SDK channel, a post goes to the platform's host (the
+        // web page's), which checks it as it checks calls.
+        let platform_post = js::get(cx, obj.raw(), "post")?;
+        let post = closure(cx, vec![platform_post], |cx, captures, args| {
+            let name = name_arg(cx, args.get(0), "host.post")?;
+            let data = to_json(cx, args.get(1))?;
+            if let Some(bridge) = bridge(cx).filter(|b| b.available()) {
+                check_call(cx, &name)?;
+                bridge.post(&name, data);
+            } else if crate::env::current(cx).host && js::is_function(cx, captures[0].raw()) {
+                js::call(
+                    cx,
+                    captures[0].raw(),
+                    UNDEFINED,
+                    &[args.get(0), args.get(1)],
+                )?;
+            }
+            Ok(V::undefined())
+        })?;
+        js::define(cx, obj.raw(), "post", post, true)?;
+        Ok(obj)
+    })();
+    made.map_or(qjs::JS_EXCEPTION, V::take)
+}
+
+native! {
+    /// `on(name, listener)`: a function that stops listening, which goes by
+    /// itself with the owner it was added under (as `keymap.bind`'s
+    /// bindings do).
+    fn on(cx, _this, args) {
+        let name = name_arg(cx, args.get(0), "host.on")?;
+        if !js::is_function(cx, args.get(1)) {
+            return Err(type_error(cx, "host.on: the listener is not a function"));
+        }
+        let state = channel(cx);
+        let id = state.next.get() + 1;
+        state.next.set(id);
+        state.listeners.borrow_mut().push(Listener {
+            id,
+            name: name.clone(),
+            f: V::dup(cx, args.get(1)),
+        });
+        // What came before a listener did goes to it at the end of this
+        // turn: after the code adding it (and its neighbors) ran.
+        if state.inbox.borrow().has(&name) {
+            let name = js::string(cx, &name)?;
+            let mut job_args = [name.raw()];
+            // SAFETY: the job keeps its own reference to the argument.
+            if unsafe { qjs::JS_EnqueueJob(cx, Some(deliver_kept_job), 1, job_args.as_mut_ptr()) } < 0 {
+                return Err(Throw);
+            }
+        }
+        let off = closure(cx, Vec::new(), move |cx, _, _| {
+            let gone = {
+                let mut listeners = channel(cx).listeners.borrow_mut();
+                listeners
+                    .iter()
+                    .position(|l| l.id == id)
+                    .map(|i| listeners.remove(i))
+            };
+            // Freed with no borrow held.
+            drop(gone);
+            Ok(V::undefined())
+        })?;
+        crate::keymap::undo_with_owner(cx, &off);
+        Ok(off)
+    }
+}
+
+fn start_call(cx: Ctx, args: Args<'_>) -> R<V> {
+    let name = name_arg(cx, args.get(0), "host.call")?;
+    check_call(cx, &name)?;
+    let options = args.get(2);
+    let timeout = if js::is_nullish(options) {
+        30_000.0
+    } else {
+        let value = js::get(cx, options, "timeout")?;
+        if js::is_undefined(value.raw()) {
+            30_000.0
+        } else {
+            js::to_number(cx, value.raw())?
+        }
+    };
+    if !timeout.is_finite() || timeout < 0.0 {
+        return Err(js::range_error(
+            cx,
+            &format!("nsh/host: invalid timeout {timeout}"),
+        ));
+    }
+    let deadline = (timeout != 0.0)
+        .then(|| {
+            Duration::try_from_secs_f64(timeout / 1000.0)
+                .ok()
+                .and_then(|duration| nsh_core::time::now().checked_add(duration))
+        })
+        .flatten();
+    let data = to_json(cx, args.get(1))?;
+    begin_call(cx, name, data, timeout, deadline, false)
+}
+
+/// Starts call `name` with `data`, waiting `timeout` milliseconds (0: as
+/// long as it takes) until `deadline`: its promise. A stand-in's call
+/// (`stand_in`) goes to the test's function of `name`, never to the
+/// embedding app's.
+fn begin_call(
+    cx: Ctx,
+    name: String,
+    data: JsonValue,
+    timeout: f64,
+    deadline: Option<nsh_core::time::Instant>,
+    stand_in: bool,
+) -> R<V> {
+    let state = channel(cx);
+    if state.calls.borrow().len() >= MAX_PENDING_CALLS {
+        return Err(throw(cx, nsh_core::host_channel::too_many_calls(&name)));
+    }
+    let deferred = Deferred::new(cx)?;
+    let promise = deferred.promise.clone_ref();
+    let id = state.next_call.get() + 1;
+    state.next_call.set(id);
+    let started = match bridge(cx) {
+        Some(bridge) => if stand_in {
+            bridge.call_module_fake(id, &name, data)
+        } else {
+            bridge.call(id, &name, data)
+        }
+        .map_err(|message| nsh_core::host_channel::host_error(&message)),
+        None => Err(nsh_core::host_channel::no_host()),
+    };
+    match started {
+        Ok(()) => {
+            state.calls.borrow_mut().insert(
+                id,
+                PendingCall {
+                    deferred,
+                    name,
+                    timeout,
+                    deadline,
+                },
+            );
+        }
+        Err(e) => {
+            let e = error(cx, e);
+            deferred.reject(cx, e.raw());
+        }
+    }
+    Ok(promise)
+}
+
+/// The stand-ins `nsh test` gives exports of native module `specifier`
+/// (`open`'s `modules`), by export or `Export.member`: none elsewhere.
+pub(crate) fn module_fakes(cx: Ctx, specifier: &str) -> Vec<(String, ModuleFake)> {
+    bridge(cx)
+        .map(|b| b.module_fakes(specifier))
+        .unwrap_or_default()
+}
+
+/// The stand-in `fake` makes for `real` (an export or a member of one): a
+/// value, or a function when `real` is one or the test answers its calls.
+/// A call crosses with its arguments as a JSON array, as a `host.call`
+/// does but for the capabilities (the test plays the module, not the
+/// embedding app) and with no time limit.
+pub(crate) fn stand_in(cx: Ctx, real: Raw, fake: &ModuleFake) -> R<V> {
+    match fake {
+        ModuleFake::Value(json) if js::is_function(cx, real) => {
+            let json = json.clone();
+            closure(cx, Vec::new(), move |cx, _, _| Ok(from_json(cx, &json)))
+        }
+        ModuleFake::Value(json) => Ok(from_json(cx, json)),
+        ModuleFake::Call(name) => {
+            let name = name.clone();
+            closure(cx, Vec::new(), move |cx, _, args| {
+                let data: R<Vec<JsonValue>> =
+                    (0..args.len()).map(|i| to_json(cx, args.get(i))).collect();
+                match data {
+                    Ok(data) => {
+                        begin_call(cx, name.clone(), JsonValue::Array(data), 0.0, None, true)
+                    }
+                    Err(Throw) => js::rejected_with_exception(cx),
+                }
+            })
+        }
+        _ => Ok(V::undefined()),
+    }
+}
+
+/// Native SDK calls and posts obey the same names and grants as the
+/// platform's `Command::HostCall`, before crossing into host code: a wrong
+/// name throws a `TypeError`, a refused one `ERR_ACCESS_DENIED`.
+fn check_call(cx: Ctx, name: &str) -> R<()> {
+    let checked =
+        nsh_core::host_channel::check_call(&crate::dom::shared(cx).system_access.borrow(), name);
+    checked.map_err(|e| {
+        log::warn!(target: "js", "{}", e.message());
+        throw(cx, e)
+    })
+}
+
+/// Earliest native SDK reply deadline, using the app's clock.
+pub(crate) fn next_deadline(cx: Ctx) -> Option<nsh_core::time::Instant> {
+    channel(cx)
+        .calls
+        .borrow()
+        .values()
+        .filter_map(|c| c.deadline)
+        .min()
+}
+
+/// Rejects expired calls and releases their slots; late replies are ignored.
+pub(crate) fn expire(cx: Ctx, now: nsh_core::time::Instant) {
+    let expired: Vec<_> = channel(cx)
+        .calls
+        .borrow()
+        .iter()
+        .filter(|(_, call)| call.deadline.is_some_and(|at| at <= now))
+        .map(|(&id, call)| {
+            let timeout = Duration::try_from_secs_f64(call.timeout / 1000.0).unwrap_or_default();
+            (id, nsh_core::host_channel::timed_out(&call.name, timeout))
+        })
+        .collect();
+    for (id, error) in expired {
+        finish(cx, id, Err(error));
+    }
+}
+
+/// The job `on` queues: delivers the events of its name kept so far.
+unsafe extern "C" fn deliver_kept_job(cx: Ctx, argc: c_int, argv: *mut Raw) -> Raw {
+    // SAFETY: the job's one argument, the name.
+    let args = unsafe { Args::new(argc, argv) };
+    let Ok(name) = js::to_string(cx, args.get(0)) else {
+        return qjs::JS_EXCEPTION;
+    };
+    while listens(cx, &name) {
+        let Some(data) = channel(cx).inbox.borrow_mut().pop(&name) else {
+            break;
+        };
+        // A listener may unsubscribe itself, or dispose its owner. Leave
+        // the remaining events in the inbox for the next listener.
+        dispatch(cx, &name, &data);
+    }
+    UNDEFINED
+}
+
+/// Whether a listener of `name` is there.
+fn listens(cx: Ctx, name: &str) -> bool {
+    channel(cx)
+        .listeners
+        .borrow()
+        .iter()
+        .any(|l| l.name == name)
+}
+
+/// Calls the listeners of `name` with `data`, oldest first; one that
+/// throws is reported and the others still run.
+fn dispatch(cx: Ctx, name: &str, data: &JsonValue) {
+    let listeners: Vec<V> = channel(cx)
+        .listeners
+        .borrow()
+        .iter()
+        .filter(|l| l.name == name)
+        .map(|l| l.f.clone_ref())
+        .collect();
+    let data = from_json(cx, data);
+    for f in listeners {
+        if js::call(cx, f.raw(), UNDEFINED, &[data.raw()]).is_err() {
+            js::report_exception(cx);
+        }
+    }
+}
+
+/// The embedding app's event `name`: to its listeners, or kept until one
+/// is added.
+pub(crate) fn deliver(cx: Ctx, name: &str, data: JsonValue) {
+    if listens(cx, name) {
+        dispatch(cx, name, &data);
+        return;
+    }
+    let dropped = channel(cx).inbox.borrow_mut().push(name.to_owned(), data);
+    if let Some((name, _)) = dropped {
+        log::warn!(
+            target: "js",
+            "nsh/host: the app did not listen to the embedding app's events; the oldest kept (\"{name}\") was dropped"
+        );
+    }
+}
+
+/// Settles call `id` with the embedding app's answer, or its error
+/// message (`ERR_NSH_HOST_ERROR`).
+pub(crate) fn settle(cx: Ctx, id: u64, result: Result<JsonValue, String>) {
+    finish(
+        cx,
+        id,
+        result.map_err(|message| nsh_core::host_channel::host_error(&message)),
+    );
+}
+
+/// Settles call `id` with `result`.
+fn finish(cx: Ctx, id: u64, result: Result<JsonValue, JsError>) {
+    let Some(call) = channel(cx).calls.borrow_mut().remove(&id) else {
+        return;
+    };
+    let deferred = call.deferred;
+    match result {
+        Ok(value) => {
+            let value = from_json(cx, &value);
+            deferred.resolve(cx, value.raw());
+        }
+        Err(e) => {
+            let e = error(cx, e);
+            deferred.reject(cx, e.raw());
+        }
+    }
+}
+
+/// `nsh/host`'s types.
+pub(crate) const TYPES: &str = r#"/** Data that crosses between the app and the embedding app: a JSON value. */
+export type HostValue = null | boolean | number | string | HostValue[] | { [key: string]: HostValue };
+
+/** The embedding app's launch parameters. */
+export type HostParams = { readonly [key: string]: HostValue };
+
+/** The channel to the app this one is embedded in (the iOS, Android and
+ * desktop SDKs' `NshAppView`, `NshView` and `AppView`). Data crosses as JSON
+ * values: what `JSON.stringify` keeps of it (functions and `undefined`
+ * fields are left out). */
+export interface HostEvents {
+  /** Whether the platform or native SDK has a configured host. */
+  available(): boolean;
+  /** Listens until the returned function is called. */
+  on(event: string, listener: (payload: unknown) => void): () => void;
+}
+
+export interface Host {
+  /** Whether the platform or native SDK has a configured host. */
+  available(): boolean;
+  /** The parameters the embedding app set before it started this app (what
+   * to open, who the user is), `{}` when it set none. They are fixed while
+   * the app runs; later requests come as events. */
+  readonly params: HostParams;
+  /** Listens to the embedding app's event `name`: `listener` gets its data
+   * (`null` when it sent none), the listeners of a name in the order they
+   * were added. Events the embedding app sends while the app has no listener
+   * of their name are kept (up to 256, then the oldest go) and come right
+   * after the first listener is added, once the code adding it ran. Returns
+   * a function that stops listening; a listener added while a component
+   * renders stops with the component. */
+  on<T = HostValue>(name: string, listener: (data: T) => void): () => void;
+  /** Calls the embedding app's handler of `name` with `data`: the promise
+   * resolves with its answer, or rejects with an `Error` with the message the
+   * handler gave and `code` `"ERR_NSH_HOST_ERROR"`, also at once when the
+   * embedding app handles no `name`. It rejects with `code`
+   * `"ERR_ACCESS_DENIED"` (`permission` `"host"`, `resource` the name) when
+   * `capabilities.host` does not grant `name`, `"ETIMEDOUT"` once
+   * `options.timeout` milliseconds passed (30000 unless set; 0 waits as long
+   * as the host takes), `"ERR_FEATURE_UNAVAILABLE_ON_PLATFORM"` on a platform
+   * without a host, and `"ERR_NSH_QUOTA_EXCEEDED"` while 1024 calls wait
+   * for answers already; with a `TypeError` for a wrong name and a
+   * `RangeError` for a negative timeout. It never throws. */
+  call<T = HostValue>(name: string, data?: unknown, options?: { timeout?: number }): Promise<T>;
+  /** Hands `data` to the embedding app's handler of `name`, without an
+   * answer; it is dropped when the embedding app handles no `name` or there
+   * is no embedding app. Throws a `TypeError` for a wrong name and an `Error`
+   * with `code` `"ERR_ACCESS_DENIED"` when `capabilities.host` does not
+   * grant `name`. */
+  post(name: string, data?: unknown): void;
+}
+"#;
+
+#[cfg(test)]
+mod tests {
+    use std::{cell::RefCell, rc::Rc};
+
+    use nsh_core::{
+        JsonValue, Op,
+        host_channel::{HostBridge, ModuleFake},
+    };
+    use serde_json::json;
+
+    use crate::Host;
+
+    /// The embedding app's side, recording what reaches it.
+    #[derive(Default)]
+    struct Bridge {
+        calls: RefCell<Vec<(u64, String, JsonValue)>>,
+        posts: RefCell<Vec<(String, JsonValue)>>,
+        /// The stand-ins of `nsh`'s exports, and the calls of theirs.
+        fakes: Vec<(String, ModuleFake)>,
+        fake_calls: RefCell<Vec<(u64, String, JsonValue)>>,
+    }
+
+    impl HostBridge for Bridge {
+        fn params(&self) -> JsonValue {
+            json!({ "conversation": "c-1", "user": { "id": 7 } })
+        }
+
+        fn call(&self, id: u64, name: &str, data: JsonValue) -> Result<(), String> {
+            if name == "missing" {
+                return Err("no such handler".into());
+            }
+            self.calls.borrow_mut().push((id, name.into(), data));
+            Ok(())
+        }
+
+        fn post(&self, name: &str, data: JsonValue) {
+            self.posts.borrow_mut().push((name.into(), data));
+        }
+
+        fn module_fakes(&self, specifier: &str) -> Vec<(String, ModuleFake)> {
+            match specifier {
+                "nsh" => self.fakes.clone(),
+                _ => Vec::new(),
+            }
+        }
+
+        fn call_module_fake(&self, id: u64, name: &str, data: JsonValue) -> Result<(), String> {
+            self.fake_calls.borrow_mut().push((id, name.into(), data));
+            Ok(())
+        }
+    }
+
+    fn allow_host(host: &Host) {
+        host.set_system_access(
+            nsh_core::access::Access {
+                declared: nsh_core::access::Capabilities::from_json(&json!({ "host": true }))
+                    .unwrap(),
+                ..Default::default()
+            },
+            None,
+        );
+    }
+
+    const REPORT: &str = r#"import { text } from "nsh:rt";
+import { host } from "nsh";
+const report = (v) => text(String(v));
+"#;
+
+    /// The texts reported since the last call.
+    fn reported(host: &Host) -> Vec<String> {
+        let mut ops = Vec::new();
+        host.take_ops(&mut ops);
+        ops.into_iter()
+            .filter_map(|op| match op {
+                Op::CreateText { text, .. } => Some(text),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn pending_calls(host: &Host) -> usize {
+        host.with_raw(|cx| super::channel(cx).calls.borrow().len())
+    }
+
+    #[test]
+    fn without_an_embedding_app_params_are_empty_and_posts_are_ignored() {
+        let host = Host::new().unwrap();
+        host.eval_source(&format!(
+            r#"{REPORT}
+report(JSON.stringify(host.params));
+host.post("seen", {{ a: 1 }});
+"#
+        ))
+        .unwrap();
+        host.run_jobs();
+        assert_eq!(reported(&host), ["{}"]);
+    }
+
+    #[test]
+    fn calls_settle_with_the_answers_by_id() {
+        let host = Host::new().unwrap();
+        let bridge = Rc::new(Bridge::default());
+        allow_host(&host);
+        host.set_host_bridge(bridge.clone());
+        host.eval_source(&format!(
+            r#"{REPORT}
+report(host.params.conversation + " " + host.params.user.id);
+host.call("profile", {{ id: 7, skip: undefined }}).then((v) => report("profile " + v.name));
+host.call("save", [1, 2]).catch((e) => report("save " + e.code + " " + e.message));
+host.call("missing").catch((e) => report("missing " + e.code + " " + e.message));
+host.post("seen", "home");
+"#
+        ))
+        .unwrap();
+        host.run_jobs();
+        assert_eq!(
+            reported(&host),
+            ["c-1 7", "missing ERR_NSH_HOST_ERROR no such handler"]
+        );
+        let calls = bridge.calls.borrow().clone();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].1, "profile");
+        assert_eq!(calls[0].2, json!({ "id": 7 }));
+        assert_eq!(calls[1].2, json!([1, 2]));
+        assert_eq!(*bridge.posts.borrow(), [("seen".to_owned(), json!("home"))]);
+        assert_eq!(pending_calls(&host), 2);
+        host.host_reply(calls[1].0, Err("disk full".into()));
+        host.host_reply(calls[0].0, Ok(json!({ "name": "Ada" })));
+        // A second answer, or one for no call, is ignored.
+        host.host_reply(calls[0].0, Ok(json!(null)));
+        host.host_reply(999, Ok(json!(null)));
+        assert_eq!(
+            reported(&host),
+            ["save ERR_NSH_HOST_ERROR disk full", "profile Ada"]
+        );
+        assert_eq!(pending_calls(&host), 0);
+    }
+
+    #[test]
+    fn module_fakes_stand_in_for_exports_and_members() {
+        let host = Host::new().unwrap();
+        // No `host` capability: the stand-ins are the test's, not the
+        // embedding app's.
+        let bridge = Rc::new(Bridge {
+            fakes: vec![
+                ("batch".into(), ModuleFake::Value(json!(42))),
+                ("Image.prefetch".into(), ModuleFake::Value(json!("ready"))),
+                ("Image.getSize".into(), ModuleFake::Call("size".into())),
+                ("nothing".into(), ModuleFake::Value(json!(0))),
+                ("Image.prefech".into(), ModuleFake::Value(json!(0))),
+            ],
+            ..Bridge::default()
+        });
+        host.set_host_bridge(bridge.clone());
+        host.eval_source(&format!(
+            r#"{REPORT}
+import {{ batch, Image }} from "nsh";
+report("batch " + batch(() => 1));
+report("prefetch " + Image.prefetch("a.png"));
+report("typo " + ("prefech" in Image));
+Image.getSize("b.png", {{ at: 2 }}).then((s) => report("size " + s.width));
+"#
+        ))
+        .unwrap();
+        host.run_jobs();
+        assert_eq!(
+            reported(&host),
+            ["batch 42", "prefetch ready", "typo false"]
+        );
+        assert!(bridge.calls.borrow().is_empty());
+        let calls = bridge.fake_calls.borrow().clone();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].1, "size");
+        assert_eq!(calls[0].2, json!(["b.png", { "at": 2 }]));
+        host.host_reply(calls[0].0, Ok(json!({ "width": 64 })));
+        assert_eq!(reported(&host), ["size 64"]);
+    }
+
+    #[test]
+    fn the_app_s_calls_never_reach_a_stand_in() {
+        let host = Host::new().unwrap();
+        allow_host(&host);
+        let bridge = Rc::new(Bridge {
+            fakes: vec![("Image.getSize".into(), ModuleFake::Call("size".into()))],
+            ..Bridge::default()
+        });
+        host.set_host_bridge(bridge.clone());
+        host.eval_source(&format!(
+            r#"{REPORT}
+host.call("size", "b.png");
+"#
+        ))
+        .unwrap();
+        host.run_jobs();
+        assert!(bridge.fake_calls.borrow().is_empty());
+        let calls = bridge.calls.borrow().clone();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].1, "size");
+    }
+
+    #[test]
+    fn events_wait_for_a_listener_of_their_name() {
+        let host = Host::new().unwrap();
+        allow_host(&host);
+        host.set_host_bridge(Rc::new(Bridge::default()));
+        host.eval_source(&format!(
+            r#"{REPORT}
+globalThis.listen = () => {{
+  host.on("open", (d) => report("a " + d.id));
+  host.on("open", (d) => report("b " + d.id));
+  report("listening");
+}};
+const off = host.on("tick", (n) => report("tick " + n));
+globalThis.stop = () => off();
+"#
+        ))
+        .unwrap();
+        host.host_event("open", json!({ "id": 1 }));
+        host.host_event("open", json!({ "id": 2 }));
+        host.host_event("tick", json!(1));
+        assert_eq!(reported(&host), ["tick 1"]);
+        // Kept until the listeners are added, then theirs in order, after
+        // the code adding them.
+        host.eval_source("listen();").unwrap();
+        host.run_jobs();
+        assert_eq!(reported(&host), ["listening", "a 1", "b 1", "a 2", "b 2"]);
+        host.eval_source("stop();").unwrap();
+        host.host_event("tick", json!(2));
+        assert_eq!(reported(&host), Vec::<String>::new());
+    }
+
+    #[test]
+    fn kept_events_wait_again_when_the_last_listener_unsubscribes() {
+        let host = Host::new().unwrap();
+        host.eval_source(&format!(
+            r#"{REPORT}
+globalThis.listen = () => {{
+  const off = host.on("open", (data) => {{ report("first " + data); off(); }});
+}};
+globalThis.listenAgain = () => host.on("open", (data) => report("next " + data));
+"#
+        ))
+        .unwrap();
+        host.host_event("open", json!(1));
+        host.host_event("open", json!(2));
+        host.host_event("open", json!(3));
+        host.eval_source("listen();").unwrap();
+        host.run_jobs();
+        assert_eq!(reported(&host), ["first 1"]);
+        // The first callback removed the only listener. Neither remaining
+        // event has been delivered yet; both still wait, in order.
+        host.eval_source("listenAgain();").unwrap();
+        host.run_jobs();
+        assert_eq!(reported(&host), ["next 2", "next 3"]);
+    }
+
+    #[test]
+    fn native_calls_and_posts_require_the_hosts_capability() {
+        let host = Host::new().unwrap();
+        let bridge = Rc::new(Bridge::default());
+        host.set_host_bridge(bridge.clone());
+        host.eval_source(&format!(
+            r#"{REPORT}
+report(host.available());
+const denied = e => [e.name, e.code, e.permission, e.resource].join(" ");
+host.call("profile").catch(e => report(denied(e)));
+try {{ host.post("profile"); }} catch (e) {{ report(denied(e)); }}
+host.call("a b").catch(e => report(e.name));
+"#
+        ))
+        .unwrap();
+        host.run_jobs();
+        assert_eq!(
+            reported(&host),
+            [
+                "true",
+                "Error ERR_ACCESS_DENIED host profile",
+                "Error ERR_ACCESS_DENIED host profile",
+                "TypeError",
+            ]
+        );
+        assert!(bridge.calls.borrow().is_empty());
+        assert!(bridge.posts.borrow().is_empty());
+    }
+
+    #[test]
+    fn native_timeouts_release_calls_and_ignore_late_replies() {
+        let host = Host::new().unwrap();
+        allow_host(&host);
+        let bridge = Rc::new(Bridge::default());
+        host.set_host_bridge(bridge.clone());
+        host.eval_source(&format!(
+            r#"{REPORT}
+host.call("slow", null, {{ timeout: 20 }}).then(report, e => report(e.code));
+host.call("bad", null, {{ timeout: -1 }}).catch(e => report(e.name));
+host.call("wait", null, {{ timeout: 0 }}).then(report);
+"#
+        ))
+        .unwrap();
+        host.run_jobs();
+        assert_eq!(reported(&host), ["RangeError"]);
+        assert!(host.next_timer().is_some());
+        host.run_timers(nsh_core::time::now() + std::time::Duration::from_millis(50));
+        assert_eq!(reported(&host), ["ETIMEDOUT"]);
+        assert_eq!(pending_calls(&host), 1);
+        let calls = bridge.calls.borrow();
+        host.host_reply(calls[0].0, Ok(json!("too late")));
+        host.host_reply(calls[1].0, Ok(json!("answered")));
+        assert_eq!(reported(&host), ["answered"]);
+        assert!(host.next_timer().is_none());
+    }
+
+    #[test]
+    fn names_data_and_waiting_calls_are_limited() {
+        let host = Host::new().unwrap();
+        allow_host(&host);
+        host.set_host_bridge(Rc::new(Bridge::default()));
+        host.eval_source(&format!(
+            r#"{REPORT}
+const fails = (f) => {{ try {{ f(); return "no"; }} catch (e) {{ return e.name; }} }};
+report(fails(() => host.on("", () => {{}})));
+report(fails(() => host.on("x".repeat(257), () => {{}})));
+report(fails(() => host.on("x", 1)));
+report(fails(() => host.post(1)));
+let deep = 0;
+for (let i = 0; i < 100; i++) deep = [deep];
+report(fails(() => host.post("deep", deep)));
+for (let i = 0; i < {max}; i++) host.call("wait");
+host.call("wait").catch((e) => report(e.name + " " + e.code));
+report(fails(() => host.call(1).catch(() => {{}})));
+"#,
+            max = nsh_core::host_channel::MAX_PENDING_CALLS
+        ))
+        .unwrap();
+        host.run_jobs();
+        assert_eq!(
+            reported(&host),
+            [
+                "TypeError",
+                "TypeError",
+                "TypeError",
+                "TypeError",
+                "RangeError",
+                "no",
+                "Error ERR_NSH_QUOTA_EXCEEDED"
+            ]
+        );
+        assert_eq!(
+            pending_calls(&host),
+            nsh_core::host_channel::MAX_PENDING_CALLS
+        );
+    }
+}
