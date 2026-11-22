@@ -162,7 +162,7 @@ jobs:
     needs: prepare
     runs-on: ${{ matrix.runner }}
     environment: nightly
-    timeout-minutes: 180
+    timeout-minutes: 300
     strategy:
       fail-fast: false
       matrix:

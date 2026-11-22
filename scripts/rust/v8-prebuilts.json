@@ -14,5 +14,13 @@
       "commit": "79e7f7255c6d242cfdc8a33f365e6ffba6438a40",
       "run": "https://github.com/apache/maka/actions/runs/45023061009"
     }
+  },
+  "163a551dd3fd0cbabf837bdacacd4e411cfe8f809947e4fefcd2f76b18bf5da4": {
+    "url": "https://github.com/apache/maka/releases/download/deps-v8-150.4.0-79e7f7255/v8-x86_64-unknown-linux-gnu-163a551dd3fd0cbabf837bdacacd4e411cfe8f809947e4fefcd2f76b18bf5da4.tar.gz",
+    "sha256": "9683d55e352b81589788e2e72eea366b2a6547f60a7e6593ca6f4b00877765d3",
+    "verifiedBy": {
+      "commit": "76a3e47547ed8596f8195ef8da21a5f50939703b",
+      "run": "https://github.com/apache/maka/actions/runs/45039417335"
+    }
   }
 }
