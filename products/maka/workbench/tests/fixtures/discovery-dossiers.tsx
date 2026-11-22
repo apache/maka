@@ -141,6 +141,10 @@ mount(() => {
         case 'setDossierMuted':
           update(input.topicId, { muted: input.muted });
           return null;
+        case 'dismissPendingAction':
+          if (input.actionId !== 'review') throw Error('Wrong pending action');
+          update('one', { pendingActions: [] });
+          return null;
         case 'openDossierThread':
           if (input.topicId !== 'two' || ++threadOpens !== 1)
             throw Error('Unexpected thread creation');

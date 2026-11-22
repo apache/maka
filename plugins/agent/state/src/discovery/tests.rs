@@ -151,29 +151,6 @@ async fn persisted_tracking_records_keep_their_cas_and_receipt() {
         .await
         .unwrap();
     let topic = TopicId("release".into());
-    let watch = WatchRecord {
-        watch_id: WatchId("spec".into()),
-        topic_id: topic.clone(),
-        kind: WatchKind::FileHash,
-        target: "spec.md".into(),
-        predicate: json!({"changed":true}),
-        on_trigger: WatchTrigger::InvalidateAction,
-        last_state_hash: None,
-        expires_at: None,
-        created_at: at,
-        updated_at: at,
-    };
-    assert!(s.save_watch(watch.clone(), None).await.unwrap());
-    assert!(
-        s.compare_and_set_watch_state(watch.watch_id.clone(), None, "v2".into(), at)
-            .await
-            .unwrap()
-    );
-    assert!(
-        !s.compare_and_set_watch_state(watch.watch_id.clone(), None, "v1".into(), at)
-            .await
-            .unwrap()
-    );
     let action = PendingActionRecord {
         action_id: ActionId("mail".into()),
         topic_id: topic.clone(),
@@ -183,54 +160,43 @@ async fn persisted_tracking_records_keep_their_cas_and_receipt() {
         idempotency_key: "draft-1".into(),
         status: PendingActionStatus::AwaitingConfirm,
         receipt: None,
-        expires_at: UnixMillis(200),
+        expires_at: UnixMillis(i64::MAX),
         created_at: at,
         updated_at: at,
     };
-    s.create_pending_action(action.clone()).await.unwrap();
-    let mut edited = action.clone();
-    edited.params = json!({"draft": "revised"});
-    edited.updated_at = UnixMillis(13);
-    assert!(s.update_pending_action(edited.clone(), at).await.unwrap());
-    assert!(!s.update_pending_action(edited, at).await.unwrap());
+    let stage = |r| {
+        s.data
+            .write(s.stage_action_statement(r, json!({}), json!({})))
+    };
+    stage(action.clone()).await.unwrap();
+    let detail = s.detail(topic.clone()).await.unwrap().unwrap();
+    let watch = detail.watches.into_iter().next().unwrap();
+    assert_eq!(watch.last_state_hash.as_deref(), Some("v2"));
     let mut duplicate = action.clone();
     duplicate.action_id = ActionId("another".into());
-    assert!(s.create_pending_action(duplicate).await.is_err());
-    use PendingActionStatus::*;
-    let id = action.action_id.clone();
+    assert!(stage(duplicate).await.is_err());
+    let id = action.action_id;
     assert!(
-        s.transition_pending_action(id.clone(), AwaitingConfirm, Executing, None, at)
+        s.claim_action(id.clone(), at, guards::InputCheck::Compared(vec![]))
+            .await
+            .unwrap()
+    );
+    s.recover_executing_actions(UnixMillis(14)).await.unwrap();
+    let original = s.get_pending_action(id.clone()).await.unwrap().unwrap();
+    assert_eq!(original.status, PendingActionStatus::UnknownPendingReceipt);
+    assert!(original.receipt.unwrap()["error"].is_string());
+    assert!(
+        !s.claim_action(id.clone(), at, guards::InputCheck::Compared(vec![]))
             .await
             .unwrap()
     );
     assert!(
-        !s.transition_pending_action(id.clone(), AwaitingConfirm, Stale, None, at)
+        s.data
+            .write(s.dismiss_action_statement(id, at))
             .await
-            .unwrap()
+            .is_err()
     );
-    assert!(
-        s.transition_pending_action(id.clone(), Executing, UnknownPendingReceipt, None, at)
-            .await
-            .unwrap()
-    );
-    assert!(!s.delete_pending_action(id.clone()).await.unwrap());
-    assert!(
-        s.transition_pending_action(
-            id,
-            UnknownPendingReceipt,
-            Done,
-            Some(json!({"id":"confirmed"})),
-            at
-        )
-        .await
-        .unwrap()
-    );
-    let detail = s.detail(topic).await.unwrap().unwrap();
-    assert_eq!(detail.watches[0].last_state_hash.as_deref(), Some("v2"));
-    assert_eq!(
-        detail.pending_actions[0].receipt,
-        Some(json!({"id":"confirmed"}))
-    );
+    assert!(s.list_watches(topic).await.unwrap().is_empty());
     let mut cursor = SourceCursorRecord {
         source_uri: SourceUri("spec.md".into()),
         last_mtime_ms: at,

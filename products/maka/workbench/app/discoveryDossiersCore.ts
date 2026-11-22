@@ -69,3 +69,32 @@ export function dossierInterrupt(
   }
   return { seen: next, notifications };
 }
+
+type PendingAction = DossierDetail['pendingActions'][number];
+
+export function pendingActionControls(
+  action: Pick<PendingAction, 'status' | 'receipt'>,
+  busy = false,
+) {
+  const awaiting = action.status === 'awaiting_confirm';
+  const stale = action.status === 'stale';
+  const receipt = action.receipt;
+  const reason =
+    receipt && typeof receipt === 'object' && 'reason' in receipt ? receipt.reason : null;
+  const notice = stale
+    ? reason === 'expired'
+      ? 'Dossier action expired'
+      : reason === 'watch' || reason === 'authorization_unavailable'
+        ? 'Dossier action stale'
+        : 'Dossier source changed'
+    : action.status === 'unknown_pending_receipt'
+      ? 'Dossier check receipt'
+      : null;
+  return {
+    showConfirm: awaiting || stale,
+    confirm: awaiting && !busy,
+    showDismiss: awaiting || stale,
+    dismiss: (awaiting || stale) && !busy,
+    notice,
+  } as const;
+}

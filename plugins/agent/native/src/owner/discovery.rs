@@ -45,7 +45,9 @@ pub(super) const LIST: &str = "ListDossiers";
 pub(super) const READ: &str = "ReadDossier";
 pub(super) const STAGE: &str = "StageArtifact";
 pub(super) const PREFERENCES: &str = "UpdateDiscoveryPreferences";
-pub(super) const WORKER_TOOLS: &[&str] = &[COMPLETE, UPSERT, FINISH, STAGE];
+pub(super) const REGISTER: &str = "RegisterWatch";
+pub(super) const PENDING: &str = "StagePendingAction";
+pub(super) const WORKER_TOOLS: &[&str] = &[COMPLETE, UPSERT, FINISH, STAGE, REGISTER, PENDING];
 pub(super) const VISIBLE_TOOLS: &[&str] = &[
     COMPLETE,
     MEMORY,
@@ -54,6 +56,8 @@ pub(super) const VISIBLE_TOOLS: &[&str] = &[
     LIST,
     READ,
     STAGE,
+    REGISTER,
+    PENDING,
     PREFERENCES,
 ];
 mod dossiers;
@@ -62,11 +66,14 @@ pub(super) const MODEL_ROUTE_CHANGED: &str = "background_model_route_changed";
 pub(super) const APPROVED_MODEL_UNAVAILABLE: &str = "background_model_unavailable";
 const RECALL_TOOLS: &[&str] = &["Recall", "RecallMore", "RecallMaterial"];
 const ACTIVE: &str = "discovery/active";
+mod actions;
 mod artifacts;
 pub(in crate::owner) mod changes;
 mod context;
 mod preferences;
 mod records;
+mod watch_inputs;
+pub(in crate::owner) mod watches;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -177,6 +184,20 @@ impl CaptureError {
     }
 }
 
+fn monitoring_prompt(language: Language) -> &'static str {
+    match language {
+        Language::En => {
+            "Use RegisterWatch to monitor stock, deadlines or file changes. Use StagePendingAction for external sends and workspace overwrites. The user confirms the exact action."
+        }
+        Language::ZhCn => {
+            "用 RegisterWatch 监测库存、期限或文件变化。外发或覆写工作区文件时，用 StagePendingAction 暂存具体操作，交由用户确认。"
+        }
+        Language::ZhTw => {
+            "用 RegisterWatch 監測庫存、期限或檔案變更。外發或覆寫工作區檔案時，用 StagePendingAction 暫存具體操作，交由使用者確認。"
+        }
+    }
+}
+
 fn investigation_prompt(
     language: Language,
     mode: &DiscoveryMode,
@@ -195,6 +216,7 @@ fn investigation_prompt(
             "Help the user decide in one click. Go beyond warnings. Whenever a low-cost, reversible draft, diff, checklist or brief would help, make it ready to use in the isolated sandbox with StageArtifact and attach its receipt to UpsertDossier.artifacts. Keep original workspace files read-only. FinishNoChange is the expected, healthy outcome when nothing material changed. Never manufacture a report."
         }
     };
+    let draft = format!("{draft} {}", monitoring_prompt(language));
     if matches!(mode, DiscoveryMode::Wander { .. }) {
         let wander = match language {
             Language::ZhCn => {
@@ -385,6 +407,10 @@ impl scheduler::Scheduler {
 
 impl Owner {
     pub(super) async fn restore_discovery(&self) -> Result<(), String> {
+        self.discovery
+            .recover_executing_actions(UnixMillis(now() as i64))
+            .await
+            .map_err(reason)?;
         let (revision, job) = self.scheduler.investigation().await?;
         let Some(mut job) = job else {
             return Ok(());
@@ -592,6 +618,7 @@ impl Owner {
                 .filter(|name| catalog.contains(name))
                 .map(str::to_owned),
         );
+        names.extend(WORKER_TOOLS.iter().map(|name| (*name).to_owned()));
         let names =
             self.discovery_worker_tools(&names, source.configuration.tools.as_deref(), selection);
         // Optional tools must retain their displayed category and parent approval.
@@ -623,7 +650,7 @@ impl Owner {
             )
     }
 
-    fn permits_discovery_tool(&self, name: &str) -> bool {
+    pub(super) fn permits_discovery_tool(&self, name: &str) -> bool {
         match self.tool_basis.iter().find(|tool| tool.name() == name) {
             Some(tool) => tool.discovery_safe,
             None => {
@@ -652,7 +679,12 @@ impl Owner {
             })
             .cloned()
             .collect();
-        allowed.extend(WORKER_TOOLS.iter().map(|name| (*name).to_owned()));
+        allowed.extend(
+            names
+                .iter()
+                .filter(|name| WORKER_TOOLS.contains(&name.as_str()))
+                .cloned(),
+        );
         allowed.sort_unstable();
         allowed.dedup();
         allowed

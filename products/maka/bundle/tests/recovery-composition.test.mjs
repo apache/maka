@@ -126,6 +126,8 @@ test('built installation binds continuation, Goal and Scheduler to the original 
     ['setDossierMuted', 'mutation'],
     ['setDiscoveryNotifications', 'mutation'],
     ['dropDiscoveryLead', 'mutation'],
+    ['confirmPendingAction', 'mutation'],
+    ['dismissPendingAction', 'mutation'],
     ['openDossierThread', 'mutation'],
   ];
   for (const contract of [provider.exports.agent.contract, consumer.contract]) {

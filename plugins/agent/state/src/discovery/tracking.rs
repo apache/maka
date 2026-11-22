@@ -20,8 +20,8 @@
 use super::*;
 
 const CURSOR_FIELDS: &str = "source_uri,last_mtime_ms,last_hash,write_burst_count,cooldown_until,last_explored_at,updated_at";
-const WATCH_FIELDS: &str = "watch_id,topic_id,kind,target,predicate_json,on_trigger,last_state_hash,expires_at,created_at,updated_at";
-const ACTION_FIELDS: &str = "action_id,topic_id,connector_tool,params_json,input_hashes_json,idempotency_key,status,receipt_json,expires_at,created_at,updated_at";
+pub(super) const WATCH_FIELDS: &str = "watch_id,topic_id,kind,target,predicate_json,on_trigger,last_state_hash,expires_at,created_at,updated_at";
+pub(super) const ACTION_FIELDS: &str = "action_id,topic_id,connector_tool,params_json,input_hashes_json,idempotency_key,status,receipt_json,expires_at,created_at,updated_at";
 
 fn cursor(r: &Row<'_>) -> rusqlite::Result<SourceCursorRecord> {
     Ok(SourceCursorRecord {
@@ -34,7 +34,7 @@ fn cursor(r: &Row<'_>) -> rusqlite::Result<SourceCursorRecord> {
         updated_at: UnixMillis(r.get(6)?),
     })
 }
-fn watch_record(r: &Row<'_>) -> rusqlite::Result<WatchRecord> {
+pub(super) fn watch_record(r: &Row<'_>) -> rusqlite::Result<WatchRecord> {
     Ok(WatchRecord {
         watch_id: WatchId(r.get(0)?),
         topic_id: TopicId(r.get(1)?),
@@ -48,7 +48,7 @@ fn watch_record(r: &Row<'_>) -> rusqlite::Result<WatchRecord> {
         updated_at: UnixMillis(r.get(9)?),
     })
 }
-fn action(r: &Row<'_>) -> rusqlite::Result<PendingActionRecord> {
+pub(super) fn action(r: &Row<'_>) -> rusqlite::Result<PendingActionRecord> {
     Ok(PendingActionRecord {
         action_id: ActionId(r.get(0)?),
         topic_id: TopicId(r.get(1)?),
@@ -83,10 +83,12 @@ pub(super) fn actions(
     c: &Connection,
     owner: &str,
     topic: &TopicId,
+    open_only: bool,
 ) -> Result<Vec<PendingActionRecord>, StoreError> {
+    let visible = if open_only { "AND status!='done'" } else { "" };
     let mut stmt = c.prepare_cached(&format!(
         "SELECT {ACTION_FIELDS} FROM discovery_pending_actions
-         WHERE owner=?1 AND topic_id=?2 ORDER BY action_id"
+         WHERE owner=?1 AND topic_id=?2 {visible} ORDER BY action_id"
     ))?;
     Ok(stmt
         .query_map(params![owner, topic.0], action)?
@@ -174,61 +176,6 @@ impl DiscoveryStore {
     pub async fn list_watches(&self, topic: TopicId) -> Result<Vec<WatchRecord>, StoreError> {
         self.read(move |c, owner| watches(c, owner, &topic)).await
     }
-    pub async fn save_watch(
-        &self,
-        r: WatchRecord,
-        expected: Option<UnixMillis>,
-    ) -> Result<bool, StoreError> {
-        self.data.write(self.mutation(true, move |c, owner| {
-            let args = params![
-                owner, r.watch_id.0, r.topic_id.0, r.kind.as_str(), r.target, serde_json::to_string(&r.predicate)?,
-                r.on_trigger.as_str(), r.last_state_hash, r.expires_at.map(|t| t.0),
-                r.created_at.0, r.updated_at.0, expected.map(|t| t.0),
-            ];
-            let count = if expected.is_some() {
-                c.execute(
-                    "UPDATE discovery_watches SET kind=?4,target=?5,predicate_json=?6,on_trigger=?7,
-                         last_state_hash=?8,expires_at=?9,updated_at=?11
-                     WHERE owner=?1 AND watch_id=?2 AND topic_id=?3 AND created_at=?10 AND updated_at=?12 AND ?11>?12",
-                    args,
-                )?
-            } else {
-                c.execute(
-                    "INSERT INTO discovery_watches(owner,watch_id,topic_id,kind,target,predicate_json,
-                         on_trigger,last_state_hash,expires_at,created_at,updated_at)
-                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11) ON CONFLICT(owner,watch_id) DO NOTHING",
-                    &args[..11],
-                )?
-            };
-            Ok(count == 1)
-        })).await
-    }
-    pub async fn compare_and_set_watch_state(
-        &self,
-        id: WatchId,
-        expected: Option<String>,
-        next: String,
-        at: UnixMillis,
-    ) -> Result<bool, StoreError> {
-        self.data.write(self.mutation(true, move |c, owner| {
-            let count = c.execute(
-                "UPDATE discovery_watches SET last_state_hash=?4,updated_at=max(updated_at+1,?5)
-                 WHERE owner=?1 AND watch_id=?2 AND last_state_hash IS ?3 AND last_state_hash IS NOT ?4",
-                params![owner, id.0, expected, next, at.0],
-            )?;
-            Ok(count == 1)
-        })).await
-    }
-    pub async fn delete_watch(&self, id: WatchId) -> Result<bool, StoreError> {
-        self.data
-            .write(self.mutation(true, move |c, owner| {
-                Ok(c.execute(
-                    "DELETE FROM discovery_watches WHERE owner=?1 AND watch_id=?2",
-                    params![owner, id.0],
-                )? == 1)
-            }))
-            .await
-    }
     pub async fn get_pending_action(
         &self,
         id: ActionId,
@@ -244,83 +191,7 @@ impl DiscoveryStore {
         &self,
         topic: TopicId,
     ) -> Result<Vec<PendingActionRecord>, StoreError> {
-        self.read(move |c, owner| actions(c, owner, &topic)).await
-    }
-    pub async fn create_pending_action(&self, r: PendingActionRecord) -> Result<(), StoreError> {
-        if r.status != PendingActionStatus::AwaitingConfirm || r.receipt.is_some() {
-            return Err(crate::store::invalid(
-                "new discovery action must await confirmation",
-            ));
-        }
-        self.data.write(self.mutation(true, move |c, owner| {
-            c.execute(
-                "INSERT INTO discovery_pending_actions(owner,action_id,topic_id,connector_tool,params_json,
-                     input_hashes_json,idempotency_key,status,expires_at,created_at,updated_at)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,'awaiting_confirm',?8,?9,?10)",
-                params![owner,r.action_id.0,r.topic_id.0,r.connector_tool,serde_json::to_string(&r.params)?,
-                    serde_json::to_string(&r.input_hashes)?,r.idempotency_key,r.expires_at.0,r.created_at.0,r.updated_at.0],
-            )?;
-            Ok(())
-        })).await
-    }
-    /// A prepared action can be edited until a transition claims or invalidates it.
-    pub async fn update_pending_action(
-        &self,
-        r: PendingActionRecord,
-        expected: UnixMillis,
-    ) -> Result<bool, StoreError> {
-        if r.status != PendingActionStatus::AwaitingConfirm || r.receipt.is_some() {
-            return Err(crate::store::invalid(
-                "only an unconfirmed action can be edited",
-            ));
-        }
-        self.data.write(self.mutation(true, move |c, owner| {
-            let count = c.execute(
-                "UPDATE discovery_pending_actions SET connector_tool=?4,params_json=?5,input_hashes_json=?6,
-                     expires_at=?8,updated_at=?9 WHERE owner=?1 AND action_id=?2 AND topic_id=?3 AND idempotency_key=?7
-                     AND status='awaiting_confirm' AND updated_at=?10 AND ?9>?10",
-                params![owner,r.action_id.0,r.topic_id.0,r.connector_tool,serde_json::to_string(&r.params)?,
-                    serde_json::to_string(&r.input_hashes)?,r.idempotency_key,r.expires_at.0,r.updated_at.0,expected.0],
-            )?;
-            Ok(count == 1)
-        })).await
-    }
-    pub async fn transition_pending_action(
-        &self,
-        id: ActionId,
-        expected: PendingActionStatus,
-        next: PendingActionStatus,
-        receipt: Option<serde_json::Value>,
-        at: UnixMillis,
-    ) -> Result<bool, StoreError> {
-        use PendingActionStatus::*;
-        if !matches!(
-            (expected, next),
-            (AwaitingConfirm, Stale | Executing)
-                | (Executing, Done | UnknownPendingReceipt)
-                | (UnknownPendingReceipt, Done)
-        ) {
-            return Err(crate::store::invalid("invalid discovery action transition"));
-        }
-        self.data.write(self.mutation(true, move |c, owner| {
-            let count = c.execute(
-                "UPDATE discovery_pending_actions SET status=?4,receipt_json=?5,updated_at=max(updated_at,?6)
-                 WHERE owner=?1 AND action_id=?2 AND status=?3",
-                params![owner,id.0,expected.as_str(),next.as_str(),receipt.as_ref().map(serde_json::to_string).transpose()?,at.0],
-            )?;
-            Ok(count == 1)
-        })).await
-    }
-    pub async fn delete_pending_action(&self, id: ActionId) -> Result<bool, StoreError> {
-        self.data
-            .write(self.mutation(true, move |c, owner| {
-                let count = c.execute(
-                    "DELETE FROM discovery_pending_actions WHERE owner=?1 AND action_id=?2
-                 AND status NOT IN ('executing','unknown_pending_receipt')",
-                    params![owner, id.0],
-                )?;
-                Ok(count == 1)
-            }))
+        self.read(move |c, owner| actions(c, owner, &topic, false))
             .await
     }
 }

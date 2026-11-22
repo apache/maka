@@ -178,6 +178,8 @@ impl Fixture {
                             name,
                             "DiscoveryComplete"
                                 | "FinishNoChange"
+                                | "RegisterWatch"
+                                | "StagePendingAction"
                                 | "StageArtifact"
                                 | "UpsertDossier"
                         ) || chosen.contains_key(name)
@@ -1158,8 +1160,10 @@ async fn discovery_previews_and_enforces_the_bot_tool_ceiling() {
         json!([
             "DiscoveryComplete",
             "FinishNoChange",
+            "RegisterWatch",
             "ScheduledTask",
             "StageArtifact",
+            "StagePendingAction",
             "UpsertDossier"
         ])
     );
@@ -1259,7 +1263,9 @@ async fn discovery_approves_grouped_aliases_and_rechecks_the_parent_ceiling() {
             "FinishNoChange",
             "InspectSetup",
             "OpenDocument",
+            "RegisterWatch",
             "StageArtifact",
+            "StagePendingAction",
             "UpsertDossier"
         ])
     );
@@ -1272,7 +1278,9 @@ async fn discovery_approves_grouped_aliases_and_rechecks_the_parent_ceiling() {
             "FinishNoChange",
             "InspectSetup",
             "OpenDocument",
+            "RegisterWatch",
             "StageArtifact",
+            "StagePendingAction",
             "UpsertDossier"
         ]
     );
@@ -1305,7 +1313,9 @@ async fn discovery_approves_grouped_aliases_and_rechecks_the_parent_ceiling() {
         [
             "DiscoveryComplete",
             "FinishNoChange",
+            "RegisterWatch",
             "StageArtifact",
+            "StagePendingAction",
             "UpsertDossier"
         ]
     );
@@ -1404,7 +1414,9 @@ async fn discovery_standard_tools_pin_the_displayed_list_until_reapproved() {
             "DiscoveryComplete",
             "FinishNoChange",
             "Read",
+            "RegisterWatch",
             "StageArtifact",
+            "StagePendingAction",
             "UpsertDossier"
         ])
     );
@@ -2550,3 +2562,5 @@ async fn discovery_wander_starts_blind_rotates_sources_and_learns_only_in_follow
     quiet(&f, &listener, &mut bot).await;
     f.close().await;
 }
+
+mod guards;

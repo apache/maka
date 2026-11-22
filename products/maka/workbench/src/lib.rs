@@ -160,8 +160,12 @@ mod tests {
             .unwrap();
         app.wait_for("label:Discovery desktop notifications: Off")
             .unwrap();
-        app.wait_for("text:Stale").unwrap();
+        app.wait_for("text:Source file changed. Execution blocked.")
+            .unwrap();
         app.wait_for("text:ReviewExport").unwrap();
+        app.press("role:button[Dismiss]").unwrap();
+        app.wait_for("text:Action dismissed.").unwrap();
+        assert!(!app.screen().matches("text:Pending actions").unwrap());
         app.wait_for("text:1 linked schedule").unwrap();
         assert!(!app.screen().matches("text:/Last material change/").unwrap());
         app.press("role:button[Watches and activity]").unwrap();

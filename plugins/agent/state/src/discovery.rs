@@ -31,6 +31,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tokio::sync::watch;
 
 pub mod changes;
+pub mod guards;
 #[cfg(test)]
 mod tests;
 mod tracking;
@@ -333,7 +334,7 @@ impl DiscoveryStore {
                 .map(|dossier| {
                     Ok(DossierDetail {
                         watches: tracking::watches(c, owner, &topic)?,
-                        pending_actions: tracking::actions(c, owner, &topic)?,
+                        pending_actions: tracking::actions(c, owner, &topic, true)?,
                         dossier,
                     })
                 })

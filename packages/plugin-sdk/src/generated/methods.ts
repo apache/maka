@@ -3164,6 +3164,29 @@ export interface ServiceMethods {
       input: Runtime.AgentSessionRead;
       output: Runtime.AgentComputerApps;
     };
+    confirmPendingAction: {
+      mode: 'mutation';
+      input: {
+        actionId: string;
+      };
+      output:
+        | {
+            outcome: 'done';
+            receipt: unknown;
+          }
+        | {
+            outcome: 'stale';
+            changedPaths: string[];
+          }
+        | {
+            outcome: 'failed';
+            error: string;
+          }
+        | {
+            outcome: 'unknown_pending_receipt';
+            error: string;
+          };
+    };
     context: {
       mode: 'query';
       input: Runtime.AgentContextRead;
@@ -3291,6 +3314,13 @@ export interface ServiceMethods {
       mode: 'query';
       input: Runtime.AgentDirectories;
       output: Runtime.AgentDirectoryPage;
+    };
+    dismissPendingAction: {
+      mode: 'mutation';
+      input: {
+        actionId: string;
+      };
+      output: null;
     };
     dossier: {
       mode: 'query';

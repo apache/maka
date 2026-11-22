@@ -44,6 +44,7 @@ import { SettingsButton } from './SettingsPage';
 import {
   leadFilePaths,
   pinDossier,
+  pendingActionControls,
   type DossierDetail,
   type DossierSelection,
   type DossierSummary,
@@ -51,7 +52,7 @@ import {
 } from './discoveryDossiersCore';
 import { useHost } from './host';
 import { currentLocale, tr, type MessageKey } from './locale';
-import { createText, errorText, message } from './text';
+import { createText, createTransientText, errorText, message, type UiText } from './text';
 import {
   C,
   bodyTextStyle,
@@ -159,6 +160,121 @@ function ArtifactPreview(props: { topicId: string; path: string }) {
   );
 }
 
+function PendingActionRow(props: {
+  action(): DossierDetail['pendingActions'][number];
+  refresh(): Promise<void>;
+  feedback(text: UiText): void;
+}) {
+  const host = useHost();
+  const busy = signal(false);
+  const settled = signal<DossierDetail['pendingActions'][number]['status'] | null>(null);
+  const error = createText();
+  const status = () => settled() ?? props.action().status;
+  const controls = () =>
+    pendingActionControls({ status: status(), receipt: props.action().receipt }, busy());
+  let alive = true;
+  cleanup(() => {
+    alive = false;
+  });
+  const submit = async (dismiss: boolean) => {
+    if (dismiss ? !controls().dismiss : !controls().confirm) return;
+    const actionId = props.action().actionId;
+    busy.set(true);
+    error.set('');
+    props.feedback('');
+    try {
+      if (dismiss) {
+        await host.mutateAgent('dismissPendingAction', { actionId });
+        if (alive) settled.set('done');
+        props.feedback(message('Dossier action dismissed'));
+      } else {
+        const result = await host.mutateAgent('confirmPendingAction', { actionId });
+        if (result.outcome === 'done') props.feedback(message('Dossier action done'));
+        if (result.outcome === 'failed')
+          props.feedback(
+            result.error === 'discovery_action_expired'
+              ? message('Dossier action expired')
+              : result.error,
+          );
+        if (alive)
+          settled.set(
+            result.outcome === 'failed'
+              ? result.error === 'discovery_action_expired'
+                ? 'stale'
+                : 'done'
+              : result.outcome,
+          );
+      }
+    } catch (reason) {
+      if (alive) error.set(errorText(reason, 'Dossier action failed'));
+    } finally {
+      await props.refresh();
+      if (alive) {
+        busy.set(false);
+      }
+    }
+  };
+  return (
+    <View style={{ gap: 3 }}>
+      <View style={{ ...rowStyle, flexWrap: 'wrap' }}>
+        <Text style={{ ...bodyTextStyle, flex: 1, color: C.text }}>
+          {props.action().connectorTool}
+        </Text>
+        <If when={controls().showConfirm}>
+          <SettingsButton
+            label={tr('Confirm dossier action')}
+            disabled={!controls().confirm}
+            onPress={() => void submit(false)}
+          />
+        </If>
+        <If when={controls().showDismiss}>
+          <SettingsButton
+            label={tr('Dismiss dossier action')}
+            tone="quiet"
+            disabled={!controls().dismiss}
+            onPress={() => void submit(true)}
+          />
+        </If>
+        <If when={busy()}>
+          <LoadingIndicator />
+        </If>
+      </View>
+      <If when={status() === 'awaiting_confirm'}>
+        <Scroll style={{ maxHeight: 96 }}>
+          <Text style={{ ...codeTextStyle, color: C.secondary, userSelect: 'text' }}>
+            {JSON.stringify(props.action().params, null, 2)}
+          </Text>
+        </Scroll>
+      </If>
+      <If when={controls().notice !== null}>
+        <Text
+          style={{
+            ...captionTextStyle,
+            color: C.warning,
+            ...(status() === 'unknown_pending_receipt'
+              ? {
+                  backgroundColor: C.card,
+                  alignSelf: 'flex-start' as const,
+                  borderRadius: 4,
+                  paddingHorizontal: 6,
+                  paddingVertical: 2,
+                }
+              : {}),
+          }}
+        >
+          {tr(controls().notice!)}
+        </Text>
+      </If>
+      <If when={status() === 'executing'}>
+        <Text style={mutedText()}>{tr(statuses[status()])}</Text>
+      </If>
+      <If when={error()}>
+        <Text style={{ ...captionTextStyle, color: C.danger }}>{error()}</Text>
+      </If>
+    </View>
+  );
+}
+
 function DossierPane(
   props: Pick<DossiersProps, 'snapshot' | 'botSession' | 'openLink' | 'openSession'> & {
     topicId: string;
@@ -173,6 +289,7 @@ function DossierPane(
   const saving = signal(false);
   const error = createText();
   const readError = createText();
+  const actionFeedback = createTransientText();
   let alive = true,
     reading = false,
     dirty = false;
@@ -330,26 +447,19 @@ function DossierPane(
               <Text style={titleStyle()}>{tr('Dossier pending actions')}</Text>
               <Each of={detail()!.pendingActions} key={(action) => action.actionId}>
                 {(action) => (
-                  <View style={rowStyle}>
-                    <Text
-                      style={{
-                        ...captionTextStyle,
-                        color: C.secondary,
-                        backgroundColor: C.card,
-                        paddingHorizontal: 6,
-                        paddingVertical: 2,
-                        borderRadius: 4,
-                      }}
-                    >
-                      {tr(statuses[action().status])}
-                    </Text>
-                    <Text style={{ ...captionTextStyle, flexShrink: 1, color: C.text }}>
-                      {action().connectorTool}
-                    </Text>
-                  </View>
+                  <PendingActionRow
+                    action={action}
+                    refresh={refresh}
+                    feedback={(text) => {
+                      if (alive) actionFeedback.set(text);
+                    }}
+                  />
                 )}
               </Each>
             </View>
+          </If>
+          <If when={actionFeedback()}>
+            <Text style={mutedText()}>{actionFeedback()}</Text>
           </If>
           <Button
             accessibilityLabel={tr('Dossier watches and activity')}

@@ -222,6 +222,7 @@ pub(crate) struct Owner {
     pub(super) durable: maka_agent_state::Store,
     pub(crate) discovery: maka_agent_state::discovery::DiscoveryStore,
     pub(super) services: maka_host_runtime::application::NativeServices,
+    watch_runner: discovery::watches::WatchRunner,
     wake_notify: tokio::sync::Notify,
     physical_changes: tokio::sync::watch::Sender<()>,
     pub recall: Arc<recall::Recall>,
@@ -459,7 +460,10 @@ impl Owner {
             settings.scheduled_tasks
                 || matches!(
                     tool.definition.name.as_str(),
-                    discovery::STAGE | discovery::PREFERENCES
+                    discovery::STAGE
+                        | discovery::REGISTER
+                        | discovery::PENDING
+                        | discovery::PREFERENCES
                 )
         }));
         let todo = Arc::new(todo::Todo::new(persistence.store().clone(), prefix.clone()));
@@ -602,6 +606,7 @@ impl Owner {
             model_reader_process,
             durable,
             services: context.services().clone(),
+            watch_runner: Default::default(),
             wake_notify: tokio::sync::Notify::new(),
             physical_changes: tokio::sync::watch::channel(()).0,
             prefix,
@@ -1318,7 +1323,19 @@ impl Owner {
                 let memory = *name == discovery::MEMORY;
                 (discovery::WORKER_TOOLS.contains(name)
                     && !investigation
-                    && !(*name == discovery::STAGE && dossier_thread))
+                    && !(matches!(
+                        *name,
+                        discovery::STAGE | discovery::REGISTER | discovery::PENDING
+                    ) && dossier_thread))
+                    || (dossier_thread
+                        && !matches!(
+                            *name,
+                            discovery::STAGE
+                                | discovery::REGISTER
+                                | discovery::PENDING
+                                | discovery::PREFERENCES
+                        )
+                        && !self.permits_discovery_tool(name))
                     || (*name == discovery::PREFERENCES && !(bot || dossier_thread))
                     || (matches!(*name, discovery::LIST | discovery::READ)
                         && !(bot || investigation))

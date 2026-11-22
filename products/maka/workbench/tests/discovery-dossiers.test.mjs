@@ -28,6 +28,7 @@ import {
   leadFilePaths,
   notificationTarget,
   pinDossier,
+  pendingActionControls,
 } from '../app/discoveryDossiersCore.ts';
 
 const dossier = (topicId, fields = {}) => ({
@@ -45,6 +46,27 @@ const dossier = (topicId, fields = {}) => ({
 });
 const a = dossier('a');
 const b = dossier('b', { signal: 'yellow' });
+
+test('confirmation follows the live action state and locks both buttons during submission', () => {
+  const controls = (status, busy = false, reason) =>
+    pendingActionControls({ status, receipt: { reason } }, busy);
+  assert.equal(controls('awaiting_confirm').confirm, true);
+  assert.equal(controls('awaiting_confirm', true).confirm, false);
+  assert.equal(controls('awaiting_confirm', true).dismiss, false);
+  assert.deepEqual(controls('stale'), {
+    showConfirm: true,
+    confirm: false,
+    showDismiss: true,
+    dismiss: true,
+    notice: 'Dossier source changed',
+  });
+  assert.equal(controls('stale', false, 'expired').notice, 'Dossier action expired');
+  for (const status of ['executing', 'done', 'unknown_pending_receipt']) {
+    assert.equal(controls(status).showConfirm, false);
+    assert.equal(controls(status).showDismiss, false);
+  }
+  assert.equal(controls('unknown_pending_receipt').notice, 'Dossier check receipt');
+});
 
 test('dropping files retains path order and decodes escaped and non-ASCII names once', () => {
   const files = [resolve('合同 final.pdf'), resolve('50% #1.png')];

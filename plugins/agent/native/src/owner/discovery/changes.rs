@@ -19,7 +19,7 @@
 
 //! Observe configured workspace roots uniformly. All quiet periods use event time in milliseconds.
 use super::*;
-use cap_fs_ext::{DirExt, FollowSymlinks, OpenOptionsFollowExt};
+use cap_fs_ext::{DirExt, FollowSymlinks, MetadataExt, OpenOptionsFollowExt};
 use cap_std::fs::{Dir, OpenOptions};
 use maka_agent_state::discovery::{
     DiscoveryStore,
@@ -79,7 +79,14 @@ pub(super) fn ignored(path: &Path, private: &[PathBuf]) -> bool {
             })
 }
 
-fn file_events(event: notify::Event, private: &[PathBuf], tx: &mpsc::Sender<FileWrite>) {
+fn file_events(
+    event: notify::Event,
+    private: &[PathBuf],
+    tx: &mpsc::Sender<FileWrite>,
+    watch_paths: &tokio::sync::broadcast::Sender<PathBuf>,
+    track_deltas: bool,
+    staging: &Path,
+) {
     let kind = match event.kind {
         EventKind::Create(CreateKind::File | CreateKind::Any)
         | EventKind::Modify(ModifyKind::Name(
@@ -94,7 +101,10 @@ fn file_events(event: notify::Event, private: &[PathBuf], tx: &mpsc::Sender<File
     };
     let at = UnixMillis(now() as i64);
     for (index, path) in event.paths.into_iter().enumerate() {
-        if ignored(&path, private) {
+        if !private.iter().any(|p| path.starts_with(p)) || path.starts_with(staging) {
+            let _ = watch_paths.send(path.clone());
+        }
+        if !track_deltas || ignored(&path, private) {
             continue;
         }
         let kind = if index == 0
@@ -244,13 +254,17 @@ pub(super) fn fingerprint_in(
     let Some(Component::Normal(name)) = relative.next_back() else {
         return Ok(None);
     };
-    let mut parent = dir.try_clone()?;
-    for comp in relative {
-        let Component::Normal(part) = comp else {
-            return Ok(None);
-        };
-        parent = parent.open_dir_nofollow(part)?;
-    }
+    let open_parent = || -> io::Result<Dir> {
+        let mut parent = dir.try_clone()?;
+        for component in relative.clone() {
+            let Component::Normal(part) = component else {
+                return Err(io::ErrorKind::InvalidInput.into());
+            };
+            parent = parent.open_dir_nofollow(part)?;
+        }
+        Ok(parent)
+    };
+    let parent = open_parent()?;
     let meta = parent.symlink_metadata(name)?;
     if !meta.is_file() {
         return Ok(None);
@@ -259,31 +273,42 @@ pub(super) fn fingerprint_in(
     options.read(true).follow(FollowSymlinks::No);
     #[cfg(unix)]
     cap_std::fs::OpenOptionsExt::custom_flags(&mut options, libc::O_NONBLOCK);
-    let mut file = parent.open_with(name, &options)?.into_std();
+    let file = parent.open_with(name, &options)?;
     let meta = file.metadata()?;
     if !meta.is_file() {
         return Ok(None);
     }
     let mtime = meta.modified()?;
+    let mut reader = (&file).take(meta.len());
     let mut hash = Sha256::new();
     let mut buf = [0; 64 * 1024];
     loop {
         if stop.is_cancelled() {
             return Err(io::ErrorKind::Interrupted.into());
         }
-        let n = file.read(&mut buf)?;
+        let n = reader.read(&mut buf)?;
         if n == 0 {
+            if reader.limit() != 0 {
+                return Err(io::ErrorKind::WouldBlock.into());
+            }
             break;
         }
         hash.update(&buf[..n]);
     }
-    let after = file.metadata()?;
-    if after.len() != meta.len() || after.modified()? != mtime {
+    // An editor can replace the directory entry while the original descriptor is being hashed.
+    let after = open_parent()?.symlink_metadata(name)?;
+    if !after.is_file()
+        || after.dev() != meta.dev()
+        || after.ino() != meta.ino()
+        || after.len() != meta.len()
+        || after.modified()? != mtime
+    {
         return Err(io::ErrorKind::WouldBlock.into());
     }
     Ok(Some(Fingerprint {
         mtime: UnixMillis(
             mtime
+                .into_std()
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_millis() as i64,
@@ -294,12 +319,6 @@ pub(super) fn fingerprint_in(
 
 impl Owner {
     pub(in crate::owner) fn start_change_tracker(self: &Arc<Self>) {
-        if !self.settings.bot
-            || !self.settings.scheduled_tasks
-            || self.settings.workspace_roots.is_empty()
-        {
-            return;
-        }
         let owner = self.clone();
         self.producers.spawn(async move {
             while !owner.stop.is_cancelled() {
@@ -316,6 +335,28 @@ impl Owner {
     }
 
     async fn watch_discovery_changes(&self) -> Result<(), String> {
+        let track_deltas = self.settings.bot
+            && self.settings.scheduled_tasks
+            && !self.settings.workspace_roots.is_empty();
+        if !track_deltas {
+            let mut registrations = self.watch_runner.changes.subscribe();
+            loop {
+                registrations.borrow_and_update();
+                if self
+                    .discovery
+                    .next_watch_due(maka_agent_facts::discovery::WatchKind::FileHash)
+                    .await
+                    .map_err(reason)?
+                    .is_some()
+                {
+                    break;
+                }
+                tokio::select! {
+                    _ = self.stop.cancelled()=>return Ok(()),
+                    result=registrations.changed()=>result.map_err(reason)?,
+                }
+            }
+        }
         let state = self.store.owned_root().map_err(reason)?;
         let mut private = vec![
             state.canonical_path().into(),
@@ -349,16 +390,26 @@ impl Owner {
             .filter(|p| !p.ancestors().skip(1).any(|a| tracker.roots.contains_key(a)))
             .cloned()
             .collect();
-        let (tx, rx) = mpsc::channel(BATCH * 2);
+        let (tx, mut rx) = mpsc::channel(BATCH * 2);
         let (release, shutdown) = oneshot::channel::<()>();
+        let watch_paths = self.watch_runner.paths.clone();
         let watcher = tokio::task::spawn_blocking(move || {
+            let discovery = artifacts::discovery_dir(&state, true).map_err(reason)?;
+            artifacts::child(&discovery, "staging", true).map_err(reason)?;
+            let staging = state.canonical_path().join("discovery/staging");
+            let mut paths = paths;
+            if !paths.iter().any(|root| staging.starts_with(root)) {
+                paths.push(staging.clone())
+            }
             private.push(maka_sandbox::native_task_namespace().map_err(reason)?);
             let mut watcher = RecommendedWatcher::new(
                 move |event: notify::Result<notify::Event>| match event {
                     Ok(event) if event.need_rescan() => {
                         tracing::warn!("Discovery filesystem event stream reported lost changes")
                     }
-                    Ok(event) => file_events(event, &private, &tx),
+                    Ok(event) => {
+                        file_events(event, &private, &tx, &watch_paths, track_deltas, &staging)
+                    }
                     Err(error) => tracing::warn!(%error, "Discovery filesystem watcher error"),
                 },
                 notify::Config::default().with_follow_symlinks(false),
@@ -381,7 +432,12 @@ impl Owner {
                     .map_err(reason)
             },
             async {
-                let result = tracker.run(self, rx).await;
+                let result = if track_deltas {
+                    tracker.run(self, rx).await
+                } else {
+                    tokio::select! {_ = self.stop.cancelled()=>{}, _ = rx.recv()=>{}}
+                    Ok(())
+                };
                 drop(release);
                 result
             }

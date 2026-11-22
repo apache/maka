@@ -105,6 +105,8 @@ impl ToolPreparer for Scheduler {
                 | super::super::discovery::FINISH
                 | super::super::discovery::LIST
                 | super::super::discovery::READ
+                | super::super::discovery::REGISTER
+                | super::super::discovery::PENDING
                 | super::super::discovery::STAGE
                 | super::super::discovery::PREFERENCES
         ) {

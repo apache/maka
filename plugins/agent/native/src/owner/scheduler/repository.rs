@@ -347,6 +347,12 @@ impl Scheduler {
         Ok(())
     }
 }
+impl Catalog {
+    pub(in crate::owner) fn watch_fire(&self, plan: &Plan) -> Result<Vec<Mutation>, String> {
+        Ok(prepare_commit(self, &plan.task.id, Some(plan))?.0)
+    }
+}
+
 fn prepare_commit(
     catalog: &Catalog,
     id: &str,

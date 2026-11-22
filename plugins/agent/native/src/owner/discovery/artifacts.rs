@@ -57,7 +57,7 @@ pub(super) fn validate_path(topic: &TopicId, path: &str) -> io::Result<()> {
     Ok(())
 }
 
-fn child(parent: &Dir, name: &str, create: bool) -> io::Result<Dir> {
+pub(super) fn child(parent: &Dir, name: &str, create: bool) -> io::Result<Dir> {
     match parent.open_dir_nofollow(name) {
         Err(e) if create && e.kind() == io::ErrorKind::NotFound => {
             match parent.create_dir(name) {

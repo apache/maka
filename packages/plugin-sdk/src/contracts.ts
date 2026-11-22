@@ -5811,6 +5811,85 @@ export const contracts: {
           },
           resources: {},
         },
+        confirmPendingAction: {
+          mode: 'mutation',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'PendingActionRequest',
+            type: 'object',
+            properties: {
+              actionId: {
+                type: 'string',
+              },
+            },
+            additionalProperties: false,
+            required: ['actionId'],
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'ConfirmPendingActionResult',
+            oneOf: [
+              {
+                type: 'object',
+                properties: {
+                  outcome: {
+                    type: 'string',
+                    const: 'done',
+                  },
+                  receipt: true,
+                },
+                additionalProperties: false,
+                required: ['outcome', 'receipt'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  outcome: {
+                    type: 'string',
+                    const: 'stale',
+                  },
+                  changedPaths: {
+                    type: 'array',
+                    items: {
+                      type: 'string',
+                    },
+                  },
+                },
+                additionalProperties: false,
+                required: ['outcome', 'changedPaths'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  outcome: {
+                    type: 'string',
+                    const: 'failed',
+                  },
+                  error: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['outcome', 'error'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  outcome: {
+                    type: 'string',
+                    const: 'unknown_pending_receipt',
+                  },
+                  error: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['outcome', 'error'],
+              },
+            ],
+          },
+          resources: {},
+        },
         context: {
           mode: 'query',
           input: {
@@ -9597,6 +9676,27 @@ export const contracts: {
                 required: ['name', 'path'],
               },
             },
+          },
+          resources: {},
+        },
+        dismissPendingAction: {
+          mode: 'mutation',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'PendingActionRequest',
+            type: 'object',
+            properties: {
+              actionId: {
+                type: 'string',
+              },
+            },
+            additionalProperties: false,
+            required: ['actionId'],
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'null',
+            type: 'null',
           },
           resources: {},
         },

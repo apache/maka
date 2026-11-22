@@ -81,6 +81,8 @@ enum Call {
     Upsert { input: Upsert, fingerprint: String },
     Finish(Finish),
     Stage(artifacts::StageArtifact),
+    Register(watches::RegisterWatch),
+    Pending(actions::StagePendingAction),
     Preferences(preferences::Update),
     List,
     Read(ReadTopic),
@@ -94,6 +96,10 @@ impl scheduler::Scheduler {
              schemars::schema_for!(Upsert), ToolSemantics::ExclusiveStep),
             (STAGE, "Prepare a ready-to-use UTF-8 draft, diff, checklist or brief in this topic’s isolated staging directory. Workers pass the receipt verbatim in UpsertDossier.artifacts. In a dossier thread the draft attaches to that topic automatically. input_paths are source files in the authorized workspace.",
              schemars::schema_for!(artifacts::StageArtifact), ToolSemantics::ExclusiveStep),
+            (REGISTER, "Monitor an existing topic without a model. Use an HTTP predicate, a file digest, or a deadline (Unix milliseconds). HTTP intervals are in seconds.",
+             schemars::schema_for!(watches::RegisterWatch), ToolSemantics::ExclusiveStep),
+            (PENDING, "Stage an exact connector mutation for desktop confirmation and finish this turn. Include every source file, staged input and overwrite destination. Use workspace paths or staging/<topic_id>/<path> for staged files.",
+             schemars::schema_for!(actions::StagePendingAction), ToolSemantics::FinishTurn),
             (PREFERENCES, "Save an explicit user instruction for future discovery. Append a concise natural-language rule, or replace the rules for one scope. The host records the date.",
              schemars::schema_for!(preferences::Update), ToolSemantics::ExclusiveStep),
             (FINISH,
@@ -137,6 +143,8 @@ impl scheduler::Scheduler {
                     ));
                     serde_json::from_value(input).map(|input| Call::Upsert { input, fingerprint })
                 }
+                REGISTER => serde_json::from_value(input).map(Call::Register),
+                PENDING => serde_json::from_value(input).map(Call::Pending),
                 STAGE => serde_json::from_value(input).map(Call::Stage),
                 PREFERENCES => serde_json::from_value(input).map(Call::Preferences),
                 FINISH => serde_json::from_value(input).map(Call::Finish),
@@ -186,6 +194,8 @@ impl Owner {
         cancel: CancellationToken,
     ) -> Result<Value, ToolError> {
         match call {
+            Call::Register(input) => self.register_watch(&context, input, cancel).await,
+            Call::Pending(input) => self.stage_pending_action(&context, input, cancel).await,
             Call::Stage(stage) => self.stage_artifact(&context, stage, cancel).await,
             Call::Preferences(update) => self.update_discovery_preferences(&context, update).await,
             Call::Finish(input) => {
@@ -681,7 +691,11 @@ impl Owner {
             .map_err(reason)?
             .ok_or("discovery_thread_unbound")?;
         let quote = QuoteRef {
-            text: format!("topic_id: {}\n\n{summary}", topic.0),
+            text: format!(
+                "topic_id: {}\n\n{summary}\n\n{}",
+                topic.0,
+                monitoring_prompt(request.spec.language)
+            ),
             label: None,
             source_message_id: None,
             source_turn_id: None,

@@ -876,6 +876,32 @@ impl Handler for Agent {
                     }
                 }
             }),
+            "confirmPendingAction" => json_rpc(&mut args, |owner, input, context| async move {
+                discovery_desktop(&context)?;
+                context.operation().ok_or("agent_mutation_required")?;
+                encode(
+                    owner
+                        .confirm_pending_action(decode(input)?, context.scope())
+                        .await?,
+                )
+            }),
+            "dismissPendingAction" => handler_rpc(&mut args, |owner, input, context| async move {
+                discovery_desktop(&context)?;
+                context.operation().ok_or("agent_mutation_required")?;
+                let input: PendingActionRequest = decode(input)?;
+                let change = owner.discovery.dismiss_action_statement(
+                    input.action_id,
+                    maka_agent_facts::durable::UnixMillis(maka_agent_authority::now() as i64),
+                );
+                context.complete_change(
+                    Value::Null,
+                    owner
+                        .store
+                        .data_writer()
+                        .map_err(|e| e.to_string())?
+                        .prepare(change),
+                )
+            }),
             "setDossierMuted" => handler_rpc(&mut args, |owner, input, context| async move {
                 discovery_desktop(&context)?;
                 context.operation().ok_or("agent_mutation_required")?;

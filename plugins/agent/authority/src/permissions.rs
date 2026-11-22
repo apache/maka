@@ -180,6 +180,27 @@ pub fn resolve_session(
     Ok(session.map_configuration(|_| configuration))
 }
 
+/// In-process evidence carried by a confirmed desktop action through its selected Files method.
+pub struct ConfirmedFileAction {
+    pub target: maka_agent_api::contract::ScheduledTarget,
+    pub connector_tool: String,
+}
+
+impl ConfirmedFileAction {
+    pub fn permits(&self, session: &SessionRecord<ResolvedConfiguration>) -> bool {
+        let c = &session.configuration;
+        !session.archived
+            && session.id == self.target.session_id
+            && c.workspace == self.target.workspace
+            && c.permissions == self.target.permissions
+            && c.boundary_revision == self.target.boundary_revision
+            && c.binding == self.target.binding
+            && c.tools
+                .as_ref()
+                .is_none_or(|names| names.contains(&self.connector_tool))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

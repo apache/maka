@@ -52,6 +52,7 @@ pub enum FireSource {
     #[default]
     Schedule,
     FileChange,
+    Watch,
 }
 
 impl FireSource {
