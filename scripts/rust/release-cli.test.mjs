@@ -37,8 +37,11 @@ import { packLauncher } from './pack-launcher.mjs';
 test('prepared release binds its source and recovers partial publication and missing tags', async (t) => {
   const stage = await mkdtemp(join(tmpdir(), 'maka launcher release '));
   try {
-    const version = '0.2.0-rust-preview.1';
-    const root = 'apache-maka-0.2.0-incubating';
+    const { version: baseVersion } = JSON.parse(
+      await readFile(join(import.meta.dirname, '../../packages/cli/package.json'), 'utf8'),
+    );
+    const version = `${baseVersion}-rust-preview.1`;
+    const root = `apache-maka-${baseVersion}-incubating`;
     const sourceRoot = join(stage, root);
     await mkdir(join(sourceRoot, 'packages/cli/bin'), { recursive: true });
     for (const file of ['package.json', 'README.md', 'README.zh-CN.md', 'bin/maka.mjs']) {
@@ -48,11 +51,11 @@ test('prepared release binds its source and recovers partial publication and mis
       );
     }
     for (const [file, content] of Object.entries({
-      'package.json': JSON.stringify({ name: 'maka', version: '0.2.0', license: 'Apache-2.0' }),
+      'package.json': JSON.stringify({ name: 'maka', version: baseVersion, license: 'Apache-2.0' }),
       'package-lock.json': JSON.stringify({
-        version: '0.2.0',
+        version: baseVersion,
         lockfileVersion: 3,
-        packages: { '': { version: '0.2.0' } },
+        packages: { '': { version: baseVersion } },
       }),
       LICENSE: 'Apache License, Version 2.0\n',
       NOTICE: 'Apache Maka\n',
@@ -65,7 +68,7 @@ test('prepared release binds its source and recovers partial publication and mis
       .update(await readFile(join(stage, archive)))
       .digest('hex');
     await writeFile(join(stage, archive + '.sha512'), `${sha512}  ${archive}\n`);
-    const source = { archive, version: '0.2.0', sha512 };
+    const source = { archive, version: baseVersion, sha512 };
     await mkdir(join(stage, 'package'));
     for (const target of previewTargets) {
       const name = '@maka-agent/cli-' + target;
@@ -152,6 +155,7 @@ test('prepared release binds its source and recovers partial publication and mis
 });
 
 async function publicationRecovery(t, directory, packages) {
+  const newerVersion = packages[0].version.replace(/\.1$/, '.999');
   const versions = new Map();
   const tags = new Map();
   const uploads = [];
@@ -169,7 +173,7 @@ async function publicationRecovery(t, directory, packages) {
     const path = new URL(url).pathname;
     if (path.startsWith('/-/package/')) {
       const name = decodeURIComponent(path.slice('/-/package/'.length, -'/dist-tags'.length));
-      if (raced && ++tagReads > packages.length) tags.set(name, '0.2.0-rust-preview.999');
+      if (raced && ++tagReads > packages.length) tags.set(name, newerVersion);
       return new Response(JSON.stringify(tags.has(name) ? { 'rust-preview': tags.get(name) } : {}));
     }
     const pkg = packages.find((pkg) => path === '/' + pkg.name + '/' + pkg.version);
@@ -217,9 +221,9 @@ async function publicationRecovery(t, directory, packages) {
     tags.delete('@maka-agent/cli');
     await publishPreviewRelease(directory);
     assert.equal(tags.get('@maka-agent/cli'), packages[0].version);
-    tags.set('@maka-agent/cli', '0.2.0-rust-preview.999');
+    tags.set('@maka-agent/cli', newerVersion);
     await assert.rejects(publishPreviewRelease(directory), /backwards/);
-    assert.equal(tags.get('@maka-agent/cli'), '0.2.0-rust-preview.999');
+    assert.equal(tags.get('@maka-agent/cli'), newerVersion);
     assert.equal(uploads.length, packages.length);
     versions.clear();
     tags.clear();
