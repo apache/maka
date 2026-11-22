@@ -79,7 +79,7 @@ import {
 } from './RoomPanels';
 import {
   applyRoomWatchUpdate,
-  catchUpLiveTail,
+  createSerialQueue,
   isGroupContinuation,
   roomAuthorSession,
   roomAvatarColor,
@@ -1053,6 +1053,7 @@ export function RoomTimeline(props: {
 
   const liveAddedIds = new Set<string>();
   const watchState: RoomWatchState = { through: 0, revision: null };
+  const runTimeline = createSerialQueue();
   let alive = true;
   let scroll: ScrollRef | null = null;
   let stream: { next(): Promise<Output<'agent', 'watch'> | null>; close(): Promise<void> } | null =
@@ -1064,7 +1065,6 @@ export function RoomTimeline(props: {
   let scrollY = 0;
   let prependAnchor: { height: number; y: number } | null = null;
   let lastMarked: string | null = null;
-  let reading: Promise<boolean> | null = null;
 
   const map = () => new Map(messages().map((message) => [message.id, message]));
   const waitingMembers = () =>
@@ -1191,86 +1191,62 @@ export function RoomTimeline(props: {
     return true;
   };
 
-  const refresh = async (includeMetadata = false, targetThrough?: number): Promise<boolean> => {
-    while (reading) {
-      const prevOk = await reading;
-      if (!alive) return false;
-      if (
-        prevOk &&
-        !includeMetadata &&
-        targetThrough !== undefined &&
-        after() === null &&
-        loadedSequence() >= targetThrough
-      ) {
-        return true;
-      }
+  // Runs strictly inside `runTimeline` so paging and watch updates never interleave.
+  const refreshLocked = async (
+    includeMetadata = false,
+    targetThrough?: number,
+  ): Promise<boolean> => {
+    const current = messages();
+    const last = current.at(-1);
+    if (after() !== null) {
+      if (includeMetadata) return refreshVisibleMetadata();
+      await loadState();
+      return alive;
     }
-    const run = (async (): Promise<boolean> => {
-      const current = messages();
-      const last = current.at(-1);
-      if (after() !== null) {
-        if (includeMetadata) return refreshVisibleMetadata();
-        await loadState();
-        return alive;
-      }
-      if (!last) {
-        publish(await read({ kind: 'tail' }), 'replace', false);
-        await loadState();
-        return alive && (targetThrough === undefined || loadedSequence() >= targetThrough);
-      }
-      let cursor = last.id;
-      do {
-        const page = await read({ kind: 'after_message', messageId: cursor });
-        publish(page, 'append', true);
-        if (!page.after || !alive) break;
-        cursor = page.after;
-      } while (alive);
-      if (!alive) return false;
-      if (includeMetadata) return refreshVisibleMetadata(last.sequence);
-      return targetThrough === undefined || loadedSequence() >= targetThrough;
-    })().finally(() => {
-      reading = null;
-    });
-    reading = run;
-    return run;
+    if (!last) {
+      publish(await read({ kind: 'tail' }), 'replace', false);
+      await loadState();
+      return alive && (targetThrough === undefined || loadedSequence() >= targetThrough);
+    }
+    let cursor = last.id;
+    do {
+      const page = await read({ kind: 'after_message', messageId: cursor });
+      publish(page, 'append', true);
+      if (!page.after || !alive) break;
+      cursor = page.after;
+    } while (alive);
+    if (!alive) return false;
+    if (includeMetadata) return refreshVisibleMetadata(last.sequence);
+    return targetThrough === undefined || loadedSequence() >= targetThrough;
   };
 
-  const reconcilePagedTail = (revBefore: number | null) =>
-    catchUpLiveTail(watchState, revBefore, {
-      hasAfterCursor: () => after() !== null,
-      loadedThrough: loadedSequence,
-      onThrough: (nextThrough) => throughSignal.set(Math.max(throughSignal(), nextThrough)),
-      appendNew: (refreshExisting, targetThrough) => refresh(refreshExisting, targetThrough),
-      refreshExisting: () => refreshVisibleMetadata(),
-      clearUnseen: () => unseenCount.set(0),
-    });
+  const refresh = (includeMetadata = false) => runTimeline(() => refreshLocked(includeMetadata));
 
   const latest = async () => {
     try {
-      const revBefore = watchState.revision;
-      atEnd.set(true);
-      publish(await read({ kind: 'tail' }), 'replace');
-      await reconcilePagedTail(revBefore);
-      await refreshState();
-      scroll?.scrollToEnd({ animated: !reduceMotion() });
+      await runTimeline(async () => {
+        atEnd.set(true);
+        publish(await read({ kind: 'tail' }), 'replace');
+        await refreshState();
+      });
+      if (alive) scroll?.scrollToEnd({ animated: !reduceMotion() });
     } catch (reason) {
       if (alive) error.set(reasonText(reason));
     }
   };
 
   const earlier = async () => {
-    const cursor = before();
-    if (!cursor || loadingEarlier()) return;
+    if (!before() || loadingEarlier()) return;
     loadingEarlier.set(true);
     try {
-      const revBefore = watchState.revision;
-      const page = await read({ kind: 'before_message', messageId: cursor });
-      prependAnchor = { height: contentHeight, y: scrollY };
-      atEnd.set(false);
-      publish(page, 'prepend');
-      if (alive && watchState.revision !== revBefore) {
-        await refreshVisibleMetadata();
-      }
+      await runTimeline(async () => {
+        const cursor = before();
+        if (!cursor || !alive) return;
+        const page = await read({ kind: 'before_message', messageId: cursor });
+        prependAnchor = { height: contentHeight, y: scrollY };
+        atEnd.set(false);
+        publish(page, 'prepend');
+      });
     } catch (reason) {
       if (alive) error.set(reasonText(reason));
     } finally {
@@ -1279,14 +1255,15 @@ export function RoomTimeline(props: {
   };
 
   const newer = async () => {
-    const cursor = after();
-    if (!cursor || loadingNewer()) return;
+    if (!after() || loadingNewer()) return;
     loadingNewer.set(true);
     try {
-      const revBefore = watchState.revision;
-      const page = await read({ kind: 'after_message', messageId: cursor });
-      publish(page, 'append');
-      await reconcilePagedTail(revBefore);
+      await runTimeline(async () => {
+        const cursor = after();
+        if (!cursor || !alive) return;
+        const page = await read({ kind: 'after_message', messageId: cursor });
+        publish(page, 'append');
+      });
     } catch (reason) {
       if (alive) error.set(reasonText(reason));
     } finally {
@@ -1303,17 +1280,18 @@ export function RoomTimeline(props: {
 
   const focusMessage = async (messageId: string) => {
     try {
-      if (!map().has(messageId)) {
-        const revBefore = watchState.revision;
-        atEnd.set(false);
-        rowOffsets.clear();
-        pendingScrollId = messageId;
-        publish(await read({ kind: 'around_message', messageId }), 'replace');
-        await reconcilePagedTail(revBefore);
-      } else if (!scrollToMessage(messageId)) {
-        pendingScrollId = messageId;
-      }
-      flashHighlight(messageId);
+      await runTimeline(async () => {
+        if (!alive) return;
+        if (!map().has(messageId)) {
+          atEnd.set(false);
+          rowOffsets.clear();
+          pendingScrollId = messageId;
+          publish(await read({ kind: 'around_message', messageId }), 'replace');
+        } else if (!scrollToMessage(messageId)) {
+          pendingScrollId = messageId;
+        }
+      });
+      if (alive) flashHighlight(messageId);
     } catch (reason) {
       if (alive) error.set(reasonText(reason));
     }
@@ -1357,24 +1335,30 @@ export function RoomTimeline(props: {
       const first = await opened.next();
       if (!alive) return;
       if (first === null || first.kind !== 'room') throw new Error(tr('Live updates ended.'));
-      const [page] = await Promise.all([read({ kind: 'tail' }), loadState()]);
+      await runTimeline(async () => {
+        const [page] = await Promise.all([read({ kind: 'tail' }), loadState()]);
+        if (!alive) return;
+        publish(page, 'replace');
+        watchState.revision = first.revision;
+      });
       if (!alive) return;
-      publish(page, 'replace');
-      watchState.revision = first.revision;
       reconnectBackoff = 1000;
       for (;;) {
         const update = await opened.next();
         if (!alive) break;
         if (update === null) throw new Error(tr('Live updates ended.'));
         if (update.kind === 'room') {
-          const ok = await applyRoomWatchUpdate(watchState, update, {
-            hasAfterCursor: () => after() !== null,
-            loadedThrough: loadedSequence,
-            onThrough: (nextThrough) => throughSignal.set(Math.max(throughSignal(), nextThrough)),
-            onUnseenDelta: (delta) => unseenCount.set(unseenCount() + delta),
-            appendNew: (refreshExisting, targetThrough) => refresh(refreshExisting, targetThrough),
-            refreshExisting: () => refreshVisibleMetadata(),
-          });
+          const ok = await runTimeline(() =>
+            applyRoomWatchUpdate(watchState, update, {
+              hasAfterCursor: () => after() !== null,
+              loadedThrough: loadedSequence,
+              onThrough: (nextThrough) => throughSignal.set(Math.max(throughSignal(), nextThrough)),
+              onUnseenDelta: (delta) => unseenCount.set(unseenCount() + delta),
+              appendNew: (refreshExisting, targetThrough) =>
+                refreshLocked(refreshExisting, targetThrough),
+              refreshExisting: () => refreshVisibleMetadata(),
+            }),
+          );
           if (!ok && alive) throw new Error(tr('Live updates ended.'));
         }
       }
@@ -1475,7 +1459,7 @@ export function RoomTimeline(props: {
       .catch((reason) => {
         if (alive) {
           error.set(reasonText(reason));
-          void refreshVisibleMetadata();
+          void runTimeline(() => refreshVisibleMetadata()).catch(() => {});
         }
       });
   };
@@ -1771,7 +1755,10 @@ export function RoomTimeline(props: {
             onPress={() => {
               error.set('');
               if (streamBroken()) void start(true);
-              else void refresh();
+              else
+                void refresh().catch((reason) => {
+                  if (alive) error.set(reasonText(reason));
+                });
             }}
             style={controlStyle}
           >

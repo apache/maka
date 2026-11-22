@@ -21,7 +21,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   applyRoomWatchUpdate,
-  catchUpLiveTail,
+  createSerialQueue,
   extractInlineMentionIds,
   formatInlineMention,
   formatRoomPreviewText,
@@ -267,79 +267,147 @@ test('applyRoomWatchUpdate catches retractions, skips quiet frames, avoids plain
   assert.deepEqual(state6, { through: 101, revision: 10 });
 });
 
-test('catchUpLiveTail appends messages that arrived while newer/latest paging switched back to the live tail', async () => {
-  // User is viewing historical page 1..52 (after != null, watchState.through = 100, rev = 10).
-  const state = { through: 100, revision: 10 };
-  let afterCursor = 'm52';
-  let loaded = 52;
-  let unseen = 0;
+test('createSerialQueue prevents newer paging and coalesced watch retract+append from interleaving in either order', async () => {
+  const deferred = () => {
+    let resolve;
+    const promise = new Promise((r) => {
+      resolve = r;
+    });
+    return { promise, resolve };
+  };
 
-  // 1. User clicks "Newer messages" (captures revBefore = 10); server reads 53..100 with after=null (in flight).
-  const revBefore = state.revision;
+  // Order A: newer() starts first (reads 53..100 before server retracts #90 and appends #101),
+  // while watch frame { through: 101, revision: 11 } arrives mid-read.
+  {
+    const run = createSerialQueue();
+    const state = { through: 100, revision: 10 };
+    const store = new Map(
+      Array.from({ length: 100 }, (_, i) => [i + 1, { seq: i + 1, deleted: false }]),
+    );
+    let rows = Array.from({ length: 48 }, (_, i) => ({ ...store.get(i + 5) }));
+    let afterCursor = 52;
+    let unseen = 0;
 
-  // 2. While newer() is in flight, remote posts m101 and watch arrives first while afterCursor is still non-null.
-  const watchOk = await applyRoomWatchUpdate(
-    state,
-    { through: 101, revision: 10 },
-    {
-      hasAfterCursor: () => afterCursor !== null,
-      loadedThrough: () => loaded,
-      onThrough: () => {},
-      onUnseenDelta: (delta) => {
-        unseen += delta;
-      },
-      appendNew: async () => true,
-      refreshExisting: async () => true,
-    },
+    const gateNewer = deferred();
+    const newerTask = run(async () => {
+      // Snapshot 53..100 taken before remote retract+append.
+      const snapshot = Array.from({ length: 48 }, (_, i) => ({ ...store.get(i + 53) }));
+      await gateNewer.promise;
+      rows = [...rows, ...snapshot];
+      afterCursor = null;
+      unseen = 0;
+    });
+
+    // Remote retracts #90 and appends #101 while newerTask is awaiting response.
+    store.get(90).deleted = true;
+    store.set(101, { seq: 101, deleted: false });
+
+    const watchTask = run(() =>
+      applyRoomWatchUpdate(
+        state,
+        { through: 101, revision: 11 },
+        {
+          hasAfterCursor: () => afterCursor !== null,
+          loadedThrough: () => rows.at(-1)?.seq ?? 0,
+          onThrough: () => {},
+          onUnseenDelta: (delta) => {
+            unseen += delta;
+          },
+          appendNew: async (refreshExisting) => {
+            const last = rows.at(-1).seq;
+            for (let s = last + 1; s <= store.size; s++) rows.push({ ...store.get(s) });
+            if (refreshExisting) {
+              rows = rows.map((r) => ({ ...store.get(r.seq) }));
+            }
+            return true;
+          },
+          refreshExisting: async () => {
+            rows = rows.map((r) => ({ ...store.get(r.seq) }));
+            return true;
+          },
+        },
+      ),
+    );
+
+    gateNewer.resolve();
+    await newerTask;
+    assert.equal(await watchTask, true);
+    assert.equal(rows.at(-1).seq, 101);
+    assert.equal(rows.find((r) => r.seq === 90).deleted, true);
+    assert.equal(unseen, 0);
+    assert.deepEqual(state, { through: 101, revision: 11 });
+  }
+
+  // Order B: watch starts first (retract #90 + append #101), pauses mid-refresh, and user clicks newer() during pause.
+  {
+    const run = createSerialQueue();
+    const state = { through: 100, revision: 10 };
+    const store = new Map(
+      Array.from({ length: 100 }, (_, i) => [i + 1, { seq: i + 1, deleted: false }]),
+    );
+    let rows = Array.from({ length: 48 }, (_, i) => ({ ...store.get(i + 5) }));
+    let afterCursor = 52;
+    let unseen = 0;
+
+    store.get(90).deleted = true;
+    store.set(101, { seq: 101, deleted: false });
+
+    const gateWatch = deferred();
+    const watchTask = run(() =>
+      applyRoomWatchUpdate(
+        state,
+        { through: 101, revision: 11 },
+        {
+          hasAfterCursor: () => afterCursor !== null,
+          loadedThrough: () => rows.at(-1)?.seq ?? 0,
+          onThrough: () => {},
+          onUnseenDelta: (delta) => {
+            unseen += delta;
+          },
+          appendNew: async () => true,
+          refreshExisting: async () => {
+            await gateWatch.promise;
+            rows = rows.map((r) => ({ ...store.get(r.seq) }));
+            return true;
+          },
+        },
+      ),
+    );
+
+    // User clicks newer() while watch is paused inside refreshExisting(); queue holds newer() until watch finishes.
+    const newerTask = run(async () => {
+      const start = afterCursor + 1;
+      const page = [];
+      for (let s = start; s < start + 48 && s <= store.size; s++) page.push({ ...store.get(s) });
+      rows = [...rows, ...page];
+      afterCursor = rows.at(-1).seq < store.size ? rows.at(-1).seq : null;
+    });
+
+    gateWatch.resolve();
+    assert.equal(await watchTask, true);
+    await newerTask;
+    // newer() read after watch completed, so #90 is already retracted and afterCursor points at #100 (with unseen=1 for #101).
+    assert.equal(rows.find((r) => r.seq === 90).deleted, true);
+    assert.equal(afterCursor, 100);
+    assert.equal(unseen, 1);
+
+    // Next newer() reaches 101 and clears unseen cleanly.
+    await run(async () => {
+      rows = [...rows, { ...store.get(101) }];
+      afterCursor = null;
+      if (rows.at(-1).seq >= state.through) unseen = 0;
+    });
+    assert.equal(rows.at(-1).seq, 101);
+    assert.equal(unseen, 0);
+  }
+
+  // Queue stays healthy after a task rejects.
+  const q = createSerialQueue();
+  await assert.rejects(
+    q(async () => {
+      throw new Error('boom');
+    }),
+    /boom/,
   );
-  assert.equal(watchOk, true);
-  assert.equal(state.through, 101);
-  assert.equal(unseen, 1);
-
-  // 3. Stale newer() response arrives with items 53..100 and after=null; loaded is 100 < state.through (101).
-  loaded = 100;
-  afterCursor = null;
-
-  const catchUpCalls = [];
-  const ok = await catchUpLiveTail(state, revBefore, {
-    hasAfterCursor: () => afterCursor !== null,
-    loadedThrough: () => loaded,
-    onThrough: () => {},
-    appendNew: async (refreshExisting, targetThrough) => {
-      catchUpCalls.push([refreshExisting, targetThrough]);
-      loaded = targetThrough;
-      return true;
-    },
-    refreshExisting: async () => true,
-    clearUnseen: () => {
-      unseen = 0;
-    },
-  });
-  assert.equal(ok, true);
-  assert.deepEqual(catchUpCalls, [[false, 101]]);
-  assert.equal(loaded, 101);
-  assert.equal(unseen, 0);
-  assert.deepEqual(state, { through: 101, revision: 10 });
-
-  // 4. If a retraction also bumped revision while paging was in flight, catchUpLiveTail requests refreshExisting=true.
-  state.revision = 11;
-  state.through = 102;
-  loaded = 101;
-  const revCalls = [];
-  const okRev = await catchUpLiveTail(state, 10, {
-    hasAfterCursor: () => false,
-    loadedThrough: () => loaded,
-    onThrough: () => {},
-    appendNew: async (refreshExisting, targetThrough) => {
-      revCalls.push([refreshExisting, targetThrough]);
-      loaded = targetThrough;
-      return true;
-    },
-    refreshExisting: async () => true,
-    clearUnseen: () => {
-      unseen = 0;
-    },
-  });
-  assert.equal(okRev, true);
-  assert.deepEqual(revCalls, [[true, 102]]);
+  assert.equal(await q(async () => 42), 42);
 });

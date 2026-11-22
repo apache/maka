@@ -249,36 +249,20 @@ export async function applyRoomWatchUpdate(
 }
 
 /**
- * Reconcile a newly published page (from newer/latest/focus/earlier) against watch updates
- * that arrived while that page read was in flight, before clearing unseen counts.
+ * Serialize async timeline mutations (watch updates, paging, jump, post-send refresh) so a
+ * page read can never return mid-watch and split the loaded window or overtake the watermark.
+ * Rejections propagate to the caller without poisoning subsequent queued tasks.
  */
-export async function catchUpLiveTail(
-  state: RoomWatchState,
-  revisionBeforeRead: number | null,
-  actions: Pick<
-    RoomWatchActions,
-    'hasAfterCursor' | 'loadedThrough' | 'onThrough' | 'appendNew' | 'refreshExisting'
-  > & {
-    clearUnseen: () => void;
-  },
-): Promise<boolean> {
-  const revChanged = revisionBeforeRead !== state.revision;
-  if (actions.hasAfterCursor()) {
-    return revChanged ? actions.refreshExisting() : true;
-  }
-  const target = state.through;
-  if (actions.loadedThrough() < target) {
-    const ok = await actions.appendNew(revChanged, target);
-    const loaded = actions.loadedThrough();
-    if (!ok || loaded < target) return false;
-    state.through = Math.max(state.through, loaded);
-    actions.onThrough(state.through);
-  } else if (revChanged) {
-    const ok = await actions.refreshExisting();
-    if (!ok) return false;
-  }
-  actions.clearUnseen();
-  return true;
+export function createSerialQueue() {
+  let tail: Promise<unknown> = Promise.resolve();
+  return <T>(task: () => Promise<T>): Promise<T> => {
+    const next = tail.then(task, task);
+    tail = next.then(
+      () => undefined,
+      () => undefined,
+    );
+    return next;
+  };
 }
 
 export function roomResult<T>(reply: unknown): T {
