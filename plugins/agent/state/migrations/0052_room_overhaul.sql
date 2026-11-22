@@ -36,41 +36,6 @@ CREATE TABLE agent_room_members (
 
 CREATE INDEX agent_room_members_member ON agent_room_members(member_session);
 
--- Backfill roster for pre-existing 0040 Rooms from still-live Agent authors and accepted deliveries.
-INSERT OR IGNORE INTO agent_room_members(owner, session, member_session, added_at)
-SELECT m.owner, m.session, json_extract(m.body_json, '$.author.execution.sessionId'), MIN(m.at)
-FROM agent_room_messages m
-WHERE json_extract(m.body_json, '$.author.kind') = 'session'
-  AND json_extract(m.body_json, '$.author.execution.sessionId') IS NOT NULL
-  AND json_extract(m.body_json, '$.author.execution.sessionId') <> m.session
-  AND EXISTS(
-      SELECT 1 FROM session_control s
-      WHERE s.id = json_extract(m.body_json, '$.author.execution.sessionId')
-        AND NOT EXISTS(SELECT 1 FROM session_retirements d WHERE d.session_id = s.id AND d.remove_session = 1)
-  )
-  AND NOT EXISTS(
-      SELECT 1 FROM agent_rooms r
-      WHERE r.owner = m.owner AND r.session = json_extract(m.body_json, '$.author.execution.sessionId')
-  )
-GROUP BY m.owner, m.session, json_extract(m.body_json, '$.author.execution.sessionId');
-
-INSERT OR IGNORE INTO agent_room_members(owner, session, member_session, added_at)
-SELECT m.owner, m.session, json_extract(d.value, '$.sessionId'), MIN(m.at)
-FROM agent_room_messages m, json_each(m.body_json, '$.deliveries') d
-WHERE json_extract(d.value, '$.kind') = 'accepted'
-  AND json_extract(d.value, '$.sessionId') IS NOT NULL
-  AND json_extract(d.value, '$.sessionId') <> m.session
-  AND EXISTS(
-      SELECT 1 FROM session_control s
-      WHERE s.id = json_extract(d.value, '$.sessionId')
-        AND NOT EXISTS(SELECT 1 FROM session_retirements ret WHERE ret.session_id = s.id AND ret.remove_session = 1)
-  )
-  AND NOT EXISTS(
-      SELECT 1 FROM agent_rooms r
-      WHERE r.owner = m.owner AND r.session = json_extract(d.value, '$.sessionId')
-  )
-GROUP BY m.owner, m.session, json_extract(d.value, '$.sessionId');
-
 CREATE TABLE agent_room_reactions (
     owner TEXT NOT NULL,
     session TEXT NOT NULL,
@@ -105,17 +70,6 @@ CREATE VIRTUAL TABLE agent_room_search USING fts5(
     body,
     tokenize='trigram'
 );
-
-INSERT INTO agent_room_search_docs(owner, session, message)
-SELECT owner, session, message
-FROM agent_room_messages
-WHERE deleted_at IS NULL;
-
-INSERT INTO agent_room_search(rowid, body)
-SELECT d.doc_id, COALESCE(json_extract(m.body_json, '$.content.text'), '')
-FROM agent_room_search_docs d
-JOIN agent_room_messages m
-  ON m.owner = d.owner AND m.session = d.session AND m.message = d.message;
 
 CREATE TRIGGER agent_room_topic_update AFTER UPDATE OF topic ON agent_rooms BEGIN
     UPDATE agent_rooms SET revision = revision + 1 WHERE owner = NEW.owner AND session = NEW.session;

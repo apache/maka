@@ -1764,14 +1764,13 @@ mod tests {
         }
     }
 
-    fn open_db(max_version: Option<i64>) -> Connection {
+    fn open_db() -> Connection {
         let db = Connection::open_in_memory().unwrap();
         db.pragma_update(None, "foreign_keys", "ON").unwrap();
         let catalog: Vec<_> = maka_event_log::ROOT_MIGRATIONS
             .iter()
             .chain(crate::MIGRATIONS)
             .copied()
-            .filter(|m| max_version.is_none_or(|cap| m.version <= cap))
             .collect();
         maka_event_log::migration::run(&db, &catalog).unwrap();
         db
@@ -1797,7 +1796,7 @@ mod tests {
 
     #[test]
     fn reactions_preserve_insertion_order_and_replies_do_not_cross_attribute() {
-        let db = open_db(None);
+        let db = open_db();
         let owner = test_owner();
         seed_session(&db, "room_a", "Room A");
         seed_session(&db, "room_b", "Room B");
@@ -1976,77 +1975,36 @@ mod tests {
     }
 
     #[test]
-    fn fts_uses_rowid_lookup_and_upgrade_0052_backfills_roster() {
-        // Start on schema v51 (pre-0052 Room overhaul), seed a 0040 Room with existing Agent author + accepted delivery.
-        let db = open_db(Some(51));
+    fn fts_uses_rowid_lookup_and_syncs_edits_and_deletes() {
+        let db = open_db();
         let owner = test_owner();
         let owner_json = serde_json::to_string(&owner).unwrap();
-        seed_session(&db, "legacy_room", "Legacy Room");
-        seed_session(&db, "alice", "Alice");
-        seed_session(&db, "bob", "Bob");
-        db.execute(
-            "INSERT INTO agent_rooms(session, owner) VALUES('legacy_room', ?1)",
-            params![owner_json],
-        )
-        .unwrap();
-        let msg1 = serde_json::json!({
-            "id": "old1",
-            "sequence": 1,
-            "at": 1000,
-            "author": { "kind": "human" },
-            "content": { "text": "alpha bravo charlie" },
-            "replyTo": null,
-            "mentions": ["alice"],
-            "deliveries": [{ "kind": "accepted", "sessionId": "alice", "messageId": "q1" }]
-        });
-        let msg2 = serde_json::json!({
-            "id": "old2",
-            "sequence": 2,
-            "at": 2000,
-            "author": { "kind": "session", "execution": { "sessionId": "bob", "runId": "00000000-0000-0000-0000-000000000000", "turnId": "t1" } },
-            "content": { "text": "delta echo foxtrot" },
-            "replyTo": "old1",
-            "mentions": [],
-            "deliveries": []
-        });
-        db.execute(
-            "INSERT INTO agent_room_messages(owner, session, sequence, message, at, reply_to, body_json)
-             VALUES(?1, 'legacy_room', 1, 'old1', 1000, NULL, ?2)",
-            params![owner_json, msg1.to_string()],
-        )
-        .unwrap();
-        db.execute(
-            "INSERT INTO agent_room_messages(owner, session, sequence, message, at, reply_to, body_json)
-             VALUES(?1, 'legacy_room', 2, 'old2', 2000, 'old1', ?2)",
-            params![owner_json, msg2.to_string()],
-        )
-        .unwrap();
-
-        // Upgrade to 0052 and verify both alice (accepted delivery) & bob (agent author) are backfilled.
-        let full: Vec<_> = maka_event_log::ROOT_MIGRATIONS
-            .iter()
-            .chain(crate::MIGRATIONS)
-            .copied()
-            .collect();
-        maka_event_log::migration::run(&db, &full).unwrap();
-
-        let state = StateQuery {
+        seed_session(&db, "room_search", "Search Room");
+        CreateRoom {
             owner: owner.clone(),
-            session: "legacy_room".into(),
+            session: "room_search".into(),
         }
         .execute(&db)
         .unwrap();
-        let member_ids: Vec<&str> = state
-            .members
-            .iter()
-            .map(|m| m.session_id.as_str())
-            .collect();
-        assert_eq!(member_ids, vec!["alice", "bob"]);
+        PostStatement {
+            owner: owner.clone(),
+            post: Post {
+                session: "room_search".into(),
+                id: "m1".into(),
+                at: UnixMillis(1000),
+                author: RoomAuthor::Human,
+                content: MessageInput::from("alpha bravo charlie".to_owned()),
+                reply_to: None,
+                mentions: vec![],
+                deliveries: vec![],
+            },
+        }
+        .execute(&db)
+        .unwrap();
 
-        // Verify FTS search works on migrated row, updates cleanly on edit, and deletes by rowid (no full-table scan).
         let hits = SearchQuery {
             owner: owner.clone(),
-            session: "legacy_room".into(),
+            session: "room_search".into(),
             query: "bravo".into(),
             limit: 10,
         }
@@ -2056,18 +2014,18 @@ mod tests {
 
         EditMessageStatement {
             owner: owner.clone(),
-            session: "legacy_room".into(),
-            message_id: "old1".into(),
+            session: "room_search".into(),
+            message_id: "m1".into(),
             actor: RoomActor::Human,
             text: "updated keyword zebra".into(),
-            at: UnixMillis(3000),
+            at: UnixMillis(2000),
         }
         .execute(&db)
         .unwrap();
         assert!(
             SearchQuery {
                 owner: owner.clone(),
-                session: "legacy_room".into(),
+                session: "room_search".into(),
                 query: "bravo".into(),
                 limit: 10,
             }
@@ -2078,7 +2036,7 @@ mod tests {
         assert_eq!(
             SearchQuery {
                 owner: owner.clone(),
-                session: "legacy_room".into(),
+                session: "room_search".into(),
                 query: "zebra".into(),
                 limit: 10,
             }
@@ -2088,13 +2046,34 @@ mod tests {
             1
         );
 
+        DeleteMessageStatement {
+            owner: owner.clone(),
+            session: "room_search".into(),
+            message_id: "m1".into(),
+            actor: RoomActor::Human,
+            at: UnixMillis(3000),
+        }
+        .execute(&db)
+        .unwrap();
+        assert!(
+            SearchQuery {
+                owner: owner.clone(),
+                session: "room_search".into(),
+                query: "zebra".into(),
+                limit: 10,
+            }
+            .execute(&db)
+            .unwrap()
+            .is_empty()
+        );
+
         let plan: Vec<String> = db
             .prepare(
                 "EXPLAIN QUERY PLAN DELETE FROM agent_room_search
                  WHERE rowid = (SELECT doc_id FROM agent_room_search_docs WHERE owner=?1 AND session=?2 AND message=?3)",
             )
             .unwrap()
-            .query_map(params![owner_json, "legacy_room", "old1"], |r| r.get::<_, String>(3))
+            .query_map(params![owner_json, "room_search", "m1"], |r| r.get::<_, String>(3))
             .unwrap()
             .map(Result::unwrap)
             .collect();
