@@ -25,9 +25,17 @@ use nsh_terminal::{Modifiers, NativeSurface};
 use serde_json::json;
 use std::{future::Future, panic::AssertUnwindSafe, time::Duration};
 
-async fn fixture() -> Fixture {
+// Windows CI has no managed sandbox. These terminal tests exercise the native
+// shell and UI with the fixture's own commands and workspace.
+const TERMINAL_FIXTURE_ACCESS: &str = if cfg!(windows) {
+    "danger_full_access"
+} else {
+    "workspace_write"
+};
+
+async fn fixture(access: &str) -> Fixture {
     Fixture::open_with_configuration(Options::default(), |configuration, _| {
-        configuration["agent"]["permissions"]["access"] = json!("workspace_write");
+        configuration["agent"]["permissions"]["access"] = json!(access);
     })
     .await
 }
@@ -361,7 +369,7 @@ recoveryPrototype.beginMutation = async function(endpoint, method, input) {
 }
 
 pub(super) async fn desktop_create_recovery_closes_original_form(settings: bool, reopen: bool) {
-    let fixture = fixture().await;
+    let fixture = fixture("workspace_write").await;
     let (desktop, lost) = action_recovery_desktop(&fixture, "create").await;
     desktop
         .press_until("Toggle session details", "Add Action")
@@ -466,7 +474,7 @@ pub(super) async fn desktop_create_recovery_closes_original_form(settings: bool,
 }
 
 pub(super) async fn desktop_remove_recovery_finishes_original_form(leave: bool) {
-    let fixture = fixture().await;
+    let fixture = fixture("workspace_write").await;
     let (desktop, lost) = action_recovery_desktop(&fixture, "remove").await;
     desktop
         .press_until("Toggle session details", "Add Action")
@@ -556,7 +564,7 @@ pub(super) async fn desktop_action_receipts_follow_the_latest_presentation() {
         atomic::{AtomicU64, Ordering},
     };
 
-    let fixture = fixture().await;
+    let fixture = fixture(TERMINAL_FIXTURE_ACCESS).await;
     let nsh_engine::BundleCode::Source(mut source) = maka_workbench::bootstrap_bundle().code else {
         unreachable!();
     };
@@ -682,7 +690,7 @@ hostPrototype.session = function(...args) {
 }
 
 async fn desktop_actions_at_width(width: i32, docked: bool) {
-    let fixture = fixture().await;
+    let fixture = fixture(TERMINAL_FIXTURE_ACCESS).await;
     let desktop = Desktop::open_at(
         &fixture,
         &fixture.address,
@@ -835,7 +843,7 @@ async fn desktop_actions_at_width(width: i32, docked: bool) {
 pub(super) async fn terminal_actions_preserve_keyboard_input_and_original_output() {
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
     use maka_terminal_shell::terminal::handle_event;
-    let fixture = fixture().await;
+    let fixture = fixture(TERMINAL_FIXTURE_ACCESS).await;
     let workspace = fixture.directory.path().join("workspace");
     let client = fixture.client().await;
     #[cfg(unix)]
