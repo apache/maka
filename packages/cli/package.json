@@ -1,6 +1,6 @@
 {
   "name": "@maka-agent/cli",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Unofficial experimental Maka Rust preview; not an ASF release or endorsement",
   "license": "Apache-2.0",
   "private": true,

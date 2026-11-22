@@ -350,6 +350,23 @@ mod tests {
     }
 
     #[test]
+    fn turn_usage_shows_coverage_for_each_partially_reported_field() {
+        let mut app = headless_fixture(
+            "tests/fixtures/turn-usage.tsx",
+            Size::new(px(600.0), px(480.0)),
+            false,
+        );
+        let input = "role:button[Input tokens: 1.2k (2/3 requests) · Show exact token count]";
+        app.wait_for(input).unwrap();
+        app.press(input).unwrap();
+        app.wait_for("text:1,220 (2/3 requests)").unwrap();
+        app.wait_for("text:250").unwrap();
+        app.wait_for("text:0 (1/3 requests)").unwrap();
+        app.wait_for("text:$0.006000 (2/3 requests)").unwrap();
+        app.wait_for("text:Unavailable >> nth=1").unwrap();
+    }
+
+    #[test]
     fn request_metrics_toggle_token_counts_independently() {
         let mut app = headless_fixture(
             "tests/fixtures/request-metrics.tsx",

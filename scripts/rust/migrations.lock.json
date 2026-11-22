@@ -201,6 +201,10 @@
       "plugins/agent/state/migrations/0051_memory_recall.sql": {
         "version": 51,
         "sha384": "d26a002a58e4bf85dd7da2058117641014f77df905464d8cc220e130ffd62538769d7b7fdee0b44494d1f05ab96d2030"
+      },
+      "plugins/agent/state/migrations/0052_room_overhaul.sql": {
+        "version": 52,
+        "sha384": "28e5b10d41c45d63c3cb2e2a05e0e40e2ca3907cc973d024e607dd5d42ea3e9bff75dbd3f077d3f1e7e348cc9ebb7847"
       }
     },
     "checkpoint-repository": {
