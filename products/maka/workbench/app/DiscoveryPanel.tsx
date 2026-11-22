@@ -788,9 +788,7 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
             <Text style={{ ...captionTextStyle, color: C.secondary }}>
               {tr('Discovery permissions')}:{' '}
               {resolvedWorkerTools() === 'session'
-                ? tr('Use standard Session tools') +
-                  ' · ' +
-                  accessLabel(snapshot()!.target.permissions.access)
+                ? tr('Use standard Session tools') + ' · ' + accessLabel('read_only')
                 : tr('Use read-only investigation tools')}
             </Text>
             <If when={planSelection() != null}>
@@ -936,7 +934,7 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
             <If when={workerTools() === 'session' && formTarget()}>
               <Text style={{ ...captionTextStyle, color: C.muted }}>
                 {tr('Discovery workspace scope', {
-                  access: accessLabel(formTarget()!.permissions.access),
+                  access: accessLabel('read_only'),
                 })}
                 {' ' + discoveryExternalToolNotice(selectedTools())}
               </Text>

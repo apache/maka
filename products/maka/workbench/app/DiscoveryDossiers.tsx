@@ -31,6 +31,7 @@ import {
 } from 'nsh';
 import { Button, Checkbox, Dialog } from 'nsh/base';
 import { controlsLeft, controlsRight, TITLE_BAR_HEIGHT, windowDrag } from './chrome';
+import { LocalMessageCopy } from './CompactReplyFooter';
 import { ChoiceIndicator } from './ChoiceIndicator';
 import { DiscoveryDialog } from './DiscoveryPanel';
 import { DossierThread } from './DossierThread';
@@ -55,6 +56,7 @@ import {
   C,
   bodyTextStyle,
   captionTextStyle,
+  codeTextStyle,
   controlFocusStyle,
   controlHoverStyle,
   quietFocusStyle,
@@ -113,6 +115,50 @@ const rowStyle = { flexDirection: 'row', alignItems: 'center', gap: 8 } as const
 const mutedText = () => ({ ...captionTextStyle, color: C.muted });
 const titleStyle = () => ({ ...bodyTextStyle, color: C.text, fontWeight: '600' as const });
 
+function ArtifactPreview(props: { topicId: string; path: string }) {
+  const host = useHost();
+  const content = signal<string | null>(null);
+  const error = createText();
+  let alive = true;
+  cleanup(() => {
+    alive = false;
+  });
+  void host
+    .query('agent', 'readDossierArtifact', {
+      topicId: props.topicId,
+      path: props.path,
+    })
+    .then(
+      (text) => {
+        if (alive) content.set(text);
+      },
+      (reason) => {
+        if (alive) error.set(errorText(reason, 'Could not preview this artifact.'));
+      },
+    );
+  const preview = computed(() => {
+    const text = content() ?? '';
+    return text.length > 4096 ? text.slice(0, 4096).replace(/[\uD800-\uDBFF]$/, '') + '…' : text;
+  });
+  return (
+    <View style={{ gap: 4, padding: 8, backgroundColor: C.card, borderRadius: 4 }}>
+      <If
+        when={content() !== null}
+        else={
+          <If when={error()} else={<LoadingIndicator />}>
+            <Text style={mutedText()}>{error()}</Text>
+          </If>
+        }
+      >
+        <Scroll style={{ maxHeight: 160 }}>
+          <Text style={{ ...codeTextStyle, color: C.text, userSelect: 'text' }}>{preview()}</Text>
+        </Scroll>
+        <LocalMessageCopy label={tr('Copy staged artifact')} text={() => content()!} />
+      </If>
+    </View>
+  );
+}
+
 function DossierPane(
   props: Pick<DossiersProps, 'snapshot' | 'botSession' | 'openLink' | 'openSession'> & {
     topicId: string;
@@ -123,6 +169,7 @@ function DossierPane(
   const topicId = props.topicId;
   const detail = signal<DossierDetail | null>(null);
   const expanded = signal(false);
+  const artifactPath = signal<string | null>(null);
   const saving = signal(false);
   const error = createText();
   const readError = createText();
@@ -248,13 +295,31 @@ function DossierPane(
           <If when={detail()!.artifacts.length > 0}>
             <View style={{ gap: 4 }}>
               <Text style={titleStyle()}>{tr('Dossier artifacts')}</Text>
-              <Each of={detail()!.artifacts} key={(_, index) => index}>
+              <Each
+                of={detail()!.artifacts}
+                key={(artifact) => JSON.stringify([artifact.path, artifact.sha256])}
+              >
                 {(artifact) => (
                   <View style={{ gap: 2 }}>
-                    <Text style={{ ...bodyTextStyle, color: C.text, userSelect: 'text' }}>
-                      {artifact().path}
-                    </Text>
-                    <Text style={mutedText()}>{artifact().purpose}</Text>
+                    <Button
+                      accessibilityLabel={tr('Preview staged artifact', {
+                        path: artifact().path,
+                      })}
+                      selected={artifactPath() === artifact().path}
+                      onPress={inputAction(
+                        (path) => artifactPath.set(artifactPath() === path ? null : path),
+                        artifact().path,
+                      )}
+                      style={{ gap: 2, paddingVertical: 3, borderRadius: 4 }}
+                      hoverStyle={controlHoverStyle()}
+                      focusStyle={quietFocusStyle()}
+                    >
+                      <Text style={{ ...bodyTextStyle, color: C.text }}>{artifact().path}</Text>
+                      <Text style={mutedText()}>{artifact().purpose}</Text>
+                    </Button>
+                    <If when={artifactPath() === artifact().path}>
+                      <ArtifactPreview topicId={topicId} path={artifact().path} />
+                    </If>
                   </View>
                 )}
               </Each>

@@ -50,6 +50,14 @@ pub enum CallerStatus {
     AuthorizationChanged,
 }
 impl CallerFence {
+    pub fn completed_local_tool(&self, c: &Connection, name: &str) -> Result<bool, StoreError> {
+        Ok(c.query_row("SELECT EXISTS(SELECT 1 FROM agent_tools WHERE run=?1 AND pending=0
+            AND json_extract(body,'$.call.name')=?2 AND json_extract(body,'$.call.provider_executed')=0
+            AND json_extract(body,'$.accepted.outcome.kind')='succeeded')",
+            rusqlite::params![self.execution.run_id.to_string(), name], |r| r.get(0),
+        )?)
+    }
+
     pub fn status(&self, connection: &Connection) -> Result<CallerStatus, StoreError> {
         if !crate::interactions::sql::active_session(connection, &self.execution.session_id)? {
             return Ok(CallerStatus::Unavailable);

@@ -185,7 +185,7 @@ impl Owner {
                 let tools = self
                     .select_catalog_tools(
                         &catalog.tools,
-                        Some(session_id),
+                        Some((session_id, session.configuration.dossier_seed.is_some())),
                         allowed_tools.as_deref(),
                         editing,
                     )

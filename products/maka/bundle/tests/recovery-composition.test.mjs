@@ -121,6 +121,7 @@ test('built installation binds continuation, Goal and Scheduler to the original 
     ['watchSchedules', 'subscription'],
     ['dossiers', 'query'],
     ['dossier', 'query'],
+    ['readDossierArtifact', 'query'],
     ['watchDossiers', 'subscription'],
     ['setDossierMuted', 'mutation'],
     ['setDiscoveryNotifications', 'mutation'],

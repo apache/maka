@@ -547,6 +547,7 @@ impl Rig {
                 "schedules",
                 "dossiers",
                 "dossier",
+                "readDossierArtifact",
                 "watchDossiers",
                 "setDossierMuted",
                 "setDiscoveryNotifications",

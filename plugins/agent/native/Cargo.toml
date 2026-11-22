@@ -66,6 +66,7 @@ maka-js-runtime.workspace = true
 maka-mcp.workspace = true
 maka-network.workspace = true
 reqwest.workspace = true
+maka-packages.workspace = true
 maka-plugin-core.workspace = true
 maka-presentation.workspace = true
 maka-providers.workspace = true
@@ -94,7 +95,6 @@ uuid.workspace = true
 [dev-dependencies]
 image = { version = "0.25.10", default-features = false, features = ["png"] }
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt"] }
-maka-packages.workspace = true
 maka-processes-native.workspace = true
 rusqlite = { workspace = true, features = ["functions"] }
 maka-settings-native.workspace = true

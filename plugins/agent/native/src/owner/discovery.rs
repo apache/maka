@@ -33,7 +33,7 @@ use maka_agent_state::{
 };
 use maka_plugin_core::storage::{Data, Mutation, Store};
 use maka_scheduler::{
-    plan::Fire,
+    plan::{Fire, FireSource},
     task::{Outcome, Run},
 };
 use std::sync::Weak;
@@ -43,16 +43,29 @@ pub(super) const UPSERT: &str = "UpsertDossier";
 pub(super) const FINISH: &str = "FinishNoChange";
 pub(super) const LIST: &str = "ListDossiers";
 pub(super) const READ: &str = "ReadDossier";
-pub(super) const WORKER_TOOLS: &[&str] = &[COMPLETE, UPSERT, FINISH];
-pub(super) const VISIBLE_TOOLS: &[&str] = &[COMPLETE, MEMORY, UPSERT, FINISH, LIST, READ];
+pub(super) const STAGE: &str = "StageArtifact";
+pub(super) const PREFERENCES: &str = "UpdateDiscoveryPreferences";
+pub(super) const WORKER_TOOLS: &[&str] = &[COMPLETE, UPSERT, FINISH, STAGE];
+pub(super) const VISIBLE_TOOLS: &[&str] = &[
+    COMPLETE,
+    MEMORY,
+    UPSERT,
+    FINISH,
+    LIST,
+    READ,
+    STAGE,
+    PREFERENCES,
+];
 mod dossiers;
 pub(super) use dossiers::ScheduleOp;
 pub(super) const MODEL_ROUTE_CHANGED: &str = "background_model_route_changed";
 pub(super) const APPROVED_MODEL_UNAVAILABLE: &str = "background_model_unavailable";
 const RECALL_TOOLS: &[&str] = &["Recall", "RecallMore", "RecallMaterial"];
 const ACTIVE: &str = "discovery/active";
+mod artifacts;
 pub(in crate::owner) mod changes;
 mod context;
+mod preferences;
 mod records;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -84,9 +97,17 @@ enum Phase {
     },
     Stopping,
 }
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum DiscoveryMode {
+    FollowUp,
+    Wander { sources: Vec<String> },
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Job {
+    mode: Option<DiscoveryMode>,
     fire_id: String,
     task_id: String,
     bot: String,
@@ -158,10 +179,36 @@ impl CaptureError {
 
 fn investigation_prompt(
     language: Language,
+    mode: &DiscoveryMode,
     direction: &str,
     memory_allowed: bool,
     history_allowed: bool,
 ) -> String {
+    let draft = match language {
+        Language::ZhCn => {
+            "让用户能一步做决定。遇到低成本、可撤回的工作，别停在风险提示：主动用 StageArtifact 在隔离沙箱里做好可直接使用的草稿、diff、清单或简报，把返回的记录附到 UpsertDossier.artifacts。原工作区只读。没有实质变化就用 FinishNoChange 静默收尾，这是正常结果，无需凑报告。"
+        }
+        Language::ZhTw => {
+            "讓使用者能一步做決定。遇到低成本、可撤回的工作，別停在風險提醒：主動用 StageArtifact 在隔離沙箱裡做好可直接使用的草稿、diff、清單或簡報，把傳回的紀錄附到 UpsertDossier.artifacts。原工作區唯讀。沒有實質變化就用 FinishNoChange 安靜收尾，這是正常結果，無須硬湊報告。"
+        }
+        Language::En => {
+            "Help the user decide in one click. Go beyond warnings. Whenever a low-cost, reversible draft, diff, checklist or brief would help, make it ready to use in the isolated sandbox with StageArtifact and attach its receipt to UpsertDossier.artifacts. Keep original workspace files read-only. FinishNoChange is the expected, healthy outcome when nothing material changed. Never manufacture a report."
+        }
+    };
+    if matches!(mode, DiscoveryMode::Wander { .. }) {
+        let wander = match language {
+            Language::ZhCn => {
+                "从给出的冷门起点独立探索。结合其他工作区文档或已授权的网页工具，寻找未明说的需求、遗忘的期限或停滞的想法。先形成有证据的发现，再仅在准备调用 UpsertDossier 提交前用 ListDossiers 去重，沿用匹配的 topic_id 和 revision，新主题用 expected_revision 0。默认 quiet。"
+            }
+            Language::ZhTw => {
+                "從提供的冷門起點獨立探索。結合其他工作區文件或已授權的網頁工具，尋找未說出口的需求、遺忘的期限或停滯的構想。先形成有證據的發現，再僅於準備呼叫 UpsertDossier 提交前用 ListDossiers 去重，沿用符合的 topic_id 和 revision，新主題用 expected_revision 0。預設 quiet。"
+            }
+            Language::En => {
+                "Explore independently from the cold starting points. Cross-check other workspace documents and authorized web tools for unstated needs, forgotten deadlines or stalled ideas. Form a finding from evidence first. Call ListDossiers only just before committing with UpsertDossier to merge duplicates. Reuse a matching topic_id and revision, or use expected_revision 0 for a new topic. Default to quiet."
+            }
+        };
+        return format!("{wander}\n\n{draft}");
+    }
     let direction = direction.trim();
     let (focused, broad, memory, history, finish) = match language {
         Language::ZhCn => (
@@ -197,7 +244,7 @@ fn investigation_prompt(
     if history_allowed {
         prompt.push_str(&format!("\n{history}"));
     }
-    prompt.push_str(&format!("\n\n{finish}"));
+    prompt.push_str(&format!("\n\n{finish}\n{draft}"));
     prompt
 }
 
@@ -345,13 +392,25 @@ impl Owner {
         let authorized = self.discovery_authorized(&job).await;
         let pending = self.scheduler.has_active_fire(&job).await?;
         let retired = self.discovery_worker_retired(&job).await?;
-        if matches!(job.phase, Phase::Stopping | Phase::Converged { .. })
+        let unsafe_worker = self
+            .store
+            .get_session::<StoredSessionConfiguration>(&job.worker)
+            .await
+            .map_err(reason)?
+            .is_some_and(|s| {
+                s.configuration.permissions != permissions()
+                    || job.tools.names.iter().any(|name| {
+                        !WORKER_TOOLS.contains(&name.as_str()) && !self.permits_discovery_tool(name)
+                    })
+            });
+        if unsafe_worker
+            || matches!(job.phase, Phase::Stopping | Phase::Converged { .. })
             || !pending
             || authorization_revoked(&authorized)
             || retired
         {
             if !matches!(job.phase, Phase::Stopping)
-                && (!pending || authorization_revoked(&authorized) || retired)
+                && (unsafe_worker || !pending || authorization_revoked(&authorized) || retired)
             {
                 job.phase = Phase::Stopping;
                 self.scheduler
@@ -535,8 +594,7 @@ impl Owner {
         );
         let names =
             self.discovery_worker_tools(&names, source.configuration.tools.as_deref(), selection);
-        // Every requested optional name must still be in the profile, in its displayed
-        // category, and under the parent ceiling. The reporting tools are intrinsic.
+        // Optional tools must retain their displayed category and parent approval.
         if selection.is_some_and(|selected| selected.len() + WORKER_TOOLS.len() != names.len()) {
             return Err("scheduler_discovery_tools_changed".into());
         }
@@ -565,6 +623,16 @@ impl Owner {
             )
     }
 
+    fn permits_discovery_tool(&self, name: &str) -> bool {
+        match self.tool_basis.iter().find(|tool| tool.name() == name) {
+            Some(tool) => tool.discovery_safe,
+            None => {
+                matches!(name, MEMORY | LIST | READ | "ScheduledTask")
+                    || RECALL_TOOLS.contains(&name)
+            }
+        }
+    }
+
     fn discovery_worker_tools(
         &self,
         names: &[String],
@@ -575,6 +643,7 @@ impl Owner {
             .iter()
             .filter(|name| {
                 !WORKER_TOOLS.contains(&name.as_str())
+                    && self.permits_discovery_tool(name)
                     && (self.settings.recall || !RECALL_TOOLS.contains(&name.as_str()))
                     && configured.is_none_or(|configured| configured.contains(name))
                     && selection.is_none_or(|selected| {
@@ -585,6 +654,7 @@ impl Owner {
             .collect();
         allowed.extend(WORKER_TOOLS.iter().map(|name| (*name).to_owned()));
         allowed.sort_unstable();
+        allowed.dedup();
         allowed
     }
 
@@ -640,6 +710,13 @@ impl Owner {
         self.check_discovery_invocation(&context, &job)
             .await
             .map_err(ToolError::Failed)?;
+        if matches!(job.mode, Some(DiscoveryMode::Wander { .. }))
+            && matches!(report, Report::Report { .. })
+        {
+            return Err(ToolError::Failed(
+                "Use ListDossiers and UpsertDossier to commit a Wander finding".into(),
+            ));
+        }
         let Phase::Investigating { result } = &mut job.phase else {
             unreachable!()
         };
@@ -674,7 +751,7 @@ impl Owner {
         self: &Arc<Self>,
         fire: &Fire<ScheduledEffect, scheduler::Approval>,
         enabled: bool,
-        timezone: &str,
+        plan: &scheduler::Plan,
     ) -> Result<Option<Run>, String> {
         if let Some(record) = self
             .scheduler
@@ -710,6 +787,7 @@ impl Owner {
             let request = hex::encode(Sha256::digest(fire.id.as_bytes()));
             let worker = format!("{}{}", self.prefix, &request[..32]);
             Job {
+                mode: None,
                 fire_id: fire.id.clone(),
                 task_id: fire.task_id.clone(),
                 bot: approval.target.session_id.clone(),
@@ -791,7 +869,7 @@ impl Owner {
                         .map(Some);
                 }
                 if let Err(error) = self
-                    .enqueue_discovery_worker(&mut job, &mut revision, fire, timezone)
+                    .enqueue_discovery_worker(&mut job, &mut revision, fire, plan)
                     .await
                 {
                     return self
@@ -936,11 +1014,12 @@ impl Owner {
         job: &Job,
         fire: &Fire<ScheduledEffect, scheduler::Approval>,
         timezone: &str,
+        mode: &DiscoveryMode,
         allowed_tools: &[String],
     ) -> Result<
         (
             MessageInput,
-            Vec<maka_agent_state::discovery::changes::Delta>,
+            maka_agent_state::discovery::changes::OpeningSources,
         ),
         String,
     > {
@@ -948,14 +1027,24 @@ impl Owner {
             || allowed_tools
                 .iter()
                 .any(|name| self.discovery_tool_group(name) == DiscoveryToolGroup::History);
-        let (mut prompt, shown) = self.discovery_opening(job, allowed_tools).await?;
+        let (mut prompt, shown) = self.discovery_opening(mode, job, allowed_tools).await?;
         prompt.push_str("\n\n");
         prompt.push_str(&investigation_prompt(
             job.approval.language,
+            mode,
             fire.intent.body(),
             allowed_tools.iter().any(|name| name == MEMORY),
             history_allowed,
         ));
+        if matches!(mode, DiscoveryMode::Wander { .. })
+            && !allowed_tools.iter().any(|name| name == LIST)
+        {
+            prompt.push_str(match job.approval.language {
+                Language::ZhCn => "\n本轮未授权 ListDossiers，无法提交去重后的发现。用 FinishNoChange 静默收尾。",
+                Language::ZhTw => "\n此輪未授權 ListDossiers，無法提交去重後的發現。請用 FinishNoChange 安靜收尾。",
+                Language::En => "\nThis plan does not grant ListDossiers. Finish quietly with FinishNoChange when you cannot check for duplicates.",
+            });
+        }
         prompt.push_str(&context::environment(
             job.approval.language,
             &job.approval.target.workspace.path,
@@ -969,7 +1058,7 @@ impl Owner {
         job: &mut Job,
         revision: &mut Option<u64>,
         fire: &Fire<ScheduledEffect, scheduler::Approval>,
-        timezone: &str,
+        plan: &scheduler::Plan,
     ) -> Result<(), CaptureError> {
         let source = self.session(&job.bot).await?;
         let allowed_tools = self.discovery_worker_tools(
@@ -1009,11 +1098,7 @@ impl Owner {
                             .as_ref()
                             .ok_or(CaptureError::WorkspaceUnavailable)?
                             .reference(),
-                        permissions: if job.tools.profile == DiscoveryWorkerTools::Session {
-                            job.approval.target.permissions.clone()
-                        } else {
-                            permissions()
-                        },
+                        permissions: permissions(),
                         boundary_revision: 0,
                     },
                     fire.scheduled_at as u64,
@@ -1051,14 +1136,35 @@ impl Owner {
         basis.model = Some(job.approval.accepted_model.clone());
         // Freeze the opening and acknowledge exactly its displayed deltas in the same Root transaction.
         if !job.input.has_content() || allowed_tools != job.tools.names {
+            let advance = job.mode.is_none()
+                && fire.source == FireSource::Schedule
+                && fire.intent.body().trim().is_empty()
+                && scheduler::file_change_grant(plan).is_some();
+            let mode = match job.mode.take() {
+                Some(mode) => mode,
+                None if advance && self.discovery.broad_cycle().await.map_err(reason)? == 3 => {
+                    let sources = if self.discovery_reads_files(&allowed_tools) {
+                        self.wander_sources(&job.approval).await?
+                    } else {
+                        vec![]
+                    };
+                    DiscoveryMode::Wander { sources }
+                }
+                None => DiscoveryMode::FollowUp,
+            };
             let (input, shown) = self
-                .discovery_input(job, fire, timezone, &allowed_tools)
+                .discovery_input(job, fire, &plan.timezone, &mode, &allowed_tools)
                 .await?;
+            job.mode = Some(mode);
             job.input = input;
             job.tools.names.clone_from(&allowed_tools);
             let active = mutation(ACTIVE.into(), *revision, job)?;
             let records = self
-                .commit_discovery_writes(self.discovery.acknowledge_changes(shown), vec![active])
+                .commit_discovery_writes(
+                    self.discovery
+                        .record_opening(shown, advance, UnixMillis(now() as i64)),
+                    vec![active],
+                )
                 .await
                 .map_err(reason)?;
             *revision = Some(records[0].revision);

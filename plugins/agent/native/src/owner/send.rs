@@ -72,6 +72,7 @@ impl<T: serde::Serialize> NativeMutation<T> {
 pub(super) enum PreparedSend {
     Returned(SendResult),
     Ready {
+        dossier_reply: bool,
         value: SendResult,
         statement: Box<PreparedAgentSend>,
     },
@@ -261,9 +262,9 @@ impl Owner {
         let mcp_floor = self
             .capture_sandbox(&session.configuration, parent.sandbox_floor())
             .await?;
-        let read_only_discovery =
-            self.scheduler.investigation_profile(id) == Some(DiscoveryWorkerTools::ReadOnly);
-        let selected_catalog = if read_only_discovery || (external && !host_bridge) {
+        let investigation = self.scheduler.investigation_profile(id);
+        let read_only_discovery = investigation == Some(DiscoveryWorkerTools::ReadOnly);
+        let selected_catalog = if investigation.is_some() || (external && !host_bridge) {
             self.mcp_projects.base.clone()
         } else {
             match self
@@ -277,7 +278,7 @@ impl Owner {
                 }
             }
         };
-        let selected_catalog = if read_only_discovery {
+        let selected_catalog = if investigation.is_some() {
             selected_catalog
         } else {
             self.mcp_projects.with_client(id, selected_catalog)?
@@ -300,6 +301,7 @@ impl Owner {
             allowed_tools.as_deref(),
         );
         let basis = CapturedRun {
+            dossier_thread: session.configuration.dossier_seed.is_some(),
             mcp_revision: selected_catalog.revision.clone(),
             client_mcp: selected_catalog.client_mcp,
             mcp_catalog: Some(selected_catalog.clone()),
@@ -369,10 +371,30 @@ impl Owner {
             .await?
         {
             PreparedSend::Returned(value) => Ok(NativeMutation::Returned(value)),
-            PreparedSend::Ready { value, statement } => Ok(NativeMutation::Commit {
+            PreparedSend::Ready {
                 value,
-                change: self.message_writer(parent)?.prepare(*statement),
-            }),
+                statement,
+                dossier_reply,
+            } => {
+                let writer = self.message_writer(parent)?;
+                let change = if dossier_reply
+                    && let Some(topic) = self
+                        .discovery
+                        .thread_topic(statement.queue.session.clone())
+                        .await
+                        .map_err(|e| e.to_string())?
+                {
+                    self.observe_discovery_outcome(
+                        &writer,
+                        *statement,
+                        topic,
+                        "replied in the dossier thread",
+                    )
+                } else {
+                    writer.prepare(*statement)
+                };
+                Ok(NativeMutation::Commit { value, change })
+            }
         }
     }
 
@@ -554,6 +576,7 @@ impl Owner {
                 }));
             }
         };
+        let dossier_reply = basis.dossier_thread && origin.is_none();
         let source = RootSourceMessage {
             message: DeliveredMessage {
                 origin,
@@ -617,6 +640,7 @@ impl Owner {
             order,
         };
         Ok(PreparedSend::Ready {
+            dossier_reply,
             value: SendResult::Queued {
                 completion,
                 session_id: id,

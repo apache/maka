@@ -80,6 +80,8 @@ struct ReadTopic {
 enum Call {
     Upsert { input: Upsert, fingerprint: String },
     Finish(Finish),
+    Stage(artifacts::StageArtifact),
+    Preferences(preferences::Update),
     List,
     Read(ReadTopic),
 }
@@ -90,6 +92,10 @@ impl scheduler::Scheduler {
             (UPSERT,
              "Save one topic with expected_revision (zero for creation). schedule_ops can revise the intent_body of linked once tasks or cancel them. Use interrupt when the user needs to act now.",
              schemars::schema_for!(Upsert), ToolSemantics::ExclusiveStep),
+            (STAGE, "Prepare a ready-to-use UTF-8 draft, diff, checklist or brief in this topic’s isolated staging directory. Workers pass the receipt verbatim in UpsertDossier.artifacts. In a dossier thread the draft attaches to that topic automatically. input_paths are source files in the authorized workspace.",
+             schemars::schema_for!(artifacts::StageArtifact), ToolSemantics::ExclusiveStep),
+            (PREFERENCES, "Save an explicit user instruction for future discovery. Append a concise natural-language rule, or replace the rules for one scope. The host records the date.",
+             schemars::schema_for!(preferences::Update), ToolSemantics::ExclusiveStep),
             (FINISH,
              "Finish the investigation quietly with a concise note. Pass checked_topic_ids for topics reviewed without further material changes.",
              schemars::schema_for!(Finish), ToolSemantics::FinishTurn),
@@ -131,6 +137,8 @@ impl scheduler::Scheduler {
                     ));
                     serde_json::from_value(input).map(|input| Call::Upsert { input, fingerprint })
                 }
+                STAGE => serde_json::from_value(input).map(Call::Stage),
+                PREFERENCES => serde_json::from_value(input).map(Call::Preferences),
                 FINISH => serde_json::from_value(input).map(Call::Finish),
                 LIST => serde_json::from_value::<DossiersRead>(input).map(|_| Call::List),
                 READ => serde_json::from_value(input).map(Call::Read),
@@ -147,7 +155,7 @@ impl scheduler::Scheduler {
                     let captured = owner.clone();
                     let value = owner
                         .workers
-                        .spawn(async move { captured.dossier_call(call, context).await })
+                        .spawn(async move { captured.dossier_call(call, context, cancel).await })
                         .await
                         .map_err(|e| ToolError::OutcomeUnknown(e.to_string()))??;
                     Ok(value.into())
@@ -171,8 +179,15 @@ pub(super) fn write_error(e: StoreError) -> ToolError {
 }
 
 impl Owner {
-    async fn dossier_call(&self, call: Call, context: ToolCallContext) -> Result<Value, ToolError> {
+    async fn dossier_call(
+        &self,
+        call: Call,
+        context: ToolCallContext,
+        cancel: CancellationToken,
+    ) -> Result<Value, ToolError> {
         match call {
+            Call::Stage(stage) => self.stage_artifact(&context, stage, cancel).await,
+            Call::Preferences(update) => self.update_discovery_preferences(&context, update).await,
             Call::Finish(input) => {
                 if input.note.trim().is_empty() || input.note.len() > records::MAX_TEXT_BYTES {
                     return Err(ToolError::Failed(
@@ -191,6 +206,22 @@ impl Owner {
                 Ok(serde_json::json!({"recorded":true}))
             }
             Call::Upsert { input, fingerprint } => {
+                let mut paths = BTreeSet::new();
+                for artifact in &input.dossier.artifacts {
+                    artifacts::validate_path(&input.dossier.topic_id, &artifact.path)
+                        .map_err(|e| ToolError::Failed(reason(e)))?;
+                    if !paths.insert(&artifact.path)
+                        || artifact.sha256.len() != 64
+                        || !artifact
+                            .sha256
+                            .bytes()
+                            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                    {
+                        return Err(ToolError::Failed(
+                            "attach distinct StageArtifact receipts".into(),
+                        ));
+                    }
+                }
                 let _gate = self.scheduler.gate.lock().await;
                 let (_, job) = self
                     .scheduler
@@ -224,6 +255,7 @@ impl Owner {
                     .revision_guard(&writer, source_revision)
                     .map_err(write_error)?;
                 let op = DossierMutation {
+                    wander: matches!(job.mode, Some(DiscoveryMode::Wander { .. })),
                     call_id: context.tool_use_id(),
                     caller: maka_agent_state::CallerFence {
                         execution: context.execution,
@@ -312,7 +344,7 @@ fn model_detail(detail: DossierDetail) -> Value {
         "last_notified_revision": dossier.last_notified_revision, "last_interrupt_reason": dossier.last_interrupt_reason,
         "last_interrupt_at": dossier.last_interrupt_at, "created_at": dossier.created_at, "updated_at": dossier.updated_at,
         "artifacts": dossier.artifacts.into_iter().map(|artifact| serde_json::json!({
-            "path": artifact.path, "purpose": artifact.purpose, "input_hashes": artifact.input_hashes,
+            "path": artifact.path, "sha256": artifact.sha256, "purpose": artifact.purpose, "input_hashes": artifact.input_hashes,
         })).collect::<Vec<_>>(),
         "watches": detail.watches.into_iter().map(|watch| serde_json::json!({
             "watch_id": watch.watch_id, "topic_id": watch.topic_id, "kind": watch.kind, "target": watch.target, "predicate": watch.predicate,
@@ -361,6 +393,7 @@ impl<A: Statement, B: Statement> Statement for WithStorage<A, B> {
 }
 
 struct DossierMutation {
+    wander: bool,
     caller: maka_agent_state::CallerFence,
     source: maka_event_log::root_store::SessionRevisionGuard,
     call_id: String,
@@ -407,6 +440,11 @@ impl Statement for DossierMutation {
                     notification: maka_event_log::writeback::Notification::NONE,
                 });
             }
+        }
+        if self.wander && !self.caller.completed_local_tool(c, LIST)? {
+            return Err(invalid(
+                "Call ListDossiers before committing a Wander finding",
+            ));
         }
         let Upsert {
             mut dossier,
@@ -636,8 +674,14 @@ impl Owner {
         let [source] = source_messages.as_mut_slice() else {
             return Err("discovery_thread_source_missing".into());
         };
+        let topic = self
+            .discovery
+            .thread_topic(session.to_owned())
+            .await
+            .map_err(reason)?
+            .ok_or("discovery_thread_unbound")?;
         let quote = QuoteRef {
-            text: summary,
+            text: format!("topic_id: {}\n\n{summary}", topic.0),
             label: None,
             source_message_id: None,
             source_turn_id: None,

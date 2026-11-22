@@ -2309,6 +2309,7 @@ pub fn contract() -> Contract {
                 ),
                 ("dossiers".into(), method::<DossiersRead, Dossiers>(MethodMode::Query)),
                 ("dossier".into(), method::<DossierRead, Option<DossierDetail>>(MethodMode::Query)),
+                ("readDossierArtifact".into(), method::<DossierArtifactRead, String>(MethodMode::Query)),
                 ("watchDossiers".into(), method::<DossiersRead, DossiersUpdate>(MethodMode::Subscription)),
                 ("setDossierMuted".into(), method::<DossierMute, ()>(MethodMode::Mutation)),
                 ("setDiscoveryNotifications".into(), method::<DiscoveryNotifications, ()>(MethodMode::Mutation)),

@@ -4098,6 +4098,14 @@ export interface ServiceMethods {
       input: Runtime.AgentQueueMessage;
       output: Runtime.AgentQueueMessageResult;
     };
+    readDossierArtifact: {
+      mode: 'query';
+      input: {
+        topicId: string;
+        path: string;
+      };
+      output: string;
+    };
     readFile: {
       mode: 'subscription';
       /**
@@ -6034,6 +6042,10 @@ export interface AgentDossierOutput_DossierDetail {
 export interface AgentDossierOutput_DossierArtifact {
   path: string;
   purpose: string;
+  /**
+   * Historical attachments may predate staged content fingerprints.
+   */
+  sha256?: string | null;
   inputHashes?: {
     [k: string]: string | undefined;
   };

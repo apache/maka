@@ -43,6 +43,7 @@ pub(super) const COORDINATION_TOOLS: &[&str] = &[
     "DiscoveryMemory",
     "ListDossiers",
     "ReadDossier",
+    "UpdateDiscoveryPreferences",
     "CreateGoal",
     "GetGoal",
     "GoalStatus",

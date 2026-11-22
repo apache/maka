@@ -57,6 +57,8 @@ vocabulary!(PendingActionStatus {
 pub struct DossierArtifact {
     pub path: String,
     pub purpose: String,
+    /// Historical attachments may predate staged content fingerprints.
+    pub sha256: Option<String>,
     #[serde(default)]
     pub input_hashes: BTreeMap<String, String>,
 }

@@ -84,7 +84,13 @@ mount(() => {
   const update = (topicId: string, edit: Partial<DossierDetail>) =>
     files.set(files().map((d) => (d.topicId === topicId ? { ...d, ...edit } : d)));
   const host = {
-    async query(_: string, method: string, input: { topicId?: string; sessionId?: string }) {
+    async query(
+      _: string,
+      method: string,
+      input: { topicId?: string; sessionId?: string; path?: string },
+    ) {
+      if (method === 'readDossierArtifact' && input.topicId === 'one' && input.path === 'draft.md')
+        return 'Ready to review\n+ revised clause\n' + 'line\n'.repeat(1100) + 'End of draft';
       if (method === 'dossier') return files().find((d) => d.topicId === input.topicId) ?? null;
       if (method === 'history' && input.sessionId === 'thread-two')
         return {

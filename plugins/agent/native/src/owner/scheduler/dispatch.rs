@@ -67,7 +67,7 @@ impl CapturedRun {
             && (session.archived
                 || session.configuration.workspace != boundary.workspace
                 || session.configuration.permissions
-                    != if discovery_profile == Some(DiscoveryWorkerTools::ReadOnly) {
+                    != if discovery_profile.is_some() {
                         super::super::discovery::permissions()
                     } else {
                         boundary.permissions.clone()
@@ -580,7 +580,7 @@ impl Owner {
         let active = plan.task.status == Status::Active;
         if matches!(fire.effect, ScheduledEffect::Discovery { .. }) {
             return self
-                .dispatch_discovery(fire, active && !expired, &plan.timezone)
+                .dispatch_discovery(fire, active && !expired, plan)
                 .await;
         }
         let Some(Approval::Execution { approval }) = &fire.authorization else {

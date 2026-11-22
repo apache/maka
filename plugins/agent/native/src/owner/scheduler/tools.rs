@@ -81,7 +81,6 @@ impl Scheduler {
         }];
         tools.push(self.discovery_tool());
         tools.push(self.discovery_memory_tool());
-        tools.extend(self.dossier_tools());
         tools
     }
 }
@@ -106,6 +105,8 @@ impl ToolPreparer for Scheduler {
                 | super::super::discovery::FINISH
                 | super::super::discovery::LIST
                 | super::super::discovery::READ
+                | super::super::discovery::STAGE
+                | super::super::discovery::PREFERENCES
         ) {
             return self.prepare_dossier_tool(name, input, context, cancellation);
         }

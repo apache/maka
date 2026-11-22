@@ -9746,6 +9746,10 @@ export const contracts: {
                   purpose: {
                     type: 'string',
                   },
+                  sha256: {
+                    description: 'Historical attachments may predate staged content fingerprints.',
+                    type: ['string', 'null'],
+                  },
                   inputHashes: {
                     type: 'object',
                     additionalProperties: {
@@ -35435,6 +35439,30 @@ export const contracts: {
                 enum: ['delivered', 'cancelled', 'unknown'],
               },
             },
+          },
+          resources: {},
+        },
+        readDossierArtifact: {
+          mode: 'query',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'DossierArtifactRead',
+            type: 'object',
+            properties: {
+              topicId: {
+                type: 'string',
+              },
+              path: {
+                type: 'string',
+              },
+            },
+            additionalProperties: false,
+            required: ['topicId', 'path'],
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'string',
+            type: 'string',
           },
           resources: {},
         },

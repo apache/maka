@@ -139,6 +139,23 @@ mod tests {
         app.wait_for("role:button[Proactive discovery]").unwrap();
         app.press("role:button[Proactive discovery]").unwrap();
         app.wait_for("text:Review copy").unwrap();
+        assert!(!app.screen().matches("text:/revised clause/").unwrap());
+        app.press("role:button[Preview draft.md]").unwrap();
+        app.wait_for("text:/revised clause/").unwrap();
+        app.press("role:button[Copy]").unwrap();
+        assert_eq!(
+            app.screen().clipboard(),
+            Some(
+                format!(
+                    "Ready to review\n+ revised clause\n{}End of draft",
+                    "line\n".repeat(1100)
+                )
+                .as_str()
+            )
+        );
+        app.press("role:button[Preview draft.md]").unwrap();
+        assert!(!app.screen().matches("text:/revised clause/").unwrap());
+        assert!(!app.screen().matches("role:button[Copy]").unwrap());
         app.press("label:Discovery desktop notifications: On")
             .unwrap();
         app.wait_for("label:Discovery desktop notifications: Off")

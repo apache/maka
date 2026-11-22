@@ -54,6 +54,13 @@ export const discoveryMessages = {
     '{count} 个关联提醒',
     '{count} 個關聯提醒',
   ],
+  'Preview staged artifact': ['Preview {path}', '预览 {path}', '預覽 {path}'],
+  'Copy staged artifact': ['Copy', '复制', '複製'],
+  'Could not preview this artifact.': [
+    'Could not preview this artifact.',
+    '无法预览此文件。',
+    '無法預覽此檔案。',
+  ],
   'Dossier artifacts': ['Artifacts', '产物', '產出檔案'],
   'Dossier pending actions': ['Pending actions', '待处理操作', '待處理操作'],
   'Dossier awaiting confirmation': ['Awaiting confirmation', '待确认', '待確認'],
@@ -114,9 +121,9 @@ export const discoveryMessages = {
     '調查方向（選填）',
   ],
   'Discovery permission notice': [
-    'Selected tools use the workspace permissions shown above. Terminal, desktop, and extension tools may also access files or the network. The selected model may incur charges.',
-    '已选工具使用上方的工作区权限。终端、桌面和扩展工具也可能读写文件或联网。所选模型可能产生费用。',
-    '已選工具使用上方的工作區權限。終端機、桌面與擴充工具也可能讀寫檔案或連網。選用的模型可能產生費用。',
+    'Discovery reads the workspace and prepares drafts in its staging folder. The selected model may incur charges.',
+    '调查可读取工作区，并在独立的暂存目录中准备草稿。所选模型可能产生费用。',
+    '調查可讀取工作區，並在獨立的暫存目錄中準備草稿。選用的模型可能產生費用。',
   ],
   'Discovery read-only notice': [
     'This plan uses read-only investigation tools. Its selected model may incur charges.',
@@ -156,8 +163,8 @@ export const discoveryMessages = {
   'Discovery list separator': [', ', '、', '、'],
   'Discovery external tool scope': [
     '{tools} may also access files or the network.',
-    '已选的{tools}也可能读写文件或联网。',
-    '已選的{tools}也可能讀寫檔案或連網。',
+    '已选的{tools}也可能读取文件或联网。',
+    '已選的{tools}也可能讀取檔案或連網。',
   ],
   'Discovery interval too long': [
     'This interval is too long. Enter a shorter interval.',

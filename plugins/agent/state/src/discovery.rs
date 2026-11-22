@@ -47,9 +47,31 @@ pub struct DossierUpsert {
     pub window_at: Option<UnixMillis>,
     pub summary_md: String,
     #[serde(default)]
-    pub artifacts: Vec<DossierArtifact>,
+    pub artifacts: Vec<StagedArtifact>,
     /// Omission preserves existing bindings. An empty list explicitly unlinks them.
     pub linked_task_ids: Option<Vec<String>>,
+}
+
+/// Receipt returned by StageArtifact and accepted verbatim by the worker tool.
+#[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct StagedArtifact {
+    pub path: String,
+    pub sha256: String,
+    pub purpose: String,
+    #[serde(default)]
+    pub input_hashes: std::collections::BTreeMap<String, String>,
+}
+
+impl From<StagedArtifact> for DossierArtifact {
+    fn from(value: StagedArtifact) -> Self {
+        Self {
+            path: value.path,
+            purpose: value.purpose,
+            sha256: Some(value.sha256),
+            input_hashes: value.input_hashes,
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -251,6 +273,59 @@ impl DiscoveryStore {
     }
     pub async fn get_dossier(&self, topic: TopicId) -> Result<Option<DossierRecord>, StoreError> {
         self.read(move |c, owner| get(c, owner, &topic)).await
+    }
+    pub async fn artifact(
+        &self,
+        topic: TopicId,
+        path: String,
+    ) -> Result<Option<DossierArtifact>, StoreError> {
+        self.read(move |c, owner| {
+            Ok(c.query_row(
+                "SELECT a.value FROM discovery_dossiers d, json_each(d.artifacts_json) a
+            WHERE d.owner=?1 AND d.topic_id=?2 AND a.value->>'$.path'=?3 LIMIT 1",
+                params![owner, topic.0, path],
+                |r| json(r, 0),
+            )
+            .optional()?)
+        })
+        .await
+    }
+
+    pub async fn attach_thread_artifact(
+        &self,
+        session: String,
+        topic: TopicId,
+        artifact: StagedArtifact,
+        at: UnixMillis,
+    ) -> Result<(), StoreError> {
+        self.data.write(self.mutation(true, move |c, owner| {
+            let mut artifacts: Vec<DossierArtifact> = c.query_row(
+                "SELECT artifacts_json FROM discovery_dossiers WHERE owner=?1 AND topic_id=?2 AND thread_session_id=?3",
+                params![owner, topic.0, session], |r| json(r, 0),
+            )?;
+            let artifact = DossierArtifact::from(artifact);
+            if let Some(previous) = artifacts.iter_mut().find(|a| a.path == artifact.path) {
+                if *previous == artifact { return Ok(()); }
+                *previous = artifact;
+            } else {
+                artifacts.push(artifact);
+            }
+            c.execute("UPDATE discovery_dossiers SET artifacts_json=?3, revision=revision+1,
+                last_material_change_at=max(last_material_change_at,?4), updated_at=max(updated_at,?4)
+                WHERE owner=?1 AND topic_id=?2", params![owner, topic.0, serde_json::to_string(&artifacts)?, at.0])?;
+            Ok(())
+        })).await
+    }
+    pub async fn thread_topic(&self, session: String) -> Result<Option<TopicId>, StoreError> {
+        self.read(move |c, owner| {
+            Ok(c.query_row(
+                "SELECT topic_id FROM discovery_dossiers WHERE thread_session_id=?1 AND owner=?2",
+                params![session, owner],
+                |r| Ok(TopicId(r.get(0)?)),
+            )
+            .optional()?)
+        })
+        .await
     }
     pub async fn detail(&self, topic: TopicId) -> Result<Option<DossierDetail>, StoreError> {
         self.read(move |c, owner| {
@@ -532,7 +607,12 @@ fn upsert(
     {
         return Err(crate::store::invalid("invalid discovery dossier"));
     }
-    let artifacts = serde_json::to_string(&input.artifacts)?;
+    let artifacts: Vec<_> = input
+        .artifacts
+        .into_iter()
+        .map(DossierArtifact::from)
+        .collect();
+    let artifacts = serde_json::to_string(&artifacts)?;
     let links = input
         .linked_task_ids
         .map(|mut ids| {
