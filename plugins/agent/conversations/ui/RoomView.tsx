@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { effect, keymap, signal, View, type JSX } from 'nsh';
+import { effect, keymap, platform, signal, View, type JSX } from 'nsh';
 import { Dialog } from 'nsh/base';
 import type { RoomWorkspaceInput } from '../../../../packages/plugin-sdk/src/workbench-views.js';
 import { createRoomWorkspace } from '../../../../products/maka/workbench/app/RoomWorkspace';
@@ -27,6 +27,7 @@ import {
   canDockPreview,
   createPreviewDialog,
   createSidebarHover,
+  sidePaneRoom,
 } from '../../../../products/maka/workbench/app/Workbench';
 import { HostProvider, type Host } from '../../../../products/maka/workbench/app/host';
 import { ImageViewer } from '../../../../products/maka/workbench/app/ImageViewer';
@@ -36,11 +37,51 @@ import { tr } from '../../../../products/maka/workbench/app/locale';
 import { createResources } from '../../../workspace/workspace-files/ui/resources';
 import { ResourcePane } from '../../../workspace/workspace-files/ui/ResourcePane';
 
-export function RoomView(props: { host: Host; input: RoomWorkspaceInput<JSX.Element> }) {
+export type RoomSidePaneHandle = {
+  leave(): Promise<boolean>;
+};
+
+export type RoomSidePaneFactory = (options: {
+  sessionId: () => string;
+  active: () => boolean;
+  visible: () => boolean;
+  blocked: () => boolean;
+  attach: (handle: RoomSidePaneHandle) => void;
+  openSession: (id: string | null) => Promise<boolean>;
+  openSettings: () => void;
+  close: () => void;
+}) => JSX.Element;
+
+export function RoomView(props: {
+  host: Host;
+  input: RoomWorkspaceInput<JSX.Element>;
+  renderAgentSide?: RoomSidePaneFactory;
+}) {
   const input = props.input;
   const selected = signal(input.initialSessionId);
+  const sideAgentId = signal<string | null>(null);
+  let sideHandle: RoomSidePaneHandle | null = null;
+
+  const setSideAgent = async (next: string | null): Promise<boolean> => {
+    const current = sideAgentId();
+    if (next === current) return true;
+    if (current !== null && sideHandle) {
+      try {
+        if (!(await sideHandle.leave())) return false;
+      } catch {
+        return false;
+      }
+    }
+    if (next === null) sideHandle = null;
+    sideAgentId.set(next);
+    return true;
+  };
+
   const resources = createResources(props.host, {
-    sessions: () => (selected() === null ? [] : [selected()!]),
+    sessions: () => [
+      ...(selected() === null ? [] : [selected()!]),
+      ...(sideAgentId() === null ? [] : [sideAgentId()!]),
+    ],
     blocked: () => input.blocked() || !input.visible(),
     directory: () => rooms.directory(),
     report: (reason) => rooms.report(reason),
@@ -58,9 +99,34 @@ export function RoomView(props: { host: Host; input: RoomWorkspaceInput<JSX.Elem
     else floatingNavigation.set(!floatingNavigation());
   };
   const previewDocked = () => resources.shown() && canDockPreview();
+  const canOpenSideAgent = () =>
+    Boolean(props.renderAgentSide) &&
+    platform.idiom !== 'terminal' &&
+    sidePaneRoom(navigationDocked(), previewDocked()) > 0;
+
   effect(() => {
     if (navigationFits() || !input.visible()) closeNavigation();
   });
+
+  const openAgentFromRoom = (id: string) => {
+    void (async () => {
+      try {
+        const { session } = await props.host.query('agent', 'observe', { sessionId: id });
+        if (session.kind === 'room') {
+          await rooms.open(id);
+          return;
+        }
+      } catch {
+        // Fall through to opening as an Agent session.
+      }
+      if (canOpenSideAgent()) {
+        await setSideAgent(id);
+      } else {
+        input.openSession(id);
+      }
+    })();
+  };
+
   const rooms = createRoomWorkspace({
     host: props.host,
     initial: input.initialSessionId,
@@ -76,12 +142,55 @@ export function RoomView(props: { host: Host; input: RoomWorkspaceInput<JSX.Elem
       sidebarHover: sidebarHover.hover,
     }),
     closeNavigation,
-    openAgent: input.openSession,
+    inspecting: () => sideAgentId(),
+    openAgent: openAgentFromRoom,
     openSettings: input.openSettings,
     openLink: resources.openLink,
   });
   effect(() => selected.set(rooms.selected()));
-  input.attach(rooms);
+  input.attach({
+    selected: rooms.selected,
+    title: rooms.title,
+    open: rooms.open,
+    async flush() {
+      await rooms.flush();
+      if (sideAgentId() !== null && sideHandle) {
+        try {
+          await sideHandle.leave();
+        } catch {
+          // Best-effort flush when leaving the Room workspace.
+        }
+      }
+    },
+  });
+
+  const sidePanes = () => {
+    const id = sideAgentId();
+    const factory = props.renderAgentSide;
+    if (!id || !factory || platform.idiom === 'terminal') return [];
+    return [
+      {
+        render: () =>
+          factory({
+            sessionId: () => sideAgentId() ?? id,
+            active: input.active,
+            visible: () => input.visible() && sideAgentId() !== null,
+            blocked: input.blocked,
+            attach: (handle) => {
+              sideHandle = handle;
+            },
+            openSession: async (next) => {
+              if (next === null) return setSideAgent(null);
+              openAgentFromRoom(next);
+              return true;
+            },
+            openSettings: input.openSettings,
+            close: () => void setSideAgent(null),
+          }),
+      },
+    ];
+  };
+
   const closePreview = () => {
     const sessionId = resources.sessionId();
     if (sessionId) resources.close({ sessionId, instance: resources.instance() });
@@ -103,6 +212,7 @@ export function RoomView(props: { host: Host; input: RoomWorkspaceInput<JSX.Elem
         previewShown={resources.shown}
         previewDialog={previewDialog}
         closePreview={closePreview}
+        sides={sidePanes}
         navigation={(temporary) =>
           rooms.navigation(
             input.modeSwitch(),

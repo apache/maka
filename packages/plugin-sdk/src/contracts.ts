@@ -15803,6 +15803,21 @@ export const contracts: {
                     required: ['kind', 'messageId'],
                   },
                   {
+                    description: 'Room messages centered around this message.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'around_message',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'messageId'],
+                  },
+                  {
                     description:
                       'Reveal this exact row field from its beginning, including empty tool rows.',
                     type: 'object',
@@ -16130,6 +16145,13 @@ export const contracts: {
                   after: {
                     type: ['string', 'null'],
                   },
+                  participants: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/AgentRoomMember',
+                    },
+                    default: [],
+                  },
                 },
                 additionalProperties: false,
                 required: ['items', 'through'],
@@ -16151,7 +16173,7 @@ export const contracts: {
                     minimum: 0,
                   },
                   author: {
-                    $ref: '#/$defs/RoomAuthor',
+                    $ref: '#/$defs/AgentRoomAuthor',
                   },
                   content: {
                     $ref: '#/$defs/AgentRoomContent',
@@ -16171,11 +16193,39 @@ export const contracts: {
                       $ref: '#/$defs/RoomDelivery',
                     },
                   },
+                  editedAt: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  deletedAt: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  reactions: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/AgentRoomReaction',
+                    },
+                    default: [],
+                  },
+                  pinned: {
+                    type: 'boolean',
+                    default: false,
+                  },
+                  deliveryStates: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/AgentRoomDeliveryState',
+                    },
+                    default: [],
+                  },
                 },
                 additionalProperties: false,
                 required: ['id', 'sequence', 'at', 'author', 'content', 'mentions', 'deliveries'],
               },
-              RoomAuthor: {
+              AgentRoomAuthor: {
                 oneOf: [
                   {
                     type: 'object',
@@ -16302,6 +16352,272 @@ export const contracts: {
                     required: ['kind', 'sessionId', 'reason'],
                   },
                 ],
+              },
+              AgentRoomReaction: {
+                type: 'object',
+                properties: {
+                  emoji: {
+                    type: 'string',
+                  },
+                  actors: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/AgentRoomActor',
+                    },
+                  },
+                },
+                additionalProperties: false,
+                required: ['emoji', 'actors'],
+              },
+              AgentRoomActor: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'human',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'session',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId'],
+                  },
+                ],
+              },
+              AgentRoomDeliveryState: {
+                description: 'Derived execution outcome for a Room mention delivery.',
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'queued',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'messageId'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'working',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'messageId'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'waiting',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                      pendingCount: {
+                        type: 'integer',
+                        format: 'uint32',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'messageId', 'pendingCount'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'replied',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                      replyMessageId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'messageId', 'replyMessageId'],
+                  },
+                  {
+                    description:
+                      'The mentioned Agent acknowledged the message with a Room reaction and finished without a prose reply.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'reacted',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                      emoji: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'messageId', 'emoji'],
+                  },
+                  {
+                    description:
+                      'The mentioned Agent finished its run without posting a reply or reaction in the Room.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'silent',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'messageId'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'failed',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                      reason: {
+                        type: ['string', 'null'],
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'messageId'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'stopped',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'messageId'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'rejected',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      reason: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'reason'],
+                  },
+                ],
+              },
+              AgentRoomMember: {
+                type: 'object',
+                properties: {
+                  sessionId: {
+                    type: 'string',
+                  },
+                  title: {
+                    type: 'string',
+                  },
+                  presetName: {
+                    type: ['string', 'null'],
+                  },
+                  workspacePath: {
+                    type: 'string',
+                  },
+                  activity: {
+                    $ref: '#/$defs/AgentRoomParticipantActivity',
+                  },
+                  pendingInteractions: {
+                    type: 'integer',
+                    format: 'uint32',
+                    minimum: 0,
+                    default: 0,
+                  },
+                  archived: {
+                    type: 'boolean',
+                    default: false,
+                  },
+                  unavailable: {
+                    type: 'boolean',
+                    default: false,
+                  },
+                  addedAt: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['sessionId', 'title', 'workspacePath', 'activity'],
+              },
+              AgentRoomParticipantActivity: {
+                type: 'string',
+                enum: ['idle', 'working', 'waiting'],
               },
               AgentHistoryChunk: {
                 type: 'object',
@@ -16790,10 +17106,22 @@ export const contracts: {
                         type: 'string',
                       },
                       author: {
-                        $ref: '#/$defs/RoomAuthor',
+                        $ref: '#/$defs/AgentRoomAuthor',
                       },
                       replyTo: {
                         type: ['string', 'null'],
+                      },
+                      mentions: {
+                        type: 'array',
+                        items: {
+                          type: 'string',
+                        },
+                      },
+                      hopCount: {
+                        type: ['integer', 'null'],
+                        format: 'uint8',
+                        minimum: 0,
+                        maximum: 255,
                       },
                     },
                     additionalProperties: false,
@@ -18482,10 +18810,22 @@ export const contracts: {
                         type: 'string',
                       },
                       author: {
-                        $ref: '#/$defs/RoomAuthor',
+                        $ref: '#/$defs/AgentRoomAuthor',
                       },
                       replyTo: {
                         type: ['string', 'null'],
+                      },
+                      mentions: {
+                        type: 'array',
+                        items: {
+                          type: 'string',
+                        },
+                      },
+                      hopCount: {
+                        type: ['integer', 'null'],
+                        format: 'uint8',
+                        minimum: 0,
+                        maximum: 255,
                       },
                     },
                     additionalProperties: false,
@@ -18574,7 +18914,7 @@ export const contracts: {
                 additionalProperties: false,
                 required: ['sessionId', 'turnId', 'runId'],
               },
-              RoomAuthor: {
+              AgentRoomAuthor: {
                 oneOf: [
                   {
                     type: 'object',
@@ -24810,6 +25150,21 @@ export const contracts: {
                     required: ['kind', 'messageId'],
                   },
                   {
+                    description: 'Room messages centered around this message.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'around_message',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'messageId'],
+                  },
+                  {
                     description:
                       'Reveal this exact row field from its beginning, including empty tool rows.',
                     type: 'object',
@@ -25137,6 +25492,13 @@ export const contracts: {
                   after: {
                     type: ['string', 'null'],
                   },
+                  participants: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/AgentRoomMember',
+                    },
+                    default: [],
+                  },
                 },
                 additionalProperties: false,
                 required: ['items', 'through'],
@@ -25158,7 +25520,7 @@ export const contracts: {
                     minimum: 0,
                   },
                   author: {
-                    $ref: '#/$defs/RoomAuthor',
+                    $ref: '#/$defs/AgentRoomAuthor',
                   },
                   content: {
                     $ref: '#/$defs/AgentRoomContent',
@@ -25178,11 +25540,39 @@ export const contracts: {
                       $ref: '#/$defs/RoomDelivery',
                     },
                   },
+                  editedAt: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  deletedAt: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  reactions: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/AgentRoomReaction',
+                    },
+                    default: [],
+                  },
+                  pinned: {
+                    type: 'boolean',
+                    default: false,
+                  },
+                  deliveryStates: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/AgentRoomDeliveryState',
+                    },
+                    default: [],
+                  },
                 },
                 additionalProperties: false,
                 required: ['id', 'sequence', 'at', 'author', 'content', 'mentions', 'deliveries'],
               },
-              RoomAuthor: {
+              AgentRoomAuthor: {
                 oneOf: [
                   {
                     type: 'object',
@@ -25309,6 +25699,272 @@ export const contracts: {
                     required: ['kind', 'sessionId', 'reason'],
                   },
                 ],
+              },
+              AgentRoomReaction: {
+                type: 'object',
+                properties: {
+                  emoji: {
+                    type: 'string',
+                  },
+                  actors: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/AgentRoomActor',
+                    },
+                  },
+                },
+                additionalProperties: false,
+                required: ['emoji', 'actors'],
+              },
+              AgentRoomActor: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'human',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'session',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId'],
+                  },
+                ],
+              },
+              AgentRoomDeliveryState: {
+                description: 'Derived execution outcome for a Room mention delivery.',
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'queued',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'messageId'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'working',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'messageId'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'waiting',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                      pendingCount: {
+                        type: 'integer',
+                        format: 'uint32',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'messageId', 'pendingCount'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'replied',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                      replyMessageId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'messageId', 'replyMessageId'],
+                  },
+                  {
+                    description:
+                      'The mentioned Agent acknowledged the message with a Room reaction and finished without a prose reply.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'reacted',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                      emoji: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'messageId', 'emoji'],
+                  },
+                  {
+                    description:
+                      'The mentioned Agent finished its run without posting a reply or reaction in the Room.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'silent',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'messageId'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'failed',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                      reason: {
+                        type: ['string', 'null'],
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'messageId'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'stopped',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'messageId'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'rejected',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      reason: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'reason'],
+                  },
+                ],
+              },
+              AgentRoomMember: {
+                type: 'object',
+                properties: {
+                  sessionId: {
+                    type: 'string',
+                  },
+                  title: {
+                    type: 'string',
+                  },
+                  presetName: {
+                    type: ['string', 'null'],
+                  },
+                  workspacePath: {
+                    type: 'string',
+                  },
+                  activity: {
+                    $ref: '#/$defs/AgentRoomParticipantActivity',
+                  },
+                  pendingInteractions: {
+                    type: 'integer',
+                    format: 'uint32',
+                    minimum: 0,
+                    default: 0,
+                  },
+                  archived: {
+                    type: 'boolean',
+                    default: false,
+                  },
+                  unavailable: {
+                    type: 'boolean',
+                    default: false,
+                  },
+                  addedAt: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['sessionId', 'title', 'workspacePath', 'activity'],
+              },
+              AgentRoomParticipantActivity: {
+                type: 'string',
+                enum: ['idle', 'working', 'waiting'],
               },
               AgentHistoryChunk: {
                 type: 'object',
@@ -25797,10 +26453,22 @@ export const contracts: {
                         type: 'string',
                       },
                       author: {
-                        $ref: '#/$defs/RoomAuthor',
+                        $ref: '#/$defs/AgentRoomAuthor',
                       },
                       replyTo: {
                         type: ['string', 'null'],
+                      },
+                      mentions: {
+                        type: 'array',
+                        items: {
+                          type: 'string',
+                        },
+                      },
+                      hopCount: {
+                        type: ['integer', 'null'],
+                        format: 'uint8',
+                        minimum: 0,
+                        maximum: 255,
                       },
                     },
                     additionalProperties: false,
@@ -27016,10 +27684,22 @@ export const contracts: {
                         type: 'string',
                       },
                       author: {
-                        $ref: '#/$defs/RoomAuthor',
+                        $ref: '#/$defs/AgentRoomAuthor',
                       },
                       replyTo: {
                         type: ['string', 'null'],
+                      },
+                      mentions: {
+                        type: 'array',
+                        items: {
+                          type: 'string',
+                        },
+                      },
+                      hopCount: {
+                        type: ['integer', 'null'],
+                        format: 'uint8',
+                        minimum: 0,
+                        maximum: 255,
                       },
                     },
                     additionalProperties: false,
@@ -27112,7 +27792,7 @@ export const contracts: {
                 type: 'string',
                 format: 'uuid',
               },
-              RoomAuthor: {
+              AgentRoomAuthor: {
                 oneOf: [
                   {
                     type: 'object',
@@ -34027,10 +34707,22 @@ export const contracts: {
                         type: 'string',
                       },
                       author: {
-                        $ref: '#/$defs/RoomAuthor',
+                        $ref: '#/$defs/AgentRoomAuthor',
                       },
                       replyTo: {
                         type: ['string', 'null'],
+                      },
+                      mentions: {
+                        type: 'array',
+                        items: {
+                          type: 'string',
+                        },
+                      },
+                      hopCount: {
+                        type: ['integer', 'null'],
+                        format: 'uint8',
+                        minimum: 0,
+                        maximum: 255,
                       },
                     },
                     additionalProperties: false,
@@ -34123,7 +34815,7 @@ export const contracts: {
                 type: 'string',
                 format: 'uuid',
               },
-              RoomAuthor: {
+              AgentRoomAuthor: {
                 oneOf: [
                   {
                     type: 'object',
@@ -38844,6 +39536,1671 @@ export const contracts: {
           },
           resources: {},
         },
+        roomManage: {
+          mode: 'mutation',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentRoomManage',
+            type: 'object',
+            properties: {
+              sessionId: {
+                type: 'string',
+                minLength: 1,
+              },
+              action: {
+                $ref: '#/$defs/AgentRoomManageAction',
+              },
+            },
+            additionalProperties: false,
+            required: ['sessionId', 'action'],
+            $defs: {
+              AgentRoomManageAction: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'set_topic',
+                      },
+                      topic: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'topic'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'add_members',
+                      },
+                      memberSessionIds: {
+                        type: 'array',
+                        items: {
+                          type: 'string',
+                        },
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'memberSessionIds'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'remove_members',
+                      },
+                      memberSessionIds: {
+                        type: 'array',
+                        items: {
+                          type: 'string',
+                        },
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'memberSessionIds'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'react',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                      emoji: {
+                        type: 'string',
+                      },
+                      add: {
+                        description: 'Omit to toggle; true to add, false to remove.',
+                        type: ['boolean', 'null'],
+                        default: null,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'messageId', 'emoji'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'pin',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'messageId'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'unpin',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'messageId'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'edit_message',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                      text: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'messageId', 'text'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'delete_message',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'messageId'],
+                  },
+                ],
+              },
+            },
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentRoomManageResult',
+            oneOf: [
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'topic_updated',
+                  },
+                  topic: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'topic'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'members_added',
+                  },
+                  added: {
+                    type: 'array',
+                    items: {
+                      type: 'string',
+                    },
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'added'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'members_removed',
+                  },
+                  removed: {
+                    type: 'array',
+                    items: {
+                      type: 'string',
+                    },
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'removed'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'reaction_updated',
+                  },
+                  messageId: {
+                    type: 'string',
+                  },
+                  emoji: {
+                    type: 'string',
+                  },
+                  present: {
+                    type: 'boolean',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'messageId', 'emoji', 'present'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'pin_updated',
+                  },
+                  messageId: {
+                    type: 'string',
+                  },
+                  pinned: {
+                    type: 'boolean',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'messageId', 'pinned'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'message_updated',
+                  },
+                  message: {
+                    $ref: '#/$defs/AgentRoomMessage',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'message'],
+              },
+            ],
+            $defs: {
+              AgentRoomMessage: {
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                  },
+                  sequence: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  at: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  author: {
+                    $ref: '#/$defs/AgentRoomAuthor',
+                  },
+                  content: {
+                    $ref: '#/$defs/AgentRoomContent',
+                  },
+                  replyTo: {
+                    type: ['string', 'null'],
+                  },
+                  mentions: {
+                    type: 'array',
+                    items: {
+                      type: 'string',
+                    },
+                  },
+                  deliveries: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/RoomDelivery',
+                    },
+                  },
+                  editedAt: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  deletedAt: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  reactions: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/AgentRoomReaction',
+                    },
+                    default: [],
+                  },
+                  pinned: {
+                    type: 'boolean',
+                    default: false,
+                  },
+                  deliveryStates: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/AgentRoomDeliveryState',
+                    },
+                    default: [],
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'sequence', 'at', 'author', 'content', 'mentions', 'deliveries'],
+              },
+              AgentRoomAuthor: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'human',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'session',
+                      },
+                      execution: {
+                        $ref: '#/$defs/ExecutionIdentity',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'execution'],
+                  },
+                ],
+              },
+              ExecutionIdentity: {
+                type: 'object',
+                properties: {
+                  sessionId: {
+                    type: 'string',
+                  },
+                  turnId: {
+                    type: 'string',
+                  },
+                  runId: {
+                    $ref: '#/$defs/RunId',
+                  },
+                },
+                additionalProperties: false,
+                required: ['sessionId', 'turnId', 'runId'],
+              },
+              RunId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              AgentRoomContent: {
+                type: 'object',
+                properties: {
+                  text: {
+                    type: 'string',
+                  },
+                  attachments: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/AgentHistoryAttachment',
+                    },
+                  },
+                },
+                additionalProperties: false,
+                required: ['text', 'attachments'],
+              },
+              AgentHistoryAttachment: {
+                type: 'object',
+                properties: {
+                  name: {
+                    type: 'string',
+                  },
+                  mimeType: {
+                    type: 'string',
+                  },
+                  bytes: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  kind: {
+                    $ref: '#/$defs/AttachmentKind',
+                  },
+                },
+                additionalProperties: false,
+                required: ['name', 'mimeType', 'bytes', 'kind'],
+              },
+              AttachmentKind: {
+                type: 'string',
+                enum: ['image', 'pdf', 'doc', 'code', 'other'],
+              },
+              RoomDelivery: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'accepted',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'messageId'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'rejected',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      reason: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'reason'],
+                  },
+                ],
+              },
+              AgentRoomReaction: {
+                type: 'object',
+                properties: {
+                  emoji: {
+                    type: 'string',
+                  },
+                  actors: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/AgentRoomActor',
+                    },
+                  },
+                },
+                additionalProperties: false,
+                required: ['emoji', 'actors'],
+              },
+              AgentRoomActor: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'human',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'session',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId'],
+                  },
+                ],
+              },
+              AgentRoomDeliveryState: {
+                description: 'Derived execution outcome for a Room mention delivery.',
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'queued',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'messageId'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'working',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'messageId'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'waiting',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                      pendingCount: {
+                        type: 'integer',
+                        format: 'uint32',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'messageId', 'pendingCount'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'replied',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                      replyMessageId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'messageId', 'replyMessageId'],
+                  },
+                  {
+                    description:
+                      'The mentioned Agent acknowledged the message with a Room reaction and finished without a prose reply.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'reacted',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                      emoji: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'messageId', 'emoji'],
+                  },
+                  {
+                    description:
+                      'The mentioned Agent finished its run without posting a reply or reaction in the Room.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'silent',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'messageId'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'failed',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                      reason: {
+                        type: ['string', 'null'],
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'messageId'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'stopped',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'messageId'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'rejected',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      reason: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'reason'],
+                  },
+                ],
+              },
+            },
+          },
+          resources: {},
+        },
+        roomSearch: {
+          mode: 'query',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentRoomSearchRead',
+            type: 'object',
+            properties: {
+              sessionId: {
+                type: 'string',
+                minLength: 1,
+              },
+              query: {
+                type: 'string',
+                minLength: 1,
+              },
+              limit: {
+                type: ['integer', 'null'],
+                format: 'uint32',
+                minimum: 1,
+                maximum: 100,
+                default: null,
+              },
+            },
+            additionalProperties: false,
+            required: ['sessionId', 'query'],
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentRoomSearchResult',
+            type: 'object',
+            properties: {
+              items: {
+                type: 'array',
+                items: {
+                  $ref: '#/$defs/AgentRoomSearchMatch',
+                },
+              },
+            },
+            additionalProperties: false,
+            required: ['items'],
+            $defs: {
+              AgentRoomSearchMatch: {
+                type: 'object',
+                properties: {
+                  message: {
+                    $ref: '#/$defs/AgentRoomMessage',
+                  },
+                  snippet: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['message', 'snippet'],
+              },
+              AgentRoomMessage: {
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                  },
+                  sequence: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  at: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  author: {
+                    $ref: '#/$defs/AgentRoomAuthor',
+                  },
+                  content: {
+                    $ref: '#/$defs/AgentRoomContent',
+                  },
+                  replyTo: {
+                    type: ['string', 'null'],
+                  },
+                  mentions: {
+                    type: 'array',
+                    items: {
+                      type: 'string',
+                    },
+                  },
+                  deliveries: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/RoomDelivery',
+                    },
+                  },
+                  editedAt: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  deletedAt: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  reactions: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/AgentRoomReaction',
+                    },
+                    default: [],
+                  },
+                  pinned: {
+                    type: 'boolean',
+                    default: false,
+                  },
+                  deliveryStates: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/AgentRoomDeliveryState',
+                    },
+                    default: [],
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'sequence', 'at', 'author', 'content', 'mentions', 'deliveries'],
+              },
+              AgentRoomAuthor: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'human',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'session',
+                      },
+                      execution: {
+                        $ref: '#/$defs/ExecutionIdentity',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'execution'],
+                  },
+                ],
+              },
+              ExecutionIdentity: {
+                type: 'object',
+                properties: {
+                  sessionId: {
+                    type: 'string',
+                  },
+                  turnId: {
+                    type: 'string',
+                  },
+                  runId: {
+                    $ref: '#/$defs/RunId',
+                  },
+                },
+                additionalProperties: false,
+                required: ['sessionId', 'turnId', 'runId'],
+              },
+              RunId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              AgentRoomContent: {
+                type: 'object',
+                properties: {
+                  text: {
+                    type: 'string',
+                  },
+                  attachments: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/AgentHistoryAttachment',
+                    },
+                  },
+                },
+                additionalProperties: false,
+                required: ['text', 'attachments'],
+              },
+              AgentHistoryAttachment: {
+                type: 'object',
+                properties: {
+                  name: {
+                    type: 'string',
+                  },
+                  mimeType: {
+                    type: 'string',
+                  },
+                  bytes: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  kind: {
+                    $ref: '#/$defs/AttachmentKind',
+                  },
+                },
+                additionalProperties: false,
+                required: ['name', 'mimeType', 'bytes', 'kind'],
+              },
+              AttachmentKind: {
+                type: 'string',
+                enum: ['image', 'pdf', 'doc', 'code', 'other'],
+              },
+              RoomDelivery: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'accepted',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'messageId'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'rejected',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      reason: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'reason'],
+                  },
+                ],
+              },
+              AgentRoomReaction: {
+                type: 'object',
+                properties: {
+                  emoji: {
+                    type: 'string',
+                  },
+                  actors: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/AgentRoomActor',
+                    },
+                  },
+                },
+                additionalProperties: false,
+                required: ['emoji', 'actors'],
+              },
+              AgentRoomActor: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'human',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'session',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId'],
+                  },
+                ],
+              },
+              AgentRoomDeliveryState: {
+                description: 'Derived execution outcome for a Room mention delivery.',
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'queued',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'messageId'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'working',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'messageId'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'waiting',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                      pendingCount: {
+                        type: 'integer',
+                        format: 'uint32',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'messageId', 'pendingCount'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'replied',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                      replyMessageId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'messageId', 'replyMessageId'],
+                  },
+                  {
+                    description:
+                      'The mentioned Agent acknowledged the message with a Room reaction and finished without a prose reply.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'reacted',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                      emoji: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'messageId', 'emoji'],
+                  },
+                  {
+                    description:
+                      'The mentioned Agent finished its run without posting a reply or reaction in the Room.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'silent',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'messageId'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'failed',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                      reason: {
+                        type: ['string', 'null'],
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'messageId'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'stopped',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'messageId'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'rejected',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      reason: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'reason'],
+                  },
+                ],
+              },
+            },
+          },
+          resources: {},
+        },
+        roomState: {
+          mode: 'query',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentRoomStateRead',
+            type: 'object',
+            properties: {
+              sessionId: {
+                type: 'string',
+                minLength: 1,
+              },
+            },
+            additionalProperties: false,
+            required: ['sessionId'],
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentRoomState',
+            type: 'object',
+            properties: {
+              sessionId: {
+                type: 'string',
+              },
+              topic: {
+                type: 'string',
+              },
+              members: {
+                type: 'array',
+                items: {
+                  $ref: '#/$defs/AgentRoomMember',
+                },
+              },
+              pinned: {
+                type: 'array',
+                items: {
+                  $ref: '#/$defs/AgentRoomMessage',
+                },
+              },
+            },
+            additionalProperties: false,
+            required: ['sessionId', 'topic', 'members', 'pinned'],
+            $defs: {
+              AgentRoomMember: {
+                type: 'object',
+                properties: {
+                  sessionId: {
+                    type: 'string',
+                  },
+                  title: {
+                    type: 'string',
+                  },
+                  presetName: {
+                    type: ['string', 'null'],
+                  },
+                  workspacePath: {
+                    type: 'string',
+                  },
+                  activity: {
+                    $ref: '#/$defs/AgentRoomParticipantActivity',
+                  },
+                  pendingInteractions: {
+                    type: 'integer',
+                    format: 'uint32',
+                    minimum: 0,
+                    default: 0,
+                  },
+                  archived: {
+                    type: 'boolean',
+                    default: false,
+                  },
+                  unavailable: {
+                    type: 'boolean',
+                    default: false,
+                  },
+                  addedAt: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['sessionId', 'title', 'workspacePath', 'activity'],
+              },
+              AgentRoomParticipantActivity: {
+                type: 'string',
+                enum: ['idle', 'working', 'waiting'],
+              },
+              AgentRoomMessage: {
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                  },
+                  sequence: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  at: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  author: {
+                    $ref: '#/$defs/AgentRoomAuthor',
+                  },
+                  content: {
+                    $ref: '#/$defs/AgentRoomContent',
+                  },
+                  replyTo: {
+                    type: ['string', 'null'],
+                  },
+                  mentions: {
+                    type: 'array',
+                    items: {
+                      type: 'string',
+                    },
+                  },
+                  deliveries: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/RoomDelivery',
+                    },
+                  },
+                  editedAt: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  deletedAt: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  reactions: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/AgentRoomReaction',
+                    },
+                    default: [],
+                  },
+                  pinned: {
+                    type: 'boolean',
+                    default: false,
+                  },
+                  deliveryStates: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/AgentRoomDeliveryState',
+                    },
+                    default: [],
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'sequence', 'at', 'author', 'content', 'mentions', 'deliveries'],
+              },
+              AgentRoomAuthor: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'human',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'session',
+                      },
+                      execution: {
+                        $ref: '#/$defs/ExecutionIdentity',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'execution'],
+                  },
+                ],
+              },
+              ExecutionIdentity: {
+                type: 'object',
+                properties: {
+                  sessionId: {
+                    type: 'string',
+                  },
+                  turnId: {
+                    type: 'string',
+                  },
+                  runId: {
+                    $ref: '#/$defs/RunId',
+                  },
+                },
+                additionalProperties: false,
+                required: ['sessionId', 'turnId', 'runId'],
+              },
+              RunId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              AgentRoomContent: {
+                type: 'object',
+                properties: {
+                  text: {
+                    type: 'string',
+                  },
+                  attachments: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/AgentHistoryAttachment',
+                    },
+                  },
+                },
+                additionalProperties: false,
+                required: ['text', 'attachments'],
+              },
+              AgentHistoryAttachment: {
+                type: 'object',
+                properties: {
+                  name: {
+                    type: 'string',
+                  },
+                  mimeType: {
+                    type: 'string',
+                  },
+                  bytes: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  kind: {
+                    $ref: '#/$defs/AttachmentKind',
+                  },
+                },
+                additionalProperties: false,
+                required: ['name', 'mimeType', 'bytes', 'kind'],
+              },
+              AttachmentKind: {
+                type: 'string',
+                enum: ['image', 'pdf', 'doc', 'code', 'other'],
+              },
+              RoomDelivery: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'accepted',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'messageId'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'rejected',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      reason: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'reason'],
+                  },
+                ],
+              },
+              AgentRoomReaction: {
+                type: 'object',
+                properties: {
+                  emoji: {
+                    type: 'string',
+                  },
+                  actors: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/AgentRoomActor',
+                    },
+                  },
+                },
+                additionalProperties: false,
+                required: ['emoji', 'actors'],
+              },
+              AgentRoomActor: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'human',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'session',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId'],
+                  },
+                ],
+              },
+              AgentRoomDeliveryState: {
+                description: 'Derived execution outcome for a Room mention delivery.',
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'queued',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'messageId'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'working',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'messageId'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'waiting',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                      pendingCount: {
+                        type: 'integer',
+                        format: 'uint32',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'messageId', 'pendingCount'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'replied',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                      replyMessageId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'messageId', 'replyMessageId'],
+                  },
+                  {
+                    description:
+                      'The mentioned Agent acknowledged the message with a Room reaction and finished without a prose reply.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'reacted',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                      emoji: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'messageId', 'emoji'],
+                  },
+                  {
+                    description:
+                      'The mentioned Agent finished its run without posting a reply or reaction in the Room.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'silent',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'messageId'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'failed',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                      reason: {
+                        type: ['string', 'null'],
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'messageId'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'stopped',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'messageId'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'rejected',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      reason: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'reason'],
+                  },
+                ],
+              },
+            },
+          },
+          resources: {},
+        },
         saveFile: {
           mode: 'mutation',
           input: {
@@ -42280,8 +44637,15 @@ export const contracts: {
               },
               delivery: {
                 description:
-                  'Defaults to steer. Omit or use steer for updates to ongoing work;\nuse queue only when this message should wait until the current turn ends.',
-                $ref: '#/$defs/AgentSendDelivery',
+                  'Defaults to steer (injects cleanly at the next step boundary without aborting in-flight tools).\nPass queue to wait until the current turn finishes before delivering.',
+                anyOf: [
+                  {
+                    $ref: '#/$defs/AgentSendDelivery',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
               },
               expectedRunId: {
                 description:
@@ -45034,6 +47398,122 @@ export const contracts: {
                     additionalProperties: false,
                     required: ['kind', 'model'],
                   },
+                  {
+                    description: "Update a Room's topic / shared goal statement.",
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'room_topic',
+                      },
+                      topic: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'topic'],
+                  },
+                  {
+                    description: "Add or remove Agent conversations in a Room's member roster.",
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'room_members',
+                      },
+                      add: {
+                        type: 'array',
+                        items: {
+                          type: 'string',
+                        },
+                        default: [],
+                      },
+                      remove: {
+                        type: 'array',
+                        items: {
+                          type: 'string',
+                        },
+                        default: [],
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind'],
+                  },
+                  {
+                    description:
+                      'Add, remove, or toggle an emoji reaction on a Room message (e.g. ✅ or 👀).',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'room_react',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                      emoji: {
+                        type: 'string',
+                      },
+                      add: {
+                        description: 'Omit to toggle; true to add, false to remove.',
+                        type: ['boolean', 'null'],
+                        default: null,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'messageId', 'emoji'],
+                  },
+                  {
+                    description: 'Pin or unpin an important Room message.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'room_pin',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                      pinned: {
+                        type: 'boolean',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'messageId', 'pinned'],
+                  },
+                  {
+                    description: 'Edit a Room message you posted.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'room_edit',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                      text: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'messageId', 'text'],
+                  },
+                  {
+                    description: 'Retract (soft-delete) a Room message you posted.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'room_delete',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'messageId'],
+                  },
                 ],
               },
               AgentQueueAction: {
@@ -45208,6 +47688,20 @@ export const contracts: {
                 },
                 additionalProperties: false,
                 required: ['kind', 'reason'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'room_updated',
+                  },
+                  result: {
+                    $ref: '#/$defs/AgentRoomManageResult',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'result'],
               },
               {
                 type: 'object',
@@ -46199,6 +48693,523 @@ export const contracts: {
                   'safety_check_failed',
                 ],
               },
+              AgentRoomManageResult: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'topic_updated',
+                      },
+                      topic: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'topic'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'members_added',
+                      },
+                      added: {
+                        type: 'array',
+                        items: {
+                          type: 'string',
+                        },
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'added'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'members_removed',
+                      },
+                      removed: {
+                        type: 'array',
+                        items: {
+                          type: 'string',
+                        },
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'removed'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'reaction_updated',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                      emoji: {
+                        type: 'string',
+                      },
+                      present: {
+                        type: 'boolean',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'messageId', 'emoji', 'present'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'pin_updated',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                      pinned: {
+                        type: 'boolean',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'messageId', 'pinned'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'message_updated',
+                      },
+                      message: {
+                        $ref: '#/$defs/AgentRoomMessage',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'message'],
+                  },
+                ],
+              },
+              AgentRoomMessage: {
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                  },
+                  sequence: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  at: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  author: {
+                    $ref: '#/$defs/AgentRoomAuthor',
+                  },
+                  content: {
+                    $ref: '#/$defs/AgentRoomContent',
+                  },
+                  replyTo: {
+                    type: ['string', 'null'],
+                  },
+                  mentions: {
+                    type: 'array',
+                    items: {
+                      type: 'string',
+                    },
+                  },
+                  deliveries: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/RoomDelivery',
+                    },
+                  },
+                  editedAt: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  deletedAt: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  reactions: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/AgentRoomReaction',
+                    },
+                    default: [],
+                  },
+                  pinned: {
+                    type: 'boolean',
+                    default: false,
+                  },
+                  deliveryStates: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/AgentRoomDeliveryState',
+                    },
+                    default: [],
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'sequence', 'at', 'author', 'content', 'mentions', 'deliveries'],
+              },
+              AgentRoomAuthor: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'human',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'session',
+                      },
+                      execution: {
+                        $ref: '#/$defs/ExecutionIdentity',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'execution'],
+                  },
+                ],
+              },
+              ExecutionIdentity: {
+                type: 'object',
+                properties: {
+                  sessionId: {
+                    type: 'string',
+                  },
+                  turnId: {
+                    type: 'string',
+                  },
+                  runId: {
+                    $ref: '#/$defs/RunId',
+                  },
+                },
+                additionalProperties: false,
+                required: ['sessionId', 'turnId', 'runId'],
+              },
+              AgentRoomContent: {
+                type: 'object',
+                properties: {
+                  text: {
+                    type: 'string',
+                  },
+                  attachments: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/AgentHistoryAttachment',
+                    },
+                  },
+                },
+                additionalProperties: false,
+                required: ['text', 'attachments'],
+              },
+              AgentHistoryAttachment: {
+                type: 'object',
+                properties: {
+                  name: {
+                    type: 'string',
+                  },
+                  mimeType: {
+                    type: 'string',
+                  },
+                  bytes: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  kind: {
+                    $ref: '#/$defs/AttachmentKind',
+                  },
+                },
+                additionalProperties: false,
+                required: ['name', 'mimeType', 'bytes', 'kind'],
+              },
+              AttachmentKind: {
+                type: 'string',
+                enum: ['image', 'pdf', 'doc', 'code', 'other'],
+              },
+              RoomDelivery: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'accepted',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'messageId'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'rejected',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      reason: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'reason'],
+                  },
+                ],
+              },
+              AgentRoomReaction: {
+                type: 'object',
+                properties: {
+                  emoji: {
+                    type: 'string',
+                  },
+                  actors: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/AgentRoomActor',
+                    },
+                  },
+                },
+                additionalProperties: false,
+                required: ['emoji', 'actors'],
+              },
+              AgentRoomActor: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'human',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'session',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId'],
+                  },
+                ],
+              },
+              AgentRoomDeliveryState: {
+                description: 'Derived execution outcome for a Room mention delivery.',
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'queued',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'messageId'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'working',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'messageId'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'waiting',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                      pendingCount: {
+                        type: 'integer',
+                        format: 'uint32',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'messageId', 'pendingCount'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'replied',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                      replyMessageId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'messageId', 'replyMessageId'],
+                  },
+                  {
+                    description:
+                      'The mentioned Agent acknowledged the message with a Room reaction and finished without a prose reply.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'reacted',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                      emoji: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'messageId', 'emoji'],
+                  },
+                  {
+                    description:
+                      'The mentioned Agent finished its run without posting a reply or reaction in the Room.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'silent',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'messageId'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'failed',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                      reason: {
+                        type: ['string', 'null'],
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'messageId'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'stopped',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'messageId'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'rejected',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      reason: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'reason'],
+                  },
+                ],
+              },
               AgentRejection: {
                 type: 'string',
                 enum: [
@@ -46443,6 +49454,12 @@ export const contracts: {
                 ],
                 default: null,
               },
+              searchQuery: {
+                description:
+                  'Full-text search within a Room; returns matching posts with snippets.',
+                type: ['string', 'null'],
+                default: null,
+              },
               row: {
                 description:
                   'Exact historical row lookup emitted by Recall or Code Mode cell references.',
@@ -46486,7 +49503,7 @@ export const contracts: {
               },
               AgentRoomAnchorMode: {
                 type: 'string',
-                enum: ['at', 'before', 'after'],
+                enum: ['at', 'before', 'after', 'around'],
               },
               AgentSessionRowLookup: {
                 type: 'object',
@@ -46656,6 +49673,16 @@ export const contracts: {
               },
               liveOutputPreview: {
                 type: ['string', 'null'],
+              },
+              room: {
+                anyOf: [
+                  {
+                    $ref: '#/$defs/AgentRoomOverview',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
               },
               transcript: {
                 anyOf: [
@@ -48282,6 +51309,72 @@ export const contracts: {
                 additionalProperties: false,
                 required: ['messageId', 'text', 'editableByCaller'],
               },
+              AgentRoomOverview: {
+                type: 'object',
+                properties: {
+                  topic: {
+                    type: 'string',
+                  },
+                  members: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/AgentRoomMember',
+                    },
+                  },
+                  pinnedMessageIds: {
+                    type: 'array',
+                    items: {
+                      type: 'string',
+                    },
+                  },
+                },
+                additionalProperties: false,
+              },
+              AgentRoomMember: {
+                type: 'object',
+                properties: {
+                  sessionId: {
+                    type: 'string',
+                  },
+                  title: {
+                    type: 'string',
+                  },
+                  presetName: {
+                    type: ['string', 'null'],
+                  },
+                  workspacePath: {
+                    type: 'string',
+                  },
+                  activity: {
+                    $ref: '#/$defs/AgentRoomParticipantActivity',
+                  },
+                  pendingInteractions: {
+                    type: 'integer',
+                    format: 'uint32',
+                    minimum: 0,
+                    default: 0,
+                  },
+                  archived: {
+                    type: 'boolean',
+                    default: false,
+                  },
+                  unavailable: {
+                    type: 'boolean',
+                    default: false,
+                  },
+                  addedAt: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['sessionId', 'title', 'workspacePath', 'activity'],
+              },
+              AgentRoomParticipantActivity: {
+                type: 'string',
+                enum: ['idle', 'working', 'waiting'],
+              },
               AgentSessionTranscript: {
                 oneOf: [
                   {
@@ -48393,10 +51486,19 @@ export const contracts: {
                     maximum: 9007199254740991,
                   },
                   author: {
-                    $ref: '#/$defs/RoomAuthor',
+                    $ref: '#/$defs/AgentRoomAuthor',
+                  },
+                  authorName: {
+                    type: ['string', 'null'],
                   },
                   text: {
                     type: 'string',
+                  },
+                  attachments: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/AgentRoomAttachmentEntry',
+                    },
                   },
                   replyTo: {
                     type: ['string', 'null'],
@@ -48413,11 +51515,37 @@ export const contracts: {
                       $ref: '#/$defs/RoomDelivery',
                     },
                   },
+                  deliveryStates: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/AgentRoomDeliveryState',
+                    },
+                  },
+                  reactions: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/AgentRoomReaction',
+                    },
+                  },
+                  pinned: {
+                    type: 'boolean',
+                    default: false,
+                  },
+                  editedAt: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                    maximum: 9007199254740991,
+                  },
+                  deleted: {
+                    type: 'boolean',
+                    default: false,
+                  },
                 },
                 additionalProperties: false,
                 required: ['id', 'sequence', 'at', 'author', 'text'],
               },
-              RoomAuthor: {
+              AgentRoomAuthor: {
                 oneOf: [
                   {
                     type: 'object',
@@ -48445,6 +51573,36 @@ export const contracts: {
                     required: ['kind', 'execution'],
                   },
                 ],
+              },
+              AgentRoomAttachmentEntry: {
+                type: 'object',
+                properties: {
+                  name: {
+                    type: 'string',
+                  },
+                  mimeType: {
+                    type: 'string',
+                  },
+                  bytes: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                    maximum: 9007199254740991,
+                  },
+                  kind: {
+                    $ref: '#/$defs/AttachmentKind',
+                  },
+                  resourcePath: {
+                    description: 'Pass directly to Read({ path }) to inspect this Room attachment.',
+                    type: ['string', 'null'],
+                  },
+                },
+                additionalProperties: false,
+                required: ['name', 'mimeType', 'bytes', 'kind'],
+              },
+              AttachmentKind: {
+                type: 'string',
+                enum: ['image', 'pdf', 'doc', 'code', 'other'],
               },
               RoomDelivery: {
                 oneOf: [
@@ -48484,6 +51642,227 @@ export const contracts: {
                   },
                 ],
               },
+              AgentRoomDeliveryState: {
+                description: 'Derived execution outcome for a Room mention delivery.',
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'queued',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'messageId'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'working',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'messageId'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'waiting',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                      pendingCount: {
+                        type: 'integer',
+                        format: 'uint32',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'messageId', 'pendingCount'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'replied',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                      replyMessageId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'messageId', 'replyMessageId'],
+                  },
+                  {
+                    description:
+                      'The mentioned Agent acknowledged the message with a Room reaction and finished without a prose reply.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'reacted',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                      emoji: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'messageId', 'emoji'],
+                  },
+                  {
+                    description:
+                      'The mentioned Agent finished its run without posting a reply or reaction in the Room.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'silent',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'messageId'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'failed',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                      reason: {
+                        type: ['string', 'null'],
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'messageId'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'stopped',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'messageId'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'rejected',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      reason: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'reason'],
+                  },
+                ],
+              },
+              AgentRoomReaction: {
+                type: 'object',
+                properties: {
+                  emoji: {
+                    type: 'string',
+                  },
+                  actors: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/AgentRoomActor',
+                    },
+                  },
+                },
+                additionalProperties: false,
+                required: ['emoji', 'actors'],
+              },
+              AgentRoomActor: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'human',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'session',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId'],
+                  },
+                ],
+              },
             },
           },
           resources: {},
@@ -48504,8 +51883,15 @@ export const contracts: {
               },
               delivery: {
                 description:
-                  'Defaults to steer; use queue only to wait until the current turn finishes.',
-                $ref: '#/$defs/AgentSendDelivery',
+                  'Defaults to steer (injects cleanly at the next step boundary without aborting in-flight tools).\nPass queue to wait until the current turn finishes before delivering.',
+                anyOf: [
+                  {
+                    $ref: '#/$defs/AgentSendDelivery',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
               },
               onComplete: {
                 description:
@@ -50705,10 +54091,22 @@ export const contracts: {
                         type: 'string',
                       },
                       author: {
-                        $ref: '#/$defs/RoomAuthor',
+                        $ref: '#/$defs/AgentRoomAuthor',
                       },
                       replyTo: {
                         type: ['string', 'null'],
+                      },
+                      mentions: {
+                        type: 'array',
+                        items: {
+                          type: 'string',
+                        },
+                      },
+                      hopCount: {
+                        type: ['integer', 'null'],
+                        format: 'uint8',
+                        minimum: 0,
+                        maximum: 255,
                       },
                     },
                     additionalProperties: false,
@@ -50801,7 +54199,7 @@ export const contracts: {
                 type: 'string',
                 format: 'uuid',
               },
-              RoomAuthor: {
+              AgentRoomAuthor: {
                 oneOf: [
                   {
                     type: 'object',
@@ -52335,9 +55733,14 @@ export const contracts: {
                     format: 'uint64',
                     minimum: 0,
                   },
+                  revision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
                 },
                 additionalProperties: false,
-                required: ['kind', 'through'],
+                required: ['kind', 'through', 'revision'],
               },
               {
                 type: 'object',
@@ -53079,10 +56482,22 @@ export const contracts: {
                         type: 'string',
                       },
                       author: {
-                        $ref: '#/$defs/RoomAuthor',
+                        $ref: '#/$defs/AgentRoomAuthor',
                       },
                       replyTo: {
                         type: ['string', 'null'],
+                      },
+                      mentions: {
+                        type: 'array',
+                        items: {
+                          type: 'string',
+                        },
+                      },
+                      hopCount: {
+                        type: ['integer', 'null'],
+                        format: 'uint8',
+                        minimum: 0,
+                        maximum: 255,
                       },
                     },
                     additionalProperties: false,
@@ -53171,7 +56586,7 @@ export const contracts: {
                 additionalProperties: false,
                 required: ['sessionId', 'turnId', 'runId'],
               },
-              RoomAuthor: {
+              AgentRoomAuthor: {
                 oneOf: [
                   {
                     type: 'object',

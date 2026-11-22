@@ -724,10 +724,10 @@ pub struct Send {
     #[serde(default)]
     #[schemars(length(max = 16))]
     pub quotes: Vec<maka_agent_facts::input::QuoteRef>,
-    /// Defaults to steer. Omit or use steer for updates to ongoing work;
-    /// use queue only when this message should wait until the current turn ends.
+    /// Defaults to steer (injects cleanly at the next step boundary without aborting in-flight tools).
+    /// Pass queue to wait until the current turn finishes before delivering.
     #[serde(default)]
-    pub delivery: SendDelivery,
+    pub delivery: Option<SendDelivery>,
     /// An active send must not start new work after Stop fences its original Run.
     pub expected_run_id: Option<maka_agent_facts::durable::RunId>,
     /// IDs of immutable user uploads in this Session; metadata is resolved by the owner.
@@ -1216,6 +1216,7 @@ pub struct Part {
 pub enum DeliveryPage {
     Room {
         through: u64,
+        revision: u64,
     },
     Events {
         through: u64,
@@ -1719,6 +1720,8 @@ pub struct RoomHistoryPage {
     pub through: u64,
     pub before: Option<String>,
     pub after: Option<String>,
+    #[serde(default)]
+    pub participants: Vec<maka_agent_facts::room::RoomMember>,
 }
 
 #[derive(Clone, Serialize, Deserialize, JsonSchema)]
@@ -1733,6 +1736,16 @@ pub struct RoomMessage {
     pub reply_to: Option<String>,
     pub mentions: Vec<String>,
     pub deliveries: Vec<maka_agent_facts::room::RoomDelivery>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edited_at: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deleted_at: Option<u64>,
+    #[serde(default)]
+    pub reactions: Vec<maka_agent_facts::room::RoomReaction>,
+    #[serde(default)]
+    pub pinned: bool,
+    #[serde(default)]
+    pub delivery_states: Vec<maka_agent_facts::room::RoomDeliveryState>,
 }
 
 #[derive(Clone, Serialize, Deserialize, JsonSchema)]
@@ -1743,42 +1756,188 @@ pub struct RoomContent {
     pub attachments: Vec<HistoryAttachment>,
 }
 
+impl From<maka_agent_facts::room::RoomMessage> for RoomMessage {
+    fn from(message: maka_agent_facts::room::RoomMessage) -> Self {
+        Self {
+            id: message.id,
+            sequence: message.sequence,
+            at: message.at,
+            author: message.author,
+            content: RoomContent {
+                text: message.content.display_text.unwrap_or(message.content.text),
+                attachments: message
+                    .content
+                    .attachments
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|attachment| HistoryAttachment {
+                        name: attachment.name,
+                        mime_type: attachment.mime_type,
+                        bytes: attachment.bytes,
+                        kind: attachment.kind,
+                    })
+                    .collect(),
+            },
+            reply_to: message.reply_to,
+            mentions: message.mentions,
+            deliveries: message.deliveries,
+            edited_at: message.edited_at,
+            deleted_at: message.deleted_at,
+            reactions: message.reactions,
+            pinned: message.pinned,
+            delivery_states: message.delivery_states,
+        }
+    }
+}
+
 impl From<maka_agent_facts::room::RoomPage> for RoomHistoryPage {
     fn from(page: maka_agent_facts::room::RoomPage) -> Self {
         Self {
             through: page.through,
             before: page.before,
             after: page.after,
-            items: page
-                .items
-                .into_iter()
-                .map(|message| RoomMessage {
-                    id: message.id,
-                    sequence: message.sequence,
-                    at: message.at,
-                    author: message.author,
-                    content: RoomContent {
-                        text: message.content.display_text.unwrap_or(message.content.text),
-                        attachments: message
-                            .content
-                            .attachments
-                            .unwrap_or_default()
-                            .into_iter()
-                            .map(|attachment| HistoryAttachment {
-                                name: attachment.name,
-                                mime_type: attachment.mime_type,
-                                bytes: attachment.bytes,
-                                kind: attachment.kind,
-                            })
-                            .collect(),
-                    },
-                    reply_to: message.reply_to,
-                    mentions: message.mentions,
-                    deliveries: message.deliveries,
-                })
-                .collect(),
+            items: page.items.into_iter().map(RoomMessage::from).collect(),
+            participants: page.participants,
         }
     }
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentRoomStateRead")]
+pub struct RoomStateRead {
+    #[schemars(length(min = 1))]
+    pub session_id: String,
+}
+
+#[derive(Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentRoomState")]
+pub struct RoomStateView {
+    pub session_id: String,
+    pub topic: String,
+    pub members: Vec<maka_agent_facts::room::RoomMember>,
+    pub pinned: Vec<RoomMessage>,
+}
+
+impl From<maka_agent_facts::room::RoomState> for RoomStateView {
+    fn from(state: maka_agent_facts::room::RoomState) -> Self {
+        Self {
+            session_id: state.session_id,
+            topic: state.topic,
+            members: state.members,
+            pinned: state.pinned.into_iter().map(RoomMessage::from).collect(),
+        }
+    }
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentRoomSearchRead")]
+pub struct RoomSearchRead {
+    #[schemars(length(min = 1))]
+    pub session_id: String,
+    #[schemars(length(min = 1))]
+    pub query: String,
+    #[serde(default)]
+    #[schemars(range(min = 1, max = 100))]
+    pub limit: Option<u32>,
+}
+
+#[derive(Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentRoomSearchMatch")]
+pub struct RoomSearchMatchView {
+    pub message: RoomMessage,
+    pub snippet: String,
+}
+
+#[derive(Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentRoomSearchResult")]
+pub struct RoomSearchResult {
+    pub items: Vec<RoomSearchMatchView>,
+}
+
+#[derive(Clone, Deserialize, Serialize, JsonSchema)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+#[schemars(rename = "AgentRoomManageAction")]
+pub enum RoomManageAction {
+    SetTopic {
+        topic: String,
+    },
+    AddMembers {
+        member_session_ids: Vec<String>,
+    },
+    RemoveMembers {
+        member_session_ids: Vec<String>,
+    },
+    React {
+        message_id: String,
+        emoji: String,
+        /// Omit to toggle; true to add, false to remove.
+        #[serde(default)]
+        add: Option<bool>,
+    },
+    Pin {
+        message_id: String,
+    },
+    Unpin {
+        message_id: String,
+    },
+    EditMessage {
+        message_id: String,
+        text: String,
+    },
+    DeleteMessage {
+        message_id: String,
+    },
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentRoomManage")]
+pub struct RoomManage {
+    #[schemars(length(min = 1))]
+    pub session_id: String,
+    pub action: RoomManageAction,
+}
+
+#[derive(Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+#[schemars(rename = "AgentRoomManageResult")]
+pub enum RoomManageResult {
+    TopicUpdated {
+        topic: String,
+    },
+    MembersAdded {
+        added: Vec<String>,
+    },
+    MembersRemoved {
+        removed: Vec<String>,
+    },
+    ReactionUpdated {
+        message_id: String,
+        emoji: String,
+        present: bool,
+    },
+    PinUpdated {
+        message_id: String,
+        pinned: bool,
+    },
+    MessageUpdated {
+        message: Box<RoomMessage>,
+    },
 }
 
 impl From<maka_agent_ports::session::history::Page> for HistoryPage {
@@ -2215,6 +2374,18 @@ pub fn contract() -> Contract {
                 (
                     "history".into(),
                     method::<History, HistoryPage>(MethodMode::Query),
+                ),
+                (
+                    "roomState".into(),
+                    method::<RoomStateRead, RoomStateView>(MethodMode::Query),
+                ),
+                (
+                    "roomSearch".into(),
+                    method::<RoomSearchRead, RoomSearchResult>(MethodMode::Query),
+                ),
+                (
+                    "roomManage".into(),
+                    method::<RoomManage, RoomManageResult>(MethodMode::Mutation),
                 ),
                 (
                     "historyLandmarks".into(),

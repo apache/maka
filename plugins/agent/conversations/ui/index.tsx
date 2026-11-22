@@ -124,8 +124,10 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
           sessionId={id}
           host={host}
           visible={shell.visible}
+          workspacePath={() => props.room.workspace.path}
           name={people.name}
           resolveNames={people.resolveNames}
+          rememberParticipants={people.rememberParticipants}
           searchSessions={people.searchSessions}
           openAgent={(id) => void shell.openSession(id)}
           openLink={async (target, restoreFocus) => {
@@ -238,7 +240,36 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
         kind: 'view',
         contract: roomWorkspaceView.id,
         render({ input }: UiEmbeddedViewProps<RoomWorkspaceInput<JSX.Element>, JSX.Element>) {
-          return <RoomView host={host} input={input} />;
+          return (
+            <RoomView
+              host={host}
+              input={input}
+              renderAgentSide={(side) => (
+                <AgentSide
+                  input={{
+                    active: side.active,
+                    attach: side.attach,
+                    shell: {
+                      sessionId: side.sessionId,
+                      visible: side.visible,
+                      paneVisible: side.visible,
+                      blocked: side.blocked,
+                      connectionLost: () => false,
+                      openSession: side.openSession,
+                      openSettings: () => side.openSettings(),
+                      sidebarShown: () => true,
+                      sidebarDocked: () => true,
+                      previewDocked: () => false,
+                      showSidebar() {},
+                      hideSidebar() {},
+                      dismissRoute: () => false,
+                      closePane: side.close,
+                    },
+                  }}
+                />
+              )}
+            />
+          );
         },
       },
       navigation: {

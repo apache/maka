@@ -78,6 +78,11 @@ export function originLabel(origin: MessageOrigin | null | undefined): string | 
     : null;
 }
 
+function sessionTitle(sessionId: string, senders?: MessageSenders): string {
+  const title = senders?.session(sessionId)?.title.trim();
+  return title && title !== sessionId ? title : tr('Agent conversation');
+}
+
 function senderLabel(sessionId: string, senders?: MessageSenders): string {
   const title = senders?.session(sessionId)?.title.trim();
   return title && title !== sessionId ? tr('From {title}', { title }) : tr('Agent conversation');
@@ -294,10 +299,20 @@ export function MessageRow({
         };
         if (sender() || automation()) {
           const title = () => {
-            const origin = automation();
-            return origin
-              ? tr('Automation: {title}', { title: origin.title })
-              : senderLabel(sender()!, senders);
+            const auto = automation();
+            if (auto) return tr('Automation: {title}', { title: auto.title });
+            const rawOrigin = row().origin;
+            if (rawOrigin?.kind === 'room') {
+              const roomName = sessionTitle(rawOrigin.sessionId, senders);
+              if (rawOrigin.author.kind === 'human') {
+                return tr('From room human', { room: roomName });
+              }
+              return tr('From room agent', {
+                room: roomName,
+                sender: sessionTitle(rawOrigin.author.execution.sessionId, senders),
+              });
+            }
+            return senderLabel(sender()!, senders);
           };
           const preview = computed(() => {
             if (expanded()) return '';

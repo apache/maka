@@ -83,6 +83,21 @@ pub(super) struct PreparedAgentSend {
     pub order: Option<Arc<runs::Ordered>>,
 }
 
+impl PreparedAgentSend {
+    pub(super) fn execute_for_room(
+        self,
+        connection: &rusqlite::Connection,
+    ) -> Result<Prepared<maka_agent_state::queue::QueueCommit>, StoreError> {
+        let mut queued = self.queue.execute_for_room(connection)?;
+        if let Some(completion) = self.completion {
+            let registered = completion.execute(connection)?;
+            queued.changed |= registered.changed;
+            queued.notification = queued.notification.combine(registered.notification);
+        }
+        Ok(queued)
+    }
+}
+
 impl Statement for PreparedAgentSend {
     type Value = maka_agent_state::queue::QueueCommit;
     type Output = maka_agent_state::queue::QueueCommit;
@@ -399,6 +414,7 @@ impl Owner {
             mentions: _,
             reply_to: _,
         } = input;
+        let delivery = delivery.unwrap_or(SendDelivery::Steer);
         if !unprepared.has_content() {
             return Err("agent_message_invalid".into());
         }

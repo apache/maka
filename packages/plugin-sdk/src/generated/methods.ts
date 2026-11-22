@@ -655,6 +655,10 @@ export type AgentLoadedHistoryCheckpointHistoryInput_HistoryPosition =
       messageId: string;
     }
   | {
+      kind: 'around_message';
+      messageId: string;
+    }
+  | {
       kind: 'row';
       position: AgentLoadedHistoryCheckpointHistoryInput_HistoryRowAddress;
       field: AgentLoadedHistoryCheckpointHistoryInput_HistoryField;
@@ -1252,6 +1256,127 @@ export type AgentRestoreSessionCheckpointOutput_AgentCheckpointWorkspaceConsiste
   | 'unverified';
 export type AgentRestoreSessionCheckpointOutput_AgentCheckpointWorkspaceWarning =
   'external_writers_not_fenced';
+export type AgentRoomManageInput_AgentRoomManageAction =
+  | {
+      kind: 'set_topic';
+      topic: string;
+    }
+  | {
+      kind: 'add_members';
+      memberSessionIds: string[];
+    }
+  | {
+      kind: 'remove_members';
+      memberSessionIds: string[];
+    }
+  | {
+      kind: 'react';
+      messageId: string;
+      emoji: string;
+      /**
+       * Omit to toggle; true to add, false to remove.
+       */
+      add?: boolean | null;
+    }
+  | {
+      kind: 'pin';
+      messageId: string;
+    }
+  | {
+      kind: 'unpin';
+      messageId: string;
+    }
+  | {
+      kind: 'edit_message';
+      messageId: string;
+      text: string;
+    }
+  | {
+      kind: 'delete_message';
+      messageId: string;
+    };
+export type AgentRoomSearchOutput_AgentRoomAuthor =
+  | {
+      kind: 'human';
+    }
+  | {
+      kind: 'session';
+      execution: AgentRoomSearchOutput_ExecutionIdentity;
+    };
+export type AgentRoomSearchOutput_RunId = string;
+export type AgentRoomSearchOutput_AttachmentKind = 'image' | 'pdf' | 'doc' | 'code' | 'other';
+export type AgentRoomSearchOutput_RoomDelivery =
+  | {
+      kind: 'accepted';
+      sessionId: string;
+      messageId: string;
+    }
+  | {
+      kind: 'rejected';
+      sessionId: string;
+      reason: string;
+    };
+export type AgentRoomSearchOutput_AgentRoomActor =
+  | {
+      kind: 'human';
+    }
+  | {
+      kind: 'session';
+      sessionId: string;
+    };
+/**
+ * Derived execution outcome for a Room mention delivery.
+ */
+export type AgentRoomSearchOutput_AgentRoomDeliveryState =
+  | {
+      kind: 'queued';
+      sessionId: string;
+      messageId: string;
+    }
+  | {
+      kind: 'working';
+      sessionId: string;
+      messageId: string;
+    }
+  | {
+      kind: 'waiting';
+      sessionId: string;
+      messageId: string;
+      pendingCount: number;
+    }
+  | {
+      kind: 'replied';
+      sessionId: string;
+      messageId: string;
+      replyMessageId: string;
+    }
+  | {
+      kind: 'reacted';
+      sessionId: string;
+      messageId: string;
+      emoji: string;
+    }
+  | {
+      kind: 'silent';
+      sessionId: string;
+      messageId: string;
+    }
+  | {
+      kind: 'failed';
+      sessionId: string;
+      messageId: string;
+      reason?: string | null;
+    }
+  | {
+      kind: 'stopped';
+      sessionId: string;
+      messageId: string;
+    }
+  | {
+      kind: 'rejected';
+      sessionId: string;
+      reason: string;
+    };
 export type AgentSaveGitHubTokenOutput_AgentGitHubTokenSource =
   | 'manual'
   | 'env'
@@ -1486,6 +1611,38 @@ export type AgentSessionManageInput_AgentSessionManageAction =
       thinkingLevel?: AgentSessionManageInput_ThinkingLevel | null;
       sourceRunId?: AgentSessionManageInput_RunId | null;
       sourceHighWater?: number | null;
+    }
+  | {
+      kind: 'room_topic';
+      topic: string;
+    }
+  | {
+      kind: 'room_members';
+      add?: string[];
+      remove?: string[];
+    }
+  | {
+      kind: 'room_react';
+      messageId: string;
+      emoji: string;
+      /**
+       * Omit to toggle; true to add, false to remove.
+       */
+      add?: boolean | null;
+    }
+  | {
+      kind: 'room_pin';
+      messageId: string;
+      pinned: boolean;
+    }
+  | {
+      kind: 'room_edit';
+      messageId: string;
+      text: string;
+    }
+  | {
+      kind: 'room_delete';
+      messageId: string;
     };
 export type AgentSessionManageInput_AgentQueueAction =
   | {
@@ -1740,6 +1897,115 @@ export type AgentSessionManageOutput_AgentContinuationRejection =
   | 'already_continued'
   | 'workspace_changed'
   | 'safety_check_failed';
+export type AgentSessionManageOutput_AgentRoomManageResult =
+  | {
+      kind: 'topic_updated';
+      topic: string;
+    }
+  | {
+      kind: 'members_added';
+      added: string[];
+    }
+  | {
+      kind: 'members_removed';
+      removed: string[];
+    }
+  | {
+      kind: 'reaction_updated';
+      messageId: string;
+      emoji: string;
+      present: boolean;
+    }
+  | {
+      kind: 'pin_updated';
+      messageId: string;
+      pinned: boolean;
+    }
+  | {
+      kind: 'message_updated';
+      message: AgentSessionManageOutput_AgentRoomMessage;
+    };
+export type AgentSessionManageOutput_AgentRoomAuthor =
+  | {
+      kind: 'human';
+    }
+  | {
+      kind: 'session';
+      execution: AgentSessionManageOutput_ExecutionIdentity;
+    };
+export type AgentSessionManageOutput_AttachmentKind = 'image' | 'pdf' | 'doc' | 'code' | 'other';
+export type AgentSessionManageOutput_RoomDelivery =
+  | {
+      kind: 'accepted';
+      sessionId: string;
+      messageId: string;
+    }
+  | {
+      kind: 'rejected';
+      sessionId: string;
+      reason: string;
+    };
+export type AgentSessionManageOutput_AgentRoomActor =
+  | {
+      kind: 'human';
+    }
+  | {
+      kind: 'session';
+      sessionId: string;
+    };
+/**
+ * Derived execution outcome for a Room mention delivery.
+ */
+export type AgentSessionManageOutput_AgentRoomDeliveryState =
+  | {
+      kind: 'queued';
+      sessionId: string;
+      messageId: string;
+    }
+  | {
+      kind: 'working';
+      sessionId: string;
+      messageId: string;
+    }
+  | {
+      kind: 'waiting';
+      sessionId: string;
+      messageId: string;
+      pendingCount: number;
+    }
+  | {
+      kind: 'replied';
+      sessionId: string;
+      messageId: string;
+      replyMessageId: string;
+    }
+  | {
+      kind: 'reacted';
+      sessionId: string;
+      messageId: string;
+      emoji: string;
+    }
+  | {
+      kind: 'silent';
+      sessionId: string;
+      messageId: string;
+    }
+  | {
+      kind: 'failed';
+      sessionId: string;
+      messageId: string;
+      reason?: string | null;
+    }
+  | {
+      kind: 'stopped';
+      sessionId: string;
+      messageId: string;
+    }
+  | {
+      kind: 'rejected';
+      sessionId: string;
+      reason: string;
+    };
 export type AgentSessionManageOutput_AgentRejection =
   | 'preset_not_found'
   | 'preset_disabled'
@@ -1758,7 +2024,7 @@ export type AgentSessionManageOutput_AgentRejection =
   | 'closed';
 export type AgentSessionReadInput_AgentSessionTranscriptView = 'turns' | 'raw' | 'status_only';
 export type AgentSessionReadInput_AgentSessionWindowPosition = 'tail' | 'start';
-export type AgentSessionReadInput_AgentRoomAnchorMode = 'at' | 'before' | 'after';
+export type AgentSessionReadInput_AgentRoomAnchorMode = 'at' | 'before' | 'after' | 'around';
 /**
  * An original row within the actual read capability supplied by the caller.
  * Marker paths are relative to that capability; none of these fields grants access.
@@ -2139,6 +2405,7 @@ export type AgentSessionReadOutput_ClosureReason =
   | 'timed_out'
   | 'host_restarted'
   | 'provider_disconnected';
+export type AgentSessionReadOutput_AgentRoomParticipantActivity = 'idle' | 'working' | 'waiting';
 export type AgentSessionReadOutput_AgentSessionTranscript =
   | {
       kind: 'agent';
@@ -2152,7 +2419,7 @@ export type AgentSessionReadOutput_AgentSessionTranscript =
       beforeCursor?: string | null;
       afterCursor?: string | null;
     };
-export type AgentSessionReadOutput_RoomAuthor =
+export type AgentSessionReadOutput_AgentRoomAuthor =
   | {
       kind: 'human';
     }
@@ -2160,6 +2427,7 @@ export type AgentSessionReadOutput_RoomAuthor =
       kind: 'session';
       execution: AgentSessionReadOutput_ExecutionIdentity;
     };
+export type AgentSessionReadOutput_AttachmentKind = 'image' | 'pdf' | 'doc' | 'code' | 'other';
 export type AgentSessionReadOutput_RoomDelivery =
   | {
       kind: 'accepted';
@@ -2170,6 +2438,67 @@ export type AgentSessionReadOutput_RoomDelivery =
       kind: 'rejected';
       sessionId: string;
       reason: string;
+    };
+/**
+ * Derived execution outcome for a Room mention delivery.
+ */
+export type AgentSessionReadOutput_AgentRoomDeliveryState =
+  | {
+      kind: 'queued';
+      sessionId: string;
+      messageId: string;
+    }
+  | {
+      kind: 'working';
+      sessionId: string;
+      messageId: string;
+    }
+  | {
+      kind: 'waiting';
+      sessionId: string;
+      messageId: string;
+      pendingCount: number;
+    }
+  | {
+      kind: 'replied';
+      sessionId: string;
+      messageId: string;
+      replyMessageId: string;
+    }
+  | {
+      kind: 'reacted';
+      sessionId: string;
+      messageId: string;
+      emoji: string;
+    }
+  | {
+      kind: 'silent';
+      sessionId: string;
+      messageId: string;
+    }
+  | {
+      kind: 'failed';
+      sessionId: string;
+      messageId: string;
+      reason?: string | null;
+    }
+  | {
+      kind: 'stopped';
+      sessionId: string;
+      messageId: string;
+    }
+  | {
+      kind: 'rejected';
+      sessionId: string;
+      reason: string;
+    };
+export type AgentSessionReadOutput_AgentRoomActor =
+  | {
+      kind: 'human';
+    }
+  | {
+      kind: 'session';
+      sessionId: string;
     };
 export type AgentSessionSendInput_AgentSendDelivery = 'steer' | 'queue';
 export type AgentSessionSendInput_AgentSessionNotifyMode = 'notify_caller' | 'none';
@@ -3850,6 +4179,64 @@ export interface ServiceMethods {
         path: string;
       };
     };
+    roomManage: {
+      mode: 'mutation';
+      input: {
+        sessionId: string;
+        action: AgentRoomManageInput_AgentRoomManageAction;
+      };
+      output:
+        | {
+            kind: 'topic_updated';
+            topic: string;
+          }
+        | {
+            kind: 'members_added';
+            added: string[];
+          }
+        | {
+            kind: 'members_removed';
+            removed: string[];
+          }
+        | {
+            kind: 'reaction_updated';
+            messageId: string;
+            emoji: string;
+            present: boolean;
+          }
+        | {
+            kind: 'pin_updated';
+            messageId: string;
+            pinned: boolean;
+          }
+        | {
+            kind: 'message_updated';
+            message: Runtime.AgentRoomMessage;
+          };
+    };
+    roomSearch: {
+      mode: 'query';
+      input: {
+        sessionId: string;
+        query: string;
+        limit?: number | null;
+      };
+      output: {
+        items: AgentRoomSearchOutput_AgentRoomSearchMatch[];
+      };
+    };
+    roomState: {
+      mode: 'query';
+      input: {
+        sessionId: string;
+      };
+      output: {
+        sessionId: string;
+        topic: string;
+        members: Runtime.AgentRoomMember[];
+        pinned: Runtime.AgentRoomMessage[];
+      };
+    };
     saveFile: {
       mode: 'mutation';
       input: {
@@ -4013,6 +4400,10 @@ export interface ServiceMethods {
             reason: AgentSessionManageOutput_AgentContinuationRejection;
           }
         | {
+            kind: 'room_updated';
+            result: AgentSessionManageOutput_AgentRoomManageResult;
+          }
+        | {
             kind: 'revision_conflict';
             expected: number;
             actual: number;
@@ -4055,6 +4446,10 @@ export interface ServiceMethods {
         messageId?: string | null;
         anchor?: AgentSessionReadInput_AgentRoomAnchorMode | null;
         /**
+         * Full-text search within a Room; returns matching posts with snippets.
+         */
+        searchQuery?: string | null;
+        /**
          * Exact historical row lookup emitted by Recall or Code Mode cell references.
          */
         row?: AgentSessionReadInput_AgentSessionRowLookup | null;
@@ -4066,6 +4461,7 @@ export interface ServiceMethods {
         queuedMessages?: AgentSessionReadOutput_AgentQueuedMessageOverview[];
         queueRevision?: number | null;
         liveOutputPreview?: string | null;
+        room?: AgentSessionReadOutput_AgentRoomOverview | null;
         transcript?: AgentSessionReadOutput_AgentSessionTranscript | null;
       };
     };
@@ -4075,9 +4471,10 @@ export interface ServiceMethods {
         sessionId: string;
         message: string;
         /**
-         * Defaults to steer; use queue only to wait until the current turn finishes.
+         * Defaults to steer (injects cleanly at the next step boundary without aborting in-flight tools).
+         * Pass queue to wait until the current turn finishes before delivering.
          */
-        delivery?: AgentSessionSendInput_AgentSendDelivery;
+        delivery?: AgentSessionSendInput_AgentSendDelivery | null;
         /**
          * For Agent callers sending to a worker Session, defaults to notify_caller. Pass none to silence.
          */
@@ -6271,6 +6668,44 @@ export interface AgentRestoreSessionCheckpointOutput_AgentCheckpointWorkspaceSna
   warning: AgentRestoreSessionCheckpointOutput_AgentCheckpointWorkspaceWarning;
   inventory: AgentRestoreSessionCheckpointOutput_AgentHistoryCheckpointObject;
 }
+export interface AgentRoomSearchOutput_AgentRoomSearchMatch {
+  message: AgentRoomSearchOutput_AgentRoomMessage;
+  snippet: string;
+}
+export interface AgentRoomSearchOutput_AgentRoomMessage {
+  id: string;
+  sequence: number;
+  at: number;
+  author: AgentRoomSearchOutput_AgentRoomAuthor;
+  content: AgentRoomSearchOutput_AgentRoomContent;
+  replyTo?: string | null;
+  mentions: string[];
+  deliveries: AgentRoomSearchOutput_RoomDelivery[];
+  editedAt?: number | null;
+  deletedAt?: number | null;
+  reactions?: AgentRoomSearchOutput_AgentRoomReaction[];
+  pinned?: boolean;
+  deliveryStates?: AgentRoomSearchOutput_AgentRoomDeliveryState[];
+}
+export interface AgentRoomSearchOutput_ExecutionIdentity {
+  sessionId: string;
+  turnId: string;
+  runId: AgentRoomSearchOutput_RunId;
+}
+export interface AgentRoomSearchOutput_AgentRoomContent {
+  text: string;
+  attachments: AgentRoomSearchOutput_AgentHistoryAttachment[];
+}
+export interface AgentRoomSearchOutput_AgentHistoryAttachment {
+  name: string;
+  mimeType: string;
+  bytes: number;
+  kind: AgentRoomSearchOutput_AttachmentKind;
+}
+export interface AgentRoomSearchOutput_AgentRoomReaction {
+  emoji: string;
+  actors: AgentRoomSearchOutput_AgentRoomActor[];
+}
 export interface AgentSaveGitHubTokenOutput_AgentGitHubAuthStatus {
   host: string;
   authenticated: boolean;
@@ -6534,6 +6969,40 @@ export interface AgentSessionManageOutput_ContentRef {
   digest: string;
   bytes: number;
 }
+export interface AgentSessionManageOutput_AgentRoomMessage {
+  id: string;
+  sequence: number;
+  at: number;
+  author: AgentSessionManageOutput_AgentRoomAuthor;
+  content: AgentSessionManageOutput_AgentRoomContent;
+  replyTo?: string | null;
+  mentions: string[];
+  deliveries: AgentSessionManageOutput_RoomDelivery[];
+  editedAt?: number | null;
+  deletedAt?: number | null;
+  reactions?: AgentSessionManageOutput_AgentRoomReaction[];
+  pinned?: boolean;
+  deliveryStates?: AgentSessionManageOutput_AgentRoomDeliveryState[];
+}
+export interface AgentSessionManageOutput_ExecutionIdentity {
+  sessionId: string;
+  turnId: string;
+  runId: AgentSessionManageOutput_RunId;
+}
+export interface AgentSessionManageOutput_AgentRoomContent {
+  text: string;
+  attachments: AgentSessionManageOutput_AgentHistoryAttachment[];
+}
+export interface AgentSessionManageOutput_AgentHistoryAttachment {
+  name: string;
+  mimeType: string;
+  bytes: number;
+  kind: AgentSessionManageOutput_AttachmentKind;
+}
+export interface AgentSessionManageOutput_AgentRoomReaction {
+  emoji: string;
+  actors: AgentSessionManageOutput_AgentRoomActor[];
+}
 export interface AgentSessionReadInput_AgentSessionRowLookup {
   through?: number | null;
   position: AgentSessionReadInput_HistoryRowAddress;
@@ -6693,6 +7162,22 @@ export interface AgentSessionReadOutput_AgentQueuedMessageOverview {
   text: string;
   editableByCaller: boolean;
 }
+export interface AgentSessionReadOutput_AgentRoomOverview {
+  topic?: string;
+  members?: AgentSessionReadOutput_AgentRoomMember[];
+  pinnedMessageIds?: string[];
+}
+export interface AgentSessionReadOutput_AgentRoomMember {
+  sessionId: string;
+  title: string;
+  presetName?: string | null;
+  workspacePath: string;
+  activity: AgentSessionReadOutput_AgentRoomParticipantActivity;
+  pendingInteractions?: number;
+  archived?: boolean;
+  unavailable?: boolean;
+  addedAt?: number | null;
+}
 export interface AgentSessionReadOutput_AgentTranscriptEntry {
   role: string;
   turnId?: string | null;
@@ -6711,11 +7196,32 @@ export interface AgentSessionReadOutput_AgentRoomPostEntry {
   id: string;
   sequence: number;
   at: number;
-  author: AgentSessionReadOutput_RoomAuthor;
+  author: AgentSessionReadOutput_AgentRoomAuthor;
+  authorName?: string | null;
   text: string;
+  attachments?: AgentSessionReadOutput_AgentRoomAttachmentEntry[];
   replyTo?: string | null;
   mentions?: string[];
   deliveries?: AgentSessionReadOutput_RoomDelivery[];
+  deliveryStates?: AgentSessionReadOutput_AgentRoomDeliveryState[];
+  reactions?: AgentSessionReadOutput_AgentRoomReaction[];
+  pinned?: boolean;
+  editedAt?: number | null;
+  deleted?: boolean;
+}
+export interface AgentSessionReadOutput_AgentRoomAttachmentEntry {
+  name: string;
+  mimeType: string;
+  bytes: number;
+  kind: AgentSessionReadOutput_AttachmentKind;
+  /**
+   * Pass directly to Read({ path }) to inspect this Room attachment.
+   */
+  resourcePath?: string | null;
+}
+export interface AgentSessionReadOutput_AgentRoomReaction {
+  emoji: string;
+  actors: AgentSessionReadOutput_AgentRoomActor[];
 }
 export interface AgentSessionSendInput_AgentExecutorSelection {
   executor: string;

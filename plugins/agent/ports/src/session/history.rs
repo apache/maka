@@ -183,6 +183,10 @@ pub enum Position {
     AfterMessage {
         message_id: String,
     },
+    /// Room messages centered around this message.
+    AroundMessage {
+        message_id: String,
+    },
     /// Reveal this exact row field from its beginning, including empty tool rows.
     Row {
         position: RowPosition,
@@ -228,7 +232,8 @@ impl Read {
         match &self.position {
             Position::Message { message_id }
             | Position::BeforeMessage { message_id }
-            | Position::AfterMessage { message_id } => {
+            | Position::AfterMessage { message_id }
+            | Position::AroundMessage { message_id } => {
                 crate::name(message_id).map_err(|_| invalid())?;
             }
             Position::Row { position, field } | Position::RowEnd { position, field } => {

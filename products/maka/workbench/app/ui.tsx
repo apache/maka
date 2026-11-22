@@ -540,6 +540,7 @@ export function ViewSegment(props: { label: string; selected: boolean; onPress: 
  */
 export function Header(props: {
   title: string;
+  subtitle?: string;
   workspace?: string;
   /** The command palette, which the terminal's header opens; the desktop's is in the menu bar. */
   commands(): void;
@@ -629,6 +630,22 @@ export function Header(props: {
       >
         {props.title}
       </Text>
+      <If when={Boolean(props.subtitle)}>
+        <Text
+          style={[
+            {
+              ...captionTextStyle,
+              color: C.muted,
+              flexShrink: 2,
+              minWidth: 0,
+              marginLeft: 6,
+            },
+            { numberOfLines: 1, textOverflow: 'ellipsis' },
+          ]}
+        >
+          {props.subtitle}
+        </Text>
+      </If>
       <If when={props.files && (!desktop || Boolean(props.workspace))}>
         <Button
           accessibilityLabel={tr('Browse workspace files')}

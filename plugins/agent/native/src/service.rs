@@ -330,6 +330,19 @@ impl Handler for Agent {
             "history" => json_rpc(&mut args, |owner, input, context| async move {
                 encode(history::read(&owner, context.scope(), decode(input)?).await?)
             }),
+            "roomState" => json_rpc(&mut args, |owner, input, context| async move {
+                encode(owner.room_state(decode(input)?, context.scope()).await?)
+            }),
+            "roomSearch" => json_rpc(&mut args, |owner, input, context| async move {
+                encode(owner.room_search(decode(input)?, context.scope()).await?)
+            }),
+            "roomManage" => handler_rpc(&mut args, |owner, input, context| async move {
+                let operation = context.operation().ok_or("agent_mutation_required")?;
+                owner
+                    .room_manage(decode(input)?, operation, context.scope())
+                    .await?
+                    .complete(&context)
+            }),
             "observe" => json_rpc(&mut args, |owner, input, context| async move {
                 encode(history::observation(&owner, context.scope(), decode(input)?).await?)
             }),

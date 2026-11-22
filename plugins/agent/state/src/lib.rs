@@ -323,6 +323,12 @@ pub const MIGRATIONS: &[maka_event_log::migration::Migration] = &[
         sql: include_str!("../migrations/0051_memory_recall.sql"),
         configure: Some(memory::recall::configure_writer),
     },
+    maka_event_log::migration::Migration {
+        version: 52,
+        description: "room members, topic, reactions, pins, edits, and full-text search",
+        sql: include_str!("../migrations/0052_room_overhaul.sql"),
+        configure: None,
+    },
 ];
 
 #[cfg(test)]
@@ -334,7 +340,7 @@ mod migration_tests {
             .chain(super::MIGRATIONS)
             .copied()
             .collect();
-        for through in [0, 41].into_iter().chain(46..=50) {
+        for through in [0, 41].into_iter().chain(46..=51) {
             let directory = tempfile::tempdir().unwrap();
             let path = directory.path().join("root.sqlite");
             let db = rusqlite::Connection::open(&path).unwrap();
