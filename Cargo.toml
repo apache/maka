@@ -43,6 +43,7 @@ members = [
     "products/maka/cli",
     "plugins/settings/store",
     "products/maka/desktop-shell",
+    "products/maka/ios-shell",
     "products/maka/host-shell",
     "products/maka/client",
     "products/maka/terminal-shell",
@@ -69,6 +70,7 @@ members = [
     "plugins/agent/providers",
     "platform/host-runtime",
     "platform/host-js",
+    "platform/remote-client",
     "platform/sandbox",
     "plugins/agent/scheduler/engine",
     "plugins/settings/native",
@@ -110,6 +112,9 @@ nsh-js = { path = "third-party/nsh/crates/nsh-js" }
 nsh-platform-tui = { path = "third-party/nsh/crates/nsh-platform-tui" }
 nsh-platform-windows = { path = "third-party/nsh/crates/nsh-platform-windows", default-features = false, features = ["js", "svg", "updater", "websocket", "zlib", "crypto", "editor", "emoji-picker", "highlight", "math", "plot", "rich-editor", "term"] }
 nsh-platform-macos = { path = "third-party/nsh/crates/nsh-platform-macos", default-features = false, features = ["js", "svg", "updater", "websocket", "zlib", "crypto", "editor", "emoji-picker", "highlight", "math", "plot", "rich-editor", "term"] }
+nsh-platform-ios = { path = "third-party/nsh/crates/nsh-platform-ios", default-features = false, features = ["js", "svg", "websocket", "editor", "emoji-picker", "highlight"] }
+nsh-platform-apple = { path = "third-party/nsh/crates/nsh-platform-apple" }
+nsh-testing = { path = "third-party/nsh/crates/nsh-testing" }
 nsh-bundler = { path = "third-party/nsh/crates/nsh-bundler", default-features = false }
 nsh-base = { path = "third-party/nsh/crates/nsh-base", features = ["math", "emoji-picker", "plot"] }
 maka-mock-ai = { path = "tools/mock-ai" }
@@ -177,6 +182,7 @@ maka-process = { path = "platform/process" }
 maka-providers = { path = "plugins/agent/providers" }
 maka-host-runtime = { path = "platform/host-runtime" }
 maka-host-js = { path = "platform/host-js" }
+maka-remote-client = { path = "platform/remote-client" }
 maka-sandbox = { path = "platform/sandbox" }
 maka-scheduler = { path = "plugins/agent/scheduler/engine" }
 maka-settings-native = { path = "plugins/settings/native" }
