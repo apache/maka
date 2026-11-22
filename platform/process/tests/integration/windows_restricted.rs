@@ -20,9 +20,10 @@
 #![cfg(windows)]
 
 use maka_plugin_core::terminal::TerminalSize;
-use maka_process::{Command, ProcessOutcome, pipe, pty};
+use maka_process::{Command, ProcessOutcome, ShellExecutor, pipe, pty};
 use maka_sandbox::{
-    filesystem::Scope,
+    Network, Sandbox,
+    filesystem::{Access, Policy, Rule, Scope},
     windows::{
         WriteCapability, WriteToken,
         acl::{self, Permission},
@@ -36,6 +37,34 @@ use tokio_util::sync::CancellationToken;
 use windows_sys::Win32::Storage::FileSystem::{
     FILE_FLAG_BACKUP_SEMANTICS, READ_CONTROL, WRITE_DAC,
 };
+
+#[test]
+fn captured_working_directory_keeps_its_windows_sandbox_access() {
+    let workspace = tempfile::tempdir().unwrap();
+    let captured = workspace.path().canonicalize().unwrap();
+    let directory = OpenOptions::new()
+        .read(true)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+        .open(&captured)
+        .unwrap();
+    let filesystem = Policy {
+        default: Access::Read,
+        rules: vec![Rule::subtree(dunce::simplified(&captured), Access::Write)],
+        deny_globs: Vec::new(),
+    };
+    let compiled = filesystem.compile().unwrap();
+    assert_eq!(compiled.access(&captured), Access::Deny);
+    let executor = ShellExecutor::from_directory(
+        captured,
+        directory,
+        Sandbox::Managed {
+            filesystem,
+            network: Network::Denied,
+        },
+    )
+    .unwrap();
+    assert_eq!(compiled.access(executor.cwd()), Access::Write);
+}
 
 // This exercises the token at the real native launch boundary. It deliberately
 // does not claim to validate dedicated-account or network provisioning.

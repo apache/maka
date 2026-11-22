@@ -73,6 +73,84 @@ test('worker suites all execute and preserve every failure', async () => {
   await runSuites(['desktop'], async () => {});
 });
 
+test('a selected test archives its runtime helpers without requiring helper test targets', async () => {
+  const target = mkdtempSync(join(tmpdir(), 'maka-ci-helper-selection-'));
+  const calls = [];
+  try {
+    mkdirSync(join(target, 'debug'));
+    for (const name of ['maka', 'maka-python-worker'])
+      writeFileSync(join(target, 'debug', name), name);
+    const listing = {
+      'rust-build-meta': {
+        'target-directory': target,
+        'build-script-out-dirs': {},
+        'non-test-binaries': {
+          cli: [{ name: 'maka', kind: 'bin-exe', 'build-platform': 'target', path: 'debug/maka' }],
+        },
+      },
+      'rust-suites': {
+        actions: {
+          'package-name': 'maka-cli',
+          'package-id': 'cli',
+          'binary-id': 'maka-cli::project_actions',
+          testcases: { action: { ignored: false, 'filter-match': { status: 'matches' } } },
+        },
+      },
+    };
+    const run = executor(
+      root,
+      {},
+      {
+        run: async (exe, args) => {
+          calls.push({ exe, args });
+          if (exe === 'cargo' && args[0] === 'nextest' && args[1] === 'list')
+            return JSON.stringify(listing);
+          if (exe === 'cargo' && args[0] === 'metadata')
+            return JSON.stringify({
+              packages: [
+                { id: 'cli', name: 'maka-cli' },
+                { id: 'python', name: 'maka-python-runtime' },
+              ],
+            });
+          if (exe === 'cargo' && args[0] === 'build')
+            return JSON.stringify({
+              reason: 'compiler-artifact',
+              package_id: 'python',
+              target: { name: 'maka-python-worker', kind: ['bin'] },
+              profile: { test: false },
+              executable: join(target, 'debug/maka-python-worker'),
+            });
+          if (exe === 'cargo' && args[0] === 'nextest' && args[1] === 'archive') {
+            const config = readFileSync(args[args.indexOf('--config-file') + 1], 'utf8');
+            assert.match(config, /debug\/maka"/);
+            assert.match(config, /debug\/maka-python-worker"/);
+            assert(args.includes('binary_id(=maka-cli::project_actions)'));
+            return;
+          }
+          throw new Error(`unexpected command ${exe} ${args.join(' ')}`);
+        },
+      },
+    );
+    const partitions = await run.archive(
+      { suites: { root: { filter: 'test(=action)' } } },
+      join(target, 'archives', 'root-tests.tar.zst'),
+    );
+    assert.equal(partitions.length, 1);
+    assert.deepEqual(
+      partitions[0].helpers.map(({ path }) => path),
+      ['debug/maka', 'debug/maka-python-worker'],
+    );
+    const helper = calls.find(({ args }) => args[0] === 'build');
+    assert(helper);
+    assert(!helper.args.includes('--test') && !helper.args.includes('project_actions'));
+    assert(helper.args.includes('maka-python-runtime'));
+    assert.equal(helper.args[helper.args.indexOf('--bin') + 1], 'maka-python-worker');
+    assert(!helper.args.includes('--bins'));
+  } finally {
+    rmSync(target, { recursive: true, force: true });
+  }
+});
+
 const root = fileURLToPath(new URL('../', import.meta.url));
 const full = () =>
   createPlan({ root, changes: null, metadata: {}, revision: 'test-revision', baseline: null });

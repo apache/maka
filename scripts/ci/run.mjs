@@ -56,14 +56,18 @@ function runtimeHelpers(listing, binaries) {
         .filter((suite) => suite['package-name'] === artifact.package)
         .map((suite) => suite['package-id']),
     );
-    if (packages.size !== 1)
+    if (packages.size > 1)
       throw new Error(`Expected one native runtime package in test metadata: ${artifact.package}`);
-    const [packageId] = packages;
-    const candidates = (metadata['non-test-binaries']?.[packageId] ?? []).filter(
-      (binary) =>
-        binary.name === artifact.binary &&
-        binary.kind === 'bin-exe' &&
-        binary['build-platform'] === 'target',
+    const candidates = Object.entries(metadata['non-test-binaries'] ?? {}).flatMap(
+      ([packageId, binaries]) =>
+        packages.size && !packages.has(packageId)
+          ? []
+          : binaries.filter(
+              (binary) =>
+                binary.name === artifact.binary &&
+                binary.kind === 'bin-exe' &&
+                binary['build-platform'] === 'target',
+            ),
     );
     if (!candidates.length)
       throw new Error(
@@ -736,18 +740,30 @@ export function executor(
     }
   }
 
-  async function prepareRuntimeHelpers(listing, binaries, args) {
+  async function prepareRuntimeHelpers(listing, binaries) {
     if (!binaries.some((suite) => taskHelperConsumers.includes(suite['package-name']))) return;
     const metadata = listing['rust-build-meta'];
+    const graph = JSON.parse(
+      await cargo(
+        [
+          'metadata',
+          '--locked',
+          '--no-deps',
+          '--format-version',
+          '1',
+          '--manifest-path',
+          join(root, manifests.root),
+        ],
+        { capture: true },
+      ),
+    );
     const missing = taskHelperBinaries.flatMap((artifact) => {
       const packages = new Set(
-        Object.values(listing['rust-suites'])
-          .filter((suite) => suite['package-name'] === artifact.package)
-          .map((suite) => suite['package-id']),
+        graph.packages.filter((pkg) => pkg.name === artifact.package).map((pkg) => pkg.id),
       );
       if (packages.size !== 1)
         throw new Error(
-          `Expected one native runtime package in test metadata: ${artifact.package}`,
+          `Expected one native runtime package in Cargo metadata: ${artifact.package}`,
         );
       const [packageId] = packages;
       const found = (metadata['non-test-binaries']?.[packageId] ?? []).filter(
@@ -896,7 +912,7 @@ export function executor(
       throw new Error(
         `The planned ${id} test selection was unexpectedly empty: ${plan.suites[id].filter}`,
       );
-    await prepareRuntimeHelpers(listing, selected, args);
+    await prepareRuntimeHelpers(listing, selected);
     const config = readFileSync(join(root, '.config/nextest.toml'), 'utf8');
     const groups = [];
     for (const [group, shards, name] of [
