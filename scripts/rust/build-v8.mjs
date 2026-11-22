@@ -20,13 +20,39 @@
 import { execFileSync } from 'node:child_process';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { join, parse, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 import { rustTarget } from './build-cli.mjs';
 import { cachedV8, v8CacheKey } from './v8-cache.mjs';
 import { compileV8 } from './compile-v8.mjs';
 import { downloadV8, packV8 } from './v8-prebuilt.mjs';
+
+/**
+ * Keep Windows V8 source checkouts near the drive root so Cargo 1.100+'s
+ * `build/gn_out` relative include paths stay well under Win32 MAX_PATH (260).
+ */
+export async function prepareV8SourceDir(
+  directory,
+  { platform = process.platform, mkdtempFn = mkdtemp, rmFn = rm } = {},
+) {
+  if (platform !== 'win32') {
+    return { directory, cleanup: async () => {} };
+  }
+  const root = parse(resolve(directory)).root;
+  try {
+    const shortDir = await mkdtempFn(join(root, 'v8-'));
+    return {
+      directory: shortDir,
+      cleanup: () => rmFn(shortDir, { recursive: true, force: true }),
+    };
+  } catch (error) {
+    if (error && (error.code === 'EACCES' || error.code === 'EPERM' || error.code === 'EROFS')) {
+      return { directory, cleanup: async () => {} };
+    }
+    throw error;
+  }
+}
 
 /** Build the locked V8 without its optional LGPL glibc implementation. */
 export async function buildV8({ root, directory, cache, target, env, metadata }) {
@@ -37,15 +63,22 @@ export async function buildV8({ root, directory, cache, target, env, metadata })
     directory: cache,
     key: configuration.key,
     target,
-    build: () =>
-      Object.hasOwn(manifest, configuration.key)
-        ? downloadV8({
-            pin,
-            directory: join(directory, 'prebuilt'),
-            key: configuration.key,
-            target,
-          })
-        : compileV8({ ...configuration, directory, target, env }),
+    build: async () => {
+      if (Object.hasOwn(manifest, configuration.key)) {
+        return downloadV8({
+          pin,
+          directory: join(directory, 'prebuilt'),
+          key: configuration.key,
+          target,
+        });
+      }
+      const sourceDir = await prepareV8SourceDir(directory);
+      try {
+        return await compileV8({ ...configuration, directory: sourceDir.directory, target, env });
+      } finally {
+        await sourceDir.cleanup();
+      }
+    },
   });
 }
 
