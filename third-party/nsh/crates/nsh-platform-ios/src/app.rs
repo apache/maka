@@ -40,23 +40,52 @@ pub enum AppSource {
 }
 
 /// Options for [`run_app`].
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct AppOptions {
     /// Log per-commit timings.
     pub trace: bool,
     /// Where bundled image assets are (for [`AppSource::Bundle`]); dev
     /// servers serve them themselves.
     pub asset_base: Option<AssetBase>,
+    /// Custom reader for `asset:/` URIs; takes precedence over `asset_base`.
+    pub assets: Option<std::sync::Arc<dyn nsh_engine::Assets>>,
+    /// Asynchronous loader for runtime module chunks (`import()`).
+    pub chunk_loader: Option<std::sync::Arc<dyn nsh_engine::ChunkLoader>>,
+    /// The runtime for async tasks; `None` uses NSH's shared runtime.
+    pub runtime: Option<tokio::runtime::Handle>,
     /// Where the apps keep their data, each in `<support_dir>/<app id>`:
     /// `None` uses the app's own data directory
     /// ([`SurfaceOptions::support_dir`]'s default).
     pub support_dir: Option<std::path::PathBuf>,
+    /// The app's own data directory, used as-is without appending an app id.
+    pub data_dir: Option<std::path::PathBuf>,
     /// Where the apps keep their caches (the images they downloaded) and
     /// how much each keeps ([`SurfaceOptions::cache`]).
     pub cache: nsh_engine::CacheOptions,
+    /// Host values readable by the engine's native UI sets.
+    pub context: nsh_engine::EngineContext,
+    /// Embedding app's channel with the app (`nsh/host`).
+    pub host: nsh_engine::HostChannel,
     /// Logs the performance monitor's readings once a second
     /// ([`SurfaceOptions::fps`]).
     pub fps: bool,
+}
+
+impl std::fmt::Debug for AppOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AppOptions")
+            .field("trace", &self.trace)
+            .field("asset_base", &self.asset_base)
+            .field("assets", &self.assets.as_ref().map(|_| ".."))
+            .field("chunk_loader", &self.chunk_loader.as_ref().map(|_| ".."))
+            .field("runtime", &self.runtime)
+            .field("support_dir", &self.support_dir)
+            .field("data_dir", &self.data_dir)
+            .field("cache", &self.cache)
+            .field("host", &self.host)
+            .field("fps", &self.fps)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Whether `path` is inside the app's own bundle (which the system verifies
@@ -276,10 +305,16 @@ fn connect(mtm: MainThreadMarker, scene: &UIWindowScene) {
             trace: options.trace,
             fps: options.fps,
             asset_base: options.asset_base,
+            assets: options.assets,
+            chunk_loader: options.chunk_loader,
+            runtime: options.runtime,
             support_dir: options
                 .support_dir
                 .or_else(|| SurfaceOptions::default().support_dir),
+            data_dir: options.data_dir,
             cache: options.cache,
+            context: options.context,
+            host: options.host,
             // An app on its own (the development host, the release runner),
             // not a module embedded in another app.
             limits: nsh_engine::Limits::standalone(),
