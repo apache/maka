@@ -951,12 +951,16 @@ export const conversationMessages = {
     '等待处理的消息',
     '等待處理的訊息',
   ],
-  'Missing provider counters or prices are unavailable. Auxiliary requests and tools are counted separately.':
-    [
-      'Missing provider counters or prices are unavailable. Auxiliary requests and tools are counted separately.',
-      '提供方缺失的计数或价格显示为不可用。辅助请求和工具另行计费。',
-      '供應方缺少的計數或價格顯示為無法取得。輔助請求和工具另行計費。',
-    ],
+  'Auxiliary requests and tools are counted separately.': [
+    'Auxiliary requests and tools are counted separately.',
+    '辅助请求和工具单独统计。',
+    '輔助請求和工具單獨統計。',
+  ],
+  '{value} ({reported}/{requests} requests)': [
+    '{value} ({reported}/{requests} requests)',
+    '{value}（已统计 {reported}/{requests} 个请求）',
+    '{value}（已統計 {reported}/{requests} 個請求）',
+  ],
   'Model selection rejected: {reason}': [
     'Model selection rejected: {reason}',
     '模型选择被拒绝：{reason}',

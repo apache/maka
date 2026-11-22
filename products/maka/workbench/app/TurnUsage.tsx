@@ -22,11 +22,10 @@ import { UiError, errorText, renderText, type UiText } from './text';
 import { currentLocale, tr } from './locale';
 import { formatDuration } from './duration';
 import { TokenCount } from './TokenCount';
-import { cleanup, inputAction, Scroll, signal, Text, View } from 'nsh';
+import { cleanup, computed, inputAction, Scroll, signal, Text, View } from 'nsh';
 import { Button } from 'nsh/base';
 import type {
   ExecutorTurnUsage,
-  ModelUsage,
   PromptCacheUsage,
   ServiceMethods,
   SettingsUsageRead,
@@ -50,15 +49,28 @@ type Counter =
   | 'cache_read_tokens'
   | 'cache_write_tokens';
 
-function total(attempts: UsageModelAttempt[], key: Counter): number | null {
+function total(attempts: UsageModelAttempt[], key: Counter | 'costUsd') {
   let value = 0;
+  let reported = 0;
   for (const attempt of attempts) {
-    const next: ModelUsage[Counter] = attempt.usage[key];
-    if (typeof next !== 'number' || next < 0 || !Number.isSafeInteger(next)) return null;
+    const next = key === 'costUsd' ? attempt.costUsd : attempt.usage[key];
+    if (next == null) continue;
+    if (key !== 'costUsd' && (!Number.isSafeInteger(next) || next < 0)) return null;
     value += next;
-    if (!Number.isSafeInteger(value)) return null;
+    reported++;
   }
-  return value;
+  const validSum = key === 'costUsd' ? Number.isFinite(value) : Number.isSafeInteger(value);
+  return reported > 0 && validSum ? { value, reported } : null;
+}
+
+function withCoverage(value: string, reported: number, requests: number): string {
+  return reported === requests
+    ? value
+    : tr('{value} ({reported}/{requests} requests)', {
+        value,
+        reported: formatCount(reported),
+        requests: formatCount(requests),
+      });
 }
 
 export function cacheHitRate(cache: PromptCacheUsage): string {
@@ -220,13 +232,11 @@ export function TurnUsage(props: {
     return counts;
   };
   const cost = () => {
-    let value = 0;
-    for (const attempt of attempts()) {
-      if (attempt.costUsd == null || !Number.isFinite(attempt.costUsd)) return tr('Unavailable');
-      value += attempt.costUsd;
-      if (!Number.isFinite(value)) return tr('Unavailable');
-    }
-    return `$${value.toFixed(6)}`;
+    const requests = attempts();
+    const sum = total(requests, 'costUsd');
+    return sum
+      ? withCoverage(`$${sum.value.toFixed(6)}`, sum.reported, requests.length)
+      : tr('Unavailable');
   };
   return (
     <ModalDialog size="form" onCancel={props.close}>
@@ -303,7 +313,7 @@ export function TurnUsage(props: {
             </Text>
             <Each of={counters()} key={(counter) => counter.key}>
               {(counter) => {
-                const count = () => total(attempts(), counter().key);
+                const count = computed(() => total(attempts(), counter().key));
                 return (
                   <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 16 }}>
                     <Text style={{ flex: 1, color: C.secondary }}>{counter().label}</Text>
@@ -311,7 +321,13 @@ export function TurnUsage(props: {
                       when={count() !== null}
                       else={<Text style={{ color: C.text }}>{tr('Unavailable')}</Text>}
                     >
-                      <TokenCount label={counter().label} value={count()!} />
+                      <TokenCount
+                        label={counter().label}
+                        value={count()!.value}
+                        format={(value) =>
+                          withCoverage(value, count()!.reported, attempts().length)
+                        }
+                      />
                     </If>
                   </View>
                 );
@@ -322,9 +338,7 @@ export function TurnUsage(props: {
               <Text style={[{ color: C.text }, { userSelect: 'text' }]}>{cost()}</Text>
             </View>
             <Text style={{ color: C.muted }}>
-              {tr(
-                'Missing provider counters or prices are unavailable. Auxiliary requests and tools are counted separately.',
-              )}
+              {tr('Auxiliary requests and tools are counted separately.')}
             </Text>
           </If>
         </View>
