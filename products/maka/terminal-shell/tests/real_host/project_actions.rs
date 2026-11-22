@@ -19,14 +19,40 @@
 
 use super::{Desktop, Fixture, Options};
 use crate::support;
+use futures_util::FutureExt;
+use maka_app_client::Client;
 use nsh_terminal::{Modifiers, NativeSurface};
 use serde_json::json;
+use std::{future::Future, panic::AssertUnwindSafe, time::Duration};
 
 async fn fixture() -> Fixture {
     Fixture::open_with_configuration(Options::default(), |configuration, _| {
         configuration["agent"]["permissions"]["access"] = json!("workspace_write");
     })
     .await
+}
+
+async fn with_terminal_launch_diagnostics<T>(
+    client: &Client,
+    session: &str,
+    wait: impl Future<Output = T>,
+) -> T {
+    match AssertUnwindSafe(wait).catch_unwind().await {
+        Ok(value) => value,
+        Err(panic) => {
+            let snapshot = tokio::time::timeout(
+                Duration::from_secs(3),
+                client.query(
+                    "terminal",
+                    "list",
+                    json!({"sessionId": session, "offset": 0}),
+                ),
+            )
+            .await;
+            eprintln!("Host terminal catalog when Action input was unavailable: {snapshot:?}");
+            std::panic::resume_unwind(panic);
+        }
+    }
 }
 
 async fn terminal_contains(desktop: &Desktop, text: &str) {
@@ -451,8 +477,17 @@ pub(super) async fn desktop_remove_recovery_finishes_original_form(leave: bool) 
     save_new_action_in_settings(&desktop, "Other Action", "echo other").await;
     desktop.press("Deleted Action").await;
     desktop.press("Delete").await;
-    desktop.control("Cancel").await;
-    assert!(desktop.controls("Save").is_empty());
+    desktop
+        .until(
+            "delete confirmation did not replace the editor controls",
+            || {
+                (desktop.controls("Save").is_empty()
+                    && desktop.controls("Cancel").len() == 1
+                    && desktop.controls("Delete").len() == 1)
+                    .then_some(())
+            },
+        )
+        .await;
     desktop.press("Delete").await;
     let id = desktop
         .until("remove response was not lost", || {
@@ -702,7 +737,12 @@ async fn desktop_actions_at_width(width: i32, docked: bool) {
     assert!(desktop.controls("Choose Action directory…").is_empty());
     desktop.press(second_action).await;
     desktop.control("Close workspace preview").await;
-    desktop.control("Release input").await;
+    with_terminal_launch_diagnostics(
+        &desktop.client,
+        &fixture.session,
+        desktop.control("Release input"),
+    )
+    .await;
     terminal_contains(&desktop, "Answer:").await;
     let terminal = desktop.control("Focus terminal input").await;
     let composers = desktop.controls("Focus message composer");
@@ -738,7 +778,12 @@ async fn desktop_actions_at_width(width: i32, docked: bool) {
 
     desktop.press("Close workspace preview").await;
     desktop.press(first_action).await;
-    desktop.control("Release input").await;
+    with_terminal_launch_diagnostics(
+        &desktop.client,
+        &fixture.session,
+        desktop.control("Release input"),
+    )
+    .await;
     terminal_contains(&desktop, "Answer:").await;
     desktop.paste("second answer").await;
     desktop.key("enter", false);
@@ -830,7 +875,12 @@ pub(super) async fn terminal_actions_preserve_keyboard_input_and_original_output
     );
     support::evidence("actions-session-launcher", &launcher);
     support::click_button(&mut view, "Run current Action Terminal command").await;
-    support::wait_enabled_button(&mut view, "Release input").await;
+    with_terminal_launch_diagnostics(
+        &client,
+        &fixture.session,
+        support::wait_enabled_button(&mut view, "Release input"),
+    )
+    .await;
     support::wait_view_state(&mut view, |view, snapshot| {
         snapshot.contains("Answer:")
             && view.input_context().is_some_and(|input| {
@@ -875,7 +925,12 @@ pub(super) async fn terminal_actions_preserve_keyboard_input_and_original_output
     })
     .await;
     support::click_button(&mut view, "Run current Action Terminal command").await;
-    support::wait_enabled_button(&mut view, "Release input").await;
+    with_terminal_launch_diagnostics(
+        &client,
+        &fixture.session,
+        support::wait_enabled_button(&mut view, "Release input"),
+    )
+    .await;
     support::wait_view_state(&mut view, |view, snapshot| {
         snapshot.contains("Answer:")
             && !snapshot.contains("result first answer")
