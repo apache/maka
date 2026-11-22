@@ -79,6 +79,7 @@ import {
 } from './RoomPanels';
 import {
   applyRoomWatchUpdate,
+  catchUpLiveTail,
   isGroupContinuation,
   roomAuthorSession,
   roomAvatarColor,
@@ -1125,14 +1126,16 @@ export function RoomTimeline(props: {
       messages.set(next);
       if (mode !== 'append') before.set(page.before ?? null);
       if (mode !== 'prepend') after.set(page.after ?? null);
-      // Never advance watchState.through on prepend or incomplete middle pages so unseen tail posts are never skipped.
+      // Never advance watchState.through on prepend or incomplete middle pages, and never roll it
+      // backwards if a newer watch frame arrived while this page read was in flight.
+      const tailSeq = next.at(-1)?.sequence ?? 0;
       if (mode === 'replace') {
-        watchState.through = page.through;
+        watchState.through = Math.max(watchState.through, page.through);
       } else if (mode === 'append' && page.after === null) {
-        watchState.through = Math.max(watchState.through, next.at(-1)?.sequence ?? 0);
+        watchState.through = Math.max(watchState.through, tailSeq);
       }
       throughSignal.set(Math.max(throughSignal(), page.through));
-      if (after() === null) unseenCount.set(0);
+      if (after() === null && tailSeq >= watchState.through) unseenCount.set(0);
       ready.set(true);
     });
     const ids = page.items.flatMap((message) => [
@@ -1232,11 +1235,22 @@ export function RoomTimeline(props: {
     return run;
   };
 
+  const reconcilePagedTail = (revBefore: number | null) =>
+    catchUpLiveTail(watchState, revBefore, {
+      hasAfterCursor: () => after() !== null,
+      loadedThrough: loadedSequence,
+      onThrough: (nextThrough) => throughSignal.set(Math.max(throughSignal(), nextThrough)),
+      appendNew: (refreshExisting, targetThrough) => refresh(refreshExisting, targetThrough),
+      refreshExisting: () => refreshVisibleMetadata(),
+      clearUnseen: () => unseenCount.set(0),
+    });
+
   const latest = async () => {
     try {
+      const revBefore = watchState.revision;
       atEnd.set(true);
-      unseenCount.set(0);
       publish(await read({ kind: 'tail' }), 'replace');
+      await reconcilePagedTail(revBefore);
       await refreshState();
       scroll?.scrollToEnd({ animated: !reduceMotion() });
     } catch (reason) {
@@ -1249,10 +1263,14 @@ export function RoomTimeline(props: {
     if (!cursor || loadingEarlier()) return;
     loadingEarlier.set(true);
     try {
+      const revBefore = watchState.revision;
       const page = await read({ kind: 'before_message', messageId: cursor });
       prependAnchor = { height: contentHeight, y: scrollY };
       atEnd.set(false);
       publish(page, 'prepend');
+      if (alive && watchState.revision !== revBefore) {
+        await refreshVisibleMetadata();
+      }
     } catch (reason) {
       if (alive) error.set(reasonText(reason));
     } finally {
@@ -1265,8 +1283,10 @@ export function RoomTimeline(props: {
     if (!cursor || loadingNewer()) return;
     loadingNewer.set(true);
     try {
+      const revBefore = watchState.revision;
       const page = await read({ kind: 'after_message', messageId: cursor });
       publish(page, 'append');
+      await reconcilePagedTail(revBefore);
     } catch (reason) {
       if (alive) error.set(reasonText(reason));
     } finally {
@@ -1284,10 +1304,12 @@ export function RoomTimeline(props: {
   const focusMessage = async (messageId: string) => {
     try {
       if (!map().has(messageId)) {
+        const revBefore = watchState.revision;
         atEnd.set(false);
         rowOffsets.clear();
         pendingScrollId = messageId;
         publish(await read({ kind: 'around_message', messageId }), 'replace');
+        await reconcilePagedTail(revBefore);
       } else if (!scrollToMessage(messageId)) {
         pendingScrollId = messageId;
       }

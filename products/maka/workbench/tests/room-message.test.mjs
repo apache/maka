@@ -21,6 +21,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   applyRoomWatchUpdate,
+  catchUpLiveTail,
   extractInlineMentionIds,
   formatInlineMention,
   formatRoomPreviewText,
@@ -264,4 +265,81 @@ test('applyRoomWatchUpdate catches retractions, skips quiet frames, avoids plain
   assert.equal(ok6, true);
   assert.equal(caughtUp, true);
   assert.deepEqual(state6, { through: 101, revision: 10 });
+});
+
+test('catchUpLiveTail appends messages that arrived while newer/latest paging switched back to the live tail', async () => {
+  // User is viewing historical page 1..52 (after != null, watchState.through = 100, rev = 10).
+  const state = { through: 100, revision: 10 };
+  let afterCursor = 'm52';
+  let loaded = 52;
+  let unseen = 0;
+
+  // 1. User clicks "Newer messages" (captures revBefore = 10); server reads 53..100 with after=null (in flight).
+  const revBefore = state.revision;
+
+  // 2. While newer() is in flight, remote posts m101 and watch arrives first while afterCursor is still non-null.
+  const watchOk = await applyRoomWatchUpdate(
+    state,
+    { through: 101, revision: 10 },
+    {
+      hasAfterCursor: () => afterCursor !== null,
+      loadedThrough: () => loaded,
+      onThrough: () => {},
+      onUnseenDelta: (delta) => {
+        unseen += delta;
+      },
+      appendNew: async () => true,
+      refreshExisting: async () => true,
+    },
+  );
+  assert.equal(watchOk, true);
+  assert.equal(state.through, 101);
+  assert.equal(unseen, 1);
+
+  // 3. Stale newer() response arrives with items 53..100 and after=null; loaded is 100 < state.through (101).
+  loaded = 100;
+  afterCursor = null;
+
+  const catchUpCalls = [];
+  const ok = await catchUpLiveTail(state, revBefore, {
+    hasAfterCursor: () => afterCursor !== null,
+    loadedThrough: () => loaded,
+    onThrough: () => {},
+    appendNew: async (refreshExisting, targetThrough) => {
+      catchUpCalls.push([refreshExisting, targetThrough]);
+      loaded = targetThrough;
+      return true;
+    },
+    refreshExisting: async () => true,
+    clearUnseen: () => {
+      unseen = 0;
+    },
+  });
+  assert.equal(ok, true);
+  assert.deepEqual(catchUpCalls, [[false, 101]]);
+  assert.equal(loaded, 101);
+  assert.equal(unseen, 0);
+  assert.deepEqual(state, { through: 101, revision: 10 });
+
+  // 4. If a retraction also bumped revision while paging was in flight, catchUpLiveTail requests refreshExisting=true.
+  state.revision = 11;
+  state.through = 102;
+  loaded = 101;
+  const revCalls = [];
+  const okRev = await catchUpLiveTail(state, 10, {
+    hasAfterCursor: () => false,
+    loadedThrough: () => loaded,
+    onThrough: () => {},
+    appendNew: async (refreshExisting, targetThrough) => {
+      revCalls.push([refreshExisting, targetThrough]);
+      loaded = targetThrough;
+      return true;
+    },
+    refreshExisting: async () => true,
+    clearUnseen: () => {
+      unseen = 0;
+    },
+  });
+  assert.equal(okRev, true);
+  assert.deepEqual(revCalls, [[true, 102]]);
 });

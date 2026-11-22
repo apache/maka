@@ -248,6 +248,39 @@ export async function applyRoomWatchUpdate(
   return true;
 }
 
+/**
+ * Reconcile a newly published page (from newer/latest/focus/earlier) against watch updates
+ * that arrived while that page read was in flight, before clearing unseen counts.
+ */
+export async function catchUpLiveTail(
+  state: RoomWatchState,
+  revisionBeforeRead: number | null,
+  actions: Pick<
+    RoomWatchActions,
+    'hasAfterCursor' | 'loadedThrough' | 'onThrough' | 'appendNew' | 'refreshExisting'
+  > & {
+    clearUnseen: () => void;
+  },
+): Promise<boolean> {
+  const revChanged = revisionBeforeRead !== state.revision;
+  if (actions.hasAfterCursor()) {
+    return revChanged ? actions.refreshExisting() : true;
+  }
+  const target = state.through;
+  if (actions.loadedThrough() < target) {
+    const ok = await actions.appendNew(revChanged, target);
+    const loaded = actions.loadedThrough();
+    if (!ok || loaded < target) return false;
+    state.through = Math.max(state.through, loaded);
+    actions.onThrough(state.through);
+  } else if (revChanged) {
+    const ok = await actions.refreshExisting();
+    if (!ok) return false;
+  }
+  actions.clearUnseen();
+  return true;
+}
+
 export function roomResult<T>(reply: unknown): T {
   const receipt = (reply as OperationReply).receipt;
   if (receipt.kind !== 'recorded') throw new Error('Operation receipt is not recorded.');
