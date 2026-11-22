@@ -24,9 +24,12 @@
 //! server, sandbox, or desktop crates so it builds cleanly on iOS.
 
 use bytes::Bytes;
-use futures_util::{Sink, Stream, future::BoxFuture};
+use futures_util::{
+    Sink, Stream,
+    future::{BoxFuture, Either, select},
+};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
     io,
@@ -37,8 +40,12 @@ use std::{
 };
 use thiserror::Error;
 use tokio::{
-    io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader, ReadBuf},
+    io::{
+        AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader, ReadBuf,
+        ReadHalf, WriteHalf,
+    },
     net::TcpStream,
+    sync::watch,
 };
 use tokio_tungstenite::{
     WebSocketStream,
@@ -213,11 +220,22 @@ struct WireCallOpen {
     input: Value,
 }
 
+#[derive(Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum WireControl {
+    Pull,
+    Cancel,
+    Confirm { recovery: Value },
+}
+
 #[derive(Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum WireReply {
     Ready,
     Subscribed,
+    Prepared {
+        reference: Value,
+    },
     Item {
         value: Value,
     },
@@ -226,6 +244,10 @@ enum WireReply {
     },
     Finished {
         result: Result<Value, String>,
+        cleanup: Result<(), String>,
+    },
+    Mutation {
+        reply: Value,
         cleanup: Result<(), String>,
     },
     Aborted {
@@ -528,14 +550,12 @@ pub struct RemoteCallHandle {
 }
 
 impl RemoteCallHandle {
-    /// Invoke a method on an admitted Host endpoint over a fresh authenticated
-    /// WebSocket call channel and collect all streamed events through completion.
-    pub async fn call(
+    async fn open_call_channel(
         &self,
         endpoint: &str,
         method: &str,
         input: Value,
-    ) -> Result<Vec<RemoteCallEvent>, RemoteClientError> {
+    ) -> Result<BufReader<WsByteChannel<BoxedStream>>, RemoteClientError> {
         let Some(ep) = self.endpoints.get(endpoint) else {
             return Err(RemoteClientError::UnknownEndpoint(endpoint.to_owned()));
         };
@@ -588,17 +608,25 @@ impl RemoteCallHandle {
         write_frame(reader.get_mut(), &empty_descriptors).await?;
 
         match read_frame::<_, WireReply>(&mut reader).await? {
-            WireReply::Ready => {}
+            WireReply::Ready => Ok(reader),
             WireReply::Aborted { reason } | WireReply::BindingRetired { reason } => {
-                return Err(RemoteClientError::HostRejected(reason));
+                Err(RemoteClientError::HostRejected(reason))
             }
-            _ => {
-                return Err(RemoteClientError::Protocol(
-                    "Host did not reply Ready to call open".into(),
-                ));
-            }
+            _ => Err(RemoteClientError::Protocol(
+                "Host did not reply Ready to call open".into(),
+            )),
         }
+    }
 
+    /// Invoke a query method on an admitted Host endpoint and collect all
+    /// frames through completion.
+    pub async fn call(
+        &self,
+        endpoint: &str,
+        method: &str,
+        input: Value,
+    ) -> Result<Vec<RemoteCallEvent>, RemoteClientError> {
+        let mut reader = self.open_call_channel(endpoint, method, input).await?;
         let mut events = Vec::new();
         loop {
             match read_frame::<_, WireReply>(&mut reader).await? {
@@ -618,6 +646,11 @@ impl RemoteCallHandle {
                 WireReply::Aborted { reason } | WireReply::BindingRetired { reason } => {
                     return Err(RemoteClientError::HostRejected(reason));
                 }
+                WireReply::Prepared { .. } | WireReply::Mutation { .. } => {
+                    return Err(RemoteClientError::Protocol(
+                        "method is a mutation; use mutate() instead of call()".into(),
+                    ));
+                }
                 WireReply::Ready | WireReply::Other => {
                     return Err(RemoteClientError::Protocol(
                         "unexpected Reply frame during remote call".into(),
@@ -625,6 +658,384 @@ impl RemoteCallHandle {
                 }
             }
         }
+    }
+
+    /// Invoke a query method on an admitted Host endpoint and return its final JSON value.
+    pub async fn query(
+        &self,
+        endpoint: &str,
+        method: &str,
+        input: Value,
+    ) -> Result<Value, RemoteClientError> {
+        let events = self.call(endpoint, method, input).await?;
+        events
+            .into_iter()
+            .rev()
+            .find_map(|ev| match ev {
+                RemoteCallEvent::Finished(value) => Some(value),
+                _ => None,
+            })
+            .ok_or_else(|| {
+                RemoteClientError::Protocol("Host query completed without Finished payload".into())
+            })
+    }
+
+    /// Invoke a mutation method over the authenticated public Host gateway
+    /// (Open -> Ready -> Prepared -> Confirm -> Mutation) and return the
+    /// recorded handler output value.
+    pub async fn mutate(
+        &self,
+        endpoint: &str,
+        method: &str,
+        input: Value,
+    ) -> Result<Value, RemoteClientError> {
+        let mut reader = self.open_call_channel(endpoint, method, input).await?;
+        let reference = match read_frame::<_, WireReply>(&mut reader).await? {
+            WireReply::Prepared { reference } => reference,
+            WireReply::Aborted { reason } | WireReply::BindingRetired { reason } => {
+                return Err(RemoteClientError::HostRejected(reason));
+            }
+            WireReply::Finished { .. } | WireReply::Subscribed => {
+                return Err(RemoteClientError::Protocol(format!(
+                    "endpoint method '{endpoint}.{method}' is not a mutation"
+                )));
+            }
+            _ => {
+                return Err(RemoteClientError::Protocol(
+                    "Host did not reply Prepared for remote mutation".into(),
+                ));
+            }
+        };
+
+        let recovery = json!({
+            "kind": "maka_remote_mutation",
+            "version": 1,
+            "endpoint": endpoint,
+            "method": method,
+            "reference": reference,
+        });
+        write_frame(reader.get_mut(), &WireControl::Confirm { recovery }).await?;
+
+        loop {
+            match read_frame::<_, WireReply>(&mut reader).await? {
+                WireReply::Progress { .. } => {}
+                WireReply::Mutation { reply, cleanup } => {
+                    if let Err(err) = cleanup {
+                        return Err(RemoteClientError::HostRejected(format!(
+                            "mutation cleanup failed: {err}"
+                        )));
+                    }
+                    return extract_mutation_value(reply);
+                }
+                WireReply::Aborted { reason } | WireReply::BindingRetired { reason } => {
+                    return Err(RemoteClientError::HostRejected(reason));
+                }
+                _ => {
+                    return Err(RemoteClientError::Protocol(
+                        "unexpected Reply frame while awaiting mutation completion".into(),
+                    ));
+                }
+            }
+        }
+    }
+
+    /// Open a demand-driven streaming subscription on an admitted Host endpoint
+    /// (Open -> Ready -> Subscribed -> pull/cancel loop).
+    pub async fn subscribe(
+        &self,
+        endpoint: &str,
+        method: &str,
+        input: Value,
+    ) -> Result<RemoteSubscription, RemoteClientError> {
+        let mut reader = self.open_call_channel(endpoint, method, input).await?;
+        match read_frame::<_, WireReply>(&mut reader).await? {
+            WireReply::Subscribed => {}
+            WireReply::Aborted { reason } | WireReply::BindingRetired { reason } => {
+                return Err(RemoteClientError::HostRejected(reason));
+            }
+            WireReply::Finished { .. } | WireReply::Prepared { .. } => {
+                return Err(RemoteClientError::Protocol(format!(
+                    "endpoint method '{endpoint}.{method}' is not a subscription"
+                )));
+            }
+            _ => {
+                return Err(RemoteClientError::Protocol(
+                    "Host did not reply Subscribed for remote subscription".into(),
+                ));
+            }
+        }
+        // Transfer any buffered bytes safely: Subscribed was the last read frame
+        // and the server sends nothing further until the client sends Control::Pull.
+        if !reader.buffer().is_empty() {
+            return Err(RemoteClientError::Protocol(
+                "unexpected trailing bytes before subscription Pull".into(),
+            ));
+        }
+        let channel = reader.into_inner();
+        let (read_half, write_half) = tokio::io::split(channel);
+        Ok(RemoteSubscription {
+            reader: BufReader::new(read_half),
+            writer: write_half,
+            closed: false,
+        })
+    }
+}
+
+fn extract_mutation_value(reply: Value) -> Result<Value, RemoteClientError> {
+    let receipt = reply.get("receipt").ok_or_else(|| {
+        RemoteClientError::Protocol("Host mutation reply missing receipt field".into())
+    })?;
+    match receipt.get("kind").and_then(Value::as_str) {
+        Some("recorded") => {
+            if let Some(cleanup) = receipt.get("cleanup")
+                && cleanup.get("kind").and_then(Value::as_str) == Some("failed")
+            {
+                let diagnostic = cleanup
+                    .get("diagnostic")
+                    .and_then(Value::as_str)
+                    .unwrap_or("mutation cleanup failed");
+                return Err(RemoteClientError::HostRejected(diagnostic.to_owned()));
+            }
+            let outcome = receipt.get("outcome").ok_or_else(|| {
+                RemoteClientError::Protocol("recorded mutation receipt missing outcome".into())
+            })?;
+            match outcome.get("kind").and_then(Value::as_str) {
+                Some("returned") => {
+                    let result = outcome.get("result").ok_or_else(|| {
+                        RemoteClientError::Protocol("returned outcome missing result".into())
+                    })?;
+                    match result.get("kind").and_then(Value::as_str) {
+                        Some("success") => Ok(result.get("value").cloned().unwrap_or(Value::Null)),
+                        Some("failure") => {
+                            let diagnostic = result
+                                .get("diagnostic")
+                                .and_then(Value::as_str)
+                                .unwrap_or("remote mutation failed");
+                            Err(RemoteClientError::HostRejected(diagnostic.to_owned()))
+                        }
+                        other => Err(RemoteClientError::Protocol(format!(
+                            "unexpected mutation result kind: {other:?}"
+                        ))),
+                    }
+                }
+                Some("not_executed") => Err(RemoteClientError::HostRejected(
+                    "remote mutation was prevented before start".into(),
+                )),
+                Some("unknown") => {
+                    let diagnostic = outcome
+                        .get("diagnostic")
+                        .and_then(Value::as_str)
+                        .unwrap_or("remote mutation outcome unknown");
+                    Err(RemoteClientError::HostRejected(diagnostic.to_owned()))
+                }
+                Some("unresolved") => Err(RemoteClientError::HostRejected(
+                    "remote mutation outcome remains unresolved".into(),
+                )),
+                other => Err(RemoteClientError::Protocol(format!(
+                    "unexpected mutation outcome kind: {other:?}"
+                ))),
+            }
+        }
+        Some("unavailable") => {
+            let diagnostic = receipt
+                .get("diagnostic")
+                .and_then(Value::as_str)
+                .unwrap_or("remote mutation unavailable");
+            Err(RemoteClientError::HostRejected(diagnostic.to_owned()))
+        }
+        Some("not_recorded") => Err(RemoteClientError::HostRejected(
+            "remote mutation was not recorded".into(),
+        )),
+        other => Err(RemoteClientError::Protocol(format!(
+            "unexpected mutation receipt kind: {other:?}"
+        ))),
+    }
+}
+
+/// Active demand-driven remote Host subscription.
+pub struct RemoteSubscription {
+    reader: BufReader<ReadHalf<WsByteChannel<BoxedStream>>>,
+    writer: WriteHalf<WsByteChannel<BoxedStream>>,
+    closed: bool,
+}
+
+async fn wait_for_stop(stop: &mut watch::Receiver<bool>) {
+    if *stop.borrow() {
+        return;
+    }
+    while stop.changed().await.is_ok() {
+        if *stop.borrow() {
+            return;
+        }
+    }
+    // Sender dropped: treat as cancellation so tasks never hang forever.
+}
+
+impl RemoteSubscription {
+    /// Pull the next item from the Host subscription. Returns Ok(None) on clean completion.
+    pub async fn next(&mut self) -> Result<Option<Value>, RemoteClientError> {
+        if self.closed {
+            return Ok(None);
+        }
+        write_frame(&mut self.writer, &WireControl::Pull).await?;
+        loop {
+            match read_frame::<_, WireReply>(&mut self.reader).await? {
+                WireReply::Item { value } => return Ok(Some(value)),
+                WireReply::Progress { .. } => {}
+                WireReply::Finished { result, cleanup } => {
+                    self.closed = true;
+                    if let Err(err) = cleanup {
+                        return Err(RemoteClientError::HostRejected(format!(
+                            "subscription cleanup failed: {err}"
+                        )));
+                    }
+                    result.map_err(RemoteClientError::HostRejected)?;
+                    return Ok(None);
+                }
+                WireReply::Aborted { reason } | WireReply::BindingRetired { reason } => {
+                    self.closed = true;
+                    return Err(RemoteClientError::HostRejected(reason));
+                }
+                _ => {
+                    self.closed = true;
+                    return Err(RemoteClientError::Protocol(
+                        "unexpected Reply frame during remote subscription".into(),
+                    ));
+                }
+            }
+        }
+    }
+
+    /// Pull the next item while racing against a watch cancellation signal.
+    /// When cancelled mid-pull, sends Control::Cancel on the writer half and
+    /// shuts down the channel so the Host stops its subscription producer immediately.
+    pub async fn next_or_cancel(
+        &mut self,
+        stop: &mut watch::Receiver<bool>,
+    ) -> Result<Option<Value>, RemoteClientError> {
+        if self.closed {
+            return Ok(None);
+        }
+        if *stop.borrow() {
+            self.abort_channel().await?;
+            return Ok(None);
+        }
+        write_frame(&mut self.writer, &WireControl::Pull).await?;
+        loop {
+            let outcome = {
+                let read_fut = Box::pin(read_frame::<_, WireReply>(&mut self.reader));
+                let stop_fut = Box::pin(wait_for_stop(stop));
+                match select(read_fut, stop_fut).await {
+                    Either::Left((res, _)) => Some(res),
+                    Either::Right(((), _)) => None,
+                }
+            };
+            let reply = match outcome {
+                Some(res) => res?,
+                None => {
+                    self.abort_channel().await?;
+                    return Ok(None);
+                }
+            };
+            match reply {
+                WireReply::Item { value } => return Ok(Some(value)),
+                WireReply::Progress { .. } => {}
+                WireReply::Finished { result, cleanup } => {
+                    self.closed = true;
+                    if let Err(err) = cleanup {
+                        return Err(RemoteClientError::HostRejected(format!(
+                            "subscription cleanup failed: {err}"
+                        )));
+                    }
+                    result.map_err(RemoteClientError::HostRejected)?;
+                    return Ok(None);
+                }
+                WireReply::Aborted { reason } | WireReply::BindingRetired { reason } => {
+                    self.closed = true;
+                    return Err(RemoteClientError::HostRejected(reason));
+                }
+                _ => {
+                    self.closed = true;
+                    return Err(RemoteClientError::Protocol(
+                        "unexpected Reply frame during remote subscription".into(),
+                    ));
+                }
+            }
+        }
+    }
+
+    /// Gracefully cancel the subscription and drain until the Host settles.
+    /// Surfaces cancel-write failures, settlement timeouts, and shutdown errors
+    /// so callers never mistake an unconfirmed cancel for clean Host cleanup.
+    pub async fn cancel(self) -> Result<(), RemoteClientError> {
+        self.cancel_with_timeout(Duration::from_secs(3)).await
+    }
+
+    /// Gracefully cancel the subscription with an explicit settlement deadline.
+    pub async fn cancel_with_timeout(mut self, timeout: Duration) -> Result<(), RemoteClientError> {
+        if self.closed {
+            return Ok(());
+        }
+        self.closed = true;
+        let write_err = write_frame(&mut self.writer, &WireControl::Cancel)
+            .await
+            .err();
+        let drain = async {
+            loop {
+                match read_frame::<_, WireReply>(&mut self.reader).await {
+                    Ok(
+                        WireReply::Finished { .. }
+                        | WireReply::Aborted { .. }
+                        | WireReply::BindingRetired { .. },
+                    ) => return Ok(()),
+                    Ok(_) => continue,
+                    Err(RemoteClientError::Io(err))
+                        if err.kind() == io::ErrorKind::UnexpectedEof =>
+                    {
+                        return Ok(());
+                    }
+                    Err(err) => return Err(err),
+                }
+            }
+        };
+        let drain_err = match tokio::time::timeout(timeout, drain).await {
+            Ok(Ok(())) => None,
+            Ok(Err(err)) => Some(err),
+            Err(_) => Some(RemoteClientError::Io(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "timed out awaiting Host subscription cancellation settlement",
+            ))),
+        };
+        let shutdown_err = self
+            .writer
+            .shutdown()
+            .await
+            .err()
+            .map(RemoteClientError::Io);
+        if let Some(err) = write_err.or(drain_err).or(shutdown_err) {
+            return Err(err);
+        }
+        Ok(())
+    }
+
+    async fn abort_channel(&mut self) -> Result<(), RemoteClientError> {
+        if self.closed {
+            return Ok(());
+        }
+        self.closed = true;
+        let write_err = write_frame(&mut self.writer, &WireControl::Cancel)
+            .await
+            .err();
+        let shutdown_err = self
+            .writer
+            .shutdown()
+            .await
+            .err()
+            .map(RemoteClientError::Io);
+        if let Some(err) = write_err.or(shutdown_err) {
+            return Err(err);
+        }
+        Ok(())
     }
 }
 
@@ -676,6 +1087,51 @@ impl RemoteHostConnection {
             ));
         }
         self.handle.call(endpoint, method, input).await
+    }
+
+    /// Invoke a query method on an admitted Host endpoint and return its JSON output.
+    pub async fn query(
+        &self,
+        endpoint: &str,
+        method: &str,
+        input: Value,
+    ) -> Result<Value, RemoteClientError> {
+        if self.closed {
+            return Err(RemoteClientError::Protocol(
+                "cannot invoke query on closed Host session".into(),
+            ));
+        }
+        self.handle.query(endpoint, method, input).await
+    }
+
+    /// Invoke a mutation method on an admitted Host endpoint and return its recorded output.
+    pub async fn mutate(
+        &self,
+        endpoint: &str,
+        method: &str,
+        input: Value,
+    ) -> Result<Value, RemoteClientError> {
+        if self.closed {
+            return Err(RemoteClientError::Protocol(
+                "cannot invoke mutate on closed Host session".into(),
+            ));
+        }
+        self.handle.mutate(endpoint, method, input).await
+    }
+
+    /// Open a demand-driven streaming subscription on an admitted Host endpoint.
+    pub async fn subscribe(
+        &self,
+        endpoint: &str,
+        method: &str,
+        input: Value,
+    ) -> Result<RemoteSubscription, RemoteClientError> {
+        if self.closed {
+            return Err(RemoteClientError::Protocol(
+                "cannot subscribe on closed Host session".into(),
+            ));
+        }
+        self.handle.subscribe(endpoint, method, input).await
     }
 
     /// Gracefully detach this remote session without stopping the Host.

@@ -32,7 +32,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, VecDeque},
     fs,
     io::Write,
     path::{Path, PathBuf},
@@ -40,8 +40,14 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 use tempfile::NamedTempFile;
-use tokio::{runtime::Handle, sync::Mutex};
+use tokio::{
+    runtime::Handle,
+    sync::{Mutex, watch},
+};
 use uuid::Uuid;
+
+const MAX_ACTIVE_SUBSCRIPTIONS: usize = 32;
+const MAX_CLEANUP_WARNINGS: usize = 16;
 
 /// Explicit nsh/host allowlist declared by the iOS shell UI bundle.
 pub const ALLOWED_HOST_CALLS: &[&str] = &[
@@ -53,6 +59,10 @@ pub const ALLOWED_HOST_CALLS: &[&str] = &[
     "ios.removeHost",
     "ios.setFilter",
     "ios.hostCall",
+    "ios.hostQuery",
+    "ios.hostMutate",
+    "ios.subscribe",
+    "ios.unsubscribe",
 ];
 
 /// Factory turning a Host endpoint URL into a transport stream opener.
@@ -76,6 +86,11 @@ struct ActiveConnection {
     connection: RemoteHostConnection,
 }
 
+struct ActiveSubscription {
+    generation: u64,
+    stop: watch::Sender<bool>,
+}
+
 struct BridgeState {
     support_dir: PathBuf,
     device_peer_id: String,
@@ -83,7 +98,13 @@ struct BridgeState {
     store: SavedHostStore,
     credentials: BTreeMap<String, String>,
     active: Option<ActiveConnection>,
-    /// Monotonic generation fencing in-flight connect/pair operations against
+    /// Active Host subscriptions cancelled automatically on unsubscribe, replacement, or Host detach.
+    subscriptions: BTreeMap<String, ActiveSubscription>,
+    /// Monotonic generation fencing subscription items and ended events across same-ID replacements.
+    subscription_generation: u64,
+    /// Bounded recent errors observed while cancelling/shutting down superseded or unsubscribed streams.
+    cleanup_warnings: VecDeque<String>,
+    /// Monotonic generation fencing in-flight connect/pair/subscribe operations against
     /// concurrent disconnect, remove, or newer connect requests.
     connection_epoch: u64,
 }
@@ -94,6 +115,8 @@ pub struct HostBridge {
     state: Arc<Mutex<BridgeState>>,
     /// Serializes blocking disk commits without blocking state reads or RPCs.
     persist_gate: Arc<Mutex<()>>,
+    /// Retains a pairing URI received before JS mounts its event listener.
+    pending_pair_uri: Arc<std::sync::Mutex<Option<String>>>,
     opener: EndpointOpener,
     channel: HostChannel,
     runtime: Handle,
@@ -135,9 +158,13 @@ impl HostBridge {
                 store,
                 credentials,
                 active: None,
+                subscriptions: BTreeMap::new(),
+                subscription_generation: 0,
+                cleanup_warnings: VecDeque::new(),
                 connection_epoch: 0,
             })),
             persist_gate: Arc::new(Mutex::new(())),
+            pending_pair_uri: Arc::new(std::sync::Mutex::new(None)),
             opener,
             channel: channel.clone(),
             runtime,
@@ -172,17 +199,58 @@ impl HostBridge {
         self.register_async(channel, "ios.hostCall", |bridge, data| async move {
             bridge.host_call(data).await
         });
+        self.register_async(channel, "ios.hostQuery", |bridge, data| async move {
+            bridge.host_query(data).await
+        });
+        self.register_async(channel, "ios.hostMutate", |bridge, data| async move {
+            bridge.host_mutate(data).await
+        });
+        {
+            let bridge = self.clone();
+            channel.handle("ios.subscribe", move |mut call: HostCall| {
+                let data = call.take_data();
+                let bridge = bridge.clone();
+                let runtime = bridge.runtime.clone();
+                runtime.spawn(async move {
+                    match bridge.open_subscription(data).await {
+                        Ok((reply_payload, pump)) => {
+                            // Reply on HostChannel strictly BEFORE spawning the pull pump
+                            // so JS always receives the subscription handle before item/ended frames.
+                            call.reply(Ok(reply_payload));
+                            bridge.runtime.spawn(pump);
+                        }
+                        Err(err) => call.reply(Err(err)),
+                    }
+                });
+            });
+        }
+        self.register_async(channel, "ios.unsubscribe", |bridge, data| async move {
+            bridge.unsubscribe(data).await
+        });
 
-        let link_channel = channel.clone();
+        let link_bridge = self.clone();
         channel.handle_open_url(move |request| {
             let url = request.url().to_owned();
             if url.trim().starts_with(PAIRING_URI_PREFIX) {
-                let _ = link_channel.send("ios.pairingUri", json!({ "uri": url }));
+                link_bridge.queue_pairing_uri(url);
                 request.handled();
             } else {
                 request.decline();
             }
         });
+    }
+
+    /// Record and emit a pairing deep-link URI. Storing it in pending_pair_uri
+    /// ensures cold-launch URLs are still delivered when JS calls ios.bootstrap.
+    pub fn queue_pairing_uri(&self, uri: String) {
+        if !uri.trim().starts_with(PAIRING_URI_PREFIX) {
+            return;
+        }
+        *self
+            .pending_pair_uri
+            .lock()
+            .unwrap_or_else(|err| err.into_inner()) = Some(uri.clone());
+        let _ = self.channel.send("ios.pairingUri", json!({ "uri": uri }));
     }
 
     fn register_async<F, Fut>(&self, channel: &HostChannel, name: &'static str, handler: F)
@@ -250,11 +318,30 @@ impl HostBridge {
     /// Inspect current bridge state (usable both via nsh/host and Rust tests).
     pub async fn bootstrap(&self) -> Result<Value, String> {
         let state = self.state.lock().await;
-        Ok(Self::snapshot_locked(&state))
+        let mut snap = Self::snapshot_locked(&state);
+        if let Some(uri) = self
+            .pending_pair_uri
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .take()
+            && let Some(obj) = snap.as_object_mut()
+        {
+            obj.insert("pendingPairUri".into(), Value::String(uri));
+        }
+        Ok(snap)
     }
 
     pub async fn parse_ticket(&self, data: Value) -> Result<Value, String> {
         let uri = require_string(&data, "uri")?;
+        {
+            let mut pending = self
+                .pending_pair_uri
+                .lock()
+                .unwrap_or_else(|err| err.into_inner());
+            if pending.as_deref() == Some(uri.as_str()) {
+                *pending = None;
+            }
+        }
         let now_ms = now_epoch_ms()?;
         let ticket = PairingTicketV1::decode_uri(&uri, now_ms).map_err(|err| err.to_string())?;
         let device_peer_id = self.state.lock().await.device_peer_id.clone();
@@ -399,6 +486,7 @@ impl HostBridge {
                         let snap = Self::snapshot_locked(&state);
                         Ok((None, Some(connection), snap))
                     } else {
+                        cancel_all_subscriptions_locked(&mut state);
                         let prev = state.active.replace(ActiveConnection {
                             root_id: ticket.root_id().to_owned(),
                             host_name: ticket.host_name().to_owned(),
@@ -482,6 +570,7 @@ impl HostBridge {
             if superseded {
                 (None, Some(connection), Self::snapshot_locked(&state))
             } else {
+                cancel_all_subscriptions_locked(&mut state);
                 let prev = state.active.replace(ActiveConnection {
                     root_id: profile.root_id().to_owned(),
                     host_name: profile.host_name().to_owned(),
@@ -506,6 +595,7 @@ impl HostBridge {
         let (prev, snapshot) = {
             let mut state = self.state.lock().await;
             state.connection_epoch = state.connection_epoch.wrapping_add(1);
+            cancel_all_subscriptions_locked(&mut state);
             let prev = state.active.take();
             let snap = Self::snapshot_locked(&state);
             (prev, snap)
@@ -565,6 +655,7 @@ impl HostBridge {
             state.store = next_store;
             state.credentials = next_creds;
             let prev = if state.active.as_ref().is_some_and(|a| a.root_id == root_id) {
+                cancel_all_subscriptions_locked(&mut state);
                 state.active.take()
             } else {
                 None
@@ -630,6 +721,242 @@ impl HostBridge {
             .await
             .map_err(|err| err.to_string())?;
         Ok(json!({ "events": events }))
+    }
+
+    pub async fn host_query(&self, data: Value) -> Result<Value, String> {
+        let endpoint = require_string(&data, "endpoint")?;
+        let method = require_string(&data, "method")?;
+        let input = data.get("input").cloned().unwrap_or_else(|| json!({}));
+
+        let call_handle = {
+            let state = self.state.lock().await;
+            state
+                .active
+                .as_ref()
+                .map(|a| a.connection.call_handle())
+                .ok_or_else(|| "no remote Host is currently connected".to_owned())?
+        };
+        let value = call_handle
+            .query(&endpoint, &method, input)
+            .await
+            .map_err(|err| err.to_string())?;
+        Ok(json!({ "value": value }))
+    }
+
+    pub async fn host_mutate(&self, data: Value) -> Result<Value, String> {
+        let endpoint = require_string(&data, "endpoint")?;
+        let method = require_string(&data, "method")?;
+        let input = data.get("input").cloned().unwrap_or_else(|| json!({}));
+
+        let call_handle = {
+            let state = self.state.lock().await;
+            state
+                .active
+                .as_ref()
+                .map(|a| a.connection.call_handle())
+                .ok_or_else(|| "no remote Host is currently connected".to_owned())?
+        };
+        let value = call_handle
+            .mutate(&endpoint, &method, input)
+            .await
+            .map_err(|err| err.to_string())?;
+        Ok(json!({ "value": value }))
+    }
+
+    pub async fn subscribe(&self, data: Value) -> Result<Value, String> {
+        let (reply, pump) = self.open_subscription(data).await?;
+        self.runtime.spawn(pump);
+        Ok(reply)
+    }
+
+    async fn open_subscription(
+        &self,
+        data: Value,
+    ) -> Result<
+        (
+            Value,
+            impl std::future::Future<Output = ()> + Send + 'static,
+        ),
+        String,
+    > {
+        let subscription_id = require_string(&data, "subscriptionId")?;
+        let endpoint = require_string(&data, "endpoint")?;
+        let method = require_string(&data, "method")?;
+        let input = data.get("input").cloned().unwrap_or_else(|| json!({}));
+
+        let (call_handle, my_epoch) = {
+            let state = self.state.lock().await;
+            if !state.subscriptions.contains_key(&subscription_id)
+                && state.subscriptions.len() >= MAX_ACTIVE_SUBSCRIPTIONS
+            {
+                return Err(format!(
+                    "subscription limit reached (max {MAX_ACTIVE_SUBSCRIPTIONS})"
+                ));
+            }
+            let handle = state
+                .active
+                .as_ref()
+                .map(|a| a.connection.call_handle())
+                .ok_or_else(|| "no remote Host is currently connected".to_owned())?;
+            (handle, state.connection_epoch)
+        };
+
+        let mut sub = call_handle
+            .subscribe(&endpoint, &method, input)
+            .await
+            .map_err(|err| err.to_string())?;
+
+        let (stop_tx, mut stop_rx) = watch::channel(false);
+        let registered: Result<u64, String> = {
+            let mut state = self.state.lock().await;
+            if state.connection_epoch != my_epoch || state.active.is_none() {
+                Err("Host connection changed while opening subscription".to_owned())
+            } else if !state.subscriptions.contains_key(&subscription_id)
+                && state.subscriptions.len() >= MAX_ACTIVE_SUBSCRIPTIONS
+            {
+                Err(format!(
+                    "subscription limit reached (max {MAX_ACTIVE_SUBSCRIPTIONS})"
+                ))
+            } else {
+                state.subscription_generation = state.subscription_generation.wrapping_add(1);
+                let my_gen = state.subscription_generation;
+                if let Some(prev) = state.subscriptions.insert(
+                    subscription_id.clone(),
+                    ActiveSubscription {
+                        generation: my_gen,
+                        stop: stop_tx,
+                    },
+                ) {
+                    let _ = prev.stop.send(true);
+                }
+                Ok(my_gen)
+            }
+        };
+
+        let my_gen = match registered {
+            Ok(sub_gen) => sub_gen,
+            Err(err) => {
+                if let Err(cancel_err) = sub.cancel().await {
+                    log::warn!(
+                        "failed to cancel rejected subscription '{subscription_id}': {cancel_err}"
+                    );
+                }
+                return Err(err);
+            }
+        };
+
+        let bridge = self.clone();
+        let sub_id = subscription_id.clone();
+        let pump = async move {
+            let end_err = loop {
+                match sub.next_or_cancel(&mut stop_rx).await {
+                    Ok(Some(item)) => {
+                        if *stop_rx.borrow() {
+                            break sub.cancel().await.err().map(|err| err.to_string());
+                        }
+                        let _ = bridge.channel.send(
+                            "ios.subscriptionItem",
+                            json!({
+                                "subscriptionId": sub_id,
+                                "generation": my_gen,
+                                "item": item,
+                            }),
+                        );
+                    }
+                    Ok(None) => break None,
+                    Err(err) => break Some(err.to_string()),
+                }
+            };
+            let was_current = {
+                let mut state = bridge.state.lock().await;
+                if state
+                    .subscriptions
+                    .get(&sub_id)
+                    .is_some_and(|cur| cur.generation == my_gen)
+                {
+                    state.subscriptions.remove(&sub_id);
+                    true
+                } else {
+                    if let Some(ref err) = end_err {
+                        if state.cleanup_warnings.len() >= MAX_CLEANUP_WARNINGS {
+                            state.cleanup_warnings.pop_front();
+                        }
+                        state
+                            .cleanup_warnings
+                            .push_back(format!("{sub_id}#{my_gen}: {err}"));
+                    }
+                    false
+                }
+            };
+            // Only emit subscriptionEnded if this generation still owns subscriptionId;
+            // replaced or explicitly unsubscribed streams must never clobber a newer handle,
+            // while still surfacing teardown/cancel write failures as warnings.
+            if was_current {
+                let payload = match end_err {
+                    Some(err) => json!({
+                        "subscriptionId": sub_id,
+                        "generation": my_gen,
+                        "error": err,
+                    }),
+                    None => json!({
+                        "subscriptionId": sub_id,
+                        "generation": my_gen,
+                    }),
+                };
+                let _ = bridge.channel.send("ios.subscriptionEnded", payload);
+            } else if let Some(err) = end_err {
+                log::warn!(
+                    "remote subscription '{sub_id}' (gen {my_gen}) cleanup failed after cancel/detach: {err}"
+                );
+                let _ = bridge.channel.send(
+                    "ios.subscriptionCleanupWarning",
+                    json!({
+                        "subscriptionId": sub_id,
+                        "generation": my_gen,
+                        "error": err,
+                    }),
+                );
+            }
+        };
+
+        Ok((
+            json!({
+                "subscriptionId": subscription_id,
+                "generation": my_gen,
+            }),
+            pump,
+        ))
+    }
+
+    /// Inspect recent non-fatal subscription teardown/cancel errors (bounded).
+    pub async fn cleanup_warnings(&self) -> Vec<String> {
+        self.state
+            .lock()
+            .await
+            .cleanup_warnings
+            .iter()
+            .cloned()
+            .collect()
+    }
+
+    pub async fn unsubscribe(&self, data: Value) -> Result<Value, String> {
+        let subscription_id = require_string(&data, "subscriptionId")?;
+        let cancelled = {
+            let mut state = self.state.lock().await;
+            if let Some(sub) = state.subscriptions.remove(&subscription_id) {
+                let _ = sub.stop.send(true);
+                true
+            } else {
+                false
+            }
+        };
+        Ok(json!({ "cancelled": cancelled }))
+    }
+}
+
+fn cancel_all_subscriptions_locked(state: &mut BridgeState) {
+    for (_, sub) in std::mem::take(&mut state.subscriptions) {
+        let _ = sub.stop.send(true);
     }
 }
 

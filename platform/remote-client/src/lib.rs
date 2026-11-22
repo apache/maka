@@ -30,7 +30,7 @@ pub mod store;
 pub use client::{
     BoxedStream, MAX_CONTROL_FRAME_BYTES, MAX_WS_MESSAGE_BYTES, OpenStream, RemoteCallEvent,
     RemoteCallHandle, RemoteClientError, RemoteDeploymentRef, RemoteHostClient,
-    RemoteHostConnection, StreamIo, tcp_endpoint_opener,
+    RemoteHostConnection, RemoteSubscription, StreamIo, tcp_endpoint_opener,
 };
 pub use store::{
     HostViewFilter, PAIRING_URI_PREFIX, PairingTicketV1, RemoteHostError, SavedHostProfile,

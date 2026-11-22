@@ -43,5 +43,6 @@ tempfile.workspace = true
 maka-event-log.workspace = true
 maka-host-runtime.workspace = true
 maka-packages.workspace = true
+maka-plugin-core.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tokio-util.workspace = true

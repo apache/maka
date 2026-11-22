@@ -17,7 +17,7 @@
  * under the License.
  */
 
-//! Native Maka iOS shell: lightweight remote Host client + NSH UIKit V7 app.
+//! Native Maka iOS shell: lightweight remote Host client + NSH UIKit V8 app.
 
 pub mod bridge;
 
@@ -33,10 +33,12 @@ pub const IOS_SHELL_JS: &str = include_str!(concat!(env!("OUT_DIR"), "/ios-shell
 pub fn ios_bundle() -> Bundle {
     let mut capabilities = Capabilities::all();
     capabilities.host = ALLOWED_HOST_CALLS.iter().map(|&s| s.to_owned()).collect();
-    Bundle::source(IOS_SHELL_JS.into()).with_policy(Policy {
-        declared: Some(capabilities),
-        ..Policy::development()
-    })
+    Bundle::source(IOS_SHELL_JS.into())
+        .with_url_schemes(["maka"])
+        .with_policy(Policy {
+            declared: Some(capabilities),
+            ..Policy::development()
+        })
 }
 
 /// Build an EngineConfig configured for the iOS shell (used by both the native
@@ -67,14 +69,25 @@ pub fn run() {
         .build()
         .expect("start Maka iOS tokio runtime");
 
-    let support_dir = SurfaceOptions::default()
-        .support_dir
-        .unwrap_or_else(|| std::env::temp_dir().join("maka-ios"))
-        .join("maka-ios-shell");
+    let support_dir = std::env::var_os("MAKA_IOS_SUPPORT_DIR")
+        .filter(|v| !v.is_empty())
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            SurfaceOptions::default()
+                .support_dir
+                .unwrap_or_else(|| std::env::temp_dir().join("maka-ios"))
+                .join("maka-ios-shell")
+        });
 
     let host = HostChannel::new();
-    let _bridge = HostBridge::attach(host.clone(), support_dir.clone(), runtime.handle().clone())
+    let bridge = HostBridge::attach(host.clone(), support_dir.clone(), runtime.handle().clone())
         .expect("attach Maka iOS native bridge");
+
+    if let Ok(pair_uri) = std::env::var("MAKA_IOS_PAIR_URI")
+        && !pair_uri.trim().is_empty()
+    {
+        bridge.queue_pairing_uri(pair_uri);
+    }
 
     let options = AppOptions {
         runtime: Some(runtime.handle().clone()),
