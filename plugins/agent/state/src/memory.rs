@@ -28,6 +28,8 @@ use rusqlite::{Connection, OptionalExtension, params};
 use sha2::{Digest, Sha256};
 
 mod matching;
+pub mod pinned;
+pub mod reads;
 pub mod recall;
 pub mod resolution;
 
@@ -309,6 +311,9 @@ impl UserChange {
         if body.is_some() {
             c.execute("INSERT INTO agent_memory_evidence(namespace,scope,id,assertion,source,source_key) SELECT namespace,scope,id,revision,source,source FROM agent_memory_versions WHERE namespace=?1 AND scope=?2 AND id=?3 AND revision=?4", params![self.scope.namespace,self.scope.location,key,revision])?;
         }
+        if mode == "user_always" {
+            pinned::check_budget(c, &self.scope)?;
+        }
         if deleted {
             c.execute("UPDATE agent_memory_versions SET disposition='suppressed' WHERE namespace=?1 AND scope=?2 AND id=?3",params![self.scope.namespace,self.scope.location,key])?;
         }
@@ -575,6 +580,77 @@ mod tests {
         .unwrap()
         .value
     }
+    #[test]
+    fn pinned_projection_obeys_scope_order_and_half_open_validity() {
+        let db = setup();
+        let capture = |at| {
+            pinned::Capture {
+                personal: scope("owner", "personal"),
+                project: scope("owner", "project"),
+                at,
+            }
+            .execute(&db)
+            .unwrap()
+        };
+        for (owner, location, body, temporal) in [
+            ("owner", "project", "Project", MemoryTemporal::Timeless),
+            ("owner", "personal", "First", MemoryTemporal::Timeless),
+            ("owner", "personal", "Second", MemoryTemporal::Timeless),
+            (
+                "owner",
+                "project",
+                "During",
+                MemoryTemporal::Interval {
+                    start: 5,
+                    end: Some(8),
+                },
+            ),
+            ("owner", "other", "Other project", MemoryTemporal::Timeless),
+            ("peer", "personal", "Other agent", MemoryTemporal::Timeless),
+        ] {
+            let scope = scope(owner, location);
+            let MemoryResult::Saved { id, revision, .. } = change(
+                &db,
+                scope.clone(),
+                MemoryEdit::Create {
+                    body: body.into(),
+                    metadata: MemoryMetadata {
+                        temporal,
+                        ..Default::default()
+                    },
+                },
+            ) else {
+                panic!("fixture entry was not created")
+            };
+            change(
+                &db,
+                scope,
+                MemoryEdit::SetAlways {
+                    id,
+                    expected_revision: revision,
+                    always: true,
+                },
+            );
+        }
+        let before = capture(4);
+        assert_eq!(before.len(), 3);
+        assert_eq!(before[0].loaded.scope, "personal");
+        assert_eq!(before[1].loaded.scope, "personal");
+        assert!(before[0].loaded.id.0 < before[1].loaded.id.0);
+        assert_eq!(before[2].body, "Project");
+        assert_eq!(capture(5).len(), 4);
+        assert_eq!(capture(7), capture(5));
+        assert_eq!(capture(8), before);
+        let projection = MemoryProjection {
+            policy_revision: 1,
+            entries: before,
+        };
+        assert!(projection.check_window(Some(256), 0).is_ok());
+        assert!(projection.check_window(Some(8), 0).is_err());
+        assert!(projection.check_window(Some(256), 250).is_err());
+        assert!(projection.check_window(None, 0).is_err());
+    }
+
     #[test]
     fn correction_retains_version_evidence_and_suppression_in_one_transaction() {
         let c = setup();

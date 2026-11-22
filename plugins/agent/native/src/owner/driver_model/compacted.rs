@@ -37,6 +37,7 @@ impl CoveredPrefix {
     async fn read(
         prompt: &maka_agent_engine::prepared_prompt::PreparedPrompt,
         limit: Option<usize>,
+        mut memory_prefix: bool,
     ) -> Result<(Self, usize), RunError> {
         use maka_agent_facts::model::prompt_source::source::MessageRole;
         let directory = prompt
@@ -49,6 +50,9 @@ impl CoveredPrefix {
         let mut end = 0;
         while let Some(message) = cursor.next().await? {
             if message.role == MessageRole::System {
+                continue;
+            }
+            if std::mem::take(&mut memory_prefix) {
                 continue;
             }
             hash.update((message.logical_identity.len() as u64).to_le_bytes());
@@ -69,8 +73,9 @@ impl CoveredPrefix {
     }
     pub(super) async fn capture(
         prompt: &maka_agent_engine::prepared_prompt::PreparedPrompt,
+        memory_prefix: bool,
     ) -> Result<Self, RunError> {
-        let (covered, _) = Self::read(prompt, None).await?;
+        let (covered, _) = Self::read(prompt, None, memory_prefix).await?;
         if covered.message_count == 0 {
             return Err(RunError::CompactionFailed(
                 "compaction has no original logical messages".into(),
@@ -81,6 +86,7 @@ impl CoveredPrefix {
     async fn matching_tail_start(
         &self,
         prompt: &maka_agent_engine::prepared_prompt::PreparedPrompt,
+        memory_prefix: bool,
     ) -> Result<Option<usize>, RunError> {
         if self.message_count == 0
             || !maka_agent_facts::archive::valid_projection_digest(&self.digest)
@@ -89,7 +95,7 @@ impl CoveredPrefix {
                 "invalid original compaction coverage".into(),
             ));
         }
-        let (actual, end) = Self::read(prompt, Some(self.message_count)).await?;
+        let (actual, end) = Self::read(prompt, Some(self.message_count), memory_prefix).await?;
         Ok((actual == *self).then_some(end))
     }
 }
@@ -118,7 +124,10 @@ impl DriverModel {
             .covered_prefix
             .as_ref()
             .ok_or_else(|| unsupported("compaction-covered-prefix"))?;
-        if let Some(end) = covered.matching_tail_start(main).await? {
+        if let Some(end) = covered
+            .matching_tail_start(main, main_input.memory_prefix)
+            .await?
+        {
             return Ok(Some(end));
         }
         // Media projection preserves original metadata until the prompt is
@@ -127,7 +136,12 @@ impl DriverModel {
             .restore_frozen(reader, summary_run, summary, summary_input)
             .await?;
         let result = async {
-            let (original, end) = CoveredPrefix::read(&frozen, Some(covered.message_count)).await?;
+            let (original, end) = CoveredPrefix::read(
+                &frozen,
+                Some(covered.message_count),
+                summary_input.memory_prefix,
+            )
+            .await?;
             if original.message_count != covered.message_count {
                 return Ok(None);
             }
@@ -145,7 +159,9 @@ impl DriverModel {
             if suffix.next().await?.is_some() {
                 return Ok(None);
             }
-            original.matching_tail_start(main).await
+            original
+                .matching_tail_start(main, main_input.memory_prefix)
+                .await
         }
         .await;
         match frozen.close().await {
@@ -172,6 +188,12 @@ impl DriverModel {
         let main_input = self.frozen_input(&reader, view.run, &main).await?;
         let attempt = self.state.model_attempt(origin.run, origin.attempt).await?;
         let summary = reader.request(origin.run, attempt.step).await?;
+        if !reader
+            .can_replay_memory(summary.memory_replay, origin.run, view.run)
+            .await?
+        {
+            return Err(RunError::CompactionMismatch);
+        }
         let summary_input = self.frozen_input(&reader, origin.run, &summary).await?;
         let prompt = self
             .restore_frozen(&reader, view.run, &main, &main_input)
@@ -279,6 +301,12 @@ impl DriverModel {
         {
             return Err(unsupported("adopted-main-route-changed"));
         }
+        if !reader
+            .can_replay_memory(compacted.memory_replay, producer, view.run)
+            .await?
+        {
+            return Err(RunError::CompactionMismatch);
+        }
         if let Some(native) = &compacted.native {
             let main_context: RequestContextEvidence =
                 reader.decode(view.run, &request.provenance).await?;
@@ -369,6 +397,7 @@ impl DriverModel {
                     let mut system=directory.open(0);
                     while let Some(recipe)=system.next().await?{if matches!(recipe,MessageRecipe::System{..}){builder.append_recipe(&recipe).await?;}}
                 }
+                self.append_pinned(view, &model, &mut builder).await?;
                 self.append_compacted_material(&reader,view.run,compacted,ReplayTarget::new(&model, frozen.operation),frozen.language,&mut builder).await?;
                 let mut tail=directory.open(start);
                 while let Some(recipe)=tail.next().await?{if !matches!(recipe,MessageRecipe::System{..})&& let Some(recipe)=ReplayTarget::new(&model,frozen.operation).recipe(recipe).await?{builder.append_recipe(&recipe).await?;}}
@@ -451,6 +480,22 @@ impl DriverModel {
         }))
     }
 
+    pub(super) async fn checkpoint_available(
+        &self,
+        reader: &HistorySource<'_>,
+        run: RunId,
+        reference: &ContentRef,
+    ) -> Result<bool, RunError> {
+        // A later Run can rebuild from filtered history instead of an opaque summary.
+        let context: CompactedContext = reader.decode(run, reference).await?;
+        reader
+            .can_replay_memory(
+                context.memory_replay,
+                context.summary_origin.map_or(run, |o| o.run),
+                self.execution.run_id,
+            )
+            .await
+    }
     pub(super) async fn append_compacted(
         &self,
         reader: &HistorySource<'_>,
@@ -474,6 +519,18 @@ impl DriverModel {
         language: Language,
         messages: &mut preparation::PromptBuilder,
     ) -> Result<RequestSource, RunError> {
+        if !reader
+            .can_replay_memory(
+                body.memory_replay,
+                body.summary_origin.map_or(run, |o| o.run),
+                self.execution.run_id,
+            )
+            .await?
+        {
+            return Err(unsupported(
+                "checkpoint contains memory admitted only to its original Run",
+            ));
+        }
         if matches!(
             &body.checkpoint.summary,
             CheckpointContent::CodexNative { .. }

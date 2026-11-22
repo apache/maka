@@ -91,6 +91,7 @@ impl Owner {
                     ),
             } = &mut execution.state
         {
+            self.record_history_read(scope).await?;
             *diagnostic = crate::service::history::scoped_state(self, scope)?
                 .session_history(view.spec.owner.clone(), view.spec.session_id.clone())
                 .mask_terminal_diagnostic(view.run, std::mem::take(diagnostic))
@@ -183,6 +184,7 @@ impl Owner {
     ) -> Result<Work, String> {
         use maka_agent_state::queue::MessageResolution;
         self.scoped_session(scope, &input.session_id).await?;
+        self.record_history_read(scope).await?;
         let state = crate::service::history::scoped_state(self, scope)?;
         let model_read = scope.identity.agent().is_some();
         let cursor = input.cursor.map(|cursor| (cursor.run_id, cursor.offset));

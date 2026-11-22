@@ -238,7 +238,7 @@ async function codeResult(code) {
     result = await callTool('wait', { cell_id: summary.cell_id });
   }
 }
-async function readArchivedResult() {
+async function checkArchivedResultBoundary() {
   const tail = 'end of archived output';
   const result = await callTool('exec', {
     code: `text('x'.repeat(12000) + ${JSON.stringify(tail)});`,
@@ -255,18 +255,9 @@ async function readArchivedResult() {
   }
   if (archived.kind !== 'maka.archived_tool_result' || !archived.page.next)
     throw Error('Expected a continuation for the large tool result');
-  const suffix = await codeResult(`
-    let request = ${JSON.stringify(archived.page.next)};
-    let content = '';
-    while (request) {
-      const page = await tools.Read(request);
-      if (page.kind !== 'completed') throw Error(page.message);
-      content += page.value.content;
-      request = page.value.next;
-    }
-    text({ suffix: content.slice(-${tail.length}) });
-  `);
-  if (suffix.suffix !== tail) throw Error('Archive continuation did not reach the original output');
+  const page = await codeResult(`text(await tools.Read(${JSON.stringify(archived.page.next)}));`);
+  if (page.kind !== 'failed' || !page.message.includes('agent_memory_executor_unavailable'))
+    throw Error('External archive continuation did not enforce the history read boundary');
 }
 async function hostEffect() {
   await rpc(
@@ -451,14 +442,30 @@ async function acp(id, method, params) {
         throw Error('ACP prompt did not identify the Room and human sender');
       const { sessionId, messageId } = source;
       const history = await codeResult(
-        `text(await tools.SessionRead(${JSON.stringify({
+        `const { transcript } = await tools.SessionRead(${JSON.stringify({
           sessionId,
           messageId,
           anchor: 'before',
-        })}));`,
+        })}); const post = transcript.items[0]; text({ kind: transcript.kind, firstId: post?.id, sequence: post?.sequence });`,
       );
-      if (history.transcript?.kind !== 'room' || history.transcript.items[0]?.id !== source.replyTo)
+      if (history.kind !== 'room' || history.firstId !== source.replyTo)
         throw Error('ACP agent did not read the earlier Room post');
+      // Read the earlier post at its own watermark so it is in the bounded Room transcript.
+      const path = `maka://session/${sessionId}?through=${history.sequence}`;
+      const room = await codeResult(`
+        let request = ${JSON.stringify({ path })};
+        let pages = 0, content = '';
+        do {
+          const page = await tools.Read(request);
+          if (page.kind !== 'completed') throw Error(page.message);
+          pages++;
+          content += page.value.content;
+          request = page.value.next;
+        } while (request);
+        text({ pages, found: content.includes('The patch is ready.') });
+      `);
+      if (room.pages < 2 || !room.found)
+        throw Error(`Paged Read did not return the original Room post: ${JSON.stringify(room)}`);
       const posted = await codeResult(
         `text(await tools.SessionSend(${JSON.stringify({
           sessionId,
@@ -510,7 +517,7 @@ async function acp(id, method, params) {
       return reply(id, { stopReason: 'end_turn' });
     }
     if (job.label === 'ACP-followup') {
-      await readArchivedResult();
+      await checkArchivedResultBoundary();
       const png =
         'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a3XcAAAAASUVORK5CYII=';
       await writeFile('read-fixture.png', Buffer.from(png, 'base64'));
@@ -583,7 +590,7 @@ createInterface({ input: process.stdin }).on('line', (line) => {
           marker = text.lastIndexOf('MAKA_EXTERNAL_CASE ');
         if (marker < 0) throw Error('Missing closed test input');
         job = JSON.parse(text.slice(marker + 'MAKA_EXTERNAL_CASE '.length).split('\n')[0]);
-        if (!['A', 'B', 'C', 'D'].includes(job.label)) throw Error('Unknown test scenario');
+        if (!['A', 'B', 'C', 'D', 'E'].includes(job.label)) throw Error('Unknown test scenario');
         turn = randomUUID();
         await reply(id, { turn: { id: turn } });
         await record('started', { thread, turn });
@@ -642,7 +649,7 @@ createInterface({ input: socket }).on('line', (line) => {
         ['ACP-schedule', 'ACP-peer', 'ACP-child'].includes(job?.label)
       )
         return reply(command.promptId, { stopReason: 'end_turn' });
-      if (command.action === 'complete' && ['B', 'D'].includes(job?.label))
+      if (command.action === 'complete' && ['B', 'D', 'E'].includes(job?.label))
         return terminal('completed');
       throw Error('Invalid controller action');
     })

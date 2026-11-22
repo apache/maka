@@ -35,6 +35,8 @@ fn same_execution(a: &RunSpec, b: &RunSpec) -> bool {
         && a.allowed_tools == b.allowed_tools
         && a.mcp_revision == b.mcp_revision
         && a.compaction_prompt == b.compaction_prompt
+        && a.memory_admission == b.memory_admission
+        && a.memory_projection == b.memory_projection
         && a.system_prompt == b.system_prompt
         && a.tool_selection == b.tool_selection
         && a.budget == b.budget

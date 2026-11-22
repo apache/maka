@@ -209,7 +209,12 @@ pub(crate) fn find_index(
             .iter()
             .enumerate()
             .map(|(i, (_, ordinal, _, fact))| {
-                Ok((i, crate::sql::identity(fact.clone())?, unsigned(*ordinal)?))
+                Ok((
+                    i,
+                    crate::sql::identity(fact.clone())?,
+                    unsigned(*ordinal)?,
+                    None,
+                ))
             })
             .collect::<Result<Vec<_>, StoreError>>()?;
         crate::memory::recall::indexed_spans(c, owner, &keys, &[])?

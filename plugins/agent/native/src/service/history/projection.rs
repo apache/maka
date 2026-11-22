@@ -1179,6 +1179,28 @@ pub(super) async fn project(
                 .await
                 .map_err(|error| error.to_string())?;
             row.chunk.compaction = Some(wire::Compaction { duration_ms });
+            if mask_evidence {
+                use maka_agent_facts::memory::MemoryReplay;
+                let shared = match compact.memory_replay {
+                    MemoryReplay::Shared => true,
+                    MemoryReplay::Run(_) => false,
+                    MemoryReplay::Legacy => match reader {
+                        data::DataSource::Live { history, .. } => !history
+                            .has_memory_reads(
+                                compact
+                                    .summary_origin
+                                    .map_or(item.recorded.run, |origin| origin.run),
+                            )
+                            .await
+                            .map_err(|e| e.to_string())?,
+                        data::DataSource::Snapshot(_) => false,
+                    },
+                };
+                if !shared {
+                    result.push(row);
+                    return Ok(result);
+                }
+            }
             if let maka_agent_facts::context::CheckpointContent::Text(summary) =
                 compact.checkpoint.summary
             {

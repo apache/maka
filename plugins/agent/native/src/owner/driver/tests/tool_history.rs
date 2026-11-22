@@ -276,7 +276,7 @@ async fn model_reads_independent_bytes_of_a_rejected_tool_result() -> TestResult
         serde_json::to_value(result)?["source"]["text"],
         &expected[start..]
     );
-    let page = crate::service::history::read_page(&driver.owner, reader.scope(), serde_json::from_value(json!({
+    let page = crate::service::history::model_text_page(&driver.owner, reader.scope(), serde_json::from_value(json!({
         "sessionId":session,"through":cut.through_sequence,"position":{"kind":"row","position":position,"field":"body"}
     }))?).await?;
     assert!(
@@ -390,6 +390,51 @@ async fn child_result_text_uses_its_own_offset_in_the_recall_document() -> TestR
     Ok(())
 }
 
+async fn admit_external_history(
+    driver: &NativeDriver,
+    runtime: &str,
+) -> TestResult<maka_agent_state::DriverClaim> {
+    use maka_agent_facts::executor::{Selection, Settings};
+    let original = driver
+        .state
+        .frontier(driver.access.execution().run_id)
+        .await?;
+    let mut spec = original.spec;
+    let selection = Selection {
+        executor: "external".into(),
+        settings: Settings {
+            runtime: Some(runtime.into()),
+            ..Settings::default()
+        },
+    };
+    let descriptor = ContentBlob::json(&json!({
+        "selection":selection,"import":"fixture","member":0,"basis":"fixture"
+    }))?;
+    let mut contents = vec![descriptor.clone()];
+    for reference in [&spec.input, &spec.system_prompt, &spec.tool_selection] {
+        contents.push(ContentBlob::new(
+            driver
+                .state
+                .content(original.run, reference.clone())
+                .await?,
+        ));
+    }
+    spec.turn_id = Uuid::new_v4().to_string();
+    spec.trigger = Trigger::Message {
+        message_id: Uuid::new_v4().to_string(),
+    };
+    spec.backend = BackendSpec::Executor {
+        selection,
+        descriptor: descriptor.reference().clone(),
+    };
+    let admitted = driver
+        .state
+        .admit(Admission::new(spec, at(), contents))
+        .await?;
+    let run = admitted.facts[0].run;
+    Ok(driver.state.claim(run).await?)
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn external_return_keeps_the_name_of_its_original_call() -> TestResult<()> {
     use maka_agent_facts::external_effects::{
@@ -401,18 +446,33 @@ async fn external_return_keeps_the_name_of_its_original_call() -> TestResult<()>
             config["external"] = json!({"runtimes":{"codex":true}});
         })
         .await?;
-    rig.assemble_backend(
-        &session,
-        Budget {
-            tokens: None,
-            retries: 0,
-            deadline: None,
-        },
-        false,
-        true,
-    )
-    .await?;
+    rig.assemble(&session).await?;
     let driver = rig.driver.as_ref().unwrap();
+    let claim = admit_external_history(driver, "codex").await?;
+    let external = driver.state.frontier(claim.run()).await?;
+    let execution = ExecutionIdentity {
+        run_id: external.run,
+        session_id: session.clone(),
+        turn_id: external.spec.turn_id,
+    };
+    let external_reader = driver.owner.services.request_with_work(
+        maka_capabilities::call::Identity::Agent {
+            execution: execution.clone(),
+            operation_id: None,
+        },
+        CancellationToken::new(),
+        driver.access.custody().clone(),
+    )?;
+    let error = driver
+        .owner
+        .record_history_read(external_reader.scope())
+        .await
+        .unwrap_err();
+    assert!(
+        error.contains("agent_memory_executor_unavailable"),
+        "{error}"
+    );
+    external_reader.finish().await?;
     let task = ExternalTaskId::new();
     let key = ExternalEffectKey {
         task,
@@ -433,7 +493,7 @@ async fn external_return_keeps_the_name_of_its_original_call() -> TestResult<()>
     let descriptor = ContentBlob::json(&ExternalEffectDescriptor {
         schema_version: SCHEMA_VERSION,
         protocol: "fixture".into(),
-        execution: driver.access.execution().clone(),
+        execution,
         key,
         origin: maka_agent_facts::tool_call::ToolOrigin::External {
             task,
@@ -460,7 +520,8 @@ async fn external_return_keeps_the_name_of_its_original_call() -> TestResult<()>
         settlement: ToolSettlement::Failed,
         diagnostic: "Monday is unavailable".into(),
     })?;
-    rig.append(
+    rig.append_for(
+        &claim,
         vec![
             Fact::ExternalTaskPrepared {
                 task,
@@ -472,7 +533,8 @@ async fn external_return_keeps_the_name_of_its_original_call() -> TestResult<()>
         vec![task_descriptor],
     )
     .await?;
-    rig.append(
+    rig.append_for(
+        &claim,
         vec![
             Fact::ExternalEffect {
                 event: ExternalEffectEvent::Prepared {
@@ -491,7 +553,8 @@ async fn external_return_keeps_the_name_of_its_original_call() -> TestResult<()>
     )
     .await?;
     let written = rig
-        .append(
+        .append_for(
+            &claim,
             vec![
                 Fact::ExternalEffect {
                     event: ExternalEffectEvent::CleanupObserved {
@@ -516,7 +579,7 @@ async fn external_return_keeps_the_name_of_its_original_call() -> TestResult<()>
     let cut = history.capture().await?;
     let fact = written.facts.last().unwrap().id;
     let sequence = history
-        .fact_sequence(&cut, driver.access.execution().run_id, fact)
+        .fact_sequence(&cut, claim.run(), fact)
         .await?
         .ok_or("missing return")?;
     let position = wire::HistoryRowAddress::Live {
@@ -3832,19 +3895,21 @@ async fn shared_cell_child_receipt_survives_snapshot_transfer() {
         .ok_or("missing original interruption payload")?;
         assert!(stream::text_eq(&restored.text()?, &payload, budget).await?);
         let tree = SourceTree::snapshot(&snapshot).await?;
-        let found = tree
-            .find_page(
-                SourceFind {
-                    after: None,
-                    query: "shared child evidence".into(),
-                    case_sensitive: true,
-                    whole_word: false,
-                    include_internal: true,
-                    mask_evidence: false,
-                },
-                stop,
-            )
-            .await?;
+        let query = |mask_evidence| SourceFind {
+            after: None,
+            query: "shared child evidence".into(),
+            case_sensitive: true,
+            whole_word: false,
+            include_internal: true,
+            mask_evidence,
+        };
+        let masked = tree.find_page(query(true), stop.clone()).await?;
+        assert_eq!(
+            masked.matches.len(),
+            0,
+            "model search exposed the transferred child receipt"
+        );
+        let found = tree.find_page(query(false), stop).await?;
         assert_eq!(
             found
                 .matches
@@ -3874,52 +3939,17 @@ async fn shared_cell_child_receipt_survives_snapshot_transfer() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn executor_history_keeps_message_boundaries_and_tool_results() {
-    use maka_agent_facts::executor::{Output, Selection, Settings, ToolResultDetails, TurnUsage};
+    use maka_agent_facts::executor::{Output, ToolResultDetails, TurnUsage};
     let mut rig = Rig::new().unwrap();
     let result = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(60), async {
         let session = rig.start().await?;
         rig.assemble(&session).await?;
         let driver = rig.driver.as_ref().unwrap();
-        let original = driver
-            .state
-            .frontier(driver.access.execution().run_id)
-            .await?;
-        let mut spec = original.spec.clone();
-        let selection = Selection {
-            executor: "external".into(),
-            settings: Settings {
-                runtime: Some("antigravity".into()),
-                ..Settings::default()
-            },
-        };
-        let descriptor = ContentBlob::json(&json!({
-            "selection":selection,"import":"fixture","member":0,"basis":"fixture"
-        }))?;
-        let mut contents = vec![descriptor.clone()];
-        for reference in [&spec.input, &spec.system_prompt, &spec.tool_selection] {
-            contents.push(ContentBlob::new(
-                driver
-                    .state
-                    .content(original.run, reference.clone())
-                    .await?,
-            ));
-        }
-        spec.turn_id = Uuid::new_v4().to_string();
-        spec.trigger = Trigger::Message {
-            message_id: Uuid::new_v4().to_string(),
-        };
-        spec.backend = BackendSpec::Executor {
-            selection,
-            descriptor: descriptor.reference().clone(),
-        };
-        let admitted = driver
-            .state
-            .admit(Admission::new(spec, at(), contents))
-            .await?;
-        let run = admitted.facts[0].run;
-        let claim = driver.state.claim(run).await?;
+        let claim = admit_external_history(driver, "antigravity").await?;
+        let run = claim.run();
         let task = ExternalTaskId::new();
         let view = driver.state.frontier(run).await?;
+        let BackendSpec::Executor { descriptor, .. } = &view.spec.backend else { unreachable!() };
         let message_id = "native-reply".to_owned();
         let outputs = [
             Output::MessageStart {
@@ -3988,7 +4018,7 @@ async fn executor_history_keeps_message_boundaries_and_tool_results() {
             [
                 Fact::ExternalTaskPrepared {
                     task,
-                    descriptor: descriptor.reference().clone(),
+                    descriptor: descriptor.clone(),
                     live_workspace: true,
                 },
                 Fact::ExternalTaskAdmitted { task },
@@ -4180,7 +4210,7 @@ async fn executor_history_keeps_message_boundaries_and_tool_results() {
             return Err("missing executor answer".into());
         };
         suppress_history_quotes(&rig, &session, &[(answer_sequence, 0, "Written")]).await?;
-        let history = driver.state.session_history(original.spec.owner.clone(), session.clone());
+        let history = driver.state.session_history(driver.owner.run_owner(), session.clone());
         let cut = history.capture().await?;
         let input = "native wait original read failure";
         let prompt_sequence = page["chunks"].as_array().unwrap().iter()
@@ -4189,7 +4219,7 @@ async fn executor_history_keeps_message_boundaries_and_tool_results() {
         suppress_history_quotes(&rig, &session, &[(prompt_sequence, 0, "native wait")]).await?;
         let mut transcript = Vec::new();
         crate::service::history::readable_context_into(
-            &history, &cut, Some(original.run), &mut transcript, &CancellationToken::new()
+            &history, &cut, Some(driver.access.execution().run_id), &mut transcript, &CancellationToken::new()
         ).await?;
         let transcript = String::from_utf8(transcript)?;
         assert!(transcript.contains(input), "{transcript}");
@@ -4257,7 +4287,7 @@ async fn executor_history_keeps_message_boundaries_and_tool_results() {
                 && hit.preview.contains("tmp_test_fi") && !hit.preview.contains("Written")));
         }
         let start_row = &displayed[0].call.as_ref().unwrap().position;
-        let text_page = crate::service::history::read_page(
+        let text_page = crate::service::history::model_text_page(
             &driver.owner, reader.scope(),
             serde_json::from_value(json!({"sessionId":session,"through":page["through"],
                 "position":{"kind":"row","position":start_row,"field":"body"}}))?

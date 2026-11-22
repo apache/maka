@@ -43,6 +43,26 @@ pub(super) enum HistorySource<'a> {
     Snapshot(Snapshot, Vec<RunId>),
 }
 impl<'a> HistorySource<'a> {
+    pub(super) async fn can_replay_memory(
+        &self,
+        authority: maka_agent_facts::memory::MemoryReplay,
+        source: RunId,
+        target: RunId,
+    ) -> Result<bool, RunError> {
+        use maka_agent_facts::memory::MemoryReplay;
+        match authority {
+            MemoryReplay::Shared => Ok(true),
+            MemoryReplay::Run(owner) => Ok(owner == target),
+            MemoryReplay::Legacy => match self {
+                Self::Live { history, .. } => {
+                    Ok(!history.has_memory_reads(source).await? || source == target)
+                }
+                // A detached snapshot has no live read ledger. Rebuild its filtered history.
+                Self::Snapshot(..) => Ok(false),
+            },
+        }
+    }
+
     pub(super) fn live(state: &'a Store, cut: &HistoryCut) -> Self {
         Self::Live {
             state,

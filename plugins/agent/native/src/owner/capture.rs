@@ -109,6 +109,9 @@ impl Owner {
         fingerprint: Option<String>,
         parent: &Scope,
     ) -> Result<(PreparedRequest, Vec<ContentBlob>), String> {
+        if !matches!(source.disposition, MessageDisposition::Steering) {
+            basis.check_pinned_model()?;
+        }
         let trigger = match &basis.background_kind {
             BackgroundKind::Goal(goal_id) => Trigger::Goal { goal_id: *goal_id },
             BackgroundKind::Schedule { task_id } => Trigger::Schedule {
@@ -163,6 +166,7 @@ impl Owner {
         input: RunInput,
         parent: &Scope,
     ) -> Result<(RunSpec, Vec<ContentBlob>), String> {
+        basis.check_pinned_model()?;
         let trigger = match &input {
             RunInput::Continuation { claim, .. } => Trigger::Continuation {
                 source: claim.source.execution.run_id,
@@ -330,7 +334,15 @@ impl Owner {
             .map(ContentBlob::json)
             .transpose()
             .map_err(|e| e.to_string())?;
+        let memory = basis
+            .memory
+            .as_deref()
+            .map(ContentBlob::json)
+            .transpose()
+            .map_err(|e| e.to_string())?;
         let spec = RunSpec {
+            memory_admission: basis.memory_admission,
+            memory_projection: memory.as_ref().map(|blob| blob.reference().clone()),
             schema_version: SCHEMA_VERSION,
             owner: self.run_owner(),
             session_id: session_id.into(),
@@ -358,6 +370,7 @@ impl Owner {
             budget_basis: budget.basis.as_ref().map(|basis| basis.reference().clone()),
         };
         contents.extend([system, tools, input]);
+        contents.extend(memory);
         contents.extend(compaction_prompt);
         contents.extend(budget.basis);
         Ok((spec, contents))

@@ -22,6 +22,7 @@ mod ax_session_tools;
 mod code_mode_budget;
 mod keyed_submission;
 mod mcp_connection;
+pub(super) mod pinned_memory;
 mod rooms;
 mod stop_queue;
 use super::bot_tools::tool_response;
@@ -2135,6 +2136,8 @@ async fn context_overflow_after_partial_output_compacts_and_continues() -> TestR
         .await?;
         let session = create(client, &base, &model, None).await?;
         let id = session["id"].as_str().unwrap();
+        let marker = "Pinned across context compaction";
+        pinned_memory::enable_and_pin(client,id,marker).await?;
         let send = async |message: &str| -> TestResult<Value> {
             let sent = call(
                 client,
@@ -2173,7 +2176,8 @@ async fn context_overflow_after_partial_output_compacts_and_continues() -> TestR
 
         // 170k-200k estimated tokens: the next turn summarizes in the background.
         let first = send("Produce long history.").await?;
-        let (_, reply) = provider.next().await?;
+        let (first_wire, reply) = provider.next().await?;
+        pinned_memory::assert_wire(&first_wire,marker);
         reply.reply_text("padding ".repeat(66_000));
         quiescent_message(client, id, &first).await?;
 
@@ -2186,9 +2190,11 @@ async fn context_overflow_after_partial_output_compacts_and_continues() -> TestR
             (two, one)
         };
         assert!(summary_request(&summary), "{summary}");
+        assert!(!text_messages(&summary).contains(marker));
         summary_reply.reply_text("background-summary-marker");
         main_reply.send_plan(overflow("second-partial-marker"));
         let (resumed, reply) = provider.next().await?;
+        pinned_memory::assert_wire(&resumed, marker);
         let text = text_messages(&resumed);
         assert!(
             text.contains("background-summary-marker") && text.contains(note),
@@ -2213,12 +2219,14 @@ async fn context_overflow_after_partial_output_compacts_and_continues() -> TestR
             }
         };
         assert!(summary_request(&summary), "{summary}");
+        assert!(!text_messages(&summary).contains(marker));
         assert!(
             !text_messages(&summary).contains("third-partial-marker"),
             "{summary}"
         );
         reply.reply_text("overflow-summary-marker");
         let (resumed, reply) = provider.next().await?;
+        pinned_memory::assert_wire(&resumed, marker);
         let text = text_messages(&resumed);
         assert!(
             text.contains("overflow-summary-marker") && text.contains(note),

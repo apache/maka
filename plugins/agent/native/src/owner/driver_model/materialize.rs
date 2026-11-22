@@ -53,7 +53,7 @@ impl FrozenMaterializer {
             result=async{
                 maka_agent_authority::permissions::Access::live_configuration(self.access.as_ref()).await?;
                 let model=self.model_source.capture().await?;
-                self.access.authorize_model_request(&self.request,&model,cancellation).await?;
+                self.access.authorize_request_tools(&self.request,&model,cancellation).await?;
                 let model=self.model_source.capture().await?;
                 validate_model_input_policy(&self.provenance,&model)?;
                 let recovery=&self.recovery;
@@ -65,7 +65,7 @@ impl FrozenMaterializer {
                     ||recovery.contract!=original_recovery_contract(&binding,&model.provider,&self.surface.tools,self.frozen.operation){
                     return Err(unsupported("current-frozen-model-dispatch-contract"));
                 }
-                Ok(())
+                self.access.authorize_request_memory(&self.request,&model,&self.budget).await
             }=>result,
         };
         match result {

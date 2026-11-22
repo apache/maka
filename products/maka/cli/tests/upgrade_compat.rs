@@ -1625,6 +1625,43 @@ async fn verify_capsule(bin: &Path, capsule_dir: &Path) {
         .await;
         assert_eq!(updated_conn["kind"], "committed", "{updated_conn}");
 
+        let enabled = call(
+            &client,
+            "settings",
+            "updateAssistantPreferences",
+            json!({
+                "expectedRevision": prefs["revision"],
+                "mutation": {"kind": "memory", "value": {"enabled": true, "agentReadEnabled": true}}
+            }),
+            Attachments::new(),
+        )
+        .await;
+        assert_eq!(enabled["kind"], "committed", "{enabled}");
+        let pin = call(
+            &client,
+            "agent",
+            "changeMemory",
+            json!({
+                "scope": {"kind": "personal"},
+                "edit": {"kind": "set_always", "id": manifest.memory_id,
+                    "expectedRevision": memory["revision"], "always": true}
+            }),
+            Attachments::new(),
+        )
+        .await;
+        assert_eq!(pin["kind"], "saved", "{pin}");
+        let pinned = call(
+            &client,
+            "agent",
+            "memory",
+            json!({"scope": {"kind": "personal"}, "id": manifest.memory_id}),
+            Attachments::new(),
+        )
+        .await;
+        assert_eq!(pinned["mode"], "user_always", "{pinned}");
+        assert_eq!(pinned["assertion"], memory["assertion"]);
+        assert_eq!(pinned["revision"], pin["revision"]);
+
         let followup = call(
             &client,
             "agent",
@@ -1638,12 +1675,21 @@ async fn verify_capsule(bin: &Path, capsule_dir: &Path) {
         )
         .await;
         assert_eq!(followup["kind"], "queued", "{followup}");
-        wait_run_completed(
+        let run = wait_run_completed(
             &client,
             &manifest.primary_session_id,
             followup["messageId"].as_str().unwrap(),
         )
         .await;
+        let loaded = call(
+            &client,
+            "agent",
+            "loadedMemories",
+            json!({"sessionId": manifest.primary_session_id, "runId": run}),
+            Attachments::new(),
+        )
+        .await;
+        assert_eq!(loaded, json!([]), "tool-restricted session loaded a pin");
         assert!(
             saw_pre_context.load(Ordering::SeqCst),
             "post-upgrade model request did not retain pre-upgrade conversation context"

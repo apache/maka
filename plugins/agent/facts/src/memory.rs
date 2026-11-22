@@ -317,3 +317,97 @@ pub fn is_recall_output(tool_name: &str) -> bool {
         "Recall" | "RecallMore" | "RecallMaterial" | "SessionRead"
     )
 }
+
+/// The exact assertion and management revision admitted to a Run, in projection order.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LoadedMemory {
+    pub scope: String,
+    pub id: MemoryId,
+    pub revision: MemoryRevision,
+    pub assertion: MemoryRevision,
+}
+
+impl LoadedMemory {
+    pub fn from_record(scope: &str, record: &MemoryRecord) -> Self {
+        Self {
+            scope: scope.to_owned(),
+            id: record.id.clone(),
+            revision: record.revision,
+            assertion: record.assertion,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PinnedMemory {
+    pub loaded: LoadedMemory,
+    pub body: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct MemoryProjection {
+    pub policy_revision: u64,
+    pub entries: Vec<PinnedMemory>,
+}
+
+impl MemoryProjection {
+    pub fn check_window(&self, limit: Option<u64>, fixed_tokens: u64) -> Result<(), String> {
+        let message =
+            crate::model::prompt::Message::user(self.message().map_err(|e| e.to_string())?);
+        let estimated = crate::context::measure::estimate(&[message]);
+        let limit = limit.ok_or("pinned memory requires a known model input window; configure the model window or unpin entries")?;
+        if estimated.saturating_add(fixed_tokens) >= limit {
+            return Err(
+                "pinned memory exceeds the selected model input window; shorten or unpin entries"
+                    .into(),
+            );
+        }
+        Ok(())
+    }
+    pub fn message(&self) -> Result<String, serde_json::Error> {
+        let bodies: Vec<_> = self
+            .entries
+            .iter()
+            .map(|entry| entry.body.as_str())
+            .collect();
+        Ok(format!(
+            "User-selected memory (JSON data):\n{}",
+            serde_json::to_string(&bodies)?
+        ))
+    }
+}
+
+/// Eligibility at admission distinguishes a user Run with reads disabled from an internal Run.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryAdmission {
+    /// Source admission predates the recorded eligibility decision.
+    #[default]
+    Legacy,
+    Excluded,
+    Disabled,
+    Enabled,
+}
+
+impl MemoryAdmission {
+    pub fn is_legacy(&self) -> bool {
+        matches!(self, Self::Legacy)
+    }
+}
+
+/// Authority carried by frozen requests and by the checkpoints derived from them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryReplay {
+    #[default]
+    Legacy,
+    Shared,
+    Run(crate::durable::RunId),
+}
+
+impl MemoryReplay {
+    pub fn is_legacy(&self) -> bool {
+        matches!(self, Self::Legacy)
+    }
+}

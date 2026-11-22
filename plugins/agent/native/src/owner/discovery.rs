@@ -986,6 +986,7 @@ impl Owner {
                     job.approval.thinking_level,
                 )),
                 job.request.clone(),
+                false,
                 native.scope(),
             )
             .await;

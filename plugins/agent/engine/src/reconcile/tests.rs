@@ -72,6 +72,8 @@ pub(crate) fn policy_view(tokens: Option<u64>) -> RunView {
             allowed_tools: None,
             mcp_revision: None,
             compaction_prompt: None,
+            memory_admission: Default::default(),
+            memory_projection: None,
             system_prompt: source.clone(),
             tool_selection: source.clone(),
             input: source.clone(),
@@ -287,6 +289,7 @@ pub(crate) fn model_closure(
         _ => unreachable!(),
     };
     let request = RequestSpec {
+        memory_replay: maka_agent_facts::memory::MemoryReplay::Shared,
         schema_version: SCHEMA_VERSION,
         step,
         composition: maka_agent_facts::composition::RequestComposition {

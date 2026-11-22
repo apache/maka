@@ -201,6 +201,7 @@ impl Owner {
         id: &str,
         selection: Option<BackendPreference>,
         fingerprint: String,
+        ordinary: bool,
         parent: &maka_capabilities::call::Scope,
     ) -> Result<CapturedRun, CaptureError> {
         self.require_execution(id).await?;
@@ -320,7 +321,18 @@ impl Owner {
             language,
             allowed_tools.as_deref(),
         );
+        let user_run = ordinary
+            && matches!(
+                parent.identity,
+                maka_capabilities::call::Identity::Native
+                    | maka_capabilities::call::Identity::Remote { .. }
+            );
+        let (memory_admission, memory) = self
+            .admit_memory(id, &session.configuration, user_run, &snapshot)
+            .await?;
         let basis = CapturedRun {
+            memory_admission,
+            memory,
             mcp_revision: selected_catalog.revision.clone(),
             client_mcp: selected_catalog.client_mcp,
             mcp_catalog: Some(selected_catalog.clone()),
@@ -533,7 +545,13 @@ impl Owner {
             }
         });
         let basis = match self
-            .capture_current_run(&id, backend, operation.fingerprint.clone(), parent)
+            .capture_current_run(
+                &id,
+                backend,
+                operation.fingerprint.clone(),
+                origin.is_none(),
+                parent,
+            )
             .await
         {
             Ok(basis) => basis,

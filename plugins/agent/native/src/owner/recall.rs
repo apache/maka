@@ -92,6 +92,18 @@ impl Recall {
         }
         Ok(())
     }
+    async fn record_history_read(&self, call: &Scope) -> Result<(), ToolError> {
+        if call.identity.agent().is_some() {
+            self.authority
+                .get()
+                .and_then(std::sync::Weak::upgrade)
+                .ok_or_else(|| failed("Memory owner unavailable"))?
+                .record_history_read(call)
+                .await
+                .map_err(failed)?;
+        }
+        Ok(())
+    }
     async fn worker<T: Send + 'static>(
         &self,
         call: &Scope,
@@ -115,6 +127,7 @@ impl Recall {
         transcript_only: bool,
     ) -> Result<indexed::Batch, ToolError> {
         self.check(call).await?;
+        self.record_history_read(call).await?;
         let index = self.index(call)?;
         let exclude = if let Some(execution) = call.identity.agent() {
             Some(index.exclusion(execution.run_id).await.map_err(failed)?)
@@ -200,6 +213,11 @@ impl Recall {
         } else {
             None
         };
+        let binding = project
+            .as_ref()
+            .map(|(scope, _)| scope)
+            .unwrap_or(&personal)
+            .clone();
         let mut page = self
             .data(call)
             .map_err(|e| e.to_string())?
@@ -214,6 +232,22 @@ impl Recall {
             })
             .await
             .map_err(|e| e.to_string())?;
+        if call.identity.agent().is_some() {
+            let facts = page
+                .facts
+                .iter()
+                .map(|f| crate::contract::LoadedMemory {
+                    scope: match f.scope {
+                        MemoryScope::Personal => "personal".into(),
+                        MemoryScope::Project { .. } => binding.location.clone(),
+                    },
+                    id: f.id.clone(),
+                    assertion: f.assertion,
+                    revision: f.revision,
+                })
+                .collect();
+            owner.record_memory_reads(call, binding, facts).await?;
+        }
         if let Some(reason) = project_gap {
             page.gaps.push(reason);
         }
@@ -346,6 +380,7 @@ impl Recall {
         more: search::More,
     ) -> Result<search::ResultSet, ToolError> {
         self.check(call).await?;
+        self.record_history_read(call).await?;
         let index = self.index(call)?;
         let exclude = if let Some(execution) = call.identity.agent() {
             Some(index.exclusion(execution.run_id).await.map_err(failed)?)

@@ -203,6 +203,7 @@ impl Owner {
                 &input.session_id,
                 Some(preference),
                 operation.fingerprint.clone(),
+                true,
                 parent,
             )
             .await?;
@@ -256,6 +257,79 @@ impl Owner {
 }
 
 impl super::driver::NativeDriver {
+    async fn handoff_user_run(
+        &self,
+        view: &maka_agent_state::fold::RunView,
+    ) -> Result<Option<bool>, maka_agent_engine::RunError> {
+        use maka_agent_facts::{
+            durable::{RunOrigin, Trigger},
+            memory::MemoryAdmission,
+        };
+        let mut run = view.run;
+        let mut spec = &view.spec;
+        let mut previous;
+        let history = self
+            .state
+            .session_history(view.spec.owner.clone(), view.spec.session_id.clone());
+        let sources = loop {
+            match spec.memory_admission {
+                MemoryAdmission::Disabled | MemoryAdmission::Enabled => return Ok(Some(true)),
+                MemoryAdmission::Excluded => return Ok(Some(false)),
+                MemoryAdmission::Legacy => {}
+            }
+            if spec.origin != RunOrigin::Local || spec.allowed_tools.is_some() {
+                return Ok(Some(false));
+            }
+            match &spec.trigger {
+                Trigger::CheckpointHandoff { source } => {
+                    previous = history.run_source(*source).await?;
+                    run = previous.run;
+                    spec = &previous.spec;
+                }
+                Trigger::Message { message_id } => {
+                    let input: RunInput = self.owner.run_content(run, &spec.input).await?;
+                    let RunInput::Message {
+                        request_fingerprint,
+                        source_messages,
+                        ..
+                    } = input
+                    else {
+                        return Ok(None);
+                    };
+                    if source_messages
+                        .iter()
+                        .any(|source| source.message.origin.is_some())
+                    {
+                        return Ok(Some(false));
+                    }
+                    if source_messages.is_empty() {
+                        break vec![message_id.clone()];
+                    }
+                    if request_fingerprint.is_none() && source_messages.len() == 1 {
+                        return Ok(Some(false));
+                    }
+                    break source_messages
+                        .into_iter()
+                        .map(|source| source.message.message_id)
+                        .collect();
+                }
+                Trigger::Continuation { .. } | Trigger::ContextCompact => {
+                    break vec![run.to_string()];
+                }
+                _ => return Ok(Some(false)),
+            }
+        };
+        Ok(self
+            .access
+            .data_writer()
+            .map_err(maka_agent_engine::RunError::InvalidInput)?
+            .query(maka_agent_state::memory::reads::LegacySources {
+                session: view.spec.session_id.clone(),
+                sources,
+            })
+            .await?)
+    }
+
     pub(super) async fn resume_after_checkpoint(
         &self,
         view: &maka_agent_state::fold::RunView,
@@ -316,7 +390,36 @@ impl super::driver::NativeDriver {
         );
         selection.definitions.sort_by(|a, b| a.name.cmp(&b.name));
         let tools = ContentBlob::json(&selection)?;
+        let policy = owner
+            .configuration
+            .runtime_policy()
+            .await
+            .map_err(|e| RunError::InvalidInput(e.to_string()))?;
+        let user_run = self.handoff_user_run(view).await?;
+        let (mut admission_kind, memory) = owner
+            .admit_memory(
+                session,
+                &metadata.configuration,
+                user_run.unwrap_or(true),
+                &policy,
+            )
+            .await
+            .map_err(RunError::InvalidInput)?;
+        if user_run.is_none() {
+            if memory.is_some() {
+                return Err(RunError::InvalidInput("original memory admission unavailable; start a new user Run to load pinned memory".into()));
+            }
+            admission_kind = maka_agent_facts::memory::MemoryAdmission::Legacy;
+        }
+        if let Some(memory) = &memory {
+            memory
+                .check_window(source.accepted.input_limit, 0)
+                .map_err(RunError::InvalidInput)?;
+        }
+        let memory = memory.as_deref().map(ContentBlob::json).transpose()?;
         let mut spec = view.spec.clone();
+        spec.memory_admission = admission_kind;
+        spec.memory_projection = memory.as_ref().map(|blob| blob.reference().clone());
         spec.tool_selection = tools.reference().clone();
         spec.trigger = Trigger::CheckpointHandoff { source: view.run };
         spec.input = input.reference().clone();
@@ -324,6 +427,8 @@ impl super::driver::NativeDriver {
             binding: source.accepted.binding,
             descriptor: model.reference().clone(),
         };
+        let mut contents = vec![input, model, tools];
+        contents.extend(memory);
         let admission = Admission::new(
             spec,
             UnixMillis(
@@ -331,7 +436,7 @@ impl super::driver::NativeDriver {
                     .try_into()
                     .map_err(|_| RunError::Internal("invalid clock".into()))?,
             ),
-            vec![input, model, tools],
+            contents,
         );
         let statement =
             self.state

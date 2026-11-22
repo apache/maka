@@ -99,7 +99,33 @@ pub trait Models: Send + Sync {
         input: llm::Generate,
     ) -> futures_util::future::BoxFuture<'_, Result<ModelGeneration, ToolError>>;
 }
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum StoredReceipt {
+    Checked { visibility: u64, receipt: Receipt },
+    Legacy(Receipt),
+}
+impl StoredReceipt {
+    fn for_reader(self, required_visibility: Option<u64>) -> Result<Receipt, Error> {
+        let (visibility, receipt) = match self {
+            Self::Checked {
+                visibility,
+                receipt,
+            } => (Some(visibility), receipt),
+            Self::Legacy(receipt) => (None, receipt),
+        };
+        if matches!(receipt, Receipt::Ready { .. })
+            && required_visibility.is_some()
+            && visibility != required_visibility
+        {
+            return Err(Error::History);
+        }
+        Ok(receipt)
+    }
+}
+
 pub struct Recaps {
+    pub visibility: u64,
     pub store: Arc<dyn storage::Store>,
     pub history: Arc<dyn History>,
     pub models: Arc<dyn Models>,
@@ -122,12 +148,18 @@ pub enum Error {
 impl Recaps {
     pub async fn read(&self, scope: &call::Scope, session: &str) -> Result<Option<Receipt>, Error> {
         self.check(scope, session).await?;
-        let Some((_, latest)) = self.record(&format!("{}/latest", prefix(session))).await? else {
+        let Some((_, latest)) = self
+            .record(scope, &format!("{}/latest", prefix(session)))
+            .await?
+        else {
             return Ok(None);
         };
-        self.record(&format!("{}/{}", prefix(session), latest.operation_id()))
-            .await
-            .map(|r| r.map(|(_, r)| r))
+        self.record(
+            scope,
+            &format!("{}/{}", prefix(session), latest.operation_id()),
+        )
+        .await
+        .map(|r| r.map(|(_, r)| r))
     }
     async fn check(&self, scope: &call::Scope, session: &str) -> Result<(), Error> {
         history::Read {
@@ -153,7 +185,11 @@ impl Recaps {
             .map_err(|_| Error::History)?;
         Ok(())
     }
-    async fn record(&self, key: &str) -> Result<Option<(u64, Receipt)>, Error> {
+    async fn record(
+        &self,
+        scope: &call::Scope,
+        key: &str,
+    ) -> Result<Option<(u64, Receipt)>, Error> {
         let record = self
             .store
             .read(key.into())
@@ -162,10 +198,10 @@ impl Recaps {
         record
             .map(|r| {
                 let value = r.data.value().ok_or(Error::Storage)?;
-                Ok((
-                    r.revision,
-                    serde_json::from_value(value.clone()).map_err(|_| Error::Storage)?,
-                ))
+                let stored: StoredReceipt =
+                    serde_json::from_value(value.clone()).map_err(|_| Error::Storage)?;
+                let receipt = stored.for_reader(scope.identity.agent().map(|_| self.visibility))?;
+                Ok((r.revision, receipt))
             })
             .transpose()
     }
@@ -178,7 +214,7 @@ impl Recaps {
     ) -> Result<Option<Receipt>, Error> {
         self.check(scope, session).await?;
         Ok(self
-            .record(&format!("{}/{}", prefix(session), operation))
+            .record(scope, &format!("{}/{}", prefix(session), operation))
             .await?
             .map(|(_, receipt)| receipt))
     }
@@ -191,7 +227,7 @@ impl Recaps {
     ) -> Result<Receipt, Error> {
         self.check(parent, session).await?;
         let key = format!("{}/{}", prefix(session), operation_id);
-        if let Some((_, receipt)) = self.record(&key).await? {
+        if let Some((_, receipt)) = self.record(parent, &key).await? {
             return Ok(receipt);
         }
         let owned = call::Owned::new(parent.child().map_err(|_| Error::History)?);
@@ -208,13 +244,13 @@ impl Recaps {
             operation_id,
             through,
         };
-        let stored = self.reserve(session, &key, &intent).await;
+        let stored = self.reserve(parent, session, &key, &intent).await;
         let revision = match stored {
             Ok(Some(revision)) => revision,
             Ok(None) => {
                 owned.finish().await.map_err(|_| Error::Unknown)?;
                 return self
-                    .record(&key)
+                    .record(parent, &key)
                     .await?
                     .map(|(_, r)| r)
                     .ok_or(Error::Storage);
@@ -259,7 +295,12 @@ impl Recaps {
         owned.finish().await.map_err(|_| Error::Unknown)?;
         let receipt = result?;
         self.store
-            .batch(vec![mutation(key, Some(revision), &receipt)?])
+            .batch(vec![mutation(
+                key,
+                Some(revision),
+                &receipt,
+                self.visibility,
+            )])
             .await
             .map_err(|_| Error::Unknown)?;
         Ok(receipt)
@@ -269,17 +310,18 @@ impl Recaps {
     // a newer recap, and restart can discover an unfinished operation.
     async fn reserve(
         &self,
+        scope: &call::Scope,
         session: &str,
         key: &str,
         receipt: &Receipt,
     ) -> Result<Option<u64>, Error> {
         let latest_key = format!("{}/latest", prefix(session));
         for _ in 0..8 {
-            if self.record(key).await?.is_some() {
+            if self.record(scope, key).await?.is_some() {
                 return Ok(None);
             }
-            let latest = self.record(&latest_key).await?;
-            let mut mutations = vec![mutation(key.into(), None, receipt)?];
+            let latest = self.record(scope, &latest_key).await?;
+            let mut mutations = vec![mutation(key.into(), None, receipt, self.visibility)];
             if latest
                 .as_ref()
                 .is_none_or(|(_, r)| r.through() <= receipt.through())
@@ -288,7 +330,8 @@ impl Recaps {
                     latest_key.clone(),
                     latest.map(|(r, _)| r),
                     receipt,
-                )?);
+                    self.visibility,
+                ));
             }
             match self.store.batch(mutations).await {
                 Ok(records) => {
@@ -374,14 +417,49 @@ fn mutation(
     key: String,
     expected_revision: Option<u64>,
     receipt: &Receipt,
-) -> Result<storage::Mutation, Error> {
-    Ok(storage::Mutation {
+    visibility: u64,
+) -> storage::Mutation {
+    storage::Mutation {
         key,
         expected_revision,
-        data: storage::Data::Present(serde_json::to_value(receipt).map_err(|_| Error::Storage)?),
-    })
+        data: storage::Data::Present(
+            serde_json::json!({"visibility": visibility, "receipt": receipt}),
+        ),
+    }
 }
 fn clean(text: &str) -> Option<String> {
     let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
     (!text.is_empty() && text.len() <= 4096).then_some(text)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cached_text_requires_original_visibility_for_model_readers() {
+        let receipt = serde_json::json!({"kind":"ready","operationId":Uuid::nil(),"through":1,
+                                        "text":"original recap","modelId":"model"});
+        let checked = mutation(
+            "key".into(),
+            None,
+            &serde_json::from_value(receipt.clone()).unwrap(),
+            3,
+        );
+        for (record, original_epoch) in [(&receipt, None), (checked.data.value().unwrap(), Some(3))]
+        {
+            for reader in [None, Some(3), Some(4)] {
+                let read = serde_json::from_value::<StoredReceipt>(record.clone())
+                    .unwrap()
+                    .for_reader(reader);
+                if reader.is_none() || reader == original_epoch {
+                    assert!(
+                        matches!(read, Ok(Receipt::Ready { text, .. }) if text == "original recap")
+                    );
+                } else {
+                    assert!(matches!(read, Err(Error::History)));
+                }
+            }
+        }
+    }
 }

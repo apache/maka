@@ -204,7 +204,13 @@ impl Owner {
             } => request_fingerprint.unwrap_or_default(),
             _ => String::new(),
         };
+        let memory = match &view.spec.memory_projection {
+            Some(reference) => Some(Arc::new(self.run_content(view.run, reference).await?)),
+            None => None,
+        };
         let basis = CapturedRun {
+            memory_admission: view.spec.memory_admission,
+            memory,
             mcp_catalog: Some(catalog.clone()),
             mcp_revision: view.spec.mcp_revision.clone(),
             client_mcp: catalog.client_mcp,
@@ -239,6 +245,7 @@ impl Owner {
             binding: current.configuration.binding,
             fingerprint,
         };
+        basis.check_pinned_model().map_err(RunError::InvalidInput)?;
         Ok((basis, selection))
     }
 

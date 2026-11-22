@@ -195,7 +195,7 @@ impl Query for FindQuery {
                 match row {
                     SnapshotPosition::Canonical {
                         fact, item_index, ..
-                    } => canonical.push((index, *fact, *item_index)),
+                    } => canonical.push((index, *fact, *item_index, Some(snapshot.id))),
                     SnapshotPosition::Imported {
                         message_ordinal,
                         part_ordinal,

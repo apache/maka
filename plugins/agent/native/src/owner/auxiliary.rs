@@ -77,6 +77,7 @@ pub(super) enum Admission {
         execution: Execution,
     },
     Operation {
+        history_visibility: Option<u64>,
         reference: Box<maka_plugin_core::operation::RecoveryRef>,
         attempt: Option<std::num::NonZeroU32>,
         scope: Box<maka_event_log::applications::operations::OperationDispatchScope>,
@@ -124,6 +125,7 @@ impl Auxiliary {
         }
         let (source, binding, purpose, execution, session, operation) = match admission {
             Admission::Operation {
+                history_visibility,
                 reference,
                 attempt,
                 scope,
@@ -145,7 +147,7 @@ impl Auxiliary {
                     purpose,
                     execution,
                     session_id,
-                    Some((reference, scope)),
+                    Some((reference, scope, history_visibility)),
                 )
             }
             Admission::Source {
@@ -193,6 +195,10 @@ impl Auxiliary {
         let data = log
             .data_writer_for_work(custody.as_ref(), &session)
             .map_err(admission_error)?;
+        let guard = operation
+            .as_ref()
+            .and_then(|(_, _, visibility)| *visibility)
+            .map(|revision| (data.clone(), revision));
         let (journal, write) = UsageStore::new(data)
             .auxiliary(
                 AuxiliarySpec {
@@ -216,7 +222,7 @@ impl Auxiliary {
                 .map_err(admission_error)?,
         ));
         let lease = pending.0.take().expect("auxiliary lease");
-        let physical = if let Some((reference, dispatch)) = operation {
+        let physical = if let Some((reference, dispatch, _)) = operation {
             // The pending owner releases an unstarted lease if lookup fails.
             let mut pending = IdleLease(Some(lease));
             let operation = log.operation(&reference).map_err(admission_error)?;
@@ -246,16 +252,25 @@ impl Auxiliary {
         let id = custody.journal().id();
         let model_id = request.provider.model.clone();
         let result = async {
-            let stream = self
-                .models
-                .stream(request, cancellation.clone())
-                .await
-                .map_err(|error| {
-                    if error.cleanup_unconfirmed() {
-                        custody.phase = ProviderPhase::Active;
-                    }
-                    Error::Model(error)
-                })?;
+            let stream = match guard {
+                Some((data, revision)) => {
+                    super::recap::stream(
+                        &self.models,
+                        request,
+                        cancellation.clone(),
+                        data,
+                        revision,
+                    )
+                    .await
+                }
+                None => self.models.stream(request, cancellation.clone()).await,
+            }
+            .map_err(|error| {
+                if error.cleanup_unconfirmed() {
+                    custody.phase = ProviderPhase::Active;
+                }
+                Error::Model(error)
+            })?;
             custody.phase = ProviderPhase::Active;
             let generation = receive(stream, &mut custody, model_id, delta).await?;
             if generation.finish_reason == ModelFinishReason::ToolCalls {

@@ -21,6 +21,13 @@ use rusqlite::{OptionalExtension, params};
 use std::cmp::Ordering;
 const ORIGINAL: &str = "LEFT JOIN agent_session_history h ON h.sequence=d.sequence
  AND h.owner=d.owner AND h.session=d.session AND h.run=d.run";
+// The Recall index also serves original history. Only shareable checkpoints may
+// contribute an anchor or adjacent text to a different model conversation.
+const SHARED_CONTEXT: &str = r#"CASE WHEN d.role='"compaction"' THEN EXISTS (
+ SELECT 1 FROM contents b WHERE b.content_sha256=d.references_json->>'$[1].digest' AND
+ (b.payload->>'memoryReplay'='shared' OR (b.payload->>'memoryReplay' IS NULL AND NOT EXISTS (
+  SELECT 1 FROM agent_memory_history_reads r WHERE r.run=coalesce(b.payload->>'$.summaryOrigin.run',d.run)
+ )))) ELSE 1 END"#;
 const COLUMNS: &str = concat!(
     "d.message,d.sequence,d.ordinal,d.run,d.turn,d.at,d.role,d.body,d.attachments,d.references_json,d.fields_json,d.origin_json,
  (SELECT json_group_array(json_array(start,end)) FROM (",
@@ -134,7 +141,7 @@ pub(super) fn context(
     }
     checked_cut(c, &store, &cut)?;
     let owner = store.key()?;
-    let mut statement=c.prepare_cached(&format!("SELECT {COLUMNS} FROM agent_recall_messages d {ORIGINAL} WHERE d.owner=? AND d.session=? AND d.message=? AND d.sequence<=? AND NOT(d.session=COALESCE(?,'') AND d.turn=COALESCE(?,'') AND d.sequence>COALESCE(?,0))"))?;
+    let mut statement=c.prepare_cached(&format!("SELECT {COLUMNS} FROM agent_recall_messages d {ORIGINAL} WHERE d.owner=? AND d.session=? AND d.message=? AND {SHARED_CONTEXT} AND d.sequence<=? AND NOT(d.session=COALESCE(?,'') AND d.turn=COALESCE(?,'') AND d.sequence>COALESCE(?,0))"))?;
     let mut rows = statement.query(params![
         owner,
         session,
@@ -189,7 +196,7 @@ fn neighbors(
         } else {
             (">", "ASC")
         };
-        let mut statement=c.prepare_cached(&format!("SELECT {COLUMNS} FROM agent_recall_messages d {ORIGINAL} WHERE d.owner=? AND d.session=? AND d.turn=? AND d.sequence<=? AND (d.sequence,d.ordinal){comparison}(?,?) AND NOT(d.session=COALESCE(?,'') AND d.turn=COALESCE(?,'') AND d.sequence>COALESCE(?,0)) ORDER BY d.sequence {order},d.ordinal {order} LIMIT ?"))?;
+        let mut statement=c.prepare_cached(&format!("SELECT {COLUMNS} FROM agent_recall_messages d {ORIGINAL} WHERE d.owner=? AND d.session=? AND d.turn=? AND {SHARED_CONTEXT} AND d.sequence<=? AND (d.sequence,d.ordinal){comparison}(?,?) AND NOT(d.session=COALESCE(?,'') AND d.turn=COALESCE(?,'') AND d.sequence>COALESCE(?,0)) ORDER BY d.sequence {order},d.ordinal {order} LIMIT ?"))?;
         let cap = size
             .checked_add(1)
             .ok_or_else(|| invalid("Recall context limit overflow"))?;

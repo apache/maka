@@ -282,7 +282,7 @@ impl Owner {
             None => native,
         };
         let captured = self
-            .capture_current_run(id, Some(backend), String::new(), native.scope())
+            .capture_current_run(id, Some(backend), String::new(), false, native.scope())
             .await;
         let cleanup = native.finish().await;
         let mut basis = crate::owner::send::finish_capture(captured, cleanup)?;

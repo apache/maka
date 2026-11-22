@@ -84,6 +84,8 @@ pub(crate) enum HistoryReader {
     Other,
     File,
     Session,
+    // Distinguishes a verified unrelated service from an old unclassified recap binding.
+    NonAgent,
 }
 
 impl HistoryReader {
@@ -139,24 +141,29 @@ impl SelectedTool {
 }
 
 fn reads_agent_history(method: &str) -> bool {
-    matches!(
-        method,
-        "memory"
-            | "memories"
-            | "execution"
-            | "continuationAvailability"
-            | "work"
-            | "sessionRead"
-            | "history"
-            | "historyLandmarks"
-            | "historyPrompt"
-            | "historyRequests"
-            | "historyImages"
-            | "source"
-            | "search"
-            | "toolImage"
-            | "attachmentImage"
-    )
+    is_recap(method)
+        || matches!(
+            method,
+            "memory"
+                | "memories"
+                | "execution"
+                | "continuationAvailability"
+                | "work"
+                | "sessionRead"
+                | "history"
+                | "historyLandmarks"
+                | "historyPrompt"
+                | "historyRequests"
+                | "historyImages"
+                | "source"
+                | "search"
+                | "toolImage"
+                | "attachmentImage"
+        )
+}
+
+fn is_recap(method: &str) -> bool {
+    matches!(method, "recap" | "generateRecap")
 }
 
 impl ServiceSelection {
@@ -165,7 +172,19 @@ impl ServiceSelection {
     }
 
     pub(crate) fn history_alias(self) -> Option<(String, HistoryReader)> {
-        self.history_reader.map(|kind| (self.selection.name, kind))
+        let reader = match self.history_reader {
+            None | Some(HistoryReader::Other)
+                if is_recap(&self.selection.method)
+                    && match &self.selection.target {
+                        ServiceTarget::Export { name } => name == maka_agent_api::EXPORT,
+                        ServiceTarget::Import { .. } => true,
+                    } =>
+            {
+                Some(HistoryReader::Session)
+            }
+            reader => reader,
+        };
+        reader.map(|kind| (self.selection.name, kind))
     }
     fn matches(&self, live: &SelectedTool) -> bool {
         let admitted = &self.selection;
@@ -616,6 +635,8 @@ pub(crate) fn catalog(
                     Some(HistoryReader::File)
                 } else if contract == &agent_contract && reads_agent_history(&selection.method) {
                     Some(HistoryReader::Session)
+                } else if is_recap(&selection.method) {
+                    Some(HistoryReader::NonAgent)
                 } else if HistoryReader::builtin(&selection.name).is_some() {
                     Some(HistoryReader::Other)
                 } else {

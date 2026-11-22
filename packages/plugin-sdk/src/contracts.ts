@@ -29409,6 +29409,67 @@ export const contracts: {
           },
           resources: {},
         },
+        loadedMemories: {
+          mode: 'query',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'LoadedMemoriesRead',
+            type: 'object',
+            properties: {
+              sessionId: {
+                type: 'string',
+              },
+              runId: {
+                $ref: '#/$defs/RunId',
+              },
+            },
+            additionalProperties: false,
+            required: ['sessionId', 'runId'],
+            $defs: {
+              RunId: {
+                type: 'string',
+                format: 'uuid',
+              },
+            },
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'Array_of_LoadedMemory',
+            type: 'array',
+            items: {
+              $ref: '#/$defs/LoadedMemory',
+            },
+            $defs: {
+              LoadedMemory: {
+                description:
+                  'The exact assertion and management revision admitted to a Run, in projection order.',
+                type: 'object',
+                properties: {
+                  scope: {
+                    type: 'string',
+                  },
+                  id: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  revision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  assertion: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['scope', 'id', 'revision', 'assertion'],
+              },
+            },
+          },
+          resources: {},
+        },
         lookupSubmission: {
           mode: 'query',
           input: {

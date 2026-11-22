@@ -154,6 +154,7 @@ impl Recall {
         request: maka_agent_facts::read::ReadRequest,
     ) -> Result<ToolSuccess, ToolError> {
         self.check(&call).await?;
+        self.record_history_read(&call).await?;
         let artifacts = ArtifactStore::new(self.data(&call)?);
         let cancellation = call.cancellation.child_token();
         let _cancel_on_drop = cancellation.clone().drop_guard();

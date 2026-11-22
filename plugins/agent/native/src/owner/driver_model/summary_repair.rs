@@ -158,7 +158,7 @@ impl DriverModel {
                 return Err(unsupported("native-summary-provenance"));
             }
             if !repair {
-                frozen.covered_prefix = Some(CoveredPrefix::capture(&original_prompt).await?);
+                frozen.covered_prefix = Some(CoveredPrefix::capture(&original_prompt, frozen.memory_prefix).await?);
             }
             let settings = PromptSettings {
                 operation,
@@ -176,6 +176,7 @@ impl DriverModel {
                 self.preparation_io()?, self.resources.clone(), &self.cancellation,
             ).await?;
             let built = async {
+                let mut memory_prefix = frozen.memory_prefix;
                 let mut cursor = source.open(0);
                 while let Some(recipe) = cursor.next().await? {
                     if frozen.instructions.is_some() && matches!(recipe,
@@ -183,6 +184,7 @@ impl DriverModel {
                     {
                         continue;
                     }
+                    if !matches!(recipe, maka_agent_facts::model::prompt_source::source::MessageRecipe::System { .. }) && std::mem::take(&mut memory_prefix) {continue;}
                     if let Some(recipe) = ReplayTarget::new(&model, operation).recipe(recipe).await? {
                         builder.append_recipe(&recipe).await?;
                     }
@@ -346,6 +348,7 @@ impl DriverModel {
             }
             frozen.operation = prepared.request.operation;
             frozen.tool_choice = prepared.request.tool_choice;
+            frozen.memory_prefix = false;
             frozen.item_acceptance = false;
             frozen.instructions = prepared.request.prompt.instructions().map(str::to_owned);
             frozen.normalization = prepared.request.prompt.normalization().cloned();

@@ -495,6 +495,7 @@ impl Rig {
             &[
                 "memories",
                 "memory",
+                "loadedMemories",
                 "memoryHistory",
                 "memoryEvidence",
                 "memorySource",
@@ -532,6 +533,9 @@ impl Rig {
                 "historyImages",
                 "tools",
                 "predictNextMessage",
+                "generateRecap",
+                "recap",
+                "changeSession",
                 "askQuickQuestion",
                 "import",
                 "compact",
@@ -937,6 +941,8 @@ impl Rig {
             allowed_tools: None,
             mcp_revision: None,
             compaction_prompt: None,
+            memory_admission: Default::default(),
+            memory_projection: None,
             system_prompt: system.reference().clone(),
             tool_selection: tools.reference().clone(),
             input: empty.reference().clone(),
@@ -1046,15 +1052,25 @@ impl Rig {
         facts: Vec<Fact>,
         contents: Vec<ContentBlob>,
     ) -> TestResult<maka_agent_state::Commit> {
+        self.append_for(
+            self.driver.as_ref().unwrap().access.claim(),
+            facts,
+            contents,
+        )
+        .await
+    }
+    async fn append_for(
+        &self,
+        claim: &maka_agent_state::DriverClaim,
+        facts: Vec<Fact>,
+        contents: Vec<ContentBlob>,
+    ) -> TestResult<maka_agent_state::Commit> {
         let driver = self.driver.as_ref().unwrap();
-        let view = driver
-            .state
-            .frontier(driver.access.execution().run_id)
-            .await?;
+        let view = driver.state.frontier(claim.run()).await?;
         Ok(driver
             .state
             .append(
-                driver.access.claim(),
+                claim,
                 (&view).into(),
                 facts
                     .into_iter()
@@ -1183,6 +1199,7 @@ impl Rig {
         })?;
         let step = StepId::new();
         let request = ContentBlob::json(&RequestSpec {
+            memory_replay: maka_agent_facts::memory::MemoryReplay::Shared,
             schema_version: SCHEMA_VERSION,
             step,
             composition: RequestComposition {
@@ -7669,6 +7686,7 @@ async fn compacted_history_checks_the_producing_requests_original_cut() {
             (capture.current.digest.clone(), false),
         ] {
             let baseline = ContentBlob::json(&CompactedContext {
+                memory_replay: maka_agent_facts::memory::MemoryReplay::Shared,
                 summary_origin: None,
                 source_capture: summary.source_capture.clone(),
                 checkpoint: ContextCheckpoint {
@@ -9043,6 +9061,7 @@ async fn compaction_resumes_with_steering_indexed_at_its_original_delivery() {
                 .await?,
         )?;
         let baseline = ContentBlob::json(&CompactedContext {
+            memory_replay: maka_agent_facts::memory::MemoryReplay::Run(run),
             summary_origin: None,
             source_capture: summary.source_capture,
             checkpoint: ContextCheckpoint {
@@ -9064,6 +9083,56 @@ async fn compaction_resumes_with_steering_indexed_at_its_original_delivery() {
             vec![baseline],
         )
         .await?;
+
+        let source = owner
+            .durable
+            .session_history(owner.run_owner(), session.clone());
+        let cut = source.capture().await?;
+        let mut external_history = Vec::new();
+        crate::service::history::readable_context_into(
+            &source,
+            &cut,
+            None,
+            &mut external_history,
+            &stop,
+        )
+        .await?;
+        let external_history = String::from_utf8(external_history)?;
+        assert!(external_history.contains(steering_text));
+        assert!(!external_history.contains(summary_text));
+        let context = recall
+            .context(
+                session.clone(),
+                notification.message_id.clone(),
+                maka_agent_state::recall::ContextWindow {
+                    before: 0,
+                    after: 32,
+                },
+                Some(cut),
+                None,
+                stop.clone(),
+            )
+            .await?;
+        assert!(
+            context
+                .messages
+                .iter()
+                .all(|msg| msg.role != maka_agent_state::recall::Role::Compaction)
+        );
+        let original = model_recovery::call(rig.client.as_ref().unwrap(), "agent", "history", json!({
+            "sessionId":session, "position":{"kind":"tail"}, "view":"text", "includeThinking":false
+        })).await?;
+        assert!(
+            original["chunks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|row| row["role"] == "compaction"
+                    && row["text"]
+                        .as_str()
+                        .is_some_and(|text| text.contains(summary_text))),
+            "{original}"
+        );
 
         let engine = Engine::new(driver.state.clone());
         let mut changes = driver.state.subscribe()?;

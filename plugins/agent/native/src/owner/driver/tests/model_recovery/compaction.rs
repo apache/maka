@@ -45,7 +45,7 @@ async fn requested_compaction_resumes_from_checkpoint_with_optional_focus_and_mo
             "connection":{"slug":"compact","name":"Compact fixture",
                 "provider":{"packageId":"maka.providers","entryId":"maka.providers","scope":"profile","name":"ollama"},
                 "configuration":{"baseUrl":boot.base_url},"enabled":true,"enabledModelIds":["llama3.2","code-source","successor","low-only"],
-                "modelOverrides":{"llama3.2":{"thinkingLevels":["high"],"codeMode":false,"apiProtocol":"openai-chat-completions"}, "code-source":{"thinkingLevels":["high"],"codeMode":true,"apiProtocol":"openai-chat-completions"}, "low-only":{"thinkingLevels":["low"]},"successor":{"applyPatch":true,"thinkingLevels":["high"],"codeMode":false,"apiProtocol":"openai-chat-completions"}}}
+                "modelOverrides":{"llama3.2":{"thinkingLevels":["high"],"codeMode":false,"apiProtocol":"openai-chat-completions"}, "code-source":{"thinkingLevels":["high"],"codeMode":true,"apiProtocol":"openai-chat-completions"}, "low-only":{"thinkingLevels":["low"]},"successor":{"contextWindow":128000,"applyPatch":true,"thinkingLevels":["high"],"codeMode":false,"apiProtocol":"openai-chat-completions"}}}
         })).await?;
         let owner = rig.captured.lock().unwrap().clone().ok_or("native owner missing")?;
         for (source, focused, switch, stop) in [
@@ -149,6 +149,10 @@ async fn requested_compaction_resumes_from_checkpoint_with_optional_focus_and_mo
             }
             let target = json!({"sessionId":session,"target":{"kind":"message","messageId":sent["messageId"]}});
             let original = call(client,"agent","work",target.clone()).await?;
+            let marker = "New checkpoint handoff preference";
+            let added = if switch && focused {
+                Some(super::preset_acceptance::pinned_memory::enable_and_pin(client, session, marker).await?)
+            } else { None };
             reply.reply_text("Checkpoint: the open task is ready.");
 
             let reply = observed.recv().await.ok_or("resumed request missing")?;
@@ -158,6 +162,14 @@ async fn requested_compaction_resumes_from_checkpoint_with_optional_focus_and_mo
             assert_eq!(resumed["model"], expected);
             let running = call(client,"agent","work",target.clone()).await?;
             assert_eq!(running["execution"]["runId"] != original["execution"]["runId"], switch);
+            if let Some(pin) = added {
+                super::preset_acceptance::pinned_memory::assert_wire(&resumed, marker);
+                let loaded = call(client,"agent","loadedMemories",json!({"sessionId":session,"runId":running["execution"]["runId"]})).await?;
+                assert_eq!(loaded[0]["id"], pin["id"]);
+                let original_loaded = call(client,"agent","loadedMemories",json!({"sessionId":session,"runId":original["execution"]["runId"]})).await?;
+                assert_eq!(original_loaded, json!([]));
+                call(client,"agent","changeMemory",json!({"scope":{"kind":"project","sessionId":session},"edit":{"kind":"set_always","id":pin["id"],"expectedRevision":pin["revision"],"always":false}})).await?;
+            }
             assert_eq!(running["execution"]["state"]["kind"], "running");
             let remembered = serde_json::to_value(owner.remembered_backend(session).await?)?;
             assert_eq!(remembered["modelId"],expected);

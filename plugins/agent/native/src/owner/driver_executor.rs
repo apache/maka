@@ -1001,7 +1001,14 @@ impl ExternalPorts for DriverExecutor {
                 task_id: task,
                 language: view.spec.language,
                 execution: self.access.execution().clone(),
-                conversation_key: view.spec.session_id.clone(),
+                conversation_key: self
+                    .access
+                    .data_writer()
+                    .map_err(RunError::InvalidInput)?
+                    .query(maka_agent_state::memory::reads::ExternalConversation(
+                        view.spec.session_id.clone(),
+                    ))
+                    .await?,
                 content,
                 cwd: view.spec.workspace.clone(),
                 instructions,

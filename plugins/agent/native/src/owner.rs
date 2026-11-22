@@ -141,6 +141,8 @@ struct CapturedRun {
     background: Option<ScheduledTarget>,
     background_sandbox_ceiling: Option<maka_sandbox::Sandbox>,
     internal_bindings: Arc<BTreeMap<String, Option<String>>>,
+    memory_admission: maka_agent_facts::memory::MemoryAdmission,
+    memory: Option<Arc<MemoryProjection>>,
     behavior: Option<SystemPrompt>,
     model: Option<crate::model::AcceptedModel>,
     executor: Option<crate::executor::Accepted>,

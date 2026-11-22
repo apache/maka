@@ -204,6 +204,7 @@ impl Owner {
                 &session_id,
                 Some(preference),
                 operation.fingerprint.clone(),
+                true,
                 parent,
             )
             .await?;
@@ -259,7 +260,7 @@ impl Owner {
             original_model
                 .as_ref()
                 .expect("original preparation model")
-                .prepare_continuation(actual.run, basis.behavior.clone())
+                .prepare_continuation(actual.run, basis.memory.as_deref(), basis.behavior.clone())
                 .await
         }
         .await;

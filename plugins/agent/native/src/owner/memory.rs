@@ -42,7 +42,108 @@ async fn project_scope(
     resolved.identity().map_err(|e| e.to_string())
 }
 
+impl CapturedRun {
+    pub(super) fn check_pinned_model(&self) -> Result<(), String> {
+        if let Some(memory) = &self.memory {
+            let model = self.model.as_ref().ok_or("agent_memory_executor_unavailable: executor lacks a per-provider-send revocation check")?;
+            memory.check_window(model.input_limit, 0)?;
+        }
+        Ok(())
+    }
+}
+
 impl Owner {
+    pub(super) async fn admit_memory(
+        &self,
+        session: &str,
+        configuration: &ResolvedConfiguration,
+        user_run: bool,
+        policy: &RuntimePolicySnapshot,
+    ) -> Result<
+        (
+            maka_agent_facts::memory::MemoryAdmission,
+            Option<Arc<MemoryProjection>>,
+        ),
+        String,
+    > {
+        use maka_agent_facts::memory::MemoryAdmission;
+        if !user_run
+            || self.bot.is(session)
+            || configuration.incognito
+            || configuration.parent_session_id.is_some()
+            || configuration.tools.is_some()
+        {
+            return Ok((MemoryAdmission::Excluded, None));
+        }
+        if !policy.policy.memory.enabled || !policy.policy.memory.agent_read_enabled {
+            return Ok((MemoryAdmission::Disabled, None));
+        }
+        let memory = self
+            .capture_pinned(session, configuration, policy.revision)
+            .await?;
+        Ok((MemoryAdmission::Enabled, memory))
+    }
+
+    async fn capture_pinned(
+        &self,
+        session: &str,
+        configuration: &ResolvedConfiguration,
+        policy_revision: u64,
+    ) -> Result<Option<Arc<MemoryProjection>>, String> {
+        let project = self.project_memory_scope(session, configuration).await?;
+        let entries = self
+            .store
+            .data_writer()
+            .map_err(|e| e.to_string())?
+            .query(stored::pinned::Capture {
+                personal: self.memory_scope(MemoryScope::Personal).await?,
+                project,
+                at: now() as i64,
+            })
+            .await
+            .map_err(|e| e.to_string())?;
+        if entries.is_empty() {
+            return Ok(None);
+        }
+        let projection = MemoryProjection {
+            policy_revision,
+            entries,
+        };
+        Ok(Some(Arc::new(projection)))
+    }
+
+    pub(crate) async fn loaded_memories(
+        self: &Arc<Self>,
+        input: LoadedMemoriesRead,
+        scope: &Scope,
+    ) -> Result<Vec<LoadedMemory>, String> {
+        management(scope)?;
+        self.resource_work(scope, move |owner, _| {
+            Box::pin(async move {
+                owner.session(&input.session_id).await?;
+                let source = owner
+                    .durable
+                    .session_history(owner.run_owner(), input.session_id)
+                    .run_source(input.run_id)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                let Some(reference) = source.spec.memory_projection else {
+                    return Ok(Vec::new());
+                };
+                let projection: MemoryProjection = owner
+                    .run_content(source.run, &reference)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                Ok(projection
+                    .entries
+                    .into_iter()
+                    .map(|entry| entry.loaded)
+                    .collect())
+            })
+        })
+        .await
+    }
+
     pub(crate) fn memory_data(
         &self,
         scope: &Scope,
@@ -160,28 +261,38 @@ impl Owner {
         &self,
         requested: MemoryScope,
     ) -> Result<stored::Scope, String> {
-        let mut binding = None;
-        let location = match requested {
-            MemoryScope::Personal => "personal".into(),
+        match requested {
+            MemoryScope::Personal => Ok(stored::Scope {
+                namespace: serde_json::to_string(&self.run_owner()).map_err(|e| e.to_string())?,
+                location: "personal".into(),
+                binding: None,
+            }),
             MemoryScope::Project { session_id } => {
                 let session = self.session(&session_id).await?;
-                binding = Some((session_id, session.configuration.permission_basis()));
-                let workspace = &session.configuration.workspace;
-                let (path, _directory, observed) = workspace::open_workspace_observation(
-                    &self.workspace_roots,
-                    workspace,
-                    &self.managed_worktrees,
-                )
-                .await?;
-                project_scope(&path, &observed).await?
+                self.project_memory_scope(&session_id, &session.configuration)
+                    .await
             }
-        };
+        }
+    }
+
+    pub(super) async fn project_memory_scope(
+        &self,
+        session: &str,
+        configuration: &ResolvedConfiguration,
+    ) -> Result<stored::Scope, String> {
+        let (path, _directory, observed) = workspace::open_workspace_observation(
+            &self.workspace_roots,
+            &configuration.workspace,
+            &self.managed_worktrees,
+        )
+        .await?;
         Ok(stored::Scope {
             namespace: serde_json::to_string(&self.run_owner()).map_err(|e| e.to_string())?,
-            location,
-            binding,
+            location: project_scope(&path, &observed).await?,
+            binding: Some((session.into(), configuration.permission_basis())),
         })
     }
+
     pub(super) async fn memory_read_access(
         &self,
         scope: &Scope,
@@ -207,6 +318,12 @@ impl Owner {
             if session.configuration.incognito {
                 return Err("agent_memory_incognito".into());
             }
+            if !matches!(
+                access.spec().backend,
+                maka_agent_facts::durable::BackendSpec::Model { .. }
+            ) {
+                return Err("agent_memory_executor_unavailable".into());
+            }
             if session.configuration.parent_session_id.is_some()
                 || session.configuration.tools.is_some()
                 || !matches!(
@@ -219,6 +336,38 @@ impl Owner {
             return Ok(());
         }
         management(scope)
+    }
+    pub(crate) async fn record_history_read(&self, call: &Scope) -> Result<(), String> {
+        if let Some(execution) = call.identity.agent() {
+            self.memory_data(call)?
+                .write(stored::reads::RecordHistory {
+                    owner: self.run_owner(),
+                    execution: execution.clone(),
+                })
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+    pub(super) async fn record_memory_reads(
+        &self,
+        call: &Scope,
+        scope: stored::Scope,
+        facts: Vec<LoadedMemory>,
+    ) -> Result<(), String> {
+        if let Some(execution) = call.identity.agent()
+            && !facts.is_empty()
+        {
+            self.memory_data(call)?
+                .write(stored::reads::RecordFacts {
+                    run: execution.run_id,
+                    scope,
+                    facts,
+                })
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(())
     }
     pub(crate) async fn memories(
         self: &Arc<Self>,
@@ -236,7 +385,7 @@ impl Owner {
                 let mut records = owner
                     .memory_data(&call)?
                     .query(stored::Page {
-                        scope,
+                        scope: scope.clone(),
                         after: input.after,
                         limit: input.limit + 1,
                     })
@@ -248,6 +397,13 @@ impl Owner {
                 } else {
                     None
                 };
+                if call.identity.agent().is_some() {
+                    let facts = records
+                        .iter()
+                        .map(|r| LoadedMemory::from_record(&scope.location, r))
+                        .collect();
+                    owner.record_memory_reads(&call, scope, facts).await?;
+                }
                 Ok(MemoryPage { records, next })
             })
         })
@@ -263,14 +419,21 @@ impl Owner {
             Box::pin(async move {
                 owner.memory_read_access(&call, &input.scope).await?;
                 let scope = owner.memory_scope(input.scope).await?;
-                owner
+                let record = owner
                     .memory_data(&call)?
                     .query(stored::Read {
-                        scope,
+                        scope: scope.clone(),
                         id: input.id,
                     })
                     .await
-                    .map_err(|e| e.to_string())
+                    .map_err(|e| e.to_string())?;
+                if let Some(r) = &record
+                    && call.identity.agent().is_some()
+                {
+                    let fact = LoadedMemory::from_record(&scope.location, r);
+                    owner.record_memory_reads(&call, scope, vec![fact]).await?;
+                }
+                Ok(record)
             })
         })
         .await

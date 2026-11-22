@@ -287,10 +287,21 @@ async fn execute(
         let read: maka_agent_facts::read::ReadInput =
             serde_json::from_value(input.clone()).map_err(failed)?;
         let mut request = read.resolve().map_err(failed)?;
+        let record_history = async || {
+            root.data_writer_for_work(custody.as_ref(), &tool_context.execution.session_id)
+                .map_err(failed)?
+                .write(maka_agent_state::memory::reads::RecordHistory {
+                    owner: access.run_owner().clone(),
+                    execution: tool_context.execution.clone(),
+                })
+                .await
+                .map_err(failed)
+        };
         if let Some(address) =
             maka_agent_facts::read::parse_imported_tool_result_path(request.path())
                 .map_err(failed)?
         {
+            record_history().await?;
             let result = async {
                 let history = maka_agent_state::session_history::SessionHistory::new(
                     root.data_writer_for_work(custody.as_ref(), &tool_context.execution.session_id)
@@ -346,6 +357,12 @@ async fn execute(
             maka_agent_facts::read::ResourceAddress::parse(request.path()).map_err(failed)?
         {
             use maka_agent_facts::read::ResourceAddress;
+            if !matches!(
+                address,
+                ResourceAddress::Task(_) | ResourceAddress::Session { .. }
+            ) {
+                record_history().await?;
+            }
             cancelled(cancellation)?;
             match address {
                 ResourceAddress::Task(id) => {

@@ -30,7 +30,7 @@ use maka_session_recap::recap::{self, Recaps};
 
 #[derive(Clone, Copy)]
 enum Purpose {
-    Recap,
+    Recap { visibility: u64 },
     Memory { attempt: u32 },
 }
 struct Backend {
@@ -48,24 +48,31 @@ impl Owner {
         self.scoped_session(scope, session).await.map_err(failed)?;
         Ok(())
     }
-    fn recaps(
+    async fn recaps(
         self: &Arc<Self>,
         scope: &Scope,
         session: String,
         generation: Option<(RecoveryRef, OperationDispatchScope, ModelSelection)>,
-    ) -> Recaps {
+    ) -> Result<Recaps, String> {
+        self.record_history_read(scope).await?;
+        let visibility = self
+            .memory_data(scope)?
+            .query(maka_agent_state::memory::reads::Visibility)
+            .await
+            .map_err(|e| e.to_string())?;
         let backend = Arc::new(Backend {
-            purpose: Purpose::Recap,
+            purpose: Purpose::Recap { visibility },
             owner: self.clone(),
             session,
             generation,
             original_resources: scope.resources.clone(),
         });
-        Recaps {
+        Ok(Recaps {
+            visibility,
             store: self.recap_storage.clone(),
             history: backend.clone(),
             models: backend,
-        }
+        })
     }
     pub async fn recap(
         self: &Arc<Self>,
@@ -75,7 +82,7 @@ impl Owner {
         self.check_recap(scope, &input.session_id)
             .await
             .map_err(|e| e.to_string())?;
-        let recaps = self.recaps(scope, input.session_id.clone(), None);
+        let recaps = self.recaps(scope, input.session_id.clone(), None).await?;
         match input.operation_id {
             Some(operation) => recaps.query(scope, &input.session_id, operation).await,
             None => recaps.read(scope, &input.session_id).await,
@@ -118,11 +125,13 @@ impl Owner {
         // The full admitted identity, including namespace and immutable input, names this cache entry.
         let hash = Sha256::digest(serde_json::to_vec(operation).map_err(|e| e.to_string())?);
         let id = Uuid::from_bytes(hash[..16].try_into().expect("SHA-256 prefix"));
-        let recaps = self.recaps(
-            scope,
-            input.session_id.clone(),
-            Some((operation.clone(), dispatch, input.model)),
-        );
+        let recaps = self
+            .recaps(
+                scope,
+                input.session_id.clone(),
+                Some((operation.clone(), dispatch, input.model)),
+            )
+            .await?;
         recaps
             .generate(scope, &input.session_id, id, language)
             .await
@@ -141,7 +150,7 @@ impl recap::History for Backend {
                 return Err(failed("Recap session mismatch"));
             }
             self.owner.check_recap(&scope, &self.session).await?;
-            let page = crate::service::history::read_page(
+            let page = crate::service::history::model_text_page(
                 &self.owner,
                 &scope,
                 history::Read {
@@ -304,7 +313,7 @@ impl Owner {
             }
             prompt.push(Message::user(input.prompt));
             let requested = input.max_output_tokens.unwrap_or(1024).min(match purpose {
-                Purpose::Recap => 1024,
+                Purpose::Recap { .. } => 1024,
                 Purpose::Memory { .. } => 8192,
             });
             self.auxiliary
@@ -326,9 +335,13 @@ impl Owner {
                     cancellation.clone(),
                     &self.store,
                     auxiliary::Admission::Operation {
+                        history_visibility: match purpose {
+                            Purpose::Recap { visibility } => Some(visibility),
+                            Purpose::Memory { .. } => None,
+                        },
                         reference: Box::new(reference),
                         attempt: match purpose {
-                            Purpose::Recap => None,
+                            Purpose::Recap { .. } => None,
                             Purpose::Memory { attempt } => std::num::NonZeroU32::new(attempt),
                         },
                         scope: Box::new(dispatch),
@@ -374,7 +387,7 @@ impl Owner {
         session: &str,
     ) -> Result<(), ToolError> {
         match purpose {
-            Purpose::Recap => self.check_recap(scope, session).await,
+            Purpose::Recap { .. } => self.check_recap(scope, session).await,
             Purpose::Memory { .. } => {
                 if self.stop.is_cancelled() || scope.cancellation.is_cancelled() {
                     return Err(failed("memory resolution cancelled"));
@@ -437,4 +450,89 @@ impl Owner {
         serde_json::from_str(&generation.text)
             .map_err(|e| format!("invalid memory semantic response: {e}"))
     }
+}
+
+// Recaps contain only bounded in-memory text. Reopening has no upload or file
+// lease, but every physical attempt must still authorize the original projection.
+struct RecapText(maka_model::prompt::Prompt);
+impl maka_capabilities::http::UploadCleanup for RecapText {
+    fn close(&self) -> BoxFuture<'_, Result<(), maka_capabilities::http::Error>> {
+        Box::pin(std::future::ready(Ok(())))
+    }
+}
+struct RecapInput {
+    text: Arc<RecapText>,
+    data: maka_event_log::root_store::DataWriter,
+    revision: u64,
+    failure: std::sync::OnceLock<maka_model::ModelError>,
+}
+impl maka_agent_ports::model::FrozenPrompt for RecapInput {
+    fn authorize(
+        &self,
+        cancellation: CancellationToken,
+    ) -> BoxFuture<'_, Result<(), maka_model::ModelError>> {
+        Box::pin(async move {
+            if let Some(error) = self.failure.get() {
+                return Err(error.clone());
+            }
+            let current = tokio::select! {
+                biased;
+                _ = cancellation.cancelled() => return Err(maka_model::ModelError::Cancelled),
+                current = self.data.query(maka_agent_state::memory::reads::Visibility) => current,
+            };
+            let reason = match current {
+                Ok(current) if current == self.revision => return Ok(()),
+                Ok(_) => "recap history visibility changed; generate a new recap".to_owned(),
+                Err(error) => error.to_string(),
+            };
+            Err(self
+                .failure
+                .get_or_init(|| maka_model::ModelError::LocalAuthorization(reason))
+                .clone())
+        })
+    }
+    fn authorization_failure(&self) -> Option<maka_model::ModelError> {
+        self.failure.get().cloned()
+    }
+    fn open(
+        &self,
+        cancellation: CancellationToken,
+    ) -> BoxFuture<'_, Result<maka_agent_ports::model::MaterializedPrompt, maka_model::ModelError>>
+    {
+        Box::pin(async move {
+            self.authorize(cancellation).await?;
+            Ok(maka_agent_ports::model::MaterializedPrompt {
+                prompt: self.text.0.clone(),
+                cleanup: self.text.clone(),
+            })
+        })
+    }
+}
+pub(super) async fn stream(
+    models: &maka_model::ModelExecutor,
+    request: ModelRequest,
+    cancellation: CancellationToken,
+    data: maka_event_log::root_store::DataWriter,
+    revision: u64,
+) -> Result<maka_model::ModelStream, maka_model::ModelError> {
+    let binding = models.binding(&request.provider)?;
+    let text = Arc::new(RecapText(request.prompt.clone()));
+    let source = maka_agent_ports::model::RequestSource {
+        cleanup: text.clone(),
+        frozen: Arc::new(RecapInput {
+            text,
+            data,
+            revision,
+            failure: Default::default(),
+        }),
+    };
+    models
+        .stream_with_source(request, cancellation, None, binding, Some(source))
+        .await
+        .map_err(|error| match error {
+            maka_model::StreamOpeningError::Preparation(error) => error,
+            maka_model::StreamOpeningError::Cleanup(_) => {
+                unreachable!("closing in-memory recap text always succeeds")
+            }
+        })
 }

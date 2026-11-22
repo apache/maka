@@ -572,7 +572,7 @@ fn reader_kind(name: &str, aliases: &BTreeMap<String, HistoryReader>) -> History
 fn sensitive_call(kind: HistoryReader, input: Option<&serde_json::Value>) -> bool {
     match kind {
         HistoryReader::Session => true,
-        HistoryReader::Other => false,
+        HistoryReader::Other | HistoryReader::NonAgent => false,
         HistoryReader::File => input
             .and_then(|v| v.get("path")?.as_str())
             .is_some_and(maka_agent_facts::read::reads_history_resource),
@@ -823,13 +823,25 @@ mod tests {
 
     #[test]
     fn replay_and_archive_use_the_captured_history_reader() {
+        for initial in [50, 51, 52, 53] {
+            check_captured_readers(initial);
+        }
+    }
+
+    fn check_captured_readers(initial: i64) {
         let db = Connection::open_in_memory().unwrap();
         let migrations: Vec<_> = maka_event_log::ROOT_MIGRATIONS
             .iter()
             .chain(maka_agent_state::MIGRATIONS)
             .copied()
             .collect();
-        maka_event_log::migration::run(&db, &migrations).unwrap();
+        let original: Vec<_> = migrations
+            .iter()
+            .copied()
+            .filter(|m| m.version <= initial)
+            .collect();
+        maka_event_log::migration::run(&db, &original).unwrap();
+        db.execute("INSERT INTO session_control(id,fingerprint,revision,created_at,updated_at,archived,configuration) VALUES('chat','test',1,0,0,0,'{}')", []).unwrap();
         let blob = |value: &Value| {
             let bytes = serde_json::to_vec(value).unwrap();
             let digest = maka_agent_facts::artifact::content_digest(&bytes);
@@ -837,11 +849,15 @@ mod tests {
             (id, digest)
         };
         let services = [
+            ("GetRecap", "agent", "export", "recap", "json", ""),
             ("SessionRead", "web", "import", "search", "web", "other"),
             ("FindMessages", "agent", "export", "search", "json", "session"),
             ("ReadNotes", "files", "import", "read", "json", "file"),
+            ("Read", "agent", "export", "generateRecap", "json", "other"),
+            ("PeerRecap", "peer", "import", "recap", "json", ""),
+            ("UnrelatedRecap", "calendar", "import", "recap", "json", "non_agent"),
         ].map(|(name, target, kind, method, input, reader)| json!({
-            "history_reader": reader,
+            "history_reader": (!reader.is_empty()).then_some(reader),
             "selection": {"name":name,"description":name,"method":method,"target":{"kind":kind,"name":target},
                 "input":input,"result":"json","confirmation":"preapproved"}
         }));
@@ -873,6 +889,18 @@ mod tests {
                     VALUES('owner','chat',?,?,1,?,'prefix',?,0,?,?,?)",params![seq,run,kind,is_call,fact,!is_call,name]).unwrap();
             }
         }
+        maka_event_log::migration::run(&db, &migrations).unwrap();
+        // A v51 queued request may first insert its frozen selection after v53 installs.
+        db.execute("INSERT INTO agent_run_specs(run,schema_version,owner,session,spec_content_id) VALUES('queued',1,'owner','chat',?)",[spec]).unwrap();
+        assert_eq!(
+            db.query_row(
+                "SELECT kind FROM agent_memory_read_aliases WHERE run='queued' AND name='GetRecap'",
+                [],
+                |r| r.get::<_, String>(0)
+            )
+            .unwrap(),
+            "session"
+        );
         let restricted = db
             .prepare(
                 "SELECT h.tool_use_id FROM agent_memory_recall_outputs r
@@ -895,7 +923,10 @@ mod tests {
             .filter(|name| sensitive_call(reader_kind(name, &aliases), Some(&input)))
             .collect();
         replay.sort_unstable();
-        assert_eq!(replay, ["FindMessages", "ReadNotes"]);
+        assert_eq!(
+            replay,
+            ["FindMessages", "GetRecap", "PeerRecap", "Read", "ReadNotes"]
+        );
         assert_eq!(restricted, replay);
     }
 }

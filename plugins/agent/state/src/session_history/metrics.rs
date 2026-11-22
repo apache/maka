@@ -271,6 +271,7 @@ impl DiagnosticEvidence {
 
 fn mask_request_diagnostics(
     c: &Connection,
+    snapshot: Option<maka_agent_facts::history_snapshot::SnapshotId>,
     owner: &RunOwner,
     traces: &mut [ModelRequestTrace],
 ) -> Result<(), StoreError> {
@@ -278,7 +279,7 @@ fn mask_request_diagnostics(
         .iter()
         .enumerate()
         .filter_map(|(i, t)| t.finished.as_ref().map(|f| (i, f)))
-        .flat_map(|(i, f)| f.evidence.facts.iter().map(move |id| (i, *id, 0)))
+        .flat_map(|(i, f)| f.evidence.facts.iter().map(move |id| (i, *id, 0, snapshot)))
         .collect();
     if keys.is_empty() {
         return Ok(());
@@ -605,11 +606,11 @@ impl Query for ReadRequestTraces {
             }
         }
         if mask_evidence {
-            let owner = match &source {
-                HistoryDataSource::Live { history, .. } => &history.namespace.owner,
-                HistoryDataSource::Snapshot(snapshot) => snapshot.owner(),
+            let (owner, snapshot) = match &source {
+                HistoryDataSource::Live { history, .. } => (&history.namespace.owner, None),
+                HistoryDataSource::Snapshot(snapshot) => (snapshot.owner(), Some(snapshot.id())),
             };
-            mask_request_diagnostics(c, owner, &mut traces)?;
+            mask_request_diagnostics(c, snapshot, owner, &mut traces)?;
         }
         Ok(IndexedRead::Ready(ModelRequestTracePage {
             requests: traces,

@@ -139,6 +139,8 @@ struct FrozenInput {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     prompt_chunks: Vec<ContentRef>,
     layout: preparation::FrozenPromptLayout,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    memory_prefix: bool,
     covered_prefix: Option<CoveredPrefix>,
     normalization: Option<maka_model::ProviderKind>,
     wire: FrozenWire,
@@ -848,7 +850,7 @@ impl DriverModel {
                 .map(|_| maka_agent_engine::digest(&prompt.model().identity()))
                 .transpose()?;
             let covered_prefix = if purpose == ModelPurpose::Summary {
-                let covered = CoveredPrefix::capture(&prompt).await?;
+                let covered = CoveredPrefix::capture(&prompt, false).await?;
                 let instruction = self.summary_instruction(view, native_compaction, summary_options.prompt.as_deref()).await?;
                 prompt.initialize_overlays(Some(rendered), true, instruction).await?;
                 let budget = (!native_compaction).then(|| maka_agent_engine::context_input::summary_budget(model.context.as_ref()));
@@ -911,6 +913,7 @@ impl DriverModel {
                 }
             });
             let mut frozen = FrozenInput {
+                memory_prefix: !summary && view.spec.memory_projection.is_some(),
                 continuing: preflight.map(|_| self.source.accepted.clone()),
                 accepted: source.accepted.clone(),
                 adapter: adapter.source().clone(),
@@ -1001,6 +1004,7 @@ impl DriverModel {
                 max_output_tokens: request.request.max_output_tokens,
             };
             let spec = RequestSpec {
+                memory_replay: if self.history.has_memory_reads(view.run).await? { maka_agent_facts::memory::MemoryReplay::Run(view.run) } else { maka_agent_facts::memory::MemoryReplay::Shared },
                 schema_version: SCHEMA_VERSION,
                 step: StepId::new(),
                 composition,
@@ -1162,6 +1166,9 @@ impl DriverModel {
                 &self.cancellation,
             )
             .await?;
+            if !summary {
+                self.append_pinned(view, model, &mut messages).await?;
+            }
             let previous_checkpoint_id;
             let mut tail = ReplayedTail::default();
             let mut has_main_attempt = false;
@@ -1720,6 +1727,32 @@ impl DriverModel {
         Ok(prompt
             .with_frozen_transport(frozen.instructions.as_deref(), frozen.normalization.clone()))
     }
+    async fn append_pinned(
+        &self,
+        view: &RunView,
+        model: &maka_agent_engine::PreparedModel,
+        messages: &mut preparation::PromptBuilder,
+    ) -> Result<(), RunError> {
+        if let Some(reference) = &view.spec.memory_projection {
+            let memory: maka_agent_facts::memory::MemoryProjection =
+                self.decode(view.run, reference).await?;
+            memory
+                .check_window(
+                    model.context.as_ref().and_then(|c| {
+                        maka_agent_facts::context::effective_input_limit(
+                            c.model_context_window,
+                            c.context_window,
+                        )
+                    }),
+                    0,
+                )
+                .map_err(RunError::InvalidInput)?;
+            messages
+                .append(Message::user(memory.message().map_err(RunError::Json)?))
+                .await?;
+        }
+        Ok(())
+    }
     async fn append_frozen_base(
         &self,
         target: ReplayTarget<'_>,
@@ -1735,7 +1768,15 @@ impl DriverModel {
                 .recipes()
                 .ok_or_else(|| unsupported("frozen-recipe-source"))?;
             let mut cursor = source.open(0);
+            let mut memory_prefix = frozen.memory_prefix;
             while let Some(recipe) = cursor.next().await? {
+                if !matches!(
+                    recipe,
+                    maka_agent_facts::model::prompt_source::source::MessageRecipe::System { .. }
+                ) && std::mem::take(&mut memory_prefix)
+                {
+                    continue;
+                }
                 if !matches!(
                     recipe,
                     maka_agent_facts::model::prompt_source::source::MessageRecipe::System { .. }
@@ -1792,6 +1833,7 @@ impl DriverModel {
     pub(super) async fn prepare_continuation(
         &self,
         source_run: RunId,
+        memory: Option<&maka_agent_facts::memory::MemoryProjection>,
         mut system: Option<SystemPrompt>,
     ) -> Result<PreparedContinuation, RunError> {
         let reader = &self.history_reader(source_run).await?;
@@ -1835,6 +1877,11 @@ impl DriverModel {
         )
         .await?;
         if let Err(original) = async {
+            if let Some(memory) = memory {
+                messages
+                    .append(Message::user(memory.message().map_err(RunError::Json)?))
+                    .await?;
+            }
             self.inherited_messages(
                 target,
                 reader,
@@ -2039,7 +2086,15 @@ impl DriverModel {
                                     Fact::StepPrepared { step, .. } => {
                                         let request =
                                             reader.request(item.recorded.run, *step).await?;
-                                        if !request.adjudications.is_empty() {
+                                        if !request.adjudications.is_empty()
+                                            && reader
+                                                .can_replay_memory(
+                                                    request.memory_replay,
+                                                    item.recorded.run,
+                                                    self.execution.run_id,
+                                                )
+                                                .await?
+                                        {
                                             base = Some(Base::Request {
                                                 sequence: item.sequence,
                                                 run: item.recorded.run,
@@ -2049,6 +2104,16 @@ impl DriverModel {
                                         }
                                     }
                                     Fact::ContextCompacted { baseline } => {
+                                        if !self
+                                            .checkpoint_available(
+                                                reader,
+                                                item.recorded.run,
+                                                baseline,
+                                            )
+                                            .await?
+                                        {
+                                            continue;
+                                        }
                                         base = Some(Base::Compacted {
                                             id: item.recorded.id,
                                             run: item.recorded.run,
@@ -2269,11 +2334,25 @@ impl DriverModel {
                         match fact.fact {
                             Fact::StepPrepared { step, .. } => {
                                 let request = reader.request(prior.run, step).await?;
-                                if !request.adjudications.is_empty() {
+                                if !request.adjudications.is_empty()
+                                    && reader
+                                        .can_replay_memory(
+                                            request.memory_replay,
+                                            prior.run,
+                                            self.execution.run_id,
+                                        )
+                                        .await?
+                                {
                                     base = Some(Base::Request { after, request });
                                 }
                             }
                             Fact::ContextCompacted { baseline } => {
+                                if !self
+                                    .checkpoint_available(reader, prior.run, &baseline)
+                                    .await?
+                                {
+                                    continue;
+                                }
                                 base = Some(Base::Compacted {
                                     id: fact.id,
                                     baseline,
@@ -2490,7 +2569,9 @@ impl DriverModel {
                         })
                         .map(|f| f.id)
                         .collect();
-                    self.history.restricted_archives(results).await?
+                    self.history
+                        .archive_restrictions(results, reader.as_snapshot())
+                        .await?
                 } else {
                     Default::default()
                 };
