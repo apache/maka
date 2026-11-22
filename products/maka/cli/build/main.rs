@@ -19,6 +19,16 @@
 mod product;
 
 fn main() {
+    if std::env::var_os("CARGO_FEATURE_DESKTOP_TESTS").is_some()
+        && std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows")
+    {
+        // Native UI cases run on the main thread. Match NSH's engine stack reserve.
+        const STACK_BYTES: u64 = 8 << 20;
+        match std::env::var("CARGO_CFG_TARGET_ENV").as_deref() {
+            Ok("msvc") => println!("cargo:rustc-link-arg-tests=/STACK:{STACK_BYTES}"),
+            _ => println!("cargo:rustc-link-arg-tests=-Wl,--stack,{STACK_BYTES}"),
+        }
+    }
     product::bundle();
     println!("cargo:rerun-if-env-changed=MAKA_NATIVE_PACKAGE_VERSION");
     if let Ok(version) = std::env::var("MAKA_NATIVE_PACKAGE_VERSION") {
