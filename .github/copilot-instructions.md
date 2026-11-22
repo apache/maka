@@ -19,4 +19,4 @@
 
 # Pull Request Review
 
-Follow [.github/skills/code-review/SKILL.md](skills/code-review/SKILL.md) when reviewing pull requests. Focus on concrete bugs, broken invariants, and unverified failure paths.
+Focus pull request reviews on concrete bugs, broken invariants, unverified failure paths, call authority/resource cleanup, and persisted-state upgrade migrations (locked migrations and `upgrade_compat.rs` coverage).

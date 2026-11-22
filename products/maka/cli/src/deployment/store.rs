@@ -36,6 +36,7 @@ static MIGRATIONS: &[Migration] = &[Migration {
     description: "deployment",
     sql: include_str!("../../migrations/deployment/0001_deployment.sql"),
     configure: None,
+    data: None,
 }];
 
 pub(super) enum Installation {

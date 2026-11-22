@@ -64,6 +64,8 @@ Run `just --list` to see common development recipes. Further reading: [Architect
 
 ## Distribution
 
-`@maka-agent/cli` is a thin npm wrapper that dispatches to a platform-specific native binary package built from a single verified source archive; see [packages/cli](packages/cli/README.md).
+**Apache Releases**: The latest approved release is Apache Maka `0.2.2` (incubating). The signed source archive is the official release; see the [downloads page](https://maka.apache.org/en/downloads/) and [`.github/ASF_SOURCE_RELEASE.md`](.github/ASF_SOURCE_RELEASE.md) for verification instructions.
+
+**Convenience builds**: `@maka-agent/cli` is a thin npm wrapper that dispatches to a platform-specific native binary package built from a single verified source archive; see [packages/cli](packages/cli/README.md).
 
 Apache Maka is an effort undergoing incubation at The Apache Software Foundation (ASF). See [DISCLAIMER](DISCLAIMER), [LICENSE](LICENSE), and [NOTICE](NOTICE).

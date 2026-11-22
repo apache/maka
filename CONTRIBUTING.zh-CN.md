@@ -47,7 +47,8 @@ cargo nextest run -p <crate> --lib
 
 - 子模块统一采用 `name.rs` + `name/` 目录结构。单元测试紧挨实现放置，集成测试放在 `tests/`。
 - 测试外部可观测行为与关键失败边界，不写源码字符串断言、重复夹具或硬编码 `sleep`。
-- 校验放在系统边界，内部信任类型契约；用枚举表达闭合状态机，通过 `schemars` 生成协议 schema，数据库变更走 SQLx migration。
+- 校验放在系统边界，内部信任类型契约；用枚举表达闭合状态机，通过 `schemars` 生成协议 schema。
+- 持久化数据采用向前、只追加的 `maka_event_log::migration::Migration` 演进（由 `scripts/rust/migrations.lock.json` 锁定已发布迁移）。旧表或落盘 JSON 需要改形时在迁移内通过 SQL 或 `Migration::with_data` 就地重写，不在业务代码里堆历史兼容分支，也不靠外部脚本；Recall/FTS 等派生索引允许丢弃重建。新增或改动持久化功能/格式时同步更新 `products/maka/cli/tests/upgrade_compat.rs`。
 - 业务策略留在插件内，由 Host 统一管理准入控制、能力句柄与资源回收。
 - 协议字段与界面文案解耦；新增界面文案时同步补齐 `en`、`zh-CN`、`zh-TW` 三语词条。
 - 只在真正能帮读者省时间的地方写文档。已维护的中英文指南保持语义同步，字段级细节直接链向源码或生成好的 schema。

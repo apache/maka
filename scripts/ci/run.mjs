@@ -389,6 +389,8 @@ export function executor(
         await node([script, 'check']);
     } else if (id === 'notices') {
       await node(['scripts/rust/notices.mjs', 'check-reviewed']);
+    } else if (id === 'migrations') {
+      await node(['scripts/rust/migration-lock.mjs', 'check']);
     } else {
       throw new Error(`Unknown check: ${id}`);
     }
@@ -542,7 +544,7 @@ export function executor(
 
   async function verify(id, filter, extra = []) {
     if (id === 'tooling') {
-      for (const name of ['format', 'tooling-tests', 'licenses']) await check(name);
+      for (const name of ['format', 'tooling-tests', 'licenses', 'migrations']) await check(name);
     } else if (id === 'windows-ci') {
       await node(['--test', 'scripts/ci.test.mjs']);
     } else if (id === 'macos-agent-execution' || id === 'desktop') {

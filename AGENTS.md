@@ -36,6 +36,13 @@
 - 少写注释，只补充代码无法表达的关键约束、取舍或安全前提；随代码更新或删除过时注释。
 - 将 `unsafe` 限制在最小边界，说明安全依据，并封装为安全接口。
 
+## 数据持久化与升级兼容
+
+- 向前就地升级，不在业务代码里堆历史兼容分支：改表结构或落盘 JSON 形态时，通过原子迁移把老数据库直接升级到当前形态，业务读写只面向单一当前结构，不再依赖外部脚本迁移。
+- 已发布的迁移不可修改：`migrations/*.sql`（`event-log`、`agent/state`、`settings/store`、`cli/deployment`）的 SHA-384 由 `scripts/rust/migrations.lock.json` 锁定（`node scripts/ci.mjs check migrations`），只追加更高编号的新迁移；纯 SQL 难以完成的 JSON 重写使用 `Migration::with_data` 钩子，在同一 `SAVEPOINT` 事务内原子提交或回滚。
+- 区分权威事实与派生状态：`RootMarker`、事件事实/历史、Settings/Vault、Deployment、Checkpoint 和未结算 `application_operations` 必须向前迁移；Recall/FTS 等派生索引允许版本化 drop & rebuild。
+- 改动任何持久化表、落盘 JSON 或核心领域状态时，同步更新全场景升级剧本 [upgrade_compat.rs](products/maka/cli/tests/upgrade_compat.rs)。合入 `main` 后的 `compat-post-merge.yml` 与发版前的 `nightly.yml` `compat-gate` 会拿历史时间胶囊验证冷迁移、全量深读和活态续跑。
+
 ## CI 维护
 
 - 测试套件和执行入口统一维护在 [scripts/ci.mjs](scripts/ci.mjs) 及其模块中，`just` 和 workflow 复用这些定义；新增或移动套件时同步更新路由、归档资源及结果汇总。
