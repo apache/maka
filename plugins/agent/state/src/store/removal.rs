@@ -170,7 +170,6 @@ const SESSION_RELEASES: &[Step] = &[
     ),
     Step::OwnerSession("DELETE FROM agent_recall_heads WHERE owner=?1 AND session=?2"),
     Step::OwnerSession("DELETE FROM agent_recall_gaps WHERE owner=?1 AND session=?2"),
-    Step::OwnerSession("DELETE FROM agent_room_search WHERE owner=?1 AND session=?2"),
     Step::OwnerSession("DELETE FROM agent_catalog_sessions WHERE owner=?1 AND session=?2"),
     Step::OwnerSession("DELETE FROM agent_catalog_controls WHERE owner=?1 AND session=?2"),
 ];
@@ -1149,6 +1148,7 @@ mod tests {
             "agent_room_pins",
             "agent_room_reactions",
             "agent_room_search",
+            "agent_room_search_docs",
             "agent_rooms",
             "agent_session_artifact_registrations",
             "agent_standalone_cell_events",

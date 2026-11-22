@@ -71,6 +71,7 @@ import { tr } from './locale';
 import {
   extractInlineMentionIds,
   formatInlineMention,
+  formatRoomPreviewText,
   roomAuthorSession,
   roomAvatarColor,
   roomAvatarInitial,
@@ -937,8 +938,9 @@ export function RoomComposer(props: {
             <Text
               style={[{ ...captionTextStyle, color: C.secondary, flex: 1 }, { numberOfLines: 2 }]}
             >
-              {(props.message(replyTo()!) ?? replyQuote())?.content.text ||
-                tr('View replied message')}
+              {formatRoomPreviewText(
+                (props.message(replyTo()!) ?? replyQuote())?.content.text ?? '',
+              ) || tr('View replied message')}
             </Text>
             <Button
               accessibilityLabel={tr('Cancel reply')}

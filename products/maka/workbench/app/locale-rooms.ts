@@ -56,7 +56,7 @@ export const roomMessages = {
   'View replied message': ['View replied message', '查看回复的消息', '檢視回覆的訊息'],
   'Earlier messages': ['Earlier messages', '更早的消息', '較早的訊息'],
   'Newer messages': ['Newer messages', '更新的消息', '較新的訊息'],
-  'Select a room': ['Select a room', '选择一个房间', '選擇一個房間'],
+
   'Rename room': ['Rename room', '重命名房间', '重新命名房間'],
   'Pin room': ['Pin room', '置顶房间', '釘選房間'],
   'Unpin room': ['Unpin room', '取消置顶', '取消釘選'],
@@ -115,15 +115,9 @@ export const roomMessages = {
   'Delete message': ['Delete message', '撤回消息', '收回訊息'],
   Edited: ['edited', '已编辑', '已編輯'],
   'Message deleted': ['Message deleted', '消息已撤回', '訊息已收回'],
-  'Delivery queued': ['Queued', '排队中', '排隊中'],
-  'Delivery working': ['Working…', '思考中…', '思考中…'],
+  'Delivery working': ['Working…', '正在处理…', '正在處理…'],
   'Delivery waiting': ['Needs attention', '等待确认', '等待確認'],
-  'Delivery replied': ['Replied', '已回复', '已回覆'],
-  'Delivery silent': ['Finished without replying', '已完成但未发言', '已完成但未發言'],
   'Delivery failed': ['Run failed', '运行失败', '執行失敗'],
-  'Delivery stopped': ['Stopped', '已停止', '已停止'],
-  'Inspect session': ['Inspect', '查看私聊', '檢視對話'],
-  'Jump to reply': ['View reply', '查看回复', '檢視回覆'],
   'Waiting for your input': [
     '{names} waiting for your input',
     '{names} 正在等待你的确认',
@@ -132,11 +126,7 @@ export const roomMessages = {
   'Open to respond': ['Respond', '去处理', '去處理'],
   'Queue delivery': ['Queue', '任务后排队', '任務後排隊'],
   'Steer delivery': ['Steer', '实时插话', '即時插話'],
-  'No mentions notice': [
-    'No one mentioned — message will be saved as a room note',
-    '未 @ 成员，消息仅记录到房间',
-    '未 @ 成員，訊息僅記錄到房間',
-  ],
+
   'New messages available': ['New messages', '有新消息', '有新訊息'],
   'Add reaction': ['Add reaction', '添加回应', '新增回應'],
   'Set as double-click reaction': [

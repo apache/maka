@@ -691,7 +691,7 @@ impl Owner {
                 );
                 let items = matches
                     .into_iter()
-                    .map(|m| fact_to_room_post_entry(&session_id, m.message, &names))
+                    .map(|m| fact_to_room_post_entry(m.message, &names))
                     .collect();
                 Some(SessionTranscript::Room {
                     items,
@@ -747,7 +747,7 @@ impl Owner {
                 let items = page
                     .items
                     .into_iter()
-                    .map(|m| fact_to_room_post_entry(&session_id, m, &names))
+                    .map(|m| fact_to_room_post_entry(m, &names))
                     .collect();
                 Some(SessionTranscript::Room {
                     items,
@@ -977,7 +977,7 @@ impl Owner {
                 let entries: Vec<RoomPostEntry> = page
                     .items
                     .into_iter()
-                    .map(|m| fact_to_room_post_entry(session_id, m, &names))
+                    .map(|m| fact_to_room_post_entry(m, &names))
                     .collect();
 
                 let mut rendered_blocks: Vec<String> = Vec::new();
@@ -1671,7 +1671,6 @@ fn participant_name_map(members: &[RoomMember]) -> std::collections::HashMap<Str
 }
 
 fn fact_to_room_post_entry(
-    room_id: &str,
     m: FactRoomMessage,
     names: &std::collections::HashMap<String, String>,
 ) -> RoomPostEntry {
@@ -1693,11 +1692,7 @@ fn fact_to_room_post_entry(
                     session_id,
                     relative_path,
                 } => ResourceAddress::SessionAttachment {
-                    session_id: if session_id.is_empty() {
-                        room_id.to_owned()
-                    } else {
-                        session_id.clone()
-                    },
+                    session_id: session_id.clone(),
                     attachment_id: relative_path.clone(),
                 }
                 .canonical_path()

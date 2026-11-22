@@ -79,25 +79,28 @@ export function useBreathingStyle(slow = false) {
   };
 }
 
-/** Breathing fade-out highlight for jump-to-quote / pin / search navigation. */
-export function runJumpHighlight(progress: AnimatedValue): Promise<void> {
+/** Breathing fade-out highlight for jump-to-quote / pin / search navigation; returns a cancel handle. */
+export function runJumpHighlight(progress: AnimatedValue): () => void {
   if (!motionEnabled()) {
     progress.set(1);
-    return new Promise((resolve) => {
-      setTimeout(() => {
-        progress.set(0);
-        resolve();
-      }, 1400);
-    });
+    const timer = setTimeout(() => {
+      progress.set(0);
+    }, 1400);
+    return () => {
+      clearTimeout(timer);
+      progress.set(0);
+    };
   }
   progress.stop();
   progress.set(0);
-  return progress
-    .keyframes([0, 1, 0.3, 0.78, 0], {
-      duration: 1650,
-      easing: Easing.inOut(Easing.sin),
-    })
-    .then(() => undefined);
+  void progress.keyframes([0, 1, 0.3, 0.78, 0], {
+    duration: 1650,
+    easing: Easing.inOut(Easing.sin),
+  });
+  return () => {
+    progress.stop();
+    progress.set(0);
+  };
 }
 
 /** Create a clean AnimatedValue initialized at 0 for jump highlights. */

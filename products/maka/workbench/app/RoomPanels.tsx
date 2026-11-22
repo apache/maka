@@ -32,6 +32,7 @@ import { LoadingIndicator, ShimmerText } from './Loading';
 import { ModalDialog, DialogHeader, DialogFooter } from './ModalDialog';
 import { tr } from './locale';
 import {
+  formatRoomPreviewText,
   roomAvatarColor,
   roomAvatarInitial,
   roomDeliveryReasonKey,
@@ -51,6 +52,55 @@ import {
 
 type PresetSummary = Output<'agent', 'presets'>[number];
 type SearchMatch = Output<'agent', 'roomSearch'>['items'][number];
+
+/** Only mounted while a member is actively working, keeping idle rooms at 0fps. */
+function BreathingMemberRing() {
+  const pulse = useBreathingStyle(false);
+  return (
+    <View
+      accessibilityElementsHidden
+      style={[
+        {
+          position: 'absolute',
+          top: -2,
+          left: -2,
+          right: -2,
+          bottom: -2,
+          borderRadius: 13,
+          borderWidth: 1.5,
+          borderColor: C.accent,
+          pointerEvents: 'none',
+        },
+        pulse,
+      ]}
+    />
+  );
+}
+
+/** Only mounted while a member is waiting on human approval, keeping idle rooms at 0fps. */
+function BreathingWaitingDot() {
+  const pulse = useBreathingStyle(true);
+  return (
+    <View
+      accessibilityElementsHidden
+      style={[
+        {
+          position: 'absolute',
+          right: -1,
+          bottom: -1,
+          width: 8,
+          height: 8,
+          borderRadius: 4,
+          backgroundColor: C.warning,
+          borderWidth: 1.5,
+          borderColor: C.background,
+          pointerEvents: 'none',
+        },
+        pulse,
+      ]}
+    />
+  );
+}
 
 /** Single-line header controls: overlapping member avatars, overlay Pins & Search popovers, and actions menu. */
 export function RoomHeaderControls(props: {
@@ -254,7 +304,9 @@ export function RoomHeaderControls(props: {
               {(msg) => (
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
                   <Button
-                    accessibilityLabel={msg().content.text || tr('View replied message')}
+                    accessibilityLabel={
+                      formatRoomPreviewText(msg().content.text) || tr('View replied message')
+                    }
                     onPress={() => {
                       pinnedOpen.set(false);
                       props.onJump(msg().id);
@@ -270,7 +322,7 @@ export function RoomHeaderControls(props: {
                     hoverStyle={{ backgroundColor: C.surface }}
                   >
                     <Text style={[{ ...captionTextStyle, color: C.text }, { numberOfLines: 2 }]}>
-                      {msg().content.text}
+                      {formatRoomPreviewText(msg().content.text)}
                     </Text>
                   </Button>
                   <Button
@@ -441,7 +493,7 @@ function RoomSearchPopoverBody(props: {
           <Each of={results().slice(0, 8)} key={(m) => m.message.id}>
             {(match) => (
               <Button
-                accessibilityLabel={match().snippet}
+                accessibilityLabel={formatRoomPreviewText(match().snippet)}
                 onPress={() => props.onJump(match().message.id)}
                 style={{
                   flexDirection: 'row',
@@ -464,7 +516,7 @@ function RoomSearchPopoverBody(props: {
                 <Text
                   style={[{ ...captionTextStyle, color: C.text, flex: 1 }, { numberOfLines: 1 }]}
                 >
-                  {match().snippet}
+                  {formatRoomPreviewText(match().snippet)}
                 </Text>
               </Button>
             )}
@@ -488,7 +540,10 @@ export function RoomDeliveryStrip(props: {
 }) {
   const actionable = () =>
     props.states.filter(
-      (s) => s.kind === 'waiting' || s.kind === 'failed' || s.kind === 'rejected',
+      (s) =>
+        s.kind === 'waiting' ||
+        s.kind === 'failed' ||
+        (s.kind === 'rejected' && s.reason !== 'agent_room_self_mention'),
     );
 
   return (
@@ -576,8 +631,8 @@ export function RoomWorkingFooter(props: {
           flexDirection: 'row',
           alignItems: 'center',
           gap: 8,
-          paddingTop: 4,
-          paddingLeft: 4,
+          paddingTop: 6,
+          paddingLeft: 48,
         }}
       >
         <View style={{ flexDirection: 'row', alignItems: 'center' }}>

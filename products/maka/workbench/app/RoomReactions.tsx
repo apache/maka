@@ -53,7 +53,15 @@ import { ProfileAvatar } from './ProfileAvatar';
 import { tr } from './locale';
 import { roomAvatarColor, roomAvatarInitial } from './roomMessage';
 import { motionEnabled, popupMotionProps, ROOM_SPRING } from './roomMotion';
-import { C, captionTextStyle, controlFocusStyle, floatingStyle, textTooltip } from './ui';
+import {
+  C,
+  captionTextStyle,
+  controlFocusStyle,
+  floatingStyle,
+  menuRowHoverStyle,
+  menuRowStyle,
+  textTooltip,
+} from './ui';
 
 const RECENT_KEY = 'maka.room.reactions.recent';
 const DEFAULT_REACT_KEY = 'maka.room.reactions.default';
@@ -280,6 +288,7 @@ export function RoomEmojiPickerPopover(props: {
   open(): boolean;
   setOpen(open: boolean): void;
   onPick(emoji: string): void;
+  align?: 'start' | 'end';
   trigger: JSX.Element;
 }) {
   ensureReactionPrefsLoaded();
@@ -302,7 +311,7 @@ export function RoomEmojiPickerPopover(props: {
       open={props.open()}
       onOpenChange={({ open }) => props.setOpen(open)}
       placement="top"
-      align="end"
+      align={props.align ?? 'end'}
       offset={6}
       margin={10}
       popupClass={
@@ -361,7 +370,7 @@ export function RoomEmojiPickerPopover(props: {
         listStyle={{ flex: 1, marginTop: 4 }}
         rowStyle={{ paddingHorizontal: 8 }}
         groupStyle={{ paddingHorizontal: 10, paddingTop: 8, paddingBottom: 3 }}
-        itemClass="size-9 items-center justify-center rounded-md text-[20px] transition-colors duration-100 motion-reduce:transition-none hover:bg-raised active:scale-90"
+        itemClass={`size-9 items-center justify-center rounded-md text-[20px] transition-colors duration-100 motion-reduce:transition-none hover:bg-[${C.raised}] focus:bg-[${C.raised}] active:scale-90`}
         searchPrefix={<Icon name="search" size={13} color={C.muted} />}
         searchSuffix={
           <Button
@@ -473,6 +482,7 @@ export function RoomQuickReactBar(props: {
   onReply(): void;
   align?: 'left' | 'right';
 }) {
+  if (platform.idiom === 'terminal') return null;
   const choices = () => quickReactionChoices();
   return (
     <View
@@ -533,7 +543,13 @@ export function RoomQuickReactBar(props: {
               </Button>
             }
           >
-            <MenuItem onSelect={() => setDefaultDoubleClickReaction(emoji())}>
+            <MenuItem
+              accessibilityLabel={tr('Set as double-click reaction') + ' (' + emoji() + ')'}
+              onSelect={() => setDefaultDoubleClickReaction(emoji())}
+              style={{ ...menuRowStyle(), minWidth: 180 }}
+              hoverStyle={menuRowHoverStyle()}
+              focusStyle={menuRowHoverStyle()}
+            >
               <Text style={{ ...captionTextStyle, color: C.text }}>
                 {tr('Set as double-click reaction') + ' (' + emoji() + ')'}
               </Text>
@@ -548,6 +564,7 @@ export function RoomQuickReactBar(props: {
         open={props.pickerOpen}
         setOpen={props.setPickerOpen}
         onPick={props.onReact}
+        align={props.align === 'left' ? 'start' : 'end'}
         trigger={
           <Button
             accessibilityLabel={tr('Add reaction')}
@@ -646,6 +663,7 @@ function MiniActorAvatar(props: {
 function RoomReactionPill(props: {
   reaction(): AgentRoomReaction;
   burstTick(): number;
+  onBurstDone?(): void;
   name(id: string): string;
   onToggle(emoji: string): void;
   onOpenAgent(id: string): void;
@@ -658,7 +676,8 @@ function RoomReactionPill(props: {
   const burstId = signal(0);
   let prevMine = mine();
   let prevCount = count();
-  let prevBurstTick = props.burstTick();
+  // Initialize at 0 so a brand-new 0->1 reaction triggered by this client plays its pop + burst on mount.
+  let prevBurstTick = 0;
 
   const playPop = (withBurst: boolean) => {
     if (!motionEnabled()) return;
@@ -673,24 +692,25 @@ function RoomReactionPill(props: {
 
   effect(() => {
     const tick = props.burstTick();
-    if (tick !== prevBurstTick) {
+    if (tick > prevBurstTick) {
       prevBurstTick = tick;
       playPop(true);
+    } else if (tick === 0) {
+      prevBurstTick = 0;
     }
   });
 
   effect(() => {
     const nextMine = mine();
     const nextCount = count();
-    if (nextMine && !prevMine) {
-      playPop(true);
-    } else if (!nextMine && prevMine) {
+    if (!nextMine && prevMine) {
       if (motionEnabled()) {
         scale.stop();
         scale.set(0.92);
         void scale.timing(1, { duration: 110, easing: Easing.out(Easing.quad) });
       }
-    } else if (nextCount > prevCount) {
+    } else if (nextCount > prevCount && nextMine === prevMine) {
+      // Passive remote reaction from an Agent or another client: gentle spring pop without particle burst.
       playPop(false);
     }
     if (nextCount !== prevCount && nextCount >= 3 && motionEnabled()) {
@@ -715,7 +735,15 @@ function RoomReactionPill(props: {
     <View style={{ position: 'relative' }}>
       <If when={burstId() > 0 && motionEnabled()}>
         <Each of={[burstId()]} key={(id) => id}>
-          {() => <RoomReactionBurst emoji={props.reaction().emoji} onDone={() => burstId.set(0)} />}
+          {() => (
+            <RoomReactionBurst
+              emoji={props.reaction().emoji}
+              onDone={() => {
+                burstId.set(0);
+                props.onBurstDone?.();
+              }}
+            />
+          )}
         </Each>
       </If>
       <Button
@@ -872,6 +900,7 @@ function RoomReactionPill(props: {
 export function RoomReactionStrip(props: {
   reactions(): readonly AgentRoomReaction[];
   burstFor(emoji: string): number;
+  onBurstDone?(emoji: string): void;
   name(id: string): string;
   align?: 'left' | 'right';
   onToggle(emoji: string): void;
@@ -895,6 +924,7 @@ export function RoomReactionStrip(props: {
             <RoomReactionPill
               reaction={reaction}
               burstTick={() => props.burstFor(reaction().emoji)}
+              onBurstDone={() => props.onBurstDone?.(reaction().emoji)}
               name={props.name}
               onToggle={props.onToggle}
               onOpenAgent={props.onOpenAgent}
@@ -905,10 +935,16 @@ export function RoomReactionStrip(props: {
           open={pickerOpen}
           setOpen={(v) => pickerOpen.set(v)}
           onPick={props.onToggle}
+          align={props.align === 'right' ? 'end' : 'start'}
           trigger={
             <Button
               accessibilityLabel={tr('Add reaction')}
               tooltip={textTooltip(() => tr('Add reaction'))}
+              class={
+                pickerOpen() || platform.idiom === 'terminal'
+                  ? 'opacity-100'
+                  : 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100'
+              }
               style={{
                 width: 24,
                 height: 22,
@@ -916,9 +952,8 @@ export function RoomReactionStrip(props: {
                 alignItems: 'center',
                 justifyContent: 'center',
                 backgroundColor: C.surface,
-                opacity: 0.65,
               }}
-              hoverStyle={{ opacity: 1, backgroundColor: C.raised }}
+              hoverStyle={{ backgroundColor: C.raised }}
               focusStyle={controlFocusStyle()}
             >
               <Icon name="smilePlus" size={12} color={C.secondary} />

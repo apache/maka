@@ -22,8 +22,10 @@ import test from 'node:test';
 import {
   extractInlineMentionIds,
   formatInlineMention,
+  formatRoomPreviewText,
   isGroupContinuation,
   roomMentionAt,
+  roomTextNeedsMarkdown,
   stripInlineMention,
 } from '../app/roomMessage.ts';
 
@@ -101,4 +103,16 @@ test('isGroupContinuation groups same-author messages within 5 minutes and break
     isGroupContinuation(m1, make({ id: 'm6', at: baseAt + 10_000, deletedAt: baseAt + 11_000 })),
     false,
   );
+});
+
+test('formatRoomPreviewText strips session link URIs and roomTextNeedsMarkdown keeps plain prose compact', () => {
+  assert.equal(
+    formatRoomPreviewText(
+      'Please review [@Room reviewer](maka://session/s1) and [spec](https://example.com)',
+    ),
+    'Please review @Room reviewer and spec',
+  );
+  assert.equal(roomTextNeedsMarkdown('The patch is ready.'), false);
+  assert.equal(roomTextNeedsMarkdown('Please review [@Room reviewer](maka://session/s1)'), true);
+  assert.equal(roomTextNeedsMarkdown('line 1\nline 2'), true);
 });

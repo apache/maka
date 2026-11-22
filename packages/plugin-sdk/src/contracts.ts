@@ -55729,11 +55729,10 @@ export const contracts: {
                     type: 'integer',
                     format: 'uint64',
                     minimum: 0,
-                    default: 0,
                   },
                 },
                 additionalProperties: false,
-                required: ['kind', 'through'],
+                required: ['kind', 'through', 'revision'],
               },
               {
                 type: 'object',

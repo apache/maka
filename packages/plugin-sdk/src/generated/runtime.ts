@@ -4586,7 +4586,7 @@ export type AgentDeliveryPage =
   | {
       kind: 'room';
       through: number;
-      revision?: number;
+      revision: number;
     }
   | {
       kind: 'events';

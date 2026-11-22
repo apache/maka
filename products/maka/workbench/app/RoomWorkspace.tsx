@@ -187,6 +187,11 @@ function SidebarRoomGlyph(props: { members: readonly AgentRoomMember[]; pinned: 
             </View>
           )}
         </Each>
+        <If when={props.pinned}>
+          <View style={{ marginLeft: 3 }}>
+            <Icon name="pin" size={10} color={C.accent} />
+          </View>
+        </If>
       </View>
     </If>
   );
@@ -953,38 +958,40 @@ export function createRoomWorkspace(options: {
   };
 }
 
-/** Apply an optimistic human reaction toggle to a message list, preserving insertion order. */
-function applyOptimisticReaction(
+/** Apply or revert a single human reaction on a specific message without touching other rows. */
+function applyHumanReaction(
   list: readonly AgentRoomMessage[],
   messageId: string,
   emoji: string,
-): { next: AgentRoomMessage[]; added: boolean } {
-  let added = false;
-  const next = list.map((msg) => {
+  wantAdd: boolean,
+): AgentRoomMessage[] {
+  return list.map((msg) => {
     if (msg.id !== messageId) return msg;
     const current = msg.reactions ?? [];
     const idx = current.findIndex((r) => r.emoji === emoji);
-    if (idx < 0) {
-      added = true;
-      return { ...msg, reactions: [...current, { emoji, actors: [{ kind: 'human' as const }] }] };
+    if (wantAdd) {
+      if (idx < 0) {
+        return { ...msg, reactions: [...current, { emoji, actors: [{ kind: 'human' as const }] }] };
+      }
+      const entry = current[idx]!;
+      if (entry.actors.some((a) => a.kind === 'human')) return msg;
+      return {
+        ...msg,
+        reactions: current.map((r, i) =>
+          i === idx ? { ...r, actors: [...r.actors, { kind: 'human' as const }] } : r,
+        ),
+      };
     }
+    if (idx < 0) return msg;
     const entry = current[idx]!;
-    const hasHuman = entry.actors.some((a) => a.kind === 'human');
-    if (hasHuman) {
-      const remaining = entry.actors.filter((a) => a.kind !== 'human');
-      const reactions =
-        remaining.length === 0
-          ? current.filter((_, i) => i !== idx)
-          : current.map((r, i) => (i === idx ? { ...r, actors: remaining } : r));
-      return { ...msg, reactions };
-    }
-    added = true;
-    const reactions = current.map((r, i) =>
-      i === idx ? { ...r, actors: [...r.actors, { kind: 'human' as const }] } : r,
-    );
+    if (!entry.actors.some((a) => a.kind === 'human')) return msg;
+    const remaining = entry.actors.filter((a) => a.kind !== 'human');
+    const reactions =
+      remaining.length === 0
+        ? current.filter((_, i) => i !== idx)
+        : current.map((r, i) => (i === idx ? { ...r, actors: remaining } : r));
     return { ...msg, reactions };
   });
-  return { next, added };
 }
 
 export function RoomTimeline(props: {
@@ -1128,35 +1135,25 @@ export function RoomTimeline(props: {
     void props.resolveNames(ids).catch(() => {});
   };
 
-  const refresh = (): Promise<void> => {
-    if (reading) return reading;
-    reading = (async () => {
-      const current = messages();
-      const last = current.at(-1)?.id;
-      if (after() !== null) {
-        await refreshState();
-        return;
-      }
-      if (!last) {
-        publish(await read({ kind: 'tail' }), 'replace', false);
-        await refreshState();
-        return;
-      }
-      let cursor = last;
-      do {
-        const page = await read({ kind: 'after_message', messageId: cursor });
-        publish(page, 'append', true);
-        if (!page.after || !alive) break;
-        cursor = page.after;
-      } while (alive);
-      await refreshState();
-    })().finally(() => {
-      reading = null;
-    });
-    return reading;
+  const rowOffsets = new Map<string, number>();
+  let pendingScrollId: string | null = null;
+
+  const scrollToMessage = (messageId: string): boolean => {
+    const y = rowOffsets.get(messageId);
+    if (y === undefined || !scroll) return false;
+    pendingScrollId = null;
+    scroll.scrollTo({ y: Math.max(0, y - 80), animated: !reduceMotion() });
+    return true;
   };
 
-  // Re-fetch ALL loaded messages (even across multiple earlier pages) so edits/deletes/reactions never go stale.
+  const handleRowLayout = (messageId: string, y: number) => {
+    rowOffsets.set(messageId, y);
+    if (pendingScrollId === messageId) {
+      scrollToMessage(messageId);
+    }
+  };
+
+  // Re-fetch ALL loaded messages across the entire visible window so edits/deletes/reactions never go stale.
   const refreshVisibleMetadata = async () => {
     const loaded = messages();
     const first = loaded[0];
@@ -1171,7 +1168,7 @@ export function RoomTimeline(props: {
         if (page.participants?.length) props.rememberParticipants?.(page.participants);
         for (const item of page.items) updated.set(item.id, item);
       } else {
-        const maxPages = Math.min(Math.ceil(loaded.length / 48) + 1, 8);
+        const maxPages = Math.ceil(loaded.length / 48) + 2;
         let position: HistoryPosition = { kind: 'message', messageId: first.id };
         for (let i = 0; i < maxPages && alive; i++) {
           const page = await read(position);
@@ -1189,6 +1186,38 @@ export function RoomTimeline(props: {
     } catch {
       // Ignore transient refresh failures; next revision will reconcile.
     }
+  };
+
+  const refresh = (includeMetadata = false): Promise<void> => {
+    if (reading) return reading;
+    reading = (async () => {
+      const current = messages();
+      const last = current.at(-1)?.id;
+      if (after() !== null) {
+        await refreshVisibleMetadata();
+        return;
+      }
+      if (!last || current.length <= 48) {
+        publish(await read({ kind: 'tail' }), 'replace', Boolean(last));
+        await refreshState();
+        return;
+      }
+      let cursor = last;
+      do {
+        const page = await read({ kind: 'after_message', messageId: cursor });
+        publish(page, 'append', true);
+        if (!page.after || !alive) break;
+        cursor = page.after;
+      } while (alive);
+      if (includeMetadata) {
+        await refreshVisibleMetadata();
+      } else {
+        await refreshState();
+      }
+    })().finally(() => {
+      reading = null;
+    });
+    return reading;
   };
 
   const latest = async () => {
@@ -1244,8 +1273,11 @@ export function RoomTimeline(props: {
     try {
       if (!map().has(messageId)) {
         atEnd.set(false);
+        rowOffsets.clear();
+        pendingScrollId = messageId;
         publish(await read({ kind: 'around_message', messageId }), 'replace');
-        scroll?.scrollTo({ y: 0, animated: !reduceMotion() });
+      } else if (!scrollToMessage(messageId)) {
+        pendingScrollId = messageId;
       }
       flashHighlight(messageId);
     } catch (reason) {
@@ -1295,7 +1327,8 @@ export function RoomTimeline(props: {
         if (!alive) break;
         if (update === null) throw new Error(tr('Live updates ended.'));
         if (update.kind === 'room') {
-          const rev = update.revision ?? 0;
+          const rev = update.revision;
+          const revChanged = watchRevision !== null && rev !== watchRevision;
           if (update.through > through) {
             const delta = update.through - through;
             through = update.through;
@@ -1303,13 +1336,13 @@ export function RoomTimeline(props: {
             watchRevision = rev;
             if (after() !== null) {
               unseenCount.set(unseenCount() + delta);
-              await refreshState();
+              await refreshVisibleMetadata();
             } else {
-              await refresh();
+              await refresh(revChanged);
             }
           } else if (watchRevision === null) {
             watchRevision = rev;
-          } else if (rev !== watchRevision) {
+          } else if (revChanged) {
             watchRevision = rev;
             await refreshVisibleMetadata();
           }
@@ -1334,6 +1367,9 @@ export function RoomTimeline(props: {
   cleanup(() => {
     alive = false;
     if (reconnectTimer) clearTimeout(reconnectTimer);
+    rowOffsets.clear();
+    pendingScrollId = null;
+    reactionBursts.set(new Map());
     rise.stop();
     fade.stop();
     void closeStream();
@@ -1358,25 +1394,38 @@ export function RoomTimeline(props: {
     messages.set(messages().map((m) => (m.id === updated.id ? updated : m)));
   };
 
+  const clearReactionBurst = (messageId: string, emoji: string) => {
+    const key = messageId + ':' + emoji;
+    if (!reactionBursts().has(key)) return;
+    const bursts = new Map(reactionBursts());
+    bursts.delete(key);
+    reactionBursts.set(bursts);
+  };
+
   const toggleReaction = (messageId: string, emoji: string) => {
-    const snapshot = messages();
-    const { next, added } = applyOptimisticReaction(snapshot, messageId, emoji);
-    messages.set(next);
-    if (added && motionEnabled()) {
+    const target = messages().find((m) => m.id === messageId);
+    if (!target || target.deletedAt) return;
+    const hadHuman = Boolean(
+      target.reactions?.some((r) => r.emoji === emoji && r.actors.some((a) => a.kind === 'human')),
+    );
+    const wantAdd = !hadHuman;
+    if (wantAdd && motionEnabled()) {
       const key = messageId + ':' + emoji;
       const bursts = new Map(reactionBursts());
       bursts.set(key, (bursts.get(key) ?? 0) + 1);
       reactionBursts.set(bursts);
     }
+    messages.set(applyHumanReaction(messages(), messageId, emoji, wantAdd));
     void props.host
       .control('roomManage', {
         sessionId: props.sessionId,
-        action: { kind: 'react', messageId, emoji },
+        action: { kind: 'react', messageId, emoji, add: wantAdd },
       })
       .then(({ reply }) => roomResult<RoomManageOutput>(reply))
       .catch((reason) => {
         if (alive) {
-          messages.set(snapshot);
+          messages.set(applyHumanReaction(messages(), messageId, emoji, !wantAdd));
+          clearReactionBurst(messageId, emoji);
           error.set(reasonText(reason));
         }
       });
@@ -1601,6 +1650,9 @@ export function RoomTimeline(props: {
                     }
                     name={props.name}
                     burstFor={(emoji) => reactionBursts().get(message().id + ':' + emoji) ?? 0}
+                    onBurstDone={(emoji) => clearReactionBurst(message().id, emoji)}
+                    onRowLayout={handleRowLayout}
+                    onError={(reason) => error.set(reasonText(reason))}
                     onReply={(msg) => composer?.reply(msg)}
                     onJump={(id) => void focusMessage(id)}
                     onReact={toggleReaction}

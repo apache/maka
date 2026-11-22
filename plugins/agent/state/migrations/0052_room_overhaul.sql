@@ -123,9 +123,6 @@ CREATE TRIGGER agent_room_search_update AFTER UPDATE OF body_json, deleted_at ON
     DELETE FROM agent_room_search_docs
     WHERE NEW.deleted_at IS NOT NULL
       AND owner = OLD.owner AND session = OLD.session AND message = OLD.message;
-    INSERT OR IGNORE INTO agent_room_search_docs(owner, session, message)
-    SELECT NEW.owner, NEW.session, NEW.message
-    WHERE NEW.deleted_at IS NULL;
     INSERT INTO agent_room_search(rowid, body)
     SELECT d.doc_id, COALESCE(json_extract(NEW.body_json, '$.content.text'), '')
     FROM agent_room_search_docs d

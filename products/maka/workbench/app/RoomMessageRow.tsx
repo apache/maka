@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { cleanup, Clipboard, effect, signal, Text, View } from 'nsh';
+import { cleanup, Clipboard, effect, platform, signal, Text, View } from 'nsh';
 import { Button, ContextMenu, Input, MenuItem } from 'nsh/base';
 import type { AgentRoomMessage } from '../../../../packages/plugin-sdk/src/index.js';
 import { HistoryAttachments } from './Attachments';
@@ -33,15 +33,24 @@ import {
   RoomReactionStrip,
 } from './RoomReactions';
 import { tr } from './locale';
-import { roomAuthorSession, roomAvatarColor, roomAvatarInitial } from './roomMessage';
+import {
+  formatRoomPreviewText,
+  roomAuthorSession,
+  roomAvatarColor,
+  roomAvatarInitial,
+  roomTextNeedsMarkdown,
+} from './roomMessage';
 import { createJumpHighlightValue, runJumpHighlight, useLiveMessageStyle } from './roomMotion';
 import {
   C,
+  bodyTextStyle,
   captionTextStyle,
   controlFocusStyle,
   controlStyle,
   floatingStyle,
   inputTextStyle,
+  menuRowHoverStyle,
+  menuRowStyle,
   textTooltip,
 } from './ui';
 
@@ -72,6 +81,9 @@ export function RoomMessageRow(props: {
   repliedMessage(): AgentRoomMessage | undefined;
   name(id: string): string;
   burstFor(emoji: string): number;
+  onBurstDone?(emoji: string): void;
+  onRowLayout?(messageId: string, y: number): void;
+  onError?(reason: unknown): void;
   onReply(message: AgentRoomMessage): void;
   onJump(messageId: string): void;
   onReact(messageId: string, emoji: string): void;
@@ -86,19 +98,24 @@ export function RoomMessageRow(props: {
   onUserScroll(): void;
 }) {
   const pickerOpen = signal(false);
+  const editComposing = signal(false);
   const highlight = createJumpHighlightValue();
   const enterStyle = useLiveMessageStyle(props.isLive());
   let lastHighlightTick = 0;
+  let cancelHighlight: (() => void) | null = null;
 
   effect(() => {
     const tick = props.highlightTick();
     if (props.isHighlighted() && tick > 0 && tick !== lastHighlightTick) {
       lastHighlightTick = tick;
-      void runJumpHighlight(highlight);
+      cancelHighlight?.();
+      cancelHighlight = runJumpHighlight(highlight);
     }
   });
 
   cleanup(() => {
+    cancelHighlight?.();
+    cancelHighlight = null;
     highlight.stop();
   });
 
@@ -130,7 +147,8 @@ export function RoomMessageRow(props: {
         hoverStyle={{ backgroundColor: C.surface }}
       >
         <Text style={[{ ...captionTextStyle, color: C.secondary }, { numberOfLines: 1 }]}>
-          {props.repliedMessage()?.content.text || tr('View replied message')}
+          {formatRoomPreviewText(props.repliedMessage()?.content.text ?? '') ||
+            tr('View replied message')}
         </Text>
       </Button>
     </If>
@@ -142,19 +160,28 @@ export function RoomMessageRow(props: {
         <Text style={{ ...captionTextStyle, color: C.muted }}>{tr('Message deleted')}</Text>
       </If>
       <If when={!isDeleted() && props.isEditing()}>
-        <View style={{ gap: 8, minWidth: 240 }}>
+        <View style={{ gap: 8, minWidth: 260 }}>
           <Input
             autoFocus
+            multiline
+            submitBehavior="submit"
             accessibilityLabel={tr('Edit message')}
             value={props.editDraft()}
             onChange={({ value }) => props.setEditDraft(value)}
-            onSubmit={() => props.onSaveEdit()}
+            onCompositionChange={(event) => editComposing.set(event.composing)}
+            onSubmit={({ text }) => {
+              if (editComposing()) return;
+              props.setEditDraft(text);
+              props.onSaveEdit();
+            }}
             style={{
               ...inputTextStyle,
               color: C.text,
               backgroundColor: C.raised,
               borderRadius: 8,
               padding: 10,
+              minHeight: 36,
+              maxHeight: 220,
             }}
           />
           <View style={{ flexDirection: 'row', gap: 8 }}>
@@ -176,25 +203,29 @@ export function RoomMessageRow(props: {
         </View>
       </If>
       <If when={!isDeleted() && !props.isEditing() && Boolean(props.message().content.text)}>
-        {/* Scope selectable strictly to the text body so double-click on the frame triggers quick react */}
-        <View selectable>
-          <MarkdownBody
-            selectable={false}
-            row={() => ({
-              key: props.message().id + ':' + String(props.message().editedAt ?? 0),
-              messageId: props.message().id,
-              field: 'body',
-              role: isHuman() ? 'user' : 'assistant',
-              text: props.message().content.text,
-              prefix: true,
-              closedAt: props.message().at,
-            })}
-            sourceId={props.message().id}
-            sessionId={props.sessionId}
-            openLink={props.onOpenLink}
-            userScroll={props.onUserScroll}
-          />
-        </View>
+        <If
+          when={isHuman() && !roomTextNeedsMarkdown(props.message().content.text)}
+          else={
+            <MarkdownBody
+              selectable={false}
+              row={() => ({
+                key: props.message().id + ':' + String(props.message().editedAt ?? 0),
+                messageId: props.message().id,
+                field: 'body',
+                role: isHuman() ? 'user' : 'assistant',
+                text: props.message().content.text,
+                prefix: true,
+                closedAt: props.message().at,
+              })}
+              sourceId={props.message().id}
+              sessionId={props.sessionId}
+              openLink={props.onOpenLink}
+              userScroll={props.onUserScroll}
+            />
+          }
+        >
+          <Text style={{ ...bodyTextStyle, color: C.text }}>{props.message().content.text}</Text>
+        </If>
       </If>
       <If when={!isDeleted() && props.message().content.attachments.length > 0}>
         <HistoryAttachments
@@ -227,10 +258,20 @@ export function RoomMessageRow(props: {
           <Each of={quickReactionChoices()} key={(emoji) => emoji}>
             {(emoji) => (
               <MenuItem
+                accessibilityLabel={emoji()}
                 onSelect={() => {
                   recordRecentReaction(emoji());
                   props.onReact(props.message().id, emoji());
                 }}
+                style={{
+                  width: 28,
+                  height: 28,
+                  borderRadius: 6,
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                }}
+                hoverStyle={{ backgroundColor: C.surface }}
+                focusStyle={{ backgroundColor: C.surface }}
               >
                 <Text style={{ fontSize: 15 }}>{emoji()}</Text>
               </MenuItem>
@@ -238,30 +279,70 @@ export function RoomMessageRow(props: {
           </Each>
         </View>
       </If>
-      <MenuItem onSelect={() => props.onReply(props.message())}>
-        <Text style={{ color: C.text }}>{tr('Reply to message')}</Text>
+      <MenuItem
+        accessibilityLabel={tr('Reply to message')}
+        onSelect={() => props.onReply(props.message())}
+        style={{ ...menuRowStyle(), minWidth: 168 }}
+        hoverStyle={menuRowHoverStyle()}
+        focusStyle={menuRowHoverStyle()}
+      >
+        <Text style={{ ...captionTextStyle, color: C.text }}>{tr('Reply to message')}</Text>
       </MenuItem>
       <If when={!isDeleted()}>
-        <MenuItem onSelect={() => props.onTogglePin(props.message().id, !props.message().pinned)}>
-          <Text style={{ color: C.text }}>
+        <MenuItem
+          accessibilityLabel={props.message().pinned ? tr('Unpin message') : tr('Pin message')}
+          onSelect={() => props.onTogglePin(props.message().id, !props.message().pinned)}
+          style={{ ...menuRowStyle(), minWidth: 168 }}
+          hoverStyle={menuRowHoverStyle()}
+          focusStyle={menuRowHoverStyle()}
+        >
+          <Text style={{ ...captionTextStyle, color: C.text }}>
             {props.message().pinned ? tr('Unpin message') : tr('Pin message')}
           </Text>
         </MenuItem>
-        <MenuItem onSelect={() => void Clipboard.writeText(props.message().content.text)}>
-          <Text style={{ color: C.text }}>{tr('Copy message')}</Text>
+        <If when={Boolean(props.message().content.text)}>
+          <MenuItem
+            accessibilityLabel={tr('Copy message')}
+            onSelect={() =>
+              void Clipboard.writeText(props.message().content.text).catch((reason) =>
+                props.onError?.(reason),
+              )
+            }
+            style={{ ...menuRowStyle(), minWidth: 168 }}
+            hoverStyle={menuRowHoverStyle()}
+            focusStyle={menuRowHoverStyle()}
+          >
+            <Text style={{ ...captionTextStyle, color: C.text }}>{tr('Copy message')}</Text>
+          </MenuItem>
+        </If>
+        <MenuItem
+          accessibilityLabel={tr('Edit message')}
+          onSelect={() => props.onStartEdit(props.message())}
+          style={{ ...menuRowStyle(), minWidth: 168 }}
+          hoverStyle={menuRowHoverStyle()}
+          focusStyle={menuRowHoverStyle()}
+        >
+          <Text style={{ ...captionTextStyle, color: C.text }}>{tr('Edit message')}</Text>
         </MenuItem>
-        <MenuItem onSelect={() => props.onStartEdit(props.message())}>
-          <Text style={{ color: C.text }}>{tr('Edit message')}</Text>
-        </MenuItem>
-        <MenuItem onSelect={() => props.onDelete(props.message().id)}>
-          <Text style={{ color: C.danger }}>{tr('Delete message')}</Text>
+        <MenuItem
+          accessibilityLabel={tr('Delete message')}
+          onSelect={() => props.onDelete(props.message().id)}
+          style={{ ...menuRowStyle(), minWidth: 168 }}
+          hoverStyle={menuRowHoverStyle()}
+          focusStyle={menuRowHoverStyle()}
+        >
+          <Text style={{ ...captionTextStyle, color: C.danger }}>{tr('Delete message')}</Text>
         </MenuItem>
       </If>
     </>
   );
 
+  const humanCardNeedsFixedWidth = () =>
+    !isDeleted() && (props.isEditing() || roomTextNeedsMarkdown(props.message().content.text));
+
   return (
     <View
+      onLayout={({ bounds }) => props.onRowLayout?.(props.message().id, bounds.origin.y)}
       style={[
         {
           marginTop: props.isFirst()
@@ -285,6 +366,7 @@ export function RoomMessageRow(props: {
         popupStyle={floatingStyle()}
         trigger={
           <View
+            selectable
             class="group"
             onPress={handleDoubleClick}
             style={{
@@ -340,7 +422,11 @@ export function RoomMessageRow(props: {
                         }}
                       >
                         <Text
-                          class="opacity-0 group-hover:opacity-100"
+                          class={
+                            platform.idiom === 'terminal'
+                              ? undefined
+                              : 'opacity-0 group-hover:opacity-100'
+                          }
                           style={{ fontSize: 10, color: C.muted }}
                         >
                           {props.timeLabel}
@@ -407,6 +493,7 @@ export function RoomMessageRow(props: {
                       <RoomReactionStrip
                         reactions={() => props.message().reactions ?? []}
                         burstFor={props.burstFor}
+                        onBurstDone={props.onBurstDone}
                         name={props.name}
                         align="left"
                         onToggle={(emoji) => props.onReact(props.message().id, emoji)}
@@ -428,20 +515,25 @@ export function RoomMessageRow(props: {
               <View style={{ alignItems: 'flex-end', gap: 3 }}>
                 <View
                   style={{
+                    width: '100%',
                     flexDirection: 'row',
                     alignItems: 'flex-end',
                     justifyContent: 'flex-end',
                     gap: 8,
-                    maxWidth: '84%',
                   }}
                 >
                   <View
-                    class="opacity-0 group-hover:opacity-100"
+                    class={
+                      platform.idiom === 'terminal'
+                        ? undefined
+                        : 'opacity-0 group-hover:opacity-100'
+                    }
                     style={{
                       flexDirection: 'row',
                       alignItems: 'center',
                       gap: 4,
                       paddingBottom: 4,
+                      flexShrink: 0,
                     }}
                   >
                     <If when={props.message().pinned}>
@@ -454,7 +546,8 @@ export function RoomMessageRow(props: {
                   </View>
                   <View
                     style={{
-                      maxWidth: '100%',
+                      width: humanCardNeedsFixedWidth() ? '78%' : undefined,
+                      maxWidth: '78%',
                       paddingHorizontal: 15,
                       paddingVertical: 10,
                       borderRadius: 18,
@@ -472,6 +565,7 @@ export function RoomMessageRow(props: {
                   <RoomReactionStrip
                     reactions={() => props.message().reactions ?? []}
                     burstFor={props.burstFor}
+                    onBurstDone={props.onBurstDone}
                     name={props.name}
                     align="right"
                     onToggle={(emoji) => props.onReact(props.message().id, emoji)}

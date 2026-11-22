@@ -1216,7 +1216,6 @@ pub struct Part {
 pub enum DeliveryPage {
     Room {
         through: u64,
-        #[serde(default)]
         revision: u64,
     },
     Events {

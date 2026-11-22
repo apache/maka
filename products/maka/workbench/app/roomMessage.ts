@@ -107,6 +107,23 @@ export function stripInlineMention(text: string, sessionId: string): string {
   return text.replace(re, '');
 }
 
+const MARKDOWN_LINK_RE = /\[((?:\\[^\r\n]|[^\]\\\r\n])+)\]\((?:[^)\r\n]+)\)/g;
+
+/** Format raw Room message Markdown into clean single/multi-line preview prose for quotes, pins, and search snippets. */
+export function formatRoomPreviewText(text: string): string {
+  return text
+    .replace(MARKDOWN_LINK_RE, (_, label: string) => label.replace(/\\([\[\]\\])/g, '$1'))
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/** Match SkillMessage's plain-vs-markdown heuristic so plain human prose keeps its natural bubble width. */
+export function roomTextNeedsMarkdown(text: string): boolean {
+  if (!text) return false;
+  if (/[\r\n]|!\[/.test(text)) return true;
+  return /[#*_~`\[\]<>!\\&@$]|^(?: {4}|\t)|^\s*(?:[-+=]|\d+[.)])|https?:|www\./i.test(text);
+}
+
 const AVATAR_PALETTE = [
   '#4F7CAC',
   '#7A68C8',
