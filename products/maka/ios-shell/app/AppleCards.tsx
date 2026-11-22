@@ -21,7 +21,13 @@ import { signal, Text, View } from 'nsh';
 import { Input } from 'nsh/base';
 import { palette } from './theme';
 
-export type PermissionAction = 'once' | 'session' | 'always' | 'deny';
+export type PermissionAction =
+  | 'once'
+  | 'run'
+  | 'session'
+  | 'always'
+  | 'deny'
+  | 'cancel_system_permission';
 
 export type PermissionCardMode = 'permissions' | 'computer_app' | 'binary' | 'unsupported';
 
@@ -35,6 +41,8 @@ export interface PermissionCardItem {
   command: string;
   /** Original grant::Permissions object required by PermissionDecision::Allow. */
   requestedPermissions?: Record<string, unknown>;
+  /** True when the request is bound to a specific toolUseId so PermissionScope::Once is legal. */
+  canAllowOnce?: boolean;
   allowAlways?: boolean;
   unsupportedNotice?: string;
   resolved?: {
@@ -60,7 +68,7 @@ export interface QuestionCardItem {
   id: string;
   requestId?: string;
   questions: SingleQuestionItem[];
-  answered?: string[];
+  answered?: (string | null)[];
 }
 
 export interface TurnStepItem {
@@ -164,6 +172,27 @@ export function ApplePermissionCard(props: {
           >
             <Text style={{ fontSize: 12.5, color: palette().ink2 }}>{props.item().command}</Text>
           </View>
+          <If when={props.item().interactionKind === 'system_permission'}>
+            <View
+              role="button"
+              accessibilityLabel="Cancel system permission wait"
+              onPress={() => {
+                if (!props.busy?.()) props.onDecide('cancel_system_permission');
+              }}
+              style={{
+                minHeight: 40,
+                borderRadius: 20,
+                backgroundColor: palette().dangerSoft,
+                alignItems: 'center',
+                justifyContent: 'center',
+                marginTop: 4,
+              }}
+            >
+              <Text style={{ fontSize: 14, fontWeight: '600', color: palette().danger }}>
+                取消等待
+              </Text>
+            </View>
+          </If>
         </View>
       </If>
 
@@ -218,26 +247,60 @@ export function ApplePermissionCard(props: {
 
           {/* Apple iOS 26 Pill actions */}
           <View style={{ gap: 8 }}>
-            <View
-              role="button"
-              accessibilityLabel="Allow once"
-              onPress={() => {
-                if (!props.busy?.()) props.onDecide('once');
-              }}
-              style={{
-                minHeight: 44,
-                borderRadius: 22,
-                backgroundColor: palette().primaryBg,
-                alignItems: 'center',
-                justifyContent: 'center',
-              }}
-            >
-              <Text style={{ fontSize: 15, fontWeight: '600', color: palette().primaryText }}>
-                {props.item().mode === 'binary' ? '允许' : '允许本次'}
-              </Text>
-            </View>
+            <If when={props.item().mode !== 'permissions' || props.item().canAllowOnce !== false}>
+              <View
+                role="button"
+                accessibilityLabel="Allow once"
+                onPress={() => {
+                  if (!props.busy?.()) props.onDecide('once');
+                }}
+                style={{
+                  minHeight: 44,
+                  borderRadius: 22,
+                  backgroundColor: palette().primaryBg,
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                }}
+              >
+                <Text style={{ fontSize: 15, fontWeight: '600', color: palette().primaryText }}>
+                  {props.item().mode === 'binary' ? '允许' : '允许本次'}
+                </Text>
+              </View>
+            </If>
 
             <View style={{ flexDirection: 'row', gap: 8 }}>
+              <If when={props.item().mode === 'permissions'}>
+                <View
+                  role="button"
+                  accessibilityLabel="Allow for run"
+                  onPress={() => {
+                    if (!props.busy?.()) props.onDecide('run');
+                  }}
+                  style={{
+                    flex: 1,
+                    minHeight: 42,
+                    borderRadius: 21,
+                    backgroundColor:
+                      props.item().canAllowOnce === false
+                        ? palette().primaryBg
+                        : palette().surface2,
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                  }}
+                >
+                  <Text
+                    style={{
+                      fontSize: 14,
+                      fontWeight: '600',
+                      color:
+                        props.item().canAllowOnce === false ? palette().primaryText : palette().ink,
+                    }}
+                  >
+                    本轮允许
+                  </Text>
+                </View>
+              </If>
+
               <If when={props.item().mode !== 'binary'}>
                 <View
                   role="button"
@@ -292,7 +355,7 @@ const CUSTOM_OPTION_ID = '__custom__';
 export function AppleQuestionCard(props: {
   item: () => QuestionCardItem;
   busy?: () => boolean;
-  onSubmit: (answers: string[]) => void;
+  onSubmit: (answers: (string | null)[]) => void;
 }) {
   const initSelections = (): Record<string, string> => {
     const out: Record<string, string> = {};
@@ -352,7 +415,8 @@ export function AppleQuestionCard(props: {
         >
           <Text style={{ fontSize: 12.5, fontWeight: '600', color: palette().ink2 }}>✓</Text>
           <Text style={{ fontSize: 12.5, color: palette().ink3 }}>
-            {'已回答 · ' + (props.item().answered ?? []).join(' / ')}
+            {'已回答 · ' +
+              (props.item().answered ?? []).map((a) => (a === null ? '已跳过' : a)).join(' / ')}
           </Text>
         </View>
       </If>
@@ -547,33 +611,56 @@ export function AppleQuestionCard(props: {
             )}
           </Each>
 
-          {/* Primary Submit Pill */}
-          <View
-            role="button"
-            accessibilityLabel="Submit question answer"
-            onPress={() => {
-              const ans = resolvedAnswers();
-              if (ans.length > 0 && ans.every((a) => a.length > 0) && !props.busy?.()) {
-                props.onSubmit(ans);
-              }
-            }}
-            style={{
-              minHeight: 44,
-              borderRadius: 22,
-              backgroundColor: canSubmit() ? palette().primaryBg : palette().surface2,
-              alignItems: 'center',
-              justifyContent: 'center',
-            }}
-          >
-            <Text
+          {/* Primary Submit + Skip Pills */}
+          <View style={{ flexDirection: 'row', gap: 8 }}>
+            <View
+              role="button"
+              accessibilityLabel="Skip question"
+              onPress={() => {
+                if (!props.busy?.()) {
+                  props.onSubmit(props.item().questions.map(() => null));
+                }
+              }}
               style={{
-                fontSize: 15,
-                fontWeight: '600',
-                color: canSubmit() ? palette().primaryText : palette().ink3,
+                minWidth: 78,
+                minHeight: 44,
+                paddingHorizontal: 14,
+                borderRadius: 22,
+                backgroundColor: palette().surface2,
+                alignItems: 'center',
+                justifyContent: 'center',
               }}
             >
-              提交回答
-            </Text>
+              <Text style={{ fontSize: 14, fontWeight: '600', color: palette().ink2 }}>跳过</Text>
+            </View>
+            <View
+              role="button"
+              accessibilityLabel="Submit question answer"
+              onPress={() => {
+                const ans = resolvedAnswers();
+                if (ans.length > 0 && ans.every((a) => a.length > 0) && !props.busy?.()) {
+                  props.onSubmit(ans);
+                }
+              }}
+              style={{
+                flex: 1,
+                minHeight: 44,
+                borderRadius: 22,
+                backgroundColor: canSubmit() ? palette().primaryBg : palette().surface2,
+                alignItems: 'center',
+                justifyContent: 'center',
+              }}
+            >
+              <Text
+                style={{
+                  fontSize: 15,
+                  fontWeight: '600',
+                  color: canSubmit() ? palette().primaryText : palette().ink3,
+                }}
+              >
+                提交回答
+              </Text>
+            </View>
           </View>
         </View>
       </If>

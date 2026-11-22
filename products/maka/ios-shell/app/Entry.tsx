@@ -39,20 +39,27 @@ import {
   type TurnStepItem,
 } from './AppleCards';
 import {
+  agentChangeSession,
+  agentControlGoal,
   agentCreateSession,
   agentGitWorkspaceDiff,
   agentHistory,
   agentListDirectoryRoots,
+  agentListModels,
   agentListProjects,
   agentListSchedules,
   agentListSessions,
+  agentMarkRead,
   agentObserve,
   agentOpenBot,
   agentPendingInteractions,
+  agentReadGoal,
   agentReadInteraction,
   agentRespondInteraction,
+  agentSelectBackend,
   agentSend,
   agentStop,
+  agentUpdateMetadata,
   bootstrap,
   connectHost,
   disconnectHost,
@@ -68,27 +75,35 @@ import {
   setFilter,
   subscribe,
   unsubscribe,
+  type AgentBackendPreference,
   type AgentDeliveryPage,
+  type AgentGoalDetail,
+  type AgentGoalView,
   type AgentHistoryChunk,
   type AgentHistoryPage,
   type AgentInteractionRecord,
+  type AgentModelChoice,
   type AgentProject,
   type AgentRoomMessage,
   type AgentScheduledSummary,
   type AgentSession,
   type AgentSessionPage,
+  type AgentWorkspaceSelection,
   type HostStateSnapshot,
   type ParsedTicketInfo,
   type SavedHostItem,
 } from './bridge';
-import { DrawerHome } from './DrawerHome';
+import { DrawerHome, type CatalogFilterMode } from './DrawerHome';
+import { GoalBar } from './GoalBar';
 import {
   AutomationsOverlay,
   DiffOverlay,
-  NewSessionOverlay,
+  ModelPickerOverlay,
+  NewRoomOverlay,
   PairingOverlay,
   parseUnifiedWorkspacePatch,
   SettingsOverlay,
+  WorkspacePickerOverlay,
   type DiffLineItem,
 } from './Overlays';
 import {
@@ -104,8 +119,18 @@ import {
   type LiveToolPreview,
 } from './streaming';
 import { palette } from './theme';
+import { TurnRail, type TurnRailEntry } from './TurnRail';
 
-type Route = 'home' | 'chat' | 'pairing' | 'diff' | 'automations' | 'settings' | 'new_session';
+type Route =
+  | 'home'
+  | 'chat'
+  | 'pairing'
+  | 'diff'
+  | 'automations'
+  | 'settings'
+  | 'new_room'
+  | 'workspace_picker'
+  | 'model_picker';
 
 interface ChatMessage {
   id: string;
@@ -205,6 +230,7 @@ const PREVIEW_DIFF_LINES: DiffLineItem[] = [
 const PREVIEW_PERMISSION: PermissionCardItem = {
   id: 'ap-preview',
   mode: 'permissions',
+  canAllowOnce: true,
   title: '允许执行远端日志读取？',
   subtitle: '请求读取 Host 运行状态 · 仅本次生效',
   command: 'hostLogs.read({ position: { kind: "tail" } })',
@@ -224,6 +250,13 @@ const PREVIEW_QUESTION: QuestionCardItem = {
     },
   ],
 };
+
+function formatBackendPill(backend: AgentBackendPreference | null | undefined): string {
+  if (!backend) return '默认模型';
+  if (backend.kind === 'executor') return backend.selection.executor;
+  const lvl = backend.thinkingLevel ? ' · ' + backend.thinkingLevel : '';
+  return backend.modelId + lvl;
+}
 
 function toolTitleOf(tool: AgentHistoryChunk['tool']): string {
   if (!tool) return '执行工具';
@@ -379,6 +412,7 @@ function mapInteractionToCards(records: AgentInteractionRecord[]): {
         requestId: rec.requestId,
         interactionKind: 'permissions',
         mode: 'permissions',
+        canAllowOnce: req.toolUseId !== null && req.toolUseId !== undefined,
         title: '请求工作区额外权限',
         subtitle: req.request.reason + cwd,
         command: cmd,
@@ -440,8 +474,6 @@ function mapInteractionToCards(records: AgentInteractionRecord[]): {
       continue;
     }
 
-    // Unsupported interactive types (form / system_permission) must NEVER masquerade
-    // as generic permission cards or send invalid PermissionDecision answers.
     const detail =
       req.kind === 'system_permission'
         ? req.application + ': ' + req.grants.join(', ')
@@ -456,7 +488,10 @@ function mapInteractionToCards(records: AgentInteractionRecord[]): {
       title: req.kind === 'system_permission' ? '需要桌面端系统权限' : '需在桌面端完成表单',
       subtitle: '移动端暂不直接提交此类请求',
       command: detail,
-      unsupportedNotice: '此请求 (' + req.kind + ') 需在桌面端 Maka 处理',
+      unsupportedNotice:
+        req.kind === 'system_permission'
+          ? '系统授权需在桌面端完成，或在此取消等待'
+          : '此请求 (' + req.kind + ') 需在桌面端 Maka 处理',
     });
   }
   return { permissions, questions };
@@ -466,6 +501,9 @@ function buildInteractionAnswer(
   card: PermissionCardItem,
   action: PermissionAction,
 ): Record<string, unknown> | null {
+  if (action === 'cancel_system_permission' && card.interactionKind === 'system_permission') {
+    return { kind: 'system_permission_cancel' };
+  }
   if (card.mode === 'unsupported') return null;
 
   if (card.interactionKind === 'permissions') {
@@ -475,7 +513,8 @@ function buildInteractionAnswer(
     if (!card.requestedPermissions) {
       return null;
     }
-    const scope = action === 'session' || action === 'always' ? 'session' : 'once';
+    const scope =
+      action === 'session' || action === 'always' ? 'session' : action === 'run' ? 'run' : 'once';
     return {
       kind: 'permissions',
       decision: {
@@ -526,12 +565,31 @@ function App() {
   const statusBanner = signal<string | null>(null);
   const busy = signal(false);
 
-  // Real Host Agent state
+  // Host-owned Agent catalog projection
   const projects = signal<AgentProject[]>([]);
-  const sessions = signal<AgentSession[]>([]);
   const directoryRoots = signal<{ name: string; path: string }[]>([]);
+  const sessions = signal<AgentSession[]>([]);
+  const catalogFilter = signal<CatalogFilterMode>('all');
+  const catalogQuery = signal('');
+  const catalogRevision = signal<string | null>(null);
+  const catalogAfter = signal<string | null>(null);
+  const needsYouCount = signal(0);
+
+  // Active session / Draft state
   const activeSession = signal<AgentSession | null>(null);
+  const draftWorkspace = signal<{ selection: AgentWorkspaceSelection; label: string } | null>(null);
+  const draftBackend = signal<AgentBackendPreference | null>(null);
+  const creatingDraft = signal(false);
+  const headerRenaming = signal(false);
+  const headerRenameDraft = signal('');
+
+  // Model catalog picker state
+  const modelChoices = signal<AgentModelChoice[]>([]);
+  const modelsLoading = signal(false);
+
+  // Run / streaming / goal state
   const activeRunId = signal<string | null>(null);
+  const activeGoal = signal<AgentGoalDetail | null>(null);
   const streamingText = signal<string>('');
   const streamingThinking = signal<string>('');
   const streamingThinkingExpanded = signal<boolean>(true);
@@ -545,8 +603,11 @@ function App() {
   const parsedTicket = signal<ParsedTicketInfo | null>(null);
   const pairingError = signal<string | null>(null);
 
-  // Chat & interaction state
+  // Chat & history window state
   const messages = signal<ChatMessage[]>(PREVIEW_MESSAGES);
+  const historyBefore = signal<unknown | null>(null);
+  const historyThrough = signal<number | null>(null);
+  const loadingEarlier = signal(false);
   const permissions = signal<PermissionCardItem[]>([PREVIEW_PERMISSION]);
   const questions = signal<QuestionCardItem[]>([PREVIEW_QUESTION]);
   const activeReactionMsgId = signal<string | null>(null);
@@ -557,6 +618,7 @@ function App() {
   const diffTitle = signal('platform/remote-client/src/client.rs');
   const diffLines = signal<DiffLineItem[]>(PREVIEW_DIFF_LINES);
   const diffTruncatedNotice = signal<string | null>(null);
+  const activeTurnId = signal<string | null>(null);
   const burst = createBurstController();
 
   interface SubSlot {
@@ -565,23 +627,67 @@ function App() {
     ended: boolean;
     hostGen: number;
     hostEpoch: string;
+    queryGen?: number;
     sessionGen?: number;
     sessionId?: string;
   }
 
-  // Monotonic fencing generations preventing stale Host or Session async responses
-  // from overwriting newly selected Host/Session state.
+  // Monotonic fencing generations preventing stale Host, Catalog Query, or Session
+  // async responses from overwriting newer UI state.
   let hostSyncGen = 0;
+  let catalogQueryGen = 0;
+  let catalogSubReceivedForQuery = false;
+  let loadingMoreSessions = false;
   let sessionSyncGen = 0;
+  let goalWatchReceived = false;
   let streamGen = 0;
   let subOpenSeq = 0;
   let watchCursor = 0;
   let lastHostEpoch: string | null = null;
   let catalogSub: SubSlot | null = null;
   let watchSub: SubSlot | null = null;
+  let goalSub: SubSlot | null = null;
   let chatScroll: ScrollRef | null = null;
   let stickToBottom = true;
+  let lastContentHeight = 0;
+  let currentDraftKey = 'offline:draft';
+  let inFlightDraft: { key: string; text: string; quote: string | null } | null = null;
+  const sessionDrafts = new Map<string, { text: string; quote: string | null }>();
+  const turnOffsets = new Map<string, number>();
   const previewAccumulator = new LivePreviewAccumulator();
+
+  const draftKeyFor = (hostKey: string | null | undefined, sessionId: string | null | undefined) =>
+    (hostKey ?? 'offline') + ':' + (sessionId ?? 'draft');
+
+  const switchDraftPartition = (nextKey: string) => {
+    const pending = inFlightDraft;
+    inFlightDraft = null;
+    if (nextKey === currentDraftKey) {
+      if (pending !== null) {
+        if (pending.key === nextKey && composerDraft().length === 0 && quotedLine() === null) {
+          composerDraft.set(pending.text);
+          quotedLine.set(pending.quote);
+        } else if (!sessionDrafts.has(pending.key)) {
+          sessionDrafts.set(pending.key, { text: pending.text, quote: pending.quote });
+        }
+      }
+      return;
+    }
+    const text = composerDraft();
+    const quote = quotedLine();
+    if (text.length > 0 || quote !== null) {
+      sessionDrafts.set(currentDraftKey, { text, quote });
+    } else {
+      sessionDrafts.delete(currentDraftKey);
+    }
+    if (pending !== null && !sessionDrafts.has(pending.key)) {
+      sessionDrafts.set(pending.key, { text: pending.text, quote: pending.quote });
+    }
+    currentDraftKey = nextKey;
+    const restored = sessionDrafts.get(nextKey);
+    composerDraft.set(restored?.text ?? '');
+    quotedLine.set(restored?.quote ?? null);
+  };
 
   const applyLivePreview = (snap: LivePreviewSnapshot) => {
     streamGen += 1;
@@ -590,9 +696,6 @@ function App() {
     streamingTools.set(snap.tools);
     if (snap.thinking.length > 0 || snap.body.length > 0 || snap.tools.length > 0) {
       awaitingReply.set(false);
-    }
-    if (stickToBottom) {
-      chatScroll?.scrollToEnd({ animated: false });
     }
   };
 
@@ -615,12 +718,91 @@ function App() {
     }
   };
 
+  const stopGoalSubscription = () => {
+    if (goalSub) {
+      const id = goalSub.subscriptionId;
+      goalSub = null;
+      unsubscribe(id).catch(() => {});
+    }
+  };
+
   const stopCatalogSubscription = () => {
     if (catalogSub) {
       const id = catalogSub.subscriptionId;
       catalogSub = null;
       unsubscribe(id).catch(() => {});
     }
+  };
+
+  const defaultDraftWorkspace = (): { selection: AgentWorkspaceSelection; label: string } => {
+    const cur = activeSession();
+    if (cur?.workspace?.projectId && cur.workspace.path) {
+      const proj = projects().find((p) => p.reference.id === cur.workspace.projectId);
+      return {
+        selection: {
+          kind: 'project',
+          projectId: cur.workspace.projectId,
+          path: cur.workspace.path,
+        },
+        label: proj?.name ?? cur.workspace.name ?? '当前项目',
+      };
+    }
+    const firstProj = projects().find((p) => !p.archived && !!p.path);
+    if (firstProj && firstProj.path) {
+      return {
+        selection: { kind: 'project', projectId: firstProj.reference.id, path: firstProj.path },
+        label: firstProj.name,
+      };
+    }
+    const firstRoot = directoryRoots()[0];
+    if (firstRoot) {
+      return {
+        selection: { kind: 'directory', path: firstRoot.path },
+        label: firstRoot.name,
+      };
+    }
+    return { selection: { kind: 'directory', path: '~' }, label: '默认工作区' };
+  };
+
+  const upsertSessionInList = (updated: AgentSession) => {
+    const existing = sessions();
+    const idx = existing.findIndex((s) => s.id === updated.id);
+    if (idx >= 0) {
+      sessions.set(existing.map((s) => (s.id === updated.id ? updated : s)));
+    } else {
+      sessions.set([updated, ...existing]);
+    }
+    if (activeSession()?.id === updated.id) {
+      activeSession.set(updated);
+    }
+  };
+
+  const markVisibleSessionRead = (
+    sess: AgentSession,
+    mapped: ChatMessage[],
+    gen: number,
+    epoch: string,
+    sGen: number,
+  ) => {
+    if (!sess.hasUnread) return;
+    const msgId = sess.tailMessageId ?? mapped[mapped.length - 1]?.id ?? null;
+    if (
+      !msgId ||
+      msgId.startsWith('chunk-') ||
+      msgId.startsWith('optimistic-') ||
+      msgId === 'steps-tail'
+    ) {
+      return;
+    }
+    agentMarkRead(sess.id, msgId).then(
+      (res) => {
+        if (!isSessionStillCurrent(gen, epoch, sGen, sess.id)) return;
+        if (res.kind === 'observed' && res.session) {
+          upsertSessionInList(res.session);
+        }
+      },
+      () => {},
+    );
   };
 
   const loadSessionInteractions = (sessionId: string, gen: number, epoch: string, sGen: number) => {
@@ -677,7 +859,15 @@ function App() {
     agentHistory(sessionId).then(
       (page) => {
         if (!isSessionStillCurrent(gen, epoch, sGen, sessionId)) return;
-        messages.set(mapHistoryPageToMessages(page, sessions()));
+        const mapped = mapHistoryPageToMessages(page, sessions());
+        messages.set(mapped);
+        if (page.kind === 'ready') {
+          historyThrough.set(page.through ?? null);
+          historyBefore.set(page.before ?? null);
+        } else {
+          historyThrough.set(page.page?.through ?? null);
+          historyBefore.set(page.page?.before ?? null);
+        }
         if (clearStream) {
           if (streamGen === streamGenAtStart) {
             resetLivePreview();
@@ -686,8 +876,9 @@ function App() {
             if (handoff) applyLivePreview(handoff);
           }
         }
-        if (stickToBottom) {
-          chatScroll?.scrollToEnd({ animated: false });
+        const curSess = activeSession();
+        if (curSess && curSess.id === sessionId) {
+          markVisibleSessionRead(curSess, mapped, gen, epoch, sGen);
         }
       },
       (err: Error) => {
@@ -697,6 +888,43 @@ function App() {
       },
     );
     loadSessionInteractions(sessionId, gen, epoch, sGen);
+  };
+
+  const loadEarlierHistory = () => {
+    const sess = activeSession();
+    const active = hostState().active;
+    const before = historyBefore();
+    if (!sess || !active || !before || loadingEarlier()) return;
+    const gen = hostSyncGen;
+    const epoch = active.epoch;
+    const sGen = sessionSyncGen;
+    const sessionId = sess.id;
+    loadingEarlier.set(true);
+    stickToBottom = false;
+    const position =
+      sess.kind === 'room' && typeof before === 'string'
+        ? ({ kind: 'before_message', messageId: before } as const)
+        : ({ kind: 'before', cursor: before } as const);
+    agentHistory(sessionId, { through: historyThrough(), position }).then(
+      (page) => {
+        if (!isSessionStillCurrent(gen, epoch, sGen, sessionId)) return;
+        loadingEarlier.set(false);
+        const older = mapHistoryPageToMessages(page, sessions());
+        const existingIds = new Set(messages().map((m) => m.id));
+        const deduped = older.filter((m) => !existingIds.has(m.id));
+        messages.set([...deduped, ...messages()]);
+        if (page.kind === 'ready') {
+          historyBefore.set(page.before ?? null);
+        } else {
+          historyBefore.set(page.page?.before ?? null);
+        }
+      },
+      (err: Error) => {
+        if (!isSessionStillCurrent(gen, epoch, sGen, sessionId)) return;
+        loadingEarlier.set(false);
+        statusBanner.set('加载更早历史失败: ' + err.message);
+      },
+    );
   };
 
   const startWatchSubscription = (
@@ -709,8 +937,6 @@ function App() {
     stopWatchSubscription();
     subOpenSeq += 1;
     const subId = 'watch:' + sessionId + ':' + String(sGen) + ':' + String(subOpenSeq);
-    // Register the unique subscription slot synchronously BEFORE calling subscribe()
-    // so early item/ended frames arriving before Promise settlement are never dropped.
     const slot: SubSlot = {
       subscriptionId: subId,
       generation: null,
@@ -728,18 +954,14 @@ function App() {
           slot.ended ||
           !isSessionStillCurrent(gen, epoch, sGen, sessionId)
         ) {
-          if (watchSub === slot) {
-            watchSub = null;
-          }
+          if (watchSub === slot) watchSub = null;
           unsubscribe(handle.subscriptionId).catch(() => {});
           return;
         }
         slot.generation = handle.generation;
       },
       (err: Error) => {
-        if (watchSub === slot) {
-          watchSub = null;
-        }
+        if (watchSub === slot) watchSub = null;
         if (isSessionStillCurrent(gen, epoch, sGen, sessionId)) {
           statusBanner.set('实时会话订阅失败（可点右上角“同步”重试）: ' + err.message);
         }
@@ -747,46 +969,176 @@ function App() {
     );
   };
 
-  const startCatalogSubscription = (gen: number, epoch: string) => {
-    stopCatalogSubscription();
+  const applyGoalView = (view: AgentGoalView, source: 'read' | 'watch') => {
+    const incoming = view.enabled ? (view.current ?? null) : null;
+    if (source === 'watch') {
+      goalWatchReceived = true;
+      activeGoal.set(incoming);
+      return;
+    }
+    const current = activeGoal();
+    if (incoming === null) {
+      if (goalWatchReceived && current !== null) return;
+      activeGoal.set(null);
+      return;
+    }
+    if (current && current.id === incoming.id && current.revision > incoming.revision) {
+      return;
+    }
+    activeGoal.set(incoming);
+  };
+
+  const startGoalSubscription = (sessionId: string, gen: number, epoch: string, sGen: number) => {
+    stopGoalSubscription();
+    goalWatchReceived = false;
+    agentReadGoal(sessionId).then(
+      (view) => {
+        if (!isSessionStillCurrent(gen, epoch, sGen, sessionId) || goalWatchReceived) return;
+        applyGoalView(view, 'read');
+      },
+      () => {},
+    );
     subOpenSeq += 1;
-    const subId = 'catalog:' + epoch + ':' + String(gen) + ':' + String(subOpenSeq);
+    const subId = 'goal:' + sessionId + ':' + String(sGen) + ':' + String(subOpenSeq);
     const slot: SubSlot = {
       subscriptionId: subId,
       generation: null,
       ended: false,
       hostGen: gen,
       hostEpoch: epoch,
+      sessionGen: sGen,
+      sessionId,
+    };
+    goalSub = slot;
+    subscribe(subId, 'agent', 'watchGoal', { sessionId }).then(
+      (handle) => {
+        if (goalSub !== slot || slot.ended || !isSessionStillCurrent(gen, epoch, sGen, sessionId)) {
+          if (goalSub === slot) goalSub = null;
+          unsubscribe(handle.subscriptionId).catch(() => {});
+          return;
+        }
+        slot.generation = handle.generation;
+      },
+      () => {
+        if (goalSub === slot) goalSub = null;
+      },
+    );
+  };
+
+  const startCatalogSubscription = (
+    gen: number,
+    epoch: string,
+    filter: CatalogFilterMode = catalogFilter(),
+    titleQuery = catalogQuery(),
+    qGen = catalogQueryGen,
+  ) => {
+    stopCatalogSubscription();
+    subOpenSeq += 1;
+    const subId =
+      'catalog:' + epoch + ':' + String(gen) + ':' + String(qGen) + ':' + String(subOpenSeq);
+    const slot: SubSlot = {
+      subscriptionId: subId,
+      generation: null,
+      ended: false,
+      hostGen: gen,
+      hostEpoch: epoch,
+      queryGen: qGen,
     };
     catalogSub = slot;
     subscribe(subId, 'agent', 'catalog', {
       kind: null,
-      filter: 'all',
-      includeArchived: false,
+      filter,
+      includeArchived: filter === 'archived',
       rootsOnly: false,
       position: { kind: 'start' },
       scope: { kind: 'all' },
-      titleQuery: '',
+      titleQuery,
     }).then(
       (handle) => {
-        if (catalogSub !== slot || slot.ended || !isHostStillCurrent(gen, epoch)) {
-          if (catalogSub === slot) {
-            catalogSub = null;
-          }
+        if (
+          catalogSub !== slot ||
+          slot.ended ||
+          !isHostStillCurrent(gen, epoch) ||
+          qGen !== catalogQueryGen
+        ) {
+          if (catalogSub === slot) catalogSub = null;
           unsubscribe(handle.subscriptionId).catch(() => {});
           return;
         }
         slot.generation = handle.generation;
       },
       (err: Error) => {
-        if (catalogSub === slot) {
-          catalogSub = null;
-        }
-        if (isHostStillCurrent(gen, epoch)) {
+        if (catalogSub === slot) catalogSub = null;
+        if (isHostStillCurrent(gen, epoch) && qGen === catalogQueryGen) {
           statusBanner.set('会话目录订阅失败（可点“同步”重试）: ' + err.message);
         }
       },
     );
+  };
+
+  const applyCatalogPage = (page: AgentSessionPage, append = false) => {
+    const incoming = page.sessions ?? [];
+    catalogRevision.set(page.revision ?? null);
+    catalogAfter.set(page.after ?? null);
+    if (typeof page.needsYouCount === 'number') {
+      needsYouCount.set(page.needsYouCount);
+    }
+    if (append) {
+      const seen = new Set(sessions().map((s) => s.id));
+      sessions.set([...sessions(), ...incoming.filter((s) => !seen.has(s.id))]);
+    } else {
+      sessions.set(incoming);
+    }
+    const cur = activeSession();
+    if (cur) {
+      const refreshed = incoming.find((s) => s.id === cur.id);
+      if (refreshed) activeSession.set(refreshed);
+    }
+  };
+
+  const reloadCatalog = (
+    filter: CatalogFilterMode,
+    query: string,
+    gen = hostSyncGen,
+    epoch = hostState().active?.epoch ?? '',
+  ) => {
+    if (!epoch || !isHostStillCurrent(gen, epoch)) return;
+    catalogQueryGen += 1;
+    const qGen = catalogQueryGen;
+    catalogSubReceivedForQuery = false;
+    loadingMoreSessions = false;
+    agentListSessions(filter, query).then(
+      (page) => {
+        if (
+          !isHostStillCurrent(gen, epoch) ||
+          qGen !== catalogQueryGen ||
+          catalogFilter() !== filter ||
+          catalogQuery() !== query
+        ) {
+          return;
+        }
+        if (!catalogSubReceivedForQuery) {
+          applyCatalogPage(page, false);
+        }
+        if (
+          filter === 'all' &&
+          query.trim().length === 0 &&
+          route() === 'chat' &&
+          !drawerOpen() &&
+          activeSession() === null &&
+          draftWorkspace() === null &&
+          (page.sessions ?? []).length > 0
+        ) {
+          openAgentSession(page.sessions[0]);
+        }
+      },
+      (err: Error) => {
+        if (isHostStillCurrent(gen, epoch) && qGen === catalogQueryGen) {
+          statusBanner.set('读取会话列表失败: ' + err.message);
+        }
+      },
+    );
+    startCatalogSubscription(gen, epoch, filter, query, qGen);
   };
 
   const openAgentSession = (session: AgentSession) => {
@@ -798,15 +1150,26 @@ function App() {
     const sGen = sessionSyncGen;
 
     stopWatchSubscription();
+    stopGoalSubscription();
     busy.set(false);
+    creatingDraft.set(false);
+    headerRenaming.set(false);
     stickToBottom = true;
+    lastContentHeight = 0;
+    turnOffsets.clear();
+    activeTurnId.set(null);
+    draftWorkspace.set(null);
     activeSession.set(session);
+    switchDraftPartition(draftKeyFor(active.rootId, session.id));
     activeRunId.set(null);
+    activeGoal.set(null);
     watchCursor = 0;
     streamingThinkingExpanded.set(true);
     resetLivePreview();
     queuedMessages.set([]);
     messages.set([]);
+    historyBefore.set(null);
+    historyThrough.set(null);
     permissions.set([]);
     questions.set([]);
     drawerOpen.set(false);
@@ -830,7 +1193,16 @@ function App() {
     agentHistory(session.id).then(
       (page) => {
         if (!isSessionStillCurrent(gen, epoch, sGen, session.id)) return;
-        messages.set(mapHistoryPageToMessages(page, sessions()));
+        const mapped = mapHistoryPageToMessages(page, sessions());
+        messages.set(mapped);
+        if (page.kind === 'ready') {
+          historyThrough.set(page.through ?? null);
+          historyBefore.set(page.before ?? null);
+        } else {
+          historyThrough.set(page.page?.through ?? null);
+          historyBefore.set(page.page?.before ?? null);
+        }
+        markVisibleSessionRead(session, mapped, gen, epoch, sGen);
       },
       (err: Error) => {
         if (isSessionStillCurrent(gen, epoch, sGen, session.id)) {
@@ -839,21 +1211,72 @@ function App() {
       },
     );
     loadSessionInteractions(session.id, gen, epoch, sGen);
+    if (session.kind === 'agent') {
+      startGoalSubscription(session.id, gen, epoch, sGen);
+    }
+  };
+
+  const startDraft = (workspace?: { selection: AgentWorkspaceSelection; label: string }) => {
+    const active = hostState().active;
+    if (!active || !hasAgentEndpoint(active)) return;
+    // If already editing an unsubmitted draft with no explicit workspace change, focus it without wiping text.
+    if (activeSession() === null && draftWorkspace() !== null && !workspace) {
+      drawerOpen.set(false);
+      route.set('chat');
+      return;
+    }
+    sessionSyncGen += 1;
+    stopWatchSubscription();
+    stopGoalSubscription();
+    busy.set(false);
+    creatingDraft.set(false);
+    headerRenaming.set(false);
+    stickToBottom = true;
+    lastContentHeight = 0;
+    turnOffsets.clear();
+    activeTurnId.set(null);
+    activeSession.set(null);
+    activeRunId.set(null);
+    activeGoal.set(null);
+    resetLivePreview();
+    queuedMessages.set([]);
+    messages.set([]);
+    historyBefore.set(null);
+    historyThrough.set(null);
+    permissions.set([]);
+    questions.set([]);
+    draftWorkspace.set(workspace ?? defaultDraftWorkspace());
+    switchDraftPartition(draftKeyFor(active.rootId, null));
+    drawerOpen.set(false);
+    route.set('chat');
   };
 
   const syncConnectedAgentHost = (snap: HostStateSnapshot) => {
     const active = snap.active;
     if (!active) {
       hostSyncGen += 1;
+      catalogQueryGen += 1;
+      loadingMoreSessions = false;
+      goalWatchReceived = false;
       sessionSyncGen += 1;
       stopWatchSubscription();
+      stopGoalSubscription();
       stopCatalogSubscription();
+      creatingDraft.set(false);
+      busy.set(false);
+      switchDraftPartition('offline:draft');
       lastHostEpoch = null;
       projects.set([]);
       sessions.set([]);
       directoryRoots.set([]);
+      catalogRevision.set(null);
+      catalogAfter.set(null);
+      needsYouCount.set(0);
       activeSession.set(null);
+      draftWorkspace.set(null);
+      draftBackend.set(null);
       activeRunId.set(null);
+      activeGoal.set(null);
       queuedMessages.set([]);
       resetLivePreview();
       return;
@@ -861,17 +1284,31 @@ function App() {
     if (lastHostEpoch === active.epoch) return;
     lastHostEpoch = active.epoch;
     hostSyncGen += 1;
+    catalogQueryGen += 1;
+    loadingMoreSessions = false;
+    goalWatchReceived = false;
     sessionSyncGen += 1;
     const gen = hostSyncGen;
     const epoch = active.epoch;
 
     stopWatchSubscription();
+    stopGoalSubscription();
     stopCatalogSubscription();
+    creatingDraft.set(false);
+    busy.set(false);
+    switchDraftPartition(draftKeyFor(active.rootId, null));
     projects.set([]);
     sessions.set([]);
     directoryRoots.set([]);
+    catalogFilter.set('all');
+    catalogQuery.set('');
+    catalogRevision.set(null);
+    catalogAfter.set(null);
+    needsYouCount.set(0);
     activeSession.set(null);
+    draftWorkspace.set(null);
     activeRunId.set(null);
+    activeGoal.set(null);
     queuedMessages.set([]);
     resetLivePreview();
 
@@ -879,7 +1316,6 @@ function App() {
       return;
     }
 
-    // Clear offline preview placeholders as soon as a real Agent Host connects.
     messages.set([]);
     permissions.set([]);
     questions.set([]);
@@ -900,25 +1336,7 @@ function App() {
       },
       () => {},
     );
-    agentListSessions('all').then(
-      (page) => {
-        if (!isHostStillCurrent(gen, epoch)) return;
-        const list = page.sessions ?? [];
-        sessions.set(list);
-        // When already on the chat route with no session selected (e.g. right after
-        // pairing), immediately open the latest real session instead of an empty shell.
-        if (route() === 'chat' && !drawerOpen() && activeSession() === null && list.length > 0) {
-          openAgentSession(list[0]);
-        }
-      },
-      (err: Error) => {
-        if (isHostStillCurrent(gen, epoch)) {
-          statusBanner.set('读取会话列表失败: ' + err.message);
-        }
-      },
-    );
-
-    startCatalogSubscription(gen, epoch);
+    reloadCatalog('all', '', gen, epoch);
   };
 
   const runParseTicket = (rawUri?: string) => {
@@ -1033,8 +1451,6 @@ function App() {
         ) {
           needRefresh = true;
           if (fact.kind === 'part_committed' || fact.kind === 'step_ended') {
-            // Only clear live preview once empty/handoff arrives; do NOT wipe mid-stream
-            // when the user's own message commits via transcript_changed.
             if (previewAccumulator.snapshot().awaitingHistoryHandoff) {
               clearStreamOnRefresh = true;
             }
@@ -1078,6 +1494,7 @@ function App() {
       matchesSubSlot(catalogSub, payload.subscriptionId, payload.generation) &&
       catalogSub &&
       isHostStillCurrent(catalogSub.hostGen, catalogSub.hostEpoch) &&
+      catalogSub.queryGen === catalogQueryGen &&
       payload.item &&
       typeof payload.item === 'object'
     ) {
@@ -1086,8 +1503,29 @@ function App() {
       }
       const page = payload.item as Partial<AgentSessionPage>;
       if (Array.isArray(page.sessions)) {
-        sessions.set(page.sessions);
+        catalogSubReceivedForQuery = true;
+        applyCatalogPage(page as AgentSessionPage, false);
       }
+      return;
+    }
+    if (
+      matchesSubSlot(goalSub, payload.subscriptionId, payload.generation) &&
+      goalSub &&
+      goalSub.sessionGen !== undefined &&
+      goalSub.sessionId !== undefined &&
+      isSessionStillCurrent(
+        goalSub.hostGen,
+        goalSub.hostEpoch,
+        goalSub.sessionGen,
+        goalSub.sessionId,
+      ) &&
+      payload.item &&
+      typeof payload.item === 'object'
+    ) {
+      if (goalSub.generation === null) {
+        goalSub.generation = payload.generation;
+      }
+      applyGoalView(payload.item as AgentGoalView, 'watch');
       return;
     }
     if (
@@ -1120,6 +1558,10 @@ function App() {
         statusBanner.set('会话目录同步中断: ' + payload.error);
       }
     }
+    if (matchesSubSlot(goalSub, payload.subscriptionId, payload.generation) && goalSub) {
+      goalSub.ended = true;
+      goalSub = null;
+    }
     if (matchesSubSlot(watchSub, payload.subscriptionId, payload.generation) && watchSub) {
       const slot = watchSub;
       slot.ended = true;
@@ -1137,6 +1579,7 @@ function App() {
 
   cleanup(() => {
     stopWatchSubscription();
+    stopGoalSubscription();
     stopCatalogSubscription();
     offState();
     offLink();
@@ -1200,6 +1643,205 @@ function App() {
         statusBanner.set(null);
       },
       (err: Error) => statusBanner.set(err.message),
+    );
+  };
+
+  const runRenameSession = (sess: AgentSession, nextTitle: string) => {
+    const active = hostState().active;
+    if (!active) return;
+    const gen = hostSyncGen;
+    const epoch = active.epoch;
+    agentUpdateMetadata({
+      sessionId: sess.id,
+      expectedRevision: sess.revision,
+      title: nextTitle,
+      labels: sess.labels ?? [],
+    }).then(
+      (res) => {
+        if (!isHostStillCurrent(gen, epoch)) return;
+        if (res.kind === 'committed') {
+          upsertSessionInList(res.session);
+          statusBanner.set(null);
+        } else if (res.kind === 'revision_conflict') {
+          statusBanner.set('会话已被其他端修改，已刷新列表，请重试重命名');
+          reloadCatalog(catalogFilter(), catalogQuery(), gen, epoch);
+        } else {
+          statusBanner.set('重命名被拒绝: ' + JSON.stringify(res.reason));
+        }
+      },
+      (err: Error) => {
+        if (isHostStillCurrent(gen, epoch)) statusBanner.set('重命名失败: ' + err.message);
+      },
+    );
+  };
+
+  const runTogglePinSession = (sess: AgentSession) => {
+    const active = hostState().active;
+    if (!active) return;
+    const gen = hostSyncGen;
+    const epoch = active.epoch;
+    agentUpdateMetadata({
+      sessionId: sess.id,
+      expectedRevision: sess.revision,
+      title: sess.title,
+      labels: sess.labels ?? [],
+      pinned: !sess.pinned,
+    }).then(
+      (res) => {
+        if (!isHostStillCurrent(gen, epoch)) return;
+        if (res.kind === 'committed') {
+          upsertSessionInList(res.session);
+        } else if (res.kind === 'revision_conflict') {
+          statusBanner.set('会话版本变化，已刷新，请重试');
+          reloadCatalog(catalogFilter(), catalogQuery(), gen, epoch);
+        } else {
+          statusBanner.set('置顶操作失败: ' + JSON.stringify(res.reason));
+        }
+      },
+      (err: Error) => {
+        if (isHostStillCurrent(gen, epoch)) statusBanner.set('置顶失败: ' + err.message);
+      },
+    );
+  };
+
+  const runChangeSessionLifecycle = (
+    sess: AgentSession,
+    action: 'archive' | 'restore' | 'remove',
+  ) => {
+    const active = hostState().active;
+    if (!active) return;
+    const gen = hostSyncGen;
+    const epoch = active.epoch;
+    agentChangeSession(sess.id, sess.revision, action).then(
+      (res) => {
+        if (!isHostStillCurrent(gen, epoch)) return;
+        if (res.kind === 'removed') {
+          sessions.set(sessions().filter((s) => s.id !== sess.id));
+          if (activeSession()?.id === sess.id) {
+            stopWatchSubscription();
+            stopGoalSubscription();
+            activeSession.set(null);
+            activeGoal.set(null);
+            messages.set([]);
+            route.set('home');
+          }
+        } else if (res.kind === 'changed') {
+          if (
+            (action === 'archive' && catalogFilter() !== 'archived') ||
+            (action === 'restore' && catalogFilter() === 'archived')
+          ) {
+            sessions.set(sessions().filter((s) => s.id !== sess.id));
+          } else {
+            upsertSessionInList(res.session);
+          }
+        } else if (res.kind === 'revision_conflict') {
+          statusBanner.set('会话版本变化，已刷新，请重试');
+          reloadCatalog(catalogFilter(), catalogQuery(), gen, epoch);
+        } else {
+          statusBanner.set('操作被拒绝: ' + JSON.stringify(res.reason));
+        }
+      },
+      (err: Error) => {
+        if (isHostStillCurrent(gen, epoch)) statusBanner.set('会话操作失败: ' + err.message);
+      },
+    );
+  };
+
+  const runLoadModels = (query = '') => {
+    const active = hostState().active;
+    if (!active || !hasAgentEndpoint(active)) return;
+    const gen = hostSyncGen;
+    const epoch = active.epoch;
+    modelsLoading.set(true);
+    agentListModels(query).then(
+      (list) => {
+        if (!isHostStillCurrent(gen, epoch)) return;
+        modelChoices.set(list);
+        modelsLoading.set(false);
+      },
+      (err: Error) => {
+        if (!isHostStillCurrent(gen, epoch)) return;
+        modelsLoading.set(false);
+        statusBanner.set('读取模型列表失败: ' + err.message);
+      },
+    );
+  };
+
+  const runOpenModelPicker = () => {
+    route.set('model_picker');
+    runLoadModels('');
+  };
+
+  const runSelectBackend = (backend: AgentBackendPreference) => {
+    const sess = activeSession();
+    const active = hostState().active;
+    if (!sess) {
+      draftBackend.set(backend);
+      route.set('chat');
+      return;
+    }
+    if (!active) return;
+    const gen = hostSyncGen;
+    const epoch = active.epoch;
+    const sGen = sessionSyncGen;
+    const sessionId = sess.id;
+    agentSelectBackend(sessionId, backend).then(
+      (res) => {
+        if (!isSessionStillCurrent(gen, epoch, sGen, sessionId)) return;
+        if (res.kind === 'committed' && res.session) {
+          upsertSessionInList(res.session);
+          route.set('chat');
+        } else if (res.kind === 'rejected') {
+          statusBanner.set(
+            '切换模型被拒绝: ' +
+              (typeof res.reason === 'string'
+                ? res.reason
+                : JSON.stringify(res.reason ?? 'rejected')),
+          );
+        } else {
+          statusBanner.set('切换模型冲突，请重试');
+        }
+      },
+      (err: Error) => {
+        if (isSessionStillCurrent(gen, epoch, sGen, sessionId)) {
+          statusBanner.set('切换模型失败: ' + err.message);
+        }
+      },
+    );
+  };
+
+  const runGoalControl = (action: 'pause' | 'resume' | 'cancel' | 'dismiss') => {
+    const sess = activeSession();
+    const active = hostState().active;
+    const g = activeGoal();
+    if (!sess || !active || !g) return;
+    const gen = hostSyncGen;
+    const epoch = active.epoch;
+    const sGen = sessionSyncGen;
+    const sessionId = sess.id;
+    busy.set(true);
+    agentControlGoal(sessionId, g.id, g.revision, action).then(
+      (res) => {
+        if (!isSessionStillCurrent(gen, epoch, sGen, sessionId)) return;
+        busy.set(false);
+        if (res.kind === 'rejected') {
+          statusBanner.set('目标操作被拒绝: ' + res.reason);
+        } else if (res.kind === 'conflict') {
+          statusBanner.set('目标状态已更新，正在刷新');
+        }
+        agentReadGoal(sessionId).then(
+          (view) => {
+            if (!isSessionStillCurrent(gen, epoch, sGen, sessionId)) return;
+            applyGoalView(view, 'read');
+          },
+          () => {},
+        );
+      },
+      (err: Error) => {
+        if (!isSessionStillCurrent(gen, epoch, sGen, sessionId)) return;
+        busy.set(false);
+        statusBanner.set('目标操作失败: ' + err.message);
+      },
     );
   };
 
@@ -1268,16 +1910,26 @@ function App() {
       if (sess && !watchSub) {
         startWatchSubscription(sess.id, watchCursor, gen, epoch, sessionSyncGen);
       }
-      agentListSessions('all').then(
+      const qGen = catalogQueryGen;
+      const filter = catalogFilter();
+      const query = catalogQuery();
+      agentListSessions(filter, query).then(
         (page) => {
           busy.set(false);
-          if (!isHostStillCurrent(gen, epoch)) return;
-          sessions.set(page.sessions ?? []);
+          if (
+            !isHostStillCurrent(gen, epoch) ||
+            qGen !== catalogQueryGen ||
+            catalogFilter() !== filter ||
+            catalogQuery() !== query
+          ) {
+            return;
+          }
+          applyCatalogPage(page, false);
           statusBanner.set('实时同步完成 · ' + String((page.sessions ?? []).length) + ' 个会话');
         },
         (err: Error) => {
           busy.set(false);
-          if (isHostStillCurrent(gen, epoch)) {
+          if (isHostStillCurrent(gen, epoch) && qGen === catalogQueryGen) {
             statusBanner.set('同步失败: ' + err.message);
           }
         },
@@ -1414,23 +2066,35 @@ function App() {
     activeReactionMsgId.set(null);
   };
 
-  const sendMessage = () => {
-    const text = composerDraft().trim();
-    if (!text) return;
-    const quote = quotedLine();
-    const content = quote ? '> ' + quote + '\n' + text : text;
-    composerDraft.set('');
-    quotedLine.set(null);
+  const sendMessage = (overrideDelivery?: 'steer' | 'queue') => {
+    const rawText = composerDraft().trim();
+    if (!rawText || creatingDraft()) return;
+    const savedQuote = quotedLine();
+    const content = savedQuote ? '> ' + savedQuote + '\n' + rawText : rawText;
 
     const sess = activeSession();
     const active = hostState().active;
     if (active && hasAgentEndpoint(active)) {
       const gen = hostSyncGen;
       const epoch = active.epoch;
-      const delivery = defaultDelivery();
+      const delivery = overrideDelivery ?? defaultDelivery();
+      composerDraft.set('');
+      quotedLine.set(null);
+      sessionDrafts.delete(currentDraftKey);
 
-      const dispatchToSession = (targetSessionId: string, targetSGen: number) => {
-        const hadActiveRun = activeRunId() !== null;
+      const restoreFailedDraft = () => {
+        if (composerDraft().trim().length === 0) {
+          composerDraft.set(rawText);
+        }
+        if (quotedLine() === null && savedQuote !== null) {
+          quotedLine.set(savedQuote);
+        }
+      };
+
+      const dispatchToSession = (targetSession: AgentSession, targetSGen: number) => {
+        const targetSessionId = targetSession.id;
+        const isRoom = targetSession.kind === 'room';
+        const expectedRunId = delivery === 'steer' ? activeRunId() : null;
         stickToBottom = true;
         messages.set([
           ...messages(),
@@ -1441,30 +2105,35 @@ function App() {
             reactions: [],
           },
         ]);
-        awaitingReply.set(true);
-        chatScroll?.scrollToEnd({ animated: false });
-        agentSend(targetSessionId, content, delivery).then(
+        if (!isRoom) {
+          awaitingReply.set(true);
+        }
+        agentSend(targetSessionId, content, delivery, { expectedRunId }).then(
           (res) => {
             if (!isSessionStillCurrent(gen, epoch, targetSGen, targetSessionId)) return;
-            if (res.kind === 'queued') {
-              if (hadActiveRun) {
-                queuedMessages.set([...queuedMessages(), content]);
-              }
-            } else if (res.kind === 'started' && res.runId) {
+            if (res.kind === 'started' && res.runId) {
               activeRunId.set(res.runId);
+            } else if (res.kind === 'posted') {
+              awaitingReply.set(false);
             } else if (res.kind === 'rejected') {
               awaitingReply.set(false);
+              restoreFailedDraft();
               const reasonText =
                 typeof res.reason === 'string'
                   ? res.reason
                   : JSON.stringify(res.reason ?? 'unknown');
               statusBanner.set('消息被 Host 拒绝: ' + reasonText);
+            } else if (res.kind === 'not_your_worker') {
+              awaitingReply.set(false);
+              restoreFailedDraft();
+              statusBanner.set('当前会话不允许直接发送消息');
             }
             refreshSessionTranscript(targetSessionId, false, gen, epoch, targetSGen);
           },
           (err: Error) => {
             if (isSessionStillCurrent(gen, epoch, targetSGen, targetSessionId)) {
               awaitingReply.set(false);
+              restoreFailedDraft();
               statusBanner.set('发送失败: ' + err.message);
             }
           },
@@ -1472,20 +2141,54 @@ function App() {
       };
 
       if (sess) {
-        dispatchToSession(sess.id, sessionSyncGen);
+        dispatchToSession(sess, sessionSyncGen);
       } else {
-        const wsPath = directoryRoots()[0]?.path ?? '~';
-        const autoTitle = content.replace(/\s+/g, ' ').slice(0, 28) || '新会话';
-        agentCreateSession(autoTitle, 'agent', wsPath).then(
+        const ws = draftWorkspace()?.selection ?? defaultDraftWorkspace().selection;
+        const draftSGen = sessionSyncGen;
+        const draftPartitionKey = draftKeyFor(active.rootId, null);
+        const pendingEntry = { key: draftPartitionKey, text: rawText, quote: savedQuote };
+        inFlightDraft = pendingEntry;
+        const preserveUnsentDraft = () => {
+          if (inFlightDraft === pendingEntry) inFlightDraft = null;
+          if (!sessionDrafts.has(draftPartitionKey)) {
+            sessionDrafts.set(draftPartitionKey, { text: rawText, quote: savedQuote });
+          }
+        };
+        const isDraftStillCurrent = () =>
+          isHostStillCurrent(gen, epoch) &&
+          draftSGen === sessionSyncGen &&
+          activeSession() === null;
+        creatingDraft.set(true);
+        agentCreateSession({
+          title: 'New conversation',
+          kind: 'agent',
+          workspace: ws,
+          automaticTitle: true,
+          backend: draftBackend(),
+        }).then(
           (created) => {
-            if (!isHostStillCurrent(gen, epoch)) return;
-            sessions.set([created, ...sessions().filter((s) => s.id !== created.id)]);
+            if (!isHostStillCurrent(gen, epoch)) {
+              preserveUnsentDraft();
+              return;
+            }
+            upsertSessionInList(created);
+            if (!isDraftStillCurrent()) {
+              preserveUnsentDraft();
+              return;
+            }
+            if (inFlightDraft === pendingEntry) inFlightDraft = null;
+            creatingDraft.set(false);
             openAgentSession(created);
-            dispatchToSession(created.id, sessionSyncGen);
+            dispatchToSession(created, sessionSyncGen);
           },
           (err: Error) => {
-            if (isHostStillCurrent(gen, epoch)) {
-              statusBanner.set('自动创建会话失败: ' + err.message);
+            if (isDraftStillCurrent()) {
+              if (inFlightDraft === pendingEntry) inFlightDraft = null;
+              creatingDraft.set(false);
+              restoreFailedDraft();
+              statusBanner.set('创建会话失败: ' + err.message);
+            } else {
+              preserveUnsentDraft();
             }
           },
         );
@@ -1493,6 +2196,8 @@ function App() {
       return;
     }
 
+    composerDraft.set('');
+    quotedLine.set(null);
     messages.set([
       ...messages(),
       {
@@ -1511,12 +2216,16 @@ function App() {
     const label =
       action === 'deny'
         ? '已拒绝'
-        : action === 'session'
-          ? '已本会话允许'
-          : action === 'always'
-            ? '已始终允许'
-            : '已允许本次';
-    const allowed = action !== 'deny';
+        : action === 'cancel_system_permission'
+          ? '已取消等待'
+          : action === 'run'
+            ? '已本轮允许'
+            : action === 'session'
+              ? '已本会话允许'
+              : action === 'always'
+                ? '已始终允许'
+                : '已允许本次';
+    const allowed = action !== 'deny' && action !== 'cancel_system_permission';
     const sess = activeSession();
     const active = hostState().active;
 
@@ -1538,9 +2247,18 @@ function App() {
       const sessionId = sess.id;
       busy.set(true);
       agentRespondInteraction(sessionId, card.requestId, answer).then(
-        () => {
+        (res) => {
           if (!isSessionStillCurrent(gen, epoch, sGen, sessionId)) return;
           busy.set(false);
+          if (res.kind !== 'recorded') {
+            statusBanner.set(
+              '权限回复被 Host 拒绝: ' +
+                (typeof res.reason === 'string'
+                  ? res.reason
+                  : JSON.stringify(res.reason ?? 'rejected')),
+            );
+            return;
+          }
           markResolved();
           refreshSessionTranscript(sessionId, false, gen, epoch, sGen);
         },
@@ -1559,7 +2277,7 @@ function App() {
     }
   };
 
-  const submitQuestion = (card: QuestionCardItem, answers: string[]) => {
+  const submitQuestion = (card: QuestionCardItem, answers: (string | null)[]) => {
     const sess = activeSession();
     const active = hostState().active;
     const markAnswered = () => {
@@ -1576,9 +2294,18 @@ function App() {
         kind: 'question',
         answers,
       }).then(
-        () => {
+        (res) => {
           if (!isSessionStillCurrent(gen, epoch, sGen, sessionId)) return;
           busy.set(false);
+          if (res.kind !== 'recorded') {
+            statusBanner.set(
+              '问题回复被 Host 拒绝: ' +
+                (typeof res.reason === 'string'
+                  ? res.reason
+                  : JSON.stringify(res.reason ?? 'rejected')),
+            );
+            return;
+          }
           markAnswered();
           refreshSessionTranscript(sessionId, false, gen, epoch, sGen);
         },
@@ -1601,15 +2328,36 @@ function App() {
   const chatTitle = () => {
     const sess = activeSession();
     if (sess) return (sess.kind === 'room' ? '# ' : '') + sess.title;
+    if (hasAgentEndpoint(hostState().active)) return '新对话';
     return hostState().active?.hostName ?? 'Maka Bot';
   };
 
   const chatSubtitle = () => {
     const active = hostState().active;
     if (!active) return '本地预览会话';
+    if (creatingDraft()) return active.hostName + ' · 正在创建会话…';
     if (activeRunId()) return active.hostName + ' · 执行中';
-    return activeSession() ? active.hostName + ' · 实时同步' : '远端 Host 已就绪';
+    if (activeSession()) return active.hostName + ' · 实时同步';
+    if (hasAgentEndpoint(active)) return active.hostName + ' · 草稿';
+    return '远端 Host 已就绪';
   };
+
+  const turnEntries = (): TurnRailEntry[] =>
+    messages()
+      .filter((m) => m.role === 'user')
+      .map((m) => ({ id: m.id, preview: m.text }));
+
+  const jumpToTurn = (turnId: string) => {
+    const y = turnOffsets.get(turnId);
+    if (typeof y === 'number') {
+      stickToBottom = false;
+      activeTurnId.set(turnId);
+      chatScroll?.scrollTo({ y: Math.max(0, y - 12), animated: true });
+    }
+  };
+
+  const currentBackend = (): AgentBackendPreference | null =>
+    activeSession()?.backend ?? draftBackend();
 
   const topPad = () => Math.max(insets().top, 16);
   const bottomPad = () => Math.max(insets().bottom, 16);
@@ -1618,11 +2366,63 @@ function App() {
     hostState,
     projects,
     sessions,
+    catalogFilter,
+    catalogQuery,
+    needsYouCount,
+    hasMoreSessions: () => catalogAfter() !== null,
     activeSessionId: () => activeSession()?.id ?? null,
     pendingCount,
     statusBanner,
     bottomPad,
     onSelectSession: openAgentSession,
+    onStartDraft: startDraft,
+    onOpenNewRoom: () => {
+      drawerOpen.set(false);
+      route.set('new_room');
+    },
+    onCatalogFilterChange: (nextFilter: CatalogFilterMode) => {
+      catalogFilter.set(nextFilter);
+      reloadCatalog(nextFilter, catalogQuery());
+    },
+    onCatalogQueryChange: (nextQuery: string) => {
+      catalogQuery.set(nextQuery);
+      reloadCatalog(catalogFilter(), nextQuery);
+    },
+    onLoadMoreSessions: () => {
+      const active = hostState().active;
+      const rev = catalogRevision();
+      const after = catalogAfter();
+      if (!active || !rev || !after || loadingMoreSessions) return;
+      const gen = hostSyncGen;
+      const epoch = active.epoch;
+      const qGen = catalogQueryGen;
+      const filter = catalogFilter();
+      const query = catalogQuery();
+      loadingMoreSessions = true;
+      agentListSessions(filter, query, { revision: rev, cursor: after }).then(
+        (page) => {
+          if (
+            !isHostStillCurrent(gen, epoch) ||
+            qGen !== catalogQueryGen ||
+            catalogFilter() !== filter ||
+            catalogQuery() !== query
+          ) {
+            return;
+          }
+          loadingMoreSessions = false;
+          applyCatalogPage(page, true);
+        },
+        (err: Error) => {
+          if (isHostStillCurrent(gen, epoch) && qGen === catalogQueryGen) {
+            loadingMoreSessions = false;
+            statusBanner.set('加载更多失败: ' + err.message);
+          }
+        },
+      );
+    },
+    onRenameSession: runRenameSession,
+    onTogglePinSession: runTogglePinSession,
+    onChangeSessionLifecycle: runChangeSessionLifecycle,
     onOpenBot: runOpenBot,
     onOpenActiveWorkspace: () => {
       drawerOpen.set(false);
@@ -1633,10 +2433,6 @@ function App() {
     onOpenPairing: () => {
       drawerOpen.set(false);
       route.set('pairing');
-    },
-    onOpenNewSession: () => {
-      drawerOpen.set(false);
-      route.set('new_session');
     },
     onOpenAutomations: runOpenAutomations,
     onOpenSettings: () => {
@@ -1649,6 +2445,7 @@ function App() {
     <View
       style={{
         flex: 1,
+        minHeight: 0,
         backgroundColor: palette().bg,
         paddingTop: topPad(),
       }}
@@ -1658,7 +2455,8 @@ function App() {
       </If>
 
       <If when={route() === 'chat'}>
-        <View style={{ flex: 1 }}>
+        <View style={{ flex: 1, minHeight: 0 }}>
+          {/* Top Navigation Bar */}
           <View
             style={{
               flexDirection: 'row',
@@ -1686,7 +2484,18 @@ function App() {
               <Text style={{ fontSize: 17, color: palette().ink }}>☰</Text>
             </View>
 
-            <View style={{ flex: 1, alignItems: 'center', paddingHorizontal: 8 }}>
+            <View
+              role="button"
+              accessibilityLabel="Rename active session title"
+              onPress={() => {
+                const sess = activeSession();
+                if (sess && hasAgentEndpoint(hostState().active)) {
+                  headerRenameDraft.set(sess.title);
+                  headerRenaming.set(!headerRenaming());
+                }
+              }}
+              style={{ flex: 1, alignItems: 'center', paddingHorizontal: 8 }}
+            >
               <Text style={{ fontSize: 15.5, fontWeight: '600', color: palette().ink }}>
                 {chatTitle()}
               </Text>
@@ -1746,6 +2555,68 @@ function App() {
             </View>
           </View>
 
+          {/* Inline Header Session Rename Bar */}
+          <If when={headerRenaming() && activeSession() !== null}>
+            <View
+              style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                gap: 8,
+                paddingHorizontal: 14,
+                paddingVertical: 8,
+                backgroundColor: palette().surface,
+                borderBottomWidth: 1,
+                borderBottomColor: palette().line,
+              }}
+            >
+              <Input
+                accessibilityLabel="Inline rename active session input"
+                value={headerRenameDraft()}
+                onChange={({ value }: { value: string }) => headerRenameDraft.set(value)}
+                placeholder="修改会话标题…"
+                style={{
+                  flex: 1,
+                  minHeight: 34,
+                  borderRadius: 9,
+                  backgroundColor: palette().surface2,
+                  paddingHorizontal: 10,
+                  color: palette().ink,
+                  fontSize: 13.5,
+                }}
+              />
+              <View
+                role="button"
+                accessibilityLabel="Save inline session title"
+                onPress={() => {
+                  const sess = activeSession();
+                  const next = headerRenameDraft().trim();
+                  if (sess && next.length > 0) {
+                    runRenameSession(sess, next);
+                    headerRenaming.set(false);
+                  }
+                }}
+                style={{
+                  paddingHorizontal: 12,
+                  paddingVertical: 7,
+                  borderRadius: 9,
+                  backgroundColor: palette().primaryBg,
+                }}
+              >
+                <Text style={{ fontSize: 12.5, fontWeight: '600', color: palette().primaryText }}>
+                  保存
+                </Text>
+              </View>
+              <View
+                role="button"
+                accessibilityLabel="Cancel inline session rename"
+                onPress={() => headerRenaming.set(false)}
+                style={{ paddingHorizontal: 6, paddingVertical: 6 }}
+              >
+                <Text style={{ fontSize: 12.5, color: palette().ink3 }}>取消</Text>
+              </View>
+            </View>
+          </If>
+
           <If when={statusBanner() !== null}>
             <View
               style={{
@@ -1758,290 +2629,363 @@ function App() {
             </View>
           </If>
 
-          <Scroll
-            ref={(node) => {
-              chatScroll = node;
-            }}
-            style={{ flex: 1, minHeight: 0 }}
-            onScroll={(event) => {
-              stickToBottom = event.offset.y >= event.contentSize.height - event.size.height - 64;
-            }}
-            contentStyle={{ padding: 16, paddingBottom: 24 }}
-          >
-            <View
-              style={{ width: '100%', gap: 16 }}
-              onLayout={() => {
-                if (stickToBottom) chatScroll?.scrollToEnd({ animated: false });
+          {/* Scrollable Chat Viewport + Right-Edge Turn Navigation Rail */}
+          <View style={{ flex: 1, minHeight: 0, position: 'relative' }}>
+            <Scroll
+              ref={(node) => {
+                chatScroll = node;
+              }}
+              style={{ flex: 1, minHeight: 0 }}
+              onScroll={(event) => {
+                const maxY = Math.max(0, event.contentSize.height - event.size.height);
+                stickToBottom = maxY <= 8 || event.offset.y >= maxY - 36;
+                const y = event.offset.y + 40;
+                let nearest: string | null = null;
+                for (const turn of turnEntries()) {
+                  const ty = turnOffsets.get(turn.id);
+                  if (typeof ty === 'number' && ty <= y) {
+                    nearest = turn.id;
+                  }
+                }
+                if (nearest !== null && nearest !== activeTurnId()) {
+                  activeTurnId.set(nearest);
+                }
+              }}
+              contentStyle={{
+                paddingLeft: 16,
+                paddingRight: 28,
+                paddingTop: 14,
+                paddingBottom: 24,
               }}
             >
-              <If
-                when={
-                  messages().length === 0 &&
-                  streamingText().length === 0 &&
-                  streamingThinking().length === 0 &&
-                  !awaitingReply()
-                }
+              <View
+                style={{ width: '100%', gap: 16 }}
+                onLayout={({ bounds }) => {
+                  const h = bounds.size.height;
+                  if (h > lastContentHeight && stickToBottom) {
+                    chatScroll?.scrollToEnd({ animated: false });
+                  }
+                  lastContentHeight = h;
+                }}
               >
-                <View style={{ paddingVertical: 32, alignItems: 'center', gap: 6 }}>
-                  <Text style={{ fontSize: 15, fontWeight: '600', color: palette().ink }}>
-                    {chatTitle()}
-                  </Text>
-                  <Text style={{ fontSize: 13, color: palette().ink3 }}>
-                    发一条消息开始对话，Maka 会实时同步执行过程
-                  </Text>
-                </View>
-              </If>
-
-              <Each of={messages()} key={(m) => m.id}>
-                {(msg) => (
+                <If when={historyBefore() !== null}>
                   <View
+                    role="button"
+                    accessibilityLabel="Load earlier messages"
+                    onPress={loadEarlierHistory}
                     style={{
-                      alignItems: msg().role === 'user' ? 'flex-end' : 'flex-start',
-                      gap: 6,
+                      alignSelf: 'center',
+                      paddingHorizontal: 14,
+                      paddingVertical: 7,
+                      borderRadius: 14,
+                      backgroundColor: palette().surface,
+                      borderWidth: 1,
+                      borderColor: palette().line,
                     }}
                   >
-                    <If when={msg().role === 'user'}>
-                      <View
-                        role="button"
-                        accessibilityLabel={'Message ' + msg().id}
-                        onPress={() => activeReactionMsgId.set(msg().id)}
-                        style={{
-                          maxWidth: '84%',
-                          paddingHorizontal: 14,
-                          paddingVertical: 10,
-                          borderRadius: 18,
-                          backgroundColor: palette().userBubble,
-                        }}
-                      >
-                        <Text
+                    <Text style={{ fontSize: 12.5, color: palette().ink2 }}>
+                      {loadingEarlier() ? '正在加载更早消息…' : '加载更早消息'}
+                    </Text>
+                  </View>
+                </If>
+
+                <If
+                  when={
+                    messages().length === 0 &&
+                    streamingText().length === 0 &&
+                    streamingThinking().length === 0 &&
+                    !awaitingReply()
+                  }
+                >
+                  <View style={{ paddingVertical: 32, alignItems: 'center', gap: 6 }}>
+                    <Text style={{ fontSize: 15.5, fontWeight: '600', color: palette().ink }}>
+                      {chatTitle()}
+                    </Text>
+                    <Text style={{ fontSize: 13, color: palette().ink3 }}>
+                      {activeSession() === null && hasAgentEndpoint(hostState().active)
+                        ? '直接发第一条消息即可自动创建会话并生成标题'
+                        : '发一条消息开始对话，Maka 会实时同步执行过程'}
+                    </Text>
+                  </View>
+                </If>
+
+                <Each of={messages()} key={(m) => m.id}>
+                  {(msg) => (
+                    <View
+                      onLayout={({ bounds }) => {
+                        if (msg().role === 'user') {
+                          turnOffsets.set(msg().id, bounds.origin.y);
+                        }
+                      }}
+                      style={{
+                        alignItems: msg().role === 'user' ? 'flex-end' : 'flex-start',
+                        gap: 6,
+                      }}
+                    >
+                      <If when={msg().role === 'user'}>
+                        <View
                           style={{
-                            fontSize: 15.5,
-                            lineHeight: 22,
-                            color: palette().userBubbleText,
+                            maxWidth: '84%',
+                            paddingHorizontal: 14,
+                            paddingVertical: 10,
+                            borderRadius: 18,
+                            backgroundColor: palette().userBubble,
                           }}
                         >
-                          {msg().text}
-                        </Text>
-                      </View>
-                    </If>
-
-                    <If when={msg().role === 'agent'}>
-                      <View style={{ width: '100%', gap: 6 }}>
-                        <If when={activeSession()?.kind === 'room'}>
-                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7 }}>
-                            <View
-                              style={{
-                                width: 20,
-                                height: 20,
-                                borderRadius: 5,
-                                backgroundColor: palette().surface2,
-                                borderWidth: 1,
-                                borderColor: palette().line,
-                                alignItems: 'center',
-                                justifyContent: 'center',
-                              }}
-                            >
-                              <Text
-                                style={{ fontSize: 10, fontWeight: '700', color: palette().ink }}
-                              >
-                                A
-                              </Text>
-                            </View>
-                            <Text
-                              style={{ fontSize: 12.5, fontWeight: '600', color: palette().ink2 }}
-                            >
-                              {msg().author ?? 'Maka'}
-                            </Text>
-                          </View>
-                        </If>
-
-                        <If when={!!msg().turnSummary && (msg().steps?.length ?? 0) > 0}>
-                          <TurnPanel
-                            id={msg().id}
-                            summary={() => msg().turnSummary ?? ''}
-                            steps={() => msg().steps ?? []}
-                            onOpenDiff={(p) => runOpenDiff(p)}
-                          />
-                        </If>
-
-                        <View
-                          role="button"
-                          accessibilityLabel={'Agent message ' + msg().id}
-                          onPress={() => activeReactionMsgId.set(msg().id)}
-                          style={{ gap: 4 }}
-                        >
-                          <Text style={{ fontSize: 15.5, lineHeight: 23.5, color: palette().ink }}>
+                          <Text
+                            style={{
+                              fontSize: 15.5,
+                              lineHeight: 22,
+                              color: palette().userBubbleText,
+                            }}
+                          >
                             {msg().text}
                           </Text>
                         </View>
-                      </View>
-                    </If>
+                      </If>
 
-                    <If when={activeReactionMsgId() === msg().id}>
-                      <ReactionPickerBar
-                        onPick={(emoji) => toggleReaction(msg().id, emoji)}
-                        onDismiss={() => activeReactionMsgId.set(null)}
+                      <If when={msg().role === 'agent'}>
+                        <View style={{ width: '100%', gap: 6 }}>
+                          <If when={activeSession()?.kind === 'room'}>
+                            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7 }}>
+                              <View
+                                style={{
+                                  width: 20,
+                                  height: 20,
+                                  borderRadius: 5,
+                                  backgroundColor: palette().surface2,
+                                  borderWidth: 1,
+                                  borderColor: palette().line,
+                                  alignItems: 'center',
+                                  justifyContent: 'center',
+                                }}
+                              >
+                                <Text
+                                  style={{ fontSize: 10, fontWeight: '700', color: palette().ink }}
+                                >
+                                  A
+                                </Text>
+                              </View>
+                              <Text
+                                style={{ fontSize: 12.5, fontWeight: '600', color: palette().ink2 }}
+                              >
+                                {msg().author ?? 'Maka'}
+                              </Text>
+                            </View>
+                          </If>
+
+                          <If when={!!msg().turnSummary && (msg().steps?.length ?? 0) > 0}>
+                            <TurnPanel
+                              id={msg().id}
+                              summary={() => msg().turnSummary ?? ''}
+                              steps={() => msg().steps ?? []}
+                              onOpenDiff={(p) => runOpenDiff(p)}
+                            />
+                          </If>
+
+                          {/* Pure scrollable text without a full-body press overlay blocking pan gestures */}
+                          <Text style={{ fontSize: 15.5, lineHeight: 23.5, color: palette().ink }}>
+                            {msg().text}
+                          </Text>
+
+                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                            <View
+                              role="button"
+                              accessibilityLabel={'Agent message ' + msg().id}
+                              onPress={() =>
+                                activeReactionMsgId.set(
+                                  activeReactionMsgId() === msg().id ? null : msg().id,
+                                )
+                              }
+                              style={{
+                                paddingHorizontal: 8,
+                                paddingVertical: 3,
+                                borderRadius: 10,
+                                backgroundColor: palette().rowHover,
+                              }}
+                            >
+                              <Text style={{ fontSize: 11.5, color: palette().ink3 }}>☺</Text>
+                            </View>
+                          </View>
+                        </View>
+                      </If>
+
+                      <If when={activeReactionMsgId() === msg().id}>
+                        <ReactionPickerBar
+                          onPick={(emoji) => toggleReaction(msg().id, emoji)}
+                          onDismiss={() => activeReactionMsgId.set(null)}
+                        />
+                      </If>
+
+                      <ReactionPillsRow
+                        reactions={msg().reactions}
+                        onToggle={(emoji) => toggleReaction(msg().id, emoji)}
+                        onRetryWithNewIdea={() => {
+                          composerDraft.set('换一个更直接的思路重新处理');
+                        }}
                       />
-                    </If>
+                    </View>
+                  )}
+                </Each>
 
-                    <ReactionPillsRow
-                      reactions={msg().reactions}
-                      onToggle={(emoji) => toggleReaction(msg().id, emoji)}
-                      onRetryWithNewIdea={() => {
-                        composerDraft.set('换一个更直接的思路重新处理');
-                      }}
-                    />
-                  </View>
-                )}
-              </Each>
-
-              <If
-                when={
-                  awaitingReply() &&
-                  streamingThinking().length === 0 &&
-                  streamingText().length === 0 &&
-                  streamingTools().length === 0
-                }
-              >
-                <View
-                  style={{
-                    flexDirection: 'row',
-                    alignItems: 'center',
-                    gap: 8,
-                    paddingVertical: 4,
-                  }}
+                <If
+                  when={
+                    awaitingReply() &&
+                    streamingThinking().length === 0 &&
+                    streamingText().length === 0 &&
+                    streamingTools().length === 0
+                  }
                 >
                   <View
-                    style={{
-                      width: 7,
-                      height: 7,
-                      borderRadius: 4,
-                      backgroundColor: palette().working,
-                    }}
-                  />
-                  <Text style={{ fontSize: 13, color: palette().ink3 }}>Maka 正在思考…</Text>
-                </View>
-              </If>
-
-              <If when={streamingThinking().length > 0}>
-                <View
-                  style={{
-                    width: '100%',
-                    borderRadius: 14,
-                    backgroundColor: palette().surface,
-                    borderWidth: 1,
-                    borderColor: palette().line,
-                    paddingHorizontal: 12,
-                    paddingVertical: 10,
-                    gap: 6,
-                  }}
-                >
-                  <View
-                    role="button"
-                    accessibilityLabel="Toggle live thinking"
-                    onPress={() => streamingThinkingExpanded.set(!streamingThinkingExpanded())}
                     style={{
                       flexDirection: 'row',
                       alignItems: 'center',
-                      justifyContent: 'space-between',
+                      gap: 8,
+                      paddingVertical: 4,
                     }}
                   >
-                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7 }}>
-                      <View
-                        style={{
-                          width: 6,
-                          height: 6,
-                          borderRadius: 3,
-                          backgroundColor: palette().working,
-                        }}
-                      />
-                      <Text style={{ fontSize: 12.5, fontWeight: '600', color: palette().ink2 }}>
-                        {streamingText().length > 0 ? '思考过程' : '正在思考…'}
-                      </Text>
-                    </View>
-                    <Text style={{ fontSize: 11.5, color: palette().ink3 }}>
-                      {streamingThinkingExpanded() ? '收起 ▾' : '展开 ▸'}
-                    </Text>
+                    <View
+                      style={{
+                        width: 7,
+                        height: 7,
+                        borderRadius: 4,
+                        backgroundColor: palette().working,
+                      }}
+                    />
+                    <Text style={{ fontSize: 13, color: palette().ink3 }}>Maka 正在思考…</Text>
                   </View>
-                  <If when={streamingThinkingExpanded()}>
-                    <Text style={{ fontSize: 13, lineHeight: 19.5, color: palette().ink2 }}>
-                      {streamingThinking()}
-                    </Text>
-                  </If>
-                </View>
-              </If>
+                </If>
 
-              <Each of={streamingTools()} key={(t) => t.toolUseId}>
-                {(tool) => (
+                <If when={streamingThinking().length > 0}>
                   <View
                     style={{
                       width: '100%',
-                      borderRadius: 12,
+                      borderRadius: 14,
                       backgroundColor: palette().surface,
                       borderWidth: 1,
                       borderColor: palette().line,
                       paddingHorizontal: 12,
-                      paddingVertical: 8,
-                      gap: 3,
+                      paddingVertical: 10,
+                      gap: 6,
                     }}
                   >
-                    <Text style={{ fontSize: 12.5, fontWeight: '600', color: palette().ink2 }}>
-                      {'准备调用工具 · ' + tool().name}
-                    </Text>
-                    <If when={tool().inputPreview.length > 0}>
-                      <Text style={{ fontSize: 12, color: palette().ink3 }}>
-                        {tool().inputPreview}
+                    <View
+                      role="button"
+                      accessibilityLabel="Toggle live thinking"
+                      onPress={() => streamingThinkingExpanded.set(!streamingThinkingExpanded())}
+                      style={{
+                        flexDirection: 'row',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                      }}
+                    >
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7 }}>
+                        <View
+                          style={{
+                            width: 6,
+                            height: 6,
+                            borderRadius: 3,
+                            backgroundColor: palette().working,
+                          }}
+                        />
+                        <Text style={{ fontSize: 12.5, fontWeight: '600', color: palette().ink2 }}>
+                          {streamingText().length > 0 ? '思考过程' : '正在思考…'}
+                        </Text>
+                      </View>
+                      <Text style={{ fontSize: 11.5, color: palette().ink3 }}>
+                        {streamingThinkingExpanded() ? '收起 ▾' : '展开 ▸'}
+                      </Text>
+                    </View>
+                    <If when={streamingThinkingExpanded()}>
+                      <Text style={{ fontSize: 13, lineHeight: 19.5, color: palette().ink2 }}>
+                        {streamingThinking()}
                       </Text>
                     </If>
                   </View>
-                )}
-              </Each>
+                </If>
 
-              <If when={streamingText().length > 0}>
-                <View style={{ width: '100%', gap: 4 }}>
-                  <Text style={{ fontSize: 15.5, lineHeight: 23.5, color: palette().ink }}>
-                    {streamingText()}
-                  </Text>
-                  <If when={activeRunId() !== null}>
-                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                      <View
-                        style={{
-                          width: 6,
-                          height: 6,
-                          borderRadius: 3,
-                          backgroundColor: palette().working,
-                        }}
-                      />
-                      <Text style={{ fontSize: 11.5, color: palette().ink3 }}>正在输出…</Text>
+                <Each of={streamingTools()} key={(t) => t.toolUseId}>
+                  {(tool) => (
+                    <View
+                      style={{
+                        width: '100%',
+                        borderRadius: 12,
+                        backgroundColor: palette().surface,
+                        borderWidth: 1,
+                        borderColor: palette().line,
+                        paddingHorizontal: 12,
+                        paddingVertical: 8,
+                        gap: 3,
+                      }}
+                    >
+                      <Text style={{ fontSize: 12.5, fontWeight: '600', color: palette().ink2 }}>
+                        {'准备调用工具 · ' + tool().name}
+                      </Text>
+                      <If when={tool().inputPreview.length > 0}>
+                        <Text style={{ fontSize: 12, color: palette().ink3 }}>
+                          {tool().inputPreview}
+                        </Text>
+                      </If>
                     </View>
-                  </If>
-                </View>
-              </If>
+                  )}
+                </Each>
 
-              <Each of={permissions()} key={(p) => p.id}>
-                {(perm) => (
-                  <ApplePermissionCard
-                    item={perm}
-                    busy={busy}
-                    onDecide={(action) => resolvePermission(perm(), action)}
-                  />
-                )}
-              </Each>
+                <If when={streamingText().length > 0}>
+                  <View style={{ width: '100%', gap: 4 }}>
+                    <Text style={{ fontSize: 15.5, lineHeight: 23.5, color: palette().ink }}>
+                      {streamingText()}
+                    </Text>
+                    <If when={activeRunId() !== null}>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                        <View
+                          style={{
+                            width: 6,
+                            height: 6,
+                            borderRadius: 3,
+                            backgroundColor: palette().working,
+                          }}
+                        />
+                        <Text style={{ fontSize: 11.5, color: palette().ink3 }}>正在输出…</Text>
+                      </View>
+                    </If>
+                  </View>
+                </If>
 
-              <Each of={questions()} key={(q) => q.id}>
-                {(q) => (
-                  <AppleQuestionCard
-                    item={q}
-                    busy={busy}
-                    onSubmit={(answers) => submitQuestion(q(), answers)}
-                  />
-                )}
-              </Each>
-            </View>
-          </Scroll>
+                <Each of={permissions()} key={(p) => p.id}>
+                  {(perm) => (
+                    <ApplePermissionCard
+                      item={perm}
+                      busy={busy}
+                      onDecide={(action) => resolvePermission(perm(), action)}
+                    />
+                  )}
+                </Each>
+
+                <Each of={questions()} key={(q) => q.id}>
+                  {(q) => (
+                    <AppleQuestionCard
+                      item={q}
+                      busy={busy}
+                      onSubmit={(answers) => submitQuestion(q(), answers)}
+                    />
+                  )}
+                </Each>
+              </View>
+            </Scroll>
+
+            <TurnRail
+              turns={turnEntries}
+              activeId={() => activeTurnId() ?? turnEntries()[turnEntries().length - 1]?.id ?? null}
+              onJump={jumpToTurn}
+            />
+          </View>
 
           <ReactionBurstLayer burst={burst} />
 
+          {/* Docked Goal Status & Controls Bar (Desktop Parity) */}
+          <GoalBar goal={activeGoal} busy={busy} onControl={runGoalControl} />
+
+          {/* Host-Owned Queue Bar */}
           <If when={queuedMessages().length > 0}>
             <View
               style={{
@@ -2061,13 +3005,6 @@ function App() {
               <Text style={{ fontSize: 12, color: palette().ink2 }}>
                 {'已排队 ' + String(queuedMessages().length) + ' 条消息: ' + queuedMessages()[0]}
               </Text>
-              <View
-                role="button"
-                accessibilityLabel="Clear queued indicator"
-                onPress={() => queuedMessages.set([])}
-              >
-                <Text style={{ fontSize: 12, color: palette().ink3 }}>收起</Text>
-              </View>
             </View>
           </If>
 
@@ -2101,10 +3038,84 @@ function App() {
             </View>
           </If>
 
+          {/* Compact Context Row Above Composer: Draft Workspace Chip + Model/Thinking Chip */}
+          <If when={hasAgentEndpoint(hostState().active) && activeSession()?.kind !== 'room'}>
+            <View
+              style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                gap: 8,
+                paddingHorizontal: 14,
+                paddingBottom: 6,
+              }}
+            >
+              <If when={activeSession() === null}>
+                <View
+                  role="button"
+                  accessibilityLabel="Pick draft workspace"
+                  onPress={() => route.set('workspace_picker')}
+                  style={{
+                    paddingHorizontal: 10,
+                    paddingVertical: 5,
+                    borderRadius: 12,
+                    backgroundColor: palette().surface,
+                    borderWidth: 1,
+                    borderColor: palette().line,
+                  }}
+                >
+                  <Text style={{ fontSize: 12, color: palette().ink2 }}>
+                    {'工作区 · ' +
+                      (draftWorkspace()?.label ?? defaultDraftWorkspace().label) +
+                      ' ▾'}
+                  </Text>
+                </View>
+              </If>
+
+              <View
+                role="button"
+                accessibilityLabel="Select model and thinking"
+                onPress={runOpenModelPicker}
+                style={{
+                  paddingHorizontal: 10,
+                  paddingVertical: 5,
+                  borderRadius: 12,
+                  backgroundColor: palette().surface,
+                  borderWidth: 1,
+                  borderColor: palette().line,
+                }}
+              >
+                <Text style={{ fontSize: 12, color: palette().ink2 }}>
+                  {formatBackendPill(currentBackend()) + ' ▾'}
+                </Text>
+              </View>
+
+              <If when={activeRunId() !== null}>
+                <View
+                  role="button"
+                  accessibilityLabel="Toggle steer or queue delivery"
+                  onPress={() =>
+                    defaultDelivery.set(defaultDelivery() === 'steer' ? 'queue' : 'steer')
+                  }
+                  style={{
+                    paddingHorizontal: 10,
+                    paddingVertical: 5,
+                    borderRadius: 12,
+                    backgroundColor: palette().surface2,
+                  }}
+                >
+                  <Text style={{ fontSize: 11.5, color: palette().ink2 }}>
+                    {defaultDelivery() === 'steer' ? '立即纠偏' : '排队发送'}
+                  </Text>
+                </View>
+              </If>
+            </View>
+          </If>
+
+          {/* Composer */}
           <View
             style={{
               paddingHorizontal: 12,
-              paddingTop: 6,
+              paddingTop: 4,
               paddingBottom: bottomPad(),
             }}
           >
@@ -2129,9 +3140,9 @@ function App() {
                 placeholder={
                   activeSession()?.kind === 'room'
                     ? '在 Room 中发言，或 @ 提及 Agent…'
-                    : defaultDelivery() === 'steer'
-                      ? '告诉 Maka 下一步…'
-                      : '输入消息（排队发送）…'
+                    : activeRunId() !== null && defaultDelivery() === 'queue'
+                      ? '输入消息（排队发送）…'
+                      : '发送消息，或开始一项任务…'
                 }
                 style={{
                   flex: 1,
@@ -2155,13 +3166,12 @@ function App() {
                       const sGen = sessionSyncGen;
                       const sessionId = sess.id;
                       agentStop(sessionId, runId).then(
-                        () => {
-                          if (
-                            isSessionStillCurrent(gen, epoch, sGen, sessionId) &&
-                            activeRunId() === runId
-                          ) {
-                            activeRunId.set(null);
+                        (res) => {
+                          if (!isSessionStillCurrent(gen, epoch, sGen, sessionId)) return;
+                          if (res && res.requested === false) {
+                            statusBanner.set('当前运行已结束或不支持中断');
                           }
+                          refreshSessionTranscript(sessionId, false, gen, epoch, sGen);
                         },
                         (err: Error) => {
                           if (isSessionStillCurrent(gen, epoch, sGen, sessionId)) {
@@ -2189,14 +3199,16 @@ function App() {
               <View
                 role="button"
                 accessibilityLabel="Send message"
-                onPress={sendMessage}
+                onPress={() => sendMessage()}
                 style={{
                   minWidth: 36,
                   height: 36,
                   paddingHorizontal: 12,
                   borderRadius: 18,
                   backgroundColor:
-                    composerDraft().trim().length > 0 ? palette().primaryBg : palette().surface2,
+                    composerDraft().trim().length > 0 && !creatingDraft()
+                      ? palette().primaryBg
+                      : palette().surface2,
                   alignItems: 'center',
                   justifyContent: 'center',
                 }}
@@ -2206,7 +3218,9 @@ function App() {
                     fontSize: 15,
                     fontWeight: '700',
                     color:
-                      composerDraft().trim().length > 0 ? palette().primaryText : palette().ink3,
+                      composerDraft().trim().length > 0 && !creatingDraft()
+                        ? palette().primaryText
+                        : palette().ink3,
                   }}
                 >
                   ↑
@@ -2289,32 +3303,62 @@ function App() {
         />
       </If>
 
-      <If when={route() === 'new_session'}>
-        <NewSessionOverlay
+      <If when={route() === 'new_room'}>
+        <NewRoomOverlay
+          projects={projects}
           roots={directoryRoots}
+          defaultWorkspace={() => draftWorkspace() ?? defaultDraftWorkspace()}
           busy={busy}
-          onCreate={(title, kind, ws) => {
+          onCreateRoom={(title, workspace) => {
             const active = hostState().active;
             if (!active) return;
             const gen = hostSyncGen;
             const epoch = active.epoch;
             busy.set(true);
-            agentCreateSession(title, kind, ws).then(
+            agentCreateSession({
+              title,
+              kind: 'room',
+              workspace,
+              automaticTitle: false,
+            }).then(
               (created) => {
                 busy.set(false);
                 if (!isHostStillCurrent(gen, epoch)) return;
-                sessions.set([created, ...sessions()]);
+                upsertSessionInList(created);
                 openAgentSession(created);
               },
               (err: Error) => {
                 busy.set(false);
                 if (isHostStillCurrent(gen, epoch)) {
-                  statusBanner.set('创建会话失败: ' + err.message);
+                  statusBanner.set('创建 Room 失败: ' + err.message);
                 }
               },
             );
           }}
           onBack={() => route.set(hostState().active ? 'chat' : 'home')}
+        />
+      </If>
+
+      <If when={route() === 'workspace_picker'}>
+        <WorkspacePickerOverlay
+          projects={projects}
+          roots={directoryRoots}
+          onSelect={(selection, label) => {
+            draftWorkspace.set({ selection, label });
+            route.set('chat');
+          }}
+          onBack={() => route.set('chat')}
+        />
+      </If>
+
+      <If when={route() === 'model_picker'}>
+        <ModelPickerOverlay
+          choices={modelChoices}
+          loading={modelsLoading}
+          currentBackend={currentBackend}
+          onSearch={(q) => runLoadModels(q)}
+          onSelect={runSelectBackend}
+          onBack={() => route.set('chat')}
         />
       </If>
 

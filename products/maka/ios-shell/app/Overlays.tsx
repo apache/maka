@@ -20,8 +20,13 @@
 import { Scroll, signal, Text, View } from 'nsh';
 import { Input } from 'nsh/base';
 import {
+  agentListDirectoryChildren,
   formatSas,
+  type AgentBackendPreference,
+  type AgentModelChoice,
+  type AgentProject,
   type AgentScheduledSummary,
+  type AgentWorkspaceSelection,
   type HostStateSnapshot,
   type ParsedTicketInfo,
   type SavedHostItem,
@@ -800,18 +805,35 @@ export function SettingsOverlay(props: {
   );
 }
 
-export function NewSessionOverlay(props: {
+export function NewRoomOverlay(props: {
+  projects: () => AgentProject[];
   roots: () => { name: string; path: string }[];
+  defaultWorkspace: () => { selection: AgentWorkspaceSelection; label: string } | null;
   busy: () => boolean;
-  onCreate: (title: string, kind: 'agent' | 'room', workspacePath: string) => void;
+  onCreateRoom: (title: string, workspace: AgentWorkspaceSelection) => void;
   onBack: () => void;
 }) {
   const title = signal('');
-  const kind = signal<'agent' | 'room'>('agent');
-  const selectedPath = signal<string>(props.roots()[0]?.path ?? '~');
+  const initialWs = (): AgentWorkspaceSelection => {
+    const def = props.defaultWorkspace();
+    if (def) return def.selection;
+    const firstProj = props.projects().find((p) => !p.archived && p.path);
+    if (firstProj && firstProj.path) {
+      return { kind: 'project', projectId: firstProj.reference.id, path: firstProj.path };
+    }
+    return { kind: 'directory', path: props.roots()[0]?.path ?? '~' };
+  };
+  const selected = signal<AgentWorkspaceSelection>(initialWs());
+
+  const selectedKey = () => {
+    const s = selected();
+    if (s.kind === 'project') return 'proj:' + s.projectId;
+    if (s.kind === 'directory' || s.kind === 'isolated_git') return 'dir:' + s.path;
+    return 'sess:' + s.sessionId;
+  };
 
   return (
-    <View style={{ flex: 1, backgroundColor: palette().bg }}>
+    <View style={{ flex: 1, minHeight: 0, backgroundColor: palette().bg }}>
       <View
         style={{
           flexDirection: 'row',
@@ -825,70 +847,17 @@ export function NewSessionOverlay(props: {
       >
         <View
           role="button"
-          accessibilityLabel="Cancel new session"
+          accessibilityLabel="Cancel new room"
           onPress={props.onBack}
           style={{ minWidth: 44, minHeight: 40, justifyContent: 'center' }}
         >
           <Text style={{ fontSize: 16, color: palette().ink }}>‹ 取消</Text>
         </View>
-        <Text style={{ fontSize: 16, fontWeight: '600', color: palette().ink }}>新建对话</Text>
+        <Text style={{ fontSize: 16, fontWeight: '600', color: palette().ink }}>新建协作 Room</Text>
         <View style={{ minWidth: 44 }} />
       </View>
 
-      <Scroll style={{ flex: 1 }} contentStyle={{ padding: 18, gap: 16 }}>
-        <View style={{ flexDirection: 'row', gap: 8 }}>
-          <View
-            role="button"
-            accessibilityLabel="Select kind agent"
-            onPress={() => kind.set('agent')}
-            style={{
-              flex: 1,
-              minHeight: 42,
-              borderRadius: 21,
-              backgroundColor: kind() === 'agent' ? palette().primaryBg : palette().surface,
-              borderWidth: 1,
-              borderColor: palette().line,
-              alignItems: 'center',
-              justifyContent: 'center',
-            }}
-          >
-            <Text
-              style={{
-                fontSize: 14,
-                fontWeight: '600',
-                color: kind() === 'agent' ? palette().primaryText : palette().ink,
-              }}
-            >
-              Agent 会话
-            </Text>
-          </View>
-          <View
-            role="button"
-            accessibilityLabel="Select kind room"
-            onPress={() => kind.set('room')}
-            style={{
-              flex: 1,
-              minHeight: 42,
-              borderRadius: 21,
-              backgroundColor: kind() === 'room' ? palette().primaryBg : palette().surface,
-              borderWidth: 1,
-              borderColor: palette().line,
-              alignItems: 'center',
-              justifyContent: 'center',
-            }}
-          >
-            <Text
-              style={{
-                fontSize: 14,
-                fontWeight: '600',
-                color: kind() === 'room' ? palette().primaryText : palette().ink,
-              }}
-            >
-              多方协作 Room
-            </Text>
-          </View>
-        </View>
-
+      <Scroll style={{ flex: 1, minHeight: 0 }} contentStyle={{ padding: 18, gap: 16 }}>
         <View
           style={{
             borderRadius: 18,
@@ -899,12 +868,14 @@ export function NewSessionOverlay(props: {
             gap: 10,
           }}
         >
-          <Text style={{ fontSize: 13.5, fontWeight: '600', color: palette().ink2 }}>会话标题</Text>
+          <Text style={{ fontSize: 13.5, fontWeight: '600', color: palette().ink2 }}>
+            Room 名称
+          </Text>
           <Input
-            accessibilityLabel="New session title input"
+            accessibilityLabel="New room title input"
             value={title()}
             onChange={({ value }: { value: string }) => title.set(value)}
-            placeholder={kind() === 'room' ? '例如：发布前联调 Room' : '例如：排查 QUIC 握手超时'}
+            placeholder="例如：发布前联调 Room"
             style={{
               minHeight: 42,
               borderRadius: 11,
@@ -916,22 +887,66 @@ export function NewSessionOverlay(props: {
           />
 
           <Text style={{ fontSize: 13.5, fontWeight: '600', color: palette().ink2, marginTop: 6 }}>
-            工作目录
+            所属工作区
           </Text>
+
+          <If when={props.projects().filter((p) => !p.archived && !!p.path).length > 0}>
+            <View style={{ gap: 6 }}>
+              <Each
+                of={props.projects().filter((p) => !p.archived && !!p.path)}
+                key={(p) => p.reference.id}
+              >
+                {(proj) => (
+                  <View
+                    role="button"
+                    accessibilityLabel={'Room workspace ' + proj().name}
+                    onPress={() => {
+                      if (proj().path) {
+                        selected.set({
+                          kind: 'project',
+                          projectId: proj().reference.id,
+                          path: proj().path!,
+                        });
+                      }
+                    }}
+                    style={{
+                      paddingHorizontal: 12,
+                      paddingVertical: 10,
+                      borderRadius: 11,
+                      backgroundColor:
+                        selectedKey() === 'proj:' + proj().reference.id
+                          ? palette().rowActive
+                          : palette().surface2,
+                    }}
+                  >
+                    <Text style={{ fontSize: 14, fontWeight: '500', color: palette().ink }}>
+                      {proj().name}
+                    </Text>
+                    <Text style={{ fontSize: 11.5, color: palette().ink3 }}>
+                      {proj().path ?? ''}
+                    </Text>
+                  </View>
+                )}
+              </Each>
+            </View>
+          </If>
+
           <If when={props.roots().length > 0}>
             <View style={{ gap: 6 }}>
               <Each of={props.roots()} key={(r) => r.path}>
                 {(root) => (
                   <View
                     role="button"
-                    accessibilityLabel={'Workspace ' + root().name}
-                    onPress={() => selectedPath.set(root().path)}
+                    accessibilityLabel={'Room root ' + root().name}
+                    onPress={() => selected.set({ kind: 'directory', path: root().path })}
                     style={{
                       paddingHorizontal: 12,
                       paddingVertical: 10,
                       borderRadius: 11,
                       backgroundColor:
-                        selectedPath() === root().path ? palette().rowActive : palette().surface2,
+                        selectedKey() === 'dir:' + root().path
+                          ? palette().rowActive
+                          : palette().surface2,
                     }}
                   >
                     <Text style={{ fontSize: 14, fontWeight: '500', color: palette().ink }}>
@@ -947,24 +962,583 @@ export function NewSessionOverlay(props: {
 
         <View
           role="button"
-          accessibilityLabel="Create session submit"
+          accessibilityLabel="Create room submit"
           onPress={() => {
-            const cleanTitle = title().trim() || (kind() === 'room' ? '协作 Room' : '新会话');
-            const ws = selectedPath() || props.roots()[0]?.path || '~';
-            if (!props.busy()) props.onCreate(cleanTitle, kind(), ws);
+            const cleanTitle = title().trim();
+            if (cleanTitle.length > 0 && !props.busy()) {
+              props.onCreateRoom(cleanTitle, selected());
+            }
           }}
           style={{
             minHeight: 46,
             borderRadius: 23,
-            backgroundColor: palette().primaryBg,
+            backgroundColor:
+              title().trim().length > 0 && !props.busy() ? palette().primaryBg : palette().surface2,
             alignItems: 'center',
             justifyContent: 'center',
           }}
         >
-          <Text style={{ fontSize: 15.5, fontWeight: '600', color: palette().primaryText }}>
-            {props.busy() ? '正在创建…' : '创建并进入'}
+          <Text
+            style={{
+              fontSize: 15.5,
+              fontWeight: '600',
+              color:
+                title().trim().length > 0 && !props.busy() ? palette().primaryText : palette().ink3,
+            }}
+          >
+            {props.busy() ? '正在创建…' : '创建 Room'}
           </Text>
         </View>
+      </Scroll>
+    </View>
+  );
+}
+
+export function WorkspacePickerOverlay(props: {
+  projects: () => AgentProject[];
+  roots: () => { name: string; path: string }[];
+  onSelect: (selection: AgentWorkspaceSelection, label: string) => void;
+  onBack: () => void;
+}) {
+  const browsingPath = signal<string | null>(null);
+  const children = signal<{ name: string; path: string }[]>([]);
+  const dirAfter = signal<string | null>(null);
+  const loadingDir = signal(false);
+  const loadingMoreDir = signal(false);
+  const dirError = signal<string | null>(null);
+  let dirBrowseGen = 0;
+
+  const openDirectory = (path: string) => {
+    dirBrowseGen += 1;
+    const gen = dirBrowseGen;
+    browsingPath.set(path);
+    children.set([]);
+    dirAfter.set(null);
+    loadingDir.set(true);
+    loadingMoreDir.set(false);
+    dirError.set(null);
+    agentListDirectoryChildren(path, null).then(
+      (res) => {
+        if (gen !== dirBrowseGen || browsingPath() !== path) return;
+        children.set(res.children);
+        dirAfter.set(res.after);
+        loadingDir.set(false);
+      },
+      (err: Error) => {
+        if (gen !== dirBrowseGen || browsingPath() !== path) return;
+        children.set([]);
+        dirAfter.set(null);
+        loadingDir.set(false);
+        dirError.set(err.message);
+      },
+    );
+  };
+
+  const loadMoreDirectories = () => {
+    const path = browsingPath();
+    const after = dirAfter();
+    if (!path || !after || loadingDir() || loadingMoreDir()) return;
+    const gen = dirBrowseGen;
+    loadingMoreDir.set(true);
+    agentListDirectoryChildren(path, after).then(
+      (res) => {
+        if (gen !== dirBrowseGen || browsingPath() !== path) return;
+        const seen = new Set(children().map((c) => c.path));
+        children.set([...children(), ...res.children.filter((c) => !seen.has(c.path))]);
+        dirAfter.set(res.after);
+        loadingMoreDir.set(false);
+      },
+      (err: Error) => {
+        if (gen !== dirBrowseGen || browsingPath() !== path) return;
+        loadingMoreDir.set(false);
+        dirError.set(err.message);
+      },
+    );
+  };
+
+  return (
+    <View style={{ flex: 1, minHeight: 0, backgroundColor: palette().bg }}>
+      <View
+        style={{
+          flexDirection: 'row',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          paddingHorizontal: 14,
+          paddingVertical: 10,
+          borderBottomWidth: 1,
+          borderBottomColor: palette().line,
+        }}
+      >
+        <View
+          role="button"
+          accessibilityLabel="Back from workspace picker"
+          onPress={() => {
+            if (browsingPath() !== null) {
+              dirBrowseGen += 1;
+              browsingPath.set(null);
+              children.set([]);
+              dirAfter.set(null);
+              loadingDir.set(false);
+              loadingMoreDir.set(false);
+              dirError.set(null);
+            } else {
+              props.onBack();
+            }
+          }}
+          style={{ minWidth: 52, minHeight: 40, justifyContent: 'center' }}
+        >
+          <Text style={{ fontSize: 16, color: palette().ink }}>
+            {browsingPath() !== null ? '‹ 根目录' : '‹ 返回'}
+          </Text>
+        </View>
+        <Text style={{ fontSize: 16, fontWeight: '600', color: palette().ink }}>选择工作区</Text>
+        <View style={{ minWidth: 52 }} />
+      </View>
+
+      <Scroll style={{ flex: 1, minHeight: 0 }} contentStyle={{ padding: 16, gap: 14 }}>
+        <If when={browsingPath() !== null}>
+          <View style={{ gap: 10 }}>
+            <View
+              role="button"
+              accessibilityLabel="Use current directory"
+              onPress={() => {
+                const p = browsingPath()!;
+                const name = p.split('/').filter(Boolean).pop() ?? p;
+                props.onSelect({ kind: 'directory', path: p }, name);
+              }}
+              style={{
+                minHeight: 44,
+                borderRadius: 14,
+                backgroundColor: palette().primaryBg,
+                paddingHorizontal: 14,
+                alignItems: 'center',
+                justifyContent: 'center',
+              }}
+            >
+              <Text style={{ fontSize: 14.5, fontWeight: '600', color: palette().primaryText }}>
+                {'使用当前目录 · ' + (browsingPath()?.split('/').filter(Boolean).pop() ?? '')}
+              </Text>
+            </View>
+
+            <If when={dirError() !== null}>
+              <Text style={{ fontSize: 12.5, color: palette().danger }}>{dirError()}</Text>
+            </If>
+            <If when={loadingDir()}>
+              <Text style={{ fontSize: 13, color: palette().ink3 }}>正在读取子目录…</Text>
+            </If>
+
+            <Each of={children()} key={(d) => d.path}>
+              {(dir) => (
+                <View
+                  style={{
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    gap: 8,
+                    paddingHorizontal: 12,
+                    paddingVertical: 10,
+                    borderRadius: 12,
+                    backgroundColor: palette().surface,
+                    borderWidth: 1,
+                    borderColor: palette().line,
+                  }}
+                >
+                  <View
+                    role="button"
+                    accessibilityLabel={'Select dir ' + dir().name}
+                    onPress={() =>
+                      props.onSelect({ kind: 'directory', path: dir().path }, dir().name)
+                    }
+                    style={{ flex: 1, gap: 2 }}
+                  >
+                    <Text style={{ fontSize: 14.5, fontWeight: '500', color: palette().ink }}>
+                      {dir().name}
+                    </Text>
+                    <Text style={{ fontSize: 11.5, color: palette().ink3 }}>{dir().path}</Text>
+                  </View>
+                  <View
+                    role="button"
+                    accessibilityLabel={'Browse dir ' + dir().name}
+                    onPress={() => openDirectory(dir().path)}
+                    style={{
+                      paddingHorizontal: 10,
+                      paddingVertical: 6,
+                      borderRadius: 8,
+                      backgroundColor: palette().surface2,
+                    }}
+                  >
+                    <Text style={{ fontSize: 12, color: palette().ink2 }}>进入 ›</Text>
+                  </View>
+                </View>
+              )}
+            </Each>
+
+            <If when={dirAfter() !== null}>
+              <View
+                role="button"
+                accessibilityLabel="Load more directories"
+                onPress={loadMoreDirectories}
+                style={{
+                  minHeight: 40,
+                  borderRadius: 12,
+                  backgroundColor: palette().surface2,
+                  borderWidth: 1,
+                  borderColor: palette().line,
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                }}
+              >
+                <Text style={{ fontSize: 13, fontWeight: '600', color: palette().ink2 }}>
+                  {loadingMoreDir() ? '正在加载更多目录…' : '加载更多目录'}
+                </Text>
+              </View>
+            </If>
+          </View>
+        </If>
+
+        <If when={browsingPath() === null}>
+          <View style={{ gap: 14 }}>
+            <If when={props.projects().filter((p) => !p.archived && !!p.path).length > 0}>
+              <View style={{ gap: 6 }}>
+                <Text style={{ fontSize: 12.5, fontWeight: '600', color: palette().ink3 }}>
+                  已有项目
+                </Text>
+                <Each
+                  of={props.projects().filter((p) => !p.archived && !!p.path)}
+                  key={(p) => p.reference.id}
+                >
+                  {(proj) => (
+                    <View
+                      role="button"
+                      accessibilityLabel={'Pick project ' + proj().name}
+                      onPress={() => {
+                        if (proj().path) {
+                          props.onSelect(
+                            {
+                              kind: 'project',
+                              projectId: proj().reference.id,
+                              path: proj().path!,
+                            },
+                            proj().name,
+                          );
+                        }
+                      }}
+                      style={{
+                        paddingHorizontal: 14,
+                        paddingVertical: 11,
+                        borderRadius: 13,
+                        backgroundColor: palette().surface,
+                        borderWidth: 1,
+                        borderColor: palette().line,
+                        gap: 2,
+                      }}
+                    >
+                      <Text style={{ fontSize: 14.5, fontWeight: '600', color: palette().ink }}>
+                        {proj().name}
+                      </Text>
+                      <Text style={{ fontSize: 11.5, color: palette().ink3 }}>
+                        {proj().path ?? ''}
+                      </Text>
+                    </View>
+                  )}
+                </Each>
+              </View>
+            </If>
+
+            <If when={props.roots().length > 0}>
+              <View style={{ gap: 6 }}>
+                <Text style={{ fontSize: 12.5, fontWeight: '600', color: palette().ink3 }}>
+                  远端目录
+                </Text>
+                <Each of={props.roots()} key={(r) => r.path}>
+                  {(root) => (
+                    <View
+                      style={{
+                        flexDirection: 'row',
+                        alignItems: 'center',
+                        gap: 8,
+                        paddingHorizontal: 14,
+                        paddingVertical: 11,
+                        borderRadius: 13,
+                        backgroundColor: palette().surface,
+                        borderWidth: 1,
+                        borderColor: palette().line,
+                      }}
+                    >
+                      <View
+                        role="button"
+                        accessibilityLabel={'Pick root ' + root().name}
+                        onPress={() =>
+                          props.onSelect({ kind: 'directory', path: root().path }, root().name)
+                        }
+                        style={{ flex: 1, gap: 2 }}
+                      >
+                        <Text style={{ fontSize: 14.5, fontWeight: '500', color: palette().ink }}>
+                          {root().name}
+                        </Text>
+                        <Text style={{ fontSize: 11.5, color: palette().ink3 }}>{root().path}</Text>
+                      </View>
+                      <View
+                        role="button"
+                        accessibilityLabel={'Browse root ' + root().name}
+                        onPress={() => openDirectory(root().path)}
+                        style={{
+                          paddingHorizontal: 10,
+                          paddingVertical: 6,
+                          borderRadius: 8,
+                          backgroundColor: palette().surface2,
+                        }}
+                      >
+                        <Text style={{ fontSize: 12, color: palette().ink2 }}>子目录 ›</Text>
+                      </View>
+                    </View>
+                  )}
+                </Each>
+              </View>
+            </If>
+          </View>
+        </If>
+      </Scroll>
+    </View>
+  );
+}
+
+export function ModelPickerOverlay(props: {
+  choices: () => AgentModelChoice[];
+  loading: () => boolean;
+  currentBackend: () => AgentBackendPreference | null;
+  onSearch: (query: string) => void;
+  onSelect: (backend: AgentBackendPreference) => void;
+  onBack: () => void;
+}) {
+  const query = signal('');
+  const pendingChoice = signal<AgentModelChoice | null>(null);
+
+  const isSelectedChoice = (choice: AgentModelChoice): boolean => {
+    const cur = props.currentBackend();
+    if (!cur) return false;
+    if (cur.kind === 'model' && choice.selection.kind === 'model') {
+      return (
+        cur.connectionId === choice.selection.connectionId &&
+        cur.modelId === choice.selection.modelId
+      );
+    }
+    if (cur.kind === 'executor' && choice.selection.kind === 'executor') {
+      return cur.selection.executor === choice.selection.executor;
+    }
+    return false;
+  };
+
+  const applyChoiceWithThinking = (choice: AgentModelChoice, level: string | null) => {
+    if (choice.selection.kind === 'model') {
+      props.onSelect({
+        ...choice.selection,
+        thinkingLevel: level,
+      });
+    } else {
+      props.onSelect(choice.selection);
+    }
+  };
+
+  return (
+    <View style={{ flex: 1, minHeight: 0, backgroundColor: palette().bg }}>
+      <View
+        style={{
+          flexDirection: 'row',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          paddingHorizontal: 14,
+          paddingVertical: 10,
+          borderBottomWidth: 1,
+          borderBottomColor: palette().line,
+        }}
+      >
+        <View
+          role="button"
+          accessibilityLabel="Back from model picker"
+          onPress={props.onBack}
+          style={{ minWidth: 52, minHeight: 40, justifyContent: 'center' }}
+        >
+          <Text style={{ fontSize: 16, color: palette().ink }}>‹ 返回</Text>
+        </View>
+        <Text style={{ fontSize: 16, fontWeight: '600', color: palette().ink }}>
+          模型与思考强度
+        </Text>
+        <View style={{ minWidth: 52 }} />
+      </View>
+
+      <View style={{ paddingHorizontal: 16, paddingTop: 12, paddingBottom: 8 }}>
+        <Input
+          accessibilityLabel="Search models input"
+          value={query()}
+          onChange={({ value }: { value: string }) => {
+            query.set(value);
+            props.onSearch(value);
+          }}
+          placeholder="搜索模型名称或来源…"
+          style={{
+            minHeight: 38,
+            borderRadius: 11,
+            backgroundColor: palette().surface2,
+            paddingHorizontal: 12,
+            color: palette().ink,
+            fontSize: 14,
+          }}
+        />
+      </View>
+
+      <Scroll style={{ flex: 1, minHeight: 0 }} contentStyle={{ padding: 16, gap: 10 }}>
+        <If when={props.loading()}>
+          <Text style={{ fontSize: 13, color: palette().ink3 }}>正在加载模型目录…</Text>
+        </If>
+
+        <If when={!props.loading() && props.choices().length === 0}>
+          <View
+            style={{
+              padding: 18,
+              borderRadius: 16,
+              backgroundColor: palette().surface,
+              borderWidth: 1,
+              borderColor: palette().line,
+              gap: 4,
+            }}
+          >
+            <Text style={{ fontSize: 14.5, fontWeight: '600', color: palette().ink }}>
+              暂无可用模型
+            </Text>
+            <Text style={{ fontSize: 12.5, color: palette().ink2 }}>
+              请在远端 Host 配置模型连接后重试。
+            </Text>
+          </View>
+        </If>
+
+        <Each
+          of={props.choices()}
+          key={(c) =>
+            c.selection.kind === 'model'
+              ? c.selection.connectionId + ':' + c.selection.modelId
+              : 'exec:' + c.selection.selection.executor + ':' + c.label
+          }
+        >
+          {(choice) => {
+            const expanded = () =>
+              pendingChoice()?.label === choice().label &&
+              pendingChoice()?.sourceName === choice().sourceName;
+            const currentThinking = () => {
+              const cur = props.currentBackend();
+              return cur && cur.kind === 'model' ? (cur.thinkingLevel ?? null) : null;
+            };
+
+            return (
+              <View
+                style={{
+                  borderRadius: 14,
+                  backgroundColor: isSelectedChoice(choice())
+                    ? palette().rowActive
+                    : palette().surface,
+                  borderWidth: 1,
+                  borderColor: palette().line,
+                  padding: 12,
+                  gap: 8,
+                }}
+              >
+                <View
+                  role="button"
+                  accessibilityLabel={'Model ' + choice().label}
+                  onPress={() => {
+                    if (choice().selection.kind === 'model' && choice().thinkingLevels.length > 0) {
+                      pendingChoice.set(expanded() ? null : choice());
+                    } else {
+                      applyChoiceWithThinking(choice(), null);
+                    }
+                  }}
+                  style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}
+                >
+                  <View style={{ flex: 1, gap: 2 }}>
+                    <Text style={{ fontSize: 14.5, fontWeight: '600', color: palette().ink }}>
+                      {choice().label}
+                    </Text>
+                    <Text style={{ fontSize: 12, color: palette().ink3 }}>
+                      {choice().sourceName +
+                        (choice().thinkingLevels.length > 0 ? ' · 支持思考强度' : '')}
+                    </Text>
+                  </View>
+                  <If when={isSelectedChoice(choice())}>
+                    <Text style={{ fontSize: 13, fontWeight: '700', color: palette().ink }}>✓</Text>
+                  </If>
+                </View>
+
+                <If
+                  when={
+                    choice().selection.kind === 'model' &&
+                    choice().thinkingLevels.length > 0 &&
+                    (expanded() || isSelectedChoice(choice()))
+                  }
+                >
+                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, paddingTop: 2 }}>
+                    <View
+                      role="button"
+                      accessibilityLabel={'Thinking default ' + choice().label}
+                      onPress={() => applyChoiceWithThinking(choice(), null)}
+                      style={{
+                        paddingHorizontal: 10,
+                        paddingVertical: 6,
+                        borderRadius: 9,
+                        backgroundColor:
+                          isSelectedChoice(choice()) && currentThinking() === null
+                            ? palette().primaryBg
+                            : palette().surface2,
+                      }}
+                    >
+                      <Text
+                        style={{
+                          fontSize: 12,
+                          fontWeight: '600',
+                          color:
+                            isSelectedChoice(choice()) && currentThinking() === null
+                              ? palette().primaryText
+                              : palette().ink2,
+                        }}
+                      >
+                        默认
+                      </Text>
+                    </View>
+                    <Each of={choice().thinkingLevels} key={(lvl) => lvl}>
+                      {(lvl) => (
+                        <View
+                          role="button"
+                          accessibilityLabel={'Thinking ' + lvl() + ' ' + choice().label}
+                          onPress={() => applyChoiceWithThinking(choice(), lvl())}
+                          style={{
+                            paddingHorizontal: 10,
+                            paddingVertical: 6,
+                            borderRadius: 9,
+                            backgroundColor:
+                              isSelectedChoice(choice()) && currentThinking() === lvl()
+                                ? palette().primaryBg
+                                : palette().surface2,
+                          }}
+                        >
+                          <Text
+                            style={{
+                              fontSize: 12,
+                              fontWeight: '600',
+                              color:
+                                isSelectedChoice(choice()) && currentThinking() === lvl()
+                                  ? palette().primaryText
+                                  : palette().ink2,
+                            }}
+                          >
+                            {lvl()}
+                          </Text>
+                        </View>
+                      )}
+                    </Each>
+                  </View>
+                </If>
+              </View>
+            );
+          }}
+        </Each>
       </Scroll>
     </View>
   );

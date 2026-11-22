@@ -1718,7 +1718,8 @@ fn ios_shell_drives_live_agent_host_with_real_agent_contract_schemas() {
         .unwrap();
     app.wait_for("text:第一题：先处理哪条链路？").unwrap();
     app.wait_for("text:第二题：验证优先级如何安排？").unwrap();
-    app.wait_for("text:/system_permission.*桌面端/").unwrap();
+    app.wait_for("text:需要桌面端系统权限").unwrap();
+    app.wait_for("label:Cancel system permission wait").unwrap();
 
     // 4. Approve real Permission with Session scope -> Host validates original permissions & scope!
     app.press("label:Allow session").unwrap();
@@ -3204,4 +3205,2746 @@ async fn unsubscribe_records_cancel_write_error_as_cleanup_warning() {
     fail_writes.store(false, Ordering::SeqCst);
     bridge.disconnect_host().await.unwrap();
     live.shutdown().await;
+}
+#[test]
+fn desktop_parity_project_plus_draft_models_goal_lifecycle_and_turn_rail() {
+    use maka_agent_api::contract::{
+        ChangeSession, Create, Created, DataSource, DeliveryPage, Directories, DirectoryPage,
+        GoalChange, GoalResult, GoalView, History, HistoryChunk, HistoryOrder, HistoryPage,
+        HistoryPosition, HistoryRowAddress, List, MarkRead, MarkReadResult, Metadata,
+        MetadataResult, ModelChoice, ModelsPage, ModelsRead, Observation, PendingInteractions,
+        Project, ProjectRef, ProjectsPage, ProjectsRead, SelectBackend, Send as AgentSend,
+        SendResult, Session, SessionAction, SessionActivity, SessionChanged, SessionKind,
+        SessionPage, SessionRead, Workspace, WorkspaceAccess, WorkspacePermissions,
+        WorkspaceSelection,
+    };
+    use maka_agent_facts::{
+        durable::{FactId, RunId},
+        execution::ThinkingLevel,
+        executor::BackendPreference,
+    };
+    use maka_agent_ports::session::history::{Cursor, HistoryField, Role};
+    use maka_host_runtime::application::{
+        Context, Handler, HandlerError, HandlerResult, HandlerValue, NativeActivation,
+        NativeRegistry,
+    };
+    use maka_plugin_core::runtime::Published;
+    use maka_sandbox::workspace::BindingStamp;
+
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    let proj_alpha_id = Uuid::parse_str("22222222-2222-4222-8222-222222222222").unwrap();
+    let proj_empty_id = Uuid::parse_str("33333333-3333-4333-8333-333333333333").unwrap();
+    let goal_id = Uuid::parse_str("ab0ee903-f74d-4ba0-9145-06c6385ca630").unwrap();
+    let deployment_id = Uuid::new_v4();
+    let binding_id = Uuid::new_v4();
+    let run_id = RunId::new();
+    let facts = [
+        FactId::new(),
+        FactId::new(),
+        FactId::new(),
+        FactId::new(),
+        FactId::new(),
+    ];
+
+    let created_reqs: Arc<
+        std::sync::Mutex<Vec<(bool, String, WorkspaceSelection, Option<BackendPreference>)>>,
+    > = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let metadata_reqs: Arc<std::sync::Mutex<Vec<(String, String, u64)>>> =
+        Arc::new(std::sync::Mutex::new(Vec::new()));
+    let change_reqs: Arc<std::sync::Mutex<Vec<(String, SessionAction)>>> =
+        Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mark_read_reqs: Arc<std::sync::Mutex<Vec<String>>> =
+        Arc::new(std::sync::Mutex::new(Vec::new()));
+    let goal_controls: Arc<std::sync::Mutex<Vec<String>>> =
+        Arc::new(std::sync::Mutex::new(Vec::new()));
+    let history_before_called = Arc::new(AtomicBool::new(false));
+    let goal_status = Arc::new(std::sync::Mutex::new("active".to_string()));
+    let goal_revision = Arc::new(std::sync::Mutex::new(1u64));
+
+    struct ParityAgentService {
+        root_id: String,
+        deployment_id: Uuid,
+        binding_id: Uuid,
+        proj_alpha_id: Uuid,
+        proj_empty_id: Uuid,
+        goal_id: Uuid,
+        run_id: RunId,
+        facts: [FactId; 5],
+        sessions: Arc<std::sync::Mutex<Vec<Session>>>,
+        created_reqs: Arc<
+            std::sync::Mutex<Vec<(bool, String, WorkspaceSelection, Option<BackendPreference>)>>,
+        >,
+        metadata_reqs: Arc<std::sync::Mutex<Vec<(String, String, u64)>>>,
+        change_reqs: Arc<std::sync::Mutex<Vec<(String, SessionAction)>>>,
+        mark_read_reqs: Arc<std::sync::Mutex<Vec<String>>>,
+        goal_controls: Arc<std::sync::Mutex<Vec<String>>>,
+        history_before_called: Arc<AtomicBool>,
+        goal_status: Arc<std::sync::Mutex<String>>,
+        goal_revision: Arc<std::sync::Mutex<u64>>,
+    }
+
+    impl Handler for ParityAgentService {
+        fn call(
+            &self,
+            method: String,
+            input: Value,
+            context: Context,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = HandlerResult> + Send + 'static>>
+        {
+            let root_id = self.root_id.clone();
+            let deployment_id = self.deployment_id;
+            let binding_id = self.binding_id;
+            let proj_alpha_id = self.proj_alpha_id;
+            let proj_empty_id = self.proj_empty_id;
+            let goal_id = self.goal_id;
+            let run_id = self.run_id;
+            let facts = self.facts;
+            let sessions = self.sessions.clone();
+            let created_reqs = self.created_reqs.clone();
+            let metadata_reqs = self.metadata_reqs.clone();
+            let change_reqs = self.change_reqs.clone();
+            let mark_read_reqs = self.mark_read_reqs.clone();
+            let goal_controls = self.goal_controls.clone();
+            let history_before_called = self.history_before_called.clone();
+            let goal_status = self.goal_status.clone();
+            let goal_revision = self.goal_revision.clone();
+
+            Box::pin(async move {
+                fn to_val<T: serde::Serialize>(v: &T) -> Result<HandlerValue, HandlerError> {
+                    serde_json::to_value(v)
+                        .map(HandlerValue::Json)
+                        .map_err(|e| HandlerError::from(e.to_string()))
+                }
+
+                let make_goal_view = |status_str: &str, rev: u64| -> GoalView {
+                    serde_json::from_value(json!({
+                        "enabled": true,
+                        "current": {
+                            "id": goal_id.to_string(),
+                            "revision": rev,
+                            "objective": "对齐 iOS 与 Desktop 的全部核心交互",
+                            "status": status_str,
+                            "iterations": 2,
+                            "tokenBudget": null,
+                            "consumed": { "known": 1650, "missing": 0 },
+                            "remainingTokens": null,
+                            "elapsedSeconds": 125,
+                            "retryAt": null,
+                            "createdAt": 1795300000000u64,
+                            "pending": false,
+                            "dismissed": false,
+                            "report": null,
+                            "note": "正在补齐 TurnRail 与 GoalBar"
+                        }
+                    }))
+                    .unwrap()
+                };
+
+                match method.as_str() {
+                    "projects" => {
+                        let _req: ProjectsRead = serde_json::from_value(input)
+                            .map_err(|e| HandlerError::from(e.to_string()))?;
+                        let rev = "b".repeat(64);
+                        to_val(&ProjectsPage::Projects {
+                            revision: rev.clone(),
+                            projects: vec![
+                                Project {
+                                    reference: ProjectRef {
+                                        id: proj_alpha_id,
+                                        revision: rev.clone(),
+                                    },
+                                    name: "alpha-repo".into(),
+                                    archived: false,
+                                    available: true,
+                                    path: Some("/Users/dev/alpha".into()),
+                                },
+                                Project {
+                                    reference: ProjectRef {
+                                        id: proj_empty_id,
+                                        revision: rev,
+                                    },
+                                    name: "empty-lab".into(),
+                                    archived: false,
+                                    available: true,
+                                    path: Some("/Users/dev/empty-lab".into()),
+                                },
+                            ],
+                            next: None,
+                        })
+                    }
+                    "directories" => {
+                        let _req: Directories = serde_json::from_value(input)
+                            .map_err(|e| HandlerError::from(e.to_string()))?;
+                        to_val(&DirectoryPage::Roots { roots: vec![] })
+                    }
+                    "list" => {
+                        let req: List = serde_json::from_value(input)
+                            .map_err(|e| HandlerError::from(e.to_string()))?;
+                        let filtered: Vec<Session> = sessions
+                            .lock()
+                            .unwrap()
+                            .iter()
+                            .filter(|s| {
+                                if req.include_archived {
+                                    s.archived
+                                } else {
+                                    !s.archived
+                                }
+                            })
+                            .cloned()
+                            .collect();
+                        to_val(&SessionPage {
+                            revision: "rev-parity".into(),
+                            needs_you_count: 0,
+                            sessions: filtered,
+                            before: None,
+                            after: None,
+                        })
+                    }
+                    "catalog" => {
+                        let _req: List = serde_json::from_value(input)
+                            .map_err(|e| HandlerError::from(e.to_string()))?;
+                        let visible: Vec<Session> = sessions
+                            .lock()
+                            .unwrap()
+                            .iter()
+                            .filter(|s| !s.archived)
+                            .cloned()
+                            .collect();
+                        context
+                            .emit(
+                                serde_json::to_value(&SessionPage {
+                                    revision: "rev-parity".into(),
+                                    needs_you_count: 0,
+                                    sessions: visible,
+                                    before: None,
+                                    after: None,
+                                })
+                                .unwrap(),
+                            )
+                            .await
+                            .map_err(|e| HandlerError::from(e.to_string()))?;
+                        context.scope().cancellation.cancelled().await;
+                        Ok(HandlerValue::Json(Value::Null))
+                    }
+                    "models" => {
+                        let _req: ModelsRead = serde_json::from_value(input)
+                            .map_err(|e| HandlerError::from(e.to_string()))?;
+                        to_val(&ModelsPage::Ready {
+                            revision: "mrev-1".into(),
+                            choices: vec![ModelChoice {
+                                service_tiers: vec![],
+                                selection: BackendPreference::Model {
+                                    connection_id: "kimi-coding-plan".into(),
+                                    model_id: "kimi-for-coding".into(),
+                                    service_tier: None,
+                                    thinking_level: Some(ThinkingLevel::Medium),
+                                },
+                                aliases: vec![],
+                                source_name: "Kimi Coding Plan".into(),
+                                label: "Kimi K2.5".into(),
+                                thinking_levels: vec!["low".into(), "medium".into(), "high".into()],
+                                default_thinking_level: Some("medium".into()),
+                            }],
+                            refreshing: false,
+                            complete: true,
+                            next: None,
+                        })
+                    }
+                    "selectBackend" => {
+                        let req: SelectBackend = serde_json::from_value(input)
+                            .map_err(|e| HandlerError::from(e.to_string()))?;
+                        let mut guard = sessions.lock().unwrap();
+                        let s = guard.iter_mut().find(|s| s.id == req.session_id).unwrap();
+                        s.backend = Some(req.backend);
+                        s.revision += 1;
+                        to_val(&MetadataResult::Committed {
+                            session: Box::new(s.clone()),
+                        })
+                    }
+                    "create" => {
+                        let req: Create = serde_json::from_value(input)
+                            .map_err(|e| HandlerError::from(e.to_string()))?;
+                        let (proj_id, path) = match &req.workspace {
+                            WorkspaceSelection::Project { project_id, path } => {
+                                (Some(*project_id), path.clone())
+                            }
+                            _ => (Some(proj_empty_id), "/Users/dev/empty-lab".into()),
+                        };
+                        created_reqs.lock().unwrap().push((
+                            req.automatic_title,
+                            req.title.clone(),
+                            req.workspace,
+                            req.backend.clone(),
+                        ));
+                        let created_session = Session {
+                            incognito: false,
+                            kind: SessionKind::Agent,
+                            applied_preset: None,
+                            parent_session_id: None,
+                            branch: None,
+                            backend: req.backend,
+                            tools: None,
+                            data_source: Box::new(DataSource {
+                                state_domain: root_id.clone(),
+                                deployment: deployment_id,
+                                namespace: maka_plugin_core::composition::InstanceId(vec![
+                                    Uuid::new_v4(),
+                                ]),
+                            }),
+                            permissions: WorkspacePermissions {
+                                access: WorkspaceAccess::WorkspaceWrite,
+                                request_permissions: true,
+                            },
+                            boundary_revision: 1,
+                            binding: BindingStamp {
+                                id: binding_id,
+                                permission_epoch: 1,
+                            },
+                            id: "sess-draft-created".into(),
+                            title: "自动生成标题".into(),
+                            labels: vec![],
+                            workspace: Workspace {
+                                worktree: None,
+                                project_id: proj_id,
+                                path,
+                            },
+                            revision: 1,
+                            updated_at: 1_795_300_200_000,
+                            archived: false,
+                            pinned: false,
+                            has_unread: false,
+                            tail_message_id: None,
+                            activity: SessionActivity::Idle,
+                        };
+                        sessions.lock().unwrap().insert(0, created_session.clone());
+                        to_val(&Created::Created {
+                            session: Box::new(created_session),
+                        })
+                    }
+                    "send" => {
+                        let req: AgentSend = serde_json::from_value(input)
+                            .map_err(|e| HandlerError::from(e.to_string()))?;
+                        to_val(&SendResult::Started {
+                            session_id: req.session_id,
+                            run_id,
+                            message_id: "msg-draft-1".into(),
+                            completion: None,
+                        })
+                    }
+                    "observe" => {
+                        let req: SessionRead = serde_json::from_value(input)
+                            .map_err(|e| HandlerError::from(e.to_string()))?;
+                        let guard = sessions.lock().unwrap();
+                        let s = guard
+                            .iter()
+                            .find(|s| s.id == req.session_id)
+                            .cloned()
+                            .unwrap_or_else(|| guard[0].clone());
+                        to_val(&Observation {
+                            session: s,
+                            last_completed_turn_id: Some("t-5".into()),
+                            compacting: None,
+                            remembered_backend: None,
+                            metrics: None,
+                            latest_run_id: None,
+                            through: 5,
+                            run: None,
+                            parts: vec![],
+                            tool_seeds: vec![],
+                        })
+                    }
+                    "history" => {
+                        let req: History = serde_json::from_value(input)
+                            .map_err(|e| HandlerError::from(e.to_string()))?;
+                        let mk = |seq: u64, fact: FactId, role: Role, id: &str, text: &str| {
+                            HistoryChunk {
+                                imported_turn: None,
+                                run_id: Some(run_id),
+                                model_part: None,
+                                source_citation: false,
+                                citation: None,
+                                citation_anchor: None,
+                                has_references: false,
+                                quotes: vec![],
+                                final_output: false,
+                                reply_info: None,
+                                final_answer: role == Role::Assistant,
+                                model: None,
+                                origin: None,
+                                compaction: None,
+                                attachments: vec![],
+                                timing: None,
+                                folded_work: None,
+                                work: None,
+                                field: HistoryField::Body,
+                                message_id: Some(id.into()),
+                                turn_id: Some(format!("t-{seq}")),
+                                timestamp: Some(1_795_300_000_000 + seq),
+                                role,
+                                order: HistoryOrder {
+                                    path: vec![seq],
+                                    item_index: 0,
+                                },
+                                position: HistoryRowAddress::Live {
+                                    sequence: seq,
+                                    fact,
+                                    item_index: 0,
+                                },
+                                offset: 0,
+                                total_bytes: text.len() as u64,
+                                text: text.into(),
+                                tool: None,
+                            }
+                        };
+                        match req.position {
+                            HistoryPosition::Before { .. } => {
+                                history_before_called.store(true, Ordering::SeqCst);
+                                to_val(&HistoryPage::Ready {
+                                    through: Some(5),
+                                    chunks: vec![mk(
+                                        1,
+                                        facts[0],
+                                        Role::User,
+                                        "m-older-1",
+                                        "更早的历史消息内容",
+                                    )],
+                                    before: None,
+                                    after: None,
+                                })
+                            }
+                            _ => to_val(&HistoryPage::Ready {
+                                through: Some(5),
+                                chunks: vec![
+                                    mk(2, facts[1], Role::User, "m-u1", "第一轮提问：检查编译状态"),
+                                    mk(
+                                        3,
+                                        facts[2],
+                                        Role::Assistant,
+                                        "m-a1",
+                                        "第一轮答复：编译正常。",
+                                    ),
+                                    mk(
+                                        4,
+                                        facts[3],
+                                        Role::User,
+                                        "m-u2",
+                                        "第二轮提问：加上右侧进度条",
+                                    ),
+                                    mk(
+                                        5,
+                                        facts[4],
+                                        Role::Assistant,
+                                        "m-a2",
+                                        "第二轮答复：TurnRail 已就绪。",
+                                    ),
+                                ],
+                                before: Some(Cursor {
+                                    position: HistoryRowAddress::Live {
+                                        sequence: 2,
+                                        fact: facts[1],
+                                        item_index: 0,
+                                    },
+                                    field: HistoryField::Body,
+                                    offset: 0,
+                                }),
+                                after: None,
+                            }),
+                        }
+                    }
+                    "watch" => {
+                        context
+                            .emit(
+                                serde_json::to_value(&DeliveryPage::Events {
+                                    through: 5,
+                                    next_after: 5,
+                                    events: vec![],
+                                })
+                                .unwrap(),
+                            )
+                            .await
+                            .map_err(|e| HandlerError::from(e.to_string()))?;
+                        context.scope().cancellation.cancelled().await;
+                        Ok(HandlerValue::Json(Value::Null))
+                    }
+                    "pendingInteractions" => to_val(&PendingInteractions {
+                        revision: 1,
+                        entries: vec![],
+                    }),
+                    "markRead" => {
+                        let req: MarkRead = serde_json::from_value(input)
+                            .map_err(|e| HandlerError::from(e.to_string()))?;
+                        mark_read_reqs.lock().unwrap().push(req.session_id.clone());
+                        let mut guard = sessions.lock().unwrap();
+                        let s = guard.iter_mut().find(|s| s.id == req.session_id).unwrap();
+                        s.has_unread = false;
+                        to_val(&MarkReadResult::Observed {
+                            session: Box::new(s.clone()),
+                        })
+                    }
+                    "metadata" => {
+                        let req: Metadata = serde_json::from_value(input)
+                            .map_err(|e| HandlerError::from(e.to_string()))?;
+                        metadata_reqs.lock().unwrap().push((
+                            req.session_id.clone(),
+                            req.title.clone(),
+                            req.expected_revision,
+                        ));
+                        let mut guard = sessions.lock().unwrap();
+                        let s = guard.iter_mut().find(|s| s.id == req.session_id).unwrap();
+                        s.title = req.title;
+                        if let Some(p) = req.pinned {
+                            s.pinned = p;
+                        }
+                        s.revision += 1;
+                        to_val(&MetadataResult::Committed {
+                            session: Box::new(s.clone()),
+                        })
+                    }
+                    "changeSession" => {
+                        let req: ChangeSession = serde_json::from_value(input)
+                            .map_err(|e| HandlerError::from(e.to_string()))?;
+                        change_reqs
+                            .lock()
+                            .unwrap()
+                            .push((req.session_id.clone(), req.action));
+                        let mut guard = sessions.lock().unwrap();
+                        let s = guard.iter_mut().find(|s| s.id == req.session_id).unwrap();
+                        if matches!(req.action, SessionAction::Archive) {
+                            s.archived = true;
+                        }
+                        s.revision += 1;
+                        to_val(&SessionChanged::Changed {
+                            session: Box::new(s.clone()),
+                        })
+                    }
+                    "goal" => {
+                        let st = goal_status.lock().unwrap().clone();
+                        let rev = *goal_revision.lock().unwrap();
+                        to_val(&make_goal_view(&st, rev))
+                    }
+                    "watchGoal" => {
+                        let st = goal_status.lock().unwrap().clone();
+                        let rev = *goal_revision.lock().unwrap();
+                        context
+                            .emit(serde_json::to_value(&make_goal_view(&st, rev)).unwrap())
+                            .await
+                            .map_err(|e| HandlerError::from(e.to_string()))?;
+                        context.scope().cancellation.cancelled().await;
+                        Ok(HandlerValue::Json(Value::Null))
+                    }
+                    "changeGoal" => {
+                        let req: GoalChange = serde_json::from_value(input)
+                            .map_err(|e| HandlerError::from(e.to_string()))?;
+                        match req {
+                            GoalChange::Control { action, .. } => {
+                                let action_str = serde_json::to_value(action)
+                                    .unwrap()
+                                    .as_str()
+                                    .unwrap()
+                                    .to_string();
+                                goal_controls.lock().unwrap().push(action_str.clone());
+                                if action_str == "pause" {
+                                    *goal_status.lock().unwrap() = "paused".into();
+                                }
+                                let mut rev = goal_revision.lock().unwrap();
+                                *rev += 1;
+                                to_val(&GoalResult::Committed {
+                                    goal_id,
+                                    revision: *rev,
+                                })
+                            }
+                            _ => Err(HandlerError::from("unexpected GoalChange variant")),
+                        }
+                    }
+                    other => Err(HandlerError::from(format!(
+                        "unexpected parity agent method: {other}"
+                    ))),
+                }
+            })
+        }
+    }
+
+    let (dir, ws_addr, pairing, stop, server) = rt.block_on(async {
+        let dir = tempfile::tempdir().unwrap();
+        private_directory(dir.path()).unwrap();
+        let root = Arc::new(
+            RootOwner::create(
+                &dir.path().join("root"),
+                &RootNamespaces {
+                    ownership: dir.path().join("ownership"),
+                    control: dir.path().join("control"),
+                },
+            )
+            .unwrap(),
+        );
+        let root_id_for_service = root.root_id().to_owned();
+        let store = Arc::new(RootStore::open(root, ROOT_MIGRATIONS).await.unwrap());
+        let agent_contract = maka_agent_api::contract();
+        let pkg = |id: &str, host: Value| {
+            Package::new(BTreeMap::from([(
+                "maka.extension.json".into(),
+                serde_json::to_vec(&json!({
+                    "schemaVersion": 1,
+                    "id": id,
+                    "application": { "host": host }
+                }))
+                .unwrap(),
+            )]))
+            .unwrap()
+        };
+        let agent_pkg = pkg(
+            "test.agent.parity",
+            json!({
+                "implementation": { "kind": "native", "implementation": "test.parity.agent" },
+                "configuration": { "type": "object" },
+                "imports": {},
+                "exports": { "Agent": { "contract": agent_contract, "availability": "required" } }
+            }),
+        );
+        let gateway_pkg = pkg(
+            "test.gateway.parity",
+            json!({
+                "implementation": { "kind": "native", "implementation": GATEWAY },
+                "configuration": { "type": "object" },
+                "exports": {},
+                "imports": { "agent": { "contract": agent_contract, "cardinality": { "kind": "one" } } }
+            }),
+        );
+        let consumer = Uuid::new_v4();
+        store
+            .commit_application(
+                deployment_id,
+                0,
+                serde_json::from_value(json!({
+                    "instances": {
+                        "agent": {
+                            "key": Uuid::new_v4(),
+                            "package": { "source": "pinned", "package": agent_pkg.application_ref() },
+                            "usePackage": "host"
+                        },
+                        "gateway": {
+                            "key": consumer,
+                            "package": { "source": "pinned", "package": gateway_pkg.application_ref() },
+                            "usePackage": "host",
+                            "bindings": {
+                                "agent": [{ "kind": "instance", "path": ["agent"], "export": "Agent" }]
+                            }
+                        }
+                    }
+                }))
+                .unwrap(),
+                vec![],
+                vec![agent_pkg, gateway_pkg],
+            )
+            .await
+            .unwrap();
+
+        let initial_sessions = Arc::new(std::sync::Mutex::new(vec![Session {
+            incognito: false,
+            kind: SessionKind::Agent,
+            applied_preset: None,
+            parent_session_id: None,
+            branch: None,
+            backend: None,
+            tools: None,
+            data_source: Box::new(DataSource {
+                state_domain: root_id_for_service.clone(),
+                deployment: deployment_id,
+                namespace: maka_plugin_core::composition::InstanceId(vec![Uuid::new_v4()]),
+            }),
+            permissions: WorkspacePermissions {
+                access: WorkspaceAccess::WorkspaceWrite,
+                request_permissions: true,
+            },
+            boundary_revision: 1,
+            binding: BindingStamp {
+                id: binding_id,
+                permission_epoch: 1,
+            },
+            id: "sess-existing".into(),
+            title: "现有会话 Alpha".into(),
+            labels: vec![],
+            workspace: Workspace {
+                worktree: None,
+                project_id: Some(proj_alpha_id),
+                path: "/Users/dev/alpha".into(),
+            },
+            revision: 2,
+            updated_at: 1_795_300_100_000,
+            archived: false,
+            pinned: false,
+            has_unread: true,
+            tail_message_id: Some("m-a2".into()),
+            activity: SessionActivity::Idle,
+        }]));
+
+        let mut native = NativeRegistry::default();
+        let contract_clone = agent_contract.clone();
+        let created_c = created_reqs.clone();
+        let metadata_c = metadata_reqs.clone();
+        let change_c = change_reqs.clone();
+        let mark_c = mark_read_reqs.clone();
+        let goal_c = goal_controls.clone();
+        let hist_c = history_before_called.clone();
+        let gs_c = goal_status.clone();
+        let gr_c = goal_revision.clone();
+        native
+            .insert(
+                "test.parity.agent".into(),
+                Arc::new(move |_ctx, _cfg| {
+                    let contract = contract_clone.clone();
+                    let root_id = root_id_for_service.clone();
+                    let sessions = initial_sessions.clone();
+                    let created_reqs = created_c.clone();
+                    let metadata_reqs = metadata_c.clone();
+                    let change_reqs = change_c.clone();
+                    let mark_read_reqs = mark_c.clone();
+                    let goal_controls = goal_c.clone();
+                    let history_before_called = hist_c.clone();
+                    let goal_status = gs_c.clone();
+                    let goal_revision = gr_c.clone();
+                    Box::pin(async move {
+                        NativeActivation {
+                            exports: Ok(BTreeMap::from([(
+                                "Agent".into(),
+                                Published {
+                                    contract,
+                                    value: Arc::new(ParityAgentService {
+                                        root_id,
+                                        deployment_id,
+                                        binding_id,
+                                        proj_alpha_id,
+                                        proj_empty_id,
+                                        goal_id,
+                                        run_id,
+                                        facts,
+                                        sessions,
+                                        created_reqs,
+                                        metadata_reqs,
+                                        change_reqs,
+                                        mark_read_reqs,
+                                        goal_controls,
+                                        history_before_called,
+                                        goal_status,
+                                        goal_revision,
+                                    }) as Arc<dyn Handler>,
+                                },
+                            )])),
+                            owner: Arc::new(()),
+                        }
+                    })
+                }),
+            )
+            .unwrap();
+
+        let configuration = Configuration::PublicHost {
+            endpoints: serde_json::from_value(json!({
+                "agent": {
+                    "consumer": [consumer],
+                    "import": "agent",
+                    "grant": {
+                        "methods": [
+                            "projects", "directories", "list", "catalog", "models", "selectBackend",
+                            "create", "send", "observe", "history", "watch", "pendingInteractions",
+                            "markRead", "metadata", "changeSession", "goal", "watchGoal", "changeGoal"
+                        ],
+                        "recovery": false
+                    }
+                }
+            }))
+            .unwrap(),
+            native: Default::default(),
+            product_methods: Default::default(),
+        };
+        let host = Host::open_with_options(
+            store,
+            deployment_id,
+            native,
+            None,
+            configuration,
+            Options {
+                lifecycle_mode: LifecycleMode::Ephemeral,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let pairing = host.prepare_access("ios-parity-e2e".into()).await.unwrap();
+        #[cfg(unix)]
+        let socket = dir.path().join("host.sock");
+        #[cfg(windows)]
+        let socket =
+            std::path::PathBuf::from(format!(r"\.pipemaka-ios-parity-{}", Uuid::new_v4()));
+        let local = LocalListener::bind(&socket).unwrap();
+        let websocket = WebSocketListener::bind("127.0.0.1:0".parse().unwrap(), vec![])
+            .await
+            .unwrap();
+        let ws_addr = websocket.local_addr().unwrap();
+        let stop = CancellationToken::new();
+        let server = tokio::spawn({
+            let stop = stop.clone();
+            async move { host.serve(local, Some(websocket), stop).await }
+        });
+        (dir, ws_addr, pairing, stop, server)
+    });
+
+    let uri = PairingTicketV1::new(
+        pairing.root_id.clone(),
+        "Parity Mac",
+        "peer_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        vec![format!("ws://{ws_addr}")],
+        pairing.credential.clone(),
+        "nonce-parity-01",
+        now_ms() + 300_000,
+    )
+    .unwrap()
+    .encode_uri()
+    .unwrap();
+
+    let support_dir = tempfile::tempdir().unwrap();
+    let channel = HostChannel::new();
+    let _bridge =
+        HostBridge::attach(channel.clone(), support_dir.path(), rt.handle().clone()).unwrap();
+
+    let mut cfg = engine_config(channel, rt.handle().clone());
+    cfg.viewport = Size::new(px(390.0), px(844.0));
+    cfg.environment = Environment {
+        os: Os::Ios,
+        ..Environment::default()
+    };
+    let mut app = nsh_testing::Headless::start_with_link(cfg, &uri).unwrap();
+
+    // 1. Pair & auto-open existing unread session -> verifies markRead, GoalBar, TurnRail, and Load earlier!
+    app.wait_for("label:Confirm pairing and connect").unwrap();
+    app.press("label:Confirm pairing and connect").unwrap();
+    app.wait_for("text:现有会话 Alpha").unwrap();
+    app.wait_for("text:第二轮答复：TurnRail 已就绪。").unwrap();
+    app.wait_for("text:目标 · 正在推进").unwrap();
+    app.wait_for("label:Jump to turn m-u1").unwrap();
+    app.wait_for("label:Jump to turn m-u2").unwrap();
+
+    app.press("label:Jump to turn m-u1").unwrap();
+    app.wait_for("text:/第一轮提问：检查编译状态/").unwrap();
+    assert!(
+        !mark_read_reqs.lock().unwrap().is_empty(),
+        "opening unread session must call agent.markRead"
+    );
+
+    // 2. Expand GoalBar and pause active goal via real agent.changeGoal!
+    app.press("label:Toggle goal details").unwrap();
+    app.wait_for("text:对齐 iOS 与 Desktop 的全部核心交互")
+        .unwrap();
+    app.press("label:Pause goal").unwrap();
+    app.wait_for("text:目标 · 已暂停").unwrap();
+    assert_eq!(goal_controls.lock().unwrap().as_slice(), &["pause"]);
+
+    // 3. Backward history pagination ("加载更早消息" -> HistoryPosition::Before)!
+    app.press("label:Load earlier messages").unwrap();
+    app.wait_for("text:更早的历史消息内容").unwrap();
+    assert!(history_before_called.load(Ordering::SeqCst));
+
+    // 4. Inline header rename -> real agent.metadata with expectedRevision!
+    app.press("label:Rename active session title").unwrap();
+    app.type_text("label:Inline rename active session input", " · 已改名")
+        .unwrap();
+    app.press("label:Save inline session title").unwrap();
+    app.wait_for("text:现有会话 Alpha · 已改名").unwrap();
+    {
+        let renames = metadata_reqs.lock().unwrap();
+        assert_eq!(renames.len(), 1);
+        assert_eq!(renames[0].0, "sess-existing");
+        assert_eq!(renames[0].1, "现有会话 Alpha · 已改名");
+        assert_eq!(renames[0].2, 2);
+    }
+
+    // 5. Open drawer -> verify EMPTY project "empty-lab" is shown with trailing "+" button!
+    app.press("label:Open drawer").unwrap();
+    app.wait_for("text:empty-lab").unwrap();
+    app.wait_for("label:New draft in empty-lab").unwrap();
+
+    // Pin and archive via Drawer "⋯" menu!
+    app.press("label:Session actions 现有会话 Alpha · 已改名")
+        .unwrap();
+    app.press("label:Pin 现有会话 Alpha · 已改名").unwrap();
+    app.wait_for("text:置顶").unwrap();
+    app.press("label:Session actions 现有会话 Alpha · 已改名")
+        .unwrap();
+    app.press("label:Archive 现有会话 Alpha · 已改名").unwrap();
+    assert!(
+        change_reqs
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(sid, act)| sid == "sess-existing" && matches!(act, SessionAction::Archive))
+    );
+
+    // 6. Tap empty-lab trailing "+" -> opens local Draft (NO agent.create yet!), pick model + thinking level, send first message -> real agent.create(automaticTitle=true) + send!
+    app.press("label:New draft in empty-lab").unwrap();
+    app.wait_for("text:新对话").unwrap();
+    app.wait_for("text:/工作区 · empty-lab/").unwrap();
+    assert!(
+        created_reqs.lock().unwrap().is_empty(),
+        "tapping Project '+' must open a local Draft without prematurely calling agent.create"
+    );
+
+    app.press("label:Select model and thinking").unwrap();
+    app.wait_for("text:Kimi K2.5").unwrap();
+    app.press("label:Model Kimi K2.5").unwrap();
+    app.press("label:Thinking high Kimi K2.5").unwrap();
+    app.wait_for("text:/kimi-for-coding · high/").unwrap();
+
+    app.type_text("label:Chat composer input", "帮我初始化 empty-lab 项目")
+        .unwrap();
+    app.press("label:Send message").unwrap();
+    app.wait_for("text:自动生成标题").unwrap();
+
+    {
+        let created = created_reqs.lock().unwrap();
+        assert_eq!(created.len(), 1);
+        assert!(created[0].0, "first-send draft must enable automaticTitle");
+        assert_eq!(created[0].1, "New conversation");
+        assert!(matches!(
+            &created[0].2,
+            WorkspaceSelection::Project { project_id, path }
+                if *project_id == proj_empty_id && path == "/Users/dev/empty-lab"
+        ));
+        assert!(matches!(
+            &created[0].3,
+            Some(BackendPreference::Model {
+                model_id,
+                thinking_level: Some(ThinkingLevel::High),
+                ..
+            }) if model_id == "kimi-for-coding"
+        ));
+    }
+
+    rt.block_on(async {
+        stop.cancel();
+        let _ = tokio::time::timeout(Duration::from_secs(5), server).await;
+    });
+    drop(dir);
+}
+
+#[test]
+fn approval_rejection_keeps_card_open_and_send_rejection_restores_draft() {
+    use maka_agent_api::contract::{
+        DataSource, DeliveryPage, Directories, DirectoryPage, HistoryPage, InteractionKind,
+        InteractionRead, InteractionRejection, InteractionRespond, InteractionResult,
+        InteractionSummary, List, Observation, PendingInteractions, ProjectsPage, ProjectsRead,
+        Send as AgentSend, SendRejection, SendResult, Session, SessionActivity, SessionKind,
+        SessionPage, SessionRead, Workspace, WorkspaceAccess, WorkspacePermissions,
+    };
+    use maka_agent_facts::{
+        durable::{AuthorizationObligation, ExecutionIdentity, RunId},
+        interaction::{
+            InteractionAnswer, InteractionQuestion, InteractionRecord, InteractionRequest,
+            PermissionCommand, PermissionRequest, PermissionSource, QuestionOption,
+            SystemPermissionGrant,
+        },
+    };
+    use maka_host_runtime::application::{
+        Context, Handler, HandlerError, HandlerResult, HandlerValue, NativeActivation,
+        NativeRegistry,
+    };
+    use maka_plugin_core::runtime::Published;
+    use maka_sandbox::{
+        grant::Permissions,
+        workspace::{BindingStamp, PermissionBasis},
+    };
+
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    let deployment_id = Uuid::new_v4();
+    let binding_id = Uuid::new_v4();
+    let active_run = RunId::new();
+    let recorded_answers: Arc<std::sync::Mutex<Vec<(String, InteractionAnswer)>>> =
+        Arc::new(std::sync::Mutex::new(Vec::new()));
+
+    struct SafetyAgentService {
+        root_id: String,
+        deployment_id: Uuid,
+        binding_id: Uuid,
+        active_run: RunId,
+        recorded_answers: Arc<std::sync::Mutex<Vec<(String, InteractionAnswer)>>>,
+    }
+
+    impl Handler for SafetyAgentService {
+        fn call(
+            &self,
+            method: String,
+            input: Value,
+            context: Context,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = HandlerResult> + Send + 'static>>
+        {
+            let root_id = self.root_id.clone();
+            let deployment_id = self.deployment_id;
+            let binding_id = self.binding_id;
+            let active_run = self.active_run;
+            let recorded_answers = self.recorded_answers.clone();
+
+            Box::pin(async move {
+                fn to_val<T: serde::Serialize>(v: &T) -> Result<HandlerValue, HandlerError> {
+                    serde_json::to_value(v)
+                        .map(HandlerValue::Json)
+                        .map_err(|e| HandlerError::from(e.to_string()))
+                }
+
+                let session = Session {
+                    incognito: false,
+                    kind: SessionKind::Agent,
+                    applied_preset: None,
+                    parent_session_id: None,
+                    branch: None,
+                    backend: None,
+                    tools: None,
+                    data_source: Box::new(DataSource {
+                        state_domain: root_id.clone(),
+                        deployment: deployment_id,
+                        namespace: maka_plugin_core::composition::InstanceId(vec![Uuid::new_v4()]),
+                    }),
+                    permissions: WorkspacePermissions {
+                        access: WorkspaceAccess::WorkspaceWrite,
+                        request_permissions: true,
+                    },
+                    boundary_revision: 1,
+                    binding: BindingStamp {
+                        id: binding_id,
+                        permission_epoch: 1,
+                    },
+                    id: "sess-safety".into(),
+                    title: "安全边界回归".into(),
+                    labels: vec![],
+                    workspace: Workspace {
+                        worktree: None,
+                        project_id: None,
+                        path: "/Users/dev/safety".into(),
+                    },
+                    revision: 1,
+                    updated_at: 1_795_300_500_000,
+                    archived: false,
+                    pinned: false,
+                    has_unread: false,
+                    tail_message_id: None,
+                    activity: SessionActivity::Waiting,
+                };
+                let execution = ExecutionIdentity {
+                    session_id: "sess-safety".into(),
+                    turn_id: "t-1".into(),
+                    run_id: active_run,
+                };
+                let basis = PermissionBasis {
+                    boundary_revision: 1,
+                    binding: BindingStamp {
+                        id: binding_id,
+                        permission_epoch: 1,
+                    },
+                };
+                let perm_record = InteractionRecord {
+                    execution: execution.clone(),
+                    request_id: "req-perm-no-tool".into(),
+                    created_at: 1_795_300_501_000,
+                    request: InteractionRequest::Permissions {
+                        target: AuthorizationObligation::Cell {
+                            cell: maka_agent_facts::cells::CellId::new(),
+                            operation: Uuid::new_v4(),
+                        },
+                        tool_use_id: None,
+                        basis,
+                        request: PermissionRequest {
+                            reason: "需要全局写入权限".into(),
+                            command: Some(PermissionCommand {
+                                command: "git push origin main".into(),
+                                cwd: "/Users/dev/safety".into(),
+                            }),
+                            permissions: serde_json::from_value::<Permissions>(json!({
+                                "filesystem": [{
+                                    "path": "/Users/dev/safety",
+                                    "scope": "subtree",
+                                    "access": "write"
+                                }],
+                                "network": "allowed"
+                            }))
+                            .unwrap(),
+                            source: PermissionSource::Processes,
+                        },
+                    },
+                    outcome: None,
+                };
+                let q_record = InteractionRecord {
+                    execution: execution.clone(),
+                    request_id: "req-q-skip".into(),
+                    created_at: 1_795_300_502_000,
+                    request: InteractionRequest::Question {
+                        tool_use_id: "tu-q-skip".into(),
+                        questions: vec![InteractionQuestion {
+                            question: "可选补充问题？".into(),
+                            options: vec![
+                                QuestionOption {
+                                    label: "选项 A".into(),
+                                    description: None,
+                                },
+                                QuestionOption {
+                                    label: "选项 B".into(),
+                                    description: None,
+                                },
+                            ],
+                        }],
+                    },
+                    outcome: None,
+                };
+                let sys_record = InteractionRecord {
+                    execution,
+                    request_id: "req-sys-cancel".into(),
+                    created_at: 1_795_300_503_000,
+                    request: InteractionRequest::SystemPermission {
+                        tool_use_id: "tu-sys".into(),
+                        grants: vec![SystemPermissionGrant::ScreenRecording],
+                        application: "Maka Host".into(),
+                        application_location: None,
+                    },
+                    outcome: None,
+                };
+
+                match method.as_str() {
+                    "projects" => {
+                        let _req: ProjectsRead = serde_json::from_value(input)
+                            .map_err(|e| HandlerError::from(e.to_string()))?;
+                        to_val(&ProjectsPage::Projects {
+                            revision: "c".repeat(64),
+                            projects: vec![],
+                            next: None,
+                        })
+                    }
+                    "directories" => {
+                        let _req: Directories = serde_json::from_value(input)
+                            .map_err(|e| HandlerError::from(e.to_string()))?;
+                        to_val(&DirectoryPage::Roots { roots: vec![] })
+                    }
+                    "list" => {
+                        let _req: List = serde_json::from_value(input)
+                            .map_err(|e| HandlerError::from(e.to_string()))?;
+                        to_val(&SessionPage {
+                            revision: "rev-safe".into(),
+                            needs_you_count: 1,
+                            sessions: vec![session],
+                            before: None,
+                            after: None,
+                        })
+                    }
+                    "catalog" => {
+                        let _req: List = serde_json::from_value(input)
+                            .map_err(|e| HandlerError::from(e.to_string()))?;
+                        context
+                            .emit(
+                                serde_json::to_value(&SessionPage {
+                                    revision: "rev-safe".into(),
+                                    needs_you_count: 1,
+                                    sessions: vec![session],
+                                    before: None,
+                                    after: None,
+                                })
+                                .unwrap(),
+                            )
+                            .await
+                            .map_err(|e| HandlerError::from(e.to_string()))?;
+                        context.scope().cancellation.cancelled().await;
+                        Ok(HandlerValue::Json(Value::Null))
+                    }
+                    "observe" => {
+                        let _req: SessionRead = serde_json::from_value(input)
+                            .map_err(|e| HandlerError::from(e.to_string()))?;
+                        to_val(&Observation {
+                            session,
+                            last_completed_turn_id: None,
+                            compacting: None,
+                            remembered_backend: None,
+                            metrics: None,
+                            latest_run_id: None,
+                            through: 1,
+                            run: None,
+                            parts: vec![],
+                            tool_seeds: vec![],
+                        })
+                    }
+                    "history" => to_val(&HistoryPage::Ready {
+                        through: Some(1),
+                        chunks: vec![],
+                        before: None,
+                        after: None,
+                    }),
+                    "watch" => {
+                        context
+                            .emit(
+                                serde_json::to_value(&DeliveryPage::Events {
+                                    through: 1,
+                                    next_after: 1,
+                                    events: vec![],
+                                })
+                                .unwrap(),
+                            )
+                            .await
+                            .map_err(|e| HandlerError::from(e.to_string()))?;
+                        context.scope().cancellation.cancelled().await;
+                        Ok(HandlerValue::Json(Value::Null))
+                    }
+                    "goal" => Ok(HandlerValue::Json(
+                        json!({ "enabled": false, "current": null }),
+                    )),
+                    "watchGoal" => {
+                        context
+                            .emit(json!({ "enabled": false, "current": null }))
+                            .await
+                            .map_err(|e| HandlerError::from(e.to_string()))?;
+                        context.scope().cancellation.cancelled().await;
+                        Ok(HandlerValue::Json(Value::Null))
+                    }
+                    "pendingInteractions" => to_val(&PendingInteractions {
+                        revision: 1,
+                        entries: vec![
+                            InteractionSummary {
+                                request_id: "req-perm-no-tool".into(),
+                                kind: InteractionKind::Permissions,
+                                tool_use_id: None,
+                            },
+                            InteractionSummary {
+                                request_id: "req-q-skip".into(),
+                                kind: InteractionKind::Question,
+                                tool_use_id: Some("tu-q-skip".into()),
+                            },
+                            InteractionSummary {
+                                request_id: "req-sys-cancel".into(),
+                                kind: InteractionKind::SystemPermission,
+                                tool_use_id: Some("tu-sys".into()),
+                            },
+                        ],
+                    }),
+                    "interaction" => {
+                        let req: InteractionRead = serde_json::from_value(input)
+                            .map_err(|e| HandlerError::from(e.to_string()))?;
+                        let rec = match req.request_id.as_str() {
+                            "req-perm-no-tool" => Some(perm_record),
+                            "req-q-skip" => Some(q_record),
+                            "req-sys-cancel" => Some(sys_record),
+                            _ => None,
+                        };
+                        to_val(&rec)
+                    }
+                    "respond" => {
+                        let req: InteractionRespond = serde_json::from_value(input)
+                            .map_err(|e| HandlerError::from(e.to_string()))?;
+                        recorded_answers
+                            .lock()
+                            .unwrap()
+                            .push((req.request_id.clone(), req.answer));
+                        if req.request_id == "req-perm-no-tool" {
+                            to_val(&InteractionResult::Rejected {
+                                reason: InteractionRejection::AuthorizationChanged,
+                            })
+                        } else {
+                            let rec = if req.request_id == "req-q-skip" {
+                                q_record
+                            } else {
+                                sys_record
+                            };
+                            to_val(&InteractionResult::Recorded {
+                                record: Box::new(rec),
+                            })
+                        }
+                    }
+                    "send" => {
+                        let req: AgentSend = serde_json::from_value(input)
+                            .map_err(|e| HandlerError::from(e.to_string()))?;
+                        to_val(&SendResult::Rejected {
+                            session_id: req.session_id,
+                            reason: SendRejection::ModelUnavailable,
+                            skills: None,
+                        })
+                    }
+                    other => Err(HandlerError::from(format!(
+                        "unexpected safety agent method: {other}"
+                    ))),
+                }
+            })
+        }
+    }
+
+    let (dir, ws_addr, pairing, stop, server) = rt.block_on(async {
+        let dir = tempfile::tempdir().unwrap();
+        private_directory(dir.path()).unwrap();
+        let root = Arc::new(
+            RootOwner::create(
+                &dir.path().join("root"),
+                &RootNamespaces {
+                    ownership: dir.path().join("ownership"),
+                    control: dir.path().join("control"),
+                },
+            )
+            .unwrap(),
+        );
+        let root_id_for_service = root.root_id().to_owned();
+        let store = Arc::new(RootStore::open(root, ROOT_MIGRATIONS).await.unwrap());
+        let agent_contract = maka_agent_api::contract();
+        let pkg = |id: &str, host: Value| {
+            Package::new(BTreeMap::from([(
+                "maka.extension.json".into(),
+                serde_json::to_vec(&json!({
+                    "schemaVersion": 1,
+                    "id": id,
+                    "application": { "host": host }
+                }))
+                .unwrap(),
+            )]))
+            .unwrap()
+        };
+        let agent_pkg = pkg(
+            "test.agent.safety",
+            json!({
+                "implementation": { "kind": "native", "implementation": "test.safety.agent" },
+                "configuration": { "type": "object" },
+                "imports": {},
+                "exports": { "Agent": { "contract": agent_contract, "availability": "required" } }
+            }),
+        );
+        let gateway_pkg = pkg(
+            "test.gateway.safety",
+            json!({
+                "implementation": { "kind": "native", "implementation": GATEWAY },
+                "configuration": { "type": "object" },
+                "exports": {},
+                "imports": { "agent": { "contract": agent_contract, "cardinality": { "kind": "one" } } }
+            }),
+        );
+        let consumer = Uuid::new_v4();
+        store
+            .commit_application(
+                deployment_id,
+                0,
+                serde_json::from_value(json!({
+                    "instances": {
+                        "agent": {
+                            "key": Uuid::new_v4(),
+                            "package": { "source": "pinned", "package": agent_pkg.application_ref() },
+                            "usePackage": "host"
+                        },
+                        "gateway": {
+                            "key": consumer,
+                            "package": { "source": "pinned", "package": gateway_pkg.application_ref() },
+                            "usePackage": "host",
+                            "bindings": {
+                                "agent": [{ "kind": "instance", "path": ["agent"], "export": "Agent" }]
+                            }
+                        }
+                    }
+                }))
+                .unwrap(),
+                vec![],
+                vec![agent_pkg, gateway_pkg],
+            )
+            .await
+            .unwrap();
+
+        let mut native = NativeRegistry::default();
+        let contract_clone = agent_contract.clone();
+        let answers_c = recorded_answers.clone();
+        native
+            .insert(
+                "test.safety.agent".into(),
+                Arc::new(move |_ctx, _cfg| {
+                    let contract = contract_clone.clone();
+                    let root_id = root_id_for_service.clone();
+                    let recorded_answers = answers_c.clone();
+                    Box::pin(async move {
+                        NativeActivation {
+                            exports: Ok(BTreeMap::from([(
+                                "Agent".into(),
+                                Published {
+                                    contract,
+                                    value: Arc::new(SafetyAgentService {
+                                        root_id,
+                                        deployment_id,
+                                        binding_id,
+                                        active_run,
+                                        recorded_answers,
+                                    }) as Arc<dyn Handler>,
+                                },
+                            )])),
+                            owner: Arc::new(()),
+                        }
+                    })
+                }),
+            )
+            .unwrap();
+
+        let configuration = Configuration::PublicHost {
+            endpoints: serde_json::from_value(json!({
+                "agent": {
+                    "consumer": [consumer],
+                    "import": "agent",
+                    "grant": {
+                        "methods": [
+                            "projects", "directories", "list", "catalog", "observe", "history",
+                            "watch", "goal", "watchGoal", "pendingInteractions", "interaction",
+                            "respond", "send"
+                        ],
+                        "recovery": false
+                    }
+                }
+            }))
+            .unwrap(),
+            native: Default::default(),
+            product_methods: Default::default(),
+        };
+        let host = Host::open_with_options(
+            store,
+            deployment_id,
+            native,
+            None,
+            configuration,
+            Options {
+                lifecycle_mode: LifecycleMode::Ephemeral,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let pairing = host.prepare_access("ios-safety-e2e".into()).await.unwrap();
+        #[cfg(unix)]
+        let socket = dir.path().join("host.sock");
+        #[cfg(windows)]
+        let socket =
+            std::path::PathBuf::from(format!(r"\.pipemaka-ios-safety-{}", Uuid::new_v4()));
+        let local = LocalListener::bind(&socket).unwrap();
+        let websocket = WebSocketListener::bind("127.0.0.1:0".parse().unwrap(), vec![])
+            .await
+            .unwrap();
+        let ws_addr = websocket.local_addr().unwrap();
+        let stop = CancellationToken::new();
+        let server = tokio::spawn({
+            let stop = stop.clone();
+            async move { host.serve(local, Some(websocket), stop).await }
+        });
+        (dir, ws_addr, pairing, stop, server)
+    });
+
+    let uri = PairingTicketV1::new(
+        pairing.root_id.clone(),
+        "Safety Mac",
+        "peer_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        vec![format!("ws://{ws_addr}")],
+        pairing.credential.clone(),
+        "nonce-safety-01",
+        now_ms() + 300_000,
+    )
+    .unwrap()
+    .encode_uri()
+    .unwrap();
+
+    let support_dir = tempfile::tempdir().unwrap();
+    let channel = HostChannel::new();
+    let _bridge =
+        HostBridge::attach(channel.clone(), support_dir.path(), rt.handle().clone()).unwrap();
+
+    let mut cfg = engine_config(channel, rt.handle().clone());
+    cfg.viewport = Size::new(px(390.0), px(844.0));
+    cfg.environment = Environment {
+        os: Os::Ios,
+        ..Environment::default()
+    };
+    let mut app = nsh_testing::Headless::start_with_link(cfg, &uri).unwrap();
+    app.wait_for("label:Confirm pairing and connect").unwrap();
+    app.press("label:Confirm pairing and connect").unwrap();
+
+    app.wait_for("text:git push origin main").unwrap();
+    // toolUseId == None must hide "允许本次" and expose "本轮允许"!
+    app.wait_for("label:Allow for run").unwrap();
+    assert!(
+        !app.screen().texts().iter().any(|t| *t == "允许本次"),
+        "Allow once must be hidden when toolUseId is null"
+    );
+
+    // Clicking Allow for run gets InteractionResult::Rejected -> card MUST stay open & error banner shown!
+    app.press("label:Allow for run").unwrap();
+    app.wait_for("text:/权限回复被 Host 拒绝/").unwrap();
+    app.wait_for("label:Allow for run").unwrap();
+
+    // Clicking Skip question sends vec![None]!
+    app.press("label:Skip question").unwrap();
+    app.wait_for("text:已回答 · 已跳过").unwrap();
+
+    // Clicking Cancel system permission wait sends SystemPermissionCancel!
+    app.press("label:Cancel system permission wait").unwrap();
+    app.wait_for("text:/已取消等待.*Maka Host/").unwrap();
+
+    {
+        let answers = recorded_answers.lock().unwrap();
+        assert_eq!(answers.len(), 3);
+        assert!(matches!(
+            &answers[0],
+            (id, InteractionAnswer::Permissions { .. }) if id == "req-perm-no-tool"
+        ));
+        assert_eq!(
+            answers[1],
+            (
+                "req-q-skip".into(),
+                InteractionAnswer::Question {
+                    answers: vec![None]
+                }
+            )
+        );
+        assert_eq!(
+            answers[2],
+            (
+                "req-sys-cancel".into(),
+                InteractionAnswer::SystemPermissionCancel {}
+            )
+        );
+    }
+
+    // Sending a message when Host returns SendResult::Rejected restores the draft text!
+    app.type_text("label:Chat composer input", "不要丢失这条草稿")
+        .unwrap();
+    app.press("label:Send message").unwrap();
+    app.wait_for("text:/消息被 Host 拒绝/").unwrap();
+    app.wait_for("text:不要丢失这条草稿").unwrap();
+
+    rt.block_on(async {
+        stop.cancel();
+        let _ = tokio::time::timeout(Duration::from_secs(5), server).await;
+    });
+    drop(dir);
+}
+#[test]
+fn directory_children_pagination_and_goal_watch_beats_stale_read() {
+    use maka_agent_api::contract::{
+        DataSource, DeliveryPage, Directories, Directory, DirectoryPage, GoalChange, GoalResult,
+        GoalView, HistoryPage, List, Observation, PendingInteractions, ProjectsPage, ProjectsRead,
+        Session, SessionActivity, SessionKind, SessionPage, SessionRead, Workspace,
+        WorkspaceAccess, WorkspacePermissions,
+    };
+    use maka_host_runtime::application::{
+        Context, Handler, HandlerError, HandlerResult, HandlerValue, NativeActivation,
+        NativeRegistry,
+    };
+    use maka_plugin_core::runtime::Published;
+    use maka_sandbox::workspace::BindingStamp;
+
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    let deployment_id = Uuid::new_v4();
+    let binding_id = Uuid::new_v4();
+    let goal_id = Uuid::parse_str("ab0ee903-f74d-4ba0-9145-06c6385ca631").unwrap();
+    let stale_read_gate = Arc::new(Notify::new());
+    let stale_read_entered = Arc::new(AtomicBool::new(false));
+    let stale_read_returned = Arc::new(AtomicBool::new(false));
+    let recorded_control_revs: Arc<std::sync::Mutex<Vec<u64>>> =
+        Arc::new(std::sync::Mutex::new(Vec::new()));
+    let dir_after_calls: Arc<std::sync::Mutex<Vec<Option<String>>>> =
+        Arc::new(std::sync::Mutex::new(Vec::new()));
+
+    struct DirGoalService {
+        root_id: String,
+        deployment_id: Uuid,
+        binding_id: Uuid,
+        goal_id: Uuid,
+        stale_read_gate: Arc<Notify>,
+        stale_read_entered: Arc<AtomicBool>,
+        stale_read_returned: Arc<AtomicBool>,
+        recorded_control_revs: Arc<std::sync::Mutex<Vec<u64>>>,
+        dir_after_calls: Arc<std::sync::Mutex<Vec<Option<String>>>>,
+    }
+
+    impl Handler for DirGoalService {
+        fn call(
+            &self,
+            method: String,
+            input: Value,
+            context: Context,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = HandlerResult> + Send + 'static>>
+        {
+            let root_id = self.root_id.clone();
+            let deployment_id = self.deployment_id;
+            let binding_id = self.binding_id;
+            let goal_id = self.goal_id;
+            let stale_read_gate = self.stale_read_gate.clone();
+            let stale_read_entered = self.stale_read_entered.clone();
+            let stale_read_returned = self.stale_read_returned.clone();
+            let recorded_control_revs = self.recorded_control_revs.clone();
+            let dir_after_calls = self.dir_after_calls.clone();
+
+            Box::pin(async move {
+                fn to_val<T: serde::Serialize>(v: &T) -> Result<HandlerValue, HandlerError> {
+                    serde_json::to_value(v)
+                        .map(HandlerValue::Json)
+                        .map_err(|e| HandlerError::from(e.to_string()))
+                }
+                let make_goal = |status: &str, rev: u64| -> GoalView {
+                    serde_json::from_value(json!({
+                        "enabled": true,
+                        "current": {
+                            "id": goal_id.to_string(),
+                            "revision": rev,
+                            "objective": "验证 Goal watch 优先于滞后 read",
+                            "status": status,
+                            "iterations": rev,
+                            "tokenBudget": null,
+                            "consumed": { "known": 100, "missing": 0 },
+                            "remainingTokens": null,
+                            "elapsedSeconds": 10,
+                            "retryAt": null,
+                            "createdAt": 1795300000000u64,
+                            "pending": false,
+                            "dismissed": false,
+                            "report": null,
+                            "note": ""
+                        }
+                    }))
+                    .unwrap()
+                };
+                let session = Session {
+                    incognito: false,
+                    kind: SessionKind::Agent,
+                    applied_preset: None,
+                    parent_session_id: None,
+                    branch: None,
+                    backend: None,
+                    tools: None,
+                    data_source: Box::new(DataSource {
+                        state_domain: root_id.clone(),
+                        deployment: deployment_id,
+                        namespace: maka_plugin_core::composition::InstanceId(vec![Uuid::new_v4()]),
+                    }),
+                    permissions: WorkspacePermissions {
+                        access: WorkspaceAccess::WorkspaceWrite,
+                        request_permissions: true,
+                    },
+                    boundary_revision: 1,
+                    binding: BindingStamp {
+                        id: binding_id,
+                        permission_epoch: 1,
+                    },
+                    id: "sess-dir-goal".into(),
+                    title: "目录与目标测试".into(),
+                    labels: vec![],
+                    workspace: Workspace {
+                        worktree: None,
+                        project_id: None,
+                        path: "/Users/dev/root".into(),
+                    },
+                    revision: 1,
+                    updated_at: 1_795_300_100_000,
+                    archived: false,
+                    pinned: false,
+                    has_unread: false,
+                    tail_message_id: None,
+                    activity: SessionActivity::Idle,
+                };
+
+                match method.as_str() {
+                    "projects" => {
+                        let _req: ProjectsRead = serde_json::from_value(input)
+                            .map_err(|e| HandlerError::from(e.to_string()))?;
+                        to_val(&ProjectsPage::Projects {
+                            revision: "d".repeat(64),
+                            projects: vec![],
+                            next: None,
+                        })
+                    }
+                    "directories" => {
+                        let req: Directories = serde_json::from_value(input)
+                            .map_err(|e| HandlerError::from(e.to_string()))?;
+                        match req {
+                            Directories::Roots => to_val(&DirectoryPage::Roots {
+                                roots: vec![Directory {
+                                    name: "dev-root".into(),
+                                    path: "/Users/dev/root".into(),
+                                }],
+                            }),
+                            Directories::Children { path, after } => {
+                                dir_after_calls.lock().unwrap().push(after.clone());
+                                if after.is_none() {
+                                    to_val(&DirectoryPage::Children {
+                                        directory: Directory {
+                                            name: "dev-root".into(),
+                                            path,
+                                        },
+                                        children: vec![Directory {
+                                            name: "sub-alpha".into(),
+                                            path: "/Users/dev/root/sub-alpha".into(),
+                                        }],
+                                        after: Some("cur-dir-2".into()),
+                                    })
+                                } else {
+                                    to_val(&DirectoryPage::Children {
+                                        directory: Directory {
+                                            name: "dev-root".into(),
+                                            path,
+                                        },
+                                        children: vec![Directory {
+                                            name: "sub-beta".into(),
+                                            path: "/Users/dev/root/sub-beta".into(),
+                                        }],
+                                        after: None,
+                                    })
+                                }
+                            }
+                        }
+                    }
+                    "list" => {
+                        let _req: List = serde_json::from_value(input)
+                            .map_err(|e| HandlerError::from(e.to_string()))?;
+                        to_val(&SessionPage {
+                            revision: "rev-dg".into(),
+                            needs_you_count: 0,
+                            sessions: vec![session],
+                            before: None,
+                            after: None,
+                        })
+                    }
+                    "catalog" => {
+                        let _req: List = serde_json::from_value(input)
+                            .map_err(|e| HandlerError::from(e.to_string()))?;
+                        context
+                            .emit(
+                                serde_json::to_value(&SessionPage {
+                                    revision: "rev-dg".into(),
+                                    needs_you_count: 0,
+                                    sessions: vec![session],
+                                    before: None,
+                                    after: None,
+                                })
+                                .unwrap(),
+                            )
+                            .await
+                            .map_err(|e| HandlerError::from(e.to_string()))?;
+                        context.scope().cancellation.cancelled().await;
+                        Ok(HandlerValue::Json(Value::Null))
+                    }
+                    "observe" => {
+                        let _req: SessionRead = serde_json::from_value(input)
+                            .map_err(|e| HandlerError::from(e.to_string()))?;
+                        to_val(&Observation {
+                            session,
+                            last_completed_turn_id: None,
+                            compacting: None,
+                            remembered_backend: None,
+                            metrics: None,
+                            latest_run_id: None,
+                            through: 1,
+                            run: None,
+                            parts: vec![],
+                            tool_seeds: vec![],
+                        })
+                    }
+                    "history" => to_val(&HistoryPage::Ready {
+                        through: Some(1),
+                        chunks: vec![],
+                        before: None,
+                        after: None,
+                    }),
+                    "watch" => {
+                        context
+                            .emit(
+                                serde_json::to_value(&DeliveryPage::Events {
+                                    through: 1,
+                                    next_after: 1,
+                                    events: vec![],
+                                })
+                                .unwrap(),
+                            )
+                            .await
+                            .map_err(|e| HandlerError::from(e.to_string()))?;
+                        context.scope().cancellation.cancelled().await;
+                        Ok(HandlerValue::Json(Value::Null))
+                    }
+                    "pendingInteractions" => to_val(&PendingInteractions {
+                        revision: 1,
+                        entries: vec![],
+                    }),
+                    "goal" => {
+                        if !stale_read_entered.swap(true, Ordering::SeqCst) {
+                            // First read stalls until watchGoal (rev 3) has already rendered!
+                            stale_read_gate.notified().await;
+                            stale_read_returned.store(true, Ordering::SeqCst);
+                            to_val(&make_goal("active", 1))
+                        } else {
+                            // Post-control read returns rev 4
+                            to_val(&make_goal("active", 4))
+                        }
+                    }
+                    "watchGoal" => {
+                        // Watch delivers newer revision 3 ("paused") immediately!
+                        context
+                            .emit(serde_json::to_value(&make_goal("paused", 3)).unwrap())
+                            .await
+                            .map_err(|e| HandlerError::from(e.to_string()))?;
+                        context.scope().cancellation.cancelled().await;
+                        Ok(HandlerValue::Json(Value::Null))
+                    }
+                    "changeGoal" => {
+                        let req: GoalChange = serde_json::from_value(input)
+                            .map_err(|e| HandlerError::from(e.to_string()))?;
+                        if let GoalChange::Control { revision, .. } = req {
+                            recorded_control_revs.lock().unwrap().push(revision);
+                            to_val(&GoalResult::Committed {
+                                goal_id,
+                                revision: revision + 1,
+                            })
+                        } else {
+                            Err(HandlerError::from("unexpected GoalChange"))
+                        }
+                    }
+                    other => Err(HandlerError::from(format!("unexpected method: {other}"))),
+                }
+            })
+        }
+    }
+
+    let (dir, ws_addr, pairing, stop, server) = rt.block_on(async {
+        let dir = tempfile::tempdir().unwrap();
+        private_directory(dir.path()).unwrap();
+        let root = Arc::new(
+            RootOwner::create(
+                &dir.path().join("root"),
+                &RootNamespaces {
+                    ownership: dir.path().join("ownership"),
+                    control: dir.path().join("control"),
+                },
+            )
+            .unwrap(),
+        );
+        let root_id_for_service = root.root_id().to_owned();
+        let store = Arc::new(RootStore::open(root, ROOT_MIGRATIONS).await.unwrap());
+        let agent_contract = maka_agent_api::contract();
+        let pkg = |id: &str, host: Value| {
+            Package::new(BTreeMap::from([(
+                "maka.extension.json".into(),
+                serde_json::to_vec(&json!({
+                    "schemaVersion": 1,
+                    "id": id,
+                    "application": { "host": host }
+                }))
+                .unwrap(),
+            )]))
+            .unwrap()
+        };
+        let agent_pkg = pkg(
+            "test.agent.dirgoal",
+            json!({
+                "implementation": { "kind": "native", "implementation": "test.dirgoal.agent" },
+                "configuration": { "type": "object" },
+                "imports": {},
+                "exports": { "Agent": { "contract": agent_contract, "availability": "required" } }
+            }),
+        );
+        let gateway_pkg = pkg(
+            "test.gateway.dirgoal",
+            json!({
+                "implementation": { "kind": "native", "implementation": GATEWAY },
+                "configuration": { "type": "object" },
+                "exports": {},
+                "imports": { "agent": { "contract": agent_contract, "cardinality": { "kind": "one" } } }
+            }),
+        );
+        let consumer = Uuid::new_v4();
+        store
+            .commit_application(
+                deployment_id,
+                0,
+                serde_json::from_value(json!({
+                    "instances": {
+                        "agent": {
+                            "key": Uuid::new_v4(),
+                            "package": { "source": "pinned", "package": agent_pkg.application_ref() },
+                            "usePackage": "host"
+                        },
+                        "gateway": {
+                            "key": consumer,
+                            "package": { "source": "pinned", "package": gateway_pkg.application_ref() },
+                            "usePackage": "host",
+                            "bindings": {
+                                "agent": [{ "kind": "instance", "path": ["agent"], "export": "Agent" }]
+                            }
+                        }
+                    }
+                }))
+                .unwrap(),
+                vec![],
+                vec![agent_pkg, gateway_pkg],
+            )
+            .await
+            .unwrap();
+
+        let mut native = NativeRegistry::default();
+        let contract_clone = agent_contract.clone();
+        let gate_c = stale_read_gate.clone();
+        let ent_c = stale_read_entered.clone();
+        let ret_c = stale_read_returned.clone();
+        let revs_c = recorded_control_revs.clone();
+        let dir_c = dir_after_calls.clone();
+        native
+            .insert(
+                "test.dirgoal.agent".into(),
+                Arc::new(move |_ctx, _cfg| {
+                    let contract = contract_clone.clone();
+                    let root_id = root_id_for_service.clone();
+                    let stale_read_gate = gate_c.clone();
+                    let stale_read_entered = ent_c.clone();
+                    let stale_read_returned = ret_c.clone();
+                    let recorded_control_revs = revs_c.clone();
+                    let dir_after_calls = dir_c.clone();
+                    Box::pin(async move {
+                        NativeActivation {
+                            exports: Ok(BTreeMap::from([(
+                                "Agent".into(),
+                                Published {
+                                    contract,
+                                    value: Arc::new(DirGoalService {
+                                        root_id,
+                                        deployment_id,
+                                        binding_id,
+                                        goal_id,
+                                        stale_read_gate,
+                                        stale_read_entered,
+                                        stale_read_returned,
+                                        recorded_control_revs,
+                                        dir_after_calls,
+                                    }) as Arc<dyn Handler>,
+                                },
+                            )])),
+                            owner: Arc::new(()),
+                        }
+                    })
+                }),
+            )
+            .unwrap();
+
+        let configuration = Configuration::PublicHost {
+            endpoints: serde_json::from_value(json!({
+                "agent": {
+                    "consumer": [consumer],
+                    "import": "agent",
+                    "grant": {
+                        "methods": [
+                            "projects", "directories", "list", "catalog", "observe", "history",
+                            "watch", "pendingInteractions", "goal", "watchGoal", "changeGoal"
+                        ],
+                        "recovery": false
+                    }
+                }
+            }))
+            .unwrap(),
+            native: Default::default(),
+            product_methods: Default::default(),
+        };
+        let host = Host::open_with_options(
+            store,
+            deployment_id,
+            native,
+            None,
+            configuration,
+            Options {
+                lifecycle_mode: LifecycleMode::Ephemeral,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let pairing = host.prepare_access("ios-dirgoal-e2e".into()).await.unwrap();
+        #[cfg(unix)]
+        let socket = dir.path().join("host.sock");
+        #[cfg(windows)]
+        let socket =
+            std::path::PathBuf::from(format!(r"\.pipemaka-ios-dirgoal-{}", Uuid::new_v4()));
+        let local = LocalListener::bind(&socket).unwrap();
+        let websocket = WebSocketListener::bind("127.0.0.1:0".parse().unwrap(), vec![])
+            .await
+            .unwrap();
+        let ws_addr = websocket.local_addr().unwrap();
+        let stop = CancellationToken::new();
+        let server = tokio::spawn({
+            let stop = stop.clone();
+            async move { host.serve(local, Some(websocket), stop).await }
+        });
+        (dir, ws_addr, pairing, stop, server)
+    });
+
+    let uri = PairingTicketV1::new(
+        pairing.root_id.clone(),
+        "DirGoal Mac",
+        "peer_cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        vec![format!("ws://{ws_addr}")],
+        pairing.credential.clone(),
+        "nonce-dirgoal-01",
+        now_ms() + 300_000,
+    )
+    .unwrap()
+    .encode_uri()
+    .unwrap();
+
+    let support_dir = tempfile::tempdir().unwrap();
+    let channel = HostChannel::new();
+    let _bridge =
+        HostBridge::attach(channel.clone(), support_dir.path(), rt.handle().clone()).unwrap();
+
+    let mut cfg = engine_config(channel, rt.handle().clone());
+    cfg.viewport = Size::new(px(390.0), px(844.0));
+    cfg.environment = Environment {
+        os: Os::Ios,
+        ..Environment::default()
+    };
+    let mut app = nsh_testing::Headless::start_with_link(cfg, &uri).unwrap();
+    app.wait_for("label:Confirm pairing and connect").unwrap();
+    app.press("label:Confirm pairing and connect").unwrap();
+
+    // 1. watchGoal delivers revision 3 ("paused") while initial agent.goal (rev 1, "active") is gated!
+    app.wait_for("text:目标 · 已暂停").unwrap();
+    // Release stale initial read and let it settle; UI MUST stay on rev 3 ("已暂停")!
+    stale_read_gate.notify_one();
+    rt.block_on(async {
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !stale_read_returned.load(Ordering::SeqCst) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+    });
+    std::thread::sleep(Duration::from_millis(120));
+    app.wait_for("text:目标 · 已暂停").unwrap();
+
+    // Expand GoalBar and tap Resume -> MUST send revision 3 (NOT stale rev 1)!
+    app.press("label:Toggle goal details").unwrap();
+    app.press("label:Resume goal").unwrap();
+    app.wait_for("text:目标 · 正在推进").unwrap();
+    assert_eq!(recorded_control_revs.lock().unwrap().as_slice(), &[3]);
+
+    // 2. Open Draft -> WorkspacePickerOverlay -> browse DirectoryPage::Children + after pagination!
+    app.press("label:Open drawer").unwrap();
+    app.press("label:New draft conversation").unwrap();
+    app.wait_for("label:Pick draft workspace").unwrap();
+    app.press("label:Pick draft workspace").unwrap();
+    app.wait_for("label:Browse root dev-root").unwrap();
+    app.press("label:Browse root dev-root").unwrap();
+    app.wait_for("text:sub-alpha").unwrap();
+    app.wait_for("label:Load more directories").unwrap();
+    app.press("label:Load more directories").unwrap();
+    app.wait_for("text:sub-beta").unwrap();
+    app.press("label:Select dir sub-beta").unwrap();
+    app.wait_for("text:/工作区 · sub-beta/").unwrap();
+    assert_eq!(
+        dir_after_calls.lock().unwrap().as_slice(),
+        &[None, Some("cur-dir-2".into())]
+    );
+
+    rt.block_on(async {
+        stop.cancel();
+        let _ = tokio::time::timeout(Duration::from_secs(5), server).await;
+    });
+    drop(dir);
+}
+
+#[test]
+fn draft_create_switch_fencing_and_catalog_query_pagination_fencing() {
+    use maka_agent_api::contract::{
+        Create, Created, DataSource, DeliveryPage, Directories, DirectoryPage, HistoryPage, List,
+        Observation, PendingInteractions, ProjectsPage, ProjectsRead, Send as AgentSend,
+        SendResult, Session, SessionActivity, SessionKind, SessionPage, SessionPosition,
+        SessionRead, Workspace, WorkspaceAccess, WorkspacePermissions,
+    };
+    use maka_agent_facts::durable::RunId;
+    use maka_host_runtime::application::{
+        Context, Handler, HandlerError, HandlerResult, HandlerValue, NativeActivation,
+        NativeRegistry,
+    };
+    use maka_plugin_core::runtime::Published;
+    use maka_sandbox::workspace::BindingStamp;
+
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    let deployment_id = Uuid::new_v4();
+    let binding_id = Uuid::new_v4();
+    let run_id = RunId::new();
+
+    let create_gate = Arc::new(Notify::new());
+    let create_entered = Arc::new(Notify::new());
+    let create_fail_next = Arc::new(AtomicBool::new(false));
+    let create_hang_next = Arc::new(AtomicBool::new(false));
+    let create_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let send_session_ids: Arc<std::sync::Mutex<Vec<String>>> =
+        Arc::new(std::sync::Mutex::new(Vec::new()));
+
+    let slow_all_gate = Arc::new(Notify::new());
+    let slow_all_entered = Arc::new(Notify::new());
+    let slow_all_armed = Arc::new(AtomicBool::new(false));
+
+    let load_more_gate = Arc::new(Notify::new());
+    let load_more_entered = Arc::new(Notify::new());
+    let load_more_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+    struct FencingAgentService {
+        root_id: String,
+        deployment_id: Uuid,
+        binding_id: Uuid,
+        run_id: RunId,
+        create_gate: Arc<Notify>,
+        create_entered: Arc<Notify>,
+        create_fail_next: Arc<AtomicBool>,
+        create_hang_next: Arc<AtomicBool>,
+        create_count: Arc<std::sync::atomic::AtomicUsize>,
+        send_session_ids: Arc<std::sync::Mutex<Vec<String>>>,
+        slow_all_gate: Arc<Notify>,
+        slow_all_entered: Arc<Notify>,
+        slow_all_armed: Arc<AtomicBool>,
+        load_more_gate: Arc<Notify>,
+        load_more_entered: Arc<Notify>,
+        load_more_calls: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl Handler for FencingAgentService {
+        fn call(
+            &self,
+            method: String,
+            input: Value,
+            context: Context,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = HandlerResult> + Send + 'static>>
+        {
+            let root_id = self.root_id.clone();
+            let deployment_id = self.deployment_id;
+            let binding_id = self.binding_id;
+            let run_id = self.run_id;
+            let create_gate = self.create_gate.clone();
+            let create_entered = self.create_entered.clone();
+            let create_fail_next = self.create_fail_next.clone();
+            let create_hang_next = self.create_hang_next.clone();
+            let create_count = self.create_count.clone();
+            let send_session_ids = self.send_session_ids.clone();
+            let slow_all_gate = self.slow_all_gate.clone();
+            let slow_all_entered = self.slow_all_entered.clone();
+            let slow_all_armed = self.slow_all_armed.clone();
+            let load_more_gate = self.load_more_gate.clone();
+            let load_more_entered = self.load_more_entered.clone();
+            let load_more_calls = self.load_more_calls.clone();
+
+            Box::pin(async move {
+                fn to_val<T: serde::Serialize>(v: &T) -> Result<HandlerValue, HandlerError> {
+                    serde_json::to_value(v)
+                        .map(HandlerValue::Json)
+                        .map_err(|e| HandlerError::from(e.to_string()))
+                }
+                let mk_sess = |id: &str, title: &str| Session {
+                    incognito: false,
+                    kind: SessionKind::Agent,
+                    applied_preset: None,
+                    parent_session_id: None,
+                    branch: None,
+                    backend: None,
+                    tools: None,
+                    data_source: Box::new(DataSource {
+                        state_domain: root_id.clone(),
+                        deployment: deployment_id,
+                        namespace: maka_plugin_core::composition::InstanceId(vec![Uuid::new_v4()]),
+                    }),
+                    permissions: WorkspacePermissions {
+                        access: WorkspaceAccess::WorkspaceWrite,
+                        request_permissions: true,
+                    },
+                    boundary_revision: 1,
+                    binding: BindingStamp {
+                        id: binding_id,
+                        permission_epoch: 1,
+                    },
+                    id: id.into(),
+                    title: title.into(),
+                    labels: vec![],
+                    workspace: Workspace {
+                        worktree: None,
+                        project_id: None,
+                        path: "/Users/dev/fence".into(),
+                    },
+                    revision: 1,
+                    updated_at: 1_795_300_100_000,
+                    archived: false,
+                    pinned: false,
+                    has_unread: false,
+                    tail_message_id: None,
+                    activity: SessionActivity::Idle,
+                };
+
+                match method.as_str() {
+                    "projects" => {
+                        let _req: ProjectsRead = serde_json::from_value(input)
+                            .map_err(|e| HandlerError::from(e.to_string()))?;
+                        to_val(&ProjectsPage::Projects {
+                            revision: "e".repeat(64),
+                            projects: vec![],
+                            next: None,
+                        })
+                    }
+                    "directories" => {
+                        let _req: Directories = serde_json::from_value(input)
+                            .map_err(|e| HandlerError::from(e.to_string()))?;
+                        to_val(&DirectoryPage::Roots { roots: vec![] })
+                    }
+                    "list" => {
+                        let req: List = serde_json::from_value(input)
+                            .map_err(|e| HandlerError::from(e.to_string()))?;
+                        if matches!(req.position, SessionPosition::After { .. }) {
+                            load_more_calls.fetch_add(1, Ordering::SeqCst);
+                            load_more_entered.notify_one();
+                            load_more_gate.notified().await;
+                            return to_val(&SessionPage {
+                                revision: "rev-fence".into(),
+                                needs_you_count: 1,
+                                sessions: vec![mk_sess("sess-page2-stale", "旧筛选分页项")],
+                                before: None,
+                                after: None,
+                            });
+                        }
+                        if req.include_archived {
+                            return to_val(&SessionPage {
+                                revision: "rev-arch".into(),
+                                needs_you_count: 1,
+                                sessions: vec![mk_sess("sess-arch-1", "归档会话 Gamma")],
+                                before: None,
+                                after: None,
+                            });
+                        }
+                        if req.title_query.trim() == "slow" {
+                            slow_all_armed.store(true, Ordering::SeqCst);
+                            slow_all_entered.notify_one();
+                            slow_all_gate.notified().await;
+                            return to_val(&SessionPage {
+                                revision: "rev-slow".into(),
+                                needs_you_count: 1,
+                                sessions: vec![mk_sess("sess-slow-stale", "过期的慢搜索结果")],
+                                before: None,
+                                after: None,
+                            });
+                        }
+                        to_val(&SessionPage {
+                            revision: "rev-fence".into(),
+                            needs_you_count: 1,
+                            sessions: vec![mk_sess("sess-beta", "现有会话 Beta")],
+                            before: None,
+                            after: Some("cur-p2".into()),
+                        })
+                    }
+                    "catalog" => {
+                        let req: List = serde_json::from_value(input)
+                            .map_err(|e| HandlerError::from(e.to_string()))?;
+                        if req.include_archived {
+                            context
+                                .emit(
+                                    serde_json::to_value(&SessionPage {
+                                        revision: "rev-arch".into(),
+                                        needs_you_count: 1,
+                                        sessions: vec![mk_sess("sess-arch-1", "归档会话 Gamma")],
+                                        before: None,
+                                        after: None,
+                                    })
+                                    .unwrap(),
+                                )
+                                .await
+                                .map_err(|e| HandlerError::from(e.to_string()))?;
+                        } else if req.title_query.trim() != "slow" {
+                            context
+                                .emit(
+                                    serde_json::to_value(&SessionPage {
+                                        revision: "rev-fence".into(),
+                                        needs_you_count: 1,
+                                        sessions: vec![mk_sess("sess-beta", "现有会话 Beta")],
+                                        before: None,
+                                        after: Some("cur-p2".into()),
+                                    })
+                                    .unwrap(),
+                                )
+                                .await
+                                .map_err(|e| HandlerError::from(e.to_string()))?;
+                        }
+                        context.scope().cancellation.cancelled().await;
+                        Ok(HandlerValue::Json(Value::Null))
+                    }
+                    "observe" => {
+                        let req: SessionRead = serde_json::from_value(input)
+                            .map_err(|e| HandlerError::from(e.to_string()))?;
+                        let title = if req.session_id == "sess-beta" {
+                            "现有会话 Beta"
+                        } else {
+                            "归档会话 Gamma"
+                        };
+                        to_val(&Observation {
+                            session: mk_sess(&req.session_id, title),
+                            last_completed_turn_id: None,
+                            compacting: None,
+                            remembered_backend: None,
+                            metrics: None,
+                            latest_run_id: None,
+                            through: 1,
+                            run: None,
+                            parts: vec![],
+                            tool_seeds: vec![],
+                        })
+                    }
+                    "history" => to_val(&HistoryPage::Ready {
+                        through: Some(1),
+                        chunks: vec![],
+                        before: None,
+                        after: None,
+                    }),
+                    "watch" => {
+                        context
+                            .emit(
+                                serde_json::to_value(&DeliveryPage::Events {
+                                    through: 1,
+                                    next_after: 1,
+                                    events: vec![],
+                                })
+                                .unwrap(),
+                            )
+                            .await
+                            .map_err(|e| HandlerError::from(e.to_string()))?;
+                        context.scope().cancellation.cancelled().await;
+                        Ok(HandlerValue::Json(Value::Null))
+                    }
+                    "goal" => Ok(HandlerValue::Json(
+                        json!({ "enabled": false, "current": null }),
+                    )),
+                    "watchGoal" => {
+                        context
+                            .emit(json!({ "enabled": false, "current": null }))
+                            .await
+                            .map_err(|e| HandlerError::from(e.to_string()))?;
+                        context.scope().cancellation.cancelled().await;
+                        Ok(HandlerValue::Json(Value::Null))
+                    }
+                    "pendingInteractions" => to_val(&PendingInteractions {
+                        revision: 1,
+                        entries: vec![],
+                    }),
+                    "create" => {
+                        let _req: Create = serde_json::from_value(input)
+                            .map_err(|e| HandlerError::from(e.to_string()))?;
+                        let n = create_count.fetch_add(1, Ordering::SeqCst) + 1;
+                        create_entered.notify_one();
+                        if create_hang_next.swap(false, Ordering::SeqCst) {
+                            // Never resolves on its own — stays pending across Host disconnect!
+                            context.scope().cancellation.cancelled().await;
+                            return Err(HandlerError::from("cancelled after disconnect"));
+                        }
+                        create_gate.notified().await;
+                        if create_fail_next.load(Ordering::SeqCst) {
+                            return Err(HandlerError::from("injected create failure"));
+                        }
+                        to_val(&Created::Created {
+                            session: Box::new(mk_sess(
+                                &format!("sess-late-{n}"),
+                                &format!("迟到的草稿会话 {n}"),
+                            )),
+                        })
+                    }
+                    "send" => {
+                        let req: AgentSend = serde_json::from_value(input)
+                            .map_err(|e| HandlerError::from(e.to_string()))?;
+                        send_session_ids
+                            .lock()
+                            .unwrap()
+                            .push(req.session_id.clone());
+                        to_val(&SendResult::Started {
+                            session_id: req.session_id,
+                            run_id,
+                            message_id: "m-1".into(),
+                            completion: None,
+                        })
+                    }
+                    other => Err(HandlerError::from(format!("unexpected method: {other}"))),
+                }
+            })
+        }
+    }
+
+    let (dir, ws_addr, pairing, stop, server) = rt.block_on(async {
+        let dir = tempfile::tempdir().unwrap();
+        private_directory(dir.path()).unwrap();
+        let root = Arc::new(
+            RootOwner::create(
+                &dir.path().join("root"),
+                &RootNamespaces {
+                    ownership: dir.path().join("ownership"),
+                    control: dir.path().join("control"),
+                },
+            )
+            .unwrap(),
+        );
+        let root_id_for_service = root.root_id().to_owned();
+        let store = Arc::new(RootStore::open(root, ROOT_MIGRATIONS).await.unwrap());
+        let agent_contract = maka_agent_api::contract();
+        let pkg = |id: &str, host: Value| {
+            Package::new(BTreeMap::from([(
+                "maka.extension.json".into(),
+                serde_json::to_vec(&json!({
+                    "schemaVersion": 1,
+                    "id": id,
+                    "application": { "host": host }
+                }))
+                .unwrap(),
+            )]))
+            .unwrap()
+        };
+        let agent_pkg = pkg(
+            "test.agent.fencing",
+            json!({
+                "implementation": { "kind": "native", "implementation": "test.fencing.agent" },
+                "configuration": { "type": "object" },
+                "imports": {},
+                "exports": { "Agent": { "contract": agent_contract, "availability": "required" } }
+            }),
+        );
+        let gateway_pkg = pkg(
+            "test.gateway.fencing",
+            json!({
+                "implementation": { "kind": "native", "implementation": GATEWAY },
+                "configuration": { "type": "object" },
+                "exports": {},
+                "imports": { "agent": { "contract": agent_contract, "cardinality": { "kind": "one" } } }
+            }),
+        );
+        let consumer = Uuid::new_v4();
+        store
+            .commit_application(
+                deployment_id,
+                0,
+                serde_json::from_value(json!({
+                    "instances": {
+                        "agent": {
+                            "key": Uuid::new_v4(),
+                            "package": { "source": "pinned", "package": agent_pkg.application_ref() },
+                            "usePackage": "host"
+                        },
+                        "gateway": {
+                            "key": consumer,
+                            "package": { "source": "pinned", "package": gateway_pkg.application_ref() },
+                            "usePackage": "host",
+                            "bindings": {
+                                "agent": [{ "kind": "instance", "path": ["agent"], "export": "Agent" }]
+                            }
+                        }
+                    }
+                }))
+                .unwrap(),
+                vec![],
+                vec![agent_pkg, gateway_pkg],
+            )
+            .await
+            .unwrap();
+
+        let mut native = NativeRegistry::default();
+        let contract_clone = agent_contract.clone();
+        let cg = create_gate.clone();
+        let ce = create_entered.clone();
+        let cf = create_fail_next.clone();
+        let ch = create_hang_next.clone();
+        let cc = create_count.clone();
+        let ss = send_session_ids.clone();
+        let sg = slow_all_gate.clone();
+        let se = slow_all_entered.clone();
+        let sa = slow_all_armed.clone();
+        let lg = load_more_gate.clone();
+        let le = load_more_entered.clone();
+        let lc = load_more_calls.clone();
+        native
+            .insert(
+                "test.fencing.agent".into(),
+                Arc::new(move |_ctx, _cfg| {
+                    let contract = contract_clone.clone();
+                    let root_id = root_id_for_service.clone();
+                    let create_gate = cg.clone();
+                    let create_entered = ce.clone();
+                    let create_fail_next = cf.clone();
+                    let create_hang_next = ch.clone();
+                    let create_count = cc.clone();
+                    let send_session_ids = ss.clone();
+                    let slow_all_gate = sg.clone();
+                    let slow_all_entered = se.clone();
+                    let slow_all_armed = sa.clone();
+                    let load_more_gate = lg.clone();
+                    let load_more_entered = le.clone();
+                    let load_more_calls = lc.clone();
+                    Box::pin(async move {
+                        NativeActivation {
+                            exports: Ok(BTreeMap::from([(
+                                "Agent".into(),
+                                Published {
+                                    contract,
+                                    value: Arc::new(FencingAgentService {
+                                        root_id,
+                                        deployment_id,
+                                        binding_id,
+                                        run_id,
+                                        create_gate,
+                                        create_entered,
+                                        create_fail_next,
+                                        create_hang_next,
+                                        create_count,
+                                        send_session_ids,
+                                        slow_all_gate,
+                                        slow_all_entered,
+                                        slow_all_armed,
+                                        load_more_gate,
+                                        load_more_entered,
+                                        load_more_calls,
+                                    }) as Arc<dyn Handler>,
+                                },
+                            )])),
+                            owner: Arc::new(()),
+                        }
+                    })
+                }),
+            )
+            .unwrap();
+
+        let configuration = Configuration::PublicHost {
+            endpoints: serde_json::from_value(json!({
+                "agent": {
+                    "consumer": [consumer],
+                    "import": "agent",
+                    "grant": {
+                        "methods": [
+                            "projects", "directories", "list", "catalog", "observe", "history",
+                            "watch", "goal", "watchGoal", "pendingInteractions", "create", "send"
+                        ],
+                        "recovery": false
+                    }
+                }
+            }))
+            .unwrap(),
+            native: Default::default(),
+            product_methods: Default::default(),
+        };
+        let host = Host::open_with_options(
+            store,
+            deployment_id,
+            native,
+            None,
+            configuration,
+            Options {
+                lifecycle_mode: LifecycleMode::Ephemeral,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let pairing = host.prepare_access("ios-fencing-e2e".into()).await.unwrap();
+        #[cfg(unix)]
+        let socket = dir.path().join("host.sock");
+        #[cfg(windows)]
+        let socket =
+            std::path::PathBuf::from(format!(r"\.pipemaka-ios-fencing-{}", Uuid::new_v4()));
+        let local = LocalListener::bind(&socket).unwrap();
+        let websocket = WebSocketListener::bind("127.0.0.1:0".parse().unwrap(), vec![])
+            .await
+            .unwrap();
+        let ws_addr = websocket.local_addr().unwrap();
+        let stop = CancellationToken::new();
+        let server = tokio::spawn({
+            let stop = stop.clone();
+            async move { host.serve(local, Some(websocket), stop).await }
+        });
+        (dir, ws_addr, pairing, stop, server)
+    });
+
+    let uri = PairingTicketV1::new(
+        pairing.root_id.clone(),
+        "Fencing Mac",
+        "peer_dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        vec![format!("ws://{ws_addr}")],
+        pairing.credential.clone(),
+        "nonce-fencing-01",
+        now_ms() + 300_000,
+    )
+    .unwrap()
+    .encode_uri()
+    .unwrap();
+
+    let support_dir = tempfile::tempdir().unwrap();
+    let channel = HostChannel::new();
+    let _bridge =
+        HostBridge::attach(channel.clone(), support_dir.path(), rt.handle().clone()).unwrap();
+
+    let mut cfg = engine_config(channel, rt.handle().clone());
+    cfg.viewport = Size::new(px(390.0), px(844.0));
+    cfg.environment = Environment {
+        os: Os::Ios,
+        ..Environment::default()
+    };
+    let mut app = nsh_testing::Headless::start_with_link(cfg, &uri).unwrap();
+    app.wait_for("label:Confirm pairing and connect").unwrap();
+    app.press("label:Confirm pairing and connect").unwrap();
+    app.wait_for("text:现有会话 Beta").unwrap();
+
+    // 1. Draft create SUCCESS while superseded by switching to Session Beta:
+    //    MUST NOT hijack active session Beta and MUST NOT send into the late created session!
+    app.press("label:Open drawer").unwrap();
+    app.press("label:New draft conversation").unwrap();
+    app.wait_for("text:新对话").unwrap();
+    app.type_text("label:Chat composer input", "草稿首条消息")
+        .unwrap();
+    app.press("label:Send message").unwrap();
+    rt.block_on(async {
+        tokio::time::timeout(Duration::from_secs(2), create_entered.notified())
+            .await
+            .unwrap();
+    });
+    // Switch to existing Session Beta BEFORE create settles!
+    app.press("label:Open drawer").unwrap();
+    app.press("label:Session 现有会话 Beta").unwrap();
+    app.wait_for("text:现有会话 Beta").unwrap();
+    create_gate.notify_one();
+    std::thread::sleep(Duration::from_millis(120));
+    app.wait_for("text:现有会话 Beta").unwrap();
+    assert!(
+        send_session_ids.lock().unwrap().is_empty(),
+        "superseded Draft create must NOT send into late created session"
+    );
+
+    // 2. Draft create FAILURE while superseded by switching to Session Beta:
+    //    MUST NOT pollute Session Beta's composer with the failed Draft's text!
+    create_fail_next.store(true, Ordering::SeqCst);
+    app.press("label:Open drawer").unwrap();
+    app.press("label:New draft conversation").unwrap();
+    app.wait_for("text:新对话").unwrap();
+    app.type_text("label:Chat composer input", "失败草稿不串会话")
+        .unwrap();
+    app.press("label:Send message").unwrap();
+    rt.block_on(async {
+        tokio::time::timeout(Duration::from_secs(2), create_entered.notified())
+            .await
+            .unwrap();
+    });
+    app.press("label:Open drawer").unwrap();
+    app.press("label:Session 现有会话 Beta").unwrap();
+    app.wait_for("text:现有会话 Beta").unwrap();
+    create_gate.notify_one();
+    std::thread::sleep(Duration::from_millis(120));
+    app.wait_for("text:现有会话 Beta").unwrap();
+    assert!(
+        !app.screen()
+            .texts()
+            .iter()
+            .any(|t| *t == "失败草稿不串会话"),
+        "failed superseded Draft must NOT overwrite Session Beta's composer"
+    );
+
+    // 3. Catalog pagination concurrency guard + stale filter-switch fencing + slow search fencing!
+    app.press("label:Open drawer").unwrap();
+    app.wait_for("label:Load more sessions").unwrap();
+    // Press Load more TWICE while first page-2 RPC is gated -> must only fire ONCE!
+    app.press("label:Load more sessions").unwrap();
+    rt.block_on(async {
+        tokio::time::timeout(Duration::from_secs(2), load_more_entered.notified())
+            .await
+            .unwrap();
+    });
+    app.press("label:Load more sessions").unwrap();
+    assert_eq!(
+        load_more_calls.load(Ordering::SeqCst),
+        1,
+        "concurrent Load more clicks must be deduplicated"
+    );
+    // Switch filter to Archived BEFORE stale Load more settles -> stale page-2 MUST be discarded!
+    app.press("label:Filter archived").unwrap();
+    app.wait_for("text:归档会话 Gamma").unwrap();
+    load_more_gate.notify_one();
+    std::thread::sleep(Duration::from_millis(120));
+    app.wait_for("text:归档会话 Gamma").unwrap();
+    assert!(
+        !app.screen().texts().iter().any(|t| *t == "旧筛选分页项"),
+        "stale Load more response must not append into newly selected Archived filter"
+    );
+
+    // Trigger slow search ("slow") under All, then switch back to Archived -> slow search MUST NOT overwrite Archived!
+    app.press("label:Filter all").unwrap();
+    app.type_text("label:Search sessions", "slow").unwrap();
+    rt.block_on(async {
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !slow_all_armed.load(Ordering::SeqCst) {
+                slow_all_entered.notified().await;
+            }
+        })
+        .await
+        .unwrap();
+    });
+    app.press("label:Filter archived").unwrap();
+    app.wait_for("text:归档会话 Gamma").unwrap();
+    slow_all_gate.notify_one();
+    std::thread::sleep(Duration::from_millis(120));
+    app.wait_for("text:归档会话 Gamma").unwrap();
+    assert!(
+        !app.screen()
+            .texts()
+            .iter()
+            .any(|t| *t == "过期的慢搜索结果"),
+        "stale slow search response must not overwrite newer filter results"
+    );
+
+    // 4. Draft create pending when Host disconnects:
+    //    creatingDraft must clear, unsent text must be preserved in rootId:draft,
+    //    and reconnecting + opening Draft must restore the text and allow immediate Send!
+    create_fail_next.store(false, Ordering::SeqCst);
+    create_hang_next.store(true, Ordering::SeqCst);
+    app.press("label:Filter all").unwrap();
+    app.press("label:New draft conversation").unwrap();
+    app.wait_for("text:新对话").unwrap();
+    app.type_text("label:Chat composer input", "断连不丢失草稿")
+        .unwrap();
+    app.press("label:Send message").unwrap();
+    rt.block_on(async {
+        tokio::time::timeout(Duration::from_secs(2), create_entered.notified())
+            .await
+            .unwrap();
+    });
+    // Disconnect active Host WHILE create is permanently pending (NEVER released before reconnect)!
+    app.press("label:Open drawer").unwrap();
+    app.press("label:Settings").unwrap();
+    app.press("label:Disconnect active host").unwrap();
+    // Reconnect to Fencing Mac from Settings WITHOUT releasing any stale RPC -> unsent Draft MUST be restored immediately and sendable!
+    app.wait_for("label:Connect Fencing Mac").unwrap();
+    app.press("label:Connect Fencing Mac").unwrap();
+    app.press("label:Back from settings").unwrap();
+    app.wait_for("label:New draft conversation").unwrap();
+    app.press("label:New draft conversation").unwrap();
+    app.wait_for("text:/断连不丢失草稿/").unwrap();
+    // Verify creatingDraft is false and Send immediately triggers a fresh create + send!
+    app.press("label:Send message").unwrap();
+    rt.block_on(async {
+        tokio::time::timeout(Duration::from_secs(2), create_entered.notified())
+            .await
+            .unwrap();
+    });
+    create_gate.notify_one();
+    app.wait_for("text:/迟到的草稿会话/").unwrap();
+    app.wait_for("label:Stop active run").unwrap();
+    assert!(
+        !send_session_ids.lock().unwrap().is_empty(),
+        "reconnected Draft must not remain stuck in creatingDraft and must send cleanly"
+    );
+
+    rt.block_on(async {
+        stop.cancel();
+        let _ = tokio::time::timeout(Duration::from_secs(5), server).await;
+    });
+    drop(dir);
 }

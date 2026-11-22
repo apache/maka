@@ -98,11 +98,66 @@ export interface AgentProject {
   path: string | null;
 }
 
+export type AgentBackendPreference =
+  | {
+      kind: 'model';
+      connectionId: string;
+      modelId: string;
+      serviceTier?: string | null;
+      thinkingLevel?: string | null;
+    }
+  | {
+      kind: 'executor';
+      selection: {
+        executor: string;
+        settings?: Record<string, unknown>;
+      };
+    };
+
+export interface AgentModelChoice {
+  selection: AgentBackendPreference;
+  aliases?: AgentBackendPreference[];
+  sourceName: string;
+  label: string;
+  thinkingLevels: string[];
+  defaultThinkingLevel: string | null;
+}
+
+export type AgentWorkspaceSelection =
+  | { kind: 'project'; projectId: string; path: string }
+  | { kind: 'directory'; path: string }
+  | { kind: 'session'; sessionId: string }
+  | { kind: 'isolated_git'; path: string };
+
+export interface AgentGoalDetail {
+  id: string;
+  revision: number;
+  objective: string;
+  status: 'active' | 'paused' | 'blocked' | 'achieved' | 'cancelled' | string;
+  iterations: number;
+  tokenBudget: number | null;
+  consumed?: { known: number; missing: number };
+  remainingTokens: number | null;
+  elapsedSeconds: number;
+  retryAt: number | null;
+  createdAt: number;
+  pending: boolean;
+  dismissed: boolean;
+  report?: { status?: string; note?: string } | null;
+  note: string;
+}
+
+export interface AgentGoalView {
+  enabled: boolean;
+  current: AgentGoalDetail | null;
+}
+
 export interface AgentSession {
   id: string;
   title: string;
   kind: 'agent' | 'room';
   parentSessionId: string | null;
+  backend?: AgentBackendPreference | null;
   labels: string[];
   workspace: {
     path?: string;
@@ -114,6 +169,7 @@ export interface AgentSession {
   archived: boolean;
   pinned: boolean;
   hasUnread: boolean;
+  tailMessageId?: string | null;
   activity: 'idle' | 'working' | 'waiting';
 }
 
@@ -533,13 +589,16 @@ export async function agentListProjects(): Promise<AgentProject[]> {
 export function agentListSessions(
   filter: 'all' | 'archived' | 'needs_you' = 'all',
   titleQuery = '',
+  after?: { revision: string; cursor: string } | null,
 ): Promise<AgentSessionPage> {
   return hostQuery<AgentSessionPage>('agent', 'list', {
     kind: null,
     filter,
-    includeArchived: false,
+    includeArchived: filter === 'archived',
     rootsOnly: false,
-    position: { kind: 'start' },
+    position: after
+      ? { kind: 'after', revision: after.revision, cursor: after.cursor }
+      : { kind: 'start' },
     scope: { kind: 'all' },
     titleQuery,
   });
@@ -554,25 +613,51 @@ export async function agentListDirectoryRoots(): Promise<{ name: string; path: s
   return page && page.kind === 'roots' && Array.isArray(page.roots) ? page.roots : [];
 }
 
-export async function agentCreateSession(
-  title: string,
-  kind: 'agent' | 'room',
-  workspacePath: string,
-): Promise<AgentSession> {
+export async function agentListDirectoryChildren(
+  path: string,
+  after: string | null = null,
+): Promise<{
+  directory: { name: string; path: string } | null;
+  children: { name: string; path: string }[];
+  after: string | null;
+}> {
+  const page = await hostQuery<{
+    kind: string;
+    directory?: { name: string; path: string };
+    children?: { name: string; path: string }[];
+    after?: string | null;
+  }>('agent', 'directories', { kind: 'children', path, after });
+  if (page && page.kind === 'children' && Array.isArray(page.children)) {
+    return {
+      directory: page.directory ?? null,
+      children: page.children,
+      after: page.after ?? null,
+    };
+  }
+  return { directory: null, children: [], after: null };
+}
+
+export async function agentCreateSession(params: {
+  title: string;
+  kind: 'agent' | 'room';
+  workspace: AgentWorkspaceSelection;
+  automaticTitle: boolean;
+  backend?: AgentBackendPreference | null;
+}): Promise<AgentSession> {
   const res = await hostMutate<
     | { kind: 'created'; session: AgentSession }
     | { kind: 'rejected'; reason: unknown }
     | AgentSession
   >('agent', 'create', {
     incognito: false,
-    kind,
+    kind: params.kind,
     presetId: null,
-    backend: null,
-    automaticTitle: false,
+    backend: params.kind === 'room' ? null : (params.backend ?? null),
+    automaticTitle: params.kind === 'room' ? false : params.automaticTitle,
     tools: null,
-    title,
+    title: params.title,
     labels: [],
-    workspace: { kind: 'directory', path: workspacePath },
+    workspace: params.workspace,
   });
   if (res && typeof res === 'object' && 'kind' in res) {
     if (res.kind === 'created' && 'session' in res && res.session) {
@@ -586,6 +671,88 @@ export async function agentCreateSession(
   return res as AgentSession;
 }
 
+export function agentUpdateMetadata(params: {
+  sessionId: string;
+  expectedRevision: number;
+  title: string;
+  labels: string[];
+  pinned?: boolean;
+}): Promise<
+  | { kind: 'committed'; session: AgentSession }
+  | { kind: 'revision_conflict'; expected: number; actual: number }
+  | { kind: 'rejected'; reason: unknown }
+> {
+  return hostMutate('agent', 'metadata', {
+    sessionId: params.sessionId,
+    expectedRevision: params.expectedRevision,
+    title: params.title,
+    labels: params.labels,
+    ...(params.pinned === undefined ? {} : { pinned: params.pinned }),
+  });
+}
+
+export function agentChangeSession(
+  sessionId: string,
+  expectedRevision: number,
+  action: 'archive' | 'restore' | 'remove',
+): Promise<
+  | { kind: 'changed'; session: AgentSession }
+  | { kind: 'removed'; sessionId: string }
+  | { kind: 'revision_conflict'; expected: number; actual: number }
+  | { kind: 'rejected'; reason: unknown }
+> {
+  return hostMutate('agent', 'changeSession', {
+    sessionId,
+    expectedRevision,
+    action,
+  });
+}
+
+export function agentMarkRead(
+  sessionId: string,
+  messageId: string,
+): Promise<{ kind: 'observed'; session: AgentSession } | { kind: 'rejected'; reason: unknown }> {
+  return hostMutate('agent', 'markRead', { sessionId, messageId });
+}
+
+export async function agentListModels(query = ''): Promise<AgentModelChoice[]> {
+  const page = await hostQuery<{ kind: string; choices?: AgentModelChoice[] }>('agent', 'models', {
+    kind: 'start',
+    query,
+  });
+  return page && page.kind === 'ready' && Array.isArray(page.choices) ? page.choices : [];
+}
+
+export function agentSelectBackend(
+  sessionId: string,
+  backend: AgentBackendPreference,
+): Promise<{ kind: string; session?: AgentSession; reason?: unknown }> {
+  return hostMutate('agent', 'selectBackend', { sessionId, backend });
+}
+
+export function agentReadGoal(sessionId: string): Promise<AgentGoalView> {
+  return hostQuery<AgentGoalView>('agent', 'goal', { sessionId });
+}
+
+export function agentControlGoal(
+  sessionId: string,
+  goalId: string,
+  revision: number,
+  action: 'pause' | 'resume' | 'cancel' | 'dismiss',
+): Promise<
+  | { kind: 'committed'; goalId: string; revision: number }
+  | { kind: 'conflict'; actual: number | null }
+  | { kind: 'rejected'; reason: string }
+> {
+  return hostMutate('agent', 'changeGoal', {
+    kind: 'control',
+    sessionId,
+    goalId,
+    revision,
+    action,
+  });
+}
+
 export function agentOpenBot(): Promise<{ kind: string; sessionId?: string }> {
   return hostMutate<{ kind: string; sessionId?: string }>('agent', 'openBot', {
     workspace: null,
@@ -597,11 +764,20 @@ export function agentObserve(sessionId: string): Promise<AgentObservation> {
   return hostQuery<AgentObservation>('agent', 'observe', { sessionId });
 }
 
-export function agentHistory(sessionId: string): Promise<AgentHistoryPage> {
+export function agentHistory(
+  sessionId: string,
+  opts?: {
+    through?: number | null;
+    position?:
+      | { kind: 'tail' }
+      | { kind: 'before'; cursor: unknown }
+      | { kind: 'before_message'; messageId: string };
+  },
+): Promise<AgentHistoryPage> {
   return hostQuery<AgentHistoryPage>('agent', 'history', {
     sessionId,
-    through: null,
-    position: { kind: 'tail' },
+    through: opts?.through ?? null,
+    position: opts?.position ?? { kind: 'tail' },
     includeThinking: true,
     view: 'conversation',
   });
@@ -611,30 +787,34 @@ export function agentSend(
   sessionId: string,
   message: string,
   delivery: 'steer' | 'queue',
-  mentions: string[] = [],
+  opts?: {
+    mentions?: string[];
+    expectedRunId?: string | null;
+    backend?: AgentBackendPreference | null;
+  },
 ): Promise<{
   kind: string;
   sessionId?: string;
   runId?: string;
   messageId?: string;
-  reason?: string;
+  reason?: unknown;
 }> {
   return hostMutate('agent', 'send', {
-    mentions,
+    mentions: opts?.mentions ?? [],
     replyTo: null,
     onComplete: null,
     quotes: [],
     delivery,
-    expectedRunId: null,
+    expectedRunId: opts?.expectedRunId ?? null,
     attachments: [],
-    backend: null,
+    backend: opts?.backend ?? null,
     sessionId,
     message,
   });
 }
 
-export function agentStop(sessionId: string, runId: string): Promise<unknown> {
-  return hostMutate('agent', 'stop', { sessionId, runId });
+export function agentStop(sessionId: string, runId: string): Promise<{ requested?: boolean }> {
+  return hostMutate<{ requested?: boolean }>('agent', 'stop', { sessionId, runId });
 }
 
 export function agentPendingInteractions(sessionId: string): Promise<{
@@ -655,7 +835,9 @@ export function agentRespondInteraction(
   sessionId: string,
   requestId: string,
   answer: Record<string, unknown>,
-): Promise<{ kind: string; reason?: string }> {
+): Promise<
+  { kind: 'recorded'; record?: AgentInteractionRecord } | { kind: 'rejected'; reason?: unknown }
+> {
   return hostMutate('agent', 'respond', { sessionId, requestId, answer });
 }
 
