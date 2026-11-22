@@ -41,6 +41,8 @@ export const links = {
   sponsorship: 'https://www.apache.org/foundation/sponsorship.html',
   thanks: 'https://www.apache.org/foundation/thanks.html',
   dist: 'https://downloads.apache.org/incubator/maka/',
+  closer: 'https://www.apache.org/dyn/closer.lua/incubator/maka/',
+  archive: 'https://archive.apache.org/dist/incubator/maka/',
 };
 
 // Documents that exist in both languages. The English file is the authority;

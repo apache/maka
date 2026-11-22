@@ -125,7 +125,7 @@ export const zhCN: Copy = {
     },
     releases: {
       title: 'Apache Releases',
-      body: 'Maka 尚未发布过 Apache release。发布之后，带签名的源码包才是正式 release，安装包只是便利构建。',
+      body: '带签名的源码包才是正式 Apache release，安装包只是便利构建。',
       note: 'KEYS · SHA-512 · .asc',
     },
   },
@@ -152,9 +152,7 @@ export const zhCN: Copy = {
     status: {
       h3: '当前状态',
       release: {
-        label: 'Apache release',
-        value: '暂未发布。首个 release 投票通过后会列在这里。',
-        note: '暂无',
+        label: '最新版本',
       },
       nightly: {
         label: '原生 CLI',
@@ -169,13 +167,14 @@ export const zhCN: Copy = {
     },
     releases: {
       h2: 'Apache releases',
-      note: '暂无 APACHE RELEASE',
-      p: 'Apache Maka (Incubating) 尚未发布过 Apache release。首个 release 投票通过后会列在这里：源码包、ASF 分发目录中的 SHA-512 校验和与独立的 GPG 签名，以及签名对应的 KEYS 文件。',
-      distNote: '在此之前，分发目录尚未创建：',
+      p: '带签名的源码包就是正式 Apache release。源码包链接走 ASF 下载服务；校验和与签名请从 ASF 分发目录下载。',
+      checksum: 'SHA-512',
+      signature: '签名',
+      archiveNote: '历史版本归档在',
     },
     verify: {
       h2: '验证 release',
-      p: '所有 Apache release 的验证方式都一样，参与投票的每位 reviewer 在表决前都会走一遍这几步。',
+      p: '以下命令校验最新版本。校验历史版本时，请替换路径中的版本号。',
       keys: '第 1 步：导入 release manager 的公钥',
       signature: '第 2 步：校验签名',
       checksum: '第 3 步：核对校验和',
