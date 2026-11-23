@@ -47,6 +47,8 @@ impl<E: TaskEffect, A: Clone> TaskPlan<E, A> {
         if let Some(schedule) = patch.schedule {
             if next.task.schedule != schedule {
                 next.condition_matched = false;
+                next.last_dedupe_key = None;
+                next.consecutive_errors = 0;
             }
             next.task.schedule = schedule;
         }

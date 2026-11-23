@@ -49,6 +49,16 @@ fn due_at(plan: &Plan) -> Option<i64> {
         .min()
 }
 impl ReadyIndex {
+    pub(super) fn ready_ids(&self, at: i64) -> impl Iterator<Item = &String> {
+        // Reconcile pending deliveries first, then admit the oldest deadlines
+        // so frequent checks cannot keep taking a newly available script slot.
+        self.pending.iter().chain(
+            self.due
+                .range(..=at)
+                .flat_map(|(_, ids)| ids)
+                .filter(|id| !self.pending.contains(*id)),
+        )
+    }
     pub(super) fn next_after(&self, loaded_at: i64) -> Option<i64> {
         // A deadline crossed during loading still needs an immediate next tick.
         self.due
@@ -244,14 +254,9 @@ impl Scheduler {
             .transpose()
             .map_err(reason)?
             .unwrap_or_default();
-        let selected: BTreeSet<String> = match (rebuild, selection) {
-            (true, _) | (_, Selection::All) => index.ids.iter().cloned().collect(),
-            (_, Selection::Due(at)) => ready
-                .pending
-                .iter()
-                .chain(ready.due.range(..=at).flat_map(|(_, ids)| ids))
-                .cloned()
-                .collect(),
+        let selected: Vec<String> = match (rebuild, selection) {
+            (true, _) | (_, Selection::All) => index.ids.clone(),
+            (_, Selection::Due(at)) => ready.ready_ids(at).cloned().collect(),
             (_, Selection::FileChanges) => {
                 ready.pending.union(&ready.file_changes).cloned().collect()
             }
@@ -647,6 +652,26 @@ impl Saved {
 #[cfg(test)]
 mod wake_tests {
     use super::*;
+
+    #[test]
+    fn a_waiting_deadline_precedes_a_faster_tasks_next_check() {
+        let ready = ReadyIndex {
+            pending: ["pending".into()].into(),
+            due: BTreeMap::from([
+                (1000, ["z-waiting".into()].into()),
+                (1500, ["pending".into(), "a-rearmed".into()].into()),
+                (2000, ["future".into()].into()),
+            ]),
+            ..Default::default()
+        };
+        assert_eq!(
+            ready
+                .ready_ids(1500)
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            ["pending", "z-waiting", "a-rearmed"]
+        );
+    }
 
     #[test]
     fn deadline_crossed_during_loading_remains_the_next_wake() {

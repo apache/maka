@@ -1538,6 +1538,32 @@ async fn discovery_memory_tool_searches_record_text_and_relationships() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn scheduler_dry_run_rejects_oversize_state_without_saving_a_task() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut f = Fixture::new(&listener).await;
+    f.send("Preview this automation", json!([])).await;
+    let (mut socket, _) = next(&listener).await;
+    tool(
+        &mut socket,
+        "ScheduledTask",
+        json!({"request":{"action":"test_script",
+        "source":"console.log(true)", "state":"x".repeat(65_535)}}),
+    )
+    .await;
+    let (mut socket, body) = next(&listener).await;
+    let preview = output(&body);
+    assert_eq!(preview["ok"], false, "{preview}");
+    assert_eq!(preview["error"], "state exceeds 65536 JSON bytes");
+    assert!(preview["durationMs"].is_u64());
+    assert_eq!(
+        f.query("schedules", json!({"kind":"list"})).await["tasks"],
+        json!([])
+    );
+    quiet(&f, &listener, &mut socket).await;
+    f.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn discovery_model_proposals_require_bot_identity_and_human_approval() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let mut f = Fixture::new(&listener).await;

@@ -17,33 +17,28 @@
  * under the License.
  */
 
-use std::time::Duration;
+use std::{collections::VecDeque, time::Duration};
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio_util::sync::CancellationToken;
 
-const TAIL_BYTES: usize = 65_536;
+pub(crate) const TAIL_BYTES: usize = 65_536;
 pub(crate) const DRAIN: Duration = Duration::from_secs(2);
 
-#[derive(Default)]
 pub(crate) struct Tail {
-    bytes: Vec<u8>,
+    bytes: VecDeque<u8>,
+    limit: usize,
     pub truncated: bool,
 }
 
 impl Tail {
     fn push(&mut self, bytes: &[u8]) {
-        let overflow = (self.bytes.len() + bytes.len()).saturating_sub(TAIL_BYTES);
+        let overflow = (self.bytes.len() + bytes.len()).saturating_sub(self.limit);
         if overflow > 0 {
             self.truncated = true;
-            if overflow >= self.bytes.len() {
-                self.bytes.clear();
-                self.bytes
-                    .extend_from_slice(&bytes[bytes.len().saturating_sub(TAIL_BYTES)..]);
-                return;
-            }
-            self.bytes.drain(..overflow);
+            self.bytes.drain(..overflow.min(self.bytes.len()));
         }
-        self.bytes.extend_from_slice(bytes);
+        self.bytes
+            .extend(&bytes[bytes.len().saturating_sub(self.limit)..]);
     }
 
     pub fn text(&mut self) -> String {
@@ -54,9 +49,9 @@ impl Tail {
                 start += 1;
             }
         }
-        let text = String::from_utf8_lossy(&self.bytes[start..]);
+        let text = String::from_utf8_lossy(&self.bytes.make_contiguous()[start..]);
         // Invalid source bytes can expand to replacement characters.
-        let mut start = text.len().saturating_sub(TAIL_BYTES);
+        let mut start = text.len().saturating_sub(self.limit);
         while !text.is_char_boundary(start) {
             start += 1;
         }
@@ -68,12 +63,17 @@ impl Tail {
 pub(crate) async fn capture(
     mut pipe: impl AsyncRead + Unpin,
     exited: CancellationToken,
+    limit: usize,
     observer: Option<(
         tokio::sync::mpsc::Sender<crate::PipeEvent>,
         maka_plugin_core::shell_run::PipeStream,
     )>,
 ) -> Tail {
-    let mut tail = Tail::default();
+    let mut tail = Tail {
+        bytes: VecDeque::new(),
+        limit,
+        truncated: false,
+    };
     let deadline = async {
         exited.cancelled().await;
         tokio::time::sleep(DRAIN).await

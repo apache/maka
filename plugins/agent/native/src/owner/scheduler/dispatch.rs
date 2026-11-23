@@ -23,6 +23,8 @@ use maka_agent_facts::durable::{FactId, UnixMillis};
 use maka_agent_state::queue::{MessageResolution, QueueCommand, QueueEdit, RequestId};
 use tokio::time::Instant;
 
+const MAX_CONCURRENT_SCRIPTS: usize = 3;
+
 #[derive(Default)]
 struct ScriptChecks {
     running: BTreeSet<String>,
@@ -33,17 +35,17 @@ struct ScriptChecks {
 impl ScriptChecks {
     fn start(
         &mut self,
-        owner: &Arc<Owner>,
-        id: String,
+        id: &str,
         revision: u64,
-        source: String,
-        approval: BackgroundGrant,
+        spawn: impl FnOnce() -> tokio::task::JoinHandle<
+            Result<maka_scheduler::plan::ScriptOutcome, String>,
+        >,
     ) {
-        self.running.insert(id.clone());
-        let check_owner = owner.clone();
-        let job = owner
-            .producers
-            .spawn(async move { check_owner.check_automation(approval, source).await });
+        if self.running.len() >= MAX_CONCURRENT_SCRIPTS || !self.running.insert(id.to_owned()) {
+            return;
+        }
+        let id = id.to_owned();
+        let job = spawn();
         self.jobs.push(Box::pin(async move {
             let result = match job.await {
                 Ok(result) => result,
@@ -443,7 +445,12 @@ impl Owner {
             scripts.running.remove(&checked.id);
             scripts.completed = None;
         }
-        for id in catalog.plans.keys().cloned().collect::<Vec<_>>() {
+        for id in catalog
+            .ready
+            .ready_ids(loaded_at)
+            .cloned()
+            .collect::<Vec<_>>()
+        {
             if self.stop.is_cancelled() {
                 break;
             }
@@ -470,11 +477,18 @@ impl Owner {
                 && let TaskSchedule::Script { source, .. } = &plan.task.schedule
                 && let Some(Approval::Execution { approval }) = &plan.authorization
                 && plan.task.expires_at.is_none_or(|at| at > loaded_at)
-                && plan.task.next_fire_at.is_some_and(|at| at <= loaded_at)
             {
-                if !scripts.running.contains(&id) {
-                    scripts.start(self, id, saved.revision, source.clone(), approval.clone());
-                }
+                scripts.start(&id, saved.revision, || {
+                    let owner = self.clone();
+                    let source = source.clone();
+                    let state = plan.script_state().map(str::to_owned);
+                    let approval = approval.clone();
+                    self.producers.spawn(async move {
+                        owner
+                            .check_scheduled_script(approval, source, state.as_deref())
+                            .await
+                    })
+                });
                 continue;
             }
             let mut plan = plan.clone();
@@ -783,7 +797,21 @@ impl Owner {
             basis.mcp_catalog = Some(selected.clone());
             basis.internal_bindings = selected.bindings.clone();
         }
-        let message: MessageInput = fire.intent.body().to_string().into();
+        let mut body = fire.intent.body().to_owned();
+        if let Some(payload) = &fire.trigger_payload {
+            use std::fmt::Write;
+            body.push_str("\n\n[Trigger context]");
+            if let Some(summary) = &payload.summary {
+                write!(body, "\nSummary: {summary}").unwrap();
+            }
+            if let Some(data) = &payload.data {
+                write!(body, "\nData: {data}").unwrap();
+            }
+            if let Some(key) = &payload.dedupe_key {
+                write!(body, "\nDedupe key: {key}").unwrap();
+            }
+        }
+        let message: MessageInput = body.into();
         let source = RootSourceMessage {
             message: DeliveredMessage {
                 origin: Some(MessageOrigin::Automation {
@@ -875,6 +903,29 @@ impl Retry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn script_capacity_is_reused_on_completion_and_duplicate_checks_do_not_start() {
+        let mut scripts = ScriptChecks::default();
+        let (release, wait) = tokio::sync::oneshot::channel();
+        scripts.start("first", 1, || {
+            tokio::spawn(async move {
+                wait.await.unwrap();
+                Ok(false.into())
+            })
+        });
+        scripts.start("first", 1, || panic!("duplicate check started"));
+        for id in ["second", "third"] {
+            scripts.start(id, 1, || tokio::spawn(std::future::pending()));
+        }
+        scripts.start("fourth", 1, || panic!("fourth concurrent check started"));
+        release.send(()).unwrap();
+        let completed = scripts.jobs.next().await.unwrap();
+        assert_eq!(completed.id, "first");
+        scripts.running.remove(&completed.id);
+        scripts.start("fourth", 1, || tokio::spawn(async { Ok(true.into()) }));
+        assert_eq!(scripts.jobs.next().await.unwrap().id, "fourth");
+    }
 
     #[test]
     fn early_wakes_leave_only_the_failed_fire_waiting() {

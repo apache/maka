@@ -56,6 +56,13 @@ pub(crate) async fn run(
     }
     let exited = CancellationToken::new();
     let owns_tree = input.is_some();
+    // A protocol result can contain multiple bounded JSON fields with escaped
+    // strings. Retain it independently of the ordinary shell diagnostic tail.
+    let stdout_limit = if input.is_some() {
+        1024 * 1024
+    } else {
+        tail::TAIL_BYTES
+    };
     let lifecycle = async {
         let outcome = settle(&mut child, timeout_ms, cancellation, owns_tree).await;
         exited.cancel();
@@ -77,11 +84,13 @@ pub(crate) async fn run(
         tail::capture(
             stdout,
             exited.clone(),
+            stdout_limit,
             observer.clone().map(|o| (o, PipeStream::Stdout))
         ),
         tail::capture(
             stderr,
             exited.clone(),
+            tail::TAIL_BYTES,
             observer.map(|o| (o, PipeStream::Stderr))
         ),
     );

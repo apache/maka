@@ -17,7 +17,7 @@
  * under the License.
  */
 
-use super::TaskPlan;
+use super::{ScriptOutcome, ScriptPayload, StateUpdate, TaskPlan};
 use crate::{
     Error,
     command::Update,
@@ -25,6 +25,7 @@ use crate::{
     task::{Create, Creator, Outcome, Run, Status, TaskEffect},
 };
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 enum Delivery {
@@ -68,6 +69,183 @@ fn outcome(id: String, at: i64) -> Run {
         session_id: None,
         run_id: None,
     }
+}
+
+fn script_plan(every_seconds: u32) -> TaskPlan<Delivery, u64> {
+    TaskPlan::create(
+        "script".into(),
+        Create {
+            title: "Check".into(),
+            intent_body: "Report".into(),
+            schedule: Schedule::Script {
+                source: "console.log(true)".into(),
+                every_seconds,
+                start_at: 2_000,
+            },
+            effect: Delivery::Work("report".into()),
+            max_fires: None,
+            expires_at: None,
+        },
+        Creator::User,
+        "UTC".into(),
+        1_000,
+    )
+    .unwrap()
+}
+
+#[test]
+fn legacy_pending_boolean_fire_roundtrips_and_rearms_only_after_false() {
+    let legacy = json!({
+        "task": {"id":"script","title":"Check","intent":{"kind":"text","body":"Report"},
+            "schedule":{"kind":"script","source":"console.log(true)","everySeconds":1,"startAt":2000},
+            "effect":{"Work":"report"},"status":"active","nextFireAt":2000,"lastFireAt":null,
+            "fireCount":0,"maxFires":null,"expiresAt":null,"createdBy":{"kind":"user"},
+            "createdAt":1000,"updatedAt":2000,"runs":[],"lastError":null},
+        "editRevision":1,"timezone":"UTC","misfire":"skip","authorization":null,"conditionMatched":true,
+        "pending":{"id":"original","taskId":"script","scheduledAt":2000,"title":"Check",
+            "intent":{"kind":"text","body":"Report"},"effect":{"Work":"report"},"authorization":null}
+    });
+    let mut plan: TaskPlan<Delivery, u64> = serde_json::from_value(legacy.clone()).unwrap();
+    plan.validate().unwrap();
+    assert_eq!(serde_json::to_value(&plan).unwrap(), legacy);
+    plan.settle(outcome("original".into(), 2_000)).unwrap();
+    for (at, check, fire) in [
+        (3_000, true, false),
+        (4_000, false, false),
+        (5_000, true, true),
+    ] {
+        plan.record_condition(at, Ok(check.into())).unwrap();
+        assert_eq!(plan.pending.is_some(), fire);
+    }
+}
+
+#[test]
+fn keyed_fires_freeze_payload_and_remember_the_last_key_across_false_checks() {
+    let mut plan = script_plan(1);
+    for (triggered, key, fire) in [
+        (true, "e1", true),
+        (true, "e1", false),
+        (true, "e2", true),
+        (false, "ignored", false),
+        (true, "e2", false),
+    ] {
+        let at = plan.task.next_fire_at.unwrap();
+        let payload = ScriptPayload {
+            dedupe_key: Some(key.into()),
+            summary: Some("evidence".into()),
+            data: Some(json!(null)),
+        };
+        plan.record_condition(
+            at,
+            Ok(ScriptOutcome {
+                triggered,
+                dedupe_key: Some(key.into()),
+                payload: Some(payload.clone()),
+                state_update: StateUpdate::Set(json!(key).to_string()),
+            }),
+        )
+        .unwrap();
+        plan = serde_json::from_value(serde_json::to_value(&plan).unwrap()).unwrap();
+        assert_eq!(plan.script_state(), Some(json!(key).to_string().as_str()));
+        assert_eq!(plan.pending.is_some(), fire);
+        if let Some(pending) = &plan.pending {
+            assert_eq!(pending.trigger_payload.as_ref(), Some(&payload));
+            plan.settle(outcome(pending.id.clone(), at)).unwrap();
+        }
+    }
+    assert_eq!(plan.task.fire_count, 2);
+    assert_eq!(plan.last_dedupe_key(), Some("e2"));
+}
+
+#[test]
+fn nonmatching_checks_can_set_keep_and_clear_state() {
+    let mut plan = script_plan(1);
+    for (update, expected) in [
+        (StateUpdate::Set("42".into()), Some("42")),
+        (StateUpdate::Unchanged, Some("42")),
+        (StateUpdate::Clear, None),
+    ] {
+        plan.record_condition(
+            plan.task.next_fire_at.unwrap(),
+            Ok(ScriptOutcome {
+                state_update: update,
+                ..false.into()
+            }),
+        )
+        .unwrap();
+        assert_eq!(plan.script_state(), expected);
+        assert!(plan.pending.is_none());
+    }
+}
+
+#[test]
+fn script_errors_back_off_from_completion_and_success_restores_the_schedule() {
+    let mut plan = script_plan(60);
+    let mut at = 2_123;
+    for (n, delay) in [60, 120, 240, 480, 960, 1800, 1800].into_iter().enumerate() {
+        plan.record_condition(at, Err("unavailable".into()))
+            .unwrap();
+        plan = serde_json::from_value(serde_json::to_value(&plan).unwrap()).unwrap();
+        assert_eq!(plan.consecutive_errors(), n as u32 + 1);
+        assert_eq!(plan.task.last_error.as_deref(), Some("unavailable"));
+        at += delay * 1000;
+        assert_eq!(plan.task.next_fire_at, Some(at));
+    }
+    plan.record_condition(at, Ok(false.into())).unwrap();
+    assert_eq!(plan.consecutive_errors(), 0);
+    assert_eq!(plan.task.last_error, None);
+    assert_eq!(plan.task.next_fire_at, Some(at - 123 + 60_000));
+
+    let mut long = script_plan(3600);
+    long.record_condition(2_000, Err("offline".into())).unwrap();
+    assert_eq!(long.task.next_fire_at, Some(3_602_000));
+    long.task.expires_at = Some(7_202_000);
+    long.record_condition(3_602_000, Err("offline".into()))
+        .unwrap();
+    assert_eq!(
+        (long.task.status, long.task.next_fire_at),
+        (Status::Expired, None)
+    );
+}
+
+#[test]
+fn editing_script_source_rearms_checks_and_resets_backoff() {
+    let mut plan = script_plan(1);
+    plan.record_condition(
+        2_000,
+        Ok(ScriptOutcome {
+            dedupe_key: Some("seen".into()),
+            state_update: StateUpdate::Set("1".into()),
+            ..true.into()
+        }),
+    )
+    .unwrap();
+    plan.settle(outcome(plan.pending.as_ref().unwrap().id.clone(), 2_000))
+        .unwrap();
+    plan.record_condition(3_000, Err("failed".into())).unwrap();
+    let mut edited = plan
+        .update(
+            Update {
+                schedule: Some(Schedule::Script {
+                    source: "console.log(false)".into(),
+                    every_seconds: 1,
+                    start_at: 2_000,
+                }),
+                ..Default::default()
+            },
+            3_100,
+        )
+        .unwrap();
+    assert_eq!(
+        (
+            edited.consecutive_errors(),
+            edited.last_dedupe_key(),
+            edited.script_state()
+        ),
+        (0, None, Some("1"))
+    );
+    edited.record_condition(4_000, Ok(true.into())).unwrap();
+    assert!(edited.pending.is_some());
 }
 
 #[test]
