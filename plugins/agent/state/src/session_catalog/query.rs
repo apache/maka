@@ -75,15 +75,21 @@ const BASE: &str = "WITH base AS (
  AND (?9 IS NULL OR json_extract(s.configuration,'$.parentSessionId')=?9)
  AND (?10=0 OR (?10=1 AND s.archived=0) OR (?10=2 AND s.archived=1))
  AND (?13 IS NULL OR (room.session IS NOT NULL)=?13)
+ AND (?14=0
+  OR (?14=1 AND (COALESCE(json_extract(k.lineage,'$.origin.side'),json_extract(k.lineage,'$.branch.side')) IS NULL
+   OR NOT EXISTS(SELECT 1 FROM session_control p WHERE p.id=COALESCE(json_extract(k.lineage,'$.origin.parent_session_id'),json_extract(k.lineage,'$.branch.parent_session_id'))
+    AND NOT EXISTS(SELECT 1 FROM session_retirements d WHERE d.session_id=p.id AND d.remove_session=1))))
+  OR (?14=2 AND COALESCE(json_extract(k.lineage,'$.origin.side'),json_extract(k.lineage,'$.branch.side')) IS NOT NULL
+   AND COALESCE(json_extract(k.lineage,'$.origin.parent_session_id'),json_extract(k.lineage,'$.branch.parent_session_id'))=?15))
 ), selected AS (SELECT *, (pending_since IS NOT NULL) AS needs_you FROM base)";
 const FILTER: &str =
     "(?11=0 OR json_extract(configuration,'$.parentSessionId') IS NULL) AND (?12=0 OR needs_you=1)";
 const COLUMNS: &str = "id,revision,created_at,updated_at,archived,configuration,binding_id,workspace_json,permission_epoch,metadata_epoch,control_revision,read_message,lineage,has_unread,tail,message_at,preview,pending_since,run,terminal,stopped,run_blocked,run_unknown,run_cleanup,late_sequence,working,blocked,unknown_effects,cleanup_pending,late_evidence,index_gap,latest_schema,control_schema,source_run,source_unread,is_room";
-const SELECTION_PARAMS: usize = 13;
+const SELECTION_PARAMS: usize = 15;
 const RECORD_BUCKETS: [usize; 4] = [8, 32, 128, 256];
 
 static KEY_SQL: LazyLock<String> = LazyLock::new(|| {
-    format!("{BASE} SELECT unpinned,recency,id FROM selected WHERE {FILTER} AND id=?14")
+    format!("{BASE} SELECT unpinned,recency,id FROM selected WHERE {FILTER} AND id=?16")
 });
 static PENDING_COUNT_SQL: LazyLock<String> = LazyLock::new(|| {
     format!(
@@ -91,7 +97,7 @@ static PENDING_COUNT_SQL: LazyLock<String> = LazyLock::new(|| {
     )
 });
 static SINGLE_RECORD_SQL: LazyLock<String> =
-    LazyLock::new(|| format!("{BASE} SELECT {COLUMNS} FROM selected WHERE {FILTER} AND id=?14"));
+    LazyLock::new(|| format!("{BASE} SELECT {COLUMNS} FROM selected WHERE {FILTER} AND id=?16"));
 static RECORD_BUCKET_SQL: LazyLock<[String; 4]> = LazyLock::new(|| {
     RECORD_BUCKETS.map(|bucket| {
         let slots = (1..=bucket)
@@ -164,6 +170,9 @@ impl Selection {
                 return Err(invalid("catalog scope broadens the native owner namespace"));
             }
         }
+        if let SideQuestions::Of(parent) = &filter.side {
+            catalog.check_session(parent)?;
+        }
         Ok(Self {
             catalog: catalog.clone(),
             values: vec![
@@ -187,6 +196,16 @@ impl Selection {
                 filter
                     .room
                     .map_or(SqlValue::Null, |room| i64::from(room).into()),
+                match &filter.side {
+                    SideQuestions::Any => 0i64,
+                    SideQuestions::Hidden => 1,
+                    SideQuestions::Of(_) => 2,
+                }
+                .into(),
+                match &filter.side {
+                    SideQuestions::Of(parent) => parent.clone().into(),
+                    SideQuestions::Any | SideQuestions::Hidden => SqlValue::Null,
+                },
             ],
         })
     }
@@ -240,7 +259,7 @@ impl Selection {
                 key.recency.into(),
                 key.id.clone().into(),
             ]);
-            format!("AND (unpinned,recency,id){operator}(?14,?15,?16)")
+            format!("AND (unpinned,recency,id){operator}(?16,?17,?18)")
         } else {
             String::new()
         };
@@ -613,6 +632,7 @@ pub(crate) fn records_in_snapshot(
             },
             needs_you_only: false,
             room: None,
+            side: SideQuestions::Any,
         },
         limit: 128,
     };
@@ -674,14 +694,15 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn catalog_pages_across_sizes_return_exact_records_with_bounded_statement_cache() {
-        let dir = tempfile::tempdir().unwrap();
+    async fn seeded(
+        dir: &std::path::Path,
+        sessions: i64,
+    ) -> (RootStore, DataWriter, SessionCatalog) {
         let ns = RootNamespaces {
-            ownership: dir.path().join("owners"),
-            control: dir.path().join("control"),
+            ownership: dir.join("owners"),
+            control: dir.join("control"),
         };
-        let owner = Arc::new(RootOwner::create(&dir.path().join("root"), &ns).unwrap());
+        let owner = Arc::new(RootOwner::create(&dir.join("root"), &ns).unwrap());
         let migrations: Vec<_> = maka_event_log::ROOT_MIGRATIONS
             .iter()
             .chain(crate::MIGRATIONS)
@@ -689,14 +710,21 @@ mod tests {
             .collect();
         let root = RootStore::open(owner, &migrations).await.unwrap();
         let data = root.data_writer().unwrap();
-        data.write(SeedSessions(10)).await.unwrap();
+        data.write(SeedSessions(sessions)).await.unwrap();
 
         let run_owner: RunOwner = serde_json::from_value(serde_json::json!({
             "deployment": Uuid::now_v7(),
             "namespace": []
         }))
         .unwrap();
-        let catalog = SessionCatalog::new(data, run_owner, "sess-".into()).unwrap();
+        let catalog = SessionCatalog::new(data.clone(), run_owner, "sess-".into()).unwrap();
+        (root, data, catalog)
+    }
+
+    #[tokio::test]
+    async fn catalog_pages_across_sizes_return_exact_records_with_bounded_statement_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, _, catalog) = seeded(dir.path(), 10).await;
         let filter = Filter {
             base: CatalogFilter {
                 roots_only: false,
@@ -705,6 +733,7 @@ mod tests {
             },
             needs_you_only: false,
             room: None,
+            side: SideQuestions::Any,
         };
 
         let expected: Vec<String> = (1..=10).rev().map(|i| format!("sess-{i:02}")).collect();
@@ -769,10 +798,100 @@ mod tests {
             saw_single_record_query |= reader.statements.iter().any(|s| {
                 s.sql
                     .as_deref()
-                    .is_some_and(|sql| sql.ends_with("AND id=?14") && sql.contains(COLUMNS))
+                    .is_some_and(|sql| sql.ends_with("AND id=?16") && sql.contains(COLUMNS))
             });
         }
         assert!(saw_single_record_query);
+        root.close().await.unwrap();
+    }
+
+    /// Branches of other sessions, and the removal of one parent.
+    struct SeedBranches(String);
+    impl Statement for SeedBranches {
+        type Output = ();
+        type Value = ();
+        fn execute(self, c: &Connection) -> Result<Prepared<()>, StoreError> {
+            use maka_agent_facts::session::{BranchOrigin, ForkPosition, Lineage};
+            for (session, parent, side) in [
+                ("sess-02", "sess-01", true),
+                ("sess-03", "sess-01", false),
+                ("sess-04", "sess-05", true),
+            ] {
+                let lineage = Lineage::Branch {
+                    origin: BranchOrigin {
+                        parent_session_id: parent.into(),
+                        position: ForkPosition::End,
+                        side,
+                    },
+                };
+                c.execute(
+                    "INSERT INTO agent_catalog_controls(owner,session,revision,lineage) VALUES(?1,?2,0,?3)",
+                    rusqlite::params![self.0, session, serde_json::to_string(&lineage)?],
+                )?;
+            }
+            c.execute(
+                "INSERT INTO session_retirements(session_id,remove_session,completed) VALUES('sess-05',1,0)",
+                [],
+            )?;
+            Ok(Prepared {
+                value: (),
+                changed: true,
+                notification: Notification::default(),
+            })
+        }
+        fn committed(_: ()) {}
+        fn isolated_rejection(_: &StoreError) -> bool {
+            false
+        }
+    }
+
+    #[tokio::test]
+    async fn side_questions_are_listed_under_their_parent_until_it_is_removed() {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, data, catalog) = seeded(dir.path(), 5).await;
+        data.write(SeedBranches(catalog.owner_key().unwrap()))
+            .await
+            .unwrap();
+        let listed = async |side: SideQuestions| {
+            let page = catalog
+                .page(
+                    CatalogScope::Profile,
+                    None,
+                    Position::Start,
+                    Filter {
+                        base: CatalogFilter {
+                            roots_only: false,
+                            archived_only: false,
+                            include_archived: true,
+                        },
+                        needs_you_only: false,
+                        room: None,
+                        side,
+                    },
+                    32,
+                )
+                .await
+                .unwrap();
+            page.sessions
+                .into_iter()
+                .map(|record| record.metadata.id)
+                .collect::<Vec<_>>()
+        };
+        // sess-05 is removed. Its side question sess-04 has no parent left to
+        // be listed under, so it is an ordinary conversation again.
+        assert_eq!(
+            listed(SideQuestions::Hidden).await,
+            ["sess-04", "sess-03", "sess-01"]
+        );
+        // An ordinary branch of the same parent is not a side question.
+        assert_eq!(
+            listed(SideQuestions::Of("sess-01".into())).await,
+            ["sess-02"]
+        );
+        assert_eq!(
+            listed(SideQuestions::Any).await,
+            ["sess-04", "sess-03", "sess-02", "sess-01"]
+        );
         root.close().await.unwrap();
     }
 }

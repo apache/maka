@@ -55,6 +55,18 @@ pub struct Filter {
     pub base: CatalogFilter,
     pub needs_you_only: bool,
     pub room: Option<bool>,
+    pub side: SideQuestions,
+}
+/// Which sessions a read keeps with respect to side questions.
+#[derive(Clone, Debug, Serialize)]
+pub enum SideQuestions {
+    /// Side questions and other sessions alike.
+    Any,
+    /// Leave out side questions whose parent conversation still exists. One
+    /// whose parent was removed is listed as an ordinary conversation.
+    Hidden,
+    /// Only the side questions of this parent.
+    Of(String),
 }
 #[derive(Clone, Debug)]
 pub enum Position {
@@ -219,6 +231,7 @@ impl SessionCatalog {
                     },
                     needs_you_only: false,
                     room: None,
+                    side: SideQuestions::Any,
                 },
                 1,
             )

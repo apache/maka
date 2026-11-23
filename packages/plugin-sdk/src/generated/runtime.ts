@@ -2430,6 +2430,10 @@ export type AgentSessionListScope =
   | {
       kind: 'workspace';
       sessionId: string;
+    }
+  | {
+      kind: 'side_questions';
+      sessionId: string;
     };
 export type AgentWorkspaceSelection =
   | {
@@ -7849,6 +7853,11 @@ export interface AppliedPreset {
 export interface AgentSessionBranch {
   sessionId: string;
   position: AgentForkPosition;
+  /**
+   * The branch is a side question of that conversation. Fork results stored
+   * before side questions have no such field.
+   */
+  side?: boolean;
 }
 export interface AgentRecallPassage {
   session: AgentSession;
@@ -8009,6 +8018,11 @@ export interface AgentFork {
   position: AgentForkPosition;
   title: string;
   labels: string[];
+  /**
+   * Makes the fork a side question of the source conversation: lists leave
+   * it out unless they ask for that conversation's side questions.
+   */
+  side?: boolean;
 }
 export interface AgentForkReceipt {
   /**

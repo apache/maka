@@ -125,6 +125,10 @@ pub struct CopyReceipt {
 pub struct BranchOrigin {
     pub parent_session_id: String,
     pub position: ForkPosition,
+    /// The branch is a question asked beside its parent conversation. Written
+    /// only when true, so earlier records keep their encoding.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub side: bool,
 }
 
 /// Flattened provenance remains readable after the source catalog is removed.

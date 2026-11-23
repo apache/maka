@@ -1123,6 +1123,23 @@ export const contracts: {
                     additionalProperties: false,
                     required: ['kind', 'sessionId'],
                   },
+                  {
+                    description:
+                      'Side questions asked beside an owned session. Every other scope leaves\nout side questions whose parent conversation still exists.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'side_questions',
+                      },
+                      sessionId: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId'],
+                  },
                 ],
               },
             },
@@ -1366,6 +1383,12 @@ export const contracts: {
                   },
                   position: {
                     $ref: '#/$defs/AgentForkPosition',
+                  },
+                  side: {
+                    description:
+                      'The branch is a side question of that conversation. Fork results stored\nbefore side questions have no such field.',
+                    type: 'boolean',
+                    default: false,
                   },
                 },
                 additionalProperties: false,
@@ -3042,6 +3065,12 @@ export const contracts: {
                   },
                   position: {
                     $ref: '#/$defs/AgentForkPosition',
+                  },
+                  side: {
+                    description:
+                      'The branch is a side question of that conversation. Fork results stored\nbefore side questions have no such field.',
+                    type: 'boolean',
+                    default: false,
                   },
                 },
                 additionalProperties: false,
@@ -8215,6 +8244,12 @@ export const contracts: {
                   position: {
                     $ref: '#/$defs/AgentForkPosition',
                   },
+                  side: {
+                    description:
+                      'The branch is a side question of that conversation. Fork results stored\nbefore side questions have no such field.',
+                    type: 'boolean',
+                    default: false,
+                  },
                 },
                 additionalProperties: false,
                 required: ['sessionId', 'position'],
@@ -11683,6 +11718,12 @@ export const contracts: {
                   type: 'string',
                 },
               },
+              side: {
+                description:
+                  "Makes the fork a side question of the source conversation: lists leave\nit out unless they ask for that conversation's side questions.",
+                type: 'boolean',
+                default: false,
+              },
             },
             additionalProperties: false,
             required: ['sessionId', 'expectedRevision', 'position', 'title', 'labels'],
@@ -12150,6 +12191,12 @@ export const contracts: {
                   },
                   position: {
                     $ref: '#/$defs/AgentForkPosition',
+                  },
+                  side: {
+                    description:
+                      'The branch is a side question of that conversation. Fork results stored\nbefore side questions have no such field.',
+                    type: 'boolean',
+                    default: false,
                   },
                 },
                 additionalProperties: false,
@@ -12936,6 +12983,12 @@ export const contracts: {
                   },
                   position: {
                     $ref: '#/$defs/AgentForkPosition',
+                  },
+                  side: {
+                    description:
+                      'The branch is a side question of that conversation. Fork results stored\nbefore side questions have no such field.',
+                    type: 'boolean',
+                    default: false,
                   },
                 },
                 additionalProperties: false,
@@ -20437,6 +20490,12 @@ export const contracts: {
                   position: {
                     $ref: '#/$defs/AgentForkPosition',
                   },
+                  side: {
+                    description:
+                      'The branch is a side question of that conversation. Fork results stored\nbefore side questions have no such field.',
+                    type: 'boolean',
+                    default: false,
+                  },
                 },
                 additionalProperties: false,
                 required: ['sessionId', 'position'],
@@ -21639,6 +21698,12 @@ export const contracts: {
                   },
                   position: {
                     $ref: '#/$defs/AgentForkPosition',
+                  },
+                  side: {
+                    description:
+                      'The branch is a side question of that conversation. Fork results stored\nbefore side questions have no such field.',
+                    type: 'boolean',
+                    default: false,
                   },
                 },
                 additionalProperties: false,
@@ -23634,6 +23699,23 @@ export const contracts: {
                     additionalProperties: false,
                     required: ['kind', 'sessionId'],
                   },
+                  {
+                    description:
+                      'Side questions asked beside an owned session. Every other scope leaves\nout side questions whose parent conversation still exists.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'side_questions',
+                      },
+                      sessionId: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId'],
+                  },
                 ],
               },
             },
@@ -23877,6 +23959,12 @@ export const contracts: {
                   },
                   position: {
                     $ref: '#/$defs/AgentForkPosition',
+                  },
+                  side: {
+                    description:
+                      'The branch is a side question of that conversation. Fork results stored\nbefore side questions have no such field.',
+                    type: 'boolean',
+                    default: false,
                   },
                 },
                 additionalProperties: false,
@@ -29250,6 +29338,12 @@ export const contracts: {
                   position: {
                     $ref: '#/$defs/AgentForkPosition',
                   },
+                  side: {
+                    description:
+                      'The branch is a side question of that conversation. Fork results stored\nbefore side questions have no such field.',
+                    type: 'boolean',
+                    default: false,
+                  },
                 },
                 additionalProperties: false,
                 required: ['sessionId', 'position'],
@@ -31149,6 +31243,12 @@ export const contracts: {
                   position: {
                     $ref: '#/$defs/AgentForkPosition',
                   },
+                  side: {
+                    description:
+                      'The branch is a side question of that conversation. Fork results stored\nbefore side questions have no such field.',
+                    type: 'boolean',
+                    default: false,
+                  },
                 },
                 additionalProperties: false,
                 required: ['sessionId', 'position'],
@@ -32484,6 +32584,12 @@ export const contracts: {
                   },
                   position: {
                     $ref: '#/$defs/AgentForkPosition',
+                  },
+                  side: {
+                    description:
+                      'The branch is a side question of that conversation. Fork results stored\nbefore side questions have no such field.',
+                    type: 'boolean',
+                    default: false,
                   },
                 },
                 additionalProperties: false,
@@ -36263,6 +36369,12 @@ export const contracts: {
                   },
                   position: {
                     $ref: '#/$defs/AgentForkPosition',
+                  },
+                  side: {
+                    description:
+                      'The branch is a side question of that conversation. Fork results stored\nbefore side questions have no such field.',
+                    type: 'boolean',
+                    default: false,
                   },
                 },
                 additionalProperties: false,
@@ -44174,6 +44286,12 @@ export const contracts: {
                   position: {
                     $ref: '#/$defs/AgentForkPosition',
                   },
+                  side: {
+                    description:
+                      'The branch is a side question of that conversation. Fork results stored\nbefore side questions have no such field.',
+                    type: 'boolean',
+                    default: false,
+                  },
                 },
                 additionalProperties: false,
                 required: ['sessionId', 'position'],
@@ -46579,6 +46697,12 @@ export const contracts: {
                   },
                   position: {
                     $ref: '#/$defs/AgentForkPosition',
+                  },
+                  side: {
+                    description:
+                      'The branch is a side question of that conversation. Fork results stored\nbefore side questions have no such field.',
+                    type: 'boolean',
+                    default: false,
                   },
                 },
                 additionalProperties: false,
@@ -52896,6 +53020,12 @@ export const contracts: {
                   },
                   position: {
                     $ref: '#/$defs/AgentForkPosition',
+                  },
+                  side: {
+                    description:
+                      'The branch is a side question of that conversation. Fork results stored\nbefore side questions have no such field.',
+                    type: 'boolean',
+                    default: false,
                   },
                 },
                 additionalProperties: false,

@@ -35,6 +35,10 @@ pub struct Fork {
     #[schemars(length(min = 1))]
     pub title: String,
     pub labels: Vec<String>,
+    /// Makes the fork a side question of the source conversation: lists leave
+    /// it out unless they ask for that conversation's side questions.
+    #[serde(default)]
+    pub side: bool,
 }
 
 #[derive(Serialize, Deserialize, JsonSchema)]
@@ -72,4 +76,8 @@ pub struct SessionBranch {
     #[schemars(length(min = 1))]
     pub session_id: String,
     pub position: ForkPosition,
+    /// The branch is a side question of that conversation. Fork results stored
+    /// before side questions have no such field.
+    #[serde(default)]
+    pub side: bool,
 }
