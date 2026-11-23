@@ -31,12 +31,15 @@ import {
   StagedAttachments,
 } from '../../../../products/maka/workbench/app/Attachments';
 import { ComposerDetails } from '../../../../products/maka/workbench/app/ComposerDetails';
+import { ComposerShelf, ComposerShelfRow } from '../../../../products/maka/workbench/app/Feedback';
+import { toast } from '../../../../products/maka/workbench/app/toastStore';
 import { SessionPermissionsSelect } from '../../../../products/maka/workbench/app/SessionPermissionsSelect';
 import type { AgentExecution } from '../../../../packages/plugin-sdk/src/generated/runtime.js';
 import { hasComposerContent } from '../../../../packages/plugin-sdk/src/composer-view.js';
 import type {
   ComposerBackend,
   ComposerSession,
+  ComposerShelfStatus,
   ComposerViewInput,
 } from '../../../../packages/plugin-sdk/src/composer-view.js';
 import {
@@ -551,57 +554,85 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
       </If>
       {props.request}
       <View style={{ flexShrink: 0 }}>
-        <If when={props.session()?.error()}>
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-            <Text style={[{ color: C.danger, flex: 1 }, { userSelect: 'text' }]}>
-              {props.session()?.error()}
-            </Text>
-            <Button
-              accessibilityLabel={tr('Dismiss error')}
-              tooltip={textTooltip(() => tr('Dismiss error'))}
-              onPress={() => props.session()?.dismissError()}
-              style={{
-                ...controlStyle,
-                width: 32,
-                height: 32,
-                paddingHorizontal: 8,
-                alignItems: 'center',
-                justifyContent: 'center',
-                borderRadius: 16,
-              }}
-              hoverStyle={{ backgroundColor: C.surface }}
-              focusStyle={{ backgroundColor: C.raised }}
-            >
-              <Icon name="close" color={C.muted} />
-            </Button>
-          </View>
-        </If>
-        <If when={props.session()?.notice()}>
-          <Text
-            style={{
-              color: C.muted,
-              fontSize: 12,
-              // A single line occupies 32 points: 16 of text, 8 above and 8 below.
-              // This keeps the next card's outward cell paint clear of the notice.
-              ...(platform.idiom === 'terminal'
-                ? { lineHeight: 16, paddingVertical: 8 }
-                : { paddingTop: 4 }),
-            }}
-          >
-            {props.session()?.notice()}
-          </Text>
-        </If>
-        <Each of={props.session() ? [props.session()!] : []} key={(session) => session.sessionId}>
-          {(session) => {
-            const owner = session();
-            return (
-              <View>
-                <ProjectMcp owner={owner.projectMcp} />
-                <ComposerDetails session={owner} />
-              </View>
-            );
-          }}
-        </Each>
+        {(() => {
+          let lastNoticeKey = '';
+          effect(() => {
+            const session = props.session();
+            const message = session?.notice() ?? '';
+            const key = session && message ? `${session.sessionId}:${message}` : '';
+            if (!key) {
+              lastNoticeKey = '';
+              return;
+            }
+            if (key === lastNoticeKey) return;
+            lastNoticeKey = key;
+            toast.show({ id: 'composer.notice', tone: 'info', message });
+          });
+          cleanup(() => {
+            if (lastNoticeKey) toast.dismiss('composer.notice');
+          });
+
+          const shelfStatus = (): ComposerShelfStatus | null => {
+            const session = props.session();
+            const external = props.shelfStatus?.() ?? null;
+            const sessionError = session?.error() ?? '';
+            if (sessionError) {
+              return {
+                tone: 'danger',
+                message: sessionError,
+                onDismiss: () => session?.dismissError(),
+              };
+            }
+            if (external?.tone === 'danger') return external;
+            const mcp = session?.projectMcp;
+            if (mcp && !mcp.proposal() && mcp.error()) {
+              return {
+                tone: 'danger',
+                message: mcp.error(),
+                onDismiss: mcp.pending() ? undefined : mcp.dismiss,
+              };
+            }
+            if (external) return external;
+            if (platform.idiom !== 'terminal' && session?.connected() && warning()) {
+              return { tone: 'warning', message: warning() };
+            }
+            if (mcp && !mcp.proposal() && mcp.notice()) {
+              return { tone: 'info', message: mcp.notice() };
+            }
+            return null;
+          };
+
+          return (
+            <>
+              <If when={props.session() === null && shelfStatus() !== null}>
+                <ComposerShelf inset={24}>
+                  <ComposerShelfRow
+                    tone={shelfStatus()!.tone}
+                    message={shelfStatus()!.message}
+                    detail={shelfStatus()!.detail}
+                    action={shelfStatus()!.action}
+                    secondaryAction={shelfStatus()!.secondaryAction}
+                    onDismiss={shelfStatus()!.onDismiss}
+                  />
+                </ComposerShelf>
+              </If>
+              <Each
+                of={props.session() ? [props.session()!] : []}
+                key={(session) => session.sessionId}
+              >
+                {(session) => {
+                  const owner = session();
+                  return (
+                    <View>
+                      <ProjectMcp owner={owner.projectMcp} />
+                      <ComposerDetails session={owner} status={shelfStatus} />
+                    </View>
+                  );
+                }}
+              </Each>
+            </>
+          );
+        })()}
         <View
           ref={(node) => {
             cardRoot.set(node);
@@ -1144,10 +1175,9 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
           </If>
           <ComposerCompletion state={completion} />
         </View>
-        {/* The terminal reserves the warning row so the composer never jumps; the
-            desktop shows it only when there is a warning, so no empty band sits
-            under the box. */}
-        <If when={platform.idiom === 'terminal' || (props.session()?.connected() && warning())}>
+        {/* The terminal reserves the warning row so the composer never jumps;
+            on the desktop warnings dock into ComposerShelf above the card. */}
+        <If when={platform.idiom === 'terminal'}>
           <View style={{ minHeight: 24, paddingTop: 8 }}>
             <If when={props.session()?.connected() && warning()}>
               <Text style={{ color: C.warning, fontSize: 12, lineHeight: 16 }}>{warning()}</Text>

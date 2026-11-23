@@ -78,9 +78,11 @@ import {
   type ComposerSession,
   type ComposerCompletionSource,
   type ComposerFocusHandle,
+  type ComposerShelfStatus,
   type ComposerViewInput,
 } from '../../../../packages/plugin-sdk/src/workbench-views.js';
-import { delayed } from '../../../../products/maka/workbench/app/delayed';
+import { InlineCallout } from '../../../../products/maka/workbench/app/Feedback';
+import { toast } from '../../../../products/maka/workbench/app/toastStore';
 import {
   createText,
   createTransientText,
@@ -314,7 +316,6 @@ export function createConversationUi(
   const switching = signal(false);
   const busy = signal(false);
   const creatingFork = signal(false);
-  const working = delayed(() => switching() || creatingFork());
   const controls = signal<any[]>([]);
   const controlsKnown = signal(false);
   const recovering = signal(false);
@@ -2392,49 +2393,153 @@ export function createConversationUi(
         prefills.set(input.shell.sessionId()!, { text: input.firstMessage, send: true });
       bind(input.shell);
       input.attach(sessionHandle);
+      // Route transient action feedback, fork banner, and recovered-fork CTA to Mode A Toasts.
+      let lastStatus = '';
+      effect(() => {
+        const message = !connectionLost() ? status() : '';
+        if (!message) {
+          lastStatus = '';
+          return;
+        }
+        if (message === lastStatus) return;
+        lastStatus = message;
+        toast.show({ id: 'conversation.status', tone: 'info', message });
+      });
+
+      let shownForkId: string | null = null;
+      effect(() => {
+        const currentFork = forkNotice();
+        const currentId = selected();
+        if (!currentFork || currentFork.id !== currentId || connectionLost()) {
+          if (shownForkId !== null) {
+            shownForkId = null;
+            toast.dismiss('conversation.fork-notice');
+          }
+          return;
+        }
+        if (shownForkId === currentFork.id) return;
+        shownForkId = currentFork.id;
+        toast.show({
+          id: 'conversation.fork-notice',
+          tone: 'info',
+          message: tr('This is a fork of {title}. The original conversation is unchanged.', {
+            title: currentFork.title,
+          }),
+          actions: [
+            {
+              label: tr('Back to original'),
+              primary: true,
+              onPress: () => {
+                forkNotice.set(null);
+                void openBrowsed({ id: currentFork.source, origin: selected() });
+              },
+            },
+          ],
+        });
+      });
+
+      let shownRecoveredId: string | null = null;
+      effect(() => {
+        const recovered = recoveredFork();
+        if (!recovered) {
+          if (shownRecoveredId !== null) {
+            shownRecoveredId = null;
+            toast.dismiss('conversation.recovered-fork');
+          }
+          return;
+        }
+        if (shownRecoveredId === recovered.id) return;
+        shownRecoveredId = recovered.id;
+        toast.show({
+          id: 'conversation.recovered-fork',
+          tone: 'info',
+          message: `${tr('Open recovered fork')} · ${recovered.title}`,
+          actions: [
+            {
+              label: tr('Open'),
+              primary: true,
+              onPress: () => {
+                recoveredFork.set(null);
+                void openBrowsed({ id: recovered.id, origin: selected() });
+              },
+            },
+          ],
+        });
+      });
+
+      cleanup(() => {
+        if (lastStatus) toast.dismiss('conversation.status');
+        if (shownForkId !== null) toast.dismiss('conversation.fork-notice');
+        if (shownRecoveredId !== null) toast.dismiss('conversation.recovered-fork');
+      });
+
+      const shelfStatus = (): ComposerShelfStatus | null => {
+        if (connectionLost()) return null;
+        if ((handle()?.connected() ?? true) && error()) {
+          return {
+            tone: 'danger',
+            message: error(),
+            onDismiss: () => error.set(''),
+          };
+        }
+        const current = handle();
+        if (!current) return null;
+        const retryMeta = current.attachmentMetadataFailed()
+          ? {
+              label: tr('Retry attachment metadata'),
+              onPress: () => current.retryAttachmentMetadata(),
+            }
+          : undefined;
+        if (current.reconnecting()) {
+          return {
+            tone: 'warning',
+            message: tr('Reconnecting updates… Your draft is kept.'),
+            action: {
+              label: tr('Retry'),
+              primary: true,
+              onPress: () => current.reconnect(),
+            },
+            secondaryAction: retryMeta,
+          };
+        }
+        const waitMessage = current.executionWaitMessage();
+        if (waitMessage) {
+          return {
+            tone: 'info',
+            message: waitMessage,
+            action: retryMeta,
+          };
+        }
+        if (retryMeta) {
+          return {
+            tone: 'warning',
+            message: tr('Could not load attachments.'),
+            action: { ...retryMeta, primary: true },
+          };
+        }
+        return null;
+      };
+
       const request = (
         <View style={{ minHeight: 0, flexShrink: 1 }}>
-          <If when={selected() === null && workspaceError()}>
-            <View
-              style={{
-                marginBottom: 8,
-                flexDirection: 'row',
-                flexWrap: 'wrap',
-                alignItems: 'center',
-                justifyContent: 'center',
-                columnGap: 12,
-                rowGap: 4,
+          <If when={selected() === null && Boolean(workspaceError())}>
+            <InlineCallout
+              tone="warning"
+              message={tr('Folder unavailable')}
+              detail={workspaceError()}
+              action={{
+                label: tr('Choose another folder…'),
+                primary: true,
+                onPress: inputAction(() => recentOpen.set(true), null),
               }}
-            >
-              <Text
-                tooltip={textTooltip(workspaceError)}
-                style={{ ...bodyTextStyle, color: C.secondary }}
-              >
-                {tr('Folder unavailable')}
-              </Text>
-              <View style={{ flexDirection: 'row', gap: 8 }}>
-                <Button
-                  accessibilityLabel={tr('Choose another folder…')}
-                  onPress={inputAction(() => recentOpen.set(true), null)}
-                  style={controlStyle}
-                  hoverStyle={controlHoverStyle()}
-                  focusStyle={controlFocusStyle()}
-                >
-                  <Text style={{ color: C.accent }}>{tr('Choose another folder…')}</Text>
-                </Button>
-                <Button
-                  accessibilityLabel={tr('Retry folder')}
-                  onPress={inputAction(() => {
-                    void checkWorkspace();
-                  }, null)}
-                  style={controlStyle}
-                  hoverStyle={controlHoverStyle()}
-                  focusStyle={controlFocusStyle()}
-                >
-                  <Text style={{ color: C.secondary }}>{tr('Retry folder')}</Text>
-                </Button>
-              </View>
-            </View>
+              secondaryAction={{
+                label: tr('Retry folder'),
+                onPress: inputAction(() => {
+                  void checkWorkspace();
+                }, null),
+              }}
+              style={{ marginBottom: 8 }}
+            />
           </If>
           <Each<ConversationHandle>
             of={handle() ? [handle()!] : []}
@@ -2465,157 +2570,16 @@ export function createConversationUi(
               );
             }}
           </Each>
-          <If
-            when={
-              handle()?.reconnecting() ||
-              handle()?.executionWaitMessage() ||
-              handle()?.attachmentMetadataFailed()
-            }
-          >
-            <View
-              style={{
-                flexDirection: 'row',
-                flexWrap: 'wrap',
-                alignItems: 'center',
-                gap: 8,
-                paddingHorizontal: 12,
-                paddingVertical: 4,
-              }}
-            >
-              <If when={handle()?.reconnecting() || handle()?.executionWaitMessage()}>
-                <Text style={{ ...bodyTextStyle, flex: 1, color: C.muted }}>
-                  {handle()?.reconnecting()
-                    ? tr('Reconnecting updates… Your draft is kept.')
-                    : handle()?.executionWaitMessage()}
-                </Text>
-              </If>
-              <If when={handle()?.reconnecting()}>
-                <Button
-                  accessibilityLabel={tr('Reconnect updates')}
-                  onPress={() => handle()?.reconnect()}
-                  style={controlStyle}
-                >
-                  <Text style={{ color: C.accent }}>{tr('Retry')}</Text>
-                </Button>
-              </If>
-              <If when={handle()?.attachmentMetadataFailed()}>
-                <Button onPress={() => handle()?.retryAttachmentMetadata()} style={controlStyle}>
-                  <Text style={{ color: C.accent }}>{tr('Retry attachment metadata')}</Text>
-                </Button>
-              </If>
-            </View>
-          </If>
-          <If when={!connectionLost() && status()}>
-            <View
-              style={{
-                flexDirection: 'row',
-                alignItems: 'center',
-                gap: 8,
-                paddingHorizontal: 12,
-                paddingVertical: 4,
-                flexShrink: 0,
-              }}
-            >
-              <Text
-                style={[
-                  {
-                    ...bodyTextStyle,
-                    flex: 1,
-                    minWidth: 0,
-                    color: C.muted,
-                  },
-                  { userSelect: 'text' },
-                ]}
-              >
-                {status()}
-              </Text>
-              <Button
-                accessibilityLabel={tr('Dismiss action feedback')}
-                onPress={inputAction(() => status.set(''), null)}
-                style={{
-                  ...controlStyle,
-                  width: 32,
-                  height: 32,
-                  paddingHorizontal: 0,
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                }}
-                hoverStyle={controlHoverStyle()}
-                focusStyle={controlFocusStyle()}
-              >
-                <Icon name="close" color={C.muted} />
-              </Button>
-            </View>
-          </If>
-          <If
-            when={
-              !connectionLost() &&
-              (handle()?.connected() ?? true) &&
-              (error() || working() || forkNotice()?.id === selected())
-            }
-          >
-            <Scroll
-              accessibilityLabel={tr('Action feedback')}
-              style={{
-                minHeight: bodyTextStyle.lineHeight + 16,
-                flexShrink: 1,
-                backgroundColor: C.card,
-                // A card of its own on the desktop: square corners
-                // flush on the composer's rounded top read as notches.
-                ...(platform.idiom === 'terminal' ? {} : { borderRadius: 8, marginBottom: 8 }),
-              }}
-              contentStyle={{
-                paddingHorizontal: 16,
-                paddingVertical: 8,
-                gap: 8,
-              }}
-            >
-              <If when={error()}>
-                <Text style={[{ ...bodyTextStyle, color: C.danger }, { userSelect: 'text' }]}>
-                  {error()}
-                </Text>
-              </If>
-              <If when={working() && !error()}>
-                <Text style={{ ...bodyTextStyle, color: C.muted }}>
-                  {switching() ? tr('Saving draft before switching…') : tr('Creating fork…')}
-                </Text>
-              </If>
-              <If when={forkNotice()?.id === selected()}>
-                <View
-                  style={{
-                    flexDirection: 'row',
-                    alignItems: 'center',
-                    gap: 8,
-                  }}
-                >
-                  <Icon name="fork" color={C.secondary} />
-                  <Text
-                    style={{
-                      ...bodyTextStyle,
-                      flex: 1,
-                      color: C.muted,
-                    }}
-                  >
-                    {tr('This is a fork of {title}. The original conversation is unchanged.', {
-                      title: forkNotice()!.title,
-                    })}
-                  </Text>
-                  <Button
-                    onPress={inputAction(openBrowsed, {
-                      id: forkNotice()!.source,
-                      origin: selected(),
-                    })}
-                    style={controlStyle}
-                    hoverStyle={{ backgroundColor: C.cardRaised }}
-                    focusStyle={controlFocusStyle()}
-                  >
-                    <Text style={{ ...bodyTextStyle, color: C.accent }}>
-                      {tr('Back to original')}
-                    </Text>
-                  </Button>
-                </View>
-              </If>
-            </Scroll>
+          <If when={input.compact !== undefined && shelfStatus() !== null}>
+            <InlineCallout
+              tone={shelfStatus()!.tone}
+              message={shelfStatus()!.message}
+              detail={shelfStatus()!.detail}
+              action={shelfStatus()!.action}
+              secondaryAction={shelfStatus()!.secondaryAction}
+              onDismiss={shelfStatus()!.onDismiss}
+              style={{ marginTop: 6 }}
+            />
           </If>
         </View>
       );
@@ -2859,6 +2823,7 @@ export function createConversationUi(
                 stopAction={stopAction}
                 needsConnection={noConnections}
                 request={request}
+                shelfStatus={shelfStatus}
                 attach={(node) => {
                   for (const unbind of unbindEditorKeys.splice(0)) unbind();
                   editor = node;
@@ -2966,21 +2931,7 @@ export function createConversationUi(
                 })}
               />
             </If>
-            <If when={recoveredFork()}>
-              <Button
-                onPress={inputAction(openBrowsed, {
-                  id: recoveredFork()!.id,
-                  origin: selected(),
-                })}
-                style={{ ...controlStyle, alignSelf: 'flex-start' }}
-                hoverStyle={controlHoverStyle()}
-                focusStyle={controlFocusStyle()}
-              >
-                <Text style={{ color: C.accent }}>
-                  {tr('Open recovered fork')} · {recoveredFork()!.title}
-                </Text>
-              </Button>
-            </If>
+
             <Each
               of={overlay() && overlay()!.kind !== 'models' ? [overlay()!] : []}
               key={(value: Overlay) => value.instance}

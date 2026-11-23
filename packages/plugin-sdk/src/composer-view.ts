@@ -302,6 +302,22 @@ export function hasComposerContent(
   return text.length > 0 || attachments.length > 0 || quotes.length > 0;
 }
 
+export interface ComposerShelfAction {
+  readonly label: string;
+  readonly onPress: () => void;
+  readonly primary?: boolean;
+  readonly disabled?: boolean;
+}
+
+export interface ComposerShelfStatus {
+  readonly tone: 'danger' | 'warning' | 'info';
+  readonly message: string;
+  readonly detail?: string;
+  readonly action?: ComposerShelfAction;
+  readonly secondaryAction?: ComposerShelfAction;
+  readonly onDismiss?: () => void;
+}
+
 export interface ComposerViewInput<Element = unknown> {
   session(): ComposerSession<Element> | null;
   pending?(): {
@@ -331,6 +347,8 @@ export interface ComposerViewInput<Element = unknown> {
   blocked?(): boolean;
   readonly models: Element;
   readonly request: Element;
+  /** Session-scoped status row docked into the composer's top shelf. */
+  shelfStatus?(): ComposerShelfStatus | null;
   stopAction(): () => void;
   chooseWorkspace(): void;
   /** Optional product-owned directory switcher, in the existing composer location. */

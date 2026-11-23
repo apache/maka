@@ -28,6 +28,7 @@ import {
   reduceMotion,
   signal,
   windowSize,
+  type JSX,
   type ViewStyle,
 } from 'nsh';
 import { Button, Popover } from 'nsh/base';
@@ -803,6 +804,123 @@ export function InlineCallout(props: {
         </Text>
         <If when={Boolean(props.detail)}>
           <Text style={[{ ...captionTextStyle, color: C.muted }, { userSelect: 'text' }]}>
+            {props.detail}
+          </Text>
+        </If>
+      </View>
+      <If when={props.secondaryAction !== undefined}>
+        <CompactFeedbackButton
+          label={props.secondaryAction!.label}
+          primary={props.secondaryAction!.primary}
+          disabled={props.secondaryAction!.disabled}
+          onPress={props.secondaryAction!.onPress}
+        />
+      </If>
+      <If when={props.action !== undefined}>
+        <CompactFeedbackButton
+          label={props.action!.label}
+          primary={props.action!.primary ?? true}
+          disabled={props.action!.disabled}
+          onPress={props.action!.onPress}
+        />
+      </If>
+      <If when={props.onDismiss !== undefined}>
+        <CompactDismissButton label={props.dismissLabel} onPress={props.onDismiss!} />
+      </If>
+    </View>
+  );
+}
+
+/**
+ * Mode B: Unified top-docked shelf sitting flush on the composer's straight top edge.
+ * Shared by Conversations (ComposerDetails) and Rooms (RoomComposer).
+ */
+export function ComposerShelf(props: {
+  inset?: number;
+  accessibilityLabel?: string;
+  style?: ViewStyle;
+  children: JSX.Element;
+}) {
+  const inset = () => props.inset ?? 24;
+  return (
+    <View
+      accessibilityLabel={props.accessibilityLabel}
+      style={{
+        minHeight: 0,
+        flexShrink: 1,
+        backgroundColor: C.card,
+        overflow: 'hidden',
+        ...(platform.idiom === 'terminal'
+          ? { marginBottom: 16, borderWidth: 1, borderColor: C.line, borderRadius: 12 }
+          : {
+              // A docked lip on the composer card rather than a second card stacked above it.
+              marginHorizontal: inset(),
+              borderTopWidth: 1,
+              borderLeftWidth: 1,
+              borderRightWidth: 1,
+              borderBottomWidth: 0,
+              borderColor: C.line,
+              borderTopLeftRadius: 12,
+              borderTopRightRadius: 12,
+            }),
+        ...props.style,
+      }}
+    >
+      {props.children}
+    </View>
+  );
+}
+
+/** A single compact status/action row inside a ComposerShelf. */
+export function ComposerShelfRow(props: {
+  tone?: ToastTone;
+  icon?: Parameters<typeof Icon>[0]['name'];
+  message: string;
+  detail?: string;
+  divided?: boolean;
+  action?: RegionFeedbackAction;
+  secondaryAction?: RegionFeedbackAction;
+  onDismiss?: () => void;
+  dismissLabel?: string;
+}) {
+  const tone = () => props.tone ?? 'info';
+  const iconName = () => props.icon ?? toneIcon(tone());
+  const textColor = () => {
+    switch (tone()) {
+      case 'danger':
+        return C.danger;
+      case 'warning':
+        return C.warning;
+      case 'info':
+        return C.secondary;
+    }
+  };
+  return (
+    <View
+      style={{
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 8,
+        paddingHorizontal: 12,
+        paddingVertical: 7,
+        flexShrink: 0,
+        ...(props.divided ? { borderBottomWidth: 1, borderBottomColor: C.line } : {}),
+      }}
+    >
+      <View style={{ flexShrink: 0 }}>
+        <Icon name={iconName()} size={14} color={toneColor(tone())} />
+      </View>
+      <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
+        <Text style={[{ ...captionTextStyle, color: textColor() }, { userSelect: 'text' }]}>
+          {props.message}
+        </Text>
+        <If when={Boolean(props.detail)}>
+          <Text
+            style={[
+              { ...captionTextStyle, color: C.muted },
+              { numberOfLines: 2, userSelect: 'text' },
+            ]}
+          >
             {props.detail}
           </Text>
         </If>

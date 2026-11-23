@@ -80,6 +80,7 @@ import {
   stripInlineMention,
   workspaceTailName,
 } from './roomMessage';
+import { ComposerShelf, ComposerShelfRow } from './Feedback';
 import { LoadingIndicator } from './Loading';
 import { motionEnabled } from './roomMotion';
 
@@ -108,6 +109,8 @@ export function RoomComposer(props: {
   sessionId: string;
   members(): readonly AgentRoomMember[];
   waitingMembers?(): readonly AgentRoomMember[];
+  streamError?(): string;
+  retryStream?(): void;
   name(id: string): string;
   resolveNames(ids: string[]): Promise<void>;
   message(id: string): AgentRoomMessage | undefined;
@@ -866,311 +869,289 @@ export function RoomComposer(props: {
         </Overlay>
       </If>
 
-      <If when={!error() && !pending() && (props.waitingMembers?.().length ?? 0) > 0}>
-        {() => {
+      <View style={{ flexShrink: 0 }}>
+        {(() => {
+          const streamError = () => props.streamError?.() ?? '';
           const waiting = () => props.waitingMembers?.() ?? [];
-          const names = () =>
-            waiting()
-              .map((m) => m.title)
-              .join(', ');
+          const hasFailure = () => Boolean(streamError() || error() || pending());
+          const hasWaiting = () => waiting().length > 0;
+          const failureMessage = () =>
+            error() || (pending() ? tr('Could not send to the room.') : streamError());
+          const pendingPreview = () => {
+            const draft = pending()?.correlation.draft;
+            if (!draft) return '';
+            const mentions = (draft.mentions ?? []).map((id) => '@' + props.name(id)).join(' ');
+            return [draft.text.trim(), mentions].filter(Boolean).join(' ');
+          };
+          const retryFailure = () => {
+            if (pending()) {
+              void recover();
+              return;
+            }
+            if (error()) {
+              void (ready() ? flush() : restore())
+                .then(() => error.set(''))
+                .catch((reason) => error.set(describe(reason)));
+              return;
+            }
+            props.retryStream?.();
+          };
           return (
+            <If when={hasFailure() || hasWaiting()}>
+              <ComposerShelf inset={20}>
+                <If when={hasFailure()}>
+                  <ComposerShelfRow
+                    tone="danger"
+                    message={failureMessage()}
+                    detail={pending() ? pendingPreview() : undefined}
+                    divided={hasWaiting()}
+                    action={{
+                      label: tr('Retry'),
+                      primary: true,
+                      disabled: busy(),
+                      onPress: retryFailure,
+                    }}
+                    onDismiss={
+                      pending()
+                        ? () => {
+                            if (!busy()) void removePending();
+                          }
+                        : undefined
+                    }
+                    dismissLabel={tr('Dismiss message status')}
+                  />
+                </If>
+                <If when={hasWaiting()}>
+                  <ComposerShelfRow
+                    tone="warning"
+                    message={tr('Waiting for your input', {
+                      names: waiting()
+                        .map((m) => m.title)
+                        .join(', '),
+                    })}
+                    action={{
+                      label: tr('Open to respond'),
+                      primary: true,
+                      onPress: () => {
+                        const first = waiting()[0];
+                        if (first) props.openAgent(first.sessionId);
+                      },
+                    }}
+                  />
+                </If>
+              </ComposerShelf>
+            </If>
+          );
+        })()}
+        <View
+          ref={(node) => composerCard.set(node)}
+          style={{ backgroundColor: C.card, borderRadius: 20, padding: 16, gap: 12 }}
+        >
+          <If when={replyTo() !== null}>
             <View
               style={{
                 flexDirection: 'row',
                 alignItems: 'center',
-                alignSelf: 'flex-start',
                 gap: 8,
-                paddingHorizontal: 12,
-                paddingVertical: 5,
-                borderRadius: 999,
-                backgroundColor: C.warning + '18',
+                borderLeftWidth: 2,
+                borderLeftColor: C.accent,
+                paddingLeft: 10,
               }}
             >
-              <View
-                style={{
-                  width: 6,
-                  height: 6,
-                  borderRadius: 3,
-                  backgroundColor: C.warning,
-                }}
-              />
-              <Text style={{ ...captionTextStyle, color: C.warning }}>
-                {tr('Waiting for your input', { names: names() })}
+              <Text
+                style={[{ ...captionTextStyle, color: C.secondary, flex: 1 }, { numberOfLines: 2 }]}
+              >
+                {formatRoomPreviewText(
+                  (props.message(replyTo()!) ?? replyQuote())?.content.text ?? '',
+                ) || tr('View replied message')}
               </Text>
               <Button
-                accessibilityLabel={tr('Open to respond')}
+                accessibilityLabel={tr('Cancel reply')}
+                disabled={busy() || pending() !== null}
                 onPress={() => {
-                  const first = waiting()[0];
-                  if (first) props.openAgent(first.sessionId);
+                  replyTo.set(null);
+                  replyQuote.set(null);
+                  changed();
                 }}
-                style={{
-                  paddingHorizontal: 8,
-                  paddingVertical: 2,
-                  borderRadius: 999,
-                  backgroundColor: C.warning + '24',
-                }}
-                hoverStyle={{ backgroundColor: C.warning + '36' }}
+                style={controlStyle}
+                hoverStyle={{ backgroundColor: C.surface }}
               >
-                <Text style={{ ...captionTextStyle, fontWeight: '600', color: C.warning }}>
-                  {tr('Open to respond')}
-                </Text>
+                <Icon name="close" color={C.muted} />
               </Button>
             </View>
-          );
-        }}
-      </If>
+          </If>
 
-      <View
-        ref={(node) => composerCard.set(node)}
-        style={{ backgroundColor: C.card, borderRadius: 20, padding: 16, gap: 12 }}
-      >
-        <If when={replyTo() !== null}>
-          <View
-            style={{
-              flexDirection: 'row',
-              alignItems: 'center',
-              gap: 8,
-              borderLeftWidth: 2,
-              borderLeftColor: C.accent,
-              paddingLeft: 10,
-            }}
+          <If
+            when={(() => {
+              const inline = new Set(extractInlineMentionIds(text()));
+              return extraMentions().some((id) => !inline.has(id));
+            })()}
           >
-            <Text
-              style={[{ ...captionTextStyle, color: C.secondary, flex: 1 }, { numberOfLines: 2 }]}
-            >
-              {formatRoomPreviewText(
-                (props.message(replyTo()!) ?? replyQuote())?.content.text ?? '',
-              ) || tr('View replied message')}
-            </Text>
-            <Button
-              accessibilityLabel={tr('Cancel reply')}
-              disabled={busy() || pending() !== null}
-              onPress={() => {
-                replyTo.set(null);
-                replyQuote.set(null);
-                changed();
-              }}
-              style={controlStyle}
-              hoverStyle={{ backgroundColor: C.surface }}
-            >
-              <Icon name="close" color={C.muted} />
-            </Button>
-          </View>
-        </If>
-
-        <If
-          when={(() => {
-            const inline = new Set(extractInlineMentionIds(text()));
-            return extraMentions().some((id) => !inline.has(id));
-          })()}
-        >
-          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
-            <Each
-              of={(() => {
-                const inline = new Set(extractInlineMentionIds(text()));
-                return extraMentions().filter((id) => !inline.has(id));
-              })()}
-              key={(id) => id}
-            >
-              {(id) => (
-                <Button
-                  accessibilityLabel={tr('Remove mention {name}', { name: props.name(id()) })}
-                  onPress={() => removeMention(id())}
-                  style={{
-                    flexDirection: 'row',
-                    alignItems: 'center',
-                    gap: 4,
-                    paddingHorizontal: 8,
-                    paddingVertical: 4,
-                    borderRadius: 8,
-                    backgroundColor: C.surface,
-                  }}
-                  hoverStyle={{ backgroundColor: C.raised }}
-                  focusStyle={controlFocusStyle()}
-                >
-                  <View
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
+              <Each
+                of={(() => {
+                  const inline = new Set(extractInlineMentionIds(text()));
+                  return extraMentions().filter((id) => !inline.has(id));
+                })()}
+                key={(id) => id}
+              >
+                {(id) => (
+                  <Button
+                    accessibilityLabel={tr('Remove mention {name}', { name: props.name(id()) })}
+                    onPress={() => removeMention(id())}
                     style={{
-                      width: 14,
-                      height: 14,
-                      borderRadius: 7,
-                      backgroundColor: roomAvatarColor(id()),
+                      flexDirection: 'row',
                       alignItems: 'center',
-                      justifyContent: 'center',
+                      gap: 4,
+                      paddingHorizontal: 8,
+                      paddingVertical: 4,
+                      borderRadius: 8,
+                      backgroundColor: C.surface,
                     }}
+                    hoverStyle={{ backgroundColor: C.raised }}
+                    focusStyle={controlFocusStyle()}
                   >
-                    <Text style={{ fontSize: 9, fontWeight: '600', color: '#FFFFFF' }}>
-                      {roomAvatarInitial(props.name(id()))}
+                    <View
+                      style={{
+                        width: 14,
+                        height: 14,
+                        borderRadius: 7,
+                        backgroundColor: roomAvatarColor(id()),
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                      }}
+                    >
+                      <Text style={{ fontSize: 9, fontWeight: '600', color: '#FFFFFF' }}>
+                        {roomAvatarInitial(props.name(id()))}
+                      </Text>
+                    </View>
+                    <Text style={{ ...captionTextStyle, color: C.accent }}>
+                      @{props.name(id())}
                     </Text>
-                  </View>
-                  <Text style={{ ...captionTextStyle, color: C.accent }}>@{props.name(id())}</Text>
-                  <Icon name="close" size={12} color={C.muted} />
-                </Button>
-              )}
-            </Each>
-          </View>
-        </If>
+                    <Icon name="close" size={12} color={C.muted} />
+                  </Button>
+                )}
+              </Each>
+            </View>
+          </If>
 
-        <DraftAttachments draft={projection} preview={props.preview} />
+          <DraftAttachments draft={projection} preview={props.preview} />
 
-        <SkillInput
-          ref={(node) => editor.set(node)}
-          testID="room-message-input"
-          accessibilityLabel={tr('Message room')}
-          value={text()}
-          readonly={!ready() || busy() || pending() !== null}
-          placeholder={tr('Message this room…')}
-          autoFocus={false}
-          style={{ minHeight: 48, maxHeight: 200 }}
-          onChange={({ value }) => {
-            text.set(value);
-            changed();
-          }}
-          onSelectionChange={(value) => selection.set(value)}
-          onOpenSessionReference={({ sessionId }) => props.openAgent(sessionId)}
-          onSubmit={() => {
-            const candidate = pickerOpen() ? visibleChoices()[choice()] : undefined;
-            if (candidate) void selectChoice(candidate);
-            else void send();
-          }}
-          onEscape={() => dismissPicker()}
-          onPaste={(event) => paste.paste(pasteOwner, event)}
-          onFileDrop={(event) => paste.drop(pasteOwner, event)}
-          onFocus={() => paste.focus(pasteOwner)}
-          onBlur={() => paste.blur(pasteOwner)}
-        />
+          <SkillInput
+            ref={(node) => editor.set(node)}
+            testID="room-message-input"
+            accessibilityLabel={tr('Message room')}
+            value={text()}
+            readonly={!ready() || busy() || pending() !== null}
+            placeholder={tr('Message this room…')}
+            autoFocus={false}
+            style={{ minHeight: 48, maxHeight: 200 }}
+            onChange={({ value }) => {
+              text.set(value);
+              changed();
+            }}
+            onSelectionChange={(value) => selection.set(value)}
+            onOpenSessionReference={({ sessionId }) => props.openAgent(sessionId)}
+            onSubmit={() => {
+              const candidate = pickerOpen() ? visibleChoices()[choice()] : undefined;
+              if (candidate) void selectChoice(candidate);
+              else void send();
+            }}
+            onEscape={() => dismissPicker()}
+            onPaste={(event) => paste.paste(pasteOwner, event)}
+            onFileDrop={(event) => paste.drop(pasteOwner, event)}
+            onFocus={() => paste.focus(pasteOwner)}
+            onBlur={() => paste.blur(pasteOwner)}
+          />
 
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-          <Button
-            accessibilityLabel={tr('Attach files…')}
-            onPress={() =>
-              attachments.open({ owner: props.sessionId, value: !attachments.picker() })
-            }
-            disabled={!ready() || busy() || pending() !== null}
-            style={controlStyle}
-            hoverStyle={{ backgroundColor: C.surface }}
-            focusStyle={controlFocusStyle()}
-          >
-            <Icon name="plus" color={C.secondary} />
-          </Button>
-          <Button
-            accessibilityLabel={tr('Mention a session')}
-            onPress={openPicker}
-            disabled={!ready() || busy() || pending() !== null}
-            style={controlStyle}
-            hoverStyle={{ backgroundColor: C.surface }}
-            focusStyle={controlFocusStyle()}
-          >
-            <Text style={{ ...bodyTextStyle, color: choosing() ? C.accent : C.secondary }}>@</Text>
-          </Button>
-          <If when={hasBusyTarget()}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
             <Button
-              accessibilityLabel={
-                delivery() === 'queue' ? tr('Queue delivery') : tr('Steer delivery')
+              accessibilityLabel={tr('Attach files…')}
+              onPress={() =>
+                attachments.open({ owner: props.sessionId, value: !attachments.picker() })
               }
-              onPress={() => delivery.set(delivery() === 'queue' ? 'steer' : 'queue')}
-              disabled={busy() || pending() !== null}
-              style={{
-                flexDirection: 'row',
-                alignItems: 'center',
-                gap: 4,
-                paddingHorizontal: 10,
-                paddingVertical: 5,
-                borderRadius: 10,
-                backgroundColor: delivery() === 'queue' ? C.surface : 'transparent',
-                borderWidth: 1,
-                borderColor: delivery() === 'queue' ? C.accent : C.line,
-              }}
+              disabled={!ready() || busy() || pending() !== null}
+              style={controlStyle}
               hoverStyle={{ backgroundColor: C.surface }}
               focusStyle={controlFocusStyle()}
             >
-              <Icon
-                name={delivery() === 'queue' ? 'queue' : 'activity'}
-                size={13}
-                color={delivery() === 'queue' ? C.accent : C.secondary}
-              />
-              <Text
-                style={{
-                  ...captionTextStyle,
-                  color: delivery() === 'queue' ? C.accent : C.secondary,
-                }}
-              >
-                {delivery() === 'queue' ? tr('Queue delivery') : tr('Steer delivery')}
+              <Icon name="plus" color={C.secondary} />
+            </Button>
+            <Button
+              accessibilityLabel={tr('Mention a session')}
+              onPress={openPicker}
+              disabled={!ready() || busy() || pending() !== null}
+              style={controlStyle}
+              hoverStyle={{ backgroundColor: C.surface }}
+              focusStyle={controlFocusStyle()}
+            >
+              <Text style={{ ...bodyTextStyle, color: choosing() ? C.accent : C.secondary }}>
+                @
               </Text>
             </Button>
-          </If>
-          <View style={{ flex: 1 }} />
-          <Button
-            accessibilityLabel={tr('Send message')}
-            onPress={() => void send()}
-            disabled={!canSend()}
-            class={motionEnabled() ? 'transition-colors duration-150' : undefined}
-            style={{
-              width: 34,
-              height: 34,
-              alignItems: 'center',
-              justifyContent: 'center',
-              borderRadius: 17,
-              backgroundColor: canSend() ? C.accent : C.surface,
-            }}
-            activeStyle={motionEnabled() ? { transform: [{ scale: 0.92 }] } : undefined}
-            focusStyle={controlFocusStyle()}
-          >
-            <If
-              when={busy()}
-              else={<Icon name="send" color={canSend() ? C.background : C.muted} />}
-            >
-              <LoadingIndicator color={C.background} />
+            <If when={hasBusyTarget()}>
+              <Button
+                accessibilityLabel={
+                  delivery() === 'queue' ? tr('Queue delivery') : tr('Steer delivery')
+                }
+                onPress={() => delivery.set(delivery() === 'queue' ? 'steer' : 'queue')}
+                disabled={busy() || pending() !== null}
+                style={{
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  gap: 4,
+                  paddingHorizontal: 10,
+                  paddingVertical: 5,
+                  borderRadius: 10,
+                  backgroundColor: delivery() === 'queue' ? C.surface : 'transparent',
+                  borderWidth: 1,
+                  borderColor: delivery() === 'queue' ? C.accent : C.line,
+                }}
+                hoverStyle={{ backgroundColor: C.surface }}
+                focusStyle={controlFocusStyle()}
+              >
+                <Icon
+                  name={delivery() === 'queue' ? 'queue' : 'activity'}
+                  size={13}
+                  color={delivery() === 'queue' ? C.accent : C.secondary}
+                />
+                <Text
+                  style={{
+                    ...captionTextStyle,
+                    color: delivery() === 'queue' ? C.accent : C.secondary,
+                  }}
+                >
+                  {delivery() === 'queue' ? tr('Queue delivery') : tr('Steer delivery')}
+                </Text>
+              </Button>
             </If>
-          </Button>
+            <View style={{ flex: 1 }} />
+            <Button
+              accessibilityLabel={tr('Send message')}
+              onPress={() => void send()}
+              disabled={!canSend()}
+              class={motionEnabled() ? 'transition-colors duration-150' : undefined}
+              style={{
+                width: 34,
+                height: 34,
+                alignItems: 'center',
+                justifyContent: 'center',
+                borderRadius: 17,
+                backgroundColor: canSend() ? C.accent : C.surface,
+              }}
+              activeStyle={motionEnabled() ? { transform: [{ scale: 0.92 }] } : undefined}
+              focusStyle={controlFocusStyle()}
+            >
+              <If
+                when={busy()}
+                else={<Icon name="send" color={canSend() ? C.background : C.muted} />}
+              >
+                <LoadingIndicator color={C.background} />
+              </If>
+            </Button>
+          </View>
         </View>
       </View>
-
-      <If when={pending()}>
-        <View style={{ backgroundColor: C.surface, borderRadius: 12, padding: 12, gap: 4 }}>
-          <Text style={[{ ...captionTextStyle, color: C.secondary }, { numberOfLines: 3 }]}>
-            {pending()!.correlation.draft.text}
-          </Text>
-          <If when={(pending()!.correlation.draft.mentions?.length ?? 0) > 0}>
-            <Text style={{ ...captionTextStyle, color: C.accent }}>
-              {pending()!
-                .correlation.draft.mentions!.map((id) => '@' + props.name(id))
-                .join(' ')}
-            </Text>
-          </If>
-        </View>
-      </If>
-
-      <If when={error() || pending()}>
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-          <Text style={{ ...captionTextStyle, color: C.warning, flex: 1 }}>
-            {error() || tr('Could not send to the room.')}
-          </Text>
-          <Button
-            accessibilityLabel={tr('Retry')}
-            onPress={() =>
-              void (pending()
-                ? recover()
-                : (ready() ? flush() : restore())
-                    .then(() => error.set(''))
-                    .catch((reason) => error.set(describe(reason))))
-            }
-            disabled={busy()}
-            style={controlStyle}
-          >
-            <Text style={{ color: C.accent }}>{tr('Retry')}</Text>
-          </Button>
-          <If when={pending()}>
-            <Button
-              accessibilityLabel={tr('Dismiss message status')}
-              onPress={() => void removePending()}
-              disabled={busy()}
-              style={controlStyle}
-            >
-              <Icon name="close" color={C.muted} />
-            </Button>
-          </If>
-        </View>
-      </If>
     </View>
   );
 }

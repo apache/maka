@@ -1758,38 +1758,19 @@ export function RoomTimeline(props: {
         </If>
       </View>
 
-      <If when={error()}>
-        <View
-          style={{
-            flexDirection: 'row',
-            gap: 8,
-            paddingHorizontal: 24,
-            paddingBottom: 4,
-            alignItems: 'center',
-          }}
-        >
-          <Text style={{ ...captionTextStyle, color: C.warning, flex: 1 }}>{error()}</Text>
-          <Button
-            accessibilityLabel={tr('Retry')}
-            onPress={() => {
-              error.set('');
-              if (streamBroken()) void start(true);
-              else
-                void refresh().catch((reason) => {
-                  if (alive) error.set(reasonText(reason));
-                });
-            }}
-            style={controlStyle}
-          >
-            <Text style={{ color: C.accent }}>{tr('Retry')}</Text>
-          </Button>
-        </View>
-      </If>
-
       <RoomComposer
         sessionId={props.sessionId}
         members={members}
         waitingMembers={waitingMembers}
+        streamError={error}
+        retryStream={() => {
+          error.set('');
+          if (streamBroken()) void start(true);
+          else
+            void refresh().catch((reason) => {
+              if (alive) error.set(reasonText(reason));
+            });
+        }}
         name={props.name}
         resolveNames={props.resolveNames}
         message={(id) => map().get(id)}

@@ -19,108 +19,129 @@
 
 import { inputAction, Scroll, Text, View } from 'nsh';
 import { Button } from 'nsh/base';
-import { C, controlStyle } from './ui';
+import { InlineCallout } from './Feedback';
+import {
+  C,
+  bodyTextStyle,
+  captionTextStyle,
+  controlDisabledStyle,
+  controlFocusStyle,
+  controlHoverStyle,
+  controlStyle,
+} from './ui';
 import { tr } from './locale';
 import type { ComposerProjectMcp as Owner } from '../../../../packages/plugin-sdk/src/composer-view.js';
 
+/**
+ * Decision card shown above the composer when a workspace MCP config needs explicit trust.
+ * Standalone error/notice states without an active proposal are surfaced via ComposerShelf.
+ */
 export function ProjectMcp(props: { owner: Owner }) {
   const owner = props.owner;
   return (
-    <View>
-      <If when={owner.error()}>
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-          <Text style={[{ color: C.danger, flex: 1 }, { userSelect: 'text' }]}>
-            {owner.error()}
+    <Each of={owner.proposal() ? [owner.proposal()!] : []} key={(proposal) => proposal.revision}>
+      {(proposal) => (
+        <View
+          style={{
+            padding: 12,
+            gap: 8,
+            marginBottom: 8,
+            backgroundColor: C.card,
+            borderWidth: 1,
+            borderColor: C.line,
+            borderRadius: 12,
+          }}
+        >
+          <Text style={{ ...bodyTextStyle, color: C.text, fontWeight: '600' }}>
+            {tr('Trust project MCP configuration?')}
           </Text>
-          <If when={!owner.proposal() && !owner.pending()}>
+          <Text style={[{ ...captionTextStyle, color: C.muted }, { userSelect: 'text' }]}>
+            {proposal().path}
+          </Text>
+          <Text style={{ ...captionTextStyle, color: C.warning }}>
+            {tr(
+              'These servers run outside the conversation sandbox and can run commands as your user or contact remote services. Full-access sessions can call their tools without further confirmation.',
+            )}
+          </Text>
+          <Scroll
+            accessibilityLabel={tr('MCP server configuration')}
+            style={{ maxHeight: 192 }}
+            contentStyle={{ gap: 8 }}
+          >
+            <Each of={proposal().servers} key={(server) => server.name}>
+              {(server) => (
+                <View style={{ gap: 4 }}>
+                  <Text style={[{ ...captionTextStyle, color: C.text }, { userSelect: 'text' }]}>
+                    {server().name}: {server().launch}
+                  </Text>
+                  <If when={server().environment.length > 0}>
+                    <Text style={{ ...captionTextStyle, color: C.muted }}>
+                      {tr('Environment variables')}: {server().environment.join(', ')}
+                    </Text>
+                  </If>
+                  <If when={server().headers.length > 0}>
+                    <Text style={{ ...captionTextStyle, color: C.muted }}>
+                      {tr('HTTP headers')}: {server().headers.join(', ')}
+                    </Text>
+                  </If>
+                  <If when={server().readOnlyTools.length > 0}>
+                    <Text style={{ ...captionTextStyle, color: C.warning }}>
+                      {tr('Tools declared read-only')}: {server().readOnlyTools.join(', ')}
+                    </Text>
+                  </If>
+                </View>
+              )}
+            </Each>
+            <If when={proposal().disabled.length > 0}>
+              <Text style={{ ...captionTextStyle, color: C.muted }}>
+                {tr('Disabled servers')}: {proposal().disabled.join(', ')}
+              </Text>
+            </If>
+          </Scroll>
+          <If when={Boolean(owner.error())}>
+            <InlineCallout tone="danger" surface="chrome" message={owner.error()} />
+          </If>
+          <If when={!owner.error() && Boolean(owner.notice())}>
+            <InlineCallout tone="info" surface="chrome" message={owner.notice()} />
+          </If>
+          <Text style={{ ...captionTextStyle, color: C.muted }}>
+            {tr(
+              'Trust is saved for this workspace and configuration. Changes require confirmation again. Your draft has not been sent.',
+            )}
+          </Text>
+          <View style={{ flexDirection: 'row', gap: 8 }}>
             <Button
-              accessibilityLabel={tr('Dismiss error')}
+              disabled={owner.pending()}
+              accessibilityLabel={tr('Trust configuration')}
+              onPress={inputAction(owner.trust, proposal().revision)}
+              style={{
+                ...controlStyle,
+                borderWidth: 1,
+                borderColor: C.line,
+                backgroundColor: C.raised,
+              }}
+              hoverStyle={controlHoverStyle()}
+              focusStyle={controlFocusStyle()}
+              disabledStyle={controlDisabledStyle}
+            >
+              <Text style={{ ...captionTextStyle, fontWeight: '500', color: C.accent }}>
+                {owner.pending() ? tr('Saving trust…') : tr('Trust configuration')}
+              </Text>
+            </Button>
+            <Button
+              disabled={owner.pending()}
+              accessibilityLabel={tr('Cancel')}
               onPress={owner.dismiss}
               style={controlStyle}
+              hoverStyle={controlHoverStyle()}
+              focusStyle={controlFocusStyle()}
+              disabledStyle={controlDisabledStyle}
             >
-              <Text style={{ color: C.muted }}>{tr('Close')}</Text>
+              <Text style={{ ...captionTextStyle, color: C.muted }}>{tr('Cancel')}</Text>
             </Button>
-          </If>
-        </View>
-      </If>
-      <If when={owner.notice()}>
-        <Text style={{ color: C.muted }}>{owner.notice()}</Text>
-      </If>
-      <Each of={owner.proposal() ? [owner.proposal()!] : []} key={(proposal) => proposal.revision}>
-        {(proposal) => (
-          <View style={{ padding: 12, gap: 8, backgroundColor: C.surface }}>
-            <Text style={{ color: C.text, fontWeight: '600' }}>
-              {tr('Trust project MCP configuration?')}
-            </Text>
-            <Text style={[{ color: C.muted }, { userSelect: 'text' }]}>{proposal().path}</Text>
-            <Text style={{ color: C.warning }}>
-              {tr(
-                'These servers run outside the conversation sandbox and can run commands as your user or contact remote services. Full-access sessions can call their tools without further confirmation.',
-              )}
-            </Text>
-            <Scroll
-              accessibilityLabel={tr('MCP server configuration')}
-              style={{ maxHeight: 192 }}
-              contentStyle={{ gap: 8 }}
-            >
-              <Each of={proposal().servers} key={(server) => server.name}>
-                {(server) => (
-                  <View style={{ gap: 4 }}>
-                    <Text style={[{ color: C.text }, { userSelect: 'text' }]}>
-                      {server().name}: {server().launch}
-                    </Text>
-                    <If when={server().environment.length > 0}>
-                      <Text style={{ color: C.muted }}>
-                        {tr('Environment variables')}: {server().environment.join(', ')}
-                      </Text>
-                    </If>
-                    <If when={server().headers.length > 0}>
-                      <Text style={{ color: C.muted }}>
-                        {tr('HTTP headers')}: {server().headers.join(', ')}
-                      </Text>
-                    </If>
-                    <If when={server().readOnlyTools.length > 0}>
-                      <Text style={{ color: C.warning }}>
-                        {tr('Tools declared read-only')}: {server().readOnlyTools.join(', ')}
-                      </Text>
-                    </If>
-                  </View>
-                )}
-              </Each>
-              <If when={proposal().disabled.length > 0}>
-                <Text style={{ color: C.muted }}>
-                  {tr('Disabled servers')}: {proposal().disabled.join(', ')}
-                </Text>
-              </If>
-            </Scroll>
-            <Text style={{ color: C.muted }}>
-              {tr(
-                'Trust is saved for this workspace and configuration. Changes require confirmation again. Your draft has not been sent.',
-              )}
-            </Text>
-            <View style={{ flexDirection: 'row', gap: 8 }}>
-              <Button
-                disabled={owner.pending()}
-                accessibilityLabel={tr('Trust configuration')}
-                onPress={inputAction(owner.trust, proposal().revision)}
-                style={controlStyle}
-              >
-                <Text style={{ color: C.text }}>
-                  {owner.pending() ? tr('Saving trust…') : tr('Trust configuration')}
-                </Text>
-              </Button>
-              <Button
-                disabled={owner.pending()}
-                accessibilityLabel={tr('Cancel')}
-                onPress={owner.dismiss}
-                style={controlStyle}
-              >
-                <Text style={{ color: C.muted }}>{tr('Cancel')}</Text>
-              </Button>
-            </View>
           </View>
-        )}
-      </Each>
-    </View>
+        </View>
+      )}
+    </Each>
   );
 }
