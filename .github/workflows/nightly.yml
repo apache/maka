@@ -671,7 +671,13 @@ jobs:
 
   publish-npm:
     needs: [prepare, build, build-linux-arm64, compat-gate]
-    if: inputs.publish_npm
+    if: >-
+      inputs.publish_npm &&
+      !cancelled() &&
+      needs.prepare.result == 'success' &&
+      needs.build.result == 'success' &&
+      needs.build-linux-arm64.result == 'success' &&
+      needs.compat-gate.result == 'success'
     runs-on: ubuntu-latest
     environment: nightly
     timeout-minutes: 20
