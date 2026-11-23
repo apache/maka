@@ -97,12 +97,13 @@ function CompactFeedbackButton(props: {
   label: string;
   primary?: boolean;
   disabled?: boolean;
+  inert?: boolean;
   onPress: () => void;
 }) {
   return (
     <Button
       accessibilityLabel={props.label}
-      disabled={props.disabled}
+      disabled={props.disabled || props.inert}
       onPress={props.onPress}
       style={{
         height: 24,
@@ -115,7 +116,7 @@ function CompactFeedbackButton(props: {
       hoverStyle={quietHoverStyle()}
       activeStyle={quietActiveStyle()}
       focusStyle={quietFocusStyle()}
-      disabledStyle={controlDisabledStyle}
+      disabledStyle={props.disabled ? controlDisabledStyle : undefined}
     >
       <Text
         style={{
@@ -130,12 +131,13 @@ function CompactFeedbackButton(props: {
   );
 }
 
-function CompactDismissButton(props: { label?: string; onPress: () => void }) {
+function CompactDismissButton(props: { label?: string; inert?: boolean; onPress: () => void }) {
   const label = () => props.label ?? tr('Dismiss');
   return (
     <Button
       accessibilityLabel={label()}
       tooltip={textTooltip(label)}
+      disabled={props.inert}
       onPress={props.onPress}
       style={{
         width: 24,
@@ -237,12 +239,15 @@ export function Toaster(props: {
     heights.set({ ...prev, [id]: rounded });
   };
 
-  const cardHeight = (id: string) => heights()[id] ?? DEFAULT_TOAST_HEIGHT;
+  const CARD_BORDER_VERTICAL = 2;
+  const cardInnerHeight = (id: string) => heights()[id] ?? DEFAULT_TOAST_HEIGHT;
+  const cardOuterHeight = (id: string) => cardInnerHeight(id) + CARD_BORDER_VERTICAL;
 
-  const frontHeight = () => {
+  const frontInnerHeight = () => {
     const front = visibleItems()[0];
-    return front ? cardHeight(front.id) : DEFAULT_TOAST_HEIGHT;
+    return front ? cardInnerHeight(front.id) : DEFAULT_TOAST_HEIGHT;
   };
+  const frontOuterHeight = () => frontInnerHeight() + CARD_BORDER_VERTICAL;
 
   const collapsedTranslateY = (index: number) => {
     if (index === 0) return 0;
@@ -254,7 +259,7 @@ export function Toaster(props: {
     const list = visibleItems();
     let y = 0;
     for (let i = 0; i < index && i < list.length; i++) {
-      y += cardHeight(list[i]!.id) + EXPANDED_GAP;
+      y += cardOuterHeight(list[i]!.id) + EXPANDED_GAP;
     }
     return y;
   };
@@ -265,11 +270,11 @@ export function Toaster(props: {
     if (expanded()) {
       let total = 0;
       for (let i = 0; i < list.length; i++) {
-        total += cardHeight(list[i]!.id);
+        total += cardOuterHeight(list[i]!.id);
       }
       return total + (list.length - 1) * EXPANDED_GAP;
     }
-    const frontH = cardHeight(list[0]!.id);
+    const frontH = cardOuterHeight(list[0]!.id);
     const layers = Math.min(list.length, MAX_COLLAPSED_TOASTS);
     return frontH + (layers - 1) * STACK_OFFSET_Y;
   };
@@ -295,7 +300,11 @@ export function Toaster(props: {
     }
   };
 
-  const renderCardContent = (item: () => ToastRecord, index: () => number) => (
+  const renderCardContent = (
+    item: () => ToastRecord,
+    index: () => number,
+    interactive: () => boolean,
+  ) => (
     <>
       <View style={{ paddingTop: 1, flexShrink: 0 }}>
         <Icon name={toneIcon(item().tone)} size={14} color={toneColor(item().tone)} />
@@ -338,6 +347,7 @@ export function Toaster(props: {
           <Popover
             open={detailsOpenId() === item().id}
             onOpenChange={({ open }) => {
+              if (open && !interactive()) return;
               const id = item().id;
               if (open) detailsOpenId.set(id);
               else if (detailsOpenId() === id) detailsOpenId.set(null);
@@ -354,6 +364,7 @@ export function Toaster(props: {
             trigger={
               <Button
                 accessibilityLabel={item().details?.label ?? tr('Details')}
+                disabled={!interactive()}
                 selected={detailsOpenId() === item().id}
                 style={{
                   height: 24,
@@ -419,12 +430,13 @@ export function Toaster(props: {
             <CompactFeedbackButton
               label={action().label}
               primary={action().primary}
+              inert={!interactive()}
               onPress={() => runAction(item().id, action())}
             />
           )}
         </Each>
         <If when={item().dismissible}>
-          <CompactDismissButton onPress={() => store.dismiss(item().id)} />
+          <CompactDismissButton inert={!interactive()} onPress={() => store.dismiss(item().id)} />
         </If>
       </View>
     </>
@@ -461,7 +473,7 @@ export function Toaster(props: {
                     maxWidth: cardWidth(),
                   }}
                 >
-                  {renderCardContent(item, index)}
+                  {renderCardContent(item, index, () => true)}
                 </View>
               )}
             </Each>
@@ -515,6 +527,7 @@ export function Toaster(props: {
                     };
               return (
                 <View
+                  accessibilityElementsHidden={!isInteractive()}
                   style={[
                     {
                       ...floatingStyle(),
@@ -523,7 +536,7 @@ export function Toaster(props: {
                       top: 0,
                       right: 0,
                       width: cardWidth(),
-                      ...(isCollapsedBack() ? { height: frontHeight() } : {}),
+                      ...(isCollapsedBack() ? { height: frontOuterHeight() } : {}),
                       zIndex: 40 - index(),
                       opacity: opacity(),
                       translate: [0, translateY()],
@@ -538,7 +551,7 @@ export function Toaster(props: {
                       width: '100%',
                       borderRadius: 11,
                       ...(isCollapsedBack()
-                        ? { height: frontHeight(), overflow: 'hidden' as const }
+                        ? { height: frontInnerHeight(), overflow: 'hidden' as const }
                         : {}),
                     }}
                   >
@@ -554,7 +567,7 @@ export function Toaster(props: {
                         gap: 8,
                       }}
                     >
-                      {renderCardContent(item, index)}
+                      {renderCardContent(item, index, isInteractive)}
                     </View>
                   </View>
                 </View>

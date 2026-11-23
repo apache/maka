@@ -49,7 +49,7 @@ import { createQuickQuestion, type QuickThread } from './quickQuestion';
 import { inputEditor } from './ComposerEditor';
 import { attachDictation } from './InlineDictation';
 import { dictationPreferences } from './dictationPreferences';
-import { InlineCallout } from './Feedback';
+import { InlineCallout, Toaster } from './Feedback';
 import { QuickQuestionPanel } from './QuickQuestionPanel';
 import type { ConversationLauncher } from '../../../../plugins/agent/conversations/ui/QuickConversations';
 import { rememberInput, historyAtSelection } from './quick-input-history';
@@ -1586,60 +1586,67 @@ export function QuickLauncher(
           props.closed();
         }}
       >
-        <If
-          when={reading()}
-          else={
-            <If
-              when={props.conversing()}
-              else={
-                <If
-                  when={editor() !== null}
-                  else={
-                    <Launcher
-                      history={inputs}
-                      remember={remember}
-                      askBot={(text) => void askBot(text)}
-                      quick={quick}
-                      usage={usage}
-                      focused={() => props.opened() && !panelBlurred()}
-                      listenOnOpen={listenOnOpen}
-                      query={query}
-                      failure={failure}
-                      page={page}
-                      scope={scope}
-                      selection={selection}
-                      enter={enter}
-                      leave={leave}
-                    />
-                  }
-                >
-                  <QuickEditor editor={editor()!} back={() => editor.set(null)} />
-                </If>
-              }
-            >
-              <View style={[frameStyle(), { maxHeight: MAX_HEIGHT }]}>{props.conversation()}</View>
-            </If>
-          }
-        >
-          <HostProvider value={quickHost}>
-            <View style={[frameStyle(), { maxHeight: MAX_HEIGHT }]}>
-              <QuickQuestionPanel
-                question={question}
-                promoting={promoting}
-                promote={() => void promote()}
-                back={() => {
-                  reading.set(false);
-                  if (!inQuickHistory()) {
-                    const history = quick
-                      .entries()
-                      .find((item) => conversationTool(item.tool) && item.entry.id === 'history');
-                    if (history) enter(history, '');
-                  }
-                }}
-              />
-            </View>
-          </HostProvider>
-        </If>
+        <View style={{ width: '100%' }}>
+          <If
+            when={reading()}
+            else={
+              <If
+                when={props.conversing()}
+                else={
+                  <If
+                    when={editor() !== null}
+                    else={
+                      <Launcher
+                        history={inputs}
+                        remember={remember}
+                        askBot={(text) => void askBot(text)}
+                        quick={quick}
+                        usage={usage}
+                        focused={() => props.opened() && !panelBlurred()}
+                        listenOnOpen={listenOnOpen}
+                        query={query}
+                        failure={failure}
+                        page={page}
+                        scope={scope}
+                        selection={selection}
+                        enter={enter}
+                        leave={leave}
+                      />
+                    }
+                  >
+                    <QuickEditor editor={editor()!} back={() => editor.set(null)} />
+                  </If>
+                }
+              >
+                <View style={[frameStyle(), { maxHeight: MAX_HEIGHT }]}>
+                  {props.conversation()}
+                </View>
+              </If>
+            }
+          >
+            <HostProvider value={quickHost}>
+              <View style={[frameStyle(), { maxHeight: MAX_HEIGHT }]}>
+                <QuickQuestionPanel
+                  question={question}
+                  promoting={promoting}
+                  promote={() => void promote()}
+                  back={() => {
+                    reading.set(false);
+                    if (!inQuickHistory()) {
+                      const history = quick
+                        .entries()
+                        .find((item) => conversationTool(item.tool) && item.entry.id === 'history');
+                      if (history) enter(history, '');
+                    }
+                  }}
+                />
+              </View>
+            </HostProvider>
+          </If>
+          <If when={props.opened() && quick.enabled()}>
+            <Toaster top={12} right={12} maxWidth={340} />
+          </If>
+        </View>
       </Window>
     </>
   );

@@ -458,9 +458,11 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
     const external = props.shelfStatus?.() ?? null;
     const sessionError = session?.error() ?? '';
     if (sessionError) {
+      const recoveryAction = external?.action ?? external?.secondaryAction;
       return {
         tone: 'danger',
         message: sessionError,
+        action: recoveryAction ? { ...recoveryAction, primary: true } : undefined,
         onDismiss: () => session?.dismissError(),
       };
     }

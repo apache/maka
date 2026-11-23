@@ -2453,6 +2453,8 @@ export function createConversationUi(
         toast.show({
           id: 'conversation.recovered-fork',
           tone: 'info',
+          persistent: true,
+          dismissible: true,
           message: `${tr('Open recovered fork')} · ${recovered.title}`,
           actions: [
             {
@@ -2475,21 +2477,22 @@ export function createConversationUi(
 
       const shelfStatus = (): ComposerShelfStatus | null => {
         if (connectionLost()) return null;
-        if ((handle()?.connected() ?? true) && error()) {
-          return {
-            tone: 'danger',
-            message: error(),
-            onDismiss: () => error.set(''),
-          };
-        }
         const current = handle();
-        if (!current) return null;
-        const retryMeta = current.attachmentMetadataFailed()
+        const retryMeta = current?.attachmentMetadataFailed()
           ? {
               label: tr('Retry attachment metadata'),
               onPress: () => current.retryAttachmentMetadata(),
             }
           : undefined;
+        if ((current?.connected() ?? true) && error()) {
+          return {
+            tone: 'danger',
+            message: error(),
+            action: retryMeta,
+            onDismiss: () => error.set(''),
+          };
+        }
+        if (!current) return null;
         if (current.reconnecting()) {
           return {
             tone: 'warning',

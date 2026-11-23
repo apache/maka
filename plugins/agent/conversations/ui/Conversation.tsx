@@ -2047,6 +2047,7 @@ export function Conversation(props: ConversationProps) {
   const retryAttachmentMetadata = (owner: string) => {
     if (!alive || owner !== sessionId) return;
     attachmentMetadataFailed.set(false);
+    error.set('');
     hydrateAttachmentMetadata();
   };
   const readLandmarks = (through: number) => {

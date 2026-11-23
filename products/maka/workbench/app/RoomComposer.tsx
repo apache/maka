@@ -227,6 +227,24 @@ export function RoomComposer(props: {
     return saving;
   }
 
+  let hydrationPending = false;
+  const hydrateRestoredDraft = async () => {
+    hydrationPending = true;
+    const messageId = replyTo();
+    if (messageId && !props.message(messageId) && replyQuote()?.id !== messageId) {
+      const history = await host.query('agent', 'history', {
+        sessionId: props.sessionId,
+        position: { kind: 'message', messageId },
+      });
+      if (history.kind !== 'room') throw new Error('Expected Room history.');
+      if (alive && replyTo() === messageId)
+        replyQuote.set(history.page.items.find((message) => message.id === messageId) ?? null);
+    }
+    if (!alive) return;
+    hydrationPending = false;
+    void attachments.start();
+  };
+
   const restore = async () => {
     const [draft, operations] = await Promise.all([loadDraft(client), pendingSends(client)]);
     if (!alive) return;
@@ -242,17 +260,7 @@ export function RoomComposer(props: {
       ready.set(true);
     });
     void props.resolveNames(draft.mentions ?? []).catch(() => {});
-    if (draft.replyTo && !props.message(draft.replyTo)) {
-      const messageId = draft.replyTo;
-      const history = await host.query('agent', 'history', {
-        sessionId: props.sessionId,
-        position: { kind: 'message', messageId },
-      });
-      if (history.kind !== 'room') throw new Error('Expected Room history.');
-      if (alive && replyTo() === messageId)
-        replyQuote.set(history.page.items.find((message) => message.id === messageId) ?? null);
-    }
-    void attachments.start();
+    await hydrateRestoredDraft();
   };
   void restore().catch((reason) => {
     if (alive) error.set(describe(reason));
@@ -661,9 +669,18 @@ export function RoomComposer(props: {
       return;
     }
     if (error()) {
-      void (ready() ? flush() : restore())
-        .then(() => error.set(''))
-        .catch((reason) => error.set(describe(reason)));
+      const retryAction = !ready()
+        ? restore()
+        : hydrationPending
+          ? hydrateRestoredDraft().then(() => flush())
+          : flush();
+      void retryAction
+        .then(() => {
+          if (alive) error.set('');
+        })
+        .catch((reason) => {
+          if (alive) error.set(describe(reason));
+        });
       return;
     }
     props.retryStream?.();

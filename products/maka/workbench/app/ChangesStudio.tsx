@@ -42,7 +42,7 @@ import {
 import { useHost } from './host';
 import { NativeFileTree } from './NativeFileTree';
 import { pathTree } from './fileTreePaths';
-import { RegionEmptyError } from './Feedback';
+import { InlineCallout, RegionEmptyError } from './Feedback';
 import { Icon } from './Icon';
 import { LoadingState } from './Loading';
 import { tr } from './locale';
@@ -2039,7 +2039,7 @@ export function ChangesStudio(props: {
             }
           >
             <If
-              when={!loadError()}
+              when={!(Boolean(loadError()) && allFileRows().length === 0)}
               else={
                 <RegionEmptyError
                   tone="danger"
@@ -2049,6 +2049,18 @@ export function ChangesStudio(props: {
                 />
               }
             >
+              <If when={Boolean(loadError()) && allFileRows().length > 0}>
+                <InlineCallout
+                  tone="danger"
+                  message={loadError()}
+                  action={{
+                    label: tr('Retry'),
+                    primary: true,
+                    onPress: () => void refreshWorkspaceGit(),
+                  }}
+                  style={{ marginHorizontal: 16, marginTop: 10, marginBottom: 4 }}
+                />
+              </If>
               <If
                 when={allFileRows().length > 0}
                 else={
