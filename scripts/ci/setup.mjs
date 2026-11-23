@@ -331,7 +331,7 @@ async function cleanPackages(manifest, packages) {
     manifest,
     '--target-dir',
     TARGET_ROOT,
-    ...(profile === 'release' ? ['--release'] : []),
+    ...(profile === 'release' ? ['--release'] : profile !== 'dev' ? ['--profile', profile] : []),
     ...packages.flatMap((name) => ['--package', name]),
   ];
   await command('cargo', base);
@@ -368,7 +368,7 @@ async function main(action) {
         readFileSync('.cargo/config.toml'),
         readFileSync('.github/actions/ci-setup/action.yml'),
         readFileSync('.github/actions/ci-cache/action.yml'),
-        ...(profile === 'release' ? [readFileSync('scripts/rust/build-cli.mjs')] : []),
+        ...(profile !== 'dev' ? [readFileSync('scripts/rust/build-cli.mjs')] : []),
       ]),
     );
     const compiled = `rust-deps-${process.env.RUNNER_OS}-${process.env.RUNNER_ARCH}-${hash(compiler)}-${cacheRole}-${configuration}`;

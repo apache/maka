@@ -34,11 +34,10 @@ desktop-tests = []
 name = "maka"
 path = "src/main.rs"
 
-# Internal Windows service entry; the public console command remains `maka`.
+# Internal windowless Windows service launcher; delegates to the sibling `maka.exe`.
 [[bin]]
 name = "maka-service"
 path = "src/service_main.rs"
-test = false
 
 [[test]]
 name = "integration"

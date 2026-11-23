@@ -289,6 +289,30 @@ test('CLI builds use the requested target and artifact path', async (t) => {
   );
   assert.equal(invocation.options.cwd, sourceRoot);
   assert.equal(invocation.options.env, sourceEnv);
+  await mkdir(join(sourceRoot, 'target/aarch64-apple-darwin/dist'), { recursive: true });
+  await writeFile(
+    join(sourceRoot, 'target/aarch64-apple-darwin/dist/maka-desktop-shell'),
+    'shell bytes',
+  );
+  await writeFile(
+    join(sourceRoot, 'target/aarch64-apple-darwin/dist/maka-host-shell'),
+    'host shell bytes',
+  );
+  executable = join(sourceRoot, 'target/aarch64-apple-darwin/dist/maka');
+  assert.equal(
+    (
+      await buildCli({
+        profile: 'dist',
+        target: 'aarch64-apple-darwin',
+        repositoryRoot: sourceRoot,
+        env: sourceEnv,
+      })
+    ).binary,
+    join(sourceRoot, 'target/aarch64-apple-darwin/dist/maka'),
+  );
+  assert.ok(invocation.args.includes('--profile'));
+  assert.equal(invocation.args[invocation.args.indexOf('--profile') + 1], 'dist');
+  assert.ok(!invocation.args.includes('--release'));
   exitCode = 1;
   await assert.rejects(buildCli({ release: true, repositoryRoot: root }), /Maka build failed: 1/u);
 });
