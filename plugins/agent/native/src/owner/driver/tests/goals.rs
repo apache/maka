@@ -83,13 +83,7 @@ async fn stop_pauses_goal_even_when_it_observes_another_run() -> TestResult<()> 
     let listener = tokio::net::TcpListener::from_std(rig.model_listener.try_clone()?)?;
     let posts = Arc::new(AtomicUsize::new(0));
     let (requests, mut received) = tokio::sync::mpsc::unbounded_channel();
-    let cancel = CancellationToken::new();
-    let serving = tokio::spawn(model_recovery::serve(
-        listener,
-        posts.clone(),
-        cancel.clone(),
-        Some(requests),
-    ));
+    let serving = model_recovery::serve(listener, posts.clone(), Some(requests)).await?;
     let outcome = AssertUnwindSafe(tokio::time::timeout(
         Duration::from_secs(30),
         exercise(&mut rig, &posts, &mut received),
@@ -97,11 +91,9 @@ async fn stop_pauses_goal_even_when_it_observes_another_run() -> TestResult<()> 
     .catch_unwind()
     .await;
     let cleanup = rig.finish().await;
-    cancel.cancel();
-    let served = serving.await;
+    serving.shutdown().await;
     assert!(matches!(&outcome, Ok(Ok(Ok(())))), "{outcome:?}");
     assert!(cleanup.is_empty(), "{cleanup:?}");
-    served??;
     Ok(())
 }
 
@@ -175,7 +167,7 @@ async fn arm(
 async fn exercise(
     rig: &mut Rig,
     posts: &AtomicUsize,
-    received: &mut tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>,
+    received: &mut tokio::sync::mpsc::UnboundedReceiver<Value>,
 ) -> TestResult<()> {
     let session = rig
         .start_configured(None, |config| config["goals"] = json!(true))
@@ -303,11 +295,9 @@ async fn exercise(
             json!({"kind":"control","sessionId":session,"goalId":goal.id,"revision":goal.revision,"action":"resume"}),
         ).await?;
     assert_eq!(resumed["kind"], "committed");
-    let request: Value = serde_json::from_slice(
-        &tokio::time::timeout(Duration::from_secs(5), received.recv())
-            .await?
-            .ok_or("model request channel closed")?,
-    )?;
+    let request = tokio::time::timeout(Duration::from_secs(5), received.recv())
+        .await?
+        .ok_or("model request channel closed")?;
     assert!(
         request["messages"]
             .as_array()
@@ -346,22 +336,17 @@ async fn goal_tells_the_next_iteration_why_one_failed_and_pauses_after_two() -> 
     let mut rig = Rig::new()?;
     let listener = tokio::net::TcpListener::from_std(rig.model_listener.try_clone()?)?;
     let (requests, mut received) = tokio::sync::mpsc::unbounded_channel::<Value>();
-    let app = axum::Router::new().route(
-        "/v1/chat/completions",
-        axum::routing::post(move |body: axum::body::Bytes| {
-            let requests = requests.clone();
-            async move {
-                let _ = requests.send(serde_json::from_slice(&body).unwrap_or_default());
-                (
-                    axum::http::StatusCode::BAD_REQUEST,
-                    [("content-type", "application/json")],
-                    json!({"error":{"message":"fixture rejected the goal","type":"invalid_request_error"}})
-                        .to_string(),
-                )
-            }
-        }),
-    );
-    let serving = tokio::spawn(async move { axum::serve(listener, app).await });
+    let serving = MockAiBuilder::new()
+        .handler_fn(move |req, _| {
+            let _ = requests.send(req.raw_body.clone());
+            TurnPlan::http_error(HttpErrorSpec::new(
+                400,
+                "invalid_request_error",
+                "fixture rejected the goal",
+            ))
+        })
+        .start_with_listener(listener)
+        .await?;
     let outcome = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(30), async {
         let session = rig
             .start_configured(None, |config| config["goals"] = json!(true))
@@ -424,7 +409,7 @@ async fn goal_tells_the_next_iteration_why_one_failed_and_pauses_after_two() -> 
     .catch_unwind()
     .await;
     let cleanup = rig.finish().await;
-    serving.abort();
+    serving.shutdown().await;
     match outcome {
         Ok(result) => result??,
         Err(panic) => std::panic::resume_unwind(panic),
@@ -438,53 +423,34 @@ async fn background_wakeups_and_continuation_preserve_inherited_skill_catalog() 
     let mut rig = Rig::new()?;
     let listener = tokio::net::TcpListener::from_std(rig.model_listener.try_clone()?)?;
     let (requests, mut received) = tokio::sync::mpsc::unbounded_channel::<Value>();
-    let step_index = Arc::new(AtomicUsize::new(0));
-    let app = axum::Router::new().route(
-        "/v1/chat/completions",
-        axum::routing::post(move |body: axum::body::Bytes| {
-            let requests = requests.clone();
-            let index = step_index.fetch_add(1, Ordering::SeqCst);
-            async move {
-                let _ = requests.send(serde_json::from_slice(&body).unwrap_or_default());
-                let tool_sse = |id: &str, name: &str, args: &str| {
-                    let c1 = json!({
-                        "id":format!("cont-skill-{index}"),"object":"chat.completion.chunk",
-                        "created":1,"model":"llama3.2","choices":[{"index":0,"delta":{
-                            "role":"assistant",
-                            "tool_calls":[{"index":0,"id":id,"type":"function","function":{"name":name,"arguments":args}}]
-                        },"finish_reason":null}]
-                    });
-                    let c2 = json!({
-                        "id":format!("cont-skill-{index}"),"object":"chat.completion.chunk",
-                        "created":1,"model":"llama3.2","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],
-                        "usage":{"prompt_tokens":100,"completion_tokens":10,"total_tokens":110}
-                    });
-                    format!("data: {c1}\n\ndata: {c2}\n\ndata: [DONE]\n\n")
-                };
-                let text_sse = |text: &str| {
-                    let chunk = json!({
-                        "id":format!("cont-skill-{index}"),"object":"chat.completion.chunk",
-                        "created":1,"model":"llama3.2","choices":[{"index":0,
-                        "delta":{"role":"assistant","content":text},"finish_reason":"stop"}],
-                        "usage":{"prompt_tokens":100,"completion_tokens":5,"total_tokens":105}
-                    });
-                    format!("data: {chunk}\n\ndata: [DONE]\n\n")
-                };
-                // 0: initial Continuation Main -> call CompactContext
-                // 1: Summary -> produce checkpoint summary (sets view.baseline)
-                // 2: post-compaction Main (view.baseline.is_some()) -> call exec tool
-                // 3: post-compaction tool continuation (view.baseline.is_some()) -> finish
-                let sse = match index {
-                    0 => tool_sse("call-compact", "CompactContext", "{}"),
-                    1 => text_sse("Compacted checkpoint summary."),
-                    2 => tool_sse("call-post-compact", "exec", r#"{"code":"text(\"post-compact\")"}"#),
-                    _ => text_sse("Continued after compaction"),
-                };
-                ([("content-type", "text/event-stream")], sse)
+    let serving = MockAiBuilder::new()
+        .handler_fn(move |req, ctx| {
+            let _ = requests.send(req.raw_body.clone());
+            let tool = |id, name, args| {
+                TurnPlan::new()
+                    .push_tool_call(id, name, args)
+                    .with_usage(Usage::new(100, 10))
+                    .finish(FinishReason::ToolCalls)
+            };
+            let text = |s| {
+                TurnPlan::new()
+                    .push_text(s)
+                    .with_usage(Usage::new(100, 5))
+                    .finish(FinishReason::Stop)
+            };
+            match ctx.global_turn {
+                1 => tool("call-compact", "CompactContext", json!({})),
+                2 => text("Compacted checkpoint summary."),
+                3 => tool(
+                    "call-post-compact",
+                    "exec",
+                    json!({"code":r#"text("post-compact")"#}),
+                ),
+                _ => text("Continued after compaction"),
             }
-        }),
-    );
-    let serving = tokio::spawn(async move { axum::serve(listener, app).await });
+        })
+        .start_with_listener(listener)
+        .await?;
     let outcome = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(30), async {
         let session = rig
             .start_configured(None, |config| config["todo"] = json!(true))
@@ -729,7 +695,7 @@ async fn background_wakeups_and_continuation_preserve_inherited_skill_catalog() 
     .catch_unwind()
     .await;
     let cleanup = rig.finish().await;
-    serving.abort();
+    serving.shutdown().await;
     match outcome {
         Ok(result) => result??,
         Err(panic) => std::panic::resume_unwind(panic),

@@ -494,3 +494,408 @@ async fn anthropic_messages_sse_and_compaction_conform_to_maka_decoder() {
     assert_eq!(finish2.raw_reason.as_deref(), Some("compaction"));
     assert_eq!(finish2.usage.as_ref().and_then(|u| u.output), Some(45));
 }
+
+#[tokio::test]
+async fn interactive_non_streaming_meta_filtered_and_ws_stall_disconnect() {
+    use maka_mock_ai::{CustomResponse, HttpErrorSpec};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    // 1) Filtered interactive mode + custom_route overriding /v1/models + control_plane_requests
+    let mut server = MockAiBuilder::new()
+        .custom_route(Arc::new(|method, path, headers, _body| {
+            if method == "GET" && path == "/v1/custom" {
+                Some(CustomResponse::text(200, "custom-body").with_header(
+                    "x-custom-tag",
+                    headers.get("x-in").cloned().unwrap_or_default(),
+                ))
+            } else {
+                None
+            }
+        }))
+        .interactive_filtered(8, |req, _| {
+            if req.last_user_text() == Some("warmup") {
+                Some(TurnPlan::text("auto-warmup"))
+            } else {
+                None
+            }
+        })
+        .start()
+        .await
+        .unwrap();
+
+    let client = reqwest::Client::new();
+
+    // Control plane request recording (GET /v1/models with custom header)
+    let models_resp = client
+        .get(format!("{}/models", server.base_url()))
+        .header("x-magpie-drawers", "1")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(models_resp.status(), 200);
+    let custom_resp = client
+        .get(format!("{}/custom", server.base_url()))
+        .header("x-in", "ok")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(custom_resp.status(), 200);
+    assert_eq!(custom_resp.headers()["x-custom-tag"], "ok");
+    assert_eq!(custom_resp.text().await.unwrap(), "custom-body");
+    let cp = server.control_plane_requests();
+    assert_eq!(cp.len(), 2);
+    assert_eq!(
+        cp[0].headers.get("x-magpie-drawers").map(String::as_str),
+        Some("1")
+    );
+
+    // Filtered auxiliary turn is handled automatically without entering interactive queue
+    let warmup = post_json(
+        &client,
+        &format!("{}/chat/completions", server.base_url()),
+        &json!({ "model": "gpt-4.1", "stream": false, "messages": [{ "role": "user", "content": "warmup" }] }),
+    )
+    .await;
+    assert_eq!(warmup.status(), 200);
+    assert!(warmup.text().await.unwrap().contains("auto-warmup"));
+
+    // Interactive non-streaming JSON + full TurnPlan metadata via send_plan (response_id, headers, on_close)
+    let non_stream_req = tokio::spawn({
+        let client = client.clone();
+        let url = format!("{}/chat/completions", server.base_url());
+        async move {
+            post_json(
+                &client,
+                &url,
+                &json!({ "model": "gpt-4.1", "stream": false, "messages": [{ "role": "user", "content": "json-turn" }] }),
+            )
+            .await
+        }
+    });
+    let h = server.next_turn().await.unwrap();
+    let plan_closed = tokio_util::sync::CancellationToken::new();
+    h.send_plan(
+        TurnPlan::text("json-ok")
+            .with_response_id("custom-id-1")
+            .with_header("x-mock-turn", "yes")
+            .with_on_close(plan_closed.clone()),
+    );
+    let r = non_stream_req.await.unwrap();
+    assert_eq!(r.status(), 200);
+    assert_eq!(r.headers()["x-mock-turn"], "yes");
+    let body: Value = serde_json::from_str(&r.text().await.unwrap()).unwrap();
+    assert_eq!(body["id"], "custom-id-1");
+    assert_eq!(body["choices"][0]["message"]["content"], "json-ok");
+    tokio::time::timeout(Duration::from_secs(2), plan_closed.cancelled())
+        .await
+        .expect("send_plan must preserve plan.on_close signal");
+
+    // send_plan preserves leading Delay + plain-text HTTP error semantics identically to TurnDecision::Plan
+    let err_req = tokio::spawn({
+        let client = client.clone();
+        let url = format!("{}/chat/completions", server.base_url());
+        async move {
+            post_json(
+                &client,
+                &url,
+                &json!({ "model": "gpt-4.1", "stream": true, "messages": [{ "role": "user", "content": "plain-err" }] }),
+            )
+            .await
+        }
+    });
+    let h_err = server.next_turn().await.unwrap();
+    let err_closed = tokio_util::sync::CancellationToken::new();
+    h_err.send_plan(
+        TurnPlan::new()
+            .with_delay(Duration::from_millis(5))
+            .push(TurnEvent::HttpError(HttpErrorSpec::plain(
+                429,
+                "unknown INCLUDE_USAGE",
+            )))
+            .with_on_close(err_closed.clone()),
+    );
+    let r_err = err_req.await.unwrap();
+    assert_eq!(r_err.status(), 429);
+    assert_eq!(r_err.headers()["content-type"], "text/plain");
+    assert_eq!(r_err.text().await.unwrap(), "unknown INCLUDE_USAGE");
+    tokio::time::timeout(Duration::from_secs(2), err_closed.cancelled())
+        .await
+        .expect("send_plan error must still fire plan.on_close");
+
+    // Interactive WebSocket: Stall unblocks on next event, and client close wakes wait_closed()
+    let (mut ws, _) = tokio_tungstenite::connect_async(server.responses_ws_url())
+        .await
+        .unwrap();
+    ws.send(WsMessage::text(
+        json!({ "type": "response.create", "model": "gpt-4.1", "store": false, "input": "ws-stall" }).to_string(),
+    ))
+    .await
+    .unwrap();
+    let h_ws = server.next_turn().await.unwrap();
+    assert!(h_ws.send(TurnEvent::StreamStart).await);
+    assert!(h_ws.reasoning_encrypted("thought", "enc-1").await);
+    assert!(h_ws.flush_item().await);
+    h_ws.stall().await;
+
+    // Drain response.created and reasoning output_item.done BEFORE unstalling (bounded by timeout).
+    let mut saw_created = false;
+    let mut saw_reasoning_done = false;
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while !saw_reasoning_done {
+            let Some(Ok(WsMessage::Text(txt))) = ws.next().await else {
+                panic!("unexpected ws eof before reasoning done");
+            };
+            let v: Value = serde_json::from_str(&txt).unwrap();
+            if v["type"] == "response.created" {
+                saw_created = true;
+            }
+            if v["type"] == "response.output_item.done"
+                && v["item"]["type"] == "reasoning"
+                && v["item"]["encrypted_content"] == "enc-1"
+            {
+                saw_reasoning_done = true;
+            }
+        }
+    })
+    .await
+    .expect("timed out waiting for pre-stall reasoning done");
+    assert!(saw_created);
+    assert!(saw_reasoning_done);
+
+    // Unstall interactive WS by sending a new event + finish, verifying delta arrives BEFORE completed!
+    assert!(h_ws.delta("resumed").await);
+    h_ws.finish().await;
+    let mut saw_resumed_delta = false;
+    let mut saw_completed = false;
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while let Some(Ok(WsMessage::Text(txt))) = ws.next().await {
+            let v: Value = serde_json::from_str(&txt).unwrap();
+            if v["type"] == "response.output_text.delta" && v["delta"] == "resumed" {
+                assert!(!saw_completed, "delta arrived after completion");
+                saw_resumed_delta = true;
+            }
+            if v["type"] == "response.completed" {
+                saw_completed = true;
+                break;
+            }
+        }
+    })
+    .await
+    .expect("timed out waiting for resumed WS delta and completion");
+    assert!(saw_resumed_delta, "resumed text delta missing");
+    assert!(saw_completed);
+
+    // Turn 2 on same WS: send_plan(TurnPlan::stall()) consumes TurnHandle, yet must keep stalling until client closes!
+    ws.send(WsMessage::text(
+        json!({ "type": "response.create", "model": "gpt-4.1", "store": false, "input": "ws-send-plan-stall" }).to_string(),
+    ))
+    .await
+    .unwrap();
+    let h_plan_stall = server.next_turn().await.unwrap();
+    let closed_sig = h_plan_stall.closed_signal();
+    h_plan_stall.send_plan(TurnPlan::stall());
+    assert!(
+        tokio::time::timeout(Duration::from_millis(80), ws.next())
+            .await
+            .is_err(),
+        "send_plan(TurnPlan::stall()) must keep WS open after TurnHandle is dropped"
+    );
+    drop(ws);
+    tokio::time::timeout(Duration::from_secs(2), closed_sig.cancelled())
+        .await
+        .expect("WS client disconnect must wake send_plan(TurnPlan::stall()) close signal");
+
+    // HTTP client disconnect BEFORE first reply must wake TurnHandle::wait_closed() via RAII guard!
+    let dropped_http = tokio::spawn({
+        let client = client.clone();
+        let url = format!("{}/chat/completions", server.base_url());
+        async move {
+            let _ = post_json(
+                &client,
+                &url,
+                &json!({ "model": "gpt-4.1", "stream": true, "messages": [{ "role": "user", "content": "http-drop-before-reply" }] }),
+            )
+            .await;
+        }
+    });
+    let h_http_drop = server.next_turn().await.unwrap();
+    dropped_http.abort();
+    let _ = dropped_http.await;
+    tokio::time::timeout(Duration::from_secs(2), h_http_drop.wait_closed())
+        .await
+        .expect("HTTP client disconnect before first reply must wake TurnHandle::wait_closed()");
+
+    // Turn 3 on a new WS: client closes while TurnHandle is idle -> wait_closed() must wake promptly!
+    let (mut ws2, _) = tokio_tungstenite::connect_async(server.responses_ws_url())
+        .await
+        .unwrap();
+    ws2.send(WsMessage::text(
+        json!({ "type": "response.create", "model": "gpt-4.1", "store": false, "input": "ws-close" }).to_string(),
+    ))
+    .await
+    .unwrap();
+    let h_close = server.next_turn().await.unwrap();
+    drop(ws2);
+    tokio::time::timeout(Duration::from_secs(2), h_close.wait_closed())
+        .await
+        .expect("WS client disconnect must wake TurnHandle::wait_closed()");
+
+    // Queued send_plan(stall().with_on_close(sig)) immediately followed by shutdown() must
+    // fire BOTH handle.closed_signal() and plan.on_close even if recv() never dequeues the plan!
+    let http_shutdown_req = tokio::spawn({
+        let client = client.clone();
+        let url = format!("{}/chat/completions", server.base_url());
+        async move {
+            let _ = post_json(
+                &client,
+                &url,
+                &json!({ "model": "gpt-4.1", "stream": true, "messages": [{ "role": "user", "content": "http-queued-shutdown" }] }),
+            )
+            .await;
+        }
+    });
+    let h_http_shutdown = server.next_turn().await.unwrap();
+    let http_handle_sig = h_http_shutdown.closed_signal();
+    let http_plan_sig = tokio_util::sync::CancellationToken::new();
+
+    let (mut ws3, _) = tokio_tungstenite::connect_async(server.responses_ws_url())
+        .await
+        .unwrap();
+    ws3.send(WsMessage::text(
+        json!({ "type": "response.create", "model": "gpt-4.1", "store": false, "input": "ws-shutdown" }).to_string(),
+    ))
+    .await
+    .unwrap();
+    let h_ws_shutdown = server.next_turn().await.unwrap();
+    let ws_handle_sig = h_ws_shutdown.closed_signal();
+    let ws_plan_sig = tokio_util::sync::CancellationToken::new();
+
+    h_http_shutdown.send_plan(TurnPlan::stall().with_on_close(http_plan_sig.clone()));
+    h_ws_shutdown.send_plan(TurnPlan::stall().with_on_close(ws_plan_sig.clone()));
+    server.shutdown().await;
+
+    for (label, sig) in [
+        ("http handle", http_handle_sig),
+        ("http plan.on_close", http_plan_sig),
+        ("ws handle", ws_handle_sig),
+        ("ws plan.on_close", ws_plan_sig),
+    ] {
+        tokio::time::timeout(Duration::from_secs(2), sig.cancelled())
+            .await
+            .unwrap_or_else(|_| panic!("shutdown() must trigger {label} close signal"));
+    }
+    http_shutdown_req.abort();
+    let _ = http_shutdown_req.await;
+    drop(ws3);
+}
+
+#[tokio::test]
+async fn handler_panics_are_captured_and_surfaced() {
+    use futures_util::FutureExt;
+    use std::panic::AssertUnwindSafe;
+
+    let server = MockAiBuilder::new()
+        .handler_fn(|_, _| {
+            panic!("expected test assertion failure");
+        })
+        .start()
+        .await
+        .unwrap();
+    let client = reqwest::Client::new();
+    let _ = client
+        .post(format!("{}/chat/completions", server.base_url()))
+        .header("content-type", "application/json")
+        .body(json!({ "model": "gpt-4.1", "stream": true, "messages": [{ "role": "user", "content": "boom" }] }).to_string())
+        .send()
+        .await;
+    // Verify the actual shutdown() propagation path relied on by integration harnesses.
+    let err = AssertUnwindSafe(server.shutdown())
+        .catch_unwind()
+        .await
+        .expect_err("shutdown() must propagate handler panics");
+    let msg = err
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| err.downcast_ref::<&str>().copied())
+        .unwrap_or("<non-string panic>");
+    assert!(
+        msg.contains("expected test assertion failure"),
+        "unexpected shutdown panic message: {msg}"
+    );
+}
+
+#[tokio::test]
+async fn intermediate_web_search_started_sse_comment_and_ring_control_budget() {
+    let plan = TurnPlan::new()
+        .push_sse_comment("pending")
+        .push(TurnEvent::NativeTool(NativeToolEvent::WebSearchStarted {
+            id: "ws_1".into(),
+            query: "rust".into(),
+        }))
+        .push(TurnEvent::TruncateEof);
+    let server = MockAiBuilder::new()
+        .recorder(maka_mock_ai::RecorderMode::Ring {
+            capacity: 1,
+            max_bytes: 180,
+        })
+        .scripted([plan])
+        .start()
+        .await
+        .unwrap();
+    let client = reqwest::Client::new();
+
+    let resp = post_json(
+        &client,
+        &format!("{}/responses", server.base_url()),
+        &json!({ "model": "gpt-5", "stream": true, "input": "search" }),
+    )
+    .await;
+    assert_eq!(server.recorded_requests().len(), 1);
+
+    // Oversized control request header must be rejected without evicting existing model history.
+    let models_resp = client
+        .get(format!("{}/models", server.base_url()))
+        .header("x-oversized", "a".repeat(350))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(models_resp.status(), 200);
+    assert!(
+        server.control_plane_requests().is_empty(),
+        "Ring max_bytes must also bound control-plane request entries"
+    );
+    assert_eq!(
+        server.recorded_requests().len(),
+        1,
+        "an oversized entry that cannot fit must not evict existing ring entries"
+    );
+    assert_eq!(resp.status(), 200);
+    let body = resp.text().await.unwrap();
+    assert!(body.starts_with(": pending\n\n"), "{body}");
+
+    let events: Vec<Value> = body
+        .split("\n\n")
+        .filter_map(|frame| {
+            frame
+                .lines()
+                .find_map(|line| line.strip_prefix("data: "))
+                .and_then(|json| serde_json::from_str::<Value>(json).ok())
+        })
+        .collect();
+    let search_added = events
+        .iter()
+        .find(|ev| ev["type"] == "response.output_item.added")
+        .unwrap_or_else(|| panic!("missing response.output_item.added in {events:?}"));
+    assert_eq!(search_added["item"]["type"], "web_search_call");
+    assert_eq!(search_added["item"]["id"], "ws_1");
+    assert_eq!(search_added["item"]["status"], "in_progress");
+    assert!(
+        !events
+            .iter()
+            .any(|ev| ev["type"] == "response.output_item.done"
+                || ev["type"] == "response.completed"),
+        "truncated stream must not emit completion events: {events:?}"
+    );
+    server.shutdown().await;
+}

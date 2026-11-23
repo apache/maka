@@ -21,23 +21,41 @@ use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
-use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::Notify;
+use tokio_util::sync::CancellationToken;
 
-/// Notification fired when a turn's HTTP stream or WebSocket turn terminates (finish, cancel, or disconnect).
-#[derive(Clone, Debug)]
-pub struct CloseSignal(pub Arc<Notify>);
+/// Sticky, multi-waiter notification fired when a turn's HTTP stream or WebSocket turn terminates
+/// (finish, error, cancel, or client disconnect).
+#[derive(Clone, Debug, Default)]
+pub struct CloseSignal(pub CancellationToken);
 
 impl PartialEq for CloseSignal {
-    fn eq(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.0, &other.0)
+    fn eq(&self, _other: &Self) -> bool {
+        false
+    }
+}
+
+impl From<CancellationToken> for CloseSignal {
+    fn from(token: CancellationToken) -> Self {
+        Self(token)
     }
 }
 
 impl CloseSignal {
+    pub fn new() -> Self {
+        Self(CancellationToken::new())
+    }
+
     pub fn notify(&self) {
-        self.0.notify_one();
+        self.0.cancel();
+    }
+
+    pub fn is_closed(&self) -> bool {
+        self.0.is_cancelled()
+    }
+
+    pub async fn wait(&self) {
+        self.0.cancelled().await;
     }
 }
 
@@ -169,12 +187,21 @@ impl ToolCallSpec {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum NativeToolEvent {
+    /// Complete web search lifecycle (started + completed in one step).
     WebSearch {
         #[serde(default)]
         id: String,
         query: String,
         #[serde(default)]
         results: Vec<WebSearchResult>,
+    },
+    /// Start a web search call in `in_progress` state without completing it yet
+    /// (useful with `TurnEvent::Stall` to test mid-search interruption/recovery).
+    WebSearchStarted {
+        #[serde(default)]
+        id: String,
+        #[serde(default)]
+        query: String,
     },
 }
 
@@ -255,6 +282,12 @@ pub struct HttpErrorSpec {
     /// Optional raw JSON body overriding the auto-formatted provider error envelope.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub raw_body: Option<Value>,
+    /// Optional raw text body (sent as `content_type` or `text/plain`, bypassing JSON wrapping).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_text: Option<String>,
+    /// Optional explicit Content-Type header override for HTTP error responses.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_type: Option<String>,
 }
 
 fn default_error_type() -> String {
@@ -272,11 +305,18 @@ impl HttpErrorSpec {
             retry_after_ms: None,
             headers: BTreeMap::new(),
             raw_body: None,
+            raw_text: None,
+            content_type: None,
         }
     }
 
     pub fn with_retry_after_ms(mut self, ms: u64) -> Self {
         self.retry_after_ms = Some(ms);
+        self
+    }
+
+    pub fn with_header(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
+        self.headers.insert(name.into(), value.into());
         self
     }
 
@@ -290,6 +330,8 @@ impl HttpErrorSpec {
             retry_after_ms: None,
             headers: BTreeMap::new(),
             raw_body: None,
+            raw_text: None,
+            content_type: None,
         }
     }
 
@@ -303,6 +345,23 @@ impl HttpErrorSpec {
             retry_after_ms: None,
             headers: BTreeMap::new(),
             raw_body: Some(body),
+            raw_text: None,
+            content_type: None,
+        }
+    }
+
+    pub fn plain(status: u16, body: impl Into<String>) -> Self {
+        Self {
+            status,
+            error_type: "api_error".into(),
+            code: None,
+            message: String::new(),
+            retry_after_secs: None,
+            retry_after_ms: None,
+            headers: BTreeMap::new(),
+            raw_body: None,
+            raw_text: Some(body.into()),
+            content_type: Some("text/plain".into()),
         }
     }
 }
@@ -370,6 +429,14 @@ pub enum TurnEvent {
     TruncateEof,
     /// Emit a raw JSON payload as an SSE `data: <json>\n\n` or WS text frame.
     RawJson { value: Value },
+    /// Emit the protocol's initial stream-open frame immediately (`response.created`,
+    /// `message_start`, or initial assistant role chunk) without emitting any content yet.
+    StreamStart,
+    /// Immediately close any currently open reasoning/message item (`response.output_item.done`
+    /// or `content_block_stop`) before continuing or stalling.
+    Flush,
+    /// Emit an HTTP SSE comment frame (`: <comment>\n\n`); no-op on WebSocket / non-streaming.
+    SseComment { comment: String },
     /// Emit raw bytes directly onto the HTTP response stream (escape hatch).
     #[serde(skip)]
     RawBytes(Bytes),
@@ -450,12 +517,39 @@ impl TurnPlan {
         })
     }
 
+    pub fn push_stream_start(self) -> Self {
+        self.push(TurnEvent::StreamStart)
+    }
+
+    pub fn push_flush(self) -> Self {
+        self.push(TurnEvent::Flush)
+    }
+
+    pub fn push_sse_comment(self, comment: impl Into<String>) -> Self {
+        self.push(TurnEvent::SseComment {
+            comment: comment.into(),
+        })
+    }
+
     pub fn push_reasoning(self, text: impl Into<String>) -> Self {
         self.push(TurnEvent::Reasoning {
             text: text.into(),
             chunk_chars: 0,
             signature: Some("mock-thinking-sig".into()),
             encrypted_content: None,
+        })
+    }
+
+    pub fn push_reasoning_encrypted(
+        self,
+        text: impl Into<String>,
+        encrypted_content: impl Into<String>,
+    ) -> Self {
+        self.push(TurnEvent::Reasoning {
+            text: text.into(),
+            chunk_chars: 0,
+            signature: None,
+            encrypted_content: Some(encrypted_content.into()),
         })
     }
 
@@ -466,6 +560,17 @@ impl TurnPlan {
         arguments: Value,
     ) -> Self {
         self.push(TurnEvent::ToolCall(ToolCallSpec::new(id, name, arguments)))
+    }
+
+    pub fn push_custom_tool_call(
+        self,
+        id: impl Into<String>,
+        name: impl Into<String>,
+        input: impl Into<String>,
+    ) -> Self {
+        self.push(TurnEvent::ToolCall(
+            ToolCallSpec::new(id, name, Value::String(input.into())).as_custom_tool(),
+        ))
     }
 
     pub fn push_compaction(self, output: CompactionOutput) -> Self {
@@ -507,8 +612,13 @@ impl TurnPlan {
         self
     }
 
-    pub fn with_on_close(mut self, notify: Arc<Notify>) -> Self {
-        self.on_close = Some(CloseSignal(notify));
+    pub fn with_close_connection(mut self, close: bool) -> Self {
+        self.close_connection = close;
+        self
+    }
+
+    pub fn with_on_close(mut self, signal: impl Into<CloseSignal>) -> Self {
+        self.on_close = Some(signal.into());
         self
     }
 

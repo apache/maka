@@ -23,78 +23,30 @@ mod code_mode_budget;
 mod mcp_connection;
 mod rooms;
 mod stop_queue;
-enum ModelReply {
-    Stream(String),
-    RateLimited,
-    Fatal(String),
-}
-fn completion(delta: Value, finish: &str) -> ModelReply {
-    ModelReply::Stream(super::bot_tools::completion(delta, finish))
-}
-fn tool_response(name: &str, input: Value) -> ModelReply {
-    ModelReply::Stream(super::bot_tools::tool_response(name, input))
-}
+use super::bot_tools::tool_response;
 use std::sync::atomic::AtomicUsize;
 
-type ModelRequest = (Value, oneshot::Sender<ModelReply>);
-
 struct Provider {
-    url: String,
-    requests: tokio::sync::mpsc::Receiver<ModelRequest>,
-    task: JoinHandle<std::io::Result<()>>,
+    server: MockAiServer,
+    requests: tokio::sync::mpsc::Receiver<TurnHandle>,
 }
 impl Provider {
     async fn start() -> TestResult<Self> {
-        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
-        let url = format!("http://{}/v1", listener.local_addr()?);
-        let (requests, receiver) = tokio::sync::mpsc::channel(8);
-        let app = axum::Router::new().route(
-            "/v1/chat/completions",
-            axum::routing::post(move |body: axum::body::Bytes| {
-                let requests = requests.clone();
-                async move {
-                    let request = serde_json::from_slice(&body).unwrap();
-                    let (reply, response) = oneshot::channel();
-                    let _ = requests.send((request, reply)).await;
-                    use axum::response::IntoResponse;
-                    match response.await {
-                        Ok(ModelReply::Stream(body)) => {
-                            ([("content-type", "text/event-stream")], body).into_response()
-                        }
-                        Ok(ModelReply::RateLimited) => (
-                            axum::http::StatusCode::TOO_MANY_REQUESTS,
-                            [("retry-after", "0")],
-                            "rate limited",
-                        )
-                            .into_response(),
-                        Ok(ModelReply::Fatal(message)) => (
-                            axum::http::StatusCode::BAD_REQUEST,
-                            [("content-type", "application/json")],
-                            serde_json::json!({"error": {"message": message, "type": "invalid_request_error"}}).to_string(),
-                        )
-                            .into_response(),
-                        Err(_) => axum::http::StatusCode::SERVICE_UNAVAILABLE.into_response(),
-                    }
-                }
-            }),
-        );
-        let task = tokio::spawn(async move { axum::serve(listener, app).await });
-        Ok(Self {
-            url,
-            requests: receiver,
-            task,
-        })
+        let mut server = MockAiBuilder::new().interactive(8).start().await?;
+        let requests = server.take_interactive_rx().unwrap();
+        Ok(Self { server, requests })
     }
-    async fn next(&mut self) -> TestResult<ModelRequest> {
-        tokio::time::timeout(Duration::from_secs(20), self.requests.recv())
+
+    async fn next(&mut self) -> TestResult<(Value, TurnHandle)> {
+        let mut turn = tokio::time::timeout(Duration::from_secs(20), self.requests.recv())
             .await?
-            .ok_or_else(|| "model request missing".into())
+            .ok_or("model request missing")?;
+        Ok((std::mem::take(&mut turn.request.raw_body), turn))
     }
 }
-impl Drop for Provider {
-    fn drop(&mut self) {
-        self.task.abort();
-    }
+
+fn fatal(message: &str) -> TurnPlan {
+    TurnPlan::http_error(HttpErrorSpec::new(400, "invalid_request_error", message))
 }
 
 async fn model(client: &HostClient, url: &str, code: bool) -> TestResult<Value> {
@@ -178,14 +130,13 @@ async fn interrupted_provider_search_continues_without_replaying_the_call() -> T
     boot.replay = true;
     attach(&mut rig, &boot).await?;
     let (requests, mut received) = tokio::sync::mpsc::channel(4);
-    let stop = CancellationToken::new();
-    let wire = tokio::spawn(serve_replay(
+    let wire = serve_replay(
         listener,
         Arc::default(),
         requests,
-        stop.clone(),
         FirstResponse::StartSearch,
-    ));
+    )
+    .await?;
     let outcome = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(30), async {
         let client = rig.client.as_ref().unwrap();
         let model = model(client, &boot.base_url, false).await?;
@@ -245,8 +196,7 @@ async fn interrupted_provider_search_continues_without_replaying_the_call() -> T
     }))
     .catch_unwind()
     .await;
-    stop.cancel();
-    wire.await??;
+    wire.shutdown().await;
     assert!(rig.finish().await.is_empty());
     match outcome {
         Ok(result) => result?,
@@ -274,12 +224,18 @@ async fn check_truncated_cell_image() -> TestResult<()> {
     let mut last_work = None;
     let outcome = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(45), async {
         let base = rig.directory.path().to_path_buf();
-        let boot = bootstrap(&base, provider.url.clone(), true).await?;
+        let boot = bootstrap(&base, provider.server.base_url(), true).await?;
         stage = "attach Host";
         attach(&mut rig, &boot).await?;
         let client = rig.client.as_ref().unwrap();
         stage = "configure model";
-        let model = model_options(client, &provider.url, true, json!({"vision":true})).await?;
+        let model = model_options(
+            client,
+            &provider.server.base_url(),
+            true,
+            json!({"vision":true}),
+        )
+        .await?;
 
         stage = "encode complete PNG";
         let mut state = 1_u32;
@@ -319,15 +275,12 @@ async fn check_truncated_cell_image() -> TestResult<()> {
             assert_eq!(sent["kind"], "queued", "{sent}");
             stage = "wait initial model request";
             let (_, reply) = provider.next().await?;
-            stage = "send image tool call";
-            reply
-                .send(tool_response(
-                    "exec",
-                    json!({
-                        "code": format!("image('data:image/png;base64,{data}');")
-                    }),
-                ))
-                .map_err(|_| "image tool response lost")?;
+            reply.send_plan(tool_response(
+                "exec",
+                json!({
+                    "code": format!("image('data:image/png;base64,{data}');")
+                }),
+            ));
 
             if expected == "completed" {
                 stage = "wait model request with complete PNG";
@@ -337,13 +290,7 @@ async fn check_truncated_cell_image() -> TestResult<()> {
                         .to_string()
                         .contains("data:image/png;base64,")
                 );
-                stage = "send final model response";
-                reply
-                    .send(completion(
-                        json!({"content":"Valid image received."}),
-                        "stop",
-                    ))
-                    .map_err(|_| "final model response lost")?;
+                reply.reply_text("Valid image received.");
             }
             let target = json!({"kind":"message","messageId":sent["messageId"]});
             loop {
@@ -486,9 +433,7 @@ async fn permission_round(
     } else {
         (name, input)
     };
-    reply
-        .send(tool_response(name, input))
-        .map_err(|_| "model response lost")?;
+    reply.send_plan(tool_response(name, input));
     if approve {
         tokio::time::timeout(Duration::from_secs(15), async {
             loop {
@@ -525,12 +470,7 @@ async fn permission_round(
         .ok_or("tool reply missing")?;
     // Chat Completions can carry a tool image in the following user message.
     let output = serde_json::to_string(&messages[last_tool..])?;
-    reply
-        .send(completion(
-            json!({"role":"assistant","content":"Done."}),
-            "stop",
-        ))
-        .map_err(|_| "final response lost")?;
+    reply.reply_text("Done.");
     match tokio::time::timeout(
         Duration::from_secs(20),
         quiescent_message(client, session, &sent["messageId"]),
@@ -615,7 +555,7 @@ async fn tool_matrix(code: bool) -> TestResult<()> {
     let server = tokio::spawn(async move { axum::serve(listener, app).await });
     let outcome = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(240), async {
         let base = rig.directory.path().to_path_buf();
-        let boot = bootstrap_with(&base,provider.url.clone(),|config| {
+        let boot = bootstrap_with(&base,provider.server.base_url(),|config| {
             config["tools"] = json!([
                 {"name":"Read","description":"Read local file","target":{"kind":"import","name":"files"},"method":"read","nestable":true,"result":"image","confirmation":"preapproved"},
                 {"name":"Write","description":"Write local file","target":{"kind":"import","name":"files"},"method":"write","nestable":true,"result":"json","confirmation":"preapproved"},
@@ -637,7 +577,7 @@ async fn tool_matrix(code: bool) -> TestResult<()> {
                 "results":{"list":"/results","url":"/url","title":null,"snippet":null}
             }}
         }})).await?["kind"],"updated");
-        let model = model_options(client,&provider.url,code,json!({"vision":true})).await?;
+        let model = model_options(client,&provider.server.base_url(),code,json!({"vision":true})).await?;
         let preset = preset(client,&model,"Keep the reviewer role.").await?;
         let session = create(client, &base, &model, None).await?;
         let id = session["id"].as_str().unwrap();
@@ -780,7 +720,7 @@ async fn shell_and_web_network_grants_stay_with_their_tools() -> TestResult<()> 
     }
     let outcome = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(240), async {
         let base = rig.directory.path().to_path_buf();
-        let boot = bootstrap_with(&base, provider.url.clone(), |config| {
+        let boot = bootstrap_with(&base, provider.server.base_url(), |config| {
             config["tools"] = json!([
                 {"name":"Shell","description":"Run a command","target":{"kind":"import","name":"processes"},"method":"execute","input":"shell","nestable":true,"result":"json","confirmation":"preapproved"},
                 {"name":"BackgroundTaskHealth","description":"Probe a running service","target":{"kind":"import","name":"processes"},"method":"health","result":"json","confirmation":"preapproved"},
@@ -790,7 +730,7 @@ async fn shell_and_web_network_grants_stay_with_their_tools() -> TestResult<()> 
         }).await?;
         attach(&mut rig, &boot).await?;
         let client = rig.client.as_ref().unwrap();
-        let model = model(client, &provider.url, false).await?;
+        let model = model(client, &provider.server.base_url(), false).await?;
         let session = create(client, &base, &model, None).await?;
         let id = session["id"].as_str().unwrap();
         let owner = rig.captured.lock().unwrap().clone().unwrap();
@@ -897,7 +837,7 @@ async fn read_only_writes_ask_for_permission() -> TestResult<()> {
     let mut provider = Provider::start().await?;
     let outcome = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(240), async {
         let base = rig.directory.path().to_path_buf();
-        let boot = bootstrap_with(&base, provider.url.clone(), |config| {
+        let boot = bootstrap_with(&base, provider.server.base_url(), |config| {
             config["tools"] = json!([
                 {"name":"Write","description":"Write local file","target":{"kind":"import","name":"files"},"method":"write","nestable":true,"result":"json","confirmation":"preapproved"},
                 {"name":"Shell","description":"Run a command","target":{"kind":"import","name":"processes"},"method":"execute","input":"shell","nestable":true,"result":"json","confirmation":"preapproved"},
@@ -906,7 +846,7 @@ async fn read_only_writes_ask_for_permission() -> TestResult<()> {
         }).await?;
         attach(&mut rig, &boot).await?;
         let client = rig.client.as_ref().unwrap();
-        let model = model(client, &provider.url, false).await?;
+        let model = model(client, &provider.server.base_url(), false).await?;
         let session = create(client, &base, &model, None).await?;
         let id = session["id"].as_str().unwrap();
         let owner = rig.captured.lock().unwrap().clone().unwrap();
@@ -981,14 +921,14 @@ async fn read_only_session_write_grant_outlasts_disabled_requests() -> TestResul
     let mut provider = Provider::start().await?;
     let outcome = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(240), async {
         let base = rig.directory.path().to_path_buf();
-        let boot = bootstrap_with(&base, provider.url.clone(), |config| {
+        let boot = bootstrap_with(&base, provider.server.base_url(), |config| {
             config["tools"] = json!([
                 {"name":"Write","description":"Write local file","target":{"kind":"import","name":"files"},"method":"write","nestable":true,"result":"json","confirmation":"preapproved"}
             ]);
         }).await?;
         attach(&mut rig, &boot).await?;
         let client = rig.client.as_ref().unwrap();
-        let model = model(client, &provider.url, false).await?;
+        let model = model(client, &provider.server.base_url(), false).await?;
         let session = create(client, &base, &model, None).await?;
         let id = session["id"].as_str().unwrap();
         let owner = rig.captured.lock().unwrap().clone().unwrap();
@@ -1025,7 +965,7 @@ async fn child_write_approval_stays_within_its_caller() -> TestResult<()> {
     let mut provider = Provider::start().await?;
     let outcome = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(240), async {
         let base = rig.directory.path().to_path_buf();
-        let boot = bootstrap_with(&base, provider.url.clone(), |config| {
+        let boot = bootstrap_with(&base, provider.server.base_url(), |config| {
             config["tools"] = json!([
                 {"name":"Write","description":"Write local file","target":{"kind":"import","name":"files"},"method":"write","nestable":true,"result":"json","confirmation":"preapproved"},
                 {"name":"SessionSend","description":"Send a message","target":{"kind":"export","name":"agent"},"method":"sessionSend","nestable":true,"result":"json","confirmation":"preapproved"}
@@ -1033,7 +973,7 @@ async fn child_write_approval_stays_within_its_caller() -> TestResult<()> {
         }).await?;
         attach(&mut rig, &boot).await?;
         let client = rig.client.as_ref().unwrap();
-        let model = model(client, &provider.url, false).await?;
+        let model = model(client, &provider.server.base_url(), false).await?;
         let owner = rig.captured.lock().unwrap().clone().unwrap();
         let mut ids = Vec::new();
         for (title, requests) in [("Read-only caller", false), ("Worker that may ask", true)] {
@@ -1051,9 +991,9 @@ async fn child_write_approval_stays_within_its_caller() -> TestResult<()> {
         let sent = call(client, "agent", "send", json!({"sessionId":caller,"message":"caller-marker"})).await?;
         assert_eq!(sent["kind"], "queued", "{sent}");
         let (_, reply) = provider.next().await?;
-        reply.send(tool_response("SessionSend", json!({
+        reply.send_plan(tool_response("SessionSend", json!({
             "sessionId":worker,"message":"worker-marker","onComplete":"none"
-        }))).map_err(|_| "caller response lost")?;
+        })));
         // The caller's follow-up and the worker's requests arrive in either order.
         let mut output = None;
         let mut caller_done = false;
@@ -1065,14 +1005,14 @@ async fn child_write_approval_stays_within_its_caller() -> TestResult<()> {
             let tool = messages.iter().rposition(|message| message["role"] == "tool");
             let response = if text_messages(&request).contains("caller-marker") {
                 caller_done = tool.is_some();
-                completion(json!({"role":"assistant","content":"Sent."}), "stop")
+                TurnPlan::text("Sent.")
             } else if let Some(tool) = tool {
                 output = Some(serde_json::to_string(&messages[tool..])?);
-                completion(json!({"role":"assistant","content":"Done."}), "stop")
+                TurnPlan::text("Done.")
             } else {
                 tool_response("Write", json!({"path":"notes.md","content":"worker"}))
             };
-            reply.send(response).map_err(|_| "model response lost")?;
+            reply.send_plan(response);
         }
         let output = output.unwrap();
         assert!(output.contains("beyond what this conversation's caller can write"), "{output}");
@@ -1132,7 +1072,7 @@ async fn preset_composes_platform_and_workspace_instructions_and_forks_frozen_ro
             base.join("home/.maka/AGENTS.md"),
             "global-instruction-marker",
         )?;
-        let boot = bootstrap_with(&base, provider.url.clone(), |config| {
+        let boot = bootstrap_with(&base, provider.server.base_url(), |config| {
             config["assistant"] = json!({"home":base.join("home")});
         })
         .await?;
@@ -1156,7 +1096,7 @@ async fn preset_composes_platform_and_workspace_instructions_and_forks_frozen_ro
             .await?;
             assert_eq!(updated["kind"], "committed", "{updated}");
         }
-        let model = model(client, &provider.url, false).await?;
+        let model = model(client, &provider.server.base_url(), false).await?;
         let role = "# Reviewer\nFollow preset-role-marker. 中文";
         let preset = preset(client, &model, role).await?;
         let session = create(client, &base, &model, Some(&preset)).await?;
@@ -1236,12 +1176,7 @@ async fn preset_composes_platform_and_workspace_instructions_and_forks_frozen_ro
                         .collect::<Vec<_>>(),
                 );
             }
-            reply
-                .send(completion(
-                    json!({"role":"assistant","content":"Reviewed."}),
-                    "stop",
-                ))
-                .map_err(|_| "reply lost")?;
+            reply.reply_text("Reviewed.");
             quiescent_message(client, id, &sent["messageId"]).await?;
         }
         assert_eq!(
@@ -1338,10 +1273,10 @@ async fn preset_create_and_send_preserve_atomicity_across_caller_interruption() 
     let mut provider = Provider::start().await?;
     let outcome = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(90), async {
         let base = rig.directory.path().to_path_buf();
-        let boot = bootstrap(&base, provider.url.clone(), false).await?;
+        let boot = bootstrap(&base, provider.server.base_url(), false).await?;
         attach(&mut rig, &boot).await?;
         let client = rig.client.as_ref().unwrap();
-        let model = model(client, &provider.url, false).await?;
+        let model = model(client, &provider.server.base_url(), false).await?;
         let preset = preset(client, &model, "interruption-role-marker").await?;
         let input = json!({"title":"Interrupted creation","labels":[],"presetId":preset["id"],
             "workspace":{"kind":"directory","path":base.join("workspace")}});
@@ -1396,12 +1331,7 @@ async fn preset_create_and_send_preserve_atomicity_across_caller_interruption() 
         let text = text_messages(&request);
         assert_eq!(text.matches("interruption-role-marker").count(), 1);
         assert_eq!(text.matches("interrupted-send-marker").count(), 1);
-        reply
-            .send(completion(
-                json!({"role":"assistant","content":"Completed after lost reply."}),
-                "stop",
-            ))
-            .map_err(|_| "reply lost")?;
+        reply.reply_text("Completed after lost reply.");
         quiescent_message(client, session, &sent["messageId"]).await?;
         let work = call(
             client,
@@ -1435,10 +1365,10 @@ async fn preset_role_and_request_survive_physical_rate_limit_retry() -> TestResu
     let mut provider = Provider::start().await?;
     let outcome = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(90), async {
         let base = rig.directory.path().to_path_buf();
-        let boot = bootstrap(&base,provider.url.clone(),false).await?;
+        let boot = bootstrap(&base,provider.server.base_url(),false).await?;
         attach(&mut rig,&boot).await?;
         let client = rig.client.as_ref().unwrap();
-        let model = model(client,&provider.url,false).await?;
+        let model = model(client,&provider.server.base_url(),false).await?;
         let preset = preset(client,&model,"physical-retry-role-marker").await?;
         let session = create(client,&base,&model,Some(&preset)).await?;
         let id = session["id"].as_str().unwrap();
@@ -1446,13 +1376,13 @@ async fn preset_role_and_request_survive_physical_rate_limit_retry() -> TestResu
         let (first,reply) = provider.next().await?;
         // Change the live preset while the accepted request is still in flight.
         assert_eq!(call(client,"agent","updatePreset",json!({"id":preset["id"],"expectedRevision":1,"instruction":"changed-after-admission"})).await?["kind"],"saved");
-        reply.send(ModelReply::RateLimited).map_err(|_| "retry response lost")?;
+        reply.send_plan(TurnPlan::http_error(HttpErrorSpec::plain(429, "rate limited").with_header("retry-after", "0")));
         let (retried,reply) = provider.next().await?;
         assert_eq!(first,retried,"physical retry changed the frozen request");
         let text = text_messages(&retried);
         assert_eq!(text.matches("physical-retry-role-marker").count(),1);
         assert!(!text.contains("changed-after-admission"));
-        reply.send(completion(json!({"role":"assistant","content":"Retried."}),"stop")).map_err(|_| "reply lost")?;
+        reply.reply_text("Retried.");
         let run = quiescent_message(client,id,&sent["messageId"]).await?;
         let owner = rig.captured.lock().unwrap().clone().unwrap();
         let history = facts(&owner.durable,run).await?;
@@ -1482,12 +1412,12 @@ async fn preset_role_survives_automatic_history_compaction() -> TestResult<()> {
     let mut provider = Provider::start().await?;
     let outcome = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(90), async {
         let base = rig.directory.path().to_path_buf();
-        let boot = bootstrap(&base, provider.url.clone(), true).await?;
+        let boot = bootstrap(&base, provider.server.base_url(), true).await?;
         attach(&mut rig, &boot).await?;
         let client = rig.client.as_ref().unwrap();
         let model = model_options(
             client,
-            &provider.url,
+            &provider.server.base_url(),
             false,
             json!({"contextWindow":32000,"compactionThreshold":6000}),
         )
@@ -1503,12 +1433,7 @@ async fn preset_role_survives_automatic_history_compaction() -> TestResult<()> {
         )
         .await?;
         let (_, reply) = provider.next().await?;
-        reply
-            .send(completion(
-                json!({"role":"assistant","content":"historical-padding ".repeat(2000)}),
-                "stop",
-            ))
-            .map_err(|_| "reply lost")?;
+        reply.reply_text("historical-padding ".repeat(2000));
         quiescent_message(client, id, &sent["messageId"]).await?;
         let sent = call(
             client,
@@ -1530,12 +1455,7 @@ async fn preset_role_survives_automatic_history_compaction() -> TestResult<()> {
             "threshold did not trigger compaction: {summary}"
         );
         assert!(text_messages(&summary).contains("historical-padding"));
-        reply
-            .send(completion(
-                json!({"role":"assistant","content":"compacted-history-marker"}),
-                "stop",
-            ))
-            .map_err(|_| "summary lost")?;
+        reply.reply_text("compacted-history-marker");
         let (request, reply) = match provider.next().await {
             Ok(value) => value,
             Err(error) => {
@@ -1558,12 +1478,7 @@ async fn preset_role_survives_automatic_history_compaction() -> TestResult<()> {
             !text.contains("historical-padding"),
             "compacted history was not consumed"
         );
-        reply
-            .send(completion(
-                json!({"role":"assistant","content":"Continued."}),
-                "stop",
-            ))
-            .map_err(|_| "reply lost")?;
+        reply.reply_text("Continued.");
         quiescent_message(client, id, &sent["messageId"]).await?;
         Ok::<_, Box<dyn Error + Send + Sync>>(())
     }))
@@ -1641,10 +1556,10 @@ async fn product_preset_tools(code: bool) -> TestResult<()> {
         let base = rig.directory.path().to_path_buf();
         // Read the product declarations, so a renamed or unregistered tool breaks this route.
         let tools = product_agent_tools(false).await?;
-        let boot = bootstrap_with(&base,provider.url.clone(),|config| {config["tools"] = tools; config["toolDiscovery"] = json!(true);}).await?;
+        let boot = bootstrap_with(&base,provider.server.base_url(),|config| {config["tools"] = tools; config["toolDiscovery"] = json!(true);}).await?;
         attach(&mut rig,&boot).await?;
         let client = rig.client.as_ref().unwrap();
-        let model = model_options(client,&provider.url,code,json!({"contextWindow":128000,"compactionThreshold":100000})).await?;
+        let model = model_options(client,&provider.server.base_url(),code,json!({"contextWindow":128000,"compactionThreshold":100000})).await?;
         let parent = create(client,&base,&model,None).await?;
         let parent_id = parent["id"].as_str().unwrap();
         for restricted in [false, true] {
@@ -1658,7 +1573,7 @@ async fn product_preset_tools(code: bool) -> TestResult<()> {
             let (request,reply) = provider.next().await?;
             let advertised = serde_json::to_string(&request["tools"]).unwrap();
             assert_eq!(advertised.contains("SubagentPresetCreate"), !restricted, "{advertised}");
-            reply.send(completion(json!({"role":"assistant","content":"Hello"}),"stop")).map_err(|_|"reply lost")?;
+            reply.reply_text("Hello");
             quiescent_message(client,id,&sent["messageId"]).await?;
         }
         if code {
@@ -1709,7 +1624,7 @@ async fn product_preset_tools(code: bool) -> TestResult<()> {
         let sent = call(client,"agent","send",json!({"sessionId":parent_id,"message":"Delegate this one-off task"})).await?;
         let (_,reply) = provider.next().await?;
         let input = json!({"sessionId":child,"message":"one-off product task","onComplete":"none"});
-        reply.send(if code {tool_response("exec",json!({"code":format!("text(await tools.SessionSend({input}));")}))} else {tool_response("SessionSend",input)}).map_err(|_|"send response lost")?;
+        reply.send_plan(if code {tool_response("exec",json!({"code":format!("text(await tools.SessionSend({input}));")}))} else {tool_response("SessionSend",input)});
         let mut saw_child = false;
         let mut saw_parent = false;
         while !saw_child || !saw_parent {
@@ -1721,7 +1636,7 @@ async fn product_preset_tools(code: bool) -> TestResult<()> {
                 assert_eq!(request["model"],model["modelId"]);
                 saw_child = true;
             } else { saw_parent = true; }
-            reply.send(completion(json!({"role":"assistant","content":"Finished."}),"stop")).map_err(|_|"reply lost")?;
+            reply.reply_text("Finished.");
         }
         quiescent_message(client,parent_id,&sent["messageId"]).await?;
         let output = tool_round(&rig,&mut provider,parent_id,code,"SubagentPresetUpdate",json!({"id":id,"expectedRevision":4,"instruction":""})).await?;
@@ -1746,10 +1661,10 @@ async fn interrupted_stream_and_silent_provider_are_retried() -> TestResult<()> 
     let mut provider = Provider::start().await?;
     let outcome = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(30), async {
         let base = rig.directory.path().to_path_buf();
-        let boot = bootstrap(&base, provider.url.clone(), false).await?;
+        let boot = bootstrap(&base, provider.server.base_url(), false).await?;
         attach(&mut rig, &boot).await?;
         let client = rig.client.as_ref().unwrap();
-        let model = model(client, &provider.url, false).await?;
+        let model = model(client, &provider.server.base_url(), false).await?;
         let session = create(client, &base, &model, None).await?;
         let id = session["id"].as_str().unwrap();
         for silent in [true, false] {
@@ -1767,11 +1682,12 @@ async fn interrupted_stream_and_silent_provider_are_retried() -> TestResult<()> 
                 drop(reply);
             } else {
                 // Reasoning metadata makes the request unsafe to send again verbatim.
-                let partial = json!({"id":"cut","object":"chat.completion.chunk","created":1,"model":"llama3.2",
-                    "choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"Planning.","content":"First half."},"finish_reason":null}]});
-                reply
-                    .send(ModelReply::Stream(format!("data: {partial}\n\n")))
-                    .map_err(|_| "provider reply lost")?;
+                reply.send_plan(
+                    TurnPlan::new()
+                        .push_reasoning("Planning.")
+                        .push_text("First half.")
+                        .push(TurnEvent::TruncateEof),
+                );
             }
             let (retry_request, reply) = provider.next().await?;
             if !silent {
@@ -1781,18 +1697,25 @@ async fn interrupted_stream_and_silent_provider_are_retried() -> TestResult<()> 
                     "interrupted draft leaked into retry request: {messages}"
                 );
             }
-            reply
-                .send(completion(json!({"role":"assistant","content":"Done."}), "stop"))
-                .map_err(|_| "provider reply lost")?;
+            reply.reply_text("Done.");
             let target = json!({"kind":"message","messageId":sent["messageId"]});
             let work = loop {
-                let work = call(client, "agent", "work", json!({"sessionId":id,"target":target})).await?;
+                let work = call(
+                    client,
+                    "agent",
+                    "work",
+                    json!({"sessionId":id,"target":target}),
+                )
+                .await?;
                 match work["execution"]["state"]["kind"].as_str() {
                     Some("completed" | "failed" | "cancelled") => break work,
                     _ => tokio::time::sleep(Duration::from_millis(30)).await,
                 }
             };
-            assert_eq!(work["execution"]["state"]["kind"], "completed", "silent={silent} {work}");
+            assert_eq!(
+                work["execution"]["state"]["kind"], "completed",
+                "silent={silent} {work}"
+            );
         }
         Ok::<_, Box<dyn Error + Send + Sync>>(())
     }))
@@ -1813,25 +1736,22 @@ async fn model_hears_about_one_withheld_response_and_a_second_ends_the_run() -> 
     let mut provider = Provider::start().await?;
     let outcome = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(30), async {
         let base = rig.directory.path().to_path_buf();
-        let boot = bootstrap(&base, provider.url.clone(), false).await?;
+        let boot = bootstrap(&base, provider.server.base_url(), false).await?;
         attach(&mut rig, &boot).await?;
         let client = rig.client.as_ref().unwrap();
-        let model = model(client, &provider.url, false).await?;
+        let model = model(client, &provider.server.base_url(), false).await?;
         let session = create(client, &base, &model, None).await?;
         let id = session["id"].as_str().unwrap();
         let withheld = |reason: &str| {
-            let chunk = |delta: Value, finish: Value| {
-                json!({"id":"r","object":"chat.completion.chunk","created":1,"model":"llama3.2",
-                "choices":[{"index":0,"delta":delta,"finish_reason":finish}]})
-            };
-            ModelReply::Stream(format!(
-                "data: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
-                chunk(
-                    json!({"role":"assistant","content":"Refused draft."}),
-                    Value::Null
-                ),
-                chunk(json!({}), json!(reason)),
-            ))
+            let plan = TurnPlan::new().with_response_id("r").push_text("Refused draft.");
+            if reason == "content_filter" {
+                return plan.finish(FinishReason::ContentFilter);
+            }
+            // Chat Completions has no standard recitation finish reason.
+            plan.push(TurnEvent::RawJson {
+                value: json!({"id":"r","object":"chat.completion.chunk","created":1,"model":"llama3.2",
+                    "choices":[{"index":0,"delta":{},"finish_reason":reason}]})
+            }).push(TurnEvent::RawBytes(axum::body::Bytes::from_static(b"data: [DONE]\n\n"))).push(TurnEvent::TruncateEof)
         };
         for twice in [false, true] {
             let sent = call(
@@ -1843,12 +1763,11 @@ async fn model_hears_about_one_withheld_response_and_a_second_ends_the_run() -> 
             .await?;
             let (_, reply) = provider.next().await?;
             reply
-                .send(withheld(if twice {
+                .send_plan(withheld(if twice {
                     "recitation"
                 } else {
                     "content_filter"
-                }))
-                .map_err(|_| "provider reply lost")?;
+                }));
             let (retried, reply) = provider.next().await?;
             let text = text_messages(&retried);
             assert!(
@@ -1866,15 +1785,10 @@ async fn model_hears_about_one_withheld_response_and_a_second_ends_the_run() -> 
             assert!(!text.contains("Refused draft."), "{retried}");
             if twice {
                 reply
-                    .send(withheld("content_filter"))
-                    .map_err(|_| "provider reply lost")?;
+                    .send_plan(withheld("content_filter"));
             } else {
                 reply
-                    .send(completion(
-                        json!({"role":"assistant","content":"Done another way."}),
-                        "stop",
-                    ))
-                    .map_err(|_| "provider reply lost")?;
+                    .reply_text("Done another way.");
             }
             let target = json!({"kind":"message","messageId":sent["messageId"]});
             let work = loop {
@@ -1916,10 +1830,10 @@ async fn next_turn_reads_why_the_previous_turn_failed() -> TestResult<()> {
     let mut provider = Provider::start().await?;
     let outcome = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(30), async {
         let base = rig.directory.path().to_path_buf();
-        let boot = bootstrap(&base, provider.url.clone(), false).await?;
+        let boot = bootstrap(&base, provider.server.base_url(), false).await?;
         attach(&mut rig, &boot).await?;
         let client = rig.client.as_ref().unwrap();
-        let model = model(client, &provider.url, false).await?;
+        let model = model(client, &provider.server.base_url(), false).await?;
         let session = create(client, &base, &model, None).await?;
         let id = session["id"].as_str().unwrap();
         let send = |message: &'static str| {
@@ -1951,8 +1865,7 @@ async fn next_turn_reads_why_the_previous_turn_failed() -> TestResult<()> {
         let failed = send("Summarize the report.").await?;
         let (_, reply) = provider.next().await?;
         reply
-            .send(ModelReply::Fatal("fixture rejected the report".into()))
-            .map_err(|_| "provider reply lost")?;
+            .send_plan(fatal("fixture rejected the report"));
         wait_terminal(json!({"kind":"message","messageId":failed["messageId"]}), "failed").await?;
 
         let next = send("Try again.").await?;
@@ -1964,16 +1877,14 @@ async fn next_turn_reads_why_the_previous_turn_failed() -> TestResult<()> {
         assert!(text[note..].contains("fixture rejected the report"), "{request}");
         assert!(note < text.find("Try again.").unwrap(), "{request}");
         reply
-            .send(completion(json!({"role":"assistant","content":"Done."}), "stop"))
-            .map_err(|_| "provider reply lost")?;
+            .reply_text("Done.");
         quiescent_message(client, id, &next["messageId"]).await?;
 
         // 2. Continuing a zero-output failed run via continueRun does not append the past-tense failure note.
         let failed_again = send("Retry via continueRun.").await?;
         let (_, reply) = provider.next().await?;
         reply
-            .send(ModelReply::Fatal("temporary outage".into()))
-            .map_err(|_| "provider reply lost")?;
+            .send_plan(fatal("temporary outage"));
         let failed_work = wait_terminal(
             json!({"kind":"message","messageId":failed_again["messageId"]}),
             "failed",
@@ -2007,8 +1918,7 @@ async fn next_turn_reads_why_the_previous_turn_failed() -> TestResult<()> {
             "continueRun should end on the user prompt without a past-tense failure note: {cont_request}"
         );
         reply
-            .send(completion(json!({"role":"assistant","content":"Recovered."}), "stop"))
-            .map_err(|_| "provider reply lost")?;
+            .reply_text("Recovered.");
         wait_terminal(
             json!({"kind":"run","runId":continued["execution"]["runId"]}),
             "completed",
@@ -2034,13 +1944,13 @@ async fn preparation_model_error_fails_the_run_and_admits_the_next_queued_messag
     let provider = Provider::start().await?;
     let outcome = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(30), async {
         let base = rig.directory.path().to_path_buf();
-        let boot = bootstrap(&base, provider.url.clone(), false).await?;
+        let boot = bootstrap(&base, provider.server.base_url(), false).await?;
         attach(&mut rig, &boot).await?;
         let client = rig.client.as_ref().unwrap();
         // No request fits the declared size, so model preparation fails before sending.
         let model = model_options(
             client,
-            &provider.url,
+            &provider.server.base_url(),
             false,
             json!({"imageInput":{"requestBytes":1}}),
         )
@@ -2112,12 +2022,12 @@ async fn context_overflow_after_partial_output_compacts_and_continues() -> TestR
     let mut provider = Provider::start().await?;
     let outcome = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(60), async {
         let base = rig.directory.path().to_path_buf();
-        let boot = bootstrap(&base, provider.url.clone(), false).await?;
+        let boot = bootstrap(&base, provider.server.base_url(), false).await?;
         attach(&mut rig, &boot).await?;
         let client = rig.client.as_ref().unwrap();
         let model = model_options(
             client,
-            &provider.url,
+            &provider.server.base_url(),
             false,
             json!({"contextWindow":400000,"compactionThreshold":200000}),
         )
@@ -2135,19 +2045,27 @@ async fn context_overflow_after_partial_output_compacts_and_continues() -> TestR
             Ok(sent["messageId"].clone())
         };
         let overflow = |partial: &str| {
-            let chunk = json!({"id":"r","object":"chat.completion.chunk","created":1,"model":"llama3.2",
-                "choices":[{"index":0,"delta":{"role":"assistant","content":partial},"finish_reason":null}]});
-            let error = json!({"error":{"message":"This model's maximum context length is 8192 tokens.",
-                "type":"invalid_request_error","code":"context_length_exceeded"}});
-            ModelReply::Stream(format!("data: {chunk}\n\ndata: {error}\n\n"))
+            TurnPlan::new()
+                .push_text(partial)
+                .push(TurnEvent::MidStreamError(
+                    maka_mock_ai::MidStreamErrorSpec {
+                        error_type: "invalid_request_error".into(),
+                        code: Some("context_length_exceeded".into()),
+                        message: "This model's maximum context length is 8192 tokens.".into(),
+                        retryable: None,
+                    },
+                ))
         };
         let summary_request = |request: &Value| {
             // A summary cut to fit opens with excerpts in place of the closing instruction.
             request["messages"].as_array().is_some_and(|messages| {
-                messages.iter().filter_map(|message| message["content"].as_str()).any(|text| {
-                    text.starts_with("Summarize the captured conversation")
-                        || text.starts_with("Conversation excerpts for summarization")
-                })
+                messages
+                    .iter()
+                    .filter_map(|message| message["content"].as_str())
+                    .any(|text| {
+                        text.starts_with("Summarize the captured conversation")
+                            || text.starts_with("Conversation excerpts for summarization")
+                    })
             })
         };
         let note = "[Host] Your previous response was cut off";
@@ -2155,35 +2073,38 @@ async fn context_overflow_after_partial_output_compacts_and_continues() -> TestR
         // 170k-200k estimated tokens: the next turn summarizes in the background.
         let first = send("Produce long history.").await?;
         let (_, reply) = provider.next().await?;
-        reply
-            .send(completion(json!({"role":"assistant","content":"padding ".repeat(66_000)}), "stop"))
-            .map_err(|_| "provider reply lost")?;
+        reply.reply_text("padding ".repeat(66_000));
         quiescent_message(client, id, &first).await?;
 
         // The overflow adopts the background summary.
         let second = send("Read the second file.").await?;
         let (one, two) = (provider.next().await?, provider.next().await?);
-        let ((summary, summary_reply), (_, main_reply)) =
-            if summary_request(&one.0) { (one, two) } else { (two, one) };
+        let ((summary, summary_reply), (_, main_reply)) = if summary_request(&one.0) {
+            (one, two)
+        } else {
+            (two, one)
+        };
         assert!(summary_request(&summary), "{summary}");
-        summary_reply
-            .send(completion(json!({"role":"assistant","content":"background-summary-marker"}), "stop"))
-            .map_err(|_| "provider reply lost")?;
-        main_reply.send(overflow("second-partial-marker")).map_err(|_| "provider reply lost")?;
+        summary_reply.reply_text("background-summary-marker");
+        main_reply.send_plan(overflow("second-partial-marker"));
         let (resumed, reply) = provider.next().await?;
         let text = text_messages(&resumed);
-        assert!(text.contains("background-summary-marker") && text.contains(note), "{text}");
+        assert!(
+            text.contains("background-summary-marker") && text.contains(note),
+            "{text}"
+        );
         assert!(!text.contains("second-partial-marker"), "{text}");
-        reply
-            .send(completion(json!({"role":"assistant","content":"Second file read."}), "stop"))
-            .map_err(|_| "provider reply lost")?;
+        reply.reply_text("Second file read.");
         quiescent_message(client, id, &second).await?;
 
         // Without a candidate, the overflow requests its own summary.
         let third = send("Read the third file.").await?;
         let (main, reply) = provider.next().await?;
-        assert!(!text_messages(&main).contains("second-partial-marker"), "{main}");
-        reply.send(overflow("third-partial-marker")).map_err(|_| "provider reply lost")?;
+        assert!(
+            !text_messages(&main).contains("second-partial-marker"),
+            "{main}"
+        );
+        reply.send_plan(overflow("third-partial-marker"));
         let (summary, reply) = tokio::select! {
             request = provider.next() => request?,
             ended = quiescent_message(client, id, &third) => {
@@ -2191,17 +2112,19 @@ async fn context_overflow_after_partial_output_compacts_and_continues() -> TestR
             }
         };
         assert!(summary_request(&summary), "{summary}");
-        assert!(!text_messages(&summary).contains("third-partial-marker"), "{summary}");
-        reply
-            .send(completion(json!({"role":"assistant","content":"overflow-summary-marker"}), "stop"))
-            .map_err(|_| "provider reply lost")?;
+        assert!(
+            !text_messages(&summary).contains("third-partial-marker"),
+            "{summary}"
+        );
+        reply.reply_text("overflow-summary-marker");
         let (resumed, reply) = provider.next().await?;
         let text = text_messages(&resumed);
-        assert!(text.contains("overflow-summary-marker") && text.contains(note), "{text}");
+        assert!(
+            text.contains("overflow-summary-marker") && text.contains(note),
+            "{text}"
+        );
         assert!(!text.contains("third-partial-marker"), "{text}");
-        reply
-            .send(completion(json!({"role":"assistant","content":"Third file read."}), "stop"))
-            .map_err(|_| "provider reply lost")?;
+        reply.reply_text("Third file read.");
         quiescent_message(client, id, &third).await?;
         Ok::<_, Box<dyn Error + Send + Sync>>(())
     }))
@@ -2224,14 +2147,14 @@ async fn overflow_summary_is_cut_below_the_request_that_overflowed() -> TestResu
     let mut provider = Provider::start().await?;
     let outcome = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(90), async {
         let base = rig.directory.path().to_path_buf();
-        let boot = bootstrap(&base, provider.url.clone(), false).await?;
+        let boot = bootstrap(&base, provider.server.base_url(), false).await?;
         attach(&mut rig, &boot).await?;
         let client = rig.client.as_ref().unwrap();
         // The declared window is far above what the provider accepts, so nothing
         // compacts before the request is sent.
         let model = model_options(
             client,
-            &provider.url,
+            &provider.server.base_url(),
             false,
             json!({"contextWindow":400000,"compactionThreshold":200000}),
         )
@@ -2267,7 +2190,7 @@ async fn overflow_summary_is_cut_below_the_request_that_overflowed() -> TestResu
             }
         };
         let overflow =
-            || ModelReply::Fatal("This model's maximum context length is 8192 tokens.".into());
+            || fatal("This model's maximum context length is 8192 tokens.");
         let summary_request = |request: &Value| {
             // A summary cut to fit opens with excerpts in place of the closing instruction.
             request["messages"].as_array().is_some_and(|messages| {
@@ -2281,8 +2204,7 @@ async fn overflow_summary_is_cut_below_the_request_that_overflowed() -> TestResu
         let first = send("Produce long history.").await?;
         let (_, reply) = provider.next().await?;
         reply
-            .send(completion(json!({"role":"assistant","content":"padding ".repeat(20_000)}), "stop"))
-            .map_err(|_| "provider reply lost")?;
+            .reply_text("padding ".repeat(20_000));
         quiescent_message(client, id, &first).await?;
 
         // The summary of an overflowed request is smaller than that request; it
@@ -2290,7 +2212,7 @@ async fn overflow_summary_is_cut_below_the_request_that_overflowed() -> TestResu
         let second = send("Read the second file.").await?;
         let (main, reply) = provider.next().await?;
         assert!(!summary_request(&main), "{main}");
-        reply.send(overflow()).map_err(|_| "provider reply lost")?;
+        reply.send_plan(overflow());
         let (summary, reply) = tokio::select! {
             request = provider.next() => request?,
             work = failed(&second) => {
@@ -2302,25 +2224,23 @@ async fn overflow_summary_is_cut_below_the_request_that_overflowed() -> TestResu
         assert!(asked < overflowed, "summary {asked} bytes, overflowed request {overflowed} bytes");
         assert!(main["tools"].as_array().is_some_and(|tools| !tools.is_empty()), "{main}");
         assert!(summary.get("tools").is_none_or(|tools| tools.as_array().is_some_and(Vec::is_empty)), "{summary}");
-        reply.send(overflow()).map_err(|_| "provider reply lost")?;
+        reply.send_plan(overflow());
         let work = failed(&second).await?.to_string();
         assert!(!work.contains("invalid event transition"), "{work}");
 
         // A summary that fits lets the next turn continue from it.
         let third = send("Read the third file.").await?;
         let (_, reply) = provider.next().await?;
-        reply.send(overflow()).map_err(|_| "provider reply lost")?;
+        reply.send_plan(overflow());
         let (summary, reply) = provider.next().await?;
         assert!(summary_request(&summary), "{summary}");
         reply
-            .send(completion(json!({"role":"assistant","content":"overflow-summary-marker"}), "stop"))
-            .map_err(|_| "provider reply lost")?;
+            .reply_text("overflow-summary-marker");
         let (resumed, reply) = provider.next().await?;
         let text = text_messages(&resumed);
         assert!(text.contains("overflow-summary-marker"), "{text}");
         reply
-            .send(completion(json!({"role":"assistant","content":"Third file read."}), "stop"))
-            .map_err(|_| "provider reply lost")?;
+            .reply_text("Third file read.");
         quiescent_message(client, id, &third).await?;
         let history = call(
             client,
@@ -2350,12 +2270,12 @@ async fn recall_model_observes_current_fact_and_policy() -> TestResult<()> {
     let mut provider = Provider::start().await?;
     let outcome = AssertUnwindSafe(async {
         let base = rig.directory.path().to_path_buf();
-        let boot = bootstrap_with(&base, provider.url.clone(), |config| {
+        let boot = bootstrap_with(&base, provider.server.base_url(), |config| {
             config["recall"] = json!(true);
         }).await?;
         attach(&mut rig, &boot).await?;
         let client = rig.client.as_ref().unwrap();
-        let model = model(client, &provider.url, false).await?;
+        let model = model(client, &provider.server.base_url(), false).await?;
         let selected = create(client, &base, &model, None).await?;
         let session = selected["id"].as_str().unwrap();
         let scope = json!({"kind": "project", "sessionId": session});
@@ -2440,7 +2360,7 @@ async fn recall_model_observes_current_fact_and_policy() -> TestResult<()> {
         assert!(replayed.iter().all(|args| !args.contains(argument)), "{replayed:?}");
         assert!(replayed.iter().any(|args| args.contains("apri")), "{replayed:?}");
         assert!(prompts.last().unwrap().contains("继续"));
-        reply.send(completion(json!({"role":"assistant","content":"好的。"}), "stop")).map_err(|_| "response lost")?;
+        reply.reply_text("好的。");
         tokio::time::timeout(Duration::from_secs(20),
             quiescent_message(client, session, &continued["messageId"])).await??;
         let more = tool_round(&rig, &mut provider, session, false, "RecallMore", json!({

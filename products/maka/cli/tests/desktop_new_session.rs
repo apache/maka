@@ -22,16 +22,13 @@
 // The real Desktop workbench on NSH's native surface, admitted to an owned Root.
 // This is not an OS-window/Desktop Shell E2E test or a terminal-keyboard surface.
 use crate::host::{Host, Result, Sandbox};
-use http_body_util::{BodyExt, Full, Limited};
-use hyper::{
-    Request, Response,
-    body::{Bytes, Incoming},
-    service::service_fn,
-};
-use hyper_util::rt::TokioIo;
 use maka_app_client::{Client, Journal};
 use maka_capabilities::call::{Attachments, ReadResource, ResourceEncoding};
 use maka_host_runtime::application::host::Client as HostClient;
+use maka_mock_ai::{
+    ControlPlaneConfig, FinishReason, MockAiBuilder, MockAiServer, ModelEntry, NormalizedRequest,
+    Protocol, TurnContext, TurnPlan, Usage,
+};
 use maka_plugin_core::{
     contract::ResourceType,
     operation::{OperationOutcome, OperationReply, OperationResult, Receipt},
@@ -56,11 +53,7 @@ use std::{
     },
     time::{Duration, Instant},
 };
-use tokio::{
-    net::TcpListener,
-    task::{JoinHandle, JoinSet},
-};
-use tokio_util::sync::CancellationToken;
+
 use uuid::Uuid;
 
 const STEP: Duration = Duration::from_secs(30);
@@ -146,134 +139,61 @@ impl ReadResource for FixtureKey {
 struct ModelFixture {
     base: String,
     nonce_requests: Arc<AtomicUsize>,
-    stop: CancellationToken,
-    task: Option<JoinHandle<Result<()>>>,
+    server: Option<MockAiServer>,
 }
 impl ModelFixture {
-    fn spawn(listener: TcpListener, nonce: String) -> Result<Self> {
-        let base = format!(
-            "http://{}/v1",
-            listener.local_addr().map_err(|e| e.to_string())?
-        );
-        let stop = CancellationToken::new();
+    async fn start(nonce: String) -> Result<Self> {
         let nonce_requests = Arc::new(AtomicUsize::new(0));
-        let (cancel, requests) = (stop.clone(), nonce_requests.clone());
-        let nonce = Arc::new(nonce);
-        let task = tokio::spawn(async move {
-            let mut calls = JoinSet::new();
-            let mut failures = Vec::new();
-            loop {
-                tokio::select! {
-                    _ = cancel.cancelled() => break,
-                    joined = calls.join_next(), if !calls.is_empty() => {
-                        match joined.expect("nonempty HTTP connections") {
-                            Ok(Ok(())) => {}
-                            Ok(Err(error)) => { failures.push(error); break; }
-                            Err(error) => { failures.push(format!("HTTP connection task: {error}")); break; }
-                        }
-                    }
-                    accepted = listener.accept() => {
-                        let (socket, _) = match accepted {
-                            Ok(accepted) => accepted,
-                            Err(error) => { failures.push(format!("model accept: {error}")); break; }
-                        };
-                        let (nonce, requests, cancel) = (nonce.clone(), requests.clone(), cancel.clone());
-                        calls.spawn(async move {
-                            let service = service_fn(move |request| {
-                                model_response(request, nonce.clone(), requests.clone())
-                            });
-                            let mut builder = hyper::server::conn::http1::Builder::new();
-                            builder.keep_alive(false);
-                            tokio::select! {
-                                _ = cancel.cancelled() => Ok(()),
-                                result = builder.serve_connection(TokioIo::new(socket), service) =>
-                                    result.map_err(|error| format!("model HTTP: {error}")),
-                            }
-                        });
-                    }
+        let requests = nonce_requests.clone();
+        let server = MockAiBuilder::new()
+            .control(ControlPlaneConfig {
+                models: vec![ModelEntry::simple("gpt-4.1")],
+                ..Default::default()
+            })
+            .handler_fn(move |req: &NormalizedRequest, _ctx: &TurnContext| {
+                assert_eq!(req.protocol, Protocol::OpenaiChatCompletions);
+                assert_eq!(req.model, "gpt-4.1", "unexpected model identity");
+                let messages = req.raw_body["messages"]
+                    .as_array()
+                    .expect("model request omitted messages");
+                if messages.iter().any(|message| {
+                    message["role"] == "user"
+                        && message["content"].to_string().contains(nonce.as_str())
+                }) {
+                    requests.fetch_add(1, Ordering::Relaxed);
                 }
-            }
-            drop(listener);
-            cancel.cancel();
-            while let Some(joined) = calls.join_next().await {
-                match joined {
-                    Ok(Ok(())) => {}
-                    Ok(Err(error)) => failures.push(error),
-                    Err(error) => failures.push(format!("join model connection: {error}")),
-                }
-            }
-            if failures.is_empty() {
-                Ok(())
-            } else {
-                Err(failures.join("; "))
-            }
-        });
+                TurnPlan::new()
+                    .with_response_id("desktop")
+                    .push_text(format!("desktop-reply-{nonce}"))
+                    .with_usage(Usage::new(100, 10))
+                    .finish(FinishReason::Stop)
+            })
+            .start()
+            .await
+            .map_err(|error| error.to_string())?;
+        let base = server.base_url();
         Ok(Self {
             base,
             nonce_requests,
-            stop,
-            task: Some(task),
+            server: Some(server),
         })
     }
 
+    fn cancel(&self) {
+        if let Some(server) = &self.server {
+            server.shutdown_token().cancel();
+        }
+    }
+
     async fn close(&mut self) -> Result<()> {
-        self.stop.cancel();
-        if let Some(task) = self.task.take() {
-            task.await
-                .map_err(|error| format!("join model listener: {error}"))??;
+        if let Some(server) = self.server.take() {
+            let panics = server.shutdown_taking_panics().await;
+            if !panics.is_empty() {
+                return Err(panics.join("; "));
+            }
         }
         Ok(())
     }
-}
-
-async fn model_response(
-    request: Request<Incoming>,
-    nonce: Arc<String>,
-    requests: Arc<AtomicUsize>,
-) -> Result<Response<Full<Bytes>>> {
-    let path = request.uri().path();
-    let listing = request.method() == hyper::Method::GET && path == "/v1/models";
-    if !listing && !(request.method() == hyper::Method::POST && path == "/v1/chat/completions") {
-        return Err("unexpected model request method or path".into());
-    }
-    let (body, content_type) = if listing {
-        (
-            json!({"object":"list","data":[{"id":"gpt-4.1","object":"model"}]}).to_string(),
-            "application/json",
-        )
-    } else {
-        let bytes = Limited::new(request.into_body(), 8 * 1024 * 1024)
-            .collect()
-            .await
-            .map_err(|error| format!("read model request: {error}"))?
-            .to_bytes();
-        let body: Value = serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
-        if body["model"] != "gpt-4.1" {
-            return Err("unexpected model identity".into());
-        }
-        let messages = body["messages"]
-            .as_array()
-            .ok_or("model request omitted messages")?;
-        if messages.iter().any(|message| {
-            message["role"] == "user" && message["content"].to_string().contains(nonce.as_str())
-        }) {
-            requests.fetch_add(1, Ordering::Relaxed);
-        }
-        let first = json!({"id":"desktop","object":"chat.completion.chunk","choices":[{
-            "index":0,"delta":{"role":"assistant","content":format!("desktop-reply-{nonce}")},"finish_reason":null}]});
-        let last = json!({"id":"desktop","object":"chat.completion.chunk","choices":[{
-            "index":0,"delta":{},"finish_reason":"stop"}],
-            "usage":{"prompt_tokens":100,"completion_tokens":10,"total_tokens":110}});
-        (
-            format!("data: {first}\n\ndata: {last}\n\ndata: [DONE]\n\n"),
-            "text/event-stream",
-        )
-    };
-    Response::builder()
-        .header("content-type", content_type)
-        .header("connection", "close")
-        .body(Full::new(Bytes::from(body)))
-        .map_err(|error| error.to_string())
 }
 
 async fn phase<T>(name: &str, future: impl Future<Output = Result<T>>) -> Result<T> {
@@ -425,8 +345,7 @@ pub(crate) fn new_conversation_creates_and_selects_a_session_in_the_same_workspa
             log::STATIC_MAX_LEVEL
         );
         let (seed_id, seed_title, directory, model_choice) = runtime.block_on(async {
-            let listener = TcpListener::bind("127.0.0.1:0").await.map_err(|error| error.to_string())?;
-            model = Some(ModelFixture::spawn(listener, nonce.clone())?);
+            model = Some(ModelFixture::start(nonce.clone()).await?);
             // Store the exact child before any startup await, including connect.
             process = Some(Host::spawn(&sandbox)?);
             let (admin, address) = phase("real default Host startup", process.as_mut().unwrap().ready()).await?;
@@ -940,7 +859,7 @@ pub(crate) fn new_conversation_creates_and_selects_a_session_in_the_same_workspa
         });
     }
     if let Some(model) = &model {
-        model.stop.cancel();
+        model.cancel();
     }
     if matches!(&outcome, Ok(Ok(())))
         && cleanup.is_empty()
