@@ -26,7 +26,7 @@ import { tr } from './locale';
 import { initializeAppearance } from './appearance';
 import { initializeComposerToolbar } from './composerToolbar';
 import { initializeSidebarPreferences } from './sidebarPreferences';
-import { C } from './ui';
+import { C, controlFocusStyle, controlHoverStyle, controlStyle } from './ui';
 import { LoadingState } from './Loading';
 import { nativeDesktop } from './nativeDesktop';
 
@@ -75,7 +75,9 @@ function Bootstrap() {
             <Button
               accessibilityLabel={tr('Retry')}
               onPress={plugins.runtime.retryUpdates}
-              style={{ padding: 8 }}
+              style={{ ...controlStyle, borderWidth: 1, borderColor: C.line }}
+              hoverStyle={controlHoverStyle()}
+              focusStyle={controlFocusStyle()}
             >
               <Text style={{ color: C.accent }}>{tr('Retry')}</Text>
             </Button>

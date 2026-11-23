@@ -319,7 +319,7 @@ function DictationSettings(props: { addConnection(): void }) {
         </SettingsSection>
       </If>
       <If when={!!dictation.error()}>
-        <Text style={{ color: C.danger }}>{dictation.error()}</Text>
+        <SettingsProblem message={dictation.error()} />
       </If>
     </SettingsBody>
   );

@@ -22,11 +22,11 @@ import { computed, inputAction, List, Scroll, signal, Text, View } from 'nsh';
 import { Button } from 'nsh/base';
 import type { ResourceUpdate } from '../../../../packages/plugin-sdk/src/index.js';
 import { terminalRunning, terminalStatus, type TerminalsModel } from './terminalState';
+import { InlineCallout, RegionEmptyError } from './Feedback';
 import { Icon } from './Icon';
 import { SettingsButton } from './SettingsPage';
 import {
   C,
-  bodyTextStyle,
   captionTextStyle,
   codeTextStyle,
   controlStyle,
@@ -85,20 +85,16 @@ export function PersonalTerminals(props: {
           <StartTerminal model={model} iconOnly />
         </View>
       </If>
-      <If when={model.error() || (model.known() && model.pending().length > 0)}>
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-          <Text
-            style={[
-              { ...captionTextStyle, flex: 1, color: model.error() ? C.danger : C.muted },
-              { userSelect: 'text' },
-            ]}
-          >
-            {model.error() || tr('Checking terminal command status…')}
-          </Text>
-          <If when={model.error()}>
-            <RefreshTerminals model={model} />
-          </If>
-        </View>
+      <If when={Boolean(model.error()) || (model.known() && model.pending().length > 0)}>
+        <InlineCallout
+          tone={model.error() ? 'danger' : 'info'}
+          message={model.error() || tr('Checking terminal command status…')}
+          action={
+            model.error()
+              ? { label: tr('Refresh'), onPress: inputAction(model.refresh, null) }
+              : undefined
+          }
+        />
       </If>
     </View>
   );
@@ -133,21 +129,6 @@ function StartTerminal(props: { model: TerminalsModel; iconOnly: boolean }) {
   );
 }
 
-function RefreshTerminals(props: { model: TerminalsModel }) {
-  return (
-    <Button
-      onPress={inputAction(props.model.refresh, null)}
-      accessibilityLabel={tr('Refresh terminals')}
-      tooltip={textTooltip(() => tr('Refresh terminals'))}
-      style={controlStyle}
-      hoverStyle={controlHoverStyle()}
-      focusStyle={controlFocusStyle()}
-    >
-      <Icon name="refresh" color={C.secondary} />
-    </Button>
-  );
-}
-
 export function AgentTerminals(props: {
   model: TerminalsModel;
   running: readonly TerminalRow[];
@@ -163,44 +144,67 @@ export function AgentTerminals(props: {
   ]);
   return (
     <View style={{ flex: 1, minHeight: 0, gap: 4 }}>
-      <If when={props.model.error()}>
-        <View style={{ flexDirection: 'row', gap: 4, alignItems: 'center' }}>
-          <Text style={{ ...bodyTextStyle, flex: 1, color: C.danger }}>{props.model.error()}</Text>
-          <RefreshTerminals model={props.model} />
-        </View>
+      <If when={Boolean(props.model.error()) && items().length > 0}>
+        <InlineCallout
+          tone="danger"
+          message={props.model.error()}
+          action={{ label: tr('Refresh'), onPress: inputAction(props.model.refresh, null) }}
+        />
       </If>
-      <If when={items().length === 0 && !props.model.error()}>
-        <Text style={{ ...captionTextStyle, color: C.muted }}>
-          {props.model.loading() ? tr('Reading terminals…') : tr('No commands')}
-        </Text>
-      </If>
-      <List
-        each={items()}
-        keyExtractor={(item) => (item.kind === 'entry' ? item.row.value().result.ref : item.kind)}
-        estimatedItemSize={48}
-        accessibilityLabel={tr('Agent terminals')}
-        style={{ flex: 1, minHeight: 0 }}
+      <If
+        when={Boolean(props.model.error()) && items().length === 0}
+        else={
+          <>
+            <If when={items().length === 0 && !props.model.error()}>
+              <Text style={{ ...captionTextStyle, color: C.muted }}>
+                {props.model.loading() ? tr('Reading terminals…') : tr('No commands')}
+              </Text>
+            </If>
+            <List
+              each={items()}
+              keyExtractor={(item) =>
+                item.kind === 'entry' ? item.row.value().result.ref : item.kind
+              }
+              estimatedItemSize={48}
+              accessibilityLabel={tr('Agent terminals')}
+              style={{ flex: 1, minHeight: 0 }}
+            >
+              {(item) => {
+                const current = item();
+                if (current.kind === 'finished')
+                  return (
+                    <Button
+                      accessibilityLabel={tr('Finished commands')}
+                      onPress={() => expanded.set(!expanded())}
+                      style={{
+                        ...controlStyle,
+                        flexDirection: 'row',
+                        alignItems: 'center',
+                        gap: 6,
+                      }}
+                      hoverStyle={controlHoverStyle()}
+                      focusStyle={controlFocusStyle()}
+                    >
+                      <Icon name={expanded() ? 'down' : 'right'} size={14} color={C.muted} />
+                      <Text style={{ ...captionTextStyle, color: C.text }}>
+                        {tr('Finished commands')}
+                      </Text>
+                    </Button>
+                  );
+                return <AgentTerminalRow entry={current.row.value()} open={props.open} />;
+              }}
+            </List>
+          </>
+        }
       >
-        {(item) => {
-          const current = item();
-          if (current.kind === 'finished')
-            return (
-              <Button
-                accessibilityLabel={tr('Finished commands')}
-                onPress={() => expanded.set(!expanded())}
-                style={{ ...controlStyle, flexDirection: 'row', alignItems: 'center', gap: 6 }}
-                hoverStyle={controlHoverStyle()}
-                focusStyle={controlFocusStyle()}
-              >
-                <Icon name={expanded() ? 'down' : 'right'} size={14} color={C.muted} />
-                <Text style={{ ...captionTextStyle, color: C.text }}>
-                  {tr('Finished commands')}
-                </Text>
-              </Button>
-            );
-          return <AgentTerminalRow entry={current.row.value()} open={props.open} />;
-        }}
-      </List>
+        <RegionEmptyError
+          compact
+          tone="danger"
+          icon="terminal"
+          title={props.model.error()}
+          retry={inputAction(props.model.refresh, null)}
+        />
+      </If>
     </View>
   );
 }

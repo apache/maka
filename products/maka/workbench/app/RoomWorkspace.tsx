@@ -838,7 +838,7 @@ export function createRoomWorkspace(options: {
             </View>
           </View>
           <If when={error()}>
-            <Text style={{ color: C.warning }}>{error()}</Text>
+            <Text style={{ ...captionTextStyle, color: C.danger }}>{error()}</Text>
           </If>
           <DialogFooter>
             <Button
@@ -907,7 +907,7 @@ export function createRoomWorkspace(options: {
             }}
           />
           <If when={error()}>
-            <Text style={{ color: C.warning }}>{error()}</Text>
+            <Text style={{ ...captionTextStyle, color: C.danger }}>{error()}</Text>
           </If>
           <DialogFooter>
             <Button
@@ -942,7 +942,7 @@ export function createRoomWorkspace(options: {
             {tr('Delete “{title}” and its messages?', { title: removing()!.title })}
           </Text>
           <If when={error()}>
-            <Text style={{ color: C.warning }}>{error()}</Text>
+            <Text style={{ ...captionTextStyle, color: C.danger }}>{error()}</Text>
           </If>
           <DialogFooter>
             <Button

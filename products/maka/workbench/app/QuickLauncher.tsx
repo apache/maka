@@ -49,6 +49,7 @@ import { createQuickQuestion, type QuickThread } from './quickQuestion';
 import { inputEditor } from './ComposerEditor';
 import { attachDictation } from './InlineDictation';
 import { dictationPreferences } from './dictationPreferences';
+import { InlineCallout } from './Feedback';
 import { QuickQuestionPanel } from './QuickQuestionPanel';
 import type { ConversationLauncher } from '../../../../plugins/agent/conversations/ui/QuickConversations';
 import { rememberInput, historyAtSelection } from './quick-input-history';
@@ -999,14 +1000,13 @@ function Launcher(props: {
           </If>
         </View>
         <If when={problem() !== null}>
-          <Text
-            style={[
-              { ...bodyTextStyle, paddingVertical: 8, paddingLeft: 42, paddingRight: 12 },
-              { color: C.warning, userSelect: 'text' },
-            ]}
-          >
-            {renderText(problem()!)}
-          </Text>
+          <View style={{ paddingHorizontal: 12, paddingTop: 8 }}>
+            <InlineCallout
+              tone="danger"
+              message={renderText(problem()!)}
+              onDismiss={failure() !== null ? () => failure.set(null) : undefined}
+            />
+          </View>
         </If>
         <If
           when={rows().length > 0}
@@ -1126,8 +1126,8 @@ function QuickEditor(props: { editor: QuickTextEditor; back(): void }) {
         value={props.editor.value()}
         change={(value) => props.editor.change(value)}
       />
-      <If when={!!props.editor.error()}>
-        <Text style={{ color: C.warning }}>{props.editor.error()}</Text>
+      <If when={Boolean(props.editor.error())}>
+        <InlineCallout tone="danger" message={props.editor.error() ?? ''} />
       </If>
     </View>
   );

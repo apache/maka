@@ -42,6 +42,7 @@ import {
 import { useHost } from './host';
 import { NativeFileTree } from './NativeFileTree';
 import { pathTree } from './fileTreePaths';
+import { RegionEmptyError } from './Feedback';
 import { Icon } from './Icon';
 import { LoadingState } from './Loading';
 import { tr } from './locale';
@@ -2040,11 +2041,12 @@ export function ChangesStudio(props: {
             <If
               when={!loadError()}
               else={
-                <View
-                  style={{ flex: 1, justifyContent: 'center', alignItems: 'center', padding: 24 }}
-                >
-                  <Text style={{ ...bodyTextStyle, color: C.danger }}>{loadError()}</Text>
-                </View>
+                <RegionEmptyError
+                  tone="danger"
+                  icon="diff"
+                  title={loadError()}
+                  retry={() => void refreshWorkspaceGit()}
+                />
               }
             >
               <If

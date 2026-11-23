@@ -446,7 +446,7 @@ function RoomSearchPopoverBody(props: {
         </If>
       </View>
       <If when={Boolean(error())}>
-        <Text style={{ ...captionTextStyle, color: C.warning }}>{error()}</Text>
+        <Text style={{ ...captionTextStyle, color: C.danger }}>{error()}</Text>
       </If>
       <If when={!loading() && Boolean(query().trim()) && results().length === 0}>
         <Text style={{ ...captionTextStyle, color: C.muted, paddingHorizontal: 4 }}>
@@ -994,7 +994,7 @@ export function RoomMembersModal(props: {
         </If>
 
         <If when={Boolean(error())}>
-          <Text style={{ ...captionTextStyle, color: C.warning }}>{error()}</Text>
+          <Text style={{ ...captionTextStyle, color: C.danger }}>{error()}</Text>
         </If>
       </View>
       <DialogFooter>
