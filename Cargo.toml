@@ -260,6 +260,65 @@ opt-level = 3
 [profile.dev.package.icy_sixel]
 opt-level = 3
 
+[profile.dist]
+inherits = "release"
+# Shipped release profile: optimize for compact binaries (npm/installer limits +
+# I-cache locality) and whole-program ThinLTO while staying within 7 GB macOS CI
+# runner memory. Kept separate from [profile.release] for fast local builds.
+# Never set panic = "abort": catch_unwind is required across the workspace.
+opt-level = "s"
+lto = "thin"
+strip = "symbols"
+
+# Keep compute-hot engines, renderers, and codecs at maximum optimization.
+[profile.dist.package.quickjs-jit-sys]
+opt-level = 3
+
+[profile.dist.package.taffy]
+opt-level = 3
+
+[profile.dist.package.nsh-terminal]
+opt-level = 3
+
+[profile.dist.package.quantette]
+opt-level = 3
+
+[profile.dist.package.icy_sixel]
+opt-level = 3
+
+[profile.dist.package.regex-automata]
+opt-level = 3
+
+[profile.dist.package.blake3]
+opt-level = 3
+
+[profile.dist.package.sha2]
+opt-level = 3
+
+[profile.dist.package.flate2]
+opt-level = 3
+
+[profile.dist.package.zstd]
+opt-level = 3
+
+[profile.dist.package.zune-jpeg]
+opt-level = 3
+
+[profile.dist.package.png]
+opt-level = 3
+
+[profile.dist.package.image-webp]
+opt-level = 3
+
+[profile.dist.package.tiny-skia]
+opt-level = 3
+
+[profile.dist.package.resvg]
+opt-level = 3
+
+[profile.dist.package.syntect]
+opt-level = 3
+
 [patch.crates-io]
 zbus = { git = "https://github.com/maka-agent/cua", rev = "f767531b26772afea29985d360d3f00d730baeb0" }
 nom = { git = "https://github.com/maka-agent/cua", rev = "f767531b26772afea29985d360d3f00d730baeb0" }
