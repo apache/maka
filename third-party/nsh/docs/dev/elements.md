@@ -35,7 +35,7 @@ prop sets (`HostProps::reset`, also used when a Rust component's render stops se
 interface per element group and platform (`InputHostProps`, `IOSInputHostProps`, ...) that the element types of
 `types.d.ts` and `nsh/base`'s components extend. The payload's type decodes itself (`HostValue`;
 `#[derive(PropEnum)]` for string unions); `default`, `min` / `max`, `on` (the element groups), `ios` / `android` /
-`macos` (names inside `ios={{…}}` / `android={{…}}` / `macos={{…}}`), `with` (a decoder of the whole variant, `js/host_values.rs`), `once`
+`macos` / `windows` (names inside `ios={{…}}` / `android={{…}}` / `macos={{…}}` / `windows={{…}}`), `with` (a decoder of the whole variant, `js/host_values.rs`), `once`
 (not reset) and `internal` (set by the runtime, untyped) cover the rest. **Events** are a table next to it
 (`host::EVENTS`): the event, the element groups whose props declare it and its handler's type, one row per payload
 (`onLoad` gives an image its size and a video its duration); the handlers join the same interfaces. An event no

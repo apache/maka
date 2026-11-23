@@ -2226,6 +2226,17 @@ pub trait Interactive: Element {
         self
     }
 
+    /// The system's blur of what is behind a transparent window, under the
+    /// view's box and corners, on Windows 11 and later
+    /// (`windows={{ backdrop }}`), or none.
+    fn windows_backdrop(
+        mut self,
+        backdrop: impl IntoReactive<Option<crate::WindowsBackdrop>>,
+    ) -> Self {
+        super::host::bind_prop(self.node(), backdrop, Prop::WindowsBackdrop);
+        self
+    }
+
     /// The id UI tests find it by.
     fn test_id(mut self, id: &str) -> Self {
         super::host::set(self.node(), Prop::TestId(Some(id.into())));

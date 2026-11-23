@@ -333,6 +333,7 @@ fn asset_in(dir: &Path, package: &str, lit: LitStr) -> syn::Result<TokenStream> 
             })?;
             let (width, height) = (w as f32, h as f32);
             quote! {{
+                ::nsh_core::__require_svg!();
                 const _: &[u8] = ::core::include_bytes!(#source);
                 #ui::ImageAsset {
                     url: #uri,
@@ -410,7 +411,12 @@ fn assets_in(dir: &Path, package: &str, span: Span) -> syn::Result<TokenStream> 
             #ui::AssetFile { uri: #uri, source: #source, kind: #ui::AssetKind::#variant }
         });
     }
+    let require_svg = found
+        .iter()
+        .any(|f| matches!(kind(f), Kind::Svg))
+        .then(|| quote!(::nsh_core::__require_svg!();));
     Ok(quote! {{
+        #require_svg
         const FILES: &[#ui::AssetFile] = &[#(#entries),*];
         FILES
     }})

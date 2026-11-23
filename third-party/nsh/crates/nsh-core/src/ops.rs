@@ -3649,6 +3649,10 @@ pub enum Prop {
     /// (default `popover` / `withinWindow` / `active`; `None`: none).
     #[prop(macos = "backdrop")]
     MacOsBackdrop(Option<crate::MacOsBackdrop>),
+    /// `windows={{ backdrop }}`: `{ material: "blur" }` draws the system's blur
+    /// of what is behind a transparent window under the view, on Windows 11.
+    #[prop(windows = "backdrop")]
+    WindowsBackdrop(Option<crate::WindowsBackdrop>),
     /// An accessibility property.
     #[prop(nested)]
     Accessibility(AccessibilityProp),

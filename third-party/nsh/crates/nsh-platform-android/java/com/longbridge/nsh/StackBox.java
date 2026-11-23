@@ -414,6 +414,8 @@ final class StackBox extends FrameLayout implements Node {
         boolean preventBack;
         private final BackArrow arrow;
         private final Mounter mounter;
+        /** The toolbar's gap above the bar (the status bar's height, in px), kept for a safe-area change. */
+        private int barTop;
         /** The header's colors as configured (0: the theme's), kept for an appearance change. */
         private int tint, background, titleColor;
         private boolean transparent;
@@ -485,6 +487,20 @@ final class StackBox extends FrameLayout implements Node {
             toolbar.layout(0, 0, r - l, toolbar.getMeasuredHeight());
         }
 
+        /**
+         * Pads the toolbar: the gap above the bar, and at the sides the view's
+         * safe area, the insets the screen reports to its page. A navigation
+         * bar or display cutout at a side (a phone in landscape with
+         * three-button navigation) then does not cover the up arrow, the
+         * title or the items, while the toolbar's background still spans the
+         * full width. Called again when the safe area changes.
+         */
+        void padToolbar() {
+            float d = mounter.density;
+            toolbar.setPadding(Math.round(mounter.host.safeLeft() * d), barTop,
+                    Math.round(mounter.host.safeRight() * d), 0);
+        }
+
         /** Applies `encode.rs` `screen_config`. */
         void configure(Mounter m, String title, boolean shown, boolean transparent, int tint, int background,
                        int titleColor, boolean backVisible, boolean gesture, boolean preventBack, int animation,
@@ -498,7 +514,8 @@ final class StackBox extends FrameLayout implements Node {
             toolbar.setTitle(titleView >= 0 ? null : title);
             int height = Math.round(headerHeight * d);
             int bar = Math.round(56 * d);
-            toolbar.setPadding(0, Math.max(0, height - bar), 0, 0);
+            barTop = Math.max(0, height - bar);
+            padToolbar();
             ViewGroup.LayoutParams p = toolbar.getLayoutParams();
             p.height = height;
             toolbar.setLayoutParams(p);
@@ -539,7 +556,8 @@ final class StackBox extends FrameLayout implements Node {
             int[] size = m.headerSizes.get(itemId);
             int w = size != null ? size[0] : 1, h = size != null ? size[1] : 1;
             Toolbar.LayoutParams p = new Toolbar.LayoutParams(Math.max(1, w), Math.max(1, h), gravity | android.view.Gravity.CENTER_VERTICAL);
-            if (gravity == android.view.Gravity.END) p.rightMargin = Math.round(12 * m.density);
+            // An end margin: in RTL the Toolbar lays END items out from the left edge.
+            if (gravity == android.view.Gravity.END) p.setMarginEnd(Math.round(12 * m.density));
             toolbar.addView(item, p);
         }
 

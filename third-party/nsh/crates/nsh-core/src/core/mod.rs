@@ -799,6 +799,8 @@ struct Node {
     backdrop_material: crate::BackdropMaterial,
     /// `macos={{ backdrop }}`.
     macos_backdrop: Option<crate::MacOsBackdrop>,
+    /// `windows={{ backdrop }}`.
+    windows_backdrop: Option<crate::WindowsBackdrop>,
     /// A text block: its attachments (inline views and images, in text
     /// order) whose native views are inside its own.
     attached: Vec<NodeId>,
@@ -890,6 +892,7 @@ impl Node {
         style.elevation = self.elevation;
         style.backdrop_material = self.backdrop_material;
         style.macos_backdrop = self.macos_backdrop;
+        style.windows_backdrop = self.windows_backdrop;
         // A list in its parent's viewport is a plain view clipping its
         // cells (a scroll view clips its content).
         if self.list.as_ref().is_some_and(|l| l.parent) {
@@ -1053,6 +1056,7 @@ impl Node {
             elevation: Points::ZERO,
             backdrop_material: crate::BackdropMaterial::default(),
             macos_backdrop: None,
+            windows_backdrop: None,
             dirty: 0,
             queued: false,
             text_queued: false,
@@ -6281,6 +6285,12 @@ impl<M: TextEngine> Core<M> {
                     flags |= dirty::VIEW;
                 }
             }
+            Prop::WindowsBackdrop(value) => {
+                if node.windows_backdrop != value {
+                    node.windows_backdrop = value;
+                    flags |= dirty::VIEW;
+                }
+            }
             Prop::ActiveStyle(patch) => {
                 self.set_part_style(key, classes::Part::Active, patch);
                 return Ok(());
@@ -7836,6 +7846,7 @@ impl<M: TextEngine> Core<M> {
             || node.elevation != Points::ZERO
             || node.backdrop_material != crate::BackdropMaterial::default()
             || node.macos_backdrop.is_some()
+            || node.windows_backdrop.is_some()
             || parent_list
             || node.spare
             || node.hidden_in_text

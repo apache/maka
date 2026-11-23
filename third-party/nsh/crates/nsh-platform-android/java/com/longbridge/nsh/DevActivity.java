@@ -45,6 +45,7 @@ public final class DevActivity extends Activity {
         }
         // An app on its own, not a module embedded in another app: no limits.
         view.useStandaloneLimits();
+        view.ownSystemBars();
         setContentView(view);
         view.handleNotificationIntent(getIntent());
         // A recreated activity's intent was handed in already.
@@ -117,6 +118,7 @@ public final class DevActivity extends Activity {
     public void onConfigurationChanged(android.content.res.Configuration config) {
         super.onConfigurationChanged(config);
         systemBars(this);
+        if (view != null) view.mounter().applySystemBars();
     }
 
     /** Draw behind the system bars: the app gets them as `safeArea()`. */
@@ -135,12 +137,17 @@ public final class DevActivity extends Activity {
         systemBars(activity);
     }
 
-    /** Dark system bar icons in light mode, light ones in dark mode. */
-    @SuppressWarnings("deprecation")
+    /** Dark system bar icons in light mode, light ones in dark mode (the system's, until the app sets its own). */
     static void systemBars(Activity activity) {
         int night = activity.getResources().getConfiguration().uiMode
                 & android.content.res.Configuration.UI_MODE_NIGHT_MASK;
-        boolean dark = night == android.content.res.Configuration.UI_MODE_NIGHT_YES;
+        systemBars(activity, night == android.content.res.Configuration.UI_MODE_NIGHT_YES);
+    }
+
+    /** Light system bar icons over {@code dark} content, dark ones over light. */
+    @SuppressWarnings("deprecation")
+    static void systemBars(Activity activity, boolean dark) {
+        if (activity == null) return;
         // Creates the decor view, which owns the insets controller.
         activity.getWindow().getDecorView();
         if (Build.VERSION.SDK_INT >= 30) {

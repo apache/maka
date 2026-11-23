@@ -1463,7 +1463,7 @@ fn set_prop(
         }
         // SAFETY: live node data.
         "component" | "componentSlot" => unsafe { (*p).places = true },
-        "ios" | "android" | "macos" | "desktop" | "web" => {
+        "ios" | "android" | "macos" | "windows" | "desktop" | "web" => {
             return platform_props(cx, node, name, value, prev);
         }
         "contentStyle" | "contentClass" if unsafe { (*p).tag } == Some(Tag::Scroll) => {
@@ -1716,8 +1716,8 @@ pub(crate) fn is_ancestor_of(cx: *mut JsContext, node: NodeId, of: NodeId) -> bo
     is_ancestor(cx, node, of)
 }
 
-/// `ios={{…}}` / `android={{…}}` / `macos={{…}}` / `web={{…}}` /
-/// `desktop={{…}}`: the props of this platform only, each set (or cleared)
+/// `ios={{…}}` / `android={{…}}` / `macos={{…}}` / `windows={{…}}` /
+/// `web={{…}}` / `desktop={{…}}`: the props of this platform only, each set (or cleared)
 /// on its own. Desktop props apply on the desktop OSes and in
 /// desktop-class browsers.
 fn platform_props(
@@ -1772,18 +1772,25 @@ fn platform_props(
             let k = std::ffi::CString::new(key).unwrap_or_default();
             qjs::JS_GetPropertyStr(cx, obj, k.as_ptr())
         };
+        let set = |key: &str, value, old| {
+            if name == "windows" {
+                set_prop(cx, node, &format!("windows.{key}"), value, old)
+            } else {
+                set_prop(cx, node, key, value, old)
+            }
+        };
         let next_keys = keys(value);
         for key in keys(prev) {
             if !next_keys.contains(&key) {
                 let old = get(prev, &key);
-                let r = set_prop(cx, node, &key, UNDEFINED, old);
+                let r = set(&key, UNDEFINED, old);
                 qjs::JS_FreeValue(cx, old);
                 r?;
             }
         }
         for key in next_keys {
             let (v, old) = (get(value, &key), get(prev, &key));
-            let r = set_prop(cx, node, &key, v, old);
+            let r = set(&key, v, old);
             qjs::JS_FreeValue(cx, v);
             qjs::JS_FreeValue(cx, old);
             r?;

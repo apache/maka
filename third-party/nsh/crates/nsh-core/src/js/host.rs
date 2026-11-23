@@ -276,7 +276,8 @@ pub mod on {
 }
 
 /// The platform a prop is for: everywhere, or inside `ios={{…}}` /
-/// `android={{…}}` / `macos={{…}}` / `desktop={{…}}` / `web={{…}}`.
+/// `android={{…}}` / `macos={{…}}` / `windows={{…}}` / `desktop={{…}}` /
+/// `web={{…}}`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Platform {
     /// Every platform.
@@ -287,6 +288,8 @@ pub enum Platform {
     Android,
     /// `macos={{…}}`.
     Macos,
+    /// `windows={{…}}`.
+    Windows,
     /// `desktop={{…}}` (macOS, Windows, Linux, desktop browsers).
     Desktop,
     /// `web={{…}}`.
@@ -1180,6 +1183,7 @@ pub fn declarations() -> String {
             (Platform::Ios, "IOS", " inside `ios={{…}}`"),
             (Platform::Android, "Android", " inside `android={{…}}`"),
             (Platform::Macos, "MacOS", " inside `macos={{…}}`"),
+            (Platform::Windows, "Windows", " inside `windows={{…}}`"),
             (Platform::Desktop, "Desktop", " inside `desktop={{…}}`"),
             (Platform::Web, "Web", " inside `web={{…}}`"),
         ] {

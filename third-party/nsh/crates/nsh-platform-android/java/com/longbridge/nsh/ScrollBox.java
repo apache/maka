@@ -630,7 +630,7 @@ final class ScrollBox extends FrameLayout implements Node {
                     float along = horizontal ? mx : my;
                     boolean more = horizontal ? scroller.canScrollHorizontally(along < 0 ? 1 : -1)
                             : scroller.canScrollVertically(along < 0 ? 1 : -1);
-                    if (along != 0 && !more) {
+                    if (along != 0 && !more && aroundTakes(mx, my)) {
                         owning = false;
                         parent.requestDisallowInterceptTouchEvent(false);
                         yielded = true;
@@ -643,7 +643,7 @@ final class ScrollBox extends FrameLayout implements Node {
                 int slop = ViewConfiguration.get(scroller.getContext()).getScaledTouchSlop();
                 if (Math.abs(dx) <= slop && Math.abs(dy) <= slop) break;
                 claiming = false;
-                if (!scrolls(dx, dy)) {
+                if (!scrolls(dx, dy) && aroundTakes(dx, dy)) {
                     parent.requestDisallowInterceptTouchEvent(false);
                     yielded = true;
                     return true;
@@ -659,6 +659,23 @@ final class ScrollBox extends FrameLayout implements Node {
                 break;
             default:
                 break;
+        }
+        return false;
+    }
+
+    /**
+     * Whether something around this view takes a drag by ({@code dx}, {@code dy}) px that this view has no content
+     * to move for: its own pull to refresh, a pan of a view around it, or a scroll view around it that moves that
+     * way (an outer list, a pager, the host's). With none, the drag stays with the platform scroll view, which pulls
+     * its edge (the stretch from Android 12, the glow before) as a scroll view at its end does.
+     */
+    private boolean aroundTakes(float dx, float dy) {
+        if (dy > 0 && Math.abs(dy) > Math.abs(dx) && canPull()) return true;
+        boolean across = Math.abs(dx) > Math.abs(dy);
+        for (ViewParent p = getParent(); p instanceof View; p = p.getParent()) {
+            View v = (View) p;
+            if (v instanceof Box && ((Box) v).takesPan(dx, dy)) return true;
+            if (across ? v.canScrollHorizontally(dx < 0 ? 1 : -1) : v.canScrollVertically(dy < 0 ? 1 : -1)) return true;
         }
         return false;
     }

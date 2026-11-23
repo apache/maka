@@ -1478,9 +1478,24 @@ impl VideoHost {
             unsafe {
                 let _: () = msg_send![player, setMuted: Bool::new(p.muted)];
                 let _: () = msg_send![player, setVolume: p.volume.clamp(0.0, 1.0)];
+                // The system controls' play button and the `repeat` loop
+                // play at the default rate (macOS 13 and iOS 16 on).
+                let default_rate: Bool =
+                    msg_send![player, respondsToSelector: objc2::sel!(setDefaultRate:)];
+                if default_rate.as_bool() {
+                    let _: () = msg_send![player, setDefaultRate: p.rate];
+                }
+                // `paused` is acted on when it changes (or for a new
+                // source): a video the system controls paused would play
+                // on whenever another prop (the volume, say) changed. A
+                // new rate applies to a video that plays.
+                let toggled = first || reopened || p.paused != old.paused;
+                let rate: f32 = msg_send![player, rate];
                 if p.paused {
-                    let _: () = msg_send![player, pause];
-                } else {
+                    if toggled {
+                        let _: () = msg_send![player, pause];
+                    }
+                } else if toggled || p.rate != old.rate && rate != 0.0 {
                     let _: () = msg_send![player, setRate: p.rate];
                 }
             }

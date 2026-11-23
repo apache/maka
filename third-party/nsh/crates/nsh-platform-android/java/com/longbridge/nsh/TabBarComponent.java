@@ -168,11 +168,20 @@ final class TabBarComponent implements NshComponent {
         }
 
         @Override
+        public WindowInsets onApplyWindowInsets(WindowInsets insets) {
+            // The insets it keeps clear of are read as it lays out: one that
+            // comes in later (a side navigation bar after a rotation, a
+            // switch of the navigation mode) needs another pass.
+            requestLayout();
+            return super.onApplyWindowInsets(insets);
+        }
+
+        @Override
         protected void onLayout(boolean changed, int l, int t, int r, int b) {
             super.onLayout(changed, l, t, r, b);
             // Reaching the window's bottom, the bar goes under the
             // navigation bar, taller by its inset, as Material's does.
-            int bottom = 0;
+            int bottom = 0, left = 0, right = 0;
             WindowInsets insets = getRootWindowInsets();
             if (insets != null && getRootView() != null) {
                 int[] at = new int[2];
@@ -181,11 +190,21 @@ final class TabBarComponent implements NshComponent {
                 int window = getRootView().getHeight();
                 int nav = navigationInset(insets);
                 if (nav > 0 && reach >= window - nav) bottom = nav;
+                // A navigation bar or display cutout at a side (a phone in
+                // landscape): the tabs keep clear of the part of it the bar
+                // spans, the bar's background still reaches under it.
+                int[] sides = sideInsets(insets);
+                left = Math.max(0, sides[0] - at[0]);
+                right = Math.max(0, sides[1] - (getRootView().getWidth() - at[0] - getWidth()));
             }
             if (bottom != inset) {
                 inset = bottom;
-                setPadding(0, 0, 0, inset);
                 events.setSize(0, BAR_DP + inset / density);
+            }
+            if (left != getPaddingLeft() || right != getPaddingRight() || inset != getPaddingBottom()) {
+                setPadding(left, 0, right, inset);
+                // The tabs were just laid out with the old padding: once more.
+                post(this::requestLayout);
             }
         }
 
@@ -217,6 +236,15 @@ final class TabBarComponent implements NshComponent {
             return nav.bottom;
         }
         return insets.getSystemWindowInsetBottom();
+    }
+
+    /** The navigation bar and display cutout at the window's sides (px: left, right). */
+    private static int[] sideInsets(WindowInsets insets) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            Insets sides = insets.getInsets(WindowInsets.Type.navigationBars() | WindowInsets.Type.displayCutout());
+            return new int[] {sides.left, sides.right};
+        }
+        return new int[] {insets.getSystemWindowInsetLeft(), insets.getSystemWindowInsetRight()};
     }
 
     /** The app's appearance changed: the bar follows it. */
@@ -294,6 +322,9 @@ final class TabBarComponent implements NshComponent {
                     at.topMargin = px((INDICATOR_H_DP - ICON_DP) / 2);
                 } else {
                     badge.setText(badgeText);
+                    // Text with no letters ("99+") reads left to right in RTL instead of "+99"; a badge that
+                    // starts with a letter of an RTL script keeps reading right to left.
+                    badge.setTextDirection(View.TEXT_DIRECTION_FIRST_STRONG_LTR);
                     badge.setSingleLine(true);
                     badge.setEllipsize(android.text.TextUtils.TruncateAt.END);
                     badge.setGravity(Gravity.CENTER);

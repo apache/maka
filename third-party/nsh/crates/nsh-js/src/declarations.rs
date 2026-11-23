@@ -41,6 +41,8 @@ export interface CommonProps<S = ViewStyle, R = ViewRef> extends TouchProps, Hos
   android?: AndroidProps;
   /** macOS-only props (`macos={{…}}`; ignored elsewhere). */
   macos?: MacOSProps;
+  /** Windows-only props (`windows={{…}}`; ignored elsewhere). */
+  windows?: WindowsProps;
   /** Desktop-only props (macOS, Windows, Linux and desktop browsers;
    * ignored on mobile). */
   desktop?: DesktopProps;
@@ -101,6 +103,9 @@ export interface AndroidProps extends AndroidHostProps {}
 
 /** macOS-only props of every element (`macos={{…}}`); elements add their own. */
 export interface MacOSProps extends MacOSHostProps {}
+
+/** Windows-only props of every element (`windows={{…}}`). */
+export interface WindowsProps extends WindowsHostProps {}
 
 /** `<View>` */
 export interface ViewProps extends CommonProps, ViewHostProps {

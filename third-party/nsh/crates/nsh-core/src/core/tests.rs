@@ -7844,6 +7844,102 @@ fn macos_backdrop_decodes_and_survives_restyling() {
     assert_eq!(decode(HostTestValue::Null), Prop::MacOsBackdrop(None));
 }
 
+/// `windows={{ backdrop }}` decodes its one name, reaches the view
+/// style, and clears through the Windows-qualified decode key.
+#[test]
+fn windows_backdrop_decodes_and_clears() {
+    use crate::{
+        WindowsBackdrop, WindowsBackdropMaterial,
+        js::host::{HostCx, HostProps},
+    };
+    let decode = |value: HostTestValue<'_>| {
+        let mut cx = HostCx::for_element(Tag::View);
+        <Prop as HostProps>::decode("windows.backdrop", &value, &mut cx)
+            .expect("a Windows backdrop prop")
+            .expect("a value")
+    };
+    let backdrop = WindowsBackdrop {
+        material: WindowsBackdropMaterial::Blur,
+    };
+    let prop = decode(HostTestValue::object([(
+        "material",
+        HostTestValue::String("blur"),
+    )]));
+    assert_eq!(prop, Prop::WindowsBackdrop(Some(backdrop)));
+    for value in [
+        HostTestValue::String("blur"),
+        HostTestValue::Number(1.0),
+        HostTestValue::object([]),
+        HostTestValue::object([("material", HostTestValue::String("mica"))]),
+        HostTestValue::object([("material", HostTestValue::Number(1.0))]),
+        HostTestValue::object([("blending", HostTestValue::String("behindWindow"))]),
+        HostTestValue::Null,
+    ] {
+        assert_eq!(decode(value), Prop::WindowsBackdrop(None));
+    }
+
+    let mut c = core();
+    apply(
+        &mut c,
+        vec![
+            Op::Create {
+                id: 2,
+                tag: Tag::View,
+            },
+            Op::SetProp {
+                id: 2,
+                prop: prop.clone(),
+            },
+            Op::Insert {
+                parent: ROOT_ID,
+                child: 2,
+                before: None,
+            },
+        ],
+    );
+    assert_eq!(
+        view_style_of(&c.commit().unwrap(), 2)
+            .unwrap()
+            .windows_backdrop,
+        Some(backdrop)
+    );
+    c.apply(Op::SetProp {
+        id: 2,
+        prop: <Prop as HostProps>::reset(&prop).unwrap(),
+    })
+    .unwrap();
+    assert_eq!(
+        view_style_of(&c.commit().unwrap(), 2)
+            .unwrap()
+            .windows_backdrop,
+        None
+    );
+}
+
+#[test]
+fn rust_windows_backdrop_reaches_the_view_style() {
+    use crate::{WindowsBackdrop, element::Root, prelude::*};
+
+    #[component]
+    fn BackdropView() -> impl IntoElement {
+        view().windows_backdrop(WindowsBackdrop::default())
+    }
+
+    let mut c = core();
+    c.mount_root(&Root::new::<BackdropView>(|| ()));
+    let backdrops = c
+        .commit()
+        .unwrap()
+        .items
+        .into_iter()
+        .filter_map(|item| match item {
+            MountItem::ViewStyle { style, .. } => style.windows_backdrop,
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(backdrops, [WindowsBackdrop::default()]);
+}
+
 #[test]
 fn glass_tint_updates_and_removal_keeps_effects() {
     let mut c = core();

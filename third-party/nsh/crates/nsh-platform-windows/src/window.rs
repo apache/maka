@@ -136,6 +136,10 @@ struct WindowData {
     windowed: Cell<Option<WINDOWPLACEMENT>>,
     /// Its frame's style bits before it went full screen.
     windowed_style: Cell<isize>,
+    /// The mode a hidden window was asked for, which it takes when it shows
+    /// ([`crate::window_state::set_mode`]): Windows changes a window's mode
+    /// by showing it.
+    held_mode: Cell<Option<nsh_core::desktop::WindowMode>>,
     /// What it holds of the app's window API ([`crate::shell`]).
     shell: crate::shell::Shell,
     /// The embedding app's root window an embedded surface's window
@@ -251,6 +255,7 @@ pub(crate) fn create(
         margins: Cell::new(None),
         windowed: Cell::new(None),
         windowed_style: Cell::new(0),
+        held_mode: Cell::new(None),
         shell: crate::shell::Shell::new(nsh_core::desktop::WindowKind::Normal),
         root: Cell::new(None),
         window: None,
@@ -359,6 +364,7 @@ pub(crate) fn create_app_window(
         margins: Cell::new(None),
         windowed: Cell::new(None),
         windowed_style: Cell::new(0),
+        held_mode: Cell::new(None),
         shell,
         root: Cell::new(None),
         window: Some(id),
@@ -450,6 +456,32 @@ pub(crate) fn frame_extents(hwnd: HWND) -> (i32, i32, i32, i32) {
 /// What `hwnd` holds of the app's window API.
 pub(crate) fn shell(hwnd: HWND) -> Option<&'static crate::shell::Shell> {
     data(hwnd).map(|d| &d.shell)
+}
+
+/// The mode hidden window `hwnd` takes when it shows, if another than the
+/// one it is in.
+pub(crate) fn held_mode(hwnd: HWND) -> Option<nsh_core::desktop::WindowMode> {
+    data(hwnd).and_then(|d| d.held_mode.get())
+}
+
+/// Sets (or forgets) the mode `hwnd` takes when it shows.
+pub(crate) fn hold_mode(hwnd: HWND, mode: Option<nsh_core::desktop::WindowMode>) {
+    if let Some(data) = data(hwnd) {
+        data.held_mode.set(mode);
+    }
+}
+
+/// Reports the state of top-level window `hwnd` to its app, after a change
+/// no message of the window tells of.
+pub(crate) fn report_state(hwnd: HWND) {
+    let Some(data) = data(hwnd) else { return };
+    let Some(surface) = data.surface.upgrade() else {
+        return;
+    };
+    match data.window {
+        None => crate::window_state::report_main(&surface),
+        Some(id) => crate::app_window::state_changed(&surface, id),
+    }
 }
 
 /// The dialog root a window of the app's own shows (`None` for a
@@ -603,9 +635,17 @@ fn toggle_full_screen_inner(hwnd: HWND) {
 }
 
 /// Shows a top-level window (without activating it when its attributes
-/// say so), and keeps it out of the taskbar if it is. A background app's
-/// shows without activating, the window that would have the keyboard.
+/// say so), in the mode it was asked for while hidden, and keeps it out of
+/// the taskbar if it is. A background app's shows without activating, the
+/// window that would have the keyboard.
 pub(crate) fn show(hwnd: HWND) {
+    show_as_it_is(hwnd);
+    crate::window_state::enter_held_mode(hwnd);
+}
+
+/// [`show`] without the mode held for it, which the caller enters
+/// ([`crate::window_state::enter_held_mode`]).
+pub(crate) fn show_as_it_is(hwnd: HWND) {
     let activate = shell(hwnd).is_none_or(|s| {
         let a = s.attrs();
         a.activate && a.focusable

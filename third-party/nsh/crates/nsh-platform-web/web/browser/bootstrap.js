@@ -3379,6 +3379,7 @@
 		"ios",
 		"android",
 		"macos",
+		"windows",
 		"desktop",
 		"web"
 	]);
@@ -3541,11 +3542,12 @@
 			const previous = heldProps.get(node)?.get(name);
 			hold(node, name, value);
 			if (!(name === "desktop" ? platform?.desktop : name === platform?.os)) return;
+			const set = (key, value) => prop(node, name === "windows" ? `windows.${key}` : key, value);
 			const next = value !== null && typeof value === "object" ? value : {};
 			if (previous !== null && typeof previous === "object") {
-				for (const key of Object.keys(previous)) if (!Object.hasOwn(next, key)) prop(node, key, void 0);
+				for (const key of Object.keys(previous)) if (!Object.hasOwn(next, key)) set(key, void 0);
 			}
-			for (const key of Object.keys(next)) prop(node, key, next[key]);
+			for (const key of Object.keys(next)) set(key, next[key]);
 		};
 		const dynamic = (value, depth = 0) => typeof value === "function" || depth < 64 && Array.isArray(value) && value.some((item) => dynamic(item, depth + 1));
 		const itemMemo = (fn) => reactive.computed(() => {
