@@ -1662,9 +1662,7 @@ fn next_action(
                 } else {
                     view.retry_phase
                 };
-                let limit = u64::from(view.spec.budget.retries)
-                    + u64::from(phase == maka_agent_facts::model::retry_transport::RetryTransportPhase::Fallback);
-                return if u64::from(view.retries_for(phase)) < limit {
+                return if view.can_charge_retry(id) {
                     Action::ChargeRetry(id, phase)
                 } else if !resume && phase == maka_agent_facts::model::retry_transport::RetryTransportPhase::Primary
                     && model.is_some_and(|model| {

@@ -572,6 +572,40 @@ fn verify_sqlite_integrity_and_migrations(root: &Path) -> BTreeMap<String, Vec<i
                 .unwrap()
                 .to_string_lossy()
                 .replace('\\', "/");
+            let has_runs: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='agent_runs'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            if has_runs > 0 && versions.contains(&53) {
+                let mut streaks = conn
+                    .prepare("SELECT run, retry_streak FROM agent_runs")
+                    .unwrap();
+                let rows = streaks
+                    .query_map([], |row| {
+                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                    })
+                    .unwrap();
+                for row in rows {
+                    let (run, raw) = row.unwrap();
+                    let parsed: Value = serde_json::from_str(&raw).unwrap_or_else(|e| {
+                        panic!("invalid agent_runs.retry_streak JSON for run {run}: {raw} ({e})")
+                    });
+                    assert!(
+                        matches!(
+                            parsed.get("kind").and_then(Value::as_str),
+                            Some(
+                                "regular"
+                                    | "fallback_transition_pending"
+                                    | "after_fallback_transition"
+                            )
+                        ),
+                        "unexpected agent_runs.retry_streak variant for run {run}: {parsed}"
+                    );
+                }
+            }
             ledgers.insert(rel, versions);
         }
     }
