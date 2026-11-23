@@ -266,20 +266,33 @@ pub(crate) fn configure() {
             println!("cargo:rustc-link-arg-bin=maka-service=-Wl,-no_exported_symbols");
         }
         "linux" => {
-            let mut list = String::from("{ ");
+            // cargo-zigbuild (zig cc) rejects --undefined and
+            // --export-dynamic-symbol-list and drops --version-script for
+            // executables. A linker script passed via -Wl,-T,<path> with
+            // -Wl,--export-dynamic works across zig cc (lld), rust-lld,
+            // and GNU ld (BFD): EXTERN(...) roots unreferenced .rcgu.o
+            // members from libdeno_napi.rlib before --gc-sections,
+            // SECTIONS { .napi_dummy : {} } INSERT AFTER .text; augments the
+            // default script instead of replacing it on GNU ld (an empty
+            // SECTIONS {} triggers a GNU ld BFD PIE link error, while an empty
+            // output section is omitted from the final ELF), and VERSION
+            // exports only the N-API host ABI instead of dumping every linked
+            // global into .dynsym.
+            let mut script = String::from("EXTERN(\n");
             for sym in NAPI_HOST_SYMBOLS {
-                write!(&mut list, "\"{sym}\"; ").expect("format Linux export symbol");
-                // --export-dynamic-symbol-list alone does not extract unreferenced
-                // .rcgu.o members from libdeno_napi.rlib under --gc-sections.
-                println!("cargo:rustc-link-arg-bin=maka=-Wl,--undefined={sym}");
+                writeln!(&mut script, "  {sym}").expect("format Linux EXTERN symbol");
             }
-            list.push_str("};\n");
-            let path = out_dir.join("napi_exports_linux.def");
-            fs::write(&path, list).expect("write Linux N-API export list");
-            println!(
-                "cargo:rustc-link-arg-bin=maka=-Wl,--export-dynamic-symbol-list={}",
-                path.display()
+            script.push_str(
+                ")\nSECTIONS { .napi_dummy : {} }\nINSERT AFTER .text;\nVERSION {\n  {\n    global:\n",
             );
+            for sym in NAPI_HOST_SYMBOLS {
+                writeln!(&mut script, "      {sym};").expect("format Linux VERSION symbol");
+            }
+            script.push_str("    local:\n      *;\n  };\n}\n");
+            let path = out_dir.join("napi_exports_linux.ld");
+            fs::write(&path, script).expect("write Linux N-API linker script");
+            println!("cargo:rustc-link-arg-bin=maka=-Wl,--export-dynamic");
+            println!("cargo:rustc-link-arg-bin=maka=-Wl,-T,{}", path.display());
         }
         "windows" => {
             if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
