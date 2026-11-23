@@ -46,6 +46,7 @@ fn formatting() -> impl IntoElement {
 ```tsx tabs
 import { mount, signal, Text } from "nsh";
 import { Button, Toggle, Toolbar, ToolbarGroup, ToolbarSeparator } from "nsh/base";
+import { Window } from "nsh/desktop";
 
 function App() {
   const bold = signal(false);
@@ -72,7 +73,11 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 `Toolbar`、`ToolbarGroup` 和 `ToolbarSeparator` 来自 [`nsh/base`](../modules/nsh-base.md)，在 Rust 中是 `nsh-base` crate。工具栏不持有值：其中的开关按钮被告知是否按下并报告 `onChange`，按钮报告 `onPress`，状态由应用保存。在 Rust 中由 `toolbar()`、`toolbar_group()` 和 `toolbar_separator()` 创建，每个属性对应一个设置方法（`.axis(..)`、`.disabled(..)`），再加上类型化的样式方法和放内容的 `.child(..)`。

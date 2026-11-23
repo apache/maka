@@ -46,6 +46,9 @@ pub(crate) struct Output {
     /// The linked Cells of the frame last drawn, which the backend wraps
     /// in their hyperlinks (`crate::link`).
     pub(crate) links: std::cell::RefCell<crate::link::Links>,
+    /// Kitty graphics commands (image transmissions and deletions) the
+    /// backend writes ahead of the next Cells it draws (`crate::image`).
+    pub(crate) graphics: Rc<std::cell::RefCell<Vec<u8>>>,
 }
 
 pub(crate) struct Monitor {

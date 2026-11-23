@@ -177,7 +177,9 @@ export function ColorFields(props: ColorFieldsProps) {
   const fields = () => FORMAT_FIELDS[props.format];
   const label = () => colorFormats.find((f) => f.value === props.format)!.label;
   return (
-    <View {...fieldLook({ style: { height: fieldSize.height, alignItems: "stretch", overflow: terminal ? undefined : "hidden" } })}>
+    // In the terminal one row with no frame of its own, as the panel's other rows: a framed well is three rows for one
+    // line of numbers.
+    <View {...(terminal ? { style: { flexDirection: "row", height: TERMINAL_ROW } } : fieldLook({ style: { height: fieldSize.height, alignItems: "stretch", overflow: "hidden" } }))}>
       <Menu
         align="start"
         offset={4}

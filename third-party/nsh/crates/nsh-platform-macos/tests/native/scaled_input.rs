@@ -39,6 +39,7 @@ const FIELD: (f32, f32, f32, f32) = (60.0, 50.0, 150.0, 30.0);
 /// window, so a press there reaches it).
 const COVER: (f32, f32, f32, f32) = (200.0, 120.0, 100.0, 60.0);
 
+static OUTSIDE_PRESSES: AtomicUsize = AtomicUsize::new(0);
 /// Presses of the view covering the field's right half.
 static COVER_PRESSES: AtomicUsize = AtomicUsize::new(0);
 
@@ -51,6 +52,14 @@ static CLIPPED_STEP: AtomicUsize = AtomicUsize::new(0);
 fn Page() -> impl IntoElement {
     view()
         .size_full()
+        .child(
+            overlay()
+                .w(px(12.0))
+                .h(px(12.0))
+                .on_press_outside(|_: &Point<Points>| {
+                    OUTSIDE_PRESSES.fetch_add(1, Ordering::SeqCst);
+                }),
+        )
         .child(
             view()
                 .absolute()
@@ -393,7 +402,11 @@ pub(super) fn run() {
     // A press in the box's padding, above the editor: the pad sends it to
     // the editor at the clicked x, as a press on an input's padding does.
     let padding = box_rect.origin.y + 4.0;
+    let before = OUTSIDE_PRESSES.load(Ordering::SeqCst);
     click(&window, box_rect.origin.x + 3.0, padding);
+    until("one outside press from the input", || {
+        OUTSIDE_PRESSES.load(Ordering::SeqCst) == before + 1
+    });
     until("the field's focus", || field.currentEditor().is_some());
     let start = caret(&field);
     if start != 0 {

@@ -22,8 +22,9 @@ use std::{
 
 use crate::element::{Callback, JsError, JsObject, Later, System, codes, module};
 
-/// Takes a piece of a body and the total size if known; an error stops it.
-pub type UpdaterSink<'a> = &'a mut dyn FnMut(&[u8], Option<u64>) -> Result<(), String>;
+/// Takes a piece of a body: its byte offset in the resource, the bytes, and
+/// the resource's total size if known; an error stops it.
+pub type UpdaterSink<'a> = &'a mut dyn FnMut(u64, &[u8], Option<u64>) -> Result<(), String>;
 
 /// What the platform gives the module: the package's update configuration
 /// and HTTP. Both block, and are called off the engine thread.
@@ -32,9 +33,14 @@ pub trait UpdaterHost: Send + Sync + 'static {
     /// development run, an app without `"updater"` in `nsh.json`).
     fn config(&self) -> Option<Vec<u8>>;
 
-    /// Gets `url`, following redirects, handing each piece of the body and
-    /// the total size if known to `sink`, until it fails or the body ends.
-    fn get(&self, url: &str, sink: UpdaterSink<'_>) -> Result<(), String>;
+    /// Gets `url` from byte `from` on, following redirects, handing each
+    /// piece of the body to `sink` with its offset in the resource, until it
+    /// fails or the body ends. With `from > 0` the host asks for the rest
+    /// (`Range: bytes=<from>-`); a server that ignores the range sends the
+    /// whole resource from offset `0`, and one that cannot satisfy it
+    /// (`416`) sends no pieces. Offsets count the raw resource's bytes, so
+    /// the host asks for no transparent compression.
+    fn get(&self, url: &str, from: u64, sink: UpdaterSink<'_>) -> Result<(), String>;
 
     /// The signed package this run's code came from; `None` (the default):
     /// the bundle the app shipped with.
@@ -228,13 +234,20 @@ impl Updater {
     }
 
     /// Downloads the update the last `checkForUpdate` found and checks it
-    /// against the manifest, calling `onProgress` as bytes arrive. Rejects
-    /// with `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM` when it found none or
-    /// `canInstall` is false, and when the download fails or does not match.
+    /// against the manifest, calling `onProgress` as bytes arrive. An
+    /// interrupted transfer keeps its partial file keyed to the asset and
+    /// resumes on the next call when the host supports HTTP `Range` requests,
+    /// starting over when the server ignores the range or the file does not
+    /// match. Rejects with `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM` when it found
+    /// none or `canInstall` is false, and when the download fails or does not
+    /// match.
     pub(crate) fn download_update(
         #[args(progress)] on_progress: Option<Callback<UpdateProgress>>,
         sys: System,
     ) -> Later<()> {
+        let on_progress = on_progress.map(|callback| {
+            Box::new(move |progress| callback.post(progress)) as Box<dyn Fn(UpdateProgress)>
+        });
         Later::new(native::download(sys, on_progress))
     }
 
@@ -263,6 +276,31 @@ impl Updater {
         Later::new(native::install_on_quit(sys))
     }
 
+    /// Checks for a newer version as `checkForUpdate` does and asks the
+    /// user about it in NSH's built-in prompt, as macOS apps' Sparkle does:
+    /// the version, its notes and Skip This Version, Remind Me Later and
+    /// Install Update, then the download's progress and Install and
+    /// Relaunch or Install on Quit. Where the app cannot install itself
+    /// (`canInstall` false: iOS, Android) Install Update opens the update's
+    /// `url`. The user's Skip This Version and "Automatically download and
+    /// install updates" are kept in the app's data directory: a `quiet`
+    /// check (at startup, in the background) shows nothing for a skipped
+    /// version, and installs an update as the app quits without asking
+    /// once the user chose to; it shows nothing either when the app is up
+    /// to date or the check fails. Without `quiet` (a "Check for Updates…"
+    /// menu item) the user hears that too. Resolves once the prompt shows,
+    /// or there is nothing to show; never rejects.
+    pub(crate) fn prompt_for_update(
+        options: Option<UpdatePromptOptions>,
+        sys: System,
+    ) -> Later<()> {
+        let options = options.unwrap_or_default();
+        Later::new(async move {
+            prompt::run(sys, options).await;
+            Ok::<_, JsError>(())
+        })
+    }
+
     /// Asks the source in `nsh.json`'s `"updater"` for a newer build of the
     /// app's code: a signed package newer than the running build (the
     /// running package's, else the one the app shipped with) that this
@@ -283,9 +321,13 @@ impl Updater {
     /// signed by a release key a trusted root certifies, for this app, newer
     /// than the running build, for this runtime. It then runs from the
     /// app's next start (`restartToPackage`). Calls `onProgress` as bytes
-    /// arrive. Rejects with `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM` when the
-    /// check found none, and with an error saying why when the download
-    /// fails or the package is refused, which leaves nothing behind.
+    /// arrive. An interrupted transfer keeps its partial file keyed to the
+    /// package and resumes on the next call when the host supports HTTP
+    /// `Range` requests, starting over when the server ignores the range or
+    /// the file does not match. Rejects with
+    /// `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM` when the check found none, and
+    /// with an error saying why when the download fails or the package is
+    /// refused (a refused package leaves nothing behind).
     pub(crate) fn download_package(
         #[args(progress)] on_progress: Option<Callback<UpdateProgress>>,
         sys: System,
@@ -330,6 +372,10 @@ impl Updater {
     }
 }
 
+mod prompt;
+
+pub use prompt::{UpdatePrompt, UpdatePromptOptions, prompt_for_update, set_update_presenter};
+
 /// Why no package can be downloaded.
 fn no_package() -> JsError {
     JsError::Error("no package to download: checkForPackage found none".into())
@@ -350,7 +396,7 @@ fn unavailable() -> JsError {
 mod native {
     use std::collections::BTreeMap;
 
-    use nsh_updater::{Available, Config, Download};
+    use nsh_updater::{Available, Config};
 
     use super::*;
 
@@ -535,6 +581,25 @@ mod native {
         Ok(Some(update))
     }
 
+    /// The app's display name and version as it was packaged
+    /// (`nsh-updater.json`), when it has them.
+    pub(super) async fn shipped(sys: &System) -> (Option<String>, Option<String>) {
+        let Some(host) = sys.updater.clone() else {
+            return (None, None);
+        };
+        let shipped = blocking(move || {
+            Ok(host
+                .config()
+                .and_then(|bytes| Config::parse(&bytes).ok())
+                .map(|config| (config.name, config.version)))
+        })
+        .await;
+        match shipped {
+            Ok(Some((name, version))) => (name, Some(version)),
+            _ => (None, None),
+        }
+    }
+
     /// The notes in `locale` among `files`, downloaded and checked; `None`
     /// keeps the default notes, also when the file cannot be had: notes in
     /// another language must not fail a check.
@@ -559,7 +624,7 @@ mod native {
     fn get_all(host: &dyn UpdaterHost, url: &str) -> Result<Vec<u8>, String> {
         const MAX: usize = 1 << 20;
         let mut bytes = Vec::new();
-        host.get(url, &mut |chunk, _| {
+        host.get(url, 0, &mut |_, chunk, _| {
             if bytes.len() + chunk.len() > MAX {
                 return Err("over 1 MiB".to_owned());
             }
@@ -579,12 +644,460 @@ mod native {
             .ok_or_else(unavailable)
     }
 
+    /// Safe filename fragment keying a partial or verified download to the
+    /// asset's manifest SHA-256: lowercase hex as-is for normal hashes, or
+    /// hashed otherwise so an unusual manifest field can never escape `dir`.
+    fn part_key(sha256: &str) -> String {
+        if !sha256.is_empty() && sha256.len() <= 64 && sha256.bytes().all(|b| b.is_ascii_hexdigit())
+        {
+            sha256.to_ascii_lowercase()
+        } else {
+            nsh_updater::sha256(sha256.as_bytes())
+        }
+    }
+
+    /// Removes stale `download-*` files in `dir` that do not belong to the
+    /// asset currently being downloaded (leaving OTA package files untouched).
+    fn cleanup_stale_downloads(dir: &std::path::Path, keep_part: &str, keep_dest: &str) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else { continue };
+            if name.starts_with("download-")
+                && name != keep_part
+                && name != keep_dest
+                && name.strip_suffix(".lock") != Some(keep_part)
+            {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
+
+    /// Removes stale OTA `.part` files in `dir` that do not match `keep_part`
+    /// (including legacy `next.nshpkg.part`), leaving `next.nshpkg`,
+    /// `trying.nshpkg`, `current.nshpkg`, `trust/` and `packages/` untouched.
+    fn cleanup_stale_package_parts(dir: &std::path::Path, keep_part: &str) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else { continue };
+            let legacy = name == format!("{NEXT}.part");
+            let other = name.starts_with("next-")
+                && (name.ends_with(".nshpkg.part") || name.ends_with(".nshpkg.part.lock"));
+            if (legacy || other)
+                && name != keep_part
+                && name.strip_suffix(".lock") != Some(keep_part)
+            {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
+
+    /// An [`nsh_updater::Download`] that counts what it took, so a kept
+    /// `.part` file can be hashed again and resumed from its end.
+    #[derive(Debug)]
+    struct Download {
+        check: nsh_updater::Download,
+        received: u64,
+    }
+
+    impl Download {
+        fn new(sha256: &str, size: Option<u64>) -> Download {
+            Download {
+                check: nsh_updater::Download::new(sha256, size),
+                received: 0,
+            }
+        }
+
+        /// Seeded with the bytes already in `partial`; fails if they exceed
+        /// the manifest's size or cannot be read.
+        fn resume(
+            sha256: &str,
+            size: Option<u64>,
+            partial: &mut impl std::io::Read,
+        ) -> Result<Download, String> {
+            let mut download = Download::new(sha256, size);
+            let mut buf = [0u8; 16 * 1024];
+            loop {
+                match partial.read(&mut buf) {
+                    Ok(0) => return Ok(download),
+                    Ok(n) => {
+                        download.update(&buf[..n]).map_err(|e| e.to_string())?;
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(e) => return Err(e.to_string()),
+                }
+            }
+        }
+
+        fn received(&self) -> u64 {
+            self.received
+        }
+
+        fn update(&mut self, chunk: &[u8]) -> Result<u64, nsh_updater::Error> {
+            self.received = self.check.update(chunk)?;
+            Ok(self.received)
+        }
+
+        fn finish(self) -> Result<(), nsh_updater::Error> {
+            self.check.finish()
+        }
+    }
+
+    /// Opens an existing `.part` file and seeds a [`Download`] from it, or
+    /// creates a fresh empty `.part` file when none exists or the existing one
+    /// is unusable (for instance, larger than `size`). Returns the open file
+    /// positioned at its end, the seeded [`Download`], and whether non-empty
+    /// bytes were loaded from disk.
+    fn open_or_create_part(
+        part: &std::path::Path,
+        sha256: &str,
+        size: Option<u64>,
+    ) -> Result<(std::fs::File, Download, bool), String> {
+        use std::io::Seek as _;
+
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(part)
+        {
+            match Download::resume(sha256, size, &mut file) {
+                Ok(check) => {
+                    let received = check.received();
+                    file.seek(std::io::SeekFrom::Start(received))
+                        .map_err(|e| e.to_string())?;
+                    file.set_len(received).map_err(|e| e.to_string())?;
+                    return Ok((file, check, received > 0));
+                }
+                Err(_) => {
+                    drop(file);
+                    let _ = std::fs::remove_file(part);
+                }
+            }
+        }
+        let (file, check) = reset_part(part, sha256, size)?;
+        Ok((file, check, false))
+    }
+
+    /// Removes any existing `part` and creates a fresh empty file beside a
+    /// fresh [`Download`].
+    fn reset_part(
+        part: &std::path::Path,
+        sha256: &str,
+        size: Option<u64>,
+    ) -> Result<(std::fs::File, Download), String> {
+        let _ = std::fs::remove_file(part);
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(part)
+            .map_err(|e| e.to_string())?;
+        Ok((file, Download::new(sha256, size)))
+    }
+
+    struct DownloadTarget<'a> {
+        host: &'a dyn UpdaterHost,
+        url: &'a str,
+        part: &'a std::path::Path,
+        dest: &'a std::path::Path,
+        remove_invalid_dest: bool,
+        sha256: &'a str,
+        size: Option<u64>,
+    }
+
+    enum TransferStep {
+        /// Body reached EOF (`Full` or `Partial`); caller syncs, finishes and verifies.
+        Finished {
+            file: std::fs::File,
+            check: Download,
+            resumed: bool,
+        },
+        /// The existing partial file verified against the manifest and was
+        /// moved into `dest` (`416` when the manifest omitted `size`).
+        Completed,
+        /// The existing partial file was discarded; caller restarts once from `0`.
+        RestartFresh,
+    }
+
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum ResponseKind {
+        None,
+        Full,
+        Partial,
+        Unsatisfiable,
+    }
+
+    /// Streams one transfer pass (possibly multiple ranged slices if the host
+    /// caps individual `206` responses) into `file`.
+    fn transfer_into_part(
+        target: &DownloadTarget<'_>,
+        mut file: std::fs::File,
+        mut check: Download,
+        mut resumed: bool,
+        progress: &mut impl FnMut(u64, Option<u64>) -> bool,
+        verify: &impl Fn(&std::path::Path) -> Result<(), String>,
+    ) -> Result<TransferStep, String> {
+        use std::io::{Seek as _, Write as _};
+
+        // Upper bound on server-capped `206` slices in one call.
+        const MAX_RANGE_SLICES: usize = 1024;
+        let mut slices = 0usize;
+
+        loop {
+            let offset = check.received();
+            let mut kind = ResponseKind::None;
+            let mut server_total: Option<u64> = None;
+            let mut exceeded_size = false;
+
+            let transfer = target
+                .host
+                .get(target.url, offset, &mut |at, chunk, total| {
+                    if chunk.is_empty() {
+                        return Ok(());
+                    }
+                    if kind == ResponseKind::None {
+                        if at == 0 {
+                            kind = ResponseKind::Full;
+                            if check.received() > 0 {
+                                file.set_len(0).map_err(|e| e.to_string())?;
+                                file.seek(std::io::SeekFrom::Start(0))
+                                    .map_err(|e| e.to_string())?;
+                                check = Download::new(target.sha256, target.size);
+                                resumed = false;
+                            }
+                        } else if at == offset {
+                            kind = ResponseKind::Partial;
+                            // Show the kept bytes before the new ones arrive.
+                            if !progress(offset, target.size.or(total)) {
+                                return Err("download cancelled".to_owned());
+                            }
+                        } else {
+                            return Err(format!("body starts at byte {at}, not {offset}"));
+                        }
+                        server_total = total;
+                    } else if at != check.received() {
+                        return Err(format!(
+                            "body piece at byte {at}, expected {}",
+                            check.received()
+                        ));
+                    }
+                    let received = match check.update(chunk) {
+                        Ok(received) => received,
+                        Err(e) => {
+                            exceeded_size = true;
+                            return Err(e.to_string());
+                        }
+                    };
+                    file.write_all(chunk).map_err(|e| e.to_string())?;
+                    if !progress(received, target.size.or(server_total)) {
+                        return Err("download cancelled".to_owned());
+                    }
+                    Ok(())
+                });
+            // No body for a resumed request: the server could not satisfy
+            // the range (`416`).
+            if transfer.is_ok() && kind == ResponseKind::None && offset > 0 {
+                kind = ResponseKind::Unsatisfiable;
+            }
+
+            if let Err(err) = transfer {
+                let _ = file.flush();
+                let received = check.received();
+                drop(file);
+                if exceeded_size {
+                    let _ = std::fs::remove_file(target.part);
+                    if resumed {
+                        return Ok(TransferStep::RestartFresh);
+                    }
+                    return Err(err);
+                }
+                // Keep partial progress on transport / HTTP errors or cancellation
+                // so the next call resumes; drop empty 0-byte placeholders.
+                if received == 0 {
+                    let _ = std::fs::remove_file(target.part);
+                }
+                return Err(err);
+            }
+
+            match kind {
+                ResponseKind::Unsatisfiable => {
+                    let received = check.received();
+                    let _ = file.sync_all();
+                    drop(file);
+                    if offset > 0 && target.size.is_none_or(|s| s == received) {
+                        // A `416` when the manifest omitted `size` can mean
+                        // the partial file already holds the entire asset.
+                        if check.finish().is_ok() {
+                            if let Err(err) = verify(target.part) {
+                                let _ = std::fs::remove_file(target.part);
+                                return Err(err);
+                            }
+                            let _ = progress(received, target.size.or(Some(received)));
+                            std::fs::rename(target.part, target.dest).map_err(|e| e.to_string())?;
+                            return Ok(TransferStep::Completed);
+                        }
+                    }
+                    let _ = std::fs::remove_file(target.part);
+                    if resumed {
+                        return Ok(TransferStep::RestartFresh);
+                    }
+                    return Err("HTTP 416".to_owned());
+                }
+                ResponseKind::Partial => {
+                    let expected = target.size.or(server_total);
+                    if check.received() > offset
+                        && expected.is_some_and(|total| check.received() < total)
+                        && slices < MAX_RANGE_SLICES
+                    {
+                        slices += 1;
+                        continue;
+                    }
+                    return Ok(TransferStep::Finished {
+                        file,
+                        check,
+                        resumed,
+                    });
+                }
+                ResponseKind::Full => {
+                    return Ok(TransferStep::Finished {
+                        file,
+                        check,
+                        resumed,
+                    });
+                }
+                ResponseKind::None => {
+                    let received = check.received();
+                    drop(file);
+                    if received == 0 {
+                        let _ = std::fs::remove_file(target.part);
+                    }
+                    return Err("empty response".to_owned());
+                }
+            }
+        }
+    }
+
+    /// Locks `<part>.lock`, held until the returned file drops; fails at
+    /// once when another download of the same asset holds it.
+    fn lock_part(part: &std::path::Path) -> Result<std::fs::File, String> {
+        let mut path = part.as_os_str().to_owned();
+        path.push(".lock");
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&path)
+            .map_err(|e| e.to_string())?;
+        match file.try_lock() {
+            Ok(()) => Ok(file),
+            Err(std::fs::TryLockError::WouldBlock) => {
+                Err("another download of this update is in progress".to_owned())
+            }
+            Err(std::fs::TryLockError::Error(e)) => Err(e.to_string()),
+        }
+    }
+
+    /// Downloads `target.url` into `target.part` (resuming an existing partial
+    /// file when present), verifies its size, SHA-256 and `verify`, and moves
+    /// it atomically to `target.dest`.
+    fn download_resumable(
+        target: &DownloadTarget<'_>,
+        mut progress: impl FnMut(u64, Option<u64>) -> bool,
+        verify: impl Fn(&std::path::Path) -> Result<(), String>,
+    ) -> Result<(), String> {
+        // One download of an asset at a time, also across processes: the
+        // `.part` is shared, so a second one would interleave its bytes.
+        let _lock = lock_part(target.part)?;
+        // Fast path: the final file is already on disk and matches this asset.
+        if let Ok(mut existing) = std::fs::File::open(target.dest) {
+            let matched = Download::resume(target.sha256, target.size, &mut existing)
+                .ok()
+                .and_then(|check| {
+                    let received = check.received();
+                    check.finish().ok().map(|()| received)
+                });
+            drop(existing);
+            if let Some(received) = matched {
+                let _ = std::fs::remove_file(target.part);
+                if let Err(err) = verify(target.dest) {
+                    let _ = std::fs::remove_file(target.dest);
+                    return Err(err);
+                }
+                let _ = progress(received, target.size.or(Some(received)));
+                return Ok(());
+            } else if target.remove_invalid_dest {
+                let _ = std::fs::remove_file(target.dest);
+            }
+        }
+
+        let (mut file, mut check, mut resumed) =
+            open_or_create_part(target.part, target.sha256, target.size)?;
+
+        // Fast path: a previous run wrote all expected bytes before crashing
+        // or failing before the final rename.
+        if resumed && target.size == Some(check.received()) {
+            let received = check.received();
+            drop(file);
+            if check.finish().is_ok() {
+                if let Err(err) = verify(target.part) {
+                    let _ = std::fs::remove_file(target.part);
+                    return Err(err);
+                }
+                let _ = progress(received, Some(received));
+                std::fs::rename(target.part, target.dest).map_err(|e| e.to_string())?;
+                return Ok(());
+            }
+            (file, check) = reset_part(target.part, target.sha256, target.size)?;
+            resumed = false;
+        }
+
+        loop {
+            match transfer_into_part(target, file, check, resumed, &mut progress, &verify)? {
+                TransferStep::Completed => return Ok(()),
+                TransferStep::RestartFresh => {
+                    (file, check) = reset_part(target.part, target.sha256, target.size)?;
+                    resumed = false;
+                }
+                TransferStep::Finished {
+                    file: done_file,
+                    check: done_check,
+                    resumed: used_partial,
+                } => {
+                    let sync = done_file.sync_all().map_err(|e| e.to_string());
+                    drop(done_file);
+                    sync?;
+                    if let Err(err) = done_check.finish() {
+                        let _ = std::fs::remove_file(target.part);
+                        if used_partial {
+                            // The kept partial bytes or the remote file may have
+                            // changed; fall back once to a clean full download.
+                            (file, check) = reset_part(target.part, target.sha256, target.size)?;
+                            resumed = false;
+                            continue;
+                        }
+                        return Err(err.to_string());
+                    }
+                    if let Err(err) = verify(target.part) {
+                        let _ = std::fs::remove_file(target.part);
+                        return Err(err);
+                    }
+                    std::fs::rename(target.part, target.dest).map_err(|e| e.to_string())?;
+                    return Ok(());
+                }
+            }
+        }
+    }
+
     pub(super) async fn download(
         sys: System,
-        on_progress: Option<Callback<UpdateProgress>>,
+        on_progress: Option<Box<dyn Fn(UpdateProgress)>>,
     ) -> Result<(), JsError> {
-        use std::io::Write as _;
-
         let found = sys.locals.get::<Found>();
         let _operation = begin(&found)?;
         let pending = pending(&sys)?;
@@ -593,54 +1106,152 @@ mod native {
         let url = pending.available.url.clone();
         let sha256 = pending.available.sha256.clone().unwrap_or_default();
         let size = pending.available.size;
-        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let name = format!(
-            "download-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-        );
+        #[cfg(any(
+            all(target_os = "linux", not(target_env = "ohos")),
+            target_os = "macos",
+            windows
+        ))]
+        let delta = pending
+            .available
+            .delta
+            .clone()
+            .map(|delta| (delta, pending.installation.clone()));
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let mut work = std::pin::pin!(blocking(move || {
             std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-            let path = dir.join(name);
-            let mut file = std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&path)
-                .map_err(|e| e.to_string())?;
-            let mut check = Download::new(&sha256, size);
-            let result = host
-                .get(&url, &mut |chunk, total| {
-                    let received = check.update(chunk).map_err(|e| e.to_string())?;
-                    file.write_all(chunk).map_err(|e| e.to_string())?;
-                    let _ = tx.send((received, size.or(total)));
-                    Ok(())
-                })
-                .and_then(|()| file.flush().map_err(|e| e.to_string()))
-                .and_then(|()| check.finish().map_err(|e| e.to_string()));
-            if let Err(e) = result {
-                let _ = std::fs::remove_file(&path);
-                return Err(e);
-            }
-            Ok(path)
-        }));
-        let path = loop {
-            tokio::select! {
-                result = &mut work => break result?,
-                Some((received, total)) = rx.recv() => {
-                    if let Some(callback) = &on_progress {
-                        callback.post(UpdateProgress {
-                            received: received as f64,
-                            total: total.map(|t: u64| t as f64),
-                        });
+            let key = part_key(&sha256);
+            let part_name = format!("download-{key}.part");
+            let dest_name = format!("download-{key}");
+            cleanup_stale_downloads(&dir, &part_name, &dest_name);
+            // The patch from the running version first, the archive when
+            // it cannot make the new app.
+            #[cfg(any(
+                all(target_os = "linux", not(target_env = "ohos")),
+                target_os = "macos",
+                windows
+            ))]
+            if let Some((delta, installation)) = &delta {
+                let progress = |received, total| tx.send((received, total)).is_ok();
+                match patched(&*host, installation, &dir, delta, progress) {
+                    Ok(path) => return Ok(path),
+                    Err(e) => {
+                        log::warn!("updater: downloading the whole app, the patch failed: {e}")
                     }
                 }
             }
+            let part = dir.join(&part_name);
+            let dest = dir.join(&dest_name);
+            let target = DownloadTarget {
+                host: &*host,
+                url: &url,
+                part: &part,
+                dest: &dest,
+                remove_invalid_dest: true,
+                sha256: &sha256,
+                size,
+            };
+            download_resumable(
+                &target,
+                |received, total| tx.send((received, total)).is_ok(),
+                |_| Ok(()),
+            )?;
+            Ok(dest)
+        }));
+        let post = |received: u64, total: Option<u64>| {
+            if let Some(on_progress) = &on_progress {
+                on_progress(UpdateProgress {
+                    received: received as f64,
+                    total: total.map(|t| t as f64),
+                });
+            }
         };
-        if let Some(previous) = pending.archive.borrow_mut().replace(path) {
+        let result = loop {
+            tokio::select! {
+                result = &mut work => break result,
+                Some((received, total)) = rx.recv() => post(received, total),
+            }
+        };
+        while let Ok((received, total)) = rx.try_recv() {
+            post(received, total);
+        }
+        let path = result?;
+        if let Some(previous) = pending.archive.borrow_mut().replace(path.clone())
+            && previous != path
+        {
             let _ = std::fs::remove_file(previous);
         }
         Ok(())
+    }
+
+    /// Makes the new app from the patch of the running version
+    /// ([`nsh_updater::delta`]): the installed app as the patch's reference,
+    /// checked against the manifest, the patch downloaded (resumable) and
+    /// applied; the `.tar` it made, checked too.
+    #[cfg(any(
+        all(target_os = "linux", not(target_env = "ohos")),
+        target_os = "macos",
+        windows
+    ))]
+    fn patched(
+        host: &dyn UpdaterHost,
+        installation: &nsh_updater::install::Installation,
+        dir: &std::path::Path,
+        delta: &nsh_updater::Delta,
+        progress: impl FnMut(u64, Option<u64>) -> bool,
+    ) -> Result<PathBuf, String> {
+        use std::{fs, io::BufWriter};
+        let key = part_key(&delta.result);
+        // What patches to other versions left.
+        if let Ok(entries) = fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                if let Some(name) = name.to_str()
+                    && name.starts_with("delta-")
+                    && !name.starts_with(&format!("delta-{key}"))
+                {
+                    let _ = fs::remove_file(entry.path());
+                }
+            }
+        }
+        let base_path = dir.join(format!("delta-{key}.base"));
+        let result = (|| {
+            let file = fs::File::create(&base_path).map_err(|e| e.to_string())?;
+            let base = installation
+                .delta_base(BufWriter::new(file))
+                .map_err(|e| e.to_string())?;
+            if base != delta.base.to_ascii_lowercase() {
+                return Err(format!(
+                    "the installed app is not version {} as released",
+                    delta.from
+                ));
+            }
+            let part = dir.join(format!("delta-{key}.patch.part"));
+            let patch = dir.join(format!("delta-{key}.patch"));
+            let target = DownloadTarget {
+                host,
+                url: &delta.url,
+                part: &part,
+                dest: &patch,
+                remove_invalid_dest: true,
+                sha256: &delta.sha256,
+                size: Some(delta.size),
+            };
+            download_resumable(&target, progress, |_| Ok(()))?;
+            let base = fs::read(&base_path).map_err(|e| e.to_string())?;
+            let out_path = dir.join(format!("delta-{key}.tar"));
+            let applied = (|| {
+                let out = BufWriter::new(fs::File::create(&out_path)?);
+                nsh_updater::delta::apply(&base, fs::File::open(&patch)?, out, &delta.result)
+            })();
+            let _ = fs::remove_file(&patch);
+            if let Err(e) = applied {
+                let _ = fs::remove_file(&out_path);
+                return Err(e.to_string());
+            }
+            Ok(out_path)
+        })();
+        let _ = fs::remove_file(&base_path);
+        result
     }
 
     /// The app's updates directory, as `nsh_engine::updates` has it.
@@ -717,8 +1328,6 @@ mod native {
         sys: System,
         on_progress: Option<Callback<UpdateProgress>>,
     ) -> Result<(), JsError> {
-        use std::io::Write as _;
-
         let found = sys.locals.get::<Found>();
         let _operation = begin(&found)?;
         let pending = found.2.borrow().clone().ok_or_else(no_package)?;
@@ -727,55 +1336,56 @@ mod native {
             let pending = &*pending;
             let dir = &pending.dir;
             std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-            let part = dir.join(format!("{NEXT}.part"));
-            // A download that stopped half way (the app quit) starts again.
-            let _ = std::fs::remove_file(&part);
-            let mut file = std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&part)
-                .map_err(|e| e.to_string())?;
             let available = &pending.available;
-            let mut check = Download::new(&available.sha256, available.size);
-            let result = pending
-                .host
-                .get(&available.url, &mut |chunk, total| {
-                    let received = check.update(chunk).map_err(|e| e.to_string())?;
-                    file.write_all(chunk).map_err(|e| e.to_string())?;
-                    let _ = tx.send((received, available.size.or(total)));
-                    Ok(())
-                })
-                .and_then(|()| file.sync_all().map_err(|e| e.to_string()))
-                .and_then(|()| check.finish().map_err(|e| e.to_string()))
-                .and_then(|()| {
-                    pending.host.verify_package(
-                        &part,
-                        dir,
-                        &pending.app_id,
-                        &pending.roots,
-                        pending.running_build,
-                    )
-                })
-                .and_then(|_| std::fs::rename(&part, dir.join(NEXT)).map_err(|e| e.to_string()));
-            if let Err(e) = result {
-                let _ = std::fs::remove_file(&part);
-                return Err(format!("package refused: {e}"));
-            }
-            Ok(())
+            let part_name = format!("next-{}.nshpkg.part", part_key(&available.sha256));
+            cleanup_stale_package_parts(dir, &part_name);
+            let part = dir.join(&part_name);
+            let dest = dir.join(NEXT);
+            let target = DownloadTarget {
+                host: &*pending.host,
+                url: &available.url,
+                part: &part,
+                dest: &dest,
+                remove_invalid_dest: false,
+                sha256: &available.sha256,
+                size: available.size,
+            };
+            download_resumable(
+                &target,
+                |received, total| tx.send((received, total)).is_ok(),
+                |file| {
+                    pending
+                        .host
+                        .verify_package(
+                            file,
+                            dir,
+                            &pending.app_id,
+                            &pending.roots,
+                            pending.running_build,
+                        )
+                        .map(|_| ())
+                },
+            )
+            .map_err(|e| format!("package refused: {e}"))
         }));
-        loop {
+        let post = |received: u64, total: Option<u64>| {
+            if let Some(callback) = &on_progress {
+                callback.post(UpdateProgress {
+                    received: received as f64,
+                    total: total.map(|t| t as f64),
+                });
+            }
+        };
+        let result = loop {
             tokio::select! {
                 result = &mut work => break result,
-                Some((received, total)) = rx.recv() => {
-                    if let Some(callback) = &on_progress {
-                        callback.post(UpdateProgress {
-                            received: received as f64,
-                            total: total.map(|t: u64| t as f64),
-                        });
-                    }
-                }
+                Some((received, total)) = rx.recv() => post(received, total),
             }
+        };
+        while let Ok((received, total)) = rx.try_recv() {
+            post(received, total);
         }
+        result
     }
 
     pub(super) async fn restart_to_package(sys: System) -> Result<(), JsError> {
@@ -999,13 +1609,13 @@ mod native {
                 )
             }
 
-            fn get(&self, url: &str, sink: UpdaterSink<'_>) -> Result<(), String> {
+            fn get(&self, url: &str, _: u64, sink: UpdaterSink<'_>) -> Result<(), String> {
                 self.0.lock().unwrap().push(url.to_owned());
                 let manifest = match url.strip_suffix(".sig").unwrap_or(url) {
                     STABLE => served("1.0.0"),
                     BETA => beta(),
-                    ZH_TW => return sink("修復".as_bytes(), None),
-                    JA => return sink(b"tampered", None),
+                    ZH_TW => return sink(0, "修復".as_bytes(), None),
+                    JA => return sink(0, b"tampered", None),
                     _ => return Err("not found".into()),
                 };
                 let body = if url.ends_with(".sig") {
@@ -1013,7 +1623,7 @@ mod native {
                 } else {
                     manifest
                 };
-                sink(&body, Some(body.len() as u64))
+                sink(0, &body, Some(body.len() as u64))
             }
         }
 
@@ -1098,6 +1708,666 @@ mod native {
             drop(operation);
             assert!(begin(&found).is_ok());
         }
+
+        struct TempDir(PathBuf);
+
+        impl TempDir {
+            fn new(name: &str) -> Self {
+                static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+                let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let dir = std::env::temp_dir().join(format!(
+                    "nsh-core-updater-{name}-{}-{n}",
+                    std::process::id()
+                ));
+                let _ = std::fs::remove_dir_all(&dir);
+                std::fs::create_dir_all(&dir).unwrap();
+                Self(dir)
+            }
+
+            fn path(&self) -> &std::path::Path {
+                &self.0
+            }
+        }
+
+        impl Drop for TempDir {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+
+        /// Scripted `UpdaterHost` for testing range resume, fallback, 416,
+        /// server-capped slices and OTA package verification.
+        struct ScriptedHost {
+            payload: Vec<u8>,
+            /// Each payload `get` pops one scripted action from the front.
+            script: std::sync::Mutex<std::collections::VecDeque<ScriptedResponse>>,
+            /// Byte offsets requested in order.
+            offsets: std::sync::Mutex<Vec<u64>>,
+            /// Optional package manifest + verify result for `download_package`.
+            package_config: Option<Vec<u8>>,
+            package_manifest: Option<Vec<u8>>,
+            verify_error: Option<String>,
+            verify_calls: std::sync::atomic::AtomicUsize,
+        }
+
+        enum ScriptedResponse {
+            /// Send `bytes` from `from` (or `0` when `from == 0`), then fail with `err`.
+            DropAfter { bytes: usize, err: &'static str },
+            /// Honor `Range` (`206` when `from > 0`, `200` when `from == 0`) for the rest of `payload`.
+            Complete,
+            /// Honor `Range` (`206`) for at most `max_bytes` from `from` (server-capped slice).
+            CappedSlice(usize),
+            /// Ignore `Range` and send full `payload` as `200 OK`.
+            IgnoreRangeFull,
+            /// Reply `416 Range Not Satisfiable`.
+            Unsatisfiable,
+            /// Fail immediately before sending headers.
+            ImmediateErr(&'static str),
+        }
+
+        impl ScriptedHost {
+            fn new(payload: &[u8], script: impl IntoIterator<Item = ScriptedResponse>) -> Self {
+                Self {
+                    payload: payload.to_vec(),
+                    script: std::sync::Mutex::new(script.into_iter().collect()),
+                    offsets: std::sync::Mutex::new(Vec::new()),
+                    package_config: None,
+                    package_manifest: None,
+                    verify_error: None,
+                    verify_calls: std::sync::atomic::AtomicUsize::new(0),
+                }
+            }
+
+            fn offsets(&self) -> Vec<u64> {
+                self.offsets.lock().unwrap().clone()
+            }
+        }
+
+        impl UpdaterHost for ScriptedHost {
+            fn config(&self) -> Option<Vec<u8>> {
+                self.package_config.clone()
+            }
+
+            fn get(&self, url: &str, from: u64, sink: UpdaterSink<'_>) -> Result<(), String> {
+                if let Some(manifest) = &self.package_manifest
+                    && !url.ends_with(".nshpkg")
+                {
+                    if url.ends_with(".sig") {
+                        let sig = nsh_updater::sign(SECRET, manifest).unwrap();
+                        return sink(0, sig.as_bytes(), Some(sig.len() as u64));
+                    }
+                    return sink(0, manifest, Some(manifest.len() as u64));
+                }
+                self.offsets.lock().unwrap().push(from);
+                let action = self
+                    .script
+                    .lock()
+                    .unwrap()
+                    .pop_front()
+                    .expect("scripted response");
+                let total = Some(self.payload.len() as u64);
+                let start = from as usize;
+                match action {
+                    ScriptedResponse::DropAfter { bytes, err } => {
+                        let end = (start + bytes).min(self.payload.len());
+                        if start < end {
+                            sink(from, &self.payload[start..end], total)?;
+                        }
+                        Err(err.to_owned())
+                    }
+                    ScriptedResponse::Complete => sink(from, &self.payload[start..], total),
+                    ScriptedResponse::CappedSlice(max_bytes) => {
+                        let end = (start + max_bytes).min(self.payload.len());
+                        sink(from, &self.payload[start..end], total)
+                    }
+                    ScriptedResponse::IgnoreRangeFull => sink(0, &self.payload, total),
+                    ScriptedResponse::Unsatisfiable => Ok(()),
+                    ScriptedResponse::ImmediateErr(err) => Err(err.to_owned()),
+                }
+            }
+
+            fn verify_package(
+                &self,
+                _file: &std::path::Path,
+                _updates: &std::path::Path,
+                _app_id: &str,
+                _roots: &[String],
+                _newer_than: u64,
+            ) -> Result<PackageVersion, String> {
+                self.verify_calls
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                if let Some(err) = &self.verify_error {
+                    return Err(err.clone());
+                }
+                Ok(PackageVersion {
+                    version: "1.0.1".into(),
+                    build: 2,
+                })
+            }
+        }
+
+        #[test]
+        fn interrupted_download_resumes_from_partial_file() {
+            let dir = TempDir::new("resume");
+            let payload = b"0123456789abcdef";
+            let sha256 = nsh_updater::sha256(payload);
+            let part = dir.path().join(format!("download-{sha256}.part"));
+            let dest = dir.path().join(format!("download-{sha256}"));
+            let host = ScriptedHost::new(
+                payload,
+                [
+                    ScriptedResponse::DropAfter {
+                        bytes: 6,
+                        err: "connection reset",
+                    },
+                    ScriptedResponse::DropAfter {
+                        bytes: 5,
+                        err: "timed out",
+                    },
+                    ScriptedResponse::Complete,
+                ],
+            );
+            let target = DownloadTarget {
+                host: &host,
+                url: "https://x.dev/app.tar.gz",
+                part: &part,
+                dest: &dest,
+                remove_invalid_dest: true,
+                sha256: &sha256,
+                size: Some(payload.len() as u64),
+            };
+
+            // First interruption keeps the 6 bytes received.
+            let err = download_resumable(&target, |_, _| true, |_| Ok(())).unwrap_err();
+            assert!(err.contains("connection reset"), "{err}");
+            assert_eq!(std::fs::read(&part).unwrap(), &payload[..6]);
+            assert!(!dest.exists());
+
+            // Second interruption appends 5 more bytes and keeps 11 bytes.
+            let mut progress = Vec::new();
+            let err = download_resumable(
+                &target,
+                |r, t| {
+                    progress.push((r, t));
+                    true
+                },
+                |_| Ok(()),
+            )
+            .unwrap_err();
+            assert!(err.contains("timed out"), "{err}");
+            assert_eq!(std::fs::read(&part).unwrap(), &payload[..11]);
+            assert_eq!(progress, [(6, Some(16)), (11, Some(16))]);
+
+            // Third attempt finishes from byte 11 and atomically moves into `dest`.
+            progress.clear();
+            download_resumable(
+                &target,
+                |r, t| {
+                    progress.push((r, t));
+                    true
+                },
+                |_| Ok(()),
+            )
+            .unwrap();
+            assert_eq!(host.offsets(), [0, 6, 11]);
+            assert_eq!(progress, [(11, Some(16)), (16, Some(16))]);
+            assert!(!part.exists());
+            assert_eq!(std::fs::read(&dest).unwrap(), payload);
+        }
+
+        #[test]
+        fn downloads_resume_from_existing_bytes() {
+            let full = b"hello resumable world";
+            let hash = nsh_updater::sha256(full);
+            let size = Some(full.len() as u64);
+
+            // Partial prefix + appended tail verifies identically to a single pass.
+            let mut cursor = std::io::Cursor::new(&full[..6]);
+            let mut resumed = Download::resume(&hash, size, &mut cursor).unwrap();
+            assert_eq!(resumed.received(), 6);
+            assert_eq!(resumed.update(&full[6..]).unwrap(), full.len() as u64);
+            assert_eq!(resumed.received(), full.len() as u64);
+            assert!(resumed.finish().is_ok());
+
+            // An empty partial starts at 0.
+            let mut empty = std::io::Cursor::new(&b""[..]);
+            let mut fresh = Download::resume(&hash, size, &mut empty).unwrap();
+            assert_eq!(fresh.received(), 0);
+            fresh.update(full).unwrap();
+            assert!(fresh.finish().is_ok());
+
+            // A partial already holding all bytes finishes immediately.
+            let mut complete = std::io::Cursor::new(&full[..]);
+            let done = Download::resume(&hash, size, &mut complete).unwrap();
+            assert_eq!(done.received(), full.len() as u64);
+            assert!(done.finish().is_ok());
+
+            // A partial larger than the manifest size is refused before any range request.
+            let mut oversized = std::io::Cursor::new(b"hello resumable world!");
+            assert!(Download::resume(&hash, size, &mut oversized).is_err());
+
+            // A corrupted partial prefix fails verification once the tail arrives.
+            let mut corrupt = std::io::Cursor::new(b"Hxllo ");
+            let mut bad = Download::resume(&hash, size, &mut corrupt).unwrap();
+            bad.update(&full[6..]).unwrap();
+            assert!(bad.finish().is_err());
+        }
+
+        #[test]
+        fn a_second_download_of_the_same_asset_is_refused() {
+            let dir = TempDir::new("part-lock");
+            let part = dir.path().join("download-abc.part");
+            let held = lock_part(&part).unwrap();
+            let err = lock_part(&part).unwrap_err();
+            assert!(err.contains("in progress"), "{err}");
+            drop(held);
+            lock_part(&part).unwrap();
+        }
+
+        #[test]
+        fn resume_falls_back_when_server_ignores_range() {
+            let dir = TempDir::new("ignore-range");
+            let payload = b"abcdefghijkl";
+            let sha256 = nsh_updater::sha256(payload);
+            let part = dir.path().join(format!("download-{sha256}.part"));
+            let dest = dir.path().join(format!("download-{sha256}"));
+            std::fs::write(&part, &payload[..5]).unwrap();
+
+            let host = ScriptedHost::new(payload, [ScriptedResponse::IgnoreRangeFull]);
+            let target = DownloadTarget {
+                host: &host,
+                url: "https://x.dev/app.tar.gz",
+                part: &part,
+                dest: &dest,
+                remove_invalid_dest: true,
+                sha256: &sha256,
+                size: Some(payload.len() as u64),
+            };
+            let mut progress = Vec::new();
+            download_resumable(
+                &target,
+                |r, t| {
+                    progress.push((r, t));
+                    true
+                },
+                |_| Ok(()),
+            )
+            .unwrap();
+
+            assert_eq!(host.offsets(), [5]);
+            // Progress never jumped to 5 before resetting to 0.
+            assert_eq!(progress, [(12, Some(12))]);
+            assert!(!part.exists());
+            assert_eq!(std::fs::read(&dest).unwrap(), payload);
+        }
+
+        #[test]
+        fn resume_recovers_from_corrupt_partial_file() {
+            let dir = TempDir::new("corrupt-part");
+            let payload = b"0123456789";
+            let sha256 = nsh_updater::sha256(payload);
+            let part = dir.path().join(format!("download-{sha256}.part"));
+            let dest = dir.path().join(format!("download-{sha256}"));
+            std::fs::write(&part, b"XXXXX").unwrap();
+
+            let host = ScriptedHost::new(
+                payload,
+                [ScriptedResponse::Complete, ScriptedResponse::Complete],
+            );
+            let target = DownloadTarget {
+                host: &host,
+                url: "https://x.dev/app.tar.gz",
+                part: &part,
+                dest: &dest,
+                remove_invalid_dest: true,
+                sha256: &sha256,
+                size: Some(payload.len() as u64),
+            };
+            download_resumable(&target, |_, _| true, |_| Ok(())).unwrap();
+            // First tried resuming from 5, saw SHA-256 mismatch, deleted part, restarted from 0.
+            assert_eq!(host.offsets(), [5, 0]);
+            assert!(!part.exists());
+            assert_eq!(std::fs::read(&dest).unwrap(), payload);
+        }
+
+        #[test]
+        fn resume_handles_416_for_complete_and_stale_partials() {
+            let dir = TempDir::new("416");
+            let payload = b"already-complete";
+            let sha256 = nsh_updater::sha256(payload);
+            let part = dir.path().join(format!("download-{sha256}.part"));
+            let dest = dir.path().join(format!("download-{sha256}"));
+
+            // Manifest omits `size`, partial is already complete: 416 verifies and finishes.
+            std::fs::write(&part, payload).unwrap();
+            let host = ScriptedHost::new(payload, [ScriptedResponse::Unsatisfiable]);
+            let target = DownloadTarget {
+                host: &host,
+                url: "https://x.dev/app.tar.gz",
+                part: &part,
+                dest: &dest,
+                remove_invalid_dest: true,
+                sha256: &sha256,
+                size: None,
+            };
+            download_resumable(&target, |_, _| true, |_| Ok(())).unwrap();
+            assert_eq!(host.offsets(), [payload.len() as u64]);
+            assert!(!part.exists());
+            assert_eq!(std::fs::read(&dest).unwrap(), payload);
+
+            // Corrupt/oversized partial + 416: deletes part and retries once from 0.
+            std::fs::remove_file(&dest).unwrap();
+            std::fs::write(&part, b"stale-oversized-bytes-on-disk").unwrap();
+            let host = ScriptedHost::new(
+                payload,
+                [ScriptedResponse::Unsatisfiable, ScriptedResponse::Complete],
+            );
+            let target = DownloadTarget {
+                host: &host,
+                ..target
+            };
+            download_resumable(&target, |_, _| true, |_| Ok(())).unwrap();
+            assert_eq!(host.offsets(), [29, 0]);
+            assert!(!part.exists());
+            assert_eq!(std::fs::read(&dest).unwrap(), payload);
+        }
+
+        #[test]
+        fn resume_reuses_already_complete_part_or_dest_without_network() {
+            let dir = TempDir::new("reuse-complete");
+            let payload = b"cached-archive";
+            let sha256 = nsh_updater::sha256(payload);
+            let part = dir.path().join(format!("download-{sha256}.part"));
+            let dest = dir.path().join(format!("download-{sha256}"));
+
+            // Complete `.part` with known `size` needs zero HTTP requests.
+            std::fs::write(&part, payload).unwrap();
+            let host = ScriptedHost::new(payload, []);
+            let target = DownloadTarget {
+                host: &host,
+                url: "https://x.dev/app.tar.gz",
+                part: &part,
+                dest: &dest,
+                remove_invalid_dest: true,
+                sha256: &sha256,
+                size: Some(payload.len() as u64),
+            };
+            download_resumable(&target, |_, _| true, |_| Ok(())).unwrap();
+            assert!(host.offsets().is_empty());
+            assert!(!part.exists());
+            assert_eq!(std::fs::read(&dest).unwrap(), payload);
+
+            // Calling again with `dest` already verified also needs zero HTTP requests.
+            download_resumable(&target, |_, _| true, |_| Ok(())).unwrap();
+            assert!(host.offsets().is_empty());
+        }
+
+        #[test]
+        fn resume_continues_across_server_capped_206_slices() {
+            let dir = TempDir::new("capped-206");
+            let payload = b"0123456789abcdef";
+            let sha256 = nsh_updater::sha256(payload);
+            let part = dir.path().join(format!("download-{sha256}.part"));
+            let dest = dir.path().join(format!("download-{sha256}"));
+            std::fs::write(&part, &payload[..4]).unwrap();
+
+            let host = ScriptedHost::new(
+                payload,
+                [
+                    ScriptedResponse::CappedSlice(4),
+                    ScriptedResponse::CappedSlice(4),
+                    ScriptedResponse::CappedSlice(4),
+                ],
+            );
+            let target = DownloadTarget {
+                host: &host,
+                url: "https://x.dev/app.tar.gz",
+                part: &part,
+                dest: &dest,
+                remove_invalid_dest: true,
+                sha256: &sha256,
+                size: Some(payload.len() as u64),
+            };
+            download_resumable(&target, |_, _| true, |_| Ok(())).unwrap();
+            assert_eq!(host.offsets(), [4, 8, 12]);
+            assert_eq!(std::fs::read(&dest).unwrap(), payload);
+        }
+
+        #[test]
+        fn stale_partials_are_cleaned_without_touching_other_update_files() {
+            let dir = TempDir::new("cleanup");
+            std::fs::write(dir.path().join("download-old.part"), b"old").unwrap();
+            std::fs::write(dir.path().join("download-old.part.lock"), b"").unwrap();
+            std::fs::write(dir.path().join("download-old"), b"old-done").unwrap();
+            std::fs::write(dir.path().join("download-keep.part"), b"keep").unwrap();
+            std::fs::write(dir.path().join("download-keep.part.lock"), b"").unwrap();
+            std::fs::write(dir.path().join("next.nshpkg"), b"pkg").unwrap();
+            std::fs::write(dir.path().join("next.nshpkg.part"), b"legacy").unwrap();
+            std::fs::write(dir.path().join("next-old.nshpkg.part"), b"old-pkg").unwrap();
+            std::fs::write(dir.path().join("next-old.nshpkg.part.lock"), b"").unwrap();
+            std::fs::write(dir.path().join("next-keep.nshpkg.part"), b"keep-pkg").unwrap();
+            std::fs::write(dir.path().join("next-keep.nshpkg.part.lock"), b"").unwrap();
+
+            cleanup_stale_downloads(dir.path(), "download-keep.part", "download-keep");
+            assert!(!dir.path().join("download-old.part").exists());
+            assert!(!dir.path().join("download-old.part.lock").exists());
+            assert!(!dir.path().join("download-old").exists());
+            assert!(dir.path().join("download-keep.part").exists());
+            assert!(dir.path().join("download-keep.part.lock").exists());
+            assert!(dir.path().join("next.nshpkg").exists());
+            assert!(dir.path().join("next-keep.nshpkg.part").exists());
+
+            cleanup_stale_package_parts(dir.path(), "next-keep.nshpkg.part");
+            assert!(!dir.path().join("next.nshpkg.part").exists());
+            assert!(!dir.path().join("next-old.nshpkg.part").exists());
+            assert!(!dir.path().join("next-old.nshpkg.part.lock").exists());
+            assert!(dir.path().join("next-keep.nshpkg.part").exists());
+            assert!(dir.path().join("next-keep.nshpkg.part.lock").exists());
+            assert!(dir.path().join("next.nshpkg").exists());
+
+            // Unusual hashes never produce path separators or escape `dir`.
+            let key = part_key("../../etc/passwd");
+            assert!(!key.contains('/') && !key.contains('.'));
+            assert_eq!(key.len(), 64);
+        }
+
+        #[test]
+        fn resume_ignores_empty_chunks_and_rejects_misaligned_offsets() {
+            enum Mode {
+                EmptyFullThenFail,
+                MisalignedSecondChunk,
+                EmptyPartialThenFinish,
+            }
+
+            struct ChunkHost {
+                payload: Vec<u8>,
+                modes: std::sync::Mutex<std::collections::VecDeque<Mode>>,
+            }
+
+            impl UpdaterHost for ChunkHost {
+                fn config(&self) -> Option<Vec<u8>> {
+                    None
+                }
+
+                fn get(&self, _url: &str, from: u64, sink: UpdaterSink<'_>) -> Result<(), String> {
+                    let total = Some(self.payload.len() as u64);
+                    let start = from as usize;
+                    match self.modes.lock().unwrap().pop_front().unwrap() {
+                        Mode::EmptyFullThenFail => {
+                            sink(0, b"", total)?;
+                            Err("connection reset".into())
+                        }
+                        Mode::MisalignedSecondChunk => {
+                            sink(from, &self.payload[start..start + 2], total)?;
+                            sink(from, &self.payload[start + 2..], total)
+                        }
+                        Mode::EmptyPartialThenFinish => {
+                            sink(from, b"", total)?;
+                            sink(from, &self.payload[start..], total)
+                        }
+                    }
+                }
+            }
+
+            let dir = TempDir::new("chunk-offsets");
+            let payload = b"0123456789";
+            let sha256 = nsh_updater::sha256(payload);
+            let part = dir.path().join(format!("download-{sha256}.part"));
+            let dest = dir.path().join(format!("download-{sha256}"));
+            std::fs::write(&part, &payload[..4]).unwrap();
+
+            let host = ChunkHost {
+                payload: payload.to_vec(),
+                modes: std::sync::Mutex::new(
+                    [
+                        Mode::EmptyFullThenFail,
+                        Mode::MisalignedSecondChunk,
+                        Mode::EmptyPartialThenFinish,
+                    ]
+                    .into_iter()
+                    .collect(),
+                ),
+            };
+            let target = DownloadTarget {
+                host: &host,
+                url: "https://x.dev/app.tar.gz",
+                part: &part,
+                dest: &dest,
+                remove_invalid_dest: true,
+                sha256: &sha256,
+                size: Some(payload.len() as u64),
+            };
+
+            let err = download_resumable(&target, |_, _| true, |_| Ok(())).unwrap_err();
+            assert!(err.contains("connection reset"), "{err}");
+            assert_eq!(std::fs::read(&part).unwrap(), &payload[..4]);
+
+            let err = download_resumable(&target, |_, _| true, |_| Ok(())).unwrap_err();
+            assert!(err.contains("expected 6"), "{err}");
+            assert_eq!(std::fs::read(&part).unwrap(), &payload[..6]);
+
+            let mut progress = Vec::new();
+            download_resumable(
+                &target,
+                |r, t| {
+                    progress.push((r, t));
+                    true
+                },
+                |_| Ok(()),
+            )
+            .unwrap();
+            assert_eq!(progress, [(6, Some(10)), (10, Some(10))]);
+            assert_eq!(std::fs::read(&dest).unwrap(), payload);
+        }
+
+        #[test]
+        fn download_package_resumes_and_cleans_up_refused_packages() {
+            let dir = TempDir::new("package-resume");
+            let payload = b"signed-nshpkg-bytes";
+            let sha256 = nsh_updater::sha256(payload);
+            let config = format!(
+                r#"{{"id":"dev.noop.app","version":"1.0.0","build":1,"url":"{STABLE}","publicKey":"{PUBLIC}","packages":{{"roots":["{PUBLIC}"]}}}}"#
+            )
+            .into_bytes();
+            let manifest = serde_json::to_vec(&serde_json::json!({
+                "id": "dev.noop.app",
+                "version": "1.0.1",
+                "platforms": {},
+                "package": {
+                    "version": "1.0.1",
+                    "build": 2,
+                    "url": "app-2.nshpkg",
+                    "sha256": sha256,
+                    "size": payload.len(),
+                    "minRuntime": "0.1.0",
+                },
+            }))
+            .unwrap();
+
+            // Pre-existing older `next.nshpkg` must survive an interrupted newer download.
+            let updates = dir.path().join(UPDATES);
+            std::fs::create_dir_all(&updates).unwrap();
+            std::fs::write(updates.join(NEXT), b"older-build").unwrap();
+
+            let mut host = ScriptedHost::new(
+                payload,
+                [
+                    ScriptedResponse::DropAfter {
+                        bytes: 7,
+                        err: "network lost",
+                    },
+                    ScriptedResponse::ImmediateErr("HTTP 503"),
+                    ScriptedResponse::Complete,
+                ],
+            );
+            host.package_config = Some(config.clone());
+            host.package_manifest = Some(manifest.clone());
+            let host = Arc::new(host);
+
+            let mut sys = System::default().with_updater(Some(host.clone()));
+            sys.data_dir = Some(dir.path().to_path_buf());
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .build()
+                .unwrap();
+
+            let offered = rt
+                .block_on(check_package(sys.clone(), None))
+                .unwrap()
+                .unwrap();
+            assert_eq!(offered.build, 2.0);
+
+            // Attempt 1 drops after 7 bytes: part stays, older `next.nshpkg` stays.
+            let err = rt
+                .block_on(download_package(sys.clone(), None))
+                .unwrap_err();
+            assert!(format!("{err:?}").contains("network lost"), "{err:?}");
+            let part = updates.join(format!("next-{sha256}.nshpkg.part"));
+            assert_eq!(std::fs::read(&part).unwrap(), &payload[..7]);
+            assert_eq!(std::fs::read(updates.join(NEXT)).unwrap(), b"older-build");
+
+            // Attempt 2 hits HTTP 503: part still stays at 7 bytes.
+            let err = rt
+                .block_on(download_package(sys.clone(), None))
+                .unwrap_err();
+            assert!(format!("{err:?}").contains("HTTP 503"), "{err:?}");
+            assert_eq!(std::fs::read(&part).unwrap(), &payload[..7]);
+
+            // Attempt 3 resumes from byte 7, verifies, and atomically replaces `next.nshpkg`.
+            rt.block_on(download_package(sys.clone(), None)).unwrap();
+            assert_eq!(host.offsets(), [0, 7, 7]);
+            assert!(!part.exists());
+            assert_eq!(std::fs::read(updates.join(NEXT)).unwrap(), payload);
+
+            // A package refused by `verify_package` removes the part and does not re-download.
+            let dir2 = TempDir::new("package-refused");
+            let mut bad_host = ScriptedHost::new(payload, [ScriptedResponse::Complete]);
+            bad_host.package_config = Some(config);
+            bad_host.package_manifest = Some(manifest);
+            bad_host.verify_error = Some("not trusted".into());
+            let bad_host = Arc::new(bad_host);
+            let mut sys2 = System::default().with_updater(Some(bad_host.clone()));
+            sys2.data_dir = Some(dir2.path().to_path_buf());
+            rt.block_on(check_package(sys2.clone(), None))
+                .unwrap()
+                .unwrap();
+            let err = rt.block_on(download_package(sys2, None)).unwrap_err();
+            assert!(format!("{err:?}").contains("not trusted"), "{err:?}");
+            assert_eq!(bad_host.offsets(), [0]);
+            assert_eq!(
+                bad_host
+                    .verify_calls
+                    .load(std::sync::atomic::Ordering::Relaxed),
+                1
+            );
+            assert!(
+                !dir2
+                    .path()
+                    .join(UPDATES)
+                    .join(format!("next-{sha256}.nshpkg.part"))
+                    .exists()
+            );
+            assert!(!dir2.path().join(UPDATES).join(NEXT).exists());
+        }
     }
 }
 
@@ -1107,25 +2377,45 @@ mod native {
 mod native {
     use super::*;
 
+    /// Fails when the app ships an update configuration a native runtime
+    /// without the feature cannot act on: saying so beats reporting "no
+    /// update" forever. Without one (a development run, an app without
+    /// `"updater"`) there is nothing to check, as with the feature.
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn configured(sys: &System) -> Result<(), JsError> {
+        let Some(host) = sys.updater.clone() else {
+            return Ok(());
+        };
+        if super::super::fs::blocking(move || Ok(host.config().is_some())).await? {
+            return Err(JsError::Error(
+                "this runtime was built without the NSH platform crate's feature `updater`".into(),
+            )
+            .with_code(codes::UNAVAILABLE));
+        }
+        Ok(())
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    async fn configured(_: &System) -> Result<(), JsError> {
+        Ok(())
+    }
+
     pub(super) async fn check(
-        _: System,
+        sys: System,
         _: Option<String>,
         _: Option<String>,
     ) -> Result<Option<AppUpdate>, JsError> {
-        // A native app built without the feature cannot update; saying so
-        // beats reporting "no update" forever.
-        #[cfg(not(target_arch = "wasm32"))]
-        return Err(JsError::Error(
-            "this runtime was built without the NSH platform crate's feature `updater`".into(),
-        )
-        .with_code(codes::UNAVAILABLE));
-        #[cfg(target_arch = "wasm32")]
+        configured(&sys).await?;
         Ok(None)
+    }
+
+    pub(super) async fn shipped(_: &System) -> (Option<String>, Option<String>) {
+        (None, None)
     }
 
     pub(super) async fn download(
         _: System,
-        _: Option<Callback<UpdateProgress>>,
+        _: Option<Box<dyn Fn(UpdateProgress)>>,
     ) -> Result<(), JsError> {
         Err(unavailable())
     }
@@ -1139,9 +2429,10 @@ mod native {
     }
 
     pub(super) async fn check_package(
-        _: System,
+        sys: System,
         _: Option<String>,
     ) -> Result<Option<PackageUpdate>, JsError> {
+        configured(&sys).await?;
         Ok(None)
     }
 
@@ -1154,5 +2445,50 @@ mod native {
 
     pub(super) async fn restart_to_package(_: System) -> Result<(), JsError> {
         Err(no_package())
+    }
+
+    #[cfg(all(test, not(target_arch = "wasm32")))]
+    mod tests {
+        use std::sync::Arc;
+
+        use super::*;
+
+        struct Host(Option<&'static str>);
+
+        impl UpdaterHost for Host {
+            fn config(&self) -> Option<Vec<u8>> {
+                self.0.map(|config| config.as_bytes().to_vec())
+            }
+
+            fn get(&self, _: &str, _: u64, _: UpdaterSink<'_>) -> Result<(), String> {
+                Err("offline".into())
+            }
+        }
+
+        #[test]
+        fn only_a_configured_app_learns_the_feature_is_off() {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .build()
+                .unwrap();
+            let with = |host: Option<Host>| {
+                System::default()
+                    .with_updater(host.map(|host| Arc::new(host) as Arc<dyn UpdaterHost>))
+            };
+            // A development run or an app without `"updater"`: no update.
+            for sys in [with(None), with(Some(Host(None)))] {
+                assert!(
+                    rt.block_on(check(sys.clone(), None, None))
+                        .unwrap()
+                        .is_none()
+                );
+                assert!(rt.block_on(check_package(sys, None)).unwrap().is_none());
+            }
+            // An app that ships a configuration hears why it cannot update.
+            let sys = with(Some(Host(Some("{}"))));
+            let err = rt.block_on(check(sys.clone(), None, None)).unwrap_err();
+            assert_eq!(err.code(), Some(codes::UNAVAILABLE));
+            let err = rt.block_on(check_package(sys, None)).unwrap_err();
+            assert_eq!(err.code(), Some(codes::UNAVAILABLE));
+        }
     }
 }

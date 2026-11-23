@@ -175,6 +175,25 @@ define_class!(
     }
 );
 
+/// Attaches any active HUD belonging to `surface` once a new `<Window>` opens.
+pub(crate) fn attach_for_surface(surface: &Surface) {
+    let matching: Vec<Rc<Hud>> = HUDS.with(|huds| {
+        huds.borrow()
+            .values()
+            .filter_map(Weak::upgrade)
+            .filter(|hud| {
+                hud.surface
+                    .upgrade()
+                    .is_some_and(|s| std::ptr::eq(&*s, surface))
+            })
+            .collect()
+    });
+    for hud in matching {
+        hud.attach();
+        hud.update();
+    }
+}
+
 /// Collapses or expands HUD `key`'s panel (a click on it).
 fn toggle(key: u64) {
     let Some(hud) = HUDS.with(|h| h.borrow().get(&key).and_then(Weak::upgrade)) else {
@@ -270,6 +289,7 @@ fn draw_trace(c: &CGContext, bounds: NSRect, trace: &Trace) {
 pub(crate) struct Hud {
     key: u64,
     surface: Weak<Surface>,
+    host_container: Retained<NSView>,
     monitor: Arc<PerfMonitor>,
     panel: Retained<NSView>,
     label: Retained<NSTextField>,
@@ -321,13 +341,13 @@ impl Hud {
             unsafe { msg_send![super(trace), initWithFrame: NSRect::ZERO] };
         panel.addSubview(&label);
         panel.addSubview(&trace);
-        view.container().addSubview(&panel);
         panel.setAutoresizingMask(
             NSAutoresizingMaskOptions::ViewMinXMargin | NSAutoresizingMaskOptions::ViewMinYMargin,
         );
         let hud = Rc::new(Hud {
             key,
             surface: Rc::downgrade(surface),
+            host_container: Retained::from(view.container()),
             monitor: monitor.clone(),
             panel,
             label,
@@ -340,9 +360,23 @@ impl Hud {
         HUDS.with(|h| h.borrow_mut().insert(hud.key, Rc::downgrade(&hud)));
         MEASURING.set(MEASURING.get() + 1);
         surface.set_perf_monitor(Some(monitor));
+        hud.attach();
         hud.update();
         schedule(hud.key);
         hud
+    }
+
+    /// Attaches the panel to the active app window's container, falling back
+    /// to the host container when no `<Window>` is open (embedded `AppView`).
+    pub(crate) fn attach(&self) {
+        let target = self
+            .surface
+            .upgrade()
+            .and_then(|s| crate::window::visible_container(&s))
+            .unwrap_or_else(|| self.host_container.clone());
+        if crate::view::superview(&self.panel).as_deref() != Some(&*target) {
+            target.addSubview(&self.panel);
+        }
     }
 
     /// The monitor it shows.
@@ -373,6 +407,7 @@ impl Hud {
         if mode == FpsMode::Hidden {
             return;
         }
+        self.attach();
         let pill = pill_text(&snapshot);
         // SAFETY: a string, which a button's value is.
         unsafe {

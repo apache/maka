@@ -20,7 +20,7 @@ One NSH bundle runs on iOS, Android, macOS, Windows and Linux (and in Mac Cataly
 
 Every platform is desktop or mobile, by one rule. Desktop is macOS, Windows, Linux, and browsers in the desktop idiom (a mouse and a wide window, [the web](./web.md)). Mobile is iOS, Android, and browsers in the phone or tablet idiom; Mac Catalyst runs the iOS backend, so it is mobile too, with `ios={{…}}` props. `desktop={{…}}` props, `platform.select({ desktop, mobile })`, `platform.desktop` and `platform.idiom === "desktop"` all follow this rule, as do `nsh/base`'s components (a menu is a popup on desktops and a sheet on mobile) and, in Rust, `is_desktop()`.
 
-`nsh/desktop`'s `isAvailable` answers a narrower question: whether that module's window and menu APIs work, which they do on macOS, Windows and Linux. Gate layout, density and input on `platform.desktop`, and calls of `Window` and `Menu` on `isAvailable`.
+`nsh/desktop`'s `isAvailable` answers a narrower question: whether that module's window and menu APIs work, which they do on macOS, Windows and Linux, but not in a terminal app. Gate layout, density and input on `platform.desktop`, and calls of `Window` and `Menu` on `isAvailable`.
 
 ## Platform-only props
 
@@ -84,9 +84,10 @@ What exists today:
 |---|---|---|---|
 | `.ripple(Ripple { .. })` | `android={{ ripple }}` | every element | The material ripple while pressed: color, borderless, radius, foreground. |
 | `.elevation(..)` | `android={{ elevation }}` | every element | The material shadow, in points, from the view's shape. |
-| | `android={{ accessibilityLiveRegion }}` | every element | `"none"`, `"polite"` or `"assertive"`: TalkBack announces the view's changes. |
+| | `android={{ accessibilityLiveRegion }}` | every element | `"none"`, `"polite"` or `"assertive"`: TalkBack announces the view's changes. The same prop without the bag does it on the other platforms too (`aria-live` on the web, a live region on Windows, an announcement on macOS). |
 | `.status_bar_translucent(..)` | `android={{ statusBarTranslucent }}` | `Dialog` | The dialog's content reaches under the status bar. |
 | `.input_accessory(..)` | `ios={{ inputAccessoryViewID }}` | `Input` | The `InputAccessoryView` shown over the keyboard. |
+| `.input_accessory(..)` | `inputAccessoryViewID` | `RichEditor` | The `InputAccessoryView` shown over the keyboard while the editor has the focus. |
 | `.auto_fill(..)` | `ios={{ textContentType }}` | `Input` | iOS's names for autofill types (Rust's `AutoFill` covers both platforms). |
 | `.supported_orientations(..)` | `ios={{ supportedOrientations }}` | `Dialog` | The orientations it allows. |
 | `.supported_orientations(..)` | `ios={{ supportedOrientations }}`, `android={{ supportedOrientations }}` | `NavPage` | The orientations the screen may take while the page is shown ([NavPage](../elements/nav-stack.md#navpage-props)). |
@@ -120,6 +121,7 @@ In Rust, the APIs only one platform has are functions of `nsh_core::prelude` (`o
 | Rust | TSX | Description |
 |---|---|---|
 | `on_back_press(listener)` | `BackHandler.on("press", listener)` | Listens to the back button after dialogs, before stacks; return `true` when handled. The listener goes with the component (or effect) that added it; in TSX the call also returns a function that stops it earlier. |
+| `on_back_progress(listener)` | `BackHandler.on("progress", listener)` | Follows the back gesture (Android 14 and later): `start`, `move`, then `end` (the press follows) or `cancel`, with the `progress` from 0 to 1 and the `edge` it started at. While one listens, the stacks do not preview their pop. |
 | | `BackHandler.exitApp()` | Leaves the app. |
 
 ```rust tabs
@@ -186,7 +188,7 @@ Rust apps draw their own title bars with `nsh_core::element::desktop` ([Building
 | `titleBar` | The hidden title bar's height and the room the system's window controls take (reactive). |
 | `windowState`, `displays` | The current window's bounds, mode and display, and the displays (reactive). |
 | `Menu` | `setApplicationMenu(items)` (the menu bar, with shortcuts) and `popup(items, at?)` (context menus). An item's `icon` is an image as `<Image>`'s `src` takes it, so menus show the app's own icon set: an SVG takes the color of the menu's text, a bitmap keeps its colors. macOS and Windows show it; GTK's menus show no icon beside a label. |
-| `isAvailable` | `true` where the window and menu APIs work: macOS, Windows and Linux. Desktop browsers have `platform.desktop` and keep the browser's window and menus. |
+| `isAvailable` | `true` where the window and menu APIs work: macOS, Windows and Linux, but not a terminal app. Desktop browsers have `platform.desktop` and keep the browser's window and menus. |
 
 See [nsh/desktop](../modules/nsh-desktop.md).
 

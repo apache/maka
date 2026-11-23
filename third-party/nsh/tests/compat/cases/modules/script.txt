@@ -41,8 +41,10 @@ tap id:case-mod-android
 expect Android: false
 expect Exit: function
 expect Calls: not called
+expect Progress: not called
 tap id:call
 expect Calls: done, remove function
+expect Progress: done, stop function
 covers [nsh/mobile] BackHandler
 # mod-clipboard
 tap id:case-mod-clipboard
@@ -68,6 +70,8 @@ expect Hello: Hello
 expect Greet: Hello, Ada!
 expect Missing: en-US.missing
 expect Asked: 你好
+expect Extra: en-US.extra
+expect FrenchHello: Hello
 expect Locales: en zh zh-CN
 expect German: 1.234,5
 expect French: 1,234.5
@@ -78,9 +82,16 @@ expect Greet: 你好，Ada！
 tap id:device
 expect Shown: en-US
 expect Hello: Hello
+tap id:add-translations
+expect Extra: Loaded
+expect Hello: Hello
+expect Asked: 您好
+expect FrenchHello: Bonjour
+expect Locales: en fr zh zh-CN
 covers [nsh/i18n] t
 covers [nsh/i18n] setLocale
 covers [nsh/i18n] availableLocales
+covers [nsh/i18n] addTranslations
 # mod-picker
 tap id:case-mod-picker
 # a pick is a promise that never throws: options out of range reject it with
@@ -112,6 +123,15 @@ expect File: rejected ERR_ACCESS_DENIED
 expect Blank: rejected TypeError
 expect Long URL: rejected RangeError
 covers [nsh] Share
+# mod-app-settings
+tap id:case-mod-app-settings
+# no settings page of the app's own there: AppSettings.available() resolves
+# false and AppSettings.open() rejects as unavailable, never as opened.
+expect Available: false
+expect Settings: not opened
+tap id:settings
+expect Settings: rejected ERR_FEATURE_UNAVAILABLE_ON_PLATFORM
+covers [nsh/mobile] AppSettings
 # mod-speech
 tap id:case-mod-speech
 # nothing recognizes speech there: available() resolves false and a session
@@ -161,7 +181,8 @@ expect Early: 1.2.3
 covers [nsh] appInfo
 # mod-url-scheme
 tap id:case-mod-url-scheme
-# the domain claims `compat`: no link opened it, and the listener stops.
+# the domain claims `compat` and a web link: no link opened it, and the
+# listener stops.
 # The app's own `setUrl` is no change of the address it did not make.
 expect Links: none
 expect Listener: listening
@@ -185,28 +206,28 @@ expect Check: null
 expect Download: rejected
 expect Restart: rejected
 expect Install on quit: rejected
+expect Prompt: resolved
 covers [nsh/updater] checkForPackage
 covers [nsh/updater] checkForUpdate
 covers [nsh/updater] downloadPackage
 covers [nsh/updater] installOnQuit
+covers [nsh/updater] promptForUpdate
 covers [nsh/updater] restartToPackage
 covers [nsh/updater] runningPackage
 covers [nsh/updater] shellInfo
 # mod-desktop
 tap id:case-mod-desktop
-# no title bar area, the main window is the only one, a window of the app's
-# own neither renders nor opens, the window, app and menu functions do
-# nothing, and a popup closes at once.
+# no title bar area and no windows, a window of the app's own renders its
+# content but never opens, the window, app and menu functions do nothing,
+# and a popup closes at once.
 expect Desktop: false
 expect Title bar: 0 0 0
 expect Window state: null displays 0
-expect Current: main true null state null
-expect Windows: main focused null get true null
-absent Inside a window
+expect Inside a window
 expect Calls: not called
 expect Popup: not shown
 tap id:window
-expect Calls: window done, open ERR_FEATURE_UNAVAILABLE_ON_PLATFORM, close function
+expect Calls: window done, current no code, open ERR_FEATURE_UNAVAILABLE_ON_PLATFORM, windows 1 focused null get null
 tap id:menu
 expect Calls: menu done
 expect Popup: closed
@@ -241,6 +262,7 @@ expect Size classes: compact regular
 expect Scheme: light
 expect Lifecycle: active
 expect Wakes: 0
+expect Network: true unknown false false unknown
 expect Time zone: UTC
 expect Intl local time: its zone
 expect Languages: en-US
@@ -266,17 +288,19 @@ covers [nsh] horizontalSizeClass
 covers [nsh] verticalSizeClass
 covers [nsh] lifecycle
 covers [nsh] wakeCount
+covers [nsh] network
 covers [nsh] localeSettings
 # mod-host-channel
 tap id:case-mod-host-channel
-# no embedding app: no parameters, posts go nowhere and calls reject at
-# once with ERR_FEATURE_UNAVAILABLE_ON_PLATFORM.
+# no embedding app: no parameters, posts go nowhere and a call of a name
+# capabilities.host does not grant rejects at once with ERR_ACCESS_DENIED
+# (the grant is checked before whether there is a host).
 expect Params: 0 object
 expect Calls: not called
 expect Call failed: none
 tap id:call
 expect Calls: function, post done
-expect Call failed: Error ERR_FEATURE_UNAVAILABLE_ON_PLATFORM
+expect Call failed: Error ERR_ACCESS_DENIED
 covers [nsh] host
 # mod-ios
 tap id:case-mod-ios
@@ -343,15 +367,20 @@ expect Storage cleared: none missing=null
 # A value past the quota rejects with a code and is not kept.
 tap id:full
 expect Storage full: Error ERR_NSH_QUOTA_EXCEEDED kept=false
+# The app's own changes are not changes made elsewhere.
+expect Storage listener listening
+tap id:stop
+expect Storage listener stopped function, heard nothing
 covers [nsh] Storage
 # mod-host
 tap id:case-mod-host
-# no host on this platform: the call rejects at once with
-# ERR_FEATURE_UNAVAILABLE_ON_PLATFORM; the root's events reach the listener.
+# no host on this platform and no capabilities.host: the call rejects at
+# once with ERR_ACCESS_DENIED (the grant is checked before whether there
+# is a host); the root's events reach the listener.
 expect Host available: false
 expect Host call: not called
 tap id:call
-expect Host call: rejected Error ERR_FEATURE_UNAVAILABLE_ON_PLATFORM
+expect Host call: rejected Error ERR_ACCESS_DENIED
 event id:heard onHost type=event event=tick payload=1
 expect Host heard: [1]
 # Stopped, the listener hears no more.

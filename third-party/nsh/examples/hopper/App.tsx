@@ -1,4 +1,5 @@
 import { type JSX, mount, platform, Scroll, signal, Text, View } from "nsh";
+import { Window } from "nsh/desktop";
 import { createNavStack, NavPage, NavStack } from "nsh/base";
 import { safeAreaInsets } from "nsh";
 import { FlightPlan } from "./cards/FlightPlan";
@@ -175,4 +176,4 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => <Window id="main">{App}</Window>);

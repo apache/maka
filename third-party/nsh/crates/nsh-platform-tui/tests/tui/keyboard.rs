@@ -1981,3 +1981,35 @@ fn a_dialog_is_the_keyboard_boundary_a_page_capture_does_not_cross() {
     assert_eq!(view.handle(key("a", Default::default())), Handled::Yes);
     draw_until(&mut view, &mut terminal, &rx, "focused opener heard a true");
 }
+
+/// A menu of items only, bordered and padded as an app's popup.
+#[component]
+fn PaddedMenu() -> impl IntoElement {
+    view().flex_1().child(
+        nsh_base::menu()
+            .popup_class("border border-zinc-600 bg-zinc-900 p-1")
+            .trigger(view().w(px(80.0)).child(text("File")))
+            .child(nsh_base::menu_item().child(text("Undo")))
+            .child(nsh_base::menu_item().child(text("Redo"))),
+    )
+}
+
+#[test]
+fn a_menu_of_items_keeps_its_padding_inside_its_line() {
+    let (mut view, rx) = surface();
+    let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();
+    view.load(App::Rust(Root::new::<PaddedMenu>(|| ())))
+        .unwrap();
+    draw_until(&mut view, &mut terminal, &rx, "File");
+    let none = Modifiers::default();
+    view.handle(key("Tab", none));
+    view.handle(key("Enter", none));
+    draw_until(&mut view, &mut terminal, &rx, "Redo");
+    let (x, y) = super::dock::find(&terminal, "Redo").unwrap();
+    let buffer = terminal.backend().buffer();
+    let line: String = (0..40).map(|x| buffer[(x, y)].symbol()).collect();
+    // The label a Cell in from the menu's line, as under a group's title.
+    assert!(x >= 2, "{line}");
+    assert_eq!(buffer[(x - 1, y)].symbol(), " ", "{line}");
+    assert_eq!(buffer[(x - 2, y)].symbol(), "│", "{line}");
+}

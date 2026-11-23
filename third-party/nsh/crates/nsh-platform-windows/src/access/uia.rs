@@ -216,12 +216,7 @@ fn runtime_id(id: NodeId) -> [i32; 2] {
 fn local(parent: &NshView, child: &NshView) -> Option<Mat4> {
     let p = parent.try_state()?;
     let s = child.try_state()?;
-    let (x, y) = p.child_origin(s.frame, s.shift);
-    let m = Mat4::new().translate(x, y);
-    Some(match s.transform() {
-        Some(t) => Mat4::mul(&t, &m),
-        None => m,
-    })
+    Some(p.child_matrix(&s))
 }
 
 /// A rectangle (x, y, width, height).

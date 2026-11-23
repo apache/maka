@@ -922,8 +922,8 @@ test("native file drops preserve URIs and optional page position", { skip: !path
     const uris = ["file:///tmp/hello.txt", "file:///tmp/world.txt"];
     const mimeTypes = ["text/plain", "text/plain"];
     assert.deepEqual(f.fileDropEvents(), [
-      { uris, mimeTypes },
-      { uris, mimeTypes, pagePosition: { x: 30, y: 40 } },
+      { uris, mimeTypes, files: [] },
+      { uris, mimeTypes, files: [], pagePosition: { x: 30, y: 40 } },
     ]);
   } finally { f.close(); }
 });

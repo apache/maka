@@ -387,6 +387,10 @@ pub(super) struct ListState {
     pub(super) offset: f32,
     /// Main-axis size of the list viewport (from layout).
     pub(super) viewport: f32,
+    /// The list's `contentInset` along the main axis (leading, trailing):
+    /// its offsets run from `-leading` to the content's end plus
+    /// `trailing`, as the platforms scroll it.
+    pub(super) inset: (f32, f32),
     /// Window, bindings or positions need recomputing.
     pub(super) dirty: bool,
     /// Cross-axis size the cells were last laid out at.
@@ -508,6 +512,7 @@ impl ListState {
             start_threshold: START_THRESHOLD,
             offset: 0.0,
             viewport: 0.0,
+            inset: (0.0, 0.0),
             dirty: true,
             cells_cross: f32::NAN,
             load_more_at: None,
@@ -625,8 +630,15 @@ impl ListState {
         if self.parent {
             self.limits
         } else {
-            (0.0, (self.content_len() - self.viewport).max(0.0))
+            (-self.inset.0, self.own_end())
         }
+    }
+
+    /// The end of a list in its own scroll view: the content's end plus
+    /// the trailing inset, at the viewport's end; content too short to
+    /// scroll rests at its start, under the leading inset.
+    fn own_end(&self) -> f32 {
+        (self.content_len() + self.inset.1 - self.viewport).max(-self.inset.0)
     }
 
     /// The items changed: `removed` items at `at` were replaced by
@@ -1593,6 +1605,23 @@ impl ListState {
         (start, (cross - start - end).max(0.0))
     }
 
+    /// A cell's cross-axis origin within its column, or an extra's full span.
+    pub(super) fn align_cross(&self, start: f32, cross: f32, cell: f32) -> f32 {
+        let free = cross - cell;
+        let align = self
+            .content
+            .align_items
+            .unwrap_or(taffy::AlignItems::STRETCH);
+        start
+            + if align == taffy::AlignItems::CENTER {
+                free / 2.0
+            } else if align == taffy::AlignItems::FLEX_END {
+                free
+            } else {
+                0.0
+            }
+    }
+
     /// Main-axis size of item `i`'s row.
     pub(super) fn row_extent(&self, i: u32) -> f32 {
         self.row_size(self.row_of(i))
@@ -1708,7 +1737,8 @@ impl ListState {
                     content.row_gap.0
                 } else {
                     content.column_gap.0
-                };
+                }
+                || self.content.align_items != content.align_items;
             self.content = content;
             if cross_changed {
                 self.cells_cross = f32::NAN;
@@ -1870,6 +1900,28 @@ impl ListState {
         }
     }
 
+    /// Records the size of item `i` when it has none yet, without
+    /// scrolling: for a cell the window just bound to the row it already
+    /// shows (a cell that took back the row now at its index after the
+    /// items changed, [`Self::adopt_orphans`]). No render lays it out
+    /// again, so it is measured where it is placed, in the same commit, and
+    /// the rows after it move with it. The window was set from the
+    /// estimate: the list updates again in the next commit.
+    pub(super) fn measured_unknown(&mut self, i: u32, size: f32) {
+        let idx = i as usize;
+        if !self.sizes.get(idx).is_some_and(|s| s.is_nan()) {
+            return;
+        }
+        let row = self.row_of(i);
+        let before = self.row_size(row);
+        self.sizes[idx] = size;
+        let delta = self.row_size(row) - before;
+        if delta != 0.0 {
+            self.rows.add(row as usize, delta as f64);
+        }
+        self.dirty = true;
+    }
+
     /// Records the size of an extra cell; returns the anchoring change as
     /// [`ListState::measured`] does.
     pub(super) fn measured_extra(&mut self, kind: ExtraKind, size: f32) -> f32 {
@@ -1985,8 +2037,8 @@ impl ListState {
         if self.viewport <= 0.0 {
             return 0.0;
         }
-        let end = (self.content_len() - self.viewport).max(0.0);
         if !self.inverted {
+            let end = self.own_end();
             if matches!(self.pin, Some(Pin::Reading { .. })) {
                 // A temporary projection shrink is not an end-follow intent.
                 self.anchored_end = end;
@@ -2032,6 +2084,7 @@ impl ListState {
             self.offset = end;
             return delta;
         }
+        let end = (self.content_len() - self.viewport).max(0.0);
         let delta = if self.anchored_end.is_nan() {
             end - self.offset
         } else {
@@ -2087,7 +2140,7 @@ impl ListState {
             let (min, max) = self.limits;
             (self.content_len() - self.viewport).clamp(min, max)
         } else {
-            (self.content_len() - self.viewport).max(0.0)
+            self.own_end()
         }
     }
 
@@ -2856,6 +2909,35 @@ mod tests {
     }
 
     #[test]
+    fn lists_under_a_content_inset_follow_their_end() {
+        // Under a bar it scrolls beneath: offsets start at minus the
+        // leading inset, where content too short to scroll rests.
+        let mut l = list(2, 50.0, 956.0);
+        l.follow_end = Some(80.0);
+        l.inset = (116.0, 0.0);
+        assert_eq!(l.measured(0, 176.0), 0.0);
+        assert_eq!(l.measured(1, 176.0), 0.0);
+        l.reported(-116.0, 0);
+        assert_eq!(l.anchor_end(0.0), 0.0);
+        assert_eq!(l.offset_limits(), (-116.0, -116.0));
+        // The keyboard shortens the viewport as the last row grows past
+        // it: the list was at its end, so it follows.
+        l.viewport = 609.0;
+        assert_eq!(l.measured(1, 442.0), 0.0);
+        assert_eq!(l.anchor_end(0.0), 125.0);
+        assert_eq!(l.offset, 9.0);
+        // The trailing inset is scrolled past too.
+        l.inset = (116.0, 34.0);
+        assert_eq!(l.end_offset(), 43.0);
+        assert_eq!(l.offset_limits(), (-116.0, 43.0));
+        // Scrolled up past the threshold, growth below leaves it alone.
+        l.anchor_end(0.0);
+        l.reported(-116.0, 0);
+        l.measured(1, 500.0);
+        assert_eq!(l.anchor_end(0.0), 0.0);
+    }
+
+    #[test]
     fn inverted_lists_load_at_their_start_and_keep_the_visible_rows() {
         let mut l = list(100, 50.0, 400.0);
         l.set_inverted(true);
@@ -2956,6 +3038,32 @@ mod tests {
     }
 
     #[test]
+    fn cells_align_on_the_cross_axis() {
+        for horizontal in [false, true] {
+            let mut l = list(2, 50.0, 200.0);
+            l.set_horizontal(horizontal);
+            let (start, cross) = l.column(200.0, 0, None);
+            assert_eq!(l.align_cross(start, cross, 40.0), 0.0, "{horizontal}");
+            for (align, expected) in [
+                (taffy::AlignItems::STRETCH, 0.0),
+                (taffy::AlignItems::FLEX_START, 0.0),
+                (taffy::AlignItems::CENTER, 80.0),
+                (taffy::AlignItems::FLEX_END, 160.0),
+            ] {
+                assert!(l.set_content(ListContentStyle {
+                    align_items: Some(align),
+                    ..ListContentStyle::default()
+                }));
+                assert_eq!(
+                    l.align_cross(start, cross, 40.0),
+                    expected,
+                    "{horizontal}: {align:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn a_mirrored_horizontal_list_keeps_its_left_padding_on_the_left() {
         // Laid out left to right and shown mirrored: the left padding is the
         // end of its main axis, so it shows on the left.
@@ -2986,6 +3094,7 @@ mod tests {
             },
             row_gap: px(8.0),
             column_gap: px(0.0),
+            ..ListContentStyle::default()
         });
         l.add_slot_cell(CellSlot::Header, 7);
         l.measured_extra(ExtraKind::Header, 30.0);

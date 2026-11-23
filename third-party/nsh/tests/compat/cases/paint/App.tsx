@@ -3,7 +3,9 @@
 // `id:case-<case>` (a one-point view over the corner, out of the layout);
 // the steps after it are that case's.
 import { type JSX, View, mount, signal } from "nsh";
+import { Window } from "nsh/desktop";
 import PaintBorders from "./paint-borders";
+import PaintClipPath from "./paint-clip-path";
 import PaintCurrentColor from "./paint-current-color";
 import PaintEffects from "./paint-effects";
 import PaintInlineAlign from "./paint-inline-align";
@@ -23,6 +25,7 @@ import StateFocusWithin from "./state-focus-within";
 
 const cases: Record<string, () => JSX.Element> = {
   "paint-borders": PaintBorders,
+  "paint-clip-path": PaintClipPath,
   "paint-current-color": PaintCurrentColor,
   "paint-effects": PaintEffects,
   "paint-misc": PaintMisc,
@@ -42,7 +45,7 @@ const cases: Record<string, () => JSX.Element> = {
 };
 const shown = signal("");
 
-mount(() => (
+mount(() => <Window id="main">{() => (
   <>
     {() => {
       const Case = cases[shown()];
@@ -54,4 +57,4 @@ mount(() => (
       ))}
     </View>
   </>
-));
+)}</Window>);

@@ -15,7 +15,6 @@ use std::{
 use nsh_base::{ComboboxEvent, SelectEntry, SelectItem, combobox};
 use nsh_core::{
     AccessibilityRole, MountItem, Size,
-    element::Root,
     platform::{Idiom, Os},
     prelude::*,
 };
@@ -233,7 +232,9 @@ fn start(props: HarnessProps) -> App {
 fn start_on(os: Os, idiom: Idiom, props: HarnessProps) -> App {
     let mut config = EngineConfig {
         viewport: Size::new(px(390.0), px(844.0)),
-        ..EngineConfig::new(Root::new::<Harness>(move || props.clone()))
+        ..EngineConfig::new(nsh_testing::windowed_root_with::<Harness>(move || {
+            props.clone()
+        }))
     };
     config.environment.os = os;
     config.environment.idiom = idiom;
@@ -541,7 +542,9 @@ fn cost_of_toggles(items: usize) -> [(usize, usize, usize); 2] {
     };
     let mut config = EngineConfig {
         viewport: Size::new(px(390.0), px(844.0)),
-        ..EngineConfig::new(Root::new::<ManyTags>(move || ManyTagsProps { items, run }))
+        ..EngineConfig::new(nsh_testing::windowed_root_with::<ManyTags>(move || {
+            ManyTagsProps { items, run }
+        }))
     };
     config.environment.os = Os::MacOs;
     let mut app = Headless::start(config).unwrap();

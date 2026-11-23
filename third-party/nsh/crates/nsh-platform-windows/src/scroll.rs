@@ -82,6 +82,11 @@ impl ScrollHost for Host<'_> {
         self.surface.control(|c| c.key_scrolled(id, key_move));
     }
 
+    fn report_zoom(&self, scale: f32) {
+        let id = self.view.id();
+        self.surface.control(|c| c.zoom(id, scale));
+    }
+
     fn moved(&self, offset: Point<Points>) {
         self.view.moved();
         pin_sticky(self.surface, self.view);
@@ -345,6 +350,32 @@ pub(crate) fn command(surface: &Rc<Surface>, view: &NshView, command: &Command) 
 
 // Input.
 
+/// Whether a pinch over `view` zooms it: a scroll view the app lets zoom.
+pub(crate) fn pinches(surface: &Rc<Surface>, view: &NshView) -> bool {
+    view.kind() == ViewKind::Scroll && shared::pinches(&Host::new(surface, view))
+}
+
+/// A pinch (two fingers, or a touchpad's or Ctrl + wheel's) over `view`
+/// ([`pinches`]) began.
+pub(crate) fn pinch_begin(surface: &Rc<Surface>, view: &NshView) {
+    shared::pinch_begin(&Host::new(surface, view));
+}
+
+/// The pinch is at `scale` times the zoom it began at, around `(x, y)`
+/// (`view`'s coordinates); past the limits it rubber-bands.
+pub(crate) fn pinch(surface: &Rc<Surface>, view: &NshView, scale: f32, x: f32, y: f32) {
+    shared::pinch(
+        &Host::new(surface, view),
+        scale,
+        point(Points(x), Points(y)),
+    );
+}
+
+/// The pinch around `(x, y)` ended: past the limits it springs back.
+pub(crate) fn pinch_end(surface: &Rc<Surface>, view: &NshView, x: f32, y: f32) {
+    shared::pinch_end(&Host::new(surface, view), point(Points(x), Points(y)));
+}
+
 /// A finger or pen drag starts scrolling `view` (the mouse never drags
 /// content).
 pub(crate) fn drag_begin(surface: &Rc<Surface>, view: &NshView) {
@@ -494,7 +525,7 @@ fn draw_spinner(cx: &mut DrawCx<'_>, x: f32, y: f32, progress: Percentage, spin:
 }
 
 /// A wheel or touchpad scroll starts on `view` (a touchpad gesture: it
-/// ends with [`wheel_end`]).
+/// ends with [`wheel_settle`]).
 pub(crate) fn wheel_begin(surface: &Rc<Surface>, view: &NshView) {
     shared::wheel_begin(&Host::new(surface, view));
 }
@@ -505,10 +536,36 @@ pub(crate) fn wheel(surface: &Rc<Surface>, view: &NshView, dx: f32, dy: f32) {
     shared::wheel(&Host::new(surface, view), point(Points(dx), Points(dy)));
 }
 
-/// The wheel scroll ended (velocity in points per second; 0 for wheels
-/// without momentum).
-pub(crate) fn wheel_end(surface: &Rc<Surface>, view: &NshView, vx: f32, vy: f32) {
-    shared::wheel_end(&Host::new(surface, view), vx, vy);
+/// A mouse wheel's notch of `(dx, dy)` points, `line` points a line along
+/// each axis: in the view's own lines (`wheelLineHeight`), and gliding on
+/// a `smoothWheel` view unless the system reduces motion. `None` once it
+/// glides, else the notch for the platform's own wheel to take.
+pub(crate) fn wheel_notch(
+    surface: &Rc<Surface>,
+    view: &NshView,
+    dx: f32,
+    dy: f32,
+    line: Point<Points>,
+) -> Option<(f32, f32)> {
+    let host = Host::new(surface, view);
+    let d = shared::wheel_line(&host, point(Points(dx), Points(dy)), line);
+    if !surface.environment.get().reduce_motion && shared::smooth_wheel(&host) {
+        shared::wheel_smooth(&host, d);
+        return None;
+    }
+    Some((d.x.0, d.y.0))
+}
+
+/// A mouse wheel's notch, `(dx, dy)` points: an animated scroll, which
+/// later notches retarget.
+pub(crate) fn wheel_step(surface: &Rc<Surface>, view: &NshView, dx: f32, dy: f32) {
+    shared::wheel_step(&Host::new(surface, view), point(Points(dx), Points(dy)));
+}
+
+/// The touchpad scroll ended, its system glide spent: a snapping view
+/// settles on its nearest snap point.
+pub(crate) fn wheel_settle(surface: &Rc<Surface>, view: &NshView) {
+    shared::wheel_settle(&Host::new(surface, view));
 }
 
 // The keyboard.
@@ -635,16 +692,20 @@ fn pick(view: &NshView, x: f32, y: f32) -> Option<NshView> {
     if !inside && (state.clips() || state.overflow.is_none()) {
         return None;
     }
+    // Outside its clip path, neither it nor anything in it.
+    if state.style.clip_path().is_some_and(|c| {
+        !c.contains(
+            state.frame.size,
+            nsh_core::geometry::point(Points(x), Points(y)),
+        )
+    }) {
+        return None;
+    }
     let hit = view.with_children(|children| {
         children.iter().rev().find_map(|child| {
             let local = {
                 let cs = child.state();
-                let (ox, oy) = state.child_origin(cs.frame, cs.shift);
-                let m = Mat4::new().translate(ox, oy);
-                match cs.transform() {
-                    Some(t) => Mat4::mul(&t, &m),
-                    None => m,
-                }
+                state.child_matrix(&cs)
             };
             let (cx, cy) = local.unproject(x, y)?;
             pick(child, cx, cy)

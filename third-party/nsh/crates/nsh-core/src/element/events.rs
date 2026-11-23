@@ -23,6 +23,11 @@ pub struct FileDropEvent {
     /// Where the files were let go, in the window's coordinates (TS:
     /// `pagePosition`), on backends that know it (Linux).
     pub page_position: Option<Point<Points>>,
+    /// The dropped regular files with their contents, on backends that hand
+    /// over contents instead of paths (the Web, where `uris` is empty):
+    /// in the drop's order, directories left out, so not by index of
+    /// `uris`. Each keeps its bytes after the listener returns.
+    pub files: Vec<crate::picker::PickedFile>,
 }
 
 /// Local files or directories a drag offers to an element while it enters
@@ -82,12 +87,15 @@ pub enum ScrollIntent {
     Scroll,
 }
 
-/// A drag (`on_pan_start` / `on_pan_end`): translation since it started and
-/// velocity, in points (per second).
+/// A drag (`on_pan_start` / `on_pan_end`): where it started, translation
+/// since then and velocity, in points (per second).
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct PanEvent {
     /// The system cancelled the drag rather than releasing it.
     pub cancelled: bool,
+    /// Where the finger (or the pointer) went down, in the surface's points
+    /// as a touch's `page`: the same at the start and at the end.
+    pub origin: Point<Points>,
     /// The translation.
     pub translation: Point<Points>,
     /// Horizontal velocity.
@@ -643,6 +651,7 @@ pub(crate) fn offset(p: &EventPayload) -> Option<Cow<'_, Point<Points>>> {
 pub(crate) fn pan(p: &EventPayload) -> Option<Cow<'_, PanEvent>> {
     match *p {
         EventPayload::Pan {
+            origin,
             translation,
             velocity_x,
             velocity_y,
@@ -650,6 +659,7 @@ pub(crate) fn pan(p: &EventPayload) -> Option<Cow<'_, PanEvent>> {
             value_y,
         }
         | EventPayload::PanCancelled {
+            origin,
             translation,
             velocity_x,
             velocity_y,
@@ -657,6 +667,7 @@ pub(crate) fn pan(p: &EventPayload) -> Option<Cow<'_, PanEvent>> {
             value_y,
         } => Some(Cow::Owned(PanEvent {
             cancelled: matches!(p, EventPayload::PanCancelled { .. }),
+            origin,
             translation,
             velocity_x,
             velocity_y,
@@ -792,6 +803,7 @@ pub(crate) fn file_drop(p: &EventPayload) -> Option<Cow<'_, FileDropEvent>> {
             uris: uris.clone(),
             mime_types: mime_types(uris),
             page_position: None,
+            files: Vec::new(),
         })),
         EventPayload::FileDropAt {
             uris,
@@ -800,6 +812,13 @@ pub(crate) fn file_drop(p: &EventPayload) -> Option<Cow<'_, FileDropEvent>> {
             uris: uris.clone(),
             mime_types: mime_types(uris),
             page_position: Some(*page_position),
+            files: Vec::new(),
+        })),
+        EventPayload::FileContents(c) => Some(Cow::Owned(FileDropEvent {
+            uris: Vec::new(),
+            mime_types: c.mime_types.clone(),
+            page_position: c.page_position,
+            files: c.files.clone(),
         })),
         _ => None,
     }
@@ -813,6 +832,10 @@ pub(crate) fn file_drag(p: &EventPayload) -> Option<Cow<'_, FileDragEvent>> {
                 mime_types: mime_types(uris),
             }))
         }
+        EventPayload::FileContents(c) => Some(Cow::Owned(FileDragEvent {
+            uris: Vec::new(),
+            mime_types: c.mime_types.clone(),
+        })),
         _ => None,
     }
 }
@@ -823,6 +846,7 @@ mod tests {
     fn a_cancelled_pan_preserves_its_final_values() {
         use crate::{EventPayload, Points, geometry::point};
         let payload = EventPayload::PanCancelled {
+            origin: point(Points(12.0), Points(30.0)),
             translation: point(Points(4.0), Points(150.0)),
             velocity_x: 0.0,
             velocity_y: 900.0,
@@ -831,6 +855,7 @@ mod tests {
         };
         let event = super::pan(&payload).unwrap();
         assert!(event.cancelled);
+        assert_eq!(event.origin, point(Points(12.0), Points(30.0)));
         assert_eq!(event.translation, point(Points(4.0), Points(150.0)));
         assert_eq!(event.value_y, Some(150.0));
         assert_eq!(event.velocity_y, 900.0);
@@ -869,6 +894,26 @@ mod tests {
         assert_eq!(drop.mime_types, types);
         assert_eq!(drop.page_position, Some(point(Points(3.0), Points(4.0))));
         assert!(super::file_drag(&EventPayload::None).is_none());
+    }
+
+    #[test]
+    fn dropped_contents_arrive_without_uris() {
+        use crate::{
+            EventPayload, FileContents, ImageData, Points, geometry::point, picker::PickedFile,
+        };
+        let file = PickedFile::new("a.txt", "text/plain", ImageData::new(b"hi".to_vec()));
+        let payload = EventPayload::FileContents(Box::new(FileContents::new(
+            vec![file.clone()],
+            vec!["text/plain".into()],
+            Some(point(Points(1.0), Points(2.0))),
+        )));
+        let drop = super::file_drop(&payload).unwrap();
+        assert!(drop.uris.is_empty());
+        assert_eq!(drop.files, vec![file]);
+        assert_eq!(drop.page_position, Some(point(Points(1.0), Points(2.0))));
+        let drag = super::file_drag(&payload).unwrap();
+        assert!(drag.uris.is_empty());
+        assert_eq!(drag.mime_types, ["text/plain"]);
     }
 
     #[test]

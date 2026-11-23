@@ -38,7 +38,14 @@ for (const scroll of ["inner", "outer"]) {
     await app.longPress("text:Alpha beta gamma");
     await app.waitUntil(() => app.texts().some((t) => t.startsWith("Selection: {") && t.includes('"pageBounds"')));
     const before = selection(app);
-    await app.scroll(`id:${scroll}`, 20);
+    // The long press leaves the edit menu up. UIKit places it above or below
+    // the selection (iOS 27 below, over the inner view's middle, where
+    // `app.scroll` puts the finger), and a finger on the menu scrolls
+    // nothing: the inner view is dragged from a place the menu never covers.
+    // The drag is short, as short as a tap's movement: scrolling still keeps
+    // the selection.
+    if (scroll === "inner") await app.drag("id:inner-grip", { x: 0, y: -20 });
+    else await app.scroll(`id:${scroll}`, 20);
     await app.waitUntil(() => selection(app).pageBounds.origin.y < before.pageBounds.origin.y);
     const after = selection(app);
     expect(after.text).toBe(before.text);
@@ -49,6 +56,15 @@ for (const scroll of ["inner", "outer"]) {
     await toolbarFollows(app);
   });
 }
+
+test("a tap beside the selection clears it", async () => {
+  const app = await open("./App.tsx");
+  await app.longPress("text:Alpha beta gamma");
+  await app.waitUntil(() => selection(app).text.length > 0);
+  // A finger that lands and lifts without moving: the area hears no presses.
+  await app.drag("text:Delta epsilon", { x: 0, y: 0 });
+  await app.waitUntil(() => selection(app).text === "");
+});
 
 test("a long press on selectable text opens the edit menu, and the selection copies", async () => {
   const app = await open("./App.tsx");

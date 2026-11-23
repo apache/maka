@@ -1,11 +1,13 @@
-//! The pointer's steps: `drag(<selector>, <x>, <y>)`, a finger that lands
-//! on a view, moves and lifts, and `hover(<selector>)`, the mouse coming
-//! over a view; the app hears what a platform's pointer input makes of
+//! The pointer's steps: `drag(<selector>, <x>, <y>)`, a finger (the mouse
+//! on a desktop or the web) that lands on a view, moves and lifts, and
+//! `hover(<selector>)`, the mouse coming over a view; the app hears what a platform's pointer input makes of
 //! them. The decisions are nsh-core's `input`, the desktop backends' own:
 //! the views listening to touches hear them (the JS responder), a pan or a
 //! scroll view takes the drag once it passes the slop, unless the
 //! responder holds it, and the press under the finger is cancelled once
 //! the finger moves away.
+
+use std::time::Duration;
 
 use nsh_core::{
     EventKind, EventPayload, NodeId, Point, Points, ROOT_ID, TouchEvent, TouchPhase, TouchPoint,
@@ -16,14 +18,16 @@ use nsh_core::{
     },
 };
 
+mod press;
+
 use super::Headless;
-use crate::selector::Selector;
+use crate::{DragOptions, selector::Selector};
 
 /// How far a finger moves in one display frame, as a scroll's does.
 const DRAG_STEP: Points = Points(10.0);
 /// How long the finger rests where it lands before it moves, as a hand
 /// does (the agents' `LANDING`): the views under it hear it land first.
-const LANDING: f64 = 100.0;
+const LANDING: Duration = crate::drag::LANDING;
 
 /// What the drag does.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -37,10 +41,15 @@ enum Mode {
     Pan(NodeId),
     /// The scroll view, dragged from its offset then and the finger there.
     Scroll(NodeId, Points, Point<Points>),
+    /// The mouse selects in the selectable view.
+    Select(NodeId),
 }
 
-/// The finger.
+/// The finger, or the mouse with its button down.
 pub(super) struct Finger {
+    /// What it is ([`Headless::pointer`]): its touches say so, and only a
+    /// finger drags a scroll view.
+    pointer: nsh_core::PointerType,
     start: Point<Points>,
     at: Point<Points>,
     /// Milliseconds since the drag began.
@@ -56,6 +65,7 @@ pub(super) struct Finger {
     press: Option<input::Press<NodeId>>,
     mode: Mode,
     moved: bool,
+    long_at: Option<nsh_core::time::Instant>,
 }
 
 fn transform_payload(key: &'static str, amount: f32) -> EventPayload {
@@ -69,24 +79,39 @@ impl Headless {
     /// The step `drag(<selector>, <by>)`: a finger lands on the middle of
     /// the view `selector` names, rests there for 100 ms, moves by `by`
     /// points, 10 points per display frame, and lifts at once (still
-    /// moving). What takes the drag
+    /// moving). On a desktop or the web it is the mouse, with its button
+    /// down ([`Self::pointer`]). What takes the drag
     /// is what a platform's input would give it to (nsh-core `input`): the
-    /// views listening to touches hear `onTouch` (the JS responder system),
-    /// a pan hears `onPanStart` and `onPanEnd` and moves its `pan` values,
-    /// a scroll view scrolls with the finger and refreshes when it is
-    /// pulled far enough past its top, and the press under the finger is
-    /// cancelled once it moves away (`onPressUp`, no `onPress`).
-    pub fn drag(&mut self, selector: &str, by: Point<Points>) -> Result<(), String> {
-        self.step(format!("drag({selector}, {}, {})", by.x, by.y));
-        self.drag_from(selector, by, false)
+    /// views listening to touches hear `onTouch` (the JS responder system,
+    /// `pointerType` `"touch"`, or `"mouse"`), a pan hears `onPanStart` and
+    /// `onPanEnd` and moves its `pan` values, a scroll view scrolls with a
+    /// finger (not with the mouse, as on the desktop backends and the web)
+    /// and refreshes when it is pulled far enough past its top, and the
+    /// press under the pointer is cancelled once it moves away
+    /// (`onPressUp`, no `onPress`). `options.hold` sets the rest before the
+    /// move; one past a press's long-press delay delivers the long press
+    /// first.
+    pub fn drag(
+        &mut self,
+        selector: &str,
+        by: Point<Points>,
+        options: DragOptions,
+    ) -> Result<(), String> {
+        self.step(step_name("drag", selector, by, options));
+        self.drag_from(selector, by, false, options)
     }
 
     /// The step `dragAndHold(<selector>, <by>)`: [`Self::drag`] without the
     /// lift, so the test can look at the screen mid-drag (a drag preview, a
     /// drop line); [`Self::drop_held`] lifts the finger where it is.
-    pub fn drag_and_hold(&mut self, selector: &str, by: Point<Points>) -> Result<(), String> {
-        self.step(format!("dragAndHold({selector}, {}, {})", by.x, by.y));
-        self.drag_from(selector, by, true)
+    pub fn drag_and_hold(
+        &mut self,
+        selector: &str,
+        by: Point<Points>,
+        options: DragOptions,
+    ) -> Result<(), String> {
+        self.step(step_name("dragAndHold", selector, by, options));
+        self.drag_from(selector, by, true, options)
     }
 
     /// The step `drop()`: the finger [`Self::drag_and_hold`] left down lifts.
@@ -100,7 +125,19 @@ impl Headless {
         self.done()
     }
 
-    fn drag_from(&mut self, selector: &str, by: Point<Points>, hold: bool) -> Result<(), String> {
+    fn drag_from(
+        &mut self,
+        selector: &str,
+        by: Point<Points>,
+        held: bool,
+        options: DragOptions,
+    ) -> Result<(), String> {
+        // A custom hold keeps the long press's deadline; none keeps the
+        // released timing.
+        let (hold, long_press) = match options.hold {
+            Some(hold) => (hold, true),
+            None => (LANDING, false),
+        };
         // A new drag lifts the finger an earlier one left down.
         if let Some(finger) = self.finger.take() {
             self.finger_lifted(finger);
@@ -118,7 +155,14 @@ impl Headless {
         // A finger going down ends what a responder held before.
         self.screen.reset_js_block();
         let mut grab = Grab::default();
-        let options = GrabOptions::new(true, false, false, true);
+        let pointer = self.pointer();
+        let mut options =
+            GrabOptions::new(pointer != nsh_core::PointerType::Mouse, false, false, true);
+        // An edge pan's edges are its window's.
+        if let Some(window) = self.screen.window_area(target) {
+            let at = point(start.x - window.origin.x, start.y - window.origin.y);
+            options = options.start(at, window.size);
+        }
         for &id in &chain {
             if let Some(link) = self.screen.link(id) {
                 grab.add(&id, &link, options);
@@ -132,7 +176,22 @@ impl Headless {
             ..
         } = grab;
         let press = self.screen.press_in_chain(&chain);
+        // The mouse selects in a selectable view rather than dragging it.
+        let selecting = match self.environment.desktop() {
+            true => self.selection_down(target, start, press.is_some()),
+            false => None,
+        };
+        let long_at = long_press
+            .then_some(press.as_ref())
+            .flatten()
+            .filter(|press| press.events.contains(EventKind::LongPress))
+            .and_then(|press| {
+                Duration::try_from_secs_f64(f64::from(press.long_delay.max(0.0)) / 1000.0).ok()
+            })
+            .map(|delay| self.clock.now() + delay);
+
         let mut finger = Finger {
+            pointer,
             start,
             at: start,
             time: 0.0,
@@ -144,45 +203,64 @@ impl Headless {
             candidates,
             gate,
             press,
-            mode: Mode::Idle,
+            mode: selecting.map_or(Mode::Idle, Mode::Select),
             moved: false,
+            long_at,
         };
         finger.velocity.add(0.0, start);
         if finger.reporting {
             self.touch(TouchPhase::Start, &finger, None);
         }
         // Inside a scroll view a touch presses only once it rests: a drag
-        // moves away before. A desktop's mouse presses at once (a drag
-        // selects text there rather than scrolling).
-        let mut press_due = if in_scroll && !self.environment.desktop() {
+        // moves away before. The mouse presses at once (a drag selects text
+        // there rather than scrolling).
+        let mut press_due = if in_scroll && pointer != nsh_core::PointerType::Mouse {
             Some(SCROLL_PRESS_DELAY as f64)
         } else {
             self.press_in(&mut finger);
             None
         };
         let frame = super::animation::FRAME.as_secs_f64() * 1000.0;
-        while finger.time + frame <= LANDING {
-            self.display_frame();
+        while if long_press {
+            finger.time < hold.as_secs_f64() * 1000.0
+        } else {
+            finger.time + frame <= hold.as_secs_f64() * 1000.0
+        } {
+            if long_press {
+                self.elapse(super::animation::FRAME);
+            } else {
+                self.display_frame();
+            }
             finger.time += frame;
             if press_due.is_some_and(|due| finger.time >= due) {
                 press_due = None;
                 self.press_in(&mut finger);
             }
+            if long_press {
+                self.long_press_due(&mut finger);
+            }
         }
         let steps = (by.x.abs().max(by.y.abs()) / DRAG_STEP).ceil().max(1.0) as u32;
         for step in 1..=steps {
-            self.display_frame();
+            if long_press {
+                self.elapse(super::animation::FRAME);
+            } else {
+                self.display_frame();
+            }
             finger.time += frame;
             if press_due.is_some_and(|due| finger.time >= due) {
                 press_due = None;
                 self.press_in(&mut finger);
+            }
+            if long_press {
+                self.long_press_due(&mut finger);
             }
             let t = step as f32 / steps as f32;
             let at = point(start.x + by.x * t, start.y + by.y * t);
             self.finger_moved(&mut finger, at);
             self.responder_granted(&mut finger);
         }
-        if hold {
+        if held {
             self.finger = Some(finger);
         } else {
             self.finger_lifted(finger);
@@ -196,10 +274,16 @@ impl Headless {
         finger.velocity.add(finger.time, at);
         let first = !std::mem::replace(&mut finger.moved, true);
         let (tx, ty) = (at.x - finger.start.x, at.y - finger.start.y);
+        // A drag that selects presses nothing, as text editors do.
+        if let Mode::Select(area) = finger.mode
+            && self.selection_drag(area, point(tx, ty), at)
+        {
+            self.cancel_press(finger);
+        }
         let activated = Gate::step(&mut finger.gate, &mut finger.candidates, tx, ty);
         // The view's JS responder takes the drag over: nothing native
-        // starts meanwhile.
-        if activated.is_some() && finger.mode == Mode::Idle {
+        // starts meanwhile, but the view's own pan.
+        if finger.mode == Mode::Idle && input::activation_frees(activated, &finger.candidates) {
             finger.mode = Mode::Free;
         }
         if finger.reporting {
@@ -210,7 +294,7 @@ impl Headless {
         // to take the gesture before a native drag starts.
         let js_pending = finger.reporting && first;
         if finger.mode == Mode::Idle && distance > PAN_SLOP && !js_pending {
-            if finger.gate.is_none() {
+            if !input::waits(&finger.candidates, finger.gate.as_ref(), tx, ty) {
                 finger.mode = Mode::Free;
             }
             let started = if self.screen.js_block() {
@@ -251,7 +335,7 @@ impl Headless {
                 };
                 self.scroll_dragged(view, from + along);
             }
-            Mode::Idle | Mode::Free => {}
+            Mode::Idle | Mode::Free | Mode::Select(_) => {}
         }
     }
 
@@ -281,7 +365,10 @@ impl Headless {
                 self.pan_end(view, &finger);
             }
             Mode::Scroll(view, ..) => self.scroll_released(view),
-            Mode::Idle | Mode::Free => {
+            Mode::Idle | Mode::Free | Mode::Select(_) => {
+                if matches!(finger.mode, Mode::Select(_)) {
+                    self.selection_up();
+                }
                 if let Some(mut press) = finger.press.take() {
                     // A quick tap inside a scroll view: the press goes in now.
                     if let Some(kind) = press.press_in() {
@@ -298,34 +385,6 @@ impl Headless {
                         self.send(press.target(kind), kind, EventPayload::None);
                     }
                 }
-            }
-        }
-    }
-
-    /// The press under the finger goes in (`onPressDown`).
-    fn press_in(&mut self, finger: &mut Finger) {
-        let Some(press) = &mut finger.press else {
-            return;
-        };
-        let Some(kind) = press.press_in() else {
-            return;
-        };
-        // Where the drag starts, in the pressed view, with the keys held:
-        // a press that selects or drags from there reads them.
-        let node = press.node;
-        let at = self
-            .screen
-            .bounds_in_root(node)
-            .map(|b| point(finger.start.x - b.origin.x, finger.start.y - b.origin.y));
-        let payload = self.press_payload(node, at);
-        self.send(node, kind, payload);
-    }
-
-    /// The finger moved away from its press: it ends without a press.
-    fn cancel_press(&mut self, finger: &mut Finger) {
-        if let Some(mut press) = finger.press.take() {
-            for kind in press.press_out(false) {
-                self.send(press.target(kind), kind, EventPayload::None);
             }
         }
     }
@@ -348,7 +407,7 @@ impl Headless {
                 page: finger.at,
                 location: point(finger.at.x - finger.origin.x, finger.at.y - finger.origin.y),
                 changed: true,
-                pointer_type: nsh_core::PointerType::Touch,
+                pointer_type: finger.pointer,
                 pressure: nsh_core::TouchPoint::default_pressure(phase, true),
                 tilt_x: 0.0,
                 tilt_y: 0.0,
@@ -372,6 +431,7 @@ impl Headless {
         let (value_x, value_y) = self.animator.pan_values(view);
         let (velocity_x, velocity_y) = finger.velocity.velocity();
         EventPayload::Pan {
+            origin: finger.start,
             translation,
             velocity_x,
             velocity_y,
@@ -531,6 +591,20 @@ impl Headless {
         }
     }
 
+    /// What drags (`drag`, `dragAndHold`): the mouse where there is one (a
+    /// desktop, and the web at any width, as `hover` has), else a finger.
+    /// The desktop backends and the web report the mouse's touches as
+    /// `"mouse"`, and a mouse drags no scroll view ([`GrabOptions::touch`]).
+    ///
+    /// [`GrabOptions::touch`]: nsh_core::input::GrabOptions::touch
+    fn pointer(&self) -> nsh_core::PointerType {
+        if self.environment.desktop() || self.environment.os == nsh_core::platform::Os::Web {
+            nsh_core::PointerType::Mouse
+        } else {
+            nsh_core::PointerType::Touch
+        }
+    }
+
     /// The step `hover(<selector>)`: the mouse comes over the middle of the
     /// view `selector` names, as on a desktop (`open`'s `platform`): the
     /// views under it that it left hear `onMouseLeave` (from the inside
@@ -546,7 +620,7 @@ impl Headless {
     pub fn hover(&mut self, selector: &str) -> Result<(), String> {
         let parsed = Selector::parse(selector)?;
         self.step(format!("hover({selector})"));
-        if !self.environment.desktop() && self.environment.os != nsh_core::platform::Os::Web {
+        if self.pointer() != nsh_core::PointerType::Mouse {
             return Err(
                 "a phone has no mouse to hover with: open the app as a desktop or the web (`platform`)"
                     .into(),
@@ -616,4 +690,13 @@ impl Headless {
             None,
         ))
     }
+}
+
+/// A drag's step name, with its hold when it has one.
+fn step_name(name: &str, selector: &str, by: Point<Points>, options: DragOptions) -> String {
+    let hold = options
+        .hold_ms()
+        .map(|ms| format!(", hold={ms}ms"))
+        .unwrap_or_default();
+    format!("{name}({selector}, {}, {}{hold})", by.x, by.y)
 }

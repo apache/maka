@@ -248,10 +248,26 @@ pub(crate) fn doc_of(
     content: &Content,
     format: Option<RichFormat>,
 ) -> Result<Node, String> {
-    let content = fragment_of(schema, content, format)?;
+    if let (Content::Text(text), Some(RichFormat::Json)) = (content, format) {
+        let json: JsonValue = serde_json::from_str(text).map_err(|e| e.to_string())?;
+        return doc_of(schema, &Content::Json(json), None);
+    }
+    // A whole document keeps its own attributes, as Tiptap's
+    // `createDocument` does; other content fills a new one.
+    let (attrs, content) = match content {
+        Content::Json(json @ JsonValue::Object(_)) => {
+            let node = Node::from_json(schema, json).map_err(|e| e.to_string())?;
+            if node.ty() == &schema.top_node_type() {
+                (Some(node.attrs().clone()), node.content().clone())
+            } else {
+                (None, Fragment::from(vec![node]))
+            }
+        }
+        _ => (None, fragment_of(schema, content, format)?),
+    };
     let doc = schema
         .top_node_type()
-        .create_and_fill(None, content, vec![])
+        .create_and_fill(attrs, content, vec![])
         .ok_or_else(|| "the content does not fit the schema's top node".to_owned())?;
     doc.check().map_err(|e| e.to_string())?;
     Ok(doc)

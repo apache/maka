@@ -2,12 +2,16 @@
 // (in memory on the headless runtime): values set, read back, listed in
 // order, removed and cleared, each call seeing the ones before it; a value
 // past the 5 MB quota rejects with `ERR_NSH_QUOTA_EXCEEDED` and is not kept.
-// Its script checks each.
+// A `change` listener hears only changes made elsewhere (another window or
+// tab), none of the app's own, and stops when told. Its script checks each.
 import { Text, View, signal } from "nsh";
 import { Storage } from "nsh";
 
 function App() {
   const state = signal("empty");
+  const heard: string[] = [];
+  const listener = signal("listening");
+  const stop = Storage.on("change", (e) => heard.push(`${e.key}=${e.value}`));
   const show = async (step: string) => {
     const keys = await Storage.keys();
     const values = await Promise.all(keys.map((k) => Storage.getItem(k)));
@@ -17,6 +21,7 @@ function App() {
   return (
     <View style={{ flex: 1, paddingTop: 64 }}>
       <Text>{`Storage ${state()}`}</Text>
+      <Text>{`Storage listener ${listener()}`}</Text>
       <View
         testID="set"
         onPress={async () => {
@@ -58,6 +63,15 @@ function App() {
         }}
       >
         <Text>Fill</Text>
+      </View>
+      <View
+        testID="stop"
+        onPress={() => {
+          stop();
+          listener.set(`stopped ${typeof stop}, heard ${heard.join(",") || "nothing"}`);
+        }}
+      >
+        <Text>Stop</Text>
       </View>
     </View>
   );

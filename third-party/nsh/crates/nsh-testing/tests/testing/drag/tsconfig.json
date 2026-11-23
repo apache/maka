@@ -1,0 +1,1 @@
+{"extends":"./.nsh/tsconfig.json","include":["*.tsx"]}

@@ -278,6 +278,14 @@ fn tick(surface: &Rc<Surface>, view: &NshView, now: f64) -> Next {
         crate::scroll::resized(surface, view);
     }
     view.moved();
+    if matches!(
+        view.kind(),
+        ViewKind::WebView | ViewKind::Video | ViewKind::Native
+    ) {
+        // A hosted page or video follows the frame shown on each tick, not
+        // the one it had when the layout animation started (#2517).
+        crate::native::resized(view);
+    }
     match deadline {
         _ if step.finished => Next::Done,
         Some(ms) => Next::At(ms / 1000.0),

@@ -15,7 +15,7 @@
 //! says it is ready ([`Drive::Compiling`]). The shader views with a frame
 //! to render or collect
 //! ([`ShaderView::wants_frame`]: their uniforms or size changed, or they
-//! read `nsh.time`) render at their window's backing scale, on one frame
+//! read `nsh.time`) render at the scale they are shown at, on one frame
 //! callback of the surface's display link while their frames change with
 //! time or anything else wants frames; a view that only changed (a uniform
 //! the app set) renders once the batch is applied, and its frame shows
@@ -668,7 +668,7 @@ pub(crate) fn start_transition(
         (shader.role, shader.view.overflow())
     };
     let host = host(surface, view, role);
-    let scale = host.ns().window().map_or(2.0, |w| w.backingScaleFactor());
+    let scale = crate::view::backing_scale_of(host.ns());
     let size = host.state().frame.size;
     // From what shows: the running transition's frame (copied on the
     // GPU), or the children.
@@ -1345,10 +1345,10 @@ fn take_pictures(surface: &Surface, view: &NshView, renderer: &Renderer, now: In
         return;
     }
     let host = host(surface, view, role);
-    let Some(window) = host.ns().window() else {
+    if host.ns().window().is_none() {
         return;
-    };
-    let scale = window.backingScaleFactor();
+    }
+    let scale = crate::view::backing_scale_of(host.ns());
     let size = host.state().frame.size;
     // The canvases leave the state while they draw (rendering lays out
     // and draws views, which may look at it).
@@ -1737,7 +1737,7 @@ fn show_frame(
         .as_ref()
         .map_or(ShaderRole::Fill, |s| s.role);
     let host = host(surface, view, role);
-    let scale = host.ns().window().map_or(2.0, |w| w.backingScaleFactor()) as f32;
+    let scale = crate::view::backing_scale_of(host.ns()) as f32;
     let size = host.state().frame.size;
     let mut state = view.state_mut();
     let Some(shader) = state.shader.as_mut() else {
@@ -1913,7 +1913,7 @@ impl NavOverlay {
     ) -> Option<NavOverlay> {
         surface.shaders.renderer()?;
         let layer = host.ns().layer()?;
-        let scale = host.ns().window().map_or(2.0, |w| w.backingScaleFactor());
+        let scale = crate::view::backing_scale_of(host.ns());
         let size = host.state().frame.size;
         let picture = picture_size(size, 0.0, scale)?;
         let mut view = surface_view();

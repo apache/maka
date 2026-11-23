@@ -2286,7 +2286,11 @@ impl WebHost {
                 control.dispatch_event(node, kind, payload);
             }
         });
-        let download = web_download::Transport::new(surface.mtm, emit);
+        // A download's redirects take the grant its navigations do.
+        let grant = access.clone();
+        let allows: web_download::Allows =
+            Rc::new(move |url: &str| navigation_allowed(grant.as_deref(), None, true, url));
+        let download = web_download::Transport::new(surface.mtm, emit, allows);
         let handler = WebHandler::new(
             surface.mtm,
             Emitter::new(surface, view),

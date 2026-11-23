@@ -791,3 +791,45 @@ fn content_a_component_does_not_place_is_not_shown() {
     let body = t.iter().find(|t| t.1 == "sheet body").unwrap().0;
     assert!(attached(&p, body), "the open sheet shows its content");
 }
+
+/// Shows what `app_info()` answers.
+#[component]
+fn Version() -> impl IntoElement {
+    let shown = match app_info() {
+        Some(info) => format!(
+            "{} {} {} ({}){}",
+            info.id.unwrap_or_default(),
+            info.name.unwrap_or_default(),
+            info.version.unwrap_or_default(),
+            info.build.map(|b| b.to_string()).unwrap_or_default(),
+            if info.development { " dev" } else { "" },
+        ),
+        None => "unknown".to_owned(),
+    };
+    view().child(text(shown))
+}
+
+#[test]
+fn a_rust_app_reads_its_app_info() {
+    let start = |root: Root| {
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let engine = Engine::start(
+            EngineConfig::new(root),
+            || ApproxTextEngine,
+            ChannelSink(tx),
+        )
+        .unwrap();
+        (engine, rx)
+    };
+    // As nsh's generated code sets it from `nsh.json` or the package.
+    let (_engine, rx) = start(Root::of::<Version>().app_info_json(
+        r#"{"id":"com.example.orders","name":"Orders","version":"2.1.0","build":7,"development":true}"#,
+    ));
+    let expected = "com.example.orders Orders 2.1.0 (7) dev";
+    let (text, _) = shown(&rx, Duration::from_secs(5), expected).unwrap();
+    assert_eq!(text, expected);
+    // A root the runner gave none.
+    let (_engine, rx) = start(Root::of::<Version>());
+    let (text, _) = shown(&rx, Duration::from_secs(5), "unknown").unwrap();
+    assert_eq!(text, "unknown");
+}

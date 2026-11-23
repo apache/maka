@@ -14,8 +14,8 @@ use crate::{
         TsTypes, module,
     },
     file_dialog,
-    geometry::{DevicePixels, Size},
-    picker::{self, FilePickRequest, PickRequest, PickedFile},
+    geometry::DevicePixels,
+    picker::{self, FilePickRequest, PickRequest, PickedFile, PickedImage},
 };
 
 /// The system's picker.
@@ -47,7 +47,7 @@ impl Picker {
         }
         Ok(Later::new(async move {
             let files = crate::prelude::pick_images(request).await;
-            Ok::<_, JsError>(files.into_iter().map(PickedImage).collect())
+            Ok::<_, JsError>(files.into_iter().map(PickedImage::new).collect())
         }))
     }
 
@@ -241,39 +241,5 @@ impl PickImagesOptions {
             PickFormat::Current => picker::PickFormat::Current,
         };
         Ok(request)
-    }
-}
-
-/// A picked image: its `File` and its size in pixels.
-pub(crate) struct PickedImage(PickedFile);
-
-impl JsValue for PickedImage {
-    fn ts_type(types: &mut TsTypes) -> String {
-        let size = Size::<DevicePixels>::ts_type(types);
-        types.declare("PickedImage", |_| {
-            format!(
-                "/** An image the user picked (`Picker.pickImages`). */\n\
-                 export interface PickedImage {{\n\
-                 \x20 /** The image's file: its name, type (`image/jpeg`), size in bytes and bytes. */\n\
-                 \x20 file: File;\n\
-                 \x20 /** Its size in pixels, as it shows (its orientation applied). */\n\
-                 \x20 size: {size};\n\
-                 }}"
-            )
-        })
-    }
-
-    fn from_js(value: JsIn<'_>) -> Result<Self, PropError> {
-        Err(value.expected("no value: a picked image is only returned"))
-    }
-
-    fn to_js<'a>(&self, host: &'a dyn JsHost) -> Result<JsOwned<'a>, PropError> {
-        let file = &self.0;
-        let owned = JsOwned::new(host, host.new_object()?);
-        let object = owned.get().raw();
-        let js_file = host.new_file(&file.data, &file.mime, &file.name, file.last_modified)?;
-        host.set_field(object, "file", js_file)?;
-        host.set_field(object, "size", file.size.to_js(host)?.into_raw())?;
-        Ok(owned)
     }
 }

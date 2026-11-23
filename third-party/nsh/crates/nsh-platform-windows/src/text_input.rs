@@ -10,9 +10,9 @@
 //! drags that scroll), multilevel undo, the clipboard, the IME in place
 //! with its candidate window at the caret, Text Services Framework input
 //! (dictation, the emoji panel, the touch keyboard, reconversion), spell
-//! checking (`autoCorrect`), password masking and scrolling. The field
-//! keeps it in plain text mode with one character and paragraph format,
-//! made from the config's font, color, alignment and line height.
+//! checking (`autoCorrect`), password masking and scrolling. The text
+//! keeps one character and paragraph format, RichEdit's defaults, which the
+//! field makes from the config's font, color, alignment and line height.
 //!
 //! The view draws the decoration (background, border, corners) from the
 //! core's style like any other view; the field ([`InputState`], a
@@ -55,7 +55,7 @@
 //! `VK_PROCESSKEY`), so a return that commits a composition (CJK input
 //! methods) submits nothing. Tab moves between fields, never into the text.
 //! RichEdit's formatting shortcuts (Ctrl+B, Ctrl+E, ...) are never sent:
-//! the text is plain, and the app's shortcuts get those keys.
+//! the text keeps one format, and the app's shortcuts get those keys.
 //!
 //! Pastes go through the field (`onPaste`, `pasteBehavior`, line breaks of
 //! a single line turned into spaces), then into RichEdit as a replacement
@@ -87,8 +87,13 @@ use windows::{
         Foundation::{COLORREF, HWND, LPARAM, LRESULT, RECT, WPARAM},
         Graphics::{
             Direct2D::{
-                Common::D2D1_COMPOSITE_MODE_SOURCE_OVER, D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT,
-                D2D1_INTERPOLATION_MODE_NEAREST_NEIGHBOR, ID2D1CommandList,
+                Common::{
+                    D2D_SIZE_U, D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COMPOSITE_MODE_SOURCE_OVER,
+                    D2D1_PIXEL_FORMAT,
+                },
+                D2D1_BITMAP_OPTIONS_NONE, D2D1_BITMAP_PROPERTIES1,
+                D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT, D2D1_INTERPOLATION_MODE_NEAREST_NEIGHBOR,
+                ID2D1CommandList,
             },
             DirectWrite::{
                 DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_ITALIC, DWRITE_FONT_STYLE_NORMAL,
@@ -97,22 +102,23 @@ use windows::{
                 DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_TEXT_METRICS,
                 DWRITE_TRIMMING, DWRITE_TRIMMING_GRANULARITY_CHARACTER,
                 DWRITE_WORD_WRAPPING_EMERGENCY_BREAK, DWRITE_WORD_WRAPPING_NO_WRAP,
-                IDWriteTextFormat, IDWriteTextLayout,
+                IDWriteTextFormat, IDWriteTextFormat1, IDWriteTextLayout,
             },
+            Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM,
         },
         UI::{
             Controls::RichEdit::{
                 CFE_ITALIC, CFM_BOLD, CFM_COLOR, CFM_FACE, CFM_ITALIC, CFM_SIZE, CFM_SPACING,
                 CFM_WEIGHT, EM_CANREDO, EM_EXSETSEL, EM_GETLANGOPTIONS, EM_GETSCROLLPOS, EM_REDO,
                 EM_SETEDITSTYLE, EM_SETEVENTMASK, EM_SETLANGOPTIONS, EM_SETSCROLLPOS,
-                EM_SETTEXTMODE, EM_SETTYPOGRAPHYOPTIONS, ENM_CHANGE, ENM_ENDCOMPOSITION,
-                ENM_SELCHANGE, ENM_STARTCOMPOSITION, IMF_SPELLCHECKING, IMF_TKBPREDICTION,
-                PFA_CENTER, PFA_JUSTIFY, PFA_LEFT, PFA_RIGHT, PFM_ALIGNMENT, PFM_LINESPACING,
-                PFM_RTLPARA, SES_USECTF, TM_MULTICODEPAGE, TM_MULTILEVELUNDO, TM_PLAINTEXT,
-                TO_ADVANCEDTYPOGRAPHY, TXTBIT_AUTOWORDSEL, TXTBIT_CHARFORMATCHANGE,
-                TXTBIT_CLIENTRECTCHANGE, TXTBIT_D2DDWRITE, TXTBIT_DISABLEDRAG,
-                TXTBIT_HIDESELECTION, TXTBIT_MAXLENGTHCHANGE, TXTBIT_MULTILINE,
-                TXTBIT_PARAFORMATCHANGE, TXTBIT_READONLY, TXTBIT_SCROLLBARCHANGE,
+                EM_SETTEXTMODE, EM_SETTYPOGRAPHYOPTIONS, EM_STOPGROUPTYPING, ENM_CHANGE,
+                ENM_ENDCOMPOSITION, ENM_SELCHANGE, ENM_STARTCOMPOSITION, IMF_IMEALWAYSSENDNOTIFY,
+                IMF_SPELLCHECKING, IMF_TKBPREDICTION, PFA_CENTER, PFA_JUSTIFY, PFA_LEFT, PFA_RIGHT,
+                PFM_ALIGNMENT, PFM_LINESPACING, PFM_RTLPARA, SES_USECTF, TM_MULTICODEPAGE,
+                TM_MULTILEVELUNDO, TM_RICHTEXT, TO_ADVANCEDTYPOGRAPHY, TXTBIT_AUTOWORDSEL,
+                TXTBIT_CHARFORMATCHANGE, TXTBIT_CLIENTRECTCHANGE, TXTBIT_D2DDWRITE,
+                TXTBIT_DISABLEDRAG, TXTBIT_HIDESELECTION, TXTBIT_MAXLENGTHCHANGE, TXTBIT_MULTILINE,
+                TXTBIT_PARAFORMATCHANGE, TXTBIT_READONLY, TXTBIT_RICHTEXT, TXTBIT_SCROLLBARCHANGE,
                 TXTBIT_USEPASSWORD, TXTBIT_WORDWRAP,
             },
             Input::{
@@ -144,7 +150,7 @@ use crate::{
     render::{DrawCx, rect_f},
     richedit::{self, Editor, Props},
     surface::Surface,
-    view::{Hosted, ItemPointer, NshView},
+    view::{Hosted, ItemPointer, NshView, WeakView},
 };
 
 /// `EM_SETSEL`.
@@ -178,8 +184,15 @@ pub(crate) struct InputState {
     surface: u64,
     /// The input view's node (`EngineControl::input_scroll`).
     id: NodeId,
+    /// Weak references back to the view and self, used when recreating
+    /// RichEdit to switch between DirectWrite and GDI custom-font rendering.
+    view: WeakView,
+    me: std::rc::Weak<InputState>,
     /// The control (`None` when RichEdit could not be made).
-    editor: Option<Editor>,
+    editor: RefCell<Option<Editor>>,
+    /// True while RichEdit runs in GDI mode (`TXTBIT_D2DDWRITE` cleared) so it
+    /// can render an app-registered memory font loaded via `AddFontMemResourceEx`.
+    use_gdi: Cell<bool>,
     config: RefCell<InputConfig>,
     /// A configuration was applied (auto focus happens on the first).
     configured: Cell<bool>,
@@ -221,15 +234,20 @@ pub(crate) struct InputState {
     active: Cell<bool>,
     /// The blinking caret's phase.
     caret_on: Cell<bool>,
-    /// The scroll of several lines as last reported to a built-in bar
-    /// (`InputConfig::replaced`): offset, text height, width, viewport
+    /// The scroll of several lines as last reported to a bar of the app's
+    /// (`InputConfig::report_scroll`): offset, text height, width, viewport
     /// height. `None` until reported (again).
     reported_scroll: Cell<Option<(f32, f32, f32, f32)>>,
     /// A press is selecting.
     dragging: Cell<bool>,
+    /// The press that focused the field selects all its text when it ends
+    /// (`selectTextOnFocus`), unless it made a selection itself.
+    select_on_up: Cell<bool>,
     /// The text's format (the placeholder's and the line's height), made
-    /// from the config's font.
-    format: RefCell<Option<IDWriteTextFormat>>,
+    /// from the config's font at the recorded custom-font generation.
+    format: RefCell<Option<(u64, IDWriteTextFormat)>>,
+    /// The custom-font generation last applied to RichEdit's character format.
+    font_generation: Cell<u64>,
     /// The placeholder, laid out.
     placeholder: RefCell<Option<IDWriteTextLayout>>,
     /// What RichEdit drew last (in the content box's points), shown again
@@ -237,61 +255,87 @@ pub(crate) struct InputState {
     drawn: RefCell<Option<ID2D1CommandList>>,
 }
 
+/// Creates and configures a windowless RichEdit control with `bits`.
+fn make_editor(
+    hwnd: HWND,
+    id: NodeId,
+    view: WeakView,
+    weak: std::rc::Weak<InputState>,
+    bits: u32,
+) -> Option<Editor> {
+    let redraw = {
+        let view = view.clone();
+        move || {
+            if let Some(view) = view.upgrade() {
+                view.changed();
+            }
+        }
+    };
+    let after_timer = move || {
+        if let (Some(view), Some(input)) = (view.upgrade(), weak.upgrade())
+            && let Some(surface) = Surface::by_key(input.surface)
+        {
+            process(&surface, &view, &input);
+        }
+    };
+    let editor = Editor::new(
+        hwnd,
+        Props {
+            bits,
+            ..Props::default()
+        },
+        Box::new(redraw),
+        Box::new(after_timer),
+    );
+    if let Some(e) = &editor {
+        // The text mode (only while empty), the notifications the
+        // field follows, DirectWrite's shaping.
+        e.send(EM_SETTEXTMODE, TEXT_MODE as usize, 0);
+        let mask = ENM_CHANGE | ENM_SELCHANGE | ENM_STARTCOMPOSITION | ENM_ENDCOMPOSITION;
+        e.send(EM_SETEVENTMASK, 0, mask as isize);
+        // Text Services Framework input: dictation, the emoji
+        // panel, the touch keyboard, reconversion, spelling.
+        e.send(EM_SETEDITSTYLE, SES_USECTF as usize, SES_USECTF as isize);
+        // Without `IMF_IMEALWAYSSENDNOTIFY`, RichEdit suppresses `EN_CHANGE`
+        // and `EN_SELCHANGE` while an IME composes undetermined text, leaving
+        // `onCompositionChange` (and a `RichEditor`'s inline preedit) empty
+        // until commit.
+        let (lang, _) = e.send(EM_GETLANGOPTIONS, 0, 0);
+        e.send(
+            EM_SETLANGOPTIONS,
+            0,
+            (lang.0 as u32 | IMF_IMEALWAYSSENDNOTIFY) as isize,
+        );
+        e.send(
+            EM_SETTYPOGRAPHYOPTIONS,
+            TO_ADVANCEDTYPOGRAPHY as usize,
+            TO_ADVANCEDTYPOGRAPHY as isize,
+        );
+        e.take_notes();
+    } else {
+        log::error!("no RichEdit for input {id}");
+    }
+    editor
+}
+
 impl InputState {
     fn new(surface: &Surface, view: &NshView) -> Rc<Self> {
         Rc::new_cyclic(|weak: &std::rc::Weak<InputState>| {
-            let hwnd = surface.hwnd();
-            let redraw = {
-                let view = view.downgrade();
-                move || {
-                    if let Some(view) = view.upgrade() {
-                        view.changed();
-                    }
-                }
-            };
-            let after_timer = {
-                let view = view.downgrade();
-                let weak = weak.clone();
-                move || {
-                    if let (Some(view), Some(input)) = (view.upgrade(), weak.upgrade())
-                        && let Some(surface) = Surface::by_key(input.surface)
-                    {
-                        process(&surface, &view, &input);
-                    }
-                }
-            };
-            let editor = Editor::new(
-                hwnd,
-                Props {
-                    bits: base_bits(&InputConfig::default()),
-                    ..Props::default()
-                },
-                Box::new(redraw),
-                Box::new(after_timer),
+            let weak_view = view.downgrade();
+            let editor = make_editor(
+                surface.hwnd(),
+                view.id(),
+                weak_view.clone(),
+                weak.clone(),
+                base_bits(&InputConfig::default()),
             );
-            if let Some(e) = &editor {
-                // Plain text with many undo levels (only while empty), the
-                // notifications the field follows, DirectWrite's shaping.
-                let mode = TM_PLAINTEXT.0 | TM_MULTILEVELUNDO.0 | TM_MULTICODEPAGE.0;
-                e.send(EM_SETTEXTMODE, mode as usize, 0);
-                let mask = ENM_CHANGE | ENM_SELCHANGE | ENM_STARTCOMPOSITION | ENM_ENDCOMPOSITION;
-                e.send(EM_SETEVENTMASK, 0, mask as isize);
-                // Text Services Framework input: dictation, the emoji
-                // panel, the touch keyboard, reconversion, spelling.
-                e.send(EM_SETEDITSTYLE, SES_USECTF as usize, SES_USECTF as isize);
-                e.send(
-                    EM_SETTYPOGRAPHYOPTIONS,
-                    TO_ADVANCEDTYPOGRAPHY as usize,
-                    TO_ADVANCEDTYPOGRAPHY as isize,
-                );
-                e.take_notes();
-            } else {
-                log::error!("no RichEdit for input {}", view.id());
-            }
             InputState {
                 surface: surface.key(),
                 id: view.id(),
-                editor,
+                view: weak_view,
+                me: weak.clone(),
+                editor: RefCell::new(editor),
+                use_gdi: Cell::new(false),
                 config: RefCell::default(),
                 configured: Cell::new(false),
                 #[cfg(feature = "terminal")]
@@ -314,7 +358,9 @@ impl InputState {
                 caret_on: Cell::new(true),
                 reported_scroll: Cell::new(None),
                 dragging: Cell::new(false),
+                select_on_up: Cell::new(false),
                 format: RefCell::new(None),
+                font_generation: Cell::new(crate::text::font_generation()),
                 placeholder: RefCell::new(None),
                 drawn: RefCell::new(None),
             }
@@ -329,21 +375,23 @@ impl InputState {
         self.config.borrow().multiline
     }
 
+    fn with_editor<R>(&self, f: impl FnOnce(&Editor) -> R) -> Option<R> {
+        let editor = self.editor.borrow();
+        editor.as_ref().map(f)
+    }
+
     /// Sends RichEdit a message (nothing without a control).
     fn send(&self, msg: u32, wparam: usize, lparam: isize) -> (LRESULT, bool) {
-        match &self.editor {
-            Some(e) => e.send(msg, wparam, lparam),
-            None => (LRESULT(0), false),
-        }
+        self.with_editor(|e| e.send(msg, wparam, lparam))
+            .unwrap_or((LRESULT(0), false))
     }
 
     /// The text, its line breaks `\n`, in UTF-16 units.
     fn units(&self) -> Vec<u16> {
-        let Some(e) = &self.editor else {
+        let Some(mut units) = self.with_editor(Editor::text_units) else {
             return Vec::new();
         };
         // RichEdit ends paragraphs with `\r`, one unit as `\n` is.
-        let mut units = e.text_units();
         for u in &mut units {
             if *u == u16::from(b'\r') {
                 *u = u16::from(b'\n');
@@ -357,7 +405,7 @@ impl InputState {
     }
 
     fn selection(&self) -> (u32, u32) {
-        self.editor.as_ref().map_or((0, 0), Editor::selection)
+        self.with_editor(Editor::selection).unwrap_or((0, 0))
     }
 
     /// What of `text` may replace the selection: cut to what `maxLength`
@@ -395,11 +443,11 @@ impl InputState {
     }
 
     fn set_limit(&self, units: u32) {
-        if let Some(e) = &self.editor
-            && e.props().max_length != units
-        {
-            e.update(|p| p.max_length = units, TXTBIT_MAXLENGTHCHANGE);
-        }
+        self.with_editor(|e| {
+            if e.props().max_length != units {
+                e.update(|p| p.max_length = units, TXTBIT_MAXLENGTHCHANGE);
+            }
+        });
     }
 
     /// Sets RichEdit's limit for the text it holds now
@@ -426,20 +474,85 @@ impl InputState {
         }
     }
 
+    /// Several lines too narrow for a character: the rich editor's sink, a
+    /// point wide at its caret, which takes the typing and the input
+    /// methods of an editor that draws its own text. Wrapped, RichEdit
+    /// puts every character on a line of its own there, and input methods
+    /// open their candidates by what they compose, which would go down a
+    /// line with every character typed. Such a field keeps its text
+    /// unwrapped and its caret at its left edge
+    /// ([`InputState::keep_left`]).
+    fn narrow(&self) -> bool {
+        let width = self.size.get().0;
+        let config = self.config.borrow();
+        config.multiline && width > 0.0 && width < config.style.font_size.0
+    }
+
+    /// The property bits: the config's, unwrapped while the field is
+    /// narrow, and without `TXTBIT_D2DDWRITE` while rendering a GDI-loaded
+    /// custom memory font.
+    fn bits(&self) -> u32 {
+        let mut bits = base_bits(&self.config.borrow());
+        if self.narrow() {
+            bits &= !TXTBIT_WORDWRAP;
+        }
+        if self.use_gdi.get() {
+            bits &= !TXTBIT_D2DDWRITE;
+        }
+        bits
+    }
+
+    /// A narrow field scrolls the start of what an input method composes,
+    /// else the caret, to its left edge, which is where the field is: a
+    /// composition starts there and runs on along the line, as in a field
+    /// of any width, whatever the input method places its candidates by
+    /// (the composition's start, its box or the caret). RichEdit scrolls
+    /// several lines sideways only when told to (no `ES_AUTOHSCROLL`), so
+    /// the composition stays put as it grows; it keeps the caret's line in
+    /// view itself.
+    fn keep_left(&self) {
+        if !self.narrow() {
+            return;
+        }
+        let at = match self.composing.get() {
+            Some((before, _)) => before,
+            None => self.selection().1,
+        };
+        self.with_editor(|e| e.scroll_to_left_edge(at));
+    }
+
+    fn keep_left_on(&self, e: &Editor) {
+        if !self.narrow() {
+            return;
+        }
+        let at = match self.composing.get() {
+            Some((before, _)) => before,
+            None => e.selection().1,
+        };
+        e.scroll_to_left_edge(at);
+    }
+
     /// The text format of the config's font.
     fn format(&self) -> Option<IDWriteTextFormat> {
-        if let Some(f) = &*self.format.borrow() {
+        let generation = crate::text::font_generation();
+        if let Some((saved, f)) = &*self.format.borrow()
+            && *saved == generation
+        {
             return Some(f.clone());
         }
         let config = self.config.borrow();
         let s = &config.style;
-        let family = HSTRING::from(&*family(s.font_family.map(|f| f.name()).as_deref()));
-        // SAFETY: COM calls with valid strings.
+        let resolved = crate::text::resolve_family(
+            s.font_family.map(|f| f.name()).as_deref(),
+            s.font_weight,
+            s.italic,
+        );
+        // SAFETY: COM calls with valid strings and live objects.
         let format = unsafe {
             crate::gfx::dwrite()
                 .CreateTextFormat(
-                    &family,
-                    None,
+                    &resolved.name,
+                    resolved.collection.as_ref(),
                     DWRITE_FONT_WEIGHT(s.font_weight as i32),
                     if s.italic {
                         DWRITE_FONT_STYLE_ITALIC
@@ -452,6 +565,12 @@ impl InputState {
                 )
                 .ok()?
         };
+        if let Some(fallback) = &resolved.fallback
+            && let Ok(format1) = format.cast::<IDWriteTextFormat1>()
+        {
+            // SAFETY: COM call on the new format with a live fallback object.
+            let _ = unsafe { format1.SetFontFallback(fallback) };
+        }
         if config.multiline && s.line_height.0 > 0.0 {
             // SAFETY: a COM call on the new format.
             let _ = unsafe {
@@ -462,7 +581,7 @@ impl InputState {
                 )
             };
         }
-        *self.format.borrow_mut() = Some(format.clone());
+        *self.format.borrow_mut() = Some((generation, format.clone()));
         Some(format)
     }
 
@@ -544,12 +663,14 @@ impl InputState {
     /// farthest it goes (the last line at the content box's bottom).
     /// Clamp the wheel to the text's height rather than scrolling past its end.
     fn text_scroll(&self) -> Option<(i32, i32)> {
-        let e = self.editor.as_ref()?;
-        let mut at = windows::Win32::Foundation::POINT::default();
-        e.send(EM_GETSCROLLPOS, 0, &mut at as *mut _ as isize);
         let client = self.client();
-        let height = e.text_height(client.right - client.left)?;
-        Some((at.y, (height - (client.bottom - client.top)).max(0)))
+        self.with_editor(|e| {
+            let mut at = windows::Win32::Foundation::POINT::default();
+            e.send(EM_GETSCROLLPOS, 0, &mut at as *mut _ as isize);
+            let height = e.text_height(client.right - client.left)?;
+            Some((at.y, (height - (client.bottom - client.top)).max(0)))
+        })
+        .flatten()
     }
 
     /// RichEdit's client rectangle: the content box in the window's client
@@ -584,29 +705,128 @@ impl InputState {
         self.set_size((content.size.width.0, content.size.height.0));
         let scale_changed = self.scale.replace(s) != s;
         self.origin.set(origin);
-        if let Some(e) = &self.editor {
-            e.show_in(crate::app_window::hwnd_showing(&surface, view));
-        }
+        let shown = crate::app_window::hwnd_showing(&surface, view);
+        self.with_editor(|e| e.show_in(shown));
         if scale_changed {
             self.apply_formats();
         }
         self.update_client();
     }
 
-    /// Tells RichEdit its client rectangle if it changed.
+    /// Tells RichEdit its client rectangle if it changed, and whether the
+    /// text wraps, which changes as the field becomes narrow or stops
+    /// being narrow.
     fn update_client(&self) {
+        self.with_editor(|e| self.update_client_on(e));
+    }
+
+    fn update_client_on(&self, e: &Editor) {
         let client = self.client();
-        if let Some(e) = &self.editor
-            && e.props().client != client
-        {
+        if e.props().client != client {
             e.update(|p| p.client = client, TXTBIT_CLIENTRECTCHANGE);
         }
+        let bits = self.bits();
+        if e.props().bits != bits {
+            e.update(|p| p.bits = bits, 0);
+            self.keep_left_on(e);
+        }
+    }
+
+    /// Switches RichEdit between DirectWrite (`TXTBIT_D2DDWRITE`) and GDI
+    /// (`TxDraw`) when the resolved font changes between system fonts and
+    /// app-registered custom fonts. RichEdit commits to its rendering backend
+    /// at `CreateTextServices` time, so changing the mode recreates the
+    /// control while preserving its text, selection, scroll position and focus.
+    fn ensure_editor_mode(&self, use_gdi: bool) {
+        if self.use_gdi.get() == use_gdi {
+            return;
+        }
+        let Some(surface) = Surface::by_key(self.surface) else {
+            return;
+        };
+        let text = self.text();
+        let state = self.with_editor(|e| {
+            let mut scroll = windows::Win32::Foundation::POINT::default();
+            e.send(EM_GETSCROLLPOS, 0, &mut scroll as *mut _ as isize);
+            (e.selection(), scroll)
+        });
+        let Some((sel, scroll_pos)) = state else {
+            self.use_gdi.set(use_gdi);
+            return;
+        };
+        let shown_in = self.view.upgrade().map_or(surface.hwnd(), |v| {
+            crate::app_window::hwnd_showing(&surface, &v)
+        });
+        let mut bits = base_bits(&self.config.borrow());
+        if self.narrow() {
+            bits &= !TXTBIT_WORDWRAP;
+        }
+        if use_gdi {
+            bits &= !TXTBIT_D2DDWRITE;
+        }
+        let Some(new_editor) = make_editor(
+            surface.hwnd(),
+            self.id,
+            self.view.clone(),
+            self.me.clone(),
+            bits,
+        ) else {
+            return;
+        };
+        new_editor.show_in(shown_in);
+        self.use_gdi.set(use_gdi);
+        self.composing.set(None);
+        // Drop the previous editor before activating the replacement so its
+        // timers and host state are cleaned up first.
+        *self.editor.borrow_mut() = Some(new_editor);
+        self.with_editor(|e| {
+            if !text.is_empty() {
+                self.programmatic.set(true);
+                e.set_text(&text);
+                self.programmatic.set(false);
+            }
+            let mut range = windows::Win32::UI::Controls::RichEdit::CHARRANGE {
+                cpMin: sel.0.min(i32::MAX as u32) as i32,
+                cpMax: sel.1.min(i32::MAX as u32) as i32,
+            };
+            e.send(EM_EXSETSEL, 0, &mut range as *mut _ as isize);
+            if scroll_pos.x != 0 || scroll_pos.y != 0 {
+                let mut pt = scroll_pos;
+                e.send(EM_SETSCROLLPOS, 0, &mut pt as *mut _ as isize);
+            }
+            if self.focused.get() && self.active.get() {
+                e.set_focus(true);
+            }
+            e.take_notes();
+        });
+    }
+
+    fn resolve_font(&self) -> (u64, crate::text::ResolvedFamily) {
+        let generation = crate::text::font_generation();
+        let config = self.config.borrow();
+        let style = &config.style;
+        let resolved = crate::text::resolve_family(
+            style.font_family.map(|f| f.name()).as_deref(),
+            style.font_weight,
+            style.italic,
+        );
+        (generation, resolved)
     }
 
     /// Makes RichEdit's formats and properties from the config at the
     /// current scale.
     fn apply_formats(&self) {
-        let Some(e) = &self.editor else { return };
+        let (generation, resolved) = self.resolve_font();
+        self.ensure_editor_mode(resolved.gdi_custom);
+        self.with_editor(|e| self.apply_formats_to(e, &resolved, generation));
+    }
+
+    fn apply_formats_to(
+        &self,
+        e: &Editor,
+        resolved: &crate::text::ResolvedFamily,
+        generation: u64,
+    ) {
         let Some(surface) = Surface::by_key(self.surface) else {
             return;
         };
@@ -616,9 +836,8 @@ impl InputState {
         let config = self.config.borrow();
         let style = &config.style;
         let color = self.anim_color.get().unwrap_or(style.color);
-        let face = family(style.font_family.map(|f| f.name()).as_deref());
-        let bits = base_bits(&config);
-        let limit = self.limit();
+        let bits = self.bits();
+        let limit = self.limit_of(e);
         e.update(
             |p| {
                 let cf = &mut p.char_format;
@@ -638,15 +857,7 @@ impl InputState {
                 };
                 cf.Base.crTextColor = colorref(color);
                 cf.sSpacing = (style.letter_spacing.0 * s * twips).round() as i16;
-                cf.Base.szFaceName = [0; 32];
-                for (d, u) in cf
-                    .Base
-                    .szFaceName
-                    .iter_mut()
-                    .zip(face.encode_utf16().take(31))
-                {
-                    *d = u;
-                }
+                copy_face_name(&mut cf.Base.szFaceName, &resolved.gdi_name);
                 let pf = &mut p.para_format;
                 pf.Base.dwMask = PFM_ALIGNMENT | PFM_LINESPACING | PFM_RTLPARA;
                 pf.Base.wAlignment = match config.align {
@@ -678,12 +889,13 @@ impl InputState {
                 | TXTBIT_MAXLENGTHCHANGE
                 | TXTBIT_SCROLLBARCHANGE,
         );
+        self.font_generation.set(generation);
         // Spelling (and the touch keyboard's suggestions) where the app
         // wants corrections: never in a password, shown or not.
         let spell =
             config.auto_correct && !config.secure && !config.visible_password() && config.editable;
         drop(config);
-        let (options, _) = self.send(EM_GETLANGOPTIONS, 0, 0);
+        let (options, _) = e.send(EM_GETLANGOPTIONS, 0, 0);
         let flags = IMF_SPELLCHECKING | IMF_TKBPREDICTION;
         let want = if spell {
             options.0 as u32 | flags
@@ -691,23 +903,40 @@ impl InputState {
             options.0 as u32 & !flags
         };
         if want != options.0 as u32 {
-            self.send(EM_SETLANGOPTIONS, 0, want as isize);
+            e.send(EM_SETLANGOPTIONS, 0, want as isize);
         }
-        self.update_client();
+        self.update_client_on(e);
+    }
+
+    fn limit_of(&self, e: &Editor) -> u32 {
+        let Some(max) = self.config.borrow().max_length else {
+            return i32::MAX as u32;
+        };
+        let mut units = e.text_units();
+        for u in &mut units {
+            if *u == u16::from(b'\r') {
+                *u = u16::from(b'\n');
+            }
+        }
+        let room = (max as usize).saturating_sub(char_count(&units));
+        (units.len() + room).min(i32::MAX as usize) as u32
     }
 
     /// Reports how far several lines scrolled, the text's height and the
-    /// viewport's to the built-in bar that takes the place of an
-    /// indicator (`InputConfig::replaced`), when any of them changed since
+    /// viewport's to a bar of the app's that follows them
+    /// (`InputConfig::report_scroll`), when any of them changed since
     /// last reported.
     fn report_scroll(&self) {
+        self.with_editor(|e| self.report_scroll_on(e));
+    }
+
+    fn report_scroll_on(&self, e: &Editor) {
         {
             let config = self.config.borrow();
-            if !config.replaced || !config.multiline {
+            if !config.report_scroll || !config.multiline {
                 return;
             }
         }
-        let Some(e) = &self.editor else { return };
         let (w, h) = self.size.get();
         if w <= 0.0 || h <= 0.0 {
             return;
@@ -741,15 +970,19 @@ impl InputState {
 
     /// The caret in the content box (points: x, y, width, height).
     fn caret_rect(&self) -> Option<(f32, f32, f32, f32)> {
-        let caret = self.editor.as_ref()?.caret();
+        self.with_editor(|e| self.caret_rect_on(e))
+    }
+
+    fn caret_rect_on(&self, e: &Editor) -> (f32, f32, f32, f32) {
+        let caret = e.caret();
         let (ox, oy) = self.origin.get();
         let s = self.scale.get().max(0.01);
-        Some((
+        (
             (caret.x - ox) as f32 / s,
             (caret.y - oy) as f32 / s,
             caret.width as f32 / s,
             caret.height as f32 / s,
-        ))
+        )
     }
 
     /// Records what RichEdit draws, in the content box's points, as
@@ -761,6 +994,67 @@ impl InputState {
         let (ox, oy) = self.origin.get();
         let s = cx.scale.max(0.01);
         let bounds = self.client();
+        if self.use_gdi.get() {
+            let bw = (bounds.right - bounds.left).max(0) as u32;
+            let bh = (bounds.bottom - bounds.top).max(0) as u32;
+            let Some(bgra) = e.draw_gdi_bgra(bounds) else {
+                return;
+            };
+            let list = crate::decor::layer::with_context(cx.gfx, |dc| {
+                // SAFETY: COM calls on a context nobody else draws with;
+                // `bgra` holds `bw * 4 * bh` bytes and outlives `CreateBitmap`.
+                unsafe {
+                    let bmp_props = D2D1_BITMAP_PROPERTIES1 {
+                        pixelFormat: D2D1_PIXEL_FORMAT {
+                            format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                            alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
+                        },
+                        dpiX: 96.0 * s,
+                        dpiY: 96.0 * s,
+                        bitmapOptions: D2D1_BITMAP_OPTIONS_NONE,
+                        colorContext: std::mem::ManuallyDrop::new(None),
+                    };
+                    let bmp = dc
+                        .CreateBitmap(
+                            D2D_SIZE_U {
+                                width: bw,
+                                height: bh,
+                            },
+                            Some(bgra.as_ptr().cast()),
+                            bw * 4,
+                            &bmp_props,
+                        )
+                        .ok()?;
+                    let list = dc.CreateCommandList().ok()?;
+                    dc.SetTarget(&list);
+                    dc.SetDpi(96.0 * s, 96.0 * s);
+                    dc.BeginDraw();
+                    dc.SetTransform(&Matrix3x2::identity());
+                    let dest = rect_f(
+                        (bounds.left - ox) as f32 / s,
+                        (bounds.top - oy) as f32 / s,
+                        bw as f32 / s,
+                        bh as f32 / s,
+                    );
+                    dc.DrawBitmap(
+                        &bmp,
+                        Some(&dest),
+                        1.0,
+                        D2D1_INTERPOLATION_MODE_NEAREST_NEIGHBOR,
+                        None,
+                        None,
+                    );
+                    let ended = dc.EndDraw(None, None);
+                    dc.SetTarget(None);
+                    (ended.is_ok() && list.Close().is_ok()).then_some(list)
+                }
+            })
+            .flatten();
+            if let Some(list) = list {
+                self.drawn.replace(Some(list));
+            }
+            return;
+        }
         let list = crate::decor::layer::with_context(cx.gfx, |dc| {
             // SAFETY: COM calls on a context nobody else draws with;
             // `EndDraw` follows `BeginDraw`, the list is closed before use.
@@ -798,17 +1092,31 @@ impl InputState {
 
 impl Hosted for InputState {
     fn draw(&self, cx: &mut DrawCx<'_>, size: (f32, f32)) {
+        self.set_size(size);
+        let fonts_changed = self.font_generation.get() != crate::text::font_generation();
+        let scale_changed = self.scale.get() != cx.scale;
+        let resolved = if fonts_changed || scale_changed {
+            if fonts_changed {
+                self.format.borrow_mut().take();
+                self.placeholder.borrow_mut().take();
+            }
+            let (generation, resolved) = self.resolve_font();
+            self.ensure_editor_mode(resolved.gdi_custom);
+            Some((generation, resolved))
+        } else {
+            None
+        };
+        let editor = self.editor.borrow();
+        let Some(e) = editor.as_ref() else { return };
         // Inside the window's paint: what RichEdit invalidates while it
         // is told its size and drawn is drawn now (asking for another
         // paint here would be lost).
-        let _drawing = self.editor.as_ref().map(|e| e.drawing());
-        self.set_size(size);
-        if self.scale.get() != cx.scale {
+        let _drawing = e.drawing();
+        if let Some((generation, resolved)) = resolved {
             self.scale.set(cx.scale);
-            self.apply_formats();
+            self.apply_formats_to(e, &resolved, generation);
         }
-        self.update_client();
-        let Some(e) = &self.editor else { return };
+        self.update_client_on(e);
         self.record(cx, e);
         let (w, h) = size;
         let multiline = self.multiline();
@@ -821,7 +1129,7 @@ impl Hosted for InputState {
         }
         // Every change of the scroll, the text or the size draws again, so
         // a built-in bar hears of each here.
-        self.report_scroll();
+        self.report_scroll_on(e);
         let config = self.config.borrow();
         let color = self.anim_color.get().unwrap_or(config.style.color);
         let empty = e.text_units().is_empty();
@@ -885,7 +1193,8 @@ impl Hosted for InputState {
             && caret.shown
             && config.editable
             && !config.caret_hidden;
-        if caret_shown && let Some((x, y, cw, ch)) = self.caret_rect() {
+        if caret_shown {
+            let (x, y, cw, ch) = self.caret_rect_on(e);
             // On whole pixels, so that the caret stays sharp.
             let snap = |v: f32| (v * cx.scale).round() / cx.scale;
             let tint = config.caret_color.unwrap_or(color);
@@ -912,14 +1221,25 @@ impl Hosted for InputState {
     }
 }
 
-/// The property bits of a config (DirectWrite drawing, lines, read-only,
-/// password); RichEdit's own drag and drop stays off (the window is the
-/// drop target of files).
+/// RichEdit's text mode: rich text with many undo levels. Plain text mode
+/// would suit the field's single format, but it ignores the paragraph
+/// format's line spacing, which then drew lines at the font's height
+/// instead of the line height the field is laid out with (#2655). The text
+/// still keeps one format: the field never forwards the formatting
+/// shortcuts, pastes insert plain text and RichEdit's drag and drop is off.
+const TEXT_MODE: i32 = TM_RICHTEXT.0 | TM_MULTILEVELUNDO.0 | TM_MULTICODEPAGE.0;
+
+/// The property bits of a config (DirectWrite drawing, rich text as
+/// [`TEXT_MODE`] says, lines, read-only, password); RichEdit's own drag and
+/// drop stays off (the window is the drop target of files).
 fn base_bits(config: &InputConfig) -> u32 {
     // The selection shows only while the field has the keys, as on the
     // other platforms.
-    let mut bits =
-        TXTBIT_D2DDWRITE | TXTBIT_AUTOWORDSEL | TXTBIT_DISABLEDRAG | TXTBIT_HIDESELECTION;
+    let mut bits = TXTBIT_D2DDWRITE
+        | TXTBIT_RICHTEXT
+        | TXTBIT_AUTOWORDSEL
+        | TXTBIT_DISABLEDRAG
+        | TXTBIT_HIDESELECTION;
     if config.multiline {
         bits |= TXTBIT_MULTILINE | TXTBIT_WORDWRAP;
     }
@@ -950,25 +1270,26 @@ fn metrics(layout: &IDWriteTextLayout) -> DWRITE_TEXT_METRICS {
     m
 }
 
-/// The first family of a `fontFamily` list as DirectWrite knows it: the
-/// generic names map to Windows' fonts, the UI font when there is none.
-fn family(name: Option<&str>) -> String {
-    thread_local! {
-        static UI: std::sync::Arc<str> = crate::text::ui_family();
-    }
-    let first = name
-        .into_iter()
-        .flat_map(|n| n.split(','))
-        .map(|f| f.trim().trim_matches(['"', '\'']))
-        .find(|f| !f.is_empty());
-    match first {
-        None | Some("system-ui" | "sans-serif" | "ui-sans-serif" | "-apple-system") => {
-            UI.with(|u| u.to_string())
+/// Copies `face` into RichEdit's 32-unit `szFaceName` buffer, keeping a
+/// trailing NUL and never splitting a UTF-16 surrogate pair.
+fn copy_face_name(dst: &mut [u16; 32], face: &str) {
+    *dst = [0; 32];
+    let limit = dst.len() - 1;
+    let mut pos = 0;
+    for ch in face.chars() {
+        let n = ch.len_utf16();
+        if pos + n > limit {
+            break;
         }
-        Some("ui-monospace" | "monospace") => "Consolas".to_owned(),
-        Some("ui-serif" | "serif") => "Times New Roman".to_owned(),
-        Some(f) => f.to_owned(),
+        ch.encode_utf16(&mut dst[pos..pos + n]);
+        pos += n;
     }
+}
+
+/// The resolved face name of a `fontFamily` list at regular weight.
+#[cfg(test)]
+fn family(name: Option<&str>) -> String {
+    crate::text::resolve_family(name, 400, false).gdi_name
 }
 
 fn scroll_flags(config: &InputConfig) -> u32 {
@@ -1055,9 +1376,7 @@ pub(crate) fn stopped(surface: &Surface) {
         input.focused.set(false);
         input.active.set(false);
         input.composing.set(None);
-        if let Some(e) = &input.editor {
-            e.set_focus(false);
-        }
+        input.with_editor(|e| e.set_focus(false));
     }
     blink::update();
 }
@@ -1106,6 +1425,32 @@ pub(crate) fn set_accessible_value(surface: &Rc<Surface>, view: &NshView, text: 
     replace_selection(&input, &text);
     process(surface, view, &input);
     true
+}
+
+/// `InputRef.insertText`: replaces the selection with `text` as a paste
+/// would (`maxLength` applies, line breaks become spaces in a single-line
+/// field, undo takes it back as one step and the change is reported), for
+/// an app that took a paste over (`pasteBehavior: "report"`). Nothing
+/// happens in a read-only field or during an IME composition.
+pub(crate) fn insert_text(view: &NshView, text: &str) {
+    let Some(input) = input_of(view) else {
+        return;
+    };
+    if !input.config.borrow().editable || input.composing.get().is_some() {
+        return;
+    }
+    let text = pasted(text, input.multiline());
+    let (start, end) = input.selection();
+    if text.is_empty() && start == end {
+        return;
+    }
+    // A step of its own in the undo history, apart from typing around it.
+    input.send(EM_STOPGROUPTYPING, 0, 0);
+    replace_selection(&input, &text.replace('\n', "\r"));
+    if let Some(surface) = surface_of(view) {
+        process(&surface, view, &input);
+    }
+    view.changed();
 }
 
 /// The field that has the keyboard focus.
@@ -1213,9 +1558,7 @@ fn drop_quietly(surface: &Surface, field: &NshView) {
         #[cfg(feature = "terminal")]
         cancel_terminal_preedit(&input);
         input.composing.set(None);
-        if let Some(e) = &input.editor {
-            e.set_focus(false);
-        }
+        input.with_editor(|e| e.set_focus(false));
     }
     FOCUS.with(|f| {
         if let Some(f) = f.borrow_mut().get_mut(&surface.key()) {
@@ -1295,10 +1638,8 @@ fn move_focus(surface: &Rc<Surface>, old: Option<NshView>, view: Option<&NshView
             input.focused.set(false);
             input.dragging.set(false);
             input.composing.set(None);
-            if let Some(e) = &input.editor {
-                e.set_focus(false);
-            }
-
+            input.select_on_up.set(false);
+            input.with_editor(|e| e.set_focus(false));
             process(surface, old, &input);
             report_composition(surface, old, &input);
         }
@@ -1314,10 +1655,9 @@ fn move_focus(surface: &Rc<Surface>, old: Option<NshView>, view: Option<&NshView
             input.active.set(window_active(surface));
             input.wake_caret();
             input.follow(view);
-            if input.active.get()
-                && let Some(e) = &input.editor
-            {
-                e.set_focus(true);
+            update_ime(surface);
+            if input.active.get() {
+                input.with_editor(|e| e.set_focus(true));
             }
             process(surface, view, &input);
         }
@@ -1589,30 +1929,46 @@ fn flush_pending(surface: &Rc<Surface>) {
 
 // --- The IME -----------------------------------------------------------------
 
-/// Enables the IME while an editable, non-secure field has the focus.
+/// Enables the IME on the window showing the focused editable, non-secure
+/// field (and detaches it from the surface's other windows).
 fn update_ime(surface: &Surface) {
-    let hwnd = surface.hwnd();
-    if hwnd.is_invalid() {
-        return;
-    }
-    let wants = FOCUS
+    let target = FOCUS
         .with(|f| f.borrow().get(&surface.key()).and_then(|f| f.view.clone()))
-        .and_then(|v| input_of(&v))
-        .is_some_and(|input| {
-            let c = input.config.borrow();
-            c.editable && !c.secure
-        });
-    // SAFETY: plain calls on the surface's window; a null context with no
-    // flags detaches the IME, IACE_DEFAULT restores the window's own.
-    unsafe {
-        let _ = ImmAssociateContextEx(hwnd, HIMC::default(), if wants { IACE_DEFAULT } else { 0 });
+        .filter(|v| {
+            input_of(v).is_some_and(|input| {
+                let c = input.config.borrow();
+                c.editable && !c.secure
+            })
+        })
+        .map(|v| crate::app_window::hwnd_showing(surface, &v));
+    let mut hwnds = crate::app_window::all_hwnds(surface);
+    let host = surface.hwnd();
+    if !host.is_invalid() && !hwnds.contains(&host) {
+        hwnds.push(host);
+    }
+    for hwnd in hwnds {
+        if hwnd.is_invalid() {
+            continue;
+        }
+        let flags = if target == Some(hwnd) {
+            IACE_DEFAULT
+        } else {
+            0
+        };
+        // SAFETY: plain calls on the surface's live windows; a null context
+        // with no flags detaches the IME, IACE_DEFAULT restores the window's own.
+        unsafe {
+            let _ = ImmAssociateContextEx(hwnd, HIMC::default(), flags);
+        }
     }
 }
 
 /// Tells the IME to finish (`CPS_COMPLETE`) or drop (`CPS_CANCEL`) what it
 /// composes.
 fn notify_composition(surface: &Surface, action: NOTIFY_IME_INDEX) {
-    let hwnd = surface.hwnd();
+    let hwnd = focused(surface)
+        .map(|v| crate::app_window::hwnd_showing(surface, &v))
+        .unwrap_or_else(|| surface.hwnd());
     if hwnd.is_invalid() {
         return;
     }
@@ -1780,17 +2136,18 @@ fn report_text(surface: &Surface, view: &NshView, input: &InputState) -> bool {
 /// a composition's start, edits (the text, or what is composed), its end,
 /// the selection and the caret. Returns whether the text changed.
 fn process(surface: &Surface, view: &NshView, input: &InputState) -> bool {
-    let Some(e) = &input.editor else {
+    let Some(notes) = input.with_editor(Editor::take_notes) else {
         return false;
     };
-    let notes = e.take_notes();
     if let Some((start, end, len)) = notes.composition_start {
         input.composing.set(Some((start, len.saturating_sub(end))));
     }
     let mut changed = false;
     if notes.changed && !input.programmatic.get() {
         if input.composing.get().is_some() {
-            report_composition(surface, view, input);
+            if !notes.composition_end {
+                report_composition(surface, view, input);
+            }
         } else {
             changed = report_text(surface, view, input);
         }
@@ -1800,12 +2157,15 @@ fn process(surface: &Surface, view: &NshView, input: &InputState) -> bool {
         changed |= report_text(surface, view, input);
         input.composing.set(None);
         report_composition(surface, view, input);
-    } else if notes.composition_start.is_some() {
+    } else if notes.composition_start.is_some()
+        || (input.composing.get().is_some() && notes.selection)
+    {
         report_composition(surface, view, input);
     }
     if notes.changed || notes.composition_end {
         input.follow_limit();
     }
+    input.keep_left();
     if notes.changed || notes.selection {
         input.wake_caret();
         report_selection(surface, view, input);
@@ -1916,7 +2276,9 @@ pub(crate) fn config(surface: &Rc<Surface>, view: &NshView, config: &InputConfig
     let (font_changed, editable_changed) = {
         let old = input.config.borrow();
         (
-            old.style != config.style || old.multiline != config.multiline,
+            old.style != config.style
+                || old.multiline != config.multiline
+                || input.font_generation.get() != crate::text::font_generation(),
             old.editable != config.editable || old.secure != config.secure,
         )
     };
@@ -1955,7 +2317,7 @@ pub(crate) fn config(surface: &Rc<Surface>, view: &NshView, config: &InputConfig
 /// insert it after configuring it).
 fn auto_focus(surface: &Rc<Surface>, view: &NshView) {
     if can_hold_focus(surface, view) {
-        return set_focus(surface, Some(view));
+        return focus_selecting(surface, view);
     }
     FOCUS.with(|f| {
         f.borrow_mut().entry(surface.key()).or_default().auto_focus = Some(view.clone());
@@ -1973,7 +2335,7 @@ pub(crate) fn end_batch(surface: &Rc<Surface>) {
         return;
     }
     if can_hold_focus(surface, &view) {
-        set_focus(surface, Some(&view));
+        focus_selecting(surface, &view);
     } else {
         FOCUS.with(|f| {
             f.borrow_mut().entry(surface.key()).or_default().auto_focus = Some(view);
@@ -2033,17 +2395,21 @@ fn set_value(view: &NshView, input: &InputState, text: &str, count: u32) {
         input.reported_text.replace(text.to_owned());
         return;
     }
-    let Some(e) = &input.editor else { return };
+    if input.editor.borrow().is_none() {
+        return;
+    }
     input.programmatic.set(true);
     // The app's value is never cut to `maxLength`, as on every platform.
-    uncut(input, || e.set_text(text));
+    uncut(input, || {
+        input.with_editor(|e| e.set_text(text));
+    });
     input.send(EM_SETSEL, usize::MAX >> 1, -1);
     input.programmatic.set(false);
     input.reported_text.replace(input.text());
     if let Some(surface) = surface_of(view) {
         process(&surface, view, input);
     } else {
-        e.take_notes();
+        input.with_editor(Editor::take_notes);
     }
     view.changed();
 }
@@ -2091,7 +2457,24 @@ fn surface_of(view: &NshView) -> Option<Rc<Surface>> {
 /// `focus()`.
 pub(crate) fn focus(view: &NshView) {
     if let Some(surface) = surface_of(view) {
-        set_focus(&surface, Some(view));
+        focus_selecting(&surface, view);
+    }
+}
+
+/// Focuses `view` without a press (`focus()`, `autoFocus`): with
+/// `selectTextOnFocus`, its whole text selected as the focus arrives. A
+/// press's own handling decides after it ([`pointer`]); Tab selects all
+/// anyway ([`tab_to`]).
+fn focus_selecting(surface: &Rc<Surface>, view: &NshView) {
+    let arrives = focused(surface).as_ref() != Some(view);
+    set_focus(surface, Some(view));
+    if arrives
+        && let Some(input) = input_of(view)
+        && input.focused.get()
+        && input.config.borrow().select_text_on_focus
+    {
+        input.send(EM_SETSEL, 0, -1);
+        process(surface, view, &input);
     }
 }
 
@@ -2192,10 +2575,9 @@ pub(crate) fn window_focus(surface: &Rc<Surface>, focused_window: bool) {
     {
         input.active.set(focused_window);
         input.dragging.set(false);
+        input.select_on_up.set(false);
         input.caret_on.set(true);
-        if let Some(e) = &input.editor {
-            e.set_focus(focused_window);
-        }
+        input.with_editor(|e| e.set_focus(focused_window));
         process(surface, &view, &input);
         view.changed();
     }
@@ -2216,7 +2598,19 @@ pub(crate) fn pointer(surface: &Rc<Surface>, view: &NshView, event: &ItemPointer
         return false;
     };
     if matches!(event.kind, PointerKind::Down) {
+        let arrives = focused(surface).as_ref() != Some(view);
         set_focus(surface, Some(view));
+        // The press, sent to RichEdit after the focus arrived, places the
+        // caret where it lands (or extends the selection, or starts a
+        // drag): `selectTextOnFocus` waits for its release. A Shift or
+        // double click selects for itself.
+        input.select_on_up.set(
+            arrives
+                && input.focused.get()
+                && input.config.borrow().select_text_on_focus
+                && !event.modifiers.shift
+                && event.clicks < 2,
+        );
     }
     input.follow(view);
     let content = content_rect(view, &input);
@@ -2264,6 +2658,13 @@ pub(crate) fn pointer(surface: &Rc<Surface>, view: &NshView, event: &ItemPointer
     with_modifiers(event.modifiers, || {
         input.send(msg, keys, mouse_lparam(x, y));
     });
+    if msg == WM_LBUTTONUP && input.select_on_up.take() {
+        // A drag that selected a range keeps it.
+        let (start, end) = input.selection();
+        if start == end && matches!(event.kind, PointerKind::Up) {
+            input.send(EM_SETSEL, 0, -1);
+        }
+    }
     process(surface, view, &input);
     true
 }
@@ -3036,6 +3437,194 @@ mod tests {
         }
     }
 
+    /// Several lines are as far apart as the line height says, the same
+    /// height the field is laid out with, also for text the field held
+    /// before the line height was set (#2655).
+    #[test]
+    fn multiline_lines_follow_the_line_height() {
+        // Where the 12th of 12 lines starts below the first, in pixels.
+        let travel = |twips: i32| {
+            let config = InputConfig {
+                multiline: true,
+                ..Default::default()
+            };
+            let editor = Editor::new(
+                HWND::default(),
+                Props {
+                    client: RECT {
+                        right: 800,
+                        bottom: 2000,
+                        ..Default::default()
+                    },
+                    bits: base_bits(&config),
+                    ..Default::default()
+                },
+                Box::new(|| {}),
+                Box::new(|| {}),
+            )
+            .expect("RichEdit");
+            editor.send(EM_SETTEXTMODE, TEXT_MODE as usize, 0);
+            editor.set_text(&["The quick brown fox"; 12].join("\r"));
+            editor.update(
+                |p| {
+                    let pf = &mut p.para_format;
+                    pf.Base.dwMask = PFM_LINESPACING;
+                    pf.bLineSpacingRule = 4;
+                    pf.dyLineSpacing = twips;
+                },
+                TXTBIT_PARAFORMATCHANGE,
+            );
+            let y = |line: usize| {
+                let (index, _) = editor.send(0x00BB, line, 0); // EM_LINEINDEX
+                let mut at = windows::Win32::Foundation::POINTL::default();
+                editor.send(0x00D6, &mut at as *mut _ as usize, index.0); // EM_POSFROMCHAR
+                at.y
+            };
+            y(11) - y(0)
+        };
+        let (single, double) = (travel(400), travel(800));
+        assert!(single > 0, "lines not laid out: {single}");
+        assert!(
+            (double - 2 * single).abs() <= 11,
+            "line spacing ignored: {single} px at 400 twips, {double} px at 800"
+        );
+    }
+
+    /// The font the field sets reaches the text it already holds: one
+    /// format for all of it, as the text mode promises ([`TEXT_MODE`]).
+    #[test]
+    fn rich_text_mode_reads_back_only_the_text_typed() {
+        for multiline in [false, true] {
+            let config = InputConfig {
+                multiline,
+                ..Default::default()
+            };
+            let editor = Editor::new(
+                HWND::default(),
+                Props {
+                    client: RECT {
+                        right: 800,
+                        bottom: 200,
+                        ..Default::default()
+                    },
+                    bits: base_bits(&config),
+                    ..Default::default()
+                },
+                Box::new(|| {}),
+                Box::new(|| {}),
+            )
+            .expect("RichEdit");
+            editor.send(EM_SETTEXTMODE, TEXT_MODE as usize, 0);
+            // RichEdit's own end of the story is not the field's text.
+            assert_eq!(editor.text_units(), Vec::<u16>::new(), "empty");
+            editor.set_text("/");
+            assert_eq!(String::from_utf16_lossy(&editor.text_units()), "/");
+            if multiline {
+                // A line break the user typed at the end stays.
+                editor.set_text("a\r");
+                assert_eq!(String::from_utf16_lossy(&editor.text_units()), "a\r");
+            }
+        }
+    }
+
+    #[test]
+    fn font_changes_reach_held_text() {
+        let config = InputConfig {
+            multiline: true,
+            ..Default::default()
+        };
+        let editor = Editor::new(
+            HWND::default(),
+            Props {
+                client: RECT {
+                    right: 800,
+                    bottom: 2000,
+                    ..Default::default()
+                },
+                bits: base_bits(&config),
+                ..Default::default()
+            },
+            Box::new(|| {}),
+            Box::new(|| {}),
+        )
+        .expect("RichEdit");
+        editor.send(EM_SETTEXTMODE, TEXT_MODE as usize, 0);
+        editor.set_text(&["The quick brown fox"; 12].join("\r"));
+        // Where the 12th of 12 lines starts below the first, in pixels.
+        let travel = || {
+            let y = |line: usize| {
+                let (index, _) = editor.send(0x00BB, line, 0); // EM_LINEINDEX
+                let mut at = windows::Win32::Foundation::POINTL::default();
+                editor.send(0x00D6, &mut at as *mut _ as usize, index.0); // EM_POSFROMCHAR
+                at.y
+            };
+            y(11) - y(0)
+        };
+        let size = |twips: i32| {
+            editor.update(
+                |p| {
+                    p.char_format.Base.dwMask = CFM_SIZE;
+                    p.char_format.Base.yHeight = twips;
+                },
+                TXTBIT_CHARFORMATCHANGE,
+            );
+            travel()
+        };
+        let (small, large) = (size(200), size(600));
+        assert!(small > 0, "lines not laid out: {small}");
+        assert!(
+            large > 2 * small,
+            "font size ignored: {small} px at 10 pt, {large} px at 30 pt"
+        );
+    }
+
+    /// Rich text's final paragraph mark ([`TEXT_MODE`]) is not the
+    /// field's: its text, selection and limit leave it out.
+    #[test]
+    fn rich_text_keeps_its_final_mark_out_of_the_text() {
+        for multiline in [false, true] {
+            let config = InputConfig {
+                multiline,
+                ..Default::default()
+            };
+            let editor = Editor::new(
+                HWND::default(),
+                Props {
+                    client: RECT {
+                        right: 800,
+                        bottom: 200,
+                        ..Default::default()
+                    },
+                    bits: base_bits(&config),
+                    ..Default::default()
+                },
+                Box::new(|| {}),
+                Box::new(|| {}),
+            )
+            .expect("RichEdit");
+            editor.send(EM_SETTEXTMODE, TEXT_MODE as usize, 0);
+            let text = || String::from_utf16_lossy(&editor.text_units());
+            assert_eq!(text(), "", "multiline {multiline}");
+            editor.send(EM_SETSEL, 0, -1);
+            assert_eq!(editor.selection(), (0, 0), "multiline {multiline}");
+            editor.set_text("own words");
+            assert_eq!(text(), "own words", "multiline {multiline}");
+            editor.send(EM_SETSEL, 0, -1);
+            assert_eq!(editor.selection(), (0, 9), "multiline {multiline}");
+            if multiline {
+                editor.set_text("a\rb\r");
+                assert_eq!(text(), "a\rb\r");
+            }
+            // As many units as the limit says, typed.
+            editor.set_text("");
+            editor.update(|p| p.max_length = 5, TXTBIT_MAXLENGTHCHANGE);
+            for _ in 0..7 {
+                editor.send(WM_CHAR, 'a' as usize, 1);
+            }
+            assert_eq!(text(), "aaaaa", "multiline {multiline}");
+        }
+    }
+
     #[test]
     fn stop_and_destroy_forget_the_focus() {
         let surface = Surface::new(Default::default());
@@ -3046,6 +3635,102 @@ mod tests {
         destroyed(&surface);
         assert!(FOCUS.with(|f| !f.borrow().contains_key(&surface.key())));
         assert!(window_active(&surface));
+    }
+
+    /// The rich editor's sink: a multiline input a point wide. However
+    /// much it holds, the caret stays at its top left, and what an input
+    /// method composes starts there and runs on along one line, where the
+    /// input method opens its candidates; a field of any other width wraps
+    /// as before.
+    #[test]
+    fn a_point_wide_input_keeps_a_composition_at_its_corner() {
+        let surface = Surface::new(Default::default());
+        let view = NshView::new(5, nsh_core::ViewKind::Input);
+        create(&surface, &view);
+        let input = input_of(&view).expect("input");
+        config(
+            &surface,
+            &view,
+            &InputConfig {
+                multiline: true,
+                ..Default::default()
+            },
+        );
+        let at = |w: f32| {
+            content(
+                &view,
+                Bounds::new(Point::default(), Size::new(Points(w), Points(16.0))),
+            );
+        };
+        at(1.0);
+        let editor = input.editor.borrow();
+        let e = editor.as_ref().expect("RichEdit");
+        assert_eq!(
+            e.props().bits & TXTBIT_WORDWRAP,
+            0,
+            "a point-wide input wraps"
+        );
+        let client = e.props().client;
+        let at_corner = |p: windows::Win32::Foundation::POINT| {
+            (p.x - client.left).abs() <= 1 && (p.y - client.top).abs() <= 1
+        };
+        let mut text = String::new();
+        for (count, c) in "你好世界，再见".chars().enumerate() {
+            text.push(c);
+            value(&view, &text, count as u32 + 1);
+            let caret = e.position(input.selection().1);
+            assert!(
+                at_corner(caret),
+                "after {text:?} the caret is at {caret:?}, the field at {client:?}"
+            );
+        }
+        // An input method composes at the caret (as Text Services Framework
+        // would, with no message of the field's).
+        let start = input.selection().1;
+        input.composing.set(Some((start, 0)));
+        for letter in ["n", "i", "h", "a", "o"] {
+            replace_selection(&input, letter);
+            process(&surface, &view, &input);
+            let (first, end) = (e.position(start), e.position(input.selection().1));
+            assert!(
+                at_corner(first),
+                "the composition starts at {first:?}, the field at {client:?}"
+            );
+            assert_eq!(end.y, first.y, "the composition goes on to another line");
+        }
+        input.composing.set(None);
+        at(200.0);
+        assert_ne!(
+            e.props().bits & TXTBIT_WORDWRAP,
+            0,
+            "a wide input does not wrap"
+        );
+    }
+
+    #[test]
+    fn editor_enables_ime_always_send_notify() {
+        let surface = Surface::new(Default::default());
+        let view = NshView::new(6, nsh_core::ViewKind::Input);
+        create(&surface, &view);
+        let input = input_of(&view).expect("input");
+        for auto_correct in [false, true] {
+            config(
+                &surface,
+                &view,
+                &InputConfig {
+                    auto_correct,
+                    ..Default::default()
+                },
+            );
+            let (lang, _) = input
+                .with_editor(|e| e.send(EM_GETLANGOPTIONS, 0, 0))
+                .expect("RichEdit");
+            assert_ne!(
+                lang.0 as u32 & IMF_IMEALWAYSSENDNOTIFY,
+                0,
+                "IMF_IMEALWAYSSENDNOTIFY missing with auto_correct={auto_correct}"
+            );
+        }
     }
 
     #[test]
@@ -3062,12 +3747,436 @@ mod tests {
         assert_eq!(dwrite_align(&c), DWRITE_TEXT_ALIGNMENT_JUSTIFIED);
     }
 
+    /// Replaces the 8-byte family name `"Pacifico"` inside a copy of the
+    /// bundled TrueType font and updates its `name` and `head` checksums so
+    /// tests can register a unique family without racing other tests.
+    fn renamed_pacifico(name: &str) -> Vec<u8> {
+        assert_eq!(name.len(), "Pacifico".len());
+        let mut data =
+            include_bytes!("../../../examples/gallery/fonts/Pacifico-Regular.ttf").to_vec();
+        let num_tables = u16::from_be_bytes([data[4], data[5]]) as usize;
+        let mut name_table = None;
+        let mut head_table = None;
+        for i in 0..num_tables {
+            let entry = 12 + i * 16;
+            let tag = &data[entry..entry + 4];
+            let offset =
+                u32::from_be_bytes(data[entry + 8..entry + 12].try_into().unwrap()) as usize;
+            let length =
+                u32::from_be_bytes(data[entry + 12..entry + 16].try_into().unwrap()) as usize;
+            if tag == b"name" {
+                name_table = Some((entry, offset, length));
+            } else if tag == b"head" {
+                head_table = Some((entry, offset, length));
+            }
+        }
+        let (name_entry, name_off, name_len) = name_table.expect("name table");
+        let old_ascii = b"Pacifico";
+        let new_ascii = name.as_bytes();
+        let old_utf16: Vec<u8> = "Pacifico"
+            .encode_utf16()
+            .flat_map(u16::to_be_bytes)
+            .collect();
+        let new_utf16: Vec<u8> = name.encode_utf16().flat_map(u16::to_be_bytes).collect();
+        let slice = &mut data[name_off..name_off + name_len];
+        for i in 0..=slice.len().saturating_sub(old_utf16.len()) {
+            if &slice[i..i + old_utf16.len()] == old_utf16.as_slice() {
+                slice[i..i + new_utf16.len()].copy_from_slice(&new_utf16);
+            }
+        }
+        for i in 0..=slice.len().saturating_sub(old_ascii.len()) {
+            if &slice[i..i + old_ascii.len()] == old_ascii.as_slice() {
+                slice[i..i + new_ascii.len()].copy_from_slice(new_ascii);
+            }
+        }
+        let checksum = |bytes: &[u8]| -> u32 {
+            let mut sum = 0u32;
+            for chunk in bytes.chunks(4) {
+                let mut buf = [0u8; 4];
+                buf[..chunk.len()].copy_from_slice(chunk);
+                sum = sum.wrapping_add(u32::from_be_bytes(buf));
+            }
+            sum
+        };
+        let name_sum = checksum(&data[name_off..name_off + name_len]);
+        data[name_entry + 4..name_entry + 8].copy_from_slice(&name_sum.to_be_bytes());
+        if let Some((head_entry, head_off, head_len)) = head_table {
+            data[head_off + 8..head_off + 12].copy_from_slice(&0u32.to_be_bytes());
+            let head_sum = checksum(&data[head_off..head_off + head_len]);
+            data[head_entry + 4..head_entry + 8].copy_from_slice(&head_sum.to_be_bytes());
+            let adj = 0xB1B0_AFBAu32.wrapping_sub(checksum(&data));
+            data[head_off + 8..head_off + 12].copy_from_slice(&adj.to_be_bytes());
+        }
+        data
+    }
+
+    fn face_name(input: &InputState) -> String {
+        let editor = input.editor.borrow();
+        let face = editor
+            .as_ref()
+            .expect("RichEdit")
+            .props()
+            .char_format
+            .Base
+            .szFaceName;
+        let len = face.iter().position(|&c| c == 0).unwrap_or(face.len());
+        String::from_utf16_lossy(&face[..len])
+    }
+
+    fn format_family(input: &InputState) -> String {
+        let format = input.format().expect("DirectWrite format");
+        // SAFETY: COM calls on a live format with a buffer sized from its length.
+        unsafe {
+            let len = format.GetFontFamilyNameLength() as usize;
+            let mut buf = vec![0u16; len + 1];
+            format.GetFontFamilyName(&mut buf).expect("family name");
+            String::from_utf16_lossy(&buf[..len])
+        }
+    }
+
+    type InkBounds = (u32, u32, u32, u32);
+
+    /// Renders `input`'s RichEdit text into an offscreen Direct2D bitmap using
+    /// the same D2D / GDI rendering path as [`InputState::record`], and returns
+    /// its alpha plane and ink bounding box `(left, top, right, bottom)`.
+    fn render_input(input: &InputState) -> (Vec<u8>, Option<InkBounds>) {
+        use windows::Win32::Graphics::{
+            Direct2D::{
+                Common::{
+                    D2D_POINT_2U, D2D_RECT_U, D2D_SIZE_U, D2D1_ALPHA_MODE_PREMULTIPLIED,
+                    D2D1_PIXEL_FORMAT,
+                },
+                D2D1_BITMAP_OPTIONS, D2D1_BITMAP_OPTIONS_CANNOT_DRAW, D2D1_BITMAP_OPTIONS_CPU_READ,
+                D2D1_BITMAP_OPTIONS_TARGET, D2D1_BITMAP_PROPERTIES1, D2D1_MAP_OPTIONS_READ,
+            },
+            Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM,
+        };
+        let gfx = crate::gfx::get().expect("gfx");
+        let editor = input.editor.borrow();
+        let e = editor.as_ref().expect("RichEdit");
+        let client = e.props().client;
+        let (w, h) = (360u32, 120u32);
+        let props = |options: D2D1_BITMAP_OPTIONS| D2D1_BITMAP_PROPERTIES1 {
+            pixelFormat: D2D1_PIXEL_FORMAT {
+                format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
+            },
+            dpiX: 96.0,
+            dpiY: 96.0,
+            bitmapOptions: options,
+            colorContext: std::mem::ManuallyDrop::new(None),
+        };
+        let size = D2D_SIZE_U {
+            width: w,
+            height: h,
+        };
+        let s = input.scale.get().max(0.01);
+        // SAFETY: COM calls on live objects; mapped memory is read before Unmap.
+        unsafe {
+            let dc = &gfx.dc;
+            let target = dc
+                .CreateBitmap(size, None, 0, &props(D2D1_BITMAP_OPTIONS_TARGET))
+                .expect("target bitmap");
+            dc.SetTarget(&target);
+            dc.SetDpi(96.0 * s, 96.0 * s);
+            dc.BeginDraw();
+            dc.Clear(None);
+            if input.use_gdi.get() {
+                let bw = (client.right - client.left).max(0) as u32;
+                let bh = (client.bottom - client.top).max(0) as u32;
+                let bgra = e.draw_gdi_bgra(client).expect("GDI TxDraw");
+                let bmp_props = D2D1_BITMAP_PROPERTIES1 {
+                    pixelFormat: D2D1_PIXEL_FORMAT {
+                        format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                        alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
+                    },
+                    dpiX: 96.0 * s,
+                    dpiY: 96.0 * s,
+                    bitmapOptions: D2D1_BITMAP_OPTIONS_NONE,
+                    colorContext: std::mem::ManuallyDrop::new(None),
+                };
+                let bmp = dc
+                    .CreateBitmap(
+                        D2D_SIZE_U {
+                            width: bw,
+                            height: bh,
+                        },
+                        Some(bgra.as_ptr().cast()),
+                        bw * 4,
+                        &bmp_props,
+                    )
+                    .expect("GDI bitmap");
+                dc.SetTransform(&Matrix3x2::identity());
+                let dest = rect_f(
+                    client.left as f32 / s,
+                    client.top as f32 / s,
+                    bw as f32 / s,
+                    bh as f32 / s,
+                );
+                dc.DrawBitmap(
+                    &bmp,
+                    Some(&dest),
+                    1.0,
+                    D2D1_INTERPOLATION_MODE_NEAREST_NEIGHBOR,
+                    None,
+                    None,
+                );
+            } else {
+                let k = richedit::target_scale(HWND::default(), s);
+                dc.SetTransform(&Matrix3x2 {
+                    M11: k,
+                    M12: 0.0,
+                    M21: 0.0,
+                    M22: k,
+                    M31: 0.0,
+                    M32: 0.0,
+                });
+                assert!(e.draw(dc.as_raw(), client));
+            }
+            dc.SetTransform(&Matrix3x2::identity());
+            dc.EndDraw(None, None).expect("EndDraw");
+            dc.SetTarget(None);
+            dc.SetDpi(96.0, 96.0);
+            let read = dc
+                .CreateBitmap(
+                    size,
+                    None,
+                    0,
+                    &props(D2D1_BITMAP_OPTIONS_CPU_READ | D2D1_BITMAP_OPTIONS_CANNOT_DRAW),
+                )
+                .expect("read bitmap");
+            read.CopyFromBitmap(
+                Some(&D2D_POINT_2U { x: 0, y: 0 }),
+                &target,
+                Some(&D2D_RECT_U {
+                    left: 0,
+                    top: 0,
+                    right: w,
+                    bottom: h,
+                }),
+            )
+            .expect("CopyFromBitmap");
+            let mapped = read.Map(D2D1_MAP_OPTIONS_READ).expect("Map");
+            let mut alpha = Vec::with_capacity((w * h) as usize);
+            let mut bounds: Option<(u32, u32, u32, u32)> = None;
+            for y in 0..h {
+                let row = std::slice::from_raw_parts(
+                    mapped.bits.add((y * mapped.pitch) as usize),
+                    (w * 4) as usize,
+                );
+                for x in 0..w {
+                    let a = row[(x * 4 + 3) as usize];
+                    alpha.push(a);
+                    if a > 40 {
+                        bounds = Some(match bounds {
+                            None => (x, y, x, y),
+                            Some((l, t, r, b)) => (l.min(x), t.min(y), r.max(x), b.max(y)),
+                        });
+                    }
+                }
+            }
+            read.Unmap().expect("Unmap");
+            (alpha, bounds)
+        }
+    }
+
+    fn make_input_with_family(
+        surface: &Rc<Surface>,
+        id: NodeId,
+        font_family: &str,
+        text: &str,
+    ) -> (NshView, Rc<InputState>, InputConfig) {
+        let view = NshView::new(id, nsh_core::ViewKind::Input);
+        create(surface, &view);
+        let input = input_of(&view).expect("input");
+        let mut cfg = InputConfig {
+            multiline: true,
+            placeholder: "Placeholder".to_owned(),
+            ..Default::default()
+        };
+        cfg.style.font_family = Some(nsh_core::FontFamily::new(font_family));
+        cfg.style.font_size = Points(24.0);
+        cfg.style.color = Color::BLACK;
+        config(surface, &view, &cfg);
+        content(
+            &view,
+            Bounds::new(Point::default(), Size::new(Points(340.0), Points(100.0))),
+        );
+        value(&view, text, 1);
+        (view, input, cfg)
+    }
+
     #[test]
     fn families() {
         assert_eq!(family(Some("ui-monospace")), "Consolas");
-        assert_eq!(family(Some("'Noto Sans', serif")), "Noto Sans");
+        assert_eq!(family(Some("'No Such Family', serif")), "Times New Roman");
+        assert_eq!(family(Some("'Segoe UI', serif")), "Segoe UI");
         assert_eq!(family(Some("serif")), "Times New Roman");
+        assert_eq!(family(Some("SF Mono, monospace")), "Consolas");
+        assert_eq!(family(Some("Menlo")), "Consolas");
         assert!(!family(None).is_empty());
+    }
+
+    #[test]
+    fn face_name_respects_limit_without_splitting_surrogates() {
+        let mut buf = [0xFFFFu16; 32];
+        // 30 ASCII units + a 2-unit emoji (total 32): the emoji must be omitted
+        // rather than leaving an unpaired high surrogate at index 30.
+        let long = format!("{}😀", "a".repeat(30));
+        copy_face_name(&mut buf, &long);
+        assert_eq!(buf[30], 0);
+        assert_eq!(buf[31], 0);
+        assert_eq!(String::from_utf16(&buf[..30]).unwrap(), "a".repeat(30));
+
+        // 31 ASCII units fit exactly with NUL at index 31.
+        copy_face_name(&mut buf, &"b".repeat(40));
+        assert_eq!(buf[31], 0);
+        assert_eq!(String::from_utf16(&buf[..31]).unwrap(), "b".repeat(31));
+    }
+
+    #[test]
+    fn family_stacks_and_aliases_resolve_and_render_in_richedit() {
+        let surface = Surface::new(Default::default());
+        let (_, fallback, _) = make_input_with_family(
+            &surface,
+            101,
+            "No Such Family, Consolas, monospace",
+            "Il1 0O",
+        );
+        let (_, consolas, _) = make_input_with_family(&surface, 102, "Consolas", "Il1 0O");
+        let (_, segoe, _) = make_input_with_family(&surface, 103, "Segoe UI", "Il1 0O");
+        let (_, alias_stack, _) =
+            make_input_with_family(&surface, 104, "SF Mono, monospace", "Il1 0O");
+        let (_, alias_only, _) =
+            make_input_with_family(&surface, 105, "No Such Family, SF Mono", "Il1 0O");
+        let (_, quoted_comma, _) =
+            make_input_with_family(&surface, 106, "'ACME, Inc', Consolas", "Il1 0O");
+        let (_, missing_only, _) =
+            make_input_with_family(&surface, 107, "No Such Family", "Il1 0O");
+
+        assert_eq!(face_name(&fallback), "Consolas");
+        assert_eq!(format_family(&fallback), "Consolas");
+        assert_eq!(face_name(&alias_stack), "Consolas");
+        assert_eq!(format_family(&alias_stack), "Consolas");
+        assert_eq!(face_name(&alias_only), "Consolas");
+        assert_eq!(format_family(&alias_only), "Consolas");
+        assert_eq!(face_name(&quoted_comma), "Consolas");
+        assert_eq!(format_family(&quoted_comma), "Consolas");
+        assert_eq!(face_name(&missing_only), &*crate::text::ui_family());
+
+        let (fallback_px, fallback_ink) = render_input(&fallback);
+        let (consolas_px, consolas_ink) = render_input(&consolas);
+        let (segoe_px, _) = render_input(&segoe);
+        let (alias_px, _) = render_input(&alias_only);
+        assert!(fallback_ink.is_some(), "fallback input drew no ink");
+        assert_eq!(fallback_ink, consolas_ink);
+        assert_eq!(fallback_px, consolas_px);
+        assert_eq!(alias_px, consolas_px);
+        assert_ne!(
+            fallback_px, segoe_px,
+            "fallback stack rendered as Segoe UI instead of Consolas"
+        );
+    }
+
+    #[test]
+    fn registered_font_resolves_and_renders_after_input_creation() {
+        use nsh_core::TextEngine;
+
+        let surface = Surface::new(Default::default());
+        let (view, input, cfg) =
+            make_input_with_family(&surface, 201, "PacifInp, Consolas, monospace", "gpMM");
+        let (_, segoe, _) = make_input_with_family(&surface, 202, "Segoe UI", "gpMM");
+
+        // Before registration: falls back to Consolas and caches DirectWrite format.
+        assert!(!input.use_gdi.get());
+        assert_eq!(face_name(&input), "Consolas");
+        assert_eq!(format_family(&input), "Consolas");
+        let line_height_before = input.line_height();
+        let _ = input.placeholder_layout();
+        let (pixels_before, ink_before) = render_input(&input);
+        assert!(ink_before.is_some());
+
+        // Register the custom font after the input was already created and configured.
+        let font_data = renamed_pacifico("PacifInp");
+        crate::text::DWriteTextEngine::default()
+            .register_font(&font_data)
+            .expect("register custom font");
+
+        // Core::fonts_changed() re-sends the same InputConfig to the platform.
+        config(&surface, &view, &cfg);
+
+        assert!(
+            input.use_gdi.get(),
+            "custom font should switch RichEdit to GDI mode"
+        );
+        assert_eq!(
+            input.text(),
+            "gpMM",
+            "switching RichEdit mode must preserve held text"
+        );
+        assert_eq!(face_name(&input), "PacifInp");
+        assert_eq!(format_family(&input), "PacifInp");
+        let line_height_after = input.line_height();
+        // Pacifico is over 1.5 ems tall (at 24 pt, > 36 pt), much taller than Consolas.
+        assert!(
+            line_height_after > 36.0 && line_height_after > line_height_before + 4.0,
+            "DirectWrite format did not switch to registered font: before={line_height_before}, after={line_height_after}"
+        );
+
+        let (pixels_after, ink_after) = render_input(&input);
+        let (segoe_pixels, ink_segoe) = render_input(&segoe);
+        // Also compare against RichEdit's own raw fallback for an unregistered
+        // face name (both D2D and GDI), proving AddFontMemResourceEx actually
+        // resolved the custom font rather than hitting default font substitution.
+        let (_, raw_missing, _) = make_input_with_family(&surface, 203, "Segoe UI", "gpMM");
+        raw_missing.with_editor(|e| {
+            e.update(
+                |p| copy_face_name(&mut p.char_format.Base.szFaceName, "UnregFont"),
+                TXTBIT_CHARFORMATCHANGE,
+            );
+        });
+        let (unreg_pixels, ink_unreg) = render_input(&raw_missing);
+        assert!(ink_after.is_some(), "custom font input drew no ink");
+        assert_ne!(
+            pixels_after, pixels_before,
+            "RichEdit did not render with the registered font (matched pre-registration Consolas): before={ink_before:?}, after={ink_after:?}"
+        );
+        assert_ne!(
+            pixels_after, segoe_pixels,
+            "RichEdit fell back to Segoe UI instead of the registered font: segoe={ink_segoe:?}, after={ink_after:?}"
+        );
+        assert_ne!(
+            pixels_after, unreg_pixels,
+            "RichEdit fell back to its unknown-font default instead of the registered font: unreg={ink_unreg:?}, after={ink_after:?}"
+        );
+        let (_, t, _, b) = ink_after.expect("custom ink");
+        let (_, ut, _, ub) = ink_unreg.expect("unregistered ink");
+        let custom_h = b - t;
+        let unreg_h = ub - ut;
+        // Pacifico's cursive glyphs are substantially taller than Windows'
+        // default fallback font at 24 pt (~30 px vs ~18 px).
+        assert!(
+            custom_h > unreg_h + 6,
+            "custom ink height did not reflect Pacifico's taller glyphs: after={ink_after:?}, unreg={ink_unreg:?}"
+        );
+
+        // Verify dark-mode white text also recovers non-empty alpha via dual-pass matting.
+        let mut white_cfg = cfg.clone();
+        white_cfg.style.color = Color::rgba(255, 255, 255, 255);
+        config(&surface, &view, &white_cfg);
+        let (_, white_ink) = render_input(&input);
+        assert_eq!(
+            white_ink, ink_after,
+            "white custom-font text ink bounds differed from black"
+        );
+
+        // Switching back to a system font restores D2D mode and preserves text.
+        let mut sys_cfg = cfg.clone();
+        sys_cfg.style.font_family = Some(nsh_core::FontFamily::new("Consolas"));
+        config(&surface, &view, &sys_cfg);
+        assert!(!input.use_gdi.get());
+        assert_eq!(input.text(), "gpMM");
+        assert_eq!(face_name(&input), "Consolas");
     }
 
     #[test]

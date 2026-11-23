@@ -26,8 +26,10 @@ covers [events] onContextMenu
 # events-gestures
 tap id:case-events-gestures
 expect Pan: none
-event id:drag onPanStart translationX=2 translationY=-3 velocityX=10 velocityY=0
+expect Origin: none
+event id:drag onPanStart translationX=2 translationY=-3 velocityX=10 velocityY=0 origin.x=12 origin.y=70
 expect Pan: start 2,-3 v 10,0
+expect Origin: 12,70
 event id:drag onPanEnd translationX=40 translationY=5 velocityX=250.5 velocityY=-12
 expect Pan: start 2,-3 v 10,0; end 40,5 v 250.5,-12
 expect Cancelled: false
@@ -338,3 +340,25 @@ expect Pinch: none
 # takes steps once nsh-compat's `event` builds it.)
 listens id:canvas onPinch
 covers [events] onPinch
+
+# events-held-drag: the platform reports a long press and one held touch.
+# nsh/test's optional timing is exercised by HeldDrag.test.tsx alongside it;
+# test-only modules cannot be imported by the app bundle.
+tap id:case-events-held-drag
+expect phase=idle
+touch start id:source 96 48
+expect phase=down
+event id:source onLongPress
+expect phase=lifted
+expect longs=1
+touch move 250 80
+expect phase=moving
+expect ends=0
+wait 100
+expect phase=moving
+expect ends=0
+touch end
+expect phase=dropped
+expect ends=1
+expect taps=0
+covers [events] onLongPress

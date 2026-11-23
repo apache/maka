@@ -26,6 +26,9 @@ pub struct SwitchProps {
     /// What screen readers say: what the switch turns on, when its children
     /// have no text that says it.
     pub accessibility_label: Prop<Option<SharedString>>,
+    /// What activating the switch does, for screen readers, as a view's
+    /// `accessibilityHint`.
+    pub accessibility_hint: Prop<Option<SharedString>>,
     /// How far outside its bounds presses still count, as a view's
     /// `hitSlop`: one number for every side, or the sides named (each left
     /// out 0). A small switch (a track with no label) takes presses a
@@ -91,6 +94,7 @@ pub fn Switch(props: SwitchProps, cx: Scope<SwitchEvent>) -> impl IntoElement {
         .disabled(props.disabled)
         .role(AccessibilityRole::Switch)
         .optional_label(props.accessibility_label)
+        .optional_hint(props.accessibility_hint)
         .accessibility_state(move || AccessibilityState {
             checked: Some(if props.checked.get() {
                 Checked::True

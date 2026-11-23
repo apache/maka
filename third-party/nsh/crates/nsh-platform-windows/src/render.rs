@@ -628,7 +628,8 @@ impl<'a> DrawCx<'a> {
 }
 
 /// The rounded rectangle `rect` with corner radii clockwise from the top
-/// left (each clamped to half the box), as a geometry.
+/// left (fitted to the box as CSS fits them, [`crate::geom::fit_radii`]), as
+/// a geometry.
 pub(crate) fn rounded_geometry(
     gfx: &Gfx,
     rect: Bounds<Points>,
@@ -644,8 +645,7 @@ pub(crate) fn rounded_geometry(
             height: Points(h),
         },
     } = rect;
-    let max = (w.min(h) / 2.0).max(0.0);
-    let r = radii.map(|r| r.clamp(0.0, max));
+    let r = crate::geom::fit_radii(w, h, radii);
     if r[0] == r[1] && r[1] == r[2] && r[2] == r[3] {
         let rr = D2D1_ROUNDED_RECT {
             rect: rect_f(x, y, w, h),
@@ -697,7 +697,7 @@ pub(crate) fn rounded_geometry(
 
 /// Draws `view` and its subtree; `parent` is the world transform of the
 /// parent's coordinates and `origin` where the view goes in them.
-pub(crate) fn draw_view(cx: &mut DrawCx<'_>, view: &NshView, parent: Mat4, origin: (f32, f32)) {
+pub(crate) fn draw_view(cx: &mut DrawCx<'_>, view: &NshView, parent: Mat4, place: Mat4) {
     let state = view.state();
     let opacity = state.opacity();
     if state.style.hidden || state.concealed || opacity <= 0.0 || draws_nothing(view, &state) {
@@ -707,10 +707,10 @@ pub(crate) fn draw_view(cx: &mut DrawCx<'_>, view: &NshView, parent: Mat4, origi
         }
         return;
     }
-    let mut local = Mat4::new().translate(origin.0, origin.1);
-    if let Some(t) = state.transform() {
-        local = Mat4::mul(&t, &local);
-    }
+    let local = match state.transform() {
+        Some(t) => Mat4::mul(&t, &place),
+        None => place,
+    };
     let world = Mat4::mul(&local, &parent);
     if crate::decor::backface_away(&state, &world) {
         drop(state);
@@ -787,6 +787,9 @@ pub(crate) fn draw_view(cx: &mut DrawCx<'_>, view: &NshView, parent: Mat4, origi
     // view paints a single shape, fading that shape's color is the same
     // and needs no layer.
     let faded = opacity < 1.0 && !layered && paints_one_shape(view, &state);
+    // `clipPath`: everything below is drawn inside it, the view's shadows,
+    // border and children included.
+    let clip_path = state.style.clip_path().map(|c| c.resolve(state.frame.size));
     drop(state);
     cx.set_transform(world);
     let grouped = opacity < 1.0 && !faded;
@@ -795,6 +798,9 @@ pub(crate) fn draw_view(cx: &mut DrawCx<'_>, view: &NshView, parent: Mat4, origi
             Some(area) => cx.push_opacity_within(opacity, area),
             None => cx.push_opacity(opacity),
         }
+    }
+    if let Some((rect, radii)) = clip_path {
+        cx.push_clip_rounded(rect, radii.to_array().map(|r| r.0));
     }
     let (alpha, fade) = (cx.alpha, cx.fade);
     cx.alpha *= opacity;
@@ -816,6 +822,9 @@ pub(crate) fn draw_view(cx: &mut DrawCx<'_>, view: &NshView, parent: Mat4, origi
     }
     cx.alpha = alpha;
     cx.fade = fade;
+    if clip_path.is_some() {
+        cx.pop();
+    }
     if grouped {
         cx.pop();
     }
@@ -960,12 +969,7 @@ pub(crate) fn drawn_area(view: &NshView) -> Option<D2D_RECT_F> {
                 if s.style.hidden || s.concealed || s.opacity() <= 0.0 || draws_nothing(child, &s) {
                     continue;
                 }
-                let origin = state.child_origin(s.frame, s.shift);
-                let mut local = Mat4::new().translate(origin.0, origin.1);
-                if let Some(t) = s.transform() {
-                    local = Mat4::mul(&t, &local);
-                }
-                local
+                state.child_matrix(&s)
             };
             if !local.is_affine() {
                 return None;
@@ -1096,11 +1100,11 @@ pub(crate) fn draw_content(cx: &mut DrawCx<'_>, view: &NshView, world: Mat4, pai
 fn draw_children(cx: &mut DrawCx<'_>, view: &NshView, world: Mat4) {
     view.with_children(|children| {
         for child in children {
-            let origin = {
+            let place = {
                 let s = child.state();
-                view.state().child_origin(s.frame, s.shift)
+                view.state().child_place(s.frame, s.shift)
             };
-            draw_view(cx, child, world, origin);
+            draw_view(cx, child, world, place);
         }
     });
 }
@@ -1220,7 +1224,7 @@ fn draw_flat(cx: &mut DrawCx<'_>, view: &mut NshView, base: Mat4) {
     };
     let saved_live = view.state_mut().live.take();
     let saved_fade = std::mem::replace(&mut view.state_mut().fade, 1.0);
-    draw_view(cx, view, base, (0.0, 0.0));
+    draw_view(cx, view, base, Mat4::new());
     let mut s = view.state_mut();
     s.style.transform = saved_style_transform;
     s.style.opacity = saved_opacity;
@@ -1931,7 +1935,7 @@ fn draw_into(
     let root = window.unwrap_or(&surface.root).clone();
     match areas {
         None => {
-            draw_view(&mut cx, &root, Mat4::new(), (0.0, 0.0));
+            draw_view(&mut cx, &root, Mat4::new(), Mat4::new());
             // The caption buttons, last: in the topmost layer, above web
             // views.
             crate::chrome::draw(surface, hwnd, dc, scale, w);
@@ -1967,7 +1971,7 @@ fn draw_into(
             // the clip leaves.
             unsafe { dc.Clear(Some(&background)) };
             cx.damage = Some(areas.to_vec());
-            draw_view(&mut cx, &root, Mat4::new(), (0.0, 0.0));
+            draw_view(&mut cx, &root, Mat4::new(), Mat4::new());
             crate::chrome::draw(surface, hwnd, dc, scale, w);
             cx.damage = None;
             cx.clip_skip = 0;

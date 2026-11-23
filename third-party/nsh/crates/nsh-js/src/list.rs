@@ -65,6 +65,8 @@ const FORWARDED: &[&str] = &[
     "scrollable",
     "bounces",
     "scrollsToTop",
+    "smoothWheel",
+    "wheelLineHeight",
     "contentInset",
     "scrollbarInset",
     "contentOffset",

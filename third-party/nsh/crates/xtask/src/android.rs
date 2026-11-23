@@ -114,9 +114,11 @@ pub(crate) fn root() -> PathBuf {
 /// `target/android/<profile>[-dev]`, returning that directory.
 ///
 /// Release libraries go into `lib/<abi>` without their symbol tables and
-/// debug info, which APKs store uncompressed (a quarter of each library);
-/// `symbols/<abi>` keeps them whole, for `ndk-stack`, Play Console and the
-/// AAR (Gradle strips what it packages and keeps the symbols itself).
+/// debug info, which APKs store uncompressed (a quarter of each library),
+/// debug ones without their debug info (most of them), keeping the symbol
+/// table for the names in crash reports; `symbols/<abi>` keeps them whole,
+/// for `ndk-stack`, debuggers, Play Console and the AAR (Gradle strips what
+/// it packages and keeps the symbols itself).
 pub(crate) fn build(release: bool, dev: bool, abis: &[String]) -> anyhow::Result<PathBuf> {
     let sdk = Sdk::find()?;
     let profile = if release { "release" } else { "debug" };
@@ -135,17 +137,22 @@ pub(crate) fn build(release: bool, dev: bool, abis: &[String]) -> anyhow::Result
         // reinstalls the development host when they change.
         let dest = dest.join("libnsh.so");
         let symbols = out.join("symbols").join(abi).join("libnsh.so");
-        if up_to_date(&dest, std::slice::from_ref(&so)) && (!release || symbols.exists()) {
+        if up_to_date(&dest, std::slice::from_ref(&so)) && symbols.exists() {
             continue;
         }
-        if release {
-            fs::create_dir_all(symbols.parent().context("symbols directory")?)?;
-            fs::copy(&so, &symbols)?;
-            strip(&sdk, &so, &dest)?;
-            check_alignment(&sdk, &dest)?;
-        } else {
-            fs::copy(&so, &dest)?;
-        }
+        fs::create_dir_all(symbols.parent().context("symbols directory")?)?;
+        fs::copy(&so, &symbols)?;
+        strip(
+            &sdk,
+            if release {
+                "--strip-unneeded"
+            } else {
+                "--strip-debug"
+            },
+            &so,
+            &dest,
+        )?;
+        check_alignment(&sdk, &dest)?;
     }
     let java_dir = root().join("crates/nsh-platform-android/java");
     let mut sources = Vec::new();
@@ -162,12 +169,13 @@ pub(crate) fn build(release: bool, dev: bool, abis: &[String]) -> anyhow::Result
     Ok(out)
 }
 
-/// Writes `library` to `to` without the symbols nothing links against: the
-/// dynamic ones (`JNI_OnLoad`, the `Java_*` natives) stay.
-fn strip(sdk: &Sdk, library: &Path, to: &Path) -> anyhow::Result<()> {
+/// Writes `library` to `to` stripped as `how` says: `--strip-unneeded`
+/// leaves only the symbols something links against (the dynamic ones,
+/// `JNI_OnLoad` and the `Java_*` natives), `--strip-debug` the symbol table.
+fn strip(sdk: &Sdk, how: &str, library: &Path, to: &Path) -> anyhow::Result<()> {
     term::run(
         Command::new(sdk.toolchain().join("bin/llvm-strip"))
-            .arg("--strip-unneeded")
+            .arg(how)
             .arg("-o")
             .arg(to)
             .arg(library),
@@ -286,7 +294,9 @@ fn ndk_cargo(sdk: &Sdk, triple: &str, subcommand: &str) -> Command {
 }
 
 /// Clippy on the Android crate (it is empty on other targets): with every
-/// feature, and as a Rust app's library (no JS).
+/// feature, and as a Rust app's library (no JS); its tests too, which build
+/// for Android only. Then `nsh-extra`'s modules, whose Android parts build
+/// for Android only too.
 pub(crate) fn clippy() -> anyhow::Result<()> {
     let sdk = Sdk::find()?;
     for features in ["--all-features", "--no-default-features"] {
@@ -296,6 +306,7 @@ pub(crate) fn clippy() -> anyhow::Result<()> {
                 "nsh-platform-android",
                 "--target",
                 "aarch64-linux-android",
+                "--all-targets",
                 features,
                 "--",
                 "-D",
@@ -305,6 +316,23 @@ pub(crate) fn clippy() -> anyhow::Result<()> {
         if !status.success() {
             bail!("clippy found problems ({features})");
         }
+    }
+    let status = ndk_cargo(&sdk, "aarch64-linux-android", "clippy")
+        .args([
+            "-p",
+            "nsh-extra",
+            "--features",
+            "nsh-extra/camera",
+            "--target",
+            "aarch64-linux-android",
+            "--all-targets",
+            "--",
+            "-D",
+            "warnings",
+        ])
+        .status()?;
+    if !status.success() {
+        bail!("clippy found problems (nsh-extra)");
     }
     Ok(())
 }
@@ -443,9 +471,157 @@ fn collect_ext(dir: &Path, ext: &str, out: &mut Vec<PathBuf>) -> anyhow::Result<
     Ok(())
 }
 
+/// What `cargo xtask android-embed` builds.
+#[derive(clap::Args, Clone, Debug, Default)]
+pub(crate) struct EmbedOptions {
+    /// Build only `nsh.aar`, not `nsh-dev.aar`.
+    #[arg(long)]
+    pub(crate) no_dev: bool,
+    /// ABIs to build (default: arm64-v8a, armeabi-v7a and x86_64).
+    #[arg(long)]
+    pub(crate) abi: Vec<String>,
+}
+
+/// `cargo xtask android-embed`: the Android libraries into
+/// `dist/nsh/embed/android`. Release only: the archive carries
+/// `symbols/<abi>/libnsh.so`.
+pub(crate) fn embed(options: EmbedOptions) -> anyhow::Result<PathBuf> {
+    let abis = if options.abi.is_empty() {
+        ABIS.iter().map(|abi| (*abi).to_string()).collect()
+    } else {
+        options.abi
+    };
+    let root = root();
+    let out = root.join("dist/nsh/embed/android");
+    let variants: &[(bool, &str)] = if options.no_dev {
+        &[(false, "nsh.aar")]
+    } else {
+        &[(false, "nsh.aar"), (true, "nsh-dev.aar")]
+    };
+    for &(dev, name) in variants {
+        let built = build(true, dev, &abis)?;
+        let aar = out.join(name);
+        make_aar(&built, &abis, dev, &aar)?;
+        term::done(format!(
+            "packed {}",
+            aar.strip_prefix(&root).unwrap_or(&aar).display()
+        ));
+    }
+    Ok(out)
+}
+
+/// R8 rules the archive carries (`proguard.txt`), which an app's Gradle
+/// build applies when it shrinks the app: `libnsh.so` finds the runtime's
+/// classes, methods and fields by name over JNI (`TextLayouts` in
+/// `JNI_OnLoad`) and binds `native` methods by their Java names, which R8
+/// would remove or rename, Java code never naming most of them.
+const AAR_KEEP_RULES: &str = "\
+# Native Shell: libnsh.so finds these classes and members by name over JNI
+# and binds native methods by their Java names.
+-keep class com.longbridge.nsh.** { *; }
+# The WebSocket client's TLS verifier (rustls-platform-verifier) calls these
+# over JNI.
+-keep class org.rustls.platformverifier.** { *; }
+";
+
+/// An Android library archive: the Java runtime and `libnsh.so` per ABI,
+/// with the R8 rules that keep the runtime ([`AAR_KEEP_RULES`]).
+///
+/// The development library allows cleartext HTTP (merged into the app's
+/// manifest): it loads assets from the `nsh dev` server over plain HTTP.
+pub(crate) fn make_aar(built: &Path, abis: &[String], dev: bool, aar: &Path) -> anyhow::Result<()> {
+    let work = aar.with_extension("aar-work");
+    if work.exists() {
+        fs::remove_dir_all(&work)?;
+    }
+    fs::create_dir_all(&work)?;
+    fs::write(
+        work.join("AndroidManifest.xml"),
+        format!(
+            r#"<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="com.longbridge.nsh">
+    <uses-sdk android:minSdkVersion="{MIN_SDK}" />
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- The default network's callback (`network()`). -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- Text actions (Translate and the like) the selection menu offers,
+        as TextView's: Android 11+ hides other apps' activities otherwise. -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.PROCESS_TEXT" />
+            <data android:mimeType="text/plain" />
+        </intent>
+    </queries>{}
+</manifest>
+"#,
+            if dev {
+                "\n    <application android:usesCleartextTraffic=\"true\" />"
+            } else {
+                ""
+            }
+        ),
+    )?;
+    fs::write(work.join("R.txt"), "")?;
+    fs::write(work.join("proguard.txt"), AAR_KEEP_RULES)?;
+    copy_file(&built.join("classes.jar"), &work.join("classes.jar"))?;
+    // With their symbols: the app's Gradle build strips what it packages
+    // and keeps them for its crash reports.
+    for abi in abis {
+        copy_file(
+            &built.join("symbols").join(abi).join("libnsh.so"),
+            &work.join("jni").join(abi).join("libnsh.so"),
+        )?;
+    }
+    if let Some(dir) = aar.parent() {
+        fs::create_dir_all(dir)?;
+    }
+    let _ = fs::remove_file(aar);
+    zip_dir(&work, aar).with_context(|| format!("create {}", aar.display()))?;
+    fs::remove_dir_all(&work)?;
+    Ok(())
+}
+
+fn copy_file(from: &Path, to: &Path) -> anyhow::Result<()> {
+    if let Some(dir) = to.parent() {
+        fs::create_dir_all(dir)?;
+    }
+    fs::copy(from, to).with_context(|| format!("copy {} -> {}", from.display(), to.display()))?;
+    Ok(())
+}
+
+/// Zips the files under `dir` into `archive`, by their paths relative to
+/// `dir` (with `/`, whatever this machine's separator).
+fn zip_dir(dir: &Path, archive: &Path) -> anyhow::Result<()> {
+    use std::io::Write as _;
+
+    use zip::{CompressionMethod, ZipWriter, write::SimpleFileOptions};
+
+    let mut zip = ZipWriter::new(fs::File::create(archive)?);
+    let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+    let mut pending = vec![(dir.to_path_buf(), String::new())];
+    while let Some((dir, prefix)) = pending.pop() {
+        let mut entries: Vec<_> = fs::read_dir(&dir)?.collect::<Result<_, _>>()?;
+        entries.sort_by_key(|entry| entry.file_name());
+        for entry in entries {
+            let name = format!("{prefix}{}", entry.file_name().to_string_lossy());
+            if entry.file_type()?.is_dir() {
+                zip.add_directory(format!("{name}/"), options)?;
+                pending.push((entry.path(), format!("{name}/")));
+            } else {
+                zip.start_file(name, options)?;
+                zip.write_all(&fs::read(entry.path())?)?;
+            }
+        }
+    }
+    zip.finish()?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::check_load_alignment;
+    use std::{fs, io::Read as _};
+
+    use super::{AAR_KEEP_RULES, check_load_alignment, make_aar};
 
     #[test]
     fn load_segments_support_16_kb_pages() {
@@ -470,5 +646,106 @@ mod tests {
         for headers in ["", "LOAD off 0x0000", "LOAD off 0x0000 align 2**invalid"] {
             assert!(check_load_alignment(headers).is_err(), "{headers}");
         }
+    }
+
+    #[test]
+    fn an_aar_carries_the_rules_that_keep_the_runtime() {
+        let dir = std::env::temp_dir().join(format!("nsh-aar-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let built = dir.join("built");
+        fs::create_dir_all(built.join("symbols/arm64-v8a")).unwrap();
+        fs::write(built.join("classes.jar"), b"jar").unwrap();
+        fs::write(built.join("symbols/arm64-v8a/libnsh.so"), b"so").unwrap();
+        let aar = dir.join("nsh.aar");
+        make_aar(&built, &["arm64-v8a".to_string()], false, &aar).unwrap();
+        let mut zip = zip::ZipArchive::new(fs::File::open(&aar).unwrap()).unwrap();
+        let mut rules = String::new();
+        zip.by_name("proguard.txt")
+            .unwrap()
+            .read_to_string(&mut rules)
+            .unwrap();
+        assert_eq!(rules, AAR_KEEP_RULES);
+        assert!(rules.contains("-keep class com.longbridge.nsh.** { *; }"));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The opcodes of `Command` in `encode.rs`, and the `case` labels of
+    /// `Mounter.command`, are numbers two PRs can pick at once: a duplicate
+    /// label is a `javac` error, a duplicate opcode a command that runs as
+    /// another one. `nsh-platform-android` is empty off Android, so this
+    /// reads both sources as text.
+    #[test]
+    fn a_command_opcode_is_used_once() {
+        let dir = super::root().join("crates/nsh-platform-android");
+        let java = fs::read_to_string(dir.join("java/com/longbridge/nsh/Mounter.java")).unwrap();
+        let rust = fs::read_to_string(dir.join("src/encode.rs")).unwrap();
+
+        let start = java
+            .find("    private void command(")
+            .expect("Mounter.command");
+        let body = &java[start..];
+        let body = &body[..body.find("\n    }\n").expect("end of Mounter.command")];
+        // A line is `case 1:`, `case 3: stop(); break;` or `case 4: case 5:`.
+        let mut labels = Vec::new();
+        for line in body.lines() {
+            let Some(mut rest) = line.strip_prefix("            case ") else {
+                continue;
+            };
+            loop {
+                let (number, after) = rest.split_once(':').expect("a case label ends in a colon");
+                labels.push(number.parse::<u32>().expect("a numeric case label"));
+                match after.trim_start().strip_prefix("case ") {
+                    Some(next) => rest = next,
+                    None => break,
+                }
+            }
+        }
+        assert!(labels.len() > 40, "found only {} case labels", labels.len());
+        assert_eq!(
+            duplicates(&labels),
+            Vec::<u32>::new(),
+            "Mounter.command: duplicate case labels"
+        );
+
+        // The first `e.int(N)` after each `Command::` arm is its opcode;
+        // arms that write -1 are not carried out and have none.
+        let start = rust
+            .find("MountItem::Command { id, command }")
+            .expect("the command arm");
+        let mut opcodes = Vec::new();
+        let mut open = false;
+        for line in rust[start..].lines() {
+            let indent = line.len() - line.trim_start().len();
+            if indent == 20 && line.trim_start().starts_with("Command::") {
+                open = true;
+            }
+            if open && let Some(rest) = line.split("e.int(").nth(1) {
+                let number = rest.split(')').next().unwrap();
+                if let Ok(n) = number.parse::<u32>() {
+                    opcodes.push(n);
+                }
+                open = false;
+            }
+            if indent < 20 && line.trim() == "}" && !opcodes.is_empty() && opcodes.len() > 40 {
+                break;
+            }
+        }
+        assert!(opcodes.len() > 40, "found only {} opcodes", opcodes.len());
+        assert_eq!(
+            duplicates(&opcodes),
+            Vec::<u32>::new(),
+            "encode.rs: duplicate command opcodes"
+        );
+    }
+
+    fn duplicates(numbers: &[u32]) -> Vec<u32> {
+        let mut seen = std::collections::BTreeSet::new();
+        let mut again = std::collections::BTreeSet::new();
+        for n in numbers {
+            if !seen.insert(*n) {
+                again.insert(*n);
+            }
+        }
+        again.into_iter().collect()
     }
 }

@@ -85,6 +85,7 @@ pub fn App() -> impl IntoElement {
 ```tsx tabs
 import { mount, type NativeComponentRef, signal, Text, View } from "nsh";
 import { nativeComponent } from "nsh";
+import { Window } from "nsh/desktop";
 
 /** The host app's badge: a label it draws, sized to its text. */
 const Badge = nativeComponent<{ text: string; color?: string }, { tap: { count: number } }>("embed.badge", {
@@ -115,7 +116,11 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 The TSX version is `examples/embedded/App.tsx`, which both embedding samples in the repository run.
@@ -629,6 +634,42 @@ impl NativeComponent for ImageView {
         self.zoom_about(event.x, event.y, factor);
         self.context.redraw();
         true
+    }
+}
+```
+
+A drawn component can also take presses, moves and releases where it has something to hit (an annotation it draws
+over an image). `hit` is asked for each point and is `false` by default, so presses go to its view's handlers
+(`onPress`, `onMouseMove`) as before. Where it returns `true`, `pointer` gets a `Pointer` (`kind`: `Down`, `Move`,
+`Up`, `Cancel`, `Leave`; `x`, `y` in the component's points; `clicks`; `shift`, `ctrl`, `alt`): after a press it took,
+the moves and the release follow until the release, also outside its bounds; with no button down, moves come while
+the mouse is over where it hits, then `Leave`. A press it returns `false` for goes to the views below. Only the left
+button reaches it, so right-clicks and context menus stay with its view. `cursor` sets the cursor where it hits:
+
+```rust
+use nsh_platform_windows::{Cursor, Pointer, PointerKind};
+
+impl NativeComponent for ImageView {
+    // draw, set_prop, wheel, ...
+
+    fn hit(&self, x: f32, y: f32, _size: (f32, f32)) -> bool {
+        self.annotation_at(x, y).is_some()
+    }
+
+    fn pointer(&mut self, event: &Pointer) -> bool {
+        match event.kind {
+            PointerKind::Down => self.grab(event.x, event.y),
+            PointerKind::Move => self.drag_or_hover(event.x, event.y),
+            PointerKind::Up | PointerKind::Cancel => self.release(),
+            PointerKind::Leave => self.unhover(),
+            _ => {}
+        }
+        self.context.redraw();
+        true
+    }
+
+    fn cursor(&self, _x: f32, _y: f32) -> Option<Cursor> {
+        Some(Cursor::Move)
     }
 }
 ```

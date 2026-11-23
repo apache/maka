@@ -41,8 +41,8 @@ pub use perf::{FrameMetrics, MeasuredBackend, MeasuredWriter};
 pub use crate::run::{RunEvent, run_app};
 pub use crate::{
     app::{
-        AccessibleNode, AppOptions, AppView, ColorDepth, InputContext, TerminalCapabilities,
-        WakeCallback,
+        AccessibleNode, AppOptions, AppView, ColorDepth, Graphics, InputContext,
+        TerminalCapabilities, WakeCallback,
     },
     geometry::CellSize,
     image::{ImageProtocol, ProtocolType},

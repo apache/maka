@@ -20,7 +20,7 @@ NSH 的所有操作都通过一个命令 `nsh` 完成：构建用 Rust 或 TSX �
 | Linux | Linux | GTK 4.14+（构建运行时还需要它的开发包） |
 | [GPUI](./gpui.md)（嵌入 GPUI 应用） | macOS、Windows 或 Linux | GPU（Metal、DirectX 或 Vulkan）；Linux 上需要 Wayland 或 X11 |
 
-macOS 上的默认目标为 AppKit。Mac Catalyst（`--target catalyst`）和 iOS 一样需要 Xcode。详见[平台工具](#平台工具)。
+macOS 上的默认目标为 AppKit。Mac Catalyst（`--target catalyst`）是用于 Catalyst 特有工作的开发工具，和 iOS 一样需要 Xcode。详见[平台工具](#平台工具)。
 
 ## 安装发布版本
 
@@ -69,10 +69,12 @@ mise use -g github:longbridge/nsh
 
 开发所在平台之外的运行时是发布版的组件，就像 `rustup component add` 安装工具链的组成部分。第一个用到它的命令（例如 `nsh run --target android` 或 `nsh package --target web`）会从当前 `nsh` 所属的发布版下载它，校验 SHA-256，并安装到 CLI 旁边。也可以用 `nsh component` 提前管理：
 
+`nsh component list` 列出本机可用的组件以及是否已安装；`nsh component add` 提前安装，例如离线之前；`nsh component remove` 删除以释放空间：
+
 ```sh
-nsh component list            # 本机可用的组件，以及是否已安装
-nsh component add android web # 提前安装，例如离线之前
-nsh component remove gpui     # 删除以释放空间
+nsh component list
+nsh component add android web
+nsh component remove gpui
 ```
 
 | 组件 | 内容 | 发布平台 |
@@ -88,18 +90,36 @@ nsh component remove gpui     # 删除以释放空间
 
 ## 用 Rust 编写的应用
 
-通过 [rustup](https://rustup.rs) 安装 Rust。`nsh` 用 Cargo 为每个目标构建 Rust 应用的运行器，使用你的 crate 以及 crates.io 上与 CLI 同版本的 NSH crate，所以请添加你要运行的平台对应的 Rust 目标：
+通过 [rustup](https://rustup.rs) 安装 Rust。`nsh` 用 Cargo 为每个目标构建 Rust 应用的运行器，使用你的 crate 以及 crates.io 上与 CLI 同版本的 NSH crate，所以请添加你要运行的平台对应的 Rust 目标。iOS 模拟器、真机和 Mac Catalyst：
 
 ```sh
-rustup target add aarch64-apple-ios-sim aarch64-apple-ios aarch64-apple-ios-macabi   # iOS 模拟器、真机、Mac Catalyst
-rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android # Android（配合 SDK 中的 NDK）
-rustup target add wasm32-unknown-unknown                                             # Web
+rustup target add aarch64-apple-ios-sim aarch64-apple-ios aarch64-apple-ios-macabi
+```
+
+Android（配合 SDK 中的 NDK）：
+
+```sh
+rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android
+```
+
+Web：
+
+```sh
+rustup target add wasm32-unknown-unknown
 ```
 
 推荐使用 [huacnlee/cargo](https://github.com/huacnlee/cargo) 构建：这是 [huacnlee](https://github.com/huacnlee) 基于官方 Cargo 优化的分支，专门避免 Rust 编译产物把磁盘占满。所有项目和 Git worktree 共用一个构建目录，它会自己控制在大小限制之内；实测在 50 个 worktree 的场景下比官方 Cargo 少占约 90% 的磁盘空间，512 GB 的硬盘基本就够用。它直接替换 `~/.cargo/bin/cargo`，不需要任何配置：
 
+macOS 和 Linux：
+
 ```sh
-curl -fsSL https://huacnlee.github.io/cargo/install.sh | sh     # Windows：irm https://huacnlee.github.io/cargo/install.ps1 | iex
+curl -fsSL https://huacnlee.github.io/cargo/install.sh | sh
+```
+
+Windows，在 PowerShell 中：
+
+```powershell
+irm https://huacnlee.github.io/cargo/install.ps1 | iex
 ```
 
 桌面平台为你所在的机器构建。在 Rust 应用目录中运行 `cargo run` 会直接在桌面后端上启动它，构建时使用该后端的开发库（[平台工具](#平台工具)）。Android 构建还会使用 SDK 中的 **NDK**，与[构建 Android 运行时](#构建-android-运行时)相同。
@@ -136,23 +156,30 @@ Android 运行时（在 Windows 上，只有找到 Android SDK 时才包含）�
 
 ## 安装 nightly 版本
 
-`main` 有新提交的每一天，夜间都会构建并发布为 [nightly release](https://github.com/longbridge/nsh/releases/tag/nightly)，包含和正式版相同的发行包：
+`main` 有新提交的每一天，夜间都会构建并发布为 [nightly release](https://github.com/longbridge/nsh/releases/tag/nightly)，包含和正式版相同的发行包。
+
+**macOS 和 Linux**：
 
 ```sh
 curl -fsSL https://nsh.dev/install.sh | sh -s -- --nightly
-nsh -V # nsh 0.4.0 (abcdef0 nightly)
 ```
+
+**Windows**，在 PowerShell 中（`NSH_VERSION` 指定要安装的版本，这里是 `nightly`）：
+
+```powershell
+$env:NSH_VERSION = 'nightly'; irm https://nsh.dev/install.ps1 | iex
+```
+
+之后 `nsh -V` 会显示提交和渠道，例如 `nsh 0.4.0 (abcdef0 nightly)`。
 
 用 Rust 编写的应用会用 crates.io 上与 CLI 同版本号的 NSH crate 构建 runner，也就是上一个正式版的 crate；这类应用请使用正式版或源码版。
 
 ## 更新
 
-`nsh update` 把已安装的 `nsh` 更新到所在渠道的最新构建：正式版更新到最新正式版，nightly 版更新到最新 nightly。指定渠道即切换过去，与 `rustup update nightly` 一致：
+`nsh update` 把已安装的 `nsh` 更新到所在渠道的最新构建：正式版更新到最新正式版，nightly 版更新到最新 nightly。指定渠道即切换过去，与 `rustup update nightly` 一致：`nsh update nightly` 切换到 `main` 的 nightly 构建，`nsh update stable` 回到最新正式版。
 
 ```sh
-nsh update                    # 所在渠道的最新版本
-nsh update nightly            # 切换到 main 的 nightly 构建
-nsh update stable             # 回到最新正式版
+nsh update
 ```
 
 它下载和安装脚本相同的压缩包，校验 SHA-256，替换整个发行包目录，并重新安装之前已安装的组件。Homebrew、Scoop 和 mise 安装的 `nsh` 由它们自己更新（`brew upgrade nsh`、`scoop update nsh`、`mise upgrade`）。
@@ -167,9 +194,11 @@ curl -fsSL https://nsh.dev/install.sh | sh -s -- --source
 
 它把源码保留在 `~/.nsh/source`，构建 CLI 并链接到 `~/.local/bin`；再次运行即可更新。如果要开发 NSH 本身，克隆仓库并在其中构建 CLI；运行时缺少的桌面和 Web 运行时会自动构建：
 
+构建出的 CLI 位于 `./target/debug/nsh`：
+
 ```sh
 git clone https://github.com/longbridge/nsh.git && cd nsh
-cargo build -p nsh-cli          # ./target/debug/nsh
+cargo build -p nsh-cli
 ```
 
 iOS、Android 运行时和发布版运行器的构建命令见仓库的 [AGENTS.md](https://github.com/longbridge/nsh/blob/main/AGENTS.md#commands)。
@@ -218,14 +247,13 @@ sdkmanager "platforms;android-35" "build-tools;35.0.1" "platform-tools"
 
 ### 构建 Android 运行时
 
-从源码构建 Android 运行时（`cargo xtask android`）还需要 SDK 中的 **NDK**（`ndk;<version>`；如果已安装的最新版本不完整，请设置 `ANDROID_NDK_HOME`）以及 `javac`。
+从源码构建 Android 运行时（`cargo xtask android`）还需要 SDK 中的 **NDK**（`ndk;<version>`；如果已安装的最新版本不完整，请设置 `ANDROID_NDK_HOME`）以及 `javac`。只打嵌入用的 AAR：`cargo xtask android-embed`（`dist/nsh/embed/android/{nsh,nsh-dev}.aar`）。
 
 ## 各平台可用的命令
 
 | 命令 | macOS | Linux | Windows |
 |---|---|---|---|
 | `nsh init`, `nsh build`, `nsh test`, `nsh dev`, `nsh check` | 可以 | 可以 | 可以 |
-| `nsh run --target catalyst`（Mac Catalyst） | 可以 | 不可以 | 不可以 |
 | `nsh run --target macos`, `nsh package --target macos` | 可以 | 不可以 | 不可以 |
 | `nsh run --target linux`（Linux 上的默认目标）, `nsh package --target linux` | 不可以 | 可以 | 不可以 |
 | `nsh run --target windows`（Windows 上的默认目标）, `nsh package --target windows` | 不可以 | 不可以 | 可以 |
@@ -233,6 +261,7 @@ sdkmanager "platforms;android-35" "build-tools;35.0.1" "platform-tools"
 | `nsh run --target ios`, `nsh package --target ios` / `ios-simulator` | 可以，需要 Xcode | 不可以 | 不可以 |
 | `nsh run --target android`, `nsh package --target android` | 可以 | 可以，需从源码构建 | 可以，需有 Android 运行时 |
 | `nsh keygen`, `certify`, `publish`, `verify`, `revoke` | 可以 | 可以 | 可以 |
+| `nsh run --target catalyst`（Mac Catalyst） | 可以 | 不可以 | 不可以 |
 
 在 Linux 上，请从源码构建 CLI 和 Android 运行时（`cargo build -p nsh-cli` 与 `cargo xtask android --dev`）；会自动使用 NDK 的 Linux 工具链。在 Windows 上同样会使用 NDK 的 Windows 工具链，`cargo xtask dist` 找到 Android SDK 时会包含 Android 运行时。
 

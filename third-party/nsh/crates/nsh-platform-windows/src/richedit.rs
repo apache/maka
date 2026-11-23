@@ -35,8 +35,8 @@ use std::{
 use windows::{
     Win32::{
         Foundation::{
-            COLORREF, E_NOINTERFACE, E_NOTIMPL, E_POINTER, HWND, LPARAM, LRESULT, POINT, RECT,
-            RECTL, S_FALSE, S_OK, SIZE, WPARAM,
+            COLORREF, E_NOINTERFACE, E_NOTIMPL, E_POINTER, HWND, LPARAM, LRESULT, POINT, POINTL,
+            RECT, RECTL, S_FALSE, S_OK, SIZE, WPARAM,
         },
         Graphics::Gdi::{
             ClientToScreen, GetDC, GetDeviceCaps, GetSysColor, HBITMAP, HDC, HPALETTE, HRGN,
@@ -45,11 +45,12 @@ use windows::{
         System::LibraryLoader::{GetProcAddress, LoadLibraryW},
         UI::{
             Controls::RichEdit::{
-                CHARFORMAT2W, CHARFORMATW, CHARRANGE, EM_EXGETSEL, ITextServices2, PARAFORMAT,
-                PARAFORMAT2, TXTBACK_TRANSPARENT, TXTBACKSTYLE, TXTVIEW_ACTIVE,
+                CHARFORMAT2W, CHARFORMATW, CHARRANGE, EM_EXGETSEL, EM_GETSCROLLPOS,
+                EM_SETSCROLLPOS, ITextServices2, PARAFORMAT, PARAFORMAT2, TXTBACK_TRANSPARENT,
+                TXTBACKSTYLE, TXTBIT_RICHTEXT, TXTVIEW_ACTIVE,
             },
             Input::Ime::{HIMC, ImmGetContext, ImmReleaseContext},
-            WindowsAndMessaging::{HCURSOR, KillTimer, SetTimer, WM_GETTEXTLENGTH, WM_TIMER},
+            WindowsAndMessaging::{HCURSOR, KillTimer, SetTimer, WM_TIMER},
         },
     },
     core::{BOOL, GUID, HRESULT, IUnknown, Interface, PCWSTR, w},
@@ -365,10 +366,7 @@ impl Editor {
 
     /// The text (plain, lines broken by `\r`, as the services keep it).
     pub(crate) fn text_units(&self) -> Vec<u16> {
-        let mut bstr = windows::core::BSTR::new();
-        // SAFETY: an out BSTR we own.
-        let _ = unsafe { self.services.TxGetText(&mut bstr) };
-        bstr.to_vec()
+        text_of(&self.services, self.host().props.borrow().bits)
     }
 
     /// Replaces the text (no undo, no notification but `EN_CHANGE`).
@@ -378,11 +376,18 @@ impl Editor {
         let _ = unsafe { self.services.TxSetText(PCWSTR(wide.as_ptr())) };
     }
 
-    /// The selection, in UTF-16 units (start ≤ end).
+    /// The selection, in UTF-16 units (start ≤ end), within the text: rich
+    /// text's final paragraph mark ([`text_of`]), which selecting all
+    /// takes in, is left out.
     pub(crate) fn selection(&self) -> (u32, u32) {
         let mut range = CHARRANGE::default();
         self.send(EM_EXGETSEL, 0, &mut range as *mut _ as isize);
-        (range.cpMin.max(0) as u32, range.cpMax.max(0) as u32)
+        let (start, end) = (range.cpMin.max(0) as u32, range.cpMax.max(0) as u32);
+        if self.host().props.borrow().bits & TXTBIT_RICHTEXT == 0 {
+            return (start, end);
+        }
+        let len = self.text_units().len() as u32;
+        (start.min(len), end.min(len))
     }
 
     /// The vertical scroll: minimum, maximum, position and page (pixels).
@@ -395,6 +400,31 @@ impl Editor {
                 .TxGetVScroll(&mut min, &mut max, &mut pos, &mut page, &mut enabled)
         };
         (min, max, pos, page)
+    }
+
+    /// The top left of the character at `at` (UTF-16; the text's length:
+    /// its end), in client pixels.
+    pub(crate) fn position(&self, at: u32) -> POINT {
+        let mut p = POINTL::default();
+        self.send(
+            windows::Win32::UI::Controls::EM_POSFROMCHAR,
+            &mut p as *mut _ as usize,
+            at as isize,
+        );
+        POINT { x: p.x, y: p.y }
+    }
+
+    /// Scrolls the text sideways so the character at `at` is at the client
+    /// rectangle's left edge, as near as the text lets it.
+    pub(crate) fn scroll_to_left_edge(&self, at: u32) {
+        let dx = self.position(at).x - self.props().client.left;
+        if dx == 0 {
+            return;
+        }
+        let mut scroll = POINT::default();
+        self.send(EM_GETSCROLLPOS, 0, &mut scroll as *mut _ as isize);
+        scroll.x = (scroll.x + dx).max(0);
+        self.send(EM_SETSCROLLPOS, 0, &mut scroll as *mut _ as isize);
     }
 
     /// The height of the text laid out `width` pixels wide (pixels).
@@ -455,6 +485,131 @@ impl Editor {
             log::debug!("TxDrawD2D failed: {hr:?}");
         }
         hr.is_ok()
+    }
+
+    /// Draws the text with GDI (`ITextServices::TxDraw`) into a top-down
+    /// 32-bit premultiplied BGRA pixel buffer covering `bounds` (width × height
+    /// pixels). Used only when the input renders an app-registered custom font,
+    /// because windowless RichEdit's `TXTBIT_D2DDWRITE` path only sees
+    /// DirectWrite's system font collection, whereas GDI resolves
+    /// process-private fonts registered via `AddFontMemResourceEx`.
+    ///
+    /// Dual-pass black/white alpha matting recovers per-pixel alpha for
+    /// transparent backgrounds, antialiased glyphs of any color, and opaque
+    /// selection highlights without ClearType color fringing.
+    pub(crate) fn draw_gdi_bgra(&self, bounds: RECT) -> Option<Vec<u8>> {
+        use windows::Win32::Graphics::Gdi::{
+            BI_RGB, BITMAPINFO, BITMAPINFOHEADER, CreateCompatibleDC, CreateDIBSection,
+            DIB_RGB_COLORS, DeleteDC, DeleteObject, SelectObject, SetViewportOrgEx,
+        };
+        let w = (bounds.right - bounds.left).max(0);
+        let h = (bounds.bottom - bounds.top).max(0);
+        if w == 0 || h == 0 {
+            return None;
+        }
+        let byte_len = (w as usize).checked_mul(h as usize)?.checked_mul(4)?;
+        let bmi = BITMAPINFO {
+            bmiHeader: BITMAPINFOHEADER {
+                biSize: size_of::<BITMAPINFOHEADER>() as u32,
+                biWidth: w,
+                biHeight: -h,
+                biPlanes: 1,
+                biBitCount: 32,
+                biCompression: BI_RGB.0,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut bits_ptr: *mut c_void = std::ptr::null_mut();
+        let _drawing = self.drawing();
+        // SAFETY: GDI DC and DIB section are created and cleaned up within
+        // this scope; `bits_ptr` points to `byte_len` valid bytes while `dib`
+        // is alive; `TxDraw` receives a live DC and `RECTL`.
+        unsafe {
+            let dc = CreateCompatibleDC(None);
+            if dc.is_invalid() {
+                return None;
+            }
+            let Ok(dib) = CreateDIBSection(Some(dc), &bmi, DIB_RGB_COLORS, &mut bits_ptr, None, 0)
+            else {
+                let _ = DeleteDC(dc);
+                return None;
+            };
+            if bits_ptr.is_null() {
+                let _ = DeleteObject(dib.into());
+                let _ = DeleteDC(dc);
+                return None;
+            }
+            let old = SelectObject(dc, dib.into());
+            let _ = SetViewportOrgEx(dc, -bounds.left, -bounds.top, None);
+            let pixels = std::slice::from_raw_parts_mut(bits_ptr.cast::<u8>(), byte_len);
+
+            let draw_pass = |bg: u8, pixels: &mut [u8]| -> bool {
+                pixels.fill(bg);
+                let mut rc = RECTL {
+                    left: bounds.left,
+                    top: bounds.top,
+                    right: bounds.right,
+                    bottom: bounds.bottom,
+                };
+                self.services
+                    .TxDraw(
+                        windows::Win32::System::Com::DVASPECT_CONTENT,
+                        0,
+                        std::ptr::null_mut(),
+                        std::ptr::null_mut(),
+                        dc,
+                        HDC::default(),
+                        &mut rc,
+                        std::ptr::null_mut(),
+                        std::ptr::null_mut(),
+                        0,
+                        0,
+                        TXTVIEW_ACTIVE.0,
+                    )
+                    .is_ok()
+            };
+
+            let result = if draw_pass(0x00, pixels) {
+                let mut black = pixels.to_vec();
+                if draw_pass(0xFF, pixels) {
+                    for (b_px, w_px) in black
+                        .as_chunks_mut::<4>()
+                        .0
+                        .iter_mut()
+                        .zip(pixels.as_chunks::<4>().0)
+                    {
+                        let ab = 255u32.saturating_sub(u32::from(w_px[0].saturating_sub(b_px[0])));
+                        let ag = 255u32.saturating_sub(u32::from(w_px[1].saturating_sub(b_px[1])));
+                        let ar = 255u32.saturating_sub(u32::from(w_px[2].saturating_sub(b_px[2])));
+                        let alpha = ((ab + ag + ar + 1) / 3).min(255);
+                        if alpha == 0 {
+                            *b_px = [0, 0, 0, 0];
+                        } else {
+                            let premul = |c: u8, ac: u32| -> u8 {
+                                (u32::from(c) * alpha)
+                                    .checked_div(ac)
+                                    .map_or(0, |v| v.min(alpha) as u8)
+                            };
+                            b_px[0] = premul(b_px[0], ab);
+                            b_px[1] = premul(b_px[1], ag);
+                            b_px[2] = premul(b_px[2], ar);
+                            b_px[3] = alpha as u8;
+                        }
+                    }
+                    Some(black)
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+            SelectObject(dc, old);
+            let _ = DeleteObject(dib.into());
+            let _ = DeleteDC(dc);
+            result
+        }
     }
 
     /// Marks the field as being drawn until the guard drops: what the
@@ -955,6 +1110,20 @@ unsafe extern "system" fn tx_get_back_style(_: This, style: *mut TXTBACKSTYLE) -
     S_OK
 }
 
+/// The text of `services`, whose host's property bits are `bits`: rich
+/// text always ends with a paragraph mark of its own, which is not the
+/// field's text and is left out.
+fn text_of(services: &ITextServices2, bits: u32) -> Vec<u16> {
+    let mut bstr = windows::core::BSTR::new();
+    // SAFETY: an out BSTR we own.
+    let _ = unsafe { services.TxGetText(&mut bstr) };
+    let mut units = bstr.to_vec();
+    if bits & TXTBIT_RICHTEXT != 0 && units.last() == Some(&u16::from(b'\r')) {
+        units.pop();
+    }
+    units
+}
+
 unsafe extern "system" fn tx_get_max_length(this: This, out: *mut u32) -> HRESULT {
     // SAFETY: a live host and an out value.
     unsafe { *out = host(this).props.borrow().max_length };
@@ -1021,14 +1190,9 @@ unsafe extern "system" fn tx_notify(this: This, code: u32, _: *mut c_void) -> HR
                         LPARAM(&mut range as *mut _ as isize),
                         &mut r,
                     );
-                    let mut len = LRESULT(0);
-                    let _ =
-                        services.TxSendMessage(WM_GETTEXTLENGTH, WPARAM(0), LPARAM(0), &mut len);
-                    notes.composition_start = Some((
-                        range.cpMin.max(0) as u32,
-                        range.cpMax.max(0) as u32,
-                        len.0.max(0) as u32,
-                    ));
+                    let len = text_of(services, host.props.borrow().bits).len() as u32;
+                    let at = |cp: i32| (cp.max(0) as u32).min(len);
+                    notes.composition_start = Some((at(range.cpMin), at(range.cpMax), len));
                 }
             }
         }
@@ -1045,13 +1209,13 @@ unsafe extern "system" fn tx_notify(this: This, code: u32, _: *mut c_void) -> HR
 }
 
 unsafe extern "system" fn tx_imm_get_context(this: This) -> HIMC {
-    // SAFETY: the host's window.
-    unsafe { ImmGetContext(host(this).hwnd) }
+    // SAFETY: the window the field shows in (its app window, or the host's).
+    unsafe { ImmGetContext(host(this).shown_in.get()) }
 }
 
 unsafe extern "system" fn tx_imm_release_context(this: This, himc: HIMC) {
     // SAFETY: a context from `tx_imm_get_context`.
-    let _ = unsafe { ImmReleaseContext(host(this).hwnd, himc) };
+    let _ = unsafe { ImmReleaseContext(host(this).shown_in.get(), himc) };
 }
 
 unsafe extern "system" fn tx_get_selection_bar_width(_: This, out: *mut i32) -> HRESULT {
@@ -1066,7 +1230,7 @@ unsafe extern "system" fn tx_is_double_click_pending(_: This) -> BOOL {
 
 unsafe extern "system" fn tx_get_window(this: This, out: *mut HWND) -> HRESULT {
     // SAFETY: a live host and an out value.
-    unsafe { *out = host(this).hwnd };
+    unsafe { *out = host(this).shown_in.get() };
     S_OK
 }
 
@@ -1370,5 +1534,17 @@ mod tests {
         pump(60);
         assert_eq!(handed.get(), 0);
         assert!(TIMERS.with(|t| t.borrow().is_empty()));
+    }
+
+    #[test]
+    fn show_in_updates_tx_get_window() {
+        let (e, _) = editor();
+        let target = HWND(0x1234usize as *mut c_void);
+        e.show_in(target);
+        let mut reported = HWND::default();
+        // SAFETY: `e.host` is a live `Host` vtable pointer for the duration of `e`.
+        let hr = unsafe { tx_get_window(e.host as *mut c_void, &mut reported) };
+        assert!(hr.is_ok());
+        assert_eq!(reported, target);
     }
 }

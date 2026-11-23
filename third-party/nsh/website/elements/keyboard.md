@@ -47,6 +47,7 @@ fn chat() -> impl IntoElement {
 ```tsx tabs
 import { mount, Scroll, signal, Text, View } from "nsh";
 import { Input } from "nsh/base";
+import { Window } from "nsh/desktop";
 
 function App() {
   const draft = signal("");
@@ -67,7 +68,11 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 The full keyboard height suits a view that reaches the bottom of the screen, as a screen's content does. When
@@ -249,6 +254,10 @@ Command on Apple platforms, Control elsewhere), and `defaultPrevented` reports t
 accepts reactive values; omitting it on a retained view restores `"none"`. Eligible app shortcuts keep their
 priority, focused native inputs keep the keys that edit them, and a capture cannot defeat a shortcut the operating
 system never delivers. A captured Tab stays in the view; an observed Tab follows normal traversal.
+Inside the top overlay that closes on Escape (a `Popover`, a `Sheet`), a focused view whose rule, or an enabled
+ancestor's within that overlay, captures `escape` takes Escape before the overlay does: an editor in a popover
+clears its selection first, and the overlay closes on Escape again once the rule drops the key. Back and the screen
+reader's escape gesture still close the overlay.
 
 ```tsx
 import { signal, Text, View } from "nsh";

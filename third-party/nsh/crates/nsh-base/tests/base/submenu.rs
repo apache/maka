@@ -7,7 +7,6 @@
 use nsh_base::{MenuEvent, SubmenuEvent, menu, menu_item, submenu};
 use nsh_core::{
     Size,
-    element::Root,
     platform::{Idiom, Os},
     prelude::*,
 };
@@ -19,7 +18,7 @@ const WAIT: std::time::Duration = std::time::Duration::from_secs(5);
 fn start(os: Os, idiom: Idiom) -> Headless {
     let mut config = EngineConfig {
         viewport: Size::new(px(390.0), px(844.0)),
-        ..EngineConfig::new(Root::of::<Menus>())
+        ..EngineConfig::new(nsh_testing::windowed_root::<Menus>())
     };
     config.environment.os = os;
     config.environment.idiom = idiom;
@@ -249,7 +248,9 @@ fn open_padded(top: f32, rows: usize) -> Headless {
     let props = PaddedProps { top, rows };
     let mut config = EngineConfig {
         viewport: Size::new(px(390.0), px(600.0)),
-        ..EngineConfig::new(Root::new::<Padded>(move || props.clone()))
+        ..EngineConfig::new(nsh_testing::windowed_root_with::<Padded>(move || {
+            props.clone()
+        }))
     };
     config.environment.os = Os::MacOs;
     config.environment.idiom = Idiom::Desktop;
@@ -366,7 +367,9 @@ fn Owned(props: OwnedProps) -> impl IntoElement {
 fn start_owned(follow: bool) -> Headless {
     let mut config = EngineConfig {
         viewport: Size::new(px(390.0), px(844.0)),
-        ..EngineConfig::new(Root::new::<Owned>(move || OwnedProps { follow }))
+        ..EngineConfig::new(nsh_testing::windowed_root_with::<Owned>(move || {
+            OwnedProps { follow }
+        }))
     };
     config.environment.os = Os::MacOs;
     config.environment.idiom = Idiom::Desktop;

@@ -37,6 +37,7 @@ signal 保存一个值。调用它会读取该值；如果处在追踪作用域�
 
 ```tsx
 import { mount, signal, Text, View } from "nsh";
+import { Window } from "nsh/desktop";
 
 function Counter() {
   const count = signal(0);
@@ -48,7 +49,7 @@ function Counter() {
   );
 }
 
-mount(Counter);
+mount(() => <Window id="main"><Counter /></Window>);
 ```
 
 默认情况下，写入与当前值 `===` 相等的值不会产生任何效果。传入 `equals: false` 可以让每次写入都通知订阅者（适合原地修改对象后再次写入同一个对象的场景），也可以传入自定义比较函数：
@@ -157,6 +158,7 @@ interface Context<T> extends Accessor<T> {
 
 ```tsx
 import { context, mount, signal, Text, View } from "nsh";
+import { Window } from "nsh/desktop";
 
 const Theme = context<"light" | "dark">("light");
 
@@ -176,7 +178,11 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 ## mount
@@ -185,9 +191,22 @@ mount(App);
 function mount<P extends object>(app: Component<P>, props?: P): () => void;
 ```
 
-把 `app` 渲染到界面上（窗口，或嵌入应用时的 `NshAppView` / `NshView`），返回一个用于移除它的函数。每个应用的入口文件都以 `mount(App)` 结尾。
+把 `app` 渲染到应用根（app root），返回一个用于移除它的函数。每个应用的入口文件都以 `mount(App)` 结尾。
+
+在桌面平台上，应用根本身没有界面：它持有应用状态、事件和窗口注册表，它的顶层子节点是 `<Window>` 场景。应用声明的每个窗口都要显式写出，包括第一个；如果应用根返回普通视图，或没有任何顶层 `<Window>`，会抛出说明这一点的错误。第一个窗口继承 nsh.json 的 [`window`](../modules/nsh-desktop.md#应用宿主与第一个窗口) 启动默认值。在非桌面平台（手机、网页、嵌入的 `NshAppView`），`<Window>` 把内容显示在唯一的界面里，所以同一个应用也能在这些平台运行。
 
 ```tsx
+import { mount } from "nsh";
+import { Window } from "nsh/desktop";
+
+function App() {
+  return (
+    <Window id="main" title="Counter">
+      <Counter />
+    </Window>
+  );
+}
+
 mount(App);
 ```
 
@@ -323,7 +342,8 @@ interface AppInfo {
 `--release` 的 `nsh build` 是开发构建；`nsh package`、`nsh publish` 和 `nsh build --release` 不是。在任何平台、任何模块中
 都能读取，包括模块顶层的代码：构建会在应用的模块运行之前把这些信息交给运行时。
 
-安装的应用本体的版本见 `nsh/updater` 的 [`shellInfo()`](./nsh-updater.md#shellinfo)。
+安装的应用本体的版本见 `nsh/updater` 的 [`shellInfo()`](./nsh-updater.md#shellinfo)。Rust 应用的 Rust 代码用 `app_info()`
+读取同样的信息（[应用的版本](../docs/device-and-environment.md#应用的版本)）。
 
 ```tsx
 import { appInfo, Text } from "nsh";
@@ -440,6 +460,7 @@ pub fn App() -> impl IntoElement {
 ```tsx tabs
 import { mount, Text, View } from "nsh";
 import { createAnimatedValue } from "nsh";
+import { Window } from "nsh/desktop";
 
 function App() {
   const x = createAnimatedValue(0);
@@ -456,7 +477,11 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 > [!NOTE]
@@ -1096,6 +1121,28 @@ effect(() => {
 });
 ```
 
+### network
+
+```ts
+const network: Accessor<NetworkState>;
+```
+
+设备现在怎样连到网络：`online`（只有系统确知没有路由时才为 false）、路由所走链路的 `kind`（`"wifi"`、`"cellular"`、`"wired"`、`"other"`，离线为 `"none"`，平台不报告时为 `"unknown"`，按在线处理）、这条链路是否 `expensive` 或 `constrained`（低数据模式、流量节省程序），以及在 iOS 上用户是否允许应用使用蜂窝数据（`cellularData`：用户决定之前为 `"unknown"`，另有 `"restricted"`、`"notRestricted"`）。响应式：读取它的 effect 会在路由变化时重新运行，离线时失败的请求就在这里重试。iOS 和 macOS 跟随系统的路径监视器，Android 跟随默认网络，Web 读取 `navigator.onLine` 和 `navigator.connection`；Windows、Linux、GPUI 和终端报告 `"unknown"`（[网络](../docs/device-and-environment.md#网络)）。Rust：`network() -> Network`（`network().online()`、`.kind`、`.expensive`、`.constrained`、`.cellular_data`）。
+
+```rust tabs
+effect(move || {
+    if network().online() && sync.failed_offline() {
+        sync.retry();
+    }
+});
+```
+
+```tsx tabs
+effect(() => {
+  if (network().online && sync.failedOffline()) sync.retry();
+});
+```
+
 ### setColorScheme
 
 ```ts
@@ -1245,7 +1292,7 @@ const shadow = platform.select({
 const pixelRatio: Accessor<number>;
 ```
 
-每个点对应的设备像素数（大多数 iPhone 上为 `3`）。响应式：窗口移动到另一种像素密度的屏幕上时（Mac Catalyst、桌面系统或外接显示器），以及 Android 的显示大小设置改变像素密度时，它会变化。Rust：`pixel_ratio() -> f32`，取整到设备像素的长度用 `round_to_nearest_pixel(points)`；在 TSX 中这个长度是 `Math.round(x * pixelRatio()) / pixelRatio()`。
+每个点对应的设备像素数（大多数 iPhone 上为 `3`）。响应式：surface 移动到另一种像素密度的屏幕上时（Mac Catalyst 或外接显示器），以及 Android 的显示大小设置改变像素密度时，它会变化。桌面平台上它是宿主显示器的缩放比例；窗口自己的比例在 `currentWindow().state()?.scaleFactor` 中。Rust：`pixel_ratio() -> f32`，取整到设备像素的长度用 `round_to_nearest_pixel(points)`；在 TSX 中这个长度是 `Math.round(x * pixelRatio()) / pixelRatio()`。
 
 ```rust tabs
 let hairline = move || px(1.0 / pixel_ratio());
@@ -1393,6 +1440,7 @@ pub fn App() -> impl IntoElement {
 ```tsx tabs
 import { mount, signal, View } from "nsh";
 import { PanResponder } from "nsh";
+import { Window } from "nsh/desktop";
 
 function App() {
   const pos = signal({ x: 0, y: 0 });
@@ -1419,7 +1467,11 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 ### 回调
@@ -1519,8 +1571,8 @@ import { Clipboard } from "nsh";
 
 ```ts
 const Clipboard: {
-  writeText(text: string): Promise<void>;
-  write(item: ClipboardItem): Promise<void>;
+  writeText(text: string): Promise<ClipboardWrite>;
+  write(item: ClipboardItem): Promise<ClipboardWrite>;
   readText(): Promise<string>;
   hasText(): Promise<boolean>;
   writeImage(src: string): Promise<void>;
@@ -1528,6 +1580,8 @@ const Clipboard: {
   hasImage(): Promise<boolean>;
   readFiles(): Promise<string[]>;
 };
+
+type ClipboardWrite = "written" | "failed" | "requested";
 
 interface ClipboardItem {
   text: string; // 纯文本形式的内容
@@ -1542,8 +1596,8 @@ interface ClipboardImage {
 
 | TS | Rust（`nsh_core::prelude`） |
 |---|---|
-| `await Clipboard.writeText(text)` | `set_clipboard(text)` |
-| `await Clipboard.write({ text, html })` | `set_clipboard_item(item)`（一个 `ClipboardItem`） |
+| `await Clipboard.writeText(text)` | `set_clipboard(text).await -> ClipboardWrite` |
+| `await Clipboard.write({ text, html })` | `set_clipboard_item(item).await -> ClipboardWrite`（一个 `ClipboardItem`） |
 | `await Clipboard.readText()` | `clipboard_string().await -> String` |
 | `await Clipboard.hasText()` | `clipboard_has_string().await -> bool` |
 | `await Clipboard.writeImage(src)` | `set_clipboard_image(src)` |
@@ -1562,10 +1616,12 @@ iOS、桌面和 Web 上可以通过剪贴板传递图片。在 Android 上，剪
 ### Clipboard.writeText
 
 ```ts
-writeText(text: string): Promise<void>;
+writeText(text: string): Promise<ClipboardWrite>;
 ```
 
 把 `text` 放到剪贴板上，替换原有内容。Rust：`set_clipboard(text)`。
+
+结果表示这次写入的情况：系统剪贴板接收时为 `"written"`（Windows、macOS、Web），被拒绝时为 `"failed"`（剪贴板被其他应用占用、浏览器拒绝），平台无法确认时为 `"requested"`（iOS、Android、Linux、GPUI 宿主、终端）。NSH 不会读回剪贴板来确认。只在 `"written"` 时显示“已复制”，`"failed"` 时保留手动复制入口。Rust 中返回 `ClipboardWrite`；不关心结果时直接丢弃，写入照常进行。
 
 ```rust tabs
 use nsh_core::prelude::*;
@@ -1601,7 +1657,7 @@ const copied = signal(false);
 ### Clipboard.write
 
 ```ts
-write(item: ClipboardItem): Promise<void>;
+write(item: ClipboardItem): Promise<ClipboardWrite>;
 ```
 
 把同一内容的纯文本和 HTML 一起放到剪贴板上，替换原有内容，和浏览器复制选区的做法一样：能读格式的应用（邮件、文档、富文本编辑器）
@@ -2265,11 +2321,11 @@ async function signOut() {
 
 ### Notifications.on
 
-`press` 报告用户点击的通知的 `id`。点击可能启动应用：事件会等到第一个监听器注册后送达，所以请在应用启动时监听，并把点击后要打开的内容放在 `id` 里。Android 上，嵌入方的 Activity 要在 `onCreate` 和 `onNewIntent` 里把 Intent 传给 `NshView.handleNotificationIntent`。Apple 平台上，已设置通知中心 delegate 的嵌入方保留自己的 delegate，点击也由它接收。Linux 上点击只传给运行中的应用：应用退出后留下的通知点击后没有反应。
+`press` 报告用户点击的通知的 `id`。点击可能启动应用：事件会等到第一个监听器注册后送达，所以请在应用启动时监听，并把点击后要打开的内容放在 `id` 里。Android 上，嵌入方的 Activity 要在 `onCreate` 和 `onNewIntent` 里把 Intent 传给 `NshView.handleNotificationIntent`；推送 SDK 等其他代码显示的通知的点击交给 Rust 代码用 `nsh::notifications::set_foreign_handler` 设置的处理者（见 [Android](../docs/android.md#来自其他代码的通知)），不会触发 `press`。Apple 平台上，已设置通知中心 delegate 的嵌入方保留自己的 delegate，点击也由它接收；否则远程通知和其他原生代码安排的通知交给 Rust 代码用 `nsh_platform_apple::notifications::set_foreign_handler` 设置的处理者（见 [iOS](../docs/ios.md#来自其他代码的通知)），不会触发 `press`。Linux 上点击只传给运行中的应用：应用退出后留下的通知点击后没有反应。
 
 ### Notifications.permission
 
-`permission()` 只查询不询问，`requestPermission()` 首次会显示系统提示。两者的结果都是 `"default"`（尚未询问）、`"granted"`、`"denied"`（只能在系统设置里更改）或 `"unavailable"`。在 Apple 平台上，`requestPermission()` 询问之后按系统设置里的权限返回：用户关掉了通知的应用得到 `"denied"`。
+`permission()` 只查询不询问，`requestPermission()` 首次会显示系统提示。两者的结果都是 `"default"`（尚未询问）、`"granted"`、`"denied"`（只能在系统设置里更改，`nsh/mobile` 的 [`AppSettings.open`](./nsh-mobile.md#appsettings) 可以把用户带过去）或 `"unavailable"`。在 Apple 平台上，`requestPermission()` 询问之后按系统设置里的权限返回：用户关掉了通知的应用得到 `"denied"`。
 
 ## UrlScheme
 
@@ -2307,11 +2363,57 @@ scheme 以字母开头，后面是字母、数字、`+`、`-` 或 `.`，按小�
 | Windows | 应用每次启动时写入 `HKEY_CURRENT_USER\\Software\\Classes`；第二次启动会把 URL 交给正在运行的应用 |
 | Linux | 应用启动时在 `~/.local/share/applications` 写入带 `x-scheme-handler/<scheme>` 的桌面文件（`<应用 id>.desktop`）。安装器为本可执行文件放在那里的条目会保留，只补上它缺少的 scheme；属于应用另一份副本的条目不会改动。只有某个 scheme 还没有任何应用处理时，应用才设为它的默认处理程序。`nsh run` 以同样方式注册开发宿主。第二次启动会把 URL 交给正在运行的应用 |
 
+### Web 链接
+
+应用还可以声明 Web 链接：自己网站上能打开应用的 `https` 链接，即 iOS 和 macOS 上的 Universal Links、Android 上的 App
+Links。这样，邮件、聊天或搜索结果里的 `https://example.com/orders/42` 这类链接在装有应用的设备上打开应用，在其他地方打开网页。
+它和 scheme 的链接交给同一个 `open` 监听器，一个监听器就能处理两者；在 Web 上，同一个地址就是页面自己的地址
+（`UrlScheme.url()`）。
+
+```json
+{
+  "links": [
+    { "host": "example.com", "paths": ["/orders/*", "/invite"] },
+    { "host": "*.example.com" }
+  ]
+}
+```
+
+- `host` 是域名，按小写比较（国际化域名可以直接写），或者 `*.` 加域名表示它的子域名：`*.example.com` 不包括
+  `example.com` 本身，两者都要列出。不能带 scheme、端口、路径，也不能是 IP 地址。
+- `paths` 列出该主机中能打开应用的路径：完整路径（`/invite`），或以 `*` 结尾的路径开头（`/orders/*` 匹配 `/orders/42`，
+  但不匹配 `/orders`）。`*` 只能出现在末尾。路径区分大小写，与链接经过百分号解码后的路径比较（`/café/*` 匹配
+  `/caf%C3%A9/1`）：请写解码后的形式，不带查询或片段。省略 `paths` 时，该主机的所有路径都打开应用；如果应用只展示网站的部分页面，
+  就把它们列出来，其他页面（`/blog`、`/login`）仍在浏览器中打开。
+
+NSH 只放行这些主机和路径的、不带端口和用户名的 `https` 链接，无论链接从哪里来：其他应用可以把任何 URL 发给 Android 的
+Activity，核心会丢弃应用没有声明的链接。和 scheme 一样，任何人都能做出这样的链接，所以要检查它请求的内容。`nsh` 不能完整读取的链接
+（新版 NSH 的键、其他形式的路径、`"paths": []`）会被略过并给出警告，绝不会只声明其中一部分。
+
+网站要通过 HTTPS 且不经重定向证明应用属于它：
+
+- `/.well-known/apple-app-site-association` 以 `<team id>.<应用 id>` 指明应用，其中的 `components` 与 `paths` 一致
+  （`{ "/": "/orders/*" }`）：iOS 检查那里的路径，NSH 检查 `paths`，两者都接受的链接才会到达应用。
+- `/.well-known/assetlinks.json` 指明包名和签名证书的 SHA-256 指纹。
+
+在此之前，系统会在浏览器中打开这些链接。
+
+| 平台 | 应用如何声明链接 |
+| --- | --- |
+| iOS | `nsh package` 签名应用时使用的 `com.apple.developer.associated-domains` entitlement 中的 `applinks:<主机>`，排在 `ios.entitlements` 列出的条目之后；真机构建的描述文件必须授予 Associated Domains。包括启动应用的链接和运行中到达的链接 |
+| macOS | 同一个 entitlement，但 macOS 只在描述文件下承认它：`nsh package` 以 ad hoc 方式签名的应用不包含它，请在 `macos.entitlements` 中列出，并用授予它的描述文件签名应用。之后应用就会接收这些链接 |
+| Android | 每个链接一个带 `android:autoVerify="true"` 的 `ACTION_VIEW` intent filter，主机作为 `https` 主机，每个路径作为 `android:path`（以 `*` 结尾的作为 `android:pathPrefix`），Android 在安装应用时验证；Activity 以 `singleTask` 运行，链接会交给正在运行的应用 |
+| Web | 页面本身就是链接：`nsh package` 略过 `links` 并给出警告 |
+| Windows、Linux | 没有应用链接：由浏览器打开，`nsh package` 略过 `links` 并给出警告 |
+
+Rust 应用生成的代码把这些链接交给它的根组件（`Root::links`）。
+
 `nsh test` 可以把链接交给测试中的应用：`App.open(entry, { url })` 用一个链接启动应用，`app.openWithUrl(url)`
 在运行中打开一个链接，两者都在无头模式下运行。
 
 嵌入 NSH 的应用自己拥有 scheme，把 URL 交给视图：`AppView.open_url`（Linux、iOS）、`NshAppView.openURL`（Swift）、
-`NshView.openUrl` 或 `NshView.handleUrlSchemeIntent`（Android）。
+`NshView.openUrl` 或 `NshView.handleUrlSchemeIntent`（Android）。Universal Link 以 activity 的形式到达嵌入应用的
+`scene(_:continue:)`：把它的 `webpageURL` 也交给 `NshAppView.openURL`，它会按应用声明的链接检查。
 
 ### UrlScheme.url
 
@@ -2475,7 +2577,8 @@ type SpeechErrorCode =
 开始一个会话并立即返回它。会话依次报告：麦克风打开、识别器开始监听时的 `start`；每次转写变化时的 `result`（`text` 始终是
 到目前为止的完整转写，应用照原样显示即可）；以及一次 `end`，之后不再有任何事件。`stop()` 停止监听，让识别器把听到的内容
 识别完：最后一个 `isFinal: true` 的结果，然后是 `end`。`abort()` 立即结束会话，不带错误，并丢弃尚未报告的内容。同一时间只运行
-一个会话：开始另一个会中止正在运行的会话。
+一个会话：开始另一个会中止正在运行的会话。在 iOS 和 macOS 上，整个进程共用一个麦克风：嵌入在同一应用中的另一个应用开始会话时，
+你的会话以 `error: "audio-capture"` 结束。
 
 `end` 带有最后的转写，会话失败时还带有 `error`，名称与 Web Speech API 一致：
 
@@ -2693,6 +2796,7 @@ const Storage: {
   removeItem(key: string): Promise<void>;
   keys(): Promise<string[]>;
   clear(): Promise<void>;
+  on(event: "change", listener: (change: { key: string | null; value: string | null }) => void): () => void;
 };
 ```
 
@@ -2703,6 +2807,7 @@ const Storage: {
 | `await Storage.removeItem(key)` | `Storage::remove_item(key)` |
 | `await Storage.keys()` | `Storage::get_all_keys() -> Vec<String>` |
 | `await Storage.clear()` | `Storage::clear()` |
+| `Storage.on("change", listener)` | `Storage::on_change(f)` |
 
 Rust 函数是同步的，因为数据就在内存中：在组件运行的地方（组件函数体、事件处理函数和任务）调用它们。
 
@@ -2719,7 +2824,7 @@ Rust 函数是同步的，因为数据就在内存中：在组件运行的地方
 
 损坏的 `storage.json` 会被保留为同目录下的 `storage.json.corrupt`，应用从空存储开始；读不了的文件则让应用的改动只留在内存中，文件本身永远不会被覆盖。
 
-在 Web 上，应用的多个标签页共用同一份存储：其中一个标签页设置、删除或清空的内容，其他标签页随后都能读到。浏览器拒绝保存的值（浏览器自身的配额用尽，或用户禁止了网站保存数据）会像超过 5 MB 的值一样被拒绝。
+在 Web 上，应用的多个标签页共用同一份存储：其中一个标签页设置、删除或清空的内容，其他标签页随后都能读到，并会收到 [`change`](#storageon)。桌面应用的多个窗口也同样共用。浏览器拒绝保存的值（浏览器自身的配额用尽，或用户禁止了网站保存数据）会像超过 5 MB 的值一样被拒绝。
 
 app id 是 `nsh.json` 中的 `id`，它随应用一起传递：`nsh build` 和 `nsh package` 把它写在 bundle 旁边，开发服务器会发送它，签名包则带有经发布密钥证书担保的 id。因此无论应用在哪里运行，都无需任何设置就各自保存自己的数据；没有 id 的应用保存在 `default` 下。宿主应用可以另选位置（见[在 iOS 中嵌入](../docs/ios.md)和[在 Android 中嵌入](../docs/android.md)）。
 
@@ -2782,6 +2887,32 @@ clear(): Promise<void>;
 
 删除应用的所有键，例如在用户退出登录时。Rust：`Storage::clear()`。
 
+### Storage.on
+
+```ts
+on(event: "change", listener: (change: { key: string | null; value: string | null }) => void): () => void;
+```
+
+每当存储在别处被改动时调用 `listener`：在 Web 上是应用的另一个标签页，或是共用同一份存储的应用的另一个窗口或视图。`key` 是改动的键，所有键都被删除时为 `null`；`value` 是它现在的值，被删除时为 `null`。监听函数运行时，`getItem` 已经读得到新值。本标签页或本窗口自己的改动不会触发，没有改变条目的改动也不会触发；没有监听时发生的改动不会保留：开始监听时先读取需要的值。返回一个停止监听的函数；组件添加的监听随组件一起停止。Rust：`Storage::on_change(f)`，在当前 owner 存活期间以 `StorageChange`（`key()`、`value()`）调用 `f`。
+
+用它让设置在多个标签页和窗口之间保持一致：
+
+```rust tabs
+let theme = signal(Storage::get_item("theme"));
+Storage::on_change(move |change| {
+    if change.key().is_none_or(|key| key == "theme") {
+        theme.set(change.value().map(str::to_owned));
+    }
+});
+```
+
+```tsx tabs
+const theme = signal(await Storage.getItem("theme"));
+Storage.on("change", ({ key, value }) => {
+  if (key === null || key === "theme") theme.set(value);
+});
+```
+
 ### 把 signal 保存在设备上
 
 应用启动时读取保存的值，之后每当 signal 变化就写回去：
@@ -2806,6 +2937,7 @@ pub fn App() -> impl IntoElement {
 
 ```tsx tabs
 import { effect, mount, signal, Text, View } from "nsh";
+import { Window } from "nsh/desktop";
 import { Storage } from "nsh";
 
 const count = signal(0);
@@ -2819,17 +2951,23 @@ effect(() => {
 });
 
 mount(() => (
-  <View onPress={() => count.update((n) => n + 1)}>
-    <Text>按了 {count()} 次</Text>
-  </View>
+  <Window id="main">
+    <View onPress={() => count.update((n) => n + 1)}>
+      <Text>按了 {count()} 次</Text>
+    </View>
+  </Window>
 ));
 ```
 
 ## host
 
-`host` 连接嵌入 NSH 的应用：`NshAppView` / `NshView` 所在的原生应用，或在 Web 上运行播放器的页面。应用按名字调用宿主的函数（参数是 JSON），并监听宿主发来的事件。
+`host` 连接嵌入 NSH 的应用：`NshAppView` / `NshView` 所在的原生应用，或在 Web 上运行播放器的页面。应用按名字调用宿主的函数（参数是 JSON），并监听宿主发来的事件。Rust 代码调用 `nsh_core::prelude` 的 `host_call`、`host_call_with`、`host_post` 和 `on_host_event`；TSX 从 `nsh` 导入 `host`。两者连到同一个宿主，名字、能力和错误码都相同，所以应用只写一份调用，由各个宿主各自应答。
 
-```ts
+```rust tabs
+use nsh_core::prelude::*; // host_call, host_call_with, host_post, on_host_event, HostCallOptions, HostError
+```
+
+```tsx tabs
 import { host } from "nsh";
 ```
 
@@ -2876,6 +3014,8 @@ call(name: string, args?: unknown, options?: { timeout?: number }): Promise<unkn
 
 不是合法名字（由 `A`–`Z`、`a`–`z`、`0`–`9`、`_`、`.`、`:`、`-` 组成，长度 1 到 128，不含 `..`）的 `name` 以 `TypeError` 拒绝。
 
+检查按以下顺序进行，调用以最先命中的一项失败：名字不合法时是 `TypeError`，其次未获授权时是 `ERR_ACCESS_DENIED`，最后没有宿主时是 `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM`。因此即使没有宿主，未获授权的调用也以 `ERR_ACCESS_DENIED` 拒绝。
+
 调用最多等待宿主应答 30 秒，之后以 `ETIMEDOUT` 拒绝，之后才到的应答会被丢弃。`options.timeout` 以毫秒设置等待时间，`0` 表示不限时；大到时钟永远走不到的值（约 1e22 毫秒）同样不限时，负数、`NaN` 或无穷大则以 `RangeError` 拒绝调用。计时用的是应用的时间，与它的定时器一致：在使用手动时钟的 `nsh test` 中随时钟推进。
 
 ```ts
@@ -2884,6 +3024,38 @@ const quote = await host.call("quote.refresh", { symbol: "AAPL" }, { timeout: 50
   if (error.code === "ETIMEDOUT" || error.code === "ERR_FEATURE_UNAVAILABLE_ON_PLATFORM") return null;
   throw error;
 });
+```
+
+在 Rust 中，`host_call(name, args)` 是在任务中等待的 `async fn`，结果是 `Result<JsonValue, HostError>`。`HostError` 的各个变体就是上表的失败（带宿主消息的 `Failed`、`Denied`、`InvalidName`、`Unavailable`、`TimedOut`、`TooManyCalls`），`code()` 给出相同的错误码。`host_call_with(name, args, options)` 接受 `HostCallOptions::default().timeout(duration)`，`Duration::ZERO` 表示宿主用多久就等多久。
+
+```rust
+// use nsh_core::JsonValue; use serde_json::json; use std::time::Duration;
+spawn(async move {
+    let user = host_call("getUserInfo", JsonValue::Null).await;
+    let options = HostCallOptions::default().timeout(Duration::from_secs(5));
+    match host_call_with("quote.refresh", json!({ "symbol": "AAPL" }), options).await {
+        Ok(quote) => show(quote),
+        Err(HostError::TimedOut { .. } | HostError::Unavailable) => {}
+        Err(error) => log::warn!("{error}"),
+    }
+});
+```
+
+### host.post
+
+```ts
+post(name: string, data?: unknown): void;
+```
+
+把 `data` 交给宿主的函数 `name`，不等待应答：宿主处理 `name` 的 handler 像收到调用一样收到它。没有嵌入应用，或宿主没有处理 `name` 的 handler 时，投递被丢弃。有宿主时，未获授权的名字或不合法的名字会抛出（`ERR_ACCESS_DENIED`、`TypeError`）。Rust 的 `host_post(name, data)` 没有返回值：无论应用运行在哪里都会检查名字，被拒绝的投递会记录日志并丢弃。
+
+```rust tabs
+// use serde_json::json;
+host_post("analytics.track", json!({ "event": "signup" }));
+```
+
+```tsx tabs
+host.post("analytics.track", { event: "signup" });
 ```
 
 ### host.on
@@ -2900,6 +3072,12 @@ const stop = host.on("loginChanged", (payload) => console.log(payload));
 stop();
 ```
 
+在 Rust 中，`on_host_event(event, listener)` 在添加它的组件存在期间，以每次事件的数据（`&JsonValue`）调用 `listener`，与 `on_key` 相同。还没有该名字的 Rust 监听器时到达的事件（包括宿主在应用启动前发送的）会被保留（最多 256 个，超出时丢弃最早的），直到添加了监听器，所以应用加载完某些内容后才添加的监听器也能收到；已经被监听器收到的事件不会补发给之后添加的监听器。
+
+```rust
+on_host_event("loginChanged", move |payload| signed_in.set(payload["signedIn"] == true));
+```
+
 ### 能力
 
 应用调用的每个函数都必须列在 `nsh.json` 的 `capabilities.host` 中：精确的名字、以 `*` 结尾的前缀，或者用 `true` 允许全部。所有应用都是如此，没有声明其他 `capabilities` 的应用也一样：宿主的函数从不默认授予。未授权的调用会以 `ERR_ACCESS_DENIED` 拒绝并记录日志，向嵌入应用 `host.post` 这样的名字会抛出同样的错误；构建从 `nsh` 导入了 `host` 却没有声明 `capabilities.host` 的应用时会给出警告。事件无需授权。参见[沙箱与能力](../docs/sandbox-and-capabilities.md#host)。
@@ -2910,7 +3088,7 @@ stop();
 
 ### Web 上的宿主
 
-在 Web 上，页面就是宿主。`createPlayer` 的 `host` 选项应答调用，`player.hostEvent(event, payload)` 发送事件：
+在 Web 上，页面就是宿主。`createPlayer` 的 `host` 选项应答调用，`player.hostEvent(event, payload)` 发送事件，TSX 应用和 Rust 应用都一样：
 
 ```js
 const player = await createPlayer(container, {
@@ -2932,7 +3110,11 @@ player.hostEvent("loginChanged", { signedIn: true });
 
 ```tsx
 const conversation = host.params.conversation as string | undefined;
-mount(() => (conversation ? <Conversation id={conversation} /> : <Inbox />));
+mount(() => (
+  <Window id="main">
+    {conversation ? <Conversation id={conversation} /> : <Inbox />}
+  </Window>
+));
 ```
 
 
@@ -2989,7 +3171,7 @@ nsh.send("conversation.open", Map.of("id", "43"));
 参见 [iOS 嵌入](../docs/ios.md#与应用通信)、[Android 嵌入](../docs/android.md#与应用通信) 和 [GPUI](../docs/gpui.md)。
 
 > [!NOTE]
-> 原生 SDK 的调用和投递与平台调用一样，需要 [`host` 能力](../docs/sandbox-and-capabilities.md#host)授权。Rust 应用直接通过嵌入方注册的函数调用其 Rust 代码（[`nativeModule`](#nativemodule) 和 Rust 导入）。
+> 原生 SDK 的调用和投递与平台调用一样，需要 [`host` 能力](../docs/sandbox-and-capabilities.md#host)授权。Rust 应用的 `host_call`、`host_post` 和 `on_host_event` 在每个平台上都连到同样的 handler 和事件。
 
 ## keymap
 
@@ -3011,21 +3193,23 @@ const keymap: {
 };
 
 interface KeyBindingOptions {
+  scope?: "window" | "app";
   when?: "always" | "notEditing";
   repeat?: boolean;
   passThrough?: boolean;
   forFocus?: boolean;
+  overFocused?: boolean;
 }
 ```
 
 | TS | Rust |
 |---|---|
 | `keymap.bind(keystroke, handler)` | `on_key(keystroke, handler)` |
-| `keymap.bind(keystroke, handler, { when, repeat, passThrough, forFocus })` | `on_key_with(keystroke, KeyOptions { when, repeat, pass_through, for_focus }, handler)`；`when` 是 `nsh_core::keymap::When`（`Auto`、`Always`、`NotEditing`） |
+| `keymap.bind(keystroke, handler, { scope, when, repeat, passThrough, forFocus, overFocused })` | `on_key_with(keystroke, KeyOptions { scope, when, repeat, pass_through, for_focus, over_focused }, handler)`；`scope` 是 `KeyScope::Window`（默认）或 `KeyScope::App`；`when` 是 `nsh_core::keymap::When`（`Auto`、`Always`、`NotEditing`） |
 | `keymap.bind({ … })` | 每个按键组合一次 `on_key` |
 | `keymap.label(keystroke)` | `key_label(keystroke)` |
 
-Rust 绑定与创建它的组件（所有者）同生命周期；处理函数收到的是你写下的按键组合。
+在 `<Window>` 内创建的绑定是窗口作用域：只有该窗口有焦点时才触发。在应用根创建的绑定是应用级；`scope: "app"` 明确表示这一点，而在应用根写 `scope: "window"` 会报错（没有可作用的窗口）。Rust 绑定与创建它的组件（所有者）同生命周期；处理函数收到的是你写下的按键组合。
 
 快捷键在 macOS、Windows、Linux 和浏览器中可用（浏览器自己的按键，比如 Ctrl+T 或 Cmd+W，不会传给页面），在接了硬件键盘的 iOS 和 Android 上也可用：iPad 的键盘、在 Mac 上运行的 iPad 应用、平板或 Chromebook 的键盘，以及模拟器的键盘。同一份代码在所有平台上运行；没有键盘时，不会有按键触发这些绑定。
 
@@ -3052,12 +3236,13 @@ pub fn App() -> impl IntoElement {
 ```tsx tabs
 import { mount, signal, Text } from "nsh";
 import { keymap } from "nsh";
+import { Window } from "nsh/desktop";
 
 const open = signal(false);
-keymap.bind("mod+k", () => open.set(true));
-keymap.bind("escape", () => open.set(false));
+keymap.bind("mod+k", () => open.set(true), { scope: "app" });
+keymap.bind("escape", () => open.set(false), { scope: "app" });
 
-mount(() => <Text>{open() ? "搜索…" : "按 ⌘K"}</Text>);
+mount(() => <Window id="main"><Text>{open() ? "搜索…" : "按 ⌘K"}</Text></Window>);
 ```
 
 传入一个对象可以一次绑定多个按键组合；返回的函数会把它们全部移除。在 Rust 中，每个按键组合调用一次 `on_key`：
@@ -3211,6 +3396,17 @@ on_key_with("space", KeyOptions { for_focus: true, ..KeyOptions::default() }, mo
 
 按键归最新的对话框：焦点留在被对话框盖住的视图上时（菜单项打开对话框，菜单关闭时把焦点还给触发器），回车和空格交给对话框的绑定，这个视图的 `forFocus` 绑定和按下都要等对话框关闭后才生效。
 
+拥有焦点的组件自己的绑定排在应用的绑定之前：`Editor` 有焦点时，无论应用把 Mod+Enter 绑给了什么，它都会在下方插入一行。带 `overFocused: true` 的绑定则排在它们之前，应用因此能拿到聚焦组件自己绑定的按键，例如查询编辑器用 Mod+Enter 执行其中的文本。在那个视图有焦点时绑定、焦点离开时撤销，组件在别的时候仍然保留这个键（Rust：`KeyOptions { over_focused: true, .. }`）。不带这个选项时顺序与以前相同，弹出层的 Escape 仍然先关闭弹出层。
+
+```tsx
+const focused = signal(false);
+effect(() => {
+  if (focused()) keymap.bind("mod+enter", runQuery, { when: "always", overFocused: true });
+});
+
+<Editor onFocus={() => focused.set(true)} onBlur={() => focused.set(false)} />
+```
+
 菜单快捷键会让位给相同按键组合的绑定：所有桌面平台上的应用菜单（[`nsh/desktop`](./nsh-desktop)），以及 macOS 上的内置菜单（Cmd+W、Cmd+C 等）。使用 `nsh run` 开发时，即使应用绑定了 `mod+r`，Cmd+R / Ctrl+R 也总是重新加载应用；打包后的应用可以绑定它。
 
 ## nativeComponent and nativeModule
@@ -3312,6 +3508,7 @@ pub fn App() -> impl IntoElement {
 ```tsx tabs
 import { mount, type NativeComponentRef, signal, View } from "nsh";
 import { nativeComponent } from "nsh";
+import { Window } from "nsh/desktop";
 
 const Badge = nativeComponent<{ text: string; color?: string }, { tap: { count: number } }>("embed.badge", {
   props: ["text", "color"],
@@ -3337,7 +3534,11 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 ### nativeModule

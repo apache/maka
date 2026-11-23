@@ -249,7 +249,8 @@ view()
 | `line-clamp-<n>`、`line-clamp-none` | `numberOfLines`（`none` 显示全部行） |
 | `text-ellipsis`、`text-clip` | `textOverflow: "ellipsis"` / `"clip"` |
 | `whitespace-nowrap`、`text-nowrap` | 不换行；用在视图上时，作用于其中文本的行（与 CSS 的 `white-space` 一样会继承） |
-| `whitespace-normal`、`text-wrap`、`text-balance`、`text-pretty` | 正常换行（不做行平衡） |
+| `whitespace-normal`、`text-wrap`、`text-balance` | 正常换行（不做行平衡） |
+| `text-pretty` | 正常换行；末行短于宽度四分之一时，在不增加行数的前提下从上面几行挪字过来，避免末行孤字 |
 | `select-text`、`select-none` | `userSelect: "text"` / `"none"`；用在视图上时，作用于其中未自行设置的文本 |
 | `select-auto` | `userSelect: "auto"`：由外层视图决定，与 CSS 的 `user-select: auto` 一样（`select-none md:select-auto`） |
 

@@ -2104,3 +2104,28 @@ fn source_anchors_keep_their_ranges_across_streaming_repairs_and_appends() {
         assert_eq!(source_leaves(&parsed), leaves, "{text}");
     }
 }
+
+#[test]
+fn inline_html_text_colors_hold_markdown() {
+    // A colored span or font keeps its color around the Markdown in it.
+    assert_eq!(
+        blocks(r#"a <span style="color: #e54545">**b** c</span> <font color="blue">d</font>"#),
+        vec![p(vec![
+            t("a "),
+            Inline::TextStyle {
+                content: vec![strong(vec![t("b")]), t(" c")],
+                color: Some("#e54545".into()),
+            },
+            t(" "),
+            Inline::TextStyle {
+                content: vec![t("d")],
+                color: Some("blue".into()),
+            },
+        ])]
+    );
+    // A span without a color is its content, read as HTML, as before.
+    assert_eq!(
+        blocks(r#"a <span class="x">**b**</span>"#),
+        vec![p(vec![t("a **b**")])]
+    );
+}

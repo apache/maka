@@ -15,7 +15,6 @@ use nsh_base::{
 };
 use nsh_core::{
     Size,
-    element::Root,
     platform::{Idiom, Os},
     prelude::*,
 };
@@ -117,8 +116,10 @@ fn Harness(props: HarnessProps) -> impl IntoElement {
 fn start(classes: EditorClasses) -> Headless {
     let mut config = EngineConfig {
         viewport: Size::new(px(800.0), px(900.0)),
-        ..EngineConfig::new(Root::new::<Harness>(move || HarnessProps {
-            classes: classes.clone(),
+        ..EngineConfig::new(nsh_testing::windowed_root_with::<Harness>(move || {
+            HarnessProps {
+                classes: classes.clone(),
+            }
         }))
     };
     config.environment.os = Os::Linux;

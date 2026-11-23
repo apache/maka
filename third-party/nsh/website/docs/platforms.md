@@ -27,9 +27,10 @@ On every platform, an app is used the same two ways: packaged as an installable 
 - **[GPUI](./gpui.md)** draws apps with [GPUI](https://gpui-kit.com), the framework of the sibling project GPUI Kit, on macOS, Windows and Linux alike: it is the backend for embedding in GPUI and GPUI Kit apps, whose `AppView` they place in their own element tree. Standalone desktop apps run and are packaged with each OS's own backend (AppKit, Win32, GTK 4).
 - **[TUI](./tui.md)** draws apps on the terminal's grid of character Cells, in the terminal's own colors, keyboard first and with the mouse: `nsh run --target tui` runs an app in the current terminal, and a ratatui app embeds one with `AppView`.
 - **[Web](./web.md)** renders apps as HTML in a browser page: `nsh package --target web` publishes a static site for any web server or CDN, with a Rust app's engine and crate compiled to WebAssembly, and a page of your own embeds an app with `createPlayer` or an iframe. It also runs the live demos and the [playground](/playground) on this site.
-- **Mac Catalyst** runs the iOS backend in an iPhone-sized window (390×844) on a Mac, for development. Select it with `--target catalyst` to see how an app looks on a phone.
 
 More platforms are built by the community on the same engine, each in a repository of its own, and the `nsh` command line runs them by name: [`nsh-platform-miniprogram`](https://github.com/huacnlee/nsh-platform-miniprogram) runs apps in WeChat Mini Programs (`--target miniprogram`). [Building a platform](./platform-extensions.md) shows how one is made.
+
+**Development tool:** Mac Catalyst runs the iOS backend in an iPhone-sized window (390×844) on a Mac (`--target catalyst`), used only when needed: to check behavior specific to Catalyst, or an app that embeds NSH in a Mac Catalyst app. For the Mac app, use the default `macos`; to see an app as a phone shows it, use `--target ios`.
 
 ## Develop and package
 
@@ -50,6 +51,8 @@ nsh package App.tsx --target macos
 Each desktop OS packages apps with its own backend, built for the machine it runs on: package a Mac app on a Mac, a Windows app on Windows and a Linux app on Linux. [Packaging](./packaging.md) covers every target's output, signing and icons.
 
 ## Embed in a native app
+
+Step-by-step guides for each platform are in [Embedding in an existing app](./embedding.md).
 
 | Platform | Host view | Runs | Ships as | Host language |
 |---|---|---|---|---|

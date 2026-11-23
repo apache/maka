@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use crate::{
     element::PropEnum,
-    geometry::{Edges, Points, px},
+    geometry::{Edges, Point, Points, px},
     js::host::HostProps,
 };
 
@@ -267,6 +267,8 @@ pub struct AccessibilityActionDef {
     pub label: Option<Arc<str>>,
 }
 
+crate::static_reactive!(Vec<AccessibilityActionDef>: Vec<AccessibilityActionDef>);
+
 /// Accessibility of one view.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Accessibility {
@@ -316,6 +318,10 @@ pub struct Accessibility {
     /// [`Accessibility::description`], so a platform without such a
     /// relation reads it all the same.
     pub described_by: Option<crate::NodeId>,
+    /// The list's orientation (ARIA's `aria-orientation`, reported on the
+    /// web): `"horizontal"` or `"vertical"`, for a tab list or toolbar laid
+    /// out along that axis; `None` has none.
+    pub orientation: Option<crate::geometry::Axis>,
 }
 
 impl Accessibility {
@@ -390,9 +396,15 @@ pub enum AccessibilityProp {
     /// `"no-hide-descendants"`.
     #[prop(js = "importantForAccessibility", with = crate::js::host_values::important, reset = AccessibilityProp::Important(None, false), ts = "\"auto\" | \"yes\" | \"no\" | \"no-hide-descendants\"")]
     Important(Option<bool>, bool),
-    /// `accessibilityLiveRegion` (Android): how changes of the view are announced
-    /// to TalkBack.
+    /// `accessibilityLiveRegion`: how changes of the view are announced by the
+    /// screen reader — TalkBack on Android, VoiceOver on macOS, UIA's live
+    /// setting and notification on Windows (`"polite"` when the user is idle,
+    /// `"assertive"` right away).
     #[prop(android = "accessibilityLiveRegion")]
+    #[prop(
+        js = "accessibilityLiveRegion",
+        ts = "\"none\" | \"polite\" | \"assertive\""
+    )]
     LiveRegion(LiveRegion),
     /// `accessibilityActions`: custom actions offered to assistive technologies
     /// (`onAccessibilityAction` reports them).
@@ -420,6 +432,9 @@ pub enum AccessibilityProp {
     /// rendered element with text.
     #[prop(js = "accessibilityDescribedBy", with = crate::js::host_values::accessibility_described_by, reset = AccessibilityProp::DescribedBy(None), ts = "ViewRef | null")]
     DescribedBy(Option<crate::element::ElementTarget>),
+    /// `aria-orientation` (web): set by a component from its own
+    /// orientation (a `Tabs`'s), never from JS.
+    Orientation(Option<crate::geometry::Axis>),
 }
 
 /// Android's press ripple (`android={{ ripple }}`).
@@ -506,6 +521,12 @@ pub struct ViewProps {
     /// for ordinary views and for portals with no key listener or capture
     /// rule on their logical ancestry.
     pub key_parent: Option<crate::NodeId>,
+    /// The app's content view where unfocused keys start in this native
+    /// window. Mounted by the core so keyboard routing follows logical
+    /// order even when the backend stacks the children differently. Only
+    /// sent when that path has a key listener or capture rule.
+    #[doc(hidden)]
+    pub key_content: Option<crate::NodeId>,
     /// The view is a selectable view (`View`'s `selectable`): the
     /// texts in its subtree that are not `selectable={false}` share one
     /// selection, from text to text ([`crate::selection`]); an area inside
@@ -523,6 +544,38 @@ pub struct ViewProps {
     /// and a double or triple click selects across them
     /// ([`crate::selection::SelectionTexts::continues`]).
     pub continues_text: bool,
+    /// `ios={{ scrollEdgeElement }}`: the scroll view the view floats
+    /// over and the edge of it the view sits at. Resolved by the core from
+    /// the element the app names; `None` when it names none or that element
+    /// is gone.
+    pub scroll_edge_element: Option<ScrollEdgeElement>,
+}
+
+/// The edge of a scroll view a view floating over it sits at
+/// (`ios={{ scrollEdgeElement }}`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, PropEnum)]
+#[non_exhaustive]
+pub enum ScrollEdge {
+    /// The top edge.
+    Top,
+    /// The bottom edge (default).
+    #[default]
+    Bottom,
+}
+
+/// A view floating over an edge of a scroll view, as the platform gets it
+/// ([`ViewProps::scroll_edge_element`]): on iOS 26 and later the scroll
+/// edge effect of that scroll view takes its shape from the view, as it
+/// does from a bar, so the content scrolled under the view fades out
+/// around what the view shows instead of being cut by it. Elsewhere a
+/// fade the app draws under the view gives the same separation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct ScrollEdgeElement {
+    /// The scroll view (its native id).
+    pub scroll_view: crate::NodeId,
+    /// The edge of it the view sits at.
+    pub edge: ScrollEdge,
 }
 
 impl ViewProps {
@@ -544,7 +597,49 @@ impl ViewProps {
     }
 }
 
-/// When a pan on a view activates (`panActivation`; react-native-gesture-
+/// The way a finger moves (`PanActivation::direction`): toward the left
+/// edge, the right edge, the top or the bottom.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PropEnum)]
+#[non_exhaustive]
+pub enum PanDirection {
+    /// Toward the left edge.
+    Left,
+    /// Toward the right edge.
+    Right,
+    /// Toward the top.
+    Up,
+    /// Toward the bottom.
+    Down,
+}
+
+/// An edge of the screen, or of the window on desktops and the page on
+/// the web, that a pan starts at (`PanActivation::edge`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PropEnum)]
+#[non_exhaustive]
+pub enum PanEdge {
+    /// The left edge: the pan moves right.
+    Left,
+    /// The right edge: the pan moves left.
+    Right,
+    /// The top edge: the pan moves down.
+    Top,
+    /// The bottom edge: the pan moves up.
+    Bottom,
+}
+
+impl PanEdge {
+    /// The way a pan from this edge moves: away from it.
+    pub(crate) fn direction(self) -> PanDirection {
+        match self {
+            PanEdge::Left => PanDirection::Right,
+            PanEdge::Right => PanDirection::Left,
+            PanEdge::Top => PanDirection::Down,
+            PanEdge::Bottom => PanDirection::Up,
+        }
+    }
+}
+
+/// When the pans on a view activate (`panActivation`; react-native-gesture-
 /// handler's `activeOffsetX` / `failOffsetY`), decided by the platform on
 /// the main thread as the fingers move: once the finger has moved further
 /// than an active offset from where it went down, the pan activates (the
@@ -553,7 +648,13 @@ impl ViewProps {
 /// first, the pan fails and the scroll views keep the touches. Offsets are
 /// distances in points along one axis, either direction. Without active
 /// offsets, the pan activates after [`PanActivation::MIN_DISTANCE`] in any
-/// direction.
+/// direction. The view's native pan (`pan` values, `on_pan_start`) starts
+/// when it activates too.
+///
+/// A [`direction`](Self::direction) keeps the pan to one way: a drag the
+/// other way, or mostly across it, fails it and stays with the views
+/// around. An [`edge`](Self::edge) keeps it to fingers that go down at
+/// that edge of the screen, moving away from it.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct PanActivation {
     /// Activates once the finger moved further than this horizontally.
@@ -564,12 +665,96 @@ pub struct PanActivation {
     pub fail_offset_x: Option<Points>,
     /// Fails once the finger moved further than this vertically first.
     pub fail_offset_y: Option<Points>,
+    /// The one way the pan activates in: once the finger moved that way
+    /// further than the active offset along its axis
+    /// ([`PanActivation::MIN_DISTANCE`] without one), and more along it
+    /// than across. A move as far the other way fails the pan, and so does
+    /// one mostly across it, unless a fail offset across is given, which
+    /// decides that instead. The active offset across is not used.
+    pub direction: Option<PanDirection>,
+    /// The edge of the screen the pan starts at (of the window on desktops,
+    /// of the page on the web): only a finger that goes down within
+    /// [`PanActivation::EDGE_WIDTH`] of it starts the pan, which then moves
+    /// away from it (that is its direction; `direction` is not used). iOS
+    /// recognizes the native pan with its own screen-edge gesture, whose
+    /// edge is the system's, and a navigation stack that can go back keeps
+    /// its swipe back. On Android, the system's back gesture keeps the left
+    /// and right edges under gesture navigation.
+    pub edge: Option<PanEdge>,
 }
 
 impl PanActivation {
     /// How far the finger moves before a pan without active offsets
     /// activates, in points.
     pub const MIN_DISTANCE: Points = px(10.0);
+
+    /// How far from its edge a finger goes down to start an edge pan
+    /// ([`PanActivation::edge`]), in points.
+    pub const EDGE_WIDTH: Points = px(20.0);
+
+    /// Sets [`PanActivation::active_offset_x`].
+    pub fn active_offset_x(mut self, offset: Points) -> Self {
+        self.active_offset_x = Some(offset);
+        self
+    }
+
+    /// Sets [`PanActivation::active_offset_y`].
+    pub fn active_offset_y(mut self, offset: Points) -> Self {
+        self.active_offset_y = Some(offset);
+        self
+    }
+
+    /// Sets [`PanActivation::fail_offset_x`].
+    pub fn fail_offset_x(mut self, offset: Points) -> Self {
+        self.fail_offset_x = Some(offset);
+        self
+    }
+
+    /// Sets [`PanActivation::fail_offset_y`].
+    pub fn fail_offset_y(mut self, offset: Points) -> Self {
+        self.fail_offset_y = Some(offset);
+        self
+    }
+
+    /// Sets [`PanActivation::direction`]: a drawer opened by a drag to
+    /// the right over its content, `PanActivation::default()
+    /// .direction(PanDirection::Right)`, leaves the drags to the left to
+    /// the content.
+    pub fn direction(mut self, direction: PanDirection) -> Self {
+        self.direction = Some(direction);
+        self
+    }
+
+    /// Sets [`PanActivation::edge`]: a drawer opened from the left edge,
+    /// `PanActivation::default().edge(PanEdge::Left)`.
+    pub fn edge(mut self, edge: PanEdge) -> Self {
+        self.edge = Some(edge);
+        self
+    }
+
+    /// The way the pan activates in, if it has one: away from its edge, or
+    /// its direction. For the backends.
+    #[doc(hidden)]
+    pub fn way(&self) -> Option<PanDirection> {
+        self.edge.map(PanEdge::direction).or(self.direction)
+    }
+
+    /// Whether a finger going down at `at` may start the pan, in an area
+    /// (the screen, the window or the page) of `size` with `at` measured
+    /// from its top left corner: anywhere without an
+    /// [`edge`](Self::edge), else within [`PanActivation::EDGE_WIDTH`] of
+    /// it. For the backends.
+    #[doc(hidden)]
+    pub fn starts_at(&self, at: Point<Points>, size: crate::Size<Points>) -> bool {
+        let w = Self::EDGE_WIDTH.0;
+        match self.edge {
+            None => true,
+            Some(PanEdge::Left) => at.x.0 <= w,
+            Some(PanEdge::Right) => at.x.0 >= size.width.0 - w,
+            Some(PanEdge::Top) => at.y.0 <= w,
+            Some(PanEdge::Bottom) => at.y.0 >= size.height.0 - w,
+        }
+    }
 
     /// A pan that activates horizontally past `active` and fails when it
     /// moves vertically past `fail` first (a scrubber in a vertical scroll
@@ -580,6 +765,8 @@ impl PanActivation {
             active_offset_y: None,
             fail_offset_x: None,
             fail_offset_y: Some(fail),
+            direction: None,
+            edge: None,
         }
     }
 
@@ -591,15 +778,20 @@ impl PanActivation {
             active_offset_y: Some(active),
             fail_offset_x: Some(fail),
             fail_offset_y: None,
+            direction: None,
+            edge: None,
         }
     }
 
-    /// The one axis this pan is for, when its offsets name one: `Some(true)`
-    /// horizontal (an active offset along x, or a fail offset along y),
-    /// `Some(false)` vertical, `None` either. A view listening to `onWheel`
-    /// with a pan along one axis takes only the wheels along it
-    /// ([`crate::input::wheel_along`]).
+    /// The one axis this pan is for, when its way or its offsets name one:
+    /// `Some(true)` horizontal (a way left or right, an active offset along
+    /// x, or a fail offset along y), `Some(false)` vertical, `None` either.
+    /// A view listening to `onWheel` with a pan along one axis takes only
+    /// the wheels along it ([`crate::input::wheel_along`]).
     pub fn axis(&self) -> Option<bool> {
+        if let Some(way) = self.way() {
+            return Some(matches!(way, PanDirection::Left | PanDirection::Right));
+        }
         let x = self.active_offset_x.is_some() || self.fail_offset_y.is_some();
         let y = self.active_offset_y.is_some() || self.fail_offset_x.is_some();
         match (x, y) {
@@ -619,12 +811,45 @@ impl PanActivation {
         if past(self.fail_offset_x, dx) || past(self.fail_offset_y, dy) {
             return Some(false);
         }
+        if let Some(way) = self.way() {
+            // How far it moved that way and across, the offset along it, and
+            // whether a fail offset across decides the moves across.
+            let (along, across, active, fail_across) = match way {
+                PanDirection::Right => (dx, dy, self.active_offset_x, self.fail_offset_y),
+                PanDirection::Left => (-dx, dy, self.active_offset_x, self.fail_offset_y),
+                PanDirection::Down => (dy, dx, self.active_offset_y, self.fail_offset_x),
+                PanDirection::Up => (-dy, dx, self.active_offset_y, self.fail_offset_x),
+            };
+            let limit = active.unwrap_or(Self::MIN_DISTANCE).0;
+            let across = across.abs();
+            if along > limit && along >= across {
+                return Some(true);
+            }
+            let across_fails = fail_across.is_none() && across > limit && across > along;
+            return (-along > limit || across_fails).then_some(false);
+        }
         let activates = if self.active_offset_x.is_some() || self.active_offset_y.is_some() {
             past(self.active_offset_x, dx) || past(self.active_offset_y, dy)
         } else {
             dx.hypot(dy) > Self::MIN_DISTANCE.0
         };
         activates.then_some(true)
+    }
+
+    /// [`PanActivation::decide`] on a move of the finger from offset `from`
+    /// to offset `to` (both from where it went down), judged along the
+    /// straight line between them a point at a time: the offset the finger
+    /// passed first decides, even when the move passes both. Moves arrive
+    /// several points apart, and a diagonal 1.5 across for 1 down passes
+    /// `activeOffsetX: 10` and `failOffsetY: 10` within one 10-point move.
+    /// The platforms ask it with the previous move's offset as `from`.
+    pub fn decide_move(&self, from: Point<Points>, to: Point<Points>) -> Option<bool> {
+        let (mx, my) = (to.x.0 - from.x.0, to.y.0 - from.y.0);
+        let steps = mx.hypot(my).ceil().max(1.0) as u32;
+        (1..=steps).find_map(|i| {
+            let t = i as f32 / steps as f32;
+            self.decide(Points(from.x.0 + mx * t), Points(from.y.0 + my * t))
+        })
     }
 }
 

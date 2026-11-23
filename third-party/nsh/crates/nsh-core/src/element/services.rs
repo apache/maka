@@ -12,7 +12,10 @@ use std::{
 
 use super::{
     Answer, ImageSize,
-    task::{Action, AnswerSlot, ClipboardImage, ClipboardItem, ClipboardRead, FileAnswer},
+    task::{
+        Action, AnswerSlot, ClipboardImage, ClipboardItem, ClipboardRead, ClipboardWrite,
+        FileAnswer,
+    },
 };
 use crate::{
     Command, ROOT_ID,
@@ -142,14 +145,23 @@ pub(crate) fn perf_monitor_mode(mode: crate::FpsMode) -> Action {
     Action::Command(ROOT_ID, Command::PerfMonitorMode(mode))
 }
 
-/// Puts `text` on the system clipboard.
-pub(crate) fn set_clipboard(text: String) -> Action {
-    Action::Command(ROOT_ID, Command::SetClipboard(text))
+/// Puts `text` on the system clipboard; the answer is what became of it.
+pub(crate) fn set_clipboard(text: String) -> (Answer<ClipboardWrite>, Action) {
+    let (answer, slot) = Answer::new();
+    (
+        answer,
+        Action::WriteClipboard(Command::SetClipboard(text), slot),
+    )
 }
 
-/// Puts `item` on the system clipboard, each of its formats in one write.
-pub(crate) fn set_clipboard_item(item: ClipboardItem) -> Action {
-    Action::Command(ROOT_ID, Command::SetClipboardItem(item))
+/// Puts `item` on the system clipboard, each of its formats in one write;
+/// the answer is what became of it.
+pub(crate) fn set_clipboard_item(item: ClipboardItem) -> (Answer<ClipboardWrite>, Action) {
+    let (answer, slot) = Answer::new();
+    (
+        answer,
+        Action::WriteClipboard(Command::SetClipboardItem(item), slot),
+    )
 }
 
 /// The text on the system clipboard (`""` when it holds none).
@@ -233,7 +245,10 @@ pub(crate) fn pick_files(
 pub(crate) fn host_call(
     name: String,
     args: crate::JsonValue,
-) -> (Answer<Result<crate::JsonValue, super::JsError>>, Action) {
+) -> (
+    Answer<Result<crate::JsonValue, crate::host_channel::HostError>>,
+    Action,
+) {
     let (answer, slot) = Answer::new();
     (
         answer,

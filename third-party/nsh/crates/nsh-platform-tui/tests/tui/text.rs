@@ -276,7 +276,7 @@ fn aligned_attachments_grow_the_line_above_and_below_its_cell_baseline() {
         (VerticalAlign::Baseline, 48.0, 48.0, 32.0),
         (VerticalAlign::TextTop, 48.0, 16.0, 0.0),
         (VerticalAlign::TextBottom, 48.0, 48.0, 32.0),
-        (VerticalAlign::Middle, 64.0, 32.0, 16.0),
+        (VerticalAlign::Middle, 48.0, 32.0, 16.0),
     ] {
         let mut text = AttributedText::default();
         text.push("A", Default::default());
@@ -350,5 +350,42 @@ fn the_first_baseline_is_the_bottom_of_the_first_rows_cells() {
             Points(baseline),
             "{align:?}"
         );
+    }
+}
+
+#[nsh_core::prelude::component]
+fn WrappedTable() -> impl nsh_core::prelude::IntoElement {
+    use nsh_core::prelude::*;
+    view().w(px(176.0)).child(nsh_base::text_view().markdown(
+        "| Name | Note |\n|---|---|\n| Ada | a note long enough to wrap in its column |\n",
+    ))
+}
+
+#[test]
+fn a_tables_cells_that_wrap_keep_its_sides_on_every_line() {
+    use nsh_platform_tui::{App, Root};
+    use ratatui_core::{backend::TestBackend, terminal::Terminal};
+
+    use super::app::{draw_until, surface};
+    let (mut view, rx) = surface();
+    let mut terminal = Terminal::new(TestBackend::new(22, 12)).unwrap();
+    view.load(App::Rust(Root::new::<WrappedTable>(|| ())))
+        .unwrap();
+    draw_until(&mut view, &mut terminal, &rx, "└");
+    let buffer = terminal.backend().buffer();
+    let rows: Vec<String> = (0..12)
+        .map(|y| (0..22).map(|x| buffer[(x, y)].symbol()).collect())
+        .collect();
+    let top = rows.iter().position(|r| r.starts_with('┌')).unwrap();
+    let bottom = rows.iter().position(|r| r.starts_with('└')).unwrap();
+    // The note wraps over several lines; each of them has the table's
+    // left side, its column line and its right side.
+    let body: Vec<&String> = rows[top + 1..bottom]
+        .iter()
+        .filter(|r| !r.starts_with('├'))
+        .collect();
+    assert!(body.len() > 2, "{rows:#?}");
+    for row in body {
+        assert_eq!(row.matches('│').count(), 3, "{rows:#?}");
     }
 }

@@ -249,7 +249,8 @@ Container widths (points): `3xs` 256, `2xs` 288, `xs` 320, `sm` 384, `md` 448, `
 | `line-clamp-<n>`, `line-clamp-none` | `numberOfLines` (`none` shows every line) |
 | `text-ellipsis`, `text-clip` | `textOverflow: "ellipsis"` / `"clip"` |
 | `whitespace-nowrap`, `text-nowrap` | lines never wrap; on a view, the lines of the texts in it (inherited, as CSS's `white-space`) |
-| `whitespace-normal`, `text-wrap`, `text-balance`, `text-pretty` | lines wrap (balancing is not done) |
+| `whitespace-normal`, `text-wrap`, `text-balance` | lines wrap (balancing is not done) |
+| `text-pretty` | lines wrap; a last line shorter than a quarter of the box takes words from the lines above, without adding a line |
 | `select-text`, `select-none` | `userSelect: "text"` / `"none"`; on a view, of the texts in it that set none |
 | `select-auto` | `userSelect: "auto"`: the view around it decides, as CSS's `user-select: auto` (`select-none md:select-auto`) |
 

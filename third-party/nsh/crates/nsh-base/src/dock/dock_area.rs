@@ -99,7 +99,8 @@ use super::{
     value::DockAreaLayout,
 };
 use crate::resizable::{
-    HANDLE_SIZE, HandleEdge, ShowHandles, resizable_panel, resizable_panel_group, resize_handle,
+    HANDLE_SIZE, HandleEdge, ResizeHandleContext, ShowHandles, resizable_panel,
+    resizable_panel_group, resize_handle,
 };
 
 /// Below this width of its own the area presents itself compactly.
@@ -115,7 +116,8 @@ pub struct DockPanel {
     pub id: PanelId,
 }
 
-/// A tab, as `renderTab` and `renderDragPreview` render it.
+/// A tab, as `renderTab`, `renderDragPreview` and `renderToolbar` render
+/// it.
 #[derive(Clone, Debug, Default, PartialEq, JsObject)]
 #[non_exhaustive]
 pub struct DockTab {
@@ -273,6 +275,9 @@ pub struct DockAreaProps {
     /// the tab, so a row of a title and a close button is a `flex-row` view
     /// of them.
     pub render_tab: Prop<Option<Renderer<DockTab>>>,
+    /// The toolbar at the end of a tab group's tab bar, given its displayed
+    /// tab: that panel's actions (as a GPUI dock panel's toolbar buttons).
+    pub render_toolbar: Prop<Option<Renderer<DockTab>>>,
     /// What shows where a drag would land, placed over the part of the
     /// group it would take.
     pub render_drop_indicator: Prop<Option<Renderer<DockDropIndicator>>>,
@@ -325,6 +330,11 @@ pub struct DockAreaProps {
     /// The style of the thumb of each handle.
     #[prop(default)]
     pub handle_thumb_style: Prop<Style>,
+    /// What is inside the indicator of each handle between the groups of a
+    /// split, drawn again when the handle's state changes: a grip, an icon
+    /// (`ResizablePanelGroup`'s `renderHandle`). The handles at the docks'
+    /// edges keep the indicator the classes style.
+    pub render_handle: Prop<Option<Renderer<ResizeHandleContext>>>,
     /// What screen readers say for each handle (an `adjustable` element):
     /// what dragging it resizes.
     pub handle_accessibility_label: Prop<Option<SharedString>>,
@@ -1149,6 +1159,7 @@ fn split_view(a: AreaCx, node: NodeId) -> AnyElement {
     let mut group = resizable_panel_group();
     // The app's style prop as it is (the setter takes typed styles).
     group.__element().__props_mut().handle_style = a.props.handle_style;
+    group.__element().__props_mut().render_handle = a.props.render_handle;
     group.__element().__props_mut().handle_thumb_style = a.props.handle_thumb_style;
     let group = group
         .axis(move || axis.get())

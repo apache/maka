@@ -1,6 +1,9 @@
 //! Text inputs: a `UITextField` (one line) or `UITextView` (`multiline`)
 //! inside a container view that carries the decoration (background,
-//! border, corners, shadow) like any other view.
+//! border, corners, shadow) like any other view. A field fills the
+//! container and insets its text by the padding; a text view sits at the
+//! content box, so its scrolled text is clipped there, and takes touches
+//! on the padding too.
 
 use std::{
     cell::{Cell, RefCell},
@@ -40,6 +43,9 @@ use crate::{target::EventTarget, text};
 /// Limits shared by both input classes, read synchronously by delegate
 /// callbacks (which cannot wait for the mounter).
 pub(crate) struct InputIvars {
+    /// The input's padding and border around the content box: a field
+    /// insets its text by them; a text area, at the content box, takes
+    /// touches on them too.
     insets: Cell<UIEdgeInsets>,
     /// Maximum length in UTF-16 units.
     max_length: Cell<Option<u32>>,
@@ -56,9 +62,10 @@ pub(crate) struct InputIvars {
     paste_listens: Cell<bool>,
     /// A paste inserts its text (`pasteBehavior`).
     paste_inserts: Cell<bool>,
-    /// A built-in bar of the app's takes the text area's scroll indicator's
-    /// place (`InputConfig::replaced`): its scrolling is reported.
-    scroll_replaced: Cell<bool>,
+    /// A bar of the app's follows the text area (its built-in bar, or one
+    /// that watches it; `InputConfig::report_scroll`): its scrolling is
+    /// reported.
+    scroll_reports: Cell<bool>,
     /// The scrolling last reported (offset y, content width and height,
     /// viewport width and height): only changes are reported again.
     scroll_reported: Cell<Option<[CGFloat; 5]>>,
@@ -75,6 +82,9 @@ pub(crate) struct InputIvars {
     edit_menu: RefCell<Option<(Vec<EditAction>, CGRect)>>,
     /// `UIEditMenuInteraction` (iOS 16), made on first use.
     edit_interaction: RefCell<Option<Retained<AnyObject>>>,
+    /// The whole text is selected when the input takes the focus
+    /// (`selectTextOnFocus`).
+    select_on_focus: Cell<bool>,
 }
 
 impl Default for InputIvars {
@@ -93,11 +103,12 @@ impl Default for InputIvars {
             caret: Cell::new(Bounds::default()),
             paste_listens: Cell::new(false),
             paste_inserts: Cell::new(true),
-            scroll_replaced: Cell::new(false),
+            scroll_reports: Cell::new(false),
             scroll_reported: Cell::new(None),
             target: RefCell::default(),
             edit_menu: RefCell::new(None),
             edit_interaction: RefCell::new(None),
+            select_on_focus: Cell::new(false),
         }
     }
 }
@@ -248,7 +259,7 @@ impl Area {
     /// Reports the scrolling through the delegate, the event target, which
     /// holds the engine's control.
     fn scroll_changed(&self) {
-        if !self.ivars().scroll_replaced.get() {
+        if !self.ivars().scroll_reports.get() {
             return;
         }
         if let Some(target) = self.ivars().target.borrow().load() {
@@ -314,6 +325,26 @@ define_class!(
     pub(crate) struct Area;
 
     impl Area {
+        /// A touch on the input's padding, outside the text view at the
+        /// content box, edits at the nearest point, as one on the text.
+        #[unsafe(method(pointInside:withEvent:))]
+        fn point_inside(&self, point: CGPoint, _event: Option<&AnyObject>) -> Bool {
+            let pad = self.ivars().insets.get();
+            let outset = UIEdgeInsets {
+                top: -pad.top,
+                left: -pad.left,
+                bottom: -pad.bottom,
+                right: -pad.right,
+            };
+            let r = inset(self.bounds(), outset);
+            Bool::new(
+                point.x >= r.origin.x
+                    && point.y >= r.origin.y
+                    && point.x < r.origin.x + r.size.width
+                    && point.y < r.origin.y + r.size.height,
+            )
+        }
+
         #[unsafe(method(caretRectForPosition:))]
         fn caret_rect(&self, position: Option<&objc2::runtime::AnyObject>) -> CGRect {
             if self.ivars().caret_hidden.get() {
@@ -508,6 +539,52 @@ pub(crate) fn test_paste(
             return Err("no input of the app has the focus".into());
         };
     let board = objc2_ui_kit::UIPasteboard::pasteboardWithUniqueName();
+    if content
+        .files
+        .iter()
+        .any(|file| image_type(&file.mime).is_none())
+    {
+        // Other files carry their names, as Files copies a document: as
+        // item providers.
+        set_providers(&board, content);
+    } else {
+        set_items(&board, content);
+    }
+    if pasting_from(view, ivars, &board) {
+        paste_text(view, &board);
+    }
+    // SAFETY: a plain getter; the test's pasteboard is not used again.
+    objc2_ui_kit::UIPasteboard::removePasteboardWithName(&*unsafe { board.name() });
+    Ok(())
+}
+
+/// The input of the app that has the keyboard focus, if one has it
+/// (`nsh test --target ios`): typing or a paste into it needs no tap, which
+/// would move its caret or, on a word, select it.
+#[cfg(feature = "dev")]
+pub(crate) fn test_focused(window: &objc2_ui_kit::UIWindow) -> Option<NodeId> {
+    let responder = crate::synth::first_responder(window)?;
+    let view: &UIView = match responder.downcast_ref::<Field>() {
+        Some(field) => field.as_ref(),
+        None => responder.downcast_ref::<Area>()?.as_ref(),
+    };
+    Some(view.tag() as NodeId)
+}
+
+/// The pasteboard type of an image of MIME type `mime` that a test pastes.
+#[cfg(feature = "dev")]
+fn image_type(mime: &str) -> Option<&'static str> {
+    match mime {
+        "image/png" => Some("public.png"),
+        "image/jpeg" => Some("public.jpeg"),
+        "image/gif" => Some("com.compuserve.gif"),
+        _ => None,
+    }
+}
+
+/// A test's paste of `content` as pasteboard items (type to value).
+#[cfg(feature = "dev")]
+fn set_items(board: &objc2_ui_kit::UIPasteboard, content: &nsh_core::PasteEvent) {
     let mut items: Vec<Retained<NSDictionary<NSString, AnyObject>>> = Vec::new();
     let item = |kind: &str, value: &AnyObject| {
         NSDictionary::from_slices(&[&*NSString::from_str(kind)], &[value])
@@ -529,12 +606,7 @@ pub(crate) fn test_paste(
         items.push(NSDictionary::from_slices(&kinds, &values));
     }
     for file in &content.files {
-        let kind = match file.mime.as_str() {
-            "image/png" => "public.png",
-            "image/jpeg" => "public.jpeg",
-            "image/gif" => "com.compuserve.gif",
-            _ => "public.data",
-        };
+        let kind = image_type(&file.mime).unwrap_or("public.data");
         items.push(item(
             kind,
             &objc2_foundation::NSData::with_bytes(&file.data),
@@ -546,13 +618,55 @@ pub(crate) fn test_paste(
         }
     }
     // SAFETY: UIPasteboard's setter of items (type to value).
-    let _: () = unsafe { msg_send![&board, setItems: &*NSArray::from_retained_slice(&items)] };
-    if pasting_from(view, ivars, &board) {
-        paste_text(view, &board);
+    let _: () = unsafe { msg_send![board, setItems: &*NSArray::from_retained_slice(&items)] };
+}
+
+/// A test's paste of `content` as item providers, one an item: its text,
+/// its HTML, each file under the type of its name (else of its MIME type)
+/// with its name suggested, and each `file:` URL.
+#[cfg(feature = "dev")]
+fn set_providers(board: &objc2_ui_kit::UIPasteboard, content: &nsh_core::PasteEvent) {
+    let Some(class) = AnyClass::get(c"NSItemProvider") else {
+        return;
+    };
+    let provider = |item: &AnyObject, kind: &str| -> Retained<AnyObject> {
+        let kind = NSString::from_str(kind);
+        // SAFETY: NSItemProvider's documented initializer (iOS 8); the item
+        // (a string, data or URL) is secure coding.
+        unsafe {
+            let alloc: Allocated<AnyObject> = msg_send![class, alloc];
+            msg_send![alloc, initWithItem: item, typeIdentifier: &*kind]
+        }
+    };
+    let mut providers = Vec::new();
+    if !content.text.is_empty() {
+        providers.push(provider(
+            &NSString::from_str(&content.text),
+            "public.utf8-plain-text",
+        ));
     }
-    // SAFETY: a plain getter; the test's pasteboard is not used again.
-    objc2_ui_kit::UIPasteboard::removePasteboardWithName(&*unsafe { board.name() });
-    Ok(())
+    if !content.html.is_empty() {
+        providers.push(provider(&NSString::from_str(&content.html), "public.html"));
+    }
+    for file in &content.files {
+        let kind = image_type(&file.mime).map_or_else(
+            || crate::file_drop::type_of_file(&file.name, &file.mime),
+            str::to_owned,
+        );
+        let item = provider(&objc2_foundation::NSData::with_bytes(&file.data), &kind);
+        let name = NSString::from_str(&file.name);
+        // SAFETY: NSItemProvider's `suggestedName` setter (iOS 11).
+        let _: () = unsafe { msg_send![&item, setSuggestedName: &*name] };
+        providers.push(item);
+    }
+    for uri in &content.uris {
+        if let Some(url) = objc2_foundation::NSURL::URLWithString(&NSString::from_str(uri)) {
+            providers.push(provider(&url, "public.file-url"));
+        }
+    }
+    // SAFETY: UIPasteboard's setter of item providers (iOS 11).
+    let _: () =
+        unsafe { msg_send![board, setItemProviders: &*NSArray::from_retained_slice(&providers)] };
 }
 
 /// Pastes `board`'s text into input `view`, cut to what `maxLength` leaves
@@ -565,22 +679,7 @@ fn paste_text(view: &UIView, board: &objc2_ui_kit::UIPasteboard) {
         return;
     };
     let range = NSRange::new(start as usize, (end - start) as usize);
-    let current = view
-        .downcast_ref::<Field>()
-        .and_then(|f| f.text())
-        .or_else(|| view.downcast_ref::<Area>().map(|a| a.text()))
-        .unwrap_or_default();
-    let room = max_length(view).map_or(usize::MAX, |max| {
-        (max as usize).saturating_sub(kept_chars(&current, range))
-    });
-    // A text of no more UTF-16 units than there is room for characters
-    // fits as it is.
-    let text = if room < text.length() {
-        let units = utf16(&text, NSRange::new(0, text.length()));
-        NSString::from_str(clip_chars(&String::from_utf16_lossy(&units), room))
-    } else {
-        text
-    };
+    let text = clipped_paste(view, range, text);
     if text.length() == 0 {
         return;
     }
@@ -599,6 +698,26 @@ fn paste_text(view: &UIView, board: &objc2_ui_kit::UIPasteboard) {
     if allows.as_bool() {
         // SAFETY: UIKeyInput's method, which both input classes implement.
         let _: () = unsafe { msg_send![view, insertText: &*text] };
+    }
+}
+
+/// The part of a paste that fits after replacing the native UTF-16 selection.
+fn clipped_paste(view: &UIView, range: NSRange, text: Retained<NSString>) -> Retained<NSString> {
+    let current = view
+        .downcast_ref::<Field>()
+        .and_then(|f| f.text())
+        .or_else(|| view.downcast_ref::<Area>().map(|a| a.text()))
+        .unwrap_or_default();
+    let room = max_length(view).map_or(usize::MAX, |max| {
+        (max as usize).saturating_sub(kept_chars(&current, range))
+    });
+    // A text of no more UTF-16 units than there is room for characters
+    // fits as it is.
+    if room < text.length() {
+        let units = utf16(&text, NSRange::new(0, text.length()));
+        NSString::from_str(clip_chars(&String::from_utf16_lossy(&units), room))
+    } else {
+        text
     }
 }
 
@@ -724,9 +843,15 @@ pub(crate) fn close_edit_menu(view: &UIView) {
 fn can_paste_more(view: &UIView, ivars: &InputIvars) -> bool {
     let board = objc2_ui_kit::UIPasteboard::generalPasteboard();
     // SAFETY: plain getters, which show no paste notice.
+    // An item that is no text, image or link is a file held as data
+    // (a document copied in Files), which the paste reports.
     ivars.paste_listens.get()
         && view.isFirstResponder()
-        && unsafe { board.hasImages() || board.hasURLs() }
+        && unsafe {
+            board.hasImages()
+                || board.hasURLs()
+                || (board.numberOfItems() > 0 && !board.hasStrings())
+        }
 }
 
 /// Reports `paste` to the app (`onPaste`), through the input's delegate,
@@ -738,14 +863,14 @@ pub(crate) fn report_paste(view: &UIView, paste: nsh_core::PasteEvent) {
 }
 
 /// Reports how far text area `view` scrolled (`EngineControl::input_scroll`)
-/// while a built-in bar takes the place of its indicator, if the offset, the
-/// text's size or the viewport changed since the last report.
+/// while a bar of the app's follows it, if the offset, the text's size or
+/// the viewport changed since the last report.
 pub(crate) fn report_scroll(view: &UIView, control: &EngineControl) {
     let Some(area) = view.downcast_ref::<Area>() else {
         return;
     };
     let ivars = area.ivars();
-    if !ivars.scroll_replaced.get() {
+    if !ivars.scroll_reports.get() {
         return;
     }
     let offset = area.contentOffset();
@@ -817,7 +942,7 @@ pub(crate) fn selection(view: &UIView) -> Option<(u32, u32)> {
 }
 
 /// The caret at the end of the selection of an input view, in the input's
-/// coordinates (its container, which the editor fills), drawn or not.
+/// coordinates (its container), drawn or not.
 pub(crate) fn caret(view: &UIView) -> Option<Bounds<Points>> {
     // SAFETY: UITextField and UITextView adopt UITextInput; both input
     // classes answer `nshCaretRectForPosition:`.
@@ -853,6 +978,38 @@ pub(crate) fn target_of(view: &UIView) -> Option<Retained<EventTarget>> {
         .map(|f| f.ivars())
         .or_else(|| view.downcast_ref::<Area>().map(|a| a.ivars()))?;
     ivars.target.borrow().load()
+}
+
+/// Input `view` took the focus (its delegate's did-begin-editing): with
+/// `selectTextOnFocus` its whole text is selected, however the focus came.
+///
+/// UIKit calls did-begin-editing from `becomeFirstResponder`, before the tap
+/// that focused the input places its caret, so the text is selected on the
+/// next main-queue turn. A selection the focusing gesture made by then (a
+/// drag, a Shift-click) is the user's and stays.
+pub(crate) fn began_editing(view: &UIView) {
+    if !ivars_of(view).is_some_and(|i| i.select_on_focus.get()) {
+        return;
+    }
+    let began = selection(view);
+    let mtm = MainThreadMarker::from(view);
+    let weak = dispatch2::MainThreadBound::new(Weak::from(view), mtm);
+    dispatch2::DispatchQueue::main().exec_async(move || {
+        let mtm = MainThreadMarker::new().expect("main queue");
+        let Some(view) = weak.into_inner(mtm).load() else {
+            return;
+        };
+        // Blurred meanwhile, or the prop was turned off.
+        if !view.isFirstResponder() || !ivars_of(&view).is_some_and(|i| i.select_on_focus.get()) {
+            return;
+        }
+        let now = selection(&view);
+        if now != began && now.is_some_and(|(start, end)| start != end) {
+            return;
+        }
+        // Reported as any other selection change, by the delegate.
+        set_selection(&view, 0, u32::MAX);
+    });
 }
 
 /// Selects `start..end` (UTF-16 units, clamped to the text).
@@ -1032,6 +1189,29 @@ impl Input {
         &self.container
     }
 
+    /// Applies an app-accepted paste through UITextInput's selected range.
+    pub(crate) fn insert_text(&self, text: &str) {
+        let view = self.editor_view();
+        let Some(config) = &self.config else { return };
+        if !config.editable || marked_text(view).is_some() {
+            return;
+        }
+        let Some((start, end)) = selection(view) else {
+            return;
+        };
+        let text = nsh_core::text_edit::pasted(text, config.multiline);
+        let range = NSRange::new(start as usize, (end - start) as usize);
+        let text = clipped_paste(view, range, NSString::from_str(&text));
+        // UITextInput's replacement applies one edit without interpreting a
+        // pasted newline as the Return key. Both editor classes adopt it.
+        unsafe {
+            let selected: Option<Retained<AnyObject>> = msg_send![view, selectedTextRange];
+            if let Some(selected) = selected {
+                let _: () = msg_send![view, replaceRange: &*selected, withText: &*text];
+            }
+        }
+    }
+
     /// The view that edits (first responder).
     pub(crate) fn editor_view(&self) -> &UIView {
         match &self.editor {
@@ -1174,10 +1354,13 @@ impl Input {
                 // A built-in bar of the app's takes the indicator's place;
                 // the text still scrolls.
                 view.setShowsVerticalScrollIndicator(config.scrollbar_visible);
-                view.ivars().scroll_replaced.set(config.replaced);
+                view.ivars().scroll_reports.set(config.report_scroll);
                 // Reported again once the configuration is applied.
                 view.ivars().scroll_reported.set(None);
             }
+        }
+        if let Some(ivars) = ivars_of(self.editor_view()) {
+            ivars.select_on_focus.set(config.select_text_on_focus);
         }
         crate::mount::mirror(self.editor_view(), config.rtl);
         set_paste(
@@ -1187,10 +1370,10 @@ impl Input {
         );
         let first = self.config.is_none();
         let auto_focus = config.auto_focus;
-        let replaced = config.replaced;
+        let reports = config.report_scroll;
         self.config = Some(config);
         self.update_placeholder();
-        if replaced {
+        if reports {
             target.input_scrolled(self.editor_view());
         }
         if first && auto_focus {
@@ -1308,19 +1491,34 @@ impl Input {
                 field.setNeedsLayout();
             }
             Editor::Area { view, placeholder } => {
-                view.setTextContainerInset(insets);
-                placeholder.setFrame(CGRect::new(
+                // At the content box, as every platform's editor is: the
+                // scroll view clips its text there, so text scrolled past
+                // it never shows in the padding or under the border. Its
+                // autoresizing keeps the padding as the input resizes.
+                view.ivars().insets.set(insets);
+                view.setFrame(CGRect::new(
                     CGPoint::new(content.origin.x.0 as CGFloat, content.origin.y.0 as CGFloat),
                     CGSize::new(
                         content.size.width.0 as CGFloat,
                         content.size.height.0 as CGFloat,
                     ),
                 ));
+                view.setTextContainerInset(UIEdgeInsets {
+                    top: 0.0,
+                    left: 0.0,
+                    bottom: 0.0,
+                    right: 0.0,
+                });
+                let width = content.size.width.0 as CGFloat;
+                placeholder.setFrame(CGRect::new(
+                    CGPoint::new(0.0, 0.0),
+                    CGSize::new(width, content.size.height.0 as CGFloat),
+                ));
                 placeholder.sizeToFit();
                 let size = placeholder.frame().size;
                 placeholder.setFrame(CGRect::new(
-                    CGPoint::new(content.origin.x.0 as CGFloat, content.origin.y.0 as CGFloat),
-                    CGSize::new(content.size.width.0 as CGFloat, size.height),
+                    CGPoint::new(0.0, 0.0),
+                    CGSize::new(width, size.height),
                 ));
             }
         }

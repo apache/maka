@@ -65,6 +65,7 @@ fn App() -> impl IntoElement {
 
 ```tsx tabs
 import { mount, resource, Scroll, Text, View } from "nsh";
+import { Window } from "nsh/desktop";
 
 type Post = { id: number; title: string };
 
@@ -85,7 +86,11 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 [`resource`](./reactivity.md#resource) 会保存值、错误以及是否正在加载；source 变化（或调用 `refetch()`）时重新加载；对于不再需要的加载（组件被移除，或有更新的加载开始）会取消请求：Rust 中丢弃加载任务，其请求随之取消；TSX 中通过它传入的 `signal` 取消。Rust 的 `fetch` 使用绝对 URL；JSON 用 `serde_json` 等 crate 解析。
@@ -368,7 +373,7 @@ Rust 组件、`#[module]` 函数和 `#[class]` 成员在任务中调用 `fetch`�
     else throw error;
   }
   ```
-- **每次重定向都会再次检查。** NSH 自己跟随重定向（最多 20 次），而不交给平台处理，所以获准的主机无法把应用重定向到未获准的主机。
+- **每次重定向都会再次检查。** NSH 自己跟随重定向（最多 20 次），而不交给平台处理，所以获准的主机无法把应用重定向到未获准的主机。跳转到另一个源（协议、主机或端口不同）时，请求的 `Authorization`、`Cookie` 和 `Proxy-Authorization` 头在这一跳及之后的每一跳都不再发送，与 Fetch 标准对 `Authorization` 的处理一致，所以发给某个服务器的凭据只会到达该服务器。
 - 同样的 `network` 授权也适用于远程图片（包括画布中的图片和 `Image.getSize` / `prefetch`）和视频来源。应用自身包中的 `asset:` URI 始终允许。
 - 主机取最后一个 `@` 之后的部分，所以 `https://ok.com@evil.io` 被视为 `evil.io`。
 
@@ -379,7 +384,7 @@ Rust 组件、`#[module]` 函数和 `#[class]` 成员在任务中调用 `fetch`�
 TSX 的 `fetch` 遵循 Fetch 标准，但在对应用（而不是网页）有意义的地方有所不同：
 
 - **没有 CORS。** 应用可以访问其能力允许的任何主机；没有预检请求，也没有不透明响应。
-- **没有禁止的请求头。** 应用可以设置 `Cookie`、`User-Agent`、`Origin` 等。
+- **没有禁止的请求头。** 应用可以设置 `Cookie`、`User-Agent`、`Origin` 等。声明了 `"capabilities"` 的应用由 NSH 自己跟随重定向，凭据头（`Authorization`、`Cookie`、`Proxy-Authorization`）只留在设置它们的源；没有声明时，由平台的网络栈按它自己的规则跟随重定向。
 - **`redirect: "manual"`** 返回 3xx 响应本身（带有 `Location` 头），而不是不透明重定向。`redirect: "error"` 遇到重定向时拒绝。
 - **`data:` 和 `blob:` URL** 在本地应答。`URL.createObjectURL(blob)` 生成一个 `blob:` URL，在撤销之前 `fetch` 都可以读取它。
 - **`asset:/` URL** 指应用随附的文件，从应用自身的文件中读取，无需任何能力授权（[运行时读取文件](./images-and-assets.md#运行时读取文件)）。

@@ -2,6 +2,20 @@
 // closes the sheet, as does a drag on a button over the list.
 import { expect, open, test } from "nsh/test";
 
+test("pressing rows at both scroll edges keeps the sheet open", async () => {
+  const app = await open("./fixtures/sheet-scroll.tsx");
+  // This case exposes both edges; the other cases exercise the button over the list.
+  await app.host.send("test:hide-overlay");
+  // The first row is inside the driver's edge margin. At the start there
+  // is no room to scroll back: a drag down would close the sheet.
+  for (const row of ["Row 1", "Row 40", "Row 1"]) {
+    await app.press(`text:${row}`);
+    await app.waitFor(`text:pressed: ${row}`);
+    expect(app.texts()).toContain("sheet: open");
+  }
+  expect(app.texts()).toContain("presses: Row 1, Row 40, Row 1");
+});
+
 test("a drag up on a sheet's list scrolls the list", async () => {
   const app = await open("./fixtures/sheet-scroll.tsx");
   await app.drag("Row 4", { x: 0, y: -200 });

@@ -87,8 +87,17 @@ impl MountSink for MainThreadSink {
     }
 
     fn run_on_main_thread(&self, task: MainThreadTask) {
+        let mounter = self.mounter.clone();
         // The main queue is serial: after the batches submitted before it.
-        DispatchQueue::main().exec_async(move || task.run());
+        DispatchQueue::main().exec_async(move || {
+            let mtm = MainThreadMarker::new().expect("main queue runs on the main thread");
+            let root = mounter
+                .get(mtm)
+                .borrow()
+                .as_ref()
+                .and_then(|mounter| mounter.ui_view(nsh_core::ROOT_ID));
+            crate::presenting::run_for(root, || task.run());
+        });
     }
 
     fn hot_update_failed(&self) {
@@ -295,6 +304,7 @@ define_class!(
         fn presses_began(&self, presses: &NSSet<UIPress>, event: Option<&UIPressesEvent>) {
             let consumed = self.target().is_some_and(|target| {
                 crate::keymap::root_began(&target, presses)
+                    || crate::keyboard::root_raw(self, &target, presses, true)
                     || crate::keyboard::root_tab(self, &target, presses)
             });
             if !consumed {
@@ -307,7 +317,10 @@ define_class!(
         fn presses_ended(&self, presses: &NSSet<UIPress>, event: Option<&UIPressesEvent>) {
             let consumed = self
                 .target()
-                .is_some_and(|target| crate::keymap::ended(&target, presses));
+                .is_some_and(|target| {
+                    crate::keymap::ended(&target, presses)
+                        | crate::keyboard::root_raw(self, &target, presses, false)
+                });
             if !consumed {
                 // SAFETY: calling the superclass implementation.
                 let _: () = unsafe { msg_send![super(self), pressesEnded: presses, withEvent: event] };
@@ -478,6 +491,9 @@ impl RootView {
             locale: current_locale(),
             locale_settings: locale_settings(),
             lifecycle: self.ivars().lifecycle.get(),
+            // The system's path monitor and `CTCellularData`, the
+            // process's (`observe_network`).
+            network: nsh_platform_apple::network::network(self.mtm()),
             // Only read for the web: iOS keys are always Apple's.
             apple_keyboard: true,
             file_requests: true,
@@ -491,6 +507,11 @@ impl RootView {
             canvas_render: true,
             // `UIActivityViewController` (`crate::share`).
             share: true,
+            // `UIApplication.openSettingsURLString`. A Mac has no settings
+            // page of an iPhone or iPad app's own: Mac Catalyst and an iOS
+            // app running on a Mac ("Designed for iPad") report none.
+            app_settings: !cfg!(target_abi = "macabi")
+                && !objc2_foundation::NSProcessInfo::processInfo().isiOSAppOnMac(),
             // `ASWebAuthenticationSession` (`crate::auth_session`).
             auth_session: true,
             // The Speech framework fed by the microphone.
@@ -543,6 +564,29 @@ impl RootView {
         let observer = unsafe {
             center.addObserverForName_object_queue_usingBlock(
                 Some(NSSystemTimeZoneDidChangeNotification),
+                None,
+                Some(&NSOperationQueue::mainQueue()),
+                &block,
+            )
+        };
+        this.ivars().observers.borrow_mut().push(observer);
+    }
+
+    /// The environment follows the route to the network and whether the
+    /// user lets the app use cellular data (`network()`): the shared
+    /// monitor posts its change once for the process, each surface reports
+    /// it.
+    fn observe_network(this: &Retained<Self>) {
+        let center = NSNotificationCenter::defaultCenter();
+        let weak = Weak::from_retained(this);
+        let block = RcBlock::new(move |_: NonNull<NSNotification>| {
+            let Some(view) = weak.load() else { return };
+            view.publish_environment();
+        });
+        // SAFETY: as in `observe_time_zone`.
+        let observer = unsafe {
+            center.addObserverForName_object_queue_usingBlock(
+                Some(&nsh_platform_apple::network::changed_name()),
                 None,
                 Some(&NSOperationQueue::mainQueue()),
                 &block,
@@ -1120,6 +1164,7 @@ impl Surface {
         RootView::observe_lifecycle(&view);
         RootView::observe_time_zone(&view);
         RootView::observe_locale(&view);
+        RootView::observe_network(&view);
         Ok(Surface { view })
     }
 
@@ -1308,12 +1353,11 @@ fn preferred_languages() -> nsh_engine::Languages {
 /// languages, the time zone, and Settings' time format (the hours of
 /// `NSDateFormatter`'s format for the `j` template, which 24-hour time
 /// changes), `NSCalendar`'s first weekday, `NSLocale`'s measurement system
-/// and the `AppleTemperatureUnit` default, over the region's.
+/// and the locale identifier's temperature unit override.
 fn locale_settings() -> nsh_engine::LocaleSettings {
-    use nsh_engine::{HourCycle, MeasurementSystem, TemperatureUnit, Weekday};
+    use nsh_engine::{HourCycle, MeasurementSystem, Weekday};
     use objc2_foundation::{
-        NSCalendar, NSDateFormatter, NSLocale, NSLocaleMeasurementSystem, NSString, NSUserDefaults,
-        ns_string,
+        NSCalendar, NSDateFormatter, NSLocale, NSLocaleMeasurementSystem, NSString, ns_string,
     };
     let locale = NSLocale::currentLocale();
     let mut preferences = nsh_engine::LocaleSettings::parse(&locale.localeIdentifier().to_string());
@@ -1345,14 +1389,6 @@ fn locale_settings() -> nsh_engine::LocaleSettings {
         Some("Metric") => preferences.measurement_system = MeasurementSystem::Metric,
         Some("U.S.") => preferences.measurement_system = MeasurementSystem::Us,
         Some("U.K.") => preferences.measurement_system = MeasurementSystem::Uk,
-        _ => {}
-    }
-    // Set once the user picks one.
-    let unit =
-        NSUserDefaults::standardUserDefaults().stringForKey(ns_string!("AppleTemperatureUnit"));
-    match unit.map(|u| u.to_string()).as_deref() {
-        Some("Celsius") => preferences.temperature_unit = TemperatureUnit::Celsius,
-        Some("Fahrenheit") => preferences.temperature_unit = TemperatureUnit::Fahrenheit,
         _ => {}
     }
     preferences

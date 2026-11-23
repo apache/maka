@@ -47,6 +47,7 @@ fn workspace() -> impl IntoElement {
 ```tsx tabs
 import { mount, signal, Text } from "nsh";
 import { DockArea, type DockAreaLayout } from "nsh/base";
+import { Window } from "nsh/desktop";
 
 const titles: Record<string, string> = {
   files: "Files", readme: "README.md", main: "main.rs", preview: "Preview", terminal: "Terminal",
@@ -80,7 +81,11 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 `DockArea` and the values it takes come from [`nsh/base`](../modules/nsh-base.md), the `nsh-base` crate in Rust
@@ -161,6 +166,28 @@ tab: a press selects it, a drag moves its panel, screen readers hear it as a tab
 The tabs are a row in a horizontal scroll view inside the bar: tabs that do not fit scroll instead of running past the
 bar's end, and the tab that becomes the displayed one is brought into view. The bar's classes style the bar itself,
 so space the tabs with `tabClass` (a margin), not with a `gap` on `tabBarClass`.
+
+`renderToolbar` renders the toolbar at the end of a group's tab bar for the group's displayed tab: that panel's
+actions, such as a button that adds a tab or a zoom button, as a GPUI dock panel's toolbar buttons. It gets the
+same `DockTab` as `renderTab` (`panel`, `group`, `index`, `zoomed`, ...), so a different panel shows different
+actions and the ref's `toggleZoom(tab.group)` acts on its group. It is a child of the tab bar after the tabs' scroll
+view, so it keeps its place while the tabs scroll and the bar's own layout places it (`ml-auto` on what it returns
+pushes it to the end of a `flex-row` bar). In the compact presentation the one tab bar ends with the shown tab's.
+
+```tsx
+renderToolbar={(tab) => (
+  <View class="ml-auto flex-row items-center gap-2 px-2">
+    {tab.panel === "editor" && (
+      <Button onPress={() => openFile(tab.group)}>
+        <Text>New</Text>
+      </Button>
+    )}
+    <Button onPress={() => area.toggleZoom(tab.group)}>
+      <Text>{tab.zoomed ? "Restore" : "Zoom"}</Text>
+    </Button>
+  </View>
+)}
+```
 
 ```tsx
 let area!: DockAreaRef;
@@ -334,6 +361,7 @@ rest of the area.
 | `panels` | `.panels(..)` | `DockPanelOptions[]` | `[]` | What each panel allows, by key: `closable`, `zoomable`, `visible`. |
 | `renderPanel` | `.render_panel(\|panel\| ..)` | `(panel: DockPanel) => JSX.Element` | none | A panel's content, by its key (`panel.id`). |
 | `renderTab` | `.render_tab(\|tab\| ..)` | `(tab: DockTab) => JSX.Element` | the key | What a tab shows. |
+| `renderToolbar` | `.render_toolbar(\|tab\| ..)` | `(tab: DockTab) => JSX.Element` | none | The toolbar at the end of a group's tab bar, for its displayed tab: that panel's actions (a new tab, a zoom button). |
 | `renderDropIndicator` | `.render_drop_indicator(\|drop\| ..)` | `(drop: DockDropIndicator) => JSX.Element` | none | What is inside the drop indicator: `group`, `side`, `index`. |
 | `renderDock` | `.render_dock(\|dock\| ..)` | `(dock: DockInfo) => JSX.Element` | none | A dock's own chrome, before its layout: `placement`, `open` (shown in the current presentation), `size`, `collapsible`. |
 | `renderEmpty` | `.render_empty(\|placement\| ..)` | `(placement: DockPlacement) => JSX.Element` | none | What an empty center shows. |
@@ -344,6 +372,7 @@ rest of the area.
 | `contentClass`, `contentStyle` | `.content_style(\|s\| ..)` | `string`, `StyleProp<ViewStyle>` | none | Each group's content frame, where its panels show. |
 | `dropIndicatorClass`, `dropIndicatorStyle` | `.drop_indicator_style(\|s\| ..)` | `string`, `StyleProp<ViewStyle>` | none | The drop indicator. |
 | `handleClass`, `handleStyle` | `.handle_style(\|s\| ..)` | `string`, `StyleProp<ViewStyle>` | none | The indicator of each handle, between a split's groups and at each dock's edge; `group-hover:` and `group-active:` follow the handle. It is 1 point across the handle and runs its full length unless it says otherwise, so `bg-border` is a hairline either way; `w-[3px]` / `h-[3px]` thicken it. |
+| `renderHandle` | `.render_handle(\|handle\| ..)` | `(handle: ResizeHandleContext) => JSX.Element` | none | What is inside the indicator of each handle between a split's groups, drawn again when the handle's `state` changes: a grip, an icon ([Resizable](./resizable.md)'s `renderHandle`). The handles at the docks' edges keep the indicator the classes style. |
 | `handleThumbClass`, `handleThumbStyle` | `.handle_thumb_class(..)`, `.handle_thumb_style(\|s\| ..)` | `string`, `StyleProp<ViewStyle>` | none | Each handle's thumb: a grip centered on the line, drawn upright as on a vertical line and turned a quarter on a horizontal one, so one class serves both axes. It stays the same view while the handle is hovered, pressed and dragged, so `group-hover:` and `group-active:` classes transition it (`h-11 w-[3px] rounded-full bg-muted-foreground opacity-0 scale-y-0 transition group-hover:opacity-40 group-hover:scale-y-[0.45] group-active:opacity-90 group-active:scale-y-100`). |
 | `dockClass`, `dockStyle` | `.dock_style(\|s\| ..)` | `string`, `StyleProp<ViewStyle>` | none | Each dock's frame. |
 | `drawerClass`, `drawerStyle` | `.drawer_style(\|s\| ..)` | `string`, `StyleProp<ViewStyle>` | none | Compact: the side docks' drawers. |
@@ -371,6 +400,7 @@ rest of the area.
 | A tab group | a region | `groupClass`, `groupStyle` | |
 | A tab bar | a group | `tabBarClass`, `tabBarStyle` | |
 | A tab | a tab bar | `tabClass`, `tabStyle`; `renderTab` | `selected:`, `active:`, `hover:` |
+| Toolbar | the end of a tab bar | `renderToolbar` | |
 | A group's content | a group | `contentClass`, `contentStyle`; `renderPanel` | |
 | A handle's indicator | between a split's groups, at a dock's edge | `handleClass`, `handleStyle` | `group-hover:`, `group-active:` |
 | A handle's thumb | centered on a handle's line | `handleThumbClass`, `handleThumbStyle` | `group-hover:`, `group-active:` (pressed until the drag ends) |

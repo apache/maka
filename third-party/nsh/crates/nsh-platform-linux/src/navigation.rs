@@ -176,7 +176,7 @@ struct ModalNav {
     paintable: Option<gtk::WidgetPaintable>,
     /// What had the keyboard focus when it was presented: it gets it back
     /// when the modal closes, as a desktop dialog gives it back.
-    restore: Option<glib::WeakRef<gtk::Widget>>,
+    restore: Option<glib::WeakRef<NshView>>,
 }
 
 /// What leaves the screen during a pop.
@@ -1037,6 +1037,7 @@ impl Nav {
         });
         self.order.retain(|&m| m != id);
         let shader = self.shader(surface, id);
+        let window = self.window_of(surface, id);
         let Some(m) = self.modals.get_mut(&id) else {
             return;
         };
@@ -1064,19 +1065,7 @@ impl Nav {
         set_shift(&view, (0.0, 0.0));
         set_fade(&view, 1.0);
         self.scope_focus(surface);
-        if let Some(widget) = restore
-            && let Some(root) = host.root()
-            && root.focus().is_none()
-            && widget.is_ancestor(&host)
-        {
-            // Refused while another modal still covers it. A text field
-            // would select all its text otherwise, and the next key typed
-            // would replace it.
-            match widget.downcast_ref::<gtk::Text>() {
-                Some(text) => text.grab_focus_without_selecting(),
-                None => widget.grab_focus(),
-            };
-        }
+        self.restore_focus(surface, &host, window, restore);
         match image {
             Some(node) => {
                 let layer = Layer::new();
@@ -1183,7 +1172,9 @@ impl Nav {
 
     /// Keeps the keyboard focus inside the newest modal: Tab never reaches
     /// the views under it (`can-focus` off holds for a widget's descendants
-    /// too). Dialogs are not views, and keep theirs.
+    /// too). The modal's own ancestors stay on, whichever view opened it:
+    /// a field inside the modal needs them. Dialogs are not views, and keep
+    /// theirs.
     fn scope_focus(&self, surface: &Surface) {
         // Each window keeps the focus inside its own newest modal.
         for (window, host) in hosts(surface) {
@@ -1194,13 +1185,50 @@ impl Nav {
             let mut child = host.first_child();
             while let Some(c) = child {
                 child = c.next_sibling();
-                if c.is::<NshView>() {
-                    c.set_can_focus(
-                        top.as_ref()
-                            .is_none_or(|t| t.upcast_ref::<gtk::Widget>() == &c),
-                    );
+                if let Some(view) = c.downcast_ref::<NshView>() {
+                    let allowed = top.as_ref().is_none_or(|t| {
+                        let top = t.upcast_ref::<gtk::Widget>();
+                        &c == top || c.is_ancestor(top)
+                    });
+                    view.set_can_focus(allowed);
                 }
             }
+        }
+    }
+
+    /// Gives the keyboard focus back to `restore` if nothing else took it
+    /// meanwhile and it can still take keyboard focus inside the active
+    /// scope (the newest modal still shown in `window`, else `host`).
+    /// Editor caret sinks reject pointer targeting (`can_target == false`)
+    /// but still regain keyboard focus; hidden, zero-sized, disabled, dying
+    /// or detached targets stay unfocused.
+    fn restore_focus(
+        &self,
+        surface: &Surface,
+        host: &NshView,
+        window: NodeId,
+        restore: Option<NshView>,
+    ) {
+        let Some(view) = restore else {
+            return;
+        };
+        let Some(root) = host.root() else {
+            return;
+        };
+        if root.focus().is_some() {
+            return;
+        }
+        let scope = self
+            .newest_in(surface, window)
+            .and_then(|id| self.modals.get(&id).and_then(|m| m.view.clone()))
+            .unwrap_or_else(|| host.clone());
+        if !can_restore_focus(&scope, &view) {
+            return;
+        }
+        if view.kind() == ViewKind::Input {
+            crate::text_input::focus(&view);
+        } else {
+            crate::key_focus::focus(&view);
         }
     }
 
@@ -1256,6 +1284,7 @@ impl Nav {
     /// Sizes modal `id` to the root view of its window and reports it
     /// (with the surface's safe area in the main window).
     fn size_modal(&mut self, surface: &Surface, id: NodeId) {
+        let presenting = self.presenting.contains(&id);
         let window = self.window_of(surface, id);
         let host = crate::window::host_root(surface, window);
         let Some(m) = self.modals.get_mut(&id) else {
@@ -1274,6 +1303,13 @@ impl Nav {
             view.moved();
         }
         let size = frame.size;
+        // Reported once its batch is applied ([`end_batch`]): a window
+        // of the app's own (`Window.open`) is presented first and only
+        // claimed by the batch's commands, and must not be laid out at the
+        // surface's size in between.
+        if presenting {
+            return;
+        }
         report(surface, id, &mut m.reported, size, insets);
     }
 
@@ -1345,14 +1381,8 @@ pub(crate) fn default_back(surface: &Rc<Surface>) {
     });
 }
 
-/// The window of `surface`, when a text field (a `gtk::TextView` or any
-/// `gtk::Editable`) or a web view's page has its keyboard focus.
-#[cfg(feature = "dev")]
-pub(crate) fn focused_field(surface: &Surface) -> Option<gtk::Root> {
-    focused_field_in(&surface.root)
-}
-
-/// [`focused_field`] in the window of root view `host`.
+/// The window of root view `host`, when a text field (a `gtk::TextView` or
+/// any `gtk::Editable`) or a web view's page has its keyboard focus.
 fn focused_field_in(host: &NshView) -> Option<gtk::Root> {
     let root = host.root()?;
     let focus = root.focus()?;
@@ -1360,6 +1390,13 @@ fn focused_field_in(host: &NshView) -> Option<gtk::Root> {
         || focus.is::<gtk::Editable>()
         || crate::native::page_of(&focus).is_some())
     .then_some(root)
+}
+
+/// Whether a text field (or a web view's page) has the keyboard focus in
+/// the window the keys go to: the main window's, or one of the app's own.
+#[cfg(feature = "dev")]
+pub(crate) fn key_window_field_focused(surface: &Surface) -> bool {
+    focused_field_in(&crate::window::key_root(surface)).is_some()
 }
 
 /// A key nothing in the window used: Escape, Alt+Left and the Back key go
@@ -1515,7 +1552,9 @@ pub(crate) fn present(surface: &Rc<Surface>, view: &NshView) {
     if let (Some(window), Some(_)) = (&window, &focus) {
         window.set_focus(None::<&gtk::Widget>);
     }
-    m.restore = focus.map(|f| f.downgrade());
+    m.restore = focus
+        .and_then(|f| enclosing_view(&f, &host))
+        .map(|v| v.downgrade());
     m.view = Some(view.clone());
     m.paintable = Some(gtk::WidgetPaintable::new(Some(view)));
     m.closed = false;
@@ -1536,6 +1575,8 @@ pub(crate) fn present(surface: &Rc<Surface>, view: &NshView) {
 /// it took goes back.
 pub(crate) fn release(surface: &Rc<Surface>, id: NodeId) {
     let mut nav = surface.nav.borrow_mut();
+    let window = nav.window_of(surface, id);
+    let host = nav.host(surface, id);
     nav.order.retain(|&m| m != id);
     nav.presenting.retain(|&m| m != id);
     let restore = nav
@@ -1544,11 +1585,61 @@ pub(crate) fn release(surface: &Rc<Surface>, id: NodeId) {
         .and_then(|m| m.restore)
         .and_then(|w| w.upgrade());
     nav.scope_focus(surface);
-    if let Some(widget) = restore
-        && widget.is_ancestor(&surface.root)
-    {
-        widget.grab_focus();
+    nav.restore_focus(surface, &host, window, restore);
+}
+
+/// The enclosing [`NshView`] of `widget` inside `host` (`None` if detached or
+/// at `host` itself).
+fn enclosing_view(widget: &gtk::Widget, host: &NshView) -> Option<NshView> {
+    let host_widget = host.upcast_ref::<gtk::Widget>();
+    let mut at = Some(widget.clone());
+    while let Some(w) = at {
+        if &w == host_widget {
+            return None;
+        }
+        if let Some(view) = w.downcast_ref::<NshView>() {
+            return Some(view.clone());
+        }
+        at = w.parent();
     }
+    None
+}
+
+/// Whether `view` is attached inside `scope` and eligible for restored
+/// keyboard focus.
+fn can_restore_focus(scope: &NshView, view: &NshView) -> bool {
+    let Ok(s) = view.try_state() else {
+        return false;
+    };
+    if s.frame.size.width <= Points(0.0) || s.frame.size.height <= Points(0.0) {
+        return false;
+    }
+    drop(s);
+    let scope_widget = scope.upcast_ref::<gtk::Widget>();
+    let mut at = Some(view.clone().upcast::<gtk::Widget>());
+    let mut reached_scope = false;
+    while let Some(w) = at {
+        if &w == scope_widget {
+            reached_scope = true;
+            break;
+        }
+        if !w.is_visible() || !w.is_child_visible() || !w.is_sensitive() {
+            return false;
+        }
+        if let Some(v) = w.downcast_ref::<NshView>() {
+            let Ok(s) = v.try_state() else {
+                return false;
+            };
+            if s.style.hidden
+                || s.props.accessibility.state.disabled
+                || s.live.as_ref().is_some_and(|l| l.dying())
+            {
+                return false;
+            }
+        }
+        at = w.parent();
+    }
+    reached_scope
 }
 
 /// A modal was removed: dismiss it.
@@ -1633,6 +1724,7 @@ pub(crate) fn end_batch(surface: &Rc<Surface>) {
         nav.reconcile(surface, stack);
     }
     for id in std::mem::take(&mut nav.presenting) {
+        nav.size_modal(surface, id);
         nav.show_modal(surface, id);
     }
     // The pages and dialogs this batch deleted left through their shaders
@@ -1655,12 +1747,384 @@ mod tests {
     use std::sync::Arc;
 
     use nsh_core::{
-        MountItem,
+        Hsla, InputConfig, MountItem, PointerEvents, ViewProps, ViewStyle,
         shader::{Shader, ShaderLayer},
     };
 
     use super::*;
-    use crate::gtk_test::{self, apply};
+    use crate::gtk_test::{self, apply, frame, show, view, wait_until};
+
+    #[derive(Clone, Copy)]
+    enum TargetKind {
+        Input,
+        NonTargetableInput,
+        Editor,
+        RichEditor,
+        Stop,
+    }
+
+    fn mount_target(surface: &Rc<Surface>, id: NodeId, kind: TargetKind) {
+        let view_kind = match kind {
+            TargetKind::Stop => ViewKind::View,
+            _ => ViewKind::Input,
+        };
+        let mut items = vec![
+            MountItem::Create {
+                id,
+                kind: view_kind,
+            },
+            MountItem::Insert {
+                parent: ROOT_ID,
+                child: id,
+                before: None,
+            },
+            MountItem::Frame {
+                id,
+                frame: frame(0.0, 0.0, 120.0, 32.0),
+            },
+        ];
+        match kind {
+            TargetKind::Input => {
+                items.push(MountItem::Input {
+                    id,
+                    config: Box::new(InputConfig::default()),
+                });
+                items.push(MountItem::InputValue {
+                    id,
+                    text: "hello".into(),
+                    count: 1,
+                });
+            }
+            TargetKind::NonTargetableInput => {
+                items.push(MountItem::ViewProps {
+                    id,
+                    props: Box::new(ViewProps {
+                        pointer_events: PointerEvents::None,
+                        ..Default::default()
+                    }),
+                });
+                items.push(MountItem::Input {
+                    id,
+                    config: Box::new(InputConfig::default()),
+                });
+            }
+            TargetKind::Editor | TargetKind::RichEditor => {
+                items.push(MountItem::ViewProps {
+                    id,
+                    props: Box::new(ViewProps {
+                        pointer_events: PointerEvents::None,
+                        ..Default::default()
+                    }),
+                });
+                let mut config = InputConfig {
+                    multiline: matches!(kind, TargetKind::Editor),
+                    caret_hidden: true,
+                    ..Default::default()
+                };
+                config.style.color = Hsla::transparent_black().into();
+                items.push(MountItem::Input {
+                    id,
+                    config: Box::new(config),
+                });
+            }
+            TargetKind::Stop => {
+                items.push(MountItem::ViewProps {
+                    id,
+                    props: Box::new(ViewProps {
+                        focusable: Some(true),
+                        ..Default::default()
+                    }),
+                });
+            }
+        }
+        apply(surface, &items);
+    }
+
+    fn focus_target(target: &NshView, kind: TargetKind) {
+        match kind {
+            TargetKind::Stop => crate::key_focus::focus(target),
+            _ => crate::text_input::focus(target),
+        }
+    }
+
+    fn has_target_focus(window: &gtk::Window, target: &NshView, kind: TargetKind) -> bool {
+        GtkWindowExt::focus(window).is_some_and(|w| match kind {
+            TargetKind::Stop => &w == target.upcast_ref::<gtk::Widget>(),
+            _ => w.is_ancestor(target),
+        })
+    }
+
+    fn mount_modal(surface: &Rc<Surface>, id: NodeId, config: ModalConfig) {
+        apply(
+            surface,
+            &[
+                MountItem::Create {
+                    id,
+                    kind: ViewKind::Modal,
+                },
+                MountItem::ModalConfig { id, config },
+                MountItem::Frame {
+                    id,
+                    frame: frame(0.0, 0.0, 200.0, 200.0),
+                },
+                MountItem::Insert {
+                    parent: ROOT_ID,
+                    child: id,
+                    before: None,
+                },
+            ],
+        );
+        end_batch(surface);
+    }
+
+    fn close_modal_by_remove(surface: &Rc<Surface>, id: NodeId) {
+        apply(surface, &[MountItem::Remove { id }]);
+        end_batch(surface);
+    }
+
+    #[test]
+    fn modal_close_restores_focus_to_editors_non_targetable_inputs_and_stops() {
+        gtk_test::run(|| {
+            for kind in [
+                TargetKind::Input,
+                TargetKind::NonTargetableInput,
+                TargetKind::Editor,
+                TargetKind::RichEditor,
+                TargetKind::Stop,
+            ] {
+                let surface = gtk_test::surface();
+                mount_target(&surface, 10, kind);
+                let window = show(&surface);
+                let target = view(&surface, 10);
+                assert!(wait_until(|| target.is_mapped()));
+                focus_target(&target, kind);
+                assert!(
+                    wait_until(|| has_target_focus(&window, &target, kind)),
+                    "initial focus should enter target"
+                );
+                if matches!(kind, TargetKind::Input)
+                    && let Some(line) = GtkWindowExt::focus(&window).and_downcast::<gtk::Text>()
+                {
+                    line.set_position(5);
+                    line.select_region(5, 5);
+                }
+
+                mount_modal(&surface, 20, ModalConfig::default());
+                assert!(
+                    wait_until(|| !has_target_focus(&window, &target, kind)),
+                    "presenting a modal drops background focus"
+                );
+
+                close_modal_by_remove(&surface, 20);
+                assert!(
+                    wait_until(|| has_target_focus(&window, &target, kind)),
+                    "closing the modal restores focus"
+                );
+                match GtkWindowExt::focus(&window) {
+                    Some(w) if matches!(kind, TargetKind::Editor) => {
+                        let tv = w.downcast_ref::<gtk::TextView>().expect("editor text view");
+                        assert!(tv.buffer().insert_interactive_at_cursor("!", true));
+                        assert_eq!(
+                            tv.buffer().text(
+                                &tv.buffer().start_iter(),
+                                &tv.buffer().end_iter(),
+                                false
+                            ),
+                            "!"
+                        );
+                    }
+                    Some(w) if !matches!(kind, TargetKind::Stop) => {
+                        let line = w.downcast_ref::<gtk::Text>().expect("line text");
+                        if matches!(kind, TargetKind::Input) {
+                            assert_eq!(line.selection_bounds(), None);
+                        }
+                        let mut pos = line.position();
+                        line.insert_text("!", &mut pos);
+                        assert!(line.text().ends_with('!'));
+                    }
+                    _ => assert!(matches!(kind, TargetKind::Stop)),
+                }
+                window.destroy();
+            }
+        });
+    }
+
+    fn open_modal_over(kind: TargetKind) -> (Rc<Surface>, gtk::Window, NshView) {
+        let surface = gtk_test::surface();
+        mount_target(&surface, 10, kind);
+        let window = show(&surface);
+        let target = view(&surface, 10);
+        assert!(wait_until(|| target.is_mapped()));
+        focus_target(&target, kind);
+        assert!(wait_until(|| has_target_focus(&window, &target, kind)));
+        mount_modal(&surface, 20, ModalConfig::default());
+        (surface, window, target)
+    }
+
+    #[test]
+    fn modal_close_skips_hidden_disabled_dying_zero_sized_and_covered_targets() {
+        gtk_test::run(|| {
+            // Hidden style (`visibility: hidden`), zero-sized (`display: none`),
+            // disabled, dying (exit animation), or still covered by an upper modal.
+            type Case = (&'static str, fn(&Rc<Surface>));
+            let cases: &[Case] = &[
+                ("hidden", |s| {
+                    apply(
+                        s,
+                        &[MountItem::ViewStyle {
+                            id: 10,
+                            style: Box::new(ViewStyle {
+                                hidden: true,
+                                ..Default::default()
+                            }),
+                        }],
+                    );
+                }),
+                ("disabled", |s| {
+                    let mut disabled = ViewProps::default();
+                    disabled.accessibility.state.disabled = true;
+                    apply(
+                        s,
+                        &[MountItem::ViewProps {
+                            id: 10,
+                            props: Box::new(disabled),
+                        }],
+                    );
+                }),
+                ("zero-sized", |s| {
+                    apply(
+                        s,
+                        &[MountItem::Frame {
+                            id: 10,
+                            frame: frame(0.0, 0.0, 0.0, 0.0),
+                        }],
+                    );
+                }),
+                ("covered", |s| {
+                    mount_modal(s, 21, ModalConfig::default());
+                }),
+                ("dying", |s| {
+                    apply(
+                        s,
+                        &[
+                            MountItem::LayoutAnimation(nsh_core::LayoutAnimation::EASE_IN_EASE_OUT),
+                            MountItem::Remove { id: 10 },
+                        ],
+                    );
+                }),
+            ];
+            for (name, mutate) in cases {
+                let (surface, window, _) = open_modal_over(TargetKind::Editor);
+                mutate(&surface);
+                close_modal_by_remove(&surface, 20);
+                assert_eq!(
+                    GtkWindowExt::focus(&window),
+                    None,
+                    "{name} target must stay unfocused"
+                );
+                window.destroy();
+            }
+        });
+    }
+
+    #[test]
+    fn modal_close_preserves_newer_focus_and_supports_escape_and_release() {
+        gtk_test::run(|| {
+            // Focus taken by another control after closing or outside stays put.
+            {
+                let surface = gtk_test::surface();
+                mount_target(&surface, 10, TargetKind::Editor);
+                mount_target(&surface, 11, TargetKind::Input);
+                let window = show(&surface);
+                let first = view(&surface, 10);
+                let other = view(&surface, 11);
+                assert!(wait_until(|| first.is_mapped() && other.is_mapped()));
+                focus_target(&first, TargetKind::Editor);
+                assert!(wait_until(|| has_target_focus(
+                    &window,
+                    &first,
+                    TargetKind::Editor
+                )));
+
+                mount_modal(&surface, 20, ModalConfig::default());
+                // A focus change elsewhere (e.g. from app logic) before close.
+                surface.nav.borrow().scope_focus(&surface);
+                crate::text_input::focus(&other);
+                assert!(wait_until(|| has_target_focus(
+                    &window,
+                    &other,
+                    TargetKind::Input
+                )));
+                close_modal_by_remove(&surface, 20);
+                assert!(has_target_focus(&window, &other, TargetKind::Input));
+                window.destroy();
+            }
+
+            // `closeOnEscape` restores editor focus.
+            {
+                let surface = gtk_test::surface();
+                mount_target(&surface, 10, TargetKind::Editor);
+                let window = show(&surface);
+                let target = view(&surface, 10);
+                assert!(wait_until(|| target.is_mapped()));
+                focus_target(&target, TargetKind::Editor);
+                assert!(wait_until(|| has_target_focus(
+                    &window,
+                    &target,
+                    TargetKind::Editor
+                )));
+                mount_modal(
+                    &surface,
+                    20,
+                    ModalConfig {
+                        close_on_escape: true,
+                        ..Default::default()
+                    },
+                );
+                assert!(key_pressed(
+                    &surface,
+                    gdk::Key::Escape,
+                    gdk::ModifierType::empty()
+                ));
+                assert!(wait_until(|| has_target_focus(
+                    &window,
+                    &target,
+                    TargetKind::Editor
+                )));
+                window.destroy();
+            }
+
+            // `release` restores single-line Input focus without selecting text.
+            {
+                let surface = gtk_test::surface();
+                mount_target(&surface, 10, TargetKind::Input);
+                let window = show(&surface);
+                let target = view(&surface, 10);
+                assert!(wait_until(|| target.is_mapped()));
+                focus_target(&target, TargetKind::Input);
+                assert!(wait_until(|| has_target_focus(
+                    &window,
+                    &target,
+                    TargetKind::Input
+                )));
+                if let Some(line) = GtkWindowExt::focus(&window).and_downcast::<gtk::Text>() {
+                    line.set_position(5);
+                    line.select_region(5, 5);
+                }
+                mount_modal(&surface, 20, ModalConfig::default());
+                release(&surface, 20);
+                assert!(wait_until(|| has_target_focus(
+                    &window,
+                    &target,
+                    TargetKind::Input
+                )));
+                if let Some(line) = GtkWindowExt::focus(&window).and_downcast::<gtk::Text>() {
+                    assert_eq!(line.selection_bounds(), None);
+                }
+                window.destroy();
+            }
+        });
+    }
 
     /// A page's shader goes with the page, at the end of the batch that
     /// deletes it: its leave in that batch (the stack reconciles at the

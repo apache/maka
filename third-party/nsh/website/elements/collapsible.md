@@ -46,6 +46,7 @@ fn storage() -> impl IntoElement {
 ```tsx tabs
 import { mount, signal, Text, View } from "nsh";
 import { Collapsible } from "nsh/base";
+import { Window } from "nsh/desktop";
 
 function App() {
   const open = signal(false);
@@ -69,7 +70,11 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 `Collapsible` comes from [`nsh/base`](../modules/nsh-base.md), the `nsh-base` crate in Rust. The value is the app's:

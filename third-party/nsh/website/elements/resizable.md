@@ -41,6 +41,7 @@ fn workspace() -> impl IntoElement {
 ```tsx tabs
 import { mount, signal, Text } from "nsh";
 import { ResizablePanel, ResizablePanelGroup } from "nsh/base";
+import { Window } from "nsh/desktop";
 
 function App() {
   const sidebar = signal(240);
@@ -60,7 +61,11 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 `ResizablePanelGroup` and `ResizablePanel` come from [`nsh/base`](../modules/nsh-base.md), the `nsh-base` crate in

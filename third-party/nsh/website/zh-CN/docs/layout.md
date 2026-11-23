@@ -106,6 +106,8 @@ view()
 
 在 Rust 中长度是类型化的：`px(16.0)` 是 16 点，`relative(0.5)` 是父元素的 50%，`auto()` 是 `auto`。刻度方法遵循 Tailwind 的间距刻度，每一级 4 点（`.p_4()` 是 16 点，`.gap_0p5()` 是 2 点）。
 
+布局落在屏幕的设备像素上，相邻视图严丝合缝、边缘清晰。半点（`px(0.5)`、`0.5`）在 2x 屏上是一个像素宽的细线；在 1x 屏上，比一个像素还细的视图也至少占一个像素，分隔线不会消失。
+
 不指定尺寸时，视图的大小等于内容（加上内边距），并因默认的 `alignItems: "stretch"` 在父元素的交叉轴上被拉伸。百分比相对于父元素的尺寸（内边距和外边距与 CSS 一样，相对于父元素的宽度）。
 
 `aspectRatio` 根据已知的一边计算另一边：
@@ -227,7 +229,7 @@ const width = signal(0);
 </View>
 ```
 
-frame 的单位是点：Rust 中是 `Bounds<Points>`，TSX 中是 `{ bounds }`，其值是一个 `Bounds`（`{ origin: { x, y }, size: { width, height } }`）。要获取整个窗口的大小，在 Rust 中读取 `window()`，在 TSX 中读取 [`nsh` 的设备 API](../modules/nsh.md#device) 的 `windowSize()`；两者都跟随旋转和窗口缩放变化，读取它们的样式会随窗口改变：
+frame 的单位是点：Rust 中是 `Bounds<Points>`，TSX 中是 `{ bounds }`，其值是一个 `Bounds`（`{ origin: { x, y }, size: { width, height } }`）。要获取整个 surface 的大小，在 Rust 中读取 `window()`，在 TSX 中读取 [`nsh` 的设备 API](../modules/nsh.md#device) 的 `windowSize()`；两者都跟随旋转和缩放变化，读取它们的样式会随 surface 改变。桌面平台上宿主不可见：窗口自己的尺寸是它的 `WindowRef.state()?.contentBounds`（Rust 为 `WindowRef::state()`），跟随该窗口缩放：
 
 ```rust tabs
 view().style_when(|| window().width > px(600.0), |s| s.flex_row())

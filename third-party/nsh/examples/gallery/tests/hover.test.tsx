@@ -4,11 +4,10 @@ import { expect, open, test } from "nsh/test";
 
 // A menu bar is the desktop's: a browser page narrower than 600 points is a
 // phone, whose menus are sheets over a backdrop that covers the bar.
-const desktop = { platform: "macos", width: 1200, height: 800 } as const;
+const desktop = { platform: "macos", width: 1200, height: 800, storage: { lastDemo: "Menu" } } as const;
 
 test("the pad hears the pointer come in, move and leave", async () => {
-  const app = await open("../App.tsx", { platform: "macos" });
-  await app.press("label:Gestures");
+  const app = await open("../App.tsx", { platform: "macos", storage: { lastDemo: "Gestures" } });
   await app.waitFor("Pointer away");
   await app.hover("id:hover-pad");
   // Its middle: half of its width, 50 of its 100 points.

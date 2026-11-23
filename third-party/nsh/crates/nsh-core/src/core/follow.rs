@@ -12,8 +12,16 @@
 //! of its own: following another element changes only its frame, one
 //! `MountItem::Frame`, and a layout that moves or resizes the element
 //! places it again in the same batch. The element may be anywhere inside
-//! the view's parent; its frame there is the frames summed up to the
-//! parent (a scroll view in between counts as unscrolled).
+//! the view's parent, in a list's row too; its frame there is the frames
+//! summed up to the parent, a list cell's being where its list placed it.
+//! A scroll view or list in between counts as the platform last reported
+//! it scrolled, and only the part of the element its viewport shows is
+//! followed (none: the view follows nothing). A report that moved one
+//! places the views again in the commit after it, so a view outside what
+//! scrolls follows it a frame or so behind; one in the same content as the
+//! element (a child of the scroll view) is moved with it natively. A list
+//! cell left spare (its row gone) shows no row: what was in it is not
+//! followed.
 //!
 //! A move to another element runs with its `follow_transition`, as a
 //! layout animation of that frame alone (`layout_scope.rs`): the platform
@@ -23,14 +31,15 @@
 //! again after it was hidden (`display: none`).
 //!
 //! Nothing runs while no view follows an element: the pass returns at
-//! once on an empty `followers`, and `set_frame` only notes a change
-//! while there is one.
+//! once on an empty `followers`, and `set_frame`, scroll reports and
+//! spare cells only note a change while there is one. With followers, the
+//! pass walks from each one's element up to its parent, nothing else.
 
 use super::{Core, Key, Kind, NO_KEY};
 use crate::{
     LayoutTransition, NodeId,
     element::FollowTarget,
-    geometry::{Bounds, Points, px},
+    geometry::{Bounds, Points, Size, bounds, point, px, size},
     text::TextEngine,
 };
 
@@ -178,13 +187,17 @@ impl<M: TextEngine> Core<M> {
         }
     }
 
-    /// The frame of `key` in the coordinates of `ancestor`: its frame and
-    /// those of the views between them summed; `None` when `ancestor` is
-    /// not around it, or a view on the way is not laid out or a root
-    /// (a screen, a list cell placed on its own).
+    /// The frame of `key` in the coordinates of `ancestor`, as it shows:
+    /// its frame and those of the views between them summed, a list cell's
+    /// being where its list placed it in its content, and each scroll view
+    /// or list of its own on the way scrolled to the offset its platform
+    /// reported (zoomed by its zoom scale), cut to its viewport. `None`
+    /// when `ancestor` is not around it, a view on the way is not laid out,
+    /// is a root other than a list cell (a screen, a modal, a fixed view)
+    /// or a spare list cell, or a scroll view on the way shows none of it.
     fn frame_in(&self, key: Key, ancestor: Key) -> Option<Bounds<Points>> {
         let node = &self.nodes[key as usize];
-        if !node.created || !valid(&node.frame) {
+        if !node.created || node.spare || !valid(&node.frame) {
             return None;
         }
         let mut frame = node.frame;
@@ -194,8 +207,15 @@ impl<M: TextEngine> Core<M> {
                 return None;
             }
             let n = &self.nodes[k as usize];
-            if n.is_layout_root() || n.kind == Kind::List || !valid(&n.frame) {
+            if (n.is_layout_root() && n.kind != Kind::Cell) || n.spare || !valid(&n.frame) {
                 return None;
+            }
+            // A list in its parent's viewport has no scroll view: its
+            // cells are where it lies.
+            if let Some(scroll) = n.scroll.as_deref()
+                && !n.list.as_ref().is_some_and(|l| l.parent)
+            {
+                frame = shown(frame, scroll.offset, scroll.zoom, n.frame.size)?;
             }
             frame.origin += n.frame.origin;
             k = n.parent;
@@ -210,6 +230,30 @@ impl<M: TextEngine> Core<M> {
             self.follow_changed = false;
         }
     }
+}
+
+/// `frame`, in the content of a scroll view `viewport` large scrolled to
+/// `offset` and zoomed by `zoom`, in the scroll view's coordinates and cut
+/// to its viewport; `None` when it shows none of it.
+fn shown(
+    frame: Bounds<Points>,
+    offset: (f32, f32),
+    zoom: f32,
+    viewport: Size<Points>,
+) -> Option<Bounds<Points>> {
+    let (x, y) = (
+        frame.origin.x.0 * zoom - offset.0,
+        frame.origin.y.0 * zoom - offset.1,
+    );
+    let (left, top) = (x.max(0.0), y.max(0.0));
+    let right = (x + frame.size.width.0 * zoom).min(viewport.width.0);
+    let bottom = (y + frame.size.height.0 * zoom).min(viewport.height.0);
+    (right >= left && bottom >= top).then(|| {
+        bounds(
+            point(px(left), px(top)),
+            size(px(right - left), px(bottom - top)),
+        )
+    })
 }
 
 /// A frame layout gave (not NaN, as before the first layout).

@@ -882,6 +882,12 @@ impl VideoHost {
             && stream.is_seekable()
         {
             stream.seek((seconds.max(0.0) * 1e6) as i64);
+            // A stream that ended stopped playing: a seek on one the app
+            // has not paused plays it on from there, as the other
+            // platforms do.
+            if self.status.playing.get() && !stream.is_playing() && !self.status.failed.get() {
+                stream.set_playing(true);
+            }
         }
     }
 }

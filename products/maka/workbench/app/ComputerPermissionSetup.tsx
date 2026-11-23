@@ -28,6 +28,7 @@ import {
   View,
   type ViewRef,
 } from 'nsh';
+import { TitleBar } from 'nsh/base';
 import type { SystemPermissionGrant } from '../../../../packages/plugin-sdk/src/generated/runtime';
 import {
   createComputerPermissionSetup,
@@ -39,7 +40,7 @@ import {
 } from './computerPermissionSetupState';
 import { PermissionButton, PermissionRow } from './ComputerPermissionControls';
 import { Icon } from './Icon';
-import { controlsLeft, controlsRight, TITLE_BAR_HEIGHT } from './chrome';
+import { TITLE_BAR_HEIGHT } from './chrome';
 import { LoadingState } from './Loading';
 import { tr } from './locale';
 import { errorText, renderText } from './text';
@@ -292,23 +293,20 @@ export function ComputerPermissionSetup(props: {
       style={{ backgroundColor: C.background }}
     >
       <If when={props.presentation === 'window'}>
-        <View
-          desktop={{ windowDrag: true }}
+        <TitleBar
           style={{
             height: TITLE_BAR_HEIGHT,
-            flexShrink: 0,
-            justifyContent: 'center',
-            paddingLeft: 16 + controlsLeft(true),
-            paddingRight: 16 + controlsRight(true),
             backgroundColor: C.surface,
             borderBottomWidth: 1,
             borderBottomColor: C.line,
           }}
         >
-          <Text style={{ ...bodyTextStyle, fontWeight: '600', color: C.text }}>
-            {tr('permissionSetup.title')}
-          </Text>
-        </View>
+          <View style={{ flex: 1, paddingHorizontal: 16, justifyContent: 'center' }}>
+            <Text style={{ ...bodyTextStyle, fontWeight: '600', color: C.text }}>
+              {tr('permissionSetup.title')}
+            </Text>
+          </View>
+        </TitleBar>
       </If>
       {props.presentation === 'window' ? (
         <Scroll class="flex-1 min-h-0" contentClass="p-6">

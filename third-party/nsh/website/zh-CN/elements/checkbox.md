@@ -39,6 +39,7 @@ fn notify() -> impl IntoElement {
 ```tsx tabs
 import { mount, signal, Text } from "nsh";
 import { Checkbox } from "nsh/base";
+import { Window } from "nsh/desktop";
 
 function App() {
   const on = signal(false);
@@ -55,7 +56,11 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 `Checkbox` 来自 [`nsh/base`](../modules/nsh-base.md)，在 Rust 中是 `nsh-base` crate。值由应用持有：按压时通过 `onChange` 报告下一个值，复选框显示应用传回的 `checked` 和 `indeterminate`。在 Rust 中，`checkbox()` 创建一个复选框，每个属性对应一个设置方法（`.checked(..)`、`.indicator_style(..)`），每个事件对应一个监听方法（`.on_change(..)`），复选框自身用类型化的样式方法，标签用 `.child(..)`；指示器的样式接受跟随复选框的状态方法（`.checked(..)`、`.indeterminate(..)`、`.disabled_style(..)`）。
@@ -72,6 +77,9 @@ mount(App);
 | `checkedStyle` | `.checked_style(\|s\| ..)` | `StyleProp<ViewStyle>` | 无 | 勾选且未禁用时复选框自身的样式，与 `checked:` 类相同。 |
 | `indeterminateStyle` | `.indeterminate_style(\|s\| ..)` | `StyleProp<ViewStyle>` | 无 | 半选且未禁用时复选框自身的样式，与 `indeterminate:` 类相同。 |
 | `accessibilityLabel` | `.accessibility_label(..)` | `string` | 无 | 屏幕阅读器读出的文字：子元素没有说明它选择什么的文字时设置。 |
+| `accessibilityHint` | `.accessibility_hint(..)` | `string` | 无 | 向屏幕阅读器说明改变勾选状态会做什么，与视图的 `accessibilityHint` 相同。 |
+| `invalid` | `.invalid(..)` | `boolean` | `false` | 值没有通过应用的校验（必选却未勾选）：屏幕阅读器每次读到它都会说明无效。不改变外观。 |
+| `accessibilityDescribedBy` | `.accessibility_described_by(..)` | `ViewRef \| null` | 无 | 描述它的元素（错误或帮助文字），每次聚焦时在名称之后读出。同 view 的 `accessibilityDescribedBy`。 |
 | `role` | `.role(..)` | `AccessibilityRole` | `"checkbox"` | 它对屏幕阅读器而言是什么，用于更具体的情形（可勾选的菜单项：`"menuitem"`）。 |
 | `indicatorClass`、`indicatorStyle` | `.indicator_style(\|s\| ..)` | `string`、`StyleProp<ViewStyle>` | 无 | 指示器，显示值的方框。 |
 | `indicator` | `.indicator(..)` | `JSX.Element` | 无 | 指示器里的内容：标记（对勾、短横），由应用按它持有的值显示。 |
@@ -169,6 +177,7 @@ const some = () => selected().length > 0 && !all();
 
 ## 无障碍
 
+- 标签不能说明改变选择的效果时，设置 `accessibilityHint`。它跟随响应式值变化；设为 `undefined` 会移除提示。
 - 复选框对屏幕阅读器而言是一个元素，角色是 `"checkbox"`（或它的 `role`），带有它的值：勾选、未勾选，或半选时的部分选中。指示器和标记是它的部件。它的标签是子元素的文字；没有文字时设置 `accessibilityLabel`。
 - `disabled` 按平台的方式报告（VoiceOver、TalkBack、UI Automation、浏览器的无障碍树）。
 - 在 macOS 和 Web 上，复选框是键盘焦点的一站：Tab 可以到达它，Space 和 Return 切换它，`focus-visible:` 样式显示焦点所在。

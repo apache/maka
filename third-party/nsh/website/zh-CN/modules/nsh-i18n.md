@@ -1,15 +1,15 @@
 ---
 title: nsh/i18n
-description: "应用的翻译（从 locales/ 中按 rust-i18n 格式读取的文件）和应用显示的语言：t、setLocale、availableLocales。"
+description: "应用的翻译（从 locales/ 按 rust-i18n 格式读取的文件或运行时加载的词典）和应用显示的语言：t、setLocale、availableLocales、addTranslations。"
 order: 12.6
 ---
 
 # nsh/i18n
 
-`nsh/i18n` 以用户的语言显示应用的文本。翻译来自应用的 `locales/` 文件，格式与 [rust-i18n](https://github.com/longbridge/rust-i18n) 相同，构建时读取并随 bundle 一起提供；API 也与 rust-i18n 相同，Rust 组件在 `nsh_core::prelude` 中有对应的 `t!`、`set_locale` 和 `available_locales`。[I18n](../docs/i18n.md) 介绍了如何翻译一个应用。
+`nsh/i18n` 以用户的语言显示应用的文本。翻译来自应用的 `locales/` 文件（格式与 [rust-i18n](https://github.com/longbridge/rust-i18n) 相同，构建时读取并随 bundle 一起提供）以及运行时通过 `addTranslations` 合并的词典；API 也与 rust-i18n 相同，Rust 组件在 `nsh_core::prelude` 中有对应的 `t!`、`set_locale`、`available_locales` 和 `add_translations`。[I18n](../docs/i18n.md) 介绍了如何翻译一个应用。
 
 ```tsx
-import { availableLocales, setLocale, t } from "nsh/i18n";
+import { addTranslations, availableLocales, setLocale, t } from "nsh/i18n";
 ```
 
 它在所有平台上可用，包括 Web。
@@ -45,7 +45,22 @@ function setLocale(locale: string | null): void;
 function availableLocales(): string[];
 ```
 
-应用翻译所包含的语言，按文件中的写法排序（`["en", "ja", "zh-CN"]`）。
+应用翻译所包含的语言，按顺序排列（`["en", "ja", "zh-CN"]`）。读取它会订阅翻译的变化，因此在 `addTranslations` 添加新语言时会随更新。
+
+## addTranslations
+
+```ts
+function addTranslations(translations: Record<string, Record<string, string>>): void;
+```
+
+在运行时将 `translations`（按语言分组的 key 与文本映射）合并到当前 surface 的词典中：已有语言只覆盖传入的 key，未涉及的 key 保持不变；新语言会被添加。读取 `t`（以及 Rust 的 `t!`）和 `availableLocales()` 的视图会就地更新，无需重启。若参数不是将语言标签映射到字符串值普通对象的结构，则抛出 `TypeError`。
+
+```tsx
+addTranslations({
+  en: { "settings.title": "Settings" },
+  fr: { hello: "Bonjour" },
+});
+```
 
 ## 文件
 

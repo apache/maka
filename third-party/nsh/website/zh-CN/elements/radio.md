@@ -51,6 +51,7 @@ fn plans() -> impl IntoElement {
 ```tsx tabs
 import { mount, signal, Text, View } from "nsh";
 import { Radio, RadioGroup } from "nsh/base";
+import { Window } from "nsh/desktop";
 
 function App() {
   const plan = signal("basic");
@@ -74,7 +75,11 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 `Radio` 和 `RadioGroup` 来自 [`nsh/base`](../modules/nsh-base.md)，在 Rust 中是 `nsh-base` crate。值由应用持有：分组本身不持有值。每个单选框被告知自己是否勾选；按下未勾选的单选框时通过 `onChange({ checked: true })` 报告，应用设置自己的值，每个单选框显示应用传回的 `checked`。在 Rust 中，`radio()` 和 `radio_group()` 创建它们，每个属性对应一个设置方法（`.checked(..)`），每个事件对应一个监听方法（`.on_change(..)`），外观用类型化的样式方法，内容用 `.child(..)`。

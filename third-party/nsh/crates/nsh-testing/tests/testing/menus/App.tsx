@@ -1,6 +1,6 @@
 import { mount, signal, Text, View } from "nsh";
 import { Input } from "nsh/base";
-import { Menu } from "nsh/desktop";
+import { Window, Menu } from "nsh/desktop";
 
 function App() {
   const chosen = signal("nothing");
@@ -23,4 +23,4 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => <Window id="main">{App}</Window>);

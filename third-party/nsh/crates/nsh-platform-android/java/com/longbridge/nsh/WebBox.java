@@ -1,13 +1,13 @@
 package com.longbridge.nsh;
 
 import android.annotation.SuppressLint;
-import android.app.Activity;
 import android.content.Context;
 import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
 import android.os.Handler;
 import android.os.Looper;
 import android.view.MotionEvent;
+import android.view.View;
 import android.webkit.JavascriptInterface;
 import android.webkit.PermissionRequest;
 import android.webkit.WebChromeClient;
@@ -43,6 +43,8 @@ import org.json.JSONTokener;
 @SuppressLint({"ViewConstructor", "SetJavaScriptEnabled"})
 final class WebBox extends WidgetBox {
     private WebView web;
+    /** Captures sharing this page's texture; ordinary WebViews need no extra layer. */
+    private int captureLayers;
     /** Source kind (0 none, 1 uri, 2 html) and fields; null before the first load. */
     private Object[] source;
     private String injected, injectedBefore, userAgent;
@@ -76,6 +78,7 @@ final class WebBox extends WidgetBox {
     }
 
     private void attach(WebView web) {
+        if (captureLayers > 0) web.setLayerType(View.LAYER_TYPE_HARDWARE, null);
         web.getSettings().setDomStorageEnabled(true);
         web.addJavascriptInterface(new Bridge(), "nsh");
         web.setWebViewClient(new Client());
@@ -87,6 +90,15 @@ final class WebBox extends WidgetBox {
             }
             return !scrollable && e.getActionMasked() == MotionEvent.ACTION_MOVE;
         });
+    }
+
+    /** Lets captures sample the page without replaying its functor at another viewport size. */
+    void retainCaptureLayer() {
+        if (captureLayers++ == 0) web.setLayerType(View.LAYER_TYPE_HARDWARE, null);
+    }
+
+    void releaseCaptureLayer() {
+        if (--captureLayers == 0) web.setLayerType(View.LAYER_TYPE_NONE, null);
     }
 
     /**
@@ -215,56 +227,19 @@ final class WebBox extends WidgetBox {
             }
             if (missing.isEmpty()) {
                 request.grant(resources);
-            } else if (context instanceof Activity) {
-                MediaPermissions.of((Activity) context).ask(missing.toArray(new String[0]), allowed -> {
+            } else if (SystemUi.activity(context) != null) {
+                boolean asked = Permissions.ask(SystemUi.activity(context), missing.toArray(new String[0]), results -> {
+                    boolean allowed = results != null && results.length > 0;
+                    if (results != null) {
+                        for (int r : results) allowed &= r == PackageManager.PERMISSION_GRANTED;
+                    }
                     if (allowed) request.grant(resources);
                     else request.deny();
                 });
+                if (!asked) request.deny();
             } else {
                 request.deny();
             }
-        }
-    }
-
-    /** Asks the user for the system's media permissions, across configuration changes. */
-    @SuppressWarnings("deprecation")
-    public static final class MediaPermissions extends android.app.Fragment {
-        private static final String TAG = "com.longbridge.nsh.WebBox.MediaPermissions";
-        private static final int CODE = 0x4f01;
-        private final List<java.util.function.Consumer<Boolean>> waiting = new ArrayList<>();
-
-        static MediaPermissions of(Activity activity) {
-            android.app.FragmentManager fragments = activity.getFragmentManager();
-            MediaPermissions found = (MediaPermissions) fragments.findFragmentByTag(TAG);
-            if (found == null) {
-                found = new MediaPermissions();
-                fragments.beginTransaction().add(found, TAG).commitNow();
-            }
-            return found;
-        }
-
-        @Override
-        public void onCreate(android.os.Bundle state) {
-            super.onCreate(state);
-            setRetainInstance(true);
-        }
-
-        void ask(String[] permissions, java.util.function.Consumer<Boolean> answer) {
-            waiting.add(answer);
-            if (waiting.size() == 1) requestPermissions(permissions, CODE);
-        }
-
-        @Override
-        public void onRequestPermissionsResult(int code, String[] permissions, int[] results) {
-            if (code != CODE) {
-                super.onRequestPermissionsResult(code, permissions, results);
-                return;
-            }
-            boolean allowed = results.length > 0;
-            for (int r : results) allowed &= r == PackageManager.PERMISSION_GRANTED;
-            List<java.util.function.Consumer<Boolean>> answered = new ArrayList<>(waiting);
-            waiting.clear();
-            for (java.util.function.Consumer<Boolean> a : answered) a.accept(allowed);
         }
     }
 

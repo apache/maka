@@ -7,11 +7,13 @@
 //! into [`activity_type`] in Info.plist's `NSUserActivityTypes`; an embedding
 //! app sets `NshAppView.handoff`). An `http(s)` address is a web page
 //! (`NSUserActivityTypeBrowsingWeb`), which the other device opens in its
-//! browser: the core takes no web links (Universal Links), so the app does
-//! not continue one. Any other address is [`activity_type`], with the URL in
-//! its `userInfo` ([`URL_KEY`]): the app on the other device continues it as
-//! a link ([`continued_url`]). A relative address (no scheme) is the app's
-//! alone and goes nowhere.
+//! browser, or in the app when the app is associated with its domain
+//! (Universal Links): the app continues it as a web link ([`web_link`]),
+//! which the core checks as it checks every link (`nsh_core::url_scheme`).
+//! Any other address is [`activity_type`], with the URL in its `userInfo`
+//! ([`URL_KEY`]): the app on the other device continues it as a link
+//! ([`continued_url`]). A relative address (no scheme) is the app's alone
+//! and goes nowhere.
 
 use objc2::{AnyThread, rc::Retained, runtime::AnyObject};
 use objc2_foundation::{
@@ -134,6 +136,24 @@ pub fn continued_url(activity: &NSUserActivity) -> Option<String> {
     continued_url_of(activity, activity_type().as_deref())
 }
 
+/// The web link an activity the system hands the app carries: the
+/// `webpageURL` of an `NSUserActivityTypeBrowsingWeb` activity, which is
+/// how iOS and macOS open the app with a Universal Link, or continue a web
+/// page of a domain it is associated with. The system hands such an
+/// activity only to an app whose associated domains (`applinks:`) name the
+/// page's domain and whose domain confirms it
+/// (`apple-app-site-association`); the core still checks the URL as every
+/// link (`nsh_core::url_scheme`). `None` for other activities, and for a
+/// page without a URL.
+pub fn web_link(activity: &NSUserActivity) -> Option<String> {
+    // SAFETY: reading an immutable Foundation constant.
+    let kind = unsafe { NSUserActivityTypeBrowsingWeb };
+    if activity.activityType().to_string() != kind.to_string() {
+        return None;
+    }
+    Some(activity.webpageURL()?.absoluteString()?.to_string())
+}
+
 /// [`continued_url`], with `own` as the app's [`activity_type`].
 fn continued_url_of(activity: &NSUserActivity, own: Option<&str>) -> Option<String> {
     if activity.activityType().to_string() != own? {
@@ -173,10 +193,27 @@ mod tests {
                 .as_deref(),
             Some("https://example.com/orders/7?tab=all")
         );
-        // The app does not continue it: the core takes no web links.
+        // It is no address of the app's own: a web link, which the core
+        // checks as every link.
         assert_eq!(continued_url_of(&page, own), None);
+        assert_eq!(
+            web_link(&page).as_deref(),
+            Some("https://example.com/orders/7?tab=all")
+        );
         // It needs no type of the app's.
         assert!(activity_of("https://example.com/", None).is_some());
+    }
+
+    #[test]
+    fn only_a_web_page_carries_a_web_link() {
+        let own = Some("com.example.app.url");
+        let link = activity_of("myapp://orders/7", own).unwrap();
+        assert_eq!(web_link(&link), None);
+        // A web page activity without a page.
+        // SAFETY: reading an immutable Foundation constant.
+        let kind = unsafe { NSUserActivityTypeBrowsingWeb };
+        let empty = NSUserActivity::initWithActivityType(NSUserActivity::alloc(), kind);
+        assert_eq!(web_link(&empty), None);
     }
 
     #[test]

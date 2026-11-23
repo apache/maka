@@ -4,5 +4,6 @@
   "version": "1.2.3",
   "build": 7,
   "schemes": ["compat"],
+  "links": [{ "host": "compat.example", "paths": ["/orders/*"] }],
   "locales": ["de", "zh-CN"]
 }

@@ -21,12 +21,43 @@
     "hourSuffix": "",
     "numeric": [["day", "/"], ["month", "/"], ["year", ""]],
     "shortYear2digit": false,
-    "text": null,
+    "text": [["day", " "], ["month", " "], ["year", ""]],
     "textLong": null,
     "weekdayFirst": true,
     "weekdaySep": ", ",
     "dateTimeSep": " ",
-    "names": null,
+    "names": {
+      "months": [
+        "Januari",
+        "Februari",
+        "Maret",
+        "April",
+        "Mei",
+        "Juni",
+        "Juli",
+        "Agustus",
+        "September",
+        "Oktober",
+        "November",
+        "Desember"
+      ],
+      "monthsShort": [
+        "Jan",
+        "Feb",
+        "Mar",
+        "Apr",
+        "Mei",
+        "Jun",
+        "Jul",
+        "Agu",
+        "Sep",
+        "Okt",
+        "Nov",
+        "Des"
+      ],
+      "weekdays": ["Minggu", "Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu"],
+      "weekdaysShort": ["Min", "Sen", "Sel", "Rab", "Kam", "Jum", "Sab"]
+    },
     "cjk": false
   }
 }

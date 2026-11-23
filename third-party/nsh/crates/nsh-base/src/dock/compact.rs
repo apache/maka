@@ -123,7 +123,9 @@ pub(crate) fn compact_view(a: AreaCx) -> AnyElement {
                                 };
                                 tab(a, id, None, value, tab_refs.clone())
                             },
-                        ))),
+                        )))
+                        // The group shown: the bar's tabs are every group's.
+                        .child(super::tab_group::toolbar(a, current)),
                 )
                 .child(
                     view()

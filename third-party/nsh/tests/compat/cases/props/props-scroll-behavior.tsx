@@ -3,7 +3,7 @@
 // deceleration, bounces, the content inset, the scroll indicator's inset,
 // where it starts, the keyboard on taps and drags, the scroll indicator,
 // sideways scrolling, scrolling turned off and the pull-to-refresh spinner,
-// and how often `onScroll` fires. Its script checks each.
+// how often `onScroll` fires and a mouse wheel's glide and line height. Its script checks each.
 import { Scroll, Text, View, signal } from "nsh";
 
 function App() {
@@ -41,6 +41,8 @@ function App() {
         testID="throttled"
         style={{ height: 100 }}
         scrollEventThrottle={3000}
+        smoothWheel
+        wheelLineHeight={40}
         onScroll={(e) => scrolled.set(`${e.offset.y}`)}
       >
         <View style={{ height: 800 }} />

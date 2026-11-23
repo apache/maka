@@ -31,6 +31,7 @@ fn reminder_time() -> impl IntoElement {
 ```tsx tabs
 import { mount, signal } from "nsh";
 import { TimeField } from "nsh/base";
+import { Window } from "nsh/desktop";
 
 function App() {
   const at = signal("09:30");
@@ -47,7 +48,11 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 `TimeField` 来自 [`nsh/base`](../modules/nsh-base.md)，在 Rust 中是 `nsh-base` crate。在 Rust 中，`time_field()` 创建一个时间输入框，每个属性有一个设置方法（`.value(..)`、`.precision(..)`、`.hour_cycle(..)`），每个事件有一个监听方法（`.on_change(..)`）。它的时间是 `TimeOfDay`，即一个 `chrono::NaiveTime`。
@@ -60,13 +65,15 @@ mount(App);
 
 `precision` 是输入框编辑的最小单位，`"minute"`（默认）或 `"second"`。`hourCycle` 是小时的计法：`"h23"`（默认）从 00 到 23，`"h12"` 从 12 到 11，并在数字后加一个上午/下午段。`localeSettings().hourCycle` 为 `"h11"` 或 `"h12"` 时用户的是 `"h12"`，否则是 `"h23"`（[地区偏好](../docs/device-and-environment.md#地区偏好)）。
 
+`min` 和 `max` 限定时间的范围，与 `value` 一样使用 `"HH:MM"` 或 `"HH:MM:SS"`：营业时间、预约时段。将要越过边界的一步会停在边界上；在边界上再向外走的一步不做任何事（不会回绕出范围）。输入的数字若使时间超出范围，会在这一段输入完成时被限制在最近的边界上（只输入了一半的段在移动选择或离开输入框时被限制到边界）。`min` 晚于 `max` 时两者都不生效。没有它们时，输入框接受任意时间，与以前一样。
+
 <a id="editing"></a>
 
 ## 编辑
 
 总有一段被选中；按键编辑它，与 `gpui-base` 的时间输入框相同：
 
-- Up 和 Down 把这一段加减一，到头后回绕（59 到 00），不会进位到相邻的段。
+- Up 和 Down 把这一段加减一，到头后回绕（59 到 00），不会进位到相邻的段。有 `min` / `max` 时，会越过边界的一步停在边界上。
 - 数字输入到这一段，每段两位：一个不能作为更长数值开头的数字（小时里的 `7`）会直接填完这一段并移到下一段。
 - `a` 和 `p` 设为上午和下午。
 - Backspace 和 Delete 重置这一段。
@@ -81,6 +88,8 @@ mount(App);
 |---|---|---|---|---|
 | `value` | `.value(..)` | `string` | 无 | 时间，由应用持有。 |
 | `defaultValue` | `.default_value(..)` | `string` | `"00:00"` | 没有 `value` 时的初始时间。 |
+| `min` | `.min(..)` | `string` | 无 | 最早的时间；步进停在它上面，输入的时间早于它时会被限制到它。 |
+| `max` | `.max(..)` | `string` | 无 | 最晚的时间；与 `min` 相同，从上方限制。 |
 | `precision` | `.precision(..)` | `"minute" \| "second"` | `"minute"` | 编辑的最小单位。 |
 | `hourCycle` | `.hour_cycle(..)` | `"h23" \| "h12"` | `"h23"` | 小时的计法；`"h12"` 会加一个上午/下午段。 |
 | `disabled` | `.disabled(..)` | `boolean` | `false` | 不接受焦点和编辑；输入框和各段应用 `disabled:` 样式。 |
@@ -127,7 +136,7 @@ Tab 到达输入框时停在选中的段上。然后：
 |---|---|
 | Left / Right | 前一段或后一段。 |
 | Tab / Shift+Tab | 后一段或前一段；在最后一段按 Tab、在第一段按 Shift+Tab 会离开输入框。 |
-| Up / Down | 把这一段加减一，到头回绕。 |
+| Up / Down | 把这一段加减一，到头回绕；越过 `min` / `max` 的一步停在边界上。 |
 | 0 到 9 | 输入到这一段。 |
 | A / P | 上午或下午。 |
 | Backspace、Delete | 重置这一段。 |

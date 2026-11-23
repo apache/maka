@@ -50,6 +50,7 @@ fn files() -> impl IntoElement {
 ```tsx tabs
 import { mount, signal, Text, View } from "nsh";
 import { Tree, type TreeItem } from "nsh/base";
+import { Window } from "nsh/desktop";
 
 const files: TreeItem[] = [
   {
@@ -89,7 +90,11 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 `Tree` 来自 [`nsh/base`](../modules/nsh-base.md)，在 Rust 中是 `nsh-base` crate。应用设置 `expanded` 和 `selected` 时，展开的项目和选中的项目由应用持有，并在 `onExpandedChange` 和 `onSelectedChange` 中更新；不设置时树自己保存状态，从 `defaultExpanded` 和 `defaultSelected` 开始。项目由 `id` 标识，这是应用自己的标识（路径、记录的键），永远不是标签。在 Rust 中由 `tree()` 创建，每个属性有一个 setter（`.items(..)`、`.expanded(..)`、`.render_item(..)`），每个事件有一个监听方法，以及有类型的样式方法。
@@ -122,6 +127,8 @@ mount(App);
 | `reveal` | `.reveal(..)` | `boolean` | `false` | 展开和收起时，项目之后的行以弹簧动画移到新位置，由原生执行。开启“减弱动态效果”时关闭。 |
 | `accessibilityLabel` | `.accessibility_label(..)` | `string` | 无 | 屏幕阅读器对树的称呼（“文件”）。 |
 | `renderItem` | `.render_item(..)` | `(entry: TreeEntry) => JSX.Element` | 无 | 可见行的内容；没有它时行显示项目的标签。 |
+| `header` | `.header(..)` | `JSX.Element` | 无 | 显示在行上方的内容，位于树的滚动视图内，随行一起滚动（固定的项目、标题）。 |
+| `empty` | `.empty(..)` | `JSX.Element` | 无 | 没有任何项目显示时代替行的内容：没有项目，或筛选后没有剩下项目。 |
 | `itemClass`、`itemStyle` | `.item_class(..)`、`.item_style(..)` | `string`、`StyleProp<TextStyle>` | 无 | 每一行：高度、内边距、背景和状态（见下）；其中的文本样式会传给标签。 |
 | `listClass`、`listStyle` | `.list_class(..)`、`.list_style(..)` | `string`、`StyleProp<ViewStyle>` | 无 | 树内承载各行的滚动视图：它的内边距和间距。 |
 | `class`、`style` | 样式方法 | `string`、`StyleProp<ViewStyle>` | 无 | 树本身。给它一个高度（或在有高度的父元素中用 `flex-1`）：行在其中滚动，只创建可见的行。 |
@@ -152,8 +159,10 @@ mount(App);
 |---|---|---|---|
 | 树 | | `class`、`style` | |
 | 列表 | 树 | `listClass`、`listStyle` | |
+| `header` | 列表 | 应用的元素 | |
 | 行 | 列表 | `itemClass`、`itemStyle` | `selected:`、`aria-expanded:`（展开的文件夹）、`focus:`（树拥有键盘焦点时按键作用的行：选中的行；选中项被收起的项目隐藏时，是那个项目的行；没有选中项时是第一行）、`focus-visible:`（树的焦点显示时的这一行：由按键移来，而不是点击）、`disabled:`、`hover:`、`active:` |
 | 行的内容 | 行 | `renderItem` | 在 `itemClass` 中加上 `group` 后的 `group-selected:`、`group-aria-expanded:`、`group-focus:`、`group-focus-visible:`、`group-disabled:` |
+| `empty` | 列表 | 应用的元素 | |
 
 用 `selected:` 表示选中的行，用 `focus-visible:` 表示键盘所在的位置：按键移动后才显示，点击后不显示（见[设计指南](../docs/design-guides.md#交互状态)）。把焦点画在行内（`focus-visible:outline-2 focus-visible:-outline-offset-2`）：列表会裁掉超出两侧的部分。
 

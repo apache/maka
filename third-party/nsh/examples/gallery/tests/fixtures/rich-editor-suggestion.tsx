@@ -1,4 +1,5 @@
 import { mount, signal, Text, View } from "nsh";
+import { Window } from "nsh/desktop";
 import { RichEditor, createRichEditor, setSuggestionOpen, starterKit, starterSchema, suggestion, withMention } from "nsh/base";
 
 // A chat composer's @-mention list: it is open while people match, so
@@ -32,4 +33,4 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => <Window id="main">{App}</Window>);

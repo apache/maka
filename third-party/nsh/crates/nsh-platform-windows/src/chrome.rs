@@ -130,7 +130,7 @@ struct Entry {
 }
 
 /// A context menu: its items and where it shows.
-struct Popup {
+pub(crate) struct Popup {
     items: Arc<[MenuItem]>,
     at: Option<(f32, f32)>,
     /// `at` is the menu's top-end corner rather than its top-start one: it
@@ -187,7 +187,7 @@ pub(crate) struct Chrome {
 impl Chrome {
     /// Captures and consumes this surface's context-menu request. Native
     /// tracking starts later; cancellation still consumes the request.
-    fn app_popup(&self, items: Arc<[MenuItem]>, at: Option<(f32, f32)>) -> Popup {
+    pub(crate) fn app_popup(&self, items: Arc<[MenuItem]>, at: Option<(f32, f32)>) -> Popup {
         Popup {
             items,
             at,
@@ -425,6 +425,8 @@ pub(crate) fn command(surface: &Rc<Surface>, command: &DesktopCommand) {
         // A window of the app's own's ([`crate::app_window`]).
         DesktopCommand::OpenWindow(_) => {}
         DesktopCommand::Quit => quit(surface),
+        // The core applies it; the platform sees it for completeness.
+        DesktopCommand::SetQuitMode(_) => {}
         DesktopCommand::SetQuitOnRequest(quit) => set_quit_on_request(surface, *quit),
         // Additional quit request sources are currently macOS-only.
         DesktopCommand::SetQuitRequestOptions(_) | DesktopCommand::CancelQuitRequest => {}
@@ -449,10 +451,14 @@ pub(crate) fn command(surface: &Rc<Surface>, command: &DesktopCommand) {
                 show_menu_bar(surface);
             }
         }
-        DesktopCommand::PopupMenu { items, at } => popup(
-            surface,
-            c.app_popup(items.clone(), at.map(|p| (p.x.0, p.y.0))),
-        ),
+        DesktopCommand::PopupMenu { items, at } => {
+            let hwnd = surface.hwnd();
+            popup(
+                surface,
+                hwnd,
+                c.app_popup(items.clone(), at.map(|p| (p.x.0, p.y.0))),
+            )
+        }
         DesktopCommand::SetTray(tray) => crate::tray::set(surface, tray.as_ref()),
         DesktopCommand::RegisterGlobalShortcut { id, shortcut } => {
             crate::global_shortcut::register(surface, *id, shortcut);
@@ -474,8 +480,7 @@ fn post_popup(hwnd: HWND) {
 /// own, which must not run while a batch is applied or an event handled.
 /// With icons not in memory, once they have loaded ([`ICON_WAIT`] at most):
 /// loaded, they are in memory when [`show_popup`] asks for them.
-fn popup(surface: &Surface, menu: Popup) {
-    let hwnd = surface.hwnd();
+pub(crate) fn popup(surface: &Surface, hwnd: HWND, menu: Popup) {
     let mut sources = Vec::new();
     MenuItem::each_icon(&menu.items, &mut |icon| sources.push(icon.clone()));
     *surface.chrome.popup.borrow_mut() = Some(menu);
@@ -568,6 +573,7 @@ pub(crate) fn popup_actions_at(
         .collect();
     popup(
         surface,
+        surface.hwnd(),
         Popup {
             items: items.into(),
             at,
@@ -585,6 +591,7 @@ pub(crate) fn popup_tray(surface: &Surface, items: Arc<[MenuItem]>, at: (f32, f3
     surface.chrome.context_area.take();
     popup(
         surface,
+        surface.hwnd(),
         Popup {
             items,
             at: Some(at),
@@ -2384,7 +2391,7 @@ fn choose(surface: &Rc<Surface>, id: u32, role: Option<MenuRole>, area: Option<&
 }
 
 /// `WM_NSH_MENU`: shows the context menu asked for.
-pub(crate) fn show_popup(surface: &Rc<Surface>) {
+pub(crate) fn show_popup(surface: &Rc<Surface>, hwnd: HWND) {
     let Some(Popup {
         items,
         at,
@@ -2396,7 +2403,6 @@ pub(crate) fn show_popup(surface: &Rc<Surface>) {
     else {
         return;
     };
-    let hwnd = surface.hwnd();
     let mut entries = Vec::new();
     let mut icons = Vec::new();
     let bitmaps: Rc<RefCell<IconBitmaps>> = Rc::default();
@@ -2418,7 +2424,7 @@ pub(crate) fn show_popup(surface: &Rc<Surface>) {
         let mut p = POINT::default();
         match at {
             Some((x, y)) => {
-                let scale = surface.scale();
+                let scale = scale_of(surface, hwnd);
                 p.x = (x * scale).round() as i32;
                 p.y = (y * scale).round() as i32;
                 let _ = windows::Win32::Graphics::Gdi::ClientToScreen(hwnd, &mut p);

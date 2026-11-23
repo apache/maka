@@ -20,6 +20,10 @@
 //!   `"HH:MM:SS"` (24-hour, whatever the field shows), or the field's own
 //!   from `defaultValue`. A value the app sets is shown unless it is the
 //!   user's change coming back (a key or more behind, as `OtpInput`'s).
+//! - **`min` and `max`** bound the time (both optional). A step that would
+//!   go past a bound lands on it, and a typed time is held to the range
+//!   when its segment completes (or the field is left). A `min` after
+//!   `max` leaves both out.
 
 use std::rc::Rc;
 
@@ -169,6 +173,9 @@ pub(crate) struct SegmentEditor {
     pub(crate) segment: TimeSegment,
     /// The first digit typed into the selected segment, awaiting a second.
     pending_digit: Option<u32>,
+    /// The earliest and latest times a step or a typed time stays within.
+    min: Option<NaiveTime>,
+    max: Option<NaiveTime>,
 }
 
 impl SegmentEditor {
@@ -179,7 +186,38 @@ impl SegmentEditor {
             hour_cycle,
             segment: TimeSegment::Hour,
             pending_digit: None,
+            min: None,
+            max: None,
         }
+    }
+
+    /// Sets the bounds a step or a typed time stays within, `min` not after
+    /// `max` (the field leaves both out when it is).
+    pub(crate) fn set_bounds(&mut self, min: Option<NaiveTime>, max: Option<NaiveTime>) {
+        self.min = min;
+        self.max = max;
+    }
+
+    /// `time` held to the bounds, at the field's precision.
+    fn held(&self, time: NaiveTime) -> NaiveTime {
+        let time = self.precision.truncate(time);
+        let time = match (self.min, self.max) {
+            (Some(min), Some(max)) => time.max(min).min(max),
+            (Some(min), None) => time.max(min),
+            (None, Some(max)) => time.min(max),
+            (None, None) => time,
+        };
+        self.precision.truncate(time)
+    }
+
+    /// Holds the time to the bounds: a typed time's commit, or a step past
+    /// one.
+    pub(crate) fn hold(&mut self) -> bool {
+        self.pending_digit = None;
+        let time = self.held(self.time);
+        let changed = time != self.time;
+        self.time = time;
+        changed
     }
 
     /// The segments shown, in reading order.
@@ -283,13 +321,24 @@ impl SegmentEditor {
         self.select_segment(*next)
     }
 
-    /// Steps the selected segment by `delta`, wrapping within it.
+    /// Steps the selected segment by `delta`, wrapping within it; a step
+    /// past a bound lands on it.
     pub(crate) fn step(&mut self, delta: i32) -> bool {
         self.pending_digit = None;
+        // At a bound, a step out of the range does nothing: the segment
+        // would otherwise wrap (09:00's minute down to 09:59) inside it.
+        if (delta > 0 && self.max.is_some_and(|max| self.time >= max))
+            || (delta < 0 && self.min.is_some_and(|min| self.time <= min))
+        {
+            return false;
+        }
         let (min, max) = self.bounds(self.segment);
         let span = (max - min + 1) as i32;
         let value = (self.value(self.segment) as i32 - min as i32 + delta).rem_euclid(span);
-        self.replace_segment(value as u32 + min)
+        let before = self.time;
+        self.replace_segment(value as u32 + min);
+        self.hold();
+        self.time != before
     }
 
     pub(crate) fn input_digit(&mut self, digit: u32) -> bool {
@@ -307,11 +356,15 @@ impl SegmentEditor {
         if !complete {
             self.pending_digit = Some(digit);
         }
-        let changed = self.replace_segment(value);
+        let before = self.time;
+        self.replace_segment(value);
         if complete {
+            // A digit held awaiting its second is no time yet: only a
+            // complete segment's time is held to the bounds.
+            self.hold();
             self.move_segment(1);
         }
-        changed
+        self.time != before
     }
 
     /// `a` or `p` typed into the AM / PM segment.
@@ -319,13 +372,19 @@ impl SegmentEditor {
         if self.segment != TimeSegment::Period {
             return false;
         }
-        self.replace_segment(pm as u32)
+        let before = self.time;
+        self.replace_segment(pm as u32);
+        self.hold();
+        self.time != before
     }
 
     /// Resets the selected segment: zero, or `12` / AM on a 12-hour clock.
     pub(crate) fn clear_segment(&mut self) -> bool {
         self.pending_digit = None;
-        self.replace_segment(0)
+        let before = self.time;
+        self.replace_segment(0);
+        self.hold();
+        self.time != before
     }
 
     fn replace_segment(&mut self, value: u32) -> bool {
@@ -345,6 +404,12 @@ pub struct TimeFieldProps {
     /// The time at first, while `value` is not set (default `00:00`).
     #[prop(default)]
     pub default_value: Prop<TimeOfDay>,
+    /// The earliest time (default none), as `value` writes one. A step that
+    /// would go before it lands on it, and a typed time before it is held
+    /// to it. Ignored with a `max` earlier than it.
+    pub min: Prop<Option<TimeOfDay>>,
+    /// The latest time (default none). As `min`, from above.
+    pub max: Prop<Option<TimeOfDay>>,
     /// The smallest unit it edits (default `"minute"`).
     #[prop(default)]
     pub precision: Prop<TimePrecision>,
@@ -389,6 +454,8 @@ pub enum TimeFieldEvent {
 /// `DatePicker` passes on.
 #[derive(Clone, Copy)]
 pub(crate) struct FieldConfig {
+    pub(crate) min: Prop<Option<TimeOfDay>>,
+    pub(crate) max: Prop<Option<TimeOfDay>>,
     pub(crate) precision: Prop<TimePrecision>,
     pub(crate) hour_cycle: Prop<HourCycle>,
     pub(crate) disabled: Prop<bool>,
@@ -405,6 +472,16 @@ type Edit = Rc<dyn Fn(&dyn Fn(&mut SegmentEditor) -> bool)>;
 
 /// How many reported times the field waits to see come back as `value`.
 const ECHOES: usize = 16;
+
+/// The bounds a field's edits stay within: none for a `min` after `max`.
+fn bounds(config: FieldConfig) -> (Option<NaiveTime>, Option<NaiveTime>) {
+    let min = config.min.get();
+    let max = config.max.get();
+    match (min, max) {
+        (Some(min), Some(max)) if max.0 < min.0 => (None, None),
+        _ => (min.map(|t| t.0), max.map(|t| t.0)),
+    }
+}
 
 /// A time field's content: its segments over its native field, showing
 /// `time` (tracked; the app's) and reporting the user's edits to
@@ -459,6 +536,8 @@ pub(crate) fn field(
 
     let edit: Edit = Rc::new(move |f| {
         let mut e = editor.get_untracked();
+        let (min, max) = untracked(|| bounds(config));
+        e.set_bounds(min, max);
         let did = f(&mut e);
         editor.set(e);
         if did {
@@ -518,14 +597,20 @@ pub(crate) fn field(
         bind_key("up", true, move || up(&|e| e.step(1)));
         let down = keys_edit.clone();
         bind_key("down", true, move || down(&|e| e.step(-1)));
+        let left = keys_edit.clone();
         bind_key("left", true, move || {
-            editor.update(|e| {
+            left(&|e| {
+                let held = e.hold();
                 e.move_segment(-1);
+                held
             })
         });
+        let right = keys_edit.clone();
         bind_key("right", true, move || {
-            editor.update(|e| {
+            right(&|e| {
+                let held = e.hold();
                 e.move_segment(1);
+                held
             })
         });
     });
@@ -541,27 +626,36 @@ pub(crate) fn field(
             )
         })
     });
+    let tab_edit = edit.clone();
     effect(move || {
         if !focused.get() || config.disabled.get() {
             return;
         }
         let (first, last) = ends.get();
         if !last {
+            let next = tab_edit.clone();
             bind_key("tab", false, move || {
-                editor.update(|e| {
+                next(&|e| {
+                    let held = e.hold();
                     e.move_segment(1);
+                    held
                 })
             });
         }
         if !first {
+            let previous = tab_edit.clone();
             bind_key("shift+tab", false, move || {
-                editor.update(|e| {
+                previous(&|e| {
+                    let held = e.hold();
                     e.move_segment(-1);
+                    held
                 })
             });
         }
     });
 
+    // Leaving the field holds a half-typed time to the bounds.
+    let commit = edit.clone();
     let native = input()
         .element_ref(&field_ref)
         .absolute()
@@ -586,7 +680,10 @@ pub(crate) fn field(
             }
         })
         .on_focus(move || focused.set(true))
-        .on_blur(move || focused.set(false))
+        .on_blur(move || {
+            focused.set(false);
+            commit(&SegmentEditor::hold);
+        })
         .into_element();
 
     // The segments change with the precision and the hour cycle only: an
@@ -672,8 +769,10 @@ fn segment_view(
                     e.input_period(pm)
                 });
             } else {
-                editor.update(|e| {
+                edit(&|e| {
+                    let held = e.hold();
                     e.select_segment(segment);
+                    held
                 });
             }
             field_ref.focus();
@@ -695,10 +794,10 @@ fn segment_view(
 /// `hourCycle="h12"` AM / PM, separated by `:`. The keys edit the selected
 /// segment (digits, Up / Down, `a` / `p`, Backspace) and move between them
 /// (Left / Right, Tab); a press selects one. The time is `value` and
-/// `onChange` (or the field's own, from `defaultValue`). It looks like
-/// nothing: the app's `class` and `style` lay out the field (`flex-row`),
-/// the parts style the segments and separators, or `renderSegment` draws
-/// them.
+/// `onChange` (or the field's own, from `defaultValue`), within the optional
+/// `min` and `max`. It looks like nothing: the app's `class` and `style` lay
+/// out the field (`flex-row`), the parts style the segments and separators,
+/// or `renderSegment` draws them.
 #[component]
 pub fn TimeField(props: TimeFieldProps, cx: Scope<TimeFieldEvent>) -> impl IntoElement {
     let own = signal(props.default_value.get_untracked().0);
@@ -710,6 +809,8 @@ pub fn TimeField(props: TimeFieldProps, cx: Scope<TimeFieldEvent>) -> impl IntoE
         cx.emit(TimeFieldEvent::Change(TimeOfDay(t)));
     });
     let config = FieldConfig {
+        min: props.min,
+        max: props.max,
         precision: props.precision,
         hour_cycle: props.hour_cycle,
         disabled: props.disabled,

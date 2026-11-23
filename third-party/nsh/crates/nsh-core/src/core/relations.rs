@@ -25,13 +25,22 @@
 //! gone or has no text (ARIA's `aria-describedby` wins over
 //! `aria-description` alike).
 //!
+//! A view floating over a scroll view names it the same way
+//! (`ios={{ scrollEdgeElement }}`): the platform gets the scroll view's id
+//! in [`crate::ViewProps::scroll_edge_element`], only while it is a
+//! rendered scroll view.
+//!
 //! Nothing runs while no view names another: the pass returns at once on
 //! an empty `relators`.
 
 use std::sync::Arc;
 
 use super::{Core, Key, Kind, dirty};
-use crate::{NodeId, element::ElementTarget, text::TextEngine};
+use crate::{
+    NodeId, ScrollEdgeElement,
+    element::{ElementTarget, ScrollEdgeTarget},
+    text::TextEngine,
+};
 
 /// What one view names.
 #[derive(Debug)]
@@ -45,11 +54,16 @@ pub(super) struct Relator {
     described_by: Option<ElementTarget>,
     /// Its own `accessibilityDescription`, while `described_by` is set.
     own_description: Option<Arc<str>>,
+    /// Its `ios={{ scrollEdgeElement }}`.
+    scroll_edge: Option<ScrollEdgeTarget>,
 }
 
 impl Relator {
     fn is_empty(&self) -> bool {
-        self.active_descendant.is_none() && self.controls.is_none() && self.described_by.is_none()
+        self.active_descendant.is_none()
+            && self.controls.is_none()
+            && self.described_by.is_none()
+            && self.scroll_edge.is_none()
     }
 }
 
@@ -69,9 +83,50 @@ struct Resolved {
     described_by: Option<NodeId>,
     /// Its description, while it names an element describing it.
     description: Option<Option<Arc<str>>>,
+    scroll_edge: Option<ScrollEdgeElement>,
 }
 
 impl<M: TextEngine> Core<M> {
+    /// The relations of view `key`, made when `make` (else `None` while it
+    /// has none).
+    fn relator(&mut self, key: Key, make: bool) -> Option<&mut Relator> {
+        match self.relators.iter().position(|r| r.key == key) {
+            Some(i) => Some(&mut self.relators[i]),
+            None if !make => None,
+            None => {
+                self.relators.push(Relator {
+                    key,
+                    active_descendant: None,
+                    controls: None,
+                    described_by: None,
+                    own_description: None,
+                    scroll_edge: None,
+                });
+                self.relators.last_mut()
+            }
+        }
+    }
+
+    /// Drops view `key` from the pass once it names nothing: its props
+    /// lose the ids now, as it leaves the pass.
+    fn drop_cleared(&mut self, key: Key) {
+        if self.relators.iter().any(|r| r.key == key && r.is_empty()) {
+            self.relators.retain(|r| r.key != key);
+            self.apply_relations(key, Resolved::default());
+        }
+    }
+
+    /// View `key` floats over the scroll view `target` names (or over
+    /// none).
+    pub(super) fn set_scroll_edge(&mut self, key: Key, target: Option<ScrollEdgeTarget>) {
+        let make = target.is_some();
+        let Some(relator) = self.relator(key, make) else {
+            return;
+        };
+        relator.scroll_edge = target;
+        self.drop_cleared(key);
+    }
+
     /// View `key` names `target` (or nothing) by `relation`.
     pub(super) fn set_relation(
         &mut self,
@@ -83,20 +138,8 @@ impl<M: TextEngine> Core<M> {
             .props
             .as_ref()
             .and_then(|p| p.accessibility.description.clone());
-        let at = self.relators.iter().position(|r| r.key == key);
-        let relator = match at {
-            Some(i) => &mut self.relators[i],
-            None if target.is_none() => return,
-            None => {
-                self.relators.push(Relator {
-                    key,
-                    active_descendant: None,
-                    controls: None,
-                    described_by: None,
-                    own_description: None,
-                });
-                self.relators.last_mut().unwrap()
-            }
+        let Some(relator) = self.relator(key, target.is_some()) else {
+            return;
         };
         let mut restore = None;
         match relation {
@@ -121,11 +164,7 @@ impl<M: TextEngine> Core<M> {
                 },
             );
         }
-        if self.relators.iter().any(|r| r.key == key && r.is_empty()) {
-            // Cleared: its props lose the ids now, as it leaves the pass.
-            self.relators.retain(|r| r.key != key);
-            self.apply_relations(key, Resolved::default());
-        }
+        self.drop_cleared(key);
     }
 
     /// View `key`'s own `accessibilityDescription`: kept apart while it
@@ -175,6 +214,19 @@ impl<M: TextEngine> Core<M> {
         // Only while it is on screen: a region keeps an element it took
         // out until it lets it go, and its text is no longer there.
         let describing = named(&r.described_by).filter(|&(k, _)| self.in_tree(k));
+        // Once its scroll view has a native scroll view of its own: a
+        // culled one is made later, in the batch's next round, which sends
+        // it then; a list in its parent's viewport scrolls with that view.
+        let scroll_edge = r.scroll_edge.as_ref().and_then(|t| {
+            let (k, scroll_view) = named(&Some(t.scroll_view.clone()))?;
+            let node = &self.nodes[k as usize];
+            let scrolls = matches!(node.kind, Kind::Scroll | Kind::List)
+                && node.list.as_ref().is_none_or(|l| !l.parent);
+            (node.created && scrolls && self.in_tree(k)).then_some(ScrollEdgeElement {
+                scroll_view,
+                edge: t.edge,
+            })
+        });
         Resolved {
             active_descendant: named(&r.active_descendant).map(|(_, id)| id),
             controls: named(&r.controls).map(|(_, id)| id),
@@ -184,6 +236,7 @@ impl<M: TextEngine> Core<M> {
                     .and_then(|(k, _)| self.describing_text(k))
                     .or_else(|| r.own_description.clone())
             }),
+            scroll_edge,
         }
     }
 
@@ -244,6 +297,7 @@ impl<M: TextEngine> Core<M> {
 
     fn apply_relations(&mut self, key: Key, resolved: Resolved) {
         let node = &mut self.nodes[key as usize];
+        let scroll_edge = node.props.as_ref().and_then(|p| p.scroll_edge_element);
         let a = node.props.as_ref().map(|p| &p.accessibility);
         let current = Resolved {
             active_descendant: a.and_then(|a| a.active_descendant),
@@ -253,11 +307,14 @@ impl<M: TextEngine> Core<M> {
                 .description
                 .as_ref()
                 .map(|_| a.and_then(|a| a.description.clone())),
+            scroll_edge,
         };
         if current == resolved {
             return;
         }
-        let a = &mut node.props.get_or_insert_default().accessibility;
+        let props = node.props.get_or_insert_default();
+        props.scroll_edge_element = resolved.scroll_edge;
+        let a = &mut props.accessibility;
         a.active_descendant = resolved.active_descendant;
         a.controls = resolved.controls;
         a.described_by = resolved.described_by;

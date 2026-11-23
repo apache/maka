@@ -1,6 +1,7 @@
 //! Benchmark of Rust components against the same component written in TSX:
-//! the first frame of 200 Buttons, one update of all their titles, and
-//! scrolling a recycled list with a Button per row. The Rust Button is the
+//! the first frame of 200 Buttons, one update of all their titles,
+//! scrolling a recycled list with a Button per row, and presses delivered
+//! to a Button's `onPress`. The Rust Button is the
 //! tests' own (`test/ui`), `TsButton.tsx` draws the same with the default
 //! theme; the screens are written into a temporary directory.
 //!
@@ -58,6 +59,14 @@ export function Grid(props: { Button: Component<BenchButtonProps> }) {
       </View>
     </Scroll>
   );
+}
+
+/** One Button whose presses count (`presses`): a Rust Button's press is
+ * a component event delivered to its `onPress`. */
+export function Press(props: { Button: Component<BenchButtonProps> }) {
+  const Button = props.Button;
+  (globalThis as any).presses = 0;
+  return <Button title="Press" onPress={() => (globalThis as any).presses++} />;
 }
 
 const items = Array.from({ length: 1000 }, (_, i) => i);
@@ -124,8 +133,9 @@ export function Button(props: ButtonProps): JSX.Element {
 }
 "#;
 
-/// The entries: a screen (`Grid`, `Rows`) with a Button (`Rust`, `Ts`).
-const ENTRIES: [(&str, &str); 4] = [
+/// The entries: a screen (`Grid`, `Rows`, `Press`) with a Button (`Rust`,
+/// `Ts`).
+const ENTRIES: [(&str, &str); 6] = [
     (
         "GridRust.tsx",
         "import { Button } from \"test/ui\";\nimport { Grid as Screen } from \"./buttons\";",
@@ -141,6 +151,14 @@ const ENTRIES: [(&str, &str); 4] = [
     (
         "RowsTs.tsx",
         "import { Button } from \"./TsButton\";\nimport { Rows as Screen } from \"./buttons\";",
+    ),
+    (
+        "PressRust.tsx",
+        "import { Button } from \"test/ui\";\nimport { Press as Screen } from \"./buttons\";",
+    ),
+    (
+        "PressTs.tsx",
+        "import { Button } from \"./TsButton\";\nimport { Press as Screen } from \"./buttons\";",
     ),
 ];
 
@@ -322,6 +340,54 @@ fn rows(entry: &str) {
     );
 }
 
+/// Presses of the Button: the Rust Button's press runs its handler in the
+/// core, whose component event JS delivers to `onPress`; the TSX Button's
+/// goes to its view's handler in JS.
+fn press(entry: &str) {
+    println!("{entry}");
+    let (mut app, items) = first_frame(entry);
+    let target = items
+        .iter()
+        .find_map(|i| match i {
+            MountItem::Events { id, events } if events.contains(EventKind::Press) => Some(*id),
+            _ => None,
+        })
+        .unwrap();
+    // Timed over all the presses (one press is a few ticks of the clock).
+    const PRESSES: u32 = 2000;
+    let mut events = Vec::new();
+    let (mut js, mut native) = (Duration::ZERO, Duration::ZERO);
+    for _ in 0..PRESSES {
+        let t = Instant::now();
+        let in_core = app
+            .core
+            .component_event(target, EventKind::Press, &EventPayload::None);
+        app.core.take_events(&mut events);
+        native += t.elapsed();
+        let t = Instant::now();
+        if !in_core {
+            app.host
+                .dispatch_event(target, EventKind::Press, &EventPayload::None);
+        }
+        for event in events.drain(..) {
+            app.host.deliver(event);
+        }
+        app.host.run_jobs();
+        js += t.elapsed();
+    }
+    assert!(
+        app.host
+            .eval_script("presses", &format!("presses === {PRESSES}"))
+            .unwrap(),
+        "{entry}: every press reached onPress"
+    );
+    println!(
+        "  press: js {:?}/press, core {:?}/press",
+        js / PRESSES,
+        native / PRESSES
+    );
+}
+
 #[test]
 #[ignore]
 fn bench_components() {
@@ -330,6 +396,9 @@ fn bench_components() {
     }
     for entry in ["RowsRust.tsx", "RowsTs.tsx"] {
         rows(entry);
+    }
+    for entry in ["PressRust.tsx", "PressTs.tsx"] {
+        press(entry);
     }
 }
 

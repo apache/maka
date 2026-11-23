@@ -1,4 +1,5 @@
 import { mount, signal, Scroll, Text, View } from "nsh";
+import { Window } from "nsh/desktop";
 
 // A scroll view whose content overflows its viewport (864 points of
 // content in 744), over a bar the app draws below it. The button
@@ -47,4 +48,4 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => <Window id="main">{App}</Window>);

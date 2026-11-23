@@ -44,6 +44,7 @@ function App() {
         <View
           testID="target"
           disabled={disabled()}
+          class="hover:border-2 focus:border-4 active:border-8"
           style={{ height: 40, backgroundColor: "#00ff00" }}
           activeStyle={{ backgroundColor: "#ff0000" }}
           hoverStyle={{ backgroundColor: "#0000ff" }}

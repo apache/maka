@@ -3,6 +3,7 @@
 // `id:case-<case>` (a one-point view over the corner, out of the layout);
 // the steps after it are that case's.
 import { type JSX, View, mount, signal } from "nsh";
+import { Window } from "nsh/desktop";
 import PropsGestureValues from "./props-gesture-values";
 import PropsInputConfig from "./props-input-config";
 import PropsListEvents from "./props-list-events";
@@ -19,7 +20,9 @@ import PropsMediaVideo from "./props-media-video";
 import PropsMediaWebview from "./props-media-webview";
 import PropsRefreshIndicator from "./props-refresh-indicator";
 import PropsScrollBehavior from "./props-scroll-behavior";
+import PropsScrollEdgeElement from "./props-scroll-edge-element";
 import PropsScrollZoom from "./props-scroll-zoom";
+import PropsTextCopy from "./props-text-copy";
 import PropsTextLines from "./props-text-lines";
 import PropsViewAccessibility from "./props-view-accessibility";
 import PropsViewStyling from "./props-view-styling";
@@ -42,7 +45,9 @@ const cases: Record<string, () => JSX.Element> = {
   "props-media-webview": PropsMediaWebview,
   "props-refresh-indicator": PropsRefreshIndicator,
   "props-scroll-behavior": PropsScrollBehavior,
+  "props-scroll-edge-element": PropsScrollEdgeElement,
   "props-scroll-zoom": PropsScrollZoom,
+  "props-text-copy": PropsTextCopy,
   "props-text-lines": PropsTextLines,
   "props-view-accessibility": PropsViewAccessibility,
   "props-view-styling": PropsViewStyling,
@@ -50,7 +55,7 @@ const cases: Record<string, () => JSX.Element> = {
 };
 const shown = signal("");
 
-mount(() => (
+mount(() => <Window id="main">{() => (
   <>
     {() => {
       const Case = cases[shown()];
@@ -62,4 +67,4 @@ mount(() => (
       ))}
     </View>
   </>
-));
+)}</Window>);

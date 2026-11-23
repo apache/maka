@@ -14,6 +14,29 @@ const DECAY_REST_SPEED: f32 = 0.0005;
 /// ([`Running::deadline`]): it settles within this of its real end.
 pub(crate) const CHECK_SECONDS: f64 = 0.1;
 
+/// A display frame that comes more than this after an animation's first
+/// step (seconds), at most two of its own frames at a capped rate, finds
+/// the UI thread was held in between: see [`first_frame_stall`].
+const FIRST_FRAME_STALL: f64 = 0.05;
+
+/// The time an animation has moved by the frame after a stalled first one
+/// (seconds): one frame at 60 Hz.
+const FIRST_FRAME_STEP: f64 = 1.0 / 60.0;
+
+/// How far to move an animation's start whose first step was at `first`
+/// when the next display frame comes at `now`: an animation starts with the
+/// change that shows it, and the work committed with that change (views
+/// mounted and laid out) can hold the UI thread right after the first
+/// step. Counted from that step, the animation would be well along on the
+/// first frame anyone sees; it counts from that frame instead, as a Core
+/// Animation animation begins once its transaction commits. Only display
+/// frames count (a hidden window's deadlines do not), and only the first.
+pub(crate) fn first_frame_stall(first: f64, now: f64, frame_rate: Option<f32>) -> Option<f64> {
+    let limit = FIRST_FRAME_STALL.max(frame_rate.map_or(0.0, |rate| 2.0 / f64::from(rate)));
+    let gap = now - first;
+    (gap > limit).then_some(gap - FIRST_FRAME_STEP)
+}
+
 /// One animation running on a value.
 #[derive(Debug, Clone)]
 pub(crate) struct Running {
@@ -25,6 +48,9 @@ pub(crate) struct Running {
     start: Option<f64>,
     /// The frame time (seconds) of the last step.
     last: Option<f64>,
+    /// Its start came from its own first step, and no display frame has
+    /// followed it yet ([`Running::commit_first_frame`]).
+    first_frame: bool,
 }
 
 impl Running {
@@ -60,6 +86,31 @@ impl Running {
             velocity,
             start: None,
             last: None,
+            first_frame: false,
+        }
+    }
+
+    /// Moves its start `by` seconds later (a step of a composite animation
+    /// that counts from its first display frame).
+    pub(crate) fn shift(&mut self, by: f64) {
+        self.start = self.start.map(|t| t + by);
+        self.last = self.last.map(|t| t + by);
+    }
+
+    /// A display frame at `now` comes after its first step: when that took
+    /// long ([`first_frame_stall`]), it counts from about this frame. One
+    /// started at a set time (a step of a composite animation, one taking
+    /// over another in motion) goes on from that time.
+    pub(crate) fn commit_first_frame(&mut self, now: f64) {
+        if !std::mem::take(&mut self.first_frame) {
+            return;
+        }
+        if let Some(start) = self.start
+            && self.last == Some(start)
+            && let Some(by) = first_frame_stall(start, now, self.frame_rate())
+        {
+            self.start = Some(start + by);
+            self.last = self.start;
         }
     }
 
@@ -132,6 +183,9 @@ impl Running {
     }
 
     fn advance(&mut self, now: f64) -> (f32, f32, bool) {
+        // The first step gives it its start; any later one, frame or
+        // deadline, is past its first frame.
+        self.first_frame = self.start.is_none();
         let start = *self.start.get_or_insert(now);
         self.last = Some(now);
         if let Driver::Decay {

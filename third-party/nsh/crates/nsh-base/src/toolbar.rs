@@ -60,12 +60,11 @@ pub struct ToolbarProps {
 #[component]
 pub fn Toolbar(props: ToolbarProps, _cx: Scope<NoEvent>) -> impl IntoElement {
     let axis = props.axis.get_untracked();
-    provide_bar(Bar {
-        roving: Roving::new(Pattern::Toolbar(axis)),
-        disabled: props.disabled,
-        axis: Some(axis),
-        open_menu: Default::default(),
-    });
+    provide_bar(Bar::new(
+        Roving::new(Pattern::Toolbar(axis)),
+        props.disabled,
+        Some(axis),
+    ));
     view()
         .when(axis == Axis::Horizontal, |v| v.flex_row())
         .role(AccessibilityRole::Toolbar)

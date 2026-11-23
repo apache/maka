@@ -85,7 +85,14 @@ pub fn Collapsible(props: CollapsibleProps, _cx: Scope<NoEvent>) -> impl IntoEle
             view()
                 .element_ref(&region)
                 .overflow_hidden()
-                .style_with(move |s| if open.get() { s } else { s.h(px(0.0)) })
+                .accessibility_elements_hidden(move || !open.get())
+                .style_with(move |s| {
+                    if open.get() {
+                        s
+                    } else {
+                        s.h(px(0.0)).pointer_events(PointerEvents::None)
+                    }
+                })
                 .child(when(mounted, content))
         })
         .otherwise(move || when(open, content)),

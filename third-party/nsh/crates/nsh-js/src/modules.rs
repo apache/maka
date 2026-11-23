@@ -210,7 +210,7 @@ const NSH: &[Item] = &[
         "mount",
         Export::Function(dom::mount, 2),
         Ts::function(
-            "Renders `app` into the surface; returns a function that removes it.",
+            "Renders `app` as the app root. On the desktops `app` declares its windows with\n`<Window>` (a plain root or no window is an error); off them it renders the app's one\nsurface. Returns a function that removes it.",
             &["<P extends object>(app: Component<P>, props?: P): () => void"],
         ),
     ),

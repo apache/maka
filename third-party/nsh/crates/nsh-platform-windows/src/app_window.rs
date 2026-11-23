@@ -33,7 +33,8 @@
 //! - **State**: its mode, bounds, focus and display are reported as
 //!   `WindowEvent::State` on its root; a move or a resize once it settles.
 //!   The area of its hidden title bar goes before it
-//!   (`WindowEvent::TitleBar`).
+//!   (`WindowEvent::TitleBar`): reported as soon as the window is made, so
+//!   the app's first frame reserves it, and again whenever it changes.
 
 use std::{
     cell::{Cell, RefCell},
@@ -99,12 +100,18 @@ pub(crate) struct AppWindow {
     /// A `WM_PAINT` is asked for.
     invalid: Cell<bool>,
     repaint_after_frame: Cell<bool>,
+    /// It was sized and placed as the app opened it ([`place`]): until
+    /// then its size is the system's default, which is reported to nobody.
+    positioned: Cell<bool>,
     /// The size last reported to the core.
     reported: Cell<Option<Size<Points>>>,
     /// It was shown once (its first frame drawn).
     opened: Cell<bool>,
     /// `focus()` came while it waited for its first frame.
     focus_on_show: Cell<bool>,
+    /// The app hid it before its first show (`WindowRef.hide()` while its
+    /// root rendered): the first show does not show it.
+    hidden: Cell<bool>,
     /// A policy hid it, reported as `Closed`: it waits for the app to
     /// remove its root.
     closed: Cell<bool>,
@@ -135,6 +142,35 @@ pub(crate) fn ids(surface: &Surface) -> Vec<NodeId> {
 /// The native window showing dialog root `id`.
 pub(crate) fn hwnd_of(surface: &Surface, id: NodeId) -> Option<HWND> {
     get(surface, id).map(|w| w.hwnd)
+}
+
+/// Every native window the app has open on `surface`.
+pub(crate) fn all_hwnds(surface: &Surface) -> Vec<HWND> {
+    surface.windows.borrow().iter().map(|w| w.hwnd).collect()
+}
+
+/// The app window with the keyboard focus, for test steps that act on the
+/// focused window (the host is not one).
+pub(crate) fn focused_hwnd(surface: &Surface) -> Option<HWND> {
+    surface
+        .windows
+        .borrow()
+        .iter()
+        .find(|w| w.state.get().is_some_and(|state| state.focused))
+        .map(|w| w.hwnd)
+}
+
+/// The window a dialog the app raised without naming a window
+/// (`AlertDialog.show`) shows over: the app window with the keyboard
+/// focus, else the oldest one; `ROOT_ID` when the app has none (a dialog
+/// of the host itself).
+pub(crate) fn dialog_window(surface: &Surface) -> NodeId {
+    let windows = surface.windows.borrow();
+    windows
+        .iter()
+        .find(|w| w.state.get().is_some_and(|state| state.focused))
+        .or_else(|| windows.first())
+        .map_or(ROOT_ID, |w| w.id)
 }
 
 /// The root view of the window showing dialog root `id`: what its
@@ -229,6 +265,8 @@ pub(crate) fn command(
             // asked for anyway is carried out as the user's.
             WindowRequest::Close => closed(surface, id, WindowCloseCause::ClosePress),
             WindowRequest::Hide => {
+                // Asked before its first show: it opens hidden.
+                window.hidden.set(true);
                 release_owner(&window);
                 // SAFETY: a plain call on the window, alive while listed.
                 let _ = unsafe { ShowWindow(hwnd, SW_HIDE) };
@@ -241,6 +279,7 @@ pub(crate) fn command(
             }
             WindowRequest::Show | WindowRequest::Focus => {
                 window.closed.set(false);
+                window.hidden.set(false);
                 hold_owner(&window);
                 crate::shell::request(hwnd, request);
             }
@@ -248,7 +287,16 @@ pub(crate) fn command(
                 crate::shell::request(hwnd, request);
             }
         },
-        // Menus, the tray and shortcuts are the main window's.
+        // A context menu belongs to this window: it is owned by its HWND,
+        // and points are converted with its client origin.
+        DesktopCommand::PopupMenu { items, at } => crate::chrome::popup(
+            surface,
+            hwnd,
+            surface
+                .chrome
+                .app_popup(items.clone(), at.map(|p| (p.x.0, p.y.0))),
+        ),
+        // The application menu, the tray and shortcuts are the host's.
         _ => {}
     }
 }
@@ -313,10 +361,12 @@ fn open(surface: &Rc<Surface>, view: &NshView, open: &OpenWindow) {
         scale: Cell::new(1.0),
         invalid: Cell::new(false),
         repaint_after_frame: Cell::new(false),
+        positioned: Cell::new(false),
         reported: Cell::new(None),
         opened: Cell::new(false),
         focus_on_show: Cell::new(false),
         closed: Cell::new(false),
+        hidden: Cell::new(false),
         state: Cell::new(None),
     });
     let weak = Rc::downgrade(&window);
@@ -328,6 +378,7 @@ fn open(surface: &Rc<Surface>, view: &NshView, open: &OpenWindow) {
     surface.windows.borrow_mut().push(window.clone());
     crate::shell::sync(surface, hwnd, None, resolved);
     place(&window, open);
+    window.positioned.set(true);
     hold_owner(&window);
     resized(surface, &window);
     // Shown once the engine has laid out and drawn what it shows: after
@@ -418,6 +469,11 @@ fn first_show(surface: &Rc<Surface>, window: &AppWindow) {
     if window.opened.replace(true) || window.closed.get() {
         return;
     }
+    if window.hidden.get() {
+        // It opened hidden: the app reads that it is not visible.
+        report_now(surface, window);
+        return;
+    }
     // What the engine sent so far, then a frame of it.
     surface.drain();
     paint(surface, window);
@@ -501,6 +557,12 @@ fn fill_background(surface: &Surface, id: NodeId, hwnd: HWND) {
 /// The window's client area was resized or moved to another scale: the
 /// root view takes its size, which the core lays the root out at.
 fn resized(surface: &Surface, window: &AppWindow) {
+    // Made at the system's default size (`CW_USEDEFAULT`, most of the
+    // screen), which its styles report before it is placed: the app would
+    // lay itself out for a window nobody sees.
+    if !window.positioned.get() {
+        return;
+    }
     let mut rect = RECT::default();
     // SAFETY: plain call with a local out value.
     let _ = unsafe { GetClientRect(window.hwnd, &mut rect) };
@@ -527,7 +589,10 @@ fn resized(surface: &Surface, window: &AppWindow) {
         surface.control(|c| c.set_root_size(window.id, size, EdgeInsets::default()));
         // The dialogs presented in it follow its size.
         crate::navigation::surface_resized(surface, size.width.0, size.height.0);
+        crate::system::window_resized(surface, window.id, size.width.0, size.height.0);
     }
+    // The primary window's size and scale are the app's `windowSize()`.
+    surface.window_environment();
     invalidate(window);
 }
 
@@ -724,10 +789,10 @@ pub(crate) fn title_bar_changed(surface: &Surface, id: NodeId, area: Edges<Point
     let Some(shell) = crate::window::shell(window.hwnd) else {
         return;
     };
-    // Reported first with its first state, once it shows.
-    if !window.opened.get() {
-        return;
-    }
+    // Reported as soon as the window exists (its creation sets the
+    // attributes), not once it shows: the app's first frame reserves the
+    // area, as it can on macOS and Linux. Its state still follows once it
+    // shows.
     if shell.title_bar.replace(Some(area)) != Some(area) {
         report(surface, id, WindowEvent::TitleBar(area));
     }
@@ -839,6 +904,11 @@ pub(crate) fn handle(
         }
         // Its own tree: the views of its dialog root.
         WM_GETOBJECT => Some(crate::access::get_object(surface, id, hwnd, wparam, lparam)),
+        // A context menu this window asked for (`Menu.popup` in it).
+        crate::window::WM_NSH_MENU => {
+            crate::chrome::show_popup(surface, hwnd);
+            Some(Some(LRESULT(0)))
+        }
         // The main window's: its menu bar, lifecycle and engine.
         WM_NCPAINT | 0x0091 | 0x0092 | WM_COMMAND | WM_DESTROY => Some(None),
         m if m >= WM_APP => Some(None),
@@ -878,7 +948,20 @@ pub(crate) fn removed(surface: &Surface, view: &NshView) -> bool {
     // The windows it owns close with it, and stay until their roots go.
     release_children(surface, window.hwnd, !window.closed.get());
     destroy(surface, &window);
+    // Another window may be the primary one now.
+    surface.window_environment();
     true
+}
+
+/// The size and scale of the app's primary window: the first of its own
+/// windows still open that has a size (not minimized when it opened).
+/// `None` while it shows none.
+pub(crate) fn primary(surface: &Surface) -> Option<(Size<Points>, f32)> {
+    surface
+        .windows
+        .borrow()
+        .iter()
+        .find_map(|w| w.reported.get().map(|size| (size, w.scale.get())))
 }
 
 /// Closes every window of the app's own (the app stopped).
@@ -887,10 +970,12 @@ pub(crate) fn close_all(surface: &Surface) {
     for window in &windows {
         destroy(surface, window);
     }
+    surface.window_environment();
 }
 
 fn destroy(surface: &Surface, window: &AppWindow) {
-    release_owner(window);
+    // The dialogs it showed go with it, answered as dismissed.
+    crate::system::window_closing(surface, window.id);
     // Its views keep their trees, but the window that showed them is gone:
     // no view of it holds the keyboard focus any more.
     crate::keyboard::forget_window(surface, window.id);
@@ -907,5 +992,82 @@ fn destroy(surface: &Surface, window: &AppWindow) {
         if IsWindow(Some(window.hwnd)).as_bool() {
             let _ = DestroyWindow(window.hwnd);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use nsh_core::{
+        ViewKind,
+        desktop::{TitleBarOptions, TitleBarStyle, WindowAttributes},
+    };
+
+    use super::*;
+
+    /// A window's hidden title bar is known when the window is made, not
+    /// only once it shows: the platform reports it then, so the app's first
+    /// frame reserves the controls. Its first state still comes once it
+    /// shows.
+    #[test]
+    fn a_hidden_title_bar_is_known_before_the_window_shows() {
+        let app = crate::app::AppView::new(None, Default::default()).unwrap();
+        let surface = app.surface();
+        let id: NodeId = 7;
+        let view = NshView::new(id, ViewKind::Modal);
+        let mut title_bar = TitleBarOptions::default();
+        title_bar.style = TitleBarStyle::Hidden;
+        title_bar.height = Some(Points(40.0));
+        let mut attributes = WindowAttributes::default();
+        attributes.title_bar = Some(title_bar);
+        let hwnd = crate::window::create_app_window(
+            surface,
+            id,
+            WindowKind::Normal,
+            &attributes,
+            None,
+            false,
+        )
+        .unwrap();
+        surface.windows.borrow_mut().push(Rc::new(AppWindow {
+            id,
+            hwnd,
+            view,
+            owner: None,
+            modal: false,
+            composition: None,
+            web: RefCell::default(),
+            placed: RefCell::default(),
+            composed: RefCell::default(),
+            swap: RefCell::new(None),
+            target_scale: Cell::new(0.0),
+            pixels: Cell::new((0, 0)),
+            scale: Cell::new(1.0),
+            invalid: Cell::new(false),
+            repaint_after_frame: Cell::new(false),
+            positioned: Cell::new(true),
+            reported: Cell::new(None),
+            opened: Cell::new(false),
+            focus_on_show: Cell::new(false),
+            closed: Cell::new(false),
+            hidden: Cell::new(false),
+            state: Cell::new(None),
+        }));
+        // Its attributes, as `open` sets them.
+        let mut resolved = crate::shell::Attrs::of_kind(WindowKind::Normal);
+        resolved.merge(&attributes);
+        crate::shell::sync(surface, hwnd, None, resolved);
+        let area = crate::chrome::title_bar_area(hwnd);
+        assert!(area.top.0 > 0.0 && area.right.0 > 0.0, "{area:?}");
+        assert_eq!(
+            crate::window::shell(hwnd).unwrap().title_bar.get(),
+            Some(area),
+            "the area is reported before the first show"
+        );
+        assert!(!get(surface, id).unwrap().opened.get(), "not shown yet");
+        // SAFETY: the test's own window.
+        unsafe {
+            let _ = DestroyWindow(hwnd);
+        }
+        surface.windows.borrow_mut().clear();
     }
 }

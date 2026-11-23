@@ -602,7 +602,7 @@ fn a_bottom_dock_keeps_its_size_in_rows() {
 
 /// A surface on a dark terminal whose own colors are known, so its frames
 /// and fills are steps of them.
-fn surfaces() -> (nsh_platform_tui::AppView, crossbeam_channel::Receiver<()>) {
+pub(super) fn surfaces() -> (nsh_platform_tui::AppView, crossbeam_channel::Receiver<()>) {
     let (tx, rx) = crossbeam_channel::unbounded();
     let mut options = nsh_platform_tui::AppOptions::default();
     options.capabilities.colors = nsh_platform_tui::ColorDepth::TrueColor;

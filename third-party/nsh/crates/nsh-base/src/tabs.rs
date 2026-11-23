@@ -6,6 +6,7 @@
 use nsh_core::{
     AccessibilityState,
     element::{LayoutTransition, Spring, Style},
+    geometry::Axis,
     prelude::*,
 };
 
@@ -95,6 +96,14 @@ pub fn Tab(props: TabProps, cx: Scope<TabEvent>) -> impl IntoElement {
 /// The props of [`Tabs`].
 #[derive(Debug, Clone, PartialEq, Props)]
 pub struct TabsProps {
+    /// The direction the list runs, which picks the arrow keys that move
+    /// between its tabs: `"horizontal"` Left and Right, `"vertical"` Up and
+    /// Down; the other pair is left to the page (a scroll view around the
+    /// list). Without one both pairs move, as a list laid out either way,
+    /// and screen readers hear no orientation. It does not lay the list
+    /// out: the app's `class` does (`flex-row` for a row). Read when the
+    /// list is made.
+    pub orientation: Prop<Option<Axis>>,
     /// The Tailwind classes of the indicator, the view on the selected tab
     /// (an underline, a pill behind it): its look and its place across the
     /// list (`bottom-0 h-[2px]` for an underline in a row, `inset-y-1` for
@@ -124,12 +133,15 @@ pub struct TabsProps {
 /// The keyboard, as WAI-ARIA's tab list pattern has it, where views that
 /// take presses are stops of the keyboard focus (macOS, the web): the list
 /// is one stop of Tab, at the selected tab (else the first that is not
-/// disabled); Left and Right, and Up and Down, move the focus to the
-/// previous and next tab, around the ends, Home and End to the first and
-/// last, past disabled tabs. The tab the focus moves to reports `onPress`,
-/// so the app selects it as the focus moves (automatic activation); Space
-/// and Return press the focused tab. Its tabs are its children, or inside
-/// the app's views among them (a tab with a hover frame or a badge).
+/// disabled); with an `orientation` its arrows move the focus to the
+/// previous and next tab (Left and Right in a row, Up and Down in a
+/// column), around the ends, and the other pair is left to the page (a
+/// scroll view around the list); without one both pairs move, as a list
+/// laid out either way; Home and End go to the first and last, past
+/// disabled tabs. The tab the focus moves to reports `onPress`, so the app
+/// selects it as the focus moves (automatic activation); Space and Return
+/// press the focused tab. Its tabs are its children, or inside the app's
+/// views among them (a tab with a hover frame or a badge).
 ///
 /// Its indicator (`gpui-component`'s tab bar's: an underline, a pill or a
 /// segmented highlight) is a part the app styles with `indicatorClass` and
@@ -153,7 +165,8 @@ pub struct TabsProps {
 /// muted, from the selected state each tab reports ([`crate::terminal`]).
 #[component]
 pub fn Tabs(props: TabsProps, _cx: Scope<NoEvent>) -> impl IntoElement {
-    let list = Roving::new(Pattern::Tabs);
+    let orientation = props.orientation.get_untracked();
+    let list = Roving::new(Pattern::Tabs(orientation));
     provide_context(TabsContext(list.clone()));
     let (class, style) = (props.indicator_class, props.indicator_style);
     // A terminal marks the selected tab itself: no indicator there.
@@ -164,6 +177,7 @@ pub fn Tabs(props: TabsProps, _cx: Scope<NoEvent>) -> impl IntoElement {
     view()
         .role(AccessibilityRole::Tablist)
         .optional_label(props.accessibility_label)
+        .accessibility_orientation(orientation)
         // Tabs two Cells apart in a row: the terminal's tab bar.
         .when(terminal, |v| v.flex_row().gap_x(measure_text("", "00")))
         .child(when(styled, move || indicator(list.clone(), class, style)))

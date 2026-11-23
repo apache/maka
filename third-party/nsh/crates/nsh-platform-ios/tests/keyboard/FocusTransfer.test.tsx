@@ -1,11 +1,12 @@
 // The root gets the keyboard back when a focused view blurs or is removed
 // and the window has no first responder left, but a focus transfer to a
-// native input (or another view) keeps it.
+// native input (or another view) keeps it. The pad takes no presses, so a
+// tap focuses it; `press` needs a pressable view, `drag` is a real touch.
 import { expect, open, test } from "nsh/test";
 
 test("blurring the focused view gives the root the keys back", async () => {
   const app = await open("./FocusTransfer.tsx");
-  await app.press("id:pad");
+  await app.drag("id:pad", { x: 0, y: 0 });
   await app.waitFor("text:focus:pad");
   await app.press("id:blurPad");
   await app.waitFor("text:focus:none");
@@ -17,7 +18,7 @@ test("blurring the focused view gives the root the keys back", async () => {
 
 test("deleting the focused view gives the root the keys back", async () => {
   const app = await open("./FocusTransfer.tsx");
-  await app.press("id:pad");
+  await app.drag("id:pad", { x: 0, y: 0 });
   await app.waitFor("text:focus:pad");
   await app.press("id:removePad");
   await app.wait(300);
@@ -27,7 +28,7 @@ test("deleting the focused view gives the root the keys back", async () => {
 
 test("a native input keeps the focus through the root recovery turn", async () => {
   const app = await open("./FocusTransfer.tsx");
-  await app.press("id:pad");
+  await app.drag("id:pad", { x: 0, y: 0 });
   await app.waitFor("text:focus:pad");
   // The input becomes first responder as the pad resigns: the deferred
   // root recovery must see it and leave the focus there.

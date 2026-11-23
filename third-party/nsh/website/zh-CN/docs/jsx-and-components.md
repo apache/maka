@@ -425,24 +425,39 @@ function Button(props: { title: string; onPress: () => void }) {
 
 ## 挂载与根视图
 
-Rust 应用的根是 `nsh.json` 的 `"root"` 指定的组件；`nsh run` 和 `nsh package` 挂载它。TSX 入口调用 `mount(App)` 渲染根组件（`mount(App, props)` 会传入 props）。根视图会填满整个界面（窗口，或应用用来嵌入 NSH 的视图）。给根视图设置 `flex: 1` 让它铺满屏幕，并设置背景色：界面自身的背景取决于平台。
+> **窗口模型 v2：** 在桌面平台上，应用用顶层 `<Window>` 场景声明窗口，第一个窗口也要声明。直接用视图根调用
+> `mount(App)` 的已发布应用仍可运行：`mount` 为它创建隐式首窗口（`id` 为 `"main"`）。这里展示的包装（`mount(() => <Window id="main">…`）把这个窗口显式写出来，多窗口应用也这样声明。
+
+Rust 应用的根是 `nsh.json` 的 `"root"` 指定的组件；`nsh run` 和 `nsh package` 挂载它。TSX 入口调用 `mount(App)` 渲染根组件（`mount(App, props)` 会传入 props）。桌面平台上，应用根是宿主而不是界面：它用顶层 [`<Window>`](./windows.md) 场景声明应用的窗口，窗口的内容填满那个窗口；返回视图的根则渲染在隐式首窗口中，和已发布应用的主窗口一样。非桌面平台（手机、Web）上，根视图就是应用的屏幕。给内容设置 `flex: 1` 让它铺满窗口，并设置背景色：平台的背景会透出来。
 
 ```rust tabs
 // nsh.json: { "rust": ".", "root": "App" }
+use nsh_core::element::desktop::window;
+use nsh_core::prelude::*;
+
 #[component]
 pub fn App() -> impl IntoElement {
-    view()
-        .flex_1()
-        .bg(move || theme().background)
-        .child(home())
+    let content = || {
+        view()
+            .flex_1()
+            .bg(move || theme().background)
+            .child(home())
+    };
+    window().id("main").content(content)
 }
 ```
 
 ```tsx tabs
+import { Window } from "nsh/desktop";
+
 mount(() => (
-  <View style={{ flex: 1, backgroundColor: "#ffffff" }}>
-    <App />
-  </View>
+  <Window id="main">
+    {() => (
+      <View style={{ flex: 1, backgroundColor: "#ffffff" }}>
+        <App />
+      </View>
+    )}
+  </Window>
 ));
 ```
 

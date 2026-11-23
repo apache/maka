@@ -41,6 +41,7 @@ unsafe extern "C" {
         data: *const u8,
         data_len: usize,
         weight: u32,
+        max_weight: u32,
         italic: u32,
     );
     #[link_name = "submit"]
@@ -82,6 +83,8 @@ unsafe extern "C" {
         body_len: usize,
         body_kind: u32,
         follow: u32,
+        cache: *const u8,
+        cache_len: usize,
     );
     #[link_name = "fetch_send"]
     fn js_fetch_send(id: u32, chunk: *const u8, len: usize);
@@ -199,8 +202,9 @@ pub(crate) fn font_x_height(font: &str) -> f32 {
     unsafe { js_font_x_height(font.as_ptr(), font.len()) as f32 }
 }
 
-/// Adds a font (`FontFace`) to the document.
-pub(crate) fn register_font(family: &str, data: &[u8], weight: u16, italic: bool) {
+/// Adds a font (`FontFace`) to the document, covering weights
+/// `weight..=max_weight` (a variable font's `wght` axis).
+pub(crate) fn register_font(family: &str, data: &[u8], weight: u16, max_weight: u16, italic: bool) {
     // SAFETY: the slices are valid for the call; JS copies them.
     unsafe {
         js_register_font(
@@ -209,6 +213,7 @@ pub(crate) fn register_font(family: &str, data: &[u8], weight: u16, italic: bool
             data.as_ptr(),
             data.len(),
             weight as u32,
+            max_weight as u32,
             italic as u32,
         )
     }
@@ -312,7 +317,8 @@ pub(crate) const BODY_BYTES: u32 = 1;
 /// [`fetch_finish`]).
 pub(crate) const BODY_STREAM: u32 = 2;
 
-/// Starts request `id` (`headers`: JSON `[name, value]` pairs); what
+/// Starts request `id` (`headers`: JSON `[name, value]` pairs; `cache`:
+/// the Fetch cache mode); what
 /// happens to it comes back through the `nsh_fetch_*` exports.
 pub(crate) fn fetch_start(
     id: u32,
@@ -322,6 +328,7 @@ pub(crate) fn fetch_start(
     body: &[u8],
     body_kind: u32,
     follow: bool,
+    cache: &str,
 ) {
     // SAFETY: the slices are valid for the call; JS copies them.
     unsafe {
@@ -337,6 +344,8 @@ pub(crate) fn fetch_start(
             body.len(),
             body_kind,
             follow as u32,
+            cache.as_ptr(),
+            cache.len(),
         )
     }
 }

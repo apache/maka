@@ -150,7 +150,12 @@ pub trait NodeView: Send + Sync {
 
     /// Whether the editor renders the node's content, editable, into the
     /// element (`cx.take_content()`); `false` (the default) makes the node
-    /// an atom, edited as one unit.
+    /// an atom, edited as one unit. The content's place in the element is
+    /// measured again when its frame in its parent changes and when the
+    /// element's size does: a part that moves the content without either
+    /// (a wider marker before content in a fixed-width box) leaves the
+    /// caret and presses where the content was, so let the content's box
+    /// grow and shrink with it (`flex_1`).
     fn editable_content_slot(&self) -> bool {
         false
     }

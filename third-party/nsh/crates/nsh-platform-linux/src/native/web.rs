@@ -351,6 +351,7 @@ impl WebHost {
             }
         }));
         history_keys(&web, surface);
+        presses(&web, surface, view.id());
         fill_sized(view, web.upcast_ref());
         WebHost {
             web,
@@ -1163,6 +1164,34 @@ fn history_keys(web: &WebView, surface: &Rc<Surface>) {
         }
     });
     web.add_controller(buttons);
+}
+
+/// A press in the page goes to WebKit, never through NSH's picking:
+/// report it, so the overlays watching presses that the web view is
+/// outside of (an open menu) hear `onPressOutside`, as for a press on any
+/// other view. Watches only (capture phase, nothing claimed).
+fn presses(web: &WebView, surface: &Rc<Surface>, id: nsh_core::NodeId) {
+    let presses = gtk::GestureClick::new();
+    presses.set_button(0);
+    presses.set_propagation_phase(gtk::PropagationPhase::Capture);
+    let weak = Rc::downgrade(surface);
+    presses.connect_pressed(move |gesture, _, x, y| {
+        let Some(surface) = weak.upgrade() else {
+            return;
+        };
+        let page = gesture
+            .widget()
+            .and_then(|web| {
+                web.compute_point(
+                    &surface.root,
+                    &gtk::graphene::Point::new(x as f32, y as f32),
+                )
+            })
+            .map_or((0.0, 0.0), |p| (p.x(), p.y()));
+        let page = nsh_core::prelude::point(nsh_core::Points(page.0), nsh_core::Points(page.1));
+        surface.control(|c| c.press_on_native(id, page));
+    });
+    web.add_controller(presses);
 }
 
 /// A JS string literal for `s`.

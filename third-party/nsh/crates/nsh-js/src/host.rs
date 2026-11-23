@@ -89,6 +89,8 @@ pub(crate) struct Shared {
     /// Measures one line of text for `measureText` (the engine's text
     /// engine).
     pub(crate) measurer: RefCell<Option<TextMeasurer>>,
+    /// Lays one line out for `measureText`'s font extent.
+    pub(crate) line_measurer: RefCell<Option<LineExtentMeasurer>>,
     /// The VM's limits.
     pub(crate) limits: Limits,
     /// Why the VM was stopped (out of memory, over a quota): no JS runs
@@ -108,6 +110,15 @@ impl Shared {
 /// Measures the width of one line of `text` in `font`, in points.
 pub type TextMeasurer =
     Box<dyn Fn(&nsh_core::canvas::CanvasFont, &str) -> nsh_core::geometry::Points>;
+
+/// Lays one line of `text` in `font` out: the font's ascent and descent on
+/// it, in points.
+pub type LineExtentMeasurer = Box<
+    dyn Fn(
+        &nsh_core::canvas::CanvasFont,
+        &str,
+    ) -> (nsh_core::geometry::Points, nsh_core::geometry::Points),
+>;
 
 /// One QuickJS runtime + context with the nsh host APIs installed.
 pub struct Host {
@@ -315,6 +326,12 @@ impl Host {
     /// Sets what canvas `measureText` measures with.
     pub fn set_text_measurer(&mut self, measurer: TextMeasurer) {
         *self.shared.measurer.borrow_mut() = Some(measurer);
+    }
+
+    /// Sets what canvas `measureText`'s `fontBoundingBoxAscent` /
+    /// `fontBoundingBoxDescent` lay the line out with (without it they are 0).
+    pub fn set_line_extent_measurer(&mut self, measurer: LineExtentMeasurer) {
+        *self.shared.line_measurer.borrow_mut() = Some(measurer);
     }
 
     /// Sets the handler for uncaught exceptions (in event handlers, timers and
@@ -602,20 +619,16 @@ impl Host {
                         })
                     }
                     // Presses always pass their event: where the backend
-                    // does not know the pointer, at the view's origin.
+                    // does not know the pointer (a keyboard or assistive
+                    // technology activation), at the view's origin with
+                    // no clicks, as the DOM's `detail` of 0.
                     (
                         EventKind::Press
                         | EventKind::LongPress
                         | EventKind::PressDown
                         | EventKind::PressUp,
                         EventPayload::None,
-                    ) => payload_object(
-                        &cx,
-                        &EventPayload::Press(nsh_core::PressEvent {
-                            clicks: 1,
-                            ..Default::default()
-                        }),
-                    ),
+                    ) => payload_object(&cx, &EventPayload::Press(nsh_core::PressEvent::default())),
                     // A video's `onLoad`: `{ duration, size }` of the
                     // platforms' `duration`, `width` and `height`.
                     (EventKind::Load, EventPayload::Map(fields))
@@ -662,6 +675,17 @@ impl Host {
             unsafe { &(*crate::state::state(cx.as_raw().as_ptr())).dom }
                 .lazy_rows
                 .set(lazy);
+        });
+    }
+
+    /// Marks the surface as an embedded desktop `AppView` whose caller owns
+    /// the host window (plain `mount` renders directly into `ROOT_ID`).
+    pub fn set_embedded(&self, embedded: bool) {
+        self.cx.with(|cx| {
+            // SAFETY: the state of this host's context.
+            unsafe { &(*crate::state::state(cx.as_raw().as_ptr())).windows }
+                .embedded
+                .set(embedded);
         });
     }
 
@@ -1379,9 +1403,58 @@ fn payload_object<'js>(cx: &Ctx<'js>, payload: &EventPayload) -> rquickjs::Resul
             }
             obj.set("uris", list)?;
             obj.set("mimeTypes", types)?;
+            // Contents come only where there are no paths (the Web).
+            obj.set("files", rquickjs::Array::new(cx.clone())?)?;
             if let EventPayload::FileDropAt { page_position, .. } = payload {
                 obj.set("pagePosition", point_object(cx, *page_position)?)?;
             }
+        }
+        // `PickedFile`s: each read one's `File` shares the dropped bytes.
+        EventPayload::FileContents(drop) => {
+            obj.set("uris", rquickjs::Array::new(cx.clone())?)?;
+            let types = rquickjs::Array::new(cx.clone())?;
+            for (index, mime) in drop.mime_types.iter().enumerate() {
+                types.set(index, mime.as_str())?;
+            }
+            obj.set("mimeTypes", types)?;
+            let files = rquickjs::Array::new(cx.clone())?;
+            for (index, file) in drop.files.iter().enumerate() {
+                let entry = rquickjs::Object::new(cx.clone())?;
+                if file.status == nsh_core::picker::PickedStatus::TooLarge {
+                    entry.set("file", Value::new_null(cx.clone()))?;
+                    entry.set("status", "tooLarge")?;
+                } else {
+                    let blob = crate::web::blob::Blob::shared(file.data.clone(), file.mime.clone());
+                    let modified = file
+                        .last_modified
+                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map_or_else(crate::web::blob::now_ms, |d| d.as_millis() as f64);
+                    let made = crate::web::blob::new_file(
+                        cx.as_raw().as_ptr(),
+                        blob,
+                        file.name.clone(),
+                        modified,
+                    )
+                    .map_err(|_| rquickjs::Error::Exception)?;
+                    // SAFETY: an owned value of this context, handed over.
+                    let value = unsafe { Value::from_raw(cx.clone(), made.take()) };
+                    entry.set("file", value)?;
+                    entry.set("status", "read")?;
+                }
+                entry.set("name", file.name.as_str())?;
+                entry.set("type", file.mime.as_str())?;
+                entry.set("size", file.len as f64)?;
+                files.set(index, entry)?;
+            }
+            obj.set("files", files)?;
+            if let Some(at) = drop.page_position {
+                obj.set("pagePosition", point_object(cx, at)?)?;
+            }
+        }
+        EventPayload::TextDrop(drop) => {
+            obj.set("text", drop.text.as_str())?;
+            obj.set("html", drop.html.as_str())?;
+            obj.set("pagePosition", point_object(cx, drop.page_position)?)?;
         }
         // The bytes cross natively: each file is a `File` over them.
         EventPayload::Paste(paste) => {
@@ -1425,7 +1498,7 @@ fn payload_object<'js>(cx: &Ctx<'js>, payload: &EventPayload) -> rquickjs::Resul
             obj.set("data", json_value(cx, data)?)?;
         }
         EventPayload::Json(value) => return json_value(cx, value),
-        EventPayload::TextLayout { lines, .. } => {
+        EventPayload::TextLayout(lines) => {
             let list = rquickjs::Array::new(cx.clone())?;
             for (i, l) in lines.iter().enumerate() {
                 let line = rquickjs::Object::new(cx.clone())?;
@@ -1445,6 +1518,7 @@ fn payload_object<'js>(cx: &Ctx<'js>, payload: &EventPayload) -> rquickjs::Resul
         }
         EventPayload::Layout(frame) => obj.set("bounds", bounds_object(cx, *frame)?)?,
         EventPayload::Pan {
+            origin,
             translation,
             velocity_x,
             velocity_y,
@@ -1452,6 +1526,7 @@ fn payload_object<'js>(cx: &Ctx<'js>, payload: &EventPayload) -> rquickjs::Resul
             value_y,
         }
         | EventPayload::PanCancelled {
+            origin,
             translation,
             velocity_x,
             velocity_y,
@@ -1462,6 +1537,7 @@ fn payload_object<'js>(cx: &Ctx<'js>, payload: &EventPayload) -> rquickjs::Resul
                 "cancelled",
                 matches!(payload, EventPayload::PanCancelled { .. }),
             )?;
+            obj.set("origin", point_object(cx, *origin)?)?;
             obj.set("translation", point_object(cx, *translation)?)?;
             let velocity = rquickjs::Object::new(cx.clone())?;
             velocity.set("x", *velocity_x)?;
@@ -2494,6 +2570,32 @@ const report = (v) => text(String(v));
             assert!(!modifiers.get::<_, bool>("shift").unwrap());
             assert_eq!(obj.get::<_, u32>("clickCount").unwrap(), 2);
         });
+    }
+
+    #[test]
+    fn a_pointerless_press_has_no_clicks() {
+        // A keyboard or assistive technology activation (#2506) must not
+        // read as a click at the origin: `clickCount` 0, as the DOM's
+        // `detail`, while a real click keeps 1.
+        let host = Host::new().unwrap();
+        host.eval_source(
+            r#"import { element, prop } from "nsh:rt";
+            globalThis.counts = [];
+            const view = element("view");
+            prop(view, "onPress", (e) => globalThis.counts.push(e.clickCount));"#,
+        )
+        .unwrap();
+        host.dispatch_event(2, EventKind::Press, &EventPayload::None);
+        host.dispatch_event(
+            2,
+            EventKind::Press,
+            &EventPayload::Press(nsh_core::PressEvent {
+                clicks: 1,
+                ..Default::default()
+            }),
+        );
+        let counts: Vec<u32> = host.cx.with(|cx| cx.eval("globalThis.counts").unwrap());
+        assert_eq!(counts, vec![0, 1]);
     }
 
     #[test]

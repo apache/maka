@@ -36,6 +36,7 @@ fn counter() -> impl IntoElement {
 ```tsx tabs
 import { mount, signal, Text } from "nsh";
 import { Button } from "nsh/base";
+import { Window } from "nsh/desktop";
 
 function App() {
   const count = signal(0);
@@ -49,7 +50,11 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 `Button` comes from [`nsh/base`](../modules/nsh-base.md), the `nsh-base` crate in Rust. In TSX its look is `class` and
@@ -68,6 +73,7 @@ the typed style methods (`.px_4()`, `.bg(..)`) for its look, the state methods (
 | `selectedStyle` | `.selected_style(\|s\| ..)` | `StyleProp<ViewStyle>` | none | The style while `selected` and not disabled, as `selected:` classes. |
 | `busy` | `.busy(..)` | `boolean` | `false` | Busy: its action is running, as a "Saving…" button. Screen readers say so. Presses still count; set `disabled` too to refuse them. |
 | `accessibilityLabel` | `.accessibility_label(..)` | `string` | none | What screen readers say when the content is not enough, as for an icon. |
+| `accessibilityHint` | `.accessibility_hint(..)` | `string` | none | Explains what activating the button does, as a view's `accessibilityHint`. |
 | `role` | `.role(..)` | `AccessibilityRole` | `"button"` | What it is for screen readers when no `nsh/base` component is that control: `"link"` (it opens a URL), ... |
 | `hitSlop` | `.hit_slop(..)` | `number \| Partial<Edges>` | none | How far outside its bounds presses still count, in points: one number for every side, or the sides named. As a view's `hitSlop`. |
 | `children` | `.child(..)` | `JSX.Element` | none | The content: text, an icon, any layout. |
@@ -254,6 +260,8 @@ fn close(open: Signal<bool>) -> impl IntoElement {
 
 ## Accessibility
 
+- Give `accessibilityHint` when the label does not explain the result of pressing the button. It follows reactive
+  values; setting it to `undefined` removes the hint.
 - A button is one element for screen readers, with the role `"button"` unless `role` says otherwise. Its label is its
   text content; give `accessibilityLabel` when the content is an icon or says too little.
 - `disabled`, `selected` and `busy` are announced as the platform announces them (VoiceOver, TalkBack, UI Automation, the

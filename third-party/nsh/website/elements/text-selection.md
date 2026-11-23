@@ -120,6 +120,10 @@ const quote = signal("");
 </View>
 ```
 
+`ref.clearSelection()` on the selectable view, or on a view inside it, clears the selection as a press elsewhere does:
+the highlight goes and `onSelectionChange` hears `""`. A bar of actions over the selection calls it once its action is
+done. In Rust it is `ElementRef::clear_selection`.
+
 ### As Markdown or HTML
 
 A `selectable` `TextView`'s ref reads its selection when the app asks: `selectedText({ format })` gives the selected
@@ -195,7 +199,10 @@ punctuation after it (a sentence's `foo.`) stays out, and so do operators (`a=b`
   items, cells and code blocks select together. Inside a selectable view it joins the outer selection.
 - **Single texts**: a text with `userSelect: "text"` in no selectable view selects on its own, as
   [Text](./text.md#props) describes.
-- **The look** is the platform's highlight in each text's `selectionColor` (`selection:text-*`).
+- **The look** is the platform's highlight in each text's `selectionColor` (`selection:bg-*`). A text that sets none
+  takes the nearest color set on a view around it: the view's `selection:bg-*` class, or `.selection_color(..)` in
+  Rust, which wins over the class. Set it once on the selectable view to color the whole selection; on Android the
+  selection handles take it too.
 - **A line in several texts**: a Rust component that lays one line out as several texts (a soft-wrapped line of
   code) marks the later parts with `.continues_text(true)`; a copy then gives the line whole, with no line break where
   it was cut, and a triple click selects all of its parts. [`DiffView`](./diff-view.md) does this for its wrapped lines.

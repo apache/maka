@@ -44,6 +44,7 @@ fn week(visitors: Vec<f64>, hovered: Signal<Option<u32>>) -> impl IntoElement {
 ```tsx tabs
 import { mount, signal, Text, View } from "nsh";
 import { Area, Grid, Line, Plot } from "nsh/base/plot";
+import { Window } from "nsh/desktop";
 
 const rows = [
   { day: "Mon", visitors: 1820 },
@@ -78,7 +79,11 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 `Plot`, `Line`, `Area`, `Bar`, `Rule`, `Dot`, `Cell`, `Grid`, `Pie`, `Arc`, `RadialLine`, `RadialGrid`, `Sankey`, `Treemap`, `PlotAxis` and `PlotLabel` come from `nsh/base/plot`, a module of [`nsh/base`](../modules/nsh-base.md) of their

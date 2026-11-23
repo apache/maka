@@ -1,11 +1,10 @@
 // A case of the API's test suite (docs/dev/compatibility.md): this domain
 // declares capabilities without `application`, so what acts on the
-// application as a whole is refused: the main window's commands
-// (`nsh/desktop`'s `WindowRef`) reach nothing (asked to minimize, the window
-// stays as it was; headless, no platform reports, so `state()` stays
-// undefined), and turning launching at login on rejects with
-// `ERR_ACCESS_DENIED`. Its script checks the state the window reports and
-// the rejection.
+// application as a whole is refused: turning launching at login on rejects
+// with `ERR_ACCESS_DENIED`. Its window is granted (`windows: true`), so
+// `WindowRef` commands work; headless, no platform reports, so the state the
+// window reports stays undefined, and the script checks that and the
+// rejection.
 import { Text, View, signal } from "nsh";
 import { Application, currentWindow } from "nsh/desktop";
 

@@ -6,7 +6,7 @@ export function createDom(invoke, values, reactive, live, wake) {
   const handlers = new WeakMap(), owners = new WeakMap(), heldProps = new WeakMap();
   let touches, measure, hot, platform, base;
   const prototype = Object.create(null);
-  for (const name of ["focus", "blur", "scrollTo", "zoomTo", "scrollToIndex", "scrollToEnd", "reveal", "reload", "goBack", "goForward", "stopLoading", "injectJavaScript", "postMessage", "insertText", "sendInput", "load", "seek"]) {
+  for (const name of ["focus", "blur", "clearSelection", "scrollTo", "zoomTo", "scrollToIndex", "scrollToEnd", "reveal", "reload", "goBack", "goForward", "stopLoading", "injectJavaScript", "postMessage", "insertText", "sendInput", "load", "seek"]) {
     prototype[name] = function (argument) { const id = values.nodeIds.get(this); if (id === undefined) throw new TypeError("nsh: not a node"); return call(314, [id, name, argument]); };
   }
   // A page's web view is an iframe whose document the app may not read:
@@ -21,6 +21,9 @@ export function createDom(invoke, values, reactive, live, wake) {
   };
   prototype.setSelection = function (start, end = start) { return call(314, [values.nodeIds.get(this), "setSelection", { start: Number(start), end: Number(end) }]); };
   prototype.command = function (name, args) { return call(314, [values.nodeIds.get(this), "native", { name, args }]); };
+  // A layout animation of this node's change whose `update` phase is
+  // `transition` (an empty phase when it is not an object), as nsh-js sends it.
+  prototype.animateLayout = function (transition) { const id = values.nodeIds.get(this); if (id === undefined) throw new TypeError("nsh: not a node"); return call(314, [id, "layoutAnimation", { update: Object(transition) === transition ? transition : {} }]); };
   prototype.scrollToOffset = function (options) { return this.scrollTo({ x: options?.offset, y: options?.offset, animated: options?.animated }); };
   prototype.measure = function () { return measure(this); };
   prototype.measureScrollPosition = function () { return measure(this, "scrollPosition"); };

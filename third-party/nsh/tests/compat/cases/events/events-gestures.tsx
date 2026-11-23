@@ -1,6 +1,7 @@
 // A case of the API's test suite (docs/dev/compatibility.md): the gestures
 // the platform recognizes on a view: a drag (pan) starting and ending with
-// its translation and velocity, a pinch with its scale and a two-finger
+// where it started, its translation and velocity, a pinch with its scale
+// and a two-finger
 // rotation with its angle, each with its velocity. Each handler shows what
 // it gets as text. Its script checks
 // each.
@@ -14,6 +15,7 @@ function pan(e: Pan): string {
 
 function App() {
   const drag = signal("none");
+  const origin = signal("none");
   const cancelled = signal(false);
   const pinch = signal("none");
   const rotation = signal("none");
@@ -22,10 +24,14 @@ function App() {
       <View
         testID="drag"
         style={{ height: 40 }}
-        onPanStart={(e) => drag.set(`start ${pan(e)}`)}
+        onPanStart={(e) => {
+          drag.set(`start ${pan(e)}`);
+          origin.set(`${e.origin.x},${e.origin.y}`);
+        }}
         onPanEnd={(e) => { drag.set(`${drag()}; end ${pan(e)}`); cancelled.set(e.cancelled ?? false); }}
       />
       <Text>Pan: {drag()}</Text>
+      <Text>Origin: {origin()}</Text>
       <Text>Cancelled: {String(cancelled())}</Text>
       <View
         testID="pinch"

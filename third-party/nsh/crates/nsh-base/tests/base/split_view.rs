@@ -14,7 +14,7 @@ use nsh_core::{
     prelude::*,
 };
 use nsh_engine::EngineConfig;
-use nsh_testing::Headless;
+use nsh_testing::{DragOptions, Headless};
 
 #[derive(Clone, PartialEq, Props)]
 struct MailProps {
@@ -124,7 +124,10 @@ fn Panes() -> impl IntoElement {
 
 /// The mail on a desktop's headless surface, `width` wide.
 fn start(triple: bool, width: f32) -> Headless {
-    on_desktop(Root::new::<Mail>(move || MailProps { triple }), width)
+    on_desktop(
+        nsh_testing::windowed_root_with::<Mail>(move || MailProps { triple }),
+        width,
+    )
 }
 
 /// `root` on a desktop's headless surface, `width` wide.
@@ -167,25 +170,37 @@ fn every_column_shows_beside_the_others_where_there_is_room() {
 }
 
 #[test]
-fn nothing_resizes_the_columns() {
-    // Neither the sidebar's edge nor the boundary between the content and
-    // the detail is a handle: nothing a pointer drags, a screen reader
-    // adjusts or the keyboard focuses.
-    for triple in [true, false] {
+fn the_columns_resize() {
+    // The sidebar's edge and the boundary between the content and the
+    // detail are handles: a pointer drags them, a screen reader adjusts
+    // them, as a desktop's split view does.
+    for (triple, handles) in [(true, 2), (false, 1)] {
         let mut app = start(triple, 1200.0);
         app.wait_for("Message").unwrap();
         app.idle(Duration::from_millis(100)).unwrap();
         assert_eq!(
             app.screen().count("role:adjustable").unwrap(),
-            0,
+            handles,
             "triple: {triple}"
         );
+        app.drag(
+            "role:adjustable >> nth=0",
+            point(px(60.0), px(0.0)),
+            DragOptions::default(),
+        )
+        .unwrap();
+        app.idle(Duration::from_millis(100)).unwrap();
+        assert_eq!(shown(&app).len(), handles + 1, "triple: {triple}");
     }
+    // At compact width one column shows: nothing to drag.
+    let mut app = start(true, 400.0);
+    app.idle(Duration::from_millis(100)).unwrap();
+    assert_eq!(app.screen().count("role:adjustable").unwrap(), 0);
     // Panels of the app's in a column keep their handle.
-    let mut app = on_desktop(Root::of::<Panes>(), 1200.0);
+    let mut app = on_desktop(nsh_testing::windowed_root::<Panes>(), 1200.0);
     app.wait_for("role:adjustable").unwrap();
     app.idle(Duration::from_millis(100)).unwrap();
-    assert_eq!(app.screen().count("role:adjustable").unwrap(), 1);
+    assert_eq!(app.screen().count("role:adjustable").unwrap(), 3);
 }
 
 #[test]

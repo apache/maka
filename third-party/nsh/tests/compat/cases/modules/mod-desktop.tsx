@@ -1,17 +1,17 @@
 // A case of the API's test suite (docs/dev/compatibility.md): `nsh/desktop`
 // off the desktops (the headless runtime is iOS): `isAvailable` is false,
 // `titleBar()` is all 0, `windowState()` is null and `displays()` empty;
-// the main window is the only one (`currentWindow()`, `windows()`,
-// `Window.get`), its requests and `set` are callable and do nothing,
-// `<Window>` renders nothing and `Window.open` throws
-// `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM`; the app and menu functions are
-// callable and do nothing, so an app that calls them runs on. Its script
-// checks each.
+// the app surface is the main window (`windows()` lists it,
+// `currentWindow()` in a handler is called outside a render, so it throws
+// as it always did there, `focusedWindow()` and `Window.get` are null),
+// `<Window>` renders its content in the app's one surface and `Window.open`
+// throws `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM`; the app and menu functions
+// are callable and do nothing, so an app that calls them runs on. Its
+// script checks each.
 import { Text, View, signal } from "nsh";
 import { Application, Menu, Window, currentWindow, displays, focusedWindow, isAvailable, titleBar, windowState, windows } from "nsh/desktop";
 
 function App() {
-  const main = currentWindow();
   const calls = signal("not called");
   const popup = signal("not shown");
   return (
@@ -21,34 +21,27 @@ function App() {
       <Text>{`Window state: ${windowState()} displays ${displays().length}`}</Text>
       <Text>{`Calls: ${calls()}`}</Text>
       <Text>{`Popup: ${popup()}`}</Text>
-      <Text>{`Current: ${main.id} ${main.main} ${main.parent} state ${main.state()}`}</Text>
-      <Text>{`Windows: ${windows().map((w) => w.id).join(",")} focused ${focusedWindow()} get ${Window.get("main") === main} ${Window.get("other")}`}</Text>
       <Window id="hidden" title="Hidden" defaultOpen>
         <Text>Inside a window</Text>
       </Window>
       <View
         testID="window"
         onPress={() => {
-          main.set({ title: "Compat", titleBar: { style: "hidden", height: 40 }, level: "floating", taskbar: false });
-          main.set({ titleBar: { style: "default" }, level: "normal" });
-          main.setBounds({ origin: { x: 40, y: 60 }, size: { width: 800, height: 600 }, animated: false });
-          main.setPlacement({ mode: "maximized", bounds: { origin: { x: -3000, y: 10 }, size: { width: 800, height: 600 } } });
-          main.setMode("maximized");
-          main.setMode("normal");
-          main.minimize();
-          main.restore();
-          main.center();
-          main.focus();
-          main.requestAttention({ critical: true });
-          const stop = main.on("closePress", () => {});
-          stop();
+          let current = "returned";
+          try {
+            currentWindow();
+          } catch (e) {
+            current = (e as { code?: string }).code ?? "no code";
+          }
           let open = "returned";
           try {
             Window.open(() => <Text>Never</Text>, { id: "other", kind: "dialog" });
           } catch (e) {
             open = (e as { code?: string }).code ?? "no code";
           }
-          calls.set(`window done, open ${open}, close ${typeof main.close}`);
+          calls.set(
+            `window done, current ${current}, open ${open}, windows ${windows().length} focused ${focusedWindow()} get ${Window.get("main")}`,
+          );
         }}
       >
         <Text>Window calls</Text>

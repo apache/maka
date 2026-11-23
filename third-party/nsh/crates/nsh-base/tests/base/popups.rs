@@ -183,7 +183,10 @@ fn PopoverScreen(props: PopoverProps) -> impl IntoElement {
 
 fn popover_app(looks: bool, reduce_motion: bool) -> App {
     start(
-        Root::new::<PopoverScreen>(move || PopoverProps { looks, low: false }),
+        nsh_testing::windowed_root_with::<PopoverScreen>(move || PopoverProps {
+            looks,
+            low: false,
+        }),
         reduce_motion,
     )
 }
@@ -271,7 +274,7 @@ fn a_popover_without_looks_goes_at_once_and_sends_nothing_more() {
 #[test]
 fn a_popover_reports_the_side_it_went_on() {
     let mut app = start(
-        Root::new::<PopoverScreen>(|| PopoverProps {
+        nsh_testing::windowed_root_with::<PopoverScreen>(|| PopoverProps {
             looks: false,
             low: true,
         }),
@@ -284,7 +287,7 @@ fn a_popover_reports_the_side_it_went_on() {
 #[test]
 fn on_a_phone_a_popover_is_above_its_backdrop() {
     let mut app = start_on(
-        Root::new::<PopoverScreen>(|| PopoverProps {
+        nsh_testing::windowed_root_with::<PopoverScreen>(|| PopoverProps {
             looks: false,
             low: false,
         }),
@@ -351,7 +354,7 @@ fn MenuScreen() -> impl IntoElement {
 
 #[test]
 fn a_desktop_menu_and_its_submenu_go_with_their_exit() {
-    let mut app = start(Root::of::<MenuScreen>(), false);
+    let mut app = start(nsh_testing::windowed_root::<MenuScreen>(), false);
     app.app.press("id:file").unwrap();
     app.app.wait_for("Side: Some(Bottom)").unwrap();
     app.app.press("id:share").unwrap();
@@ -404,7 +407,7 @@ fn KeyMenuScreen() -> impl IntoElement {
 /// The menu opened from the keyboard on its focused trigger (the focus
 /// on Open), past its entrance.
 fn key_menu_app() -> App {
-    let mut app = start(Root::of::<KeyMenuScreen>(), false);
+    let mut app = start(nsh_testing::windowed_root::<KeyMenuScreen>(), false);
     app.app.press_key("tab").unwrap();
     app.app.press_key("enter").unwrap();
     app.app.run_for(Duration::from_millis(50)).unwrap();
@@ -510,7 +513,7 @@ fn FlippedMenuScreen() -> impl IntoElement {
 /// Opens [`FlippedMenuScreen`]'s menu with its button and closes it with
 /// `close`, three times, pressing the other button in between.
 fn flipped_menu_closes(how: &str, close: impl Fn(&mut Headless)) {
-    let mut app = start(Root::of::<FlippedMenuScreen>(), false);
+    let mut app = start(nsh_testing::windowed_root::<FlippedMenuScreen>(), false);
     for round in 0..3 {
         app.app.press("id:trigger").unwrap();
         app.app.run_for(Duration::from_millis(300)).unwrap();
@@ -574,7 +577,7 @@ fn KeyPopoverScreen() -> impl IntoElement {
 
 #[test]
 fn a_popover_closed_with_escape_takes_no_return_on_its_way_out() {
-    let mut app = start(Root::of::<KeyPopoverScreen>(), false);
+    let mut app = start(nsh_testing::windowed_root::<KeyPopoverScreen>(), false);
     app.app.press_key("tab").unwrap();
     app.app.press_key("enter").unwrap();
     app.app.run_for(Duration::from_millis(50)).unwrap();
@@ -624,7 +627,10 @@ fn TooltipScreen(_props: TooltipProps) -> impl IntoElement {
 
 #[test]
 fn a_tooltip_stays_with_its_ending_look_until_its_exit_ran() {
-    let mut app = start(Root::new::<TooltipScreen>(|| TooltipProps {}), false);
+    let mut app = start(
+        nsh_testing::windowed_root_with::<TooltipScreen>(|| TooltipProps {}),
+        false,
+    );
     app.app.wait_for("Tip").unwrap();
     app.app.press("id:toggle").unwrap();
     app.app.run_for(Duration::from_millis(100)).unwrap();
@@ -660,7 +666,7 @@ fn DelayScreen(props: DelayProps) -> impl IntoElement {
 
 fn delay_app(delay: f64) -> App {
     start(
-        Root::new::<DelayScreen>(move || DelayProps { delay }),
+        nsh_testing::windowed_root_with::<DelayScreen>(move || DelayProps { delay }),
         false,
     )
 }
@@ -785,7 +791,7 @@ fn FocusScreen(props: FocusProps) -> impl IntoElement {
 /// A tooltip shows for the focus the keyboard moves to its trigger at once
 /// (Tab), hides when the focus leaves and on Escape, in `idiom`.
 fn the_focus_shows_a_tooltip_in(os: Os, idiom: Idiom) {
-    let root = Root::new::<FocusScreen>(|| FocusProps { fields: false });
+    let root = nsh_testing::windowed_root_with::<FocusScreen>(|| FocusProps { fields: false });
     let mut app = start_on(root, false, os, idiom).app;
     app.press_key("tab").unwrap();
     app.run_for(Duration::from_millis(20)).unwrap();
@@ -820,7 +826,7 @@ fn the_keyboard_focus_shows_a_tooltip_on_a_desktop() {
 /// the pointer goes, and the keyboard moving the focus there shows it.
 #[test]
 fn a_click_that_focuses_the_trigger_leaves_its_tooltip_to_the_pointer() {
-    let root = Root::new::<FocusScreen>(|| FocusProps { fields: false });
+    let root = nsh_testing::windowed_root_with::<FocusScreen>(|| FocusProps { fields: false });
     let mut app = start(root, false).app;
     app.hover("id:trigger").unwrap();
     app.run_for(Duration::from_millis(600)).unwrap();
@@ -844,7 +850,7 @@ fn a_click_that_focuses_the_trigger_leaves_its_tooltip_to_the_pointer() {
 
 #[test]
 fn the_keyboard_focus_shows_a_tooltip_on_a_phone() {
-    let root = Root::new::<FocusScreen>(|| FocusProps { fields: true });
+    let root = nsh_testing::windowed_root_with::<FocusScreen>(|| FocusProps { fields: true });
     let mut app = start_on(root, false, Os::Ios, Idiom::Phone).app;
     // A tap focusing the field (the app's `focus()` after it) shows none.
     app.press("id:focus").unwrap();
@@ -937,7 +943,7 @@ fn toolbar_app(delay: f64) -> Headless {
 }
 
 fn toolbar_app_on(delay: f64, os: Os, idiom: Idiom) -> Headless {
-    let root = Root::new::<ToolbarScreen>(move || ToolbarProps { delay });
+    let root = nsh_testing::windowed_root_with::<ToolbarScreen>(move || ToolbarProps { delay });
     start_on(root, false, os, idiom).app
 }
 

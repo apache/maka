@@ -409,7 +409,8 @@ export function AvatarDemo() {
     const side = pointer ? 44 : 52;
     return (
       <Card title="Loading and failing" subtitle="While loading, on failure, and without one">
-        <View style={{ flexDirection: "row", justifyContent: "space-between" }}>
+        {/* Columns apart, so one column's status never runs into the next one's. */}
+        <View style={{ flexDirection: "row", justifyContent: "space-between", gap: 16 }}>
           <Each of={cases}>
             {(c) => (
               <View style={{ alignItems: "center", gap: 6, flex: 1 }}>

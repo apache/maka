@@ -35,6 +35,7 @@ fn reminder_time() -> impl IntoElement {
 ```tsx tabs
 import { mount, signal } from "nsh";
 import { TimeField } from "nsh/base";
+import { Window } from "nsh/desktop";
 
 function App() {
   const at = signal("09:30");
@@ -51,7 +52,11 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 `TimeField` comes from [`nsh/base`](../modules/nsh-base.md), the `nsh-base` crate in Rust. In Rust, `time_field()`
@@ -70,11 +75,18 @@ the hours: `"h23"` (the default) from 00 to 23, `"h12"` from 12 to 11 with an AM
 user's is `"h12"` where `localeSettings().hourCycle` is `"h11"` or `"h12"`, else `"h23"`
 ([Regional preferences](../docs/device-and-environment.md#regional-preferences)).
 
+`min` and `max` bound the time, in the same `"HH:MM"` or `"HH:MM:SS"` form as `value`: business hours, an
+appointment window. A step that would go past a bound lands on it, and one at the bound that would leave the range
+does nothing (it does not wrap out of it). Typed digits that make a time outside the range are held to the nearest
+bound when the segment completes (a half-typed segment is held when the selection moves or the field is left). With
+`min` later than `max`, neither applies. Without them the field accepts any time, as before.
+
 ## Editing
 
 One segment is selected; the keys edit it, as `gpui-base`'s time field:
 
-- Up and Down step the segment by one and wrap around (59 to 00) without carrying into the next segment.
+- Up and Down step the segment by one and wrap around (59 to 00) without carrying into the next segment. With
+  `min` / `max`, a step that would go past a bound lands on it instead, and one at the bound does nothing.
 - Digits type into it, two at a time: a digit that cannot start a longer value (a `7` in the hour) completes the
   segment and moves to the next.
 - `a` and `p` set AM and PM.
@@ -90,6 +102,8 @@ phones and tablets it brings up the number pad.
 |---|---|---|---|---|
 | `value` | `.value(..)` | `string` | none | The time, owned by the app. |
 | `defaultValue` | `.default_value(..)` | `string` | `"00:00"` | The time at first, without `value`. |
+| `min` | `.min(..)` | `string` | none | The earliest time; steps stop on it and typed times before it are held to it. |
+| `max` | `.max(..)` | `string` | none | The latest time; as `min`, from above. |
 | `precision` | `.precision(..)` | `"minute" \| "second"` | `"minute"` | The smallest unit it edits. |
 | `hourCycle` | `.hour_cycle(..)` | `"h23" \| "h12"` | `"h23"` | How it counts the hours; `"h12"` adds an AM/PM segment. |
 | `disabled` | `.disabled(..)` | `boolean` | `false` | No focus and no editing; `disabled:` styles apply to the field and its segments. |
@@ -134,7 +148,7 @@ Tab reaches the field with its selected segment. Then:
 |---|---|
 | Left / Right | The segment before or after. |
 | Tab / Shift+Tab | The segment after or before; Tab from the last one and Shift+Tab from the first leave the field. |
-| Up / Down | Steps the segment by one, wrapping around. |
+| Up / Down | Steps the segment by one, wrapping around; a step past `min` / `max` lands on the bound. |
 | 0 to 9 | Types into the segment. |
 | A / P | AM or PM. |
 | Backspace, Delete | Resets the segment. |

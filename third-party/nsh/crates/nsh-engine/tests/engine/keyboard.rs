@@ -17,6 +17,7 @@ use nsh_engine::{Bundle, Engine, EngineConfig};
 use crate::ChannelSink;
 
 const APP: &str = r#"import { mount, signal, Text, View } from "nsh";
+import { Window } from "nsh/desktop";
 
 const log = signal<string[]>([]);
 const note = (s: string) => log.update((l) => [...l, s]);
@@ -44,7 +45,7 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => <Window id="main"><App /></Window>);
 "#;
 
 fn start() -> (Engine, Receiver<MountBatch>) {

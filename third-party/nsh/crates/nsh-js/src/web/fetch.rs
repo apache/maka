@@ -30,7 +30,7 @@ use super::{
     streams::{Algo, readable},
     web,
 };
-use crate::net::{FetchEvent, FetchOp, HttpBody, HttpHead, HttpRequest, RequestId};
+use crate::net::{FetchEvent, FetchOp, HttpBody, HttpCache, HttpHead, HttpRequest, RequestId};
 
 /// Response bytes waiting unread before the request is paused.
 const QUEUE_LIMIT: f64 = (1 << 20) as f64;
@@ -1471,9 +1471,10 @@ fn start_fetch(cx: Ctx, input: Raw, init: Raw) -> R<V> {
         let reason = super::event::reason(cx, signal.raw())?;
         return js::rejected(cx, reason.raw());
     }
-    let (method, url, redirect) = {
+    let (method, url, redirect, cache) = {
         let r = request(cx, req.raw())?;
-        (r.method.clone(), r.url.clone(), r.redirect.clone())
+        let cache = HttpCache::parse(&r.cache).unwrap_or_default();
+        (r.method.clone(), r.url.clone(), r.redirect.clone(), cache)
     };
     let scheme = url
         .split(':')
@@ -1574,6 +1575,7 @@ fn start_fetch(cx: Ctx, input: Raw, init: Raw) -> R<V> {
             headers: list,
             body: http_body,
             follow_redirects: redirect == "follow",
+            cache,
         }),
     );
     Ok(promise)

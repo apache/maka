@@ -1,5 +1,6 @@
 //! HTTP requests made by `fetch`, as handed to the platform's network stack.
 
+pub(crate) use nsh_core::platform::HttpCache;
 pub use nsh_core::platform::{FetchEvent, FetchOp, HttpBody, HttpHead, HttpRequest};
 
 /// Identifies a request between JS and the network stack.

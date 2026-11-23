@@ -115,13 +115,18 @@ pub enum Reply {
         /// The capabilities the app declares (JSON), which it runs under.
         #[serde(default)]
         capabilities: Option<String>,
-        /// The URL schemes the app claims (`nsh.json` `schemes`).
+        /// The links the app claims (`nsh.json` `schemes` and `links`), as
+        /// `nsh.json` writes them (checked again as read).
         #[serde(default)]
-        url_schemes: Vec<String>,
+        links: nsh_core::url_scheme::AppLinks,
         /// The main window's launch options (`nsh.json` `window`, JSON).
         #[doc(hidden)]
         #[serde(default)]
         main_window: Option<String>,
+        /// The app's lifecycle options (`nsh.json` `application`, JSON).
+        #[doc(hidden)]
+        #[serde(default)]
+        application: Option<String>,
         /// The directory the bundle's `asset:/` URLs are relative to (the
         /// app's, `nsh_bundler::Bundle::asset_root`); `None` from an nsh
         /// that sends none: the entry's.
@@ -217,8 +222,9 @@ pub fn runner(ui_sets: Vec<Registry>, root: Option<fn() -> Root>) -> ExitCode {
                 bytecode,
                 source_map,
                 capabilities,
-                url_schemes,
+                links,
                 main_window,
+                application,
                 asset_root,
             } => {
                 let bytes = std::fs::read(&bytecode)
@@ -234,8 +240,9 @@ pub fn runner(ui_sets: Vec<Registry>, root: Option<fn() -> Root>) -> ExitCode {
                 // QuickJS build it links (the request's version, checked).
                 let bundle = unsafe { Bundle::bytecode(bytes) }
                     .with_capabilities_json(capabilities.as_deref())?
-                    .with_url_schemes(url_schemes)
-                    .with_main_window(main_window.as_deref());
+                    .with_links(links)
+                    .with_main_window(main_window.as_deref())
+                    .with_application(application.as_deref());
                 // An app's entry may be its directory.
                 let asset_root = asset_root.unwrap_or_else(|| {
                     if entry.is_dir() {
@@ -330,17 +337,22 @@ mod tests {
             bytecode: "/app/.nsh/test/build/1.nshc".into(),
             source_map: None,
             capabilities: Some(r#"{"network":{"hosts":["api.test"]}}"#.into()),
-            url_schemes: vec!["myapp".into()],
+            links: nsh_core::url_scheme::AppLinks::from_json(&serde_json::json!({
+                "schemes": ["myapp"],
+                "links": [{ "host": "example.com", "paths": ["/orders/*"] }]
+            })),
             main_window: Some(r#"{"defaultVisible":false}"#.into()),
+            application: None,
             asset_root: Some("/app".into()),
         };
         let line = serde_json::to_string(&reply).unwrap();
         assert_eq!(serde_json::from_str::<Reply>(&line).unwrap(), reply);
-        // A reply from an nsh that sends no schemes claims none.
+        assert!(line.contains(r#""links":{"schemes":["myapp"],"links":[{"host":"example.com","paths":["/orders/*"]}]}"#), "{line}");
+        // A reply from an nsh that sends no links claims none.
         let older = r#"{"built":"js","bytecode":"/b.nshc","source_map":null}"#;
         assert!(matches!(
             serde_json::from_str::<Reply>(older),
-            Ok(Reply::Js { url_schemes, .. }) if url_schemes.is_empty()
+            Ok(Reply::Js { links, .. }) if links.is_empty()
         ));
     }
 }

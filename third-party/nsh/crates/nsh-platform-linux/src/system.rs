@@ -471,7 +471,8 @@ fn update(surface: &Surface, appearance: Appearance) {
     env.reduce_motion = appearance.reduce_motion;
     env.rtl = appearance.rtl;
     env.screen_reader = appearance.screen_reader;
-    env.pixel_ratio = pixel_ratio(&surface.root);
+    env.pixel_ratio = crate::window::primary(surface)
+        .map_or_else(|| pixel_ratio(&surface.root), |(_, ratio)| ratio);
     env.os_version = OS_VERSION.with(|v| *v);
     env.safe_area = Edges::default();
     env.keyboard_height = px(0.0);
@@ -556,8 +557,33 @@ fn interface_scheme(settings: &gtk::Settings) -> Option<String> {
     glib::EnumValue::from_value(&value).map(|(_, v)| v.nick().to_owned())
 }
 
+/// Tells the engine the window size and scale the app sees (`windowSize()`,
+/// `pixelRatio()`, the size classes): its primary window's
+/// ([`crate::window::primary`]), as the user resizes it, else the
+/// surface's (an embedded view, or a host whose app shows no window). The
+/// host's own window never shows under the desktop window model: reporting
+/// it would lay the app out for a window nobody sees.
+pub(crate) fn window_environment(surface: &Surface) {
+    let (size, ratio) = crate::window::primary(surface)
+        .unwrap_or_else(|| (surface.root.state().frame.size, pixel_ratio(&surface.root)));
+    let mut env = surface.environment.get();
+    if env.window == size && env.pixel_ratio == ratio {
+        return;
+    }
+    let rescaled = env.pixel_ratio != ratio;
+    env.window = size;
+    env.pixel_ratio = ratio;
+    // Only the size and scale: the appearance stays as it was applied,
+    // which a live resize would otherwise apply again on every step.
+    surface.environment.set(env);
+    surface.control(|c| c.set_environment(env));
+    if rescaled {
+        crate::image::rescaled(surface);
+    }
+}
+
 /// Device pixels per point of `root`'s window.
-fn pixel_ratio(root: &NshView) -> f32 {
+pub(crate) fn pixel_ratio(root: &NshView) -> f32 {
     root.native()
         .and_then(|n| n.surface())
         .map_or(root.scale_factor() as f64, |s| s.scale()) as f32
@@ -1421,6 +1447,11 @@ fn show_dialog(surface: &Rc<Surface>, dialog: &Dialog) {
 /// that can be closed so).
 #[cfg(feature = "dev")]
 pub(crate) fn answer_dialog(surface: &Surface, button: Option<&str>) -> Result<(), String> {
+    // The newest dialog of the surface: the main window's, or one of the
+    // app's own windows' (a dialog is shown in the window the user is in,
+    // `show_dialog`).
+    let mut roots = vec![surface.root.clone()];
+    roots.extend(crate::window::roots(surface).into_iter().map(|(_, r)| r));
     let (widget, dismiss) = SYSTEM
         .with(|s| {
             s.borrow()
@@ -1429,7 +1460,7 @@ pub(crate) fn answer_dialog(surface: &Surface, button: Option<&str>) -> Result<(
                 .rev()
                 .find_map(|o| match &o.kind {
                     OverlayKind::Dialog { dismiss, .. }
-                        if o.root == surface.root && o.widget.can_target() =>
+                        if roots.contains(&o.root) && o.widget.can_target() =>
                     {
                         Some((o.widget.clone(), dismiss.clone()))
                     }
@@ -1615,30 +1646,52 @@ pub(crate) fn read_pasted(
         if has_html {
             paste.html = read_html(&board).await.unwrap_or_default();
         }
+        // The listed files this app cannot open for reading: with an image
+        // on the clipboard too, the image is theirs (a sandboxed app copies
+        // a picture as its own file and the picture's data).
+        let mut unreadable = Vec::new();
         if has_files
             && let Ok(value) = board
                 .read_value_future(gdk::FileList::static_type(), glib::Priority::DEFAULT)
                 .await
             && let Ok(list) = value.get::<gdk::FileList>()
         {
-            paste.uris = list
-                .files()
-                .into_iter()
-                .filter(|file| file.path().is_some_and(|path| path.is_absolute()))
-                .map(|file| file.uri().to_string())
-                .collect();
+            for file in list.files() {
+                let Some(path) = file.path().filter(|path| path.is_absolute()) else {
+                    continue;
+                };
+                if has_image && !prefer_file_url(&path) {
+                    unreadable.push(file.uri().to_string());
+                } else {
+                    paste.uris.push(file.uri().to_string());
+                }
+            }
         }
-        // A file list's icon is no image of the user's.
+        // A file list's icon is no image of the user's: the image is read
+        // with no file list, or in place of the files that cannot be read.
         if has_image
-            && paste.uris.is_empty()
+            && (paste.uris.is_empty() || !unreadable.is_empty())
             && let Ok(Some(texture)) = board.read_texture_future().await
         {
             paste.files.push(nsh_core::PastedFile::image(
                 texture.save_to_png_bytes().to_vec(),
             ));
+        } else {
+            // No image to stand in for them: the files are reported as they are.
+            paste.uris.extend(unreadable);
         }
         done(paste);
     });
+}
+
+/// Whether a pasted file is reported as its URL rather than giving way to
+/// the clipboard's image: a directory or a special file always, a regular
+/// file when this process can open it for reading. Nothing is read.
+fn prefer_file_url(path: &std::path::Path) -> bool {
+    match path.metadata() {
+        Ok(metadata) if !metadata.is_file() => true,
+        _ => std::fs::File::open(path).is_ok(),
+    }
 }
 
 /// The clipboard's `text/html`: UTF-8, or UTF-16 with a byte order mark as
@@ -1813,6 +1866,90 @@ mod tests {
             });
             assert!(!blocks_activation(&surface.root));
         });
+    }
+
+    #[test]
+    fn a_pasted_file_is_kept_as_its_url_when_it_can_be_opened() {
+        let dir = std::env::temp_dir().join(format!("nsh-paste-probe-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let readable = dir.join("notes.txt");
+        std::fs::write(&readable, b"notes").unwrap();
+        assert!(prefer_file_url(&readable));
+        assert!(prefer_file_url(&dir), "a directory keeps its URL");
+        assert!(!prefer_file_url(&dir.join("gone.jpg")));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let denied = dir.join("denied.jpg");
+            std::fs::write(&denied, b"jpeg").unwrap();
+            std::fs::set_permissions(&denied, std::fs::Permissions::from_mode(0o000)).unwrap();
+            // Root opens it whatever its mode.
+            if std::fs::File::open(&denied).is_err() {
+                assert!(!prefer_file_url(&denied));
+            }
+            std::fs::set_permissions(&denied, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Pastes a clipboard holding `files` and a 1×1 image: its URIs and how
+    /// many images it reports. `None` without a display.
+    fn paste_files_and_image(files: Vec<std::path::PathBuf>) -> Option<(Vec<String>, usize)> {
+        crate::gtk_test::run(move || {
+            let board = gdk::Display::default().expect("a display").clipboard();
+            let image = gdk::MemoryTexture::new(
+                1,
+                1,
+                gdk::MemoryFormat::R8g8b8a8,
+                &glib::Bytes::from(&[0u8, 0, 0, 255]),
+                4,
+            );
+            let list = gdk::FileList::from_array(
+                &files.iter().map(gio::File::for_path).collect::<Vec<_>>(),
+            );
+            let provider = gdk::ContentProvider::new_union(&[
+                gdk::ContentProvider::for_value(&list.to_value()),
+                gdk::ContentProvider::for_value(&image.upcast::<gdk::Texture>().to_value()),
+            ]);
+            board
+                .set_content(Some(&provider))
+                .expect("the clipboard takes it");
+            let read = Rc::new(RefCell::new(None));
+            read_pasted(board, {
+                let read = read.clone();
+                move |paste| *read.borrow_mut() = Some((paste.uris, paste.files.len()))
+            });
+            let context = glib::MainContext::default();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while read.borrow().is_none() && std::time::Instant::now() < deadline {
+                context.iteration(false);
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            read.take().expect("the paste is read")
+        })
+    }
+
+    #[test]
+    fn an_image_stands_in_for_pasted_files_that_cannot_be_opened() {
+        let dir = std::env::temp_dir().join(format!("nsh-paste-image-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let readable = dir.join("notes.txt");
+        std::fs::write(&readable, b"notes").unwrap();
+        let gone = dir.join("photo.jpg");
+        let uri = |path: &std::path::Path| gio::File::for_path(path).uri().to_string();
+        // A file this app cannot open, beside the image's data: the image,
+        // and the file that can be opened stays.
+        if let Some((uris, images)) = paste_files_and_image(vec![gone.clone(), readable.clone()]) {
+            assert_eq!(uris, [uri(&readable)]);
+            assert_eq!(images, 1);
+        }
+        // Files that can all be opened: the files alone, as before (a file
+        // list's icon is no image of the user's).
+        if let Some((uris, images)) = paste_files_and_image(vec![readable.clone()]) {
+            assert_eq!(uris, [uri(&readable)]);
+            assert_eq!(images, 0);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -32,6 +32,21 @@ pub(crate) struct Java {
     pub(crate) net_finish: JStaticMethodID,
     pub(crate) net_pause: JStaticMethodID,
     pub(crate) net_cancel: JStaticMethodID,
+    /// `com.longbridge.nsh.Permissions`: runtime permissions (any thread;
+    /// a request asks on the UI thread).
+    pub(crate) permissions: GlobalRef,
+    pub(crate) permissions_states: JStaticMethodID,
+    pub(crate) permissions_request: JStaticMethodID,
+    /// `com.longbridge.nsh.Activities`: activities started for a result
+    /// (any thread; they start on the UI thread).
+    pub(crate) activities: GlobalRef,
+    pub(crate) activities_start: JStaticMethodID,
+    pub(crate) activities_can_start: JStaticMethodID,
+    pub(crate) activities_output_file: JStaticMethodID,
+    /// `com.longbridge.nsh.Picker`: the picker's image preparation (any
+    /// thread).
+    pub(crate) picker: GlobalRef,
+    pub(crate) picker_prepare_file: JStaticMethodID,
     /// `com.longbridge.nsh.NshView` instance methods.
     pub(crate) view_submit: JMethodID,
     pub(crate) view_report_error: JMethodID,
@@ -74,8 +89,14 @@ pub(crate) fn init(vm: JavaVM) -> jni::errors::Result<()> {
     let text = class(&mut env, "com/longbridge/nsh/TextLayouts")?;
     let net = class(&mut env, "com/longbridge/nsh/Net")?;
     let view = class(&mut env, "com/longbridge/nsh/NshView")?;
+    let permissions = class(&mut env, "com/longbridge/nsh/Permissions")?;
     let text_class: &JClass<'_> = text.as_obj().into();
     let net_class: &JClass<'_> = net.as_obj().into();
+    let permissions_class: &JClass<'_> = permissions.as_obj().into();
+    let activities = class(&mut env, "com/longbridge/nsh/Activities")?;
+    let activities_class: &JClass<'_> = activities.as_obj().into();
+    let picker = class(&mut env, "com/longbridge/nsh/Picker")?;
+    let picker_class: &JClass<'_> = picker.as_obj().into();
     let view_class: &JClass<'_> = view.as_obj().into();
     let java = Java {
         text_prepare: env.get_static_method_id(
@@ -124,6 +145,36 @@ pub(crate) fn init(vm: JavaVM) -> jni::errors::Result<()> {
         net_finish: env.get_static_method_id(net_class, "finish", "(J)V")?,
         net_pause: env.get_static_method_id(net_class, "pause", "(JZ)V")?,
         net_cancel: env.get_static_method_id(net_class, "cancel", "(J)V")?,
+        permissions_states: env.get_static_method_id(
+            permissions_class,
+            "states",
+            "([Ljava/lang/String;)[Ljava/lang/String;",
+        )?,
+        permissions_request: env.get_static_method_id(
+            permissions_class,
+            "request",
+            "([Ljava/lang/String;J)V",
+        )?,
+        activities_start: env.get_static_method_id(
+            activities_class,
+            "start",
+            "(Landroid/content/Intent;J)V",
+        )?,
+        activities_can_start: env.get_static_method_id(
+            activities_class,
+            "canStart",
+            "(Landroid/content/Intent;)Z",
+        )?,
+        activities_output_file: env.get_static_method_id(
+            activities_class,
+            "outputFile",
+            "(Ljava/lang/String;)[Ljava/lang/Object;",
+        )?,
+        picker_prepare_file: env.get_static_method_id(
+            picker_class,
+            "prepareFile",
+            "(Ljava/lang/String;Ljava/lang/String;IFZ)[Ljava/lang/Object;",
+        )?,
         view_submit: env.get_method_id(view_class, "submit", "([B[Ljava/lang/Object;J)V")?,
         view_report_error: env.get_method_id(view_class, "reportError", "(Ljava/lang/String;)V")?,
         view_read_asset: env.get_method_id(view_class, "readAsset", "(Ljava/lang/String;)[B")?,
@@ -155,6 +206,9 @@ pub(crate) fn init(vm: JavaVM) -> jni::errors::Result<()> {
         test_agent: class(&mut env, "com/longbridge/nsh/TestAgent")?,
         text,
         net,
+        permissions,
+        activities,
+        picker,
         vm,
     };
     let _ = JAVA.set(java);
@@ -165,25 +219,26 @@ pub(crate) fn init(vm: JavaVM) -> jni::errors::Result<()> {
 /// the engine thread calls into Java all the time), inside a local frame so
 /// local references never pile up on long-lived native threads.
 pub(crate) fn with_env<R: Default>(f: impl FnOnce(&mut JNIEnv<'_>) -> jni::errors::Result<R>) -> R {
+    try_with_env(f).unwrap_or_else(|err| {
+        log::error!("JNI call failed: {err}");
+        R::default()
+    })
+}
+
+/// Runs `f` with the current thread's JNI env (attaching the thread to the
+/// VM for good), inside a local frame: its result, or why it failed. A
+/// Java exception is described to the log and cleared, so later calls work.
+pub(crate) fn try_with_env<R>(
+    f: impl FnOnce(&mut JNIEnv<'_>) -> jni::errors::Result<R>,
+) -> jni::errors::Result<R> {
     let java = java();
-    let mut env = match java.vm.attach_current_thread_permanently() {
-        Ok(env) => env,
-        Err(err) => {
-            log::error!("cannot attach to the JVM: {err}");
-            return R::default();
-        }
-    };
+    let mut env = java.vm.attach_current_thread_permanently()?;
     let result = env.with_local_frame(32, |env| f(env));
-    match result {
-        Ok(value) => value,
-        Err(err) => {
-            // A Java exception: log it and clear it so later calls work.
-            if env.exception_check().unwrap_or(false) {
-                let _ = env.exception_describe();
-                let _ = env.exception_clear();
-            }
-            log::error!("JNI call failed: {err}");
-            R::default()
-        }
+    // Whatever `f` returned: a call that failed and was mapped to `Ok` by
+    // the caller still leaves its exception pending on this thread.
+    if env.exception_check().unwrap_or(false) {
+        let _ = env.exception_describe();
+        let _ = env.exception_clear();
     }
+    result
 }

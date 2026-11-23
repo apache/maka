@@ -30,6 +30,7 @@ fn code() -> impl IntoElement {
 ```tsx tabs
 import { mount, signal } from "nsh";
 import { Editor } from "nsh/base";
+import { Window } from "nsh/desktop";
 
 const MAIN = `fn main() {
     println!("Hello, world!");
@@ -41,7 +42,11 @@ function App() {
   return <Editor value={source()} onChange={({ value }) => source.set(value)} language="rust" class="flex-1" />;
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 编辑器填满应用给它的盒子（`flex-1`、一个高度），在其中滚动文本：纵向总是可以滚动；行比盒子长时可以横向滚动；开启 `softWrap` 后长行在编辑器的宽度处换行，不再横向滚动。
@@ -173,6 +178,8 @@ keymap.bind({
   "mod+alt+j": () => editor.run("unfoldAll"),
 });
 ```
+
+编辑器有焦点时，它自己的绑定排在应用的绑定之前：无论应用把 Mod+Enter 绑给了什么，它都会在下方插入一行。要拿到这样的按键（例如查询编辑器用 Mod+Enter 执行其中的文本），在编辑器有焦点时（`onFocus` / `onBlur`）用 [`keymap`](../modules/nsh.md#keymap) 的 `overFocused: true` 绑定它。
 
 <a id="find-and-replace"></a>
 

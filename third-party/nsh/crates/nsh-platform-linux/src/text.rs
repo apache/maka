@@ -612,7 +612,7 @@ impl PangoTextEngine {
     /// Made on the engine thread; `ui_family` is the family of the system
     /// font ([`ui_family`], read on the main thread).
     pub(crate) fn new(ui_family: Arc<str>) -> Self {
-        let font_map = pangocairo::FontMap::new();
+        let font_map = measure_font_map();
         let files = FONT_FILES.lock().unwrap_or_else(|e| e.into_inner()).clone();
         if !files.is_empty()
             && let Err(err) = set_font_files(&font_map, &files)
@@ -1184,6 +1184,20 @@ impl TextEngine for PangoTextEngine {
     }
 }
 
+/// The engine thread's font map: PangoFT2, not pangocairo. Cairo's FreeType
+/// backend evicts faces across threads unsafely once more than ten font
+/// files are open (cairo#436), and the main thread draws with cairo-ft, so
+/// the engine must measure without cairo. PangoFT2 shapes and measures
+/// through HarfBuzz alone and gives the same logical extents as pangocairo
+/// at 96 dpi (its own default is 72). It is a `PangoFcFontMap`, so
+/// [`set_font_files`] still applies (#2504).
+fn measure_font_map() -> pango::FontMap {
+    use glib::translate::FromGlibPtrFull;
+    let map = unsafe { fontconfig::pango_ft2_font_map_new() };
+    unsafe { fontconfig::pango_ft2_font_map_set_resolution(map, 96.0, 96.0) };
+    unsafe { pango::FontMap::from_glib_full(map.cast::<pango::ffi::PangoFontMap>()) }
+}
+
 mod fontconfig {
     //! Fontconfig and PangoFc functions the bindings lack: an app font for
     //! a Fontconfig font map without `pango_font_map_add_font_file`, which
@@ -1204,6 +1218,8 @@ mod fontconfig {
         #[cfg(test)]
         pub(super) fn pango_fc_font_map_get_config(map: *mut c_void) -> *mut c_void;
         pub(super) fn pango_fc_font_map_set_config(map: *mut c_void, config: *mut c_void);
+        pub(super) fn pango_ft2_font_map_new() -> *mut c_void;
+        pub(super) fn pango_ft2_font_map_set_resolution(map: *mut c_void, dpi_x: f64, dpi_y: f64);
     }
 }
 
@@ -1343,9 +1359,13 @@ pub(crate) fn set(
     let mut selection = None;
     match old.and_then(|o| o.selection.map(|s| (s, o.text))) {
         Some((s, old)) if text.is_selectable() => {
-            // Offsets into other text mean nothing.
-            if old.text != text.text {
-                s.range.set(None);
+            // Offsets into other text mean nothing: the selection ends
+            // as `select(.., None)` ends one, or the view would keep the
+            // focus, Ctrl+A / Ctrl+C and the watcher for a selection that
+            // is no more (`select` cannot clear a range already `None`).
+            if old.text != text.text && s.range.take().is_some() {
+                s.watch_outside(view, false);
+                s.release(view);
             }
             selection = Some(s);
         }
@@ -1852,7 +1872,16 @@ impl Selection {
         }
         view.insert_action_group("clipboard", None::<&gio::ActionGroup>);
         view.insert_action_group("selection", None::<&gio::ActionGroup>);
+        self.release(view);
+    }
+
+    /// Gives up what a selection took of the keyboard: GTK leaves the
+    /// focus on a widget that stops being focusable, and a focused view
+    /// still takes Ctrl+A, Ctrl+C and Ctrl+Insert for a selection that is
+    /// no more (`key_focus::blur` releases it the same way).
+    fn release(&self, view: &NshView) {
         view.set_focusable(false);
+        crate::key_focus::blur(view);
     }
 
     /// Starts or stops clearing the selection on presses outside `view`.
@@ -1934,7 +1963,7 @@ fn select(view: &NshView, range: Option<(u32, u32)>) {
         }
         None => {
             s.watch_outside(view, false);
-            view.set_focusable(false);
+            s.release(view);
         }
     }
 }
@@ -2047,7 +2076,7 @@ fn copy(view: &NshView) {
     }
 }
 
-/// The selected text, without attachments' placeholders and hidden runs.
+/// The selected text as a copy gives it ([`nsh_core::AttributedText::copied_text`]).
 fn selected_text(view: &NshView) -> Option<String> {
     let (a, b) = view_selection(view)?.range.get()?;
     let state = view.state();
@@ -2456,6 +2485,61 @@ impl LinuxLayout {
 mod tests {
     use super::*;
 
+    /// #2504: the engine measures on its own thread while the main thread
+    /// draws with cairo-ft. Over more than ten font files, cairo-ft evicts
+    /// faces across threads unsafely, so the engine must not use it.
+    #[test]
+    fn engine_measuring_does_not_race_main_thread_cairo() {
+        use pangocairo::cairo;
+        let families: Vec<String> = {
+            let map = pangocairo::FontMap::new();
+            let mut f: Vec<String> = map
+                .list_families()
+                .iter()
+                .map(|f| f.name().to_string())
+                .collect();
+            f.sort();
+            f.dedup();
+            f.into_iter().take(30).collect()
+        };
+        if families.len() <= 10 {
+            return; // Too few fonts to reach cairo's face eviction.
+        }
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let engine_families = families.clone();
+        let engine_stop = stop.clone();
+        let engine = std::thread::spawn(move || {
+            let engine = PangoTextEngine::new("sans-serif".into());
+            let mut size = 6.0;
+            while !engine_stop.load(std::sync::atomic::Ordering::Relaxed) {
+                for family in &engine_families {
+                    size = if size > 40.0 { 6.0 } else { size + 0.37 };
+                    let layout = pango::Layout::new(&engine.ltr);
+                    let mut desc = pango::FontDescription::from_string(family);
+                    desc.set_absolute_size(size * pango::SCALE as f64);
+                    layout.set_font_description(Some(&desc));
+                    layout.set_width(80 * pango::SCALE);
+                    layout.set_text("The quick brown fox jumps 0123");
+                    assert!(layout.line_count() > 0);
+                }
+            }
+        });
+        let surface = cairo::ImageSurface::create(cairo::Format::ARgb32, 64, 64).unwrap();
+        let cr = cairo::Context::new(&surface).unwrap();
+        let end = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        let mut size = 6.0;
+        while std::time::Instant::now() < end {
+            for family in &families {
+                size = if size > 40.0 { 6.0 } else { size + 0.41 };
+                cr.select_font_face(family, cairo::FontSlant::Normal, cairo::FontWeight::Normal);
+                cr.set_font_size(size);
+                let _ = cr.text_extents("Pack my box with five dozen");
+            }
+        }
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        engine.join().unwrap();
+    }
+
     #[test]
     fn utf16_offsets_of_bytes() {
         // "a" 1 byte / 1 unit, "é" 2 / 1, "中" 3 / 1, "😀" 4 / 2.
@@ -2764,6 +2848,54 @@ mod tests {
                 .num_glyphs(),
             _ => 0,
         }
+    }
+
+    /// A selectable text whose content changes ends its selection as a
+    /// cleared one: no range, no watcher on the root, not focusable and
+    /// not the focus (#2436).
+    #[test]
+    fn new_content_ends_the_selection_and_its_focus() {
+        crate::gtk_test::run(|| {
+            let engine = PangoTextEngine::new("sans-serif".into());
+            let window = gtk::Window::new();
+            let view = NshView::new(1, nsh_core::ViewKind::Text);
+            window.set_child(Some(&view));
+            window.present();
+            let set_text = |s: &str| {
+                let mut t = text(&[(s, ResolvedTextStyle::default())]);
+                t.selectable = Some(true);
+                let prepared = engine.prepare(&t);
+                let size = engine.measure(&prepared, None);
+                let layout = engine.layout(&prepared, size);
+                let content =
+                    Bounds::new(nsh_core::geometry::point(Points(0.0), Points(0.0)), size);
+                set(&view, &Arc::new(t), &layout, content);
+            };
+            let selected = |view: &NshView| {
+                let s = view_selection(view).unwrap();
+                (
+                    s.range.get(),
+                    s.outside.borrow().is_some(),
+                    view.is_focusable(),
+                    view.is_focus(),
+                )
+            };
+            set_text("hello world");
+            select(&view, Some((0, 5)));
+            assert_eq!(selected(&view), (Some((0, 5)), true, true, true));
+            // The same content keeps it.
+            set_text("hello world");
+            assert_eq!(selected(&view), (Some((0, 5)), true, true, true));
+            // Other content ends it, focus and watcher included.
+            set_text("goodbye");
+            assert_eq!(selected(&view), (None, false, false, false));
+            // A later selection clears as any other.
+            select(&view, Some((0, 4)));
+            assert_eq!(selected(&view), (Some((0, 4)), true, true, true));
+            select(&view, None);
+            assert_eq!(selected(&view), (None, false, false, false));
+            window.destroy();
+        });
     }
 
     /// Nothing of a hidden run is drawn: not its color emoji, its
@@ -3190,8 +3322,9 @@ mod fallback_tests {
 
 #[cfg(test)]
 mod font_rendering_tests {
-    use super::*;
     use pangocairo::cairo::{HintMetrics, HintStyle};
+
+    use super::*;
 
     /// By default layout is unhinted and drawing slightly hinted; hinted
     /// metrics (manual font rendering) hint and round layout too.

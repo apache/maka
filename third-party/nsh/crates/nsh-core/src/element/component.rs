@@ -575,11 +575,13 @@ pub struct Root {
     fonts: Vec<Arc<[u8]>>,
     appearance: Option<crate::platform::Appearance>,
     app_id: Option<String>,
-    url_schemes: Vec<String>,
+    links: crate::url_scheme::AppLinks,
     capabilities: Option<crate::access::Capabilities>,
     status_bar: Option<crate::StatusBarSetting>,
     main_window: Option<crate::desktop::MainWindowOptions>,
+    application: Option<crate::desktop::ApplicationOptions>,
     translations: Option<crate::i18n::Translations>,
+    app_info: Option<crate::platform::AppInfo>,
 }
 
 impl Root {
@@ -591,11 +593,13 @@ impl Root {
             fonts: Vec::new(),
             appearance: None,
             app_id: None,
-            url_schemes: Vec::new(),
+            links: crate::url_scheme::AppLinks::default(),
             capabilities: None,
             status_bar: None,
             main_window: None,
+            application: None,
             translations: None,
+            app_info: None,
         }
     }
 
@@ -636,17 +640,83 @@ impl Root {
         self.app_id.as_deref()
     }
 
-    /// The URL schemes the app claims (`nsh.json` `schemes`,
-    /// which nsh's generated code sets): the links the core lets
-    /// through ([`crate::url_scheme`], [`crate::element::next_url_scheme_open`]).
+    /// The app as it was built ([`crate::platform::AppInfo`]), which
+    /// nsh's generated code sets: what [`crate::element::app_info`]
+    /// answers.
+    pub fn app_info(mut self, info: crate::platform::AppInfo) -> Self {
+        self.app_info = Some(info);
+        self
+    }
+
+    /// [`Root::app_info`] from the JSON `appInfo()` reports, which nsh's
+    /// generated code compiles in. JSON it cannot read is an app with
+    /// nothing known (logged).
+    #[doc(hidden)]
+    pub fn app_info_json(self, json: &str) -> Self {
+        let info = match serde_json::from_str(json) {
+            Ok(value) => crate::platform::AppInfo::from_json(&value),
+            Err(e) => {
+                log::warn!("appInfo: {e}, ignored");
+                crate::platform::AppInfo::default()
+            }
+        };
+        self.app_info(info)
+    }
+
+    /// The app as it was built ([`Root::app_info`]).
+    #[doc(hidden)]
+    pub fn app_info_ref(&self) -> Option<&crate::platform::AppInfo> {
+        self.app_info.as_ref()
+    }
+
+    /// The URL schemes the app claims (`nsh.json` `schemes`): the links the
+    /// core lets through ([`crate::url_scheme`],
+    /// [`crate::element::next_url_scheme_open`]). Replaces the schemes of
+    /// [`Root::links`], keeping its web links.
     pub fn url_schemes(mut self, schemes: impl IntoIterator<Item = impl Into<String>>) -> Self {
-        self.url_schemes = schemes.into_iter().map(Into::into).collect();
+        self.links.set_schemes(schemes);
         self
     }
 
     /// The schemes the app claims ([`Root::url_schemes`]).
     pub fn url_schemes_ref(&self) -> &[String] {
-        &self.url_schemes
+        self.links.schemes()
+    }
+
+    /// The links the app claims (`nsh.json` `schemes` and `links`, which
+    /// nsh's generated code sets): URLs of its schemes and `https` URLs of
+    /// its web links, the links the core lets through ([`crate::url_scheme`],
+    /// [`crate::element::next_url_scheme_open`]).
+    pub fn links(mut self, links: crate::url_scheme::AppLinks) -> Self {
+        self.links = links;
+        self
+    }
+
+    /// [`Root::links`] from `nsh.json`'s `schemes` and `links` as JSON text
+    /// (`{"schemes": [...], "links": [...]}`), which nsh's generated code
+    /// compiles in (checked when it was generated). Read as a package's
+    /// `app.json` is: what this runtime cannot claim is left out (logged).
+    #[doc(hidden)]
+    pub fn links_json(self, json: &str) -> Self {
+        let links = match serde_json::from_str::<serde_json::Value>(json) {
+            Ok(config) => {
+                let (links, ignored) = crate::url_scheme::AppLinks::from_json_lenient(&config);
+                for what in ignored {
+                    log::warn!("nsh.json: {what}, ignored");
+                }
+                links
+            }
+            Err(e) => {
+                log::warn!("nsh.json: links: {e}; none claimed");
+                crate::url_scheme::AppLinks::default()
+            }
+        };
+        self.links(links)
+    }
+
+    /// The links the app claims ([`Root::links`]).
+    pub fn links_ref(&self) -> &crate::url_scheme::AppLinks {
+        &self.links
     }
 
     /// What the app declares it may reach (`nsh.json` `capabilities`, which
@@ -752,6 +822,38 @@ impl Root {
         self.main_window.as_ref()
     }
 
+    /// The app's lifecycle options (`nsh.json` `"application"`, which nsh's
+    /// generated code sets): the engine sets the quit mode before the app
+    /// runs, as for a TSX app's bundle.
+    pub fn application(mut self, options: crate::desktop::ApplicationOptions) -> Self {
+        self.application = Some(options);
+        self
+    }
+
+    /// [`Root::application`] from `nsh.json`'s `"application"` object as
+    /// JSON text, which nsh's generated code compiles in (checked when it
+    /// was generated). A wrong one is logged and left out.
+    #[doc(hidden)]
+    pub fn application_json(self, json: &str) -> Self {
+        let options = serde_json::from_str::<serde_json::Value>(json)
+            .map_err(|e| e.to_string())
+            .and_then(|v| {
+                crate::desktop::ApplicationOptions::from_json(&v).map_err(|e| e.to_string())
+            });
+        match options {
+            Ok(options) => self.application(options),
+            Err(e) => {
+                log::warn!("nsh.json: application: {e}");
+                self
+            }
+        }
+    }
+
+    /// The app's lifecycle options ([`Root::application`]).
+    pub fn application_ref(&self) -> Option<&crate::desktop::ApplicationOptions> {
+        self.application.as_ref()
+    }
+
     /// The status bar's default ([`Root::status_bar`]).
     pub fn status_bar_ref(&self) -> Option<crate::StatusBarSetting> {
         self.status_bar
@@ -846,9 +948,13 @@ pub struct BuiltInScrollbar {
     pub target: crate::NodeId,
     /// Whether that view scrolls sideways.
     pub horizontal: bool,
-    /// The view's own theme (its `scrollbar` object, as JSON); `None`: the
-    /// app's.
+    /// The view's own theme (its `scrollbar` object, as JSON); `None`
+    /// with no [`Self::theme_value`]: the app's.
     pub theme: Option<Arc<crate::JsonValue>>,
+    /// The view's own theme as Rust gave it
+    /// ([`ScrollbarSetting::ThemeValue`](crate::ScrollbarSetting::ThemeValue)),
+    /// a value of the set's theme type.
+    pub theme_value: Option<super::AnyValue>,
     /// The app's theme, as the set gave it
     /// ([`set_builtin_scrollbars`](super::set_builtin_scrollbars)).
     pub app_theme: Option<super::AnyValue>,
@@ -859,6 +965,50 @@ pub struct BuiltInScrollbar {
 /// it scrolls; `None` leaves the view the platform's indicator
 /// ([`Registry::scrollbars_from`]).
 pub type ScrollbarSource = fn(&BuiltInScrollbar) -> Option<super::AnyElement>;
+
+/// A theme of one view's own given in Rust
+/// ([`ScrollbarSetting::ThemeValue`](crate::ScrollbarSetting::ThemeValue)):
+/// a value of the theme type of the UI set that makes bars, with the set's
+/// maker, so a Rust app that never registered the set gets the bar too (as
+/// with [`set_builtin_scrollbars`](super::set_builtin_scrollbars)). Two are
+/// equal when they hold the same value.
+#[derive(Clone)]
+pub struct ScrollbarThemeValue {
+    source: ScrollbarSource,
+    theme: super::AnyValue,
+}
+
+impl ScrollbarThemeValue {
+    /// `theme`, drawn by `source` (which reads it as
+    /// [`BuiltInScrollbar::theme_value`]).
+    pub fn new(source: ScrollbarSource, theme: super::AnyValue) -> Self {
+        Self { source, theme }
+    }
+
+    /// What makes the bar.
+    pub fn source(&self) -> ScrollbarSource {
+        self.source
+    }
+
+    /// The theme.
+    pub fn theme(&self) -> &super::AnyValue {
+        &self.theme
+    }
+}
+
+impl PartialEq for ScrollbarThemeValue {
+    fn eq(&self, other: &Self) -> bool {
+        self.theme == other.theme
+    }
+}
+
+impl std::fmt::Debug for ScrollbarThemeValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("ScrollbarThemeValue")
+            .field(&self.theme)
+            .finish()
+    }
+}
 
 /// What a UI set exports to JS: its components and modules, and what it
 /// passes on from the runtime. Cheap to clone.

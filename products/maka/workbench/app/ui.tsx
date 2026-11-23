@@ -20,7 +20,7 @@
 import { tr } from './locale';
 import { Text, View } from 'nsh';
 import type { JSX, ViewRef } from 'nsh';
-import { Button, Tooltip } from 'nsh/base';
+import { Button, TitleBar, Tooltip } from 'nsh/base';
 import { colorScheme, keymap, LayoutAnimation, platform, reduceMotion, windowSize } from 'nsh';
 import { Icon } from './Icon';
 import {
@@ -430,28 +430,21 @@ export function SidebarTitleRow(props: {
 }) {
   let underPointer = false;
   return (
-    <View
-      desktop={windowDrag}
-      style={{
-        height: TITLE_BAR_HEIGHT,
-        flexDirection: 'row',
-        alignItems: 'center',
-        justifyContent: 'flex-start',
-        paddingLeft: Math.max(4, controlsLeft(true) - 12),
-      }}
-    >
-      <SidebarToggle
-        expanded={!props.pin}
-        hover={(inside) => {
-          underPointer = inside;
-        }}
-        toggle={() => {
-          if (props.pin) return props.pin();
-          if (underPointer) props.suppressHover?.();
-          props.toggle();
-        }}
-      />
-    </View>
+    <TitleBar style={{ height: TITLE_BAR_HEIGHT }}>
+      <View style={{ paddingLeft: 4 }}>
+        <SidebarToggle
+          expanded={!props.pin}
+          hover={(inside) => {
+            underPointer = inside;
+          }}
+          toggle={() => {
+            if (props.pin) return props.pin();
+            if (underPointer) props.suppressHover?.();
+            props.toggle();
+          }}
+        />
+      </View>
+    </TitleBar>
   );
 }
 

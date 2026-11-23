@@ -29,8 +29,49 @@ nsh run App.tsx --target ios                          # TSX 应用
 
 `nsh` 会使用已启动的模拟器，或者启动最新的 iPhone。对 Rust 应用，它用你的 crate 构建应用自己的 runner 并安装，在终端显示日志；
 修改 crate 的 Rust 代码会重新构建并重启应用。对 TSX 应用，它安装开发宿主，并在你保存时更新应用，日志显示在终端中。`--device`
-按名称或 UDID 选择模拟器。想要不用模拟器、更快的开发循环，在 Mac 上运行 `nsh run --target catalyst`，会在一个 iPhone 尺寸的
-[Mac Catalyst](./getting-started.md#mac-catalyst) 窗口中打开同一个 UIKit 后端。
+按名称或 UDID 选择模拟器。查看应用在 iPhone 上的效果请用模拟器；[Mac Catalyst](./getting-started.md#mac-catalyst)
+（`--target catalyst`）用于 Catalyst 特有的工作。
+
+## 来自其他代码的通知
+
+NSH 是应用的通知中心 delegate。[`Notifications`](../modules/nsh.md#notifications) 报告应用自己显示的通知的点击。远程通知，以及推送 SDK
+等其他原生代码安排的通知，交给 Rust 代码用 `nsh_platform_apple::notifications::set_foreign_handler` 设置的唯一处理者。请在应用 crate 的
+`#[native_module]` 入口里设置：它在应用启动前于主线程运行，所以启动应用的那次点击也能送达：
+
+```rust
+use nsh_platform_apple::notifications::{
+    ForeignNotification, ForeignNotificationHandler, Presentation, set_foreign_handler,
+};
+
+struct Chats;
+
+impl ForeignNotificationHandler for Chats {
+    // 应用在前台时到达：正在查看的会话不弹横幅。
+    fn presentation(&self, notification: &ForeignNotification) -> Presentation {
+        if is_open(&notification.thread_id) {
+            Presentation::default().banner(false).sound(false)
+        } else {
+            Presentation::default()
+        }
+    }
+
+    // 用户点击了它，应用可能因此启动。
+    fn pressed(&self, notification: &ForeignNotification) {
+        open_chat(&notification.user_info["chat"]);
+    }
+}
+
+set_foreign_handler(Chats);
+```
+
+`ForeignNotification` 带有请求的 `id`、所属分组 `thread_id`，以及转成 JSON 的 `userInfo`（`user_info`）。处理者的方法在主线程运行，
+在其他线程调用 `set_foreign_handler` 会 panic。处理者只有一个，所以由应用 crate 持有，再转给它使用的模块；之后的调用会替换它。没有处理者时，
+这些通知和应用自己的通知一样显示，点击被丢弃。只报告点击通知本身，不报告其类别的操作。嵌入 NSH 且自己设置了通知中心 delegate 的应用，
+所有通知都留在自己的 delegate。macOS 上同样如此。
+
+开启 `nsh-extra` 的 [`push`](./nshm.md#push) feature 的应用，独立运行的应用启动后由这个模块设置处理者，它把通知交给 `Push.on`，并通过
+`nsh_extra::push::on_event` 交给 Rust 代码；这时应用 crate 在那里监听，用 `nsh_extra::push::set_foreground_presentation_decider`
+决定通知在前台怎么显示，不再自己设置处理者。
 
 ## 打包
 
@@ -46,6 +87,40 @@ nsh package --target ios --sign "Apple Distribution: Example Inc (ABCDE12345)" -
 应用把它的警告、错误以及 `console.log` 和 `console.info` 日志写入统一日志，以它的 id 为子系统：连接的 iPhone 上的日志在“控制台”应用中查看，
 模拟器里的用 `xcrun simctl spawn booted log stream --predicate 'subsystem == "com.example.notes"'` 查看
 （[打包应用的日志](./dev-server-and-debugging.md#a-packaged-apps-logs)）。
+
+## 应用事件
+
+独立应用的 `UIApplicationDelegate` 归 NSH 所有。应用 crate 或 [nshm](./nshm.md) 的 Rust 代码用
+`nsh_platform_ios::on_application_event` 接收它的启动和远程通知回调。在 `#[native_module]` 入口里调用一次：入口在主线程上、应用启动前执行；
+每次调用都会再添加一个处理函数，所以重新运行入口的代码（它的 `registry()`）会重复添加。crate 只在 iOS 上依赖 `nsh-platform-ios`，
+版本和来源与它的其他 NSH crate 一致（[从应用的 crate 注册](./native-components.md#从应用的-crate-注册)）：
+
+```toml
+[target.'cfg(target_os = "ios")'.dependencies]
+nsh-platform-ios = { version = "0.6", default-features = false }
+```
+
+```rust
+#[cfg(target_os = "ios")]
+nsh_platform_ios::on_application_event(|event| match event {
+    nsh_platform_ios::ApplicationEvent::RegisteredForRemoteNotifications { device_token, .. } => {
+        // 把 token 交给应用使用的推送服务。
+        log::info!("device token: {} bytes", device_token.len());
+    }
+    nsh_platform_ios::ApplicationEvent::RemoteNotification { user_info, completion, .. } => {
+        log::info!("remote notification: {:?}", user_info.to_json());
+        // 后台工作期间保留一份 `completion` 的克隆，完成后报告结果。
+        completion.set_result(nsh_platform_ios::FetchResult::NewData);
+    }
+    _ => {}
+});
+```
+
+事件有 `Launched`（带启动选项）、`RegisteredForRemoteNotifications`、`FailedToRegisterForRemoteNotifications` 和
+`RemoteNotification`。NSH 只负责转交：申请远程通知（`registerForRemoteNotifications`）由应用自己的代码调用。
+`aps-environment` entitlement 来自应用签名所用的描述文件，`remote-notification` 后台模式由应用写在 `nsh.json` 里
+（[Info.plist 键与 entitlements](./packaging.md#infoplist-键与-entitlements)）；`nsh-extra` 的 [`push`](./nshm.md#push) feature 会自己加上这个后台模式。没有处理函数的应用，其 delegate 不实现这些方法。
+把 NSH 嵌入自己 UIKit 应用的应用保留自己的 delegate，在那里接收这些回调。
 
 ## 嵌入 iOS 应用
 
@@ -345,6 +420,13 @@ app.onOpenURL = { url in
     return false
 }
 ```
+
+## 在 Rust 中弹出视图
+
+需要显示系统视图控制器（相机、分享面板）的 Rust 代码，把它弹在发起调用的那个 surface 之上。在主线程任务（`run_on_main_thread`）里，
+`nsh_platform_ios::presenting_controller(mtm)` 是这个 surface 所在窗口最上层的视图控制器，没有时取应用的 key window。
+`prepare_image(bytes, name, &request)` 像 `Picker.pickImages` 一样处理图片数据：摆正方向，按请求缩放和编码。`nsh-extra` 的相机
+（`crates/nsh-extra/src/camera/ios.rs`）用到了这两个函数。
 
 ## 限制
 

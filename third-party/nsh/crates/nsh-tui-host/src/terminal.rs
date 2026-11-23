@@ -9,9 +9,10 @@ use std::{
     time::Duration,
 };
 
+use nsh_core::geometry::{DevicePixels, Size};
 use nsh_platform_tui::{
-    ColorDepth, CursorStyle, Input, Modifiers, MouseButton, MouseInput, MouseKind, RunEvent,
-    TerminalCapabilities,
+    ColorDepth, CursorStyle, Graphics, Input, Modifiers, MouseButton, MouseInput, MouseKind,
+    RunEvent, TerminalCapabilities,
 };
 use ratatui_crossterm::crossterm::{Command, cursor, event, execute, style::Print, terminal};
 
@@ -28,10 +29,12 @@ const DECODE_POLL: Duration = Duration::from_micros(50);
 #[cfg(unix)]
 const QUERY_TIMEOUT: Duration = Duration::from_secs(1);
 /// The default foreground (OSC 10) and background (OSC 11), the kitty keyboard
-/// protocol's flags (`CSI ? u`), synchronized output (DECRQM 2026) and DA1 last:
-/// its answer closes the replies.
+/// protocol's flags (`CSI ? u`), synchronized output (DECRQM 2026), the kitty
+/// graphics protocol (a query of a one-pixel image, `a=q`, which stores
+/// nothing), the Cell's size in pixels (`CSI 16 t`) and DA1 last: its answer
+/// closes the replies.
 #[cfg(unix)]
-const QUERY: &[u8] = b"\x1b]10;?\x1b\\\x1b]11;?\x1b\\\x1b[?u\x1b[?2026$p\x1b[c";
+const QUERY: &[u8] = b"\x1b]10;?\x1b\\\x1b]11;?\x1b\\\x1b[?u\x1b[?2026$p\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\\x1b[16t\x1b[c";
 
 /// The kitty keyboard flags the host pushes: Escape and modified keys as
 /// CSI-u sequences, the event kinds (`Repeat` and `Release`), and the
@@ -346,6 +349,20 @@ impl Session {
         #[cfg(not(unix))]
         let replies = Replies::default();
         session.capabilities = capabilities(&replies, |name| std::env::var(name).ok());
+        // A terminal that does not answer `CSI 16 t` may still give its
+        // window's pixels with its size (`TIOCGWINSZ`).
+        if session.capabilities.cell_pixels.is_none()
+            && let Ok(size) = terminal::window_size()
+            && size.columns > 0
+            && size.rows > 0
+            && size.width >= size.columns
+            && size.height >= size.rows
+        {
+            session.capabilities.cell_pixels = Some(Size::new(
+                DevicePixels(i32::from(size.width / size.columns)),
+                DevicePixels(i32::from(size.height / size.rows)),
+            ));
+        }
         session.synchronized = synchronized_output(&replies, |name| std::env::var(name).ok());
         execute!(
             Output,
@@ -395,13 +412,21 @@ pub(crate) struct Replies {
     pub(crate) keyboard: bool,
     /// The terminal reported synchronized output (mode 2026) set or reset.
     pub(crate) synchronized: bool,
+    /// The terminal answered the kitty graphics query with `OK`.
+    pub(crate) graphics: bool,
+    /// The Cell's size in pixels (width, height), from `CSI 6 ; h ; w t`.
+    pub(crate) cell_pixels: Option<(u16, u16)>,
     /// The primary device attributes arrived: no further answer will come.
     pub(crate) complete: bool,
 }
 
 /// Reads OSC 10 / 11 color answers (`ESC ] 1x ; rgb:RRRR/GGGG/BBBB` ended by ST or BEL),
-/// the kitty flags answer (`CSI ? flags u`), the mode 2026 report (`CSI ? 2026 ; Ps $ y`)
-/// and DA1 (`CSI ? … c`) from `bytes`.
+/// the kitty flags answer (`CSI ? flags u`), the mode 2026 report (`CSI ? 2026 ; Ps $ y`),
+/// the kitty graphics answer (`ESC _ G i=31 ; OK ESC \`), the Cell size
+/// (`CSI 6 ; h ; w t`) and DA1 (`CSI ? … c`) from `bytes`.
+// Only the Unix host queries the terminal; the Windows host and this module's
+// tests are the other callers.
+#[cfg_attr(not(unix), allow(dead_code))]
 pub(crate) fn parse_replies(bytes: &[u8]) -> Replies {
     let mut replies = Replies::default();
     let mut i = 0;
@@ -433,6 +458,17 @@ pub(crate) fn parse_replies(bytes: &[u8]) -> Replies {
                 let Some(end) = body.iter().position(|b| (0x40..=0x7e).contains(b)) else {
                     break;
                 };
+                if body[end] == b't'
+                    && let Some(size) = body[..end].strip_prefix(b"6;")
+                {
+                    let mut parts = std::str::from_utf8(size)
+                        .unwrap_or_default()
+                        .split(';')
+                        .map(|part| part.parse::<u16>().ok().filter(|&n| n > 0));
+                    if let (Some(Some(height)), Some(Some(width))) = (parts.next(), parts.next()) {
+                        replies.cell_pixels = Some((width, height));
+                    }
+                }
                 if body.first() == Some(&b'?') {
                     match body[end] {
                         b'u' => replies.keyboard = true,
@@ -447,6 +483,23 @@ pub(crate) fn parse_replies(bytes: &[u8]) -> Replies {
                     }
                 }
                 i += 3 + end;
+            }
+            b'_' => {
+                let body = &bytes[i + 2..];
+                let end = body
+                    .windows(2)
+                    .position(|w| w == b"\x1b\\")
+                    .unwrap_or(body.len());
+                let reply = &body[..end];
+                if let Some(reply) = reply.strip_prefix(b"G")
+                    && let Some((keys, message)) = std::str::from_utf8(reply)
+                        .ok()
+                        .and_then(|r| r.split_once(';'))
+                    && keys.split(',').any(|key| key == "i=31")
+                {
+                    replies.graphics |= message == "OK";
+                }
+                i += 2 + end;
             }
             _ => i += 1,
         }
@@ -504,6 +557,19 @@ pub(crate) fn capabilities(
     let lower = |name| var(name).map(|value| value.to_ascii_lowercase());
     // The Linux console prints an OSC 8 sequence instead of ignoring it.
     capabilities.hyperlinks = !lower("TERM").is_some_and(|term| term.starts_with("linux"));
+    capabilities.cell_pixels = replies
+        .cell_pixels
+        .map(|(w, h)| Size::new(DevicePixels(i32::from(w)), DevicePixels(i32::from(h))));
+    // Unicode placeholders are kitty's and Ghostty's: other terminals that
+    // answer the graphics query (WezTerm, Konsole) place images by cursor.
+    let term = lower("TERM").unwrap_or_default();
+    let placeholders = term.contains("kitty")
+        || term.contains("ghostty")
+        || lower("TERM_PROGRAM").is_some_and(|p| p == "ghostty")
+        || var("KITTY_WINDOW_ID").is_some_and(|v| !v.is_empty());
+    if replies.graphics && placeholders {
+        capabilities.graphics = Graphics::KittyPlaceholders;
+    }
     capabilities.colors = match lower("NSH_TUI_COLORS").as_deref() {
         Some("truecolor" | "24bit") => ColorDepth::TrueColor,
         Some("256") => ColorDepth::Ansi256,
@@ -891,6 +957,30 @@ mod tests {
             }
         );
         assert!(!parse_replies(b"\x1b]11;rgb:00").complete);
+    }
+
+    #[test]
+    fn kitty_graphics_and_cell_pixels_choose_placeholders() {
+        let replies = parse_replies(b"\x1b_Gi=31;OK\x1b\\\x1b[6;22;10t\x1b[?62;22c");
+        assert!(replies.graphics && replies.complete);
+        assert_eq!(replies.cell_pixels, Some((10, 22)));
+        let ghostty = capabilities(&replies, env(&[("TERM", "xterm-ghostty")]));
+        assert_eq!(ghostty.graphics, Graphics::KittyPlaceholders);
+        assert_eq!(
+            ghostty.cell_pixels,
+            Some(Size::new(DevicePixels(10), DevicePixels(22)))
+        );
+        // WezTerm answers the query, but places images by cursor only.
+        let wezterm = capabilities(&replies, env(&[("TERM_PROGRAM", "WezTerm")]));
+        assert_eq!(wezterm.graphics, Graphics::Blocks);
+        // An error answer, or none (tmux without passthrough), is no graphics.
+        let refused = parse_replies(b"\x1b_Gi=31;ENOTSUPPORTED:no\x1b\\\x1b[?62c");
+        assert!(!refused.graphics);
+        let kitty = capabilities(
+            &parse_replies(b"\x1b[?62c"),
+            env(&[("TERM", "xterm-kitty")]),
+        );
+        assert_eq!(kitty.graphics, Graphics::Blocks);
     }
 
     /// An environment of `pairs`.

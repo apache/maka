@@ -87,6 +87,7 @@ pub(crate) fn link_hint(
         .pointer_events(PointerEvents::None)
         .child(
             view()
+                .select_none()
                 .px(px(8.0))
                 .py(px(6.0))
                 .gap_1()

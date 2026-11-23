@@ -1,8 +1,9 @@
 import { mount, signal, Text, View } from "nsh";
+import { Window } from "nsh/desktop";
 
 const dimmed = signal(false);
 
-mount(() => (
+mount(() => <Window id="main">{() => (
   <View testID="panel" style={{ opacity: 0.5 }}>
     <View
       testID="card"
@@ -15,4 +16,4 @@ mount(() => (
     </View>
     <View onPress={() => dimmed.set(!dimmed())}><Text>Dim</Text></View>
   </View>
-));
+)}</Window>);

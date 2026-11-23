@@ -1,4 +1,5 @@
 import { keyboardFrame, mount, Scroll, signal, Text, View, WebView } from "nsh";
+import { Window } from "nsh/desktop";
 import { ContextMenu, Input, MenuItem } from "nsh/base";
 
 // Its button covers the page: any tap on the web view clicks it.
@@ -45,4 +46,4 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => <Window id="main">{App}</Window>);

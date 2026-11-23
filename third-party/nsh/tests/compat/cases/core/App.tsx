@@ -3,6 +3,7 @@
 // `id:case-<case>` (a one-point view over the corner, out of the layout);
 // the steps after it are that case's.
 import { type JSX, View, mount, signal } from "nsh";
+import { Window } from "nsh/desktop";
 import Context from "./context";
 import CoreAnimated from "./core-animated";
 import CoreCanvas from "./core-canvas";
@@ -18,6 +19,7 @@ import CoreOffscreenCanvas from "./core-offscreen-canvas";
 import CoreOverlay from "./core-overlay";
 import CorePrimitives from "./core-primitives";
 import CoreReactive from "./core-reactive";
+import CoreClearSelection from "./core-clear-selection";
 import CoreRef from "./core-ref";
 import CoreResource from "./core-resource";
 import CoreReveal from "./core-reveal";
@@ -48,6 +50,7 @@ const cases: Record<string, () => JSX.Element> = {
   "core-overlay": CoreOverlay,
   "core-primitives": CorePrimitives,
   "core-reactive": CoreReactive,
+  "core-clear-selection": CoreClearSelection,
   "core-ref": CoreRef,
   "core-resource": CoreResource,
   "core-reveal": CoreReveal,
@@ -62,7 +65,7 @@ const cases: Record<string, () => JSX.Element> = {
 };
 const shown = signal("");
 
-mount(() => (
+mount(() => <Window id="main">{() => (
   <>
     {() => {
       const Case = cases[shown()];
@@ -74,4 +77,4 @@ mount(() => (
       ))}
     </View>
   </>
-));
+)}</Window>);

@@ -45,6 +45,7 @@ pub fn App() -> impl IntoElement {
 ```tsx tabs
 import { mount, View } from "nsh";
 import { createMotion } from "nsh";
+import { Window } from "nsh/desktop";
 
 function App() {
   const card = createMotion({ enter: "fadeInUp" });
@@ -58,7 +59,11 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 动效的每个通道都有一个动画值：`opacity`（0..1）、`translateX` 和 `translateY`（点）、`rotate`、`rotateX` 和 `rotateY`（度）、`scale`、`scaleX` 和 `scaleY`。它们从静止状态开始（不透明度和缩放为 1，其余为 0），并按这个顺序作用：先平移，再旋转，最后缩放，都绕视图的变换原点进行。动效本身没有外观：它只移动你设置好样式的东西。
@@ -296,6 +301,7 @@ pub fn App() -> impl IntoElement {
 
 ```tsx tabs
 import { mount, signal, View } from "nsh";
+import { Window } from "nsh/desktop";
 
 function App() {
   const on = signal(false);
@@ -319,7 +325,11 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 | 样式 | Rust | 类型 | 说明 |
@@ -424,6 +434,7 @@ pub fn App() -> impl IntoElement {
 ```tsx tabs
 import { mount, Text, View } from "nsh";
 import { createAnimatedValue, Easing } from "nsh";
+import { Window } from "nsh/desktop";
 
 function App() {
   const x = createAnimatedValue(0);
@@ -445,7 +456,11 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 **可以绑定的属性：** `opacity`（`.bind_opacity(..)`）；`backgroundColor`、`borderColor`（所有边）和文字的 `color`（整段文字），通过插值得到颜色（`.bind_background(..)`、`.bind_border_color(..)`、`.bind_color(..)`）；`translate`（`[x, y]`，每个轴一个值）、`rotate`（度）和 `scale`（`[x, y]` 每个轴一个值，或一个值同时作用于两个轴）；以及 `transform` 列表的步骤 `translateX`、`translateY`、`scale`、`scaleX`、`scaleY`、`rotate`、`rotateX`、`rotateY` 和 `rotateZ`（Rust 中为 `.bind_translate_x(..)`、`.bind_translate_y(..)`、`.bind_scale(..)`、以度为单位的 `.bind_rotate(..)`、`.bind_transform(kind, ..)`）。阴影用[过渡](#过渡)来变化。聚焦环或闪绿的价格就是绑定到边框或文字颜色的颜色插值：

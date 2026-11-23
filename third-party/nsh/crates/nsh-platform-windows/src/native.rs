@@ -54,8 +54,8 @@ use std::{
 };
 
 use nsh_core::{
-    Bounds, Command, EventKind, EventPayload, NativeProps, NodeId, PayloadValue, Points, Size,
-    geometry::Point,
+    Bounds, Command, Cursor, EventKind, EventPayload, NativeProps, NodeId, PayloadValue, Points,
+    Size, geometry::Point,
 };
 use nsh_engine::{Access, EngineControl};
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -201,10 +201,96 @@ pub trait NativeComponent {
     /// A wheel or touchpad scroll over the component (an image viewer
     /// zooms with it). True when it took it; otherwise the scroll views
     /// around it scroll, as they do by default. Presses, moves and
-    /// releases go to its view's handlers (`onPress`, `onMouseMove`).
+    /// releases go to its view's handlers unless it takes them
+    /// ([`Self::hit`]).
     fn wheel(&mut self, event: &Wheel) -> bool {
         let _ = event;
         false
+    }
+
+    /// True when the component takes the pointer at `(x, y)` (points, the
+    /// component's coordinates; `size` is its size). Asked for each point,
+    /// so a component can take it only where it has something to hit. By
+    /// default it takes none: presses, moves and releases go to its view's
+    /// handlers (`onPress`, `onMouseMove`).
+    fn hit(&self, x: f32, y: f32, size: (f32, f32)) -> bool {
+        let _ = (x, y, size);
+        false
+    }
+
+    /// A pointer event while the component has the pointer: a press went
+    /// down where it hits (the moves and the release follow until the
+    /// release, also outside its bounds), or the mouse is over where it
+    /// hits (moves, then [`PointerKind::Leave`]). Only the left button: the
+    /// others stay with its view. True when it took the event; a press it
+    /// declines goes to the views below.
+    fn pointer(&mut self, event: &Pointer) -> bool {
+        let _ = event;
+        false
+    }
+
+    /// The cursor over `(x, y)` where it hits; `None` (or
+    /// [`Cursor::Auto`]) for its view's.
+    fn cursor(&self, x: f32, y: f32) -> Option<Cursor> {
+        let _ = (x, y);
+        None
+    }
+}
+
+/// What a pointer did ([`Pointer::kind`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum PointerKind {
+    /// A button (or a finger, a pen) went down.
+    Down,
+    /// It moved.
+    Move,
+    /// It went up.
+    Up,
+    /// The press was taken away (capture lost).
+    Cancel,
+    /// The mouse left where the component hits.
+    Leave,
+}
+
+/// A pointer event for a component ([`NativeComponent::pointer`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
+pub struct Pointer {
+    /// What happened.
+    pub kind: PointerKind,
+    /// Where (points, the component's coordinates).
+    pub x: f32,
+    /// Where, vertically.
+    pub y: f32,
+    /// Consecutive clicks (1, 2 for a double click, ...).
+    pub clicks: u32,
+    /// Shift held.
+    pub shift: bool,
+    /// Ctrl held.
+    pub ctrl: bool,
+    /// Alt held.
+    pub alt: bool,
+}
+
+impl Pointer {
+    fn new(event: &crate::view::ItemPointer) -> Self {
+        use crate::input::PointerKind as K;
+        Pointer {
+            kind: match event.kind {
+                K::Down => PointerKind::Down,
+                K::Move => PointerKind::Move,
+                K::Up => PointerKind::Up,
+                K::Cancel => PointerKind::Cancel,
+                K::Leave => PointerKind::Leave,
+            },
+            x: event.x,
+            y: event.y,
+            clicks: event.clicks,
+            shift: event.modifiers.shift,
+            ctrl: event.modifiers.ctrl,
+            alt: event.modifiers.alt,
+        }
     }
 }
 
@@ -835,10 +921,32 @@ impl Hosted for ComponentItem {
         cx.pop();
     }
 
-    fn hit(&self, _x: f32, _y: f32, _size: (f32, f32)) -> bool {
-        // Touches go to the view (presses, gestures, the responder system);
-        // a component's own window gets its input from Windows.
-        false
+    fn hit(&self, x: f32, y: f32, size: (f32, f32)) -> bool {
+        // By default touches go to the view (presses, gestures, the
+        // responder system); a component's own window gets its input from
+        // Windows. Not while its own code runs.
+        let Ok(component) = self.component.try_borrow() else {
+            return false;
+        };
+        component.as_ref().is_some_and(|c| c.hit(x, y, size))
+    }
+
+    fn pointer(&self, event: &crate::view::ItemPointer) -> bool {
+        let Ok(mut component) = self.component.try_borrow_mut() else {
+            return false;
+        };
+        let Some(component) = component.as_mut() else {
+            return false;
+        };
+        component.pointer(&Pointer::new(event))
+    }
+
+    fn cursor(&self, x: f32, y: f32) -> Option<crate::input::Cursor> {
+        let Ok(component) = self.component.try_borrow() else {
+            return None;
+        };
+        let cursor = component.as_ref()?.cursor(x, y)?;
+        crate::input::css_cursor(cursor)
     }
 
     fn composed(&self) -> bool {
@@ -1311,5 +1419,106 @@ mod tests {
         let wheel = Wheel::new(0.0, 0.0, &event, 48.0);
         assert_eq!((wheel.notches_x, wheel.notches_y), (0.25, 0.0));
         assert!(wheel.precise && !wheel.ctrl);
+    }
+
+    /// A drawn component that takes the pointer in a rectangle, records the
+    /// events and shows a crosshair there.
+    struct Target(Rc<RefCell<Vec<Pointer>>>);
+
+    impl NativeComponent for Target {
+        fn set_prop(&mut self, _: &str, _: Option<&JsonValue>) {}
+
+        fn hit(&self, x: f32, y: f32, _size: (f32, f32)) -> bool {
+            (10.0..20.0).contains(&x) && (10.0..20.0).contains(&y)
+        }
+
+        fn pointer(&mut self, event: &Pointer) -> bool {
+            self.0.borrow_mut().push(*event);
+            event.kind != PointerKind::Down || event.x < 15.0
+        }
+
+        fn cursor(&self, _x: f32, _y: f32) -> Option<Cursor> {
+            Some(Cursor::Crosshair)
+        }
+    }
+
+    fn item(component: Option<Box<dyn NativeComponent>>) -> ComponentItem {
+        ComponentItem {
+            surface: Weak::new(),
+            id: 1,
+            component: RefCell::new(component),
+            window: Cell::new(None),
+            parent: Cell::new(None),
+            placement: Placement::default(),
+            composes: Cell::new(false),
+            composed: RefCell::new(None),
+        }
+    }
+
+    fn event(kind: crate::input::PointerKind, x: f32) -> crate::view::ItemPointer {
+        crate::view::ItemPointer {
+            kind,
+            x,
+            y: 12.0,
+            clicks: 2,
+            modifiers: crate::input::Modifiers {
+                shift: true,
+                ..Default::default()
+            },
+            button: 0,
+            pointer: 1,
+            touch: false,
+            pen: false,
+        }
+    }
+
+    #[test]
+    fn components_take_the_pointer_where_they_hit() {
+        use crate::input::{Cursor as Shown, PointerKind as K};
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let it = item(Some(Box::new(Target(events.clone()))));
+        assert!(it.hit(12.0, 12.0, (100.0, 100.0)));
+        assert!(!it.hit(50.0, 12.0, (100.0, 100.0)));
+        assert_eq!(it.cursor(12.0, 12.0), Some(Shown::Crosshair));
+        // A press it takes, a move out of its bounds, the release.
+        assert!(it.pointer(&event(K::Down, 12.0)));
+        assert!(it.pointer(&event(K::Move, 150.0)));
+        assert!(it.pointer(&event(K::Up, 150.0)));
+        // A press it declines goes below.
+        assert!(!it.pointer(&event(K::Down, 18.0)));
+        assert!(it.pointer(&event(K::Leave, 18.0)));
+        let got = events.borrow();
+        let kinds: Vec<_> = got.iter().map(|e| e.kind).collect();
+        assert_eq!(
+            kinds,
+            [
+                PointerKind::Down,
+                PointerKind::Move,
+                PointerKind::Up,
+                PointerKind::Down,
+                PointerKind::Leave
+            ]
+        );
+        assert_eq!((got[1].x, got[1].y, got[1].clicks), (150.0, 12.0, 2));
+        assert!(got[0].shift && !got[0].ctrl && !got[0].alt);
+    }
+
+    #[test]
+    fn components_take_no_pointer_by_default() {
+        struct Plain;
+        impl NativeComponent for Plain {
+            fn set_prop(&mut self, _: &str, _: Option<&JsonValue>) {}
+        }
+        let it = item(Some(Box::new(Plain)));
+        assert!(!it.hit(12.0, 12.0, (100.0, 100.0)));
+        assert_eq!(it.cursor(12.0, 12.0), None);
+        assert!(!it.pointer(&event(crate::input::PointerKind::Down, 12.0)));
+        // Not made yet, or taken out while its own code runs.
+        let empty = item(None);
+        assert!(!empty.hit(12.0, 12.0, (100.0, 100.0)));
+        let busy = item(Some(Box::new(Plain)));
+        let _running = busy.component.borrow_mut();
+        assert!(!busy.hit(12.0, 12.0, (100.0, 100.0)));
+        assert!(!busy.pointer(&event(crate::input::PointerKind::Down, 12.0)));
     }
 }

@@ -44,6 +44,24 @@ pub const SCROLL_PRESS_DELAY: u64 = 130;
 pub const LONG_PRESS: f32 = 500.0;
 /// Velocities are measured over this many milliseconds.
 pub const VELOCITY_WINDOW: f64 = 100.0;
+/// Minimum duration a completed short press holds its `PRESSED` visual
+/// state so a same-turn tap-to-click renders `:active` feedback.
+pub const TAP_FEEDBACK: std::time::Duration = std::time::Duration::from_millis(64);
+
+/// How long to hold a completed short press's `PRESSED` state after a
+/// pointer release `elapsed` after the press began; `None` when the press
+/// lasted at least [`TAP_FEEDBACK`], was `cancelled`, or visual feedback
+/// must end `immediate`ly (reduced motion, automated tests).
+pub fn tap_feedback_delay(
+    elapsed: std::time::Duration,
+    cancelled: bool,
+    immediate: bool,
+) -> Option<std::time::Duration> {
+    if cancelled || immediate {
+        return None;
+    }
+    TAP_FEEDBACK.checked_sub(elapsed).filter(|d| !d.is_zero())
+}
 
 /// Estimates a pointer's velocity from its recent positions (points).
 #[derive(Debug, Clone, Copy, Default)]
@@ -99,6 +117,9 @@ pub enum Candidate {
         x: bool,
         /// It pans vertically.
         y: bool,
+        /// The view's `panActivation`, which decides instead of the axes.
+        #[doc(hidden)]
+        activation: Option<PanActivation>,
     },
     /// A scroll view.
     Scroll {
@@ -110,18 +131,30 @@ pub enum Candidate {
 impl Candidate {
     /// Whether a drag by `(dx, dy)` starts it: single-axis pans and scroll
     /// views take mostly-along-their-axis movements, so a horizontal pan
-    /// coexists with a vertical scroll view around it.
+    /// coexists with a vertical scroll view around it; a pan with a
+    /// `panActivation` starts when that activates.
     pub fn accepts(self, dx: Points, dy: Points) -> bool {
         let horizontal = dx.0.abs() > dy.0.abs();
         match self {
-            Candidate::Pan { x, y } => (x && y) || (x && horizontal) || (y && !horizontal),
+            Candidate::Pan {
+                activation: Some(activation),
+                ..
+            } => activation.decide(dx, dy) == Some(true),
+            Candidate::Pan { x, y, .. } => (x && y) || (x && horizontal) || (y && !horizontal),
             Candidate::Scroll { horizontal: h } => h == horizontal,
         }
     }
 
-    /// The pan a view with gesture `values` and `events` starts: along the
-    /// axes it drives values of, or both when it only listens.
-    pub fn pan(values: &GestureValues, events: EventMask) -> Option<Candidate> {
+    /// The pan a view with gesture `values`, `events` and `activation`
+    /// starts: along the axes it drives values of, or both when it only
+    /// listens, as its activation decides when it has one. For the
+    /// backends.
+    #[doc(hidden)]
+    pub fn pan(
+        values: &GestureValues,
+        events: EventMask,
+        activation: Option<PanActivation>,
+    ) -> Option<Candidate> {
         let pans = values.pan_x.is_some()
             || values.pan_y.is_some()
             || events.contains(EventKind::PanStart)
@@ -131,9 +164,28 @@ impl Candidate {
                 (false, false) => (true, true),
                 axes => axes,
             };
-            Candidate::Pan { x, y }
+            Candidate::Pan { x, y, activation }
         })
     }
+}
+
+/// The `panActivation` the gate of a view with gesture `values`, `events`
+/// and `activation` decides with: its activation while something follows
+/// it, the view's own native pan (`pan` values, `onPanStart` /
+/// `onPanEnd`) or its responder (`onTouch`: the responder system, Rust
+/// claims); none otherwise. A view whose pan is off (`pan_enabled(false)`)
+/// then leaves the drags to its content and to the views around it, as
+/// with no activation (a stack's swipe back inside a drawer). For the
+/// backends.
+#[doc(hidden)]
+pub fn gate_activation(
+    values: &GestureValues,
+    events: EventMask,
+    activation: Option<PanActivation>,
+) -> Option<PanActivation> {
+    activation.filter(|_| {
+        events.contains(EventKind::Touch) || Candidate::pan(values, events, None).is_some()
+    })
 }
 
 /// A view's `panActivation` deciding on a pointer's drag.
@@ -142,6 +194,8 @@ pub struct Gate {
     id: NodeId,
     activation: PanActivation,
     outer: usize,
+    /// The pointer's offset at the last step.
+    last: Point<Points>,
 }
 
 impl Gate {
@@ -152,6 +206,7 @@ impl Gate {
             id,
             activation,
             outer,
+            last: Point::default(),
         }
     }
 
@@ -169,7 +224,15 @@ impl Gate {
         dx: Points,
         dy: Points,
     ) -> (Option<NodeId>, bool) {
-        match self.activation.decide(dx, dy) {
+        self.apply(candidates, self.activation.decide(dx, dy))
+    }
+
+    fn apply<V, C>(
+        &self,
+        candidates: &mut Vec<(V, C)>,
+        decision: Option<bool>,
+    ) -> (Option<NodeId>, bool) {
+        match decision {
             Some(true) => {
                 candidates.truncate(self.outer);
                 (Some(self.id), false)
@@ -180,15 +243,19 @@ impl Gate {
     }
 
     /// [`Gate::decide`] on a pointer's gate, which stays only while
-    /// undecided: the view whose pan activated.
+    /// undecided: the view whose pan activated. The move since the last
+    /// step is judged along its line ([`PanActivation::decide_move`]).
     pub fn step<V, C>(
         gate: &mut Option<Gate>,
         candidates: &mut Vec<(V, C)>,
         dx: Points,
         dy: Points,
     ) -> Option<NodeId> {
-        let g = gate.take()?;
-        let (id, undecided) = g.decide(candidates, dx, dy);
+        let mut g = gate.take()?;
+        let to = crate::geometry::point(dx, dy);
+        let decision = g.activation.decide_move(g.last, to);
+        g.last = to;
+        let (id, undecided) = g.apply(candidates, decision);
         if let Some(id) = id {
             log::debug!(target: "nsh::input", "panActivation of {id} activated");
         }
@@ -200,15 +267,74 @@ impl Gate {
 }
 
 /// The candidate a drag by `(dx, dy)` past the pan slop starts, innermost
-/// first: while `gate` decides, those around it wait.
+/// first: while `gate` decides, those around it wait, and so do those
+/// around a pan whose `panActivation` has not decided yet.
 pub fn startable<'a, V>(
     candidates: &'a [(V, Candidate)],
     gate: Option<&Gate>,
     dx: Points,
     dy: Points,
 ) -> Option<&'a (V, Candidate)> {
+    pick(candidates, gate, dx, dy).ok().flatten()
+}
+
+/// Whether a drag by `(dx, dy)` past the pan slop that starts nothing
+/// leaves the pointer waiting for a later move: while its gate decides, or
+/// a pan whose `panActivation` has not decided yet comes before any
+/// candidate that starts. Otherwise its drags are over. For the backends.
+#[doc(hidden)]
+pub fn waits<V>(
+    candidates: &[(V, Candidate)],
+    gate: Option<&Gate>,
+    dx: Points,
+    dy: Points,
+) -> bool {
+    gate.is_some() || pick(candidates, gate, dx, dy).is_err()
+}
+
+/// Whether view `activated`, whose gate just activated, takes the
+/// pointer's drag as its JS responder alone, so that nothing native starts:
+/// unless its own native pan (`pan` values, `onPanStart`) follows the
+/// activation, the one pan with a `panActivation` among the `candidates`
+/// the gate left (those inside the gated view, and its own). For the
+/// backends.
+#[doc(hidden)]
+pub fn activation_frees<V>(activated: Option<NodeId>, candidates: &[(V, Candidate)]) -> bool {
+    activated.is_some()
+        && !candidates.iter().any(|(_, c)| {
+            matches!(
+                c,
+                Candidate::Pan {
+                    activation: Some(_),
+                    ..
+                }
+            )
+        })
+}
+
+/// [`startable`], or `Err` while a pan's `panActivation` has not decided.
+fn pick<'a, V>(
+    candidates: &'a [(V, Candidate)],
+    gate: Option<&Gate>,
+    dx: Points,
+    dy: Points,
+) -> Result<Option<&'a (V, Candidate)>, ()> {
     let open = gate.map_or(candidates.len(), Gate::outer);
-    candidates[..open].iter().find(|(_, c)| c.accepts(dx, dy))
+    for candidate in &candidates[..open] {
+        let decision = match candidate.1 {
+            Candidate::Pan {
+                activation: Some(activation),
+                ..
+            } => activation.decide(dx, dy),
+            c => Some(c.accepts(dx, dy)),
+        };
+        match decision {
+            Some(true) => return Ok(Some(candidate)),
+            Some(false) => {}
+            None => return Err(()),
+        }
+    }
+    Ok(None)
 }
 
 /// One view around a pointer going down, as [`Grab::add`] reads it.
@@ -263,6 +389,11 @@ pub struct GrabOptions {
     pub selects: bool,
     /// No other pointer is down: the gate follows the first pointer only.
     pub first: bool,
+    /// Where the pointer went down in the surface, and the surface's size:
+    /// an edge pan ([`PanActivation::edge`]) starts only at its edge, and
+    /// never without these.
+    #[doc(hidden)]
+    pub start: Option<(Point<Points>, Size<Points>)>,
 }
 
 impl GrabOptions {
@@ -273,6 +404,25 @@ impl GrabOptions {
             native,
             selects,
             first,
+            start: None,
+        }
+    }
+
+    /// The pointer went down `at` in a surface of `size`
+    /// ([`GrabOptions::start`]).
+    #[doc(hidden)]
+    pub fn start(mut self, at: Point<Points>, size: Size<Points>) -> GrabOptions {
+        self.start = Some((at, size));
+        self
+    }
+
+    /// Whether the pointer may start the pans of a view with `activation`:
+    /// an edge pan's only from its edge.
+    fn admits(&self, activation: Option<PanActivation>) -> bool {
+        match (activation, self.start) {
+            (Some(a), Some((at, size))) => a.starts_at(at, size),
+            (Some(a), None) => a.edge.is_none(),
+            (None, _) => true,
         }
     }
 }
@@ -318,9 +468,12 @@ impl<V: Clone> Grab<V> {
         if link.tracked & PRESSED != 0 {
             self.pressed.push(view.clone());
         }
-        if !options.native
+        // A pointer away from an edge pan's edge starts neither of its pans.
+        let pans = options.admits(link.pan_activation);
+        if pans
+            && !options.native
             && !options.selects
-            && let Some(pan) = Candidate::pan(&link.values, link.events)
+            && let Some(pan) = Candidate::pan(&link.values, link.events, link.pan_activation)
         {
             self.candidates.push((view.clone(), pan));
         }
@@ -337,9 +490,11 @@ impl<V: Clone> Grab<V> {
             self.pinch = Some(view.clone());
         }
         if self.gate.is_none()
+            && pans
             && options.first
             && !options.native
-            && let Some(activation) = link.pan_activation
+            && let Some(activation) =
+                gate_activation(&link.values, link.events, link.pan_activation)
         {
             self.gate = Some(Gate::new(link.id, activation, self.candidates.len()));
         }
@@ -613,6 +768,23 @@ pub fn hit_area(
         inside,
         in_slop,
         children,
+    }
+}
+
+impl HitArea {
+    /// The area left by a view's `clipPath` (`clip`) at `p` on a view of
+    /// `size`: outside it, neither the view nor anything in it is hit, its
+    /// hit slop and its children's overflow included (CSS's `clip-path`).
+    pub fn clipped(
+        self,
+        clip: Option<&crate::ClipInset>,
+        p: Point<Points>,
+        size: Size<Points>,
+    ) -> Self {
+        match clip {
+            Some(clip) if !clip.contains(size, p) => HitArea::default(),
+            _ => self,
+        }
     }
 }
 
@@ -1155,14 +1327,78 @@ mod tests {
     #[test]
     fn candidates_take_their_axis() {
         let accepts = |c: Candidate, dx: f32, dy: f32| c.accepts(Points(dx), Points(dy));
-        let horizontal = Candidate::Pan { x: true, y: false };
+        let horizontal = Candidate::Pan {
+            x: true,
+            y: false,
+            activation: None,
+        };
         assert!(accepts(horizontal, 8.0, 2.0));
         assert!(!accepts(horizontal, 2.0, 8.0));
-        let both = Candidate::Pan { x: true, y: true };
+        let both = Candidate::Pan {
+            x: true,
+            y: true,
+            activation: None,
+        };
         assert!(accepts(both, 2.0, 8.0) && accepts(both, 8.0, 2.0));
         let vertical = Candidate::Scroll { horizontal: false };
         assert!(accepts(vertical, 1.0, -7.0));
         assert!(!accepts(vertical, -7.0, 1.0));
+    }
+
+    #[test]
+    fn a_pan_with_an_activation_starts_as_it_activates() {
+        let accepts = |c: Candidate, dx: f32, dy: f32| c.accepts(Points(dx), Points(dy));
+        let values = GestureValues {
+            pan_x: Some(1),
+            ..GestureValues::default()
+        };
+        let right = PanActivation::default().direction(crate::PanDirection::Right);
+        let pan = Candidate::pan(&values, EventMask::default(), Some(right)).unwrap();
+        assert!(accepts(pan, 12.0, 3.0));
+        // The axis alone would take these: the activation does not.
+        assert!(!accepts(pan, -12.0, 3.0));
+        assert!(!accepts(pan, 8.0, 1.0));
+        let plain = Candidate::pan(&values, EventMask::default(), None).unwrap();
+        assert!(accepts(plain, -12.0, 3.0));
+        // A pager around it waits for it, then takes what it leaves.
+        let pager = Candidate::Scroll { horizontal: true };
+        let candidates = [(1, pan), (2, pager)];
+        let start = |dx: f32| startable(&candidates, None, Points(dx), Points(0.0)).map(|c| c.0);
+        assert_eq!(start(7.0), None);
+        assert_eq!(start(-7.0), None);
+        assert_eq!(start(11.0), Some(1));
+        assert_eq!(start(-11.0), Some(2));
+    }
+
+    #[test]
+    fn an_edge_pan_starts_only_from_its_edge() {
+        let mut events = EventMask::default();
+        events.set(EventKind::PanEnd, true);
+        let edge = PanActivation::default().edge(crate::PanEdge::Left);
+        let link = Link::new(5, events, 0, GestureValues::default(), None, Some(edge));
+        let surface = crate::geometry::size(Points(400.0), Points(800.0));
+        let grab = |at: Option<Point<Points>>| {
+            let mut grab: Grab<&str> = Grab::default();
+            let mut options = GrabOptions::new(true, false, false, true);
+            if let Some(at) = at {
+                options = options.start(at, surface);
+            }
+            grab.add(&"edge", &link, options);
+            grab
+        };
+        let at_edge = grab(Some(crate::geometry::point(Points(12.0), Points(300.0))));
+        assert_eq!(at_edge.candidates.len(), 1);
+        assert_eq!(at_edge.gate.map(|g| g.outer()), Some(1));
+        // Away from it: neither its native pan nor its gate.
+        let inside = grab(Some(crate::geometry::point(Points(60.0), Points(300.0))));
+        assert!(inside.candidates.is_empty() && inside.gate.is_none());
+        // A backend that does not say where the pointer went down.
+        let unknown = grab(None);
+        assert!(unknown.candidates.is_empty() && unknown.gate.is_none());
+        // An edge pan moves away from its edge.
+        let (_, pan) = at_edge.candidates[0];
+        assert!(pan.accepts(Points(14.0), Points(2.0)));
+        assert!(!pan.accepts(Points(-14.0), Points(2.0)));
     }
 
     #[test]
@@ -1178,8 +1414,40 @@ mod tests {
     }
 
     #[test]
+    fn a_gate_steps_to_the_offset_its_pointer_passed_first() {
+        // 1.5 across for 1 down, 10 points a move: the second move passes
+        // both offsets, x first.
+        let sideways = PanActivation::horizontal(Points(10.0), Points(10.0));
+        let mut candidates: Vec<((), Candidate)> = Vec::new();
+        let mut gate = Some(Gate::new(3, sideways, 0));
+        assert_eq!(
+            Gate::step(&mut gate, &mut candidates, Points(-8.3), Points(-5.5)),
+            None
+        );
+        assert_eq!(
+            Gate::step(&mut gate, &mut candidates, Points(-16.6), Points(-11.1)),
+            Some(3)
+        );
+        // 1 across for 1.5 down: y first.
+        let mut gate = Some(Gate::new(3, sideways, 0));
+        assert_eq!(
+            Gate::step(&mut gate, &mut candidates, Points(5.5), Points(8.3)),
+            None
+        );
+        assert_eq!(
+            Gate::step(&mut gate, &mut candidates, Points(11.1), Points(16.6)),
+            None
+        );
+        assert!(gate.is_none());
+    }
+
+    #[test]
     fn an_activated_gate_drops_the_candidates_around_it() {
-        let pan = Candidate::Pan { x: true, y: true };
+        let pan = Candidate::Pan {
+            x: true,
+            y: true,
+            activation: None,
+        };
         let mut candidates = vec![(1, pan), (2, pan)];
         let mut gate = Some(Gate::new(
             1,
@@ -1232,6 +1500,60 @@ mod tests {
     }
 
     #[test]
+    fn only_a_pan_or_a_responder_has_a_gate() {
+        let activation = Some(PanActivation::default().direction(crate::PanDirection::Right));
+        let mask = |kinds: &[EventKind]| {
+            let mut m = EventMask::default();
+            for k in kinds {
+                m.set(*k, true);
+            }
+            m
+        };
+        let none = GestureValues::default();
+        let values = GestureValues {
+            pan_x: Some(3),
+            ..GestureValues::default()
+        };
+        let gated = |values: &GestureValues, kinds: &[EventKind]| {
+            gate_activation(values, mask(kinds), activation) == activation
+        };
+        // Its pan off (`pan_enabled(false)` mounts no values or pan
+        // listeners) and no responder: no gate, the content keeps the drags.
+        assert_eq!(
+            gate_activation(&none, mask(&[EventKind::Press]), activation),
+            None
+        );
+        assert!(gated(&none, &[EventKind::PanStart]));
+        assert!(gated(&none, &[EventKind::PanEnd]));
+        assert!(gated(&values, &[]));
+        assert!(gated(&none, &[EventKind::Touch]));
+        assert_eq!(
+            gate_activation(&values, mask(&[EventKind::Touch]), None),
+            None
+        );
+        // The backends that grab: the pan's view, off, around a stack.
+        let grab = |events: EventMask, values: GestureValues| {
+            let mut grab: Grab<&str> = Grab::default();
+            let options = GrabOptions::new(true, false, false, true);
+            grab.add(
+                &"drawer",
+                &Link::new(2, events, 0, values, None, activation),
+                options,
+            );
+            grab.gate
+        };
+        assert!(grab(EventMask::default(), none).is_none());
+        assert_eq!(
+            grab(mask(&[EventKind::PanStart]), none).map(|g| g.outer()),
+            Some(1)
+        );
+        assert_eq!(
+            grab(mask(&[EventKind::Touch]), none).map(|g| g.outer()),
+            Some(0)
+        );
+    }
+
+    #[test]
     fn grabs_collect_along_the_chain() {
         let mut grab = Grab::default();
         let mut values = GestureValues::default();
@@ -1245,16 +1567,9 @@ mod tests {
         );
         values.pinch = Some(1);
         let activation = PanActivation::horizontal(Points(6.0), Points(8.0));
-        let link = Link::new(
-            6,
-            EventMask::default(),
-            0,
-            values,
-            Some(false),
-            Some(activation),
-        );
+        let link = Link::new(6, events, 0, values, Some(false), Some(activation));
         grab.add(&"scroll", &link, options);
-        assert_eq!(grab.path, vec![4]);
+        assert_eq!(grab.path, vec![4, 6]);
         assert_eq!(grab.pressed, vec!["inner"]);
         assert_eq!(
             grab.candidates,
@@ -1339,6 +1654,29 @@ mod tests {
         let a = hit_area(p(5.0, 40.0), s, slop, Some(overflow), false, true);
         assert!(!a.in_slop && a.children);
         assert!(hit_area(p(500.0, 500.0), s, slop, None, false, false).children);
+    }
+
+    #[test]
+    fn a_clip_path_bounds_the_view_and_its_children() {
+        let s = size(Points(100.0), Points(100.0));
+        let slop = EdgeInsets::all(Points(5.0));
+        let overflow = Bounds::new(p(0.0, 100.0), size(Points(100.0), Points(50.0)));
+        let clip = crate::ClipInset::new()
+            .left(crate::geometry::percentage(0.5))
+            .rounded(Points(10.0));
+        let at = |x, y| {
+            hit_area(p(x, y), s, slop, Some(overflow), false, true).clipped(Some(&clip), p(x, y), s)
+        };
+        let a = at(75.0, 50.0);
+        assert!(a.inside && a.in_slop && a.children);
+        // Clipped out: inside the box, in its slop, in its children's
+        // overflow, and in a rounded corner.
+        for (x, y) in [(25.0, 50.0), (102.0, 50.0), (75.0, 120.0), (51.0, 1.0)] {
+            assert_eq!(at(x, y), HitArea::default(), "{x}, {y}");
+        }
+        // Without one, nothing changes.
+        let a = hit_area(p(25.0, 50.0), s, slop, None, false, true);
+        assert_eq!(a.clipped(None, p(25.0, 50.0), s), a);
     }
 
     #[test]
@@ -1628,5 +1966,28 @@ mod tests {
         let s = size(Points(120.0), Points(40.0));
         assert_eq!(context_menu_anchor(s, false), p(0.0, 40.0));
         assert_eq!(context_menu_anchor(s, true), p(120.0, 40.0));
+    }
+
+    #[test]
+    fn tap_feedback_delay_holds_short_presses() {
+        use std::time::Duration;
+        assert_eq!(
+            tap_feedback_delay(Duration::ZERO, false, false),
+            Some(Duration::from_millis(64))
+        );
+        assert_eq!(
+            tap_feedback_delay(Duration::from_millis(12), false, false),
+            Some(Duration::from_millis(52))
+        );
+        assert_eq!(
+            tap_feedback_delay(Duration::from_millis(64), false, false),
+            None
+        );
+        assert_eq!(
+            tap_feedback_delay(Duration::from_millis(120), false, false),
+            None
+        );
+        assert_eq!(tap_feedback_delay(Duration::ZERO, true, false), None);
+        assert_eq!(tap_feedback_delay(Duration::ZERO, false, true), None);
     }
 }

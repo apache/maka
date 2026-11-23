@@ -11,7 +11,7 @@ use nsh_engine::EngineControl;
 use objc2::{
     ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send,
     rc::{Retained, Weak},
-    runtime::ProtocolObject,
+    runtime::{AnyObject, ProtocolObject},
 };
 use objc2_core_foundation::CGPoint;
 use objc2_foundation::{NSObject, NSObjectProtocol, NSRange, NSString};
@@ -52,6 +52,12 @@ pub(crate) struct TargetIvars {
     tap_start: std::cell::RefCell<Option<(Retained<UITouch>, CGPoint, f64)>>,
     /// The surface's feedback generators.
     haptics: crate::haptics::Haptics,
+    /// The words VoiceOver speaks for states with no trait, in the language
+    /// of the app's text (`Command::TextLocale`).
+    state_words: std::cell::Cell<&'static crate::state_words::StateWords>,
+    /// The file drop listeners a drag of files is over (entered, not yet
+    /// left or dropped on): each hears `onFileDragLeave` once.
+    file_drags: std::cell::RefCell<Vec<NodeId>>,
 }
 
 define_class!(
@@ -103,6 +109,89 @@ define_class!(
             // UIKeyModifierFlags (NSInteger).
             let modifiers: isize = unsafe { msg_send![recognizer, modifierFlags] };
             self.with_mounter(move |m| m.hover(id, state, in_window, modifiers));
+        }
+
+        // UIDropInteractionDelegate, for the views that listen to
+        // `onFileDrop` or take text drops ([`crate::file_drop`]).
+
+        #[unsafe(method(dropInteraction:canHandleSession:))]
+        fn drop_can_handle(&self, interaction: &AnyObject, session: &AnyObject) -> bool {
+            drop_listener(interaction)
+                .is_some_and(|(_, events)| crate::file_drop::offer(session, events).is_some())
+        }
+
+        #[unsafe(method(dropInteraction:sessionDidEnter:))]
+        fn drop_entered(&self, interaction: &AnyObject, session: &AnyObject) {
+            let Some((id, events)) = drop_listener(interaction) else { return };
+            if crate::file_drop::offer(session, events) != Some(crate::file_drop::Offer::Files) {
+                return;
+            }
+            let mut drags = self.ivars().file_drags.borrow_mut();
+            if !drags.contains(&id) {
+                drags.push(id);
+                drop(drags);
+                self.with_mounter(move |m| m.file_drag(id, true));
+            }
+        }
+
+        #[unsafe(method_id(dropInteraction:sessionDidUpdate:))]
+        fn drop_updated(
+            &self,
+            interaction: &AnyObject,
+            session: &AnyObject,
+        ) -> Option<Retained<AnyObject>> {
+            let offered = drop_listener(interaction)
+                .is_some_and(|(_, events)| crate::file_drop::offer(session, events).is_some());
+            crate::file_drop::proposal(offered)
+        }
+
+        #[unsafe(method(dropInteraction:sessionDidExit:))]
+        fn drop_exited(&self, interaction: &AnyObject, _session: &AnyObject) {
+            if let Some((id, _)) = drop_listener(interaction) {
+                self.file_drag_left(id);
+            }
+        }
+
+        #[unsafe(method(dropInteraction:sessionDidEnd:))]
+        fn drop_ended(&self, interaction: &AnyObject, _session: &AnyObject) {
+            if let Some((id, _)) = drop_listener(interaction) {
+                self.file_drag_left(id);
+            }
+        }
+
+        #[unsafe(method(dropInteraction:performDrop:))]
+        fn drop_performed(&self, interaction: &AnyObject, session: &AnyObject) {
+            let Some((id, events)) = drop_listener(interaction) else { return };
+            let offer = crate::file_drop::offer(session, events);
+            let Some(in_window) = crate::file_drop::location(interaction, session) else {
+                // The view is gone: no drop, but a drag that entered it left.
+                self.file_drag_left(id);
+                return;
+            };
+            // A file drop's leave follows the drop, once its files are read.
+            self.ivars().file_drags.borrow_mut().retain(|&d| d != id);
+            let shared = self.ivars().mounter.clone();
+            let on_main = move |f: Box<dyn FnOnce(&mut crate::mount::Mounter) + Send>| {
+                DispatchQueue::main().exec_async(move || {
+                    let mtm = MainThreadMarker::new().expect("main queue");
+                    if let Some(m) = shared.get(mtm).borrow_mut().as_mut() {
+                        f(m);
+                    }
+                });
+            };
+            match offer {
+                Some(crate::file_drop::Offer::Files) => {
+                    crate::file_drop::read(session, move |uris| {
+                        on_main(Box::new(move |m| m.files_dropped(id, in_window, uris)));
+                    });
+                }
+                Some(crate::file_drop::Offer::Text) => {
+                    crate::file_drop::read_text(session, move |text, html| {
+                        on_main(Box::new(move |m| m.text_dropped(id, in_window, text, html)));
+                    });
+                }
+                None => {}
+            }
         }
 
         #[unsafe(method(handleContextMenu:))]
@@ -217,6 +306,7 @@ define_class!(
     unsafe impl UITextFieldDelegate for EventTarget {
         #[unsafe(method(textFieldDidBeginEditing:))]
         fn text_field_did_begin(&self, field: &UITextField) {
+            input::began_editing(field);
             let id = field.tag() as NodeId;
             self.with_mounter(move |m| m.input_focused(id, true));
         }
@@ -277,6 +367,7 @@ define_class!(
 
         #[unsafe(method(textViewDidBeginEditing:))]
         fn text_view_did_begin(&self, view: &UITextView) {
+            input::began_editing(view);
             let id = view.tag() as NodeId;
             self.with_mounter(move |m| m.input_focused(id, true));
         }
@@ -348,6 +439,17 @@ define_class!(
             self.pan_should_begin(recognizer)
         }
 
+        /// A view's own edge pan lets a stack's swipe back go first: the
+        /// swipe goes back when there is a screen to go back to, and fails at
+        /// once otherwise, leaving the drag to the pan.
+        #[unsafe(method(gestureRecognizer:shouldRequireFailureOfGestureRecognizer:))]
+        fn requires_failure_of(&self, recognizer: &UIGestureRecognizer, other: &UIGestureRecognizer) -> bool {
+            recognizer.isKindOfClass(objc2_ui_kit::UIScreenEdgePanGestureRecognizer::class())
+                && recognizer
+                    .view()
+                    .is_some_and(|view| crate::navigation::is_back_swipe(&view, other))
+        }
+
         /// Taps the views inside the scroll view recognize (a web view's
         /// link) wait for its keyboard tap to fail: a tap that only dismisses
         /// the keyboard does nothing else.
@@ -372,7 +474,13 @@ define_class!(
                 && let Ok(mut m) = self.ivars().mounter.get(self.mtm()).try_borrow_mut()
                 && let Some(m) = m.as_mut()
             {
-                m.pan_touch(view.tag() as NodeId, &touched);
+                let first = recognizer.state() == UIGestureRecognizerState::Possible
+                    && recognizer.numberOfTouches() == 0;
+                m.pan_touch(
+                    view.tag() as NodeId,
+                    &touched,
+                    first.then(|| touch.locationInView(None)),
+                );
             }
             if !recognizer.isKindOfClass(UITapGestureRecognizer::class()) {
                 return true.into();
@@ -589,6 +697,8 @@ impl EventTarget {
             held: Default::default(),
             tap_start: Default::default(),
             haptics: Default::default(),
+            state_words: std::cell::Cell::new(crate::state_words::DEFAULT),
+            file_drags: Default::default(),
         });
         // SAFETY: NSObject's designated initializer.
         unsafe { msg_send![super(this), init] }
@@ -605,8 +715,8 @@ impl EventTarget {
             .or_default() += 1;
     }
 
-    /// Reports how far text area `view` scrolled, if a built-in bar takes
-    /// the place of its indicator and it changed (`input::report_scroll`).
+    /// Reports how far text area `view` scrolled, if a bar of the app's
+    /// follows it and it changed (`input::report_scroll`).
     pub(crate) fn input_scrolled(&self, view: &UIView) {
         input::report_scroll(view, &self.ivars().control);
     }
@@ -626,6 +736,19 @@ impl EventTarget {
     /// The surface's feedback generators.
     pub(crate) fn haptics(&self) -> &crate::haptics::Haptics {
         &self.ivars().haptics
+    }
+
+    /// The words VoiceOver speaks for states with no trait.
+    pub(crate) fn state_words(&self) -> &'static crate::state_words::StateWords {
+        self.ivars().state_words.get()
+    }
+
+    /// The app's text shows in `locale` now: the state words of the views
+    /// already mounted follow it the next time VoiceOver reads them.
+    pub(crate) fn set_text_locale(&self, locale: nsh_core::platform::Locale) {
+        self.ivars()
+            .state_words
+            .set(crate::state_words::for_language(locale.as_str()));
     }
 
     /// The app's keyboard shortcuts.
@@ -962,6 +1085,16 @@ impl EventTarget {
         );
     }
 
+    /// A drag of files left listener `id`, if it was over it.
+    fn file_drag_left(&self, id: NodeId) {
+        let mut drags = self.ivars().file_drags.borrow_mut();
+        if let Some(at) = drags.iter().position(|&d| d == id) {
+            drags.remove(at);
+            drop(drags);
+            self.with_mounter(move |m| m.file_drag(id, false));
+        }
+    }
+
     /// Runs `f` on the mounter. UIKit can call back synchronously while the
     /// mounter applies a batch (e.g. setting `contentOffset`); then the call
     /// is deferred to the next main-queue turn instead of re-entering.
@@ -987,4 +1120,14 @@ impl EventTarget {
             });
         }
     }
+}
+
+/// The drop listener whose view has `interaction` (its tag is the node's
+/// id), with the events it listens to.
+fn drop_listener(interaction: &AnyObject) -> Option<(NodeId, nsh_core::EventMask)> {
+    // SAFETY: UIInteraction's `view` (weak: nil once the view is gone).
+    let view: Option<Retained<UIView>> = unsafe { msg_send![interaction, view] };
+    let view = view?;
+    let events = view.downcast_ref::<crate::native_view::NshView>()?.events();
+    Some((view.tag() as NodeId, events))
 }

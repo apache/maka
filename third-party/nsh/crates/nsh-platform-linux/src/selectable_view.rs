@@ -736,6 +736,27 @@ fn select_all(surface: &Rc<Surface>, id: NodeId) {
     }
 }
 
+/// `ref.clearSelection()` on `view` (`Command::ClearSelection`): clears
+/// the selections of the areas that are `view`, inside it or around it.
+pub(crate) fn clear_in(surface: &Surface, view: &NshView) {
+    let within = |inner: &NshView, outer: &NshView| {
+        let mut current = Some(inner.clone());
+        while let Some(v) = current {
+            if &v == outer {
+                return true;
+            }
+            current = v.parent_view();
+        }
+        false
+    };
+    let ids: Vec<NodeId> = surface.selection.areas.borrow().keys().copied().collect();
+    for id in ids {
+        if view_of(surface, id).is_some_and(|area| within(&area, view) || within(view, &area)) {
+            clear(surface, id);
+        }
+    }
+}
+
 /// Clears area `id`'s selection.
 fn clear(surface: &Surface, id: NodeId) {
     let changed = surface

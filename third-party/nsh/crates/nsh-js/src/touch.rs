@@ -993,19 +993,6 @@ export interface ResponderGestureState {
   vy: number;
   numberActiveTouches: number;
 }
-
-/** When a view's pan activates (`panActivation`; react-native-gesture-handler's
- * `activeOffsetX` / `failOffsetY`), decided natively on the main thread as the
- * finger moves: past an active offset the view becomes the responder and the
- * scroll views around it can no longer take the touches; past a fail offset
- * first it never does, and they keep them. Distances in points along one axis,
- * either direction; without active offsets it activates after 10 points. */
-export interface PanActivation {
-  activeOffsetX?: number;
-  activeOffsetY?: number;
-  failOffsetX?: number;
-  failOffsetY?: number;
-}
 "#;
 
 /// `nsh/gesture`'s types.

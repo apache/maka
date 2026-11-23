@@ -6,9 +6,255 @@ use std::sync::Arc;
 
 use crate::{
     color::Hsla,
-    geometry::{DefiniteLength, Percentage, Points, REM_SIZE, Radians, Size, deg},
-    style::{BorderStyle, Color},
+    geometry::{
+        Bounds, Corners, DefiniteLength, Edges, Percentage, Point, Points, REM_SIZE, Radians, Size,
+        deg, point, size,
+    },
+    style::{BorderStyle, Color, CornerRadii},
 };
+
+/// `clipPath`: CSS's `inset()` shape, a rectangle inset from the view's
+/// border box, its corners rounded (`inset(8px 0 0 50% round 12px)`).
+/// Everything the view draws shows only inside it (its background, borders,
+/// shadows and the views in it), and only there is the view, or anything in
+/// it, hit. It transitions (`transitionProperty: "clip-path"`), each edge and
+/// radius on its own, so a panel can open out of a corner.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[non_exhaustive]
+pub struct ClipInset {
+    /// How far each edge moves in, in points (negative: out), besides
+    /// [`Self::fractions`].
+    pub offsets: Edges<Points>,
+    /// How far each edge moves in as a fraction of the box's width (left and
+    /// right) or height (top and bottom): CSS's percentages. An edge is at
+    /// its offset plus its fraction of the size, as CSS's `calc()`, which is
+    /// what an inset between a length and a percentage interpolates to.
+    pub fractions: Edges<Percentage>,
+    /// The corners' radii (`round`): circular, scaled down as a border's are
+    /// where they do not fit.
+    pub radii: Corners<Points>,
+}
+
+impl ClipInset {
+    /// No inset and square corners: the border box.
+    pub const fn new() -> Self {
+        Self {
+            offsets: Edges {
+                top: Points::ZERO,
+                right: Points::ZERO,
+                bottom: Points::ZERO,
+                left: Points::ZERO,
+            },
+            fractions: Edges {
+                top: Percentage(0.0),
+                right: Percentage(0.0),
+                bottom: Percentage(0.0),
+                left: Percentage(0.0),
+            },
+            radii: Corners {
+                top_left: Points::ZERO,
+                top_right: Points::ZERO,
+                bottom_right: Points::ZERO,
+                bottom_left: Points::ZERO,
+            },
+        }
+    }
+
+    /// Moves every edge in by `length`.
+    pub fn inset(self, length: impl Into<DefiniteLength>) -> Self {
+        let length = length.into();
+        self.top(length).right(length).bottom(length).left(length)
+    }
+
+    /// Moves the top edge down by `length` (a fraction: of the height).
+    pub fn top(mut self, length: impl Into<DefiniteLength>) -> Self {
+        (self.offsets.top, self.fractions.top) = edge(length.into());
+        self
+    }
+
+    /// Moves the right edge left by `length` (a fraction: of the width).
+    pub fn right(mut self, length: impl Into<DefiniteLength>) -> Self {
+        (self.offsets.right, self.fractions.right) = edge(length.into());
+        self
+    }
+
+    /// Moves the bottom edge up by `length` (a fraction: of the height).
+    pub fn bottom(mut self, length: impl Into<DefiniteLength>) -> Self {
+        (self.offsets.bottom, self.fractions.bottom) = edge(length.into());
+        self
+    }
+
+    /// Moves the left edge right by `length` (a fraction: of the width).
+    pub fn left(mut self, length: impl Into<DefiniteLength>) -> Self {
+        (self.offsets.left, self.fractions.left) = edge(length.into());
+        self
+    }
+
+    /// Rounds every corner by `radius`.
+    pub fn rounded(mut self, radius: impl Into<Points>) -> Self {
+        self.radii = Corners::all(radius.into());
+        self
+    }
+
+    /// Rounds each corner by its own radius.
+    pub fn corner_radii(mut self, radii: Corners<Points>) -> Self {
+        self.radii = radii;
+        self
+    }
+
+    /// The rectangle it clips a box of `size` to, in the box's coordinates,
+    /// and its radii fitted to it. As CSS: two opposite edges that would
+    /// pass each other are moved in proportion until they meet, and radii
+    /// that do not fit are scaled down together.
+    pub fn resolve(&self, size: Size<Points>) -> (Bounds<Points>, CornerRadii) {
+        let (w, h) = (size.width.0.max(0.0), size.height.0.max(0.0));
+        let at = |o: Points, f: Percentage, len: f32| o.0 + f.0 * len;
+        let (mut top, mut bottom) = (
+            at(self.offsets.top, self.fractions.top, h),
+            at(self.offsets.bottom, self.fractions.bottom, h),
+        );
+        let (mut left, mut right) = (
+            at(self.offsets.left, self.fractions.left, w),
+            at(self.offsets.right, self.fractions.right, w),
+        );
+        let meet = |a: &mut f32, b: &mut f32, len: f32| {
+            let sum = *a + *b;
+            if sum > len && sum > 0.0 {
+                let k = len / sum;
+                *a *= k;
+                *b *= k;
+            }
+        };
+        meet(&mut top, &mut bottom, h);
+        meet(&mut left, &mut right, w);
+        let rect = Bounds::new(
+            point(Points(left), Points(top)),
+            size_of((w - left - right).max(0.0), (h - top - bottom).max(0.0)),
+        );
+        let radii = CornerRadii::circular(self.radii.map(|r| r.max(Points::ZERO))).fit(rect.size);
+        (rect, radii)
+    }
+
+    /// The outline of the shape in a box of `size`, clockwise on screen
+    /// from the top edge, its corners circular arcs. Always the same
+    /// segments (a corner of radius 0 is a curve of length 0), so two
+    /// outlines interpolate segment by segment, as Core Animation animates
+    /// a path.
+    pub fn outline(&self, size: Size<Points>, out: &mut impl FnMut(crate::shape::Segment)) {
+        use crate::shape::Segment;
+        // A quarter circle's control points: `4/3 · (√2 − 1)` of the radius
+        // along each tangent.
+        const K: f32 = 0.552_284_8;
+        let (rect, radii) = self.resolve(size);
+        let (x0, y0) = (rect.origin.x.0, rect.origin.y.0);
+        let (x1, y1) = (x0 + rect.size.width.0, y0 + rect.size.height.0);
+        let (tl, tr, br, bl) = (
+            radii.top_left.0,
+            radii.top_right.0,
+            radii.bottom_right.0,
+            radii.bottom_left.0,
+        );
+        let p = |x: f32, y: f32| point(Points(x), Points(y));
+        let c =
+            |c1: Point<Points>, c2: Point<Points>, to: Point<Points>| Segment::Cubic([c1, c2, to]);
+        out(Segment::Move(p(x0 + tl, y0)));
+        out(Segment::Line(p(x1 - tr, y0)));
+        out(c(
+            p(x1 - tr + K * tr, y0),
+            p(x1, y0 + tr - K * tr),
+            p(x1, y0 + tr),
+        ));
+        out(Segment::Line(p(x1, y1 - br)));
+        out(c(
+            p(x1, y1 - br + K * br),
+            p(x1 - br + K * br, y1),
+            p(x1 - br, y1),
+        ));
+        out(Segment::Line(p(x0 + bl, y1)));
+        out(c(
+            p(x0 + bl - K * bl, y1),
+            p(x0, y1 - bl + K * bl),
+            p(x0, y1 - bl),
+        ));
+        out(Segment::Line(p(x0, y0 + tl)));
+        out(c(
+            p(x0, y0 + tl - K * tl),
+            p(x0 + tl - K * tl, y0),
+            p(x0 + tl, y0),
+        ));
+        out(Segment::Close);
+    }
+
+    /// Whether `p` (in the coordinates of a box of `size`) is inside it.
+    pub fn contains(&self, size: Size<Points>, p: Point<Points>) -> bool {
+        let (rect, radii) = self.resolve(size);
+        let (x0, y0) = (rect.origin.x.0, rect.origin.y.0);
+        let (x1, y1) = (x0 + rect.size.width.0, y0 + rect.size.height.0);
+        let (x, y) = (p.x.0, p.y.0);
+        if !(x >= x0 && y >= y0 && x < x1 && y < y1) {
+            return false;
+        }
+        // In a corner's square, the point must be within its circle.
+        let outside = |r: Points, cx: f32, cy: f32, beyond_x: bool, beyond_y: bool| {
+            let r = r.0;
+            r > 0.0 && beyond_x && beyond_y && {
+                let (dx, dy) = (x - cx, y - cy);
+                dx * dx + dy * dy > r * r
+            }
+        };
+        let (tl, tr, br, bl) = (
+            radii.top_left,
+            radii.top_right,
+            radii.bottom_right,
+            radii.bottom_left,
+        );
+        !(outside(tl, x0 + tl.0, y0 + tl.0, x < x0 + tl.0, y < y0 + tl.0)
+            || outside(tr, x1 - tr.0, y0 + tr.0, x > x1 - tr.0, y < y0 + tr.0)
+            || outside(br, x1 - br.0, y1 - br.0, x > x1 - br.0, y > y1 - br.0)
+            || outside(bl, x0 + bl.0, y1 - bl.0, x < x0 + bl.0, y > y1 - bl.0))
+    }
+
+    /// The inset `t` of the way from `self` to `to`, edge by edge and
+    /// corner by corner (`t` beyond 0..1 overshoots, radii stay at 0 or
+    /// more).
+    pub fn lerp(&self, to: &Self, t: f32) -> Self {
+        let l = |a: f32, b: f32| a + (b - a) * t;
+        let lp = |a: Points, b: Points| Points(l(a.0, b.0));
+        let lf = |a: Percentage, b: Percentage| Percentage(l(a.0, b.0));
+        Self {
+            offsets: Edges {
+                top: lp(self.offsets.top, to.offsets.top),
+                right: lp(self.offsets.right, to.offsets.right),
+                bottom: lp(self.offsets.bottom, to.offsets.bottom),
+                left: lp(self.offsets.left, to.offsets.left),
+            },
+            fractions: Edges {
+                top: lf(self.fractions.top, to.fractions.top),
+                right: lf(self.fractions.right, to.fractions.right),
+                bottom: lf(self.fractions.bottom, to.fractions.bottom),
+                left: lf(self.fractions.left, to.fractions.left),
+            },
+            radii: Corners {
+                top_left: lp(self.radii.top_left, to.radii.top_left).max(Points::ZERO),
+                top_right: lp(self.radii.top_right, to.radii.top_right).max(Points::ZERO),
+                bottom_right: lp(self.radii.bottom_right, to.radii.bottom_right).max(Points::ZERO),
+                bottom_left: lp(self.radii.bottom_left, to.radii.bottom_left).max(Points::ZERO),
+            },
+        }
+    }
+}
+
+/// An edge's length as an offset in points and a fraction.
+fn edge(length: DefiniteLength) -> (Points, Percentage) {
+    match length {
+        DefiniteLength::Absolute(a) => (a.to_points(REM_SIZE), Percentage(0.0)),
+        DefiniteLength::Fraction(f) => (Points::ZERO, f),
+    }
+}
+
+fn size_of(width: f32, height: f32) -> Size<Points> {
+    size(Points(width), Points(height))
+}
 
 /// One layer of `boxShadow` (CSS `box-shadow`).
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -984,10 +1230,12 @@ impl TransitionProps {
     pub const SHADOW: u8 = 8;
     /// Corner radii and border widths.
     pub const SHAPE: u8 = 16;
+    /// `clipPath` (CSS's `clip-path`).
+    pub const CLIP_PATH: u8 = 32;
     /// A single foreground blur filter, including transitions to/from none.
-    pub const FILTER: u8 = 32;
+    pub const FILTER: u8 = 64;
     /// Everything that can transition.
-    pub const ALL: u8 = 0x3f;
+    pub const ALL: u8 = 0x7f;
 
     /// True if `group` is included.
     #[inline]
@@ -1138,6 +1386,9 @@ pub struct Effects {
     /// drawn, top layer first (CSS order). Only gradients: CSS also takes
     /// images and shapes here, which no platform of NSH draws yet.
     pub mask_images: Vec<Gradient>,
+    /// `clipPath`: the inset rounded rectangle everything the view draws is
+    /// clipped to, and outside which nothing of it is hit.
+    pub clip_path: Option<ClipInset>,
 }
 
 impl Effects {
@@ -1148,6 +1399,7 @@ impl Effects {
             && self.filters.is_empty()
             && self.backdrop_filters.is_empty()
             && self.mask_images.is_empty()
+            && self.clip_path.is_none()
     }
 }
 
@@ -1160,6 +1412,121 @@ pub(crate) fn shared(effects: Effects) -> Option<Arc<Effects>> {
 mod tests {
     use super::*;
     use crate::geometry::{percentage, px, size};
+
+    #[test]
+    fn a_clip_inset_resolves_as_css_does() {
+        let at =
+            |x: f32, y: f32, w: f32, h: f32| Bounds::new(point(px(x), px(y)), size(px(w), px(h)));
+        let box_ = size(px(200.0), px(100.0));
+        // Percentages of the width (left, right) and the height (top, bottom).
+        let clip = ClipInset::new()
+            .top(percentage(0.1))
+            .right(px(20.0))
+            .bottom(px(30.0))
+            .left(percentage(0.25));
+        assert_eq!(clip.resolve(box_).0, at(50.0, 10.0, 130.0, 60.0));
+        // Opposite edges that would pass each other meet, in proportion.
+        let past = ClipInset::new()
+            .left(percentage(0.75))
+            .right(percentage(0.75));
+        assert_eq!(past.resolve(box_).0, at(100.0, 0.0, 0.0, 100.0));
+        // Negative edges reach out of the box.
+        assert_eq!(
+            ClipInset::new().inset(px(-8.0)).resolve(box_).0,
+            at(-8.0, -8.0, 216.0, 116.0)
+        );
+        // Radii that do not fit are scaled down together, as a border's.
+        let pill = ClipInset::new().top(px(40.0)).rounded(px(100.0));
+        let (rect, radii) = pill.resolve(box_);
+        assert_eq!(rect, at(0.0, 40.0, 200.0, 60.0));
+        assert!(
+            radii.to_array().iter().all(|r| (r.0 - 30.0).abs() < 1e-4),
+            "{radii:?}"
+        );
+    }
+
+    #[test]
+    fn a_clip_inset_contains_what_its_rounded_corners_leave() {
+        let box_ = size(px(100.0), px(100.0));
+        let clip = ClipInset::new().inset(px(10.0)).rounded(px(20.0));
+        assert!(clip.contains(box_, point(px(50.0), px(50.0))));
+        // The inset edges.
+        assert!(!clip.contains(box_, point(px(5.0), px(50.0))));
+        assert!(!clip.contains(box_, point(px(50.0), px(95.0))));
+        // Each corner's square, outside its circle and inside it.
+        for (out, inside) in [
+            ((12.0, 12.0), (18.0, 18.0)),
+            ((88.0, 12.0), (82.0, 18.0)),
+            ((88.0, 88.0), (82.0, 82.0)),
+            ((12.0, 88.0), (18.0, 82.0)),
+        ] {
+            assert!(!clip.contains(box_, point(px(out.0), px(out.1))), "{out:?}");
+            assert!(
+                clip.contains(box_, point(px(inside.0), px(inside.1))),
+                "{inside:?}"
+            );
+        }
+        // Shut to nothing, nothing is inside.
+        let shut = ClipInset::new()
+            .bottom(percentage(1.0))
+            .left(percentage(1.0));
+        assert!(!shut.contains(box_, point(px(99.0), px(0.0))));
+    }
+
+    #[test]
+    fn a_clip_inset_outline_keeps_its_segments() {
+        use crate::shape::Segment;
+        let kinds = |clip: ClipInset| {
+            let mut out = Vec::new();
+            clip.outline(size(px(100.0), px(50.0)), &mut |s| {
+                out.push(std::mem::discriminant(&s));
+            });
+            out
+        };
+        // Shut to nothing with square corners, or open and rounded: the
+        // same segments, so a path animates from one to the other.
+        let shut = ClipInset::new()
+            .bottom(percentage(1.0))
+            .left(percentage(1.0));
+        let open = ClipInset::new().rounded(px(12.0));
+        assert_eq!(kinds(shut), kinds(open));
+        assert_eq!(kinds(open).len(), 10);
+        let mut last = None;
+        open.outline(size(px(100.0), px(50.0)), &mut |s| {
+            if let Segment::Cubic([_, _, to]) = s {
+                last = Some(to);
+            }
+        });
+        // It ends where it started, past the top left corner's arc.
+        assert_eq!(last, Some(point(px(12.0), px(0.0))));
+    }
+
+    #[test]
+    fn a_clip_inset_interpolates_lengths_and_percentages_together() {
+        let from = ClipInset::new()
+            .bottom(percentage(1.0))
+            .left(px(40.0))
+            .rounded(px(0.0));
+        let to = ClipInset::new().bottom(px(10.0)).rounded(px(16.0));
+        let half = from.lerp(&to, 0.5);
+        // CSS's calc(): half of each, the length and the percentage apart.
+        assert_eq!(
+            (half.offsets.bottom, half.fractions.bottom),
+            (px(5.0), percentage(0.5))
+        );
+        assert_eq!(
+            (half.offsets.left, half.fractions.left),
+            (px(20.0), percentage(0.0))
+        );
+        assert_eq!(half.radii, Corners::all(px(8.0)));
+        assert_eq!(
+            half.resolve(size(px(100.0), px(100.0))).0.size.height,
+            px(45.0)
+        );
+        // An overshooting curve never makes a radius negative.
+        assert_eq!(from.lerp(&to, -0.5).radii, Corners::all(px(0.0)));
+        assert_eq!(from.lerp(&to, 1.0), to);
+    }
 
     #[test]
     fn stops_spread_evenly() {

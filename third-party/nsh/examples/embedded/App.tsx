@@ -14,6 +14,7 @@
 // The Markdown note is `nsh/base`'s `TextView`: the hosts serve all of `nsh/base`.
 
 import { mount, type NativeComponentRef, Scroll, signal, Text, View } from "nsh";
+import { Window } from "nsh/desktop";
 import { nativeComponent } from "nsh";
 import { host } from "nsh";
 import { openUrl } from "nsh";
@@ -96,4 +97,4 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => <Window id="main">{App}</Window>);

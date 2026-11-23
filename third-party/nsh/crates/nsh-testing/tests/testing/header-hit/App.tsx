@@ -1,4 +1,5 @@
 import { mount, Scroll, Text, View, signal } from "nsh";
+import { Window } from "nsh/desktop";
 import { NavPage, NavStack, createNavStack } from "nsh/base";
 
 // A page whose `header` holds a button above a scroll view, with a large
@@ -6,7 +7,7 @@ import { NavPage, NavStack, createNavStack } from "nsh/base";
 const nav = createNavStack<string>(["large"]);
 const pressed = signal("none");
 
-mount(() => (
+mount(() => <Window id="main">{() => (
   <NavStack state={nav} class="flex-1">
     {(route) => (
       <NavPage
@@ -32,4 +33,4 @@ mount(() => (
       </NavPage>
     )}
   </NavStack>
-));
+)}</Window>);

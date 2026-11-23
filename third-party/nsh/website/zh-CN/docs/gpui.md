@@ -113,9 +113,12 @@ view.load(App::Js(Bundle::source(code)));
 `AssetBase::Http`）。字节码 bundle（`bundle.nshc`）用 `unsafe { Bundle::bytecode(bytes) }`（或同样是 unsafe 的
 `Bundle::read_trusted(path)`）加载：QuickJS 字节码是受信任的输入，只应从你自己应用的文件中加载。
 
-- `open_app_window(source, options, cx)` 在运行中的 GPUI 应用里打开一个带 `AppView` 的窗口，并带上应用 nsh.json
-  中 `window` 的设置。设置了 `"defaultVisible": false` 时，它在 macOS 和 Windows 上以隐藏状态打开，等应用显示它时才显示
-  （[主窗口](../modules/nsh-desktop.md#主窗口)）；在 Linux 上 GPUI 打开窗口时就会显示它。
+- `open_app_window(source, options, cx)` 在运行中的 GPUI 应用里打开一个带 `AppView` 的宿主窗口，并在第一帧之前应用
+  应用 nsh.json 中 `window` 的设置。应用必须声明至少一个顶层 `<Window>`（共享的 v2 mount 校验会拒绝普通根视图），
+  它的窗口是 GPUI 原生窗口（[应用宿主与第一个窗口](../modules/nsh-desktop.md#应用宿主与第一个窗口)）。GPUI 的宿主
+  窗口仍然沿用旧的主窗口模型：它不是 v2 的隐藏宿主（在 Linux 上仍会随启动显示），旧的 `"defaultVisible"` 键不再
+  影响它，因为共享的启动策略把宿主报告为隐藏；显示的是应用声明的 `<Window>` 窗口。`examples/embed-gpui` 的
+  AppView 嵌入示例尚未迁移，按现在的写法无法运行。该后端待平台验证。
 - `run_app(source, options)` 启动 GPUI，在一个窗口中运行一个应用直到窗口关闭（开发宿主就是这样做的）。
 - `AppView::register_component(name, factory)` 在加载前注册你自己的原生组件（[原生组件](./native-components.md)）。
 - `AppOptions::cache`（或 `AppView::set_cache`，作用于之后加载的应用）设置应用保存缓存（[下载的图片](./images-and-assets.md#磁盘缓存)）的位置和每种缓存的大小：`CacheOptions { location, images }`，`CacheLocation::System`（默认）、`Dir(path)` 或 `Off`，`CachePolicy::Default`（256 MiB）、`MaxSize(ByteSize::mib(n))` 或 `Off`。
@@ -126,6 +129,8 @@ view.load(App::Js(Bundle::source(code)));
 - `AppView::on_app_error(|error| …)` 接收应用的错误：`error.kind`（应用加载失败、未捕获的异常、VM 已停止），`error.is_fatal()` 表示该应用不会再执行任何 JS，`error.message`、`error.stack`，以及 `error.package`（它来自的签名包的 id 和 build 号）。`AppView::on_error` 以文本形式收到同样的错误。
 - `AppView::set_locale(locale, cx)` 和 `AppView::set_font_scale(scale, cx)` 用你的应用的语言和文字大小代替系统的设置（`None` 恢复跟随系统）：`locale()`、`Intl`、`fontScale()` 和文字立即跟随（[设备与环境](./device-and-environment.md#在嵌入它的应用中)）。
 - `AppView::set_theme_overrides(Some(json), cx)` 把你的应用的品牌加在应用的[主题](./tailwind.md#主题-token)之上：格式与 `nsh.json` 的 `"theme"` 相同的主题文件，其中的 token 在浅色和深色模式下都覆盖应用的同名 token，应用的其他 token 保持不变；`bg-primary` 等类名立即更新样式，之后加载的应用一开始就使用它（`None` 恢复应用自己的主题；无法解析的文件返回错误，不做任何改动）。用 `set_theme` / `set_theme_json` 给了整套主题时，覆盖压在那套主题的 token 之上，两者改动其一时另一个保持不变。
+- `AppView::content_height()` 返回逻辑根节点中参与正常布局的子视图的底边位置，单位为表面逻辑点；没有已布局的流内内容时返回 `None`。浮层、模态窗口以及固定或绝对定位的根子视图不计入高度。在 Rust 宿主中监听视图的 GPUI 通知后重新读取：每次提交会一起更新缓存高度和视图，然后才通知观察者。如果应用由你维护，也可以直接用应用根视图的 `.on_layout(..)` 获取它的布局尺寸。它报告当前布局，不进行固有尺寸计算：相对视口的高度和 flex 增长仍取决于宿主提供的视口。
+- 设置宿主主题或主题覆盖时，未指定颜色的文字继承 `foreground` token。
 - `AppView::run_package(&package)` 运行来自 `verify_package` 或 `load_package` 的[签名包](./signed-packages.md)；你的应用判定它健康之后，用 `accept_package` 记录它。
 - `set_ui_sets(sets)` 设置每个引擎提供的 UI 套件：NSH 的（`nsh_base::registry()`）和你的 crate 的（`my_app::registry()`，由
   `#[native_module]` 生成；[用 Rust 开发](./rust.md)），也用来提供你的应用自己的套件：应用通过

@@ -2,7 +2,7 @@
 // Command+Z after those actions must leave the macOS host running.
 import { mount, signal, Text, View } from "nsh";
 import { Input } from "nsh/base";
-import { Menu } from "nsh/desktop";
+import { Menu, Window } from "nsh/desktop";
 
 function App() {
   const value = signal("");
@@ -42,4 +42,4 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => <Window id="main">{App}</Window>);

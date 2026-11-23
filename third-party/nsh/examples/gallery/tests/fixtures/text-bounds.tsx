@@ -1,4 +1,5 @@
 import { mount, signal, Text, View } from "nsh";
+import { Window } from "nsh/desktop";
 import { Button, Input } from "nsh/base";
 
 // Short labels laid out after an Input whose hint is wider than its field:
@@ -41,4 +42,4 @@ function App() {
   );
 }
 
-mount(() => <App />);
+mount(() => <Window id="main">{() => <App />}</Window>);

@@ -1,6 +1,6 @@
 # Tooling
 
-Commands for all three modes, Rust first. "Rust" is an app with `nsh.json` `"root"`. "Mixed" has `"rust"` and no
+Commands for all three modes, Rust first. "Rust" is an app with `nsh.json` `"root"`. "Mixed" is a TSX entry with Rust nshm crates in `ext/` (`"dependencies"` by path), or `"rust"` and no
 `"root"`, so `App.tsx` is the entry. "TSX" has neither. Mode pages: [rust.md](rust.md), [mixed.md](mixed.md), [tsx.md](tsx.md).
 
 ## First-run setup
@@ -72,8 +72,8 @@ Every command takes `[ENTRY]`: the app's directory (default `.`) or a TSX entry 
 
 ```sh
 # Rust or mixed, from the app's directory; TSX the same, or name the entry
-nsh run                          # this machine's backend
-nsh run --target ios             # catalyst, ios, android, macos, linux, windows, gpui, tui, web
+nsh run                          # this machine's backend: macos on macOS (AppKit)
+nsh run --target ios             # ios, android, macos, linux, windows, gpui, tui, web
 nsh dev --server-only            # TSX and mixed: serve hosts you start yourself
 ```
 
@@ -82,7 +82,7 @@ nsh dev --server-only            # TSX and mixed: serve hosts you start yourself
 - **Rust edits:** rebuild and restart; state starts afresh. Build errors print in the terminal, and the next save that compiles runs.
 - **TSX edits:** a patch of changed modules, about 120 ms. Edited components render again; the others keep their state. Top-level `signal(..)` and `createNavStack(..)` keep their values while the initializer is unchanged.
 - **Full reload instead:** first import of a new NSH module, a `capabilities` change, a host on an older build, or a patch that cannot apply.
-- **`--release`:** minified, no hot updates. Hardening stays off for anything loaded from a dev server.
+- **`--release`:** minified, no hot updates. Hardening stays off for anything loaded from a dev server. On `nsh run` and `nsh test`, an app with Rust crates also builds its development hosts (and `nsh test`'s headless runner and `cargo test`) in release mode (`--release`).
 - **Devices:** the server prints LAN URLs. A device needs the port reachable. Android uses `adb reverse`, which `nsh run` sets up.
 
 **Reading the terminal:** `✓` done, `→` where to connect, `•` what a device did, `warn` and `error` problems, plain lines the app's own output.
@@ -119,7 +119,6 @@ Each desktop packages only on itself. Phones are reached from a computer.
 | `linux` | GTK 4.14+ | GTK 4 | Rust and GTK's dev packages |
 | `windows` | Windows 10 1809+ | WebView2 for web views | Rust |
 | `ios`, `ios-simulator` (package only) | iOS 15+; from macOS | Xcode and a simulator runtime | `rustup target add aarch64-apple-ios-sim aarch64-apple-ios` |
-| `catalyst` (run only) | Mac, iPhone-sized window | Xcode | `rustup target add aarch64-apple-ios-macabi` |
 | `android` | API 26+; from macOS, Linux or Windows | Android SDK (`ANDROID_HOME`), a JDK, a device or emulator | The NDK, and `rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android` |
 | `web` | Modern browsers | - | `rustup target add wasm32-unknown-unknown`, `clang`, `llvm-ar` |
 | `gpui` (run only) | macOS, Windows, Linux with a GPU | Inside a GPUI app | TSX and mixed entries; a Rust root embeds instead |
@@ -127,10 +126,15 @@ Each desktop packages only on itself. Phones are reached from a computer.
 
 Notes:
 
+- On macOS, run and check apps with plain `nsh run` (AppKit, `macos`). For a phone, use `--target ios`.
 - `nsh run` on Linux opens a 390×844 window, and on macOS and Windows 1200×800. Set `--window-size` for TSX entries.
 - `--target tui` logs to `.nsh/tui.log`; `C-h e` opens logs and errors.
 - A Rust crate calling browser APIs needs the `wasm-bindgen` CLI at the version `nsh` names (`NSH_WASM_BINDGEN` overrides the path).
 - On Linux, a crate that wants web views enables `webview` on `nsh-platform-linux`, which needs WebKitGTK 6.0.
+
+### Development tool: Mac Catalyst
+
+`--target catalyst` (run only) runs the iOS backend in an iPhone-sized Mac Catalyst window; it needs Xcode, and for Rust or mixed `rustup target add aarch64-apple-ios-macabi`. Use it only when the task needs Catalyst: behavior specific to it, or an app embedding NSH in a Mac Catalyst app. Do not pick it to preview mobile UI or to run a Mac app.
 
 ## Platform-specific code
 

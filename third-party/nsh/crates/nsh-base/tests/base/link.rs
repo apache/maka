@@ -7,14 +7,14 @@
 use std::time::Duration;
 
 use nsh_base::{LinkOpenWith, link};
-use nsh_core::{AccessibilityCurrent, Size, element::Root, platform::Os, prelude::*};
+use nsh_core::{AccessibilityCurrent, Size, platform::Os, prelude::*};
 use nsh_engine::EngineConfig;
 use nsh_testing::Headless;
 
 fn start<C: Component<Props = ()>>() -> Headless {
     let mut config = EngineConfig {
         viewport: Size::new(px(390.0), px(844.0)),
-        ..EngineConfig::new(Root::of::<C>())
+        ..EngineConfig::new(nsh_testing::windowed_root::<C>())
     };
     config.environment.os = Os::MacOs;
     let mut app = Headless::start(config).unwrap();
@@ -156,7 +156,7 @@ mod hit_slop {
     use std::sync::{Arc, Mutex};
 
     use nsh_base::{LinkOpenWith, link};
-    use nsh_core::{EdgeInsets, MountBatch, MountItem, NodeId, Size, element::Root, prelude::*};
+    use nsh_core::{EdgeInsets, MountBatch, MountItem, NodeId, Size, prelude::*};
     use nsh_engine::EngineConfig;
     use nsh_testing::Headless;
 
@@ -166,7 +166,7 @@ mod hit_slop {
     fn start<C: Component<Props = ()>>() -> (Headless, Seen) {
         let config = EngineConfig {
             viewport: Size::new(px(390.0), px(844.0)),
-            ..EngineConfig::new(Root::of::<C>())
+            ..EngineConfig::new(nsh_testing::windowed_root::<C>())
         };
         let mut app = Headless::start(config).unwrap();
         let seen = Seen::default();
@@ -265,7 +265,7 @@ mod href {
     use std::sync::{Arc, Mutex};
 
     use nsh_base::link;
-    use nsh_core::{MountBatch, MountItem, NodeId, Size, element::Root, prelude::*};
+    use nsh_core::{MountBatch, MountItem, NodeId, Size, prelude::*};
     use nsh_engine::EngineConfig;
     use nsh_testing::Headless;
 
@@ -274,7 +274,7 @@ mod href {
     fn start<C: Component<Props = ()>>() -> (Headless, Seen) {
         let config = EngineConfig {
             viewport: Size::new(px(390.0), px(844.0)),
-            ..EngineConfig::new(Root::of::<C>())
+            ..EngineConfig::new(nsh_testing::windowed_root::<C>())
         };
         let mut app = Headless::start(config).unwrap();
         let seen = Seen::default();
@@ -366,7 +366,6 @@ mod url_hint {
     use nsh_base::link;
     use nsh_core::{
         Size,
-        element::Root,
         platform::{Idiom, Os},
         prelude::*,
     };
@@ -377,7 +376,7 @@ mod url_hint {
         let mut config = EngineConfig {
             viewport: Size::new(px(390.0), px(844.0)),
             clock: nsh_engine::Clock::manual(std::time::SystemTime::UNIX_EPOCH),
-            ..EngineConfig::new(Root::of::<C>())
+            ..EngineConfig::new(nsh_testing::windowed_root::<C>())
         };
         config.environment.os = os;
         config.environment.idiom = idiom;
@@ -489,7 +488,7 @@ mod url_hint {
         let mut config = EngineConfig {
             viewport: Size::new(px(390.0), px(844.0)),
             clock: nsh_engine::Clock::manual(std::time::SystemTime::UNIX_EPOCH),
-            ..EngineConfig::new(Root::of::<Hinted>())
+            ..EngineConfig::new(nsh_testing::windowed_root::<Hinted>())
         };
         config.environment.os = Os::MacOs;
         config.environment.idiom = Idiom::Desktop;
@@ -571,7 +570,7 @@ fn a_link_shows_the_pointing_hand_unless_disabled_or_the_app_says_otherwise() {
     let config = EngineConfig {
         viewport: Size::new(px(390.0), px(844.0)),
         clock: nsh_engine::Clock::manual(std::time::SystemTime::UNIX_EPOCH),
-        ..EngineConfig::new(Root::of::<Cursors>())
+        ..EngineConfig::new(nsh_testing::windowed_root::<Cursors>())
     };
     let mut app = Headless::start(config).unwrap();
     let seen = Arc::new(Mutex::new(HashMap::new()));

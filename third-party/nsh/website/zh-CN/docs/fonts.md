@@ -191,17 +191,26 @@ import "./fonts/Inter-Bold.ttf";
 列表中第一个非通用的字体族就是所用的字体；第一个是通用字体族（`system-ui`、`sans-serif`）时使用系统字体。字体也可以设置在容器上，内部的文字会继承它。
 
 ```rust tabs
+use nsh_core::{element::desktop::window, prelude::*};
+
 #[component]
 pub fn Root() -> impl IntoElement {
-    view().flex_1().font_family(INTER.family).child(app())
+    window()
+        .id("main")
+        .content(view().flex_1().font_family(INTER.family).child(app()))
 }
 ```
 
 ```tsx tabs
+import { mount, View } from "nsh";
+import { Window } from "nsh/desktop";
+
 mount(() => (
-  <View class="flex-1 font-body">
-    <App />
-  </View>
+  <Window id="main">
+    <View class="flex-1 font-body">
+      <App />
+    </View>
+  </Window>
 ));
 ```
 

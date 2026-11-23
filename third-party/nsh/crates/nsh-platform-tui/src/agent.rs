@@ -200,7 +200,13 @@ impl Native for TuiNative {
         }
     }
 
-    fn drag(&self, from: Point<Points>, to: Point<Points>) {
+    fn drag(
+        &self,
+        from: Point<Points>,
+        to: Point<Points>,
+        options: nsh_testing::DragOptions,
+    ) -> Result<(), String> {
+        nsh_testing::agent::refuse_custom_drag("drag", options)?;
         let _ = self.pointer(from, MouseKind::Move);
         let _ = self.pointer(from, MouseKind::Down(MouseButton::Left));
         std::thread::sleep(nsh_testing::agent::LANDING);
@@ -211,6 +217,7 @@ impl Native for TuiNative {
             last = at;
         }
         let _ = self.pointer(last, MouseKind::Up(MouseButton::Left));
+        Ok(())
     }
 
     fn type_text(&self, text: &str) {
@@ -327,12 +334,23 @@ fn displayed(view: &AppView, id: NodeId) -> Option<(Point<Points>, Rect)> {
         if state.concealed || state.style.hidden || opacity <= 0.0 {
             return None;
         }
+        let at = origin + state.frame.origin;
         let bounds = CellBounds::new(
-            Bounds::new(origin + state.frame.origin, state.frame.size),
+            Bounds::new(at, state.frame.size),
             view.options.cells,
             view.area,
         );
         origin = bounds.origin(view.options.cells, view.area);
+        // As the renderer clips to a clip path's rectangle.
+        if let Some(c) = state.style.clip_path() {
+            let (r, _) = c.resolve(state.frame.size);
+            clip = CellBounds::new(
+                Bounds::new(at + r.origin, r.size),
+                view.options.cells,
+                view.area,
+            )
+            .clipped(clip);
+        }
         let visible = bounds.clipped(clip);
         if node == id {
             return (!visible.is_empty()).then_some((origin, visible));

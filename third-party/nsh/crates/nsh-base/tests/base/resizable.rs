@@ -8,12 +8,11 @@ use nsh_base::{
 };
 use nsh_core::{
     Bounds, Size,
-    element::Root,
     geometry::{Along, Axis, point},
     prelude::*,
 };
 use nsh_engine::EngineConfig;
-use nsh_testing::Headless;
+use nsh_testing::{DragOptions, Headless};
 
 /// The sizes, rounded, as the app shows them.
 fn shown(sizes: &[Points]) -> String {
@@ -83,7 +82,7 @@ where
 {
     Headless::start(EngineConfig {
         viewport: Size::new(px(400.0), px(844.0)),
-        ..EngineConfig::new(Root::of::<C>())
+        ..EngineConfig::new(nsh_testing::windowed_root::<C>())
     })
     .expect("the engine starts")
 }
@@ -97,21 +96,33 @@ fn a_drag_resizes_the_panels_and_reports_once_it_ends() {
     // One handle: the third panel is hidden.
     assert_eq!(app.screen().count("role:adjustable").unwrap(), 1);
 
-    app.drag("role:adjustable", point(px(30.0), px(5.0)))
-        .unwrap();
+    app.drag(
+        "role:adjustable",
+        point(px(30.0), px(5.0)),
+        DragOptions::default(),
+    )
+    .unwrap();
     app.wait_for("Widths 180 220 0").unwrap();
     app.wait_for("Reported 180, 220").unwrap();
     app.wait_for("Sidebar 180").unwrap();
 
     // Past its maximum, it stops at 200; the handle follows the boundary.
-    app.drag("role:adjustable", point(px(60.0), px(0.0)))
-        .unwrap();
+    app.drag(
+        "role:adjustable",
+        point(px(60.0), px(0.0)),
+        DragOptions::default(),
+    )
+    .unwrap();
     app.wait_for("Widths 200 200 0").unwrap();
     app.wait_for("Reported 200, 200").unwrap();
 
     // Below its minimum, it stops at 100.
-    app.drag("role:adjustable", point(px(-150.0), px(0.0)))
-        .unwrap();
+    app.drag(
+        "role:adjustable",
+        point(px(-150.0), px(0.0)),
+        DragOptions::default(),
+    )
+    .unwrap();
     app.wait_for("Widths 100 300 0").unwrap();
     app.wait_for("Reported 100, 300").unwrap();
     app.wait_for("Sidebar 100").unwrap();
@@ -128,8 +139,12 @@ fn a_panel_shown_takes_its_space_from_the_others_and_gives_it_back() {
     assert_eq!(app.screen().count("role:adjustable").unwrap(), 2);
 
     // The second handle moves the space between the middle and the third.
-    app.drag("role:adjustable >> nth=1", point(px(-40.0), px(0.0)))
-        .unwrap();
+    app.drag(
+        "role:adjustable >> nth=1",
+        point(px(-40.0), px(0.0)),
+        DragOptions::default(),
+    )
+    .unwrap();
     app.wait_for("Widths 150 110 140").unwrap();
     app.wait_for("Reported 150, 110, 140").unwrap();
 
@@ -235,8 +250,12 @@ fn a_vertical_group_shares_its_height_and_resizes_up_and_down() {
     let mut app = start::<Rows>();
     // Neither has a size: flex shares the height.
     app.wait_for("Heights 150 150").unwrap();
-    app.drag("role:adjustable", point(px(0.0), px(50.0)))
-        .unwrap();
+    app.drag(
+        "role:adjustable",
+        point(px(0.0), px(50.0)),
+        DragOptions::default(),
+    )
+    .unwrap();
     app.wait_for("Heights 200 100").unwrap();
     app.wait_for("Reported 200, 100").unwrap();
 }
@@ -247,8 +266,12 @@ fn a_panel_shown_again_comes_back_at_its_size() {
     app.wait_for("Widths 150 250 0").unwrap();
     app.press("id:third").unwrap();
     app.wait_for("Widths 150 150 100").unwrap();
-    app.drag("role:adjustable >> nth=1", point(px(-40.0), px(0.0)))
-        .unwrap();
+    app.drag(
+        "role:adjustable >> nth=1",
+        point(px(-40.0), px(0.0)),
+        DragOptions::default(),
+    )
+    .unwrap();
     app.wait_for("Widths 150 110 140").unwrap();
     app.press("id:third").unwrap();
     app.wait_for("Widths 150 250 0").unwrap();
@@ -297,8 +320,12 @@ fn a_new_size_from_the_app_resizes_the_panel_without_a_report() {
     app.wait_for("Widths 250 150").unwrap();
     assert!(app.shows("Resizes 0"));
     // A drag reports, and the size passed back changes nothing more.
-    app.drag("role:adjustable", point(px(-50.0), px(0.0)))
-        .unwrap();
+    app.drag(
+        "role:adjustable",
+        point(px(-50.0), px(0.0)),
+        DragOptions::default(),
+    )
+    .unwrap();
     app.wait_for("Widths 200 200").unwrap();
     app.wait_for("Resizes 1").unwrap();
     // Fixed: the window growing goes to the other panel.
@@ -340,13 +367,21 @@ fn Sidebar() -> impl IntoElement {
 fn a_resize_handle_reports_the_drag_of_the_edge_it_hugs() {
     let mut app = start::<Sidebar>();
     app.wait_for("Width 200").unwrap();
-    app.drag("label:Sidebar edge", point(px(40.0), px(0.0)))
-        .unwrap();
+    app.drag(
+        "label:Sidebar edge",
+        point(px(40.0), px(0.0)),
+        DragOptions::default(),
+    )
+    .unwrap();
     app.wait_for("Width 240").unwrap();
     app.wait_for("States [Pressed, Dragging, Idle]").unwrap();
     // Hugging the edge: the band is inside the sidebar, at its end.
-    app.drag("label:Sidebar edge", point(px(-60.0), px(0.0)))
-        .unwrap();
+    app.drag(
+        "label:Sidebar edge",
+        point(px(-60.0), px(0.0)),
+        DragOptions::default(),
+    )
+    .unwrap();
     app.wait_for("Width 180").unwrap();
 }
 

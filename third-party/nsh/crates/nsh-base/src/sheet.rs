@@ -280,14 +280,24 @@ pub fn Sheet(props: SheetProps, cx: Scope<SheetEvent>) -> impl IntoElement {
                 // largest detent's.
                 .style_with(move |s| {
                     let lift = keyboard_lift();
-                    let above = Length::from(lift);
+                    // This sheet owns a modal root. Android already takes
+                    // the whole IME out of that root: restore only the safe
+                    // area's overlap, so the panel's padding ends behind
+                    // the keyboard. Other popups can live in the full
+                    // surface and keep their own keyboard lift.
+                    let offset = if platform_name() == "android" {
+                        Points::ZERO - keyboard_height().min(safe_area().bottom)
+                    } else {
+                        lift
+                    };
+                    let above = Length::from(offset);
                     let s = match props.side.get() {
                         Placement::Bottom if lift > Points::ZERO => s
                             .left_0()
                             .right_0()
                             .bottom(above)
                             .max_h(bottom_panel_max_height()),
-                        Placement::Bottom => s.left_0().right_0().bottom_0(),
+                        Placement::Bottom => s.left_0().right_0().bottom(above),
                         Placement::Top => s.left_0().right_0().top_0(),
                         Placement::Left => s.top_0().bottom(above).left_0(),
                         Placement::Right => s.top_0().bottom(above).right_0(),

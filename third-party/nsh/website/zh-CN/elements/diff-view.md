@@ -26,6 +26,7 @@ fn review() -> impl IntoElement {
 ```tsx tabs
 import { mount } from "nsh";
 import { DiffView } from "nsh/base";
+import { Window } from "nsh/desktop";
 
 const OLD = `fn total(prices: &[u32]) -> u32 {
     prices.iter().sum()
@@ -40,7 +41,11 @@ function App() {
   return <DiffView oldValue={OLD} newValue={NEW} language="rust" class="flex-1" />;
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 视图填满应用给它的盒子（`flex-1`、一个高度），在其中滚动：纵向滚动所有行，横向滚动到最长的一行，并排视图的两侧一起滚动。设置 `softWrap` 时长行在这一侧的宽度处换行，并排的一行和较高的一侧一样高，两侧始终对齐。

@@ -80,6 +80,7 @@ export const nav = createNavStack<Route>([{ name: "tasks" }]);
 ```tsx
 // The app shell: the root and the navigation stack, no page logic.
 import { mount, View } from "nsh";
+import { Window } from "nsh/desktop";
 import { NavStack } from "nsh/base";
 import { nav } from "./nav";
 import { TaskDetail } from "./pages/TaskDetail";
@@ -102,7 +103,7 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => <Window id="main">{App}</Window>);
 ```
 
 ## `components/Header.tsx`

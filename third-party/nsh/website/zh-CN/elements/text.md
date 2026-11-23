@@ -162,7 +162,27 @@ text("基于 ")
 </Text>
 ```
 
-被 `numberOfLines` 或省略号截掉的附件会被隐藏。复制可选中的文本时不包含附件。
+被 `numberOfLines` 或省略号截掉的附件会被隐藏。复制可选中的文本时不包含附件，除非附件设置了 `copyText`（Rust 中为
+`.copy_text(..)`）：复制结果会在附件的位置放上这段文字，就像浏览器复制行内图片时取它的 `alt`。行内公式可以这样在复制时保留源码：
+
+```rust tabs
+text("Area is ")
+    .child(view().copy_text("$x^2$").label("x squared").child(formula))
+    .child(" here.")
+```
+
+```tsx tabs
+<Text>
+  Area is{" "}
+  <View copyText="$x^2$" accessibilityLabel="x squared">
+    {formula}
+  </View>{" "}
+  here.
+</Text>
+```
+
+复制整行得到 `Area is $x^2$ here.`。屏幕阅读器仍按视图的标签朗读它。`copyText` 只对文本中的视图和图片生效（也包括
+`renderMath`、`renderCustom` 放在那里的内容）；嵌套的文本片段会忽略它，因为片段的字符本身就会被复制。
 
 ### 空白字符
 

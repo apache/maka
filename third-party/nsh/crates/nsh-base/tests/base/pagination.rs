@@ -19,7 +19,7 @@ use nsh_base::{
     PaginationItem::{self, Ellipsis, Page},
     PaginationItemKind, PaginationItemState, pagination, pagination_items,
 };
-use nsh_core::{AccessibilityCurrent, MountItem, Size, element::Root, platform::Os, prelude::*};
+use nsh_core::{AccessibilityCurrent, MountItem, Size, platform::Os, prelude::*};
 use nsh_engine::EngineConfig;
 use nsh_testing::Headless;
 
@@ -233,7 +233,9 @@ fn Harness(props: HarnessProps) -> impl IntoElement {
 fn start(props: HarnessProps) -> Headless {
     let mut config = EngineConfig {
         viewport: Size::new(px(800.0), px(400.0)),
-        ..EngineConfig::new(Root::new::<Harness>(move || props.clone()))
+        ..EngineConfig::new(nsh_testing::windowed_root_with::<Harness>(move || {
+            props.clone()
+        }))
     };
     config.environment.os = Os::MacOs;
     let mut app = Headless::start(config).expect("the engine starts");
@@ -522,7 +524,9 @@ impl Cost {
 fn start_counted(props: CountedProps) -> (Headless, Arc<Cost>) {
     let mut config = EngineConfig {
         viewport: Size::new(px(800.0), px(400.0)),
-        ..EngineConfig::new(Root::new::<Counted>(move || props.clone()))
+        ..EngineConfig::new(nsh_testing::windowed_root_with::<Counted>(move || {
+            props.clone()
+        }))
     };
     config.environment.os = Os::MacOs;
     let mut app = Headless::start(config).expect("the engine starts");

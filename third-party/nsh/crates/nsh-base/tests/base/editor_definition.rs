@@ -17,7 +17,6 @@ use nsh_base::editor::{
 };
 use nsh_core::{
     Cursor, EventKind, EventPayload, MountItem, MouseEvent, NodeId, PressEvent, Size,
-    element::Root,
     keymap::Modifiers,
     platform::{Idiom, Os},
     prelude::*,
@@ -186,7 +185,9 @@ fn start(answer: bool) -> (Headless, Cursors) {
     let props = HarnessProps { answer };
     let mut config = EngineConfig {
         viewport: Size::new(px(800.0), px(900.0)),
-        ..EngineConfig::new(Root::new::<Harness>(move || props.clone()))
+        ..EngineConfig::new(nsh_testing::windowed_root_with::<Harness>(move || {
+            props.clone()
+        }))
     };
     config.environment.os = Os::Linux;
     config.environment.idiom = Idiom::Desktop;

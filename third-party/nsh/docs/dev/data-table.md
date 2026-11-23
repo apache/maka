@@ -29,7 +29,9 @@ The table is a body, a hit layer over it and a header (`view.rs`), from the bott
   rows only) and the scrolling columns between them (which move both ways). Those fixed at the end stand right after
   the scrolling columns while these fit, at the view's end once they overflow it (`Columns::end_left`, as CSS's
   `sticky`). The cells a scroll needs come with the next commit, which moves the body with them;
-- the *hit layer* over it is a vertical scroll view of a horizontal one of an empty box of the content's size. The
+- the *hit layer* over it is a vertical scroll view of a horizontal one of an empty box of the content's size (no
+  shorter than the viewport, so the columns scroll from below the last row, and from the body of a table with no rows; over what the app put in the `empty` slot, which lies above the layer, a wheel
+  moves the columns from the slot's box). The
   platforms scroll it as they scroll any scroll view (inertia, scroll bars, wheel, touch), and its box takes presses,
   hovers and the context menu. It draws nothing but its scroll bars (the platform's indicator, or the built-in
   `Scrollbar` of the app's theme, both the scroll view's own), which lie over the rows' backgrounds this way: with
@@ -93,6 +95,14 @@ label and sort button (for example, their gap), and `headerCellDragging` supplie
 8-point cell padding, 8 points before a title and 4 after its sort button, with a 4-point gap before the button.
 Its columns set `fitPadding: 16` for this app-owned spacing; fits add this to the widest title or cell text.
 
+`Columns` keeps each column's *base* width (its spec's, or what a drag, a fit or the app set) apart from the width it
+shows: the base plus its share of the room the columns leave free (`grow`, `Columns::grow`), given in whole points so
+they fill the room exactly. `Dt::sync_room` gives it the room (the viewport less the row header and a terminal's bar)
+whenever that changes. A width set by a drag, `setColumnWidth` or `fitColumn` settles the column: it keeps that width
+and no longer grows. `autoFit` (`Dt::auto_fit`, run when the columns or the rows change) measures as `fitColumn` does
+and sets the base without settling or reporting, once per column; `Columns::updated` carries the bases, the settled
+and the fitted columns over by key, as it does the widths the user dragged.
+
 ## Data
 
 The app holds as many rows as it likes: `rowCount` is the table's length and `data` holds the rows from `dataStart`.
@@ -130,9 +140,11 @@ The table is one stop of Tab, as gpui-component's (a `tab_stop` focus handle): i
 `onFocus` / `onBlur` set the table's focus (`Dt::set_focus`), which binds its keys; its rows, titles and sort buttons
 are `focusable(false)`, and so are its columns' resize handles in a terminal, where a lone `ResizeHandle` is a stop
 (`PointerOnly`, provided around them: resizing is the mouse's, as gpui-component's). While it has the keyboard Tab moves the selection, as gpui-component's, and Escape gives it
-back; in a terminal Tab and Shift+Tab are not bound and move the focus on, out of the table, the arrows moving
-between the columns (`docs/dev/tui.md` "Interaction"). A press, `focus()` and `blur()` set the same flag. Tab stops at pressables and `focusable(true)` views on macOS
-and the web (`ViewProps::focus_stop`).
+back; Enter / Return activates the selection's row (`onRowActivate`), bound like a list's (`for_focus`) and not while a
+text input edits or a control inside the table has the focus. In a terminal Tab and Shift+Tab are not bound and move
+the focus on, out of the table, the arrows moving between the columns (`docs/dev/tui.md` "Interaction"). A press,
+`focus()` and `blur()` set the same flag. Tab stops at pressables and `focusable(true)` views on macOS and the web
+(`ViewProps::focus_stop`).
 
 ## Compared with gpui-component
 

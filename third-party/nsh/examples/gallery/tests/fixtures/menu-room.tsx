@@ -4,6 +4,7 @@
 // below it holds, and a text saying whether the popup kept to that room
 // and which zone was chosen.
 import { mount, signal, Text, View } from "nsh";
+import { Window } from "nsh/desktop";
 import { Menu, MenuItem } from "nsh/base";
 import { menuItemLabel, menuItemLook, menuPopup } from "../../ui";
 
@@ -39,4 +40,4 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => <Window id="main">{App}</Window>);

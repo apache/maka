@@ -1,12 +1,12 @@
 ---
 title: nsh/desktop
-description: 桌面专有 API：应用的窗口（主窗口和应用自己的窗口，它们的种类、属性、状态和事件）、显示器、自定义标题栏、应用菜单、右键菜单、托盘和全局快捷键。
+description: 桌面专有 API：应用的窗口（全部是一等窗口，它们的种类、属性、状态和事件）、显示器、自定义标题栏、应用菜单、右键菜单、托盘和全局快捷键。
 order: 12.5
 ---
 
 # nsh/desktop
 
-`nsh/desktop` 包含只有桌面才有的东西：应用的窗口和它们的标题栏、显示器、应用菜单和右键菜单、托盘和全局快捷键。它在 macOS、Windows 和 Linux 上可用。Rust 代码在 `nsh_core::element::desktop` 中有同样的功能：应用自己的窗口（`window()`）、组件所在的窗口（`current_window()`，一个 `WindowRef`）、显示器（`displays`）、`quit`、`restart`、登录时打开（`launch_at_login`、`set_launch_at_login`）、应用菜单和右键菜单（`set_application_menu`、`popup_menu`，由 `MenuItem` 组成）、托盘（`set_tray`）和全局快捷键（`register_global_shortcut`），并用 `.window_drag(true)` 标记可拖动的视图；TSX 导入 `nsh/desktop`。这个模块在所有平台上都可以导入，因此同一个 bundle 可以在所有平台运行：在 iOS 和 Android 上它的函数什么也不做，`isAvailable` 告诉你当前是否有它的窗口和菜单。声明了能力的应用需要 `"application": true` 才能使用主窗口、应用菜单、托盘、全局快捷键、`quit` 和退出请求、`restart` 和登录时打开（[能力](../docs/sandbox-and-capabilities.md#application)），否则它们什么也不做。右键菜单和应用打开的窗口（由 `windows` 授权）不需要 `application`。
+`nsh/desktop` 包含只有桌面才有的东西：应用的窗口和它们的标题栏、显示器、应用菜单和右键菜单、托盘和全局快捷键。它在 macOS、Windows 和 Linux 上可用。Rust 代码在 `nsh_core::element::desktop` 中有同样的功能：应用自己的窗口（`window()`）、组件所在的窗口（`current_window()`，一个 `WindowRef`）、显示器（`displays`）、`quit`、`restart`、登录时打开（`launch_at_login`、`set_launch_at_login`）、应用菜单和右键菜单（`set_application_menu`、`popup_menu`，由 `MenuItem` 组成）、托盘（`set_tray`）和全局快捷键（`register_global_shortcut`），并用 `.window_drag(true)` 标记可拖动的视图；TSX 导入 `nsh/desktop`。这个模块在所有平台上都可以导入，因此同一个 bundle 可以在所有平台运行：在 iOS 和 Android 上它的函数什么也不做，`isAvailable` 告诉你当前是否有它的窗口和菜单。声明了能力的应用需要 `"application": true` 才能使用应用菜单、托盘、全局快捷键、`quit` 和退出请求、`restart`、退出模式和登录时打开（[能力](../docs/sandbox-and-capabilities.md#application)），否则它们什么也不做。右键菜单和应用打开的窗口（由 `windows` 授权）不需要 `application`。
 
 ```rust tabs
 use nsh_core::{
@@ -42,20 +42,21 @@ import {
 const isAvailable: boolean;
 ```
 
-在这个模块的窗口和菜单 API 可用的地方为 `true`：macOS、Windows 和 Linux；其他平台为 `false`。Rust：`os().is_desktop()`。
+在这个模块的窗口和菜单 API 可用的地方为 `true`：macOS、Windows 和 Linux，但终端应用里不可用（终端应用用它的唯一界面填满终端，没有窗口）；其他平台为 `false`。Rust：桌面操作系统且 idiom 不是 `Terminal`。
 
 [`platform.desktop`](./nsh.md#platform) 是更宽的桌面行为判断（`desktop={{…}}` 属性、`platform.select({ desktop })`）：桌面形态的浏览器也算在内，它们运行在浏览器自己的窗口中。桌面布局、密度和输入方式用 `platform.desktop` 判断，窗口和菜单用 `isAvailable` 判断。
 
 ## 窗口
 
-应用的每个窗口都由应用唯一的引擎渲染：主窗口和应用打开的窗口共享它的 signal、context、主题和模块，窗口之间不需要传递消息。每个窗口都是一个 `WindowRef`：主窗口和应用自己的每个窗口都是同一个类型。
+应用的每个窗口都由应用唯一的引擎渲染：所有窗口共享它的 signal、context、主题和模块，窗口之间不需要传递消息。每个窗口都是一个 `WindowRef`，API 和地位都相同；`"main"` 只是应用常给第一个窗口起的 id。
 
-- 应用自己的窗口用 [`<Window>`](#window) 在组件树中声明，或用 [`Window.open`](#windowopen) 命令式地打开。
+- 窗口在应用根中用 [`<Window>`](#window) 声明，或用 [`Window.open`](#windowopen) 命令式地打开。
 - [`currentWindow()`](#currentwindow) 是调用它的组件所在的窗口；`windows()`、`focusedWindow()` 和 `Window.get(id)` 找到其他窗口。
 - 只有应用会改的东西（标题、标题栏、层级、外观、关闭策略）是窗口的[属性](#属性)：`<Window>` 的 props 和 `set()`。用户也会改的东西（外框、模式、是否打开）从 `default…` 选项开始，通过请求（`setMode`、`setBounds`、`close`……）改变，结果通过 [`state()`](#窗口状态与显示器) 和[事件](#事件)报告回来。
 - 请求没有返回值：平台可能调整或拒绝一个请求（窗口管理器自己放置窗口、显示器被拔掉了），`state()` 报告实际发生了什么。
+- 关闭窗口只销毁这个窗口，并释放它的 signal 和 effect；应用按退出模式继续运行。
 
-主窗口的启动设置在 nsh.json 的 [`window`](#主窗口) 中，应用在第一帧之前就应用它们。
+应用宿主（app host）是不可见的。nsh.json 的 [`window`](#应用宿主与第一个窗口) 为应用声明的第一个窗口提供启动默认值，但不会创建窗口。
 
 ### Window
 
@@ -78,7 +79,7 @@ interface WindowProps extends WindowOptions {
 }
 ```
 
-`<Window>` 是应用自己的一个窗口，和 [`Dialog`](./nsh-base.md) 一样受控：`open` 不为 `false` 时打开（没有 `open` 时看 `defaultOpen`，默认为 `true`），卸载时关闭。它的内容是周围组件树的一部分：读取相同的 signal 和 context，其中的 `currentWindow()` 就是这个窗口。窗口不是因 `open` prop 而关闭时，`onOpenChange({ open: false, reason })` 通知应用，应用据此设置 `open`。原因有 `"closePress"`（用户关闭了它）、`"escape"`（`closeOnEscape`）、`"blur"`（`closeOnBlur`）、`"parentClose"`（父窗口关闭了）和 `"close"`（应用调用了它的 `WindowRef.close()`）。
+在桌面上，`<Window>` 是应用自己的一个窗口，和 [`Dialog`](./nsh-base.md) 一样受控：`open` 不为 `false` 时打开（没有 `open` 时看 `defaultOpen`，默认为 `true`），卸载时关闭。在应用根的最外层，它是应用的窗口之一；在另一个窗口的内容里，它是那个窗口的场景，随它关闭。它从不作为视图渲染：它的子节点是自己树的根，有自己的响应式 owner，因此关闭窗口会释放它的 signal、effect 和按键绑定，而应用根的状态保留。子节点仍然读取应用共享的 context 和 signal，其中的 `currentWindow()` 就是这个窗口。窗口不是因 `open` prop 而关闭时，`onOpenChange({ open: false, reason })` 通知应用，应用据此设置 `open`。原因有 `"closePress"`（用户关闭了它）、`"escape"`（`closeOnEscape`）、`"blur"`（`closeOnBlur`）、`"parentClose"`（父窗口关闭了）和 `"close"`（应用调用了它的 `WindowRef.close()`）。桌面之外（iOS、Android、Web 和终端应用）没有窗口：`<Window>` 在打开时把内容作为应用唯一表面的一部分渲染；它的 `ref` 不会被设置，`currentWindow()` 就是应用的唯一表面，和旧模型的主窗口一样。
 
 它的 props 就是它的[选项](#选项)和[属性](#属性)；属性是响应式的，`title={`${doc().name} – Editor`}` 会跟随 signal。
 
@@ -157,7 +158,7 @@ let Some(doc) = open_window(
 };
 ```
 
-`Window.get(id)` 是 id 为 `id` 的已打开窗口，没有时为 `null`（响应式）；`"main"` 是主窗口。在非桌面平台上 `Window.open` 抛出 `code` 为 `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM` 的错误；应用的[权限](#权限)不允许的窗口抛出 `ERR_ACCESS_DENIED`。
+`Window.get(id)` 是 id 为 `id` 的已打开窗口，没有时为 `null`（响应式）。每个 id 都由应用决定；`"main"` 只是第一个窗口的约定 id，没有特殊行为。在非桌面平台上 `Window.open` 抛出 `code` 为 `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM` 的错误；应用的[权限](#权限)不允许的窗口抛出 `ERR_ACCESS_DENIED`。
 
 ### 种类
 
@@ -165,7 +166,7 @@ let Some(doc) = open_window(
 
 | 种类 | 用途 | 默认值 |
 |---|---|---|
-| `"normal"`（默认） | 文档窗口和主窗口 | 在任务栏中，会激活，可调整大小。 |
+| `"normal"`（默认） | 文档窗口、第一个窗口 | 在任务栏中，会激活，可调整大小。 |
 | `"dialog"` | 设置、关于、确认 | 属于打开它的窗口并居中于其上；没有最小化和最大化；Escape 关闭；不在任务栏中。`modal: true` 让父窗口在它打开期间不接受输入。 |
 | `"panel"` | 检查器、调色板、工具窗口 | 浮在父窗口之上；没有最小化和最大化；不在任务栏中；不激活应用。 |
 | `"popup"` | 启动器、托盘弹出框、命令面板 | 没有边框；不可调整大小；Escape 和失去焦点会关闭它；浮在所有工作区之上；不在任务栏中。 |
@@ -195,7 +196,7 @@ let Some(doc) = open_window(
 
 | 分组 | 属性 | 说明 |
 |---|---|---|
-| 窗口外框 | `title` | 显示在标题栏、任务栏、窗口切换器中，也提供给辅助技术。在浏览器中，主窗口的标题就是页面的标题，显示在标签页上（[`Head`](./nsh-web.md#head) 的标题优先）。 |
+| 窗口外框 | `title` | 显示在标题栏、任务栏、窗口切换器中，也提供给辅助技术。浏览器中没有窗口：页面的标题来自 [`Head`](./nsh-web.md#head)，显示在标签页上。 |
 | | `titleBar` | `{ style: "default" \| "hidden"; height?; controlsOffset? }`：系统标题栏，或应用自己的标题栏（[见下](#自定义标题栏)）。`controlsOffset`（`{ x, y }`）设置隐藏标题栏中 macOS 红绿灯的位置。 |
 | | `frame` | `"default"`，或 `"none"`：没有标题栏和边框，由应用绘制全部内容。 |
 | 尺寸 | `minSize`、`maxSize` | 用户能调整到的最小和最大内容尺寸，`{ width, height }`，单位为点；`null` 清除。 |
@@ -224,7 +225,7 @@ function windows(): WindowRef[];
 function focusedWindow(): WindowRef | null;
 ```
 
-`currentWindow()` 是调用它的组件所在的窗口：外层最近的 `<Window>`（或 `Window.open` 的窗口），没有时是主窗口。它跟随组件树，而不是焦点，因此组件无论用在哪里，都显示正确窗口的状态，并作用于自己的窗口。在渲染时调用并保留 `WindowRef`：在组件之外（事件处理函数、定时器、`await` 之后）调用会抛出 `TypeError`。
+`currentWindow()` 是调用它的组件所在的窗口：外层最近的 `<Window>`（或 `Window.open` 的窗口）。它跟随组件树，而不是焦点，因此组件无论用在哪里，都显示正确窗口的状态，并作用于自己的窗口。在渲染时调用并保留 `WindowRef`：在组件之外（事件处理函数、定时器、`await` 之后）调用会抛出 `TypeError`；在应用根中（任何 `<Window>` 之外）调用时，它返回主窗口的 ref：`mount` 为裸 root 创建的隐式首窗口（root 声明了 `<Window>` 场景时该窗口不打开）。桌面之外，它就是应用的唯一表面（[`isAvailable`](#isavailable) 为 false），`windows()` 只列出它；`focusedWindow()` 为 `null`。
 
 ```tsx
 function SaveButton() {
@@ -233,9 +234,9 @@ function SaveButton() {
 }
 ```
 
-`windows()` 是已打开的窗口，主窗口在前，然后是应用自己的窗口，按打开顺序排列；`focusedWindow()` 是拥有键盘焦点的窗口，焦点在其他应用时为 `null`。两者都是响应式的。
+`windows()` 是已打开的窗口，按打开顺序排列；`focusedWindow()` 是拥有键盘焦点的窗口，焦点在其他应用时为 `null`。两者都是响应式的，在应用根和任何窗口中都可以调用。
 
-Rust：`current_window() -> WindowRef`，同样通过组件的 context 查找；以及 `main_window()`。
+Rust：`current_window() -> WindowRef`，同样通过组件的 context 查找。`main_window()` 返回应用根用来向宿主发命令的 ref，它不是用户窗口。
 
 ### WindowRef
 
@@ -268,15 +269,15 @@ Rust 列给出 `WindowRef` 的方法。
 
 | 成员 | Rust | 说明 |
 |---|---|---|
-| `id` | `id()` | 应用给它的 id；主窗口为 `"main"`。 |
-| `main` | `is_main()` | 它是主窗口。 |
+| `id` | `id()` | 应用给它的 id。`"main"` 只是约定俗成的第一窗口 id。 |
+| `main` | `is_main()` | id 是否为 `"main"`；没有特权窗口。 |
 | `parent` | | 拥有它的窗口，或 `null`。 |
 | `state()` | `state()` | 平台报告的它的状态（响应式；[见下](#窗口状态与显示器)）。在非桌面平台上、显示之前和关闭之后为 `null`。 |
 | `titleBar()` | `title_bar()` | 它隐藏的标题栏的区域（[见下](#titlebar)）。 |
 | `set(attributes)` | `set(WindowAttributes)` | 修改给出的[属性](#属性)；其他保持原值。应用的权限不允许的属性保持不变，并给出警告。 |
 | `show()`、`hide()` | `show()`、`hide()` | 显示它（最小化时还原），或隐藏它。macOS 上全屏窗口会先退出全屏再隐藏（与 macOS 应用的窗口一致），再次显示时是普通窗口。 |
 | `focus()` | `focus()` | 显示它，提到所在层级的最前并给它键盘焦点；应用随之激活。窗口保持原有层级。 |
-| `close()` | `close()` | 关闭它，不论 `closeOnPress` 如何。应用自己的窗口卸载其内容（`<Window>`：`reason` 为 `"close"` 的 `onOpenChange`）；主窗口像用户关闭它那样关闭，最后一个窗口关闭时应用结束。 |
+| `close()` | `close()` | 关闭它，不论 `closeOnPress` 如何，销毁它的树并释放 owner（`<Window>`：`reason` 为 `"close"` 的 `onOpenChange`）。其他窗口不受影响；只有最后一个窗口关闭时，应用才按[退出模式](#退出)退出。 |
 | `minimize()`、`restore()` | `minimize()`、`restore()` | 最小化它，或按原来的模式还原：最大化的窗口最小化后还原时仍是最大化。 |
 | `setMode(mode)` | `set_mode(mode)` | 让它进入 `"normal"`、`"maximized"` 或 `"fullScreen"`；请求它当前的模式不会有变化。隐藏的窗口保持隐藏：它的 `state()` 读出这个模式，显示时进入该模式。 |
 | `setBounds({ origin?, size?, animated? })` | `set_bounds(WindowFrame { .. })` | 移动它并调整大小，单位为点；省略的字段保持原值。`origin`（`x`、`y`）是它的左上角，从主显示器的左上角量起，`y` 向下增长；只给 `height` 而不给 `y` 时顶边保持不动。macOS 和 Windows 上的 `size` 包含窗口装饰；Linux 上设置 GTK 的默认窗口尺寸。`animated: true` 启用 macOS 的窗口调整动画。宽度和高度接受正有限数值，`x` 和 `y` 接受有限数值；其他值保留字段原值。 |
@@ -306,7 +307,7 @@ Rust 列给出 `WindowRef` 的方法。
 
 - `closeOnPress: true`（默认）：窗口关闭；应用先收到 `closePress`，再收到 `close`（`<Window>`：`reason` 为 `"closePress"` 的 `onOpenChange`）。
 - `closeOnPress: false`：窗口保留，应用收到 `closePress`。由应用决定，然后用 `close()`（或 `open={false}`）关闭它：编辑器先询问是否保存修改。
-- `close()` 和 [`Application.quit()`](#application) 不论 `closeOnPress` 如何都会关闭。
+- `close()` 和 [`Application.quit()`](#application) 不论 `closeOnPress` 如何都会关闭。退出结束整个应用，而不是逐个关闭窗口：窗口的 `onOpenChange` 可能不会运行，因此要在 `Application.on("quit")` 中保存（或先用 `quitRequest` 询问）。
 
 ```tsx
 function Editor() {
@@ -322,9 +323,11 @@ function Editor() {
 
 `closeOnEscape` 和 `closeOnBlur` 以同样的方式关闭窗口，`reason` 为 `"escape"` 或 `"blur"`；父窗口关闭时，窗口随之关闭（`"parentClose"`）。
 
-### 主窗口
+### 应用宿主与第一个窗口
 
-应用启动时主窗口就已存在。nsh.json 的 `window` 保存它的启动设置，应用的窗口从第一帧起就带着它们，早于任何 JS 运行：
+应用宿主是不可见的：它持有事件循环、Storage、`Application`、应用菜单、窗口注册表和退出模式，并且在所有窗口关闭后继续存在。它不是 `WindowRef`，`currentWindow()` 也不会返回它。
+
+nsh.json 的 `window` 保存应用声明的第一个窗口的启动默认值，在第一帧之前应用：
 
 ```json
 {
@@ -338,34 +341,29 @@ function Editor() {
 }
 ```
 
-它接受[选项](#选项)中的 `defaultSize`、`defaultPosition`、`display` 和 `defaultMode`，以及所有[属性](#属性)。应用运行时，任何 `<Window>` 之外的 `currentWindow()`（或 `Window.get("main")`）就是主窗口，它的 `set()` 修改同样的属性。同一份 nsh.json 适用于所有构建：桌面应用这些设置，网页以 `title` 作为页面标题，在 iOS 和 Android 上应用填满它在屏幕中的视图。
+它接受[选项](#选项)中的 `defaultSize`、`defaultPosition`、`display`、`defaultMode` 和 `restoreBounds`，以及所有[属性](#属性)；应用打开的第一个 `<Window>` 继承它们，它自己的选项和属性覆盖它们。同一份 nsh.json 适用于所有构建：桌面应用这些设置，网页以 `title` 作为页面标题，在 iOS 和 Android 上应用填满它在屏幕中的视图。`"defaultVisible"` 不再适用：宿主没有可显示的窗口；想以无窗口状态启动的应用只要不打开窗口（或让第一个 `<Window open={false}>` 保持关闭，直到需要它）。
 
-`"defaultVisible": false` 让应用启动时主窗口处于隐藏状态：窗口照常创建，应用在其中运行，只是看不见，也不占用键盘，直到应用用 `show()` 或 `focus()` 显示它，比如[托盘](#tray)应用在图标被点击时这样做。在此之前 `state()` 报告它是隐藏的；第一次显示时，它按 `defaultMode` 打开。应用运行期间打开它的 [URL scheme](./nsh.md#urlscheme) 链接也会显示它；在 macOS 上，再次打开应用（点 Dock 图标、在访达中打开）也一样。`nsh run` 和 `nsh test --target` 同样以隐藏状态启动它。开发宿主打开窗口的方式和运行其他应用时一样：`--target windows`（`nsh run` 在 Windows 上的默认值）按应用的 `defaultSize` 和 `defaultMode` 打开，`--target macos`、`linux` 或 `gpui` 按宿主的大小、以普通模式打开；GPUI 在 Linux 上一打开窗口就会显示，所以在 Linux 上用 `--target gpui` 时窗口会显示。在 `nsh run` 下出错时会显示它，好让错误被看到。
-
-```json
-{
-  "window": {
-    "title": "Focus",
-    "closeOnPress": false,
-    "defaultVisible": false
-  }
-}
-```
+[托盘](#tray)应用可以在启动时隐藏窗口，在图标被点击时打开它，窗口隐藏后应用继续运行：
 
 ```tsx
-import { currentWindow, Tray } from "nsh/desktop";
+import { mount, signal, View } from "nsh";
+import { Tray, Window } from "nsh/desktop";
 import icon from "./tray.svg";
 
 function App() {
-  const win = currentWindow();
-  // 关闭按钮只隐藏窗口：应用继续在托盘中运行。
-  win.on("closePress", () => win.hide());
-  Tray.set({ icon, onClick: () => win.focus(), menu: [{ role: "quit" }] });
-  return <Timer />;
+  const shown = signal(false);
+  Tray.set({ icon, onClick: () => shown.set(true), menu: [{ role: "quit" }] });
+  return (
+    <Window id="main" title="Focus" open={shown()} closeOnPress={false} onClosePress={() => shown.set(false)}>
+      <Timer />
+    </Window>
+  );
 }
+
+mount(App);
 ```
 
-[`examples/tray`](https://github.com/longbridge/nsh/tree/main/examples/tray) 就是这样做的托盘应用。
+[`examples/tray`](https://github.com/longbridge/nsh/tree/main/examples/tray) 启动时显示窗口，关闭时隐藏它，再从托盘图标重新显示。
 
 ### 权限
 
@@ -383,6 +381,9 @@ const Application: {
   on(event: "openFiles", listener: (files: { paths: string[] }) => void): () => void;
   on(event: "quit", listener: () => void): () => void;
   on(event: "quitRequest", listener: () => void): () => void;
+  on(event: "reopen", listener: () => void): () => void;
+  on(event: "lastWindowClosed", listener: () => void): () => void;
+  setQuitMode(quitMode: "platform" | "lastWindowClosed" | "explicit"): void;
 };
 ```
 
@@ -396,8 +397,11 @@ const Application: {
 | `on("openFiles", listener)` | `next_open_files()` | 系统用应用声明的类型的文件打开了它（[打开文件](#打开文件)）。 |
 | `on("quit", listener)` | `on_app_quit(f)` | 应用正在退出：运行它的清理（[退出](#退出)）。 |
 | `on("quitRequest", listener)` | `on_quit_request(f)` | 用户要求退出；监听期间由应用决定何时退出（[退出](#退出)）。 |
+| `on("reopen", listener)` | `on_reopen(f)` | 系统要求应用显示自己：macOS 的 Dock/访达重新打开，或 Windows/Linux 上的再次启动。应用自己打开或聚焦想要的窗口；不会隐式显示任何窗口。 |
+| `on("lastWindowClosed", listener)` | `on_last_window_closed(f)` | 应用最后一个窗口关闭，在它自己的关闭流程之后。Rust listener 同步运行、在模式生效之前；JS listener 异步投递、在决定之后运行。要在没有窗口时继续运行的应用，在启动时设置 `quitMode: "explicit"`。 |
+| `setQuitMode(quitMode)` | `set_quit_mode(QuitMode)` | 最后一个窗口关闭时何时退出：`"platform"`（macOS 留下；Windows 和 Linux 退出）、`"lastWindowClosed"`（所有平台都退出）、`"explicit"`（由应用决定）（[退出](#退出)）。 |
 
-`Application.quit()` 用于应用自己的「退出」（自定义文字的菜单项、按钮），以及更新后重新启动。应用像最后一个窗口关闭时那样停止，然后结束运行；只关窗口会让应用继续运行时（为 Dock 保留的隐藏窗口、托盘图标）也一样。关闭的过程与「退出」菜单项相同：macOS 上的独立应用像按下 Cmd+Q 一样从 `run_app` 返回；在拥有窗口的 GPUI 应用中，请求以 `CloseRequest::Quit` 交给它的 `AppView::on_close_request` 回调，由应用在准备好后退出；其他平台上退出照常进行，与「退出」菜单项相同。嵌入在其他应用中的视图把应用的生命周期交给那个应用。在终端中应用结束，与退出角色相同。
+`Application.quit()` 用于应用自己的「退出」（自定义文字的菜单项、按钮），以及更新后重新启动。它结束应用，而不是逐个关闭窗口：窗口的 `onOpenChange` 可能不会运行。应用像最后一个窗口关闭时那样停止，然后结束运行；只关窗口会让应用继续运行时（`quitMode: "explicit"` 且没有打开的窗口）也一样。关闭的过程与「退出」菜单项相同：macOS 上的独立应用像按下 Cmd+Q 一样从 `run_app` 返回；在拥有窗口的 GPUI 应用中，请求以 `CloseRequest::Quit` 交给它的 `AppView::on_close_request` 回调，由应用在准备好后退出；其他平台上退出照常进行，与「退出」菜单项相同。嵌入在其他应用中的视图把应用的生命周期交给那个应用。在终端中应用结束，与退出角色相同。
 
 `Application.restart()` 用于下次启动才生效的设置，比如应用的语言：应用先征得用户同意，再调用它。应用像 `quit()` 一样退出，
 进程结束后，同一个程序以原来的启动参数重新启动；新旧两个进程不会同时运行。在 macOS 上，`.app` 包里的应用通过
@@ -416,37 +420,45 @@ async function changeLanguage(language: string) {
 
 ### 退出
 
-「退出」由应用自己负责，就像 GPUI 应用自己处理 `Quit` 动作。没有监听 `quitRequest` 时，应用菜单的 `{ role: "quit" }`
+应用的生命周期由应用自己负责。关闭窗口只关闭那个窗口；最后一个窗口关闭时按退出模式处理：
+`"platform"`（默认）让 macOS 应用留在 Dock 中，在 Windows 和 Linux 上退出；`"lastWindowClosed"` 在所有平台上退出；
+`"explicit"` 让应用继续运行，以便打开另一个窗口、显示托盘菜单或调用 `quit()`。应用用
+`Application.setQuitMode("platform")`（Rust：`set_quit_mode(QuitMode::Platform)`）设置它；nsh.json 的
+`application.quitMode` 保存启动时的同一个模式。`Application.on("lastWindowClosed")` 在最后一个窗口
+关闭后收到通知。Rust listener 在退出模式生效前同步运行；JS listener 在后续提交中、决定之后运行。
+
+macOS 的 Dock/访达重新打开，或 Windows/Linux 上的再次启动，会交给 `Application.on("reopen")`（Rust：
+`on_reopen`）：应用自己打开或聚焦想要的窗口。NSH 不会自己显示窗口。
+
+没有监听 `quitRequest` 时，应用菜单的 `{ role: "quit" }`
 项和平台的退出快捷键（Cmd+Q、Ctrl+Q）会立即退出。需要先询问用户的应用（有未保存的修改、正在上传）用
 `Application.on("quitRequest", listener)`（Rust：`on_quit_request`）监听它，与 AppKit 的 `applicationShouldTerminate:`
 相同：此后「退出」项、退出快捷键和 Dock 的「退出」都交给 listener，应用不会退出；应用询问之后调用 `quit()`，`quit()`
 总会退出。最后一个 listener 停止后，「退出」项和快捷键恢复立即退出。默认情况下，系统结束应用（用户注销、关机）时会先执行清理，再退出。
 它适用于 macOS、Windows 和 Linux 的独立应用；拥有窗口的 GPUI 应用以 `CloseRequest::Quit` 收到这个请求。
 
-macOS 独立应用可以让系统退出请求和主窗口关闭使用同一个确认流程：
+macOS 独立应用可以把系统退出请求纳入同一个确认流程：
 
 ```tsx
-Application.setQuitRequestOptions({ system: true, mainWindowClose: true });
+Application.setQuitRequestOptions({ system: true });
 Application.on("quitRequest", async () => {
   if (await confirmSaveAndQuit()) Application.quit();
   else Application.cancelQuitRequest();
 });
 ```
 
-两个选项都默认为 `false`，每次调用 `setQuitRequestOptions` 都会替换它们。Rust 使用
+该选项默认为 `false`，每次调用 `setQuitRequestOptions` 都会替换它。Rust 使用
 `nsh_core::element::desktop` 的 `set_quit_request_options(QuitRequestOptions)` 和 `cancel_quit_request()`，
 `QuitRequestOptions` 位于 `nsh_core::desktop`。这些选项在注册了退出请求 listener 时生效。
-Rust 调用方可以用 `QuitRequestOptions::default().system(true).main_window_close(true)` 构造选项。
+Rust 调用方可以用 `QuitRequestOptions::default().system(true)` 构造选项。
 替换应用时会取消其待处理的确认，并将选项恢复为默认值。
 
 `system: true` 让注销、重新启动和关机等待应用的答复。`quit()` 会先运行应用的清理，再由 AppKit 结束进程。
 Rust 宿主把这类清理放在 `on_app_quit` 中，而不是 `run_app` 返回之后。`cancelQuitRequest()` 会取消系统请求，
 让应用继续运行。未答复的系统请求会在 110 秒后取消，早于 AppKit 的注销超时。移除最后一个 listener 或更改选项也会取消待处理的请求。
 
-`mainWindowClose: true` 让用户关闭主窗口时，在该关闭会结束应用的情况下询问退出 listener。
-配置为关闭后继续运行的窗口仍会隐藏。设置了 `closeOnPress: false` 的窗口仍使用 `closePress`，因此一次关闭只使用一个确认 handler。
-此处遵循独立运行器原有的退出规则，以主窗口关闭为准，而不是统计全部窗口。显式调用 `WindowRef.close()` 保持原有行为。
-确认尚未答复时，重复的退出请求或符合上述条件的主窗口关闭请求共用该确认。如果此时收到系统退出请求，同一个答复也会批准或取消系统请求。
+`mainWindowClose` 保留给嵌入宿主；窗口模型 v2 的独立应用没有可见主窗口，因此它不会触发。
+确认尚未答复时，重复的退出请求共用该确认。如果此时收到系统退出请求，同一个答复也会批准或取消系统请求。
 
 在 Web 上，用户离开页面（关闭标签页、刷新、前往其他网站）就是退出请求：它在用户离开时交给 listener，所以下面的示例在
 Web 上原样可用。listener 立即调用 `quit()` 时，页面直接离开，不会询问。先询问的 listener（这里是 `askToSave()`）让浏览器
@@ -500,7 +512,7 @@ function Editor() {
 打开文档的应用（播放器、编辑器）在 nsh.json 的 `fileTypes` 中列出文件类型。`nsh package` 把它们声明给系统，应用就会出现在
 「打开方式」中，并打开用户双击或拖到图标上的文件。文件以绝对路径送到 `Application.on("openFiles")`，包括启动应用的文件。
 应用 [scheme](nsh.md#urlscheme) 的链接与之分开，仍由 `UrlScheme.on("open")` 送达。`Application` 从 `nsh/desktop` 导入，
-`openFiles` 在 iOS 上同样送达。
+`openFiles` 在 iOS 和 Android 上同样送达。
 
 ```json
 {
@@ -522,7 +534,7 @@ Application.on("openFiles", ({ paths }) => {
 | --- | --- |
 | `name` | 系统对这种文件的称呼（`"Video"`），必填。 |
 | `extensions` | 扩展名，不带点（`["mp4", "mov"]`）。 |
-| `mimeTypes` | MIME 类型（`["video/mp4"]`）：Linux 按它们列出应用。 |
+| `mimeTypes` | MIME 类型（`["video/mp4"]`）：Linux 按它们列出应用，Android 按它们把应用列入分享面板（可用 `image/*` 这样的通配）。 |
 | `contentTypes` | 统一类型标识符（`["public.movie"]`）：iOS 按它们列出应用。 |
 | `role` | `"viewer"`（默认）或 `"editor"`。 |
 
@@ -536,15 +548,19 @@ Application.on("openFiles", ({ paths }) => {
 | iOS、Mac Catalyst | `Info.plist` 中的 `CFBundleDocumentTypes`（按 `contentTypes`）；系统把文件的副本交给应用 |
 | Windows | 应用每次启动时写在 `HKEY_CURRENT_USER\\Software\\Classes` 下：每种类型一个 ProgID，列在各扩展名的 `OpenWithProgids` 中。带文件的第二次启动把文件交给正在运行的应用 |
 | Linux | 桌面条目的 `MimeType`，`Exec … %U`；应用只运行一份，第二次启动把文件交给正在运行的应用 |
-| Android、Web | 不声明；它们的包不包含 `fileTypes` |
+| Android | 分享面板：为 `mimeTypes` 声明 `SEND` 与 `SEND_MULTIPLE` intent filter；只有 `extensions` 的类型不会列出。`AppActivity` 把每个分享来的流复制到应用缓存，再把副本的路径交给应用 |
+| Web | 不声明；它的包不包含 `fileTypes` |
+
+Android 上，当某个类型给出 `mimeTypes` 时，应用会收到其他应用分享给它的文件：只接收这些类型的 `content://` 流，最多 16 个文件、
+每个 256 MiB（每次分享共 512 MiB）。应用已在运行时，分享会交给现有的 Activity（`singleTask`）。路径指向临时副本，Android 可能清理这些缓存；NSH 收到新分享时也会清理超过一周的副本。
 
 开启 [`singleInstance`](#单实例) 时，第二次启动还会以原样的参数报告 `secondInstance`。
 
 ### 单实例
 
 桌面应用通常只运行一份：再次打开时把正在运行的应用带到前台。应用在 nsh.json 中写 `"singleInstance": true` 开启。
-之后第二次启动会把它的命令行交给正在运行的应用，并在打开窗口、启动引擎之前退出；正在运行的应用把主窗口带到前台
-（隐藏时显示出来，比如托盘应用），并以 `secondInstance` 报告这次启动，带上参数（不含程序路径）和启动时的目录：
+之后第二次启动会把它的命令行交给正在运行的应用，并在打开窗口、启动引擎之前退出；正在运行的应用以
+`secondInstance` 报告这次启动，带上参数（不含程序路径）和启动时的目录，并报告 `reopen`，由应用决定显示哪个窗口：
 
 ```json
 { "singleInstance": true }
@@ -623,7 +639,7 @@ Windows 登录项能容纳的长度（260 个字符）时为 `ENAMETOOLONG`，�
 
 ## 自定义标题栏
 
-隐藏标题栏（`titleBar: { style: "hidden" }`）后，应用绘制自己的标题栏，并指定哪些部分可以拖动窗口：Rust 用 `.window_drag(true)`，TSX 用 `desktop={{ windowDrag: true }}`。主窗口的 `titleBar` 写在 nsh.json 的 [`window`](#主窗口) 中，第一帧就会带上它；`<Window>` 把它作为 prop 接受。
+隐藏标题栏（`titleBar: { style: "hidden" }`）后，应用绘制自己的标题栏，并指定哪些部分可以拖动窗口：Rust 用 `.window_drag(true)`，TSX 用 `desktop={{ windowDrag: true }}`。第一个窗口的 `titleBar` 写在 nsh.json 的 [`window`](#应用宿主与第一个窗口) 中，第一帧就会带上它；每个 `<Window>` 也把它作为 prop 接受。
 
 ```rust tabs
 use nsh_core::{
@@ -717,7 +733,7 @@ interface TitleBarArea {
 }
 ```
 
-当前窗口隐藏的标题栏的区域，单位为点（响应式）：它的 `height`，以及系统窗口按钮在左端（`left`）和右端（`right`）占用的宽度。用它来布局标题栏，避免内容被窗口按钮遮住。系统显示标题栏时（以及全屏时、非桌面平台上）三者都为 0。Rust：`title_bar() -> Edges<Points>`，其中 `top` 是高度，`left` 和 `right` 是窗口按钮的宽度；读取它会订阅变化。
+当前窗口隐藏的标题栏的区域，单位为点（响应式）：它的 `height`，以及系统窗口按钮在左端（`left`）和右端（`right`）占用的宽度。用它来布局标题栏，避免内容被窗口按钮遮住。系统显示标题栏时（以及全屏时、桌面平台之外和终端应用中）三者都为 0。Rust：`title_bar() -> Edges<Points>`，其中 `top` 是高度，`left` 和 `right` 是窗口按钮的宽度；读取它会订阅变化。
 
 | | `height` | `left` | `right` |
 |---|---|---|---|
@@ -772,7 +788,7 @@ const notch = () => displays().flatMap((d) => d.cutouts)[0] ?? null;
 
 窗口在屏上而 [`lifecycle()`](./nsh.md#device) 报告 `"background"` 时，说明它被别的窗口挡住了。
 
-`placement` 是按用户离开时的样子打开窗口所要保存的值：最大化或全屏的窗口带着它还原时的外框。应用自己的窗口用 `restoreBounds: true` 即可。主窗口则保存 `placement`，再交给 `setPlacement`；应用启动时窗口和显示器已经有值，根组件第一次渲染时就可以恢复。Rust 根组件和 TSX 根组件可以共用同一条记录，因为 `WindowPlacement` 的 serde 形式就是 TSX 保存的那个对象。
+`placement` 是按用户离开时的样子打开窗口所要保存的值：最大化或全屏的窗口带着它还原时的外框。`<Window restoreBounds>` 按窗口 id 保存并恢复它。要恢复整个窗口集合的应用自己保存每个窗口的 `placement`，并在打开窗口时调用 `setPlacement`；Rust 窗口组件和 TSX 组件可以共用同一条记录，因为 `WindowPlacement` 的 serde 形式就是 TSX 保存的那个对象。要在窗口内部读取它：在组件里用 `currentWindow()`，而不是在模块顶层用 `Window.get`（那时场景还没打开）。
 
 ```rust tabs
 #[component]
@@ -795,19 +811,23 @@ fn App() -> impl IntoElement {
 
 ```tsx tabs
 import { effect, Storage } from "nsh";
-import { Window } from "nsh/desktop";
+import { currentWindow } from "nsh/desktop";
 
-const main = Window.get("main");
-const saved = await Storage.getItem("window");
-if (main && saved) main.setPlacement(JSON.parse(saved)); // 按当前的显示器夹好
-
-effect(() => {
-  const state = main?.state();
-  if (state) Storage.setItem("window", JSON.stringify(state.placement));
-});
+function Restore() {
+  const main = currentWindow();
+  Storage.getItem("window").then((saved) => {
+    if (saved) main.setPlacement(JSON.parse(saved)); // 按当前的显示器夹好
+  });
+  effect(() => {
+    const state = main.state();
+    if (state) Storage.setItem("window", JSON.stringify(state.placement));
+  });
+  return <></>;
+}
+// <Window id="main"><Restore />…</Window>
 ```
 
-桌面平台报告窗口状态和显示器。在 iOS、Android 和 Web 上，`windowState()` 为 `null`，`displays()` 为空。
+桌面平台报告窗口状态和显示器。在 iOS、Android、Web 和终端应用中，`windowState()` 为 `null`，`displays()` 为空。
 
 ## Menu
 
@@ -821,7 +841,7 @@ const Menu: {
 
 | 成员 | 说明 |
 |---|---|
-| `setApplicationMenu(items)` | 设置应用菜单：每个顶层项是一个子菜单（`File`、`Edit`……）。在 macOS 上是菜单栏，第一个菜单是应用菜单（AppKit 以应用名作为标题）。在 Windows 和 Linux 上是窗口的菜单栏，隐藏标题栏时不显示；它的快捷键仍然有效，自定义标题栏可以用 `Menu.popup` 打开这些菜单。`null` 恢复平台默认菜单。 |
+| `setApplicationMenu(items)` | 设置应用菜单：每个顶层项是一个子菜单（`File`、`Edit`……）。在 macOS 上是菜单栏，第一个菜单是应用菜单（AppKit 以应用名作为标题）。窗口模型 v2 尚未在 Windows 和 Linux 上显示它（那里本应是窗口的菜单栏）：菜单发往应用宿主，因此请绘制应用自己的控件（用 `⋯` 按钮打开 `Menu.popup`），并用 `keymap` 绑定它们的快捷键。`null` 恢复平台默认菜单。 |
 | `setMenuBar(mode)` | 在 GPUI 应用的 Windows 和 Linux 上，窗口把应用菜单绘制成应用上方的菜单栏：`"shown"`（默认）始终显示；`"autoHide"` 在单独按下并松开 Alt 后显示，再次单独按 Alt 时隐藏，与 Windows 和 GNOME 应用一致。两种模式下 F10 和 Alt 加菜单首字母都会打开菜单，菜单打开期间菜单栏显示。macOS 的菜单栏是系统的。Rust：`set_menu_bar(mode)`。 |
 | `popup(items, at?)` | 显示右键菜单，左上角在 `at`（窗口坐标，单位为点：`onContextMenu` 的 `e.pagePosition`），省略时在指针处。菜单关闭时（无论是否选中了菜单项）返回的 Promise 会 resolve：打开它的按钮可以在此之前一直保持按下样式。 |
 
@@ -888,7 +908,7 @@ Role：
 | `about`、`hide`、`hideOthers`、`showAll` | 应用菜单的标准项 | macOS（其他平台忽略） |
 | `quit` | 退出应用 | 全部 |
 | `undo`、`redo`、`cut`、`copy`、`paste`、`selectAll` | 编辑获得焦点的文本框（快捷键仍归文本框自己） | 全部 |
-| `minimize`、`zoom`、`toggleFullScreen`、`close` | 窗口操作 | 全部 |
+| `minimize`、`zoom`、`toggleFullScreen`、`close` | 窗口操作 | macOS（key window）；Windows 和 Linux 在当前版本仍作用于宿主 |
 
 在 macOS 上，第一个含窗口 role 的顶层菜单就是应用的 Window 菜单：macOS 会在它末尾加上“Bring All to Front”和已打开的窗口（按标题），并自动保持同步。默认菜单栏的 Window 菜单同样如此。其他平台没有这个列表。
 
@@ -1124,13 +1144,19 @@ function atIcon(icon: Bounds, size: Size): Point {
 在 Rust 中，`set_tray(tray()...)` 与之相同（传 `None` 移除）：`tray()` 是一个 builder，有 `.icon(..)`、`.tooltip(..)`、`.title(runs)`（`TrayTitleRun::new(text)`，可加 `.color(..)`）、`.title_placement(..)`（`TrayTitlePlacement`）、`.menu(items)`（与 `set_application_menu` 相同的 `MenuItem`）和 `.on_click(|e| ..)`，它的 `TrayClickEvent` 带有 `bounds: Option<Bounds<Points>>`。处理函数在设置它的 owner 下运行，只在该 owner 存活期间有效；放在 `effect` 中会跟随读取的 signal 更新。每个应用只有一个托盘，与 TSX 共用：后设置的生效。
 
 ```rust
-use nsh_core::element::desktop::{MenuItem, main_window, quit, set_tray, tray};
+use nsh_core::element::desktop::{MenuItem, open_window, quit, set_tray, tray, window};
 
+// 图标要带到前面的窗口；`open_window` 返回它的 ref。
+let mail = open_window(window().id("main").title("Mail").content(Timer));
 set_tray(
     tray()
         .icon("tray.svg")
         .tooltip("Mail")
-        .on_click(|_| main_window().focus())
+        .on_click(move |_| {
+            if let Some(mail) = &mail {
+                mail.focus();
+            }
+        })
         .menu([
             MenuItem::new("New Message").on_select(compose),
             MenuItem::separator(),
@@ -1166,9 +1192,15 @@ const ok = await GlobalShortcut.register("mod+shift+space", () => Window.get("ma
 在 Rust 中，`register_global_shortcut(keystroke, on_press)` 返回 `Answer<bool>`，可以在 task 中 await，也可以不管它；按键写法无效时会 panic，与 `MenuItem::shortcut` 相同。`unregister_global_shortcut(keystroke)` 和 `unregister_all_global_shortcuts()` 用来注销；注册它的 owner 销毁时，快捷键也会被注销。
 
 ```rust
-use nsh_core::element::desktop::{main_window, register_global_shortcut};
+use nsh_core::element::desktop::{open_window, register_global_shortcut, window};
 
-let taken = register_global_shortcut("mod+shift+space", || main_window().focus());
+// 快捷键要显示的窗口，应用这样声明它。
+let mail = open_window(window().id("main").title("Mail").content(Inbox));
+let taken = register_global_shortcut("mod+shift+space", move || {
+    if let Some(mail) = &mail {
+        mail.focus();
+    }
+});
 spawn(async move {
     if !taken.await {
         log::warn!("mod+shift+space is taken");

@@ -1,6 +1,7 @@
 // A case of the API's test suite (docs/dev/compatibility.md): what the
 // macos domain's capabilities (files in the data directory and web views'
-// trusted input, nothing else) do not grant of `nsh`'s modules. Each call
+// trusted input, nothing else) do not grant of `nsh`'s modules, and
+// `nsh/mobile`'s `AppSettings.open`, which needs `application`. Each call
 // returns a promise that rejects with `ERR_ACCESS_DENIED`, naming the
 // capability (`permission`) and what was asked for (`resource`, `""` when
 // the capability has none); a refused `fetch` rejects as every failed fetch
@@ -10,6 +11,7 @@
 // `close` (1006, not clean). Its script checks each.
 import { Text, View, signal } from "nsh";
 import { Clipboard, Image, Picker, openUrl } from "nsh";
+import { AppSettings } from "nsh/mobile";
 import { connect } from "websocket";
 
 const described = (e: any) => [e.name, e.code, e.permission, JSON.stringify(e.resource)].join(" ");
@@ -58,6 +60,7 @@ function App() {
             `Picker: ${await settle(() => Picker.pickImages())}`,
             `Picker files: ${await settle(() => Picker.pickFiles())}`,
             `Open: ${await settle(() => openUrl("https://example.com/docs"))}`,
+            `App settings: ${await settle(() => AppSettings.open())}`,
             `Image size: ${await settle(() => Image.getSize("https://example.com/a.png"))}`,
             `Image prefetch: ${await settle(() => Image.prefetch("https://example.com/b.png"))}`,
             `Fetch: ${await settle(() => fetch("https://example.com/data"))}`,

@@ -14,6 +14,10 @@ pub(crate) struct Mounter {
     pub(crate) components: HashMap<String, ComponentFactory>,
     pub(crate) appearance: Option<Appearance>,
     pub(crate) exit: bool,
+    /// The last input was the pointer's (a press): the focus it moved
+    /// to a control shows no mark, as CSS's `:focus-visible`; the next
+    /// key shows it again.
+    pub(crate) pointer_focus: bool,
     /// The app turned the performance line on or off
     /// (`setFpsEnabled`), for the app to apply.
     pub(crate) perf_monitor: Option<bool>,
@@ -28,6 +32,8 @@ pub(crate) struct Mounter {
     pub(crate) dirty_images: Vec<NodeId>,
     pub(crate) removed_images: Vec<NodeId>,
     pub(crate) image_infos: Vec<(u32, String)>,
+    /// The views `ref.clearSelection()` was called on.
+    pub(crate) clear_selection_requests: Vec<NodeId>,
     /// The system dialogs shown (`AlertDialog`), oldest first.
     pub(crate) dialogs: crate::dialog::Dialogs,
     /// The context menu open (`Menu.popup`), and where the pointer last was.
@@ -59,6 +65,7 @@ impl Default for Mounter {
             components: HashMap::new(),
             appearance: None,
             exit: false,
+            pointer_focus: false,
             perf_monitor: None,
             keymap: Default::default(),
             scrolled: Vec::new(),
@@ -71,6 +78,7 @@ impl Default for Mounter {
             dirty_images: Vec::new(),
             removed_images: Vec::new(),
             image_infos: Vec::new(),
+            clear_selection_requests: Vec::new(),
             scroll_bars: Vec::new(),
             text_cells: Vec::new(),
             links: Default::default(),
@@ -99,6 +107,19 @@ impl Mounter {
 
     pub(crate) fn get_mut(&mut self, id: NodeId) -> Option<&mut NshView> {
         self.views.get_mut(id as usize)?.as_mut()
+    }
+
+    /// Whether `id` is `scope` or inside it.
+    pub(crate) fn within(&self, mut id: NodeId, scope: NodeId) -> bool {
+        loop {
+            if id == scope {
+                return true;
+            }
+            match self.get(id).and_then(|v| v.parent) {
+                Some(parent) => id = parent,
+                None => return false,
+            }
+        }
     }
 
     fn children_changed(&mut self, parent: NodeId) {
@@ -158,6 +179,7 @@ impl Mounter {
         self.animator = Default::default();
         self.responder = None;
         self.focus_requests.clear();
+        self.clear_selection_requests.clear();
         self.scroll_bars.clear();
         self.dialogs.clear();
         self.menus.reset();
@@ -361,6 +383,10 @@ impl Mounter {
                     id,
                     command: Command::Blur,
                 } => self.request_focus(id, false),
+                MountItem::Command {
+                    id,
+                    command: Command::ClearSelection,
+                } => self.clear_selection_requests.push(id),
                 MountItem::TrackStates { id, states } => {
                     if let Some(view) = self.get_mut(id) {
                         view.tracked = states;
@@ -451,6 +477,13 @@ impl Mounter {
                 MountItem::ScrollBehavior { id, behavior } => {
                     if let Some(scroll) = self.get_mut(id).and_then(|view| view.scroll.as_mut()) {
                         scroll.behavior = *behavior;
+                    }
+                }
+                // Pinned at every frame (`render.rs`): a cell no longer in
+                // the set is drawn at its frame again.
+                MountItem::StickyCells { id, cells } => {
+                    if let Some(scroll) = self.get_mut(id).and_then(|view| view.scroll.as_mut()) {
+                        scroll.sticky = cells;
                     }
                 }
                 MountItem::ScrollBy { id, dx, dy } => {

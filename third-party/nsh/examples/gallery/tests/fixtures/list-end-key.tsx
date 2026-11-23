@@ -1,4 +1,5 @@
 import { List, mount, platform, signal, Text, View } from "nsh";
+import { Window } from "nsh/desktop";
 
 // Rows of 100 pt in a 300 pt list that estimates them at 20 pt: below the
 // rows rendered so far the list's content is shorter than it will be. The
@@ -37,4 +38,4 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => <Window id="main">{App}</Window>);

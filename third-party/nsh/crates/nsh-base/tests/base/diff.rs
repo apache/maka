@@ -17,7 +17,6 @@ use nsh_base::{
 };
 use nsh_core::{
     MountItem, Size,
-    element::Root,
     platform::{Idiom, Os},
     prelude::*,
 };
@@ -307,7 +306,9 @@ fn start(props: HarnessProps) -> Headless {
 fn start_on(props: HarnessProps, os: Os, idiom: Idiom) -> Headless {
     let mut config = EngineConfig {
         viewport: Size::new(px(900.0), px(900.0)),
-        ..EngineConfig::new(Root::new::<Harness>(move || props.clone()))
+        ..EngineConfig::new(nsh_testing::windowed_root_with::<Harness>(move || {
+            props.clone()
+        }))
     };
     config.environment.os = os;
     config.environment.idiom = idiom;
@@ -395,6 +396,21 @@ fn unified_shows_the_deleted_line_above_the_added_one() {
     let added = texts.find("line ten").unwrap();
     assert!(deleted < added, "the deleted line comes first");
     assert!(app.shows("⋯ 6") && app.shows("⋯ 7"));
+}
+
+#[test]
+fn each_line_s_row_has_a_test_id_by_side_and_number() {
+    let mut app = start(HarnessProps {
+        layout: DiffLayout::Unified,
+        ..one_change()
+    });
+    see(&mut app, "line ten");
+    // Old and new line 10 share a number but not a name.
+    app.wait_for("id:diff-line:old:10").unwrap();
+    app.wait_for("id:diff-line:new:10").unwrap();
+    // A context row is named by its new number.
+    app.wait_for("id:diff-line:new:7").unwrap();
+    app.hover("id:diff-line:new:10").unwrap();
 }
 
 #[test]
@@ -1007,7 +1023,9 @@ fn file_headers_follow_wrapped_rows() {
                 };
                 let mut app = Headless::start(EngineConfig {
                     viewport: Size::new(px(900.0), px(900.0)),
-                    ..EngineConfig::new(Root::new::<Harness>(move || props.clone()))
+                    ..EngineConfig::new(nsh_testing::windowed_root_with::<Harness>(move || {
+                        props.clone()
+                    }))
                 })
                 .unwrap();
                 let items = Arc::new(Mutex::new(Vec::new()));
@@ -1088,7 +1106,7 @@ fn a_wrapped_lines_later_parts_continue_its_first_for_a_copy() {
     let long = "long text ".repeat(30);
     let mut app = Headless::start(EngineConfig {
         viewport: Size::new(px(900.0), px(900.0)),
-        ..EngineConfig::new(Root::new::<Harness>({
+        ..EngineConfig::new(nsh_testing::windowed_root_with::<Harness>({
             let long = long.clone();
             move || HarnessProps {
                 soft_wrap: true,

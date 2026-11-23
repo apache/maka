@@ -761,3 +761,151 @@ fn an_open_trigger_s_mark_is_in_the_accent_and_shows_on_its_band() {
     );
     assert_ne!(cell.fg, cell.bg, "and seen on its band\n{dump}");
 }
+/// A framed box: a toolbar along its top line, a row of text under it. The
+/// toolbar's separator parts its items; it does not split the box.
+#[component]
+fn ToolbarOverText() -> impl IntoElement {
+    let line = nsh_base::theme().border;
+    view()
+        .w(px(160.0))
+        .border(px(1.0))
+        .border_color(line)
+        .child(
+            nsh_base::toolbar()
+                .gap(px(8.0))
+                .child(nsh_base::button().child(text("Undo")))
+                .child(
+                    nsh_base::toolbar_separator()
+                        .bg(line)
+                        .w(px(1.0))
+                        .h(px(20.0)),
+                )
+                .child(nsh_base::button().child(text("Bold"))),
+        )
+        .child(text("ready"))
+}
+
+/// A framed card: a color slider (its thumb mid-track) on the row over a
+/// framed field, as the gallery's picker over its HEX field.
+#[component]
+fn ColorSliderOverField() -> impl IntoElement {
+    let line = nsh_base::theme().border;
+    view()
+        .w(px(160.0))
+        .border(px(1.0))
+        .border_color(line)
+        .child(
+            nsh_base::color_picker()
+                .default_value(hsla(0.5, 1.0, 0.5, 1.0))
+                .child(
+                    nsh_base::color_slider()
+                        .color_space(nsh_base::ColorSpace::Hsb)
+                        .channel(nsh_base::ColorChannel::Hue)
+                        .accessibility_label("Hue"),
+                )
+                .child(
+                    view()
+                        .border(px(1.0))
+                        .border_color(line)
+                        .child(text("HEX"))
+                        .child(text("#00ffff")),
+                ),
+        )
+        .child(text("ready"))
+}
+
+#[test]
+fn a_line_that_stops_short_of_its_box_s_other_side_joins_no_line() {
+    // A toolbar's separator touches the frame's top line, but the box
+    // goes on under it: the line stays `─`.
+    let (mut view, rx) = surface();
+    let mut terminal = Terminal::new(TestBackend::new(30, 6)).unwrap();
+    view.load(App::Rust(Root::new::<ToolbarOverText>(|| ())))
+        .unwrap();
+    draw_until(&mut view, &mut terminal, &rx, "ready");
+    let (undo, y) = super::dock::find(&terminal, "Undo").unwrap();
+    let (bold, _) = super::dock::find(&terminal, "Bold").unwrap();
+    let buffer = terminal.backend().buffer();
+    let separator = (undo + 4..bold)
+        .find(|&x| buffer[(x, y)].symbol() == "│")
+        .unwrap_or_else(|| panic!("a │ between the items\n{}", super::dock::dump(&terminal)));
+    assert_eq!(
+        buffer[(separator, y - 1)].symbol(),
+        "─",
+        "the frame's top line is not joined\n{}",
+        super::dock::dump(&terminal)
+    );
+
+    // A color slider's thumb over a framed field: the field's top line
+    // stays whole.
+    let (mut view, rx) = super::pointer::ramp_surface();
+    let mut terminal = Terminal::new(TestBackend::new(30, 8)).unwrap();
+    view.load(App::Rust(Root::new::<ColorSliderOverField>(|| ())))
+        .unwrap();
+    draw_until(&mut view, &mut terminal, &rx, "ready");
+    let (_, hex) = super::dock::find(&terminal, "HEX").unwrap();
+    let buffer = terminal.backend().buffer();
+    // The thumb, a `│` inside the frame on the slider's row, under the
+    // frame's top line.
+    let row = hex - 1;
+    let thumb = (1..29)
+        .find(|&x| buffer[(x, row)].symbol() == "│" && buffer[(x + 1, row)].symbol() != "")
+        .filter(|&x| (x + 1..30).any(|r| buffer[(r, row)].symbol() == "│"))
+        .unwrap_or_else(|| panic!("a thumb\n{}", super::dock::dump(&terminal)));
+    assert_eq!(
+        buffer[(thumb, row - 1)].symbol(),
+        "─",
+        "the frame's line is not joined with the thumb\n{}",
+        super::dock::dump(&terminal)
+    );
+}
+
+/// A button that counts its presses.
+#[component]
+fn Counted() -> impl IntoElement {
+    let count = signal(0);
+    view()
+        .flex_1()
+        .child(
+            nsh_base::button()
+                .h(px(16.0))
+                .on_press(move |_: &()| count.set(count.get() + 1))
+                .child(text("Go")),
+        )
+        .child(text(move || format!("pressed {}", count.get())))
+}
+
+#[test]
+fn a_control_the_pointer_focused_shows_no_focus_until_a_key() {
+    let (mut view, rx) = banded_surface();
+    let mut terminal = Terminal::new(TestBackend::new(20, 4)).unwrap();
+    view.load(App::Rust(Root::new::<Counted>(|| ()))).unwrap();
+    draw_until(&mut view, &mut terminal, &rx, "pressed 0");
+    super::app::draw_until_still(&mut view, &mut terminal, &rx);
+    let (x, y) = super::dock::find(&terminal, "Go").unwrap();
+    let rest = terminal.backend().buffer()[(x, y)].bg;
+    press_at(&mut view, x, y);
+    // Off the button, so no hover band is left on it.
+    view.handle(super::app::mouse(nsh_platform_tui::MouseKind::Move, 19, 3));
+    draw_until(&mut view, &mut terminal, &rx, "pressed 1");
+    super::app::draw_until_still(&mut view, &mut terminal, &rx);
+    assert_eq!(
+        terminal.backend().buffer()[(x, y)].bg,
+        rest,
+        "clicked, it has the focus but shows none\n{}",
+        super::dock::dump(&terminal)
+    );
+    // A key shows the focus where it is.
+    view.handle(Input::Key {
+        key: "Shift".into(),
+        modifiers: Default::default(),
+        release: false,
+    });
+    draw_until_true(
+        &mut view,
+        &mut terminal,
+        &rx,
+        "the focus shows",
+        |terminal| terminal.backend().buffer()[(x, y)].bg != rest,
+    );
+}

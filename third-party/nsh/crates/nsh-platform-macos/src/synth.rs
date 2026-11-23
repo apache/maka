@@ -457,14 +457,28 @@ fn find_item(
 /// A PNG of the window's content as the window server composites it
 /// ([`composited`]), or, where it cannot give one, as AppKit draws it in
 /// process ([`drawn`]). Neither needs the Screen Recording permission.
+/// A window that is not on screen has no picture: what it would show is
+/// not known (the host window of window model v2 never shows, and drawn
+/// it is only its background).
 pub(crate) fn shot(window: &NSWindow) -> Result<Vec<u8>, String> {
-    match composited(window) {
-        Ok(png) => Ok(png),
-        Err(why) => {
-            log::debug!("screenshot drawn in process: {why}");
-            drawn(window)
-        }
+    shot_from(window.isVisible(), || composited(window), || drawn(window))
+}
+
+/// [`shot`] with the window's state and its pictures given.
+fn shot_from(
+    visible: bool,
+    composited: impl FnOnce() -> Result<Vec<u8>, String>,
+    drawn: impl FnOnce() -> Result<Vec<u8>, String>,
+) -> Result<Vec<u8>, String> {
+    if !visible {
+        return Err("the window is not on screen".into());
     }
+    composited().or_else(|why| {
+        // Said where a test's output shows it: the picture is not the
+        // screen's (`drawn`).
+        log::warn!("screenshot drawn in process, which differs from the screen: {why}");
+        drawn()
+    })
 }
 
 /// `CGWindowListCreateImageFromArray`: images of windows as the window
@@ -492,9 +506,6 @@ fn composited(window: &NSWindow) -> Result<Vec<u8>, String> {
     use objc2_app_kit::NSScreen;
     use objc2_core_foundation::{CFArray, CFRetained, CGPoint, CGRect, CGSize};
 
-    if !window.isVisible() {
-        return Err("the window is not on screen".into());
-    }
     // SAFETY: `dlsym` with `RTLD_DEFAULT` and a NUL-terminated name only
     // looks the symbol up.
     let symbol = unsafe {
@@ -753,6 +764,27 @@ mod tests {
             1.0,
         )
         .expect("a mouse event")
+    }
+
+    #[test]
+    fn a_shot_is_of_a_window_on_screen_and_says_when_it_is_drawn_in_process() {
+        let composited = || Ok(b"composited".to_vec());
+        let drawn = || Ok(b"drawn".to_vec());
+        let refused = || Err::<Vec<u8>, String>("blank".into());
+
+        // A window off screen (the hidden host of window model v2) has no
+        // picture: never one of its background drawn in process.
+        let off = shot_from(false, composited, || panic!("drawn off screen"));
+        assert_eq!(off, Err("the window is not on screen".to_owned()));
+
+        assert_eq!(
+            shot_from(true, composited, drawn).as_deref(),
+            Ok(&b"composited"[..])
+        );
+        assert_eq!(
+            shot_from(true, refused, drawn).as_deref(),
+            Ok(&b"drawn"[..])
+        );
     }
 
     #[test]

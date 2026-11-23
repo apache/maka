@@ -725,9 +725,10 @@ pub struct KeyBinding {
     pub fallback: bool,
     /// Fires while focus is on this node or one of its descendants.
     pub within: Option<NodeId>,
-    /// The window it belongs to, as its root node ([`crate::ROOT_ID`] for
-    /// the main window, a dialog root for a window of the app's own): it
-    /// fires only for keys pressed there. `None`: in any window.
+    /// The window it belongs to, as its root node (a dialog root for a
+    /// window of the app's own): it fires only for keys pressed there.
+    /// `None`: in any window. [`crate::ROOT_ID`] is the app root, which is
+    /// app-wide in window model v2 (it is not a user window).
     pub window: Option<crate::NodeId>,
     /// It is the keys of the view with the keyboard focus (a component's,
     /// bound while its part has the focus or its popup is open): Return
@@ -735,6 +736,12 @@ pub struct KeyBinding {
     /// ([`Keymap::find_at`]). Other bindings of those keys give way to the
     /// focused control.
     pub for_focus: bool,
+    /// It comes before the views' bindings of its keystroke, not after
+    /// them: an app takes a key a focused component binds (a query editor's
+    /// mod+enter over the editor's own), for as long as it keeps the
+    /// binding. The root's table puts such bindings after the others
+    /// (`Core::keymap`), where the newest that may fire wins.
+    pub over_focused: bool,
 }
 
 impl KeyBinding {
@@ -756,6 +763,7 @@ impl KeyBinding {
             within: None,
             window: None,
             for_focus: false,
+            over_focused: false,
         }
     }
 
@@ -777,6 +785,13 @@ impl KeyBinding {
     /// `for_focus` ([`Self::for_focus`]).
     pub fn focus_keys(mut self, for_focus: bool) -> KeyBinding {
         self.for_focus = for_focus;
+        self
+    }
+
+    /// The binding coming before the views' bindings of its keystroke when
+    /// `over_focused` ([`Self::over_focused`]).
+    pub fn over_focused(mut self, over_focused: bool) -> KeyBinding {
+        self.over_focused = over_focused;
         self
     }
 }
@@ -862,7 +877,7 @@ impl Keymap {
     /// fires bindings that ask for it. A binding that passes the key
     /// through gives [`KeyMatch::Notify`], and its held key's auto-repeats
     /// go on ([`KeyMatch::None`]) unless it repeats.
-    /// The key is pressed in the main window ([`Self::find_in`]).
+    /// The key is pressed with the app root as the window ([`Self::find_in`]).
     pub fn find(&self, keystroke: Keystroke, editing: bool, repeat: bool) -> KeyMatch {
         self.find_in(crate::ROOT_ID, keystroke, editing, repeat)
     }
@@ -1059,7 +1074,7 @@ mod tests {
     fn a_windows_binding_takes_only_its_windows_keys() {
         let escape = Keystroke::parse_with("escape", true).unwrap();
         let k = |id| KeyBinding::new(id, escape, When::Always, false);
-        // JS's (any window), the main window's, then window 7's.
+        // JS's (any window), the app root's, then window 7's.
         let table = Keymap::new(vec![
             k(1),
             k(2).in_window(crate::ROOT_ID),

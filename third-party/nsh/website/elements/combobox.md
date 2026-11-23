@@ -76,6 +76,7 @@ fn tag_picker() -> impl IntoElement {
 ```tsx tabs
 import { mount, signal, Text, View } from "nsh";
 import { Combobox } from "nsh/base";
+import { Window } from "nsh/desktop";
 
 const TAGS = [
   { value: "bug", title: "Bug" },
@@ -112,7 +113,11 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 `Combobox` comes from [`nsh/base`](../modules/nsh-base.md), the `nsh-base` crate in Rust. In Rust, `combobox()` makes

@@ -36,6 +36,7 @@ fn workspace() -> impl IntoElement {
 ```tsx tabs
 import { mount, signal, Text } from "nsh";
 import { ResizablePanel, ResizablePanelGroup } from "nsh/base";
+import { Window } from "nsh/desktop";
 
 function App() {
   const sidebar = signal(240);
@@ -55,7 +56,11 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 `ResizablePanelGroup` 和 `ResizablePanel` 来自 [`nsh/base`](../modules/nsh-base.md)，在 Rust 中是 `nsh-base` crate。面板是分组的直接子元素。在 Rust 中，`h_resizable()` 和 `v_resizable()` 分别创建沿两个方向的分组（`resizable_panel_group().axis(..)` 把方向作为值传入），`resizable_panel()` 创建面板；每个属性对应一个设置方法，每个事件对应一个监听方法，外观用类型化的样式方法，内容用 `.child(..)`；`.size_range(min..max)` 一次设置两个限制。

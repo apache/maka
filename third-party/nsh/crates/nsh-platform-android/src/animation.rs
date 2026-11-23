@@ -168,8 +168,10 @@ impl UiAnimation {
         }
     }
 
+    /// A `Choreographer` frame, the only thing that ticks it
+    /// ([`Graph::tick_frame`]).
     pub(crate) fn tick(&mut self, now: f64) -> bool {
-        self.graph.tick(now, &mut self.finished)
+        self.graph.tick_frame(now, &mut self.finished)
     }
 
     pub(crate) fn animating(&self) -> bool {

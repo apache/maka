@@ -1,4 +1,5 @@
 import { mount, signal, Text, View, type KeyEvent } from "nsh";
+import { Window } from "nsh/desktop";
 
 /**
  * A scenario for the web's raw key events and mounted capture policy.
@@ -58,4 +59,4 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => <Window id="main">{App}</Window>);

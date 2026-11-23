@@ -1,4 +1,5 @@
 import { cleanup, keymap, signal, Text, View } from "nsh";
+import { Window } from "nsh/desktop";
 import { TextView, type TextViewImage, type TextViewRef } from "nsh/base";
 import { Button, Caption, Card, colors, DemoPage, Segmented, textViewCaretClass, textViewLinkClasses } from "../ui";
 import { ImageViewer } from "./ImageViewer";
@@ -156,7 +157,7 @@ function Counter() {
   );
 }
 
-mount(Counter);</code></pre>
+mount(() => <Window id="main">{Counter}</Window>);</code></pre>
   </section>
 
   <section>

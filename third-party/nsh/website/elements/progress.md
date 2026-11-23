@@ -35,6 +35,7 @@ fn upload(sent: Signal<f32>) -> impl IntoElement {
 ```tsx tabs
 import { mount, signal, Text } from "nsh";
 import { Progress } from "nsh/base";
+import { Window } from "nsh/desktop";
 
 function App() {
   const sent = signal(40);
@@ -51,7 +52,11 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 `Progress` comes from [`nsh/base`](../modules/nsh-base.md), the `nsh-base` crate in Rust. The value is the app's: the

@@ -16,9 +16,10 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-import { effect, mount, View, host as shell } from 'nsh';
-import { currentWindow } from 'nsh/desktop';
+import { mount, View, host as shell } from 'nsh';
+import { Window } from 'nsh/desktop';
 import type { LanguagePreference } from '../../../../packages/plugin-sdk/src/index.js';
+import { TITLE_BAR_HEIGHT } from './chrome';
 import { createHost, HostProvider, uiHost } from './host';
 import { initializeAppearance } from './appearance';
 import { applyLanguagePreference, tr } from './locale';
@@ -39,24 +40,26 @@ function ComputerPermissionSetupEntry() {
   const owner = params.systemPermission;
   if (!owner?.sessionId || !owner.requestId)
     throw new Error('Missing system permission request identity.');
-  const win = currentWindow();
-  effect(() => {
-    win.set({ title: tr('permissionSetup.title') });
-  });
   return (
-    <HostProvider value={host}>
-      <View class="flex-1 min-h-0" style={{ backgroundColor: C.background }}>
-        <ComputerPermissionSetup
-          client={computerPermissionClient(host, owner.sessionId, owner.requestId)}
-          request={owner.request}
-          presentation="window"
-          nativeApplicationDrag={params.nativeApplicationDrag === true}
-          onClose={async () => {
-            await shell.call('computerPermissions.close');
-          }}
-        />
-      </View>
-    </HostProvider>
+    <Window
+      id="main"
+      title={tr('permissionSetup.title')}
+      titleBar={{ style: 'hidden', height: TITLE_BAR_HEIGHT }}
+    >
+      <HostProvider value={host}>
+        <View class="flex-1 min-h-0" style={{ backgroundColor: C.background }}>
+          <ComputerPermissionSetup
+            client={computerPermissionClient(host, owner.sessionId, owner.requestId)}
+            request={owner.request}
+            presentation="window"
+            nativeApplicationDrag={params.nativeApplicationDrag === true}
+            onClose={async () => {
+              await shell.call('computerPermissions.close');
+            }}
+          />
+        </View>
+      </HostProvider>
+    </Window>
   );
 }
 mount(ComputerPermissionSetupEntry);

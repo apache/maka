@@ -4,6 +4,7 @@
 // span is made again, yet no tag's value changes, so no JS runs for them.
 // Runtimes without `addNodeView` draw the tags as plain atoms.
 import { mount, Text, View } from "nsh";
+import { Window } from "nsh/desktop";
 import {
   Button, chain, createRichEditor, defineExtension, insertText, RichEditor, type RichNodeJSON,
   type RichNodeViewProps, setTextSelection, StarterKit,
@@ -48,4 +49,4 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => <Window id="main">{App}</Window>);

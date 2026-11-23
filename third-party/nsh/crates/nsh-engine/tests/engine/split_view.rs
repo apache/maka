@@ -16,6 +16,7 @@ use crate::components::{shows, start_with, until};
 
 const MAIL: &str = r#"import { mount, signal, Text } from "nsh";
 import { type ColumnVisibility, createNavStack, NavPage, NavStack, SplitView } from "nsh/base";
+import { Window } from "nsh/desktop";
 const visibility = signal<ColumnVisibility>("all");
 const reported = signal("none");
 const mailboxes = createNavStack(["mailboxes"]);
@@ -27,6 +28,7 @@ const take = (next: ColumnVisibility) => {
   if (next !== "doubleColumn") visibility.set(next);
 };
 mount(() => (
+  <Window id="main">
   <SplitView
     style={{ flex: 1 }}
     columnVisibility={visibility()}
@@ -35,6 +37,7 @@ mount(() => (
     content={<NavStack state={inbox}>{() => <NavPage title="Inbox"><Text>Inbox</Text></NavPage>}</NavStack>}
     detail={<NavStack state={message}>{() => <NavPage title="Message"><Text>{`Reported: ${reported()} Shown: ${visibility()}`}</Text></NavPage>}</NavStack>}
   />
+  </Window>
 ));
 "#;
 

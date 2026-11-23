@@ -41,19 +41,48 @@ test("the list buttons change every level of a nested list, and take it out", as
   const numbered = app.count("text:1.");
   const lettered = app.count("text:a.");
   await app.press("The list buttons change every level at once");
-  await app.press("role:button[Numbered list]");
+  // The toolbar's: on a phone the bar over the keyboard has one too.
+  await app.press("id:toolbar >> role:button[Numbered list]");
   await app.waitFor("text:•", { state: "gone" });
   // The outer list and the nested one are numbered, the nested one with
   // letters.
   expect(app.count("text:◦")).toBe(0);
   expect(app.count("text:1.")).toBe(numbered + 1);
   expect(app.count("text:a.")).toBe(lettered + 1);
-  await app.press("role:button[Bulleted list]");
+  await app.press("id:toolbar >> role:button[Bulleted list]");
   await app.waitFor("text:◦");
   expect(app.count("text:•")).toBe(2);
   // The same kind again: the item leaves every list.
-  await app.press("role:button[Bulleted list]");
+  await app.press("id:toolbar >> role:button[Bulleted list]");
   await app.waitFor("text:◦", { state: "gone" });
+});
+
+test("on iOS a bar over the keyboard has the lists", async () => {
+  const app = await openDemo();
+  await app.press("The list buttons change every level at once");
+  await app.press("id:keyboard-bar >> role:button[Numbered list]");
+  await app.waitFor("text:•", { state: "gone" });
+  expect(app.count("text:◦")).toBe(0);
+});
+
+test("the web has no bar over the keyboard: the toolbar alone has the lists", async () => {
+  const app = await open("../App.tsx", { platform: "web" });
+  await app.press("role:button[RichEditor]");
+  await app.waitFor(ITEM);
+  expect(app.count("id:keyboard-bar")).toBe(0);
+  expect(app.count("role:button[Numbered list]")).toBe(1);
+});
+
+test("the Markdown source and back: the bar over the keyboard stays out of the way", async () => {
+  const app = await openDemo();
+  await app.press("text:Markdown");
+  await app.waitFor("id:markdown-source");
+  // The source goes below the mode switch, which takes the press: on iOS
+  // the bar over the keyboard, between them in the tree, is not among
+  // their native siblings.
+  await app.press("text:Edit");
+  await app.waitFor("id:markdown-source", { state: "gone" });
+  await app.waitFor(ITEM);
 });
 
 test("the link under the caret shows a menu that edits and removes it", async () => {

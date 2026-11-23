@@ -583,6 +583,43 @@ fn a_chosen_control_its_hue_already_tells_apart_takes_no_select_band() {
     );
 }
 
+/// A select's trigger (a combobox holding no field, no fill of its own)
+/// over a field.
+#[component]
+fn SelectTrigger() -> impl IntoElement {
+    view()
+        .flex_1()
+        .child(
+            view()
+                .w(px(120.0))
+                .h(px(16.0))
+                .role(AccessibilityRole::Combobox)
+                .on_press(|_: &()| {})
+                .child(text("Newest")),
+        )
+        .child(nsh_base::input().w(px(80.0)).h(px(16.0)))
+        .child(text("ready"))
+}
+
+#[test]
+fn a_select_trigger_is_a_field_band() {
+    let (mut view, rx) = surfaces();
+    let mut terminal = Terminal::new(TestBackend::new(24, 4)).unwrap();
+    view.load(App::Rust(Root::new::<SelectTrigger>(|| ())))
+        .unwrap();
+    draw_until(&mut view, &mut terminal, &rx, "ready");
+    let buffer = terminal.backend().buffer();
+    let field = buffer[(0, 1)].bg;
+    assert_ne!(field, Color::Reset, "the field is a band");
+    for x in 0..15 {
+        assert_eq!(
+            buffer[(x, 0)].bg,
+            field,
+            "the trigger is the same band: {x}"
+        );
+    }
+}
+
 /// An input group: the app's field box, a prefix, the field and a
 /// chevron in one row; and a bare field below it.
 #[component]
@@ -965,6 +1002,11 @@ fn a_swatch_is_its_own_color_with_text_in_black_or_white() {
         buffer[(0, 0)].bg,
         Color::Rgb(255, 0, 0),
         "without surfaces a swatch is still its own color"
+    );
+    assert_eq!(
+        buffer[(4, 0)].bg,
+        Color::Rgb(39, 39, 42),
+        "a gray one too, not the standard colors' gray (a color area's pale Cells)"
     );
 }
 
@@ -2241,17 +2283,73 @@ fn a_selected_container_shows_focus_with_its_label_underlined() {
     );
     let buffer = terminal.backend().buffer();
     assert_eq!(buffer[cell_of(buffer, "One")].bg, at_rest, "its band stays");
-    // The other takes a band of its own: no underline.
+    // The other takes the accent rail down its leading column, no band
+    // and no underline.
+    let rail = |buffer: &Buffer| {
+        let (x, _) = cell_of(buffer, "Two");
+        (0..buffer.area.height).any(|y| buffer[(x, y)].symbol() == "▎")
+    };
     tab_until(
         &mut view,
         &mut terminal,
         &rx,
         "the other one's focus",
-        |buffer| {
-            !underlined(buffer, "One") && buffer[cell_of(buffer, "Two")].bg != buffer[(19, 0)].bg
-        },
+        |buffer| !underlined(buffer, "One") && rail(buffer),
     );
-    assert!(!underlined(terminal.backend().buffer(), "Two"));
+    let buffer = terminal.backend().buffer();
+    assert!(!underlined(buffer, "Two"));
+    assert_eq!(
+        buffer[cell_of(buffer, "Two")].bg,
+        buffer[(19, 0)].bg,
+        "no band of its own"
+    );
+}
+
+/// A pane the keys move within (a sidebar's list): focusable, three rows
+/// of text, no presses of its own.
+#[component]
+fn FocusPane() -> impl IntoElement {
+    view()
+        .flex_1()
+        .bg(nsh_core::color::rgb(0x222222))
+        .child(
+            view()
+                .focusable(true)
+                .p(px(8.0))
+                .child(text("Alpha"))
+                .child(text("Beta"))
+                .child(text("Gamma")),
+        )
+        .child(text("ready"))
+}
+
+#[test]
+fn a_focused_pane_shows_no_band_or_rail() {
+    let (mut view, rx) = surfaces();
+    let mut terminal = Terminal::new(TestBackend::new(20, 8)).unwrap();
+    view.load(App::Rust(Root::new::<FocusPane>(|| ()))).unwrap();
+    draw_until(&mut view, &mut terminal, &rx, "ready");
+    let before = terminal.backend().buffer().clone();
+    view.handle(nsh_platform_tui::Input::Key {
+        key: "Tab".into(),
+        modifiers: Default::default(),
+        release: false,
+    });
+    for _ in 0..5 {
+        terminal
+            .draw(|frame| view.render(frame, frame.area()))
+            .unwrap();
+        let _ = rx.recv_timeout(std::time::Duration::from_millis(50));
+    }
+    let buffer = terminal.backend().buffer();
+    // What is focused in it shows the focus; the pane itself is as it was.
+    for y in 0..buffer.area.height {
+        for x in 0..buffer.area.width {
+            assert_ne!(buffer[(x, y)].symbol(), "▎", "no rail at {x},{y}");
+        }
+    }
+    let alpha = cell_of(buffer, "Alpha");
+    assert_eq!(buffer[alpha].bg, before[alpha].bg, "no band");
 }
 
 /// A panel of its own color over the whole screen with an open popup of `kind`

@@ -72,6 +72,14 @@ final class TestAgent {
         });
     }
 
+    /** The scroll view's room left, right, up and down (px); null for another kind of view. */
+    static float[] scrollRoom(NshView host, int id) {
+        return onMain(() -> {
+            View v = host.mounter().views.get(id);
+            return v instanceof ScrollBox ? ((ScrollBox) v).scrollRoom() : null;
+        });
+    }
+
     /**
      * Where the characters {@code start}..{@code end} (UTF-16 units) of
      * text view {@code id} are on their first line, in the window: x, y,
@@ -282,6 +290,89 @@ final class TestAgent {
             found.getLocationInWindow(at);
             return new float[] {at[0] + found.getWidth() / 2f, at[1] + found.getHeight() / 2f};
         });
+    }
+
+    /**
+     * The bounds in the window (x, y, width, height) of the control a native
+     * component draws for the app ({@link Mounter#componentControl}), by the
+     * {@code testID} of the view it is in ({@code label} null) or its label;
+     * null when none shows.
+     */
+    static float[] systemControl(NshView host, String testId, String label) {
+        return onMain(() -> {
+            View v = host.mounter().componentControl(testId, label);
+            if (v == null) return null;
+            int[] at = new int[2];
+            v.getLocationInWindow(at);
+            return new float[] {at[0], at[1], v.getWidth(), v.getHeight()};
+        });
+    }
+
+    /** Whether a system menu shows ({@link SystemMenus}: a `MenuButton`'s, a `ContextMenu`'s). */
+    static boolean menuOpen() {
+        Boolean open = onMain(() -> SystemMenus.open != null);
+        return open != null && open;
+    }
+
+    /**
+     * The middle of the open menu's row labelled {@code label}, in the
+     * menu's window (pixels); null when no menu is open or it shows no such
+     * row.
+     */
+    static float[] menuItemPoint(String label) {
+        return onMain(() -> {
+            SystemMenus.Popup menu = SystemMenus.open;
+            View row = menu == null ? null : menu.row(label);
+            // A submenu's rows are new: where they are once they are laid out.
+            if (row == null || !row.isShown() || !row.isLaidOut() || row.isLayoutRequested()) return null;
+            int[] at = new int[2];
+            row.getLocationInWindow(at);
+            return new float[] {at[0] + row.getWidth() / 2f, at[1] + row.getHeight() / 2f};
+        });
+    }
+
+    /** The labels of the open menu's rows; empty when none is open. */
+    static String[] menuLabels() {
+        String[] labels = onMain(() -> {
+            SystemMenus.Popup menu = SystemMenus.open;
+            return menu == null ? new String[0] : menu.labels().toArray(new String[0]);
+        });
+        return labels != null ? labels : new String[0];
+    }
+
+    /**
+     * One finger's {@code action} at {@code x}, {@code y} in the open menu's
+     * window, as the menu's window gets a real one; false when no menu is
+     * open.
+     */
+    static boolean menuTouch(int action, float x, float y) {
+        Boolean done = onMain(() -> {
+            SystemMenus.Popup menu = SystemMenus.open;
+            if (menu == null) return false;
+            long now = SystemClock.uptimeMillis();
+            if (action == MotionEvent.ACTION_DOWN) downTime = now;
+            MotionEvent e = MotionEvent.obtain(downTime, now, action, x, y, 0);
+            e.setSource(android.view.InputDevice.SOURCE_TOUCHSCREEN);
+            menu.windowRoot().dispatchTouchEvent(e);
+            e.recycle();
+            return true;
+        });
+        return done != null && done;
+    }
+
+    /** Closes the open menu as the system's back does; false when none is open. */
+    static boolean closeMenu() {
+        Boolean done = onMain(() -> {
+            SystemMenus.Popup menu = SystemMenus.open;
+            if (menu == null) return false;
+            View root = menu.windowRoot();
+            long now = SystemClock.uptimeMillis();
+            KeyEvent down = new KeyEvent(now, now, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_BACK, 0);
+            root.dispatchKeyEvent(down);
+            root.dispatchKeyEvent(KeyEvent.changeAction(down, KeyEvent.ACTION_UP));
+            return true;
+        });
+        return done != null && done;
     }
 
     private static View find(View v, String text) {

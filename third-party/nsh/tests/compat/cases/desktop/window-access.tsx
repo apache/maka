@@ -1,9 +1,10 @@
 // A case of the API's test suite (docs/dev/compatibility.md): the `windows`
-// capability, checked natively. This app grants four kinds and three
-// windows at once: an overlay (a kind it does not grant, and never granted
-// unless declared) and a fourth window reject with `ERR_ACCESS_DENIED`
-// (`permission: "windows"`, `resource`: the window's id); `currentWindow()`
-// outside a component (a handler) throws a `TypeError`.
+// capability, checked natively. This app grants four kinds and four open
+// windows at once, its first window included: an overlay (a kind it does not
+// grant, and never granted unless declared) and a window beyond the fourth
+// reject with `ERR_ACCESS_DENIED` (`permission: "windows"`, `resource`: the
+// window's id); `currentWindow()` outside a component (a handler) throws a
+// `TypeError`.
 import { Text, View, signal } from "nsh";
 import { Window, currentWindow } from "nsh/desktop";
 

@@ -4,6 +4,7 @@
 // generated from the Rust code into `.nsh/types/rust-exports/native.d.ts`.
 // On the desktops the crate also registers a native component, `Meter`.
 import { type JSX, mount, nativeComponent, Scroll, signal, Text, View } from "nsh";
+import { Window } from "nsh/desktop";
 import { Button as BaseButton } from "nsh/base";
 import { Account, Gauge, Ledger } from "rust-exports/native";
 
@@ -166,4 +167,4 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => <Window id="main">{App}</Window>);

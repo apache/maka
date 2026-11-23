@@ -405,9 +405,11 @@ function Label(props: { children: string }) {
 }
 
 mount(() => (
-  <Theme.Provider value="dark">
-    <Label>Hello</Label>
-  </Theme.Provider>
+  <Window id="main">
+    <Theme.Provider value="dark">
+      <Label>Hello</Label>
+    </Theme.Provider>
+  </Window>
 ));
 ```
 

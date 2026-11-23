@@ -12,6 +12,7 @@ NSH 用原生视图渲染，所以平台的辅助技术（iOS 和 Mac Catalyst �
 ## 无需任何操作就能得到的
 
 - **文本会被朗读。** 文本元素是一个无障碍元素，标签就是它的文字。没有标签的视图会朗读其内部的文字。
+- **文本里的链接和行内视图可以逐个到达。** 在 iOS 和 macOS 的 VoiceOver 下，文本中每个可按压的片段（嵌套的 `<Text onPress>`、Markdown 链接）各是一个链接，激活即按下它，用链接转子可在链接间跳转；文本里的每个行内视图各是一个元素，在句中它所在的位置被读到。在 iOS 上，给了标签、角色或自身带按压的文本仍是一个元素。
 - **可按压视图是元素。** 带按压或长按处理函数（`.on_press`、`onPress`）的视图默认是无障碍元素，激活它（在 VoiceOver 或 TalkBack 下双击）就会按下它。
 - **输入框是文本框**，带有占位文字、值和键盘。
 - **文字跟随用户的大小设置。** 见[文字大小](#文字大小)。
@@ -55,11 +56,11 @@ view()
 | `.accessibility_active_descendant(..)` | `accessibilityActiveDescendant` | `ViewRef \| null` | 获得焦点的元素里当前活动的那一项：组合框高亮的选项、列表的光标行。 |
 | `.accessibility_controls(..)` | `accessibilityControls` | `ViewRef \| null` | 内容由这个元素控制的元素：组合框的列表。 |
 | `.accessibility_described_by(..)` | `accessibilityDescribedBy` | `ViewRef \| null` | 文字用来说明这个元素的元素：输入框的错误提示行。 |
-| | `accessibilityActions` | `{ name, label? }[]` | 提供给辅助技术的操作。 |
+| `.accessibility_actions(..)` | `accessibilityActions` | `{ name, label? }[]` | 提供给辅助技术的操作。 |
 | `.on_accessibility_action(..)` | `onAccessibilityAction` | `(e: { actionName }) => void` | 执行了某个操作（Rust：操作名称）。 |
 | `.accessibility_elements_hidden(..)` | `accessibilityElementsHidden` | `boolean` | 对辅助技术隐藏该视图及其子树。 |
 | | `importantForAccessibility` | `"auto" \| "yes" \| "no" \| "no-hide-descendants"` | 视图（及其子树）是否暴露。 |
-| | `android={{ accessibilityLiveRegion }}` | `"none" \| "polite" \| "assertive"` | Android：视图的变化如何播报给 TalkBack。 |
+| `.accessibility_live_region(..)` | `accessibilityLiveRegion` | `"none" \| "polite" \| "assertive"` | 视图的变化如何自动播报：Android 上的 TalkBack、macOS 上的 VoiceOver、web 的 `aria-live`、Windows 上的实时区域。 |
 | `.test_id(..)` | `testID` | `string` | UI 测试用的标识（iOS 上的 accessibility identifier，Android 上的 resource id）；不会被朗读。 |
 
 给每个只有图标的控件加上标签：屏幕阅读器无法朗读一个符号或一张图片。标签保持简短，不要包含角色（写 "Play"，不要写 "Play button"）：角色会单独播报。
@@ -137,6 +138,8 @@ view()
 ```
 
 状态在 Rust 中是 `AccessibilityState { disabled, selected, checked: Option<Checked>, busy, expanded, pressed: Option<Checked>, current: Option<AccessibilityCurrent>, has_popup, invalid }`，在 TSX 中是 `{ disabled?, selected?, checked?: boolean | "mixed", busy?, expanded?, pressed?: boolean | "mixed", current?: boolean | "page" | "step" | "location" | "date" | "time", hasPopup?, invalid? }`。`pressed` 让按钮成为切换按钮（ARIA 的 `aria-pressed`）；`current` 标出一组中的当前项（ARIA 的 `aria-current`）：分页的当前页、向导的当前步骤；`hasPopup` 标出打开弹出层、菜单或列表的触发器（ARIA 的 `aria-haspopup`），它的 `expanded` 表示弹出层是否打开，没有 `hasPopup` 的 `expanded` 元素是就地展开内容的折叠项（`Popover`、`Menu`、`HoverCard`、`Select`、`Combobox` 和 `DatePicker` 会在各自的触发器上设置它）；`invalid` 标出没有通过应用校验的内容（ARIA 的 `aria-invalid`）：文字被拒绝的输入框、必选却留空的下拉选择。读屏随元素一起读出它，`aria-invalid:` 类可以为它设置样式。禁用视图（`.disabled(..)`、`disabled`）也意味着禁用状态。带 `min`、`max` 和 `now` 的 `accessibilityValue` 以百分比朗读；带 `text` 时按原文朗读（"3 of 10"、"Medium"）。
+
+在 iOS 和 Android 上，系统自己没有朗读词的状态（选中、部分选中、展开、收起、当前、无效）由 NSH 提供朗读词。它们使用应用文字显示的语言（[国际化](./i18n.md)），包括 `setLocale` 选择的语言，并随它改变：英文、中文（简体和繁体）、日文或韩文。其他平台用读屏自己的词朗读这些状态。
 
 ### 获得焦点的元素里的活动项
 
@@ -285,6 +288,32 @@ function Quantity() {
 </View>
 ```
 
+读取 signal 或[翻译](i18n.md)的标签会在已挂载的元素上跟着更新：应用切换语言时，操作换上新标签，元素本身、`onAccessibilityAction` 收到的名称和读屏焦点都保持不变。在 Rust 中给 `.accessibility_actions(..)` 传一个闭包：
+
+```rust tabs
+view()
+    .accessibility_actions(|| {
+        vec![AccessibilityActionDef {
+            name: "delete".into(),
+            label: Some(t!("mail.delete").into()),
+        }]
+    })
+    .on_accessibility_action(move |name: &str| {
+        if name == "delete" {
+            remove(id);
+        }
+    })
+```
+
+```tsx tabs
+<View
+  accessibilityActions={[{ name: "delete", label: t("mail.delete") }]}
+  onAccessibilityAction={() => remove(mail.id)}
+>
+  …
+</View>
+```
+
 ## 分组与隐藏
 
 让视图成为无障碍元素（`.accessible(true)`、`accessible`）会让一个视图成为一个整体元素：带标题、副标题和价格的卡片会一次读完，而不需要用户在三段文字之间来回轻扫。
@@ -377,7 +406,7 @@ function Upload() {
 }
 ```
 
-播报那些用户否则会错过的变化：后台保存完成、在焦点之外出现的错误、计时结束。在 Android 上，给视图设置 `android={{ accessibilityLiveRegion: "polite" }}`，TalkBack 就会自动播报它的变化。
+播报那些用户否则会错过的变化：后台保存完成、在焦点之外出现的错误、计时结束。给视图设置 `accessibilityLiveRegion: "polite"`，屏幕阅读器就会自动播报它的变化——Android 上的 TalkBack、macOS 上的 VoiceOver、web 上的 `aria-live`、Windows 上的实时区域（`"assertive"` 不等用户空闲，立即朗读）。
 
 在 macOS 和 Web 上，警告（`.role(AccessibilityRole::Alert)`、`role="alert"`）会自己被读出：出现时、以及内容变化时，读它的标签，没有标签就读其中的文字，并打断屏幕阅读器正在读的内容。带这个角色显示的错误在这两个平台上不必再自己播报；在 macOS 上，同一次更新里播报的相同文字只读一次。在其他平台上，仍要自己播报。
 

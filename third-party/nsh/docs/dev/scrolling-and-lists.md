@@ -30,7 +30,13 @@
   visibility preference (`WhenScrolling` suppresses content-hover reveal). `scrollbar={false}` hides the
   indicator on either axis (the platforms' `scroll::config`; on the web `barShown`, in the desktop idiom): a mouse
   without a horizontal wheel moves a horizontal view with Shift + wheel, with the vertical wheel where nothing
-  around it scrolls vertically (`scroll_target`), and with the keys. With a
+  around it scrolls vertically (`scroll_target`), and with the keys. A notched wheel moves as the platform's (at once
+  on macOS and Linux, a short glide on Windows) unless the view sets `smoothWheel`: then each notch glides on
+  Chromium's curve (`nsh_core::scroll::wheel_glide`; `wheel_smooth` for the shared backends, macOS's `scroll.rs` for
+  its own), a run of notches one motion, except where notches step through snap points or pages, zoom, or the system
+  reduces motion. `wheelLineHeight` sets a wheel line's length in points instead of the platform's (each backend
+  hands `wheel_line` its own line). iOS, Android and the web ignore both: their scroll views are the system's and the
+  browser's, whose wheels already scroll as theirs do. With a
   mouse alone, pull to refresh needs a touchpad that rubber-bands (macOS): apps offer another way on the desktop.
 - **Scroll bars of the app's own** (`nsh/base`'s `Scrollbar`, `docs/dev/components.md` "Scroll bars"): a view the
   app places that names a scroll view or a list (`scroll={ref}`), with its look (`class`, `thumbClass`) and `mode`;
@@ -65,15 +71,18 @@
   the innermost zoomable view around the pointer (`scroll.rs`'s `pinch`), wheels and trackpads scroll it both ways, and
   texts and canvases are drawn again at the zoomed resolution when a zoom ends. GPUI: the zoom is `nsh_core::scroll`'s
   (`ScrollState::zoom`, offsets along both axes, `pinch`, `zoomTo`), on for the backends that set
-  `ScrollState::can_zoom` (GPUI; Windows and Linux leave it off and ignore the zoom props); the children are drawn
-  scaled by the zoom (`ViewState::child_matrix`, which hit tests follow), glyphs at the zoomed size every frame. Zoom
+  `ScrollState::can_zoom` (GPUI and Windows; Linux leaves it off and ignores the zoom props); the children are drawn
+  scaled by the zoom (`ViewState::child_matrix`, which hit tests follow), glyphs at the zoomed size every frame. Windows
+  draws, hit tests and exposes to UI Automation through the same matrix (`ViewState::child_place`); two fingers, a
+  precision touchpad's pinch and Ctrl + wheel zoom the innermost zoomable view around the pointer. Zoom
   reports go to the core (`EngineControl::zoom`).
 - **List** props: `each`, `estimatedItemSize`, `numColumns` (both may change while the list shows: the first visible item keeps its place, `ListState::visible_anchor`; a change of columns remembers it in `columns_anchor`, so resizing back and forth does not drift), `inverted` (chat: item 0 at the bottom, starts at the end and keeps its
   distance from the end as content changes; with `onLoadMoreAtStart`, only while at it, the visible rows when scrolled away), `maintainVisibleContentPosition` (`autoscrollToBottomThreshold`: a list
   that is not inverted follows its end while within that distance of it, `ListState::anchor_end`; scrolled up, growth
   below the viewport moves nothing; Rust components: `ListLayout::follow_end`, on their own lists and the lists they place), `alignment` (`bottom`, GPUI's `ListAlignment::Bottom`: rows in reading order, opens at the end with no scroll command to pin, follows it within `follow_end` or a point's rounding, `ListState::anchor_end`; it waits for an appended last row's measurement the window will reach, so one scroll lands on its real size; short content lies at the bottom, `ListState::leading`), `stickyHeaderIndices` (one column, not inverted) + `stickyHeaderOffset` (where they stick: the core subtracts a number from the sticky ranges, so platforms pin as they do without one; an animated node rides along in `StickyCell::offset`, `ListState::sticky_node`, and the platforms add its value as they pin), `header` /
   `footer` / `empty` / `separator` (a component, called once and untracked, or an element; a signal or memo, as `<If>` and `<Each>` are, is the slot's insert's to track: `slot` in `nsh-js` `list.rs`, `web/browser/list.js`), `contentStyle`
-  (padding and gaps, numbers) / `contentClass` (`p-*`, `gap-*`), `initialScrollAtEnd` (opens at the end before the first frame, keeps it while rows measure, and takes precedence over `initialScrollIndex`; short content stays at the top), `initialScrollIndex`, `onLoadMore` + `loadMoreThreshold`,
+  (padding and gaps, numbers; `alignItems`: `stretch` (default), `flex-start`, `center` or `flex-end` on the cross axis) /
+  `contentClass` (`p-*`, `gap-*`, `items-start` / `items-center` / `items-end` / `items-stretch`), `initialScrollAtEnd` (opens at the end before the first frame, keeps it while rows measure, and takes precedence over `initialScrollIndex`; short content stays at the top), `initialScrollIndex`, `onLoadMore` + `loadMoreThreshold`,
   `onLoadMoreAtStart` + `loadMoreAtStartThreshold` (below), `onViewableItemsChange` +
   `viewabilityConfig` (`itemVisibleThreshold` / `viewAreaCoverageThreshold` / `minimumViewTime`), `keyExtractor`,
   `refreshing` / `onRefresh`, `refreshIndicator`, `pullValue`, `scrollValue`. Every other prop (`testID`, accessibility, `class`, `onLayout`, touch

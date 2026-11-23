@@ -47,12 +47,17 @@ pub fn App() -> impl IntoElement {
 
 ```tsx tabs
 import { mount, WebView } from "nsh";
+import { Window } from "nsh/desktop";
 
 function App() {
   return <WebView src="https://en.m.wikipedia.org/wiki/Swift_(programming_language)" style={{ flex: 1 }} />;
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 ### Sources
@@ -150,6 +155,7 @@ pub fn browser() -> impl IntoElement {
 
 ```tsx tabs
 import { mount, signal, Text, View, WebView, type WebViewNavigation, type WebViewRef } from "nsh";
+import { Window } from "nsh/desktop";
 
 function Browser() {
   let web!: WebViewRef;
@@ -180,7 +186,11 @@ function Browser() {
   );
 }
 
-mount(Browser);
+mount(() => (
+  <Window id="main">
+    <Browser />
+  </Window>
+));
 ```
 
 ### Messaging between the page and the app
@@ -233,6 +243,7 @@ pub fn App() -> impl IntoElement {
 
 ```tsx tabs
 import { mount, signal, Text, View, WebView, type WebViewRef } from "nsh";
+import { Window } from "nsh/desktop";
 
 const page = `<!doctype html>
 <html><head><meta name="viewport" content="width=device-width"></head>
@@ -267,7 +278,11 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 The ref's `inject_java_script` (`injectJavaScript(script)`) runs code in the current page at any time; `injected_java_script` and `injected_java_script_before_content` (`injectedJavaScript`, `injectedJavaScriptBeforeContentLoaded`) run on every page load, before or after the page's own scripts, which is the place to install hooks:
@@ -557,6 +572,7 @@ pub fn player() -> impl IntoElement {
 
 ```tsx tabs
 import { mount, signal, Text, Video, type VideoRef, View } from "nsh";
+import { Window } from "nsh/desktop";
 
 function Player() {
   let video!: VideoRef;
@@ -586,7 +602,11 @@ function Player() {
   );
 }
 
-mount(Player);
+mount(() => (
+  <Window id="main">
+    <Player />
+  </Window>
+));
 ```
 
 Playback is controlled by props: set `paused`, `muted`, `volume` and `rate` from signals and the player follows. Unpausing a video that played to its end plays it again from the start. The ref has `seek(seconds)`.

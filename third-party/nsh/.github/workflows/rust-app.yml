@@ -22,6 +22,7 @@ on:
       - "crates/nsh-base/**"
       - "crates/nsh-package/**"
       - "crates/nsh-updater/**"
+      - "crates/nsh-extra/**"
       - "crates/nsh-platform-linux/**"
       - "crates/nsh-platform-android/**"
       - "crates/nsh-platform-apple/**"
@@ -127,7 +128,7 @@ jobs:
         with:
           cache: rust-app
       - name: Clippy
-        run: cargo clippy -p gallery-native --all-targets --locked -- -D warnings
+        run: cargo clippy -p gallery-native -p nsh-extra --all-targets --features nsh-extra/camera,nsh-extra/photos,nsh-extra/push --locked -- -D warnings
       # Without the optional features: no naga, wgpu, syntect, RaTeX, ropey,
       # imara-diff; no `zlib` or `crypto` module.
       - name: Check macOS without optional features
@@ -137,9 +138,10 @@ jobs:
       # the web job). On macOS also nsh-platform-apple's (the code the macOS
       # and iOS backends share, empty elsewhere), which no other job runs:
       # in one command with the gallery, its dependencies are built with the
-      # gallery's features, so nothing is built twice.
+      # gallery's features, so nothing is built twice. nsh-extra's with
+      # every module on: off the phones, their APIs and backends.
       - name: Test the crate
-        run: cargo test -p gallery-native ${{ runner.os == 'macOS' && '-p nsh-platform-apple' || '' }} --locked
+        run: cargo test -p gallery-native -p nsh-extra --features nsh-extra/camera,nsh-extra/photos,nsh-extra/push ${{ runner.os == 'macOS' && '-p nsh-platform-apple' || '' }} --locked
       - name: Check the native dependency graph
         run: |
           cargo tree -p gallery-native --locked -e normal > "$RUNNER_TEMP/rust-app-dependencies.txt"

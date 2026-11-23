@@ -1,6 +1,6 @@
 import { cleanup, Image, type JSX, List, Scroll, signal, Text, View, type ViewStyle } from "nsh";
 import { Animated, createAnimatedValue, Easing, platform } from "nsh";
-import { alpha, Badge, Button, Caption, Card, colors, DemoPage, finish, hint, isDark, mono, Press, radius, Segmented, tints, LabeledToggle } from "../ui";
+import { alpha, Badge, Button, Caption, Card, colors, DemoPage, finish, hint, isDark, mono, photoUrl, Press, radius, Segmented, tints, LabeledToggle } from "../ui";
 
 /** The stage every specimen stands on: the card's light, without its drop shadow. */
 const stage = () => ({
@@ -355,6 +355,55 @@ function Layers() {
   );
 }
 
+/**
+ * `clipPath: inset(...)`: a panel opening out of the corner it is anchored
+ * to, and a wipe between two photographs, both transitioned by name.
+ */
+function ClipPath() {
+  const open = signal(false);
+  const wipe = signal(30);
+  const motion = { transitionProperty: "clip-path", transitionDuration: 420, transitionTimingFunction: "cubic-bezier(0.32, 0.72, 0, 1)" } as const;
+  const fill = { position: "absolute", left: 0, top: 0, right: 0, bottom: 0 } as const;
+  return (
+    <Card icon="styles" title="Clip path" subtitle="clipPath: inset() · transition">
+      <Grid>
+        <Tile label={open() ? "Open" : "Closed"} code={open() ? "inset(0 round 16px)" : "inset(0 0 100% 100% round 16px)"} note={hint("Tap to open", "Click to open")} onPress={() => open.set(!open())}>
+          <View style={{ width: 132, height: 84 }}>
+            <View
+              style={{
+                ...fill,
+                borderRadius: 16,
+                borderCurve: "continuous",
+                overflow: "hidden",
+                backgroundColor: colors.raised,
+                borderWidth: 1,
+                borderColor: colors.line,
+                padding: 10,
+                gap: 6,
+                clipPath: open() ? "inset(0 round 16px)" : "inset(0 0 100% 100% round 16px)",
+                ...motion,
+              }}
+            >
+              <Label color={colors.accent}>Panel</Label>
+              <View style={{ height: 6, width: 84, borderRadius: 3, backgroundColor: alpha(colors.accent, 0.35) }} />
+              <View style={{ height: 6, width: 60, borderRadius: 3, backgroundColor: alpha(colors.accent, 0.2) }} />
+            </View>
+            <View style={{ position: "absolute", right: 6, top: 6, width: 22, height: 22, borderRadius: 11, alignItems: "center", justifyContent: "center", backgroundColor: colors.accentFill }}>
+              <Text style={{ fontSize: 14, fontWeight: "700", color: colors.onAccent }}>{open() ? "×" : "+"}</Text>
+            </View>
+          </View>
+        </Tile>
+        <Tile label="Wipe" code={`inset(0 ${100 - wipe()}% 0 0)`} note={hint("Tap to move the edge", "Click to move the edge")} onPress={() => wipe.set(wipe() === 30 ? 75 : 30)}>
+          <View style={{ width: 132, height: 84, borderRadius: 14, borderCurve: "continuous", overflow: "hidden", backgroundColor: colors.surface }}>
+            <Image src={photoUrl("day", "small")} style={{ ...fill, objectFit: "cover" }} />
+            <Image testID="wipe" src={photoUrl("moon", "small")} style={{ ...fill, objectFit: "cover", clipPath: `inset(0 ${100 - wipe()}% 0 0)`, ...motion }} />
+          </View>
+        </Tile>
+      </Grid>
+    </Card>
+  );
+}
+
 /** Two faces back to back: each hides while turned away. */
 function FlipCard() {
   const angle = createAnimatedValue(0);
@@ -588,6 +637,6 @@ export function Styles() {
   // cards its Cells hold (borders, clipping and layers, numerals, the
   // writing direction) and leaves the others out.
   const sections =
-    platform.idiom === "terminal" ? [Borders, Layers, Numerals, RightToLeft] : [Corners, ProgressiveBlur, Borders, Shadows, Layers, Transforms, Numerals, RightToLeft];
+    platform.idiom === "terminal" ? [Borders, Layers, Numerals, RightToLeft] : [Corners, ProgressiveBlur, Borders, Shadows, Layers, ClipPath, Transforms, Numerals, RightToLeft];
   return <DemoPage cards={sections} />;
 }

@@ -21,7 +21,7 @@ It assumes `nsh` is installed and on your `PATH` ([Installation](./installation.
 
 ## Create an app
 
-On a terminal, `nsh init` asks what the app is written in: `rust`, `ts` or `mixed` (TSX with a Rust crate of its own).
+On a terminal, `nsh init` asks what the app is written in: `rust`, `ts` or `mixed` (TSX extended with Rust in `ext/`).
 `--template` chooses without asking.
 
 ### In Rust
@@ -68,8 +68,8 @@ a new directory.
 
 For both, the display name defaults to the directory's name; pass `--name "My App"` to choose another. The id becomes
 `com.example.<name>`: change it in `nsh.json` before you ship. `nsh init my-app --template mixed` creates a TSX app
-that is also a Rust crate (`Cargo.toml` and `src/lib.rs` beside `App.tsx`), whose component, module and class
-`App.tsx` imports ([Building with Rust](./rust.md)).
+extended with Rust: an nshm crate of its own in `ext/<name>-native/`, whose component, module and class `App.tsx`
+imports ([An app's own Rust: ext/](./nshm.md#an-apps-own-rust-ext)).
 
 ### The root component
 
@@ -78,7 +78,7 @@ The two templates make the same app, a counter:
 ```rust tabs
 // src/lib.rs
 use nsh_base::theme;
-use nsh_core::prelude::*;
+use nsh_core::{element::desktop::window as app_window, prelude::*};
 
 /// The crate's UI set: what a TSX entry may import from `my-app/native`.
 #[native_module("my-app/native")]
@@ -90,6 +90,7 @@ fn native(registry: &mut Registry) {
 #[component]
 pub fn App() -> impl IntoElement {
     let count = signal(0_u32);
+    app_window().id("main").content(move || {
     view()
         .flex_1()
         .bg(move || theme().background)
@@ -121,12 +122,14 @@ pub fn App() -> impl IntoElement {
                         ),
                 ),
         )
+    })
 }
 ```
 
 ```tsx tabs
 // App.tsx
 import { mount, signal, Text, View } from "nsh";
+import { Window } from "nsh/desktop";
 
 function App() {
   const count = signal(0);
@@ -144,7 +147,9 @@ function App() {
   );
 }
 
-mount(App);
+// The desktops show the app in windows it declares; `App` is the content of
+// the first one. Off the desktops it is the app's screen.
+mount(() => <Window id="main">{App}</Window>);
 ```
 
 In Rust:
@@ -180,7 +185,7 @@ In TSX:
   properties, with numbers in points. `bg-background`, `bg-primary`, `text-primary-foreground` and
   `rounded-(--radius)` name the tokens of the app's theme ([Theme tokens](./tailwind.md#theme-tokens)): they follow
   dark mode by themselves, and `"theme"` in `nsh.json` restyles them.
-- **`mount(App)`** renders the component into the app's surface.
+- **`mount(App)`** renders the app root; on the desktops the root declares its windows with `<Window>`.
 
 > [!IMPORTANT]
 > Text shows in a text element: `text(..)` in Rust, `<Text>` in TSX. In TSX, text written straight in a `<View>`
@@ -210,7 +215,6 @@ GTK window on Linux. Pick another platform with `--target`:
 | Windows | `nsh run my-app` | Windows (the default) |
 | Linux (GTK 4) | `nsh run my-app` | Linux (the default) |
 | Web | `nsh run my-app --target web` | macOS, Windows, Linux |
-| Mac Catalyst | `nsh run my-app --target catalyst` | macOS |
 
 #### iOS simulator
 
@@ -228,7 +232,8 @@ runner, or the development host) into it. `--device` picks a simulator by name o
 nsh run my-app --target android
 ```
 
-Start an emulator or connect a device first (`adb devices` lists them; NSH uses the first one). `nsh` installs the app
+Start an emulator or connect a device first (`adb devices` lists them). NSH uses the one `--device <serial>` or
+`ANDROID_SERIAL` names, else the first one, and names the one it uses when several are connected. `nsh` installs the app
 on it: a Rust app's own `libnsh.so`, or a development host APK (rebuilt only when the runtime changes) whose dev server
 port is forwarded to the device with `adb reverse`, so it works over USB without a shared network.
 
@@ -266,16 +271,6 @@ nsh run my-app --target web
 
 `nsh` prints the page's address; open it in a browser. A Rust app runs as WebAssembly with your crate, and the open
 page loads the new build by itself after a change; see [Web](./web.md).
-
-#### Mac Catalyst
-
-```sh
-nsh run my-app --target catalyst
-```
-
-The app opens in an iPhone-sized window (390×844 points) on your Mac. This is the quickest way to see an app as a phone
-shows it: no simulator to boot. It uses UIKit like iOS, so what you see is what an iPhone shows, apart from Mac-specific
-behavior such as scrolling with a mouse wheel. For the Mac app itself, use `--target macos`.
 
 ### Edit it
 
@@ -338,6 +333,18 @@ TSX build error is printed in the terminal and shown on the device as a red over
 column; the app keeps running the last good build. The overlay disappears with the next successful build (tap it to
 dismiss it earlier). An exception thrown at run time is shown the same way, with its stack mapped back to your `.tsx`
 source.
+
+### Development tools
+
+#### Mac Catalyst
+
+```sh
+nsh run my-app --target catalyst
+```
+
+The app opens with the iOS (UIKit) backend in an iPhone-sized window (390×844 points) on your Mac. Use it only when
+you need it: to check behavior specific to Catalyst, or an app that embeds NSH in a Mac Catalyst app. For the Mac app,
+use the default `macos`; to see an app as a phone shows it, use `--target ios`.
 
 ## Host it in your app
 

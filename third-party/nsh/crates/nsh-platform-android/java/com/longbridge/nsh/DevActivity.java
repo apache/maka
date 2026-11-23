@@ -47,7 +47,10 @@ public final class DevActivity extends Activity {
         view.useStandaloneLimits();
         view.ownSystemBars();
         setContentView(view);
-        view.handleNotificationIntent(getIntent());
+        // The CLI's launch (its `url` or `package`) is no notification's press: its extras are the CLI's.
+        if (!getIntent().hasExtra("url") && !getIntent().hasExtra("package")) {
+            view.handleNotificationIntent(getIntent());
+        }
         // A recreated activity's intent was handed in already.
         if (state == null) view.handleUrlSchemeIntent(getIntent());
         String pkg = getIntent().getStringExtra("package");

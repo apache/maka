@@ -3,7 +3,7 @@
 // iOS (the scripts' default platform): `accessible`, `accessibilityHint`,
 // `accessibilityDescription`,
 // `accessibilityState` (with `hasPopup`, a popup's trigger), `accessibilityValue`, `accessibilityElementsHidden`,
-// `accessibilityActions`, `importantForAccessibility`, which decides
+// `accessibilityLiveRegion`, `accessibilityActions`, `importantForAccessibility`, which decides
 // `accessible` and hides the descendants for `"no-hide-descendants"`, and
 // the `"listbox"` and `"option"` roles of a select's popup, the chosen
 // option `selected`, and the structural roles of `nsh/base`'s accordions,
@@ -59,6 +59,7 @@ function App() {
         style={{ height: 20 }}
       />
       <View testID="hidden" accessibilityElementsHidden={true} style={{ height: 20 }} />
+      <View testID="live" accessibilityLiveRegion="polite" style={{ height: 20 }} />
       <View
         testID="important-no"
         importantForAccessibility="no-hide-descendants"

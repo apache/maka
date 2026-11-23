@@ -13,10 +13,21 @@
 //! platform hands in ([`changed_elsewhere`]). Every app has its storage:
 //! what the host decides is where it is kept. The quota is checked here, in
 //! Rust.
+//!
+//! What changes the entries elsewhere, another core sharing them (another
+//! window of the app) or another writer the platform reports, is handed to
+//! the watchers of every other core ([`Storage::on_change`], TS
+//! `Storage.on("change", ...)`): each has a queue of its own, filled from
+//! any thread and drained on its core's engine thread. A core's own
+//! changes reach only the others.
 
 use std::{
-    collections::BTreeMap,
-    sync::{Arc, Mutex, Weak},
+    collections::{BTreeMap, VecDeque},
+    sync::{
+        Arc, Mutex, Weak,
+        atomic::{AtomicU64, Ordering},
+    },
+    task::{Poll, Waker},
 };
 
 /// The most an app may keep, in UTF-8 bytes of its keys and values.
@@ -96,6 +107,52 @@ impl Storage {
     pub fn clear() {
         crate::element::with_storage(|s| s.clear());
     }
+
+    /// Runs `f` with each change made to the entries elsewhere, while the
+    /// current owner lives (TS: `Storage.on("change", ...)`): by another
+    /// window or view of the app sharing its storage, or on the web by
+    /// another tab of the app. The entries hold the change already, so
+    /// [`Storage::get_item`] reads it; this core's own changes do not come.
+    /// A change that leaves an entry as it was does not come either. Runs
+    /// on the engine thread, in the order the changes were made.
+    ///
+    /// ```ignore
+    /// Storage::on_change(move |change| {
+    ///     if change.key().is_none_or(|key| key == "theme") {
+    ///         theme.set(Storage::get_item("theme"));
+    ///     }
+    /// });
+    /// ```
+    pub fn on_change(f: impl Fn(&StorageChange) + 'static) {
+        let watch = crate::element::with_storage(|s| s.watch());
+        // Ends with the owner, dropping the watch.
+        drop(crate::element::spawn(async move {
+            loop {
+                let change = watch.next().await;
+                f(&change);
+            }
+        }));
+    }
+}
+
+impl StorageChange {
+    /// The key changed; `None` for [`StorageChange::Clear`], which changes
+    /// every key.
+    pub fn key(&self) -> Option<&str> {
+        match self {
+            Self::Set(key, _) | Self::Remove(key) => Some(key),
+            Self::Clear => None,
+        }
+    }
+
+    /// The value the key holds now; `None` when it was removed (or every
+    /// key was).
+    pub fn value(&self) -> Option<&str> {
+        match self {
+            Self::Set(_, value) => Some(value),
+            Self::Remove(_) | Self::Clear => None,
+        }
+    }
 }
 
 /// A value refused because the storage would grow past [`QUOTA`], or
@@ -127,11 +184,81 @@ impl std::fmt::Display for StorageFull {
 
 impl std::error::Error for StorageFull {}
 
-/// An app's entries, shared by cores using the same backend.
+/// An app's entries, shared by cores using the same backend: one core's
+/// handle to them.
 #[derive(Clone)]
 pub(crate) struct Store {
     state: Arc<Mutex<Entries>>,
+    /// The core's, telling its own changes from others'
+    /// ([`Watcher::view`]).
+    view: u64,
 }
+
+/// The changes made elsewhere one watch has not taken yet: filled under
+/// the entries' lock from any thread, taken on its core's engine thread.
+#[derive(Default)]
+struct Inbox {
+    state: Mutex<InboxState>,
+}
+
+#[derive(Default)]
+struct InboxState {
+    changes: VecDeque<StorageChange>,
+    waker: Option<Waker>,
+}
+
+impl Inbox {
+    fn push(&self, change: StorageChange) {
+        let waker = {
+            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            state.changes.push_back(change);
+            state.waker.take()
+        };
+        if let Some(waker) = waker {
+            waker.wake();
+        }
+    }
+}
+
+/// A watch of the changes made to the entries elsewhere ([`Store::watch`]),
+/// until dropped.
+pub(crate) struct Watch {
+    inbox: Arc<Inbox>,
+}
+
+impl Watch {
+    /// The next change made elsewhere, in order.
+    pub(crate) async fn next(&self) -> StorageChange {
+        std::future::poll_fn(|cx| {
+            let mut state = self.inbox.state.lock().unwrap_or_else(|e| e.into_inner());
+            match state.changes.pop_front() {
+                Some(change) => Poll::Ready(change),
+                None => {
+                    state.waker = Some(cx.waker().clone());
+                    Poll::Pending
+                }
+            }
+        })
+        .await
+    }
+
+    /// The next change made elsewhere, if one came.
+    #[cfg(test)]
+    fn try_next(&self) -> Option<StorageChange> {
+        let mut state = self.inbox.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.changes.pop_front()
+    }
+}
+
+/// A watch held by a core ([`Entries::notify`]).
+struct Watcher {
+    /// The [`Store::view`] it watches from: its changes are its own.
+    view: u64,
+    inbox: Weak<Inbox>,
+}
+
+/// The next [`Store::view`].
+static NEXT_VIEW: AtomicU64 = AtomicU64::new(0);
 
 /// Weak references let the last core release its state and backend.
 struct Shared {
@@ -169,9 +296,11 @@ impl Store {
     /// Shares the state of `backend`; `None` creates independent in-memory
     /// storage for this core.
     pub(crate) fn new(backend: Option<Arc<dyn StorageBackend>>) -> Self {
+        let view = NEXT_VIEW.fetch_add(1, Ordering::Relaxed);
         let Some(backend) = backend else {
             return Self {
                 state: Arc::new(Mutex::new(Entries::new(None))),
+                view,
             };
         };
         let mut shared = SHARED.lock().unwrap_or_else(|e| e.into_inner());
@@ -182,14 +311,14 @@ impl Store {
             .find(|s| s.backend.ptr_eq(&identity))
             .and_then(|s| s.state.upgrade())
         {
-            return Self { state };
+            return Self { state, view };
         }
         let state = Arc::new(Mutex::new(Entries::new(Some(backend))));
         shared.push(Shared {
             backend: identity,
             state: Arc::downgrade(&state),
         });
-        Self { state }
+        Self { state, view }
     }
 
     fn entries(&self) -> std::sync::MutexGuard<'_, Entries> {
@@ -203,12 +332,12 @@ impl Store {
 
     /// Sets `key` to `value`; fails past [`QUOTA`].
     pub(crate) fn set(&self, key: String, value: String) -> Result<(), StorageFull> {
-        self.entries().set(key, value)
+        self.entries().set(key, value, self.view)
     }
 
     /// Removes `key`.
     pub(crate) fn remove(&self, key: &str) {
-        self.entries().remove(key)
+        self.entries().remove(key, self.view)
     }
 
     /// Every key, in order.
@@ -218,7 +347,22 @@ impl Store {
 
     /// Removes every entry.
     pub(crate) fn clear(&self) {
-        self.entries().clear()
+        self.entries().clear(self.view)
+    }
+
+    /// Watches the changes made to the entries elsewhere: by other cores,
+    /// or by other writers the platform reports ([`changed_elsewhere`]).
+    /// Loads the entries, so that what changes from then on is known.
+    pub(crate) fn watch(&self) -> Watch {
+        let inbox = Arc::new(Inbox::default());
+        let mut entries = self.entries();
+        entries.entries();
+        entries.watchers.retain(|w| w.inbox.strong_count() > 0);
+        entries.watchers.push(Watcher {
+            view: self.view,
+            inbox: Arc::downgrade(&inbox),
+        });
+        Watch { inbox }
     }
 }
 
@@ -228,6 +372,8 @@ struct Entries {
     backend: Option<Arc<dyn StorageBackend>>,
     entries: Option<BTreeMap<String, String>>,
     bytes: usize,
+    /// The cores' watches of changes made elsewhere ([`Store::watch`]).
+    watchers: Vec<Watcher>,
 }
 
 impl Entries {
@@ -238,6 +384,29 @@ impl Entries {
             backend,
             entries: None,
             bytes: 0,
+            watchers: Vec::new(),
+        }
+    }
+
+    /// Hands `change` to the watchers of every view but `from` (`None`: to
+    /// all), made only when one watches.
+    fn notify(&mut self, from: Option<u64>, change: impl FnOnce() -> StorageChange) {
+        if self.watchers.is_empty() {
+            return;
+        }
+        self.watchers.retain(|w| w.inbox.strong_count() > 0);
+        let inboxes: Vec<_> = self
+            .watchers
+            .iter()
+            .filter(|w| Some(w.view) != from)
+            .filter_map(|w| w.inbox.upgrade())
+            .collect();
+        if inboxes.is_empty() {
+            return;
+        }
+        let change = change();
+        for inbox in inboxes {
+            inbox.push(change.clone());
         }
     }
 
@@ -280,8 +449,8 @@ impl Entries {
         self.entries().get(key).cloned()
     }
 
-    /// Sets `key` to `value`; fails past [`QUOTA`].
-    fn set(&mut self, key: String, value: String) -> Result<(), StorageFull> {
+    /// Sets `key` to `value` for view `from`; fails past [`QUOTA`].
+    fn set(&mut self, key: String, value: String, from: u64) -> Result<(), StorageFull> {
         // Loaded first: what the device kept counts too.
         self.entries();
         let bytes = self.bytes;
@@ -300,18 +469,22 @@ impl Entries {
             log::warn!(target: "js", "the app's storage refused {key:?}: {e}");
             return Err(StorageFull { bytes: new });
         }
+        self.notify(Some(from), || {
+            StorageChange::Set(key.clone(), value.clone())
+        });
         self.entries().insert(key, value);
         self.bytes = new;
         Ok(())
     }
 
-    /// Removes `key`.
-    fn remove(&mut self, key: &str) {
+    /// Removes `key` for view `from`.
+    fn remove(&mut self, key: &str, from: u64) {
         let Some(value) = self.entries().remove(key) else {
             return;
         };
         self.bytes -= key.len() + value.len();
         self.write_removal(StorageChange::Remove(key.to_owned()));
+        self.notify(Some(from), || StorageChange::Remove(key.to_owned()));
     }
 
     /// Every key, in order.
@@ -319,8 +492,8 @@ impl Entries {
         self.entries().keys().cloned().collect()
     }
 
-    /// Removes every entry.
-    fn clear(&mut self) {
+    /// Removes every entry for view `from`.
+    fn clear(&mut self, from: u64) {
         let entries = self.entries();
         if entries.is_empty() {
             return;
@@ -328,37 +501,73 @@ impl Entries {
         entries.clear();
         self.bytes = 0;
         self.write_removal(StorageChange::Clear);
+        self.notify(Some(from), || StorageChange::Clear);
     }
 
-    /// [`changed_elsewhere`].
+    /// [`changed_elsewhere`]: told to every watcher when it changes what
+    /// the entries hold.
     fn changed_elsewhere(&mut self, change: Option<StorageChange>) {
         let Some(entries) = &mut self.entries else {
-            // The load reads it.
+            // The load reads it. Nothing watches yet: a watch loads.
             return;
         };
         let size = |key: &str, value: &str| key.len() + value.len();
         match change {
             Some(StorageChange::Set(key, value)) => {
+                if entries.get(&key) == Some(&value) {
+                    return;
+                }
                 self.bytes += size(&key, &value);
-                if let Some(old) = entries.insert(key.clone(), value) {
+                if let Some(old) = entries.insert(key.clone(), value.clone()) {
                     self.bytes -= size(&key, &old);
                 }
+                self.notify(None, || StorageChange::Set(key, value));
             }
             Some(StorageChange::Remove(key)) => {
-                if let Some(old) = entries.remove(&key) {
-                    self.bytes -= size(&key, &old);
-                }
+                let Some(old) = entries.remove(&key) else {
+                    return;
+                };
+                self.bytes -= size(&key, &old);
+                self.notify(None, || StorageChange::Remove(key));
             }
             Some(StorageChange::Clear) => {
+                if entries.is_empty() {
+                    return;
+                }
                 entries.clear();
                 self.bytes = 0;
+                self.notify(None, || StorageChange::Clear);
             }
             None => {
-                self.entries = None;
+                let old = self.entries.take().unwrap_or_default();
                 self.bytes = 0;
+                if self.watchers.iter().all(|w| w.inbox.strong_count() == 0) {
+                    // Read again on next use.
+                    return;
+                }
+                // Read again now, for the watchers to hear what changed.
+                let new = self.entries().clone();
+                for change in diff(&old, &new) {
+                    self.notify(None, || change);
+                }
             }
         }
     }
+}
+
+/// The changes that make `old` into `new`, in key order.
+fn diff(old: &BTreeMap<String, String>, new: &BTreeMap<String, String>) -> Vec<StorageChange> {
+    let removed = old
+        .keys()
+        .filter(|key| !new.contains_key(*key))
+        .map(|key| (key, StorageChange::Remove(key.clone())));
+    let set = new
+        .iter()
+        .filter(|(key, value)| old.get(*key) != Some(value))
+        .map(|(key, value)| (key, StorageChange::Set(key.clone(), value.clone())));
+    let mut changes: Vec<_> = removed.chain(set).collect();
+    changes.sort_by(|a, b| a.0.cmp(b.0));
+    changes.into_iter().map(|(_, change)| change).collect()
 }
 
 #[cfg(test)]
@@ -624,5 +833,140 @@ mod tests {
         assert_eq!(storage.keys(), ["a"]);
         // A backend no core uses takes nothing in.
         changed_elsewhere(&Recorder::default(), Some(StorageChange::Clear));
+    }
+
+    #[test]
+    fn watchers_hear_other_views_changes_only() {
+        let backend: Arc<dyn StorageBackend> = Arc::new(Recorder {
+            kept: BTreeMap::from([("a".into(), "1".into())]),
+            ..Recorder::default()
+        });
+        let first = Store::new(Some(backend.clone()));
+        let second = Store::new(Some(backend.clone()));
+        let third = Store::new(Some(backend));
+        let heard_by_first = first.watch();
+        let heard_by_second = second.watch();
+        // Each watch has a queue of its own.
+        let also_by_second = second.clone().watch();
+        first.set("theme".into(), "dark".into()).unwrap();
+        // Unchanged: nothing to hear.
+        first.set("theme".into(), "dark".into()).unwrap();
+        first.remove("missing");
+        third.remove("a");
+        second.set("own".into(), "x".into()).unwrap();
+        third.clear();
+        third.clear();
+        let drain = |watch: &Watch| std::iter::from_fn(|| watch.try_next()).collect::<Vec<_>>();
+        assert_eq!(
+            drain(&heard_by_first),
+            [
+                StorageChange::Remove("a".into()),
+                StorageChange::Set("own".into(), "x".into()),
+                StorageChange::Clear,
+            ]
+        );
+        let expected = [
+            StorageChange::Set("theme".into(), "dark".into()),
+            StorageChange::Remove("a".into()),
+            StorageChange::Clear,
+        ];
+        assert_eq!(drain(&heard_by_second), expected);
+        assert_eq!(drain(&also_by_second), expected);
+        // A dropped watch is let go.
+        drop(heard_by_first);
+        third.set("b".into(), "2".into()).unwrap();
+        assert_eq!(drain(&heard_by_second).len(), 1);
+    }
+
+    #[test]
+    fn watchers_hear_what_other_writers_changed() {
+        let backend = Arc::new(Recorder {
+            kept: BTreeMap::from([("a".into(), "1".into()), ("b".into(), "2".into())]),
+            ..Recorder::default()
+        });
+        let shared: Arc<dyn StorageBackend> = backend.clone();
+        let storage = Store::new(Some(shared.clone()));
+        let watch = storage.watch();
+        let drain = || std::iter::from_fn(|| watch.try_next()).collect::<Vec<_>>();
+        changed_elsewhere(&*shared, Some(StorageChange::Set("a".into(), "one".into())));
+        // What the entries hold already (this view wrote it since).
+        changed_elsewhere(&*shared, Some(StorageChange::Set("a".into(), "one".into())));
+        changed_elsewhere(&*shared, Some(StorageChange::Remove("missing".into())));
+        changed_elsewhere(&*shared, Some(StorageChange::Remove("b".into())));
+        assert_eq!(
+            drain(),
+            [
+                StorageChange::Set("a".into(), "one".into()),
+                StorageChange::Remove("b".into()),
+            ]
+        );
+        assert_eq!(storage.get("a").as_deref(), Some("one"));
+        // `None`: read again at once, what changed told key by key. The
+        // backend still holds what it was made with.
+        changed_elsewhere(&*shared, None);
+        assert_eq!(
+            drain(),
+            [
+                StorageChange::Set("a".into(), "1".into()),
+                StorageChange::Set("b".into(), "2".into()),
+            ]
+        );
+        changed_elsewhere(&*shared, Some(StorageChange::Set("c".into(), "3".into())));
+        changed_elsewhere(&*shared, Some(StorageChange::Remove("a".into())));
+        drain();
+        changed_elsewhere(&*shared, None);
+        assert_eq!(
+            drain(),
+            [
+                StorageChange::Set("a".into(), "1".into()),
+                StorageChange::Remove("c".into()),
+            ]
+        );
+        changed_elsewhere(&*shared, Some(StorageChange::Clear));
+        changed_elsewhere(&*shared, Some(StorageChange::Clear));
+        assert_eq!(drain(), [StorageChange::Clear]);
+        assert!(backend.changes.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_watch_waits_for_the_next_change() {
+        use std::task::{Context, Wake};
+
+        struct Flag(std::sync::atomic::AtomicBool);
+        impl Wake for Flag {
+            fn wake(self: Arc<Self>) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+        let backend: Arc<dyn StorageBackend> = Arc::new(Recorder::default());
+        let watching = Store::new(Some(backend.clone()));
+        let writing = Store::new(Some(backend));
+        let watch = watching.watch();
+        let flag = Arc::new(Flag(Default::default()));
+        let waker = Waker::from(flag.clone());
+        let mut cx = Context::from_waker(&waker);
+        let mut next = Box::pin(watch.next());
+        assert!(next.as_mut().poll(&mut cx).is_pending());
+        // Written on another thread, as another window's engine does.
+        std::thread::spawn(move || writing.set("k".into(), "v".into()).unwrap())
+            .join()
+            .unwrap();
+        assert!(flag.0.load(Ordering::SeqCst));
+        assert_eq!(
+            next.as_mut().poll(&mut cx),
+            Poll::Ready(StorageChange::Set("k".into(), "v".into()))
+        );
+    }
+
+    #[test]
+    fn a_change_names_its_key_and_value() {
+        let set = StorageChange::Set("k".into(), "v".into());
+        assert_eq!((set.key(), set.value()), (Some("k"), Some("v")));
+        let removed = StorageChange::Remove("k".into());
+        assert_eq!((removed.key(), removed.value()), (Some("k"), None));
+        assert_eq!(
+            (StorageChange::Clear.key(), StorageChange::Clear.value()),
+            (None, None)
+        );
     }
 }

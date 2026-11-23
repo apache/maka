@@ -733,7 +733,10 @@ browsers' touches into what phones report:
   scroll while it holds them (`responderBlocks`), unless the browser already scrolls (`cancelable` false).
 - **Wheels and touchpads** (`wheel`) go to the innermost scroll view along their axis that can move that way (a
   vertical wheel scrolls a horizontal view when no vertical one can) and stay on it while events come within 200 ms;
-  notches glide, touchpads follow the fingers; snapping views move one snap point per scroll. Nothing to scroll: the
+  the browser scrolls that view itself when it would pick it too (the innermost scroll view along the axis, not
+  snapping, without a content layer: `wheelNatively`), with its own smooth wheel and momentum, so a mouse feels as on
+  any page (Chrome and Safari send notches in pixels, as touchpads' deltas, which nsh moved at once); elsewhere nsh
+  scrolls: notches glide, touchpads follow the fingers; snapping views move one snap point per scroll. Nothing to scroll: the
   event goes on to the page around (an embedding page scrolls), unless it is over a dialog or an alert covering the
   window (`dialogs: "viewport"`). Ctrl + wheel (a touchpad's pinch) pinches the view
   under the pointer and never zooms the page. Scroll events follow the desktop backends: touch drags send
@@ -803,7 +806,9 @@ browsers' touches into what phones report:
   text, selectable views and hosted pages), as in native apps; it focuses the app's window in an iframe. A touch moves
   the focus as the browser does (a tap outside a field closes the keyboard), unless its press made the app focus a field
   (an editor's text): the mouse events the browser makes of the touch then leave the focus in the field (`mouseDown`,
-  `pressFocus`), so the keyboard stays open. The views under the newest
+  `pressFocus`), so the keyboard stays open. An `autoFocus` input takes the focus at the end of the batch that put it in
+  the page (`focusAppeared`), in the same turn, never from a timer: iOS Safari raises the keyboard only for a focus inside
+  the event's handler, and the focus is the press's (`pressFocus`) as a focus command's is. The views under the newest
   `Dialog` or alert are `inert`; the focus one took comes back when it closes.
 - **Accessibility**: `op_vp` sets ARIA from the accessibility props (roles mapped by `ARIA_ROLES`, `aria-disabled`,
   `-selected`, `-checked`, `-busy`, `-expanded`, `-value*`, `-live`, `-hidden`, the hint as `aria-description`);
@@ -954,7 +959,8 @@ browsers' touches into what phones report:
   web page's paragraphs; pressables in the area keep their presses. Select all selects the whole area. Copying joins
   the area's texts on one row (their boxes overlap vertically: a table's cells) with a tab instead of a newline, joins
   a text whose props have `continuesText` (`ViewProps::continues_text`: a wrapped line's later part) to the one
-  before it with nothing, and leaves out attachments (U+FFFC), as `SelectionModel::text` does.
+  before it with nothing, and gives attachments (U+FFFC) as their copy texts (`copyText`, sent with the text) or
+  leaves them out, as `SelectionModel::text` does.
 - **Elsewhere**: no page context menu or iOS callout outside fields and selectable text; a mouse drag selects only in
   selectable text and fields; overflow is `clip`, never `hidden`, so that the browser cannot scroll a box the core
   laid out to show a focused field.
@@ -1007,16 +1013,28 @@ between them); the core bounds their travel by the list's end. A cell's animated
 (`op_a`): it is kept on the cell (`_stickyOffset`) and added to the track's inset. Views clip with `overflow: clip`, which, unlike
 `hidden`, makes no scroll container, so `position: sticky` reaches the scroll view through the list.
 
-Pixel-mode wheel events follow the device's deltas directly, including its inertia. Line- and page-mode wheels
-and keyboard commands glide on animation frames. Changing from a glide to direct input continues from the sampled
+A wheel the browser can take is the browser's (`wheelNatively`): its offsets reach the core as any scroll's, and it
+ends once, with the `scrollend` that comes once no wheel event did for 200 ms (one between two notches is not the
+end), or 200 ms after the last scroll event where none comes (`waitCommandEnd`); a glide of the keys'
+it interrupts stops where it is. The wheels nsh scrolls itself (snapping views, content layers, a vertical wheel on a
+horizontal view, an outer view the browser would not pick): pixel-mode events follow the device's deltas directly,
+including its inertia; line- and page-mode wheels and keyboard commands glide on animation frames. Changing from a glide to direct input continues from the sampled
 position, so an unfinished target cannot cause a catch-up jump.
 
-A smooth scroll of the core's (`scrollTo` with `animated`) in flight moves with a `ScrollBy` (`op_sb` retargets it),
-as the native backends move theirs: setting `scrollTop` would stop the browser's smooth scroll. The user's wheel,
-pointer, touch or key takes it over. The glides of the wheel and the keys are nsh's (`scrollSmoothly`, on animation
-frames), and each frame writes the glide's offset: a `ScrollBy` moves the glide with the content, and `scrollTo` /
-`scrollToEnd` stop it where it is (`stopGlide`) before they scroll, as the native backends interrupt theirs. The
-scroll they stop ends with theirs (the browser's `scrollend`), or at once when they leave the view where it is.
+An animated scroll command of the core's (`scrollTo` or `scrollToEnd` with `animated`) is nsh's own animation
+(`animateScroll`, on animation frames): `SCROLL_MS` eased out cubically, the length and curve the core's
+`scroll::ANIMATION` runs for on the other platforms. The browser's `behavior: "smooth"` is not used for it — over a
+long distance it takes about a second, and it starts over every time a command retargets it, which a list does on
+every commit as it measures the rows the scroll passes, so a jump across unmeasured rows crawled. A command that
+retargets one in flight carries on from where it is, as the core's `animate_to` does, and a `ScrollBy` moves the
+animation with the content (`op_sb`, as `nsh-core`'s `shifted`), so it goes on from the content it was on. The
+scroll ends on the animation's last frame (`ownEnd`); the browser's `scrollend` for the frames it drew is not the
+end, because the scroll is driven here (`drive`). The user's wheel, pointer, touch or key takes it over.
+
+The glides of the wheel and the keys are nsh's too (`scrollSmoothly`, on animation frames), and each frame writes
+the glide's offset: a `ScrollBy` moves the glide with the content, and `scrollTo` / `scrollToEnd` stop it where it
+is (`cancelGlide`) before they scroll, as the native backends interrupt theirs. The scroll a command that does not
+animate stops ends with the browser's `scrollend`, or at once when the command leaves the view where it is.
 The stationary check uses exact clamped offsets: fractional movement can reach another physical pixel. If a
 fractional target instead rounds back to the current offset, a 200 ms quiet-period fallback ends the scroll;
 scroll events postpone it, and the browser's `scrollend` cancels it.
@@ -1079,7 +1097,7 @@ scroll events postpone it, and the browser's `scrollend` cancels it.
   `{ type: "reply", id, ok, value?, error? }` (`EventPayload::Json`, `nsh_event`): `ok: false` with the error's message when the page has no host, `call` throws or
   its promise rejects, or the result is not JSON, since the app's call waits until it is answered; the app's call
   rejects with that message and `code` `ERR_NSH_HOST_ERROR` (`nsh_core::host_channel::host_error`). A page without a
-  host sets the environment's `host` to `false`, so the core rejects the calls first, with
+  host sets the environment's `host` to `false`, so the core rejects the calls it checked (name, then grant) with
   `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM`. A `host.post` without the native SDK channel (`browser/host.js`) goes to the
   platform module's `post` (`nsh-core` `runtime/host.rs`), which checks the name and grant in Rust and throws
   synchronously, then the core sends `Command::HostPost` (command `hostPost`) where the environment has a host;
@@ -1118,11 +1136,14 @@ default), `role="link"` with an `href` (`ViewProps::href`, which `nsh-base`'s `L
 `web={{ element }}` (`Prop::WebElement`, `ViewProps::web_element`, the `WebElement` enum) names what `role` cannot
 say (`p`, `nav`, `article`, `time`, ...) and wins over the role. `retag` replaces the view's element by one of that
 tag, carrying its attributes, children and fields and taking its place in `views`; views whose element is a control
-of its own (images, scroll views, canvases, inputs) keep theirs. A fixed rule of the runtime's stylesheet takes the
+of its own (images, scroll views, canvases, inputs) keep theirs. A new view's tracked states and events reach the page
+before the props that name its tag: `retag` adds the old element's listeners to the new one, as the copied flags say
+(`installMouse`, `installHover`, `installFocus`, `installLinkHover`). A fixed rule of the runtime's stylesheet takes the
 browser's margins, fonts, colors, underlines and list markers off those tags, so the view looks as a `div` does. A
 link gets `href` and is not draggable; a plain click on it stays the app's (`Link`'s press; the root's `click`
 listener prevents the browser's navigation), a click with a modifier key or the middle button opens `href` as the
-browser does, and a context menu on it is the browser's (open in a new tab, copy the link) unless the link or a view
+browser does and starts no press (`pointerDown`: the link does not open it again, nor hear `onOpen` or `onPress`),
+and a context menu on it is the browser's (open in a new tab, copy the link) unless the link or a view
 in it listens for `onContextMenu` (`contextMenu`, where the runtime otherwise prevents the browser's menu). The other
 backends store `web_element` and draw nothing differently.
 
@@ -1133,9 +1154,8 @@ page's realm (the app runs in its iframe's) and writes the page's real `<head>`:
 mount order, an effect keeps its props current, and one microtask after any change the entries are merged (the later
 one wins key by key, `meta` by `name` / `property`), the elements the heads made (`data-nsh-head`) are written again,
 and `<html lang>` falls back to what the page had before. The merged title goes to the player (`setHeadTitle`), which
-owns `document.title`: the heads' title, else the main window's (a root `SetAttributes` with a `title` is encoded as
-the `setTitle` command, and the browser runtime's main window, `scope.js`, hands the `title` of its `set` to
-`setWindowTitle`; kept where the app is the page), else the page's own, written once the turn's history entries
+owns `document.title`: the heads' title, else the app root's (a root `SetAttributes` with a `title` is encoded as
+the `setTitle` command, and `runtime.js` hands it to `setWindowTitle`; kept where the app is the page), else the page's own, written once the turn's history entries
 exist (after `syncHistory`, or after a traversal of its own lands) so each entry keeps its page's title. A `canonical` path starts at the site's
 base (the directory `document.baseURI` names), as a linked stack's paths do. `page.test.mjs` tests the merging.
 

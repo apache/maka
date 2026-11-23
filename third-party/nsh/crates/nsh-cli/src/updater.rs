@@ -58,6 +58,7 @@ fn runtime_config(config: &AppConfig, id: &str) -> anyhow::Result<Option<Config>
     let mut runtime = Config::default();
     runtime.id = id.to_owned();
     runtime.version = version(config).to_owned();
+    runtime.name = config.name.clone();
     runtime.github = updater.github.clone();
     runtime.url = updater.url.clone();
     runtime.channels = updater.channels.clone();
@@ -203,6 +204,7 @@ pub(crate) struct ManifestOptions<'a> {
     pub(crate) key: Option<&'a Path>,
     pub(crate) notes: &'a [String],
     pub(crate) links: &'a [String],
+    pub(crate) previous: &'a [PathBuf],
     pub(crate) base_url: Option<&'a str>,
     pub(crate) out: &'a Path,
 }
@@ -216,6 +218,112 @@ fn archive_platform(file: &str, version: &str) -> Option<String> {
         .strip_suffix(".tar.gz")
         .or_else(|| rest.strip_suffix(".zip"))?;
     (!platform.is_empty()).then(|| platform.to_owned())
+}
+
+/// The version of `previous`, an archive of `platform` named as `nsh
+/// package` names them; `None` for another platform's.
+fn previous_version(previous: &Path, name: &str, platform: &str) -> Option<String> {
+    let file = previous.file_name()?.to_str()?;
+    let prefix = platform_archive_name(name, "", "", "");
+    let prefix = prefix.strip_suffix("--.")?;
+    let rest = file.strip_prefix(prefix)?.strip_prefix('-')?;
+    let rest = rest
+        .strip_suffix(".tar.gz")
+        .or_else(|| rest.strip_suffix(".zip"))?;
+    let version = rest.strip_suffix(platform)?.strip_suffix('-')?;
+    (!version.is_empty()).then(|| version.to_owned())
+}
+
+/// Writes the patch from the app in `previous` (version `from`) to the app
+/// in `archive` (`bytes`) beside the manifest, unless it saves little.
+fn write_delta(
+    previous: &Path,
+    from: &str,
+    archive: &Path,
+    bytes: &[u8],
+    options: &ManifestOptions<'_>,
+) -> anyhow::Result<Option<nsh_updater::Delta>> {
+    let scratch = std::env::temp_dir().join(format!("nsh-delta-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&scratch);
+    fs::create_dir_all(&scratch)?;
+    let made = (|| -> anyhow::Result<_> {
+        let old = unpack(previous, &scratch.join("old"))?;
+        let mut base = Vec::new();
+        let base_sha = nsh_updater::delta::base(&old, &mut base)?;
+        let (result, result_sha) = if bytes.starts_with(&[0x1f, 0x8b]) {
+            let mut tar = Vec::new();
+            std::io::Read::read_to_end(&mut flate2::read::GzDecoder::new(bytes), &mut tar)?;
+            let sha = nsh_updater::sha256(&tar);
+            (tar, sha)
+        } else {
+            let new = unpack(archive, &scratch.join("new"))?;
+            let mut tar = Vec::new();
+            let sha = nsh_updater::delta::tree(&new, &mut tar)?;
+            (tar, sha)
+        };
+        let mut patch = Vec::new();
+        nsh_updater::delta::make(&base, &result, &mut patch)?;
+        Ok((base_sha, result_sha, patch))
+    })();
+    let _ = fs::remove_dir_all(&scratch);
+    let (base, result, patch) =
+        made.with_context(|| format!("a patch from {}", previous.display()))?;
+    let file = archive
+        .file_name()
+        .and_then(|f| f.to_str())
+        .context("the archive has no file name")?;
+    if patch.len() as u64 * 10 > bytes.len() as u64 * 9 {
+        ui::plain(format!(
+            "no patch from {from} for {file}: {} bytes, the archive {}",
+            patch.len(),
+            bytes.len()
+        ));
+        return Ok(None);
+    }
+    let stem = file
+        .strip_suffix(".tar.gz")
+        .or_else(|| file.strip_suffix(".zip"))
+        .unwrap_or(file);
+    let name = format!("{stem}.from-{from}.patch");
+    fs::create_dir_all(options.out)?;
+    let path = options.out.join(&name);
+    fs::write(&path, &patch)?;
+    ui::done(format!(
+        "wrote {} ({}% of the archive)",
+        ui::path(&path),
+        (patch.len() as u64 * 100).div_ceil(bytes.len().max(1) as u64)
+    ));
+    let mut delta = nsh_updater::Delta::default();
+    delta.from = from.to_owned();
+    delta.base = base;
+    delta.url = match options.base_url {
+        Some(url) => format!("{}/{name}", url.trim_end_matches('/')),
+        None => name,
+    };
+    delta.sha256 = nsh_updater::sha256(&patch);
+    delta.size = patch.len() as u64;
+    delta.result = result;
+    Ok(Some(delta))
+}
+
+/// Unpacks an archive `nsh package` made into `into`; the app in it.
+fn unpack(archive: &Path, into: &Path) -> anyhow::Result<PathBuf> {
+    fs::create_dir_all(into)?;
+    let file = fs::File::open(archive).with_context(|| format!("open {}", archive.display()))?;
+    if archive.extension().is_some_and(|e| e == "zip") {
+        zip::ZipArchive::new(file)?.extract(into)?;
+    } else {
+        tar::Archive::new(flate2::read::GzDecoder::new(file)).unpack(into)?;
+    }
+    let mut apps = fs::read_dir(into)?
+        .filter_map(Result::ok)
+        .filter(|e| !e.file_name().to_string_lossy().starts_with("._"))
+        .map(|e| e.path())
+        .collect::<Vec<_>>();
+    match (apps.pop(), apps.is_empty()) {
+        (Some(app), true) if app.is_dir() => Ok(app),
+        _ => bail!("{}: expected one directory, the app", archive.display()),
+    }
 }
 
 /// `--notes`: the default notes' text and the other languages' files, by
@@ -265,14 +373,9 @@ fn notes(args: &[String]) -> anyhow::Result<Notes> {
 
 /// `nsh update-manifest`.
 pub(crate) fn manifest(options: ManifestOptions<'_>) -> anyhow::Result<()> {
-    let entry = dunce::canonicalize(options.entry)?;
-    let entry = if entry.is_dir() {
-        entry.join("App.tsx")
-    } else {
-        entry
-    };
+    let entry = crate::entry::resolve(&dunce::canonicalize(options.entry)?)?;
     let config = crate::package::read_config(&entry)?;
-    let (_, id) = crate::package::release_name_and_id(&entry, &config)?;
+    let (name, id) = crate::package::release_name_and_id(&entry, &config)?;
     let Some(runtime) = runtime_config(&config, &id)? else {
         bail!("nsh.json has no \"updater\"");
     };
@@ -297,6 +400,15 @@ pub(crate) fn manifest(options: ManifestOptions<'_>) -> anyhow::Result<()> {
         asset.url = url;
         asset.sha256 = Some(nsh_updater::sha256(&bytes));
         asset.size = Some(bytes.len() as u64);
+        for previous in options.previous {
+            let Some(from) = previous_version(previous, &name, &platform) else {
+                continue;
+            };
+            fs::create_dir_all(options.out)?;
+            if let Some(delta) = write_delta(previous, &from, archive, &bytes, &options)? {
+                asset.deltas.push(delta);
+            }
+        }
         platforms.insert(platform, asset);
     }
     for link in options.links {
@@ -490,6 +602,93 @@ mod tests {
         let path = dir.join(format!("{id}-7.nshpkg"));
         fs::write(&path, bytes).unwrap();
         path
+    }
+
+    #[test]
+    fn previous_archives_name_their_version() {
+        let version = |file: &str| previous_version(Path::new(file), "My App", "linux-x86_64");
+        assert_eq!(
+            version("My-App-1.2.0-linux-x86_64.tar.gz").as_deref(),
+            Some("1.2.0")
+        );
+        assert_eq!(
+            version("My-App-1.2.0-beta.1-linux-x86_64.zip").as_deref(),
+            Some("1.2.0-beta.1")
+        );
+        assert_eq!(version("My-App-1.2.0-windows-x86_64.zip"), None);
+        assert_eq!(version("Other-1.2.0-linux-x86_64.tar.gz"), None);
+    }
+
+    #[test]
+    fn a_patch_from_the_previous_archive_rebuilds_the_new_one() {
+        let dir = std::env::temp_dir().join(format!("nsh-updater-delta-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let big: Vec<u8> = (0..300_000u32)
+            .flat_map(|i| i.wrapping_mul(2_654_435_761).to_le_bytes())
+            .collect();
+        let archive = |version: &str, main: &[u8]| {
+            let app = dir.join(version).join("App");
+            fs::create_dir_all(app.join("assets")).unwrap();
+            fs::write(app.join("app"), main).unwrap();
+            fs::write(app.join("assets/version.txt"), version).unwrap();
+            let path = dir.join(format!("App-{version}-linux-x86_64.tar.gz"));
+            let gz = flate2::write::GzEncoder::new(
+                fs::File::create(&path).unwrap(),
+                flate2::Compression::default(),
+            );
+            let mut tar = tar::Builder::new(gz);
+            tar.append_dir_all("App", &app).unwrap();
+            tar.into_inner().unwrap().finish().unwrap();
+            (app, path)
+        };
+        let (old_app, old) = archive("1.0.0", &big);
+        let mut newer = big.clone();
+        newer[5000..5004].copy_from_slice(b"NEW!");
+        let (_, new) = archive("1.1.0", &newer);
+        let bytes = fs::read(&new).unwrap();
+        let out = dir.join("out");
+        let options = ManifestOptions {
+            archives: &[],
+            package: None,
+            entry: &dir,
+            key: None,
+            notes: &[],
+            links: &[],
+            previous: &[],
+            base_url: Some("https://x.dev/r"),
+            out: &out,
+        };
+        let delta = write_delta(&old, "1.0.0", &new, &bytes, &options)
+            .unwrap()
+            .expect("a patch");
+        assert_eq!(delta.from, "1.0.0");
+        assert_eq!(
+            delta.url,
+            "https://x.dev/r/App-1.1.0-linux-x86_64.from-1.0.0.patch"
+        );
+        let patch = fs::read(out.join("App-1.1.0-linux-x86_64.from-1.0.0.patch")).unwrap();
+        assert_eq!(patch.len() as u64, delta.size);
+        assert!(
+            patch.len() * 10 < bytes.len(),
+            "patch {} of {}",
+            patch.len(),
+            bytes.len()
+        );
+
+        // The installed old app is the reference; the result is the new
+        // archive's tar.
+        let mut base = Vec::new();
+        assert_eq!(
+            nsh_updater::delta::base(&old_app, &mut base).unwrap(),
+            delta.base
+        );
+        let mut result = Vec::new();
+        nsh_updater::delta::apply(&base, &patch[..], &mut result, &delta.result).unwrap();
+        let mut tar = Vec::new();
+        std::io::Read::read_to_end(&mut flate2::read::GzDecoder::new(&bytes[..]), &mut tar)
+            .unwrap();
+        assert_eq!(result, tar);
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

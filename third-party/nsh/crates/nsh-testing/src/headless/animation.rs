@@ -131,6 +131,9 @@ impl Animator {
         if now < next {
             return;
         }
+        // The plain tick: a manual clock moved at once (`fastForward`) is
+        // time the test passed, not a frame held by work, so no first frame
+        // is counted again (`Animator::tick_frame`).
         self.graph.tick((now - self.epoch).as_secs_f64());
         self.next = self.graph.animating().then(|| (next + FRAME).max(now));
     }

@@ -1,7 +1,8 @@
 // A case of the API's test suite (docs/dev/compatibility.md): the touch
 // settings of every element as the platform receives them: the style
 // `pointerEvents`, the props `hitSlop` (a number for every side, or some
-// sides), `delayLongPress`, `panActivation` and `focusable` (`false` on a
+// sides), `delayLongPress`, `panActivation` (offsets, a direction, an
+// edge) and `focusable` (`false` on a
 // pressable, `true` on a view that takes no presses). Its script
 // checks each.
 import { View } from "nsh";
@@ -23,6 +24,18 @@ function App() {
         testID="pan"
         panActivation={{ activeOffsetX: 20, failOffsetY: 10 }}
         onTouchStart={() => {}}
+        style={{ height: 20 }}
+      />
+      <View
+        testID="pan-way"
+        panActivation={{ direction: "right", activeOffsetX: 16 }}
+        onPanStart={() => {}}
+        style={{ height: 20 }}
+      />
+      <View
+        testID="pan-edge"
+        panActivation={{ edge: "left" }}
+        onPanStart={() => {}}
         style={{ height: 20 }}
       />
       <View testID="unfocusable" focusable={false} onPress={() => {}} style={{ height: 20 }} />

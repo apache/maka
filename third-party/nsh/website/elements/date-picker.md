@@ -68,6 +68,7 @@ fn trip_dates() -> impl IntoElement {
 ```tsx tabs
 import { mount, signal, Text, View } from "nsh";
 import { DatePicker, type DatePickerValue } from "nsh/base";
+import { Window } from "nsh/desktop";
 
 function App() {
   const due = signal<DatePickerValue>(null);
@@ -103,7 +104,11 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 `DatePicker` comes from [`nsh/base`](../modules/nsh-base.md), the `nsh-base` crate in Rust. In Rust, `date_picker()`
@@ -157,8 +162,8 @@ spread apart (`flex-row items-center justify-between`, as `gpui-component`'s). T
 On the desktops the popup comes and goes with your transitions, as a [Popover](./popover.md#entrance-and-exit)'s:
 `popupStartingClass` is its look in its first frame, and the `transition-*` classes of `popupClass` carry it to its own
 look; `popupEndingClass` is its look once closed, which it keeps, taking no presses, while those transitions run, and
-`onClose` follows. The keyboard focus is back on the trigger as it closes, unless the choice's `onChange` focused
-another view (the next field of a form), which keeps it. Opened again on its way out, it returns to its look from where
+`onClose` follows. The keyboard focus is back on the trigger as it closes (on macOS and iOS, where it was before it opened,
+when a pointer opened it), unless the choice's `onChange` focused another view (the next field of a form), which keeps it. Opened again on its way out, it returns to its look from where
 it is. `popupStartingStyle` and `popupEndingStyle` do the same with inline styles. When the user asks for less motion it
 appears and goes at once; the sheet of touch screens slides in and out on its own.
 

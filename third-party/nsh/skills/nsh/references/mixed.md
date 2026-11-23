@@ -36,16 +36,25 @@ nsh init my-app --template mixed     # add --nsh-source <checkout> to build agai
 
 | File | What it is |
 | --- | --- |
-| `nsh.json` | `name`, `id`, `version`, `build` and `"rust": "."`. No `"root"`: that is what makes `App.tsx` the entry |
-| `App.tsx` | The entry. Imports `Badge`, `Counter` and `Format` from `<name>/native` |
+| `nsh.json` | `name`, `id`, `version`, `build` and `"dependencies": { "<name>-native": { "path": "ext/<name>-native" } }`. No `"rust"`, no `"root"`: `App.tsx` is the entry |
+| `App.tsx` | The entry. Imports `Badge`, `Counter` and `Format` from `<name>-native` |
 | `App.test.tsx` | Presses through the app with `nsh/test`, in a headless runner linked with the crate |
-| `Cargo.toml` | `nsh-core` and `nsh-base` at the CLI's version, and an empty `[workspace]`, so the app builds alone inside another project |
-| `src/lib.rs` | The crate: `#[native_module("<name>/native")]` and one component, module and class |
+| `ext/<name>-native/Cargo.toml` | `nsh-core` and `nsh-base` at the CLI's version, and an empty `[workspace]`, so the crate builds alone |
+| `ext/<name>-native/src/lib.rs` | The crate, an nshm of the app's own: `#[native_module("<name>-native")]` and one component, module and class |
 | `tsconfig.json`, `.gitignore`, `README.md` | `.gitignore` holds `.nsh/` and `target/` |
 | `.nsh/types/` | Generated. `.nsh/types/<name>/native.d.ts` appears after the first command that describes the crate |
 
-Templates: `crates/nsh-cli/src/templates/mixed/`. The specifier is the app's name in lower case, words joined by `-`,
-then `/native`. `rust-exports` keeps its crate in a subdirectory (`"rust": "native"`); both layouts work.
+Templates: `crates/nsh-cli/src/templates/mixed/`. The crate name and specifier are the app's name in lower case, words
+joined by `-`, then `-native`.
+
+**`ext/` is the standard layout for a TSX app's Rust**, as `src/` is for its TSX: one nshm crate per directory under
+`ext/`, each listed in `nsh.json` `"dependencies"` by path. Add one with `cargo new --lib ext/<name>`, a
+`#[native_module("<name>")]` at its root, then `nsh add --path ext/<name>`. Reference app:
+[huacnlee/disktree](https://github.com/huacnlee/disktree) (TSX UI in `App.tsx` and `src/`, scanner and SQLite index in
+`ext/disktree-native`, imported as `import { DiskTree } from "disktree-native"`). Docs:
+[An app's own Rust: ext/](https://nsh.dev/docs/nshm#an-apps-own-rust-ext). The older layout, a crate listed in
+`"rust"` (`rust-exports` keeps it in `"rust": "native"`), still builds and is what a Rust app that adds a TSX entry uses;
+the examples below come from it, and the crate code is the same in both.
 
 ## The entry point: `#[native_module]`
 

@@ -14,7 +14,7 @@ use nsh_core::{
         Owner, create_root,
         desktop::{
             cancel_quit_request, current_window, on_app_quit, on_quit_request, quit,
-            set_quit_request_options,
+            set_quit_request_options, window,
         },
     },
     prelude::*,
@@ -45,6 +45,12 @@ thread_local! {
 
 fn case() -> String {
     std::env::var("NSH_QUIT_CHECK_CASE").unwrap()
+}
+
+/// The app's one window: the app root is the invisible host.
+#[component]
+fn App() -> impl IntoElement {
+    window().id("main").content(guarded)
 }
 
 #[component]
@@ -433,10 +439,10 @@ pub(super) fn run_case() {
     let mut options = platform::AppOptions::default();
     options.title = "Quit request check".into();
     options.keep_alive_on_close = case() == "close-retained" || case() == "system-retained-close";
-    let source = platform::AppSource::Rust(platform::Root::of::<Guarded>());
+    let source = platform::AppSource::Rust(platform::Root::of::<App>());
     #[cfg(feature = "dev")]
     let source = if case().starts_with("reload-") {
-        platform::set_root(platform::Root::of::<Guarded>);
+        platform::set_root(platform::Root::of::<App>);
         let server =
             nsh_dev::DevServer::start("127.0.0.1:0".parse().unwrap(), "", None, |_| {}).unwrap();
         server.publish_root();

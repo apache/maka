@@ -94,35 +94,46 @@ fn WslReconnectView() -> impl IntoElement {
     attrs.close_on_press = Some(true);
     attrs.close_on_escape = Some(false);
     attrs.close_on_blur = Some(false);
-    desktop::current_window().set(attrs);
-    view()
-        .h_full()
-        .p_6()
-        .flex()
-        .flex_col()
-        .gap_2()
-        .justify_center()
-        .items_center()
-        .child(
-            text(move || {
-                if error.get().is_some() {
-                    unavailable
-                } else {
-                    connecting
-                }
-            })
-            .text_lg()
-            .text_color(AdaptiveColor::rgb(0x171717, 0xf5f5f5)),
-        )
-        .child(when(
-            move || error.get().is_some(),
-            move || {
-                text(move || error.get().unwrap_or_default())
-                    .selectable(true)
-                    .text_center()
-                    .text_color(AdaptiveColor::rgb(0x525252, 0xa3a3a3))
-            },
-        ))
+    let body = move || {
+        view()
+            .h_full()
+            .p_6()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .justify_center()
+            .items_center()
+            .child(
+                text(move || {
+                    if error.get().is_some() {
+                        unavailable
+                    } else {
+                        connecting
+                    }
+                })
+                .text_lg()
+                .text_color(AdaptiveColor::rgb(0x171717, 0xf5f5f5)),
+            )
+            .child(when(
+                move || error.get().is_some(),
+                move || {
+                    text(move || error.get().unwrap_or_default())
+                        .selectable(true)
+                        .text_center()
+                        .text_color(AdaptiveColor::rgb(0x525252, 0xa3a3a3))
+                },
+            ))
+    };
+    if engine_context::<nsh_engine::EmbeddedHost>().is_some() {
+        desktop::current_window().set(attrs);
+        body().into_element()
+    } else {
+        desktop::window()
+            .id("main")
+            .attributes(attrs)
+            .content(body)
+            .into_element()
+    }
 }
 
 fn wsl_reconnect_config(errors: watch::Receiver<Option<String>>) -> nsh_engine::EngineConfig {
@@ -351,8 +362,6 @@ async fn follow_wsl(
             &mut window_closed,
             move |view| {
                 view.load_with_config(wsl_reconnect_config(errors));
-                // Replacing the workbench also removes its tray entry.
-                view.show();
             },
         )
         .await
@@ -601,19 +610,22 @@ mod tests {
             .host
             .extend(["terminal.exit", "test.ready", "test.hidden"].map(String::from));
         let bundle = nsh_engine::Bundle::source(
-            r#"import { effect, host, signal } from 'nsh';
-                import { Window } from 'nsh/desktop';
-                const main = Window.get('main');
-                const closing = signal(false);
-                main.set({ closeOnPress: false });
-                main.on('closePress', () => { closing.set(true); main.hide(); });
-                effect(() => {
-                    if (closing() && main.state()?.visible === false) {
-                        host.post('test.hidden');
-                        host.post('terminal.exit');
-                    }
+            r#"import { effect, host, mount, signal } from 'nsh';
+                import { currentWindow } from 'nsh/desktop';
+                mount(() => {
+                    const main = currentWindow();
+                    const closing = signal(false);
+                    main.set({ closeOnPress: false });
+                    main.on('closePress', () => { closing.set(true); main.hide(); });
+                    effect(() => {
+                        if (closing() && main.state()?.visible === false) {
+                            host.post('test.hidden');
+                            host.post('terminal.exit');
+                        }
+                    });
+                    requestAnimationFrame(() => host.post('test.ready'));
+                    return null;
                 });
-                requestAnimationFrame(() => host.post('test.ready'));
             "#
             .into(),
         )
@@ -626,8 +638,9 @@ mod tests {
         config.host.handle("test.ready", move |_| {
             let close_posted = close_posted.clone();
             with_running_view(move |view| {
+                let target = view.active_window_hwnd().unwrap_or_else(|| view.hwnd());
                 // SAFETY: the running view owns this live HWND; posting does not retain a Rust reference.
-                let ok = unsafe { post_message(view.hwnd().0, WM_CLOSE, 0, 0) };
+                let ok = unsafe { post_message(target.0, WM_CLOSE, 0, 0) };
                 close_posted.store(ok != 0, Ordering::SeqCst);
             });
         });

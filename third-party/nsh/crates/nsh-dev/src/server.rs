@@ -89,6 +89,8 @@ pub struct AppInfo {
     pub id: Option<String>,
     /// The main window's launch-time options (`nsh.json` `"window"`, JSON).
     pub window: Option<String>,
+    /// The app's lifecycle (`nsh.json` `"application"`, JSON).
+    pub application: Option<String>,
 }
 
 struct Bundle {
@@ -99,6 +101,7 @@ struct Bundle {
     capabilities: Option<String>,
     app_id: Option<String>,
     window: Option<String>,
+    application: Option<String>,
     /// The UI sets it imports.
     ui_sets: Arc<[String]>,
 }
@@ -456,6 +459,7 @@ impl DevServer {
             capabilities: app.capabilities,
             app_id: app.id,
             window: app.window,
+            application: app.application,
             ui_sets,
         })));
     }
@@ -1160,6 +1164,7 @@ async fn send_event(
                     capabilities: bundle.capabilities.clone(),
                     app_id: bundle.app_id.clone(),
                     window: bundle.window.clone(),
+                    application: bundle.application.clone(),
                     limits,
                 },
             )

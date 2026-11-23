@@ -427,13 +427,17 @@ impl Downloads {
             .min()
     }
 
-    /// The platform offered a download on `node`.
+    /// The platform offered a download on `node`. `refused` is why the
+    /// app's capabilities do not allow the offer's URL: such a download is
+    /// never staged or offered to the app; its held transfer is released
+    /// and a listener hears it failed with `ERR_ACCESS_DENIED`.
     pub(crate) fn offer(
         &mut self,
         node: NodeId,
         offer: DownloadOffer,
         mode: Mode,
         automatic: Option<DownloadDestination>,
+        refused: Option<String>,
     ) -> Vec<Effect> {
         let key = Key {
             node,
@@ -469,6 +473,25 @@ impl Downloads {
             cancel_answer: None,
         };
         let mut effects = Vec::new();
+        if let Some(message) = refused {
+            // The URL is where the response being downloaded came from,
+            // after every redirect: a transfer that ended up on a host the
+            // grant does not allow writes nothing, whatever the listeners.
+            if mode == Mode::None {
+                // Nothing listens: no terminal event is due.
+                session.reported = true;
+            } else {
+                effects.push(failed(
+                    &mut session,
+                    crate::element::codes::ACCESS_DENIED,
+                    message,
+                ));
+            }
+            effects.push(cancel_command(&session));
+            session.phase = Phase::Cancelling;
+            self.sessions.insert(key, session);
+            return effects;
+        }
         match mode {
             Mode::Manual => {
                 session.offer_deadline = Some(crate::time::now() + OFFER_TIMEOUT);
@@ -1420,7 +1443,10 @@ mod tests {
             method: None,
             source: WebDownloadSource::Transfer,
         };
-        assert_eq!(downloads.offer(node, offer, Mode::Manual, None).len(), 1);
+        assert_eq!(
+            downloads.offer(node, offer, Mode::Manual, None, None).len(),
+            1
+        );
         let (answer, slot) = Answer::new();
         downloads.decide(
             node,

@@ -2,6 +2,7 @@
 // more of the reply with each press (the last block grows, or one comes).
 import { mount, signal, Text, View } from "nsh";
 import { Button, TextView } from "nsh/base";
+import { Window } from "nsh/desktop";
 
 const block = (i: number) =>
   `Paragraph ${i} of the reply, with **bold** text and \`code\`.\n\n`;
@@ -24,4 +25,4 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => <Window id="main">{App}</Window>);

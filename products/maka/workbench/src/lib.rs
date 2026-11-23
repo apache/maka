@@ -882,13 +882,31 @@ mod tests {
                 native.width = 900_f32.into();
                 native.height = 720_f32.into();
                 state.native_content_bounds = Some(native);
+                let main = app
+                    .screen()
+                    .commands()
+                    .iter()
+                    .rev()
+                    .find_map(|(id, command)| match command {
+                        nsh_core::Command::Desktop(cmd) => match cmd.as_ref() {
+                            nsh_core::desktop::DesktopCommand::OpenWindow(open)
+                                if open.options.id == "main" =>
+                            {
+                                Some(*id)
+                            }
+                            _ => None,
+                        },
+                        _ => None,
+                    })
+                    .expect("implicit main window should be open");
                 let control = app.engine().control();
-                control.set_environment(Environment {
-                    os: Os::MacOs,
-                    reduce_motion: true,
-                    window_state: Some(state),
-                    ..Environment::default()
-                });
+                control.dispatch_event(
+                    main,
+                    EventKind::Window,
+                    EventPayload::Window(Box::new(nsh_core::desktop::WindowEvent::State(
+                        Box::new(state),
+                    ))),
+                );
                 control.dispatch_event(button, EventKind::Press, EventPayload::None);
                 app.wait_for(&format!("text:Placement {x}")).unwrap();
             }
@@ -1409,7 +1427,7 @@ mod tests {
                             .unwrap();
                     }
                     assert!(
-                        !app.screen().commands().iter().any(|(_, command)| matches!(command, nsh_core::Command::Desktop(value) if matches!(value.as_ref(), nsh_core::desktop::DesktopCommand::OpenWindow(_))))
+                        !app.screen().commands().iter().any(|(_, command)| matches!(command, nsh_core::Command::Desktop(value) if matches!(value.as_ref(), nsh_core::desktop::DesktopCommand::OpenWindow(open) if open.options.id != "main")))
                     );
                 }
             }
@@ -1468,8 +1486,12 @@ mod tests {
                 (0., -450., false, false),
                 (-500., 450., true, true),
             ] {
-                app.drag_and_hold("label:Target b", point(px(dx), px(dy)))
-                    .unwrap();
+                app.drag_and_hold(
+                    "label:Target b",
+                    point(px(dx), px(dy)),
+                    nsh_testing::DragOptions::default(),
+                )
+                .unwrap();
                 app.drop_held().unwrap();
                 anchored(&app, left, bottom, 700., 600.);
                 app.wait_for("text:Selected a pinned true").unwrap();
@@ -1504,6 +1526,7 @@ mod tests {
                 node,
                 EventKind::PanEnd,
                 EventPayload::PanCancelled {
+                    origin: point(px(0.), px(0.)),
                     translation: point(px(500.), px(-450.)),
                     velocity_x: 0.,
                     velocity_y: 0.,
@@ -1581,8 +1604,12 @@ mod tests {
                 // The renderer drives the same native pan bindings as the headless pointer.
                 native.pan_began(node);
                 native.pan_moved(node, point(px(-120.), px(60.)));
-                app.drag_and_hold("label:Target b", point(px(-120.), px(60.)))
-                    .unwrap();
+                app.drag_and_hold(
+                    "label:Target b",
+                    point(px(-120.), px(60.)),
+                    nsh_testing::DragOptions::default(),
+                )
+                .unwrap();
                 apply(&mut native, &mut consumed);
                 native.tick(1.);
                 assert_eq!(native.pan_values(node), (Some(-120.), Some(60.)));

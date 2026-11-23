@@ -33,7 +33,7 @@ impl Ledger {
     /// TS's.
     pub fn copy(text: String, cx: &mut ModuleCx) -> u32 {
         let count = text.chars().count() as u32;
-        cx.set_clipboard(text);
+        drop(cx.set_clipboard(text));
         count
     }
 

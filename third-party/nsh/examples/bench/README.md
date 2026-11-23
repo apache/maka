@@ -23,9 +23,22 @@ an OtpInput. Steps on standard input drive them, `--trace` shows each keystroke'
 
 `data-table/` is a DataTable of 100 000 rows × 20 columns whose app serves the rows around those in view
 (`onVisibleRowsChange`), as an app over more values than a prop takes (a million) must. Its test opens a 1280 × 800
-desktop window and holds it for 20 s while something outside drives it: on Linux, Xvfb and XTest dragging the scroll
-bar's thumb or turning the wheel, with `nsh test examples/bench/data-table --target linux --fps -v` logging the frame
-rate and the engine's cost each second. Results: `docs/dev/performance.md` ("DataTable scroll bar drag").
+desktop viewport and drives steady vertical scroll steps through `nsh/test`, verifying that `onVisibleRowsChange`
+advances past the initial 200-row page. Run headless with `--trace`, or on a desktop host with `--fps -v`:
+
+```sh
+nsh test examples/bench/data-table/scroll.test.tsx --trace
+nsh test examples/bench/data-table --target macos --fps -v    # or windows / linux
+```
+
+Set `EXTERNAL_DRIVER=1` to hold the 1280 × 800 window open for 20 s while an outside driver (such as Xvfb and XTest
+dragging the scroll bar's thumb on Linux) drives it while `--fps` logs:
+
+```sh
+EXTERNAL_DRIVER=1 nsh test examples/bench/data-table --target linux --fps -v
+```
+
+Results: `docs/dev/performance.md`.
 
 `RichEditor.tsx` holds 1,000 paragraphs of 80 ASCII characters. Each press alternates inserting and deleting one
 character in the first paragraph, retaining the rows' keys and order:
@@ -36,6 +49,14 @@ echo 'for (let i = 0; i < 8; i++) await app.press("id:edit");' | nsh test exampl
 
 Compare the final four edits after four warmups. Headless runs keep the complete document mounted; the trace
 includes selection geometry as well as the changed text. Results: `docs/dev/performance.md`.
+
+`RichEditorLongDocument.tsx` holds a long Markdown document (5,000 source lines by default, `LINES`): per section a
+heading, paragraphs with marks and links, a list, a code block, a pipe table and a quote. Its first commit is the
+mount of every block; it grows linearly with `LINES`:
+
+```sh
+echo 'await app.wait(100)' | nsh test examples/bench/RichEditorLongDocument.tsx --trace
+```
 
 `MarkdownDefinitions.tsx` sets about 40 KB of Markdown with link and footnote definitions, then replaces text
 near the start on each press. The replacement is prepared before the press, and keeps the document's shape:

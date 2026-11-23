@@ -325,6 +325,38 @@ fn simultaneous_region_removals_scan_each_host_once_and_scale_linearly() {
     );
 }
 
+#[test]
+fn an_event_looks_only_at_its_nodes_handlers() {
+    // Every row has handlers on its nodes, all in the one host's view: an
+    // event on one row's input finds that input's handlers without going
+    // through the other rows' (a layout event per block of a long rich
+    // text document went through every block's).
+    let mut visits = Vec::new();
+    for count in [50, 200, 800] {
+        let (mut c, _, _) = mount(count);
+        assert!(
+            resources(&c)[2] >= count as usize * 2,
+            "the rows' handlers are in the view"
+        );
+        let input = field(&c, count / 2);
+        let before = c.components.handler_visits.get();
+        assert!(c.component_event(
+            input,
+            EventKind::ChangeText,
+            &EventPayload::Text {
+                text: "typed".into(),
+                count: 1
+            }
+        ));
+        visits.push(c.components.handler_visits.get() - before);
+    }
+    assert!(visits[0] > 0, "the input's own handlers are looked at");
+    assert!(
+        visits.iter().all(|v| *v == visits[0]),
+        "the same work whatever the number of rows: {visits:?}"
+    );
+}
+
 thread_local! {
     static SLOT_SHOWN: Cell<Option<Signal<bool>>> = const { Cell::new(None) };
     static SLOT_PLACED: Cell<Option<Signal<bool>>> = const { Cell::new(None) };

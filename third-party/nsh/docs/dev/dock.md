@@ -82,7 +82,7 @@ is an entity the dock holds, and reconciliation against the `NodeId` cache keeps
 tab groups are rendered by the area for each `NodeId` and the panels by the app for each `PanelId`, and both survive
 every edit that keeps them.
 
-The other parts the app draws are render props as well (`renderTab` and `renderDragPreview` with a `DockTab`,
+The other parts the app draws are render props as well (`renderTab`, `renderDragPreview` and `renderToolbar` (the toolbar at the end of a group's tab bar, for its displayed tab) with a `DockTab`,
 `renderDropIndicator` with a `DockDropIndicator`, `renderDock` with a `DockInfo`, `renderEmpty`), and every part
 takes `<part>Class` / `<part>Style` (group, tab bar, tab, content, drop indicator, handle, handle thumb, dock, and
 compact's drawer, sheet and backdrop). The drop indicator moves natively: when its target changes the area asks for a

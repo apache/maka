@@ -182,6 +182,7 @@ pub(crate) fn command(surface: &Rc<Surface>, command: &DesktopCommand) {
         DesktopCommand::PopupMenu { items, at } => {
             popup(surface, items, at.map(|p| (p.x.0, p.y.0)))
         }
+        DesktopCommand::SetQuitMode(_) => {}
         DesktopCommand::Quit => {
             crate::app::quit();
         }

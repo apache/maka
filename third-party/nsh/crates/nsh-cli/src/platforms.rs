@@ -96,7 +96,7 @@ fn is_builtin(name: &str) -> bool {
 
 /// Whether `name` can name a platform: lower-case ASCII letters, digits
 /// and dashes, starting with a letter.
-fn valid_name(name: &str) -> bool {
+pub(crate) fn valid_name(name: &str) -> bool {
     name.starts_with(|c: char| c.is_ascii_lowercase())
         && name
             .chars()
@@ -123,7 +123,29 @@ fn is_executable(path: &Path) -> bool {
     path.is_file()
 }
 
-/// Runs `external` with the platform found on `path`.
+/// Where the app of the command line `args` (the command, then its
+/// arguments) is looked for: the first argument naming a file or directory
+/// (`nsh run ./app`), else the current directory.
+fn app_of(args: &[OsString]) -> PathBuf {
+    let cwd = std::env::current_dir().unwrap_or_default();
+    args.iter()
+        .skip(1)
+        .take_while(|a| *a != "--")
+        .filter(|a| !a.to_string_lossy().starts_with('-'))
+        .map(|a| cwd.join(a))
+        .find(|p| p.exists())
+        .map(|p| {
+            if p.is_file() {
+                p.parent().map(Path::to_path_buf).unwrap_or(p)
+            } else {
+                p
+            }
+        })
+        .unwrap_or(cwd)
+}
+
+/// Runs `external` with the platform an nshm of the app provides, or else
+/// the one found on `path`.
 fn run(external: &External, path: &OsStr) -> anyhow::Result<ExitCode> {
     let name = &external.name;
     if !valid_name(name) {
@@ -133,10 +155,13 @@ fn run(external: &External, path: &OsStr) -> anyhow::Result<ExitCode> {
             builtin_names()
         );
     }
-    let Some(program) = find(name, path) else {
+    // A platform nshm of the app first, then a platform on PATH.
+    let from_app = crate::nshm::platform_program(&app_of(&external.args), name)?;
+    let Some(program) = from_app.or_else(|| find(name, path)) else {
         bail!(
-            "no target named `{name}`: NSH's are {}, and no `{PREFIX}{name}` was found on PATH \
-             (a platform implemented outside NSH installs it there)",
+            "no target named `{name}`: NSH's are {}, no nshm of the app provides it, and no \
+             `{PREFIX}{name}` was found on PATH (a platform implemented outside NSH installs it \
+             there)",
             builtin_names()
         );
     };

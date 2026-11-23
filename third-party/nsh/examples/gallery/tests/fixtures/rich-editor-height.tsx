@@ -1,4 +1,5 @@
 import { mount, signal, Text, View } from "nsh";
+import { Window } from "nsh/desktop";
 import { createRichEditor, RichEditor, StarterKit } from "nsh/base";
 
 // A chat composer: an editor without a height, as tall as what is typed, up to its max-height.
@@ -15,4 +16,4 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => <Window id="main">{App}</Window>);

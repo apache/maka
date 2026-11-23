@@ -47,6 +47,7 @@ fn palette() -> impl IntoElement {
 ```tsx tabs
 import { mount, signal, Text, View } from "nsh";
 import { Command, type CommandItem } from "nsh/base";
+import { Window } from "nsh/desktop";
 
 const commands: CommandItem[] = [
   { id: "new", label: "New File", group: "File", shortcut: "mod+n" },
@@ -83,7 +84,11 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 `Command` 来自 [`nsh/base`](../modules/nsh-base.md)，在 Rust 中是 `nsh-base` crate。应用设置 `query` 时，查询词由应用持有，应用在 `onQueryChange` 里更新它；不设置时由搜索框自己保存，从 `defaultQuery` 开始。项目用应用自己的 `id` 标识，而不是标签：`onSelect({ id })` 告诉应用用户选了哪一个。在 Rust 中由 `command()` 创建，每个 prop 有对应的 setter（`.items(..)`、`.query(..)`、`.render_item(..)`），每个事件有对应的监听方法，以及类型化的样式方法。

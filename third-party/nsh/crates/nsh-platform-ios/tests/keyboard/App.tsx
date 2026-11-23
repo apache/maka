@@ -59,8 +59,8 @@ function App() {
       },
     };
     if (press) {
-      // A pressable view: Return and Space press it, and its own
-      // PressRecognizer focuses it.
+      // A pressable view (a control): Return and Space press it, Tab
+      // reaches it, and a tap presses it without focusing it.
       props.onPress = () => pressed.update((n) => n + 1);
     }
     if (captureKeys) {
@@ -94,10 +94,10 @@ function App() {
     },
   };
 
+  // A view inside a portal that takes keys and no presses: a tap focuses it.
   const childAProps: ViewProps = {
     testID: "childA",
     focusable: true,
-    onPress: () => {},
     onFocus: () => focus.set("childA"),
     onBlur: () => focus.set("none"),
   };

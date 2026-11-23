@@ -163,6 +163,17 @@ impl Selection {
         self.root.is_some()
     }
 
+    /// `ref.clearSelection()` on view `id`: clears the selection when its
+    /// selectable view is `id`, inside it or around it.
+    pub(crate) fn clear_in(&mut self, tree: &Mounter, id: NodeId) {
+        if self
+            .root
+            .is_some_and(|root| tree.within(root, id) || tree.within(id, root))
+        {
+            self.clear();
+        }
+    }
+
     pub(crate) fn clear(&mut self) {
         *self = Self {
             reported: self.reported.take(),

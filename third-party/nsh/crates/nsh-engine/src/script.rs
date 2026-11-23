@@ -24,6 +24,7 @@ pub(crate) struct SystemConfig {
     /// come near (`EngineConfig::content_culling`).
     #[cfg_attr(not(feature = "js-core"), allow(dead_code))]
     pub(crate) lazy_rows: bool,
+    pub(crate) embedded: bool,
 }
 
 #[cfg(not(any(feature = "js-core", all(feature = "browser", target_arch = "wasm32"))))]
@@ -126,6 +127,7 @@ mod imp {
             host.set_system_wake(system.wake);
             host.set_host_bridge(system.host);
             host.set_lazy_rows(system.lazy_rows);
+            host.set_embedded(system.embedded);
             host.set_stop_flag(stop.clone());
             let exit_requested = Rc::new(Cell::new(false));
             let request = exit_requested.clone();
@@ -154,8 +156,12 @@ mod imp {
                 log::error!(target: "js", "unhandled rejection: {message}");
             }));
             // Canvas `measureText` measures on this thread.
+            let line_engine = text_engine.clone();
             host.set_text_measurer(Box::new(move |font, text| {
                 nsh_core::canvas::measure_line(&*text_engine, font, text)
+            }));
+            host.set_line_extent_measurer(Box::new(move |font, text| {
+                nsh_core::canvas::line_extent(&*line_engine, font, text)
             }));
             host.set_environment(environment);
             host.set_displays(displays);

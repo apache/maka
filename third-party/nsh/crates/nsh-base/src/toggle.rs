@@ -132,12 +132,7 @@ pub fn ToggleGroup(props: ToggleGroupProps, _cx: Scope<NoEvent>) -> impl IntoEle
     let (bar, role) = match bar() {
         Some(outer) => (nested_bar(outer, props.disabled), AccessibilityRole::Group),
         None => (
-            Bar {
-                roving: Roving::new(Pattern::Toggles),
-                disabled: props.disabled,
-                axis: None,
-                open_menu: Default::default(),
-            },
+            Bar::new(Roving::new(Pattern::Toggles), props.disabled, None),
             AccessibilityRole::Toolbar,
         ),
     };

@@ -476,12 +476,13 @@ impl<M: TextEngine> Core<M> {
         let old = target.events;
         let js = target.js_events;
         self.initialize_layout_listeners(host, node, el, old | js, inst);
-        inst.handlers.retain(|(n, _, _)| *n != node && *n != holder);
+        inst.handlers.remove(node);
+        inst.handlers.remove(holder);
         inst.responders.retain(|(n, _)| *n != node && *n != holder);
         let mut mask = EventMask::default();
         for (kind, handler) in &el.handlers {
             mask.set(*kind, true);
-            inst.handlers.push((node, *kind, handler.clone()));
+            inst.handlers.push(node, *kind, handler.clone());
         }
         if let Some(responder) = &el.responder {
             mask.set(EventKind::Touch, true);
@@ -572,11 +573,7 @@ impl<M: TextEngine> Core<M> {
             None => self.components.instances.get_mut(&host).map(|i| &mut **i),
         };
         if let Some(inst) = handlers {
-            for (n, _, _) in &mut inst.handlers {
-                if *n == old {
-                    *n = new;
-                }
-            }
+            inst.handlers.rename(old, new);
             for (n, _) in &mut inst.responders {
                 if *n == old {
                     *n = new;
@@ -620,7 +617,7 @@ impl<M: TextEngine> Core<M> {
         if let Some(target) = self.components.slot_targets.remove(&holder)
             && let Some(inst) = self.components.instances.get_mut(&target.host)
         {
-            inst.handlers.retain(|(n, _, _)| *n != target.node);
+            inst.handlers.remove(target.node);
             inst.responders.retain(|(n, _)| *n != target.node);
         }
     }
@@ -688,11 +685,7 @@ impl<M: TextEngine> Core<M> {
             self.apply_attrs(holder, &applied, &Attrs::default());
             self.listen_changes(holder, EventMask::default(), events, EventMask::default());
             if let Some(inst) = self.components.instances.get_mut(&host) {
-                for (n, _, _) in &mut inst.handlers {
-                    if *n == id {
-                        *n = holder;
-                    }
-                }
+                inst.handlers.rename(id, holder);
                 for (n, _) in &mut inst.responders {
                     if *n == id {
                         *n = holder;

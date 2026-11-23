@@ -100,6 +100,21 @@ test("the system waking from sleep counts", async () => {
   expect(app.shows("App: active")).toBe(true);
 });
 
+test("the network follows the system's route", async () => {
+  const app = await open("./App.tsx");
+  // Until the platform says, the kind is unknown, which counts as online.
+  expect(app.shows("Network: online unknown false false unknown")).toBe(true);
+  await app.setNetworkState({ kind: "none" });
+  expect(app.shows("Network: offline none false false unknown")).toBe(true);
+  await app.setNetworkState({ kind: "cellular", expensive: true, constrained: true });
+  expect(app.shows("Network: online cellular true true unknown")).toBe(true);
+  // What it does not name stays.
+  await app.setNetworkState({ cellularData: "restricted" });
+  expect(app.shows("Network: online cellular true true restricted")).toBe(true);
+  await app.setNetworkState({ kind: "wifi", expensive: false, constrained: false, cellularData: "notRestricted" });
+  expect(app.shows("Network: online wifi false false notRestricted")).toBe(true);
+});
+
 test("the time zone follows the system's", async () => {
   const app = await open("./App.tsx");
   await app.setLocaleSettings({ timeZone: "Asia/Tokyo" });

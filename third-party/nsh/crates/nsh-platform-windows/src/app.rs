@@ -360,6 +360,15 @@ impl AppView {
         self.hwnd
     }
 
+    /// The Win32 handle of the focused (or first open) app window, if any.
+    pub fn active_window_hwnd(&self) -> Option<HWND> {
+        crate::app_window::focused_hwnd(&self.surface).or_else(|| {
+            crate::app_window::all_hwnds(&self.surface)
+                .into_iter()
+                .next()
+        })
+    }
+
     /// Shows a top-level view's window (in the mode nsh.json `window`
     /// opens it in).
     pub fn show(&self) {
@@ -448,7 +457,7 @@ impl AppView {
         };
         self.surface.native.set_access(Arc::new(access));
         let options = self.options.borrow();
-        let config = EngineConfig {
+        let mut config = EngineConfig {
             app,
             viewport: nsh_core::Size::new(px(0.0), px(0.0)),
             trace: options.trace,
@@ -485,6 +494,9 @@ impl AppView {
             login_item: self.login_item(&options),
         };
         crate::image::set_asset_base(&self.surface, options.asset_base.clone());
+        if !self.standalone.get() {
+            config.context = config.context.with(nsh_engine::EmbeddedHost);
+        }
         self.surface
             .native
             .set_asset_base(options.asset_base.clone());
@@ -492,7 +504,10 @@ impl AppView {
     }
 
     /// Loads an embedding application's engine configuration.
-    pub fn load_with_config(&self, config: EngineConfig) {
+    pub fn load_with_config(&self, mut config: EngineConfig) {
+        if !self.standalone.get() {
+            config.context = config.context.with(nsh_engine::EmbeddedHost);
+        }
         let access = match &config.app {
             App::Js(bundle) => bundle.policy.access(),
             App::Rust(_) => nsh_engine::Policy::default().access(),
@@ -592,6 +607,8 @@ fn initial_environment() -> Environment {
         idiom: Idiom::Desktop,
         native_focus_scopes: true,
         fallback_key_bindings: true,
+        // `SetClipboardData` says whether it took the write.
+        clipboard_write_result: true,
         canvas_render: true,
         file_requests: true,
         notifications: true,
@@ -848,14 +865,9 @@ fn run_on_this_thread(
     crate::linking::attach(view.surface());
     install_shortcuts(&view);
     view.place_main_window(&launch, kept);
-    // nsh.json `window.defaultVisible: false`: the window is made and the
-    // app runs in it, unseen, until it shows it (a tray app).
-    if !held {
-        if launch.visible_at_launch() {
-            view.show();
-        } else {
-            log::info!("the main window starts hidden (nsh.json window.defaultVisible: false)");
-        }
+    // The host never shows: the app opens the windows it declares.
+    if !held && launch.visible_at_launch() {
+        view.show();
     }
     let code = crate::window::run_loop();
     view.surface.activation_changed(false);

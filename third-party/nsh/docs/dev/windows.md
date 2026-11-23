@@ -7,6 +7,10 @@ backend's design module by module (`docs/dev/linux.md`): one retained view per n
 Unlike GTK, NSH draws every view itself (there are no system widgets to host): text fields, alerts and
 video controls are NSH's own, drawn with Direct2D and DirectWrite. User-facing page: `website/docs/windows.md`.
 
+**Window model v2:** the main window this page describes is the invisible app host. It is made and never shown:
+the windows the app declares with `<Window>` (each a native window of its own) are what shows, and a launch shows no
+window until the app opens one. `defaultVisible` and the main window's `show()` no longer apply.
+
 ## Building and checking
 
 Windows 10 1809 or later (Windows 11 recommended) and:
@@ -163,18 +167,14 @@ server client, log forwarding, the error overlay: `dev.rs`). The host turns on `
   thread-locals are released at a plain thread exit. Released by the main thread's thread-local destructors instead,
   they would run inside `ExitProcess`, after the graphics DLLs are gone, and the process would end with a stray exit
   code. The UI thread sets per-monitor DPI awareness and `OleInitialize`s (clipboard, drag and drop, WIC).
-  With nsh.json `window.defaultVisible: false` the window is made and its app runs, unshown: the app's first
-  `show()` / `focus()`, or a link from a later launch (`linking.rs`), shows it as `AppView::show` does
-  (`app::show_main`: cloaked until its background and a frame are drawn, then in the mode it opens in).
-  Windows changes a window's mode by showing it (`ShowWindow`, `SetWindowPlacement`), so a hidden window (the main
-  one or one of the app's own, before its first show or hidden by the app) is not put in a mode: the mode asked for
-  (nsh.json's, `setMode`, `setPlacement`, `setBounds` out of another mode) is held (`window::held_mode`), read as the
-  window's mode in its state, and entered when the window shows (`window::show`,
-  `window_state::enter_held_mode`). A development host holds its first show until the first app came (`dev.rs`,
-  `DevUi::held`): a session's first bundle places the window as a runner does (`AppView::place_main_window`: its
-  size, place and the mode it opens in, which waits for the first show while the window is hidden), and the app's
-  `defaultVisible` decides whether it shows. An error shows the window while it is hidden (held, or hidden by the
-  app: a tray app whose startup failed), so it is seen; a reload leaves it as it is.
+  The app host is made and never shown: the windows the app declares with `<Window>` are what shows, and a launch
+  shows no window until the app opens one. nsh.json `window.defaultVisible` is parsed but has no effect. A
+  development host opens the app root as the runner does; an error still reports through the app, and a reload
+  leaves the open windows as they are. A window that is hidden (one of the app's own before its first show, or
+  hidden by the app: a tray app) is not put in a mode, which Windows changes by showing a window (`ShowWindow`,
+  `SetWindowPlacement`): the mode asked for (`setMode`, `setPlacement`, `setBounds` out of another mode) is held
+  (`window::held_mode`), read as the window's mode in its state, and entered when the window shows
+  (`window::show`, `window_state::enter_held_mode`).
 - **Embedding**: `AppView` (`app.rs`) is one surface as a window: a child of the embedding app's window, or top-level;
   the host's message loop runs it. `set_ui_sets` serves the UI sets beside the runtime's modules
   (`nsh/base` by default; an app with Rust components of its own passes `nsh_base::registry()` and its sets).
@@ -202,7 +202,7 @@ server client, log forwarding, the error overlay: `dev.rs`). The host turns on `
 | Environment | `system.rs` | Re-read on `WM_SETTINGCHANGE` (and theme / DWM color changes). Color scheme: the app's appearance (`nsh.json` `"appearance"`, `setColorScheme`) when it forces one, else `AppsUseLightTheme`, live; the title bar (DWM's immersive dark mode) and the root's background follow it. The locale (`Intl`) from `GetUserDefaultLocaleName` (not `LANG` / `LC_*`); the preferred languages (`localeSettings()`'s `languages`) from `GetUserPreferredUILanguages` (the display languages, most preferred first); the regional preferences (`localeSettings()`'s `hourCycle` and the like) from the regional format's `LOCALE_STIMEFORMAT` (its hour letter), `LOCALE_IFIRSTDAYOFWEEK` and `LOCALE_IMEASURE` (`GetLocaleInfoEx` with the user's changes); font scale from `TextScaleFactor` (Settings > Accessibility > Text size); reduce motion from `SPI_GETCLIENTAREAANIMATION`; right to left from the UI language's reading direction; the screen reader from `SPI_GETSCREENREADER`; the pixel ratio the window's DPI over 96; `platform.os` `"windows"`, idiom `desktop`, OS version `RtlGetVersion`'s major.minor (10.0 on Windows 11 too); the accent palette for dialogs; safe area and keyboard height 0. The app's state (`lifecycle()`), followed on `WM_ACTIVATEAPP` and the window's `WM_WINDOWPOSCHANGED`, an embedded surface's from its root window, subclassed (`SetWindowSubclass`, only on the root window's own thread: a surface whose root is another thread's follows its own window's messages; the root is the one the surface had when it was made, kept while it lives) to pass them on to the surface's window (`WM_NSH_ROOT` for the moves; `window.rs` `observe_root`): `background` while the window (an embedded surface's root window) is minimized or hidden, `active` while the app is the active one (`WM_ACTIVATEAPP`'s flag, sent per thread; before the first, the foreground window being the process's), `inactive` otherwise; `background` too while the user cannot see the window: the session locked or without a display (`WM_WTSSESSION_CHANGE`), the display off (`GUID_CONSOLE_DISPLAY_STATE`), the window on another virtual desktop (cloaked by the shell, re-read on the cloaking WinEvents), all from the system's notifications, which each surface's window registers for (`presence.rs`; a test's app ignores the session and the display, as on macOS); and from `WM_QUERYENDSESSION` (signing out, shutting down, the Restart Manager), whose answer waits a bounded time for the engine to run the app's handlers; `WM_ENDSESSION` ending the session stops the engine as quitting does, so quit listeners run and storage is written before it is answered (`session.rs`; an embedded surface hears its root window's). The time zone (`localeSettings()`'s `timeZone`): the setting's zone (`GetDynamicTimeZoneInformation`'s key name) by its IANA name from the ICU Windows ships (`ucal_getTimeZoneIDForWindowsID`, loaded at run time; `UTC` without it), re-read on `WM_TIMECHANGE`. The wake count (`wakeCount()`): one more on `WM_POWERBROADCAST` with `PBT_APMRESUMEAUTOMATIC`, which top-level windows get (an embedded surface's root window passes it on; the app's other windows do not count it again). |
 | The app's icon | `window.rs`, `notifications.rs` | The window class's icon is the executable's resource 1 (`nsh package` on Windows embeds it); without one, `AppOptions::icon` (an `.ico`: the runner's `nsh\icon.ico`, the development host's `--icon`, which the CLI makes from `nsh.json` `"icon"` in `.nsh/windows/`) is the window's `WM_SETICON` big and small icons at its DPI, so the title bar, the taskbar and Alt+Tab show the app's; the same file is the toasts' `IconUri` |
 | Window chrome (`nsh/desktop`) | `chrome.rs` | The title (`SetWindowTextW`); the hidden title bar: `WM_NCCALCSIZE` gives the client area the window's whole height (the side and bottom resize borders stay non-client; a maximized window's top is moved in by the frame it hangs off the monitor by, another one's by Windows 11's visible top border, which would cover the app's top row), `WM_NCHITTEST` answers the top resize border, the caption buttons (`HTMINBUTTON` / `HTMAXBUTTON` / `HTCLOSE`, so Windows 11 shows snap layouts) and `windowDrag` views (`HTCAPTION`, with the system title bar too: the system moves, maximizes and opens the window menu; a primary press on an app's `windowDrag` view is held with the mouse captured, moved by the pointer's offset from the press when not maximized and handed to `SC_MOVE | HTCAPTION` once it leaves the drag rectangle (`SM_CXDRAG` / `SM_CYDRAG`), or delivered to the app as a click on release, pressed where it went down, if the view it went down on is still there and draggable, so overlays close; losing the capture or replacing the app drops it; a double click keeps the system's action); the caption buttons drawn over the app after the tree (46 points wide, as tall as the app's bar: `titleBar`'s `height`, 32 by default; Windows 11's glyphs and hover colors, dimmed while inactive), their non-client clicks handled here, never by `DefWindowProc` (which would draw Windows 95's); `WM_NCACTIVATE` with `lparam` -1 so the old caption is not painted over the app; full screen is `window::toggle_full_screen` (F11's), which tells the chrome to hide the menu bar and zero the title bar's area; quitting (`Application.quit()`, the `quit` role) posts `WM_CLOSE` as closing does, then ends the message loop; `Application.restart()` quits so in the standalone app (`app::request_restart`, nothing in an embedded view) and, when the UI thread's run has ended, starts the executable again with `NSH_RESTART_AFTER` naming this process, whose `run_app` waits for it to exit (at most 10 seconds) before it opens its window (`nsh_core::restart`; a development host, feature `dev`, only quits: `nsh run` ends with it). Menus are Win32 menus: the menu bar (`SetMenu`, removed while the title bar is hidden or in full screen; `&` escaped, the shortcut after a tab), context menus with `TrackPopupMenuEx` (posted as `WM_NSH_MENU`: its modal loop must not run while a batch is applied); dark with the app through uxtheme's `SetPreferredAppMode` / `FlushMenuThemes` (ordinals 135 / 136) and, for the bar, `WM_UAHDRAWMENU` / `WM_UAHDRAWMENUITEM` plus the line under it after `WM_NCPAINT`; shortcuts matched on key downs before the app's key handling (`input::key`) but after `nsh`'s bindings, the editing roles excepted (they send the field its own Ctrl+key). A menu item's `icon` (not the bar's titles) is `SetMenuItemInfoW`'s `hbmpItem`: a 32-bit premultiplied ARGB DIB section (bottom-up) of `SM_CXSMICON` at the window's DPI, made from the images' pipeline (`image::load_menu_icon`, off the main thread) and centered on its square (`desktop::menu_icon::canvas`) so labels line up, freed after its menu (`IconBitmaps`). Win32 has no template bitmaps: an SVG is painted in the menu text's color when it is made (`COLOR_MENUTEXT` / `COLOR_GRAYTEXT`, or the dark theme's), a disabled bitmap dimmed, and the menu bar's made again when the appearance or the DPI changes. Windows does not repaint a popup it is tracking, so a context menu waits for its icons, at most `ICON_WAIT` (100 ms), with the message loop running, before it opens; a failed icon warns and leaves the item as it is |
-| Windows of the app's own (`<Window>`, `Window.open`) | `app_window.rs`, `shell.rs`, `window_state.rs`, `window_close.rs` | A dialog root the runtime opens a window for becomes the root of a top-level window of its own, drawn by `render::window_frame` and sized by `set_root_size`; its input goes through the surface's input in its root (`Surface::input_root`). Each window, the main one included, has a `Shell` (`shell.rs`): its kind's window styles and the attributes applied natively. The close, Escape and blur policies, state and title bar reports, and the main window's close are covered under "Windows" below |
+| Windows of the app's own (`<Window>`, `Window.open`) | `app_window.rs`, `shell.rs`, `window_state.rs`, `window_close.rs` | A dialog root the runtime opens a window for becomes the root of a top-level window of its own, drawn by `render::window_frame` and sized by `set_root_size`; its input goes through the surface's input in its root (`Surface::input_root`). Each window, the host included, has a `Shell` (`shell.rs`): its kind's window styles and the attributes applied natively. The close, Escape and blur policies, state and title bar reports, and the main window's close are covered under "Windows" below |
 | Login item (`Application.launchAtLogin()`, `setLaunchAtLogin`) | `login_item.rs` | A value of `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` named by the app id (an empty id is `EINVAL`), holding the quoted path of the executable the app started from (`nsh_core::restart::program_path`, taken as the backend is made at the app's start; at most 260 characters, the `Run` key's limit: `ENAMETOOLONG` beyond; a path that is not Unicode, an unpaired UTF-16 surrogate in it, is `EINVAL`, and a value that is not reads as naming no executable); written only when the app asks for a change that differs, since a program the key started should not write to it while it runs. A value naming another executable reads as disabled and stays on disabling (paths compared as Windows compares them: case, separators and a verbatim `\\?\` or `\\?\UNC\` prefix aside). Settings and Task Manager turn an app off in `...\Explorer\StartupApproved\Run` (a binary value of the same name, its first byte odd), read as `requiresApproval` and never written (its format is not documented: a mark missing or of a form not known reads as approved). `AppView::load` gives the engine the backend only in `run_app`'s own view (not one embedded beside it) with `AppOptions::login_item`, which `nsh-windows-app` sets unless `NSH_APP_DIR`; the installer's `[Code]` removes the value on uninstall when its program (read as `names` reads it, the value taken as written or with its environment variables expanded, since Inno Setup does not give its type) is that installation's executable (`nsh-cli` `windows.rs`) |
 | Clipboard | `system.rs` | The Win32 clipboard (`CF_UNICODETEXT`); reads are synchronous, so `Clipboard.readText` is answered at once |
 | Networking | `nsh_engine::net` | ureq (rustls, webpki roots), one thread per request, streaming both ways; only connecting and the response head have deadlines |
@@ -272,7 +272,8 @@ ancestors within the same window:
   forced onto a US key), and `"Unidentified"` for a dead key or a key the layout cannot name. The source's own
   translation is used as it is: AltGr (Windows reports it as Control+Alt) keeps the character the layout provides
   (`@` for AltGr+Q); only a Control/Alt combination that makes a control character (Ctrl+A's 0x01) falls back to the
-  key's own character (`a`). A keypad key with Num Lock off is the navigation key it is (or `Clear`, `Delete` for
+  key's own character (`a`). The dedicated Play key reports `MediaPlay`, and the combined key reports
+  `MediaPlayPause`. A keypad key with Num Lock off is the navigation key it is (or `Clear`, `Delete` for
   `5` and the decimal point).
 - `code` is the DOM `KeyboardEvent.code` of the message's scan code with its extended bit: the key's physical place
   on any layout (`KeyA`, `ArrowLeft`, `NumpadEnter`, `Numpad1`, `ShiftLeft`/`ShiftRight`,
@@ -328,7 +329,15 @@ through NSH's hit testing to web views, as real input does):
 - a screenshot is what the window shows, web views and their layers included, at the window's scale: `PrintWindow`
   with `PW_RENDERFULLCONTENT`, which composes the window's swap chain and DirectComposition content as DWM does,
   whatever covers the window (drawn offscreen with Direct2D when the window cannot be captured: no pages then); the
-  appearance is the system's, simulated; the size is the client area's.
+  appearance is the system's, simulated; the size is the client area's;
+- the agent's pointer is the test window's only one (as on macOS and Linux): while a test model is set
+  (`Surface::testing`), the window's procedure leaves the user's pointer to the system's default handling
+  (`window::users_pointer`: the mouse's moves and leaves in the client area and over the frame, its buttons and wheels
+  in the client area, touches and pens), so the user's mouse moving over the window or resting on it never changes what
+  a test hovers or presses. Windows sends these with no motion too: a `WM_MOUSEMOVE` to the window under the resting
+  pointer when a window above it closes, a `WM_MOUSELEAVE` once another opens over it, which with several apps under
+  test on one desktop moved or ended a test's hover and came between a press's down and up. A press on the frame still
+  moves, sizes and closes the window. Keys still reach the app.
 
 `dev.rs` hands the model to the surface on the server's test session (posted messages keep their order, so it comes
 before the first bundle).
@@ -459,7 +468,9 @@ measured and are not used: they bring back that latency (48 ms) for the same fra
   closed with its views). The layers are presented unsynchronized with the window's swap chain, so for a frame NSH
   content above and below a page may come from consecutive frames while both animate. `baseUrl` answers only the
   document's request: other requests (images, scripts, links) go to the network, and `http(s)` base URLs are the ones
-  WebView2 lets the app answer. Touch and pen input reaches pages as pointer input when it comes from the system
+  WebView2 lets the app answer. A new window (`target="_blank"`, `window.open`) opens nothing, as on the other
+  platforms (`NewWindowRequested` is handled: WebView2's own pop-up would be a browser window outside the `webview`
+  capability); one for a URL that is not granted reports `onError` like a navigation. Touch and pen input reaches pages as pointer input when it comes from the system
   (swipe navigation needs it). An offscreen drawing of the window has no pages (`PrintWindow`'s capture does). Without
   the WebView2 Runtime (it comes with Windows 11; Windows 10 gets it with Edge) a web view shows a neutral
   placeholder.
@@ -469,8 +480,13 @@ measured and are not used: they bring back that latency (48 ms) for the same fra
   possible (only content made for it, such as a swap chain or a WebView2 composition controller, can be a visual).
 - **Video**: which formats play depends on the installed Media Foundation codecs; there is no poster; the control bar
   always shows while `controls` is on. Unlike GTK, `rate` works.
-- **Zooming scroll views**: `zoomTo` and the zoom props are ignored. Notched
-  mouse wheels scroll in steps (not animated).
+- **Scroll views**: a zoomable one draws, hit tests and exposes its children through its zoom
+  (`ViewState::child_place`); two fingers, a precision touchpad's pinch or Ctrl + wheel over it zoom it around the
+  pointer, nearer than a view with pinch values. A notched mouse wheel's step glides (`nsh_core::scroll::wheel_step`,
+  150 ms; a notch during the glide adds to its goal) unless the system's animations are off (`reduceMotion`); views that
+  snap or page take notches unanimated and settle on a snap point. A precision touchpad's scroll ends once the
+  system's glide is spent, so a snapping view then settles on its nearest snap point (`wheel_settle`), as browsers'
+  scroll snapping does, rather than moving on in the scroll's direction.
 - **`mixBlendMode` and `backdropFilter`** are drawn (unlike Linux), except inside a view that is itself drawn
   offscreen (a filtered or 3D-transformed ancestor): there the blend is normal and the backdrop unfiltered.
   `borderCurve: "continuous"` draws circular corners; Android's `elevation` is not drawn.
@@ -486,7 +502,7 @@ measured and are not used: they bring back that latency (48 ms) for the same fra
   committed text goes to the field/IME), and a key the system sends to a hosted web view or a native component's
   window never reaches these events.
 - **Accessibility** (UI Automation): items NSH draws itself (alerts) are not in the
-  tree; there is no Text pattern; headings report level 1; live regions raise UIA notifications.
+  tree; there is no Text pattern; live regions raise UIA notifications.
 - **No desktop equivalent**: the status bar, input accessory views, `keyboardShouldPersistTaps` (there is no software
   keyboard); the safe area and the keyboard height are 0.
 - **Window chrome**: the menu bar is not shown while the title bar is hidden (its shortcuts work; apps open its menus

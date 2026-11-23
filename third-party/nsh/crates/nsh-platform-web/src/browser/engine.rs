@@ -82,7 +82,8 @@ impl Host for Runtime {
                         (EventKind::ContentSizeChange, EventPayload::Map(_)) => {
                             events::wrap("size", events::payload(&self.bindings, payload)?)?
                         }
-                        // Presses always pass their event, as nsh-js's do.
+                        // Presses always pass their event, as nsh-js's do:
+                        // with no clicks when not from a pointer.
                         (
                             EventKind::Press
                             | EventKind::LongPress
@@ -91,10 +92,7 @@ impl Host for Runtime {
                             EventPayload::None,
                         ) => events::payload(
                             &self.bindings,
-                            &EventPayload::Press(nsh_core::PressEvent {
-                                clicks: 1,
-                                ..Default::default()
-                            }),
+                            &EventPayload::Press(nsh_core::PressEvent::default()),
                         )?,
                         // A video's `onLoad`: `{ duration, size }`, as nsh-js
                         // builds it (a web view's has no `duration`).
@@ -229,6 +227,10 @@ impl Host for Runtime {
             "fontScale":e.font_scale,"rtl":e.rtl,"reduceMotion":e.reduce_motion,"pixelRatio":e.pixel_ratio,
             "screenReader":e.screen_reader,"locale":e.locale.as_str(),"host":e.host,"lifecycle":e.lifecycle.name(),
             "shaders":e.shaders,"wakeCount":e.wake_count,
+            "network":{
+                "online":e.network.online(),"kind":e.network.kind.name(),"expensive":e.network.expensive,
+                "constrained":e.network.constrained,"cellularData":e.network.cellular_data.name()
+            },
             "horizontalSizeClass":e.horizontal_size_class().name(),
             "verticalSizeClass":e.vertical_size_class().name(),
             "localeSettings":{

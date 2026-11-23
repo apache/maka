@@ -17,7 +17,8 @@
 //! view and list around them) at once, a level at a time down to their
 //! leaves, so nothing visible is late. The rest come in later turns,
 //! nearest the viewport first, at most [`PACE_VIEWS`] views or
-//! [`PACE_TIME`] a turn; the core asks for a display frame while some
+//! [`PACE_TIME`] a turn, in the turns of display frames only
+//! ([`Core::hold_paced_mounts`]); the core asks for a display frame while some
 //! wait ([`Core::has_paced_mounts`]). A list's cell that waits has made
 //! none of its views: the list places them with the cell (`update_lists`),
 //! so they are ranked by where they are when the cell is made, not last
@@ -95,6 +96,19 @@ impl<M: TextEngine> Core<M> {
         self.pace.in_turn = true;
         self.reset_pace();
         self.reset_list_motion();
+    }
+
+    /// This turn is not a display frame's: waiting views out of sight stay
+    /// waiting, for the next frame's turn (what shows is still made at
+    /// once). Call after [`Core::begin_mount_turn`]. Without it, every
+    /// turn makes a slice of what waits, and the turns between two frames
+    /// (a timer, a message from the main thread) each commit one more.
+    pub fn hold_paced_mounts(&mut self) {
+        // Views waited when the turn began (`reset_pace`: content culling's
+        // flag is cleared by then, for its window to be worked out again).
+        if self.pace.made >= PACE_AFTER {
+            self.pace.paced = PACE_VIEWS;
+        }
     }
 
     /// Whether views wait to be made in a later turn: ask the platform for

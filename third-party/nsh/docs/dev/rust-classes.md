@@ -118,6 +118,11 @@ so a class's methods can run directly inside the JS call, as the web classes nsh
   promise with the same `TypeError`: a call returning a promise never throws), into the start of the task: a closure holding the typed values, the
   instance among them, that an op carries to the core ([below](#how-calls-cross)). The task keeps the instance
   alive until it ends.
+  Its body starts at the core's next run, not in the JS call (`Executor::spawn`), so a state it sets
+  (`loading = true`, a single-flight guard) is not seen by the caller's next line. For that, take
+  `this: Instance<Self>` in a method that is not `async` and return `Result<Later<T>, E>`: what runs before the
+  `Later` runs in the call (and a refusal rejects the promise), the work in it as the task. One method, one
+  promise, no `begin_*` step (`nsh-engine` test `first_poll`, #2750).
 - **One object per instance.** While both live, an instance has one JS object (`nsh-js` remembers it by the `Rc`'s
   address): a member returning an instance Rust keeps gives the object it has, so `a.badge === a.badge`.
 - **Errors.** `Result<T, E: Display>` throws (`Error` with the message) or rejects; a wrong argument throws (or,

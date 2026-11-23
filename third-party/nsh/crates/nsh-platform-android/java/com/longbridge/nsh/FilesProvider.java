@@ -24,6 +24,10 @@ import java.io.FileNotFoundException;
  * directories are served, as androidx' FileProvider restricts its files to
  * configured roots; {@link #uriFor} and {@link #fileFor} share that check so
  * the caller never gets a URI the provider would refuse.
+ *
+ * <p>Files of {@link #outputs} are the one exception to reading only: another
+ * app writes its answer there (a camera's photo, {@code EXTRA_OUTPUT}), which
+ * {@link Activities#outputFile} makes for Rust code.
  */
 public final class FilesProvider extends ContentProvider {
     /** The app's own directories: internal and external, files and cache. */
@@ -35,6 +39,21 @@ public final class FilesProvider extends ContentProvider {
                 context.getExternalFilesDir(null),
                 context.getExternalCacheDir(),
         };
+    }
+
+    /** The directory of the files other apps may write ({@link Activities#outputFile}). */
+    static File outputs(Context context) {
+        return new File(context.getCacheDir(), "nsh-output");
+    }
+
+    /** Whether {@code file} (canonical, as {@link #servable} gives it) is one of {@link #outputs}. */
+    private static boolean isOutput(Context context, File file) {
+        File parent = file.getParentFile();
+        try {
+            return parent != null && parent.equals(outputs(context).getCanonicalFile());
+        } catch (java.io.IOException e) {
+            return false;
+        }
     }
 
     /** The file the provider would serve, or {@code null} when it is not
@@ -107,11 +126,12 @@ public final class FilesProvider extends ContentProvider {
     @Override
     public ParcelFileDescriptor openFile(Uri uri, String mode)
             throws FileNotFoundException {
-        // The viewer only ever reads: never hand out a writable handle.
-        if (!"r".equals(mode)) throw new FileNotFoundException(uri.toString());
         File file = fileFor(uri);
         if (file == null || !file.isFile()) throw new FileNotFoundException(uri.toString());
-        return ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY);
+        if ("r".equals(mode)) return ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY);
+        // Viewers only ever read; only an output file takes another app's answer.
+        if (!isOutput(getContext(), file)) throw new FileNotFoundException(uri.toString());
+        return ParcelFileDescriptor.open(file, ParcelFileDescriptor.parseMode(mode));
     }
 
     @Override

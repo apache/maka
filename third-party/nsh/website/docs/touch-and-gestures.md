@@ -43,6 +43,7 @@ fn App() -> impl IntoElement {
 
 ```tsx tabs
 import { mount, signal, Text, View } from "nsh";
+import { Window } from "nsh/desktop";
 
 function App() {
   const count = signal(0);
@@ -61,7 +62,11 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 | Rust | TSX | Default | Description |
@@ -91,7 +96,7 @@ Press feedback is the app's: styles the view takes while it is pressed, hovered,
 | `.active(\|s\| ..)` | `activeStyle` | `active:` | While pressed. |
 | `.hover(\|s\| ..)` | `hoverStyle` | `hover:` | While a pointer is over it (desktops, iPad pointers, browsers). |
 | `.focus(\|s\| ..)` | `focusStyle` | `focus:` | While it has focus. |
-| `.focus_visible(\|s\| ..)` | `focusVisibleStyle` | `focus-visible:` | While it has focus and shows it: the keyboard moved it there (a press or a tap gives focus without it). |
+| `.focus_visible(\|s\| ..)` | `focusVisibleStyle` | `focus-visible:` | While it has focus and shows it: the keyboard moved it there (on macOS and iOS a press or a tap gives a control no focus; elsewhere, and for a view that takes keys, it gives focus without showing it). |
 | `.focus_within(\|s\| ..)` | `focusWithinStyle` | `focus-within:` | While it or a view inside it has focus: a field's frame around the input that edits. |
 | `.disabled_style(\|s\| ..)` | `disabledStyle` | `disabled:` | While disabled. |
 | `.ripple(Ripple { .. })` | `android={{ ripple }}` | | Android's material ripple (`color`, `borderless`, `radius`, `foreground`), in addition to the styles. |
@@ -267,6 +272,7 @@ fn App() -> impl IntoElement {
 ```tsx tabs
 import { mount, View } from "nsh";
 import { createAnimatedValue } from "nsh";
+import { Window } from "nsh/desktop";
 
 function App() {
   const x = createAnimatedValue(0);
@@ -286,7 +292,11 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 | Rust | TSX | Description |
@@ -298,7 +308,7 @@ mount(App);
 | `.on_pinch_start` / `.on_pinch_end` | `onPinchStart` / `onPinchEnd` | The pinch started / ended: its scale and velocity (`GestureEvent`). |
 | `.on_rotation_start` / `.on_rotation_end` | `onRotationStart` / `onRotationEnd` | The rotation started / ended: its angle (Rust: `GestureEvent<Radians>`) and velocity. |
 
-A pan event has the translation (`translation`, a `Point`: points since the start), the velocity (`velocity_x` / `velocity_y`; TSX: `velocity`, a `Point`: points per **second**) and the bound values at that moment (`value_x` / `value_y`; TSX: `value`, `{ x?, y? }` with the axes `pan` binds).
+A pan event has where the drag started (`origin`, a `Point` in surface points, like a touch's page position; the same at the start and the end), the translation (`translation`, a `Point`: points since the start), the velocity (`velocity_x` / `velocity_y`; TSX: `velocity`, a `Point`: points per **second**) and the bound values at that moment (`value_x` / `value_y`; TSX: `value`, `{ x?, y? }` with the axes `pan` binds).
 
 What the native side does for you:
 
@@ -489,6 +499,7 @@ fn sketch() -> impl IntoElement {
 
 ```tsx tabs
 import { Canvas, type GestureResponderEvent, mount, signal } from "nsh";
+import { Window } from "nsh/desktop";
 
 function Sketch() {
   const strokes = signal<[number, number][][]>([]);
@@ -518,7 +529,11 @@ function Sketch() {
   );
 }
 
-mount(Sketch);
+mount(() => (
+  <Window id="main">
+    <Sketch />
+  </Window>
+));
 ```
 
 How it runs: a view with any touch or responder handler listens to touches natively; the platform reports the touches on it (and inside it) with the path of listening views, and the negotiation runs in NSH's Rust core, asking the claims and calling your handlers in order: the captures from the outermost view inwards, then the others from the target outwards. Two consequences:
@@ -562,6 +577,7 @@ fn ball() -> impl IntoElement {
 ```tsx tabs
 import { mount, signal, View } from "nsh";
 import { PanResponder } from "nsh";
+import { Window } from "nsh/desktop";
 
 function Ball() {
   const pos = signal({ x: 0, y: 0 });
@@ -582,7 +598,11 @@ function Ball() {
   );
 }
 
-mount(Ball);
+mount(() => (
+  <Window id="main">
+    <Ball />
+  </Window>
+));
 ```
 
 The gesture state:
@@ -626,8 +646,39 @@ view()
 |---|---|---|
 | `active_offset_x`, `active_offset_y` | `activeOffsetX`, `activeOffsetY` | The pan activates once the finger has moved further than this from where it went down, along that axis (either direction, points). |
 | `fail_offset_x`, `fail_offset_y` | `failOffsetX`, `failOffsetY` | The pan fails once the finger has moved further than this first: the scroll views keep the touches. |
+| `direction` | `direction` | The one way it activates in (`left`, `right`, `up`, `down`): a drag the other way, or mostly across it, fails and stays with the views around. |
+| `edge` | `edge` | Only a finger that goes down at this edge (`left`, `right`, `top`, `bottom`) starts it, moving away from the edge. |
 
-`PanActivation::horizontal(active, fail)` and `PanActivation::vertical(active, fail)` set the usual pairs. Without active offsets the pan activates after 10 points in any direction. Until it activates, the scroll views around wait for it (iOS) and the view's other claims are not asked. When it activates, the scroll views can no longer take these touches and the view becomes the responder (the grant, then the moves); when it fails, the scroll view scrolls as usual. In TSX, `PanResponder`'s `panHandlers` work with it too: spread them next to the prop, and `onPanResponderGrant` runs at the activation.
+`PanActivation::horizontal(active, fail)` and `PanActivation::vertical(active, fail)` set the usual pairs. Without active offsets the pan activates after 10 points in any direction. Until it activates, the scroll views around wait for it (iOS) and the view's other claims are not asked. A scroll view inside the view that cannot scroll along the pan's one axis (a vertical list inside a view that pans sideways) takes only the drags the pan fails on, as on the other platforms: a diagonal goes to whichever offset the finger passes first. When it activates, the scroll views can no longer take these touches and the view becomes the responder (the grant, then the moves); when it fails, the scroll view scrolls as usual. In TSX, `PanResponder`'s `panHandlers` work with it too: spread them next to the prop, and `onPanResponderGrant` runs at the activation.
+
+### One way, or from a screen edge
+
+A view's own pan (`pan` values, `onPanStart` / `onPanEnd`) follows its pan activation too: it starts when the activation activates. A drawer opens with a drag from the left edge of the screen, and the open drawer's content closes with a drag to the left, while drags the other way go to the pager or the list underneath:
+
+```rust tabs
+// Opens from the left edge of the screen.
+let opener = view()
+    .pan_activation(PanActivation::default().edge(PanEdge::Left))
+    .pan_values(Some(&offset), None)
+    .on_pan_end(move |e: &PanEvent| settle(e));
+// The open drawer: only drags to the left close it.
+let content = view()
+    .pan_activation(PanActivation::default().direction(PanDirection::Left))
+    .pan_values(Some(&offset), None)
+    .on_pan_end(move |e: &PanEvent| settle(e));
+```
+
+```tsx tabs
+{/* Opens from the left edge of the screen. */}
+<View panActivation={{ edge: "left" }} pan={{ x: offset }} onPanEnd={settle} />
+{/* The open drawer: only drags to the left close it. */}
+<View panActivation={{ direction: "left" }} pan={{ x: offset }} onPanEnd={settle} />
+```
+
+An edge pan starts only when the finger goes down within 20 points of that edge: of the screen on phones and tablets, of the window on desktops and of the page on the web. Its pan event's `origin` tells where.
+
+- **iOS** recognizes the drag as the system's screen edge pan. Inside a navigation stack, swiping back goes first: from the left edge, a screen with one to go back to goes back, and the pan takes the drag on the first screen.
+- **Android** leaves the left and right edges to the system's back gesture under gesture navigation: a swipe it takes there goes back, and a pan that had started ends with `cancelled`. With three-button navigation, the pan takes every drag from its edge.
 
 > [!NOTE]
 > Every velocity is in points per second: the responder gesture's `vx` / `vy`, a pan's velocity and a spring's or a decay's, so `vx` goes to a spring or a decay as it is.

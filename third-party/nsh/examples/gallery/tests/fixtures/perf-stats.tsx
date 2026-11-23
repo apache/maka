@@ -1,4 +1,5 @@
 import { fpsEnabled, mount, perfStats, setFpsEnabled, Text, View } from "nsh";
+import { Window } from "nsh/desktop";
 
 // The performance monitor turned on and off by the app, and what it reads:
 // whether it measures, and its frame rate, once a second.
@@ -17,4 +18,4 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => <Window id="main">{App}</Window>);

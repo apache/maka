@@ -44,6 +44,7 @@ fn app() -> impl IntoElement {
 
 ```tsx tabs
 import { mount, signal, Text, View } from "nsh";
+import { Window } from "nsh/desktop";
 
 function App() {
   const liked = signal(false);
@@ -70,7 +71,11 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 ## 布局
@@ -149,6 +154,7 @@ view()
 | `onPress` | `.on_press` | `PressEvent`（Rust 中无） | 在视图内完成一次点击。 |
 | `onLongPress` | `.on_long_press` | `PressEvent`（Rust 中无） | 手指按住达到 `delayLongPress`（500 ms）。 |
 | `onPressDown` / `onPressUp` | `.on_press_down` / `.on_press_up` | `PressEvent`（Rust 中无） | 手指按下 / 抬起或移出。 |
+| `onFocusIn` / `onFocusOut` | `ElementRef::on_focus_in` / `on_focus_out` | 无 | 键盘焦点从外部进入视图（落到它或其内部的视图上）/ 离开到外部的视图或不再有焦点；在内部视图之间移动不算再次进入。面板可借此记下焦点位置，之后用 `ref.focus()` 放回。 |
 | `onMouseEnter` / `onMouseLeave` | `.on_mouse_enter` / `.on_mouse_leave` | `MouseEvent` | 鼠标移到视图（或其内部的视图）上 / 离开视图或窗口（见[悬停](./index.md#悬停)）；`onMouseLeave` 的位置是鼠标最后所在之处。 |
 | `onMouseMove` | `.on_mouse_move` | `MouseEvent` | 鼠标在视图（或其内部的视图）上移动，无论是否按着按键；或鼠标停在那里、没有按键按下时按下或松开了修饰键：`position`、`pagePosition`（`Point`）、`modifiers` 和 `pressedButton`（`"left"`、`"right"`、`"middle"`、`"back"`、`"forward"` 或 `null`）；每帧最多一次。 |
 | `onWheel` | `.on_wheel` | `WheelEvent` | 鼠标滚轮或触控板在视图（或其内部的视图）上滚动：`position`、`pagePosition`、`delta`、`deltaMode`（`"lines"` 或 `"points"`）和 `modifiers`；比指针下方滚动视图更近的监听者接管滚轮（见[滚轮](./index.md#滚轮)）。 |
@@ -157,7 +163,7 @@ view()
 | `onContextMenu` | `.on_context_menu` | `ContextMenuEvent` | 在视图上请求了上下文菜单：辅助按钮、浏览器中的键盘，或 macOS 和 Windows 上的读屏软件（见[上下文菜单](./index.md#上下文菜单)）。 |
 | `onFileDragEnter` | `.on_file_drag_enter` | `{ uris: string[], mimeTypes: string[] }`（`FileDragEvent`） | 本地文件进入当前桌面拖放目标，附带文件列表及其类型。 |
 | `onFileDragLeave` | `.on_file_drag_leave` | 无 | 本地文件离开当前桌面拖放目标。 |
-| `onFileDrop` | `.on_file_drop` | `{ uris: string[], mimeTypes: string[] }`（`FileDropEvent`） | 本地文件或目录被放到桌面拖放目标。 |
+| `onFileDrop` | `.on_file_drop` | `{ uris: string[], mimeTypes: string[] }`（`FileDropEvent`） | 本地文件或目录被放到拖放目标（桌面、iOS 与 Android）。 |
 | `onLayout` | `.on_layout` | `{ bounds }`（`Bounds<Points>`） | 相对父视图的 frame 发生变化。 |
 | `onPanStart` / `onPanEnd` | `.on_pan_start` / `.on_pan_end` | `PanEvent` | 通过 `pan` 绑定的拖动开始 / 结束；系统取消时 `cancelled` 为 true。 |
 | `onPinchStart` / `onPinchEnd` | `.on_pinch_start` / `.on_pinch_end` | `{ scale, velocity }` | 通过 `pinch` 绑定的捏合开始 / 结束。 |
@@ -171,6 +177,10 @@ view()
 在 AppKit、GTK、Win32 和 GPUI 上，带有 `onFileDrop` 的视图可以接收从其他应用拖入的本地文件和目录。`onFileDragEnter` 和 `onFileDrop` 都接收 `{ uris: string[], mimeTypes: string[] }`，顺序与原生文件列表一致。`uris` 的每项都是绝对 `file:` URL，空格和非 ASCII 字符使用 URL 转义。请解析 URL 获取文件系统路径。`mimeTypes[i]` 是 `uris[i]` 按文件名得出的 MIME 类型（`a.png` 为 `image/png`），文件名看不出类型时（例如目录）为 `""`，与 DOM 的 `File.type` 相同。各平台结果一致，得出它不读取任何文件。
 
 进入时的列表可用于预告文件名、数量与类型（“松开添加 2 张图片”），只传元数据；松手后仍需重新校验文件。AppKit 把 Finder 文件引用解析为路径 URL。GTK 等异步文件列表预加载完成后报告进入，鼠标停住也会通知；离开或重置后的迟到通知会被忽略。跨目标移动时先报告离开，再携同一列表报告进入；`onFileDragLeave` 用于清除预告。Rust 进入回调接收 `&FileDragEvent`，原有的 `||`、`|_: &()|` 和 `Listener<()>` 仍可使用。
+
+在 iOS（和 iPadOS）上，带有 `onFileDrop` 的视图接收拖入的文件，例如从照片、文件 App、Safari 或应用自己的网页视图拖来的图片和文档。与桌面一致，由最近的监听视图接收。拖动项不带文件 URL，只带按类型提供、松手时才读取的数据，所以 `onFileDragEnter` 在 iOS 上给出 `uris: []`，`onFileDrop` 给出复制到应用临时目录里的文件的 `file:` URL（也带 `pagePosition`），顺序与拖动项一致。NSH 不删除这些副本，由系统适时清理临时目录：应用要保留的文件请自行移走或上传。只带文字或链接的项不是文件，不会提供给视图。视图里的文本输入框保留它能接收的内容：UIKit 的文本拖放接收文字和链接，所以带着自身链接的图片（来自网页）拖到输入框上会作为链接插入。
+
+在 Android 上，带有 `onFileDrop` 的视图接收其他应用在分屏或自由窗口中拖入的文件，例如从相册拖来的照片、从文件管理器拖来的文档。按与触摸相同的命中规则，由最近的监听视图接收。与 iOS 一样，Android 只在松手时才开放拖动数据：`onFileDragEnter` 给出 `uris: []`，`onFileDrop` 给出复制到应用缓存目录里的文件的 `file:` URL（文件名取提供方应用给的名字，名字没有扩展名时按类型补上），顺序与拖动项一致，并带 `pagePosition`；之后视图收到 `onFileDragLeave`。NSH 不删除这些副本，由系统适时清理缓存目录：应用要保留的文件请自行移走或上传。只带文字或链接的拖动不是文件拖动，仍交给文本输入框；视图里的文本输入框上方拖动的文件交给该视图。
 
 ```rust tabs
 let hint = signal(String::new());

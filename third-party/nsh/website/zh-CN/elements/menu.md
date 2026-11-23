@@ -1,6 +1,6 @@
 ---
 title: Menu
-description: Menu 和 ContextMenu，配合 MenuItem、MenuSeparator 和 Submenu：桌面和常规宽度的 iPad 上是带级联子菜单的弹出层，手机上是就地展开子菜单的 sheet，样式由应用决定；ContextMenu 的 items 在 iOS 上显示系统的上下文菜单。
+description: Menu 和 ContextMenu，配合 MenuItem、MenuSeparator 和 Submenu：桌面和常规宽度的 iPad 上是带级联子菜单的弹出层，手机上是就地展开子菜单的 sheet，样式由应用决定；ContextMenu 的 items 在 iOS 和 Android 上显示系统的上下文菜单。
 group: base
 demo: el-menu
 ---
@@ -129,7 +129,7 @@ import { ContextMenu, MenuItem } from "nsh/base";
 
 键盘和读屏用户同样可以打开它。在浏览器和 Linux 上，触发元素获得焦点时按 Shift+F10 或菜单键即可打开。在 macOS 上，VoiceOver 的「显示菜单」操作（VO-Shift-M）可以打开它；在 Windows 上，读屏软件通过 UI Automation 的「显示上下文菜单」操作也可以打开它。这样打开时，菜单出现在触发元素下方、从它的起始边开始，键盘焦点落在第一个可用的条目上，与 WAI-ARIA 对上下文菜单的描述一致。给触发元素设置 `focusable`，键盘才能到达它。视图自己的 `onContextMenu` 可以通过 `pointerType` 区分这类打开方式：此时它为 `null`。
 
-由你控制 `open` 并自己把它设为 `true` 时（比如你自己的快捷键，或者获得焦点的列表要打开其中某一行的菜单），菜单也这样打开：出现在触发元素下方，键盘焦点落在第一个可用的条目上，关闭后焦点回到触发元素。
+由你控制 `open` 并自己把它设为 `true` 时（比如你自己的快捷键，或者获得焦点的列表要打开其中某一行的菜单），菜单也这样打开：出现在触发元素下方，键盘焦点落在第一个可用的条目上，关闭后焦点回到触发元素。在 macOS 和 iOS 上，由指针打开的菜单则把焦点还回打开之前的位置：那里的按压不会把焦点交给触发元素，应用的快捷键仍能收到按键。
 
 <a id="checkable-items"></a>
 
@@ -303,7 +303,7 @@ menu()
 
 ## 系统菜单：MenuButton
 
-`Menu` 在每种设备上以应用自己的外观绘制菜单。应用若需要系统自己的菜单（iOS 的下拉菜单，有系统的位置、动效，在 iOS 26 上是 Liquid Glass），用 `MenuButton` 从应用绘制的触发器上打开它：
+`Menu` 在每种设备上以应用自己的外观绘制菜单。应用若需要系统自己的菜单（iOS 的下拉菜单，有系统的位置、动效，在 iOS 26 上是 Liquid Glass；Android 的弹出菜单），用 `MenuButton` 从应用绘制的触发器上打开它：
 
 ```tsx
 import { MenuButton } from "nsh/base";
@@ -315,7 +315,7 @@ import { MenuButton } from "nsh/base";
     { id: "settings", label: "设置", icon: "gearshape" },
     { id: "read", label: "全部已读", disabled: !unread() },
     { id: "", label: "语言", items: languages.map((l) => ({ id: l.id, label: l.label, checked: l.id === lang() })) },
-    { id: "", label: "外观", inline: true, items: [
+    { id: "", label: "外观", inline: true, singleSelection: true, items: [
       { id: "light", label: "浅色", checked: !dark() },
       { id: "dark", label: "深色", checked: dark() },
     ] },
@@ -328,25 +328,29 @@ import { MenuButton } from "nsh/base";
 </MenuButton>;
 ```
 
-条目是数据，每个都有应用自己的 `id`，由 `onSelect({ id })` 报告；勾选、`disabled` 和 `destructive`（在 iOS 上为红色）是条目的状态，由应用改变；带 `items` 的条目是子菜单，再加 `inline` 则是以 `label` 为标题、就地显示的分组。子元素、`class` 和 `style` 构成触发器，在所有平台上都由应用绘制。
+条目是数据，每个都有应用自己的 `id`，由 `onSelect({ id })` 报告；勾选、`disabled` 和 `destructive`（在 iOS 上为红色，在 Android 上为主题的错误色）是条目的状态，由应用改变；带 `items` 的条目是子菜单，再加 `inline` 则是以 `label` 为标题、就地显示的分组。子菜单或分组加上 `singleSelection` 后，它自己的操作是一组单选（排序方式、外观），由应用勾选其中一项：iOS 显示为单选菜单，Android 显示为单选按钮，桌面显示为勾选标记；不加时各个勾选互相独立。这组单选只含该菜单自己的操作，其中的分组或子菜单各自设定。整个菜单的条目都是一组单选时，把它们放进一个不带标题、带 `singleSelection` 的 `inline` 分组（`{ id: "", label: "", inline: true, singleSelection: true, items }`）。子元素、`class` 和 `style` 构成触发器，在所有平台上都由应用绘制。
 
 - **iOS 和 Mac Catalyst**：触发器上覆盖一个透明的 `UIButton`，它的 `UIMenu` 是主操作：点按、VoiceOver 激活或硬件键盘都会立即打开菜单，不等待 JS。`icon` 是 SF Symbol；`title` 显示在菜单顶部。VoiceOver 访问的是这个按钮（名称来自 `accessibilityLabel`），而不是它下面的触发器内容。新的 `items` 在下次打开时生效。
 - **桌面（macOS、Windows、Linux）**：按下时在指针处以平台的上下文菜单显示这些条目（同 `nsh/desktop` 的 `Menu.popup`），分组之间用分隔线；不显示 `icon`、`title` 和 `destructive`。
-- **Android 和 Web**：视图没有系统菜单；触发器照常显示，按下不打开任何内容。在这些平台上按 `platform.os` 改用 `Menu`。
+- **Android**：触发器上覆盖一个透明按钮，点按立即在触发器下方打开系统的弹出菜单；触发器在窗口靠末端的一半时，菜单与触发器末端对齐。`title` 是菜单的第一行，不能选择（TalkBack 读作已停用的条目）；`svg` 是一份 SVG 文档，作为条目的图标，在 Android 10 及以上按条目文字的颜色绘制（`icon` 是 iOS 用的）。勾选、单选按钮、子菜单和分组由系统绘制。
+- **Web**：视图没有系统菜单；触发器照常显示，按下不打开任何内容。在 Web 上按 `platform.os` 改用 `Menu`。
 
 | 属性 | Rust | 类型 | 默认值 | 说明 |
 |---|---|---|---|---|
 | `items` | `.items(..)` | `MenuButtonItem[]` | `[]` | 菜单的条目，按顺序。 |
-| `title` | `.title(..)` | `string` | 无 | iOS：菜单的标题，显示在条目上方。 |
+| `title` | `.title(..)` | `string` | 无 | iOS 和 Android：菜单的标题，显示在条目上方。 |
 | `disabled` | `.disabled(..)` | `boolean` | `false` | 不能按下，不打开任何内容。 |
 | `accessibilityLabel` | `.accessibility_label(..)` | `string` | 无 | 读屏软件为这个按钮朗读的内容。 |
+| `accessibilityHint` | `.accessibility_hint(..)` | `string` | 无 | 向屏幕阅读器说明打开菜单后可以做什么，与视图的 `accessibilityHint` 相同。 |
 | `class`、`style`、`children` | 样式方法、`.child(..)` | | 无 | 应用绘制的触发器。 |
 
-`MenuButtonItem` 为 `{ id, label, icon?, checked?, disabled?, destructive?, items?, inline? }`（Rust：`MenuButtonItem::new(id, label)`、`::submenu(label, items)`、`::section(label, items)`，再加 `.icon(..)`、`.checked(..)`、`.disabled(..)`、`.destructive(..)`）。唯一的事件是 `onSelect({ id })`（Rust：`.on_select(|id: &SharedString| ..)`），在菜单关闭后触发。
+`accessibilityHint` 跟随响应式值变化；设为 `undefined` 会移除提示。在 iOS 和 Android 上，提示传给屏幕阅读器激活的原生按钮。
 
-## iOS 上的系统上下文菜单
+`MenuButtonItem` 为 `{ id, label, icon?, svg?, checked?, disabled?, destructive?, items?, inline?, singleSelection? }`（Rust：`MenuButtonItem::new(id, label)`、`::submenu(label, items)`、`::section(label, items)`，再加 `.icon(..)`、`.svg(..)`、`.checked(..)`、`.disabled(..)`、`.destructive(..)`、`.single_selection(..)`）。唯一的事件是 `onSelect({ id })`（Rust：`.on_select(|id: &SharedString| ..)`），在菜单关闭后触发。
 
-在 iOS 上，手指按住一条消息、一张照片或一行列表，通常会出现系统的上下文菜单：视图在模糊的屏幕上抬起，带着系统的触感和动效，菜单显示在它旁边。给 `ContextMenu` 传入与 `MenuButton` 相同的条目，iOS 就显示这个菜单，而 children 仍是其他平台上的菜单：
+## iOS 和 Android 上的系统上下文菜单
+
+在 iOS 上，手指按住一条消息、一张照片或一行列表，通常会出现系统的上下文菜单：视图在模糊的屏幕上抬起，带着系统的触感和动效，菜单显示在它旁边。在 Android 上，会在视图旁出现系统的弹出菜单。给 `ContextMenu` 传入与 `MenuButton` 相同的条目，iOS 和 Android 就显示这个菜单，而 children 仍是其他平台上的菜单：
 
 ```tsx
 import { ContextMenu, MenuItem } from "nsh/base";
@@ -368,9 +372,10 @@ import { ContextMenu, MenuItem } from "nsh/base";
 ```
 
 - **iOS 和 Mac Catalyst**：由 `UIContextMenuInteraction` 原生响应按住的手指，以及 iPad 指针或 Mac 上的辅助点按。系统抬起的预览就是触发器本身，按它自己的圆角裁剪；菜单由 `items` 生成（`MenuButtonItem`，图标是 SF Symbol，`title` 在条目上方）。`onOpenChange`、`onOpen`、`onSelect({ id })`、`onCancel` 和 `onClose` 报告发生了什么，与绘制的菜单一致。这个菜单只由用户打开：把 `open` 设为 `true` 不显示任何内容，设为 `false` 会关闭它。
-- **Android、桌面和 Web**：不使用 `items`、`title` 和 `onSelect`。children 就是菜单，与不传 `items` 时一样绘制，由各个 `MenuItem` 的 `onSelect` 报告选择。
+- **Android**：按住的手指打开系统的弹出菜单，带系统的长按触感，位于触发器下方、与其末端对齐（触发器底边不在屏幕上时，位于按住的位置下方）。`title` 是第一行，`svg` 是条目的图标，与 `MenuButton` 相同；不使用 `preview`。它报告同样的事件；与 iOS 不同，应用可以打开它：把 `open` 设为 `true` 会在触发器下方显示它。
+- **桌面和 Web**：不使用 `items`、`title` 和 `onSelect`。children 就是菜单，与不传 `items` 时一样绘制，由各个 `MenuItem` 的 `onSelect` 报告选择。
 
-触发器自己的按压在按住手指的同时照常工作。不传 `items` 时，iOS 和其他平台一样显示绘制的菜单。
+触发器自己的按压在按住手指的同时照常工作。不传 `items` 时，iOS 和 Android 与其他平台一样显示绘制的菜单。
 
 ### 用预览代替触发器
 
@@ -416,8 +421,8 @@ import { ContextMenu, MenuItem } from "nsh/base";
 | `disabled` | `.disabled(..)` | `boolean` | `false` | 什么都打不开它：辅助按键、按住的手指、键盘和读屏软件都不起作用。 |
 | `offset` | `.offset(..)` | `number` | `0` | 以弹出层呈现时：指针与弹出层之间的间距。 |
 | `margin` | `.margin(..)` | `number` | `0` | 以弹出层呈现时：它与安全区边缘保持的距离。 |
-| `items` | `.items(..)` | `MenuButtonItem[]` | `[]` | 仅 iOS：系统的上下文菜单，代替 children。其他平台不使用它，绘制 children。 |
-| `title` | `.title(..)` | `string` | 无 | 仅 iOS：系统菜单的标题，在条目上方。其他平台不使用它。 |
+| `items` | `.items(..)` | `MenuButtonItem[]` | `[]` | iOS 和 Android：系统的上下文菜单，代替 children。其他平台不使用它，绘制 children。 |
+| `title` | `.title(..)` | `string` | 无 | iOS 和 Android：系统菜单的标题，在条目上方。其他平台不使用它。 |
 | `preview` | `.preview(..)` | `JSX.Element` | 无 | 仅 iOS，传入 `items` 时：系统在菜单旁代替触发器抬起的内容。手指按下时创建，菜单关闭后移除。 |
 
 ### MenuItem

@@ -187,7 +187,29 @@ text("Made with ")
 </Text>
 ```
 
-Attachments cut off by `numberOfLines` or an ellipsis are hidden. Copying a selectable text leaves them out.
+Attachments cut off by `numberOfLines` or an ellipsis are hidden. Copying a selectable text leaves an attachment out
+unless it has a `copyText` (`.copy_text(..)`): then the copy gives that text in its place, as a browser copies an
+inline image's `alt`. An inline formula copies as its source this way:
+
+```rust tabs
+text("Area is ")
+    .child(view().copy_text("$x^2$").label("x squared").child(formula))
+    .child(" here.")
+```
+
+```tsx tabs
+<Text>
+  Area is{" "}
+  <View copyText="$x^2$" accessibilityLabel="x squared">
+    {formula}
+  </View>{" "}
+  here.
+</Text>
+```
+
+Copying the whole line gives `Area is $x^2$ here.`. Screen readers keep reading the view by its label. `copyText` is
+read from the views and images in a text (and from the content a `renderMath` or `renderCustom` places there).
+Nested text spans ignore it, as their characters are copied themselves.
 
 ### Whitespace
 

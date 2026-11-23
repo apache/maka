@@ -146,33 +146,41 @@ App.tsx ──▶ pages/ ──▶ store.ts
 
 ## 初始化与根视图所有权
 
-应用只挂载一次，并让根视图占据整个界面：TSX 入口调用 `mount(App)`，Rust 应用在 `nsh.json` 中指定根组件
-（`"root": "App"`）。根视图用 `flex: 1` 和来自主题的背景色填满界面：
+应用只挂载一次；它的根声明应用的顶层窗口，每个窗口用 `flex: 1` 的视图和来自主题的背景色填满。TSX 入口调用
+`mount(App)`，Rust 应用在 `nsh.json` 中指定根组件（`"root": "App"`）：
 
 ```rust tabs
+use nsh_core::{element::desktop::window, prelude::*};
+
 #[component]
 pub fn App() -> impl IntoElement {
     provide_context(Workspace::new());
-    view()
-        .flex_1()
-        .bg(move || theme().background)
-        .child(inbox())
+    window().id("main").content(
+        view()
+            .flex_1()
+            .bg(move || theme().background)
+            .child(inbox()),
+    )
 }
 ```
 
 ```tsx tabs
 import { mount, View } from "nsh";
+import { Window } from "nsh/desktop";
 
 mount(() => (
-  <View class="flex-1 bg-background">
-    <App />
-  </View>
+  <Window id="main">
+    <View class="flex-1 bg-background">
+      <App />
+    </View>
+  </Window>
 ));
 ```
 
-根视图协调属于整个界面的东西：导航栈，显示在所有内容之上的对话框、弹出框、菜单、面板和工具提示，以及安全区域。不要在同一个
-界面里为每个页面再挂载一个根视图。一个界面对应一个引擎：原生应用嵌入的每个 `NshAppView`、`NshView` 或 `AppView` 都运行
-自己的 VM、自己的模块状态和自己的响应式图，因此同一宿主应用中的多个界面不会意外共享状态。
+应用根协调属于整个应用的东西：共享状态、设置和窗口注册表。每个窗口的内容协调属于该窗口的东西：它的导航栈，显示在它所有内容
+之上的对话框、弹出框、菜单、面板和工具提示，以及它的安全区域。不要为每个页面再挂载一个根。一个应用对应一个引擎：原生应用
+嵌入的每个 `NshAppView`、`NshView` 或 `AppView` 都运行自己的 VM、自己的模块状态和自己的响应式图，因此同一宿主应用中的多个
+界面不会意外共享状态。
 
 ## 理解什么只运行一次，什么会再次运行
 
