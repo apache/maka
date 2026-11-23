@@ -482,162 +482,223 @@ pub fn TextView(props: TextViewProps, cx: Scope<TextViewEvent>) -> impl IntoElem
                     .collect::<Vec<_>>()
             })
         });
-        let count = computed(move || {
-            visible.with(Vec::len) + document.with(|d| usize::from(!d.footnotes.is_empty()))
-        });
+        let render_row = move |item: ReadSignal<DocumentRow>,
+                               plugins: Rc<MarkdownPlugins>,
+                               choices: BlockChoices| {
+            let cx = Cx::read(&props, cx, plugins, parsed, choices, math_loaded);
+            match item.get_untracked() {
+                DocumentRow::Block(_, index, _) => {
+                    let last = computed(move || visible.with(|v| v.last() == Some(&index)));
+                    let before = computed(move || {
+                        let prev = visible.with(|v| {
+                            v.binary_search(&index)
+                                .ok()
+                                .and_then(|pos| pos.checked_sub(1))
+                                .and_then(|p| v.get(p).copied())
+                        });
+                        document.with(|d| Before::of(prev.and_then(|i| d.blocks.get(i))))
+                    });
+                    let block = computed(move || match item.get() {
+                        DocumentRow::Block(_, _, block) => *block,
+                        DocumentRow::Footnotes => unreachable!(),
+                    });
+                    cx.block(block, index.to_string(), last, before)
+                }
+                DocumentRow::Footnotes => {
+                    cx.footnotes(computed(move || document.with(|d| d.footnotes.clone())))
+                }
+            }
+        };
+        let row_gap = || {
+            if is_terminal() {
+                nsh_core::element::cell_size()
+                    .map_or_else(crate::terminal::cell_height, |c| c.height)
+            } else {
+                px(BLOCK_GAP)
+            }
+        };
         let row_plugins = plugins.clone();
         let reported = reported.clone();
-        virtual_list(count, move |at| {
-            let rows = computed(move || {
-                let slot = at.index();
+        // Virtualize in parent-viewport mode only when source-addressed reading
+        // or explicit list content styling is active; plain TextViews keep
+        // regular flex-column layout so they size naturally inside shrink-to-fit
+        // (e.g. `align-items: flex-start`) containers as upstream does.
+        let virtualized =
+            props.source_id.with(Option::is_some) || props.content_style.with(Option::is_some);
+        if virtualized {
+            let count = computed(move || {
+                visible.with(Vec::len) + document.with(|d| usize::from(!d.footnotes.is_empty()))
+            });
+            virtual_list(count, move |at| {
+                let rows = computed(move || {
+                    let slot = at.index();
+                    let indices = visible.get();
+                    document.with(|d| {
+                        indices
+                            .get(slot)
+                            .and_then(|&index| {
+                                d.blocks
+                                    .get(index)
+                                    .cloned()
+                                    .map(|block| DocumentRow::Block(d.kind, index, Box::new(block)))
+                            })
+                            .or_else(|| {
+                                (slot == indices.len() && !d.footnotes.is_empty())
+                                    .then_some(DocumentRow::Footnotes)
+                            })
+                            .into_iter()
+                            .collect::<Vec<_>>()
+                    })
+                });
+                let plugins = row_plugins.clone();
+                let choices = choices.clone();
+                each(rows, DocumentRow::key, move |item, _| {
+                    // A cell follows Position. This owner instead follows the
+                    // logical block, so its old callbacks cannot address a row
+                    // that the cell starts showing later.
+                    view().child(render_row(item, plugins.clone(), choices.clone()))
+                })
+            })
+            .viewport(ListViewport::Parent)
+            .source_rows(move || {
+                // The live domain may be longer than this worker publication.
+                // Neither the repaired parser input nor an admitted old prefix
+                // may claim the current source's complete byte coverage.
+                let source = props.markdown.get()?;
+                let id = props.source_id.get()?;
+                let indices = visible.get();
+                document.with(|projection| {
+                    let mut rows = ListSourceRows::default();
+                    rows.id = Arc::from(id.as_str());
+                    rows.source_len = source.len() as u64;
+                    rows.projection_len = projection.raw_len;
+                    rows.provisional = parsed.pending.get() || projection.raw_len < rows.source_len;
+                    if indices.len() == projection.blocks.len() {
+                        rows.rows = projection.rows.clone();
+                    } else {
+                        let mut mapped = Vec::with_capacity(
+                            indices.len() + usize::from(!projection.footnotes.is_empty()),
+                        );
+                        for index in indices {
+                            mapped.push(projection.rows.get(index).cloned().unwrap_or_default());
+                        }
+                        if !projection.footnotes.is_empty() {
+                            mapped.push(projection.rows.last().cloned().unwrap_or_default());
+                        }
+                        rows.rows = mapped.into();
+                    }
+                    Some(Arc::new(rows))
+                })
+            })
+            .content_style(move || {
+                props
+                    .content_style
+                    .get()
+                    .unwrap_or_else(|| ListContentStyle {
+                        row_gap: row_gap(),
+                        ..ListContentStyle::default()
+                    })
+            })
+            .flex_col()
+            .keys(move || {
                 let indices = visible.get();
                 document.with(|d| {
                     indices
-                        .get(slot)
-                        .and_then(|&index| {
+                        .into_iter()
+                        .filter_map(|index| {
+                            d.blocks
+                                .get(index)
+                                .map(|block| DocumentRowKey::block(d.kind, index, block))
+                        })
+                        .chain((!d.footnotes.is_empty()).then_some(DocumentRowKey::Footnotes))
+                        .collect::<Vec<_>>()
+                })
+            })
+            .text_size(px(BODY_SIZE))
+            .line_height(px(BODY_SIZE * BODY_LINE))
+            .text_color(move || theme().foreground)
+            // Parent mode contributes these mounted texts to the surrounding
+            // reader and selection area; it owns no independent scroll offset.
+            .selectable(props.selectable)
+            .on_text_selection_change(move |e: &nsh_core::element::TextSelectionEvent| {
+                *reported.borrow_mut() = Reported {
+                    text: e.text.clone(),
+                    start: e.start,
+                };
+                cx.emit(TextViewEvent::SelectionChange(TextViewSelectionEvent {
+                    text: e.text.clone().into(),
+                    start: e.start,
+                    bounds: e.bounds,
+                    page_bounds: e.page_bounds,
+                }));
+            })
+            .map(|mut el| {
+                if let Some(parts) = use_context::<TextViewParts>() {
+                    let style = std::mem::take(el.style());
+                    *el.style() = parts.refine(Part::Root, style);
+                }
+                el
+            })
+            .app_class(move || props.classes.with(|c| c.root.clone()))
+            .inline_style(move || {
+                props
+                    .styles
+                    .with(|s| s.root.as_ref().map(|s| s.0.clone()).unwrap_or_default())
+            })
+            .into_element()
+        } else {
+            let rows = computed(move || {
+                let indices = visible.get();
+                document.with(|d| {
+                    indices
+                        .into_iter()
+                        .filter_map(|index| {
                             d.blocks
                                 .get(index)
                                 .cloned()
                                 .map(|block| DocumentRow::Block(d.kind, index, Box::new(block)))
                         })
-                        .or_else(|| {
-                            (slot == indices.len() && !d.footnotes.is_empty())
-                                .then_some(DocumentRow::Footnotes)
-                        })
-                        .into_iter()
+                        .chain((!d.footnotes.is_empty()).then_some(DocumentRow::Footnotes))
                         .collect::<Vec<_>>()
                 })
             });
-            let plugins = row_plugins.clone();
-            let choices = choices.clone();
-            each(rows, DocumentRow::key, move |item, _| {
-                let cx = Cx::read(
-                    &props,
-                    cx,
-                    plugins.clone(),
-                    parsed,
-                    choices.clone(),
-                    math_loaded,
-                );
-                // A cell follows Position. This owner instead follows the
-                // logical block, so its old callbacks cannot address a row
-                // that the cell starts showing later.
-                let content = match item.get_untracked() {
-                    DocumentRow::Block(_, index, _) => {
-                        let last = computed(move || visible.with(|v| v.last() == Some(&index)));
-                        let before = computed(move || {
-                            let prev = visible.with(|v| {
-                                v.binary_search(&index)
-                                    .ok()
-                                    .and_then(|pos| pos.checked_sub(1))
-                                    .and_then(|p| v.get(p).copied())
-                            });
-                            document.with(|d| Before::of(prev.and_then(|i| d.blocks.get(i))))
-                        });
-                        let block = computed(move || match item.get() {
-                            DocumentRow::Block(_, _, block) => *block,
-                            DocumentRow::Footnotes => unreachable!(),
-                        });
-                        cx.block(block, index.to_string(), last, before)
-                    }
-                    DocumentRow::Footnotes => {
-                        cx.footnotes(computed(move || document.with(|d| d.footnotes.clone())))
-                    }
-                };
-                view().child(content)
-            })
-        })
-        .viewport(ListViewport::Parent)
-        .source_rows(move || {
-            // The live domain may be longer than this worker publication.
-            // Neither the repaired parser input nor an admitted old prefix
-            // may claim the current source's complete byte coverage.
-            let source = props.markdown.get()?;
-            let id = props.source_id.get()?;
-            let indices = visible.get();
-            document.with(|projection| {
-                let mut rows = ListSourceRows::default();
-                rows.id = Arc::from(id.as_str());
-                rows.source_len = source.len() as u64;
-                rows.projection_len = projection.raw_len;
-                rows.provisional = parsed.pending.get() || projection.raw_len < rows.source_len;
-                if indices.len() == projection.blocks.len() {
-                    rows.rows = projection.rows.clone();
-                } else {
-                    let mut mapped = Vec::with_capacity(
-                        indices.len() + usize::from(!projection.footnotes.is_empty()),
-                    );
-                    for index in indices {
-                        mapped.push(projection.rows.get(index).cloned().unwrap_or_default());
-                    }
-                    if !projection.footnotes.is_empty() {
-                        mapped.push(projection.rows.last().cloned().unwrap_or_default());
-                    }
-                    rows.rows = mapped.into();
-                }
-                Some(Arc::new(rows))
-            })
-        })
-        .content_style(move || {
-            props
-                .content_style
-                .get()
-                .unwrap_or_else(|| ListContentStyle {
-                    row_gap: if is_terminal() {
-                        nsh_core::element::cell_size()
-                            .map_or_else(crate::terminal::cell_height, |c| c.height)
-                    } else {
-                        px(BLOCK_GAP)
-                    },
-                    ..ListContentStyle::default()
+            view()
+                .flex_col()
+                .gap(move || Length::from(row_gap()))
+                .text_size(px(BODY_SIZE))
+                .line_height(px(BODY_SIZE * BODY_LINE))
+                .text_color(move || theme().foreground)
+                .selectable(props.selectable)
+                .on_text_selection_change(move |e: &nsh_core::element::TextSelectionEvent| {
+                    *reported.borrow_mut() = Reported {
+                        text: e.text.clone(),
+                        start: e.start,
+                    };
+                    cx.emit(TextViewEvent::SelectionChange(TextViewSelectionEvent {
+                        text: e.text.clone().into(),
+                        start: e.start,
+                        bounds: e.bounds,
+                        page_bounds: e.page_bounds,
+                    }));
                 })
-        })
-        .flex_col()
-        .keys(move || {
-            let indices = visible.get();
-            document.with(|d| {
-                indices
-                    .into_iter()
-                    .filter_map(|index| {
-                        d.blocks
-                            .get(index)
-                            .map(|block| DocumentRowKey::block(d.kind, index, block))
-                    })
-                    .chain((!d.footnotes.is_empty()).then_some(DocumentRowKey::Footnotes))
-                    .collect::<Vec<_>>()
-            })
-        })
-        .text_size(px(BODY_SIZE))
-        .line_height(px(BODY_SIZE * BODY_LINE))
-        .text_color(move || theme().foreground)
-        // Parent mode contributes these mounted texts to the surrounding
-        // reader and selection area; it owns no independent scroll offset.
-        .selectable(props.selectable)
-        .on_text_selection_change(move |e: &nsh_core::element::TextSelectionEvent| {
-            *reported.borrow_mut() = Reported {
-                text: e.text.clone(),
-                start: e.start,
-            };
-            cx.emit(TextViewEvent::SelectionChange(TextViewSelectionEvent {
-                text: e.text.clone().into(),
-                start: e.start,
-                bounds: e.bounds,
-                page_bounds: e.page_bounds,
-            }));
-        })
-        .map(|mut el| {
-            if let Some(parts) = use_context::<TextViewParts>() {
-                let style = std::mem::take(el.style());
-                *el.style() = parts.refine(Part::Root, style);
-            }
-            el
-        })
-        .app_class(move || props.classes.with(|c| c.root.clone()))
-        .inline_style(move || {
-            props
-                .styles
-                .with(|s| s.root.as_ref().map(|s| s.0.clone()).unwrap_or_default())
-        })
+                .map(|mut el| {
+                    if let Some(parts) = use_context::<TextViewParts>() {
+                        let style = std::mem::take(el.style());
+                        *el.style() = parts.refine(Part::Root, style);
+                    }
+                    el
+                })
+                .app_class(move || props.classes.with(|c| c.root.clone()))
+                .inline_style(move || {
+                    props
+                        .styles
+                        .with(|s| s.root.as_ref().map(|s| s.0.clone()).unwrap_or_default())
+                })
+                .child(each(rows, DocumentRow::key, move |item, _| {
+                    render_row(item, row_plugins.clone(), choices.clone())
+                }))
+                .into_element()
+        }
     })
 }
 
