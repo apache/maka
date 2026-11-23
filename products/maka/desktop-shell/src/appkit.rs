@@ -318,7 +318,6 @@ fn carry_out(requests: Requests, runtime: &Runtime) {
         mut exits,
         mut folders,
         mut text_sizes,
-        mut notices,
     } = requests;
     runtime.spawn(async move {
         if exits.recv().await.is_some() {
@@ -341,12 +340,6 @@ fn carry_out(requests: Requests, runtime: &Runtime) {
     runtime.spawn(async move {
         while let Some(scale) = text_sizes.recv().await {
             with_running_view(move |view| view.set_font_scale(Some(scale)));
-        }
-    });
-    runtime.spawn(async move {
-        while let Some(call) = notices.recv().await {
-            call.resolve(JsonValue::Null);
-            eprintln!("maka-desktop-shell: the AppKit window posts no notifications");
         }
     });
 }
