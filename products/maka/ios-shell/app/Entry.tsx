@@ -19,6 +19,8 @@
 
 import {
   cleanup,
+  Clipboard,
+  locale,
   mount,
   safeAreaInsets,
   Scroll,
@@ -29,6 +31,7 @@ import {
   type ScrollRef,
 } from 'nsh';
 import { Input } from 'nsh/base';
+import { createCopy } from '../../../../plugins/shared/locale.js';
 import {
   ApplePermissionCard,
   AppleQuestionCard,
@@ -107,13 +110,6 @@ import {
   type DiffLineItem,
 } from './Overlays';
 import {
-  createBurstController,
-  ReactionBurstLayer,
-  ReactionPickerBar,
-  ReactionPillsRow,
-  type ReactionEntry,
-} from './Reactions';
-import {
   LivePreviewAccumulator,
   type LivePreviewSnapshot,
   type LiveToolPreview,
@@ -139,15 +135,21 @@ interface ChatMessage {
   text: string;
   turnSummary?: string;
   steps?: TurnStepItem[];
-  reactions: ReactionEntry[];
 }
+
+const messageActionCopy = createCopy({
+  copy: ['Copy', '复制', '複製'],
+  copyMessage: ['Copy message', '复制消息', '複製訊息'],
+  copied: ['Copied', '已复制', '已複製'],
+  copyFailed: ['Could not copy to the clipboard', '复制到剪贴板失败', '複製到剪貼簿失敗'],
+});
+const messageActions = () => messageActionCopy(locale());
 
 const PREVIEW_MESSAGES: ChatMessage[] = [
   {
     id: 'm1',
     role: 'user',
     text: '帮我检查一下远端 Host 连接状态，并跑一次实时 RPC 验证通路。',
-    reactions: [{ emoji: '🫡', count: 1, mine: false, fromAgent: true }],
   },
   {
     id: 'm2',
@@ -171,7 +173,6 @@ const PREVIEW_MESSAGES: ChatMessage[] = [
         diffPath: 'platform/remote-client/src/client.rs',
       },
     ],
-    reactions: [],
   },
 ];
 
@@ -279,7 +280,6 @@ function mapHistoryPageToMessages(
           role: 'user',
           author: '你',
           text: item.content?.text ?? '',
-          reactions: [],
         };
       }
       const sessionId = item.author.execution.sessionId;
@@ -289,7 +289,6 @@ function mapHistoryPageToMessages(
         role: 'agent',
         author: authorLabel,
         text: item.content?.text ?? '',
-        reactions: [],
       };
     });
   }
@@ -310,7 +309,6 @@ function mapHistoryPageToMessages(
           id,
           role: 'user',
           text: ch.text,
-          reactions: [],
         });
       }
       continue;
@@ -355,7 +353,6 @@ function mapHistoryPageToMessages(
         text: ch.text,
         turnSummary: steps ? '执行过程 · ' + String(steps.length) + ' 步' : undefined,
         steps,
-        reactions: [],
       });
     }
   }
@@ -368,7 +365,6 @@ function mapHistoryPageToMessages(
       text: '正在整理结果…',
       turnSummary: '执行过程 · ' + String(pendingSteps.length) + ' 步',
       steps: pendingSteps,
-      reactions: [],
     });
   }
   return out;
@@ -610,7 +606,6 @@ function App() {
   const loadingEarlier = signal(false);
   const permissions = signal<PermissionCardItem[]>([PREVIEW_PERMISSION]);
   const questions = signal<QuestionCardItem[]>([PREVIEW_QUESTION]);
-  const activeReactionMsgId = signal<string | null>(null);
   const composerDraft = signal('');
   const quotedLine = signal<string | null>(null);
   const defaultDelivery = signal<'steer' | 'queue'>('steer');
@@ -619,7 +614,6 @@ function App() {
   const diffLines = signal<DiffLineItem[]>(PREVIEW_DIFF_LINES);
   const diffTruncatedNotice = signal<string | null>(null);
   const activeTurnId = signal<string | null>(null);
-  const burst = createBurstController();
 
   interface SubSlot {
     subscriptionId: string;
@@ -702,6 +696,19 @@ function App() {
   const resetLivePreview = () => {
     applyLivePreview(previewAccumulator.reset());
     awaitingReply.set(false);
+  };
+
+  const clearHostTranscript = () => {
+    stickToBottom = true;
+    lastContentHeight = 0;
+    turnOffsets.clear();
+    activeTurnId.set(null);
+    messages.set([]);
+    historyBefore.set(null);
+    historyThrough.set(null);
+    loadingEarlier.set(false);
+    permissions.set([]);
+    questions.set([]);
   };
 
   const isHostStillCurrent = (gen: number, epoch: string) =>
@@ -1265,6 +1272,7 @@ function App() {
       creatingDraft.set(false);
       busy.set(false);
       switchDraftPartition('offline:draft');
+      if (lastHostEpoch !== null) clearHostTranscript();
       lastHostEpoch = null;
       projects.set([]);
       sessions.set([]);
@@ -1312,15 +1320,10 @@ function App() {
     queuedMessages.set([]);
     resetLivePreview();
 
-    if (!hasAgentEndpoint(active)) {
-      return;
-    }
-
-    messages.set([]);
-    permissions.set([]);
-    questions.set([]);
+    clearHostTranscript();
     diffLines.set([]);
     diffTruncatedNotice.set(null);
+    if (!hasAgentEndpoint(active)) return;
 
     agentListProjects().then(
       (list) => {
@@ -1631,19 +1634,14 @@ function App() {
   };
 
   const runSwitchFilter = () => {
-    const cur = hostState().filter;
-    const first = hostState().hosts[0];
+    const { active, filter } = hostState();
     const nextFilter =
-      cur.kind === 'all_computers' && first
-        ? ({ kind: 'single_computer', root_id: first.rootId } as const)
-        : ({ kind: 'all_computers' } as const);
-    setFilter(nextFilter).then(
-      (s) => {
-        hostState.set(s);
-        statusBanner.set(null);
-      },
-      (err: Error) => statusBanner.set(err.message),
-    );
+      filter.kind === 'single_computer'
+        ? ({ kind: 'all_computers' } as const)
+        : active && ({ kind: 'single_computer', root_id: active.rootId } as const);
+    if (nextFilter) {
+      setFilter(nextFilter).catch((err: Error) => statusBanner.set(err.message));
+    }
   };
 
   const runRenameSession = (sess: AgentSession, nextTitle: string) => {
@@ -1960,7 +1958,6 @@ function App() {
               String(res.events.length) +
               ' 条远端响应帧。',
             turnSummary: '已通过 ' + active.hostName + ' · Root ' + active.rootId.slice(0, 8),
-            reactions: [{ emoji: '👍', count: 1, mine: false, fromAgent: true }],
           },
         ]);
       },
@@ -2037,33 +2034,11 @@ function App() {
     }
   };
 
-  const toggleReaction = (msgId: string, emoji: string) => {
-    const next = messages().map((m) => {
-      if (m.id !== msgId) return m;
-      const existing = m.reactions.find((r) => r.emoji === emoji);
-      let updated: ReactionEntry[];
-      if (existing) {
-        if (existing.mine) {
-          updated =
-            existing.count <= 1
-              ? m.reactions.filter((r) => r.emoji !== emoji)
-              : m.reactions.map((r) =>
-                  r.emoji === emoji ? { ...r, count: r.count - 1, mine: false } : r,
-                );
-        } else {
-          burst.trigger(emoji);
-          updated = m.reactions.map((r) =>
-            r.emoji === emoji ? { ...r, count: r.count + 1, mine: true } : r,
-          );
-        }
-      } else {
-        burst.trigger(emoji);
-        updated = [...m.reactions, { emoji, count: 1, mine: true }];
-      }
-      return { ...m, reactions: updated };
-    });
-    messages.set(next);
-    activeReactionMsgId.set(null);
+  const copyMessage = (message: ChatMessage) => {
+    Clipboard.writeText(message.text).then(
+      () => statusBanner.set(messageActions().copied),
+      (err: Error) => statusBanner.set(messageActions().copyFailed + ': ' + err.message),
+    );
   };
 
   const sendMessage = (overrideDelivery?: 'steer' | 'queue') => {
@@ -2102,7 +2077,6 @@ function App() {
             id: 'optimistic-' + String(Date.now()),
             role: 'user',
             text: content,
-            reactions: [],
           },
         ]);
         if (!isRoom) {
@@ -2204,7 +2178,6 @@ function App() {
         id: 'u-' + String(Date.now()),
         role: 'user',
         text: content,
-        reactions: [{ emoji: '👀', count: 1, mine: false, fromAgent: true }],
       },
     ]);
     if (hostState().active) {
@@ -2787,43 +2760,27 @@ function App() {
                           <Text style={{ fontSize: 15.5, lineHeight: 23.5, color: palette().ink }}>
                             {msg().text}
                           </Text>
-
-                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                            <View
-                              role="button"
-                              accessibilityLabel={'Agent message ' + msg().id}
-                              onPress={() =>
-                                activeReactionMsgId.set(
-                                  activeReactionMsgId() === msg().id ? null : msg().id,
-                                )
-                              }
-                              style={{
-                                paddingHorizontal: 8,
-                                paddingVertical: 3,
-                                borderRadius: 10,
-                                backgroundColor: palette().rowHover,
-                              }}
-                            >
-                              <Text style={{ fontSize: 11.5, color: palette().ink3 }}>☺</Text>
-                            </View>
-                          </View>
                         </View>
                       </If>
 
-                      <If when={activeReactionMsgId() === msg().id}>
-                        <ReactionPickerBar
-                          onPick={(emoji) => toggleReaction(msg().id, emoji)}
-                          onDismiss={() => activeReactionMsgId.set(null)}
-                        />
+                      <If when={msg().id !== 'steps-tail' && msg().text.length > 0}>
+                        <View
+                          role="button"
+                          accessibilityLabel={messageActions().copyMessage + ' ' + msg().id}
+                          onPress={() => copyMessage(msg())}
+                          style={{
+                            minHeight: 32,
+                            justifyContent: 'center',
+                            paddingHorizontal: 9,
+                            borderRadius: 10,
+                            backgroundColor: palette().rowHover,
+                          }}
+                        >
+                          <Text style={{ fontSize: 12, color: palette().ink2 }}>
+                            {messageActions().copy}
+                          </Text>
+                        </View>
                       </If>
-
-                      <ReactionPillsRow
-                        reactions={msg().reactions}
-                        onToggle={(emoji) => toggleReaction(msg().id, emoji)}
-                        onRetryWithNewIdea={() => {
-                          composerDraft.set('换一个更直接的思路重新处理');
-                        }}
-                      />
                     </View>
                   )}
                 </Each>
@@ -2979,8 +2936,6 @@ function App() {
               onJump={jumpToTurn}
             />
           </View>
-
-          <ReactionBurstLayer burst={burst} />
 
           {/* Docked Goal Status & Controls Bar (Desktop Parity) */}
           <GoalBar goal={activeGoal} busy={busy} onControl={runGoalControl} />

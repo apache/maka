@@ -251,6 +251,26 @@ fn ios_shell_pairs_real_host_verifies_live_rpc_filters_reconnects_and_removes() 
     // 1. Cold-start Home renders V7 empty state & single-row Maka Bot.
     app.wait_for("text:Maka").unwrap();
     app.wait_for("text:连接你的第一台电脑").unwrap();
+    app.wait_for("text:未连接电脑").unwrap();
+    assert!(!app.screen().matches("label:Switch host filter").unwrap());
+
+    // The sample cards and Diff are an offline preview, not data from the next Host.
+    app.press("label:Open Maka Bot").unwrap();
+    app.wait_for("text:本地预览会话").unwrap();
+    app.press("label:Question custom option").unwrap();
+    app.wait_for("label:Custom question answer input").unwrap();
+    app.type_text("label:Custom question answer input", "先跑全量单测再决定")
+        .unwrap();
+    app.press("label:Submit question answer").unwrap();
+    app.wait_for("text:/已回答 · 先跑全量单测再决定/").unwrap();
+    app.press("label:Toggle work details m2").unwrap();
+    app.wait_for("label:Step platform/remote-client/src/client.rs")
+        .unwrap();
+    app.press("label:Step platform/remote-client/src/client.rs")
+        .unwrap();
+    app.wait_for("text:轻点任意一行可引用发给 Maka").unwrap();
+    app.press("label:Quote diff line 340").unwrap();
+    app.wait_for("text:/引用: client.*340/").unwrap();
 
     // 2. Deliver deep-link pairing URI -> decodes & shows 6-digit SAS.
     channel
@@ -282,37 +302,12 @@ fn ios_shell_pairs_real_host_verifies_live_rpc_filters_reconnects_and_removes() 
         }
     }
 
-    // 4. Docked bottom Permission Approval -> Allow once triggers real hostLogs.read RPC!
-    app.wait_for("label:Allow once").unwrap();
-    app.press("label:Allow once").unwrap();
+    // 4. A Host without Agent has no chat controls from the preview, but its live RPC works.
+    assert!(!app.screen().matches("label:Allow once").unwrap());
+    app.press("label:Verify live Host RPC").unwrap();
     app.wait_for("text:/实时 RPC 校验通过.*hostLogs/").unwrap();
-    app.wait_for("text:/已允许本次/").unwrap();
 
-    // 5. Telegram-style Reaction picker -> tap 🔥 toggles reaction pill.
-    app.press("label:Agent message m2").unwrap();
-    app.wait_for("label:React 🔥").unwrap();
-    app.press("label:React 🔥").unwrap();
-    app.wait_for("label:Toggle reaction 🔥").unwrap();
-
-    // 6. Apple HIG AskUserQuestion card WITH custom user free-text input!
-    app.press("label:Question custom option").unwrap();
-    app.wait_for("label:Custom question answer input").unwrap();
-    app.type_text("label:Custom question answer input", "先跑全量单测再决定")
-        .unwrap();
-    app.press("label:Submit question answer").unwrap();
-    app.wait_for("text:/已回答 · 先跑全量单测再决定/").unwrap();
-
-    // 7. 3-level TurnPanel expand -> Edit card jumps to Diff Viewer -> tap line quotes back!
-    app.press("label:Toggle work details m2").unwrap();
-    app.wait_for("label:Step platform/remote-client/src/client.rs")
-        .unwrap();
-    app.press("label:Step platform/remote-client/src/client.rs")
-        .unwrap();
-    app.wait_for("text:轻点任意一行可引用发给 Maka").unwrap();
-    app.press("label:Quote diff line 340").unwrap();
-    app.wait_for("text:/引用: client.*340/").unwrap();
-
-    // 8. Open 78% Slide-Over Drawer -> real setFilter wire schema round-trip.
+    // 5. Open the drawer and verify the real setFilter wire schema round trip.
     app.press("label:Open drawer").unwrap();
     app.wait_for("text:Mac Studio Live").unwrap();
     app.wait_for("text:全部").unwrap();
@@ -323,10 +318,8 @@ fn ios_shell_pairs_real_host_verifies_live_rpc_filters_reconnects_and_removes() 
             .unwrap();
     assert_eq!(persisted_store["filter"]["kind"], "single_computer");
     assert_eq!(persisted_store["filter"]["root_id"], live.pairing.root_id);
-    app.press("label:Switch host filter").unwrap();
-    app.wait_for("text:全部").unwrap();
 
-    // 9. Settings: toggle Light theme, disconnect, reconnect from Home, then remove host.
+    // 6. Settings: toggle Light theme, disconnect, reconnect from Home, then remove host.
     app.press("label:Settings").unwrap();
     app.wait_for("text:深石墨暗色").unwrap();
     app.press("label:Toggle theme").unwrap();
@@ -334,6 +327,11 @@ fn ios_shell_pairs_real_host_verifies_live_rpc_filters_reconnects_and_removes() 
     app.press("label:Disconnect active host").unwrap();
     app.press("label:Back from settings").unwrap();
     app.wait_for("text:已保存 · 点击连接").unwrap();
+    // Without an active Host a saved single scope can still be cleared. All
+    // scope has nowhere to switch and is shown as status, not a button.
+    app.press("label:Switch host filter").unwrap();
+    app.wait_for_gone("label:Switch host filter", Duration::from_secs(5))
+        .unwrap();
 
     // Reconnect saved Host via Home row -> returns to Chat connected!
     app.press("label:Host Mac Studio Live").unwrap();
@@ -1868,11 +1866,7 @@ fn subscription_replacement_generation_fencing_and_stale_host_rpc_isolation() {
         old_catalog_cancelled: Arc<AtomicBool>,
     }
 
-    async fn start_agent_host(
-        session_title: &'static str,
-        delay_list: bool,
-        fail_catalog: bool,
-    ) -> GatedAgentHost {
+    fn allocate_host_root() -> (tempfile::TempDir, Arc<RootOwner>) {
         let dir = tempfile::tempdir().unwrap();
         private_directory(dir.path()).unwrap();
         let root = Arc::new(
@@ -1885,6 +1879,15 @@ fn subscription_replacement_generation_fencing_and_stale_host_rpc_isolation() {
             )
             .unwrap(),
         );
+        (dir, root)
+    }
+
+    async fn start_agent_host(
+        (dir, root): (tempfile::TempDir, Arc<RootOwner>),
+        session_title: &'static str,
+        delay_list: bool,
+        fail_catalog: bool,
+    ) -> GatedAgentHost {
         let root_id = root.root_id().to_owned();
         let store = Arc::new(RootStore::open(root, ROOT_MIGRATIONS).await.unwrap());
         let contract = maka_agent_api::contract();
@@ -2183,8 +2186,15 @@ fn subscription_replacement_generation_fencing_and_stale_host_rpc_isolation() {
     }
 
     let (host_a, host_b) = rt.block_on(async {
-        let a = start_agent_host("HostA过期会话", true, true).await;
-        let b = start_agent_host("HostB最新会话", false, false).await;
+        let first = allocate_host_root();
+        let second = allocate_host_root();
+        let (a_root, b_root) = if first.1.root_id() < second.1.root_id() {
+            (first, second)
+        } else {
+            (second, first)
+        };
+        let a = start_agent_host(a_root, "HostA过期会话", true, true).await;
+        let b = start_agent_host(b_root, "HostB最新会话", false, false).await;
         (a, b)
     });
 
@@ -2323,6 +2333,21 @@ fn subscription_replacement_generation_fencing_and_stale_host_rpc_isolation() {
         !app.shows("HostA过期会话"),
         "stale delayed Host A RPC response must not overwrite Host B sessions"
     );
+
+    // The active Host sorts after another saved Host. Single-computer mode must
+    // keep the active catalog on screen, not filter it out in favor of Host A.
+    app.press("label:Switch host filter").unwrap();
+    app.wait_for("text:单台").unwrap();
+    app.wait_for("label:Session HostB最新会话").unwrap();
+    assert!(!app.screen().matches("label:Host Host A Slow").unwrap());
+    let filter = rt.block_on(bridge.bootstrap()).unwrap()["filter"].clone();
+    assert_eq!(
+        filter,
+        json!({ "kind": "single_computer", "root_id": host_b.pairing.root_id })
+    );
+    app.press("label:Switch host filter").unwrap();
+    app.wait_for("label:Host Host A Slow").unwrap();
+    assert!(app.screen().matches("label:Session HostB最新会话").unwrap());
 
     let _ = host_a.catalog_fail.load(Ordering::SeqCst);
     rt.block_on(async {
@@ -2866,8 +2891,18 @@ fn session_switch_fences_stale_send_and_renders_room_session_author() {
 
     let support_dir = tempfile::tempdir().unwrap();
     let channel = HostChannel::new();
-    let _bridge =
+    let bridge =
         HostBridge::attach(channel.clone(), support_dir.path(), rt.handle().clone()).unwrap();
+    let logs_host = rt.block_on(LiveTestHost::start());
+    let logs_uri = make_ticket_uri(
+        &logs_host,
+        "Logs-only Host",
+        "peer_eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    );
+    rt.block_on(async {
+        bridge.pair_host(json!({ "uri": logs_uri })).await.unwrap();
+        bridge.disconnect_host().await.unwrap();
+    });
 
     let mut cfg = engine_config(channel.clone(), rt.handle().clone());
     cfg.viewport = Size::new(px(390.0), px(844.0));
@@ -2911,6 +2946,13 @@ fn session_switch_fences_stale_send_and_renders_room_session_author() {
     app.wait_for("text:Beta 历史记录").unwrap();
     app.wait_for("text:Beta首帧立即送达").unwrap();
 
+    app.press("label:Copy message b-1").unwrap();
+    app.wait_until("Beta reply copied", Duration::from_secs(5), |screen| {
+        screen.clipboard() == Some("Beta 历史记录")
+    })
+    .unwrap();
+    assert!(!app.screen().matches("label:Agent message b-1").unwrap());
+
     // Release Session Alpha's delayed SendResult::Queued response!
     send_a_gate.notify_waiters();
     app.wait(Duration::from_millis(250)).unwrap();
@@ -2932,10 +2974,28 @@ fn session_switch_fences_stale_send_and_renders_room_session_author() {
     app.wait_for("text:RPK 校验已全部通过").unwrap();
     app.wait_for("text:Session Alpha").unwrap();
 
+    app.press("label:Copy message rm-1").unwrap();
+    app.wait_until("Room message copied", Duration::from_secs(5), |screen| {
+        screen.clipboard() == Some("请核对 QUIC 证书状态")
+    })
+    .unwrap();
+
+    assert!(!app.screen().matches("label:Agent message rm-2").unwrap());
+    assert!(!app.screen().matches("label:React to message rm-2").unwrap());
+
+    // A non-Agent Host must not inherit the previous Room transcript.
+    app.press("label:Open drawer").unwrap();
+    app.press("label:Host Logs-only Host").unwrap();
+    app.wait_for("text:远端 Host 已就绪").unwrap();
+    app.wait_for("text:Logs-only Host").unwrap();
+    assert!(!app.shows("请核对 QUIC 证书状态"));
+    assert!(!app.shows("RPK 校验已全部通过"));
+
     drop(app);
     rt.block_on(async {
         stop.cancel();
         let _ = tokio::time::timeout(Duration::from_secs(5), server).await;
+        logs_host.shutdown().await;
     });
 }
 

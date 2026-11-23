@@ -157,17 +157,17 @@ export function DrawerHome(props: DrawerHomeProps) {
     return Array.from(groups.values());
   };
 
-  const visibleHosts = (): SavedHostItem[] => {
-    const hs = props.hostState();
-    if (hs.filter.kind === 'single_computer') {
-      const targetId = hs.filter.root_id;
-      return hs.hosts.filter((h) => h.rootId === targetId);
-    }
-    return hs.hosts;
+  const offlineHosts = (): SavedHostItem[] => {
+    const { active, filter, hosts } = props.hostState();
+    if (!active) return hosts;
+    if (filter.kind === 'single_computer') return [];
+    return hosts.filter((h) => h.rootId !== active.rootId);
   };
 
-  const onlineHosts = (): SavedHostItem[] => visibleHosts().filter((h) => h.connected);
-  const offlineHosts = (): SavedHostItem[] => visibleHosts().filter((h) => !h.connected);
+  const canSwitchHostFilter = () => {
+    const { active, filter } = props.hostState();
+    return active !== null || filter.kind === 'single_computer';
+  };
 
   const activeHostLabel = (): string => {
     const active = props.hostState().active;
@@ -696,8 +696,7 @@ export function DrawerHome(props: DrawerHomeProps) {
           </View>
         </If>
 
-        {/* Online Hosts + Borderless Spatial Tree */}
-        <Each of={onlineHosts()} key={(h) => h.rootId}>
+        <If when={props.hostState().active}>
           {(hostItem) => (
             <View style={{ gap: 6 }}>
               <View
@@ -727,7 +726,7 @@ export function DrawerHome(props: DrawerHomeProps) {
                 >
                   {hostItem().hostName}
                 </Text>
-                <If when={hasAgentEndpoint(props.hostState().active)}>
+                <If when={hasAgentEndpoint(hostItem())}>
                   <View
                     role="button"
                     accessibilityLabel="Create new room"
@@ -744,7 +743,7 @@ export function DrawerHome(props: DrawerHomeProps) {
                 </If>
               </View>
 
-              <If when={hasAgentEndpoint(props.hostState().active)}>
+              <If when={hasAgentEndpoint(hostItem())}>
                 <View style={{ gap: 8 }}>
                   {/* Pinned Section */}
                   <If when={pinnedSessions().length > 0}>
@@ -929,7 +928,7 @@ export function DrawerHome(props: DrawerHomeProps) {
               </If>
 
               {/* Non-Agent Host fallback row (e.g. minimal hostLogs-only Host) */}
-              <If when={!hasAgentEndpoint(props.hostState().active)}>
+              <If when={!hasAgentEndpoint(hostItem())}>
                 <View
                   role="button"
                   accessibilityLabel={'Open workspace ' + hostItem().hostName}
@@ -947,7 +946,7 @@ export function DrawerHome(props: DrawerHomeProps) {
               </If>
             </View>
           )}
-        </Each>
+        </If>
 
         {/* Offline / Saved Hosts */}
         <If when={offlineHosts().length > 0}>
@@ -1060,16 +1059,16 @@ export function DrawerHome(props: DrawerHomeProps) {
         }}
       >
         <View
-          role="button"
-          accessibilityLabel="Switch host filter"
-          onPress={props.onSwitchFilter}
+          role={canSwitchHostFilter() ? 'button' : undefined}
+          accessibilityLabel={canSwitchHostFilter() ? 'Switch host filter' : undefined}
+          onPress={canSwitchHostFilter() ? props.onSwitchFilter : undefined}
           style={{
             flex: 1,
             minHeight: 40,
             paddingHorizontal: 12,
             borderRadius: 20,
-            backgroundColor: palette().surface,
-            borderWidth: 1,
+            backgroundColor: canSwitchHostFilter() ? palette().surface : undefined,
+            borderWidth: canSwitchHostFilter() ? 1 : 0,
             borderColor: palette().line,
             flexDirection: 'row',
             alignItems: 'center',
@@ -1089,9 +1088,11 @@ export function DrawerHome(props: DrawerHomeProps) {
               {activeHostLabel()}
             </Text>
           </View>
-          <Text style={{ fontSize: 12, color: palette().ink2 }}>
-            {props.hostState().filter.kind === 'all_computers' ? '全部' : '单台'}
-          </Text>
+          <If when={canSwitchHostFilter()}>
+            <Text style={{ fontSize: 12, color: palette().ink2 }}>
+              {props.hostState().filter.kind === 'all_computers' ? '全部' : '单台'}
+            </Text>
+          </If>
         </View>
       </View>
     </View>
