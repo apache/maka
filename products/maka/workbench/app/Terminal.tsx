@@ -363,6 +363,19 @@ export function Terminal(props: { model: TerminalModel }) {
     const output = model.entry().result.output;
     return output?.mode === 'pipes' ? output.stdout + output.stderr : '';
   };
+  const hasOutput = () =>
+    model.entry().result.mode === 'pipes' ? pipes().length > 0 : model.version() > 0;
+  const needsRetry = () => model.state() === 'failed' || model.control() === 'refused';
+  const unreadable = () =>
+    !hasOutput() &&
+    (model.state() === 'failed' || (Boolean(model.error()) && model.state() !== 'live'));
+  const overlayMessage = () =>
+    model.error() ||
+    (model.state() === 'unavailable'
+      ? tr('Waiting for retained output…')
+      : needsRetry()
+        ? tr('Terminal observation interrupted.')
+        : '');
   return (
     <View style={{ flex: 1, minHeight: 0, gap: 8 }}>
       <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 4, alignItems: 'center' }}>
@@ -637,73 +650,54 @@ export function Terminal(props: { model: TerminalModel }) {
             />
           </If>
         </View>
-        {(() => {
-          const hasOutput = () =>
-            model.entry().result.mode === 'pipes' ? pipes().length > 0 : model.version() > 0;
-          const needsRetry = () => model.state() === 'failed' || model.control() === 'refused';
-          const unreadable = () =>
-            !hasOutput() &&
-            (model.state() === 'failed' || (Boolean(model.error()) && model.state() !== 'live'));
-          const overlayMessage = () =>
-            model.error() ||
-            (model.state() === 'unavailable'
-              ? tr('Waiting for retained output…')
-              : needsRetry()
-                ? tr('Terminal observation interrupted.')
-                : '');
-          return (
-            <>
-              <If when={unreadable()}>
-                <View
-                  style={{
-                    position: 'absolute',
-                    left: 0,
-                    right: 0,
-                    top: 0,
-                    bottom: 0,
-                    backgroundColor: SURFACE.background,
-                  }}
-                >
-                  <RegionEmptyError
-                    tone="danger"
-                    icon="terminal"
-                    title={model.error() || tr('Could not open terminal.')}
-                    retry={needsRetry() ? inputAction(model.retry, null) : undefined}
-                    retryLabel={tr('Retry terminal observation')}
-                  />
-                </View>
-              </If>
-              <If when={!unreadable() && Boolean(overlayMessage())}>
-                <View
-                  style={[
-                    {
-                      position: 'absolute',
-                      left: 12,
-                      right: 12,
-                      bottom: 12,
-                      alignItems: 'flex-end',
-                    },
-                    { pointerEvents: 'box-none' },
-                  ]}
-                >
-                  <FloatingNoticeCapsule
-                    tone={model.error() ? 'danger' : 'warning'}
-                    message={overlayMessage()}
-                    action={
-                      needsRetry()
-                        ? {
-                            label: tr('Retry'),
-                            primary: true,
-                            onPress: inputAction(model.retry, null),
-                          }
-                        : undefined
+        <If when={unreadable()}>
+          <View
+            style={{
+              position: 'absolute',
+              left: 0,
+              right: 0,
+              top: 0,
+              bottom: 0,
+              backgroundColor: SURFACE.background,
+            }}
+          >
+            <RegionEmptyError
+              tone="danger"
+              icon="terminal"
+              title={model.error() || tr('Could not open terminal.')}
+              retry={needsRetry() ? inputAction(model.retry, null) : undefined}
+              retryLabel={tr('Retry terminal observation')}
+            />
+          </View>
+        </If>
+        <If when={!unreadable() && Boolean(overlayMessage())}>
+          <View
+            style={[
+              {
+                position: 'absolute',
+                left: 12,
+                right: 12,
+                bottom: 12,
+                alignItems: 'flex-end',
+              },
+              { pointerEvents: 'box-none' },
+            ]}
+          >
+            <FloatingNoticeCapsule
+              tone={model.error() ? 'danger' : 'warning'}
+              message={overlayMessage()}
+              action={
+                needsRetry()
+                  ? {
+                      label: tr('Retry'),
+                      primary: true,
+                      onPress: inputAction(model.retry, null),
                     }
-                  />
-                </View>
-              </If>
-            </>
-          );
-        })()}
+                  : undefined
+              }
+            />
+          </View>
+        </If>
       </View>
       <If when={confirmation()}>
         <ModalDialog size="alert" onCancel={() => confirmation.set(false)}>

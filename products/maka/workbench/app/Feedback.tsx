@@ -202,7 +202,13 @@ export function Toaster(props: {
   const hiddenCount = () => Math.max(0, displayItems().length - MAX_COLLAPSED_TOASTS);
 
   effect(() => {
-    const shouldPause = expanded() && displayItems().length > 0;
+    const hasItems = displayItems().length > 0;
+    if (!hasItems && hovered()) {
+      // Unmounting the stack while hovered skips onMouseLeave; clear hover so future
+      // toasts start collapsed and auto-dismiss normally.
+      hovered.set(false);
+    }
+    const shouldPause = expanded() && hasItems;
     if (shouldPause && !pausedByToaster) {
       pausedByToaster = true;
       store.pause();
@@ -233,14 +239,15 @@ export function Toaster(props: {
 
   const cardHeight = (id: string) => heights()[id] ?? DEFAULT_TOAST_HEIGHT;
 
-  const collapsedTranslateY = (index: number, id: string) => {
-    const list = visibleItems();
-    const front = list[0];
-    if (!front || index === 0) return 0;
-    const frontH = cardHeight(front.id);
-    const selfH = cardHeight(id);
+  const frontHeight = () => {
+    const front = visibleItems()[0];
+    return front ? cardHeight(front.id) : DEFAULT_TOAST_HEIGHT;
+  };
+
+  const collapsedTranslateY = (index: number) => {
+    if (index === 0) return 0;
     const depth = Math.min(index, MAX_COLLAPSED_TOASTS - 1);
-    return Math.max(0, frontH - selfH) + depth * STACK_OFFSET_Y;
+    return depth * STACK_OFFSET_Y;
   };
 
   const expandedTranslateY = (index: number) => {
@@ -473,15 +480,17 @@ export function Toaster(props: {
               height: stackHeight(),
               zIndex: props.zIndex ?? 80,
             },
-            { pointerEvents: 'box-none' },
+            // Sized strictly to the active stack so hovering across expanded gaps stays continuous.
+            { pointerEvents: 'auto' },
           ]}
         >
           <Each of={visibleItems()} key={(item) => item.id}>
             {(item, index) => {
+              const isCollapsedBack = () => !expanded() && index() > 0;
               const isCollapsedHidden = () => !expanded() && index() >= MAX_COLLAPSED_TOASTS;
               const isInteractive = () => expanded() || index() === 0;
               const translateY = () =>
-                expanded() ? expandedTranslateY(index()) : collapsedTranslateY(index(), item().id);
+                expanded() ? expandedTranslateY(index()) : collapsedTranslateY(index());
               const scale = () => {
                 if (expanded()) return 1;
                 if (index() >= MAX_COLLAPSED_TOASTS) {
@@ -506,20 +515,15 @@ export function Toaster(props: {
                     };
               return (
                 <View
-                  onLayout={({ bounds }) => measureHeight(item().id, bounds.size.height)}
                   style={[
                     {
                       ...floatingStyle(),
                       padding: 0,
-                      paddingHorizontal: 12,
-                      paddingVertical: 8,
                       position: 'absolute',
                       top: 0,
                       right: 0,
                       width: cardWidth(),
-                      flexDirection: 'row',
-                      alignItems: 'center',
-                      gap: 8,
+                      ...(isCollapsedBack() ? { height: frontHeight() } : {}),
                       zIndex: 40 - index(),
                       opacity: opacity(),
                       translate: [0, translateY()],
@@ -529,7 +533,30 @@ export function Toaster(props: {
                     { pointerEvents: isInteractive() && !isCollapsedHidden() ? 'auto' : 'none' },
                   ]}
                 >
-                  {renderCardContent(item, index)}
+                  <View
+                    style={{
+                      width: '100%',
+                      borderRadius: 11,
+                      ...(isCollapsedBack()
+                        ? { height: frontHeight(), overflow: 'hidden' as const }
+                        : {}),
+                    }}
+                  >
+                    <View
+                      onLayout={({ bounds }) => measureHeight(item().id, bounds.size.height)}
+                      style={{
+                        width: '100%',
+                        flexShrink: 0,
+                        paddingHorizontal: 12,
+                        paddingVertical: 8,
+                        flexDirection: 'row',
+                        alignItems: 'center',
+                        gap: 8,
+                      }}
+                    >
+                      {renderCardContent(item, index)}
+                    </View>
+                  </View>
                 </View>
               );
             }}

@@ -881,6 +881,17 @@ function SourceEditorView(props: {
     toast.show({ id: 'current-file.notice', tone: 'info', message: notice });
   });
 
+  const readError = () => {
+    const state = model.state();
+    return state.kind === 'error' ? renderText(state.message) : '';
+  };
+  const calloutTone = () =>
+    model.saveError() || readError() ? ('danger' as const) : ('warning' as const);
+  const calloutMessage = () =>
+    model.saveError() ||
+    readError() ||
+    (model.stale() ? tr('The workspace may have changed. Refresh for current contents.') : '');
+
   return (
     <View ref={bindShortcuts} style={{ flex: 1, minHeight: 0, gap: 6 }}>
       <View
@@ -949,47 +960,31 @@ function SourceEditorView(props: {
         </Popover>
       </View>
 
-      {(() => {
-        const readError = () => {
-          const state = model.state();
-          return state.kind === 'error' ? renderText(state.message) : '';
-        };
-        const calloutTone = () =>
-          model.saveError() || readError() ? ('danger' as const) : ('warning' as const);
-        const calloutMessage = () =>
-          model.saveError() ||
-          readError() ||
-          (model.stale()
-            ? tr('The workspace may have changed. Refresh for current contents.')
-            : '');
-        return (
-          <If when={Boolean(calloutMessage())}>
-            <InlineCallout
-              tone={calloutTone()}
-              message={calloutMessage()}
-              action={
-                model.saveError()
-                  ? {
-                      label: tr('Discard edits'),
-                      disabled: model.saving(),
-                      onPress: model.discard,
-                    }
-                  : readError()
-                    ? {
-                        label: tr('Retry'),
-                        disabled: model.state().kind === 'loading',
-                        onPress: inputAction(model.refresh, null),
-                      }
-                    : {
-                        label: tr('Refresh'),
-                        disabled: model.state().kind === 'loading',
-                        onPress: inputAction(model.refresh, null),
-                      }
-              }
-            />
-          </If>
-        );
-      })()}
+      <If when={Boolean(calloutMessage())}>
+        <InlineCallout
+          tone={calloutTone()}
+          message={calloutMessage()}
+          action={
+            model.saveError()
+              ? {
+                  label: tr('Discard edits'),
+                  disabled: model.saving(),
+                  onPress: model.discard,
+                }
+              : readError()
+                ? {
+                    label: tr('Retry'),
+                    disabled: model.state().kind === 'loading',
+                    onPress: inputAction(model.refresh, null),
+                  }
+                : {
+                    label: tr('Refresh'),
+                    disabled: model.state().kind === 'loading',
+                    onPress: inputAction(model.refresh, null),
+                  }
+          }
+        />
+      </If>
 
       <If when={finding()}>
         <View

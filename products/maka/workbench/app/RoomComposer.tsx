@@ -643,6 +643,32 @@ export function RoomComposer(props: {
     pending() === null &&
     (Boolean(text().trim()) || attachments.ids().length > 0);
 
+  const streamError = () => props.streamError?.() ?? '';
+  const waiting = () => props.waitingMembers?.() ?? [];
+  const hasFailure = () => Boolean(streamError() || error() || pending());
+  const hasWaiting = () => waiting().length > 0;
+  const failureMessage = () =>
+    error() || (pending() ? tr('Could not send to the room.') : streamError());
+  const pendingPreview = () => {
+    const draft = pending()?.correlation.draft;
+    if (!draft) return '';
+    const mentions = (draft.mentions ?? []).map((id) => '@' + props.name(id)).join(' ');
+    return [draft.text.trim(), mentions].filter(Boolean).join(' ');
+  };
+  const retryFailure = () => {
+    if (pending()) {
+      void recover();
+      return;
+    }
+    if (error()) {
+      void (ready() ? flush() : restore())
+        .then(() => error.set(''))
+        .catch((reason) => error.set(describe(reason)));
+      return;
+    }
+    props.retryStream?.();
+  };
+
   return (
     <View
       style={{
@@ -870,79 +896,50 @@ export function RoomComposer(props: {
       </If>
 
       <View style={{ flexShrink: 0 }}>
-        {(() => {
-          const streamError = () => props.streamError?.() ?? '';
-          const waiting = () => props.waitingMembers?.() ?? [];
-          const hasFailure = () => Boolean(streamError() || error() || pending());
-          const hasWaiting = () => waiting().length > 0;
-          const failureMessage = () =>
-            error() || (pending() ? tr('Could not send to the room.') : streamError());
-          const pendingPreview = () => {
-            const draft = pending()?.correlation.draft;
-            if (!draft) return '';
-            const mentions = (draft.mentions ?? []).map((id) => '@' + props.name(id)).join(' ');
-            return [draft.text.trim(), mentions].filter(Boolean).join(' ');
-          };
-          const retryFailure = () => {
-            if (pending()) {
-              void recover();
-              return;
-            }
-            if (error()) {
-              void (ready() ? flush() : restore())
-                .then(() => error.set(''))
-                .catch((reason) => error.set(describe(reason)));
-              return;
-            }
-            props.retryStream?.();
-          };
-          return (
-            <If when={hasFailure() || hasWaiting()}>
-              <ComposerShelf inset={20}>
-                <If when={hasFailure()}>
-                  <ComposerShelfRow
-                    tone="danger"
-                    message={failureMessage()}
-                    detail={pending() ? pendingPreview() : undefined}
-                    divided={hasWaiting()}
-                    action={{
-                      label: tr('Retry'),
-                      primary: true,
-                      disabled: busy(),
-                      onPress: retryFailure,
-                    }}
-                    onDismiss={
-                      pending()
-                        ? () => {
-                            if (!busy()) void removePending();
-                          }
-                        : undefined
-                    }
-                    dismissLabel={tr('Dismiss message status')}
-                  />
-                </If>
-                <If when={hasWaiting()}>
-                  <ComposerShelfRow
-                    tone="warning"
-                    message={tr('Waiting for your input', {
-                      names: waiting()
-                        .map((m) => m.title)
-                        .join(', '),
-                    })}
-                    action={{
-                      label: tr('Open to respond'),
-                      primary: true,
-                      onPress: () => {
-                        const first = waiting()[0];
-                        if (first) props.openAgent(first.sessionId);
-                      },
-                    }}
-                  />
-                </If>
-              </ComposerShelf>
+        <If when={hasFailure() || hasWaiting()}>
+          <ComposerShelf inset={20}>
+            <If when={hasFailure()}>
+              <ComposerShelfRow
+                tone="danger"
+                message={failureMessage()}
+                detail={pending() ? pendingPreview() : undefined}
+                divided={hasWaiting()}
+                action={{
+                  label: tr('Retry'),
+                  primary: true,
+                  disabled: busy(),
+                  onPress: retryFailure,
+                }}
+                onDismiss={
+                  pending()
+                    ? () => {
+                        if (!busy()) void removePending();
+                      }
+                    : undefined
+                }
+                dismissLabel={tr('Dismiss message status')}
+              />
             </If>
-          );
-        })()}
+            <If when={hasWaiting()}>
+              <ComposerShelfRow
+                tone="warning"
+                message={tr('Waiting for your input', {
+                  names: waiting()
+                    .map((m) => m.title)
+                    .join(', '),
+                })}
+                action={{
+                  label: tr('Open to respond'),
+                  primary: true,
+                  onPress: () => {
+                    const first = waiting()[0];
+                    if (first) props.openAgent(first.sessionId);
+                  },
+                }}
+              />
+            </If>
+          </ComposerShelf>
+        </If>
         <View
           ref={(node) => composerCard.set(node)}
           style={{ backgroundColor: C.card, borderRadius: 20, padding: 16, gap: 12 }}

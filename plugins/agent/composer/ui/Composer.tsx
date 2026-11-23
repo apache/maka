@@ -436,6 +436,53 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
       </If>
     </View>
   );
+  let lastNoticeKey = '';
+  effect(() => {
+    const session = props.session();
+    const message = session?.notice() ?? '';
+    const key = session && message ? `${session.sessionId}:${message}` : '';
+    if (!key) {
+      lastNoticeKey = '';
+      return;
+    }
+    if (key === lastNoticeKey) return;
+    lastNoticeKey = key;
+    toast.show({ id: 'composer.notice', tone: 'info', message });
+  });
+  cleanup(() => {
+    if (lastNoticeKey) toast.dismiss('composer.notice');
+  });
+
+  const shelfStatus = (): ComposerShelfStatus | null => {
+    const session = props.session();
+    const external = props.shelfStatus?.() ?? null;
+    const sessionError = session?.error() ?? '';
+    if (sessionError) {
+      return {
+        tone: 'danger',
+        message: sessionError,
+        onDismiss: () => session?.dismissError(),
+      };
+    }
+    if (external?.tone === 'danger') return external;
+    const mcp = session?.projectMcp;
+    if (mcp && !mcp.proposal() && mcp.error()) {
+      return {
+        tone: 'danger',
+        message: mcp.error(),
+        onDismiss: mcp.pending() ? undefined : mcp.dismiss,
+      };
+    }
+    if (external) return external;
+    if (platform.idiom !== 'terminal' && session?.connected() && warning()) {
+      return { tone: 'warning', message: warning() };
+    }
+    if (mcp && !mcp.proposal() && mcp.notice()) {
+      return { tone: 'info', message: mcp.notice() };
+    }
+    return null;
+  };
+
   return (
     <View
       style={{
@@ -554,85 +601,29 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
       </If>
       {props.request}
       <View style={{ flexShrink: 0 }}>
-        {(() => {
-          let lastNoticeKey = '';
-          effect(() => {
-            const session = props.session();
-            const message = session?.notice() ?? '';
-            const key = session && message ? `${session.sessionId}:${message}` : '';
-            if (!key) {
-              lastNoticeKey = '';
-              return;
-            }
-            if (key === lastNoticeKey) return;
-            lastNoticeKey = key;
-            toast.show({ id: 'composer.notice', tone: 'info', message });
-          });
-          cleanup(() => {
-            if (lastNoticeKey) toast.dismiss('composer.notice');
-          });
-
-          const shelfStatus = (): ComposerShelfStatus | null => {
-            const session = props.session();
-            const external = props.shelfStatus?.() ?? null;
-            const sessionError = session?.error() ?? '';
-            if (sessionError) {
-              return {
-                tone: 'danger',
-                message: sessionError,
-                onDismiss: () => session?.dismissError(),
-              };
-            }
-            if (external?.tone === 'danger') return external;
-            const mcp = session?.projectMcp;
-            if (mcp && !mcp.proposal() && mcp.error()) {
-              return {
-                tone: 'danger',
-                message: mcp.error(),
-                onDismiss: mcp.pending() ? undefined : mcp.dismiss,
-              };
-            }
-            if (external) return external;
-            if (platform.idiom !== 'terminal' && session?.connected() && warning()) {
-              return { tone: 'warning', message: warning() };
-            }
-            if (mcp && !mcp.proposal() && mcp.notice()) {
-              return { tone: 'info', message: mcp.notice() };
-            }
-            return null;
-          };
-
-          return (
-            <>
-              <If when={props.session() === null && shelfStatus() !== null}>
-                <ComposerShelf inset={24}>
-                  <ComposerShelfRow
-                    tone={shelfStatus()!.tone}
-                    message={shelfStatus()!.message}
-                    detail={shelfStatus()!.detail}
-                    action={shelfStatus()!.action}
-                    secondaryAction={shelfStatus()!.secondaryAction}
-                    onDismiss={shelfStatus()!.onDismiss}
-                  />
-                </ComposerShelf>
-              </If>
-              <Each
-                of={props.session() ? [props.session()!] : []}
-                key={(session) => session.sessionId}
-              >
-                {(session) => {
-                  const owner = session();
-                  return (
-                    <View>
-                      <ProjectMcp owner={owner.projectMcp} />
-                      <ComposerDetails session={owner} status={shelfStatus} />
-                    </View>
-                  );
-                }}
-              </Each>
-            </>
-          );
-        })()}
+        <If when={props.session() === null && shelfStatus() !== null}>
+          <ComposerShelf inset={24}>
+            <ComposerShelfRow
+              tone={shelfStatus()!.tone}
+              message={shelfStatus()!.message}
+              detail={shelfStatus()!.detail}
+              action={shelfStatus()!.action}
+              secondaryAction={shelfStatus()!.secondaryAction}
+              onDismiss={shelfStatus()!.onDismiss}
+            />
+          </ComposerShelf>
+        </If>
+        <Each of={props.session() ? [props.session()!] : []} key={(session) => session.sessionId}>
+          {(session) => {
+            const owner = session();
+            return (
+              <View>
+                <ProjectMcp owner={owner.projectMcp} />
+                <ComposerDetails session={owner} status={shelfStatus} />
+              </View>
+            );
+          }}
+        </Each>
         <View
           ref={(node) => {
             cardRoot.set(node);
