@@ -263,11 +263,9 @@ pub(super) async fn desktop_room_reply_wakes_an_agent_without_mixing_drafts() {
         point(reply.left() - px(64.), reply.bottom() + px(16.)),
         MouseButton::Right,
     );
-    desktop.press("Copy message").await;
+    let copy = desktop.control("Copy message").await;
     let copied = desktop
-        .until("agent reply was not readable in the Room", || {
-            desktop.platform.take_clipboard_write()
-        })
+        .copy_at("agent reply was not readable in the Room", copy.center())
         .await;
     assert_eq!(copied, room_reply);
     // Interactive Telegram-style reactions: click a quick reaction and open the full EmojiPicker popover.
