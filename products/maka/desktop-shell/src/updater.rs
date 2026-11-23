@@ -23,13 +23,14 @@ use maka_updater::{AvailableUpdate, BuildInfo, Channel, Progress, StagedUpdate};
 use nsh_engine::{HostChannel, JsonValue};
 use serde::Serialize;
 use std::{
+    future::Future,
     path::PathBuf,
     sync::{Arc, Condvar, Mutex},
     time::{Duration, Instant},
 };
 use tokio::{
     runtime::Handle,
-    sync::{mpsc, watch},
+    sync::{mpsc, oneshot, watch},
 };
 use uuid::Uuid;
 
@@ -97,10 +98,6 @@ impl SwapFence {
         Some(SwapGuard(Arc::clone(self)))
     }
 
-    fn is_closing(&self) -> bool {
-        self.state.lock().unwrap_or_else(|e| e.into_inner()).closing
-    }
-
     fn close_and_wait(&self) {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         state.closing = true;
@@ -120,6 +117,31 @@ impl Drop for SwapGuard {
     }
 }
 
+struct DownloadSlot {
+    closing: bool,
+    active: Option<tokio::task::JoinHandle<()>>,
+}
+
+struct TempFileGuard(Option<PathBuf>);
+
+impl TempFileGuard {
+    fn new(path: PathBuf) -> Self {
+        Self(Some(path))
+    }
+
+    fn disarm(&mut self) {
+        self.0 = None;
+    }
+}
+
+impl Drop for TempFileGuard {
+    fn drop(&mut self) {
+        if let Some(path) = self.0.take() {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
 pub(crate) struct Controller {
     info: BuildInfo,
     root: PathBuf,
@@ -129,7 +151,8 @@ pub(crate) struct Controller {
     events: Arc<Mutex<Option<HostChannel>>>,
     runtime: Handle,
     swap: Arc<SwapFence>,
-    active_download: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    shutdown: watch::Sender<bool>,
+    downloads: Mutex<DownloadSlot>,
     state: Mutex<State>,
 }
 
@@ -154,6 +177,7 @@ impl Controller {
             progress: None,
             error: None,
         };
+        let (shutdown, _) = watch::channel(false);
         let controller = Arc::new(Self {
             info,
             root,
@@ -163,7 +187,11 @@ impl Controller {
             events,
             runtime: runtime.clone(),
             swap: SwapFence::new(),
-            active_download: Mutex::new(None),
+            shutdown,
+            downloads: Mutex::new(DownloadSlot {
+                closing: false,
+                active: None,
+            }),
             state: Mutex::new(State {
                 snapshot,
                 staged: None,
@@ -171,13 +199,22 @@ impl Controller {
         });
         if controller.info.channel != Channel::Dev {
             let background = Arc::clone(&controller);
+            let mut shutdown = controller.shutdown.subscribe();
             runtime.spawn(async move {
-                tokio::time::sleep(INITIAL_CHECK_DELAY).await;
+                tokio::select! {
+                    biased;
+                    _ = shutdown.wait_for(|&closed| closed) => return,
+                    _ = tokio::time::sleep(INITIAL_CHECK_DELAY) => {}
+                }
                 background.check(false).await;
                 let mut interval = tokio::time::interval(CHECK_INTERVAL);
                 interval.tick().await;
                 loop {
-                    interval.tick().await;
+                    tokio::select! {
+                        biased;
+                        _ = shutdown.wait_for(|&closed| closed) => return,
+                        _ = interval.tick() => {}
+                    }
                     let snapshot = background.snapshot();
                     let can_recheck = matches!(snapshot.status, Status::Idle | Status::UpToDate)
                         || (snapshot.status == Status::Available && !snapshot.can_install);
@@ -250,11 +287,7 @@ impl Controller {
         let (snapshot, auto_download) =
             self.apply_check_result(result, can_install, user_initiated);
         if let Some(available) = auto_download {
-            let downloader = Arc::clone(self);
-            let handle = self.runtime.spawn(async move {
-                let _ = downloader.perform_download(available, user_initiated).await;
-            });
-            self.register_download(handle);
+            let _ = self.spawn_download(available, user_initiated);
         }
         snapshot
     }
@@ -321,6 +354,9 @@ impl Controller {
     }
 
     pub(crate) async fn download(self: &Arc<Self>) -> Result<Snapshot, String> {
+        if *self.shutdown.borrow() {
+            return Err("Desktop is exiting; update download cancelled.".into());
+        }
         let available = {
             let mut guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
             if guard.snapshot.status == Status::Ready {
@@ -348,7 +384,42 @@ impl Controller {
             available
         };
 
-        self.perform_download(available, true).await
+        let Some(result_rx) = self.spawn_download(available, true) else {
+            return Err("Desktop is exiting; update download cancelled.".into());
+        };
+        result_rx
+            .await
+            .unwrap_or_else(|_| Err("Update download task stopped unexpectedly.".into()))
+    }
+
+    fn spawn_download(
+        self: &Arc<Self>,
+        available: AvailableUpdate,
+        user_initiated: bool,
+    ) -> Option<oneshot::Receiver<Result<Snapshot, String>>> {
+        let downloader = Arc::clone(self);
+        self.spawn_download_task(async move {
+            downloader.perform_download(available, user_initiated).await
+        })
+    }
+
+    fn spawn_download_task<F>(
+        &self,
+        future: F,
+    ) -> Option<oneshot::Receiver<Result<Snapshot, String>>>
+    where
+        F: Future<Output = Result<Snapshot, String>> + Send + 'static,
+    {
+        let mut slot = self.downloads.lock().unwrap_or_else(|e| e.into_inner());
+        if slot.closing {
+            return None;
+        }
+        let (tx, rx) = oneshot::channel();
+        let handle = self.runtime.spawn(async move {
+            let _ = tx.send(future.await);
+        });
+        slot.active = Some(handle);
+        Some(rx)
     }
 
     async fn perform_download(
@@ -373,23 +444,59 @@ impl Controller {
         };
 
         let download_dir = std::env::temp_dir().join("maka-updates");
-        let mut last_emit = Instant::now() - PROGRESS_EMIT_INTERVAL;
-        let archive = match maka_updater::download(&available, &download_dir, |progress| {
-            let finished = progress
-                .total
-                .is_some_and(|total| progress.received >= total);
-            if finished || last_emit.elapsed() >= PROGRESS_EMIT_INTERVAL {
-                last_emit = Instant::now();
-                let snapshot = {
-                    let mut guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
-                    guard.snapshot.progress = Some(progress);
-                    guard.snapshot.clone()
-                };
-                self.emit(&snapshot);
-            }
-        })
+        self.perform_download_with(
+            available,
+            user_initiated,
+            download_dir,
+            move |archive| async move {
+                maka_updater::stage(installation, archive)
+                    .await
+                    .map_err(|error| error.to_string())
+            },
+        )
         .await
-        {
+    }
+
+    async fn perform_download_with<S, Fut>(
+        self: &Arc<Self>,
+        available: AvailableUpdate,
+        user_initiated: bool,
+        download_dir: PathBuf,
+        stage: S,
+    ) -> Result<Snapshot, String>
+    where
+        S: FnOnce(PathBuf) -> Fut,
+        Fut: Future<Output = Result<StagedUpdate, String>>,
+    {
+        let mut shutdown = self.shutdown.subscribe();
+        if *shutdown.borrow() {
+            return Err("Update cancelled during shutdown.".into());
+        }
+
+        let mut last_emit = Instant::now() - PROGRESS_EMIT_INTERVAL;
+        // Cancel only the in-flight HTTP transfer on shutdown so its `.part` guard cleans up
+        // promptly; once staging begins, shutdown waits for unpack and archive removal together.
+        let download_result = tokio::select! {
+            biased;
+            _ = shutdown.wait_for(|&closed| closed) => {
+                return Err("Update cancelled during shutdown.".into());
+            }
+            result = maka_updater::download(&available, &download_dir, |progress| {
+                let finished = progress
+                    .total
+                    .is_some_and(|total| progress.received >= total);
+                if finished || last_emit.elapsed() >= PROGRESS_EMIT_INTERVAL {
+                    last_emit = Instant::now();
+                    let snapshot = {
+                        let mut guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
+                        guard.snapshot.progress = Some(progress);
+                        guard.snapshot.clone()
+                    };
+                    self.emit(&snapshot);
+                }
+            }) => result,
+        };
+        let archive = match download_result {
             Ok(path) => path,
             Err(error) => {
                 let message = error.to_string();
@@ -397,19 +504,34 @@ impl Controller {
                 return Err(message);
             }
         };
+        let mut archive_guard = TempFileGuard::new(archive.clone());
+        if *shutdown.borrow() {
+            let _ = tokio::fs::remove_file(&archive).await;
+            archive_guard.disarm();
+            return Err("Update cancelled during shutdown.".into());
+        }
 
-        let staged_result = maka_updater::stage(installation, archive.clone()).await;
+        let staged_result = stage(archive.clone()).await;
         // stage() unpacks into its own scratch directory and no longer references the archive;
-        // remove it immediately so deferring restart and quitting leaves no stale downloads behind.
+        // remove it immediately so deferring restart or exiting during staging leaves no stale
+        // downloads behind.
         let _ = tokio::fs::remove_file(&archive).await;
+        archive_guard.disarm();
         let staged = match staged_result {
             Ok(staged) => staged,
-            Err(error) => {
-                let message = error.to_string();
+            Err(message) => {
+                if *shutdown.borrow() {
+                    return Err("Update cancelled during shutdown.".into());
+                }
                 self.fail_download(user_initiated, &message, false);
                 return Err(message);
             }
         };
+
+        if *shutdown.borrow() {
+            let _ = tokio::task::spawn_blocking(move || drop(staged)).await;
+            return Err("Update cancelled during shutdown.".into());
+        }
 
         Ok(self.update_snapshot(|state| {
             state.staged = Some(staged);
@@ -540,33 +662,19 @@ impl Controller {
         });
     }
 
-    fn register_download(&self, handle: tokio::task::JoinHandle<()>) {
-        let mut slot = self
-            .active_download
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        if let Some(previous) = slot.replace(handle) {
-            previous.abort();
-        }
-        if self.swap.is_closing()
-            && let Some(active) = slot.take()
-        {
-            active.abort();
-        }
-    }
-
-    /// Closes admission for any new filesystem swap, waits for any in-flight swap
-    /// to release its `RootLease`, and cancels any active background download so its
-    /// `.part` guard cleans up before runtime shutdown.
+    /// Closes admission for any new filesystem swap or download, waits for any
+    /// in-flight swap to release its `RootLease`, cancels an active HTTP download
+    /// so its `.part` file is cleaned up, and lets an in-progress stage finish
+    /// unpacking and delete its downloaded archive before runtime shutdown.
     pub(crate) fn wait_for_in_flight_swap(&self) {
         self.swap.close_and_wait();
-        let download = self
-            .active_download
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .take();
+        let download = {
+            let mut slot = self.downloads.lock().unwrap_or_else(|e| e.into_inner());
+            slot.closing = true;
+            slot.active.take()
+        };
+        self.shutdown.send_replace(true);
         if let Some(handle) = download {
-            handle.abort();
             if tokio::runtime::Handle::try_current().is_err() {
                 let _ = self.runtime.block_on(handle);
             } else {
@@ -577,6 +685,13 @@ impl Controller {
                 .join();
             }
         }
+        let staged = self
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .staged
+            .take();
+        drop(staged);
     }
 
     pub(crate) fn snapshot_json(&self) -> JsonValue {
@@ -586,17 +701,24 @@ impl Controller {
 
 #[cfg(test)]
 mod tests {
-    use super::{Controller, Snapshot, State, Status, SwapFence};
+    use super::{Controller, DownloadSlot, Snapshot, State, Status, SwapFence};
     use maka_updater::{AvailableUpdate, BuildInfo, Channel};
     use std::{
         path::PathBuf,
-        sync::{Arc, Mutex},
+        sync::{
+            Arc, Mutex,
+            atomic::{AtomicBool, Ordering},
+        },
         time::{Duration, Instant},
     };
-    use tokio::sync::{mpsc, watch};
+    use tokio::{
+        io::{AsyncReadExt as _, AsyncWriteExt as _},
+        net::TcpListener,
+        sync::{mpsc, watch},
+    };
     use uuid::Uuid;
 
-    fn test_controller(channel: Channel) -> (tokio::runtime::Runtime, Controller) {
+    fn test_controller(channel: Channel) -> (tokio::runtime::Runtime, Arc<Controller>) {
         let rt = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(1)
             .enable_all()
@@ -605,7 +727,8 @@ mod tests {
         let (_host_tx, host_rx) = watch::channel((PathBuf::new(), Uuid::nil()));
         let (updating_tx, _updating_rx) = watch::channel(false);
         let (exit_tx, _exit_rx) = mpsc::unbounded_channel();
-        let controller = Controller {
+        let (shutdown, _) = watch::channel(false);
+        let controller = Arc::new(Controller {
             info: BuildInfo {
                 channel,
                 version: "0.2.0-nightly.1".into(),
@@ -619,7 +742,11 @@ mod tests {
             events: Arc::default(),
             runtime: rt.handle().clone(),
             swap: SwapFence::new(),
-            active_download: Mutex::new(None),
+            shutdown,
+            downloads: Mutex::new(DownloadSlot {
+                closing: false,
+                active: None,
+            }),
             state: Mutex::new(State {
                 snapshot: Snapshot {
                     channel,
@@ -632,7 +759,7 @@ mod tests {
                 },
                 staged: None,
             }),
-        };
+        });
         (rt, controller)
     }
 
@@ -694,37 +821,170 @@ mod tests {
     }
 
     #[test]
-    fn shutdown_aborts_active_download_and_waits_for_part_cleanup() {
+    fn shutdown_cancels_active_http_download_and_removes_part_file() {
         let (_rt, controller) = test_controller(Channel::Nightly);
-        let dir = std::env::temp_dir().join(format!("maka-updater-shutdown-{}", Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("maka-updater-part-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
-        let part = dir.join(".maka-update-shutdown-test.part");
-        std::fs::write(&part, b"partial-bytes").unwrap();
 
-        struct Guard(PathBuf);
-        impl Drop for Guard {
-            fn drop(&mut self) {
-                let _ = std::fs::remove_file(&self.0);
+        let (addr, _hold_tx) = controller.runtime.block_on(async {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let (hold_tx, mut hold_rx) = tokio::sync::oneshot::channel::<()>();
+            tokio::spawn(async move {
+                if let Ok((mut stream, _)) = listener.accept().await {
+                    let mut req = [0u8; 1024];
+                    let _ = stream.read(&mut req).await;
+                    let body_chunk = vec![b'x'; 16 * 1024];
+                    let header = format!(
+                        "HTTP/1.1 200 OK
+Content-Length: {}
+Connection: close
+
+",
+                        64 * 1024
+                    );
+                    let _ = stream.write_all(header.as_bytes()).await;
+                    let _ = stream.write_all(&body_chunk).await;
+                    let _ = stream.flush().await;
+                    let _ = (&mut hold_rx).await;
+                }
+            });
+            (addr, hold_tx)
+        });
+
+        let update = AvailableUpdate {
+            version: "0.2.0-nightly.2".into(),
+            notes: None,
+            url: format!("http://{addr}/maka-0.2.0-nightly.2.tar.gz"),
+            sha256: Some("0".repeat(64)),
+            size: Some(64 * 1024),
+        };
+        let downloader = Arc::clone(&controller);
+        let download_dir = dir.clone();
+        controller
+            .spawn_download_task(async move {
+                downloader
+                    .perform_download_with(update, false, download_dir, |_archive| async {
+                        unreachable!("download should cancel before staging")
+                    })
+                    .await
+            })
+            .expect("download admitted before shutdown");
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let has_part = std::fs::read_dir(&dir)
+                .unwrap()
+                .filter_map(Result::ok)
+                .any(|entry| entry.path().extension().and_then(|s| s.to_str()) == Some("part"));
+            if has_part {
+                break;
             }
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for .part file during HTTP download"
+            );
+            std::thread::sleep(Duration::from_millis(20));
         }
 
-        let (started_tx, started_rx) = std::sync::mpsc::channel();
-        let guard_path = part.clone();
-        let handle = controller.runtime.spawn(async move {
-            let _guard = Guard(guard_path);
-            let _ = started_tx.send(());
-            std::future::pending::<()>().await;
-        });
-        controller.register_download(handle);
-        started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
-        assert!(part.exists());
-
         controller.wait_for_in_flight_swap();
-        let exists = part.exists();
+        let remaining: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|e| e.file_name())
+            .collect();
         let _ = std::fs::remove_dir_all(&dir);
         assert!(
-            !exists,
-            "partial file should be removed before shutdown returns"
+            remaining.is_empty(),
+            "download directory should be empty after mid-download shutdown, found: {remaining:?}"
+        );
+    }
+
+    #[test]
+    fn shutdown_during_staging_waits_for_stage_and_removes_archive() {
+        let (_rt, controller) = test_controller(Channel::Nightly);
+        let dir = std::env::temp_dir().join(format!("maka-updater-stage-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let payload = b"test-archive-payload";
+        let addr = controller.runtime.block_on(async {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            tokio::spawn(async move {
+                if let Ok((mut stream, _)) = listener.accept().await {
+                    let mut req = [0u8; 1024];
+                    let _ = stream.read(&mut req).await;
+                    let header = format!(
+                        "HTTP/1.1 200 OK
+Content-Length: {}
+Connection: close
+
+",
+                        payload.len()
+                    );
+                    let _ = stream.write_all(header.as_bytes()).await;
+                    let _ = stream.write_all(payload).await;
+                    let _ = stream.flush().await;
+                }
+            });
+            addr
+        });
+
+        let update = AvailableUpdate {
+            version: "0.2.0-nightly.2".into(),
+            notes: None,
+            url: format!("http://{addr}/maka-0.2.0-nightly.2.tar.gz"),
+            sha256: Some("154e8705933ef8c47e8c89172335a60c0f1a38d27a778383d84ad9a9f88c15a0".into()),
+            size: Some(payload.len() as u64),
+        };
+        let (stage_started_tx, stage_started_rx) = std::sync::mpsc::channel();
+        let stage_finished = Arc::new(AtomicBool::new(false));
+        let stage_finished_flag = Arc::clone(&stage_finished);
+        let downloader = Arc::clone(&controller);
+        let download_dir = dir.clone();
+        controller
+            .spawn_download_task(async move {
+                downloader
+                    .perform_download_with(update, false, download_dir, move |archive| async move {
+                        assert!(
+                            archive.exists(),
+                            "downloaded archive must exist when staging starts"
+                        );
+                        let _ = stage_started_tx.send(());
+                        tokio::task::spawn_blocking(move || {
+                            std::thread::sleep(Duration::from_millis(150));
+                            assert!(
+                                archive.exists(),
+                                "archive must remain present while staging unpacks it"
+                            );
+                        })
+                        .await
+                        .unwrap();
+                        stage_finished_flag.store(true, Ordering::SeqCst);
+                        Err("simulated unpack completion".into())
+                    })
+                    .await
+            })
+            .expect("download admitted before shutdown");
+
+        stage_started_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("staging should begin after HTTP download finishes");
+
+        controller.wait_for_in_flight_swap();
+        let remaining: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|e| e.file_name())
+            .collect();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            stage_finished.load(Ordering::SeqCst),
+            "shutdown should wait for in-progress staging instead of aborting it"
+        );
+        assert!(
+            remaining.is_empty(),
+            "download directory should be empty after mid-staging shutdown, found: {remaining:?}"
         );
     }
 

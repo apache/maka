@@ -430,18 +430,36 @@ pub async fn check_with_config(
     }))
 }
 
-struct PartFileGuard(Option<PathBuf>);
+struct PartFileGuard {
+    part: Option<PathBuf>,
+    final_path: Option<PathBuf>,
+}
 
 impl PartFileGuard {
+    fn new(part: PathBuf) -> Self {
+        Self {
+            part: Some(part),
+            final_path: None,
+        }
+    }
+
+    fn arm_final(&mut self, final_path: PathBuf) {
+        self.final_path = Some(final_path);
+    }
+
     fn disarm(&mut self) {
-        self.0 = None;
+        self.part = None;
+        self.final_path = None;
     }
 }
 
 impl Drop for PartFileGuard {
     fn drop(&mut self) {
-        if let Some(path) = self.0.take() {
-            let _ = std::fs::remove_file(path);
+        if let Some(part) = self.part.take() {
+            let _ = std::fs::remove_file(part);
+        }
+        if let Some(final_path) = self.final_path.take() {
+            let _ = std::fs::remove_file(final_path);
         }
     }
 }
@@ -484,7 +502,7 @@ where
     let mut verifier = nsh_updater::Download::new(sha256, update.size);
     // Declared before `file` so reverse drop order closes the handle before deleting
     // the `.part` file on error or async task cancellation.
-    let mut part_guard = PartFileGuard(Some(part_path.clone()));
+    let mut part_guard = PartFileGuard::new(part_path.clone());
     let mut file = tokio::fs::File::create(&part_path).await?;
     let mut stream = response.bytes_stream();
     on_progress(Progress { received: 0, total });
@@ -497,6 +515,7 @@ where
     file.flush().await?;
     drop(file);
     verifier.finish()?;
+    part_guard.arm_final(final_path.clone());
     let _ = tokio::fs::remove_file(&final_path).await;
     tokio::fs::rename(&part_path, &final_path).await?;
     part_guard.disarm();
