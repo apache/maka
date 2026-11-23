@@ -60,6 +60,7 @@ uuid.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 clipboard-win = "5.4.1"
+image = { version = "0.25", default-features = false, features = ["bmp", "gif", "jpeg", "webp"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 image = { version = "0.25", default-features = false, features = ["tiff"] }
@@ -78,3 +79,6 @@ nsh-bundler = { workspace = true, features = ["bundle"] }
 # The ui_types example writes the specs' TypeScript, which only this feature keeps.
 nsh-core = { workspace = true, features = ["declarations"] }
 nsh-js.workspace = true
+
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Security", "Win32_System_StationsAndDesktops", "Win32_Graphics_Gdi"] }

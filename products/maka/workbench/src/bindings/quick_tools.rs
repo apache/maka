@@ -17,8 +17,7 @@
  * under the License.
  */
 
-//! System reads behind the quick launcher's built-in tools. They name macOS
-//! system paths, so the launcher only offers these tools on macOS.
+//! Native system reads behind the quick launcher's built-in tools.
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use nsh_core::prelude::*;
@@ -31,7 +30,7 @@ use tokio::process::Command;
 const SEARCH_TIMEOUT: Duration = Duration::from_secs(4);
 const MAX_SEARCH_OUTPUT: u64 = 256 * 1024;
 const MAX_SEARCH_RESULTS: usize = 6;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 const MAX_CLIPBOARD_TEXT: usize = 100_000;
 /// Sharp at the 20-point size the launcher draws on a 2x display.
 #[cfg(target_os = "macos")]
@@ -495,6 +494,9 @@ mod pasteboard_history {
     }
 }
 
+#[cfg(windows)]
+mod windows_history;
+
 pub async fn clipboard_history_change(seen: Option<f64>) -> Result<HistoryChange, String> {
     #[cfg(target_os = "macos")]
     {
@@ -505,10 +507,14 @@ pub async fn clipboard_history_change(seen: Option<f64>) -> Result<HistoryChange
         })
         .await
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
+    {
+        blocking(move || windows_history::read(seen)).await?
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
     {
         let _ = seen;
-        Err("Clipboard history requires macOS.".into())
+        Err("Clipboard history requires macOS or Windows.".into())
     }
 }
 
@@ -522,10 +528,14 @@ pub async fn restore_clipboard_entry(entry: ClipboardEntry) -> Result<(), String
         })
         .await?
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
+    {
+        blocking(move || windows_history::write(entry)).await?
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
     {
         let _ = entry;
-        Err("Clipboard history requires macOS.".into())
+        Err("Clipboard history requires macOS or Windows.".into())
     }
 }
 

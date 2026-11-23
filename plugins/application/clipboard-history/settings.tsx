@@ -44,9 +44,7 @@ export function HistorySettings(props: { history: History }): JSX.Element {
   return (
     <SettingsBody>
       <SettingsSection
-        note={tr(
-          'Kept in memory only and gone when Maka quits. Copies from password managers are skipped.',
-        )}
+        note={tr('History stays in memory until Maka quits. Copies marked private are skipped.')}
       >
         <SettingsSegmented
           label={tr('Entries kept')}

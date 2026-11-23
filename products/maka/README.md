@@ -34,6 +34,10 @@
 | [`acp/`](acp/src/lib.rs) | `maka-acp` | Exposes Maka sessions to external editors and clients over the Agent Client Protocol |
 | [`cli/`](cli/src/main.rs) | `maka-cli` | Builds the `maka` binary: terminal entry, Host daemon (`host serve`), `desktop` launcher, `acp`, `sandbox`, `browser`, and `application` commands |
 
+## Windows clipboard history
+
+With Clipboard History and the quick launcher enabled, type `cb` to search recent text, images, PDFs and file lists. Select a result to copy it again. History stays in memory and skips items marked private by their source. Use the tool settings to change the entry limit or clear the list.
+
 ## Proactive discovery
 
 Open **Proactive discovery** in the Bot header. Leave the direction blank for broad exploration, or enter a topic for focused checks. New interval plans wait 30 minutes after each run finishes. The editor also offers a fixed interval, manual checks, and pause or resume controls.
