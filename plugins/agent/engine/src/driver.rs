@@ -1079,7 +1079,8 @@ impl Engine {
                         .await?;
                     }
                     Action::ChargeRetry(attempt, phase) => {
-                        let delay = 250_i64.saturating_mul(1_i64 << view.retries_for(phase).min(8));
+                        let retries = view.retries_for(view.attempts[&attempt].step, phase);
+                        let delay = 250_i64.saturating_mul(1_i64 << retries.min(8));
                         let provider_due = match &view.attempts[&attempt].recovery {
                             Some(
                                 AttemptRecovery::FrozenRetrySafe { not_before }

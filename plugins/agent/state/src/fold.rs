@@ -321,14 +321,17 @@ impl RunView {
         })
     }
 
-    pub fn retries_for(&self, phase: RetryTransportPhase) -> u32 {
+    /// Retries charged while sending one prepared Step. Each new Step starts a
+    /// fresh budget, so failures recovered earlier in a long Run cannot exhaust it.
+    pub fn retries_for(&self, step: StepId, phase: RetryTransportPhase) -> u32 {
         self.attempts
             .values()
             .filter(|attempt| {
-                attempt
-                    .retry
-                    .as_ref()
-                    .is_some_and(|retry| retry.phase == phase)
+                attempt.step == step
+                    && attempt
+                        .retry
+                        .as_ref()
+                        .is_some_and(|retry| retry.phase == phase)
             })
             .count() as u32
     }
@@ -1176,10 +1179,11 @@ impl RunView {
                         }) || current.source_failure.is_some()),
                     "transport fallback lacks original safe failed Main evidence",
                 )?;
+                // Retries before the one-way fallback are all Primary, so an exhausted
+                // Step budget implies this Run-wide count, which recorded Runs also meet.
                 require(
                     self.retry_pending == Some(*attempt)
-                        && self.retries_for(RetryTransportPhase::Primary)
-                            >= self.spec.budget.retries,
+                        && self.retries >= self.spec.budget.retries,
                     "transport fallback requires exhausted original Primary retry budget",
                 )?;
                 require(
@@ -2129,7 +2133,7 @@ impl RunView {
                     "model attempt retry already charged",
                 )?;
                 require(
-                    u64::from(self.retries_for(*phase))
+                    u64::from(self.retries_for(current.step, *phase))
                         < u64::from(self.spec.budget.retries)
                             + u64::from(*phase == RetryTransportPhase::Fallback),
                     "original transport phase retry budget exhausted",

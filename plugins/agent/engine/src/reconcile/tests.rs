@@ -1271,3 +1271,105 @@ fn a_tool_call_from_an_overflowed_attempt_is_rejected_without_execution() {
         Action::Reject(rejected, ToolRejection::PreparationFailed { .. }) if rejected == key
     ));
 }
+
+#[test]
+fn each_step_gets_a_fresh_retry_budget() {
+    use maka_agent_facts::{
+        accounting::Outcome,
+        model::{ModelFinishReason, retry_transport::RetryTransportPhase},
+    };
+    use maka_plugin_core::operation::OperationCleanup;
+
+    let mut view = policy_view(None);
+    view.spec.budget.retries = 1;
+    let spec = ContentBlob::json(&view.spec).unwrap();
+    apply_policy_fact(
+        &mut view,
+        Fact::RunAdmitted {
+            spec: spec.reference().clone(),
+        },
+    );
+    let request = ContentBlob::json(&serde_json::json!({})).unwrap();
+    let now = UnixMillis(1);
+    // The first Step spends the whole budget before succeeding; the second must
+    // still be retried instead of failing the Run.
+    for _ in 0..2 {
+        let step = StepId::new();
+        let failed = ModelAttemptId::new();
+        for fact in [
+            Fact::StepPrepared {
+                step,
+                request: request.reference().clone(),
+                adjudications: vec![],
+            },
+            Fact::ModelAttemptPrepared {
+                attempt: failed,
+                step,
+            },
+            Fact::ModelAttemptAdmitted {
+                attempt: failed,
+                upstream: serde_json::Value::Null,
+            },
+            Fact::ModelInterrupted {
+                attempt: failed,
+                diagnostic: "provider failed (TimedOut): model stream idle timeout exceeded".into(),
+            },
+            Fact::AttemptRecoveryRecorded {
+                attempt: failed,
+                recovery: AttemptRecovery::FrozenRetrySafe { not_before: None },
+            },
+            Fact::ModelCleanupObserved {
+                attempt: failed,
+                cleanup: OperationCleanup::Confirmed,
+            },
+        ] {
+            apply_policy_fact(&mut view, fact);
+        }
+        assert!(matches!(
+            next(&view, &Live::default(), now, None, false),
+            Action::ChargeRetry(id, RetryTransportPhase::Primary) if id == failed
+        ));
+        let retry = ModelAttemptId::new();
+        let protocol = serde_json::to_value(ModelClosureProtocol {
+            model_time_ms: None,
+            finish_reason: ModelFinishReason::Length,
+            provider_options: None,
+            cache_read_reported: None,
+            response_id: None,
+            model: None,
+            timestamp: None,
+            compaction: None,
+            summary: None,
+        })
+        .unwrap();
+        for fact in [
+            Fact::RetryCharged {
+                attempt: failed,
+                phase: RetryTransportPhase::Primary,
+                due_at: now,
+                diagnostic: "adapter proved frozen retry safe with no semantic progress".into(),
+            },
+            Fact::ModelAttemptPrepared {
+                attempt: retry,
+                step,
+            },
+            Fact::ModelAttemptAdmitted {
+                attempt: retry,
+                upstream: serde_json::Value::Null,
+            },
+            Fact::ModelClosed {
+                attempt: retry,
+                outcome: Outcome::Success,
+                diagnostic: None,
+                usage: Default::default(),
+                protocol,
+            },
+            Fact::ModelCleanupObserved {
+                attempt: retry,
+                cleanup: OperationCleanup::Confirmed,
+            },
+        ] {
+            apply_policy_fact(&mut view, fact);
+        }
+    }
+}
