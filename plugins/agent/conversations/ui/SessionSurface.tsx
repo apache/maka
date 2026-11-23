@@ -633,11 +633,14 @@ export function createConversationUi(
     const current = () =>
       alive && selected() === source.sessionId && (overlay()?.instance ?? null) === source.instance;
     if (!current() || switching() || reloading()) return false;
-    if (forkNotice() && forkNotice()!.id !== id) forkNotice.set(null);
+    const priorFork = forkNotice();
     const owner = handle();
     const sourceOverlay = overlay();
     if (selected() === id) {
       if (owner?.sessionId !== id) return false;
+      if (priorFork && priorFork.id !== id && forkNotice()?.id === priorFork.id) {
+        forkNotice.set(null);
+      }
       if (anchor) await owner.reveal(anchor, current);
       return true;
     }
@@ -657,6 +660,9 @@ export function createConversationUi(
         : null;
       const committed = await shell()!.openSession(id);
       if (!committed) return false;
+      if (priorFork && priorFork.id !== id && forkNotice()?.id === priorFork.id) {
+        forkNotice.set(null);
+      }
       if (source.sessionId === null && pendingWorkspace())
         pendingDraftGeneration.set(pendingDraftGeneration() + 1);
       if (overlay() === sourceOverlay) overlay.set(null);
