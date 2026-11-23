@@ -125,7 +125,7 @@ test('nightly-manifest generates SHA256SUMS, signed latest.json, and release not
 
   const notes = await readFile(join(dir, 'RELEASE_NOTES.md'), 'utf8');
   assert.match(notes, /NOT AN APACHE SOFTWARE FOUNDATION RELEASE/);
-  assert.match(notes, /非 Apache 官方版本声明/);
+  assert.doesNotMatch(notes, /\p{Script=Han}/u);
   assert.match(notes, /## Previous Nightly/);
   assert.match(notes, /nightly-previous\/Maka-nightly-macos-arm64\.dmg/);
   assert.match(notes, /@maka-agent\/cli@0\.2\.0-nightly\.20261121\.42/);

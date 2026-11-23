@@ -131,8 +131,6 @@ export function renderReleaseNotes({
     '>',
     '> This pre-release provides automated pre-built binaries strictly for **developer testing and evaluation**.',
     '> It is **NOT** an official Apache Software Foundation (ASF) release, has **NOT** been approved by an ASF release vote, and may be unstable.',
-    '>',
-    '> **非 Apache 官方版本声明**：本预发布版本仅用于方便开发者测试，未经 Apache 软件基金会正式投票批准，切勿当作官方正式版本使用。',
     '',
     '## Build Info',
     '',
