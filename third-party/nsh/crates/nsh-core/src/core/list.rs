@@ -1106,6 +1106,19 @@ impl ListState {
         self.pin = None;
     }
 
+    /// Whether a non-animated explicit scroll pin is active and eligible to
+    /// release once the viewport and its nested parent-viewport lists settle.
+    pub(super) fn can_settle_pin(&self) -> bool {
+        matches!(
+            self.pin,
+            Some(Pin::Following {
+                animating: false,
+                automatic: false,
+                ..
+            })
+        )
+    }
+
     /// The content offset for `target` with the sizes known now.
     pub(super) fn target_offset(&self, target: PinTarget) -> f32 {
         match target {
