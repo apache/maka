@@ -98,6 +98,7 @@ impl Target {
             driver: Some(driver),
             monitor: None,
         };
+        let mut phase = "bootstrap (waiting for Ready)";
         let admit = async {
             let mut bootstrap = opener.open().await.map_err(|error| error.to_string())?;
             let ready = Ready::receive(&mut bootstrap)
@@ -119,7 +120,9 @@ impl Target {
                         .map(|stream| Box::new(stream) as Channel)
                 })
             });
+            phase = "Host anchor";
             let host = Client::connect_on(open, Some(ready.epoch), None).await?;
+            phase = "workbench admission";
             let connection = Connection::admit_wsl(
                 host,
                 &ready.root,
@@ -127,6 +130,7 @@ impl Target {
                 Handle::current(),
             )
             .await?;
+            phase = "residency handoff (waiting for ACK)";
             bootstrap
                 .write_u8(1)
                 .await
@@ -143,7 +147,7 @@ impl Target {
             {
                 return Err("WSL Host residency handoff failed".into());
             }
-            Ok((connection, ready.root, bootstrap))
+            Ok::<_, String>((connection, ready.root, bootstrap))
         };
         match tokio::time::timeout(Duration::from_secs(120), admit).await {
             Ok(Ok((connection, root, mut lifetime))) => {
@@ -163,8 +167,8 @@ impl Target {
             result => {
                 bridge.close().await;
                 match result {
-                    Ok(Err(error)) => Err(error),
-                    Err(_) => Err("WSL Host startup timed out".into()),
+                    Ok(Err(error)) => Err(format!("WSL Host {phase}: {error}")),
+                    Err(_) => Err(format!("WSL Host {phase}: timed out")),
                     Ok(Ok(_)) => unreachable!(),
                 }
             }

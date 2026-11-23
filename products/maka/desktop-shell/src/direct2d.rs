@@ -29,6 +29,7 @@ use maka_workbench::{
     bindings::Bindings,
     reload::{Request, UiReload},
 };
+use nsh_core::{element::Root, prelude::*};
 use nsh_engine::JsonValue;
 use nsh_platform_windows::{AppOptions, AppView, quit_app, run_app_with_config, with_running_view};
 use std::time::{Duration, Instant};
@@ -40,6 +41,62 @@ use tokio::{
 const FIRST_PAUSE: Duration = Duration::from_secs(1);
 const RECONNECT_LIMIT: Duration = Duration::from_secs(30);
 const STEADY: Duration = Duration::from_secs(60);
+
+struct WslReconnect {
+    error: Option<String>,
+}
+
+#[component]
+fn WslReconnectView() -> impl IntoElement {
+    let reconnect = engine_context::<WslReconnect>().expect("WSL reconnect view context");
+    let locale = locale();
+    let (connecting, unavailable) = match locale.language() {
+        "zh" if locale.as_str().contains("-Hant")
+            || matches!(locale.region(), Some("TW" | "HK" | "MO")) =>
+        {
+            (
+                "正在重新連線到 WSL Host…",
+                "無法連線到 WSL Host。Maka 會自動重試。",
+            )
+        }
+        "zh" => (
+            "正在重新连接 WSL Host…",
+            "无法连接 WSL Host。Maka 会自动重试。",
+        ),
+        _ => (
+            "Reconnecting to the WSL Host…",
+            "Could not connect to the WSL Host. Maka will retry automatically.",
+        ),
+    };
+    view()
+        .h_full()
+        .p_6()
+        .flex()
+        .flex_col()
+        .gap_2()
+        .justify_center()
+        .items_center()
+        .child(
+            text(if reconnect.error.is_some() {
+                unavailable
+            } else {
+                connecting
+            })
+            .text_lg(),
+        )
+        .child(
+            reconnect
+                .error
+                .as_deref()
+                .map(|error| text(error.to_owned()).selectable(true)),
+        )
+}
+
+fn wsl_reconnect_config(error: Option<String>) -> nsh_engine::EngineConfig {
+    let mut config = nsh_engine::EngineConfig::new(Root::of::<WslReconnectView>());
+    config.context = config.context.with(WslReconnect { error });
+    config
+}
 
 pub(crate) fn start(target: crate::Target) -> Result<(), String> {
     use maka_host_runtime::application::host::Client as HostClient;
@@ -263,7 +320,11 @@ async fn follow_wsl(
             &mut window_started,
             &mut exits,
             &mut window_closed,
-            |view| view.stop(),
+            |view| {
+                view.load_with_config(wsl_reconnect_config(None));
+                // Replacing the workbench also removes its tray entry.
+                view.show();
+            },
         )
         .await
         {
@@ -283,6 +344,7 @@ async fn follow_wsl(
         if !wait {
             pause = FIRST_PAUSE;
         }
+        let mut displayed_error = None;
         let next = loop {
             if wait {
                 tokio::select! {
@@ -302,9 +364,19 @@ async fn follow_wsl(
                 Ok(session) => break session,
                 Err(error) => {
                     eprintln!("maka-desktop-shell: reconnecting WSL Host: {error}");
-                    // The tray left with the engine: a hidden window is the
-                    // only way back while no Host answers.
-                    with_running_view(|view| view.show());
+                    if displayed_error.as_ref() != Some(&error) {
+                        displayed_error = Some(error.clone());
+                        if !run_on_view(
+                            &mut window_started,
+                            &mut exits,
+                            &mut window_closed,
+                            move |view| view.load_with_config(wsl_reconnect_config(Some(error))),
+                        )
+                        .await
+                        {
+                            break 'connected;
+                        }
+                    }
                 }
             }
         };
