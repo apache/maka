@@ -41,7 +41,8 @@ import {
   appearance,
   colorThemes,
   paletteIds,
-  textSizes,
+  maxTextSize,
+  minTextSize,
   trayIcons,
   type TrayIcon,
 } from './appearance';
@@ -64,6 +65,8 @@ import {
   SettingsTextArea,
 } from './SettingsPage';
 import {
+  IconButton,
+  captionTextStyle,
   C,
   bodyTextStyle,
   controlFocusStyle,
@@ -538,8 +541,6 @@ function GlobalInstructionsEditor(props: { owner: GeneralSettingsOwner; request:
 
 const themeLabel = (theme: (typeof colorThemes)[number]) =>
   ({ system: tr('Match system'), light: tr('Light'), dark: tr('Dark') })[theme];
-const textSizeLabel = (scale: number) =>
-  scale < 1 ? tr('Small') : scale === 1 ? tr('Default') : scale < 1.2 ? tr('Large') : tr('Larger');
 const paletteLabel = (id: PaletteId) =>
   ({
     default: tr('Default'),
@@ -698,11 +699,35 @@ function AppearanceRows() {
       <If when={appearance.palette() === 'custom'}>
         <CustomPalette />
       </If>
-      <SettingsSelect
+      <SettingsRow
         label={tr('Text size')}
-        value={String(appearance.textSize())}
-        choices={textSizes.map((scale) => ({ value: String(scale), title: textSizeLabel(scale) }))}
-        change={(value) => appearance.chooseTextSize(Number(value))}
+        trailing={
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+            <IconButton
+              label={tr('Smaller text')}
+              icon="minus"
+              disabled={appearance.fontSize() <= minTextSize}
+              onPress={() => appearance.stepTextSize(-1)}
+            />
+            <Text
+              style={{
+                ...captionTextStyle,
+                minWidth: 24,
+                textAlign: 'center',
+                color: C.text,
+                fontVariant: ['tabular-nums'],
+              }}
+            >
+              {String(appearance.fontSize())}
+            </Text>
+            <IconButton
+              label={tr('Larger text')}
+              icon="plus"
+              disabled={appearance.fontSize() >= maxTextSize}
+              onPress={() => appearance.stepTextSize(1)}
+            />
+          </View>
+        }
       />
       <SettingsSelect
         label={trayIconRowLabel()}

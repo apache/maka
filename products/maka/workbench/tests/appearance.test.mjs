@@ -47,6 +47,7 @@ async function setup(t, storage) {
         return read;
       };
       export const Storage = fixture.storage;
+      export const platform = {os: 'macos'};
       export const setColorScheme = value => fixture.themes.push(value);
       export const host = {call: async (method, input) => {
         if (method !== 'appearance.textSize') throw Error(method);

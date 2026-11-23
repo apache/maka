@@ -74,8 +74,9 @@ test('an empty line at a piece edge keeps its height', () => {
 
 test('the budget covers the largest text size the desktop offers', async () => {
   const appearance = await readFile(new URL('appearance.ts', app), 'utf8');
-  const sizes = JSON.parse(appearance.match(/textSizes = (\[[^\]]*\])/)[1]);
-  assert.equal(largestTextSize, Math.max(...sizes));
+  const size = (name) => Number(appearance.match(new RegExp(`${name} = (\\d+)`))[1]);
+  // 1.3 was the largest of the named steps and may still be saved.
+  assert.ok(largestTextSize >= Math.max(1.3, size('maxTextSize') / size('defaultTextSize')));
   // 13 pt code text on 20 pt lines, a monospace column about 0.62 em wide, a 2x display.
   assert.ok(lineColumns * 13 * largestTextSize * 0.62 * 2 < 16384 * 0.95);
   assert.ok(pieceLines * 20 * largestTextSize * 2 < 16384 * 0.95);

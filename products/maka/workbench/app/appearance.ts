@@ -25,7 +25,15 @@ import { parseHex, presetRecipes, type PaletteId, type PaletteRecipe } from './c
 
 export type ColorTheme = 'system' | 'light' | 'dark';
 export const colorThemes: ColorTheme[] = ['system', 'light', 'dark'];
-export const textSizes = [0.9, 1, 1.15, 1.3];
+// The text size is chosen as the size of the conversation's text and kept as
+// its ratio to the default, which scales every text of the window alike.
+export const defaultTextSize = 14;
+export const minTextSize = 12;
+export const maxTextSize = 18;
+const textScale = (size: number) => size / defaultTextSize;
+// The largest ratio also admits 1.3, saved when sizes were four named steps.
+const validTextScale = (scale: number) =>
+  Number.isFinite(scale) && scale >= textScale(minTextSize) - 1e-6 && scale <= 1.3 + 1e-6;
 
 export type TrayIcon = 'line' | 'bold' | 'tile' | 'none';
 // Without its icon the window that was closed comes back from the Dock, which only macOS has.
@@ -129,6 +137,8 @@ function createAppearanceOwner() {
     supported: ownTitleBar,
     theme: () => theme(),
     textSize: () => textSize(),
+    /** The size of the conversation's text at this ratio, in points. */
+    fontSize: () => Math.round(textSize() * defaultTextSize),
     palette: () => palette(),
     custom: () => custom(),
     trayIcon: () => trayIcon(),
@@ -164,9 +174,10 @@ function createAppearanceOwner() {
     },
     /** The next text size up (1) or down (-1), or the default (0): the View menu's. */
     stepTextSize(step: number) {
-      const at = textSizes.indexOf(textSize());
-      const next = step === 0 ? 1 : textSizes[at + step];
-      if (next !== undefined && next !== textSize()) chooseTextSize(next);
+      const size = Math.round(textSize() * defaultTextSize);
+      const next =
+        step === 0 ? defaultTextSize : Math.min(maxTextSize, Math.max(minTextSize, size + step));
+      if (next !== size || step === 0) chooseTextSize(textScale(next));
     },
     saving: () => persistence.kind === 'saving',
     whenIdle: () => (persistence.kind === 'saving' ? persistence.completion : Promise.resolve()),
@@ -192,7 +203,7 @@ function createAppearanceOwner() {
         }),
         restore(TEXT_SIZE, (value) => {
           const scale = Number(value);
-          if (value !== null && textSizes.includes(scale)) {
+          if (value !== null && validTextScale(scale)) {
             textSize.set(scale);
             void applyTextSize(scale);
           }
