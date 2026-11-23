@@ -135,6 +135,11 @@ impl Screen {
         .expect("validated terminal dimensions")
     }
 
+    /// Retained scrollback rows above the current screen.
+    pub fn history_size(&self) -> usize {
+        self.state.term.history_size()
+    }
+
     /// Input clients must use the application's current paste mode, not infer
     /// support from the shell name or terminal environment.
     pub fn bracketed_paste(&self) -> bool {

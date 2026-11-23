@@ -196,6 +196,20 @@ impl TerminalGrid {
         Ok(json!({"after": self.after, "status": live.status.name()}))
     }
 
+    /// The grid's current total rows (history + screen). The view derives
+    /// its reading offset from this without capturing a viewport.
+    pub fn extent(&self) -> JsonValue {
+        let total_rows = match &self.content {
+            Content::Live(live) => {
+                live.screen.history_size() + usize::from(live.screen.size().rows())
+            }
+            Content::Settled(display) => {
+                display.scrollback.len() + usize::from(display.metadata.size.rows())
+            }
+        };
+        json!({"totalRows": total_rows})
+    }
+
     /// Capture only the requested physical rows. Offset zero follows the bottom;
     /// positive offsets scroll upward. A taller presentation fits the current
     /// original PTY height until its own resize is observed in the raw stream.

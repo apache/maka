@@ -50,6 +50,7 @@ import type {
 } from '../../../../packages/plugin-sdk/src/index.js';
 import type { TerminalModel } from './terminalState';
 import { terminalStatus } from './terminalState';
+import { createTerminalFollow } from './terminalFollow';
 import { Icon } from './Icon';
 import { tr } from './locale';
 import {
@@ -139,7 +140,6 @@ export function Terminal(props: { model: TerminalModel }) {
   const model = props.model;
   const dimensions = signal({ width: 0, height: LINE * 24 });
   const cellWidth = signal(8);
-  const offset = signal(0);
   const inputValue = signal('');
   const confirmation = signal(false);
   const copied = signal(false);
@@ -151,15 +151,72 @@ export function Terminal(props: { model: TerminalModel }) {
   let reset: ReturnType<typeof setTimeout> | null = null;
   let copyReset: ReturnType<typeof setTimeout> | null = null;
   let unbind = () => {};
+  // One decision per mounted pane: a remount restores the reading state
+  // the model survived suspend/activate cycles with.
+  const follow = createTerminalFollow(LINE);
+  // Scroll reports update plain model fields, so the frame computation
+  // needs its own invalidation to move the rendered slice with the native
+  // viewport while the user scrolls.
+  const frameTick = signal(0);
+  const repaint = () => frameTick.set(frameTick() + 1);
+  let scrollHold: ReturnType<typeof setTimeout> | null = null;
+  const extentRows = () => (model.grid.extent() as { totalRows: number }).totalRows;
+  // The rows the Scroll clamps against: the content of the last frame this
+  // pane rendered. The grid can run a batch ahead of it while output
+  // streams, so a gesture is measured in the Scroll's own coordinates.
+  let renderedTotal = 0;
+  const contentRows = () => {
+    const total = Math.max(rows(), frame().totalRows);
+    renderedTotal = total;
+    return total;
+  };
+  // Put the physical viewport on the bottom the reading state decided. The
+  // follow effect pins on the next batch; a gesture that ended at the bottom
+  // pins here so the rendered slice and the viewport move together at once.
+  const pin = () => {
+    model.position.y = follow.physicalY(renderedTotal, rows());
+    scroll?.scrollToEnd({ animated: false });
+  };
+  // A wheel at a scroll edge emits an intent but never moves, reports or
+  // ends; a notch glides for 150 ms reporting every frame. Close a pending
+  // window that stays quiet for twice that so the follow effect may pin
+  // again. Drags stay open until their end: a held thumb may report
+  // nothing for a while.
+  const holdScroll = () => {
+    if (scrollHold) clearTimeout(scrollHold);
+    scrollHold = setTimeout(() => {
+      scrollHold = null;
+      model.atBottom = follow.abandon(model.position.y, renderedTotal, rows()).atBottom;
+      if (model.atBottom) pin();
+      repaint();
+    }, 300);
+  };
+  const releaseScroll = () => {
+    if (scrollHold) clearTimeout(scrollHold);
+    scrollHold = null;
+  };
   const rows = () => Math.max(1, Math.min(1024, Math.floor(dimensions().height / LINE)));
   const frame = computed(() => {
     model.version();
-    return model.grid.display(offset(), rows()) as unknown as Frame;
+    frameTick();
+    // Derive the bottom-relative display offset from the top-anchored
+    // reading position against the current grid, so new output and resize
+    // keep the slice aligned with the viewport.
+    const extent = model.grid.extent() as { totalRows: number };
+    const reading = follow.displayOffset(extent.totalRows, rows());
+    return model.grid.display(reading, rows()) as unknown as Frame;
   });
+  const extent = model.grid.extent() as { totalRows: number };
+  model.atBottom = follow.restore(
+    model.atBottom,
+    model.position.y,
+    extent.totalRows,
+    rows(),
+  ).atBottom;
   const pointerInput = () =>
     model.controllable() &&
     model.control() === 'held' &&
-    offset() === 0 &&
+    follow.state.atBottom &&
     frame().metadata.input.mouseTrackingMode !== 'none';
   const key = (name: string, modifiers: TerminalModifiers = []) =>
     model.input([{ type: 'key', key: name, modifiers }]);
@@ -277,10 +334,23 @@ export function Terminal(props: { model: TerminalModel }) {
       fallback?.focus();
     };
     bindings['shift+pageup'] = () => {
-      model.atBottom = false;
-      scroll?.scrollTo({ y: Math.max(0, model.position.y - rows() * LINE) });
+      releaseScroll();
+      const extent = model.grid.extent() as { totalRows: number };
+      follow.pageUp(extent.totalRows, rows());
+      model.atBottom = follow.state.atBottom;
+      model.position.y = follow.physicalY(extent.totalRows, rows());
+      scroll?.scrollTo({ y: model.position.y, animated: false });
+      repaint();
     };
-    bindings['shift+pagedown'] = () => scroll?.scrollTo({ y: model.position.y + rows() * LINE });
+    bindings['shift+pagedown'] = () => {
+      releaseScroll();
+      const extent = model.grid.extent() as { totalRows: number };
+      follow.pageDown(extent.totalRows, rows());
+      model.atBottom = follow.state.atBottom;
+      model.position.y = follow.physicalY(extent.totalRows, rows());
+      scroll?.scrollTo({ y: model.position.y, animated: false });
+      repaint();
+    };
     unbind = keymap.bind(bindings, { when: 'always', repeat: true, within: node });
     focusShell();
   };
@@ -347,13 +417,24 @@ export function Terminal(props: { model: TerminalModel }) {
   effect(() => {
     model.version();
     dimensions();
-    if (model.atBottom) {
-      offset.set(0);
+    // A user gesture owns the viewport until it ends.
+    if (follow.active()) return;
+    if (follow.state.atBottom) {
       scroll?.scrollToEnd({ animated: false });
+    } else {
+      // Keep the physical viewport on the anchored reading position as
+      // the grid grows or reflows; the rendered slice derives from it.
+      const extent = model.grid.extent() as { totalRows: number };
+      const y = follow.physicalY(extent.totalRows, rows());
+      if (y !== model.position.y) {
+        model.position.y = y;
+        scroll?.scrollTo({ y, animated: false });
+      }
     }
   });
   cleanup(() => {
     mounted = false;
+    releaseScroll();
     unbind();
     model.release();
     if (reset) clearTimeout(reset);
@@ -376,6 +457,13 @@ export function Terminal(props: { model: TerminalModel }) {
       : needsRetry()
         ? tr('Terminal observation interrupted.')
         : '');
+  const retry = () => {
+    releaseScroll();
+    follow.reset();
+    model.atBottom = true;
+    repaint();
+    model.retry();
+  };
   return (
     <View style={{ flex: 1, minHeight: 0, gap: 8 }}>
       <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 4, alignItems: 'center' }}>
@@ -513,15 +601,29 @@ export function Terminal(props: { model: TerminalModel }) {
                   scroll = node;
                 }}
                 contentOffset={model.position}
+                onScrollIntent={() => {
+                  follow.intent(renderedTotal, rows());
+                  holdScroll();
+                }}
+                onScrollDragStart={() => follow.dragStart(renderedTotal, rows())}
+                onScrollEnd={({ offset }) => {
+                  model.atBottom = follow.scrollEnd(offset.y, renderedTotal, rows()).atBottom;
+                  releaseScroll();
+                  if (model.atBottom) pin();
+                  repaint();
+                }}
                 onScroll={(event) => {
                   model.position.y = event.offset.y;
-                  const current = frame();
-                  const distance = Math.max(
-                    0,
-                    current.totalRows - rows() - Math.floor(event.offset.y / LINE),
-                  );
-                  model.atBottom = distance <= 1;
-                  offset.set(model.atBottom ? 0 : distance);
+                  // Reports coalesce per frame and a delayed one carries an
+                  // old offset against the current geometry. Only a gesture
+                  // opened by onScrollIntent/onScrollDragStart settles the
+                  // reading state; everything while idle is the app's own
+                  // scroll or a stale report. The extent is the Scroll's
+                  // committed content, the coordinate its offsets are in.
+                  if (!follow.active()) return;
+                  model.atBottom = follow.scrolled(event.offset.y, renderedTotal, rows()).atBottom;
+                  holdScroll();
+                  repaint();
                 }}
                 style={{
                   width: Math.max(dimensions().width, frame().metadata.size.cols * cellWidth()),
@@ -530,7 +632,7 @@ export function Terminal(props: { model: TerminalModel }) {
               >
                 <View
                   style={{
-                    height: Math.max(rows(), frame().totalRows) * LINE,
+                    height: contentRows() * LINE,
                     width: frame().metadata.size.cols * cellWidth(),
                   }}
                 >
@@ -665,7 +767,7 @@ export function Terminal(props: { model: TerminalModel }) {
               tone="danger"
               icon="terminal"
               title={model.error() || tr('Could not open terminal.')}
-              retry={needsRetry() ? inputAction(model.retry, null) : undefined}
+              retry={needsRetry() ? inputAction(retry, null) : undefined}
               retryLabel={tr('Retry terminal observation')}
             />
           </View>
@@ -691,7 +793,7 @@ export function Terminal(props: { model: TerminalModel }) {
                   ? {
                       label: tr('Retry'),
                       primary: true,
-                      onPress: inputAction(model.retry, null),
+                      onPress: inputAction(retry, null),
                     }
                   : undefined
               }
