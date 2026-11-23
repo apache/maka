@@ -17,8 +17,8 @@
  * under the License.
  */
 
-/** One message in English, Simplified Chinese and Traditional Chinese. */
-export type Message = readonly [en: string, zhCN: string, zhTW: string];
+/** One message in English, Simplified Chinese and Traditional Chinese; Korean falls back to English. */
+export type Message = readonly [en: string, zhCN: string, zhTW: string, ko?: string];
 export type Catalog = Readonly<Record<string, Message>>;
 
 /** Explicit product preferences win; auto follows the bound native environment. */
@@ -27,8 +27,9 @@ export function resolveLocale(configured: string, native: unknown): string {
   return typeof native === 'string' && native.length > 0 ? native : 'en';
 }
 
-export function languageIndex(locale: string): 0 | 1 | 2 {
+export function languageIndex(locale: string): 0 | 1 | 2 | 3 {
   const tag = locale.toLowerCase();
+  if (tag === 'ko' || tag.startsWith('ko-')) return 3;
   return tag.startsWith('zh')
     ? tag.includes('hant') ||
       tag.startsWith('zh-tw') ||
@@ -39,14 +40,14 @@ export function languageIndex(locale: string): 0 | 1 | 2 {
     : 0;
 }
 
-/** Build the three immutable feature maps once; rendering only selects a map. */
+/** Build the immutable feature maps once; rendering only selects a map. */
 export function createCopy<C extends Catalog>(messages: C) {
   type Copy = Readonly<{ [K in keyof C]: string }>;
   const entries = Object.entries(messages);
-  const catalogs = ([0, 1, 2] as const).map(
+  const catalogs = ([0, 1, 2, 3] as const).map(
     (language) =>
       Object.freeze(
-        Object.fromEntries(entries.map(([key, message]) => [key, message[language]])),
+        Object.fromEntries(entries.map(([key, message]) => [key, message[language] ?? message[0]])),
       ) as Copy,
   );
   return (locale: string): Copy => catalogs[languageIndex(locale)]!;
