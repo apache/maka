@@ -63,6 +63,12 @@ pub struct ContextCounts {
 }
 
 impl PreparedContextBreakdown {
+    pub fn fixed_tokens(&self) -> u64 {
+        self.system
+            .estimated_tokens
+            .saturating_add(self.tool_schemas.estimated_tokens)
+    }
+
     /// Combine already-rounded fragments without rounding their byte totals again.
     pub fn accumulate(&mut self, other: &Self) {
         fn add(left: &mut ContextBucket, right: &ContextBucket) {

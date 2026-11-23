@@ -113,15 +113,25 @@ impl RunAccess {
         request: &RequestSpec,
         model: &PreparedModel,
         budget: &maka_agent_facts::context::PreparedContextBreakdown,
+        memory: Option<&MemoryProjection>,
     ) -> Result<(), RunError> {
         use maka_agent_state::memory::{pinned::Authorize, reads::CheckReads};
+
+        fn memory_read_failure(error: maka_event_log::StoreError) -> RunError {
+            match error {
+                maka_event_log::StoreError::InvalidTransition(message) => {
+                    RunError::FrozenMemoryDenied(message)
+                }
+                error => source_authority_changed(error.to_string()),
+            }
+        }
 
         let run = self.execution.run_id;
         let data = self.data_writer().map_err(source_authority_changed)?;
         let reads = data
             .query(CheckReads(run))
             .await
-            .map_err(|e| source_authority_changed(e.to_string()))?;
+            .map_err(memory_read_failure)?;
         let spec = self.spec();
         if spec.memory_projection.is_none()
             && !reads.facts
@@ -141,23 +151,18 @@ impl RunAccess {
             .map_err(|e| source_authority_changed(e.to_string()))?;
         loop {
             if !policy.policy.memory.enabled || !policy.policy.memory.agent_read_enabled {
-                return Err(source_authority_changed(
-                    "admitted memory read permission revoked",
+                return Err(RunError::FrozenMemoryDenied(
+                    "admitted memory read permission revoked".into(),
                 ));
             }
             let current = self.current_configuration().await?;
             if current.tools.is_some() {
-                return Err(source_authority_changed(
-                    "admitted memory read permission revoked",
+                return Err(RunError::FrozenMemoryDenied(
+                    "admitted memory read permission revoked".into(),
                 ));
             }
-            let project = owner
-                .project_memory_scope(&self.execution.session_id, &current)
-                .await
-                .map_err(source_authority_changed)?;
             let mut dependencies = Vec::new();
-            if let Some(reference) = &spec.memory_projection {
-                let memory: MemoryProjection = owner.run_content(run, reference).await?;
+            if let Some(memory) = memory {
                 if request.accounting.purpose == maka_agent_facts::context::ModelPurpose::Main {
                     let limit = model.context.as_ref().and_then(|c| {
                         maka_agent_facts::context::effective_input_limit(
@@ -166,25 +171,41 @@ impl RunAccess {
                         )
                     });
                     memory
-                        .check_window(
-                            limit,
-                            budget
-                                .system
-                                .estimated_tokens
-                                .saturating_add(budget.tool_schemas.estimated_tokens),
-                        )
+                        .check_window(limit, budget.fixed_tokens())
                         .map_err(source_authority_changed)?;
                 }
-                dependencies = memory.entries.into_iter().map(|e| e.loaded).collect();
+                dependencies = memory
+                    .entries
+                    .iter()
+                    .map(|entry| entry.loaded.clone())
+                    .collect();
             }
 
+            let scope = if reads.project.is_some()
+                || dependencies.iter().any(|entry| entry.scope != "personal")
+            {
+                owner
+                    .project_memory_scope(&self.execution.session_id, &current)
+                    .await
+                    .map_err(source_authority_changed)?
+            } else {
+                let mut scope = owner
+                    .memory_scope(MemoryScope::Personal)
+                    .await
+                    .map_err(source_authority_changed)?;
+                scope.binding = Some((
+                    self.execution.session_id.clone(),
+                    current.permission_basis(),
+                ));
+                scope
+            };
             data.query(Authorize {
                 run,
-                project,
+                scope,
                 dependencies,
             })
             .await
-            .map_err(|e| source_authority_changed(e.to_string()))?;
+            .map_err(memory_read_failure)?;
             let current_policy = owner
                 .configuration
                 .runtime_policy()

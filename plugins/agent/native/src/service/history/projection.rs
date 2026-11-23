@@ -1185,8 +1185,8 @@ pub(super) async fn project(
                     MemoryReplay::Shared => true,
                     MemoryReplay::Run(_) => false,
                     MemoryReplay::Legacy => match reader {
-                        data::DataSource::Live { history, .. } => !history
-                            .has_memory_reads(
+                        data::DataSource::Live { history, .. } => history
+                            .original_replay_is_shared(
                                 compact
                                     .summary_origin
                                     .map_or(item.recorded.run, |origin| origin.run),

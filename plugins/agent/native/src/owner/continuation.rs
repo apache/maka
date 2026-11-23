@@ -204,7 +204,7 @@ impl Owner {
                 &session_id,
                 Some(preference),
                 operation.fingerprint.clone(),
-                true,
+                crate::owner::send::PinCapture::NewRun,
                 parent,
             )
             .await?;
@@ -243,6 +243,7 @@ impl Owner {
             };
             let (preview, _) = tokio::sync::watch::channel(None);
             original_model = Some(driver_model::DriverModel {
+                memory: basis.memory.clone(),
                 history: state.session_history(self.run_owner(), session_id.clone()),
                 state,
                 log: Arc::new(log),

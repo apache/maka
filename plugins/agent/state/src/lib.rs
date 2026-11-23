@@ -411,6 +411,20 @@ pub const MIGRATIONS: &[maka_event_log::migration::Migration] = &[
         configure: None,
         data: None,
     },
+    maka_event_log::migration::Migration {
+        version: 58,
+        description: "scope history visibility to source sessions",
+        sql: include_str!("../migrations/0058_session_read_visibility.sql"),
+        configure: None,
+        data: None,
+    },
+    maka_event_log::migration::Migration {
+        version: 59,
+        description: "recover original memory replay and handoff authority",
+        sql: include_str!("../migrations/0059_legacy_memory_provenance.sql"),
+        configure: Some(memory::reads::capture_upgrade_boundary),
+        data: None,
+    },
 ];
 
 #[cfg(test)]
@@ -422,7 +436,7 @@ mod migration_tests {
             .chain(super::MIGRATIONS)
             .copied()
             .collect();
-        for through in [0, 41].into_iter().chain(46..=54) {
+        for through in [0, 41].into_iter().chain(46..=56) {
             let directory = tempfile::tempdir().unwrap();
             let path = directory.path().join("root.sqlite");
             let db = rusqlite::Connection::open(&path).unwrap();

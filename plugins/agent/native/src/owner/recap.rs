@@ -54,10 +54,10 @@ impl Owner {
         session: String,
         generation: Option<(RecoveryRef, OperationDispatchScope, ModelSelection)>,
     ) -> Result<Recaps, String> {
-        self.record_history_read(scope).await?;
+        self.record_history_read(scope, &session, None).await?;
         let visibility = self
             .memory_data(scope)?
-            .query(maka_agent_state::memory::reads::Visibility)
+            .query(maka_agent_state::memory::reads::Visibility(session.clone()))
             .await
             .map_err(|e| e.to_string())?;
         let backend = Arc::new(Backend {
@@ -83,11 +83,14 @@ impl Owner {
             .await
             .map_err(|e| e.to_string())?;
         let recaps = self.recaps(scope, input.session_id.clone(), None).await?;
-        match input.operation_id {
+        let receipt = match input.operation_id {
             Some(operation) => recaps.query(scope, &input.session_id, operation).await,
             None => recaps.read(scope, &input.session_id).await,
         }
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+        self.record_history_read(scope, &input.session_id, Some(recaps.visibility))
+            .await?;
+        Ok(receipt)
     }
     pub async fn generate_recap(
         self: &Arc<Self>,
@@ -132,10 +135,13 @@ impl Owner {
                 Some((operation.clone(), dispatch, input.model)),
             )
             .await?;
-        recaps
+        let receipt = recaps
             .generate(scope, &input.session_id, id, language)
             .await
-            .map_err(|e| e.to_string())
+            .map_err(|e| e.to_string())?;
+        self.record_history_read(scope, &input.session_id, Some(recaps.visibility))
+            .await?;
+        Ok(receipt)
     }
 }
 impl recap::History for Backend {
@@ -464,6 +470,7 @@ struct RecapInput {
     text: Arc<RecapText>,
     data: maka_event_log::root_store::DataWriter,
     revision: u64,
+    session: String,
     failure: std::sync::OnceLock<maka_model::ModelError>,
 }
 impl maka_agent_ports::model::FrozenPrompt for RecapInput {
@@ -478,7 +485,7 @@ impl maka_agent_ports::model::FrozenPrompt for RecapInput {
             let current = tokio::select! {
                 biased;
                 _ = cancellation.cancelled() => return Err(maka_model::ModelError::Cancelled),
-                current = self.data.query(maka_agent_state::memory::reads::Visibility) => current,
+                current = self.data.query(maka_agent_state::memory::reads::Visibility(self.session.clone())) => current,
             };
             let reason = match current {
                 Ok(current) if current == self.revision => return Ok(()),
@@ -514,6 +521,7 @@ pub(super) async fn stream(
     cancellation: CancellationToken,
     data: maka_event_log::root_store::DataWriter,
     revision: u64,
+    session: String,
 ) -> Result<maka_model::ModelStream, maka_model::ModelError> {
     let binding = models.binding(&request.provider)?;
     let text = Arc::new(RecapText(request.prompt.clone()));
@@ -523,6 +531,7 @@ pub(super) async fn stream(
             text,
             data,
             revision,
+            session,
             failure: Default::default(),
         }),
     };

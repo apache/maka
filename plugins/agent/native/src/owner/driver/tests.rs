@@ -969,6 +969,7 @@ impl Rig {
         )?;
         self.cells = Some(cells.clone());
         let model = DriverModel {
+            memory: None,
             state: state.clone(),
             history: state.session_history(view.spec.owner.clone(), view.spec.session_id.clone()),
             log: Arc::new(lease.store()),
@@ -9088,6 +9089,7 @@ async fn compaction_resumes_with_steering_indexed_at_its_original_delivery() {
             .durable
             .session_history(owner.run_owner(), session.clone());
         let cut = source.capture().await?;
+        let stop = CancellationToken::new();
         let mut external_history = Vec::new();
         crate::service::history::readable_context_into(
             &source,
@@ -9110,7 +9112,7 @@ async fn compaction_resumes_with_steering_indexed_at_its_original_delivery() {
                 },
                 Some(cut),
                 None,
-                stop.clone(),
+                stop,
             )
             .await?;
         assert!(

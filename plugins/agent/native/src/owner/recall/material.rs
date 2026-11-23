@@ -154,7 +154,7 @@ impl Recall {
         request: maka_agent_facts::read::ReadRequest,
     ) -> Result<ToolSuccess, ToolError> {
         self.check(&call).await?;
-        self.record_history_read(&call).await?;
+        let before_visibility = self.history_read_start(&call).await?;
         let artifacts = ArtifactStore::new(self.data(&call)?);
         let cancellation = call.cancellation.child_token();
         let _cancel_on_drop = cancellation.clone().drop_guard();
@@ -194,7 +194,9 @@ impl Recall {
                 },
             ).await.map_err(failed)?.ok_or_else(|| failed("Original attachment unavailable"))??;
             recall.check(&scope).await?;
+            let source = maka_agent_state::memory::reads::HistorySources::Attachment {session:guard.scope.session.clone(), artifact:guard.artifact.clone()};
             recall.data(&scope)?.query(guard).await.map_err(failed)?;
+            recall.record_history_read(&scope, source, before_visibility).await?;
             Ok(output)
         }).await
     }

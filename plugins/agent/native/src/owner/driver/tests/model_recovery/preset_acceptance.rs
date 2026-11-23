@@ -2137,7 +2137,7 @@ async fn context_overflow_after_partial_output_compacts_and_continues() -> TestR
         let session = create(client, &base, &model, None).await?;
         let id = session["id"].as_str().unwrap();
         let marker = "Pinned across context compaction";
-        pinned_memory::enable_and_pin(client,id,marker).await?;
+        pinned_memory::enable_and_pin(client, id, marker).await?;
         let send = async |message: &str| -> TestResult<Value> {
             let sent = call(
                 client,
@@ -2177,7 +2177,7 @@ async fn context_overflow_after_partial_output_compacts_and_continues() -> TestR
         // 170k-200k estimated tokens: the next turn summarizes in the background.
         let first = send("Produce long history.").await?;
         let (first_wire, reply) = provider.next().await?;
-        pinned_memory::assert_wire(&first_wire,marker);
+        pinned_memory::assert_wire(&first_wire, marker);
         reply.reply_text("padding ".repeat(66_000));
         quiescent_message(client, id, &first).await?;
 

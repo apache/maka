@@ -1662,6 +1662,24 @@ async fn verify_capsule(bin: &Path, capsule_dir: &Path) {
         assert_eq!(pinned["assertion"], memory["assertion"]);
         assert_eq!(pinned["revision"], pin["revision"]);
 
+        let observed = call(
+            &client,
+            "agent",
+            "observe",
+            json!({"sessionId": manifest.primary_session_id}),
+            Attachments::new(),
+        )
+        .await;
+        let original = call(
+            &client,
+            "agent",
+            "loadedMemories",
+            json!({"sessionId": manifest.primary_session_id, "runId": observed["latestRunId"].as_str().unwrap()}),
+            Attachments::new(),
+        )
+        .await;
+        assert_eq!(original, json!([]), "later pin changed historical Run admission");
+
         let followup = call(
             &client,
             "agent",

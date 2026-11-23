@@ -352,6 +352,20 @@ pub struct MemoryProjection {
 }
 
 impl MemoryProjection {
+    pub fn check_admitted_window(
+        &self,
+        limit: Option<u64>,
+        system: Option<&crate::execution::SystemPrompt>,
+    ) -> Result<(), String> {
+        let fixed = system.map_or(0, |system| {
+            crate::context::measure::estimate(&[crate::model::prompt::Message::System {
+                content: system.text.clone(),
+                provider_options: None,
+            }])
+        });
+        self.check_window(limit, fixed)
+    }
+
     pub fn check_window(&self, limit: Option<u64>, fixed_tokens: u64) -> Result<(), String> {
         let message =
             crate::model::prompt::Message::user(self.message().map_err(|e| e.to_string())?);

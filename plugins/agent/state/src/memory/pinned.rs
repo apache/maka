@@ -77,6 +77,7 @@ pub(super) fn check_budget(c: &Connection, scope: &Scope) -> Result<(), StoreErr
     entries(c, scope, None).map(drop)
 }
 
+#[derive(Clone)]
 pub struct Capture {
     pub personal: Scope,
     pub project: Scope,
@@ -91,21 +92,66 @@ impl Query for Capture {
     }
 }
 
+#[derive(Clone)]
+pub struct ProjectionCapture {
+    pub scopes: Capture,
+    pub policy_revision: u64,
+}
+
+impl Query for ProjectionCapture {
+    type Output = Option<MemoryProjection>;
+
+    fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
+        let entries = self.scopes.execute(c)?;
+        Ok((!entries.is_empty()).then_some(MemoryProjection {
+            policy_revision: self.policy_revision,
+            entries,
+        }))
+    }
+}
+
+impl crate::AdmissionGuard for ProjectionCapture {
+    fn validate(
+        &self,
+        c: &Connection,
+        _run: maka_agent_facts::durable::RunId,
+        spec: &maka_agent_facts::durable::RunSpec,
+    ) -> Result<(), StoreError> {
+        let actual = self
+            .clone()
+            .execute(c)?
+            .as_ref()
+            .map(crate::ContentBlob::json)
+            .transpose()?;
+        let actual = actual.as_ref().map(|blob| blob.reference());
+        if actual != spec.memory_projection.as_ref() {
+            let digest = |reference: Option<&maka_agent_facts::durable::ContentRef>| {
+                reference.map_or_else(|| "no pins".to_string(), |value| value.digest.clone())
+            };
+            return Err(StoreError::RevisionConflict {
+                expected: digest(spec.memory_projection.as_ref()),
+                actual: digest(actual),
+            });
+        }
+        Ok(())
+    }
+}
+
 pub struct Authorize {
     pub run: maka_agent_facts::durable::RunId,
-    pub project: Scope,
+    pub scope: Scope,
     pub dependencies: Vec<LoadedMemory>,
 }
 impl Query for Authorize {
     type Output = ();
     fn execute(self, c: &Connection) -> Result<(), StoreError> {
         let reads = super::reads::CheckReads(self.run).execute(c)?;
-        self.project.validate(c)?;
+        self.scope.validate(c)?;
         let (session, _) = self
-            .project
+            .scope
             .binding
             .as_ref()
-            .ok_or_else(|| invalid("missing project binding"))?;
+            .ok_or_else(|| invalid("missing session memory binding"))?;
         let eligible: bool = c.prepare_cached(
             "SELECT EXISTS(SELECT 1 FROM session_control WHERE id=? AND coalesce(configuration->>'incognito',0)=0
              AND configuration->>'parentSessionId' IS NULL AND configuration->>'tools' IS NULL)"
@@ -115,7 +161,7 @@ impl Query for Authorize {
         }
         if reads
             .project
-            .is_some_and(|scope| scope != self.project.location)
+            .is_some_and(|scope| scope != self.scope.location)
         {
             return Err(invalid("memory tool input project changed"));
         }
@@ -125,10 +171,10 @@ impl Query for Authorize {
              AND v.revision=? AND m.state='active' AND v.disposition<>'suppressed')",
         )?;
         for entry in self.dependencies {
-            if (entry.scope != "personal" && entry.scope != self.project.location)
+            if (entry.scope != "personal" && entry.scope != self.scope.location)
                 || !visible.query_row(
                     params![
-                        self.project.namespace,
+                        self.scope.namespace,
                         entry.scope,
                         entry.id.0.to_string(),
                         crate::recall::number(entry.assertion.0)?

@@ -397,7 +397,7 @@ impl DriverModel {
                     let mut system=directory.open(0);
                     while let Some(recipe)=system.next().await?{if matches!(recipe,MessageRecipe::System{..}){builder.append_recipe(&recipe).await?;}}
                 }
-                self.append_pinned(view, &model, &mut builder).await?;
+                self.append_pinned(&mut builder).await?;
                 self.append_compacted_material(&reader,view.run,compacted,ReplayTarget::new(&model, frozen.operation),frozen.language,&mut builder).await?;
                 let mut tail=directory.open(start);
                 while let Some(recipe)=tail.next().await?{if !matches!(recipe,MessageRecipe::System{..})&& let Some(recipe)=ReplayTarget::new(&model,frozen.operation).recipe(recipe).await?{builder.append_recipe(&recipe).await?;}}
@@ -410,6 +410,7 @@ impl DriverModel {
                 preparation::prepare_wire(&settings,&mut prompt,&definitions,model.main_output_limit,&self.cancellation).await?;
                 let calibration=self.calibration(view,&capture,&model,Some(&checkpoint)).await?;
                 let prepared=preparation::prepare_request(&settings,prompt.clone(),definitions.clone(),preparation::OutputBudget::Compute(model.main_output_limit),ModelPurpose::Main,calibration)?;
+                self.check_pinned_window(&model, &prepared.context_breakdown)?;
                 let snapshot=preparation::snapshot_prompt(self.preparation_io()?,self.resources.clone(),&prepared.request.prompt,&self.cancellation).await?;
                 let (prompt,layout_chunks,layout,cleanup)=snapshot.into_parts();
                 let evidence=self.cleanup.clone();

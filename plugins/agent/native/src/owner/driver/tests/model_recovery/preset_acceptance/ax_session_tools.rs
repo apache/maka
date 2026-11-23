@@ -122,8 +122,7 @@ async fn universal_read_and_human_symmetric_session_tools_coordinate_rooms_and_w
             "sessionId":unrelated["id"], "expectedRevision":unrelated["revision"], "action":"archive"
         })).await?;
         assert_eq!(archived["kind"], "changed");
-        reply2.send(tool_response("Read", json!({"path": format!("session:{room}")})))
-            .map_err(|_| "reply2 lost")?;
+        reply2.send_plan(tool_response("Read", json!({"path": format!("session:{room}")})));
         let (continued, reply2) = provider.next().await?;
         assert!(text_messages(&continued).contains("ROOM_GUIDELINE"));
         reply2

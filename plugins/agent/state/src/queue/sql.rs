@@ -1288,7 +1288,7 @@ pub(crate) fn rebuild_queue_projections(c: &Connection) -> Result<(), StoreError
             break;
         }
         for session in sessions {
-            rebuild(c, &session)?;
+            replay_queue_events(c, &session)?;
             after = session;
         }
     }
@@ -1296,6 +1296,17 @@ pub(crate) fn rebuild_queue_projections(c: &Connection) -> Result<(), StoreError
 }
 
 pub(super) fn rebuild(c: &Connection, session: &str) -> Result<QueueCommit, StoreError> {
+    let committed = replay_queue_events(c, session)?;
+    c.execute(
+        "UPDATE agent_queue_items AS q SET entry_json=json_set(entry_json,'$.request.spec.memoryAdmission',l.admission)
+         FROM agent_memory_legacy_queue l WHERE l.session=?1 AND q.session=l.session AND q.request=l.request
+         AND q.state='pending' AND q.entry_json->>'$.request.spec.memoryAdmission' IS NULL",
+        [session],
+    )?;
+    Ok(committed)
+}
+
+fn replay_queue_events(c: &Connection, session: &str) -> Result<QueueCommit, StoreError> {
     id(session)?;
     c.execute("DELETE FROM agent_queue_items WHERE session=?", [session])?;
     c.execute("DELETE FROM agent_queue_heads WHERE session=?", [session])?;
@@ -1343,7 +1354,22 @@ pub(crate) fn consume(
     }
     let next = cas(c, &cut.session, cut.expected_revision)?;
     let entry = pending(c, &cut.session, &cut.requests[0])?;
-    if !entry.placement.is_followup() || entry.request.spec != *spec {
+    use maka_agent_facts::memory::MemoryAdmission;
+    let original = &entry.request.spec;
+    let same_memory = original.memory_admission == spec.memory_admission
+        && original.memory_projection == spec.memory_projection;
+    let fresh_memory = matches!(
+        original.memory_admission,
+        MemoryAdmission::Enabled | MemoryAdmission::Disabled
+    ) && (spec.memory_admission == MemoryAdmission::Enabled
+        || (matches!(
+            spec.memory_admission,
+            MemoryAdmission::Disabled | MemoryAdmission::Excluded
+        ) && spec.memory_projection.is_none()));
+    if !entry.placement.is_followup()
+        || !(same_memory || fresh_memory)
+        || !entry.request.matches_run_input(spec.clone())
+    {
         return Err(invalid(
             "Run admission does not match frozen followup request",
         ));

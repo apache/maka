@@ -203,7 +203,7 @@ impl Owner {
                 &input.session_id,
                 Some(preference),
                 operation.fingerprint.clone(),
-                true,
+                crate::owner::send::PinCapture::Excluded,
                 parent,
             )
             .await?;
@@ -261,73 +261,17 @@ impl super::driver::NativeDriver {
         &self,
         view: &maka_agent_state::fold::RunView,
     ) -> Result<Option<bool>, maka_agent_engine::RunError> {
-        use maka_agent_facts::{
-            durable::{RunOrigin, Trigger},
-            memory::MemoryAdmission,
-        };
-        let mut run = view.run;
-        let mut spec = &view.spec;
-        let mut previous;
-        let history = self
-            .state
-            .session_history(view.spec.owner.clone(), view.spec.session_id.clone());
-        let sources = loop {
-            match spec.memory_admission {
-                MemoryAdmission::Disabled | MemoryAdmission::Enabled => return Ok(Some(true)),
-                MemoryAdmission::Excluded => return Ok(Some(false)),
-                MemoryAdmission::Legacy => {}
-            }
-            if spec.origin != RunOrigin::Local || spec.allowed_tools.is_some() {
-                return Ok(Some(false));
-            }
-            match &spec.trigger {
-                Trigger::CheckpointHandoff { source } => {
-                    previous = history.run_source(*source).await?;
-                    run = previous.run;
-                    spec = &previous.spec;
-                }
-                Trigger::Message { message_id } => {
-                    let input: RunInput = self.owner.run_content(run, &spec.input).await?;
-                    let RunInput::Message {
-                        request_fingerprint,
-                        source_messages,
-                        ..
-                    } = input
-                    else {
-                        return Ok(None);
-                    };
-                    if source_messages
-                        .iter()
-                        .any(|source| source.message.origin.is_some())
-                    {
-                        return Ok(Some(false));
-                    }
-                    if source_messages.is_empty() {
-                        break vec![message_id.clone()];
-                    }
-                    if request_fingerprint.is_none() && source_messages.len() == 1 {
-                        return Ok(Some(false));
-                    }
-                    break source_messages
-                        .into_iter()
-                        .map(|source| source.message.message_id)
-                        .collect();
-                }
-                Trigger::Continuation { .. } | Trigger::ContextCompact => {
-                    break vec![run.to_string()];
-                }
-                _ => return Ok(Some(false)),
-            }
-        };
-        Ok(self
-            .access
-            .data_writer()
-            .map_err(maka_agent_engine::RunError::InvalidInput)?
-            .query(maka_agent_state::memory::reads::LegacySources {
-                session: view.spec.session_id.clone(),
-                sources,
-            })
-            .await?)
+        use maka_agent_facts::memory::MemoryAdmission;
+        match view.spec.memory_admission {
+            MemoryAdmission::Disabled | MemoryAdmission::Enabled => Ok(Some(true)),
+            MemoryAdmission::Excluded => Ok(Some(false)),
+            MemoryAdmission::Legacy => Ok(self
+                .access
+                .data_writer()
+                .map_err(maka_agent_engine::RunError::InvalidInput)?
+                .query(maka_agent_state::memory::reads::OriginalAdmission(view.run))
+                .await?),
+        }
     }
 
     pub(super) async fn resume_after_checkpoint(
@@ -412,8 +356,11 @@ impl super::driver::NativeDriver {
             admission_kind = maka_agent_facts::memory::MemoryAdmission::Legacy;
         }
         if let Some(memory) = &memory {
+            let system: Option<SystemPrompt> = owner
+                .run_content(view.run, &view.spec.system_prompt)
+                .await?;
             memory
-                .check_window(source.accepted.input_limit, 0)
+                .check_admitted_window(source.accepted.input_limit, system.as_ref())
                 .map_err(RunError::InvalidInput)?;
         }
         let memory = memory.as_deref().map(ContentBlob::json).transpose()?;

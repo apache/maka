@@ -198,7 +198,7 @@ impl Auxiliary {
         let guard = operation
             .as_ref()
             .and_then(|(_, _, visibility)| *visibility)
-            .map(|revision| (data.clone(), revision));
+            .map(|revision| (data.clone(), revision, session.clone()));
         let (journal, write) = UsageStore::new(data)
             .auxiliary(
                 AuxiliarySpec {
@@ -253,13 +253,14 @@ impl Auxiliary {
         let model_id = request.provider.model.clone();
         let result = async {
             let stream = match guard {
-                Some((data, revision)) => {
+                Some((data, revision, session)) => {
                     super::recap::stream(
                         &self.models,
                         request,
                         cancellation.clone(),
                         data,
                         revision,
+                        session,
                     )
                     .await
                 }

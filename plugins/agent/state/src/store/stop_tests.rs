@@ -1852,3 +1852,96 @@ async fn cancelled_contested_takeover_preserves_prior_claim() {
     drop((claim1, claim2, store));
     root.close().await.unwrap();
 }
+
+#[tokio::test]
+async fn rejected_memory_reads_do_not_roll_back_peer_writes() {
+    use crate::memory::{
+        Scope,
+        reads::{HistorySources, RecordFacts, RecordHistory},
+    };
+    use maka_agent_facts::memory::{LoadedMemory, MemoryId, MemoryRevision};
+    use maka_plugin_core::storage::{Data, Mutation, Namespace};
+    use tokio::sync::oneshot;
+
+    struct WriterBarrier(oneshot::Sender<()>, std::sync::mpsc::Receiver<()>);
+    impl Query for WriterBarrier {
+        type Output = ();
+        fn execute(self, _: &Connection) -> Result<(), StoreError> {
+            self.0.send(()).unwrap();
+            self.1
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .unwrap();
+            Ok(())
+        }
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let (root, _) = open(dir.path(), true).await;
+    let data = root.data_writer().unwrap();
+    let namespace = Namespace::new("test.memory", maka_plugin_core::scope::Scope::Profile).unwrap();
+    let peer = root
+        .prepare_plugin_data_statement(
+            &namespace,
+            vec![Mutation {
+                key: "peer".into(),
+                expected_revision: None,
+                data: Data::Present(serde_json::json!("committed")),
+            }],
+            &data,
+        )
+        .unwrap();
+    let (admission, _) = spec();
+    let run = RunId::new();
+    let stale = RecordFacts {
+        run,
+        scope: Scope {
+            namespace: serde_json::to_string(&admission.owner).unwrap(),
+            location: "personal".into(),
+            binding: None,
+        },
+        facts: vec![LoadedMemory {
+            scope: "personal".into(),
+            id: MemoryId(Uuid::new_v4()),
+            revision: MemoryRevision(1),
+            assertion: MemoryRevision(1),
+        }],
+    };
+    let unknown = RecordHistory {
+        owner: admission.owner,
+        execution: ExecutionIdentity {
+            run_id: run,
+            session_id: "reader".into(),
+            turn_id: "expired".into(),
+        },
+        sources: HistorySources::session("source"),
+        before: None,
+    };
+
+    let (ready, entered) = oneshot::channel();
+    let (release, wait) = std::sync::mpsc::channel();
+    let lane = data.clone();
+    let barrier = tokio::spawn(async move { lane.query_barrier(WriterBarrier(ready, wait)).await });
+    entered.await.unwrap();
+    // Poll all three FIFO writes while the writer is held so they share a commit.
+    let (peer, stale, unknown, ()) = tokio::join!(biased;
+        data.write(peer),data.write(stale),data.write(unknown),async {release.send(()).unwrap()}
+    );
+    barrier.await.unwrap().unwrap();
+    assert!(
+        matches!(stale,Err(StoreError::InvalidTransition(reason)) if reason.contains("memory changed"))
+    );
+    assert!(
+        matches!(unknown,Err(StoreError::InvalidTransition(reason)) if reason.contains("execution changed"))
+    );
+    peer.unwrap();
+    assert_eq!(
+        root.plugin_data(&namespace, "peer")
+            .await
+            .unwrap()
+            .unwrap()
+            .data
+            .value(),
+        Some(&serde_json::json!("committed"))
+    );
+    root.shutdown().await.unwrap();
+}

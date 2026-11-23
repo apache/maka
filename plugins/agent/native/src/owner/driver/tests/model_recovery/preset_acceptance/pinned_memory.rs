@@ -57,13 +57,15 @@ async fn registered_bot_skips_pins_after_the_feature_is_disabled() -> TestResult
     let mut rig = Rig::new()?;
     let mut provider = Provider::start().await?;
     let base = rig.directory.path().to_owned();
-    let mut boot =
-        bootstrap_with(&base, provider.url.clone(), |cfg| cfg["bot"] = json!(true)).await?;
+    let mut boot = bootstrap_with(&base, provider.server.base_url(), |cfg| {
+        cfg["bot"] = json!(true)
+    })
+    .await?;
     attach(&mut rig, &boot).await?;
     let client = rig.client.as_ref().unwrap();
     let model = model_options(
         client,
-        &provider.url,
+        &provider.server.base_url(),
         false,
         json!({"contextWindow":128000}),
     )
@@ -131,12 +133,7 @@ async fn registered_bot_skips_pins_after_the_feature_is_disabled() -> TestResult
         assert_eq!(sent["kind"], "queued", "{sent}");
         let (wire, reply) = provider.next().await?;
         records.push(text_messages(&wire).contains(marker));
-        reply
-            .send(completion(
-                json!({"role":"assistant","content":"Done"}),
-                "stop",
-            ))
-            .map_err(|_| "provider lost")?;
+        reply.reply_text("Done");
         quiescent_message(client, session, &sent["messageId"]).await?;
     }
     assert!(rig.finish().await.is_empty());
@@ -150,7 +147,7 @@ async fn pinned_memory_freezes_per_run_and_revokes_before_next_send() -> TestRes
     let mut provider = Provider::start().await?;
     let result = AssertUnwindSafe(tokio::time::timeout(
         Duration::from_secs(90),
-        exercise(&mut rig, &mut provider),
+        freeze_and_reopen(&mut rig, &mut provider),
     ))
     .catch_unwind()
     .await;
@@ -163,20 +160,17 @@ async fn pinned_memory_freezes_per_run_and_revokes_before_next_send() -> TestRes
     Ok(())
 }
 
-async fn exercise(rig: &mut Rig, provider: &mut Provider) -> TestResult<()> {
+async fn freeze_and_reopen(rig: &mut Rig, provider: &mut Provider) -> TestResult<()> {
     let base = rig.directory.path().to_owned();
-    let boot = bootstrap_with(&base, provider.url.clone(), |cfg| {
+    let boot = bootstrap_with(&base, provider.server.base_url(), |cfg| {
         cfg["recall"] = json!(true);
-        cfg["recaps"] = json!(true);
-        cfg["tools"] = json!([{"name":"GetRecap","description":"Read a saved recap.","result":"json",
-            "confirmation":"preapproved","target":{"kind":"export","name":"agent"},"method":"recap"}]);
     })
     .await?;
     attach(rig, &boot).await?;
     let client = rig.client.as_ref().unwrap();
     let model = model_options(
         client,
-        &provider.url,
+        &provider.server.base_url(),
         false,
         json!({"contextWindow":128000}),
     )
@@ -207,12 +201,7 @@ async fn exercise(rig: &mut Rig, provider: &mut Provider) -> TestResult<()> {
     let (private_wire, reply) = provider.next().await?;
     assert!(!text_messages(&private_wire).contains(marker));
     assert!(!text_messages(&private_wire).contains("Legacy file fixture"));
-    reply
-        .send(completion(
-            json!({"role":"assistant","content":"Done"}),
-            "stop",
-        ))
-        .map_err(|_| "provider lost")?;
+    reply.reply_text("Done");
     quiescent_message(client, private_id, &private_turn["messageId"]).await?;
     let send = async |message: &str| {
         call(
@@ -247,18 +236,11 @@ async fn exercise(rig: &mut Rig, provider: &mut Provider) -> TestResult<()> {
     )
     .await?;
     assert_eq!(changed["kind"], "saved", "{changed}");
-    reply
-        .send(tool_response("Recall", json!({"terms":["no-match-xyz"]})))
-        .map_err(|_| "provider lost")?;
+    reply.send_plan(tool_response("Recall", json!({"terms":["no-match-xyz"]})));
     let (next, reply) = provider.next().await?;
     assert_wire(&next, marker);
     assert!(!text_messages(&next).contains("Banana updated fixture"));
-    reply
-        .send(completion(
-            json!({"role":"assistant","content":"Done"}),
-            "stop",
-        ))
-        .map_err(|_| "provider lost")?;
+    reply.reply_text("Done");
     let run = quiescent_message(client, session, &sent["messageId"]).await?;
     let report = call(
         client,
@@ -275,10 +257,15 @@ async fn exercise(rig: &mut Rig, provider: &mut Provider) -> TestResult<()> {
     assert!(!text_messages(&request).contains(marker));
     let removed=call(client,"agent","changeMemory",json!({"scope":scope,"edit":{"kind":"delete","expectedRevision":changed["revision"],"id":pin["id"]}})).await?;
     assert_eq!(removed["kind"], "deleted");
-    reply
-        .send(tool_response("Recall", json!({"terms":["no-match-xyz"]})))
-        .map_err(|_| "provider lost")?;
-    expect_revoked(client, provider, session, &next_turn["messageId"]).await?;
+    reply.send_plan(tool_response("Recall", json!({"terms":["no-match-xyz"]})));
+    expect_revoked(
+        client,
+        provider,
+        session,
+        &next_turn["messageId"],
+        "admitted memory revoked",
+    )
+    .await?;
     assert!(rig.finish().await.is_empty());
     rig.client = None;
     rig.host = None;
@@ -295,14 +282,58 @@ async fn exercise(rig: &mut Rig, provider: &mut Provider) -> TestResult<()> {
     .await?;
     assert_eq!(report, restored);
     assert!(!restored.to_string().contains(marker));
-    let owner = rig.captured.lock().unwrap().clone().unwrap();
-    let view = owner.durable.frontier(run).await?;
-    let (basis, _) = owner
-        .restored_data(&view)
-        .await
-        .map_err(|error| error.cause)?;
-    assert_eq!(basis.memory.as_ref().unwrap().entries[0].body, marker);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn recall_revocation_and_recap_visibility_follow_the_source_session() -> TestResult<()> {
+    let mut rig = Rig::new()?;
+    let mut provider = Provider::start().await?;
+    let result = AssertUnwindSafe(tokio::time::timeout(
+        Duration::from_secs(90),
+        recall_and_recap(&mut rig, &mut provider),
+    ))
+    .catch_unwind()
+    .await;
+    let cleanup = rig.finish().await;
+    match result {
+        Ok(result) => result??,
+        Err(panic) => std::panic::resume_unwind(panic),
+    }
+    assert!(cleanup.is_empty(), "{cleanup:?}");
+    Ok(())
+}
+
+async fn recall_and_recap(rig: &mut Rig, provider: &mut Provider) -> TestResult<()> {
+    let base = rig.directory.path().to_owned();
+    let boot = bootstrap_with(&base, provider.server.base_url(), |cfg| {
+        cfg["recall"] = json!(true);
+        cfg["recaps"] = json!(true);
+        cfg["tools"] = json!([{"name":"GetRecap","description":"Read a saved recap.","result":"json",
+            "confirmation":"preapproved","target":{"kind":"export","name":"agent"},"method":"recap"}]);
+    })
+    .await?;
+    attach(rig, &boot).await?;
     let client = rig.client.as_ref().unwrap();
+    let model = model_options(
+        client,
+        &provider.server.base_url(),
+        false,
+        json!({"contextWindow":128000}),
+    )
+    .await?;
+    let owner = rig.captured.lock().unwrap().clone().unwrap();
+    let preferences = call(client, "settings", "assistantPreferences", json!({})).await?;
+    call(
+        client,
+        "settings",
+        "updateAssistantPreferences",
+        json!({
+            "expectedRevision": preferences["revision"],
+            "mutation":{"kind":"memory","value":{"enabled":true,"agentReadEnabled":true}}
+        }),
+    )
+    .await?;
     let selected = create(client, &base, &model, None).await?;
     let session = selected["id"].as_str().unwrap();
     let saved = call(
@@ -324,9 +355,7 @@ async fn exercise(rig: &mut Rig, provider: &mut Provider) -> TestResult<()> {
     .await?;
     let (wire, reply) = provider.next().await?;
     assert!(!wire.to_string().contains("Nectarine recall fixture"));
-    reply
-        .send(tool_response("Recall", json!({"terms":["nectarine"]})))
-        .map_err(|_| "provider lost")?;
+    reply.send_plan(tool_response("Recall", json!({"terms":["nectarine"]})));
     let (wire, reply) = provider.next().await?;
     assert!(wire["messages"].as_array().unwrap().iter().any(|m| {
         m["role"] == "tool"
@@ -338,10 +367,17 @@ async fn exercise(rig: &mut Rig, provider: &mut Provider) -> TestResult<()> {
     call(client,"settings","updateAssistantPreferences",json!({
         "expectedRevision":preferences["revision"],"mutation":{"kind":"memory","value":{"enabled":true,"agentReadEnabled":false}}
     })).await?;
-    reply
-        .send(ModelReply::RateLimited)
-        .map_err(|_| "provider lost")?;
-    expect_revoked(client, provider, session, &sent["messageId"]).await?;
+    reply.send_plan(TurnPlan::http_error(
+        HttpErrorSpec::plain(429, "rate limited").with_header("retry-after", "0"),
+    ));
+    expect_revoked(
+        client,
+        provider,
+        session,
+        &sent["messageId"],
+        "admitted memory read permission revoked",
+    )
+    .await?;
 
     let marker = "Nectarine recall fixture";
     let original = call(
@@ -375,15 +411,27 @@ async fn exercise(rig: &mut Rig, provider: &mut Provider) -> TestResult<()> {
         let (wire, reply) = provider.next().await?;
         assert!(text_messages(&wire).contains("Look up the note"), "{wire}");
         assert!(!wire["messages"].to_string().contains(marker), "{wire}");
-        reply
-            .send(completion(
-                json!({"role":"assistant","content":"Reviewed the note."}),
-                "stop",
-            ))
-            .map_err(|_| "provider lost")?;
+        reply.reply_text("Reviewed the note.");
         Ok(())
     })?;
     assert_eq!(receipt["kind"], "ready", "{receipt}");
+    let unrelated = create(client, &base, &model, None).await?;
+    let (retried, ()) = tokio::try_join!(generate(), async {
+        let (first, reply) = provider.next().await?;
+        assert_eq!(first["stream_options"]["include_usage"], true, "{first}");
+        let archived = call(client, "agent", "changeSession", json!({
+            "sessionId":unrelated["id"], "expectedRevision":unrelated["revision"], "action":"archive"
+        })).await?;
+        assert_eq!(archived["kind"], "changed", "{archived}");
+        reply.send_plan(fatal("unsupported stream_options"));
+        let (wire, reply) = provider.next().await?;
+        assert!(wire.get("stream_options").is_none(), "{wire}");
+        assert!(text_messages(&wire).contains("Look up the note"), "{wire}");
+        reply.reply_text("Retried the recap.");
+        Ok(())
+    })?;
+    assert_eq!(retried["kind"], "ready", "{retried}");
+    assert!(provider.requests.try_recv().is_err());
     let recap_turn = call(
         client,
         "agent",
@@ -392,12 +440,10 @@ async fn exercise(rig: &mut Rig, provider: &mut Provider) -> TestResult<()> {
     )
     .await?;
     let (_, reply) = provider.next().await?;
-    reply
-        .send(tool_response(
-            "GetRecap",
-            json!({"sessionId":session,"operationId":receipt["operationId"]}),
-        ))
-        .map_err(|_| "provider lost")?;
+    reply.send_plan(tool_response(
+        "GetRecap",
+        json!({"sessionId":session,"operationId":receipt["operationId"]}),
+    ));
     let (wire, reply) = provider.next().await?;
     assert!(
         wire["messages"]
@@ -410,27 +456,8 @@ async fn exercise(rig: &mut Rig, provider: &mut Provider) -> TestResult<()> {
                     .contains("Reviewed the note.")),
         "{wire}"
     );
-    reply
-        .send(completion(
-            json!({"role":"assistant","content":"Finished reading."}),
-            "stop",
-        ))
-        .map_err(|_| "provider lost")?;
+    reply.reply_text("Finished reading.");
     quiescent_message(client, session, &recap_turn["messageId"]).await?;
-    let unrelated = create(client, &base, &model, None).await?;
-    let (refused, ()) = tokio::try_join!(generate(), async {
-        let (_, reply) = provider.next().await?;
-        let archived = call(client, "agent", "changeSession", json!({
-            "sessionId":unrelated["id"], "expectedRevision":unrelated["revision"], "action":"archive"
-        })).await?;
-        assert_eq!(archived["kind"], "changed", "{archived}");
-        reply
-            .send(ModelReply::RateLimited)
-            .map_err(|_| "provider lost")?;
-        Ok(())
-    })?;
-    assert_eq!(refused["kind"], "failed", "{refused}");
-    assert!(provider.requests.try_recv().is_err());
     assert_eq!(
         call(
             client,
@@ -455,12 +482,7 @@ async fn exercise(rig: &mut Rig, provider: &mut Provider) -> TestResult<()> {
         !wire["messages"].to_string().contains("Reviewed the note."),
         "{wire}"
     );
-    reply
-        .send(completion(
-            json!({"role":"assistant","content":"Done"}),
-            "stop",
-        ))
-        .map_err(|_| "provider lost")?;
+    reply.reply_text("Done");
     quiescent_message(client, session, &replay_turn["messageId"]).await?;
     let fork = call(
         client,
@@ -512,84 +534,187 @@ async fn exercise(rig: &mut Rig, provider: &mut Provider) -> TestResult<()> {
                 !text_messages(&wire).contains("Reviewed the note."),
                 "{wire}"
             );
-            reply
-                .send(completion(
-                    json!({"role":"assistant","content":"Fork summary"}),
-                    "stop",
-                ))
-                .map_err(|_| "provider lost")?;
+            reply.reply_text("Fork summary");
             Ok(())
         }
     )?;
     assert_eq!(recap["kind"], "ready", "{recap}");
-    let preferences = call(client, "settings", "assistantPreferences", json!({})).await?;
-    call(
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn queued_and_promoted_messages_load_their_runs_projection() -> TestResult<()> {
+    let mut rig = Rig::new()?;
+    let mut provider = Provider::start().await?;
+    let base = rig.directory.path().to_owned();
+    let boot = bootstrap_with(&base, provider.server.base_url(), |cfg| {
+        cfg["recall"] = json!(true)
+    })
+    .await?;
+    attach(&mut rig, &boot).await?;
+    let client = rig.client.as_ref().unwrap();
+    let model = model_options(
         client,
-        "settings",
-        "updateAssistantPreferences",
-        json!({"expectedRevision":preferences["revision"],
-        "mutation":{"kind":"memory","value":{"enabled":true,"agentReadEnabled":true}}}),
+        &provider.server.base_url(),
+        false,
+        json!({"contextWindow":128000}),
     )
     .await?;
-    let pinned = call(
-        client,
-        "agent",
-        "changeMemory",
-        json!({"scope":{"kind":"personal"},"edit":{
-        "kind":"set_always","id":saved["id"],"expectedRevision":saved["revision"],"always":true}}),
-    )
-    .await?;
-    assert_eq!(pinned["kind"], "saved", "{pinned}");
     let selected = create(client, &base, &model, None).await?;
     let session = selected["id"].as_str().unwrap();
-    let active = call(
-        client,
-        "agent",
-        "send",
-        json!({"sessionId":session,"message":"Start steering fixture"}),
-    )
-    .await?;
-    let (wire, _pending) = provider.next().await?;
-    assert_wire(&wire, marker);
-    let steer = call(
-        client,
-        "agent",
-        "send",
-        json!({"sessionId":session,"message":"Pending steer","delivery":"steer"}),
-    )
-    .await?;
-    let queue = owner.durable.queue();
-    let entry = queue
-        .message_entry(
-            session.into(),
-            steer["messageId"].as_str().ok_or("missing steer")?.into(),
+    let old = "Old queued pin fixture";
+    let new = "Updated queued pin fixture";
+    let pin = enable_and_pin(client, session, old).await?;
+    let send = async |message: &str, delivery: &str| {
+        call(
+            client,
+            "agent",
+            "send",
+            json!({"sessionId":session, "message":message, "delivery":delivery}),
         )
-        .await?
-        .ok_or("missing steer entry")?;
-    let reference = entry
-        .request
-        .spec
-        .memory_projection
-        .ok_or("steer has no independent projection")?;
-    let bytes = queue
-        .content(session.into(), entry.request.id, reference)
+        .await
+    };
+    let active = send("Start a turn", "steer").await?;
+    let (wire, _initial_reply) = provider.next().await?;
+    assert_wire(&wire, old);
+    let queued = send("Start the next turn", "queue").await?;
+    let updated = call(client, "agent", "changeMemory", json!({
+        "scope":{"kind":"project","sessionId":session}, "edit":{"kind":"correct", "id":pin["id"], "expectedRevision":pin["revision"], "body":new}
+    })).await?;
+    assert_eq!(updated["kind"], "saved", "{updated}");
+    let promoted = send("Promote this message", "queue").await?;
+    let edit = call(client, "agent", "editQueue", json!({
+        "sessionId":session, "expectedRevision":promoted["revision"], "edit":{"kind":"promote","messageId":promoted["messageId"]}
+    })).await?;
+    assert_eq!(edit["kind"], "committed", "{edit}");
+    let (wire, _promoted_reply) = provider.next().await?;
+    assert_wire(&wire, old);
+    assert!(
+        text_messages(&wire).contains("Promote this message"),
+        "{wire}"
+    );
+    let steer = send("Steer this turn", "steer").await?;
+    let (wire, reply) = provider.next().await?;
+    assert_wire(&wire, old);
+    let prompt = text_messages(&wire);
+    assert!(
+        prompt.contains("Promote this message") && prompt.contains("Steer this turn"),
+        "{wire}"
+    );
+    assert!(!prompt.contains(new), "{wire}");
+    reply.reply_text("Done");
+    let (wire, reply) = provider.next().await?;
+    assert_wire(&wire, new);
+    assert!(!text_messages(&wire).contains(old), "{wire}");
+    reply.reply_text("Done");
+    let first_run = quiescent_message(client, session, &active["messageId"]).await?;
+    let second_run = quiescent_message(client, session, &queued["messageId"]).await?;
+    assert_ne!(first_run, second_run);
+    for same in [steer, promoted] {
+        assert_eq!(
+            quiescent_message(client, session, &same["messageId"]).await?,
+            first_run
+        );
+    }
+    for (run, revision) in [
+        (first_run, &pin["revision"]),
+        (second_run, &updated["revision"]),
+    ] {
+        let loaded = call(
+            client,
+            "agent",
+            "loadedMemories",
+            json!({"sessionId":session, "runId":run}),
+        )
         .await?;
-    let memory: maka_agent_facts::memory::MemoryProjection = serde_json::from_slice(&bytes)?;
-    assert!(memory.entries.iter().any(|entry| entry.body == marker));
-    let work = call(
+        assert_eq!(&loaded[0]["revision"], revision);
+    }
+    assert!(rig.finish().await.is_empty());
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pinned_window_accounts_for_fixed_instructions_at_send() -> TestResult<()> {
+    let mut rig = Rig::new()?;
+    let provider = Provider::start().await?;
+    let base = rig.directory.path().to_owned();
+    let boot = bootstrap_with(&base, provider.server.base_url(), |_| {}).await?;
+    attach(&mut rig, &boot).await?;
+    let client = rig.client.as_ref().unwrap();
+    let model = model_options(
         client,
-        "agent",
-        "work",
-        json!({"sessionId":session,"target":{"kind":"message","messageId":active["messageId"]}}),
+        &provider.server.base_url(),
+        false,
+        json!({"contextWindow":500}),
     )
     .await?;
-    call(
+    let preset = preset(client, &model, &"x".repeat(900)).await?;
+    let selected = create(client, &base, &model, Some(&preset)).await?;
+    let session = selected["id"].as_str().unwrap();
+    enable_and_pin(client, session, &"a".repeat(850)).await?;
+    let result = call(
         client,
         "agent",
-        "stop",
-        json!({"sessionId":session,"runId":work["execution"]["runId"]}),
+        "send",
+        json!({"sessionId":session, "message":"Hello"}),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        result
+            .to_string()
+            .contains("pinned memory exceeds the selected model input window"),
+        "{result}"
+    );
+    let queue = call(client, "agent", "queue", json!({"sessionId":session})).await?;
+    assert_eq!(queue["entries"], json!([]));
+    assert!(rig.finish().await.is_empty());
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn standalone_compaction_skips_pins_with_an_unknown_window() -> TestResult<()> {
+    let mut rig = Rig::new()?;
+    let mut provider = Provider::start().await?;
+    let base = rig.directory.path().to_owned();
+    let boot = bootstrap_with(&base, provider.server.base_url(), |_| {}).await?;
+    attach(&mut rig, &boot).await?;
+    let client = rig.client.as_ref().unwrap();
+    let model = model(client, &provider.server.base_url(), false).await?;
+    let selected = create(client, &base, &model, None).await?;
+    let session = selected["id"].as_str().unwrap();
+    let sent = call(
+        client,
+        "agent",
+        "send",
+        json!({"sessionId":session, "message":"Seed history"}),
     )
     .await?;
+    let (_, reply) = provider.next().await?;
+    reply.reply_text("Ready");
+    quiescent_message(client, session, &sent["messageId"]).await?;
+    let marker = "Skip this pin during manual summary";
+    enable_and_pin(client, session, marker).await?;
+    let compact = call(
+        client,
+        "agent",
+        "compact",
+        json!({"sessionId":session, "model":model}),
+    )
+    .await?;
+    assert_eq!(compact["kind"], "started", "{compact}");
+    let (wire, reply) = provider.next().await?;
+    assert!(!text_messages(&wire).contains(marker), "{wire}");
+    let loaded = call(
+        client,
+        "agent",
+        "loadedMemories",
+        json!({"sessionId":session, "runId":compact["execution"]["runId"]}),
+    )
+    .await?;
+    assert_eq!(loaded, json!([]));
+    reply.reply_text("The user seeded history.");
+    assert!(rig.finish().await.is_empty());
     Ok(())
 }
 
@@ -598,6 +723,7 @@ async fn expect_revoked(
     provider: &mut Provider,
     session: &str,
     message: &Value,
+    reason: &str,
 ) -> TestResult<()> {
     let settled = async {
         loop {
@@ -609,14 +735,129 @@ async fn expect_revoked(
             )
             .await?;
             match work["execution"]["state"]["kind"].as_str() {
-                Some("failed" | "blocked" | "cancelled") => return Ok(()),
+                Some("failed") => {
+                    let history = call(
+                        client,
+                        "agent",
+                        "history",
+                        json!({
+                            "sessionId":session, "position":{"kind":"tail"}, "view":"text"
+                        }),
+                    )
+                    .await?;
+                    assert!(
+                        history["chunks"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .any(|row| row["text"]
+                                .as_str()
+                                .is_some_and(|text| text.contains(reason))),
+                        "{history}"
+                    );
+                    assert!(
+                        !history["chunks"].to_string().contains(
+                            "adapter supplied no safe interrupted-attempt recovery evidence"
+                        ),
+                        "{history}"
+                    );
+                    return Ok(());
+                }
+                Some("cancelled") => return Err(format!("revoked Run cancelled: {work}").into()),
                 Some("completed") => return Err(format!("revoked Run completed: {work}").into()),
                 _ => tokio::time::sleep(Duration::from_millis(20)).await,
             }
         }
     };
     tokio::select! {
-        wire = provider.requests.recv() => Err(format!("revoked request reached the provider: {:?}",wire.map(|r| r.0)).into()),
+        wire = provider.requests.recv() => Err(format!("revoked request reached the provider: {:?}",wire.map(|r| r.request.raw_body)).into()),
         result = settled => result,
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn recall_without_memory_only_revokes_a_returned_source() -> TestResult<()> {
+    let mut rig = Rig::new()?;
+    let mut provider = Provider::start().await?;
+    let base = rig.directory.path().to_owned();
+    let boot = bootstrap_with(&base, provider.server.base_url(), |cfg| {
+        cfg["recall"] = json!(true)
+    })
+    .await?;
+    attach(&mut rig, &boot).await?;
+    let client = rig.client.as_ref().unwrap();
+    let prefs = call(client, "settings", "assistantPreferences", json!({})).await?;
+    call(
+        client,
+        "settings",
+        "updateAssistantPreferences",
+        json!({
+            "expectedRevision":prefs["revision"],
+            "mutation":{"kind":"memory","value":{"enabled":false,"agentReadEnabled":false}}
+        }),
+    )
+    .await?;
+    let model = model_options(
+        client,
+        &provider.server.base_url(),
+        false,
+        json!({"contextWindow":128000}),
+    )
+    .await?;
+    let source = create(client, &base, &model, None).await?;
+    let reader = create(client, &base, &model, None).await?;
+    let unrelated = create(client, &base, &model, None).await?;
+    let source = source["id"].as_str().unwrap();
+    let reader = reader["id"].as_str().unwrap();
+    let marker = "Clementine field notes";
+    let sent = call(
+        client,
+        "agent",
+        "send",
+        json!({"sessionId":source,"message":marker}),
+    )
+    .await?;
+    let (_, reply) = provider.next().await?;
+    reply.reply_text("Filed.");
+    quiescent_message(client, source, &sent["messageId"]).await?;
+    let sent = call(
+        client,
+        "agent",
+        "send",
+        json!({"sessionId":reader,"message":"Find the field notes"}),
+    )
+    .await?;
+    let (_, reply) = provider.next().await?;
+    reply.send_plan(tool_response("Recall", json!({"terms":["clementine"]})));
+    let (wire, reply) = provider.next().await?;
+    assert!(wire["messages"].to_string().contains(marker), "{wire}");
+    let archived=call(client,"agent","changeSession",json!({
+        "sessionId":unrelated["id"], "expectedRevision":unrelated["revision"], "action":"archive"
+    })).await?;
+    assert_eq!(archived["kind"], "changed", "{archived}");
+    reply.send_plan(TurnPlan::http_error(
+        HttpErrorSpec::plain(429, "rate limited").with_header("retry-after", "0"),
+    ));
+    let (retry, reply) = provider.next().await?;
+    assert_eq!(retry["messages"], wire["messages"]);
+    let owner = rig.captured.lock().unwrap().clone().unwrap();
+    let archived=call(client,"agent","changeSession",json!({
+        "sessionId":source, "expectedRevision":owner.session(source).await?.revision, "action":"archive"
+    })).await?;
+    assert_eq!(archived["kind"], "changed", "{archived}");
+    reply.reply_tool_call(
+        "lookup-again",
+        "Recall",
+        json!({"terms":["unmatchedsecondlookup"]}),
+    );
+    expect_revoked(
+        client,
+        &mut provider,
+        reader,
+        &sent["messageId"],
+        "memory tool input revoked",
+    )
+    .await?;
+    assert!(rig.finish().await.is_empty());
+    Ok(())
 }

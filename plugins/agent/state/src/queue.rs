@@ -58,6 +58,18 @@ pub struct PreparedRequest {
     pub resources: ContentRef,
     pub required_tools: BTreeSet<String>,
 }
+impl PreparedRequest {
+    /// Compare the original queued input and execution contract. The Run
+    /// selects its memory policy and projection when it consumes the request.
+    pub(crate) fn matches_run_input(&self, mut admitted: RunSpec) -> bool {
+        admitted.memory_admission = self.spec.memory_admission;
+        admitted
+            .memory_projection
+            .clone_from(&self.spec.memory_projection);
+        admitted == self.spec
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SteeringTarget {

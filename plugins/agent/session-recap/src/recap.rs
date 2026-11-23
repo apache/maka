@@ -100,20 +100,17 @@ pub trait Models: Send + Sync {
     ) -> futures_util::future::BoxFuture<'_, Result<ModelGeneration, ToolError>>;
 }
 #[derive(Deserialize)]
-#[serde(untagged)]
-enum StoredReceipt {
-    Checked { visibility: u64, receipt: Receipt },
-    Legacy(Receipt),
+#[serde(deny_unknown_fields)]
+struct StoredReceipt {
+    visibility: Option<u64>,
+    receipt: Receipt,
 }
 impl StoredReceipt {
     fn for_reader(self, required_visibility: Option<u64>) -> Result<Receipt, Error> {
-        let (visibility, receipt) = match self {
-            Self::Checked {
-                visibility,
-                receipt,
-            } => (Some(visibility), receipt),
-            Self::Legacy(receipt) => (None, receipt),
-        };
+        let Self {
+            visibility,
+            receipt,
+        } = self;
         if matches!(receipt, Receipt::Ready { .. })
             && required_visibility.is_some()
             && visibility != required_visibility
@@ -446,7 +443,9 @@ mod tests {
             &serde_json::from_value(receipt.clone()).unwrap(),
             3,
         );
-        for (record, original_epoch) in [(&receipt, None), (checked.data.value().unwrap(), Some(3))]
+        let upgraded = serde_json::json!({"visibility":null,"receipt":receipt});
+        for (record, original_epoch) in
+            [(&upgraded, None), (checked.data.value().unwrap(), Some(3))]
         {
             for reader in [None, Some(3), Some(4)] {
                 let read = serde_json::from_value::<StoredReceipt>(record.clone())

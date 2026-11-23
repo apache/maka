@@ -245,7 +245,6 @@ impl Owner {
             binding: current.configuration.binding,
             fingerprint,
         };
-        basis.check_pinned_model().map_err(RunError::InvalidInput)?;
         Ok((basis, selection))
     }
 
@@ -391,6 +390,12 @@ impl Owner {
                 publication_store = state.clone();
                 preflight_stage = Some(AuthorityStage::InputCodec);
                 let (basis, selection) = self.restored_data(&view).await.map_err(|failure| { preflight_stage = failure.stage; failure.cause })?;
+                if let Err(error) = basis.check_pinned_model() {
+                    // The message has a durable Run now. An incompatible projection
+                    // is a terminal input rejection, so the next message can run.
+                    preflight_stage = None;
+                    return Err(RunError::InvalidInput(error));
+                }
                 preflight_stage = Some(AuthorityStage::ToolBindings);
                 let catalog = self.run_catalog(access.clone(), basis.mcp_catalog.as_ref().ok_or_else(|| RunError::InvalidInput("current MCP capability is unavailable".into()))?, &selection)?;
                 preflight_stage = Some(AuthorityStage::BackendScope);
@@ -420,6 +425,7 @@ impl Owner {
                             source.with_pricing(pricing.clone())
                         } else { source };
                         let model = driver_model::DriverModel {
+                        memory: basis.memory.clone(),
                         state: state.clone(),
                         history: state.session_history(view.spec.owner.clone(), view.spec.session_id.clone()),
                         log: Arc::new(lease.store()),

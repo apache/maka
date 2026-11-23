@@ -91,12 +91,21 @@ impl Owner {
                     ),
             } = &mut execution.state
         {
-            self.record_history_read(scope).await?;
+            let before = self.history_read_start(scope).await?;
             *diagnostic = crate::service::history::scoped_state(self, scope)?
                 .session_history(view.spec.owner.clone(), view.spec.session_id.clone())
                 .mask_terminal_diagnostic(view.run, std::mem::take(diagnostic))
                 .await
                 .map_err(|error| error.to_string())?;
+            self.record_history_sources(
+                scope,
+                maka_agent_state::memory::reads::HistorySources::Producer {
+                    session: view.spec.session_id.clone(),
+                    run: view.run,
+                },
+                before,
+            )
+            .await?;
         }
         Ok(execution)
     }
@@ -184,7 +193,7 @@ impl Owner {
     ) -> Result<Work, String> {
         use maka_agent_state::queue::MessageResolution;
         self.scoped_session(scope, &input.session_id).await?;
-        self.record_history_read(scope).await?;
+        let before = self.history_read_start(scope).await?;
         let state = crate::service::history::scoped_state(self, scope)?;
         let model_read = scope.identity.agent().is_some();
         let cursor = input.cursor.map(|cursor| (cursor.run_id, cursor.offset));
@@ -252,9 +261,21 @@ impl Owner {
                 }),
             })
         };
+        let execution = self.execution_for_reader(&observed.view, scope).await?;
+        if answer.is_some() {
+            self.record_history_sources(
+                scope,
+                maka_agent_state::memory::reads::HistorySources::Producer {
+                    session: input.session_id,
+                    run,
+                },
+                before,
+            )
+            .await?;
+        }
         Ok(Work::Delivered {
             shared,
-            execution: self.execution_for_reader(&observed.view, scope).await?,
+            execution,
             answer,
             pending_interactions,
         })

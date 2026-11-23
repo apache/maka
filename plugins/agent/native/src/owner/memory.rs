@@ -46,13 +46,35 @@ impl CapturedRun {
     pub(super) fn check_pinned_model(&self) -> Result<(), String> {
         if let Some(memory) = &self.memory {
             let model = self.model.as_ref().ok_or("agent_memory_executor_unavailable: executor lacks a per-provider-send revocation check")?;
-            memory.check_window(model.input_limit, 0)?;
+            memory.check_admitted_window(model.input_limit, self.behavior.as_ref())?;
         }
         Ok(())
     }
 }
 
 impl Owner {
+    pub(super) fn memory_admission(
+        &self,
+        session: &str,
+        configuration: &ResolvedConfiguration,
+        user_run: bool,
+        policy: &RuntimePolicySnapshot,
+    ) -> maka_agent_facts::memory::MemoryAdmission {
+        use maka_agent_facts::memory::MemoryAdmission;
+        if !user_run
+            || self.bot.is(session)
+            || configuration.incognito
+            || configuration.parent_session_id.is_some()
+            || configuration.tools.is_some()
+        {
+            return MemoryAdmission::Excluded;
+        }
+        if !policy.policy.memory.enabled || !policy.policy.memory.agent_read_enabled {
+            return MemoryAdmission::Disabled;
+        }
+        MemoryAdmission::Enabled
+    }
+
     pub(super) async fn admit_memory(
         &self,
         session: &str,
@@ -66,50 +88,48 @@ impl Owner {
         ),
         String,
     > {
-        use maka_agent_facts::memory::MemoryAdmission;
-        if !user_run
-            || self.bot.is(session)
-            || configuration.incognito
-            || configuration.parent_session_id.is_some()
-            || configuration.tools.is_some()
-        {
-            return Ok((MemoryAdmission::Excluded, None));
-        }
-        if !policy.policy.memory.enabled || !policy.policy.memory.agent_read_enabled {
-            return Ok((MemoryAdmission::Disabled, None));
-        }
-        let memory = self
-            .capture_pinned(session, configuration, policy.revision)
-            .await?;
-        Ok((MemoryAdmission::Enabled, memory))
+        let admission = self.memory_admission(session, configuration, user_run, policy);
+        let memory = if admission == maka_agent_facts::memory::MemoryAdmission::Enabled {
+            self.capture_pinned(session, configuration, policy.revision)
+                .await?
+        } else {
+            None
+        };
+        Ok((admission, memory))
     }
 
-    async fn capture_pinned(
+    pub(super) async fn capture_pinned(
         &self,
         session: &str,
         configuration: &ResolvedConfiguration,
         policy_revision: u64,
     ) -> Result<Option<Arc<MemoryProjection>>, String> {
-        let project = self.project_memory_scope(session, configuration).await?;
-        let entries = self
-            .store
+        let capture = self
+            .pin_capture(session, configuration, policy_revision)
+            .await?;
+        self.store
             .data_writer()
             .map_err(|e| e.to_string())?
-            .query(stored::pinned::Capture {
-                personal: self.memory_scope(MemoryScope::Personal).await?,
-                project,
-                at: now() as i64,
-            })
+            .query(capture)
             .await
-            .map_err(|e| e.to_string())?;
-        if entries.is_empty() {
-            return Ok(None);
-        }
-        let projection = MemoryProjection {
+            .map(|memory| memory.map(Arc::new))
+            .map_err(|e| e.to_string())
+    }
+
+    pub(super) async fn pin_capture(
+        &self,
+        session: &str,
+        configuration: &ResolvedConfiguration,
+        policy_revision: u64,
+    ) -> Result<stored::pinned::ProjectionCapture, String> {
+        Ok(stored::pinned::ProjectionCapture {
+            scopes: stored::pinned::Capture {
+                project: self.project_memory_scope(session, configuration).await?,
+                personal: self.memory_scope(MemoryScope::Personal).await?,
+                at: now() as i64,
+            },
             policy_revision,
-            entries,
-        };
-        Ok(Some(Arc::new(projection)))
+        })
     }
 
     pub(crate) async fn loaded_memories(
@@ -337,17 +357,49 @@ impl Owner {
         }
         management(scope)
     }
-    pub(crate) async fn record_history_read(&self, call: &Scope) -> Result<(), String> {
+    pub(crate) async fn history_read_start(&self, call: &Scope) -> Result<Option<u64>, String> {
+        if call.identity.agent().is_none() {
+            return Ok(None);
+        }
+        self.memory_data(call)?
+            .query(stored::reads::SearchVisibility)
+            .await
+            .map(Some)
+            .map_err(|e| e.to_string())
+    }
+    pub(crate) async fn record_history_read(
+        &self,
+        call: &Scope,
+        session: &str,
+        before: Option<u64>,
+    ) -> Result<Option<u64>, String> {
+        self.record_history_sources(
+            call,
+            stored::reads::HistorySources::session(session),
+            before,
+        )
+        .await
+    }
+    pub(crate) async fn record_history_sources(
+        &self,
+        call: &Scope,
+        sources: stored::reads::HistorySources,
+        before: Option<u64>,
+    ) -> Result<Option<u64>, String> {
         if let Some(execution) = call.identity.agent() {
-            self.memory_data(call)?
+            return self
+                .memory_data(call)?
                 .write(stored::reads::RecordHistory {
+                    sources,
+                    before,
                     owner: self.run_owner(),
                     execution: execution.clone(),
                 })
                 .await
-                .map_err(|e| e.to_string())?;
+                .map(Some)
+                .map_err(|e| e.to_string());
         }
-        Ok(())
+        Ok(None)
     }
     pub(super) async fn record_memory_reads(
         &self,

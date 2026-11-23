@@ -465,6 +465,22 @@ impl Query for RestrictedArchives {
     }
 }
 
+macro_rules! material_origins_sql {
+    () => {
+        "WITH RECURSIVE origins(session,artifact,needs_registration) AS (
+                SELECT ?2,?3,0 UNION
+                SELECT json_extract(CAST(b.payload AS TEXT),'$.origin.source.scope.session'),
+                       json_extract(CAST(b.payload AS TEXT),'$.origin.source.id'),
+                       json_extract(CAST(b.payload AS TEXT),'$.origin.source.kind')='session'
+                FROM origins o JOIN agent_session_artifact_registrations r
+                  ON r.session=o.session AND r.artifact=o.artifact AND r.owner=?1
+                JOIN contents b ON b.id=r.body_content_id
+                WHERE json_extract(CAST(b.payload AS TEXT),'$.origin.kind')='copy'
+            )"
+    };
+}
+pub(super) use material_origins_sql;
+
 #[derive(Clone)]
 pub struct MaterialAccess {
     pub scope: crate::artifacts::SessionScope,
@@ -475,16 +491,8 @@ impl Query for MaterialAccess {
     fn execute(self, c: &Connection) -> Result<(), StoreError> {
         let restricted: bool = c.query_row(
             concat!(
-            "WITH RECURSIVE origins(session,artifact,needs_registration) AS (
-                SELECT ?2,?3,0 UNION
-                SELECT json_extract(CAST(b.payload AS TEXT),'$.origin.source.scope.session'),
-                       json_extract(CAST(b.payload AS TEXT),'$.origin.source.id'),
-                       json_extract(CAST(b.payload AS TEXT),'$.origin.source.kind')='session'
-                FROM origins o JOIN agent_session_artifact_registrations r
-                  ON r.session=o.session AND r.artifact=o.artifact AND r.owner=?1
-                JOIN contents b ON b.id=r.body_content_id
-                WHERE json_extract(CAST(b.payload AS TEXT),'$.origin.kind')='copy'
-            ) SELECT EXISTS(SELECT 1 FROM origins o CROSS JOIN agent_memory_recall_attachments a
+            material_origins_sql!(),
+            " SELECT EXISTS(SELECT 1 FROM origins o CROSS JOIN agent_memory_recall_attachments a
             CROSS JOIN agent_recall_messages d ON d.id=a.message CROSS JOIN agent_session_history h ON h.sequence=d.sequence
             WHERE a.namespace=?1 AND a.session=o.session AND a.artifact=o.artifact
             AND EXISTS(",
@@ -696,8 +704,6 @@ mod tests {
 
     #[test]
     fn legacy_handoff_recovers_only_the_original_senders_of_outstanding_messages() {
-        use super::super::reads::LegacySources;
-
         let db = Connection::open_in_memory().unwrap();
         migrate(&db, 51);
         db.execute_batch(
@@ -712,8 +718,17 @@ mod tests {
             ("cancelled", "native", "cancelled", "chat"),
             ("other", "native", "pending", "another"),
         ] {
+            let source = format!("source-{message}");
+            db.execute(
+                "INSERT INTO contents(content_sha256,payload) VALUES(?,?)",
+                params![
+                    source,
+                    serde_json::to_vec(&serde_json::json!({"message_id":message})).unwrap()
+                ],
+            )
+            .unwrap();
             db.execute("INSERT INTO agent_queue_items(session,request,message,owner,position,lane,state,entry_json)
-                VALUES('chat',?1,?1,?2,0,'followup',?3,'{}')",params![message,owner.to_string(),state]).unwrap();
+                VALUES('chat',?1,?1,?2,0,'followup',?3,json_object('request',json_object('spec',json_object('origin',json_object('kind','local'),'trigger',json_object('kind','message','message_id',?1)),'source',json_object('digest',?4))))",params![message,owner.to_string(),state,source]).unwrap();
             let request =
                 serde_json::json!({"method":"send","export":"agent","origin":{"kind":actor}});
             let outcome = serde_json::json!({"kind":"success","value":{"kind":"queued","sessionId":receipt_session,"messageId":message}});
@@ -726,19 +741,170 @@ mod tests {
                 outcome_content_id,outcome_json,cleanup_json,contract_digest) VALUES('installation',?4,?1,1,?2,?3,'{}','{}','agent')",
                 params![message,request.to_string(),db.last_insert_rowid(),owner["namespace"].to_string()]).unwrap();
         }
-        migrate(&db, 53);
-        let ordinary = |sources: &[&str]| {
-            LegacySources {
-                session: "chat".into(),
-                sources: sources.iter().map(|id| id.to_string()).collect(),
-            }
-            .execute(&db)
-            .unwrap()
+        db.execute_batch(
+            r#"INSERT INTO contents(content_sha256,payload) VALUES
+             ('message-spec',CAST('{"origin":{"kind":"local"},"trigger":{"kind":"message","message_id":"user"},"input":{"digest":"user-input"}}' AS BLOB)),
+             ('user-input',CAST('{"kind":"message","source_messages":[]}' AS BLOB)),
+             ('handoff-spec',CAST('{"origin":{"kind":"local"},"trigger":{"kind":"checkpoint_handoff","source":"original"}}' AS BLOB));
+             INSERT INTO agent_run_specs SELECT 'original',1,'owner','chat',id FROM contents WHERE content_sha256='message-spec'
+              UNION ALL SELECT 'handoff',1,'owner','chat',id FROM contents WHERE content_sha256='handoff-spec';
+             INSERT INTO agent_runs(run,schema_version,owner,session,admission_sequence,local,revision,control_version,
+              stopped,tokens,retries,retry_pending,cancelled_by_risk,replans,terminal)
+              SELECT run,1,owner,session,1,1,1,0,0,0,0,0,0,'[]',CASE WHEN run='original' THEN 'completed' END FROM agent_run_specs;"#
+        ).unwrap();
+        migrate(&db, i64::MAX);
+        let queued = |id: &str| -> Option<String> {
+            db.query_row("SELECT entry_json->>'$.request.spec.memoryAdmission' FROM agent_queue_items WHERE message=?",
+                [id], |r| r.get(0)).unwrap()
         };
-        assert_eq!(ordinary(&["user"]), Some(true));
-        assert_eq!(ordinary(&["user", "worker"]), Some(false));
-        assert_eq!(ordinary(&["user", "other"]), None);
-        assert_eq!(ordinary(&["cancelled"]), None);
+        assert_eq!(queued("user").as_deref(), Some("disabled"));
+        assert_eq!(queued("worker").as_deref(), Some("excluded"));
+        assert_eq!(queued("other").as_deref(), Some("legacy"));
+        assert_eq!(queued("cancelled"), None);
+        assert!(
+            db.query_row(
+                "SELECT ordinary FROM agent_memory_legacy_runs WHERE run='handoff'",
+                [],
+                |r| r.get::<_, bool>(0)
+            )
+            .unwrap()
+        );
+    }
+
+    #[test]
+    fn old_reader_classification_respects_the_binding_and_published_executor_key() {
+        let suffix = "\n\nAlso reads Maka resources (maka://session/<id>, maka://session/<id>/tool-results/<event-id>, attachment:<id>, archive:<event-id>). Pass page.next unchanged to continue reading.";
+        for published in [false, true] {
+            let db = Connection::open_in_memory().unwrap();
+            migrate(&db, 50);
+            let selection = serde_json::json!({
+                "definitions":[
+                    {"name":"OpenDocument","description":format!("Read a document{suffix}")},
+                    {"name":"Read","description":format!("Untrusted reader{suffix}")}
+                ],
+                "services":[
+                    {"selection":{"name":"OpenDocument","target":{"kind":"import","name":"files"},
+                        "method":"read","description":"Read a document"}},
+                    {"selection":{"name":"Read","target":{"kind":"import","name":"custom"},
+                        "method":"read","description":format!("Untrusted reader{suffix}")}}
+                ],"internalBindings":{}
+            });
+            db.execute(
+                "INSERT INTO contents(content_sha256,payload) VALUES('selection',?)",
+                [serde_json::to_vec(&selection).unwrap()],
+            )
+            .unwrap();
+            db.execute_batch(
+                r#"INSERT INTO contents(content_sha256,payload) VALUES
+                ('spec', CAST('{"toolSelection":{"digest":"selection"}}' AS BLOB));"#,
+            )
+            .unwrap();
+            for (index, (session, name, path)) in [
+                ("plain", "OpenDocument", "README.md"),
+                ("archive", "OpenDocument", "session:sample"),
+                ("unknown", "Read", "README.md"),
+                ("imported-user", "", ""),
+                ("imported-opaque", "", ""),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let sequence = index as i64 + 1;
+                db.execute("INSERT INTO session_control(id,fingerprint,revision,created_at,updated_at,archived,configuration)
+                    VALUES(?,'test',1,0,0,0,'{}')",[session]).unwrap();
+                db.execute("INSERT INTO agent_run_specs SELECT ?1,1,'owner',?1,id FROM contents WHERE content_sha256='spec'",
+                    [session]).unwrap();
+                let call = serde_json::json!({"fact":{"part":{"call":{"name":name,"input":{"data":{"path":path}}}}}});
+                db.execute(
+                    "INSERT INTO contents(content_sha256,payload) VALUES(?,?)",
+                    params![session, serde_json::to_vec(&call).unwrap()],
+                )
+                .unwrap();
+                db.execute(
+                    "INSERT INTO agent_facts VALUES(?1,?2,?2,1,1,1,?3)",
+                    params![sequence, session, db.last_insert_rowid()],
+                )
+                .unwrap();
+                db.execute("INSERT INTO agent_session_history(owner,session,sequence,run,admission_sequence,kind,
+                    prefix_digest,tool_use_id,tool_start,opening_message,fact_id,result_source)
+                    VALUES('owner',?1,?2,?1,?2,'model_observed','prefix','call',?3,0,?1,0)",
+                    params![session,sequence,!name.is_empty()]).unwrap();
+                db.execute("INSERT INTO agent_runs(run,schema_version,owner,session,admission_sequence,local,revision,
+                    control_version,stopped,tokens,retries,retry_pending,cancelled_by_risk,replans,terminal)
+                    VALUES(?1,1,'owner',?1,?2,?3,1,0,0,0,0,0,0,'[]','completed')",params![session,sequence,!name.is_empty()]).unwrap();
+                if name.is_empty() {
+                    let manifest = format!("manifest-{session}");
+                    let message = format!("message-{session}");
+                    db.execute(
+                        "INSERT INTO contents(content_sha256,payload) VALUES(?1,?2)",
+                        params![manifest, br#"{"origin":{"kind":"imported"}}"#.as_slice()],
+                    )
+                    .unwrap();
+                    db.execute(
+                        "INSERT INTO agent_history_snapshots VALUES(?1,'owner',?1,'{}',?2)",
+                        params![session, db.last_insert_rowid()],
+                    )
+                    .unwrap();
+                    db.execute(
+                        "INSERT INTO agent_history_snapshot_adoptions VALUES(?1,?1,?1)",
+                        [session],
+                    )
+                    .unwrap();
+                    let role = if session == "imported-user" {
+                        "user"
+                    } else {
+                        "assistant"
+                    };
+                    let part = format!("part-{session}");
+                    let row = serde_json::json!({"role":role,"parts":[{"digest":part}]});
+                    db.execute(
+                        "INSERT INTO contents(content_sha256,payload) VALUES(?1,?2)",
+                        params![
+                            part,
+                            br#"{"kind":"input","content":{"text":"original text"}}"#.as_slice()
+                        ],
+                    )
+                    .unwrap();
+                    db.execute(
+                        "INSERT INTO contents(content_sha256,payload) VALUES(?1,?2)",
+                        params![message, serde_json::to_vec(&row).unwrap()],
+                    )
+                    .unwrap();
+                    db.execute("INSERT INTO agent_history_snapshot_entries(snapshot,ordinal,kind,position,entry_json)
+                        VALUES(?1,0,'imported',0,json_object('message',json_object('digest',?2)))",
+                        params![session,message]).unwrap();
+                }
+            }
+            if published {
+                migrate(&db, 55);
+            }
+            migrate(&db, i64::MAX);
+            for session in [
+                "plain",
+                "archive",
+                "unknown",
+                "imported-user",
+                "imported-opaque",
+            ] {
+                let reusable = matches!(session, "plain" | "imported-user");
+                let shared: bool = db
+                    .query_row(
+                        "SELECT shared FROM agent_memory_legacy_runs WHERE run=?",
+                        [session],
+                        |r| r.get(0),
+                    )
+                    .unwrap();
+                assert_eq!(shared, reusable, "{session}");
+                let key = crate::memory::reads::ExternalConversation(session.into())
+                    .execute(&db)
+                    .unwrap();
+                if reusable && !published {
+                    assert_eq!(key, session);
+                } else {
+                    assert_eq!(key, format!("memory-v53/{session}"));
+                }
+            }
+        }
     }
 
     #[test]

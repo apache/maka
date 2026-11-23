@@ -357,6 +357,16 @@ async fn assert_partial_result_pages(
         );
         input = json!({"sessionId":session,"cursor":page["transcript"]["afterCursor"]});
     }
+    let fenced = driver
+        .access
+        .data_writer()?
+        .query(maka_agent_state::memory::reads::CheckReads(
+            driver.access.execution().run_id,
+        ))
+        .await;
+    assert!(
+        matches!(fenced, Err(maka_event_log::StoreError::InvalidTransition(reason)) if reason.contains("memory tool input revoked"))
+    );
     reader.finish().await?;
     Ok(())
 }
@@ -463,15 +473,10 @@ async fn external_return_keeps_the_name_of_its_original_call() -> TestResult<()>
         CancellationToken::new(),
         driver.access.custody().clone(),
     )?;
-    let error = driver
+    driver
         .owner
-        .record_history_read(external_reader.scope())
-        .await
-        .unwrap_err();
-    assert!(
-        error.contains("agent_memory_executor_unavailable"),
-        "{error}"
-    );
+        .record_history_read(external_reader.scope(), &session, None)
+        .await?;
     external_reader.finish().await?;
     let task = ExternalTaskId::new();
     let key = ExternalEffectKey {

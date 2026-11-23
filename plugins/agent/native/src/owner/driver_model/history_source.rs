@@ -55,7 +55,7 @@ impl<'a> HistorySource<'a> {
             MemoryReplay::Run(owner) => Ok(owner == target),
             MemoryReplay::Legacy => match self {
                 Self::Live { history, .. } => {
-                    Ok(!history.has_memory_reads(source).await? || source == target)
+                    Ok(source == target || history.original_replay_is_shared(source).await?)
                 }
                 // A detached snapshot has no live read ledger. Rebuild its filtered history.
                 Self::Snapshot(..) => Ok(false),

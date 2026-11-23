@@ -315,6 +315,16 @@ impl Query for MaskTerminalDiagnostic {
 }
 
 impl SessionHistory {
+    pub async fn original_replay_is_shared(&self, run: RunId) -> Result<bool, StoreError> {
+        self.data
+            .query(crate::memory::reads::OriginalReplay {
+                run,
+                owner: self.namespace.owner.clone(),
+                session: self.namespace.session.clone(),
+            })
+            .await
+    }
+
     pub async fn has_memory_reads(&self, run: RunId) -> Result<bool, StoreError> {
         self.data.query(crate::memory::reads::HasReads(run)).await
     }

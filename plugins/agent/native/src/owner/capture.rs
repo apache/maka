@@ -109,9 +109,6 @@ impl Owner {
         fingerprint: Option<String>,
         parent: &Scope,
     ) -> Result<(PreparedRequest, Vec<ContentBlob>), String> {
-        if !matches!(source.disposition, MessageDisposition::Steering) {
-            basis.check_pinned_model()?;
-        }
         let trigger = match &basis.background_kind {
             BackgroundKind::Goal(goal_id) => Trigger::Goal { goal_id: *goal_id },
             BackgroundKind::Schedule { task_id } => Trigger::Schedule {

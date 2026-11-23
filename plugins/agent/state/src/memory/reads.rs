@@ -59,52 +59,186 @@ impl Statement for RecordFacts {
         })
     }
     fn committed(_: ()) {}
-    fn isolated_rejection(_: &StoreError) -> bool {
-        false
+    fn isolated_rejection(error: &StoreError) -> bool {
+        matches!(error, StoreError::InvalidTransition(_))
+    }
+}
+
+pub enum HistorySources {
+    Sessions(Vec<String>),
+    Attachment { session: String, artifact: String },
+    Producer { session: String, run: RunId },
+}
+impl HistorySources {
+    pub fn session(session: &str) -> Self {
+        Self::Sessions(vec![session.to_owned()])
     }
 }
 
 pub struct RecordHistory {
     pub owner: maka_agent_facts::durable::RunOwner,
     pub execution: maka_agent_facts::durable::ExecutionIdentity,
+    pub sources: HistorySources,
+    pub before: Option<u64>,
 }
 impl Statement for RecordHistory {
-    type Value = ();
-    type Output = ();
-    fn execute(self, c: &Connection) -> Result<Prepared<()>, StoreError> {
+    type Value = u64;
+    type Output = u64;
+    fn execute(self, c: &Connection) -> Result<Prepared<u64>, StoreError> {
         let run = self.execution.run_id.to_string();
+        let owner = serde_json::to_string(&self.owner)?;
         let model: bool = c.prepare_cached(
-            "SELECT EXISTS(SELECT 1 FROM agent_run_specs s JOIN contents b ON b.id=s.spec_content_id
-             WHERE s.run=?1 AND s.session=?2 AND s.owner=?3 AND b.payload->>'turnId'=?4
-             AND b.payload->>'$.backend.kind'='model')",
-        )?.query_row(params![run, self.execution.session_id, serde_json::to_string(&self.owner)?, self.execution.turn_id], |r| r.get(0))?;
+            "SELECT b.payload->>'$.backend.kind'='model' FROM agent_run_specs s JOIN contents b ON b.id=s.spec_content_id
+             WHERE s.run=?1 AND s.session=?2 AND s.owner=?3 AND b.payload->>'turnId'=?4",
+        )?.query_row(params![run, self.execution.session_id, owner, self.execution.turn_id], |r| r.get(0))
+            .optional()?.ok_or_else(|| invalid("history reader execution changed"))?;
         if !model {
-            return Err(invalid("agent_memory_executor_unavailable"));
+            CheckReads(self.execution.run_id).execute(c)?;
         }
-        let inserted = c.execute(
-            "INSERT OR IGNORE INTO agent_memory_history_reads SELECT ?1, revision FROM agent_memory_visibility WHERE id=1",
-            [run],
-        )?;
+        let mut changed = false;
+        let sessions = match self.sources {
+            HistorySources::Sessions(sessions) => {
+                if !model {
+                    for session in &sessions {
+                        authorize_external_history(c, &owner, session, None)?;
+                    }
+                }
+                sessions
+            }
+            HistorySources::Producer { session, run } => {
+                if !model {
+                    authorize_external_history(c, &owner, &session, Some(run))?;
+                }
+                vec![session]
+            }
+            HistorySources::Attachment { session, artifact } => {
+                // Read only accepts original user uploads or verified copies of them.
+                // A copy retains the source message's evidence and retirement boundary.
+                if !model {
+                    let controlled = c.prepare_cached(concat!(super::recall::material_origins_sql!(),
+                        " SELECT EXISTS(SELECT 1 FROM origins o
+                         CROSS JOIN agent_memory_recall_attachments a ON a.namespace=?1 AND a.session=o.session AND a.artifact=o.artifact
+                         CROSS JOIN agent_recall_messages d ON d.id=a.message CROSS JOIN agent_session_history h ON h.sequence=d.sequence
+                         CROSS JOIN agent_memory_evidence e ON e.namespace=a.namespace
+                         AND CAST(json_extract(e.source,'$.reference.factId') AS TEXT)=h.fact_id
+                         AND CAST(json_extract(e.source,'$.reference.itemIndex') AS INTEGER)=d.ordinal)"))?
+                        .query_row(params![owner,session,artifact], |r| r.get::<_,bool>(0))?;
+                    if controlled {
+                        return Err(invalid("agent_memory_executor_unavailable"));
+                    }
+                }
+                let mut origins = c.prepare_cached(concat!(
+                    super::recall::material_origins_sql!(),
+                    " SELECT DISTINCT session FROM origins WHERE session IS NOT NULL"
+                ))?;
+                origins
+                    .query_map(params![owner, session, artifact], |r| r.get(0))?
+                    .collect::<Result<Vec<_>, _>>()?
+            }
+        };
+        let mut visibility = 0;
+        for session in sessions {
+            let revision = Visibility(session.clone()).execute(c)?;
+            visibility = visibility.max(revision);
+            if self.before.is_some_and(|before| revision > before) {
+                return Err(invalid("history changed while returning tool output"));
+            }
+            if !model {
+                changed |= c.execute("INSERT OR IGNORE INTO agent_memory_external_sources(session,source) VALUES(?,?)",
+                    params![self.execution.session_id,session])? != 0;
+            }
+            // The first read fences the next provider send, even after a freshly masked read.
+            changed |= c.execute(
+                "INSERT OR IGNORE INTO agent_memory_session_reads VALUES(?,?,?)",
+                params![run, session, revision],
+            )? != 0;
+        }
         Ok(Prepared {
-            value: (),
-            changed: inserted != 0,
+            value: visibility,
+            changed,
             notification: Notification::NONE,
         })
     }
-    fn committed(_: ()) {}
-    fn isolated_rejection(_: &StoreError) -> bool {
-        false
+    fn committed(visibility: u64) -> u64 {
+        visibility
+    }
+    fn isolated_rejection(error: &StoreError) -> bool {
+        matches!(
+            error,
+            StoreError::InvalidTransition(_) | StoreError::SessionNotFound
+        )
     }
 }
 
-pub struct Visibility;
+// Remote continuations have no per-send Host hook. Trace mixed output to its
+// producing Run and the source sessions it previously read. UNION bounds cycles.
+fn authorize_external_history(
+    c: &Connection,
+    owner: &str,
+    session: &str,
+    producer: Option<RunId>,
+) -> Result<(), StoreError> {
+    let controlled: bool = c.prepare_cached(
+        "WITH RECURSIVE sources(session,producer) AS (
+           SELECT ?2,?3 UNION
+           SELECT h.session,NULL FROM sources s CROSS JOIN agent_run_specs r ON r.owner=?1 AND r.session=s.session
+             AND (s.producer IS NULL OR r.run=s.producer)
+           CROSS JOIN agent_memory_session_reads h ON h.run=r.run
+           CROSS JOIN contents b ON b.id=r.spec_content_id
+           WHERE h.session<>r.session OR b.payload->>'$.backend.kind'='model'
+         )
+         SELECT EXISTS(SELECT 1 FROM sources s CROSS JOIN agent_memory_evidence e
+           WHERE e.namespace=?1 AND e.source->>'kind'='conversation' AND e.source->>'$.reference.sessionId'=s.session
+             AND (s.producer IS NULL OR EXISTS(SELECT 1 FROM agent_facts f WHERE f.id=e.source->>'$.reference.factId' AND f.run=s.producer)))
+          OR EXISTS(SELECT 1 FROM sources s CROSS JOIN agent_run_specs r ON r.owner=?1 AND r.session=s.session
+             AND (s.producer IS NULL OR s.producer=r.run) CROSS JOIN contents b ON b.id=r.spec_content_id
+             WHERE b.payload->>'$.memoryProjection.digest' IS NOT NULL
+               OR EXISTS(SELECT 1 FROM agent_memory_tool_inputs t WHERE t.run=r.run)
+               OR EXISTS(SELECT 1 FROM agent_memory_history_reads h WHERE h.run=r.run)
+               OR EXISTS(SELECT 1 FROM agent_memory_session_reads h
+                   LEFT JOIN session_control sc ON sc.id=h.session
+                   LEFT JOIN agent_memory_session_visibility v ON v.session=h.session
+                   WHERE h.run=r.run AND (sc.id IS NULL OR coalesce(v.revision,0)<>h.revision)))
+          OR EXISTS(SELECT 1 FROM sources s CROSS JOIN agent_memory_adopted_snapshots a ON a.owner=?1 AND a.session=s.session
+             WHERE s.producer IS NULL AND (
+               EXISTS(SELECT 1 FROM agent_memory_snapshot_outputs o WHERE o.snapshot=a.snapshot)
+               OR EXISTS(SELECT 1 FROM agent_memory_imported_outputs o WHERE o.snapshot=a.snapshot
+                         AND (o.read_path IS NULL OR maka_reads_history_resource(o.read_path)))
+               OR EXISTS(SELECT 1 FROM agent_history_snapshot_entries f
+                         JOIN contents b ON b.content_sha256=f.entry_json->>'$.spec.digest'
+                         WHERE f.snapshot=a.snapshot AND f.kind='run' AND b.payload->>'$.memoryProjection.digest' IS NOT NULL)
+               OR EXISTS(SELECT 1 FROM agent_memory_evidence e
+                         JOIN agent_history_snapshot_entries f ON f.kind='fact' AND f.snapshot=a.snapshot
+                         AND json_extract(f.entry_json,'$.id')=e.source->>'$.reference.factId'
+                         WHERE e.namespace=?1 AND e.source->>'kind'='conversation')))"
+    )?.query_row(params![owner,session,producer.map(|run| run.to_string())], |row|row.get(0))?;
+    if controlled {
+        return Err(invalid("agent_memory_executor_unavailable"));
+    }
+    Ok(())
+}
+
+pub struct Visibility(pub String);
 impl Query for Visibility {
     type Output = u64;
     fn execute(self, c: &Connection) -> Result<u64, StoreError> {
-        crate::recall::unsigned(c.query_row(
+        c.prepare_cached(
+            "SELECT coalesce(v.revision,0) FROM session_control s
+             LEFT JOIN agent_memory_session_visibility v ON v.session=s.id WHERE s.id=?",
+        )?
+        .query_row([self.0], |row| row.get(0))
+        .optional()?
+        .ok_or(StoreError::SessionNotFound)
+    }
+}
+pub struct SearchVisibility;
+impl Query for SearchVisibility {
+    type Output = u64;
+    fn execute(self, c: &Connection) -> Result<u64, StoreError> {
+        Ok(c.query_row(
             "SELECT revision FROM agent_memory_visibility WHERE id=1",
             [],
-            |r| r.get(0),
+            |row| row.get(0),
         )?)
     }
 }
@@ -121,11 +255,16 @@ impl Query for CheckReads {
         let mut statement = c.prepare_cached(
             "SELECT EXISTS(SELECT 1 FROM agent_memory_tool_inputs WHERE run=?1 AND revoked=1)
                  OR EXISTS(SELECT 1 FROM agent_memory_history_reads h JOIN agent_memory_visibility v ON v.id=1
-                           WHERE h.run=?1 AND h.revision<>v.revision),
+                           WHERE h.run=?1 AND h.revision<>v.revision)
+                 OR EXISTS(SELECT 1 FROM agent_memory_session_reads h
+                           LEFT JOIN session_control s ON s.id=h.session
+                           LEFT JOIN agent_memory_session_visibility v ON v.session=h.session
+                           WHERE h.run=?1 AND (s.id IS NULL OR h.revision<>coalesce(v.revision,0))),
                     EXISTS(SELECT 1 FROM agent_memory_tool_inputs WHERE run=?1),
                     (SELECT min(scope) FROM agent_memory_tool_inputs WHERE run=?1 AND scope<>'personal'),
                     (SELECT max(scope) FROM agent_memory_tool_inputs WHERE run=?1 AND scope<>'personal'),
-                    EXISTS(SELECT 1 FROM agent_memory_history_reads WHERE run=?1)",
+                    EXISTS(SELECT 1 FROM agent_memory_history_reads WHERE run=?1)
+                    OR EXISTS(SELECT 1 FROM agent_memory_session_reads WHERE run=?1)",
         )?;
         let (revoked, facts, project, last_project, history) =
             statement.query_row([self.0.to_string()], |row| {
@@ -148,28 +287,46 @@ impl Query for CheckReads {
     }
 }
 
-pub struct LegacySources {
-    pub session: String,
-    pub sources: Vec<String>,
+pub(crate) fn capture_upgrade_boundary(c: &Connection) -> Result<(), StoreError> {
+    let upgraded: bool = c.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='agent_memory_legacy_runs')",
+        [],
+        |row| row.get(0),
+    )?;
+    if !upgraded {
+        c.execute_batch(
+            "DROP TABLE IF EXISTS temp.legacy_v53;
+             CREATE TEMP TABLE legacy_v53 AS SELECT data_version,
+             EXISTS(SELECT 1 FROM sqlite_schema WHERE name='agent_memory_external_epochs') AS published
+             FROM pragma_data_version;",
+        )?;
+    }
+    Ok(())
 }
-impl Query for LegacySources {
+
+pub struct OriginalAdmission(pub RunId);
+impl Query for OriginalAdmission {
     type Output = Option<bool>;
     fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
-        let mut lookup = c.prepare_cached(
-            "SELECT ordinary FROM agent_memory_legacy_sources WHERE session=? AND source=?",
-        )?;
-        let mut known = true;
-        for source in self.sources {
-            match lookup
-                .query_row(params![self.session, source], |r| r.get(0))
+        Ok(
+            c.prepare_cached("SELECT ordinary FROM agent_memory_legacy_runs WHERE run=?")?
+                .query_row([self.0.to_string()], |r| r.get(0))
                 .optional()?
-            {
-                Some(false) => return Ok(Some(false)),
-                Some(true) => {}
-                None => known = false,
-            }
-        }
-        Ok(known.then_some(true))
+                .flatten(),
+        )
+    }
+}
+
+pub(crate) struct OriginalReplay {
+    pub run: RunId,
+    pub owner: maka_agent_facts::durable::RunOwner,
+    pub session: String,
+}
+impl Query for OriginalReplay {
+    type Output = bool;
+    fn execute(self, c: &Connection) -> Result<bool, StoreError> {
+        Ok(c.prepare_cached("SELECT EXISTS(SELECT 1 FROM agent_memory_legacy_runs l JOIN agent_run_specs s ON s.run=l.run WHERE l.run=? AND l.shared=1 AND s.owner=? AND s.session=?)")?
+            .query_row(params![self.run.to_string(), serde_json::to_string(&self.owner)?, self.session], |r| r.get(0))?)
     }
 }
 
@@ -179,7 +336,8 @@ impl Query for HasReads {
     fn execute(self, c: &Connection) -> Result<bool, StoreError> {
         let mut statement = c.prepare_cached(
             "SELECT EXISTS(SELECT 1 FROM agent_memory_tool_inputs WHERE run=?1)
-                 OR EXISTS(SELECT 1 FROM agent_memory_history_reads WHERE run=?1)",
+                 OR EXISTS(SELECT 1 FROM agent_memory_history_reads WHERE run=?1)
+                    OR EXISTS(SELECT 1 FROM agent_memory_session_reads WHERE run=?1)",
         )?;
         Ok(statement.query_row([self.0.to_string()], |row| row.get(0))?)
     }
@@ -189,16 +347,178 @@ pub struct ExternalConversation(pub String);
 impl Query for ExternalConversation {
     type Output = String;
     fn execute(self, c: &Connection) -> Result<String, StoreError> {
-        let rotated: bool = c
-            .prepare_cached(
-                "SELECT EXISTS(SELECT 1 FROM agent_memory_external_epochs WHERE session=?1)",
-            )?
-            .query_row([&self.0], |row| row.get(0))?;
-        // Session IDs cannot contain a slash, so the two journal namespaces are disjoint.
-        Ok(if rotated {
-            format!("memory-v53/{}", self.0)
-        } else {
-            self.0
+        let epoch: Option<u64> = c
+            .prepare_cached("SELECT revision FROM agent_memory_external_epochs WHERE session=?")?
+            .query_row([&self.0], |row| row.get(0))
+            .optional()?;
+        // Session IDs cannot contain a slash. Keep v53 journals addressable
+        // until a read in that specific remote context is revoked.
+        Ok(match epoch {
+            None => self.0,
+            Some(0) => format!("memory-v53/{}", self.0),
+            Some(revision) => format!("memory-v54/{revision}/{}", self.0),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use maka_agent_facts::durable::{ExecutionIdentity, RunOwner};
+    use uuid::Uuid;
+
+    #[test]
+    fn recap_upgrade_keeps_receipts_and_preserves_their_original_visibility() {
+        let db = Connection::open_in_memory().unwrap();
+        let catalog: Vec<_> = maka_event_log::ROOT_MIGRATIONS
+            .iter()
+            .chain(crate::MIGRATIONS)
+            .copied()
+            .collect();
+        let old: Vec<_> = catalog
+            .iter()
+            .copied()
+            .filter(|m| m.version <= 55)
+            .collect();
+        maka_event_log::migration::run(&db, &old).unwrap();
+        db.execute_batch(r#"INSERT INTO session_control(id,fingerprint,revision,created_at,updated_at,archived,configuration)
+             VALUES('source','test',1,0,0,0,'{}'),('other','test',1,0,0,0,'{}');
+             UPDATE session_control SET archived=1 WHERE id='other';
+             INSERT INTO plugin_data VALUES('maka.session-recap','profile','old',4,
+               '{"kind":"ready","operationId":"00000000-0000-0000-0000-000000000000","through":1,"modelId":"m","text":"old"}'),
+             ('maka.session-recap','profile','checked',5,
+               '{"visibility":1,"receipt":{"kind":"ready","operationId":"00000000-0000-0000-0000-000000000000","through":1,"modelId":"m","text":"checked"}}');"#).unwrap();
+        maka_event_log::migration::run(&db, &catalog).unwrap();
+        let mut rows=db.prepare("SELECT revision,value_json->>'visibility',value_json->>'$.receipt.text' FROM plugin_data ORDER BY revision").unwrap();
+        let receipts = rows
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, Option<u64>>(1)?,
+                    r.get::<_, String>(2)?,
+                ))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(
+            receipts,
+            [(4, None, "old".into()), (5, Some(1), "checked".into())]
+        );
+        assert_eq!(Visibility("source".into()).execute(&db).unwrap(), 1);
+        db.execute(
+            "UPDATE session_control SET archived=1 WHERE id='source'",
+            [],
+        )
+        .unwrap();
+        assert!(Visibility("source".into()).execute(&db).unwrap() > 1);
+    }
+
+    #[test]
+    fn search_publication_and_replay_follow_only_returned_session_dependencies() {
+        let db = Connection::open_in_memory().unwrap();
+        let migrations = maka_event_log::ROOT_MIGRATIONS
+            .iter()
+            .chain(crate::MIGRATIONS)
+            .copied()
+            .collect::<Vec<_>>();
+        maka_event_log::migration::run(&db, &migrations).unwrap();
+        let owner = RunOwner {
+            deployment: Uuid::new_v4(),
+            namespace: maka_plugin_core::composition::InstanceId(vec![Uuid::new_v4()]),
+        };
+        let execution = |session: &str, backend: &str| {
+            let run_id = RunId::new();
+            let turn_id = Uuid::new_v4().to_string();
+            db.execute("INSERT INTO session_control(id,fingerprint,revision,created_at,updated_at,archived,configuration) VALUES(?,'test',1,0,0,0,'{}')",[session]).unwrap();
+            db.execute(
+                "INSERT INTO contents(content_sha256,payload) VALUES(?,?)",
+                params![
+                    turn_id,
+                    serde_json::to_vec(
+                        &serde_json::json!({"turnId":turn_id,"backend":{"kind":backend}})
+                    )
+                    .unwrap()
+                ],
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO agent_run_specs VALUES(?,1,?,?,?)",
+                params![
+                    run_id.to_string(),
+                    serde_json::to_string(&owner).unwrap(),
+                    session,
+                    db.last_insert_rowid()
+                ],
+            )
+            .unwrap();
+            ExecutionIdentity {
+                session_id: session.into(),
+                run_id,
+                turn_id,
+            }
+        };
+        let first = execution("first", "model");
+        let middle = execution("middle", "model");
+        let last = execution("last", "model");
+        let unrelated = execution("unrelated", "executor");
+        let remote = execution("remote", "executor");
+        db.execute(
+            "INSERT INTO agent_memory_external_epochs(session) VALUES('remote')",
+            [],
+        )
+        .unwrap();
+        let journal = || ExternalConversation("remote".into()).execute(&db).unwrap();
+        let read = |reader: &ExecutionIdentity, source: &str, before| {
+            RecordHistory {
+                owner: owner.clone(),
+                execution: reader.clone(),
+                sources: HistorySources::session(source),
+                before,
+            }
+            .execute(&db)
+        };
+        let before = SearchVisibility.execute(&db).unwrap();
+        read(&middle, "first", Some(before)).unwrap();
+        read(&last, "middle", None).unwrap();
+        read(&first, "middle", None).unwrap();
+        read(&unrelated, "unrelated", None).unwrap();
+        read(&remote, "middle", None).unwrap();
+        db.execute(
+            "UPDATE session_control SET archived=1 WHERE id='unrelated'",
+            [],
+        )
+        .unwrap();
+        assert_eq!(journal(), "memory-v53/remote");
+        assert!(CheckReads(last.run_id).execute(&db).unwrap().history);
+        read(&middle, "first", Some(before)).unwrap();
+        db.execute("UPDATE session_control SET archived=1 WHERE id='first'", [])
+            .unwrap();
+        assert!(
+            matches!(read(&middle,"first",Some(before)),Err(StoreError::InvalidTransition(message)) if message.contains("history changed while returning tool output"))
+        );
+        let current = SearchVisibility.execute(&db).unwrap();
+        read(&middle, "first", Some(current)).unwrap();
+        assert!(matches!(
+            CheckReads(middle.run_id).execute(&db),
+            Err(StoreError::InvalidTransition(_))
+        ));
+        assert!(matches!(
+            read(&remote, "middle", Some(current)),
+            Err(StoreError::InvalidTransition(_))
+        ));
+        let rotated = journal();
+        assert_ne!(rotated, "memory-v53/remote");
+        db.execute(
+            "UPDATE session_control SET archived=1 WHERE id='middle'",
+            [],
+        )
+        .unwrap();
+        assert_eq!(journal(), rotated);
+        for run in [middle.run_id, last.run_id] {
+            assert!(
+                matches!(CheckReads(run).execute(&db),Err(StoreError::InvalidTransition(message)) if message.contains("memory tool input revoked"))
+            );
+        }
     }
 }

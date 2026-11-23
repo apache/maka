@@ -654,6 +654,19 @@ impl DriverExecutor {
         request: &Request,
         cancellation: &CancellationToken,
     ) -> Result<maka_sandbox::Sandbox, RunError> {
+        let current = self
+            .access
+            .data_writer()
+            .map_err(RunError::Internal)?
+            .query(maka_agent_state::memory::reads::ExternalConversation(
+                request.execution.session_id.clone(),
+            ))
+            .await?;
+        if current != request.conversation_key {
+            return Err(RunError::FrozenMemoryDenied(
+                "external conversation input revoked; start a new Run".into(),
+            ));
+        }
         let configuration = self.access.live_configuration().await?;
         self.authority_floor(request, cancellation, configuration)
             .await

@@ -76,6 +76,7 @@ pub(in crate::owner) fn validate_native_compaction_producer(
 }
 
 pub(super) struct DriverModel {
+    pub memory: Option<Arc<maka_agent_facts::memory::MemoryProjection>>,
     pub state: Store,
     pub history: SessionHistory,
     pub log: Arc<SessionStore>,
@@ -878,6 +879,9 @@ impl DriverModel {
                 purpose,
                 calibration,
             )?;
+            if purpose == ModelPurpose::Main {
+                self.check_pinned_window(model, &request.context_breakdown)?;
+            }
             if let Some(claim) = continuation {
                 if preflight.is_some() {
                     preparation::validate_continuation_source(
@@ -1167,7 +1171,7 @@ impl DriverModel {
             )
             .await?;
             if !summary {
-                self.append_pinned(view, model, &mut messages).await?;
+                self.append_pinned(&mut messages).await?;
             }
             let previous_checkpoint_id;
             let mut tail = ReplayedTail::default();
@@ -1727,26 +1731,32 @@ impl DriverModel {
         Ok(prompt
             .with_frozen_transport(frozen.instructions.as_deref(), frozen.normalization.clone()))
     }
-    async fn append_pinned(
+    fn check_pinned_window(
         &self,
-        view: &RunView,
         model: &maka_agent_engine::PreparedModel,
-        messages: &mut preparation::PromptBuilder,
+        budget: &maka_agent_facts::context::PreparedContextBreakdown,
     ) -> Result<(), RunError> {
-        if let Some(reference) = &view.spec.memory_projection {
-            let memory: maka_agent_facts::memory::MemoryProjection =
-                self.decode(view.run, reference).await?;
+        if let Some(memory) = &self.memory {
             memory
                 .check_window(
-                    model.context.as_ref().and_then(|c| {
+                    model.context.as_ref().and_then(|context| {
                         maka_agent_facts::context::effective_input_limit(
-                            c.model_context_window,
-                            c.context_window,
+                            context.model_context_window,
+                            context.context_window,
                         )
                     }),
-                    0,
+                    budget.fixed_tokens(),
                 )
                 .map_err(RunError::InvalidInput)?;
+        }
+        Ok(())
+    }
+
+    async fn append_pinned(
+        &self,
+        messages: &mut preparation::PromptBuilder,
+    ) -> Result<(), RunError> {
+        if let Some(memory) = &self.memory {
             messages
                 .append(Message::user(memory.message().map_err(RunError::Json)?))
                 .await?;
@@ -2949,6 +2959,7 @@ impl DriverModel {
         let io = self.preparation_io()?;
         let resources = self.resources.clone();
         let access = access.clone();
+        let memory = self.memory.clone();
         let contract_ref = request.recovery_contract.clone();
         let can_replay_without_output = recovery.contract.is_some();
         let prefix_request = request.request.clone();
@@ -2984,6 +2995,7 @@ impl DriverModel {
                 sender: preview.clone(),
                 scope: attempt_binding.clone(),
             };
+            let authorization_failure = Arc::new(std::sync::Mutex::new(None));
             let mut stream_opened = false;
             let mut late_cleanup = None;
             let mut private_cut = None;
@@ -3045,9 +3057,10 @@ impl DriverModel {
                     executor: executor.clone(),
                     provenance,
                     recovery,
-                    authorization_failure: std::sync::Mutex::new(None),
+                    authorization_failure: authorization_failure.clone(),
                     provider: prepared.provider,
                     budget: expected_breakdown,
+                    memory,
                 });
                 let (prompt, input) = factory.build(&cancellation).await?;
                 let source = maka_agent_ports::model::RequestSource {
@@ -3336,6 +3349,7 @@ impl DriverModel {
                 Ok::<_, RunError>(fact)
             }
             .await;
+            let cleanup_recorded = cleanup_publication.is_ok();
             match cleanup_publication {
                 Ok(fact) => {
                     emit(
@@ -3362,6 +3376,13 @@ impl DriverModel {
             }
             if let Err(error) = result {
                 cleanup.observe(&error);
+                let denial = authorization_failure.lock().unwrap().clone();
+                if cleanup_confirmed && cleanup_recorded && let Some(materialize::Denial::Memory(message)) = denial {
+                    // This local refusal is the outcome, not a wake hint. Deliver
+                    // it even when the bounded observation channel is full.
+                    let _ = send.send(Err(RunError::FrozenMemoryDenied(message))).await;
+                    return;
+                }
                 // Preparation failure and lost local observation are not upstream closure.
                 if proactive || !stream_opened || !matches!(&error, RunError::Model(_)) {
                     emit(&send, &cancellation, Err(error)).await;
