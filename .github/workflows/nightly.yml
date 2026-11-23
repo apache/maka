@@ -747,7 +747,6 @@ jobs:
 
           gh release delete nightly-previous --repo "$GITHUB_REPOSITORY" --yes 2>/dev/null || true
           gh api -X DELETE "repos/$GITHUB_REPOSITORY/git/refs/tags/nightly-previous" 2>/dev/null || true
-          gh api -X POST "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/nightly-previous" -f sha="$PREV_COMMIT"
 
           export PREV_COMMIT PREV_VERSION
           node --input-type=module -e '
@@ -768,8 +767,12 @@ jobs:
 
           shopt -s nullglob
           prev_files=(prev-dist/*)
+          # Point the rolling tag at main (not $PREV_COMMIT) so GITHUB_TOKEN
+          # never hits HTTP 403 when .github/workflows/ changed since $PREV_COMMIT;
+          # exact PREV_COMMIT and PREV_VERSION live in prev-meta.json and prev-notes.md.
           gh release create nightly-previous "${prev_files[@]}" \
             --repo "$GITHUB_REPOSITORY" \
+            --target main \
             --prerelease \
             --latest=false \
             --title "Maka Nightly (Previous: ${PREV_VERSION})" \
@@ -809,12 +812,15 @@ jobs:
         run: |
           gh release delete nightly --repo "$GITHUB_REPOSITORY" --yes 2>/dev/null || true
           gh api -X DELETE "repos/$GITHUB_REPOSITORY/git/refs/tags/nightly" 2>/dev/null || true
-          gh api -X POST "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/nightly" -f sha="${{ needs.prepare.outputs.commit }}"
 
           shopt -s nullglob
           assets=(dist/*)
+          # Point the rolling tag at main so GITHUB_TOKEN never hits HTTP 403 if a
+          # workflow change landed on main during the build; exact build commit lives
+          # in nightly-meta.json, latest.json, and release-notes.md.
           gh release create nightly "${assets[@]}" \
             --repo "$GITHUB_REPOSITORY" \
+            --target main \
             --prerelease \
             --latest=false \
             --title "Maka Nightly (${{ needs.prepare.outputs.version }})" \
