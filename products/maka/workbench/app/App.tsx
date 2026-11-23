@@ -52,7 +52,7 @@ import {
 } from '../../../../packages/plugin-sdk/src/workbench-views.js';
 import { currentWindow } from 'nsh/desktop';
 import { QuickLauncher } from './QuickLauncher';
-import { UpdateBanner } from './UpdateBanner';
+import { appUpdater } from './appUpdater';
 import { createQuickTools, QuickToolsSettings, type QuickTools } from './QuickTools';
 import { ownTitleBar, windowTitle } from './chrome';
 import {
@@ -97,6 +97,7 @@ function App(
     quick: QuickTools;
   },
 ) {
+  appUpdater.init();
   const { context, runtime } = props;
   const configuration = context.configuration as unknown as Configuration;
   const saved = context.restored as SavedRoot | null;
@@ -576,7 +577,6 @@ function App(
           },
         })}
       </WorkspaceSurface>
-      <UpdateBanner />
       <If when={runtime.updateError() !== null}>
         <View
           style={{

@@ -174,10 +174,9 @@ impl Controller {
                 interval.tick().await;
                 loop {
                     interval.tick().await;
-                    let can_recheck = matches!(
-                        background.snapshot().status,
-                        Status::Idle | Status::UpToDate
-                    );
+                    let snapshot = background.snapshot();
+                    let can_recheck = matches!(snapshot.status, Status::Idle | Status::UpToDate)
+                        || (snapshot.status == Status::Available && !snapshot.can_install);
                     if can_recheck {
                         background.check(false).await;
                     }
@@ -221,7 +220,7 @@ impl Controller {
         snapshot
     }
 
-    pub(crate) async fn check(&self, user_initiated: bool) -> Snapshot {
+    pub(crate) async fn check(self: &Arc<Self>, user_initiated: bool) -> Snapshot {
         if self.info.channel == Channel::Dev {
             return self.snapshot();
         }
@@ -240,35 +239,79 @@ impl Controller {
             self.emit(&snapshot);
         }
 
-        match maka_updater::check(&self.info).await {
+        let result = maka_updater::check(&self.info)
+            .await
+            .map_err(|error| error.to_string());
+        let can_install = matches!(&result, Ok(Some(_))) && maka_updater::can_install();
+        let (snapshot, auto_download) =
+            self.apply_check_result(result, can_install, user_initiated);
+        if let Some(available) = auto_download {
+            let downloader = Arc::clone(self);
+            self.runtime.spawn(async move {
+                let _ = downloader.perform_download(available, user_initiated).await;
+            });
+        }
+        snapshot
+    }
+
+    fn apply_check_result(
+        &self,
+        result: Result<Option<AvailableUpdate>, String>,
+        can_install: bool,
+        user_initiated: bool,
+    ) -> (Snapshot, Option<AvailableUpdate>) {
+        match result {
+            Ok(Some(available)) if can_install => {
+                let to_download = available.clone();
+                let snapshot = self.update_snapshot(|state| {
+                    state.staged = None;
+                    state.archive = None;
+                    state.snapshot.can_install = true;
+                    state.snapshot.status = Status::Downloading;
+                    state.snapshot.available = Some(available);
+                    state.snapshot.progress = Some(Progress {
+                        received: 0,
+                        total: to_download.size,
+                    });
+                    state.snapshot.error = None;
+                });
+                (snapshot, Some(to_download))
+            }
             Ok(Some(available)) => {
-                let can_install = maka_updater::can_install();
-                self.update_snapshot(|state| {
-                    state.snapshot.can_install = can_install;
+                let snapshot = self.update_snapshot(|state| {
+                    state.snapshot.can_install = false;
                     state.snapshot.status = Status::Available;
                     state.snapshot.available = Some(available);
                     state.snapshot.progress = None;
                     state.snapshot.error = None;
-                })
+                });
+                (snapshot, None)
             }
-            Ok(None) => self.update_snapshot(|state| {
-                state.snapshot.status = Status::UpToDate;
-                state.snapshot.available = None;
-                state.snapshot.progress = None;
-                state.snapshot.error = None;
-            }),
-            Err(error) => {
-                if !user_initiated {
+            Ok(None) => {
+                let snapshot = self.update_snapshot(|state| {
+                    state.snapshot.status = Status::UpToDate;
+                    state.snapshot.available = None;
+                    state.snapshot.progress = None;
+                    state.snapshot.error = None;
+                });
+                (snapshot, None)
+            }
+            Err(message) => {
+                let snapshot = if !user_initiated {
                     // Background checks stay quiet on transient network/offline failures.
-                    return self.update_snapshot(|state| {
+                    self.update_snapshot(|state| {
                         state.snapshot.status = Status::Idle;
+                        state.snapshot.progress = None;
                         state.snapshot.error = None;
-                    });
-                }
-                self.update_snapshot(|state| {
-                    state.snapshot.status = Status::Error;
-                    state.snapshot.error = Some(error.to_string());
-                })
+                    })
+                } else {
+                    self.update_snapshot(|state| {
+                        state.snapshot.status = Status::Error;
+                        state.snapshot.progress = None;
+                        state.snapshot.error = Some(message);
+                    })
+                };
+                (snapshot, None)
             }
         }
     }
@@ -295,24 +338,33 @@ impl Controller {
             });
             guard.snapshot.error = None;
             guard.staged = None;
+            guard.archive = None;
             let snapshot = guard.snapshot.clone();
             drop(guard);
             self.emit(&snapshot);
             available
         };
 
+        self.perform_download(available, true).await
+    }
+
+    async fn perform_download(
+        self: &Arc<Self>,
+        available: AvailableUpdate,
+        user_initiated: bool,
+    ) -> Result<Snapshot, String> {
         let installation = match maka_updater::current_installation() {
             Ok(install) if install.can_install() => install,
             Ok(_) => {
                 let message =
                     "This installation directory is read-only; download the update manually."
                         .to_owned();
-                self.set_error(&message);
+                self.fail_download(user_initiated, &message, true);
                 return Err(message);
             }
             Err(error) => {
                 let message = error.to_string();
-                self.set_error(&message);
+                self.fail_download(user_initiated, &message, false);
                 return Err(message);
             }
         };
@@ -338,7 +390,7 @@ impl Controller {
             Ok(path) => path,
             Err(error) => {
                 let message = error.to_string();
-                self.set_error(&message);
+                self.fail_download(user_initiated, &message, false);
                 return Err(message);
             }
         };
@@ -348,7 +400,7 @@ impl Controller {
             Err(error) => {
                 let _ = tokio::fs::remove_file(&archive).await;
                 let message = error.to_string();
-                self.set_error(&message);
+                self.fail_download(user_initiated, &message, false);
                 return Err(message);
             }
         };
@@ -357,8 +409,41 @@ impl Controller {
             state.staged = Some(staged);
             state.archive = Some(archive);
             state.snapshot.status = Status::Ready;
+            state.snapshot.progress = None;
             state.snapshot.error = None;
         }))
+    }
+
+    fn fail_download(&self, user_initiated: bool, message: &str, read_only: bool) {
+        if read_only {
+            self.update_snapshot(|state| {
+                state.snapshot.can_install = false;
+                state.snapshot.progress = None;
+                if user_initiated {
+                    state.snapshot.status = Status::Error;
+                    state.snapshot.error = Some(message.to_owned());
+                } else {
+                    state.snapshot.status = Status::Available;
+                    state.snapshot.error = None;
+                }
+            });
+            return;
+        }
+        if !user_initiated {
+            // Silent background download failures reset to Idle so the periodic timer can retry.
+            self.update_snapshot(|state| {
+                state.snapshot.status = Status::Idle;
+                state.snapshot.available = None;
+                state.snapshot.progress = None;
+                state.snapshot.error = None;
+            });
+            return;
+        }
+        self.update_snapshot(|state| {
+            state.snapshot.status = Status::Error;
+            state.snapshot.progress = None;
+            state.snapshot.error = Some(message.to_owned());
+        });
     }
 
     pub(crate) async fn install_and_restart(&self) -> Result<(), String> {
@@ -469,11 +554,110 @@ impl Controller {
 
 #[cfg(test)]
 mod tests {
-    use super::SwapFence;
+    use super::{Controller, Snapshot, State, Status, SwapFence};
+    use maka_updater::{AvailableUpdate, BuildInfo, Channel};
     use std::{
-        sync::Arc,
+        path::PathBuf,
+        sync::{Arc, Mutex},
         time::{Duration, Instant},
     };
+    use tokio::sync::{mpsc, watch};
+    use uuid::Uuid;
+
+    fn test_controller(channel: Channel) -> (tokio::runtime::Runtime, Controller) {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let (_host_tx, host_rx) = watch::channel((PathBuf::new(), Uuid::nil()));
+        let (updating_tx, _updating_rx) = watch::channel(false);
+        let (exit_tx, _exit_rx) = mpsc::unbounded_channel();
+        let controller = Controller {
+            info: BuildInfo {
+                channel,
+                version: "0.2.0-nightly.1".into(),
+                repo: "apache/maka".into(),
+                public_key: None,
+            },
+            root: PathBuf::new(),
+            active_host: host_rx,
+            updating: updating_tx,
+            exit: exit_tx,
+            events: Arc::default(),
+            runtime: rt.handle().clone(),
+            swap: SwapFence::new(),
+            state: Mutex::new(State {
+                snapshot: Snapshot {
+                    channel,
+                    current_version: "0.2.0-nightly.1".into(),
+                    can_install: true,
+                    status: Status::Idle,
+                    available: None,
+                    progress: None,
+                    error: None,
+                },
+                staged: None,
+                archive: None,
+            }),
+        };
+        (rt, controller)
+    }
+
+    fn sample_update() -> AvailableUpdate {
+        AvailableUpdate {
+            version: "0.2.0-nightly.2".into(),
+            notes: None,
+            url: "https://example.invalid/maka.tar.gz".into(),
+            sha256: None,
+            size: Some(1024),
+        }
+    }
+
+    #[test]
+    fn check_result_starts_auto_download_when_installable_and_stays_available_when_read_only() {
+        let (_rt, controller) = test_controller(Channel::Nightly);
+        let (snapshot, auto) =
+            controller.apply_check_result(Ok(Some(sample_update())), true, false);
+        assert_eq!(snapshot.status, Status::Downloading);
+        assert!(snapshot.can_install);
+        assert_eq!(
+            auto.as_ref().map(|u| u.version.as_str()),
+            Some("0.2.0-nightly.2")
+        );
+        assert_eq!(snapshot.progress.as_ref().and_then(|p| p.total), Some(1024));
+
+        let (_rt2, read_only) = test_controller(Channel::Nightly);
+        let (snapshot, auto) =
+            read_only.apply_check_result(Ok(Some(sample_update())), false, false);
+        assert_eq!(snapshot.status, Status::Available);
+        assert!(!snapshot.can_install);
+        assert!(auto.is_none());
+    }
+
+    #[test]
+    fn download_failure_is_silent_in_background_and_visible_when_user_initiated() {
+        let (_rt, background) = test_controller(Channel::Nightly);
+        background.apply_check_result(Ok(Some(sample_update())), true, false);
+        background.fail_download(false, "network reset", false);
+        let snap = background.snapshot();
+        assert_eq!(snap.status, Status::Idle);
+        assert!(snap.available.is_none());
+        assert!(snap.error.is_none());
+
+        let (_rt2, read_only_bg) = test_controller(Channel::Nightly);
+        read_only_bg.apply_check_result(Ok(Some(sample_update())), true, false);
+        read_only_bg.fail_download(false, "read-only", true);
+        let snap = read_only_bg.snapshot();
+        assert_eq!(snap.status, Status::Available);
+        assert!(!snap.can_install);
+        assert!(snap.error.is_none());
+
+        let (_rt3, manual) = test_controller(Channel::Nightly);
+        manual.apply_check_result(Ok(Some(sample_update())), true, true);
+        manual.fail_download(true, "network reset", false);
+        let snap = manual.snapshot();
+        assert_eq!(snap.status, Status::Error);
+        assert_eq!(snap.error.as_deref(), Some("network reset"));
+    }
 
     #[test]
     fn swap_fence_blocks_shutdown_until_swap_guard_drops_and_rejects_late_admission() {

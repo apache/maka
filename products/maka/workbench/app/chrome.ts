@@ -21,7 +21,8 @@
 // the top edge are its title bar, and the application menu holds the
 // workbench's commands. Terminals keep their own title and menus.
 import { effect, host, platform } from 'nsh';
-import { currentWindow, isAvailable, Menu, titleBar, Window } from 'nsh/desktop';
+import { currentWindow, isAvailable, Menu, type MenuItem, titleBar, Window } from 'nsh/desktop';
+import { appUpdater } from './appUpdater';
 import { tr } from './locale';
 
 export const ownTitleBar = isAvailable && platform.desktop && platform.idiom !== 'terminal';
@@ -68,6 +69,8 @@ export interface MenuActions {
   nextSession(): void;
   previousSession(): void;
   settings(): void;
+  openUpdates?(): void;
+  checkForUpdates?(): void;
   sidebarShown(): boolean;
   toggleSidebar(): void;
   /** One text size up (1), down (-1), or the default (0). */
@@ -77,6 +80,7 @@ export interface MenuActions {
 /** The application menu (the macOS menu bar; the shortcuts elsewhere). */
 export function applicationMenu(actions: MenuActions) {
   if (!ownTitleBar) return;
+  if (actions.checkForUpdates) appUpdater.init();
   const mac = platform.os === 'macos';
   effect(() => {
     const settings = {
@@ -89,11 +93,42 @@ export function applicationMenu(actions: MenuActions) {
       shortcut: 'mod+q',
       onSelect: () => host.post('terminal.exit'),
     };
+    const updateItem = (): MenuItem | false => {
+      if (!actions.checkForUpdates || !appUpdater.supported) return false;
+      const state = appUpdater.snapshot();
+      if (!state || state.channel === 'dev') return false;
+      switch (state.status) {
+        case 'ready':
+          return {
+            label: tr('Restart to update…'),
+            onSelect: () => void appUpdater.installAndRestart(),
+          };
+        case 'installing':
+          return { label: tr('Installing update…'), disabled: true };
+        case 'checking':
+          return {
+            label: tr('Checking for updates…'),
+            onSelect: actions.openUpdates ?? actions.checkForUpdates,
+          };
+        case 'downloading':
+          return {
+            label: tr('Downloading update…'),
+            onSelect: actions.openUpdates ?? actions.checkForUpdates,
+          };
+        default:
+          return {
+            label: tr('Check for updates…'),
+            onSelect: actions.checkForUpdates,
+          };
+      }
+    };
+    const update = updateItem();
     Menu.setApplicationMenu([
       mac && {
         label: 'Maka',
         submenu: [
           { role: 'about' },
+          update,
           { type: 'separator' },
           settings,
           { type: 'separator' },
@@ -113,6 +148,7 @@ export function applicationMenu(actions: MenuActions) {
           { type: 'separator' },
           { role: 'close' },
           !mac && settings,
+          !mac && update,
           !mac && { type: 'separator' },
           !mac && quit,
         ],
