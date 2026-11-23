@@ -33,6 +33,12 @@ export interface ConversationShell {
   blocked(): boolean;
   connectionLost(): boolean;
   openSession(sessionId: string | null): Promise<boolean>;
+  openRooms?(): void;
+  /** The dossiers route in the main conversation pane. */
+  discovery?: {
+    route(): { topicId: string | null } | null;
+    open(topicId?: string): Promise<void>;
+  };
   openSettings(model?: ModelSelection, page?: string): void;
   sidebarShown(): boolean;
   sidebarHover?(inside: boolean): void;
@@ -51,7 +57,7 @@ export interface ConversationShell {
 
 export interface ConversationSessionHandle {
   title(): string | null;
-  /** The window-wide dossiers view covers the underlying conversation or room. */
+  /** Whether the main pane is showing discovery dossiers. */
   discoveryOpen?(): boolean;
   kind(sessionId: string): Promise<AgentSessionKind>;
   leave(): Promise<boolean>;

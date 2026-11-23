@@ -242,12 +242,17 @@ test('the window posts native interrupts, rebaselines a reconnected stream and r
   );
   const click = listeners.get('notification.open');
   click({ tag: 'discovery:b' });
+  click({ tag: 'discovery:a' });
+  click({ tag: 'discovery:' });
   click({ tag: 'main-session' });
+  click({ tag: 'discovery:b' });
   assert.deepEqual(opened, [
     ['dossier', 'b'],
+    ['dossier', 'a'],
     ['session', 'main-session'],
+    ['dossier', 'b'],
   ]);
-  assert.equal(window.focused, 1);
+  assert.equal(window.focused, 3);
   for (const stop of disposers.reverse()) stop();
   await flush();
   t.mock.timers.tick(10000);

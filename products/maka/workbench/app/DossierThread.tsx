@@ -16,15 +16,24 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-import { cleanup, inputAction, Scroll, signal, Text, View, type ScrollRef } from 'nsh';
-import { Input } from 'nsh/base';
+import { cleanup, inputAction, Scroll, signal, Text, View, windowSize, type ScrollRef } from 'nsh';
+import { Button, Input } from 'nsh/base';
 import { useHost } from './host';
 import { mergeHistoryPage, recentMessages } from './history';
 import { observeDiscovery } from './discoveryObservation';
 import { SettingsButton } from './SettingsPage';
+import { Icon } from './Icon';
 import { tr } from './locale';
 import { createText, errorText, UiError } from './text';
-import { C, captionTextStyle, inputTextStyle, secondaryTextStyle } from './ui';
+import {
+  C,
+  captionTextStyle,
+  composerIconSlot,
+  inputTextStyle,
+  quietFocusStyle,
+  secondaryTextStyle,
+  textTooltip,
+} from './ui';
 
 function RecentTurns(props: { sessionId: string }) {
   const host = useHost();
@@ -83,7 +92,7 @@ function RecentTurns(props: { sessionId: string }) {
           ref={(node) => {
             scroll = node;
           }}
-          style={{ maxHeight: 146, flexShrink: 1 }}
+          style={{ maxHeight: Math.min(146, windowSize().height * 0.2), flexShrink: 1 }}
         >
           <View style={{ gap: 5 }} onLayout={() => scroll?.scrollToEnd({ animated: false })}>
             <Each of={turns()} key={(turn) => turn.id}>
@@ -121,6 +130,7 @@ function RecentTurns(props: { sessionId: string }) {
 
 export function DossierThread(props: {
   topicId: string;
+  ready: boolean;
   threadSessionId(): string | null;
   openSession(id: string): void;
 }) {
@@ -131,13 +141,14 @@ export function DossierThread(props: {
   const opened = signal<string | null>(null);
   const session = () => props.threadSessionId() ?? opened();
   const error = createText();
+  const canSend = () => props.ready && !sending() && draft().trim().length > 0;
   let alive = true;
   cleanup(() => {
     alive = false;
   });
   const send = async () => {
     const message = draft().trim();
-    if (!alive || !message || sending()) return;
+    if (!alive || !canSend()) return;
     sending.set(true);
     error.set('');
     try {
@@ -167,7 +178,7 @@ export function DossierThread(props: {
     }
   };
   return (
-    <View style={{ gap: 6, borderTopWidth: 1, borderColor: C.line, padding: 12 }}>
+    <View style={{ gap: 8 }}>
       <Each of={session() ? [session()!] : []} key={(id) => id}>
         {(id) => (
           <>
@@ -185,7 +196,20 @@ export function DossierThread(props: {
       <If when={error()}>
         <Text style={{ ...captionTextStyle, color: C.danger }}>{error()}</Text>
       </If>
-      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+      <View
+        style={{
+          flexDirection: 'row',
+          alignItems: 'center',
+          gap: 8,
+          flexShrink: 0,
+          backgroundColor: C.card,
+          borderWidth: 1,
+          borderColor: C.line,
+          borderRadius: 12,
+          paddingHorizontal: 12,
+          paddingVertical: 8,
+        }}
+      >
         <Input
           accessibilityLabel={tr('Reply to this dossier')}
           placeholder={tr('Reply to this dossier')}
@@ -199,21 +223,24 @@ export function DossierThread(props: {
             flex: 1,
             minWidth: 0,
             height: 32,
-            paddingHorizontal: 9,
             color: C.text,
             placeholderColor: C.muted,
-            backgroundColor: C.background,
-            borderRadius: 7,
-            borderWidth: 1,
-            borderColor: C.line,
+            backgroundColor: 'transparent',
           }}
-          focusStyle={{ borderColor: C.accent }}
+          focusStyle={quietFocusStyle()}
         />
-        <SettingsButton
-          label={tr('Send')}
+        <Button
+          accessibilityLabel={tr('Send')}
+          tooltip={textTooltip(() => tr('Send'))}
           onPress={() => void send()}
-          disabled={sending() || !draft().trim()}
-        />
+          disabled={!canSend()}
+          style={{ ...composerIconSlot, borderRadius: 16, backgroundColor: C.accent }}
+          hoverStyle={{ backgroundColor: C.accentHover }}
+          focusStyle={{ backgroundColor: C.accentHover }}
+          disabledStyle={{ backgroundColor: C.line }}
+        >
+          <Icon name="send" color={canSend() ? C.background : C.muted} />
+        </Button>
       </View>
     </View>
   );

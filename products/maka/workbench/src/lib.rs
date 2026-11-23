@@ -134,14 +134,41 @@ mod tests {
         let mut app = headless_fixture(
             "tests/fixtures/discovery-dossiers.tsx",
             Size::new(px(920.0), px(760.0)),
-            false,
+            true,
         );
         app.wait_for("role:button[Proactive discovery]").unwrap();
+        app.press("role:button[Proactive discovery]").unwrap();
+        app.wait_for("text:Review copy").unwrap();
+        let discovery = "role:button[Discovery dossiers]";
+        let conversation = "role:button[Open conversation Planning]";
+        assert!(app.screen().selected(discovery).unwrap());
+        assert!(!app.screen().selected(conversation).unwrap());
+        app.press("role:button[Collapse session browser]").unwrap();
+        app.press("role:button[Expand session browser]").unwrap();
+        app.press(conversation).unwrap();
+        app.wait_for("text:planning").unwrap();
+        assert!(app.screen().selected(conversation).unwrap());
         app.press("role:button[Proactive discovery]").unwrap();
         app.wait_for("text:Review copy").unwrap();
         assert!(!app.screen().matches("text:/revised clause/").unwrap());
         app.press("role:button[Preview draft.md]").unwrap();
         app.wait_for("text:/revised clause/").unwrap();
+        app.set_viewport(Size::new(px(920.0), px(420.0))).unwrap();
+        let send = app.screen().id("role:button[Send]").unwrap();
+        let bounds = app
+            .screen()
+            .layout_nodes()
+            .into_iter()
+            .find(|node| node.id == send)
+            .unwrap()
+            .bounds;
+        assert!(
+            bounds.size.height > px(0.0)
+                && bounds.bottom() <= px(420.0)
+                && bounds.bottom() > px(360.0),
+            "composer send button: {bounds:?}"
+        );
+        app.set_viewport(Size::new(px(920.0), px(760.0))).unwrap();
         app.press("role:button[Copy]").unwrap();
         assert_eq!(
             app.screen().clipboard(),
@@ -181,6 +208,7 @@ mod tests {
         );
         app.type_text("label:Reply to this dossier…", "Review this")
             .unwrap();
+        app.press(discovery).unwrap();
         app.press_key("mod+u").unwrap();
         app.wait_for("text:Revised Release").unwrap();
         app.press("role:button[Send]").unwrap();

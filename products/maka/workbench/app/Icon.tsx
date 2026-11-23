@@ -74,6 +74,7 @@ const icons = {
   app: { lucide: 'app-window', glyph: '▢' },
   calculator: { lucide: 'calculator', glyph: '=' },
   mic: { lucide: 'mic', glyph: '🎙' },
+  muted: { custom: 'muted', glyph: '⊘' },
   camera: { lucide: 'camera', glyph: '◉' },
   clipboard: { lucide: 'clipboard-list', glyph: '▤' },
   link: { lucide: 'link', glyph: '∞' },
@@ -112,6 +113,10 @@ const icons = {
 >;
 
 const customIcons = {
+  muted: [
+    { tag: 'path', d: 'M3 9h4l5-4v14l-5-4H3z' },
+    { tag: 'path', d: 'm16 9 6 6m0-6-6 6' },
+  ],
   panelRight: [
     { tag: 'rect', x: 3, y: 3, width: 18, height: 18, rx: 2 },
     { tag: 'path', d: 'M15 3v18' },

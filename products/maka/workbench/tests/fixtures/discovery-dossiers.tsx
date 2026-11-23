@@ -16,7 +16,10 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-import { computed, keymap, mount, signal, Text } from 'nsh';
+import { computed, keymap, mount, signal, Text, View } from 'nsh';
+import { createBrowsing } from '../../app/browsing';
+import { Workbench } from '../../app/Workbench';
+import { WorkspaceBrowser } from '../../app/WorkspaceBrowser';
 import { DiscoveryDossiers } from '../../app/DiscoveryDossiers';
 import { DiscoveryPanel } from '../../app/DiscoveryPanel';
 import { HostProvider, type Host } from '../../app/host';
@@ -77,7 +80,19 @@ mount(() => {
     notificationsEnabled: enabled(),
   }));
   const route = signal<{ topicId: string | null } | null>(null);
-  const opened = signal('');
+  const opened = signal('planning');
+  const expanded = signal(true);
+  const browser = () => ({
+    navigationDocked: expanded(),
+    previewDocked: false,
+    expanded: expanded(),
+    hidden: false,
+    toggle: () => expanded.set(!expanded()),
+  });
+  const openSession = (id: string) => {
+    opened.set(id);
+    route.set(null);
+  };
   const messages: { text: string; role: 'user' | 'assistant' }[] = [];
   let threadOpens = 0;
   let wake: (() => void) | undefined;
@@ -89,6 +104,7 @@ mount(() => {
       method: string,
       input: { topicId?: string; sessionId?: string; path?: string },
     ) {
+      if (method === 'projects') return { kind: 'projects', projects: [], next: null, revision: 1 };
       if (method === 'readDossierArtifact' && input.topicId === 'one' && input.path === 'draft.md')
         return 'Ready to review\n+ revised clause\n' + 'line\n'.repeat(1100) + 'End of draft';
       if (method === 'dossier') return files().find((d) => d.topicId === input.topicId) ?? null;
@@ -114,6 +130,31 @@ mount(() => {
       method: string,
       { sessionId, after }: { sessionId: string; after: number },
     ) {
+      if (method === 'catalog') {
+        const catalog = new ReadableStream({
+          start(controller) {
+            controller.enqueue({
+              sessions: [
+                {
+                  id: 'planning',
+                  title: 'Planning',
+                  kind: 'agent',
+                  workspace: { path: '/work' },
+                  labels: [],
+                  activity: 'idle',
+                },
+              ],
+              after: null,
+              needsYouCount: 0,
+              revision: '1',
+            });
+          },
+        }).getReader();
+        return {
+          next: async () => (await catalog.read()).value ?? null,
+          close: () => catalog.cancel(),
+        };
+      }
       if (method !== 'watch' || sessionId !== 'thread-two') throw Error(method);
       return {
         next: () =>
@@ -168,6 +209,7 @@ mount(() => {
       }
     },
   } as unknown as Host;
+  const browsing = createBrowsing(host);
   keymap.bind('mod+d', () => route.set({ topicId: 'two' }), { when: 'always' });
   keymap.bind(
     'mod+r',
@@ -190,25 +232,61 @@ mount(() => {
   );
   return (
     <HostProvider value={host}>
-      <DiscoveryPanel open={() => route.set({ topicId: null })} />
-      <Text>{opened()}</Text>
-      <If when={route()}>
-        <DiscoveryDossiers
-          route={route}
-          snapshot={snapshot}
-          watchError={() => ''}
-          botSession={() => 'bot'}
-          openBot={async () => 'bot'}
-          control={async () => null}
-          chooseModel={() => {}}
-          openLink={async () => {}}
-          openSession={(id) => {
-            opened.set(id);
-            route.set(null);
-          }}
-          close={() => route.set(null)}
-        />
-      </If>
+      <Workbench
+        expanded={expanded}
+        previewShown={() => false}
+        previewDialog={() => false}
+        closePreview={() => {}}
+        preview={() => null}
+        navigation={() => (
+          <WorkspaceBrowser
+            browsing={browsing}
+            selected={opened}
+            docked={expanded}
+            switching={() => false}
+            connectionLost={() => false}
+            openDiscovery={() => route.set({ topicId: null })}
+            discoveryOpen={() => route() !== null}
+            selectSession={async (id) => openSession(id)}
+            openBot={() => openSession('bot')}
+            close={() => expanded.set(false)}
+            collapse={() => expanded.set(false)}
+            focusRequest={() => false}
+            focusHandled={() => {}}
+            attach={() => {}}
+            newConversation={() => {}}
+            search={() => {}}
+            settings={() => {}}
+            create={async () => {}}
+            changeSession={async () => {}}
+          />
+        )}
+      >
+        <If
+          when={route()}
+          else={
+            <View>
+              <DiscoveryPanel open={() => route.set({ topicId: null })} />
+              <Text>{opened()}</Text>
+            </View>
+          }
+        >
+          <DiscoveryDossiers
+            route={route}
+            browser={browser()}
+            commands={() => {}}
+            snapshot={snapshot}
+            watchError={() => ''}
+            botSession={() => 'bot'}
+            openBot={async () => 'bot'}
+            control={async () => null}
+            chooseModel={() => {}}
+            openLink={async () => {}}
+            openSession={openSession}
+            close={() => route.set(null)}
+          />
+        </If>
+      </Workbench>
     </HostProvider>
   );
 });

@@ -80,6 +80,7 @@ import { ownTitleBar, TITLE_BAR_HEIGHT, windowDrag } from './chrome';
 export type WorkspaceBrowserProps = {
   openRooms?: (() => void) | undefined;
   openDiscovery?: (() => void) | undefined;
+  discoveryOpen?(): boolean;
   navigationMore?: (() => JSX.Element) | undefined;
   pinSidebar?: (() => void) | undefined;
   suppressSidebarHover?: (() => void) | undefined;
@@ -174,8 +175,9 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
     color: selected && platform.idiom !== 'terminal' ? C.text : navText(),
     fontWeight: selected && platform.idiom !== 'terminal' ? ('500' as const) : undefined,
   });
+  const selectedSession = () => (props.discoveryOpen?.() ? null : props.selected());
   const botSelected = () =>
-    props.botSession?.() != null && props.selected() === props.botSession?.();
+    props.botSession?.() != null && selectedSession() === props.botSession?.();
   // Desktop rows hold one line; the terminal's also name the workspace.
   const rowHeight = () => (compact() ? 32 : platform.idiom === 'terminal' ? 48 : 36);
   const navigationRowHeight = () => (platform.idiom === 'terminal' && !compact() ? 40 : 32);
@@ -759,7 +761,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                     title: worker().title || tr('Untitled conversation'),
                   })}
                   disabled={props.switching()}
-                  selected={props.selected() === worker().id}
+                  selected={selectedSession() === worker().id}
                   onPress={inputAction(select, { id: worker().id, origin: props.selected() })}
                   style={{
                     flex: 1,
@@ -768,7 +770,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                     gap: 8,
                     paddingHorizontal: 8,
                     borderRadius: 8,
-                    backgroundColor: props.selected() === worker().id ? C.raised : 'transparent',
+                    backgroundColor: selectedSession() === worker().id ? C.raised : 'transparent',
                   }}
                   hoverStyle={{ backgroundColor: C.raised }}
                   focusStyle={{ backgroundColor: C.raised }}
@@ -845,11 +847,14 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
         <If
           when={
             props.openDiscovery &&
-            (platform.idiom === 'terminal' || sidebarPreferences.isPinned('discovery'))
+            (platform.idiom === 'terminal' ||
+              sidebarPreferences.isPinned('discovery') ||
+              props.discoveryOpen?.())
           }
         >
           <Button
             accessibilityLabel={tr('Discovery dossiers')}
+            selected={props.discoveryOpen?.() ?? false}
             disabled={props.connectionLost()}
             onPress={() => props.openDiscovery?.()}
             style={{
@@ -861,12 +866,13 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
               height: navigationRowHeight(),
               borderRadius: 8,
             }}
+            selectedStyle={{ backgroundColor: C.raised }}
             hoverStyle={controlHoverStyle()}
             focusStyle={controlFocusStyle()}
             disabledStyle={controlDisabledStyle}
           >
             <Icon name="activity" color={navIcon()} />
-            <Text style={{ color: navText(), flex: 1, fontSize: 14 }}>
+            <Text style={{ ...selectedNavText(props.discoveryOpen?.() ?? false), flex: 1 }}>
               {tr('Discovery dossiers')}
             </Text>
           </Button>
@@ -1507,13 +1513,13 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                   .filter(Boolean)
                   .join(' · ');
               };
+              const current = () => selectedSession() === key();
               const actionsShown = () =>
                 platform.idiom === 'terminal' ||
                 hovered() ||
                 menuOpen() ||
-                props.selected() === key() ||
+                current() ||
                 actions()?.session.id === key();
-              const current = () => props.selected() === key();
               // What the row's end shows while its More button is away: the
               // desktop's one lane for a running conversation or an unread one.
               const lane = () =>
@@ -1587,7 +1593,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                               title: session()?.title || tr('Untitled conversation'),
                             })}
                             disabled={props.switching() || !session()}
-                            selected={props.selected() === key()}
+                            selected={current()}
                             tooltip={
                               platform.idiom === 'terminal'
                                 ? undefined
@@ -1610,7 +1616,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                               borderRadius: 8,
                               backgroundColor:
                                 platform.idiom === 'terminal'
-                                  ? props.selected() === key()
+                                  ? current()
                                     ? C.line
                                     : C.surface
                                   : 'transparent',

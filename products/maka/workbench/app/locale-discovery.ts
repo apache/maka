@@ -77,7 +77,7 @@ export const discoveryMessages = {
   ],
   'Dossier action dismissed': ['Action dismissed.', '已忽略操作。', '已忽略操作。'],
   'Dossier action failed': ['Could not complete the action.', '未能完成操作。', '未能完成操作。'],
-  'Dossier pending actions': ['Pending actions', '待处理操作', '待處理操作'],
+  'Dossier pending actions': ['Pending actions', '待确认操作', '待確認操作'],
   'Dossier awaiting confirmation': ['Awaiting confirmation', '待确认', '待確認'],
   'Dossier action stale': ['Stale', '已失效', '已失效'],
   'Dossier action executing': ['Executing', '执行中', '執行中'],
