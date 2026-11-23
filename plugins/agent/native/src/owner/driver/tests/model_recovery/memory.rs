@@ -236,18 +236,13 @@ async fn semantic_recheck_acceptance(
 
 async fn exercise(rig: &mut Rig) -> TestResult<()> {
     let base = rig.directory.path().to_path_buf();
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
-    let url = format!("http://{}/v1", listener.local_addr()?);
     let (requests, mut observed) = tokio::sync::mpsc::channel(1);
     let (semantic_requests, mut semantic_observed) = tokio::sync::mpsc::channel(1);
-    let app = axum::Router::new().route(
-        "/v1/chat/completions",
-        axum::routing::post(move |request: axum::extract::Request| {
+    let provider = MockAiBuilder::new().handler_async(move |req, _| {
             let requests = requests.clone();
             let semantic_requests = semantic_requests.clone();
             async move {
-                let bytes=axum::body::to_bytes(request.into_body(),1024*1024).await.unwrap();
-                let request:Value=serde_json::from_slice(&bytes).unwrap();
+                let request = req.raw_body;
                 if let Some(prompt)=request["messages"].as_array().and_then(|messages|messages.iter().rev().find_map(|m|m["content"].as_str())).and_then(|text|serde_json::from_str::<Value>(text).ok()).filter(|v|v["snapshot"].is_object()) {
                     if prompt["writes"].as_array().unwrap().iter().any(|w| w["edit"]["body"].as_str().is_some_and(|s| s.contains("Recheck fixture"))) {
                         let (respond, response) = oneshot::channel();
@@ -260,23 +255,18 @@ async fn exercise(rig: &mut Rig) -> TestResult<()> {
                         let matrix:Vec<Vec<Value>>=writes.iter().enumerate().map(|(i,write)| candidates.iter().map(|c|c["body"].as_str().unwrap_or("")).chain(writes[..i].iter().map(|w|w["edit"]["body"].as_str().unwrap_or(""))).map(|body|json!({"relation":if ["Semantic fixture", "Recheck fixture"].iter().any(|marker| body.contains(marker) && write["edit"]["body"].as_str().unwrap_or("").contains(marker)) {"equivalent"}else{"independent"},"replacement_quote":null})).collect()).collect();
                         serde_json::to_string(&matrix).unwrap()
                     };
-                    return ([("content-type","text/event-stream")],super::bot_tools::completion(json!({"role":"assistant","content":text}),"stop"));
+                    return Some(TurnPlan::text(text));
                 }
                 let (respond, response) = oneshot::channel::<()>();
                 let _ = requests.send(respond).await;
                 let _ = response.await;
-                (
-                    [("content-type", "text/event-stream")],
-                    super::bot_tools::completion(
-                        json!({"role":"assistant","content":"Recorded in the conversation."}),
-                        "stop",
-                    ),
-                )
+                Some(TurnPlan::text("Recorded in the conversation."))
             }
-        }),
-    );
-    let provider = tokio::spawn(async move { axum::serve(listener, app).await });
-    let boot = bootstrap_with(&base, url, |config| config["memoryTestPeer"] = json!(true)).await?;
+    }).start().await?;
+    let boot = bootstrap_with(&base, provider.base_url(), |config| {
+        config["memoryTestPeer"] = json!(true)
+    })
+    .await?;
     attach(rig, &boot).await?;
     let client = rig.client.as_ref().unwrap();
     git_scope_acceptance(client, &base).await?;
@@ -868,8 +858,7 @@ async fn exercise(rig: &mut Rig) -> TestResult<()> {
                 .is_some_and(|text| text.contains("project discussions"))),
         "{after}"
     );
-    provider.abort();
-    let _ = provider.await;
+    provider.shutdown().await;
     Ok(())
 }
 

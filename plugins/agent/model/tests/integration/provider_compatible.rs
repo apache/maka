@@ -277,26 +277,33 @@ async fn chat_annotations_resolve_reopened_text_parts_through_model_stream() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn usage_retreat_is_exact_once_and_shared_only_with_executor_clones() {
+    use maka_mock_ai::{HttpErrorSpec, MockAiBuilder, TurnPlan};
+
     tokio::time::timeout(Duration::from_secs(30), async {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let url = format!("http://{}/v1", listener.local_addr().unwrap());
-        let ok = completion(&[json!({"content":"ok"})]);
-        let server = tokio::spawn(async move {
-            for (options, status, text) in [
-                (true, 400, "unknown INCLUDE_USAGE"),
-                (false, 400, "stream_options still rejected"),
-                (false, 200, ok.as_str()), // clone remembers even when the one retry failed
-                (true, 401, "stream_options"), // another endpoint is independent; never retry 401
-                (true, 400, "invalid model"), // never retry an unrelated 400
-                (true, 400, "stream_options"),
-                (false, 200, ok.as_str()), // fresh executor forgets
-            ] {
-                let (mut socket, _) = listener.accept().await.unwrap();
-                let wire = body(&mut socket).await;
-                assert_eq!(wire.get("stream_options").is_some(), options);
-                response(&mut socket, status, text).await;
-            }
-        });
+        let steps = [
+            (true, 400u16, "unknown INCLUDE_USAGE"),
+            (false, 400, "stream_options still rejected"),
+            (false, 200, "ok"), // clone remembers even when the one retry failed
+            (true, 401, "stream_options"), // another endpoint is independent; never retry 401
+            (true, 400, "invalid model"), // never retry an unrelated 400
+            (true, 400, "stream_options"),
+            (false, 200, "ok"), // fresh executor forgets
+        ];
+        let server = MockAiBuilder::new()
+            .handler_fn(move |req, ctx| {
+                let idx = (ctx.global_turn - 1) as usize;
+                let (options, status, text) = steps[idx];
+                assert_eq!(req.raw_body.get("stream_options").is_some(), options);
+                if status == 200 {
+                    TurnPlan::text(text)
+                } else {
+                    TurnPlan::http_error(HttpErrorSpec::plain(status, text))
+                }
+            })
+            .start()
+            .await
+            .unwrap();
+        let url = server.base_url();
         let executor = ModelExecutor::new(Duration::from_secs(10)).unwrap();
         assert!(collect(&executor, &url).await.is_err());
         assert!(collect(&executor.clone(), &url).await.is_ok());
@@ -305,7 +312,8 @@ async fn usage_retreat_is_exact_once_and_shared_only_with_executor_clones() {
         assert!(collect(&executor, &other).await.is_err());
         let fresh = ModelExecutor::new(Duration::from_secs(10)).unwrap();
         assert!(collect(&fresh, &url).await.is_ok());
-        server.await.unwrap();
+        assert_eq!(server.request_count(), steps.len() as u64);
+        server.shutdown().await;
     })
     .await
     .unwrap();
@@ -408,28 +416,21 @@ async fn cancellation_drains_failure_body_and_retry_without_poisoning_capacity()
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn captured_language_reaches_native_notifications_without_becoming_provider_parameter() {
     use maka_agent_facts::language::Language;
+    use maka_mock_ai::{MockAiBuilder, TurnPlan};
     use maka_model::prompt::Message;
 
     tokio::time::timeout(Duration::from_secs(20), async {
         let executor = ModelExecutor::new(Duration::from_secs(10)).unwrap();
         for (language, expected) in [
-            (
-                Language::ZhCn,
-                "[来自工具 call-原文 的通知]",
-            ),
-            (
-                Language::ZhTw,
-                "[來自工具 call-原文 的通知]",
-            ),
+            (Language::ZhCn, "[来自工具 call-原文 的通知]"),
+            (Language::ZhTw, "[來自工具 call-原文 的通知]"),
         ] {
-            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-            let url = format!("http://{}/v1", listener.local_addr().unwrap());
-            let server = tokio::spawn(async move {
-                let (mut socket, _) = listener.accept().await.unwrap();
-                let wire = body(&mut socket).await;
-                response(&mut socket, 200, &completion(&[json!({"content":"seen"})])).await;
-                wire
-            });
+            let server = MockAiBuilder::new()
+                .handler_fn(|_, _| TurnPlan::text("seen"))
+                .start()
+                .await
+                .unwrap();
+            let url = server.base_url();
             let mut input = request(&url);
             input.language = language;
             input.prompt = vec![Message::notification(
@@ -445,10 +446,16 @@ async fn captured_language_reaches_native_notifications_without_becoming_provide
                 event.unwrap();
             }
             stream.cancel_and_wait().await.unwrap();
-            let wire = server.await.unwrap();
+            let recorded = server.recorded_requests();
+            assert_eq!(recorded.len(), 1);
+            let wire = &recorded[0].raw_body;
             assert_eq!(wire["messages"][0]["role"], "user");
-            assert_eq!(wire["messages"][0]["content"], json!([{ "type":"text", "text":expected }, { "type":"text", "text":"worker result: Keep 原文" }]));
+            assert_eq!(
+                wire["messages"][0]["content"],
+                json!([{ "type":"text", "text":expected }, { "type":"text", "text":"worker result: Keep 原文" }])
+            );
             assert_eq!(wire.get("language"), None);
+            server.shutdown().await;
         }
     })
     .await
@@ -457,12 +464,18 @@ async fn captured_language_reaches_native_notifications_without_becoming_provide
 
 #[tokio::test]
 async fn full_request_byte_count_matches_upload_and_stops_oversized_headers() {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let url = format!("http://{}/v1", listener.local_addr().unwrap());
+    use maka_mock_ai::{FinishReason, MockAiBuilder, TurnPlan};
+
+    let server = MockAiBuilder::new()
+        .handler_fn(|_, _| TurnPlan::new().finish(FinishReason::Stop))
+        .start()
+        .await
+        .unwrap();
+    let url = server.base_url();
     let mut input = request(&url);
     input.provider.body_overlay = Some(serde_json::Map::from_iter([(
         "fixture".into(),
-        json!("quoted \" and Unicode 图片"),
+        json!(r#"quoted " and Unicode 图片"#),
     )]));
     input.tools.push(Arc::new(maka_model::ToolDefinition {
         provider: None,
@@ -485,26 +498,24 @@ async fn full_request_byte_count_matches_upload_and_stops_oversized_headers() {
     assert!(
         matches!(error, maka_model::ModelError::ImageInputPayloadTooLarge { bytes: actual, limit } if actual == bytes && limit == bytes - 1)
     );
-    {
-        use futures_util::FutureExt;
-        assert!(listener.accept().now_or_never().is_none());
-    }
+    assert_eq!(server.request_count(), 0);
 
     let mut input = request(&url);
     input.provider.body_overlay = Some(serde_json::Map::from_iter([(
         "fixture".into(),
-        json!("quoted \" and Unicode 图片"),
+        json!(r#"quoted " and Unicode 图片"#),
     )]));
-    let bytes = input.encoded_request_bytes().await.unwrap();
+    input.tools.push(Arc::new(maka_model::ToolDefinition {
+        provider: None,
+        name: "read_fixture".into(),
+        description: "read an image region".into(),
+        input_schema: json!({"type":"object","properties":{"path":{"type":"string"}}}),
+        freeform: None,
+        output_schema: None,
+    }));
     input.provider.image_input = Some(maka_agent_facts::configuration::ImageInput {
         request_bytes: Some(bytes),
         ..Default::default()
-    });
-    let server = tokio::spawn(async move {
-        let (mut socket, _) = listener.accept().await.unwrap();
-        let wire = body(&mut socket).await;
-        response(&mut socket, 200, &completion(&[])).await;
-        serde_json::to_vec(&wire).unwrap().len() as u64
     });
     let mut stream = executor
         .stream(input, CancellationToken::new())
@@ -514,23 +525,44 @@ async fn full_request_byte_count_matches_upload_and_stops_oversized_headers() {
         event.unwrap();
     }
     stream.cancel_and_wait().await.unwrap();
+    let recorded = server.recorded_requests();
+    assert_eq!(recorded.len(), 1);
     assert_eq!(
-        server.await.unwrap(),
-        bytes,
+        recorded[0].prompt_bytes as u64, bytes,
         "count covers actual model/options/messages/overlay envelope"
     );
+    server.shutdown().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn ollama_cloud_policy_sends_reasoning_replay_and_receives_a_reply() {
     use maka_agent_facts::configuration::ModelInfo;
     use maka_agent_ports::provider::{Connection, Resolve};
+    use maka_mock_ai::{FinishReason, MockAiBuilder, TurnPlan, Usage};
     use maka_model::prompt::{AssistantPart, Message};
     use maka_providers::{api::ApiProviders, catalog::Snapshot};
 
     tokio::time::timeout(Duration::from_secs(20), async {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let url = format!("http://{}/v1", listener.local_addr().unwrap());
+        let server = MockAiBuilder::new()
+            .handler_fn(|req, _| {
+                let wire = &req.raw_body;
+                assert_eq!(
+                    wire["messages"][0],
+                    json!({"role":"assistant","content":"previous reply","reasoning":"previous thought"})
+                );
+                assert!(wire["messages"][0].get("reasoning_content").is_none());
+                assert_eq!(wire["stream_options"], json!({"include_usage":true}));
+                assert!(wire.get("maka").is_none());
+                TurnPlan::new()
+                    .push_reasoning("new thought")
+                    .push_text("reply")
+                    .with_usage(Usage::new(4, 6))
+                    .finish(FinishReason::Stop)
+            })
+            .start()
+            .await
+            .unwrap();
+        let url = server.base_url();
         let binding = ApiProviders::definition("ollama-cloud", Arc::new(Snapshot::bundled().unwrap())).unwrap();
         let model = binding.prepare(Resolve {
             service_tier: None,
@@ -554,15 +586,6 @@ async fn ollama_cloud_policy_sends_reasoning_replay_and_receives_a_reply() {
             ],
             provider_options: None,
         }, Message::user("continue")].into();
-        let server = tokio::spawn(async move {
-            let (mut socket, _) = listener.accept().await.unwrap();
-            let wire = body(&mut socket).await;
-            assert_eq!(wire["messages"][0], json!({"role":"assistant","content":"previous reply","reasoning":"previous thought"}));
-            assert!(wire["messages"][0].get("reasoning_content").is_none());
-            assert_eq!(wire["stream_options"], json!({"include_usage":true}));
-            assert!(wire.get("maka").is_none());
-            response(&mut socket, 200, &completion(&[json!({"reasoning_content":"new thought"}), json!({"content":"reply"})])).await;
-        });
         let executor = ModelExecutor::new(Duration::from_secs(10)).unwrap();
         let mut stream = executor.stream(input, CancellationToken::new()).await.unwrap();
         let mut builder = StepBuilder::default();
@@ -573,21 +596,24 @@ async fn ollama_cloud_policy_sends_reasoning_replay_and_receives_a_reply() {
         let step = builder.finish().unwrap();
         assert_eq!(step.usage.output_tokens, Some(6));
         assert!(step.parts.iter().any(|part| matches!(part, ModelPart::Text { text_kind: TextKind::Text, text, .. } if text.chunks().collect::<String>() == "reply")));
-        server.await.unwrap();
+        server.shutdown().await;
     }).await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn explicit_usage_opt_out_is_respected_on_the_first_request() {
+    use maka_mock_ai::{MockAiBuilder, TurnPlan};
+
     tokio::time::timeout(Duration::from_secs(20), async {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let url = format!("http://{}/v1", listener.local_addr().unwrap());
-        let server = tokio::spawn(async move {
-            let (mut socket, _) = listener.accept().await.unwrap();
-            let wire = body(&mut socket).await;
-            assert!(wire.get("stream_options").is_none());
-            response(&mut socket, 200, &completion(&[json!({"content":"ok"})])).await;
-        });
+        let server = MockAiBuilder::new()
+            .handler_fn(|req, _| {
+                assert!(req.raw_body.get("stream_options").is_none());
+                TurnPlan::text("ok")
+            })
+            .start()
+            .await
+            .unwrap();
+        let url = server.base_url();
         let mut input = request(&url);
         input.provider_options = json!({"maka":{"includeUsage":false}});
         let executor = ModelExecutor::new(Duration::from_secs(10)).unwrap();
@@ -599,7 +625,8 @@ async fn explicit_usage_opt_out_is_respected_on_the_first_request() {
             event.unwrap();
         }
         stream.cancel_and_wait().await.unwrap();
-        server.await.unwrap();
+        assert_eq!(server.request_count(), 1);
+        server.shutdown().await;
     })
     .await
     .unwrap();

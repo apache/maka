@@ -47,6 +47,10 @@ use maka_host_runtime::{
     },
     ipc::LocalListener,
 };
+use maka_mock_ai::{
+    FinishReason, HttpErrorSpec, MockAiBuilder, MockAiServer, TurnEvent, TurnHandle, TurnPlan,
+    Usage,
+};
 use maka_packages::{MANIFEST_FILE, Package};
 use maka_plugin_core::{
     composition::{Configuration, Input, InstanceId, Node, PackageUse, Target},
@@ -1845,15 +1849,9 @@ mod bounded_risk {
         };
 
         let mut rig = Rig::new()?;
-        let stop = CancellationToken::new();
         let listener = tokio::net::TcpListener::from_std(rig.model_listener.try_clone()?)?;
         let (requests, mut received) = tokio::sync::mpsc::unbounded_channel();
-        let server = tokio::spawn(model_recovery::serve(
-            listener,
-            Default::default(),
-            stop.clone(),
-            Some(requests),
-        ));
+        let server = model_recovery::serve(listener, Default::default(), Some(requests)).await?;
         let outcome = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(30), async {
             let session = rig.start().await?;
             rig.assemble_model(
@@ -2035,7 +2033,7 @@ mod bounded_risk {
                     }
                 }
             }
-            let wire: Value = serde_json::from_slice(&received.try_recv()?)?;
+            let wire = received.try_recv()?;
             let messages = wire["messages"]
                 .as_array()
                 .ok_or("missing Chat Completions messages")?;
@@ -2094,11 +2092,9 @@ mod bounded_risk {
         }))
         .catch_unwind()
         .await;
-        stop.cancel();
-        let server_result = server.await;
+        server.shutdown().await;
         let cleanup = rig.finish().await;
         assert!(cleanup.is_empty(), "{cleanup:?}");
-        server_result??;
         match outcome {
             Ok(result) => result?,
             Err(panic) => std::panic::resume_unwind(panic),
@@ -2127,17 +2123,13 @@ mod bounded_risk {
         let mut rig = Rig::new().unwrap();
         let window = if explicit { 100_000 } else { 5_000 };
         rig.model_overrides = json!({"llama3.2":{"contextWindow":window}});
-        let stop = CancellationToken::new();
         let posts = Arc::new(AtomicUsize::new(0));
         let listener =
             tokio::net::TcpListener::from_std(rig.model_listener.try_clone().unwrap()).unwrap();
         let (requests, mut received) = tokio::sync::mpsc::unbounded_channel();
-        let server = tokio::spawn(model_recovery::serve(
-            listener,
-            posts.clone(),
-            stop.clone(),
-            Some(requests),
-        ));
+        let server = model_recovery::serve(listener, posts.clone(), Some(requests))
+            .await
+            .unwrap();
         let result = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(30), async {
             let session = rig.start().await?;
             rig.assemble_model(
@@ -2358,7 +2350,7 @@ mod bounded_risk {
                 }
             }
             assert_eq!(posts.load(Ordering::SeqCst), 1);
-            let wire: Value = serde_json::from_slice(&received.try_recv()?)?;
+            let wire = received.try_recv()?;
             let messages = wire["messages"]
                 .as_array()
                 .ok_or("missing provider messages")?;
@@ -2410,8 +2402,7 @@ mod bounded_risk {
         }))
         .catch_unwind()
         .await;
-        stop.cancel();
-        server.await.unwrap().unwrap();
+        server.shutdown().await;
         let cleanup = rig.finish().await;
         assert!(cleanup.is_empty(), "{cleanup:?}");
         match result {
@@ -4022,31 +4013,22 @@ mod model_recovery {
     pub(super) async fn serve(
         listener: tokio::net::TcpListener,
         posts: Arc<std::sync::atomic::AtomicUsize>,
-        stop: CancellationToken,
-        requests: Option<tokio::sync::mpsc::UnboundedSender<Vec<u8>>>,
-    ) -> TestResult<()> {
-        let app = axum::Router::new().route("/v1/chat/completions", axum::routing::post(move |request: axum::extract::Request| {
-        let posts = posts.clone();
-            let requests = requests.clone();
-        async move {
-            posts.fetch_add(1, Ordering::SeqCst);
-                let Ok(request) = axum::body::to_bytes(request.into_body(), 8 * 1024 * 1024).await else {
-                return (axum::http::StatusCode::BAD_REQUEST, [("content-type","text/event-stream")], String::new());
-                };
-                if let Some(requests) = requests {
-                    requests.send(request.to_vec()).expect("fixture request reader");
-            }
-            let body = format!("data: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
-                json!({"id":"native-cleanup","object":"chat.completion.chunk","created":1,"model":"llama3.2","choices":[{"index":0,"delta":{"role":"assistant","content":"Native cleanup retained."},"finish_reason":null}]}),
-                json!({"id":"native-cleanup","object":"chat.completion.chunk","created":1,"model":"llama3.2","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":100,"completion_tokens":10,"total_tokens":110}})
-            );
-            (axum::http::StatusCode::OK, [("content-type","text/event-stream")], body)
-        }
-    }));
-        axum::serve(listener, app)
-            .with_graceful_shutdown(stop.cancelled_owned())
-            .await?;
-        Ok(())
+        requests: Option<tokio::sync::mpsc::UnboundedSender<Value>>,
+    ) -> std::io::Result<MockAiServer> {
+        MockAiBuilder::new()
+            .handler_fn(move |req, _| {
+                posts.fetch_add(1, Ordering::SeqCst);
+                if let Some(requests) = &requests {
+                    let _ = requests.send(req.raw_body.clone());
+                }
+                TurnPlan::new()
+                    .with_response_id("native-cleanup")
+                    .push_text("Native cleanup retained.")
+                    .with_usage(Usage::new(100, 10))
+                    .finish(FinishReason::Stop)
+            })
+            .start_with_listener(listener)
+            .await
     }
 
     // This fixture supplies provider observations, not ChatGPT authentication/inventory.
@@ -4091,7 +4073,7 @@ mod model_recovery {
     }
 
     fn replay_reasoning() -> Value {
-        json!({"type":"reasoning","id":"reason-original","encrypted_content":"opaque-original",
+        json!({"type":"reasoning","id":"rs_response-0_0","encrypted_content":"opaque-original",
             "summary":[{"type":"summary_text","text":"visible summary"}]})
     }
 
@@ -4108,82 +4090,40 @@ mod model_recovery {
         listener: tokio::net::TcpListener,
         posts: Arc<std::sync::atomic::AtomicUsize>,
         requests: tokio::sync::mpsc::Sender<Vec<u8>>,
-        stop: CancellationToken,
         first: FirstResponse,
-    ) -> TestResult<()> {
-        use futures_util::{SinkExt, StreamExt};
-        use tokio_tungstenite::tungstenite::{
-            Error as WebSocketError, Message, error::ProtocolError,
-        };
-        let mut connections = tokio::task::JoinSet::<TestResult<()>>::new();
-        loop {
-            let (socket, _) = tokio::select! {
-                _ = stop.cancelled() => break,
-                accepted = listener.accept() => accepted?,
-            };
-            let (posts, requests, stop) = (posts.clone(), requests.clone(), stop.clone());
-            connections.spawn(async move {
-                let mut socket = tokio::select! {
-                    _ = stop.cancelled() => return Ok(()),
-                    socket = tokio_tungstenite::accept_async(socket) => socket?,
-                };
-                loop {
-                    let frame = tokio::select! {
-                        _ = stop.cancelled() => return Ok(()),
-                        frame = socket.next() => frame,
-                    };
-                    let bytes = match frame {
-                        Some(Ok(Message::Text(text))) => text.as_bytes().to_vec(),
-                        Some(Ok(Message::Ping(_) | Message::Pong(_))) => continue,
-                        Some(Ok(Message::Close(_))) | None => return Ok(()),
-                        Some(Ok(other)) => return Err(format!("unexpected Responses frame: {other:?}").into()),
-                        // The source process is deliberately killed after its response.
-                        Some(Err(WebSocketError::Protocol(
-                            ProtocolError::ResetWithoutClosingHandshake,
-                        ))) => return Ok(()),
-                        Some(Err(WebSocketError::Io(error)))
-                            if matches!(error.kind(), std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted) => return Ok(()),
-                        Some(Err(error)) => return Err(error.into()),
-                    };
-                    let index = posts.fetch_add(1, Ordering::SeqCst);
-                    requests.send(bytes).await?;
-                    if index == 0 && first != FirstResponse::Reasoning {
-                        if first == FirstResponse::StartSearch {
-                            socket.send(Message::text(json!({"type":"response.output_item.added",
-                                "item":{"type":"web_search_call","id":"ws_original","status":"in_progress"}
-                            }).to_string())).await?;
-                        }
-                        continue;
+    ) -> std::io::Result<MockAiServer> {
+        MockAiBuilder::new()
+            .handler_fn(move |req, _| {
+                assert_eq!(req.protocol, maka_mock_ai::Protocol::OpenaiResponsesWs);
+                let index = posts.fetch_add(1, Ordering::SeqCst);
+                let _ = requests.try_send(serde_json::to_vec(&req.raw_body).unwrap());
+                match (index, first) {
+                    (0, FirstResponse::Hold) => TurnPlan::stall(),
+                    (0, FirstResponse::StartSearch) => TurnPlan::new()
+                        .push(TurnEvent::NativeTool(
+                            maka_mock_ai::NativeToolEvent::WebSearchStarted {
+                                id: "ws_original".into(),
+                                query: String::new(),
+                            },
+                        ))
+                        .push(TurnEvent::Stall),
+                    (0, FirstResponse::Reasoning) => TurnPlan::new()
+                        .with_response_id("response-0")
+                        .push_reasoning_encrypted("visible summary", "opaque-original")
+                        .with_usage(Usage::new(100, 10))
+                        .finish(FinishReason::Stop),
+                    (1, FirstResponse::Reasoning) => {
+                        TurnPlan::http_error(HttpErrorSpec::rate_limit(None, "retry fixture"))
                     }
-                    let events = if first == FirstResponse::Reasoning && index == 1 {
-                        vec![json!({"type":"error","status":429,"error":{
-                            "type":"rate_limit_error","code":"rate_limit_exceeded","message":"retry fixture"}})]
-                    } else {
-                        let item = if index == 0 {
-                            replay_reasoning()
-                        } else {
-                            json!({"type":"message","id":"answer-target","role":"assistant",
-                                "content":[{"type":"output_text","text":"target-answer"}]})
-                        };
-                        vec![
-                            json!({"type":"response.output_item.done","item":item}),
-                            json!({"type":"response.completed","response":{
-                                "id":format!("response-{index}"),
-                                "model":if index == 0 { "llama3.2" } else { "llama3.1" },
-                                "output":[item],"usage":{"input_tokens":100,"output_tokens":10}
-                            }}),
-                        ]
-                    };
-                    for event in events {
-                        socket.send(Message::text(event.to_string())).await?;
-                    }
+                    _ => TurnPlan::new()
+                        .with_response_id(format!("response-{index}"))
+                        .push_text("target-answer")
+                        .with_usage(Usage::new(100, 10))
+                        .finish(FinishReason::Stop),
                 }
-            });
-        }
-        while let Some(joined) = connections.join_next().await {
-            joined??;
-        }
-        Ok(())
+            })
+            .start_with_listener(listener)
+            .await
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -4199,50 +4139,24 @@ mod model_recovery {
         .await?;
         attach(&mut rig, &boot).await?;
         let (requests, mut received) = tokio::sync::mpsc::channel(4);
-        let app = axum::Router::new().route(
-            "/v1/chat/completions",
-            axum::routing::post({
-                let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-                move |request: axum::extract::Request| {
-                    let requests = requests.clone();
-                    let index = count.fetch_add(1, Ordering::SeqCst);
-                    async move {
-                        let body = axum::body::to_bytes(request.into_body(), 1024 * 1024)
-                            .await
-                            .unwrap();
-                        let request: Value = serde_json::from_slice(&body).unwrap();
-                        requests.send(request).await.unwrap();
-                        use axum::response::IntoResponse;
-                        if index == 0 {
-                            return (
-                                axum::http::StatusCode::BAD_REQUEST,
-                                [("content-type", "application/json")],
-                                json!({"error":{"message":"Injected model failure","type":"invalid_request_error"}}).to_string(),
-                            )
-                                .into_response();
-                        }
-                        let chunk = json!({
-                            "id":format!("continuation-{index}"),"object":"chat.completion.chunk",
-                            "created":1,"model":"llama3.2","choices":[{"index":0,
-                            "delta":{"role":"assistant","content":"Continued"},"finish_reason":"stop"}],
-                            "usage":{"prompt_tokens":100,"completion_tokens":10,"total_tokens":110}
-                        });
-                        (
-                            [("content-type", "text/event-stream")],
-                            format!("data: {chunk}\n\ndata: [DONE]\n\n"),
-                        )
-                            .into_response()
-                    }
+        let server = MockAiBuilder::new()
+            .handler_fn(move |req, ctx| {
+                let _ = requests.try_send(req.raw_body.clone());
+                if ctx.global_turn == 1 {
+                    TurnPlan::http_error(HttpErrorSpec::new(
+                        400,
+                        "invalid_request_error",
+                        "Injected model failure",
+                    ))
+                } else {
+                    TurnPlan::new()
+                        .push_text("Continued")
+                        .with_usage(Usage::new(100, 10))
+                        .finish(FinishReason::Stop)
                 }
-            }),
-        );
-        let stop = CancellationToken::new();
-        let shutdown = stop.clone();
-        let server = tokio::spawn(async move {
-            axum::serve(listener, app)
-                .with_graceful_shutdown(shutdown.cancelled_owned())
-                .await
-        });
+            })
+            .start_with_listener(listener)
+            .await?;
         let result = tokio::time::timeout(Duration::from_secs(25), async {
             let client = rig.client.as_ref().unwrap();
             let tools = call(client, "agent", "tools", json!({})).await?;
@@ -4302,8 +4216,7 @@ mod model_recovery {
             }
             Ok::<_, Box<dyn Error + Send + Sync>>(())
         }).await;
-        stop.cancel();
-        server.await??;
+        server.shutdown().await;
         let cleanup = rig.finish().await;
         assert!(cleanup.is_empty(), "{cleanup:?}");
         result?
@@ -4323,59 +4236,29 @@ mod model_recovery {
         .await?;
         attach(&mut rig, &boot).await?;
         let (requests, mut received) = tokio::sync::mpsc::channel(16);
-        let total_requests = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let app = axum::Router::new().route(
-            "/v1/chat/completions",
-            axum::routing::post({
-                let count = total_requests.clone();
-                move |request: axum::extract::Request| {
-                    let requests = requests.clone();
-                    let index = count.fetch_add(1, Ordering::SeqCst);
-                    async move {
-                        let body = axum::body::to_bytes(request.into_body(), 1024 * 1024)
-                            .await
-                            .unwrap();
-                        let request: Value = serde_json::from_slice(&body).unwrap();
-                        requests.send(request).await.unwrap();
-                        // Turn 1: cut-off text -> cut-off reasoning-only -> cut-off tool call -> stop (3 continuations, succeeds).
-                        // Turn 2: consecutive cut-off text responses -> must fail on the 4th via Store::frontier with zero 5th request.
-                        let (delta, finish) = match index {
-                            0 => (json!({"role":"assistant","content":"PART_ONE of the answer"}), "length"),
-                            1 => (json!({"role":"assistant","reasoning_content":"deep hidden thought cut off"}), "length"),
-                            2 => (
-                                json!({"role":"assistant","tool_calls":[{"index":0,"id":"call-cut",
-                                    "type":"function","function":{"name":"WebFetch",
-                                    "arguments":"{\"url\":\"https://exa"}}]}),
-                                "length",
-                            ),
-                            3 => (json!({"role":"assistant","content":"PART_TWO"}), "stop"),
-                            _ => (json!({"role":"assistant","content":format!("TRUNCATED_{index}")}), "length"),
-                        };
-                        let chunk = |delta: Value, finish: Value| json!({
-                            "id":format!("cut-{index}"),"object":"chat.completion.chunk",
-                            "created":1,"model":"llama3.2","choices":[{"index":0,"delta":delta,
-                            "finish_reason":finish}],
-                            "usage":{"prompt_tokens":100,"completion_tokens":10,"total_tokens":110}
-                        });
-                        (
-                            [("content-type", "text/event-stream")],
-                            format!(
-                                "data: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
-                                chunk(delta, Value::Null),
-                                chunk(json!({}), json!(finish))
-                            ),
-                        )
-                    }
-                }
-            }),
-        );
-        let stop = CancellationToken::new();
-        let shutdown = stop.clone();
-        let server = tokio::spawn(async move {
-            axum::serve(listener, app)
-                .with_graceful_shutdown(shutdown.cancelled_owned())
-                .await
-        });
+        let server = MockAiBuilder::new()
+            .handler_fn(move |req, ctx| {
+                let _ = requests.try_send(req.raw_body.clone());
+                let index = ctx.global_turn - 1;
+                let plan = match index {
+                    0 => TurnPlan::new().push_text("PART_ONE of the answer"),
+                    1 => TurnPlan::new().push_reasoning("deep hidden thought cut off"),
+                    2 => TurnPlan::new().push_tool_call(
+                        "call-cut",
+                        "WebFetch",
+                        json!(r#"{"url":"https://exa"#),
+                    ),
+                    3 => TurnPlan::new().push_text("PART_TWO"),
+                    _ => TurnPlan::new().push_text(format!("TRUNCATED_{index}")),
+                };
+                plan.with_usage(Usage::new(100, 10)).finish(if index == 3 {
+                    FinishReason::Stop
+                } else {
+                    FinishReason::Length
+                })
+            })
+            .start_with_listener(listener)
+            .await?;
         let result = tokio::time::timeout(Duration::from_secs(30), async {
             let client = rig.client.as_ref().unwrap();
             let catalog = call(client, "settings", "connections", json!({"kind":"start"})).await?;
@@ -4430,7 +4313,7 @@ mod model_recovery {
                     _ => tokio::time::sleep(Duration::from_millis(20)).await,
                 }
             }
-            assert_eq!(total_requests.load(Ordering::SeqCst), 4);
+            assert_eq!(server.request_count(), 4);
 
             // Turn 2: persistent frontier counter must stop on the 4th consecutive length truncation.
             let sent2 = call(client, "agent", "send", json!({
@@ -4447,7 +4330,7 @@ mod model_recovery {
                 }
             }
             // Exactly 4 requests for turn 2 (indices 4, 5, 6, 7), zero 5th request.
-            assert_eq!(total_requests.load(Ordering::SeqCst), 8);
+            assert_eq!(server.request_count(), 8);
             let history = call(client, "agent", "history", json!({
                 "sessionId":session,"position":{"kind":"tail"},"includeThinking":false,"view":"conversation"
             })).await?;
@@ -4458,8 +4341,7 @@ mod model_recovery {
             Ok::<_, Box<dyn Error + Send + Sync>>(())
         })
         .await;
-        stop.cancel();
-        server.await??;
+        server.shutdown().await;
         let cleanup = rig.finish().await;
         assert!(cleanup.is_empty(), "{cleanup:?}");
         result?
@@ -4573,55 +4455,23 @@ mod model_recovery {
         drop(store);
 
         let (requests, mut received) = tokio::sync::mpsc::channel(2);
-        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let app = axum::Router::new().route(
-            "/v1/chat/completions",
-            axum::routing::post(move |bytes: axum::body::Bytes| {
-                use axum::http::StatusCode;
-                let requests = requests.clone();
-                let index = calls.fetch_add(1, Ordering::SeqCst);
-                async move {
-                    let request: Value =
-                        serde_json::from_slice(&bytes).map_err(|_| StatusCode::BAD_REQUEST)?;
-                    requests
-                        .try_send(request)
-                        .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
-                    let (delta, finish) = if index == 0 {
-                        (
-                            json!({"role":"assistant","tool_calls":[{"index":0,"id":"web-status",
-                            "type":"function","function":{"name":"WebStatus","arguments":"{}"}}]}),
-                            "tool_calls",
-                        )
-                    } else {
-                        (json!({"role":"assistant","content":"Hello"}), "stop")
-                    };
-                    let chunk = |delta: Value, finish: Value| {
-                        json!({
-                            "id":format!("after-restart-{index}"),"object":"chat.completion.chunk",
-                            "created":1,"model":"llama3.2",
-                            "choices":[{"index":0,"delta":delta,"finish_reason":finish}]
-                        })
-                    };
-                    Ok::<_, StatusCode>((
-                        [("content-type", "text/event-stream")],
-                        format!(
-                            "data: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
-                            chunk(delta, Value::Null),
-                            chunk(json!({}), json!(finish))
-                        ),
-                    ))
+        let server = MockAiBuilder::new()
+            .handler_fn(move |req, ctx| {
+                if requests.try_send(req.raw_body.clone()).is_err() {
+                    return TurnPlan::http_error(HttpErrorSpec::plain(503, ""));
                 }
-            }),
-        );
+                if ctx.global_turn == 1 {
+                    TurnPlan::new()
+                        .push_tool_call("web-status", "WebStatus", json!({}))
+                        .finish(FinishReason::ToolCalls)
+                } else {
+                    TurnPlan::text("Hello")
+                }
+            })
+            .start_with_listener(listener)
+            .await?;
         let mut new = Rig::new()?;
         new.directory = TestDirectory::Borrowed(base.into());
-        let stop = CancellationToken::new();
-        let shutdown = stop.clone();
-        let server = tokio::spawn(async move {
-            axum::serve(listener, app)
-                .with_graceful_shutdown(shutdown.cancelled_owned())
-                .await
-        });
         let result = tokio::time::timeout(Duration::from_secs(25), async {
             attach(&mut new, &boot)
                 .await
@@ -4668,8 +4518,7 @@ mod model_recovery {
             Ok::<_, Box<dyn Error + Send + Sync>>(())
         })
         .await;
-        stop.cancel();
-        server.await??;
+        server.shutdown().await;
         let cleanup = new.finish().await;
         assert!(cleanup.is_empty(), "{cleanup:?}");
         result?
@@ -4727,10 +4576,9 @@ mod model_recovery {
             model.executor =
                 maka_model::ModelExecutor::for_source(Duration::from_secs(30), replacement)?;
 
-            let stop = CancellationToken::new();
             let posts = Arc::new(AtomicUsize::new(0));
             let listener = tokio::net::TcpListener::from_std(rig.model_listener.try_clone()?)?;
-            let server = tokio::spawn(serve(listener, posts.clone(), stop.clone(), None));
+            let server = serve(listener, posts.clone(), None).await?;
             let driver = rig.driver.as_ref().unwrap().clone();
             let result = tokio::time::timeout(Duration::from_secs(15), async {
                 let engine = Engine::new(driver.state.clone());
@@ -4764,10 +4612,9 @@ mod model_recovery {
             })
             .await;
             drop(driver);
-            stop.cancel();
             let cleanup = rig.finish().await;
             assert!(cleanup.is_empty(), "{cleanup:?}");
-            server.await??;
+            server.shutdown().await;
             let (terminal, blocked, cleanup) = result??;
             assert_eq!(
                 terminal,
@@ -4801,14 +4648,13 @@ mod model_recovery {
         )
         .await?;
         let (requests, mut received) = tokio::sync::mpsc::channel(4);
-        let stop = CancellationToken::new();
-        let wire = tokio::spawn(serve_replay(
+        let wire = serve_replay(
             tokio::net::TcpListener::from_std(rig.model_listener.try_clone()?)?,
             Arc::default(),
             requests,
-            stop.clone(),
             FirstResponse::Hold,
-        ));
+        )
+        .await?;
         let driver = rig.driver.as_ref().ok_or("test driver missing")?.clone();
         let run = driver.access.execution().run_id;
         let cancel = CancellationToken::new();
@@ -4909,8 +4755,7 @@ mod model_recovery {
         })
         .await;
         cancel.cancel();
-        stop.cancel();
-        wire.await??;
+        wire.shutdown().await;
         assert!(rig.finish().await.is_empty());
         outcome?
     }
@@ -4920,18 +4765,17 @@ mod model_recovery {
         for (slug, expected) in [("replay-same", true), ("replay-different", false)] {
             let mut rig = Rig::new().expect("owned replay directories");
             let mut child: Option<tokio::process::Child> = None;
-            let stop = CancellationToken::new();
             let posts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
             let (requests_tx, mut requests_rx) = tokio::sync::mpsc::channel(4);
-            let mut wire: Option<JoinHandle<TestResult<()>>> = None;
+            let mut wire: Option<MockAiServer> = None;
             let result = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(180), async {
                 let base = rig.directory.path().to_path_buf();
                 let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
                 let mut boot = bootstrap(&base, format!("http://{}/v1", listener.local_addr()?), false).await?;
                 boot.replay = true;
-                wire = Some(tokio::spawn(serve_replay(
-                    listener, posts.clone(), requests_tx, stop.clone(), FirstResponse::Reasoning,
-                )));
+                wire = Some(serve_replay(
+                    listener, posts.clone(), requests_tx, FirstResponse::Reasoning,
+                ).await?);
                 let path = base.join("boot.json");
                 tokio::fs::write(&path, serde_json::to_vec(&boot)?).await?;
                 let child_test = format!("{}::model_reader_child",
@@ -5060,11 +4904,9 @@ mod model_recovery {
                 let _ = owned.wait().await;
             }
             drop(requests_rx);
-            stop.cancel();
-            let wire_result = match wire {
-                Some(task) => Some(task.await),
-                None => None,
-            };
+            if let Some(wire) = wire {
+                wire.shutdown().await;
+            }
             let cleanup =
                 AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(120), rig.finish()))
                     .catch_unwind()
@@ -5072,10 +4914,6 @@ mod model_recovery {
             assert!(
                 matches!(result, Ok(Ok(Ok(())))),
                 "encrypted replay failed for {slug}: {result:?}"
-            );
-            assert!(
-                matches!(wire_result, None | Some(Ok(Ok(())))),
-                "replay WebSocket fixture did not settle: {wire_result:?}"
             );
             assert!(
                 matches!(cleanup, Ok(Ok(ref errors)) if errors.is_empty()),
@@ -5114,55 +4952,38 @@ mod model_recovery {
     async fn serve_grouped_reasoning(
         listener: tokio::net::TcpListener,
         requests: tokio::sync::mpsc::Sender<Value>,
-        stop: CancellationToken,
-    ) -> TestResult<()> {
-        use axum::response::IntoResponse;
-        let app = axum::Router::new().route(
-            "/v1/chat/completions",
-            axum::routing::post(move |request: axum::extract::Request| {
-                let requests = requests.clone();
-                async move {
-                    let bytes = match axum::body::to_bytes(request.into_body(), 8 * 1024 * 1024).await {
-                        Ok(bytes) => bytes,
-                        Err(_) => return axum::http::StatusCode::BAD_REQUEST.into_response(),
-                    };
-                    let value: Value = match serde_json::from_slice(&bytes) {
-                        Ok(value) => value,
-                        Err(_) => return axum::http::StatusCode::BAD_REQUEST.into_response(),
-                    };
-                    let index = GROUPING_REQUESTS.fetch_add(1, Ordering::SeqCst);
-                    if requests.send(value).await.is_err() {
-                        return axum::http::StatusCode::SERVICE_UNAVAILABLE.into_response();
-                    }
-                    let (delta, finish) = if index < 2 {
-                        let n = index + 1;
-                        (json!({"role":"assistant","reasoning_content":format!("thinking-{n}"),
-                            "content":format!("visible-{n}"),"tool_calls":[{
-                                "index":0,"id":format!("todo-call-{n}"),"type":"function",
-                                "function":{"name":"todo_read","arguments":"{}"}
-                            }]}), "tool_calls")
-                    } else {
-                        (json!({"role":"assistant","content":
-                            if index == 2 { "source-finished" } else { "target-finished" }}), "stop")
-                    };
-                    let body = format!("data: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
-                        json!({"id":format!("batch-{index}"),"object":"chat.completion.chunk",
-                            "created":1,"model":if index < 3 { "llama3.2" } else { "llama3.1" },
-                            "choices":[{"index":0,"delta":delta,"finish_reason":null}]}),
-                        json!({"id":format!("batch-{index}"),"object":"chat.completion.chunk",
-                            "created":1,"model":if index < 3 { "llama3.2" } else { "llama3.1" },
-                            "choices":[{"index":0,"delta":{},"finish_reason":finish}],
-                            "usage":{"prompt_tokens":100,"completion_tokens":10,"total_tokens":110}})
-                    );
-                    (axum::http::StatusCode::OK, [("content-type", "text/event-stream")], body)
-                        .into_response()
+    ) -> std::io::Result<MockAiServer> {
+        MockAiBuilder::new()
+            .handler_fn(move |req, _| {
+                let index = GROUPING_REQUESTS.fetch_add(1, Ordering::SeqCst);
+                if requests.try_send(req.raw_body.clone()).is_err() {
+                    return TurnPlan::http_error(HttpErrorSpec::plain(503, ""));
                 }
-            }),
-        );
-        axum::serve(listener, app)
-            .with_graceful_shutdown(stop.cancelled_owned())
-            .await?;
-        Ok(())
+                let (plan, finish) = if index < 2 {
+                    let n = index + 1;
+                    (
+                        TurnPlan::new()
+                            .push_reasoning(format!("thinking-{n}"))
+                            .push_text(format!("visible-{n}"))
+                            .push_tool_call(format!("todo-call-{n}"), "todo_read", json!({})),
+                        FinishReason::ToolCalls,
+                    )
+                } else {
+                    (
+                        TurnPlan::new().push_text(if index == 2 {
+                            "source-finished"
+                        } else {
+                            "target-finished"
+                        }),
+                        FinishReason::Stop,
+                    )
+                };
+                plan.with_response_id(format!("batch-{index}"))
+                    .with_usage(Usage::new(100, 10))
+                    .finish(finish)
+            })
+            .start_with_listener(listener)
+            .await
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -5200,13 +5021,10 @@ mod model_recovery {
         use maka_agent_facts::interaction::{ClosureReason, InteractionOutcome, InteractionRecord};
         use maka_plugin_core::contract::ServiceTarget;
         let mut rig = Rig::new().unwrap();
-        let stop = CancellationToken::new();
-        let (requests, mut observed) = tokio::sync::mpsc::channel(4);
-        let mut wire = None;
+        let mut server = MockAiBuilder::new().interactive(4).start().await.unwrap();
         let result = tokio::time::timeout(Duration::from_secs(90), async {
-            let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
             let base = rig.directory.path().to_path_buf();
-            let boot = bootstrap_with(&base, format!("http://{}/v1", listener.local_addr()?), |config| {
+            let boot = bootstrap_with(&base, server.base_url(), |config| {
                 config["todo"] = json!(false);
                 config["permissions"]["requestPermissions"] = json!(true);
                 config["tools"] = json!([
@@ -5214,43 +5032,6 @@ mod model_recovery {
                         "method":"fetch","input":"web","result":"json","confirmation":"preapproved"}
                 ]);
             }).await?;
-            let app = axum::Router::new().route("/v1/chat/completions", axum::routing::post(
-                move |request: axum::extract::Request| {
-                    let requests = requests.clone();
-                    async move {
-                        let body = axum::body::to_bytes(request.into_body(), usize::MAX).await.unwrap();
-                        let request: Value = serde_json::from_slice(&body).unwrap();
-                        let (reply, response) = oneshot::channel::<(&'static str, &'static str)>();
-                        requests.send((request, reply)).await.unwrap();
-                        let (text, finish) = response.await.unwrap();
-                        use axum::response::IntoResponse;
-                        if finish == "failed" {
-                            return (
-                                axum::http::StatusCode::BAD_REQUEST,
-                                [("content-type", "application/json")],
-                                json!({"error":{"message":"Injected model failure","type":"invalid_request_error"}}).to_string(),
-                            )
-                                .into_response();
-                        }
-                        // A tool call reply carries {"name", "input"} as its text.
-                        let body = if finish == "tool_calls" {
-                            let call: Value = serde_json::from_str(text).unwrap();
-                            bot_tools::tool_response(call["name"].as_str().unwrap(), call["input"].clone())
-                        } else {
-                            format!("data: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
-                                json!({"id":"delegation","object":"chat.completion.chunk","created":1,"model":"llama3.2",
-                                    "choices":[{"index":0,"delta":{"role":"assistant","content":text},"finish_reason":null}]}),
-                                json!({"id":"delegation","object":"chat.completion.chunk","created":1,"model":"llama3.2",
-                                    "choices":[{"index":0,"delta":{},"finish_reason":finish}],
-                                    "usage":{"prompt_tokens":100,"completion_tokens":10,"total_tokens":110}}))
-                        };
-                        ([("content-type", "text/event-stream")], body).into_response()
-                    }
-                }));
-            let shutdown = stop.clone();
-            wire = Some(tokio::spawn(async move {
-                axum::serve(listener, app).with_graceful_shutdown(shutdown.cancelled_owned()).await
-            }));
             rig.attach_host(root(&base, false).await?, boot.deployment, boot.gateway, true, None).await?;
             let client = rig.client.as_ref().unwrap();
             let catalog = call(client, "settings", "connections", json!({"kind":"start"})).await?;
@@ -5282,7 +5063,7 @@ mod model_recovery {
                 "sessionId":caller,"message":"Delegate the work, then rest.","backend":backend
             })).await?;
             assert_eq!(sent["kind"], "queued");
-            let (_, caller_reply) = observed.recv().await.ok_or("caller HTTP request missing")?;
+            let caller_reply = server.next_turn().await.ok_or("caller HTTP request missing")?;
             let owner = rig.captured.lock().unwrap().clone().unwrap();
             let access = owner.runs.state().await.controls.get(caller)
                 .and_then(|control| control.access.upgrade()).ok_or("caller access missing")?;
@@ -5303,11 +5084,11 @@ mod model_recovery {
             };
             assert_eq!(delegated["kind"], "queued");
             assert_eq!(delegated["completion"], "registered");
-            let (_, worker_reply) = observed.recv().await.ok_or("worker HTTP request missing")?;
+            let worker_reply = server.next_turn().await.ok_or("worker HTTP request missing")?;
             let worker_reply = match waits {
                 Waits::Answered | Waits::ParallelTimedOut => Some(worker_reply),
                 Waits::Permission => {
-                    worker_reply.send((r#"{"name":"WebFetch","input":{"url":"https://example.com/"}}"#, "tool_calls")).unwrap();
+                    worker_reply.reply_tool_call("call-WebFetch","WebFetch",json!({"url":"https://example.com/"}));
                     None
                 }
             };
@@ -5320,7 +5101,7 @@ mod model_recovery {
                 // delivered earlier may now legitimately interrupt the model
                 // and continue the same Run before its failure is observed.
                 let mut changes = owner.durable.subscribe()?;
-                caller_reply.send(("The task is delegated.", caller_finish)).unwrap();
+                caller_reply.http_error(HttpErrorSpec::new(400, "invalid_request_error","Injected model failure")).await;
                 loop {
                     changes.borrow_and_update();
                     if let Some(terminal) = owner.durable.frontier(caller_run).await?.terminal {
@@ -5368,9 +5149,10 @@ mod model_recovery {
             };
             owner.deliver_completions_at(t0).await?;
             if let Some(caller_reply) = caller_reply {
-                caller_reply.send(("The task is delegated.", caller_finish)).unwrap();
+                caller_reply.reply_text_with_usage("The task is delegated.", Usage::new(100,10));
             }
-            let (attention, attention_reply) = observed.recv().await.ok_or("attention HTTP request missing")?;
+            let attention_reply = server.next_turn().await.ok_or("attention HTTP request missing")?;
+            let attention = attention_reply.body();
             let messages = serde_json::to_string(attention["messages"].as_array()
                 .and_then(|messages| messages.iter().rev().find(|message| message["role"] == "user"))
                 .ok_or("attention user message missing")?)?;
@@ -5425,7 +5207,8 @@ mod model_recovery {
                     owner.deliver_completions_at(t0 + 31 * 60 * 1000).await?;
                     let closed = owner.durable.interactions().read(worker, &request_id).await?.ok_or("delegated request missing")?;
                     assert!(matches!(closed.outcome, Some(InteractionOutcome::Closure {reason:ClosureReason::TimedOut, ..})), "{:?}", closed.outcome);
-                    let (continued, worker_reply) = observed.recv().await.ok_or("the delegated task did not continue")?;
+                    let worker_reply = server.next_turn().await.ok_or("the delegated task did not continue")?;
+            let continued = worker_reply.body();
                     let result = continued["messages"].as_array().unwrap().iter().rev()
                         .find(|message| message["role"] == "tool").ok_or("tool result missing")?.to_string();
                     assert!(
@@ -5436,11 +5219,12 @@ mod model_recovery {
                     worker_reply
                 }
             };
-            worker_reply.send(("Delegated task completed.", "stop")).unwrap();
+            worker_reply.reply_text_with_usage("Delegated task completed.",Usage::new(100,10));
             completed_message(client, worker, &delegated["messageId"]).await?;
             owner.deliver_completions().await?;
-            attention_reply.send(("I have seen the pending question.", "stop")).unwrap();
-            let (completion, completion_reply) = observed.recv().await.ok_or("completion HTTP request missing")?;
+            attention_reply.reply_text_with_usage("I have seen the pending question.",Usage::new(100,10));
+            let completion_reply = server.next_turn().await.ok_or("completion HTTP request missing")?;
+            let completion = completion_reply.body();
             let messages = serde_json::to_string(completion["messages"].as_array()
                 .and_then(|messages| messages.iter().rev().find(|message| message["role"] == "user"))
                 .ok_or("completion user message missing")?)?;
@@ -5449,7 +5233,7 @@ mod model_recovery {
             assert_eq!(final_run == caller_run, caller_finish == "stop");
             let final_view = owner.durable.frontier(final_run).await?;
             let Trigger::Message {message_id} = final_view.spec.trigger else {return Err("completion trigger missing".into())};
-            completion_reply.send(("The delegated result is ready.", "stop")).unwrap();
+            completion_reply.reply_text_with_usage("The delegated result is ready.",Usage::new(100,10));
             quiescent_message(client, caller, &json!(message_id)).await?;
             owner.deliver_completions().await?;
             let queue = call(client, "agent", "queue", json!({"sessionId":caller})).await?;
@@ -5457,11 +5241,8 @@ mod model_recovery {
             assert_eq!(owner.durable.latest_run(caller.clone()).await?, Some(final_run));
             Ok::<_, Box<dyn Error + Send + Sync>>(())
         }).await;
-        stop.cancel();
+        server.shutdown().await;
         let cleanup = rig.finish().await;
-        if let Some(wire) = wire {
-            wire.await.unwrap().unwrap();
-        }
         assert!(cleanup.is_empty(), "{cleanup:?}");
         result
             .expect("delegated notification fixture timed out")
@@ -5559,14 +5340,13 @@ mod model_recovery {
         };
         GROUPING_REQUESTS.store(0, Ordering::SeqCst);
         let mut rig = Rig::new().expect("owned grouping fixture");
-        let stop = CancellationToken::new();
         let (requests_tx, mut requests_rx) = tokio::sync::mpsc::channel(4);
-        let mut wire: Option<JoinHandle<TestResult<()>>> = None;
+        let mut wire: Option<MockAiServer> = None;
         let result = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(180), async {
             let base = rig.directory.path().to_path_buf();
             let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
             let boot = bootstrap(&base, format!("http://{}/v1", listener.local_addr()?), true).await?;
-            wire = Some(tokio::spawn(serve_grouped_reasoning(listener, requests_tx, stop.clone())));
+            wire = Some(serve_grouped_reasoning(listener, requests_tx).await?);
             rig.attach_host(root(&base, false).await?, boot.deployment, boot.gateway, true,
                 Some(grouping_observation)).await?;
             let client = rig.client.as_ref().ok_or("Host client missing")?;
@@ -5713,11 +5493,9 @@ mod model_recovery {
             Ok::<_, Box<dyn Error + Send + Sync>>(())
         })).catch_unwind().await;
         drop(requests_rx);
-        stop.cancel();
-        let wire_ok = match wire {
-            Some(task) => matches!(task.await, Ok(Ok(()))),
-            None => true,
-        };
+        if let Some(wire) = wire {
+            wire.shutdown().await;
+        }
         let cleanup =
             AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(120), rig.finish()))
                 .catch_unwind()
@@ -5726,7 +5504,6 @@ mod model_recovery {
             matches!(result, Ok(Ok(Ok(())))),
             "grouped TailReplay regression failed: {result:?}"
         );
-        assert!(wire_ok, "grouping HTTP fixture did not settle");
         assert!(
             matches!(cleanup, Ok(Ok(ref errors)) if errors.is_empty()),
             "grouping Root did not settle"
@@ -5913,15 +5690,14 @@ mod model_recovery {
     async fn gone_native_reader_is_acked_and_completed_without_replaying_the_original_model() {
         let mut rig = Rig::new().expect("owned test directories");
         let mut child: Option<tokio::process::Child> = None;
-        let stop = CancellationToken::new();
         let posts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let mut wire: Option<JoinHandle<TestResult<()>>> = None;
+        let mut wire: Option<MockAiServer> = None;
         let mut stage = "bootstrap";
         let outcome = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(180), async {
         let base = rig.directory.path().to_path_buf();
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
         let boot = bootstrap(&base, format!("http://{}/v1", listener.local_addr()?), false).await?;
-        wire = Some(tokio::spawn(serve(listener, posts.clone(), stop.clone(), None)));
+        wire = Some(serve(listener, posts.clone(), None).await?);
         let path = base.join("boot.json");
         tokio::fs::write(&path, serde_json::to_vec(&boot)?).await?;
         let child_test = format!("{}::model_reader_child", module_path!().split_once("::").ok_or("test module missing")?.1);
@@ -5982,11 +5758,9 @@ mod model_recovery {
             let _ = owned.kill().await;
             let _ = owned.wait().await;
         }
-        stop.cancel();
-        let wire_ok = match wire {
-            Some(task) => matches!(task.await, Ok(Ok(()))),
-            None => true,
-        };
+        if let Some(wire) = wire {
+            wire.shutdown().await;
+        }
         let cleanup =
             AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(120), rig.finish()))
                 .catch_unwind()
@@ -5995,7 +5769,6 @@ mod model_recovery {
             matches!(outcome, Ok(Ok(Ok(())))),
             "native cleanup recovery failed at static stage {stage}"
         );
-        assert!(wire_ok, "owned model fixture did not settle");
         assert!(
             matches!(cleanup, Ok(Ok(ref errors)) if errors.is_empty()),
             "owned recovery Root cleanup did not settle"
@@ -7182,51 +6955,36 @@ async fn queued_admission_wakes_when_goal_or_session_lock_releases() -> TestResu
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn compaction_cancels_background_request_when_main_finishes() {
-    use axum::{
-        body::{Body, Bytes},
-        response::IntoResponse,
-    };
-    use futures_util::StreamExt;
     use maka_agent_engine::{DriverExit, Engine, ports::Preparation};
 
     let mut rig = Rig::new().unwrap();
     rig.model_overrides = json!({"llama3.2":{"compactionThreshold":1_800}});
-    let stop = CancellationToken::new();
     let main_ready = Arc::new(tokio::sync::Notify::new());
     let listener =
         tokio::net::TcpListener::from_std(rig.model_listener.try_clone().unwrap()).unwrap();
     let release = main_ready.clone();
-    let shutdown = stop.clone();
-    let app = axum::Router::new().route("/v1/chat/completions", axum::routing::post(
-        move |request: axum::extract::Request| {
+    let server = MockAiBuilder::new()
+        .handler_async(move |req, _| {
             let release = release.clone();
-            let stop = shutdown.clone();
             async move {
-                let bytes = axum::body::to_bytes(request.into_body(), 1024 * 1024).await.unwrap();
-                let request: Value = serde_json::from_slice(&bytes).unwrap();
-                let chunk = |delta: Value, finish: Value| format!("data: {}\n\n", json!({
-                    "id":"compaction-cancel","object":"chat.completion.chunk","created":1,"model":"llama3.2",
-                    "choices":[{"index":0,"delta":delta,"finish_reason":finish}]
-                }));
-                let body = if request["tools"].as_array().is_some_and(|tools| !tools.is_empty()) {
-                    release.notified().await;
-                    Body::from(chunk(json!({"role":"assistant","content":"Main completed."}), Value::Null)
-                        + chunk(json!({}), json!("stop")).as_str() + "data: [DONE]\n\n")
-                } else {
-                    let first = chunk(json!({"role":"assistant","content":"Background summary still running."}), Value::Null);
-                    Body::from_stream(futures_util::stream::once(async { Ok::<_, std::io::Error>(Bytes::from(first)) })
-                        .chain(futures_util::stream::once(async move { stop.cancelled().await; Ok(Bytes::new()) })))
-                };
-                ([("content-type", "text/event-stream")], body).into_response()
+                Some(
+                    if req.raw_body["tools"]
+                        .as_array()
+                        .is_some_and(|tools| !tools.is_empty())
+                    {
+                        release.notified().await;
+                        TurnPlan::text("Main completed.")
+                    } else {
+                        TurnPlan::new()
+                            .push_text("Background summary still running.")
+                            .push(TurnEvent::Stall)
+                    },
+                )
             }
-        }
-    ));
-    let shutdown = stop.clone();
-    let server = tokio::spawn(async move {
-        axum::serve(listener, app)
-            .with_graceful_shutdown(shutdown.cancelled_owned())
-            .await
-    });
+        })
+        .start_with_listener(listener)
+        .await
+        .unwrap();
     let result = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(30), async {
         let session = rig.start().await?;
         rig.assemble_model(&session, Budget { tokens:None, retries:0, deadline:None }, false).await?;
@@ -7287,9 +7045,8 @@ async fn compaction_cancels_background_request_when_main_finishes() {
         )));
         Ok::<_, Box<dyn Error + Send + Sync>>(())
     })).catch_unwind().await;
-    stop.cancel();
     main_ready.notify_one();
-    server.await.unwrap().unwrap();
+    server.shutdown().await;
     let cleanup = rig.finish().await;
     assert!(cleanup.is_empty(), "{cleanup:?}");
     match result {
@@ -7304,17 +7061,13 @@ async fn compaction_checkpoint_survives_stop_and_is_used_by_the_next_message() {
     use std::sync::atomic::AtomicUsize;
 
     let mut rig = Rig::new().unwrap();
-    let stop = CancellationToken::new();
     let posts = Arc::new(AtomicUsize::new(0));
     let listener =
         tokio::net::TcpListener::from_std(rig.model_listener.try_clone().unwrap()).unwrap();
     let (requests, mut received) = tokio::sync::mpsc::unbounded_channel();
-    let server = tokio::spawn(model_recovery::serve(
-        listener,
-        posts.clone(),
-        stop.clone(),
-        Some(requests),
-    ));
+    let server = model_recovery::serve(listener, posts.clone(), Some(requests))
+        .await
+        .unwrap();
     let result = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(30), async {
         let session = rig.start().await?;
         rig.assemble(&session).await?;
@@ -7371,13 +7124,12 @@ async fn compaction_checkpoint_survives_stop_and_is_used_by_the_next_message() {
         })).await?;
         assert!(matches!(sent["kind"].as_str(), Some("started" | "queued")), "{sent}");
         model_recovery::completed_message(client, &session, &sent["messageId"]).await?;
-        let body = String::from_utf8(received.try_recv()?)?;
+        let body = received.try_recv()?.to_string();
         assert!(body.contains(summary_text) && body.contains("The new message after Stop."), "{body}");
         assert_eq!(posts.load(Ordering::SeqCst), 1);
         Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
     })).catch_unwind().await;
-    stop.cancel();
-    server.await.unwrap().unwrap();
+    server.shutdown().await;
     let cleanup = rig.finish().await;
     assert!(cleanup.is_empty(), "{cleanup:?}");
     match result {
@@ -7401,16 +7153,12 @@ async fn compaction_resumes_with_steering_indexed_at_its_original_delivery() {
     use std::sync::atomic::AtomicUsize;
 
     let mut rig = Rig::new().unwrap();
-    let stop = CancellationToken::new();
     let posts = Arc::new(AtomicUsize::new(0));
     let listener =
         tokio::net::TcpListener::from_std(rig.model_listener.try_clone().unwrap()).unwrap();
-    let server = tokio::spawn(model_recovery::serve(
-        listener,
-        posts.clone(),
-        stop.clone(),
-        None,
-    ));
+    let server = model_recovery::serve(listener, posts.clone(), None)
+        .await
+        .unwrap();
     let test = async {
         let session = rig.start().await?;
         rig.assemble_model(
@@ -7651,11 +7399,9 @@ async fn compaction_resumes_with_steering_indexed_at_its_original_delivery() {
     let outcome = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(90), test))
         .catch_unwind()
         .await;
-    stop.cancel();
-    let served = server.await;
+    server.shutdown().await;
     let cleanup = rig.finish().await;
     assert!(matches!(&outcome, Ok(Ok(Ok(())))), "{outcome:?}");
-    assert!(matches!(served, Ok(Ok(()))), "{served:?}");
     assert!(cleanup.is_empty(), "{cleanup:?}");
 }
 

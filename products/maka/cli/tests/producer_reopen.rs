@@ -22,15 +22,8 @@
 #[path = "support/host.rs"]
 pub mod host;
 
-use futures_util::{FutureExt, StreamExt};
+use futures_util::FutureExt;
 use host::{Host, Result, Sandbox};
-use http_body_util::{BodyExt, Full, StreamBody, combinators::UnsyncBoxBody};
-use hyper::{
-    Request, Response,
-    body::{Bytes, Frame, Incoming},
-    service::service_fn,
-};
-use hyper_util::rt::TokioIo;
 use maka_agent_api::contract::{ContextReport, Execution, GoalView, HistoryPage};
 use maka_agent_facts::{configuration::CatalogMutationResult, durable::ContentRef};
 use maka_agent_ports::session::history::{HistoryField, HistoryRowAddress, Role};
@@ -38,6 +31,10 @@ use maka_app_client::{Client, Journal};
 use maka_capabilities::call::{Attachments, ReadResource, ResourceEncoding};
 use maka_config::ConfigurationStore;
 use maka_event_log::root::{RootNamespaces, RootOwner};
+use maka_mock_ai::{
+    ControlPlaneConfig, CustomResponse, FinishReason, MockAiBuilder, MockAiServer, ModelEntry,
+    NormalizedRequest, Protocol, TurnContext, TurnEvent, TurnPlan, Usage,
+};
 use maka_plugin_core::{
     contract::ResourceType,
     operation::{OperationCleanup, OperationOutcome, OperationResult, Receipt},
@@ -45,23 +42,20 @@ use maka_plugin_core::{
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
-    convert::Infallible,
     future::Future,
     ops::Range,
     panic::AssertUnwindSafe,
     process::Stdio,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicUsize, Ordering},
     },
     time::Duration,
 };
 use tokio::{
     io::AsyncReadExt,
-    net::TcpListener,
     process::{Child, ChildStdout},
     sync::mpsc,
-    task::JoinSet,
 };
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
@@ -152,29 +146,20 @@ async fn query(client: &Client, method: &str, input: Value) -> Result<Value> {
     .await
 }
 
-type Body = UnsyncBoxBody<Bytes, Infallible>;
-fn response(body: String, content_type: &str) -> Response<Body> {
-    Response::builder()
-        .header("content-type", content_type)
-        .header("connection", "close")
-        .body(Full::new(Bytes::from(body)).boxed_unsync())
-        .unwrap()
+fn plan_text(text: impl Into<String>) -> TurnPlan {
+    TurnPlan::new()
+        .with_response_id("producer")
+        .push_text(text)
+        .with_usage(Usage::new(100, 10))
+        .finish(FinishReason::Stop)
 }
-fn sse(delta: Value, finish: &str) -> Response<Body> {
-    let first = json!({"id":"producer","object":"chat.completion.chunk","choices":[{"index":0,"delta":delta,"finish_reason":null}]});
-    let last = json!({"id":"producer","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":finish}],
-        "usage":{"prompt_tokens":100,"completion_tokens":10,"total_tokens":110}});
-    response(
-        format!("data: {first}\n\ndata: {last}\n\ndata: [DONE]\n\n"),
-        "text/event-stream",
-    )
-}
-fn scheduled_tool(id: &str, input: Value) -> Response<Body> {
-    sse(
-        json!({"tool_calls":[{"index":0,"id":id,"type":"function","function":{
-        "name":"ScheduledTask","arguments":json!({"request":input}).to_string()}}]}),
-        "tool_calls",
-    )
+
+fn scheduled_tool(id: &str, input: Value) -> TurnPlan {
+    TurnPlan::new()
+        .with_response_id("producer")
+        .push_tool_call(id, "ScheduledTask", json!({"request": input}))
+        .with_usage(Usage::new(100, 10))
+        .finish(FinishReason::ToolCalls)
 }
 
 fn tool_text<'a>(messages: &'a [Value], id: &str) -> Result<&'a str> {
@@ -203,54 +188,16 @@ struct Model {
     eof: AtomicUsize,
 }
 impl Model {
-    async fn reply(
-        &self,
-        request: Request<Incoming>,
-        held: Arc<AtomicBool>,
-        events: mpsc::UnboundedSender<&'static str>,
-    ) -> Result<Response<Body>> {
-        if request.method() == hyper::Method::GET && request.uri().path().ends_with("/models") {
-            return Ok(response(
-                json!({"object":"list","data":[{"id":"gpt-4.1","object":"model"}]}).to_string(),
-                "application/json",
-            ));
-        }
-        if request.uri().path() == "/v1/condition.ts" {
-            return Ok(response(
-                "export const ready = true;".into(),
-                "application/typescript",
-            ));
-        }
-        if request.uri().path() == "/v1/condition" {
-            let is_post = request.method() == hyper::Method::POST;
-            let has_header = request
-                .headers()
-                .get("x-condition")
-                .is_some_and(|value| value == "ready");
-            let body = request
-                .into_body()
-                .collect()
-                .await
-                .map_err(|error| error.to_string())?
-                .to_bytes();
-            return Ok(response(
-                (is_post && has_header && body.as_ref() == b"check").to_string(),
-                "application/json",
-            ));
-        }
-        if request.method() != hyper::Method::POST
-            || !request.uri().path().ends_with("/chat/completions")
-        {
+    fn reply(
+        self: &Arc<Self>,
+        req: &NormalizedRequest,
+        events: &mpsc::UnboundedSender<&'static str>,
+    ) -> Result<TurnPlan> {
+        if req.protocol != Protocol::OpenaiChatCompletions {
             return Err("unexpected model request: other".into());
         }
         self.requests.fetch_add(1, Ordering::SeqCst);
-        let bytes = request
-            .into_body()
-            .collect()
-            .await
-            .map_err(|error| error.to_string())?
-            .to_bytes();
-        let body: Value = serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
+        let body = &req.raw_body;
         let messages = body["messages"]
             .as_array()
             .ok_or("model messages missing")?;
@@ -269,7 +216,7 @@ impl Model {
             let content = last["content"].to_string();
             if content.contains("AUTOMATION-FOLLOWUP") || content.contains("AUTOMATION-STEERING") {
                 self.producer_requests.fetch_add(1, Ordering::SeqCst);
-                return Ok(sse(json!({"content":"Automation delivered."}), "stop"));
+                return Ok(plan_text("Automation delivered."));
             }
         }
         if has_user(&self.marker)
@@ -281,10 +228,7 @@ impl Model {
                     iteration <= 2,
                     "finite Goal must not dispatch a third iteration"
                 );
-                return Ok(sse(
-                    json!({"content":"Budgeted iteration complete."}),
-                    "stop",
-                ));
+                return Ok(plan_text("Budgeted iteration complete."));
             }
             if let Producer::Goal { pending_steering } = self.producer
                 && iteration > 1
@@ -299,45 +243,45 @@ impl Model {
                         .count();
                     assert_eq!(corrections, 1, "one delivered correction in model history");
                     if iteration == 2 {
-                        return Ok(sse(json!({"content":"Correction handled."}), "stop"));
+                        return Ok(plan_text("Correction handled."));
                     }
                 }
                 return match iteration - usize::from(pending_steering) {
-                    2 => Ok(sse(
-                        json!({"tool_calls":[{"index":0,"id":"finish-goal","type":"function","function":{
-                            "name":"GoalStatus","arguments":json!({"status":"achieved","note":"Continued in a new iteration."}).to_string()
-                        }}]}),
-                        "tool_calls",
-                    )),
+                    2 => Ok(TurnPlan::new()
+                        .with_response_id("producer")
+                        .push_tool_call(
+                            "finish-goal",
+                            "GoalStatus",
+                            json!({"status":"achieved","note":"Continued in a new iteration."}),
+                        )
+                        .with_usage(Usage::new(100, 10))
+                        .finish(FinishReason::ToolCalls)),
                     3 => {
                         let output: Value =
                             serde_json::from_str(tool_text(messages, "finish-goal")?)
                                 .map_err(|error| error.to_string())?;
                         assert_eq!(output["current"]["status"], "achieved");
-                        Ok(sse(
-                            json!({"content":"Goal completed after restart."}),
-                            "stop",
-                        ))
+                        Ok(plan_text("Goal completed after restart."))
                     }
                     _ => Err("Goal dispatched an extra model request".into()),
                 };
             }
-            held.store(true, Ordering::SeqCst);
-            // Headers and an SSE comment only: no semantic item, finish or DONE.
-            let first = futures_util::stream::once(async move {
-                events.send("accepted").expect("outer observation slot");
-                Ok::<_, Infallible>(Frame::data(Bytes::from_static(b": pending\n\n")))
+            let closed = CancellationToken::new();
+            let model_for_eof = self.clone();
+            let events_for_eof = events.clone();
+            let closed_wait = closed.clone();
+            tokio::spawn(async move {
+                closed_wait.cancelled().await;
+                model_for_eof.eof.fetch_add(1, Ordering::SeqCst);
+                let _ = events_for_eof.send("eof");
             });
-            return Ok(Response::builder()
-                .header("content-type", "text/event-stream")
-                .header("connection", "close")
-                .body(
-                    StreamBody::new(first.chain(futures_util::stream::pending::<
-                        std::result::Result<Frame<Bytes>, Infallible>,
-                    >()))
-                    .boxed_unsync(),
-                )
-                .unwrap());
+            let _ = events.send("accepted");
+            // Headers and an SSE comment only: no semantic item, finish or DONE.
+            return Ok(TurnPlan::new()
+                .with_close_connection(true)
+                .with_on_close(closed)
+                .push_sse_comment("pending")
+                .push(TurnEvent::Stall));
         }
         if !has_user(&self.bootstrap) {
             return Err("unexpected non-producer model request".into());
@@ -367,11 +311,15 @@ impl Model {
                         .is_some(),
                     "tool_search must advertise its actual query schema"
                 );
-                sse(
-                    json!({"tool_calls":[{"index":0,"id":"discover-schedule","type":"function","function":{
-                    "name":"tool_search","arguments":json!({"query":"ScheduledTask","limit":1}).to_string()}}]}),
-                    "tool_calls",
-                )
+                TurnPlan::new()
+                    .with_response_id("producer")
+                    .push_tool_call(
+                        "discover-schedule",
+                        "tool_search",
+                        json!({"query":"ScheduledTask","limit":1}),
+                    )
+                    .with_usage(Usage::new(100, 10))
+                    .finish(FinishReason::ToolCalls)
             }
             1 => {
                 // Direct JSON tool outputs are JSON text in content, not projection envelopes.
@@ -398,7 +346,7 @@ impl Model {
                     .map_err(|error| format!("direct create result JSON: {error}"))?;
                 assert!(value["taskId"].is_string());
                 assert!(value["revision"].is_u64());
-                sse(json!({"content":"Scheduled task created."}), "stop")
+                plan_text("Scheduled task created.")
             }
             _ => return Err("bootstrap must not dispatch again".into()),
         };
@@ -407,54 +355,44 @@ impl Model {
     }
 }
 
-// The outer scope, not the accept task's Drop, owns every connection task.
-async fn serve(
-    listener: TcpListener,
+async fn start_producer_mock(
     model: Arc<Model>,
     events: mpsc::UnboundedSender<&'static str>,
-    stop: CancellationToken,
-    connections: Arc<tokio::sync::Mutex<JoinSet<Result<()>>>>,
-) -> Result<()> {
-    loop {
-        let socket = tokio::select! {
-            _ = stop.cancelled() => return Ok(()),
-            accepted = listener.accept() => accepted.map_err(|error| error.to_string())?.0,
-        };
-        let (model, events, stop) = (model.clone(), events.clone(), stop.clone());
-        connections.lock().await.spawn(async move {
-            let held = Arc::new(AtomicBool::new(false));
-            let observed = held.clone();
-            let service_model = model.clone();
-            let closed = events.clone();
-            let service = service_fn(move |request| {
-                let (model, held, events) = (service_model.clone(), held.clone(), events.clone());
-                async move {
-                    model
-                        .reply(request, held, events)
-                        .await
-                        .map_err(std::io::Error::other)
-                }
-            });
-            let mut builder = hyper::server::conn::http1::Builder::new();
-            builder.keep_alive(false);
-            let result = tokio::select! {
-                _ = stop.cancelled() => return Ok(()),
-                result = builder.serve_connection(TokioIo::new(socket), service) => result,
-            };
-            if observed.load(Ordering::SeqCst) {
-                if let Err(error) = result
-                    && !(error.is_incomplete_message() || error.is_canceled() || error.is_closed())
-                {
-                    return Err(format!("held model connection: {error}"));
-                }
-                model.eof.fetch_add(1, Ordering::SeqCst);
-                closed.send("eof").map_err(|error| error.to_string())?;
-                Ok(())
-            } else {
-                result.map_err(|error| error.to_string())
+) -> MockAiServer {
+    MockAiBuilder::new()
+        .control(ControlPlaneConfig {
+            models: vec![ModelEntry::simple("gpt-4.1")],
+            ..Default::default()
+        })
+        .custom_route(Arc::new(|method, path, headers, body| {
+            if path == "/v1/condition.ts" {
+                return Some(CustomResponse::new(
+                    200,
+                    "application/typescript",
+                    b"export const ready = true;".to_vec(),
+                ));
             }
-        });
-    }
+            if path == "/v1/condition" {
+                let is_post = method == "POST";
+                let has_header = headers
+                    .get("x-condition")
+                    .is_some_and(|value| value == "ready");
+                return Some(CustomResponse::new(
+                    200,
+                    "application/json",
+                    (is_post && has_header && body == b"check")
+                        .to_string()
+                        .into_bytes(),
+                ));
+            }
+            None
+        }))
+        .handler_fn(move |req: &NormalizedRequest, _ctx: &TurnContext| {
+            model.reply(req, &events).unwrap_or_else(|e| panic!("{e}"))
+        })
+        .start()
+        .await
+        .unwrap()
 }
 
 fn work_metadata(value: &Value) -> Value {
@@ -1410,28 +1348,28 @@ async fn acceptance(producer: Producer, retry_workspace: bool) {
         producer_requests: AtomicUsize::new(0),
         eof: AtomicUsize::new(0),
     });
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let base = format!("http://{}/v1", listener.local_addr().unwrap());
     let (events, mut observations) = mpsc::unbounded_channel();
-    let stop = CancellationToken::new();
-    let connections = Arc::new(tokio::sync::Mutex::new(JoinSet::new()));
-    let mut server = tokio::spawn(serve(
-        listener,
-        model.clone(),
-        events,
-        stop.clone(),
-        connections.clone(),
-    ));
-    let mut server_collected = false;
+    let server = start_producer_mock(model.clone(), events).await;
+    let base = server.base_url();
     let mut hosts = Vec::new();
     let mut clients = Vec::new();
     let mut inspectors = Vec::new();
-    let outcome = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(150), async {
-        tokio::select! {
-            result = body(producer, retry_workspace, &sandbox, &mut hosts, &mut clients, &mut inspectors, &model, &mut observations, &base) => result,
-            result = &mut server => { server_collected = true; Err(format!("model accept task ended: {result:?}")) },
-        }
-    })).catch_unwind().await;
+    let outcome = AssertUnwindSafe(tokio::time::timeout(
+        Duration::from_secs(150),
+        body(
+            producer,
+            retry_workspace,
+            &sandbox,
+            &mut hosts,
+            &mut clients,
+            &mut inspectors,
+            &model,
+            &mut observations,
+            &base,
+        ),
+    ))
+    .catch_unwind()
+    .await;
     let mut cleanup = Vec::new();
     for client in &clients {
         if let Err(error) = phase("owned SDK close", client.close()).await {
@@ -1463,37 +1401,11 @@ async fn acceptance(producer: Producer, retry_workspace: bool) {
             cleanup.push(error);
         }
     }
-    stop.cancel();
-    if !server_collected {
-        match tokio::time::timeout(Duration::from_secs(30), &mut server).await {
-            Ok(Ok(Ok(()))) => {}
-            Ok(other) => cleanup.push(format!("model accept task join: {other:?}")),
-            Err(error) => {
-                cleanup.push(format!("model accept task deadline: {error}"));
-                server.abort();
-                cleanup.push(format!(
-                    "model accept task aborted and joined: {:?}",
-                    server.await
-                ));
-            }
-        }
+    let panics = server.take_panics();
+    if !panics.is_empty() {
+        cleanup.push(format!("model handler panics: {}", panics.join("; ")));
     }
-    let mut connections = connections.lock().await;
-    let drained = tokio::time::timeout(Duration::from_secs(30), async {
-        while let Some(joined) = connections.join_next().await {
-            if !matches!(joined, Ok(Ok(()))) {
-                cleanup.push(format!("model connection join: {joined:?}"));
-            }
-        }
-    })
-    .await;
-    if drained.is_err() {
-        cleanup.push("model connection drain deadline".into());
-        connections.abort_all();
-        while let Some(joined) = connections.join_next().await {
-            cleanup.push(format!("model connection after abort/join: {joined:?}"));
-        }
-    }
+    server.shutdown().await;
     match outcome {
         Ok(Ok(Ok(()))) => {
             assert!(cleanup.is_empty(), "{cleanup:?}");

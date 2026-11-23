@@ -20,11 +20,30 @@
 use super::*;
 use base64::Engine;
 use futures_util::{SinkExt, StreamExt};
-use tokio::net::TcpStream;
+use http_body_util::Full;
+use hyper::{
+    Request, Response,
+    body::{Bytes, Incoming},
+    service::service_fn,
+};
+use hyper_util::rt::TokioIo;
+use tokio::{
+    net::{TcpListener, TcpStream},
+    task::JoinSet,
+};
 use tokio_tungstenite::{
     WebSocketStream,
     tungstenite::{Message, protocol::Role},
 };
+use tokio_util::sync::CancellationToken;
+
+fn http_response(body: String, content_type: &str) -> Response<Full<Bytes>> {
+    Response::builder()
+        .header("content-type", content_type)
+        .header("connection", "close")
+        .body(Full::new(Bytes::from(body)))
+        .unwrap()
+}
 
 // A protocol regression: the model and Chrome peers are controlled fixtures.
 // The child Host still uses the real Root, authority, Bridge, REPL and CDP driver.
@@ -220,17 +239,9 @@ async fn connection(
     let accepted = upgrade.clone();
     let service = service_fn(|mut request: Request<Incoming>| {
         let (state, upgrade) = (state.clone(), accepted.clone());
-        let stop = stop.clone();
         async move {
             let path = request.uri().path().to_owned();
-            assert_eq!(
-                request.method(),
-                if path == "/v1/chat/completions" {
-                    hyper::Method::POST
-                } else {
-                    hyper::Method::GET
-                }
-            );
+            assert_eq!(request.method(), hyper::Method::GET);
             if path.starts_with("/devtools/") {
                 assert!(matches!(
                     path.as_str(),
@@ -251,15 +262,8 @@ async fn connection(
                     .body(Full::new(Bytes::new()))
                     .map_err(|e| e.to_string());
             }
-            let body = request
-                .into_body()
-                .collect()
-                .await
-                .map_err(|e| e.to_string())?
-                .to_bytes();
-            let mut wait_for_presentation = None;
             let (body, mime) = {
-                let mut peer = state.lock().unwrap();
+                let peer = state.lock().unwrap();
                 match path.as_str() {
                     "/json/version" => (
                         json!({"webSocketDebuggerUrl":peer.generation()}).to_string(),
@@ -275,153 +279,10 @@ async fn connection(
                         "application/json",
                     ),
                     "/fixture" => (format!("<button>{}</button>", peer.marker), "text/html"),
-                    "/v1/models" => (
-                        json!({"object":"list","data":[{"id":"gpt-4.1","object":"model"}]})
-                            .to_string(),
-                        "application/json",
-                    ),
-                    "/v1/chat/completions" => {
-                        let input: Value =
-                            serde_json::from_slice(&body).map_err(|e| e.to_string())?;
-                        peer.model_requests += 1;
-                        if peer.model_requests == 1 {
-                            (
-                                sse(
-                                    json!({"tool_calls":[{"index":0,"id":"discover_computer","type":"function","function":{
-                                    "name":"tool_search","arguments":json!({"query":"cua_repl","limit":1}).to_string()}}]}),
-                                    "tool_calls",
-                                ),
-                                "text/event-stream",
-                            )
-                        } else if peer.model_requests == 2 {
-                            let names: Vec<_> = input["tools"]
-                                .as_array()
-                                .ok_or("model tools missing")?
-                                .iter()
-                                .filter_map(|tool| tool["function"]["name"].as_str())
-                                .collect();
-                            if !names.contains(&"Read") || !names.contains(&"cua_repl") {
-                                return Err(format!(
-                                    "discovered Computer and Read tools missing: {names:?}"
-                                ));
-                            }
-                            (
-                                sse(
-                                    json!({"tool_calls":[{"index":0,"id":peer.marker,"type":"function","function":{
-                                    "name":"cua_repl","arguments":json!({"code":peer.script(),"title":"Owned protocol stack regression"}).to_string()}}]}),
-                                    "tool_calls",
-                                ),
-                                "text/event-stream",
-                            )
-                        } else if peer.model_result.is_some() {
-                            assert!(!peer.close_result_seen, "close result replayed");
-                            let result = input["messages"]
-                                .as_array()
-                                .ok_or("model messages missing")?
-                                .iter()
-                                .rev()
-                                .find(|m| m["role"] == "tool")
-                                .ok_or("close tool result missing")?;
-                            assert_eq!(result["tool_call_id"], "close_owned");
-                            assert!(!peer.created, "fresh close call left the owned tab open");
-                            peer.close_result_seen = true;
-                            (
-                                sse(
-                                    json!({"content":"owned Browser regression complete"}),
-                                    "stop",
-                                ),
-                                "text/event-stream",
-                            )
-                        } else {
-                            let expected = if peer.model_requests == 3 {
-                                peer.marker.clone()
-                            } else {
-                                format!("read_{}", peer.model_requests - 1)
-                            };
-                            let result = input["messages"]
-                                .as_array()
-                                .ok_or("model messages missing")?
-                                .iter()
-                                .rev()
-                                .find(|m| m["role"] == "tool")
-                                .ok_or("model tool result missing")?;
-                            if result["tool_call_id"] != expected {
-                                return Err(format!(
-                                    "unexpected model result correlation: {result}"
-                                ));
-                            }
-                            let content = result["content"]
-                                .as_str()
-                                .ok_or("model content is not text")?;
-                            let value: Value = serde_json::from_str(content)
-                                .map_err(|e| format!("Read protocol: {e}: {content}"))?;
-                            let page = if peer.model_requests == 3 {
-                                if value["kind"] != "maka.archived_tool_result"
-                                    || value["toolName"] != "cua_repl"
-                                {
-                                    return Err(format!("original Cua archive missing: {value}"));
-                                }
-                                &value["page"]
-                            } else {
-                                if value["kind"] != "completed" {
-                                    return Err(format!("Read did not complete: {value}"));
-                                }
-                                &value["value"]
-                            };
-                            peer.model_pages.push_str(
-                                page["content"]
-                                    .as_str()
-                                    .ok_or_else(|| format!("Read page missing: {value}"))?,
-                            );
-                            if let Some(next) = page.get("next").filter(|v| !v.is_null()) {
-                                (
-                                    sse(
-                                        json!({"tool_calls":[{"index":0,"id":format!("read_{}",peer.model_requests),"type":"function","function":{
-                                        "name":"Read","arguments":next.to_string()}}]}),
-                                        "tool_calls",
-                                    ),
-                                    "text/event-stream",
-                                )
-                            } else {
-                                peer.model_result =
-                                    Some(json!(std::mem::take(&mut peer.model_pages)));
-                                wait_for_presentation = Some(
-                                    peer.resume_model
-                                        .take()
-                                        .ok_or("model hold already consumed")?,
-                                );
-                                peer.canonical_sent
-                                    .take()
-                                    .ok_or("canonical signal already consumed")?
-                                    .send(())
-                                    .map_err(|_| "canonical observer closed")?;
-                                (
-                                    sse(
-                                        json!({"tool_calls":[{"index":0,"id":"close_owned","type":"function","function":{
-                                            "name":"cua_repl","arguments":json!({"code":"await tab.close();","title":"Close the owned regression tab"}).to_string()
-                                        }}]}),
-                                        "tool_calls",
-                                    ),
-                                    "text/event-stream",
-                                )
-                            }
-                        }
-                    }
-                    other => return Err(format!("unexpected HTTP path {other}")),
+                    other => return Err(format!("unexpected CDP HTTP path {other}")),
                 }
             };
-            if let Some(resume) = wait_for_presentation {
-                // The Peer mutex is released: CDP must remain serviceable during this hold.
-                tokio::select! {
-                    biased;
-                    () = stop.cancelled() => return Err("protocol peer stopped during model hold".into()),
-                    result = tokio::time::timeout(Duration::from_secs(30), resume) => {
-                        result.map_err(|_| "presentation release deadline")?
-                            .map_err(|_| "presentation observer closed")?;
-                    }
-                }
-            }
-            Ok::<_, String>(response(body, mime))
+            Ok::<_, String>(http_response(body, mime))
         }
     });
     tokio::select! {
@@ -489,6 +350,162 @@ async fn connection(
         }
     }
     Ok(())
+}
+
+async fn start_browser_mock_ai(state: Arc<Mutex<Peer>>, stop: CancellationToken) -> MockAiServer {
+    MockAiBuilder::new()
+        .control(ControlPlaneConfig {
+            models: vec![ModelEntry::simple("gpt-4.1")],
+            ..Default::default()
+        })
+        .handler_async(move |req: NormalizedRequest, _ctx: TurnContext| {
+            let state = state.clone();
+            let stop = stop.clone();
+            async move {
+                assert_eq!(req.protocol, Protocol::OpenaiChatCompletions);
+                let input = &req.raw_body;
+                let mut wait_for_presentation = None;
+                let plan = {
+                    let mut peer = state.lock().unwrap();
+                    peer.model_requests += 1;
+                    if peer.model_requests == 1 {
+                        TurnPlan::new()
+                            .with_response_id("browser-stack")
+                            .push_tool_call(
+                                "discover_computer",
+                                "tool_search",
+                                json!({"query":"cua_repl","limit":1}),
+                            )
+                            .with_usage(Usage::new(100, 10))
+                            .finish(FinishReason::ToolCalls)
+                    } else if peer.model_requests == 2 {
+                        let names: Vec<_> = input["tools"]
+                            .as_array()
+                            .expect("model tools missing")
+                            .iter()
+                            .filter_map(|tool| tool["function"]["name"].as_str())
+                            .collect();
+                        assert!(
+                            names.contains(&"Read") && names.contains(&"cua_repl"),
+                            "discovered Computer and Read tools missing: {names:?}"
+                        );
+                        TurnPlan::new()
+                            .with_response_id("browser-stack")
+                            .push_tool_call(
+                                peer.marker.clone(),
+                                "cua_repl",
+                                json!({"code":peer.script(),"title":"Owned protocol stack regression"}),
+                            )
+                            .with_usage(Usage::new(100, 10))
+                            .finish(FinishReason::ToolCalls)
+                    } else if peer.model_result.is_some() {
+                        assert!(!peer.close_result_seen, "close result replayed");
+                        let result = input["messages"]
+                            .as_array()
+                            .expect("model messages missing")
+                            .iter()
+                            .rev()
+                            .find(|m| m["role"] == "tool")
+                            .expect("close tool result missing");
+                        assert_eq!(result["tool_call_id"], "close_owned");
+                        assert!(!peer.created, "fresh close call left the owned tab open");
+                        peer.close_result_seen = true;
+                        TurnPlan::new()
+                            .with_response_id("browser-stack")
+                            .push_text("owned Browser regression complete")
+                            .with_usage(Usage::new(100, 10))
+                            .finish(FinishReason::Stop)
+                    } else {
+                        let expected = if peer.model_requests == 3 {
+                            peer.marker.clone()
+                        } else {
+                            format!("read_{}", peer.model_requests - 1)
+                        };
+                        let result = input["messages"]
+                            .as_array()
+                            .expect("model messages missing")
+                            .iter()
+                            .rev()
+                            .find(|m| m["role"] == "tool")
+                            .expect("model tool result missing");
+                        assert_eq!(
+                            result["tool_call_id"], expected,
+                            "unexpected model result correlation: {result}"
+                        );
+                        let content = result["content"]
+                            .as_str()
+                            .expect("model content is not text");
+                        let value: Value = serde_json::from_str(content)
+                            .unwrap_or_else(|e| panic!("Read protocol: {e}: {content}"));
+                        let page = if peer.model_requests == 3 {
+                            assert!(
+                                value["kind"] == "maka.archived_tool_result"
+                                    && value["toolName"] == "cua_repl",
+                                "original Cua archive missing: {value}"
+                            );
+                            &value["page"]
+                        } else {
+                            assert_eq!(value["kind"], "completed", "Read did not complete: {value}");
+                            &value["value"]
+                        };
+                        peer.model_pages.push_str(
+                            page["content"]
+                                .as_str()
+                                .unwrap_or_else(|| panic!("Read page missing: {value}")),
+                        );
+                        if let Some(next) = page.get("next").filter(|v| !v.is_null()) {
+                            TurnPlan::new()
+                                .with_response_id("browser-stack")
+                                .push_tool_call(
+                                    format!("read_{}", peer.model_requests),
+                                    "Read",
+                                    next.clone(),
+                                )
+                                .with_usage(Usage::new(100, 10))
+                                .finish(FinishReason::ToolCalls)
+                        } else {
+                            peer.model_result =
+                                Some(json!(std::mem::take(&mut peer.model_pages)));
+                            wait_for_presentation = Some(
+                                peer.resume_model
+                                    .take()
+                                    .expect("model hold already consumed"),
+                            );
+                            peer.canonical_sent
+                                .take()
+                                .expect("canonical signal already consumed")
+                                .send(())
+                                .expect("canonical observer closed");
+                            TurnPlan::new()
+                                .with_response_id("browser-stack")
+                                .push_tool_call(
+                                    "close_owned",
+                                    "cua_repl",
+                                    json!({"code":"await tab.close();","title":"Close the owned regression tab"}),
+                                )
+                                .with_usage(Usage::new(100, 10))
+                                .finish(FinishReason::ToolCalls)
+                        }
+                    }
+                };
+                if let Some(resume) = wait_for_presentation {
+                    // The Peer mutex is released: CDP must remain serviceable during this hold.
+                    tokio::select! {
+                        biased;
+                        () = stop.cancelled() => return None,
+                        result = tokio::time::timeout(Duration::from_secs(30), resume) => {
+                            result
+                                .expect("presentation release deadline")
+                                .expect("presentation observer closed");
+                        }
+                    }
+                }
+                Some(plan)
+            }
+        })
+        .start()
+        .await
+        .unwrap()
 }
 
 async fn serve_peer(
@@ -575,6 +592,7 @@ async fn scenario(
     clients: &mut Vec<Client>,
     inspectors: &mut Vec<(Child, ChildStdout)>,
     peer: &Arc<Mutex<Peer>>,
+    model_base_url: &str,
     progress: &mut Value,
 ) -> Result<()> {
     progress["phase"] = json!("bootstrap Host ready");
@@ -632,7 +650,7 @@ async fn scenario(
         .await?;
     let connection=mutate(client,"settings","create",json!({"expectedCatalogRevision":catalog["revision"],"connection":{
         "slug":"owned-browser","name":"Controlled Browser protocol","provider":{"packageId":"maka.providers","entryId":"maka.providers","scope":"profile","name":"openai-compatible"},
-        "configuration":{"baseUrl":format!("{origin}/v1")},"enabled":true,"enabledModelIds":["gpt-4.1"],
+        "configuration":{"baseUrl":model_base_url},"enabled":true,"enabledModelIds":["gpt-4.1"],
         "modelOverrides":{"gpt-4.1":{"codeMode":false,"apiProtocol":"openai-chat-completions"}}
     }}),Attachments::new()).await?;
     let id = connection["connection"]["connectionId"].clone();
@@ -1122,13 +1140,15 @@ async fn browser_stage_presents_the_same_window_after_tool_settlement() {
         model_pages: String::new(),
     }));
     let stop = CancellationToken::new();
+    let mock_ai = start_browser_mock_ai(peer.clone(), stop.clone()).await;
+    let model_base_url = mock_ai.base_url();
     let mut server = tokio::spawn(serve_peer(listener, peer.clone(), stop.clone()));
     let mut collected = false;
     let (mut hosts, mut clients, mut inspectors) = (Vec::new(), Vec::new(), Vec::new());
     let mut progress = json!({"phase":"fixture initialization"});
     let outcome = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(90), async {
         tokio::select! {
-            r=scenario(&sandbox,&mut hosts,&mut clients,&mut inspectors,&peer,&mut progress)=>r,
+            r=scenario(&sandbox,&mut hosts,&mut clients,&mut inspectors,&peer,&model_base_url,&mut progress)=>r,
             r=&mut server=>{collected=true;Err(format!("protocol peer ended: {r:?}"))}
         }
     }))
@@ -1162,6 +1182,11 @@ async fn browser_stage_presents_the_same_window_after_tool_settlement() {
         }
     }
     stop.cancel();
+    let panics = mock_ai.take_panics();
+    if !panics.is_empty() {
+        cleanup.push(format!("mock-ai handler panics: {}", panics.join("; ")));
+    }
+    mock_ai.shutdown().await;
     if !collected {
         match tokio::time::timeout(Duration::from_secs(30), &mut server).await {
             Ok(Ok(Ok(()))) => {}
