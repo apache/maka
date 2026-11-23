@@ -8710,6 +8710,7 @@ dependencies = [
  "maka-updater",
  "maka-workbench",
  "maka-wsl-bridge",
+ "nsh-core",
  "nsh-engine",
  "nsh-platform-linux",
  "nsh-platform-macos",
