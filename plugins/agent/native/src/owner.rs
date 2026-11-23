@@ -128,6 +128,7 @@ pub(crate) fn resolve_session(
 /// Live preparation captured by this activation; durable inputs are frozen into RunSpec separately.
 #[derive(Clone)]
 struct CapturedRun {
+    dossier_thread: bool,
     mcp_catalog: Option<Arc<crate::mcp::Catalog>>,
     mcp_revision: Option<String>,
     client_mcp: Option<crate::mcp::ClientGeneration>,
@@ -219,7 +220,10 @@ pub(crate) struct Owner {
     helper: std::path::PathBuf,
     pricing: Option<Arc<dyn maka_agent_engine::pricing::Pricing>>,
     pub(super) durable: maka_agent_state::Store,
+    pub(crate) discovery: maka_agent_state::discovery::DiscoveryStore,
     pub(super) services: maka_host_runtime::application::NativeServices,
+    watch_runner: discovery::watches::WatchRunner,
+    watch_scopes: discovery::watch_scope::WatchScopes,
     wake_notify: tokio::sync::Notify,
     physical_changes: tokio::sync::watch::Sender<()>,
     pub recall: Arc<recall::Recall>,
@@ -375,14 +379,20 @@ impl Owner {
         let import_specs = settings.import_roots.clone();
         let managed = managed_worktrees.clone();
         let root_path = root.canonical_path().to_owned();
-        let (workspace_roots, import_roots) = tokio::task::spawn_blocking(move || {
-            Ok::<_, String>((
-                workspace::open_projects(workspace_specs, &managed)?,
-                workspace::open(import_specs, &root_path)?,
-            ))
-        })
-        .await
-        .map_err(|_| "agent_workspace_configuration_worker_failed")??;
+        let owned_root = root.clone();
+        let (workspace_roots, import_roots, watch_scopes) =
+            tokio::task::spawn_blocking(move || {
+                let roots = workspace::open_projects(workspace_specs, &managed)?;
+                let watch_scopes = discovery::watch_scope::WatchScopes::open(&roots, &owned_root)
+                    .map_err(|e| e.to_string())?;
+                Ok::<_, String>((
+                    roots,
+                    workspace::open(import_specs, &root_path)?,
+                    watch_scopes,
+                ))
+            })
+            .await
+            .map_err(|_| "agent_workspace_configuration_worker_failed")??;
         let home = std::env::home_dir();
         let workers = TaskTracker::new();
         let stop = CancellationToken::new();
@@ -401,6 +411,7 @@ impl Owner {
             deployment: data_source.deployment,
             namespace: data_source.namespace.clone(),
         };
+        let discovery = durable.discovery(&run_owner).map_err(|e| e.to_string())?;
         let auxiliary = auxiliary::Auxiliary::new(models.clone(), run_owner.clone());
         let code_executor = maka_tools::CodeExecutor::new(maka_code_runtime::CellLimits::default())
             .and_then(|executor| {
@@ -449,9 +460,21 @@ impl Owner {
             persistence.store().clone(),
             prefix.clone(),
         ));
+        watch_scopes.restore(&scheduler).await?;
         if settings.scheduled_tasks {
             additional.extend(scheduler.tools());
         }
+        additional.extend(scheduler.dossier_tools().into_iter().filter(|tool| {
+            settings.scheduled_tasks
+                || matches!(
+                    tool.definition.name.as_str(),
+                    discovery::STAGE
+                        | discovery::REGISTER
+                        | discovery::PENDING
+                        | discovery::WATCH_SCOPE
+                        | discovery::PREFERENCES
+                )
+        }));
         let todo = Arc::new(todo::Todo::new(persistence.store().clone(), prefix.clone()));
         if settings.todo {
             additional.extend(todo.tools());
@@ -585,12 +608,15 @@ impl Owner {
             todo,
             bot,
             recap_storage,
+            discovery,
             scheduler,
             recall,
             store: persistence.store().clone(),
             model_reader_process,
             durable,
             services: context.services().clone(),
+            watch_runner: Default::default(),
+            watch_scopes,
             wake_notify: tokio::sync::Notify::new(),
             physical_changes: tokio::sync::watch::channel(()).0,
             prefix,
@@ -1118,6 +1144,7 @@ impl Owner {
                 backend,
                 applied_preset,
                 compaction_prompt: None,
+                dossier_seed: None,
                 collaboration_mode: CollaborationMode::Agent,
                 tools,
                 title: input.title,
@@ -1277,7 +1304,7 @@ impl Owner {
         };
         let selected = self.select_catalog_tools(
             &catalog.tools,
-            Some(session),
+            Some((session, basis.dossier_thread)),
             basis.allowed_tools.as_deref(),
             editing,
         );
@@ -1290,20 +1317,40 @@ impl Owner {
     fn select_catalog_tools(
         &self,
         catalog: &crate::tools::Declarations,
-        session: Option<&str>,
+        session: Option<(&str, bool)>,
         allowed_tools: Option<&[String]>,
         editing: Option<maka_agent_facts::execution::EditingTools>,
     ) -> crate::tools::Declarations {
-        let bot = session.is_some_and(|session| self.bot.is(session));
+        let bot = session.is_some_and(|(id, _)| self.bot.is(id));
         let investigation =
-            session.is_some_and(|id| self.scheduler.investigation_profile(id).is_some());
+            session.is_some_and(|(id, _)| self.scheduler.investigation_profile(id).is_some());
+        let dossier_thread = session.is_some_and(|(_, dossier)| dossier);
         let excluded: Vec<_> = catalog
             .definitions()
             .map(|definition| definition.name.as_str())
             .filter(|name| {
                 let bot_only = *name == bot::SEND_USER || *name == bot::SLEEP;
                 let memory = *name == discovery::MEMORY;
-                (*name == discovery::COMPLETE && !investigation)
+                (discovery::WORKER_TOOLS.contains(name)
+                    && !investigation
+                    && !(*name == discovery::WATCH_SCOPE && (bot || dossier_thread))
+                    && !(matches!(
+                        *name,
+                        discovery::STAGE | discovery::REGISTER | discovery::PENDING
+                    ) && dossier_thread))
+                    || (dossier_thread
+                        && !matches!(
+                            *name,
+                            discovery::STAGE
+                                | discovery::REGISTER
+                                | discovery::PENDING
+                                | discovery::WATCH_SCOPE
+                                | discovery::PREFERENCES
+                        )
+                        && !self.permits_discovery_tool(name))
+                    || (*name == discovery::PREFERENCES && !(bot || dossier_thread))
+                    || (matches!(*name, discovery::LIST | discovery::READ)
+                        && !(bot || investigation))
                     || (memory && (!self.settings.scheduled_tasks || !(bot || investigation)))
                     || (bot_only && !bot)
                     || (!bot_only

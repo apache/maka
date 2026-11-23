@@ -23,6 +23,7 @@ pub mod artifacts;
 pub mod cells;
 pub mod computer;
 pub mod diagnostics;
+pub mod discovery;
 pub mod external_effects;
 pub mod external_publication;
 pub mod external_steering;
@@ -376,6 +377,34 @@ pub const MIGRATIONS: &[maka_event_log::migration::Migration] = &[
         configure: None,
         data: None,
     },
+    maka_event_log::migration::Migration {
+        version: 53,
+        description: "owner-scoped discovery dossiers, cursors, watches, pending actions and preferences",
+        sql: include_str!("../migrations/0053_discovery_dossiers.sql"),
+        configure: None,
+        data: None,
+    },
+    maka_event_log::migration::Migration {
+        version: 54,
+        description: "pending discovery changes and sliding write windows",
+        sql: include_str!("../migrations/0054_discovery_changes.sql"),
+        configure: None,
+        data: None,
+    },
+    maka_event_log::migration::Migration {
+        version: 55,
+        description: "discovery broad-run rotation and staged artifact digests",
+        sql: include_str!("../migrations/0055_discovery_staging.sql"),
+        configure: None,
+        data: None,
+    },
+    maka_event_log::migration::Migration {
+        version: 56,
+        description: "discovery watch deadlines, file guards and confirmation authority",
+        sql: include_str!("../migrations/0056_discovery_watch_runner.sql"),
+        configure: None,
+        data: None,
+    },
 ];
 
 #[cfg(test)]
@@ -387,7 +416,7 @@ mod migration_tests {
             .chain(super::MIGRATIONS)
             .copied()
             .collect();
-        for through in [0, 41].into_iter().chain(46..=51) {
+        for through in [0, 41].into_iter().chain(46..=55) {
             let directory = tempfile::tempdir().unwrap();
             let path = directory.path().join("root.sqlite");
             let db = rusqlite::Connection::open(&path).unwrap();
@@ -399,7 +428,43 @@ mod migration_tests {
                     .collect();
                 maka_event_log::migration::run(&db, &previous).unwrap();
             }
+            if through == 53 {
+                db.execute(r#"INSERT INTO plugin_data(package_id,scope_id,key,revision,value_json)
+                    VALUES ('maka.agent.scheduler','profile','fixture_ready',1,'{"pending":[],"due":{}}')"#, []).unwrap();
+            }
+            if through == 54 {
+                db.execute(r#"INSERT INTO discovery_dossiers(owner,topic_id,title,signal,summary_md,artifacts_json,last_checked_at,last_material_change_at,created_at,updated_at)
+                    VALUES ('me','annex','Annex','yellow','Review','[{"path":"draft","purpose":"Review","inputHashes":{"file":"old"}}]',1,1,1,1)"#, []).unwrap();
+                db.execute(r#"INSERT INTO plugin_data(package_id,scope_id,key,revision,value_json)
+                    VALUES ('maka.agent.scheduler','profile','instance/discovery/active',1,'{"input":{"text":"existing opening"}}')"#, []).unwrap();
+            }
             maka_event_log::migration::run(&db, &catalog).unwrap();
+            if through == 54 {
+                let artifacts: String = db
+                    .query_row(
+                        "SELECT artifacts_json FROM discovery_dossiers WHERE topic_id='annex'",
+                        [],
+                        |r| r.get(0),
+                    )
+                    .unwrap();
+                assert_eq!(
+                    serde_json::from_str::<serde_json::Value>(&artifacts).unwrap(),
+                    serde_json::json!([{"path":"draft","purpose":"Review","inputHashes":{"file":"old"},"sha256":null}])
+                );
+                let mode: String = db.query_row("SELECT json_extract(value_json,'$.mode') FROM plugin_data WHERE key='instance/discovery/active'", [], |r|r.get(0)).unwrap();
+                assert_eq!(mode, "follow_up");
+            }
+            if through == 53 {
+                let rebuilt: bool = db
+                    .query_row(
+                        "SELECT revision=2 AND value_json IS NULL FROM plugin_data
+                    WHERE package_id='maka.agent.scheduler' AND key='fixture_ready'",
+                        [],
+                        |r| r.get(0),
+                    )
+                    .unwrap();
+                assert!(rebuilt);
+            }
             drop(db);
             let db = rusqlite::Connection::open(&path).unwrap();
             maka_event_log::migration::run(&db, &catalog).unwrap();
@@ -411,6 +476,16 @@ mod migration_tests {
                 )
                 .unwrap();
             assert_eq!(identities, 0);
+            for table in [
+                "discovery_dossiers",
+                "discovery_source_cursors",
+                "discovery_watches",
+                "discovery_pending_actions",
+                "discovery_preferences",
+            ] {
+                db.prepare(&format!("SELECT owner FROM {table} LIMIT 0"))
+                    .unwrap();
+            }
         }
     }
 }

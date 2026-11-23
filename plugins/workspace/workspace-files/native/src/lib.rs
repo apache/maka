@@ -118,12 +118,15 @@ impl Handler for Files {
             if name == "publishChange" {
                 return publication::call(&store, writes, state_root, input, &context).await;
             }
-            let (_, mutation) = method(&name).ok_or("workspace_file_method_unavailable")?;
-            let native = context
-                .native_context::<NativeCallContext>()
-                .ok_or("workspace_files_require_native_call")?;
+            let (tool, mutation) = method(&name).ok_or("workspace_file_method_unavailable")?;
             if mutation && context.operation().is_none() {
                 return Err("workspace_file_mutation_required".into());
+            }
+            let confirmed =
+                context.native_context::<maka_agent_authority::permissions::ConfirmedFileAction>();
+            let native = context.native_context::<NativeCallContext>();
+            if native.is_none() && !(mutation && confirmed.is_some()) {
+                return Err("workspace_files_require_native_call".into());
             }
             let mut ticket = context
                 .scope()
@@ -131,16 +134,24 @@ impl Handler for Files {
                 .reserve()
                 .map_err(|e| e.to_string())?;
             ticket.start();
-            let result = execute(
-                &store,
-                writes,
-                state_root,
-                &name,
-                input,
-                native.access(),
-                &context,
-            )
-            .await;
+            let result = if let Some(confirmed) = confirmed {
+                confirmed_file(
+                    &store, writes, state_root, tool, input, &confirmed, &context,
+                )
+                .await
+            } else {
+                let native = native.expect("validated native call");
+                execute(
+                    &store,
+                    writes,
+                    state_root,
+                    &name,
+                    input,
+                    native.access(),
+                    &context,
+                )
+                .await
+            };
             let cleanup = match &result {
                 Err(ToolError::CleanupUnconfirmed(message)) => Err(message.clone()),
                 _ => Ok(()),
@@ -247,6 +258,55 @@ pub enum Output {
     Json(Value),
     Image { bytes: Vec<u8>, mime_type: String },
 }
+async fn confirmed_file(
+    root: &RootStore,
+    writes: Arc<WriteCoordinator>,
+    state_root: PathBuf,
+    tool: &str,
+    input: Value,
+    confirmed: &maka_agent_authority::permissions::ConfirmedFileAction,
+    context: &Context,
+) -> Result<Output, ToolError> {
+    let live = || async {
+        let session = root
+            .get_session::<maka_agent_api::session::StoredSessionConfiguration>(
+                &confirmed.target.session_id,
+            )
+            .await
+            .map_err(failed)?
+            .ok_or_else(|| failed("Confirmation session unavailable"))?;
+        let session =
+            maka_agent_authority::permissions::resolve_session(session).map_err(failed)?;
+        if !confirmed.permits(&session)
+            || session.configuration.permissions.access == WorkspaceAccess::ReadOnly
+        {
+            return Err(failed("Workspace write authorization changed"));
+        }
+        Ok(session.configuration)
+    };
+    let c = live().await?;
+    let floor = context.scope().sandbox_floor().clone();
+    let executor = tokio::task::spawn_blocking(move || {
+        let captured = capture(&c.workspace, c.permissions.access, &state_root, &floor)?;
+        let Sandbox::Managed { filesystem, .. } = captured.sandbox else {
+            return Err(failed("Expected a confined file mutation"));
+        };
+        MutationExecutor::from_directory(
+            captured.path,
+            captured.directory,
+            writes,
+            Some(Arc::new(filesystem.compile().map_err(failed)?)),
+        )
+    })
+    .await
+    .map_err(failed)??;
+    live().await?;
+    executor
+        .invoke(tool.to_owned(), input, context.scope().cancellation.clone())
+        .await
+        .map(Output::Json)
+}
+
 async fn execute(
     root: &RootStore,
     writes: Arc<WriteCoordinator>,

@@ -19,7 +19,7 @@
 
 import { keymap, mount, signal, Text, View } from 'nsh';
 import { Button } from 'nsh/base';
-import { DiscoveryPanel } from '../../app/DiscoveryPanel';
+import { DiscoveryPanel, DiscoveryDialog } from '../../app/DiscoveryPanel';
 import { MessageRow } from '../../app/MessageRow';
 import { BotReply } from '../../app/BotReply';
 import { HostProvider, type Host } from '../../app/host';
@@ -37,6 +37,7 @@ mount(() => {
   let failDetailOnce = false;
   let disabledModel = false;
   const opened = signal('none');
+  const plans = signal(false);
   const calls = signal('none');
   let publish = () => {};
   const session = {
@@ -70,7 +71,8 @@ mount(() => {
   };
   const host = {
     async query(_endpoint: string, method: string, input: any) {
-      if (method === 'observe') return { session };
+      if (method === 'observe')
+        return { session, rememberedBackend: disabledModel ? null : { kind: 'model', ...model } };
       const choice = (selection: typeof model) => ({
         selection,
         label: selection === model ? 'DeepSeek' : 'Replacement model',
@@ -78,6 +80,7 @@ mount(() => {
         thinkingLevels: [],
         defaultThinkingLevel: null,
       });
+      if (method === 'model') return { kind: disabledModel ? 'unavailable' : 'ready' };
       if (method === 'models')
         return {
           kind: 'ready',
@@ -311,16 +314,19 @@ mount(() => {
   );
   return (
     <View style={{ flex: 1, padding: 24, gap: 16 }}>
-      <DiscoveryPanel
-        host={host}
-        sessionId="bot"
-        control={control}
-        selection={async () => (disabledModel ? null : { model, thinkingLevel: null })}
-        openWorker={opened.set}
-        chooseModel={() => {
-          opened.set('models');
-        }}
-      />
+      <DiscoveryPanel open={() => plans.set(true)} />
+      <If when={plans()}>
+        <DiscoveryDialog
+          host={host}
+          sessionId="bot"
+          control={control}
+          close={() => plans.set(false)}
+          openWorker={opened.set}
+          chooseModel={() => {
+            opened.set('models');
+          }}
+        />
+      </If>
       <BotReply
         messages={() => [
           {

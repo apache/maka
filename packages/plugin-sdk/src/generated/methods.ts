@@ -386,6 +386,19 @@ export type AgentDeletePresetOutput_ThinkingLevel =
   | 'xhigh'
   | 'max'
   | 'ultra';
+export type AgentDossierOutput_DossierSignal = 'red' | 'yellow' | 'green' | 'done';
+export type AgentDossierOutput_WatchKind = 'file_hash' | 'http_check' | 'deadline';
+export type AgentDossierOutput_WatchTrigger =
+  | 'notify_direct'
+  | 'invalidate_action'
+  | 'enqueue_followup';
+export type AgentDossierOutput_PendingActionStatus =
+  | 'awaiting_confirm'
+  | 'stale'
+  | 'executing'
+  | 'done'
+  | 'unknown_pending_receipt';
+export type AgentDossiersOutput_DossierSignal = 'red' | 'yellow' | 'green' | 'done';
 export type AgentExternalUsageLimitsOutput_UsageLimit =
   | {
       kind: 'window';
@@ -2589,6 +2602,7 @@ export type AgentUpdatePresetOutput_ThinkingLevel =
   | 'xhigh'
   | 'max'
   | 'ultra';
+export type AgentWatchDossiersOutput_DossierSignal = 'red' | 'yellow' | 'green' | 'done';
 export type SettingsAssistantPreferencesOutput_LanguagePreference =
   | 'auto'
   | 'en'
@@ -3150,6 +3164,29 @@ export interface ServiceMethods {
       input: Runtime.AgentSessionRead;
       output: Runtime.AgentComputerApps;
     };
+    confirmPendingAction: {
+      mode: 'mutation';
+      input: {
+        actionId: string;
+      };
+      output:
+        | {
+            outcome: 'done';
+            receipt: unknown;
+          }
+        | {
+            outcome: 'stale';
+            changedPaths: string[];
+          }
+        | {
+            outcome: 'failed';
+            error: string;
+          }
+        | {
+            outcome: 'unknown_pending_receipt';
+            error: string;
+          };
+    };
     context: {
       mode: 'query';
       input: Runtime.AgentContextRead;
@@ -3277,6 +3314,38 @@ export interface ServiceMethods {
       mode: 'query';
       input: Runtime.AgentDirectories;
       output: Runtime.AgentDirectoryPage;
+    };
+    dismissPendingAction: {
+      mode: 'mutation';
+      input: {
+        actionId: string;
+      };
+      output: null;
+    };
+    dossier: {
+      mode: 'query';
+      input: {
+        topicId: string;
+      };
+      output: AgentDossierOutput_DossierDetail | null;
+    };
+    dossiers: {
+      mode: 'query';
+      input: {};
+      output: {
+        dossiers: AgentDossiersOutput_DossierSummary[];
+        notificationsEnabled: boolean;
+      };
+    };
+    dropDiscoveryLead: {
+      mode: 'mutation';
+      input: {
+        text: string;
+        paths?: string[];
+      };
+      output: {
+        topicId: string;
+      };
     };
     editQueue: {
       mode: 'mutation';
@@ -3937,6 +4006,15 @@ export interface ServiceMethods {
             reason: AgentOpenBotOutput_AgentBotRejection;
           };
     };
+    openDossierThread: {
+      mode: 'mutation';
+      input: {
+        topicId: string;
+      };
+      output: {
+        sessionId: string;
+      };
+    };
     pendingInteractions: {
       mode: 'query';
       input: Runtime.AgentSessionRead;
@@ -4049,6 +4127,14 @@ export interface ServiceMethods {
       mode: 'query';
       input: Runtime.AgentQueueMessage;
       output: Runtime.AgentQueueMessageResult;
+    };
+    readDossierArtifact: {
+      mode: 'query';
+      input: {
+        topicId: string;
+        path: string;
+      };
+      output: string;
     };
     readFile: {
       mode: 'subscription';
@@ -4516,6 +4602,21 @@ export interface ServiceMethods {
       };
       output: Runtime.AgentMetadataResult;
     };
+    setDiscoveryNotifications: {
+      mode: 'mutation';
+      input: {
+        enabled: boolean;
+      };
+      output: null;
+    };
+    setDossierMuted: {
+      mode: 'mutation';
+      input: {
+        topicId: string;
+        muted: boolean;
+      };
+      output: null;
+    };
     skillCandidates: {
       mode: 'query';
       /**
@@ -4722,6 +4823,15 @@ export interface ServiceMethods {
       mode: 'subscription';
       input: Runtime.AgentSessionRead;
       output: Runtime.AgentDiagnosticChange;
+    };
+    watchDossiers: {
+      mode: 'subscription';
+      input: {};
+      output: {
+        dossiers: AgentWatchDossiersOutput_DossierSummary[];
+        notificationsEnabled: boolean;
+        latestInterrupt?: AgentWatchDossiersOutput_DiscoveryInterrupt | null;
+      };
     };
     watchFiles: {
       mode: 'subscription';
@@ -5936,6 +6046,79 @@ export interface AgentDeletePresetOutput_ModelSelection {
   connectionId: string;
   modelId: string;
   [k: string]: unknown | undefined;
+}
+export interface AgentDossierOutput_DossierDetail {
+  topicId: string;
+  title: string;
+  signal: AgentDossierOutput_DossierSignal;
+  priorityWeight: number;
+  windowAt?: number | null;
+  revision: number;
+  summaryMd: string;
+  artifacts: AgentDossierOutput_DossierArtifact[];
+  linkedTaskIds: string[];
+  threadSessionId?: string | null;
+  muted: boolean;
+  lastCheckedAt: number;
+  lastMaterialChangeAt: number;
+  lastNotifiedRevision: number;
+  lastInterruptReason?: string | null;
+  lastInterruptAt?: number | null;
+  createdAt: number;
+  updatedAt: number;
+  watches: AgentDossierOutput_WatchRecord[];
+  pendingActions: AgentDossierOutput_PendingActionRecord[];
+}
+export interface AgentDossierOutput_DossierArtifact {
+  path: string;
+  purpose: string;
+  /**
+   * Historical attachments may predate staged content fingerprints.
+   */
+  sha256?: string | null;
+  inputHashes?: {
+    [k: string]: string | undefined;
+  };
+}
+export interface AgentDossierOutput_WatchRecord {
+  watchId: string;
+  topicId: string;
+  kind: AgentDossierOutput_WatchKind;
+  target: string;
+  predicate: unknown;
+  onTrigger: AgentDossierOutput_WatchTrigger;
+  lastStateHash?: string | null;
+  expiresAt?: number | null;
+  createdAt: number;
+  updatedAt: number;
+}
+export interface AgentDossierOutput_PendingActionRecord {
+  actionId: string;
+  topicId: string;
+  connectorTool: string;
+  params: unknown;
+  inputHashes: {
+    [k: string]: string | undefined;
+  };
+  idempotencyKey: string;
+  status: AgentDossierOutput_PendingActionStatus;
+  receipt?: unknown;
+  expiresAt: number;
+  createdAt: number;
+  updatedAt: number;
+}
+export interface AgentDossiersOutput_DossierSummary {
+  topicId: string;
+  title: string;
+  signal: AgentDossiersOutput_DossierSignal;
+  windowAt?: number | null;
+  revision: number;
+  lastMaterialChangeAt: number;
+  muted: boolean;
+  artifactCount: number;
+  lastNotifiedRevision: number;
+  lastInterruptReason?: string | null;
+  lastInterruptAt?: number | null;
 }
 export interface AgentExternalUsageLimitsOutput_UsageQuantity {
   used: number;
@@ -7325,6 +7508,25 @@ export interface AgentWatchBotOutboxOutput_AgentBotMessage {
    * Turn's reply.
    */
   turnId?: string | null;
+}
+export interface AgentWatchDossiersOutput_DossierSummary {
+  topicId: string;
+  title: string;
+  signal: AgentWatchDossiersOutput_DossierSignal;
+  windowAt?: number | null;
+  revision: number;
+  lastMaterialChangeAt: number;
+  muted: boolean;
+  artifactCount: number;
+  lastNotifiedRevision: number;
+  lastInterruptReason?: string | null;
+  lastInterruptAt?: number | null;
+}
+export interface AgentWatchDossiersOutput_DiscoveryInterrupt {
+  topicId: string;
+  revision: number;
+  reason: string;
+  at: number;
 }
 export interface SettingsAssistantPreferencesOutput_MessagePredictionSettings {
   enabled: boolean;

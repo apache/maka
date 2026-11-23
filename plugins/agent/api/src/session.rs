@@ -38,6 +38,8 @@ pub struct StoredSessionConfiguration {
     pub tools: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compaction_prompt: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dossier_seed: Option<String>,
     pub title: String,
     pub title_is_manual: bool,
     #[serde(default)]
@@ -69,6 +71,8 @@ pub struct ResolvedConfiguration {
     pub tools: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compaction_prompt: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dossier_seed: Option<String>,
     pub title: String,
     pub title_is_manual: bool,
     #[serde(default)]
@@ -98,6 +102,7 @@ impl StoredSessionConfiguration {
             collaboration_mode: self.collaboration_mode,
             tools: self.tools,
             compaction_prompt: self.compaction_prompt,
+            dossier_seed: self.dossier_seed,
             title: self.title,
             title_is_manual: self.title_is_manual,
             pinned: self.pinned,

@@ -18,6 +18,8 @@
  */
 
 mod edit;
+mod script;
+pub use script::{ScriptOutcome, ScriptPayload, StateUpdate, compact_script_state};
 
 #[cfg(test)]
 mod tests;
@@ -46,12 +48,31 @@ pub enum PauseSource {
     Bot,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FireSource {
+    #[default]
+    Schedule,
+    FileChange,
+    Watch,
+}
+
+impl FireSource {
+    fn is_schedule(&self) -> bool {
+        *self == Self::Schedule
+    }
+}
+
 /// Persist before submitting to Host. A retry uses these frozen bytes and ID,
 /// never the task's potentially edited title, effect or instruction.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[serde(bound(deserialize = "E: Deserialize<'de>, A: Deserialize<'de>"))]
 pub struct Fire<E, A> {
+    #[serde(default, skip_serializing_if = "FireSource::is_schedule")]
+    pub source: FireSource,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preserved_next_fire_at: Option<i64>,
     pub id: String,
     pub task_id: String,
     pub scheduled_at: i64,
@@ -60,6 +81,8 @@ pub struct Fire<E, A> {
     pub effect: E,
     #[serde(default)]
     pub authorization: Option<A>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trigger_payload: Option<ScriptPayload>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -73,12 +96,38 @@ pub struct TaskPlan<E, A> {
     pub pending: Option<Fire<E, A>>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     condition_matched: bool,
+    #[serde(
+        default,
+        deserialize_with = "script::stored_state",
+        skip_serializing_if = "Option::is_none"
+    )]
+    script_state: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "script::stored_key",
+        skip_serializing_if = "Option::is_none"
+    )]
+    last_dedupe_key: Option<String>,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    consecutive_errors: u32,
     #[serde(default)]
     pub authorization: Option<A>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pause_source: Option<PauseSource>,
 }
+fn is_zero(count: &u32) -> bool {
+    *count == 0
+}
 impl<E: TaskEffect, A: Clone> TaskPlan<E, A> {
+    pub fn script_state(&self) -> Option<&str> {
+        self.script_state.as_deref()
+    }
+    pub fn last_dedupe_key(&self) -> Option<&str> {
+        self.last_dedupe_key.as_deref()
+    }
+    pub fn consecutive_errors(&self) -> u32 {
+        self.consecutive_errors
+    }
     pub fn validate(&self) -> Result<(), Error> {
         crate::task::text(&self.task.id)?;
         if self
@@ -163,6 +212,9 @@ impl<E: TaskEffect, A: Clone> TaskPlan<E, A> {
             misfire: Misfire::Skip,
             pending: None,
             condition_matched: false,
+            script_state: None,
+            last_dedupe_key: None,
+            consecutive_errors: 0,
             authorization: None,
             pause_source: None,
         })
@@ -202,6 +254,30 @@ impl<E: TaskEffect, A: Clone> TaskPlan<E, A> {
     /// Returns the same intent while settlement is pending. The repository must
     /// commit the changed Plan before the caller may dispatch the Fire.
     pub fn claim(&mut self, now: i64) -> Result<Option<&Fire<E, A>>, Error> {
+        self.claim_inner(now, FireSource::Schedule, None)
+    }
+
+    /// An overdue schedule has first claim on the single execution slot.
+    pub fn claim_preserving_schedule(
+        &mut self,
+        now: i64,
+        source: FireSource,
+    ) -> Result<Option<&Fire<E, A>>, Error> {
+        if source == FireSource::Schedule {
+            return self.claim(now);
+        }
+        if self.pending.is_some() || self.task.next_fire_at.is_none_or(|at| at <= now) {
+            return Ok(None);
+        }
+        self.claim_inner(now, source, None)
+    }
+
+    fn claim_inner(
+        &mut self,
+        now: i64,
+        source: FireSource,
+        trigger_payload: Option<ScriptPayload>,
+    ) -> Result<Option<&Fire<E, A>>, Error> {
         if self.pending.is_some() {
             return Ok(self.pending.as_ref());
         }
@@ -214,27 +290,37 @@ impl<E: TaskEffect, A: Clone> TaskPlan<E, A> {
             self.task.updated_at = self.task.updated_at.max(now);
             return Ok(None);
         }
-        let Some(at) = self.task.next_fire_at.filter(|at| *at <= now) else {
+        let Some(deadline) = self.task.next_fire_at else {
             return Ok(None);
         };
+        if source == FireSource::Schedule && deadline > now {
+            return Ok(None);
+        }
         self.pending = Some(Fire {
+            source,
+            preserved_next_fire_at: (source != FireSource::Schedule).then_some(deadline),
             id: format!("fire-{}", uuid::Uuid::new_v4()),
             task_id: self.task.id.clone(),
-            scheduled_at: at,
+            scheduled_at: if source == FireSource::Schedule {
+                deadline
+            } else {
+                now
+            },
             title: self.task.title.clone(),
             intent: self.task.intent.clone(),
             effect: self.task.effect.clone(),
             authorization: self.authorization.clone(),
+            trigger_payload,
         });
         self.task.updated_at = self.task.updated_at.max(now);
         Ok(self.pending.as_ref())
     }
-    /// Apply a check to its observed due occurrence. A true condition must clear
-    /// before it can create another fire. An error does not rearm it.
+    /// False rearms boolean checks but retains the last fired key. A keyed
+    /// match fires whenever its key changes, including on consecutive matches.
     pub fn record_condition(
         &mut self,
         now: i64,
-        result: Result<bool, String>,
+        result: Result<ScriptOutcome, String>,
     ) -> Result<(), Error> {
         if self.task.status != Status::Active || self.pending.is_some() {
             return Ok(());
@@ -242,17 +328,37 @@ impl<E: TaskEffect, A: Clone> TaskPlan<E, A> {
         if self.task.expires_at.is_some_and(|expires| now >= expires) {
             return self.advance(now, None);
         }
+        if self.task.next_fire_at.is_none_or(|at| at > now) {
+            return Ok(());
+        }
         match result {
-            Ok(matched) => {
+            Ok(outcome) => {
+                self.consecutive_errors = 0;
                 self.task.last_error = None;
-                let triggered = matched && !self.condition_matched;
-                self.condition_matched = matched;
-                if triggered {
-                    self.claim(now)?;
+                match outcome.state_update {
+                    StateUpdate::Unchanged => {}
+                    StateUpdate::Set(value) => self.script_state = Some(value),
+                    StateUpdate::Clear => self.script_state = None,
+                }
+                let fire = outcome.triggered
+                    && match outcome.dedupe_key {
+                        Some(key) => {
+                            let changed = self.last_dedupe_key.as_ref() != Some(&key);
+                            self.last_dedupe_key = Some(key);
+                            changed
+                        }
+                        None => !self.condition_matched,
+                    };
+                self.condition_matched = outcome.triggered;
+                if fire {
+                    self.claim_inner(now, FireSource::Schedule, outcome.payload)?;
                     return Ok(());
                 }
             }
-            Err(error) => self.task.last_error = Some(error),
+            Err(error) => {
+                self.task.last_error = Some(error);
+                self.consecutive_errors = self.consecutive_errors.saturating_add(1);
+            }
         }
         self.task.updated_at = self.task.updated_at.max(now);
         self.advance(now, None)
@@ -274,6 +380,10 @@ impl<E: TaskEffect, A: Clone> TaskPlan<E, A> {
             return Err(invalid("run does not settle the pending trigger"));
         }
         let paused = self.task.status == Status::Paused;
+        let preserved = match fire.source {
+            FireSource::Schedule => None,
+            FireSource::FileChange | FireSource::Watch => fire.preserved_next_fire_at,
+        };
         self.task.last_fire_at = Some(run.at);
         self.task.updated_at = run.at;
         self.task.fire_count = self
@@ -284,17 +394,36 @@ impl<E: TaskEffect, A: Clone> TaskPlan<E, A> {
         self.task.last_error = (run.outcome != Outcome::Ok).then(|| run.message.clone());
         self.task.runs.insert(0, run);
         self.pending = None;
-        self.advance(self.task.updated_at, self.task.last_fire_at)?;
+        if let Some(at) = preserved {
+            self.set_next(self.task.updated_at, Some(at));
+        } else {
+            self.advance(self.task.updated_at, self.task.last_fire_at)?;
+        }
         if paused && self.task.status == Status::Active {
             self.task.status = Status::Paused;
         }
         Ok(())
     }
     fn advance(&mut self, after: i64, settled_at: Option<i64>) -> Result<(), Error> {
-        let next =
+        let next = if self.consecutive_errors > 0
+            && let crate::schedule::Schedule::Script { every_seconds, .. } = self.task.schedule
+        {
+            let delay = every_seconds
+                .saturating_mul(1 << (self.consecutive_errors - 1).min(5))
+                .min(every_seconds.max(1800));
+            after
+                .checked_add(i64::from(delay) * 1000)
+                .filter(|at| crate::schedule::timestamp(*at).is_ok())
+        } else {
             self.task
                 .schedule
-                .next_due(after, &TimeZone::get(&self.timezone)?, settled_at)?;
+                .next_due(after, &TimeZone::get(&self.timezone)?, settled_at)?
+        };
+        self.set_next(after, next);
+        Ok(())
+    }
+
+    fn set_next(&mut self, after: i64, next: Option<i64>) {
         let expired = self
             .task
             .expires_at
@@ -316,6 +445,5 @@ impl<E: TaskEffect, A: Clone> TaskPlan<E, A> {
         self.task.next_fire_at = (self.task.status == Status::Active)
             .then_some(next)
             .flatten();
-        Ok(())
     }
 }

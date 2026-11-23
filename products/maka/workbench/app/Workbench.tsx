@@ -129,6 +129,7 @@ export function Workbench(props: {
   preview(docked: boolean): JSX.Element;
   /** Stable pane objects keep their mounted conversations through reorder and resize. */
   sides?(): readonly { render(): JSX.Element }[];
+  sideRoom?(): number;
   children: JSX.Element;
 }) {
   const preferredWidth = signal(32 * CELL);
@@ -136,7 +137,8 @@ export function Workbench(props: {
   const preview = () => props.previewShown() && canDockPreview();
   const fullscreen = () => props.previewFullscreen?.() ?? false;
   const browser = () => props.expanded() && canDockBrowser(props.previewShown() && !fullscreen());
-  const room = () => (fullscreen() ? 0 : sidePaneRoom(browser(), preview()));
+  const room = () =>
+    fullscreen() ? 0 : (props.sideRoom?.() ?? sidePaneRoom(browser(), preview()));
   let unbindFullscreen: (() => void) | undefined;
   cleanup(() => unbindFullscreen?.());
   const panes = () => (

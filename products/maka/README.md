@@ -38,7 +38,9 @@
 
 Open **Proactive discovery** in the Bot header. Leave the direction blank for broad exploration, or enter a topic for focused checks. New interval plans wait 30 minutes after each run finishes. The editor also offers a fixed interval, manual checks, and pause or resume controls.
 
-Choose **Read-only tools** or **Standard Session tools**, then select the tool groups shown below the preset. To let a new investigation install, replace or configure plugins, select **Install and manage plugins** separately. You can change the investigation model in the same form. **Show selected tools** lists their exact names. The terminal, desktop and extension tools you approve operate under the existing workspace and network permissions.
+Choose **Read-only tools** or **Standard Session tools** and review the exact names under **Show selected tools**. Both profiles read the original workspace. Workers prepare drafts, diffs and checklists under the State Root’s `discovery/staging/<topic_id>/` directory. Select an attachment in the dossier to preview or copy it.
+
+Every fourth periodic broad check starts with cold workspace sources. Directed checks and file changes follow up on existing topics. Tell the Bot or a dossier thread which topics to skip or revisit. Discovery saves these instructions locally in `discovery/preferences.md`.
 
 Use **View investigation** to open the original worker conversation. Select and quote text from a Bot reply to attach feedback to its investigation.
 

@@ -100,6 +100,8 @@ struct CapsuleManifest {
     forked_session_id: String,
     room_id: String,
     room_pre_message: String,
+    #[serde(default)]
+    discovery: Option<DiscoveryCapsule>,
     preset_id: String,
     memory_id: String,
     memory_body: String,
@@ -108,7 +110,20 @@ struct CapsuleManifest {
     session_data_key: String,
     #[serde(default)]
     operation_ref: Option<Value>,
+    #[serde(default)]
+    script_task_id: Option<String>,
     migrations: BTreeMap<String, Vec<i64>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DiscoveryCapsule {
+    topic_id: String,
+    thread_session_id: String,
+    #[serde(default)]
+    additional_deltas: usize,
+    #[serde(default)]
+    watch_scope_key: Option<String>,
 }
 
 struct FixtureSecret;
@@ -317,6 +332,33 @@ async fn wait_run_completed(client: &Client, session: &str, message_id: &str) ->
             other => panic!("unexpected workReadiness {other}: {readiness}"),
         }
     }
+}
+
+async fn wait_successful_script_check(client: &Client, task_id: &str) {
+    tokio::time::timeout(Duration::from_secs(30), async {
+        let mut first_due = None;
+        loop {
+            let detail = call(
+                client,
+                "agent",
+                "schedules",
+                json!({"kind":"get","taskId":task_id}),
+                Attachments::new(),
+            )
+            .await;
+            let task = &detail["detail"]["task"];
+            assert_eq!(task["status"], "active", "{detail}");
+            assert_eq!(task["fireCount"], 0, "{detail}");
+            assert!(task["lastError"].is_null(), "{detail}");
+            let next = task["nextFireAt"].as_i64().unwrap();
+            if next > *first_due.get_or_insert(next) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("script did not complete its next check");
 }
 
 async fn recall_search(client: &Client, term: &str) -> Value {
@@ -639,6 +681,328 @@ fn verify_sqlite_integrity_and_migrations(root: &Path) -> BTreeMap<String, Vec<i
     ledgers
 }
 
+async fn create_discovery_capsule(client: &Client, nonce: &str) -> (DiscoveryCapsule, Value) {
+    let lead = call(
+        client,
+        "agent",
+        "dropDiscoveryLead",
+        json!({"text":format!("compat discovery {nonce}"), "paths":["annex.md"]}),
+        Attachments::new(),
+    )
+    .await;
+    let topic_id = lead["topicId"].as_str().unwrap().to_owned();
+    let thread = call(
+        client,
+        "agent",
+        "openDossierThread",
+        lead,
+        Attachments::new(),
+    )
+    .await;
+    let thread_session_id = thread["sessionId"].as_str().unwrap().to_owned();
+    call(
+        client,
+        "agent",
+        "setDiscoveryNotifications",
+        json!({"enabled":false}),
+        Attachments::new(),
+    )
+    .await;
+    call(
+        client,
+        "agent",
+        "setDossierMuted",
+        json!({"topicId":topic_id,"muted":true}),
+        Attachments::new(),
+    )
+    .await;
+    let observed = call(
+        client,
+        "agent",
+        "observe",
+        json!({"sessionId":thread_session_id}),
+        Attachments::new(),
+    )
+    .await;
+    let session = &observed["session"];
+    let target = json!({"sessionId":thread_session_id,"workspace":session["workspace"],"permissions":session["permissions"],"boundaryRevision":session["boundaryRevision"],"binding":session["binding"]});
+    (
+        DiscoveryCapsule {
+            topic_id,
+            thread_session_id,
+            additional_deltas: 24,
+            watch_scope_key: None,
+        },
+        target,
+    )
+}
+
+// No public RPC creates tracking records. Seed them while the capsule's Host is stopped.
+const COMPAT_DRAFT: &str = "Review the revised contract annex.\n";
+const COMPAT_RULE: &str = "- [global] 2026-11-23 Review contract changes on Fridays.\n";
+
+fn seed_discovery_tracking(root: &Path, saved: &DiscoveryCapsule, target: Value) {
+    use sha2::{Digest, Sha256};
+    let topic = saved.topic_id.as_str();
+    let discovery = root.join("discovery");
+    let staging = discovery.join("staging").join(topic);
+    fs::create_dir_all(&staging).unwrap();
+    fs::write(staging.join("annex.md"), COMPAT_DRAFT).unwrap();
+    fs::write(discovery.join("preferences.md"), COMPAT_RULE).unwrap();
+    let conn = Connection::open(root.join(maka_event_log::root::ROOT_DATABASE)).unwrap();
+    let tx = conn.unchecked_transaction().unwrap();
+    let owner: String = tx
+        .query_row(
+            "SELECT owner FROM discovery_dossiers WHERE topic_id=?1",
+            [topic],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let artifacts = json!([{"path":"annex.md","purpose":"Review the annex","sha256":hex::encode(Sha256::digest(COMPAT_DRAFT)),"inputHashes":{}}]);
+    tx.execute(
+        "UPDATE discovery_dossiers SET artifacts_json=?2 WHERE topic_id=?1",
+        [topic, &artifacts.to_string()],
+    )
+    .unwrap();
+    tx.execute(
+        "UPDATE discovery_preferences SET broad_cycle=3 WHERE owner=?1",
+        [&owner],
+    )
+    .unwrap();
+    tx.execute(
+        "INSERT INTO discovery_source_cursors(owner,source_uri,last_hash,updated_at,delta_kind,delta_at,last_explored_at)
+         VALUES (?1,'annex.md','v1',1,'modified',1,42)",
+        [&owner],
+    )
+    .unwrap();
+    for i in 0..saved.additional_deltas {
+        tx.execute(
+            "INSERT INTO discovery_source_cursors(owner,source_uri,last_hash,updated_at,delta_kind,delta_at)
+             VALUES (?1,?2,'v1',1,'created',1)",
+            [&owner, &format!("compat-inbox/{i}.md")],
+        ).unwrap();
+    }
+    let auth = json!({"target":target,"read_floor":{"kind":"disabled"},"effect_ceiling":{"kind":"disabled"},"workspace_reads":true,"plan":null});
+    tx.execute(
+        "INSERT INTO discovery_watches(owner,watch_id,topic_id,kind,target,predicate_json,on_trigger,next_check_at,authority_json,created_at,updated_at)
+         VALUES (?1,'compat-watch',?2,'deadline','Cold restart','{\"trigger_at_ms\":1}','notify_direct',1,?3,1,1)",
+        [owner.as_str(), topic, &auth.to_string()],
+    ).unwrap();
+    tx.execute(
+        "INSERT INTO discovery_pending_actions(owner,action_id,topic_id,connector_tool,params_json,input_hashes_json,idempotency_key,status,expires_at,created_at,updated_at)
+        VALUES (?1,'interrupted',?2,'review','{}','{}','crash-key','executing',100,1,1),
+               (?1,'expired',?2,'review','{}','{}','expired-key','awaiting_confirm',100,1,1)",
+        [owner.as_str(),topic],
+    ).unwrap();
+    tx.execute(
+        "INSERT INTO discovery_pending_actions(owner,action_id,topic_id,connector_tool,params_json,
+             input_hashes_json,idempotency_key,status,expires_at,created_at,updated_at)
+         VALUES (?1,'compat-action',?2,'review','{}',json_object('annex.md','v1'),'compat-idempotency','unknown_pending_receipt',100,1,1)",
+        [owner.as_str(), topic],
+    ).unwrap();
+    tx.commit().unwrap();
+}
+
+fn compat_watch_scope(workspace: &Path) -> Value {
+    json!({"include_roots":[{"path":workspace.join("compat-inbox"),"reason":"Incoming documents"}],
+        "exclude_roots":[{"path":workspace.join("build"),"reason":"Generated files"}], "surveyed_at":42})
+}
+
+fn seed_watch_scope(dirs: &EnvDirs, script_id: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let conn = Connection::open(dirs.root.join(maka_event_log::root::ROOT_DATABASE)).unwrap();
+    let suffix = format!("task:{script_id}");
+    let task_key: String = conn.query_row(
+        "SELECT key FROM plugin_data WHERE package_id='maka.agent.scheduler' AND scope_id='profile'
+         AND substr(key,-length(?1))=?1", [&suffix], |r| r.get(0),
+    ).unwrap();
+    fs::create_dir_all(dirs.workspace.join("compat-inbox")).unwrap();
+    let prefix = task_key.strip_suffix(&suffix).unwrap();
+    let digest = hex::encode(Sha256::digest(
+        dirs.workspace.as_os_str().as_encoded_bytes(),
+    ));
+    let key = format!("{prefix}discovery/watch-scope/{digest}");
+    conn.execute(
+        "INSERT INTO plugin_data(package_id,scope_id,key,revision,value_json)
+        VALUES ('maka.agent.scheduler','profile',?1,1,?2)",
+        [&key, &compat_watch_scope(&dirs.workspace).to_string()],
+    )
+    .unwrap();
+    key
+}
+
+async fn verify_dossiers(
+    client: &Client,
+    saved: Option<&DiscoveryCapsule>,
+    nonce: &str,
+    post_nonce: &str,
+    staged: bool,
+    guards: bool,
+) {
+    let page = call(client, "agent", "dossiers", json!({}), Attachments::new()).await;
+    if let Some(saved) = saved {
+        assert_eq!(page["notificationsEnabled"], false);
+        let topic = json!({"topicId":saved.topic_id});
+        let detail = call(
+            client,
+            "agent",
+            "dossier",
+            topic.clone(),
+            Attachments::new(),
+        )
+        .await;
+        assert_eq!(detail["muted"], true);
+        if staged {
+            assert_eq!(detail["artifacts"][0]["path"], "annex.md");
+            let preview = call(
+                client,
+                "agent",
+                "readDossierArtifact",
+                json!({"topicId":saved.topic_id,"path":"annex.md"}),
+                Attachments::new(),
+            )
+            .await;
+            assert_eq!(preview, COMPAT_DRAFT);
+        }
+        assert!(detail["summaryMd"].as_str().unwrap().contains(nonce));
+        if guards {
+            tokio::time::timeout(Duration::from_secs(10), async {
+                loop {
+                    let current = call(
+                        client,
+                        "agent",
+                        "dossier",
+                        topic.clone(),
+                        Attachments::new(),
+                    )
+                    .await;
+                    if current["watches"][0]["lastStateHash"] == "fired" {
+                        assert!(current["watches"][0]["expiresAt"].is_number());
+                        assert_eq!(current["lastNotifiedRevision"], 0);
+                        break;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("persisted deadline did not fire");
+            let interrupted = call(
+                client,
+                "agent",
+                "confirmPendingAction",
+                json!({"actionId":"interrupted"}),
+                Attachments::new(),
+            )
+            .await;
+            assert_eq!(interrupted["outcome"], "unknown_pending_receipt");
+            call(
+                client,
+                "agent",
+                "dismissPendingAction",
+                json!({"actionId":"expired"}),
+                Attachments::new(),
+            )
+            .await;
+            let current = call(
+                client,
+                "agent",
+                "dossier",
+                topic.clone(),
+                Attachments::new(),
+            )
+            .await;
+            assert!(
+                current["pendingActions"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .all(|a| a["actionId"] != "expired")
+            );
+        } else {
+            assert_eq!(detail["watches"][0]["lastStateHash"], "v1");
+        }
+        assert_eq!(detail["pendingActions"][0]["inputHashes"]["annex.md"], "v1");
+        assert_eq!(
+            detail["pendingActions"][0]["status"],
+            "unknown_pending_receipt"
+        );
+        let thread = call(
+            client,
+            "agent",
+            "openDossierThread",
+            topic,
+            Attachments::new(),
+        )
+        .await;
+        assert_eq!(thread["sessionId"], saved.thread_session_id);
+        call(
+            client,
+            "agent",
+            "setDossierMuted",
+            json!({"topicId":saved.topic_id, "muted":false}),
+            Attachments::new(),
+        )
+        .await;
+    } else {
+        assert_eq!(page["notificationsEnabled"], true);
+        assert!(page["dossiers"].as_array().unwrap().is_empty());
+    }
+    let lead = call(
+        client,
+        "agent",
+        "dropDiscoveryLead",
+        json!({"text":format!("post-upgrade discovery {post_nonce}")}),
+        Attachments::new(),
+    )
+    .await;
+    let detail = call(client, "agent", "dossier", lead, Attachments::new()).await;
+    assert_eq!(detail["revision"], 1);
+}
+
+async fn consume_upgraded_discovery_deltas(root: &Path, owner: &str, expected: usize) {
+    use maka_agent_facts::{discovery::SourceUri, durable::UnixMillis};
+    use maka_agent_state::discovery::{
+        DiscoveryStore,
+        changes::{ChangeQuery, OpeningSources},
+    };
+    use maka_event_log::root::{RootNamespaces, RootOwner};
+
+    let restored = RootOwner::open(root, &RootNamespaces::for_current_account().unwrap()).unwrap();
+    let store =
+        maka_transport::open_store(Arc::new(restored), &maka_product_native::root_migrations())
+            .await
+            .unwrap();
+    let data = store.data_writer().unwrap();
+    let discovery =
+        DiscoveryStore::new(data.clone(), &serde_json::from_str(owner).unwrap()).unwrap();
+    let at = UnixMillis(1);
+    let snapshot = || {
+        discovery.change_snapshot(at, ChangeQuery::Opening { limit: 15 }, |path, _| {
+            path == Path::new("annex.md") || path.starts_with("compat-inbox")
+        })
+    };
+    let mut remaining = expected;
+    loop {
+        let ready = snapshot().await.unwrap();
+        assert_eq!(ready.deltas.len(), remaining.min(15));
+        assert_eq!(ready.omitted_deltas, remaining - ready.deltas.len());
+        if remaining == 0 {
+            break;
+        }
+        remaining = ready.omitted_deltas;
+        data.write(discovery.record_opening(OpeningSources::FollowUp(ready.deltas), false, at))
+            .await
+            .unwrap();
+    }
+    let cursor = discovery
+        .get_source_cursor(SourceUri("annex.md".into()))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(cursor.last_hash.as_deref(), Some("v1"));
+    store.shutdown().await.unwrap();
+}
+
 async fn produce_capsule(bin: &Path, capsule_dir: &Path) -> CapsuleManifest {
     fs::create_dir_all(capsule_dir).unwrap();
     let canonical_base = fs::canonicalize(capsule_dir).unwrap();
@@ -884,6 +1248,8 @@ async fn produce_capsule(bin: &Path, capsule_dir: &Path) -> CapsuleManifest {
         .await;
         assert_eq!(room_post["kind"], "posted", "{room_post}");
 
+        let (mut discovery, target) = create_discovery_capsule(&client, &nonce).await;
+
         // 5. Subagent Preset.
         let preset = call(
             &client,
@@ -976,9 +1342,30 @@ async fn produce_capsule(bin: &Path, capsule_dir: &Path) -> CapsuleManifest {
             "checkpoint export failed: {}",
             String::from_utf8_lossy(&export_out.stderr)
         );
-
+        let seed = dirs.workspace.join("compat-script-seed");
+        tokio::fs::write(&seed, &nonce).await.unwrap();
+        let session = &observed["session"];
+        let script = call(&client, "agent", "schedule", json!({"kind":"create","input":{
+            "timezone":"UTC","misfire":"skip","task":{"title":"Compat script cursor","intentBody":"Report a match",
+                "schedule":{"kind":"script","everySeconds":1,"startAt":0,
+                    "source":format!(r#"const prior = Deno.env.get("MAKA_AUTOMATION_STATE");
+                        if (prior === undefined) console.log(JSON.stringify({{trigger:false,state:await Deno.readTextFile("compat-script-seed")}}));
+                        else if (JSON.parse(prior) === "{nonce}") console.log(false);
+                        else throw Error("Wrong persisted script cursor");"#)},
+                "effect":{"kind":"session","target":{"sessionId":primary_session_id,
+                    "workspace":session["workspace"],"permissions":session["permissions"],
+                    "binding":session["binding"],"boundaryRevision":session["boundaryRevision"]},
+                    "model":{"connectionId":connection_id,"modelId":"gpt-4.1"}}}
+        }}), Attachments::new()).await;
+        assert_eq!(script["kind"], "committed", "{script}");
+        let script_task_id = script["taskId"].as_str().unwrap().to_owned();
+        wait_successful_script_check(&client, &script_task_id).await;
         host.quit(&mut client).await.expect("Host quit");
+        // Only the persisted cursor can satisfy the first check after upgrading.
+        tokio::fs::remove_file(seed).await.unwrap();
 
+        seed_discovery_tracking(&dirs.root, &discovery, target);
+        discovery.watch_scope_key = Some(seed_watch_scope(&dirs, &script_task_id));
         let migrations = verify_sqlite_integrity_and_migrations(&dirs.root);
         CapsuleManifest {
             format_version: 1,
@@ -992,6 +1379,7 @@ async fn produce_capsule(bin: &Path, capsule_dir: &Path) -> CapsuleManifest {
             forked_session_id,
             room_id,
             room_pre_message,
+            discovery: Some(discovery),
             preset_id,
             memory_id,
             memory_body,
@@ -999,6 +1387,7 @@ async fn produce_capsule(bin: &Path, capsule_dir: &Path) -> CapsuleManifest {
             portable_archive: portable_archive_name,
             session_data_key: "compat_capsule_state".into(),
             operation_ref,
+            script_task_id: Some(script_task_id),
             migrations,
         }
     })
@@ -1068,6 +1457,9 @@ async fn verify_capsule(bin: &Path, capsule_dir: &Path) {
         let (mut client, _) = host.ready().await.expect("Host ready");
 
         // Stage 2: Exhaustive read/deserialization sweep across every persisted domain.
+        if let Some(id) = &manifest.script_task_id {
+            wait_successful_script_check(&client, id).await;
+        }
         let catalog = call(
             &client,
             "settings",
@@ -1108,6 +1500,13 @@ async fn verify_capsule(bin: &Path, capsule_dir: &Path) {
             prefs["compactionPrompt"], COMPACTION_PROMPT,
             "assistantPreferences lost across upgrade: {prefs}"
         );
+
+        let staged = manifest.migrations.get(maka_event_log::root::ROOT_DATABASE).is_some_and(|v| v.contains(&55));
+        verify_dossiers(&client, manifest.discovery.as_ref(), &manifest.nonce, &post_nonce, staged,manifest.migrations.get(maka_event_log::root::ROOT_DATABASE).is_some_and(|v|v.contains(&56))).await;
+        if staged {
+            assert_eq!(fs::read_to_string(dirs.root.join("discovery/preferences.md")).unwrap(), COMPAT_RULE);
+            assert!(fs::read_to_string(dirs.root.join("discovery/outcomes.md")).unwrap().contains("opened a staged artifact"));
+        }
 
         // Sessions & full history deserialization.
         for session_id in [
@@ -1355,6 +1754,34 @@ async fn verify_capsule(bin: &Path, capsule_dir: &Path) {
         assert!(!inspected["facts"].as_array().unwrap().is_empty());
 
         // Post-upgrade SQLite integrity and monotonic migration check.
+        let conn = Connection::open(dirs.root.join(maka_event_log::root::ROOT_DATABASE)).unwrap();
+        let cursors: i64 = conn.query_row(
+            "SELECT count(*) FROM discovery_source_cursors WHERE source_uri='annex.md' AND last_hash='v1'",
+            [], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(cursors, i64::from(manifest.discovery.is_some()));
+        let pending: i64 = conn.query_row(
+            "SELECT count(*) FROM discovery_source_cursors WHERE source_uri='annex.md' AND delta_kind='modified' AND delta_at=1",
+            [], |row| row.get(0),
+        ).unwrap();
+        let captured_changes = manifest.migrations.get(maka_event_log::root::ROOT_DATABASE).is_some_and(|versions|versions.contains(&54));
+        assert_eq!(pending, i64::from(manifest.discovery.is_some() && captured_changes));
+        let owner = if let Some(dossier) = &manifest.discovery {
+            if let Some(key) = &dossier.watch_scope_key {
+                let value: String = conn.query_row("SELECT value_json FROM plugin_data WHERE package_id='maka.agent.scheduler'
+                    AND scope_id='profile' AND key=?1", [key], |r| r.get(0)).unwrap();
+                assert_eq!(serde_json::from_str::<Value>(&value).unwrap(), compat_watch_scope(&dirs.workspace));
+            }
+            let (cycle, explored, owner): (u8, i64, String) = conn.query_row("SELECT p.broad_cycle,c.last_explored_at,d.owner FROM discovery_dossiers d
+                JOIN discovery_preferences p USING(owner) JOIN discovery_source_cursors c USING(owner)
+                WHERE d.topic_id=?1 AND c.source_uri='annex.md'", [&dossier.topic_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap();
+            assert_eq!((cycle,explored), if staged { (3,42) } else { (0,0) });
+            Some((owner, 1 + dossier.additional_deltas))
+        } else { None };
+        drop(conn);
+        if let Some((owner, count)) = owner.filter(|_| captured_changes) {
+            consume_upgraded_discovery_deltas(&dirs.root, &owner, count).await;
+        }
         let upgraded_migrations = verify_sqlite_integrity_and_migrations(&dirs.root);
         for (db, prev_versions) in &manifest.migrations {
             let now_versions = upgraded_migrations

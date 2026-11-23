@@ -206,6 +206,7 @@ impl Owner {
             backend,
             applied_preset: None,
             compaction_prompt: None,
+            dossier_seed: None,
             collaboration_mode: CollaborationMode::Agent,
             tools: policy.tools,
             title,

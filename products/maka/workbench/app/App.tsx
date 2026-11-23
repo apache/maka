@@ -108,10 +108,14 @@ function App(
   const settingsModel = signal<ModelSelection | undefined>(saved?.settings?.model);
   const settingsPage = signal<string | undefined>(saved?.settings?.page);
   const session = signal<ConversationSessionHandle | null>(null);
+  const discovery = signal<{ topicId: string | null } | null>(null);
+  const discoveryOpen = () => discovery() !== null;
   windowTitle(() =>
-    workspaceMode() === 'rooms'
-      ? (roomWorkspace()?.title() ?? tr('Rooms'))
-      : (session()?.title() ?? null),
+    discoveryOpen()
+      ? tr('Discovery dossiers')
+      : workspaceMode() === 'rooms'
+        ? (roomWorkspace()?.title() ?? tr('Rooms'))
+        : (session()?.title() ?? null),
   );
   const restoredSides = platform.idiom === 'terminal' ? [] : (saved?.sideSessionIds ?? []);
   const sides = signal<SidePane[]>(restoredSides.map((id) => createSide(id)));
@@ -154,6 +158,7 @@ function App(
     sessionId: selected,
     showPanel() {
       navigationGeneration++;
+      discovery.set(null);
       settingsOpened.set(false);
       preview()?.close();
     },
@@ -184,10 +189,12 @@ function App(
     close: closePreview,
   });
   const sideRoom = () =>
-    sidePaneRoom(
-      sidebarExpanded() && canDockBrowser(previewShown()),
-      previewShown() && canDockPreview(),
-    );
+    discoveryOpen()
+      ? 0
+      : sidePaneRoom(
+          sidebarExpanded() && canDockBrowser(previewShown()),
+          previewShown() && canDockPreview(),
+        );
   const launcherClosed = () =>
     batch(() => {
       assistant.set(null);
@@ -240,9 +247,10 @@ function App(
     }
   };
   const openSession = async (id: string | null): Promise<boolean> => {
+    const generation = ++navigationGeneration;
     if (id !== null) {
       if ((await session()?.kind(id)) === 'room') {
-        if (!(await roomWorkspace()?.open(id))) return false;
+        if (!(await roomWorkspace()?.open(id)) || generation !== navigationGeneration) return false;
         return switchWorkspace('rooms');
       }
     }
@@ -251,7 +259,6 @@ function App(
     // A conversation is open in one pane at a time; selecting a side one moves it here.
     const from = id === null ? undefined : sideFor(id);
     if (from && !(await openSide(from, null))) return false;
-    const generation = ++navigationGeneration;
     const original = selected();
     const owner = session();
     try {
@@ -265,6 +272,7 @@ function App(
       )
         return false;
       batch(() => {
+        discovery.set(null);
         settingsOpened.set(false);
         workspaceMode.set('conversations');
         selected.set(id);
@@ -295,16 +303,36 @@ function App(
     sessionId: selected,
     visible: () =>
       workspaceMode() === 'conversations' &&
+      !discoveryOpen() &&
       !settingsOpened() &&
       !(plugins.panel() && !canDockPreview()),
     paneVisible: conversationPaneVisible,
     blocked,
     connectionLost: () => runtime.updateError() !== null,
     openSession,
+    openRooms: () => void switchWorkspace('rooms'),
+    discovery: {
+      route: discovery,
+      async open(topicId) {
+        if (!alive || blocked()) return;
+        const generation = ++navigationGeneration;
+        if (workspaceMode() === 'rooms') await roomWorkspace()?.flush();
+        if (!alive || blocked() || generation !== navigationGeneration) return;
+        batch(() => {
+          const panel = plugins.panel();
+          if (panel) plugins.closePanel(panel.instance);
+          settingsOpened.set(false);
+          workspaceMode.set('conversations');
+          if (topicId !== undefined || !discoveryOpen())
+            discovery.set({ topicId: topicId ?? null });
+        });
+      },
+    },
     openSettings(model, page) {
       if (!alive || blocked()) return;
       navigationGeneration++;
       batch(() => {
+        discovery.set(null);
         settingsModel.set(model);
         settingsPage.set(page);
         settingsOpened.set(true);
@@ -322,28 +350,35 @@ function App(
       if (!blocked()) sidebarExpanded.set(false);
     },
     dismissRoute() {
-      if (!settingsOpened() || blocked()) return false;
+      if (blocked()) return false;
+      if (settingsOpened()) settingsOpened.set(false);
+      else if (discoveryOpen()) discovery.set(null);
+      else return false;
       navigationGeneration++;
-      settingsOpened.set(false);
       return true;
     },
     get openBeside() {
       return platform.idiom !== 'terminal' && sideRoom() > 0 ? openBeside : undefined;
     },
-    ...(platform.idiom === 'terminal' ? {} : { besideSessionIds: besides }),
+    ...(platform.idiom === 'terminal'
+      ? {}
+      : { besideSessionIds: () => (discoveryOpen() ? [] : besides()) }),
   };
   const sidebarHover = createSidebarHover(
-    () => !sidebarExpanded() && conversationPaneVisible() && !blocked(),
+    () => !sidebarExpanded() && (conversationPaneVisible() || discoveryOpen()) && !blocked(),
   );
   const switchWorkspace = async (mode: 'conversations' | 'rooms') => {
     if (blocked()) return false;
     if (mode === workspaceMode()) return true;
+    const generation = ++navigationGeneration;
     if (workspaceMode() === 'rooms') await roomWorkspace()?.flush();
     else {
       const panes = [session(), ...sides().map((pane) => pane.handle())];
       if ((await Promise.all(panes.map((pane) => pane?.leave()))).includes(false)) return false;
     }
+    if (!alive || blocked() || generation !== navigationGeneration) return false;
     batch(() => {
+      discovery.set(null);
       settingsOpened.set(false);
       workspaceMode.set(mode);
     });
@@ -525,10 +560,11 @@ function App(
           previewDialog={previewDialog}
           closePreview={closePreview}
           sides={sides}
+          sideRoom={sideRoom}
           navigation={(temporary) =>
             runtime.renderView(configuration.navigation, conversationNavigationView, {
               shell,
-              openRooms: () => void switchWorkspace('rooms'),
+              openRooms: shell.openRooms,
               suppressSidebarHover: sidebarHover.suppressUntilExit,
               holdSidebarHover: temporary ? sidebarHover.hold : undefined,
               pinSidebar: temporary ? shell.showSidebar : undefined,
@@ -562,7 +598,7 @@ function App(
           initialSessionId: saved?.roomSessionId ?? null,
           agentSessionId: selected,
           active: () => workspaceMode() === 'rooms',
-          visible: () => workspaceMode() === 'rooms' && !settingsOpened(),
+          visible: () => workspaceMode() === 'rooms' && !settingsOpened() && !discoveryOpen(),
           blocked,
           sidebarExpanded,
           setSidebarExpanded: (expanded) => sidebarExpanded.set(expanded),

@@ -62,6 +62,7 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
   const sides = signal<ReturnType<typeof createConversationUi>[]>([]);
   const rooms = signal<{ id: string; flush(): Promise<void> }[]>([]);
   const window: ConversationWindow = {
+    openDiscovery: (topicId) => views.openDiscovery(topicId),
     workspace: signal<WorkspaceViewHandle | null>(null),
     sessions: () => [
       ...[views, ...sides()].flatMap((pane) => {

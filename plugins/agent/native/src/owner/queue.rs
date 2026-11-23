@@ -44,6 +44,8 @@ impl Owner {
         self.goals.bind(self);
         self.start_goals();
         self.start_schedules();
+        self.start_watch_runner();
+        self.start_change_tracker();
         self.start_bot_wake();
         self.start_completion_notifications();
         let owner = self.clone();
@@ -292,12 +294,12 @@ impl Owner {
         if busy {
             return Ok(());
         }
-        if let Some(run) = self
+        let previous = self
             .durable
             .latest_run(session.into())
             .await
-            .map_err(|e| e.to_string())?
-        {
+            .map_err(|e| e.to_string())?;
+        if let Some(run) = previous {
             let latest = self
                 .durable
                 .frontier(run)
@@ -372,6 +374,14 @@ impl Owner {
             }
             _ => None,
         };
+        let mut replacements: Vec<_> = replacement.into_iter().collect();
+        if previous.is_none()
+            && matches!(queued.spec.trigger, Trigger::Message { .. })
+            && let Some(seed) = current.configuration.dossier_seed
+        {
+            self.seed_dossier_input(session, &mut queued, seed, &mut replacements)
+                .await?;
+        }
         let (lease, effects) = scope.accept(self.stop.child_token());
         let committed: Result<Option<RunId>, String> = async {
             let selected = lease.store();
@@ -384,9 +394,8 @@ impl Owner {
                 .durable
                 .with_data_writer(writer)
                 .map_err(|error| error.to_string())?;
-            // A pending message has no admitted execution. Keep its identity,
-            // input and policy, and commit the current executor before consuming it.
-            let expected_revision = if let Some(descriptor) = replacement {
+            // Preserve submission identity when freezing the first thread context or refreshing an executor.
+            let expected_revision = if !replacements.is_empty() {
                 let update = state
                     .queue()
                     .execute(
@@ -399,7 +408,7 @@ impl Owner {
                                 request: Box::new(queued.clone()),
                             },
                         },
-                        vec![descriptor],
+                        replacements,
                     )
                     .await;
                 match update {

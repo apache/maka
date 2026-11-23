@@ -59,11 +59,15 @@ test('approval pins the displayed scope and model and rejects invalid intervals'
 
 test('editing a grant keeps exact names and categories as the catalog changes', () => {
   const preview = {
-    names: ['DiscoveryComplete', 'NewReader', 'Note', 'Read'],
+    names: ['DiscoveryComplete', 'NewReader', 'Note', 'Read', 'UpdateWatchScope'],
     groups: { NewReader: 'read_files', Note: 'commands', Read: 'read_files' },
   };
   const selected = selectedDiscoveryTools(preview, { Read: 'read_files', Note: 'read_files' });
-  assert.deepEqual(approvedDiscoveryNames(preview, selected), ['DiscoveryComplete', 'Read']);
+  assert.deepEqual(approvedDiscoveryNames(preview, selected), [
+    'DiscoveryComplete',
+    'Read',
+    'UpdateWatchScope',
+  ]);
   assert.deepEqual(selectedDiscoveryTools(preview, null, ['Read', 'DiscoveryComplete']), {
     Read: 'read_files',
   });

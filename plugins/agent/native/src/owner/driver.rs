@@ -18,6 +18,7 @@
  */
 
 use super::{Owner, RunAccess, driver_model::DriverModel, now};
+pub(in crate::owner) mod discovery;
 #[path = "driver_effects.rs"]
 mod effects;
 #[cfg(test)]
@@ -922,7 +923,25 @@ impl DriverPorts for NativeDriver {
             let worker = self.clone();
             let mut handle = AbortOnDrop(self.workers.spawn(async move {
                 worker.access.live_configuration().await?;
-                worker.model()?.prepare_step(&view, mode, &worker).await
+                let model = worker.model()?;
+                let prepared = model.prepare_step(&view, mode, &worker).await?;
+                let stop = model
+                    .discovery
+                    .as_ref()
+                    .filter(|_| {
+                        prepared.request.accounting.purpose
+                            == maka_agent_facts::context::ModelPurpose::Main
+                    })
+                    .and_then(|guard| guard.lock().unwrap().stop());
+                if let Some(reason) = stop {
+                    worker
+                        .owner
+                        .converge_discovery(&view, reason)
+                        .await
+                        .map_err(RunError::Internal)?;
+                    return Err(RunError::Cancelled);
+                }
+                Ok(prepared)
             }));
             (&mut handle.0).await.map_err(|error| {
                 if error.is_cancelled() {

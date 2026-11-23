@@ -205,6 +205,22 @@
       "plugins/agent/state/migrations/0052_room_overhaul.sql": {
         "version": 52,
         "sha384": "28e5b10d41c45d63c3cb2e2a05e0e40e2ca3907cc973d024e607dd5d42ea3e9bff75dbd3f077d3f1e7e348cc9ebb7847"
+      },
+      "plugins/agent/state/migrations/0053_discovery_dossiers.sql": {
+        "version": 53,
+        "sha384": "31e720459ce9893e34849810b326e32c85051784af550ce4c47399f40496060a8fb95e5e9743f712b161edf086d52251"
+      },
+      "plugins/agent/state/migrations/0054_discovery_changes.sql": {
+        "version": 54,
+        "sha384": "3a27e49d1e7bec82c6b4ff6cea38f19f2e0965d2fe75c92cf33382c20dcd205e41b0297626a314da5f571d3cd7ada7ea"
+      },
+      "plugins/agent/state/migrations/0055_discovery_staging.sql": {
+        "version": 55,
+        "sha384": "94781185752f12ec1d1b59216415c003ddb64fb440fcfc45886a1f0d43df847da62fc7693b965d8cb8680a43246951f9"
+      },
+      "plugins/agent/state/migrations/0056_discovery_watch_runner.sql": {
+        "version": 56,
+        "sha384": "f94cea0098941388d8378a2de377098db9b007daf66c158e999831ce97c36b84aa41e648b6ff4f78c3d65c609e24fedd"
       }
     },
     "checkpoint-repository": {

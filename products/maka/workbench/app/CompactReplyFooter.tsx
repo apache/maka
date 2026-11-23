@@ -68,7 +68,7 @@ export function CompactReplyFooter(props: {
   );
 }
 
-export function LocalMessageCopy(props: { text(): string; user?: boolean }) {
+export function LocalMessageCopy(props: { text(): string; user?: boolean; label?: string }) {
   const notice = createTransientText();
   const failed = signal(false);
   const copy = async () => {
@@ -85,7 +85,7 @@ export function LocalMessageCopy(props: { text(): string; user?: boolean }) {
     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
       <IconButton
         compact
-        label={props.user ? tr('Copy user message') : tr('Copy message')}
+        label={props.label ?? (props.user ? tr('Copy user message') : tr('Copy message'))}
         icon={notice() && !failed() ? 'check' : 'copy'}
         onPress={() => void copy()}
       />

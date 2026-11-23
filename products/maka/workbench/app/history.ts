@@ -173,6 +173,24 @@ export function stableRowId(
   throw new Error('Transcript row has neither a source address nor a live message identity.');
 }
 
+export function recentMessages(rows: readonly Row[]) {
+  const merged: { id: string; role: 'user' | 'assistant'; text: string }[] = [];
+  for (const row of rows) {
+    if (
+      (row.role === 'user' || row.role === 'assistant') &&
+      row.field === 'body' &&
+      !row.origin &&
+      row.text.trim().length > 0
+    ) {
+      const prev = merged.at(-1);
+      const id = stableRowId(row);
+      if (prev && prev.id === id) prev.text = row.text;
+      else merged.push({ id, role: row.role, text: row.text });
+    }
+  }
+  return merged.slice(-6);
+}
+
 export function activityMessage(origin: MessageOrigin | null | undefined): boolean {
   return origin?.kind === 'automation' || senderSession(origin) !== null;
 }

@@ -35,7 +35,7 @@ use maka_scheduler::{
 use repository::Saved;
 use std::sync::{OnceLock, Weak};
 use tokio::sync::Notify;
-type Plan = TaskPlan<ScheduledEffect, Approval>;
+pub(super) type Plan = TaskPlan<ScheduledEffect, Approval>;
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub(in crate::owner) enum Approval {
@@ -85,6 +85,30 @@ impl FollowupGrant {
                     ..
                 }) if *generation == self.generation
             )
+    }
+}
+
+pub(in crate::owner) fn file_change_grant(
+    plan: &Plan,
+) -> Option<(
+    &super::notifications::BackgroundApproval,
+    &DiscoveryToolGrant,
+)> {
+    if plan.task.status != Status::Active
+        || matches!(
+            plan.task.schedule,
+            TaskSchedule::Once { .. } | TaskSchedule::Script { .. }
+        )
+    {
+        return None;
+    }
+    match &plan.authorization {
+        Some(Approval::Discovery {
+            approval,
+            tools,
+            authority: DiscoveryAuthority::User { .. },
+        }) => Some((approval, tools)),
+        _ => None,
     }
 }
 
@@ -205,6 +229,7 @@ impl BackgroundGrant {
 }
 
 pub(super) struct ActiveInvestigation {
+    pub(super) task_id: String,
     pub(super) worker: String,
     pub(super) profile: DiscoveryWorkerTools,
 }
@@ -273,7 +298,7 @@ impl Owner {
     fn discovery_tool_groups(&self, names: &[String]) -> DiscoveryToolSelection {
         names
             .iter()
-            .filter(|name| name.as_str() != super::discovery::COMPLETE)
+            .filter(|name| !super::discovery::WORKER_TOOLS.contains(&name.as_str()))
             .map(|name| (name.clone(), self.discovery_tool_group(name)))
             .collect()
     }

@@ -20,10 +20,6 @@
 use super::*;
 use maka_agent_facts::tool_call::ToolRejection;
 use maka_agent_facts::tools::*;
-use maka_agent_facts::{
-    durable::{ContentRef, RunId},
-    input::RunInput,
-};
 use maka_tool_catalog::input::ToolRequest;
 #[derive(Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(
@@ -44,7 +40,7 @@ enum Input {
         effect: Target,
         #[serde(default)]
         delivery: AutomationDelivery,
-        /// Optional tool profile for discoveries. Follow-ups normally reuse the approved profile.
+        /// Optional tool profile for a discovery proposal.
         worker_tools: Option<DiscoveryWorkerTools>,
         max_fires: Option<u32>,
         expires_at: Option<i64>,
@@ -64,6 +60,16 @@ enum Input {
         task_id: String,
         revision: u64,
     },
+    #[serde(untagged)]
+    Script(ScriptAction),
+}
+#[derive(Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
+enum ScriptAction {
+    TestScript {
+        source: String,
+        state: Option<Value>,
+    },
 }
 #[derive(Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -77,7 +83,15 @@ impl Scheduler {
     pub fn tools(self: &Arc<Self>) -> Vec<ToolRegistration> {
         let mut tools = vec![ToolRegistration {
             definition: ToolDefinition { provider: None, name: "ScheduledTask".into(),
-                description: "Manage this conversation's automations. Creation activates the rule immediately. When it triggers, intentBody is sent to the agent as the message body. For a model connection, the default is steering; choose followup to wait for the next turn, or agent_run for a new conversation. To wake this conversation later, create an automation with the message you want to receive, then end the current turn. For external agents, the trigger starts a new turn in the same conversation. Use a time schedule or a script schedule. Scripts are ordinary JavaScript or TypeScript programs run by Deno from the conversation workspace, under its process sandbox. Scripts can import npm:, jsr:, and node: modules directly. Print true or false on the last stdout line. A script fires when the result becomes true and rearms when false. The default script interval is 60 seconds. A new discovery plan waits for user approval. While handling an approved discovery's report, the Bot can schedule a one-time follow-up using the same tool profile and authority. Set workerTools when requesting a specific profile. Check approved in the result. If false, ask the user to approve the plan in Proactive Discovery. Keep successful background scheduling confirmations internal and share material findings separately. Only the user can resume a discovery plan they paused. Times are Unix milliseconds; timezone is an IANA name. List returns tasks and revisions.".into(),
+                description: concat!(
+                    "Manage this conversation's automations. Creation activates the rule immediately. When it triggers, intentBody is sent to the agent as the message body. ",
+                    "For a model connection, the default is steering. Choose followup to wait for the next turn, or agent_run for a new conversation. To wake this conversation later, create an automation with the message you want to receive, then end the current turn. For external agents, the trigger starts a new turn in the same conversation. ",
+                    "Use a time schedule or a sandboxed Deno script. Scripts run JavaScript or TypeScript in the conversation workspace, support npm:, jsr:, and node: imports, and default to 60-second checks. ",
+                    "Print true, false, or JSON.stringify({trigger, dedupeKey, summary, data, state}) on the last non-empty stdout line. Only the boolean trigger is required in an object. Boolean checks fire on the first true and rearm on false. A true keyed check fires when its key differs from the last fired key, even across false checks. Summary and data accompany the message. ",
+                    "Read previous JSON state from MAKA_AUTOMATION_STATE. Omit state to keep it or return null to clear it. Preview with action test_script, source and optional state. ",
+                    "A new discovery plan waits for user approval. Set workerTools when requesting a specific profile. Check approved in the result. If false, ask the user to approve the plan in Proactive Discovery. Keep successful background scheduling confirmations internal and share material findings separately. Only the user can resume a discovery plan they paused. ",
+                    "Times are Unix milliseconds and timezone is an IANA name. List returns tasks and revisions.",
+                ).into(),
                 input_schema: serde_json::to_value(schemars::schema_for!(ToolRequest<Input>)).expect("task tool schema"),
                 output_schema: None, freeform: None },
             nesting: ToolNesting::Nestable, semantics: ToolSemantics::ExclusiveStep,
@@ -90,11 +104,10 @@ impl Scheduler {
 }
 impl ToolPreparer for Scheduler {
     fn names(&self) -> Vec<String> {
-        vec![
-            "ScheduledTask".into(),
-            super::super::discovery::COMPLETE.into(),
-            super::super::discovery::MEMORY.into(),
-        ]
+        std::iter::once("ScheduledTask")
+            .chain(super::super::discovery::VISIBLE_TOOLS.iter().copied())
+            .map(str::to_owned)
+            .collect()
     }
     fn prepare(
         &self,
@@ -104,6 +117,20 @@ impl ToolPreparer for Scheduler {
         cancellation: CancellationToken,
     ) -> PreparationFuture {
         let owner = self.link.get().and_then(Weak::upgrade);
+        if matches!(
+            name.as_str(),
+            super::super::discovery::UPSERT
+                | super::super::discovery::FINISH
+                | super::super::discovery::LIST
+                | super::super::discovery::READ
+                | super::super::discovery::REGISTER
+                | super::super::discovery::PENDING
+                | super::super::discovery::STAGE
+                | super::super::discovery::WATCH_SCOPE
+                | super::super::discovery::PREFERENCES
+        ) {
+            return self.prepare_dossier_tool(name, input, context, cancellation);
+        }
         if name == super::super::discovery::COMPLETE {
             return self.prepare_discovery(input, context, cancellation);
         }
@@ -141,6 +168,11 @@ impl ToolPreparer for Scheduler {
                 Input::List { .. } => {
                     Text::localized("List automations", "列出自动化", "列出自動化")
                 }
+                Input::Script(_) => Text::localized(
+                    "Test automation script",
+                    "测试自动化脚本",
+                    "測試自動化指令碼",
+                ),
                 Input::Pause { .. } => {
                     Text::localized("Pause automation", "暂停自动化", "暫停自動化")
                 }
@@ -161,9 +193,9 @@ impl ToolPreparer for Scheduler {
                         return Err(failed("Scheduled tasks unavailable"));
                     }
                     let captured = owner.clone();
-                    let job = owner
-                        .workers
-                        .spawn(async move { captured.scheduled_tool(input, context).await });
+                    let job = owner.workers.spawn(async move {
+                        captured.scheduled_tool(input, context, cancellation).await
+                    });
                     drop(runs);
                     let value = job.await.map_err(failed)?.map_err(failed)?;
                     Ok(value.into())
@@ -175,122 +207,16 @@ impl ToolPreparer for Scheduler {
     }
 }
 impl Owner {
-    async fn followup_approval(
-        &self,
-        catalog: &repository::Catalog,
-        plan: &mut Plan,
-        requested_tools: Option<DiscoveryWorkerTools>,
-        run: RunId,
-        input: &ContentRef,
-        at: i64,
-    ) -> Result<Option<Approval>, String> {
-        let TaskSchedule::Once { run_at } = &plan.task.schedule else {
-            return Ok(None);
-        };
-        let ScheduledEffect::Discovery {
-            target,
-            model,
-            thinking_level,
-            worker_tools,
-            selected_tools,
-        } = &mut plan.task.effect
-        else {
-            return Ok(None);
-        };
-        let RunInput::Message {
-            source_messages, ..
-        } = self.run_content(run, input).await.map_err(reason)?
-        else {
-            return Ok(None);
-        };
-        let [source] = source_messages.as_slice() else {
-            return Ok(None);
-        };
-        let Some(MessageOrigin::DiscoveryReport { session_id }) = &source.message.origin else {
-            return Ok(None);
-        };
-        for saved in catalog.plans.values() {
-            let parent = &saved.plan;
-            let Some(Approval::Discovery {
-                approval,
-                tools: approved,
-                authority: DiscoveryAuthority::User { generation },
-            }) = &parent.authorization
-            else {
-                continue;
-            };
-            let ScheduledEffect::Discovery {
-                target: parent_target,
-                model: parent_model,
-                thinking_level: parent_thinking,
-                selected_tools: parent_selection,
-                ..
-            } = &parent.task.effect
-            else {
-                continue;
-            };
-            if target != parent_target
-                || model != parent_model
-                || thinking_level != parent_thinking
-                || parent.task.status != Status::Active
-                || parent
-                    .task
-                    .expires_at
-                    .is_some_and(|expiry| at.max(*run_at) >= expiry)
-            {
-                continue;
-            }
-            let profile = requested_tools.unwrap_or(approved.profile);
-            if profile == DiscoveryWorkerTools::Session
-                && approved.profile == DiscoveryWorkerTools::ReadOnly
-            {
-                continue;
-            }
-            let Some(fire) = parent.task.runs.iter().find(|fire| {
-                fire.outcome == Outcome::Ok
-                    && fire.session_id.as_ref() == Some(session_id)
-                    && source.message.message_id
-                        == format!("m_{}", super::super::discovery::report_identity(&fire.id))
-            }) else {
-                continue;
-            };
-            if self.scheduler.completed_report_generation(&fire.id).await? == Some(*generation) {
-                *worker_tools = profile;
-                let mut tools = approved.clone();
-                tools.profile = profile;
-                if profile == DiscoveryWorkerTools::ReadOnly {
-                    tools
-                        .names
-                        .retain(|name| self.read_only_discovery_tool(name));
-                }
-                *selected_tools = parent_selection.as_ref().map(|selection| {
-                    selection
-                        .iter()
-                        .filter(|(name, _)| tools.names.contains(name))
-                        .map(|(name, group)| (name.clone(), *group))
-                        .collect()
-                });
-                return Ok(Some(Approval::Discovery {
-                    approval: approval.clone(),
-                    tools,
-                    authority: DiscoveryAuthority::Followup {
-                        grant: FollowupGrant {
-                            task_id: parent.task.id.clone(),
-                            generation: *generation,
-                        },
-                    },
-                }));
-            }
-        }
-        Ok(None)
-    }
-
     async fn scheduled_tool(
         &self,
         input: Input,
         context: ToolCallContext,
+        cancellation: CancellationToken,
     ) -> Result<Value, String> {
-        let _gate = self.scheduler.gate.lock().await;
+        let _gate = match &input {
+            Input::Script(_) => None,
+            _ => Some(self.scheduler.gate.lock().await),
+        };
         let session = self
             .tool_store(&context)?
             .get::<StoredSessionConfiguration>()
@@ -308,6 +234,27 @@ impl Owner {
             || view.terminal.is_some()
         {
             return Err("scheduler_invocation_closed".into());
+        }
+        let current_session = || {
+            let session = resolve_session(session)?;
+            if session.archived
+                || session.configuration.permission_basis() != view.spec.permission_basis
+            {
+                return Err("scheduler_authorization_changed".to_string());
+            }
+            Ok(session)
+        };
+        if let Input::Script(ScriptAction::TestScript { source, state }) = input {
+            let session = current_session()?;
+            return self
+                .test_script(
+                    &session.configuration,
+                    &view.spec.permission_ceiling.sandbox,
+                    source,
+                    state,
+                    cancellation,
+                )
+                .await;
         }
         let identity = hex::encode(Sha256::digest(
             serde_json::to_vec(&(&context.execution, &context.operation_id)).map_err(reason)?,
@@ -350,12 +297,7 @@ impl Owner {
                 expires_at,
             } => {
                 let (effect, authorization) = {
-                    let session = resolve_session(session)?;
-                    if session.archived
-                        || session.configuration.permission_basis() != view.spec.permission_basis
-                    {
-                        return Err("scheduler_authorization_changed".into());
-                    }
+                    let session = current_session()?;
                     let basis = {
                         let runs = self.runs.state().await;
                         runs.controls
@@ -471,20 +413,7 @@ impl Owner {
                 )
                 .map_err(reason)?;
                 plan.misfire = misfire;
-                plan.authorization =
-                    if matches!(plan.task.effect, ScheduledEffect::Discovery { .. }) {
-                        self.followup_approval(
-                            &catalog,
-                            &mut plan,
-                            worker_tools,
-                            view.run,
-                            &view.spec.input,
-                            at,
-                        )
-                        .await?
-                    } else {
-                        authorization
-                    };
+                plan.authorization = authorization;
                 if plan.authorization.is_none() {
                     plan = plan.pause(at);
                 }
@@ -561,7 +490,7 @@ impl Owner {
                 };
                 (task_id.clone(), plan)
             }
-            Input::List { .. } => unreachable!(),
+            Input::List { .. } | Input::Script(_) => unreachable!(),
         };
         let revision = catalog
             .plans

@@ -56,14 +56,27 @@ async function setup(t, initialStatus = 'default', desktop = true) {
   const permission = t.mock.fn(async () => status);
   const requestPermission = t.mock.fn(() => prompt.promise);
   globalThis.__notificationFixture = {
+    batch: (fn) => fn(),
     cleanup: (fn) => cleanups.push(fn),
+    computed: (fn) => fn,
     effect(fn) {
+      let dispose;
       const run = () => {
+        dispose?.();
         effects.sessions.delete(run);
         effects.foreground.delete(run);
-        track(run, fn);
+        dispose = track(run, fn);
       };
       run();
+      cleanups.push(() => dispose?.());
+    },
+    signal(initial) {
+      let current = initial;
+      const read = () => current;
+      read.set = (next) => {
+        current = next;
+      };
+      return read;
     },
     untracked: (read) => track(undefined, read),
     Notifications: {
@@ -81,7 +94,7 @@ async function setup(t, initialStatus = 'default', desktop = true) {
     Window: { get: (id) => ({ focus: () => actions.push(['focus', id]) }) },
   };
   const native = {
-    nsh: 'export const { cleanup, effect, Notifications, untracked } = globalThis.__notificationFixture;',
+    nsh: 'export const { batch, cleanup, computed, effect, Notifications, signal, untracked } = globalThis.__notificationFixture;',
     'nsh/desktop': 'export const { Window } = globalThis.__notificationFixture;',
     './chrome': `export const ownTitleBar = ${desktop};`,
     './locale': 'export const tr = key => key;',
@@ -99,7 +112,7 @@ async function setup(t, initialStatus = 'default', desktop = true) {
       return next(specifier, context);
     },
   });
-  const { watchNotifications } = await import(
+  const { watchDiscoveryDossiers, watchNotifications } = await import(
     new URL(`notifications.ts?test=${encodeURIComponent(t.name)}`, appRoot)
   ).finally(() => {
     hooks.deregister();
@@ -111,6 +124,7 @@ async function setup(t, initialStatus = 'default', desktop = true) {
         sessions: () => read('sessions'),
         foreground: () => read('foreground'),
         open: (id) => actions.push(['open', id]),
+        openDiscovery: (topicId) => actions.push(['openDiscovery', topicId]),
       }),
     update: (...rows) => update('sessions', rows),
     foreground: (value) => update('foreground', value),
@@ -124,6 +138,7 @@ async function setup(t, initialStatus = 'default', desktop = true) {
   owner.mount();
   return {
     owner,
+    watchDiscoveryDossiers,
     setStatus: (next) => {
       status = next;
     },
@@ -226,6 +241,75 @@ for (const status of ['granted', 'denied', 'unavailable']) {
     );
   });
 }
+
+test('discovery interrupts rebaseline on reconnect and route presses to the dossier', async (t) => {
+  const { owner, watchDiscoveryDossiers, presses, actions, shown } = await setup(t, 'granted');
+  const streams = [];
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  watchDiscoveryDossiers(
+    {
+      async subscribe(endpoint, method) {
+        assert.deepEqual([endpoint, method], ['agent', 'watchDossiers']);
+        const reader = new ReadableStream({
+          start(controller) {
+            streams.push(controller);
+          },
+        }).getReader();
+        return {
+          next: async () => (await reader.read()).value ?? null,
+          close: () => reader.cancel(),
+        };
+      },
+    },
+    () => false,
+  );
+  const revision = (n) => ({
+    notificationsEnabled: true,
+    dossiers: ['a', 'b'].map((topicId) => ({
+      topicId,
+      title: topicId,
+      muted: false,
+      lastNotifiedRevision: n,
+      lastInterruptAt: n,
+      lastInterruptReason: topicId === 'a' ? 'Signature due' : `Deadline ${n}`,
+    })),
+  });
+  streams[0].enqueue(revision(1));
+  streams[0].enqueue(revision(3));
+  streams[0].enqueue(revision(3));
+  await setImmediate();
+  streams[0].close();
+  await setImmediate();
+  t.mock.timers.tick(500);
+  await setImmediate();
+  streams[1].enqueue(revision(4));
+  streams[1].enqueue(revision(3));
+  streams[1].enqueue(revision(4));
+  streams[1].enqueue(revision(5));
+  await setImmediate();
+  assert.deepEqual(
+    shown,
+    [3, 5].flatMap((n) => [
+      { id: 'discovery:a', title: 'a', body: 'Signature due' },
+      { id: 'discovery:b', title: 'b', body: `Deadline ${n}` },
+    ]),
+  );
+  for (const [id, target] of [
+    [shown[1].id, ['openDiscovery', 'b']],
+    [shown[0].id, ['openDiscovery', 'a']],
+    ['discovery:', null],
+    ['main-session', ['open', 'main-session']],
+    [shown[1].id, ['openDiscovery', 'b']],
+  ]) {
+    presses.emit('press', { id });
+    assert.deepEqual(actions.splice(0), target ? [['focus', 'main'], target] : [['focus', 'main']]);
+  }
+  owner.dispose();
+  await setImmediate();
+  t.mock.timers.tick(10000);
+  assert.equal(streams.length, 2);
+  assert.equal(presses.listenerCount('press'), 0);
+});
 
 test('a terminal never subscribes or asks for notification permission', async (t) => {
   const { owner, permission, presses } = await setup(t, 'default', false);

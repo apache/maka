@@ -269,7 +269,7 @@ impl RunAccess {
         let mode = current.permissions.access;
         let root = self.state_root()?;
         let ceiling = self.spec.permission_ceiling.sandbox.clone();
-        let approved = if file_approvals {
+        let approved = if file_approvals && current.dossier_seed.is_none() {
             self.spec.filesystem_approval_ceiling.clone()
         } else {
             None

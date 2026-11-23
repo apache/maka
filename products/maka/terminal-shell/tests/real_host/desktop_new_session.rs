@@ -2128,6 +2128,69 @@ async fn desktop_system_permission_guidance_uses_native_actions_without_paths() 
     fixture.finish().await;
 }
 
+async fn desktop_discovery_switches_in_place_and_preserves_drafts() {
+    let fixture = Fixture::configured(Options::default()).await;
+    let client = fixture.client().await;
+    let contract = mutate(
+        &client,
+        "dropDiscoveryLead",
+        json!({"text":"Review the contract"}),
+    )
+    .await;
+    let _release = mutate(
+        &client,
+        "dropDiscoveryLead",
+        json!({"text":"Review the release"}),
+    )
+    .await;
+    mutate(
+        &client,
+        "setDossierMuted",
+        json!({"topicId":contract["topicId"],"muted":true}),
+    )
+    .await;
+    client.close().await.unwrap();
+
+    let desktop = Desktop::open(&fixture, &fixture.address).await;
+    desktop.type_text("Keep this draft").await;
+    desktop.press("More features").await;
+    desktop.press("Discovery dossiers").await;
+    desktop.control("Drop lead").await;
+    desktop.press("Open conversation NSH real Agent").await;
+    desktop.expect_text("Keep this draft").await;
+    desktop.press("Maka Bot").await;
+    desktop.press("Proactive discovery").await;
+    desktop.control("Drop lead").await;
+    desktop.control("Mute").await;
+    desktop.press("Review the contract").await;
+    desktop.control("Unmute").await;
+    desktop.press("Review the release").await;
+    desktop.control("Mute").await;
+    let viewport = desktop.platform.viewport_size();
+    let scale = desktop.platform.scale_factor();
+    desktop
+        .platform
+        .set_viewport(
+            size(nsh_terminal::DevicePixels(700), viewport.height),
+            scale,
+        )
+        .unwrap();
+    desktop.press("Expand session browser").await;
+    desktop.press("More features").await;
+    desktop.press("Rooms").await;
+    desktop.platform.set_viewport(viewport, scale).unwrap();
+    desktop.control("Conversations").await;
+    desktop.press("Conversations").await;
+    desktop.press("More features").await;
+    desktop.press("Discovery dossiers").await;
+    desktop.control("Discovery dossiers").await;
+    desktop.artifact("inline-discovery-dossiers");
+    desktop.press("Maka Bot").await;
+    desktop.control("Proactive discovery").await;
+    desktop.close().await;
+    fixture.finish().await;
+}
+
 async fn desktop_workspace_stage_inspector_worktrees_and_fullscreen_review() {
     let mut fixture = Fixture::open_with_configuration(
         Options {
@@ -2577,6 +2640,7 @@ pub(crate) const CASES: &[&str] = &[
     "desktop_file_gestures_preserve_drafts_and_stage_an_image",
     "desktop_composer_large_paste_keeps_controls_on_screen",
     "desktop_system_permission_guidance_uses_native_actions_without_paths",
+    "desktop_discovery_switches_in_place_and_preserves_drafts",
     "desktop_workspace_stage_inspector_worktrees_and_fullscreen_review",
 ];
 
@@ -2627,6 +2691,9 @@ pub(crate) fn run(name: &str) {
         }
         "desktop_system_permission_guidance_uses_native_actions_without_paths" => {
             runtime.block_on(desktop_system_permission_guidance_uses_native_actions_without_paths())
+        }
+        "desktop_discovery_switches_in_place_and_preserves_drafts" => {
+            runtime.block_on(desktop_discovery_switches_in_place_and_preserves_drafts())
         }
         "desktop_workspace_stage_inspector_worktrees_and_fullscreen_review" => {
             runtime.block_on(desktop_workspace_stage_inspector_worktrees_and_fullscreen_review())
