@@ -56,7 +56,7 @@ use maka_plugin_core::{
     contract::ResourceType,
     operation::{OperationCleanup, OperationOutcome, OperationResult, Receipt},
 };
-use rusqlite::Connection;
+use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
@@ -617,6 +617,87 @@ fn verify_sqlite_integrity_and_migrations(root: &Path) -> BTreeMap<String, Vec<i
     ledgers
 }
 
+struct QueuedBeforeUpgrade {
+    db: PathBuf,
+    session: String,
+    request: String,
+    at: i64,
+}
+
+fn capture_queued_before_upgrade(root: &Path, session: &str) -> QueuedBeforeUpgrade {
+    let mut dbs = Vec::new();
+    collect_sqlite_files(root, &mut dbs);
+    let mut found = Vec::new();
+    for db in dbs {
+        let conn = Connection::open_with_flags(&db, OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+        let has_queue: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='agent_queue_events')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        if !has_queue {
+            continue;
+        }
+        let row: Option<(String, i64)> = conn
+            .query_row(
+                "SELECT q.request, e.at FROM agent_queue_events e
+                 JOIN contents b ON b.id=e.body_content_id
+                 JOIN agent_queue_items q ON q.session=e.session
+                   AND q.request=json_extract(CAST(b.payload AS TEXT), '$.edit.request.id')
+                 WHERE e.session=? AND q.state='delivered'
+                   AND json_extract(CAST(b.payload AS TEXT), '$.kind')='command'
+                   AND json_extract(CAST(b.payload AS TEXT), '$.edit.kind')='enqueue'
+                   AND json_extract(CAST(b.payload AS TEXT), '$.resume_after_interrupt') IS NULL
+                 ORDER BY e.revision LIMIT 1",
+                [session],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()
+            .unwrap();
+        if let Some((request, at)) = row {
+            found.push(QueuedBeforeUpgrade {
+                db,
+                session: session.to_owned(),
+                request,
+                at,
+            });
+        }
+    }
+    assert_eq!(
+        found.len(),
+        1,
+        "capsule must contain a delivered ordinary enqueue for {session}"
+    );
+    let item = found.pop().unwrap();
+    assert_ne!(
+        item.at, 0,
+        "capsule enqueue time must detect a missing v54 backfill"
+    );
+    item
+}
+
+fn verify_queued_after_upgrade(item: &QueuedBeforeUpgrade) {
+    let conn = Connection::open_with_flags(&item.db, OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+    let (state, at, interrupted): (String, i64, Option<String>) = conn
+        .query_row(
+            "SELECT state,enqueued_at,interrupted_run FROM agent_queue_items WHERE session=? AND request=?",
+            params![item.session, item.request],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .expect("pre-upgrade queued request missing after upgrade");
+    assert_eq!(state, "delivered");
+    assert_eq!(
+        at, item.at,
+        "enqueue time differs from the pre-upgrade canonical event"
+    );
+    assert_eq!(
+        interrupted, None,
+        "ordinary enqueue acquired interrupt provenance"
+    );
+}
+
 async fn produce_capsule(bin: &Path, capsule_dir: &Path) -> CapsuleManifest {
     fs::create_dir_all(capsule_dir).unwrap();
     let canonical_base = fs::canonicalize(capsule_dir).unwrap();
@@ -1017,6 +1098,9 @@ async fn verify_capsule(bin: &Path, capsule_dir: &Path) {
     let dirs = EnvDirs::in_base(&canonical_base);
     dirs.prepare();
 
+    // Snapshot the old canonical event before the Host runs migration 54.
+    let queued_before = capture_queued_before_upgrade(&dirs.root, &manifest.primary_session_id);
+
     let post_nonce = uuid::Uuid::new_v4().simple().to_string();
     let saw_pre_context = Arc::new(AtomicBool::new(false));
     let saw_session_data = Arc::new(AtomicBool::new(false));
@@ -1036,6 +1120,8 @@ async fn verify_capsule(bin: &Path, capsule_dir: &Path) {
         .unwrap_or_else(|e| panic!("spawn Host {}: {e}", bin.display()));
     let outcome = AssertUnwindSafe(async {
         let (mut client, _) = host.ready().await.expect("Host ready");
+
+        verify_queued_after_upgrade(&queued_before);
 
         // Stage 2: Exhaustive read/deserialization sweep across every persisted domain.
         let catalog = call(
