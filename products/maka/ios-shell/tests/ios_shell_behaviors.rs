@@ -823,6 +823,11 @@ fn ios_shell_drives_live_agent_host_with_real_agent_contract_schemas() {
         Arc::new(std::sync::Mutex::new(Vec::new()));
     let recorded_sends: Arc<std::sync::Mutex<Vec<(String, String)>>> =
         Arc::new(std::sync::Mutex::new(Vec::new()));
+    let watch_break = Arc::new(Notify::new());
+    let catalog_break = Arc::new(Notify::new());
+    let watch_opens = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let catalog_opens = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let list_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let watch_cancelled = Arc::new(AtomicBool::new(false));
     let watch_cancel_notify = Arc::new(Notify::new());
     let perm_resolved = Arc::new(AtomicBool::new(false));
@@ -850,6 +855,11 @@ fn ios_shell_drives_live_agent_host_with_real_agent_contract_schemas() {
         requested_permissions: Permissions,
         answers: Arc<std::sync::Mutex<Vec<(String, InteractionAnswer)>>>,
         sends: Arc<std::sync::Mutex<Vec<(String, String)>>>,
+        watch_break: Arc<Notify>,
+        catalog_break: Arc<Notify>,
+        watch_opens: Arc<std::sync::atomic::AtomicUsize>,
+        catalog_opens: Arc<std::sync::atomic::AtomicUsize>,
+        list_calls: Arc<std::sync::atomic::AtomicUsize>,
         watch_cancelled: Arc<AtomicBool>,
         watch_cancel_notify: Arc<Notify>,
         perm_resolved: Arc<AtomicBool>,
@@ -936,6 +946,11 @@ fn ios_shell_drives_live_agent_host_with_real_agent_contract_schemas() {
             let requested_permissions = self.requested_permissions.clone();
             let answers = self.answers.clone();
             let sends = self.sends.clone();
+            let watch_break = self.watch_break.clone();
+            let catalog_break = self.catalog_break.clone();
+            let watch_opens = self.watch_opens.clone();
+            let catalog_opens = self.catalog_opens.clone();
+            let list_calls = self.list_calls.clone();
             let watch_cancelled = self.watch_cancelled.clone();
             let watch_cancel_notify = self.watch_cancel_notify.clone();
             let perm_resolved = self.perm_resolved.clone();
@@ -980,6 +995,7 @@ fn ios_shell_drives_live_agent_host_with_real_agent_contract_schemas() {
                         })
                     }
                     "list" => {
+                        list_calls.fetch_add(1, Ordering::SeqCst);
                         let _req: List = serde_json::from_value(input)
                             .map_err(|e| HandlerError::from(e.to_string()))?;
                         to_val(&SessionPage {
@@ -991,6 +1007,11 @@ fn ios_shell_drives_live_agent_host_with_real_agent_contract_schemas() {
                         })
                     }
                     "catalog" => {
+                        let seq = catalog_opens.fetch_add(1, Ordering::SeqCst);
+                        let mut session = session;
+                        if seq > 0 {
+                            session.title = "重连后的新目录项".into();
+                        }
                         let _req: List = serde_json::from_value(input)
                             .map_err(|e| HandlerError::from(e.to_string()))?;
                         let page = serde_json::to_value(&SessionPage {
@@ -1005,8 +1026,10 @@ fn ios_shell_drives_live_agent_host_with_real_agent_contract_schemas() {
                             .emit(page)
                             .await
                             .map_err(|e| HandlerError::from(e.to_string()))?;
-                        context.scope().cancellation.cancelled().await;
-                        Ok(HandlerValue::Json(Value::Null))
+                        tokio::select! {
+                            _ = catalog_break.notified() => Err(HandlerError::from("catalog-test-interruption")),
+                            _ = context.scope().cancellation.cancelled() => Ok(HandlerValue::Json(Value::Null)),
+                        }
                     }
                     "observe" => {
                         let _req: SessionRead = serde_json::from_value(input)
@@ -1113,6 +1136,32 @@ fn ios_shell_drives_live_agent_host_with_real_agent_contract_schemas() {
                         let req: Watch = serde_json::from_value(input)
                             .map_err(|e| HandlerError::from(e.to_string()))?;
                         assert_eq!(req.session_id, "sess-quic-01");
+                        watch_opens.fetch_add(1, Ordering::SeqCst);
+                        // Opening the selected session can replace its initial watch.
+                        // Only the resume cursor can unlock the data after the break.
+                        if req.after == 12 {
+                            context
+                                .emit(
+                                    serde_json::to_value(&DeliveryPage::Queue {
+                                        queue: Queue {
+                                            revision: 3,
+                                            entries: vec![QueueEntry {
+                                                origin: None,
+                                                message_id: "q-2".into(),
+                                                kind: QueueKind::Followup,
+                                                preview: "重连后收到的消息".into(),
+                                            }],
+                                        },
+                                    })
+                                    .unwrap(),
+                                )
+                                .await
+                                .map_err(|e| HandlerError::from(e.to_string()))?;
+                            context.scope().cancellation.cancelled().await;
+                            watch_cancelled.store(true, Ordering::SeqCst);
+                            watch_cancel_notify.notify_waiters();
+                            return Ok(HandlerValue::Json(Value::Null));
+                        }
                         assert_eq!(req.after, 10, "watch must resume from Observation.through");
 
                         // 1. Real DeliveryPage::Events with Delivery + DeliveryFact::Delta
@@ -1265,7 +1314,10 @@ fn ios_shell_drives_live_agent_host_with_real_agent_contract_schemas() {
                             .await
                             .map_err(|e| HandlerError::from(e.to_string()))?;
 
-                        context.scope().cancellation.cancelled().await;
+                        tokio::select! {
+                            _ = watch_break.notified() => return Err(HandlerError::from("watch-test-interruption")),
+                            _ = context.scope().cancellation.cancelled() => {},
+                        }
                         watch_cancelled.store(true, Ordering::SeqCst);
                         watch_cancel_notify.notify_waiters();
                         Ok(HandlerValue::Json(Value::Null))
@@ -1564,6 +1616,11 @@ fn ios_shell_drives_live_agent_host_with_real_agent_contract_schemas() {
         let contract_clone = agent_contract.clone();
         let answers_clone = recorded_answers.clone();
         let sends_clone = recorded_sends.clone();
+        let wb_clone = watch_break.clone();
+        let cb_clone = catalog_break.clone();
+        let wo_clone = watch_opens.clone();
+        let co_clone = catalog_opens.clone();
+        let lc_clone = list_calls.clone();
         let wc_clone = watch_cancelled.clone();
         let wcn_clone = watch_cancel_notify.clone();
         let perm_clone = perm_resolved.clone();
@@ -1577,6 +1634,11 @@ fn ios_shell_drives_live_agent_host_with_real_agent_contract_schemas() {
                     let root_id = root_id_for_service.clone();
                     let answers = answers_clone.clone();
                     let sends = sends_clone.clone();
+                    let watch_break = wb_clone.clone();
+                    let catalog_break = cb_clone.clone();
+                    let watch_opens = wo_clone.clone();
+                    let catalog_opens = co_clone.clone();
+                    let list_calls = lc_clone.clone();
                     let watch_cancelled = wc_clone.clone();
                     let watch_cancel_notify = wcn_clone.clone();
                     let perm_resolved = perm_clone.clone();
@@ -1600,6 +1662,11 @@ fn ios_shell_drives_live_agent_host_with_real_agent_contract_schemas() {
                                         requested_permissions,
                                         answers,
                                         sends,
+                                        watch_break,
+                                        catalog_break,
+                                        watch_opens,
+                                        catalog_opens,
+                                        list_calls,
                                         watch_cancelled,
                                         watch_cancel_notify,
                                         perm_resolved,
@@ -1762,6 +1829,9 @@ fn ios_shell_drives_live_agent_host_with_real_agent_contract_schemas() {
         );
     }
 
+    assert!(app.press("label:Toggle steer or queue delivery").is_err());
+    assert!(app.press("label:Retry subscriptions").is_err());
+
     // 6. Send real Steer message -> Host deserializes real AgentSend!
     app.type_text("label:Chat composer input", "按刚才的方案直接改")
         .unwrap();
@@ -1786,8 +1856,27 @@ fn ios_shell_drives_live_agent_host_with_real_agent_contract_schemas() {
     app.wait_for("text:运行中").unwrap();
     app.press("label:Back from automations").unwrap();
 
-    // 9. Disconnect Host -> Host watch subscription cancels promptly!
+    // Each failed stream is retried independently and delivers fresh data.
+    let lists_before = list_calls.load(Ordering::SeqCst);
+    let catalogs_before = catalog_opens.load(Ordering::SeqCst);
+    watch_break.notify_one();
+    app.wait_for("text:/会话流式订阅中断/").unwrap();
+    app.press("label:Retry subscriptions").unwrap();
+    app.wait_for("text:/重连后收到的消息/").unwrap();
+    assert_eq!(catalog_opens.load(Ordering::SeqCst), catalogs_before);
+    assert_eq!(list_calls.load(Ordering::SeqCst), lists_before);
+    assert!(!app.shows("text:/会话流式订阅中断/"));
+    assert!(app.shows("已连接 Studio Agent Host"));
+
+    let watches_before = watch_opens.load(Ordering::SeqCst);
+    catalog_break.notify_one();
+    app.wait_for("text:/会话目录同步中断/").unwrap();
+    app.press("label:Retry subscriptions").unwrap();
     app.press("label:Open drawer").unwrap();
+    app.wait_for("label:Session 重连后的新目录项").unwrap();
+    assert_eq!(watch_opens.load(Ordering::SeqCst), watches_before);
+    assert_eq!(list_calls.load(Ordering::SeqCst), lists_before);
+    // 9. Disconnect Host -> Host watch subscription cancels promptly!
     app.press("label:Settings").unwrap();
     app.press("label:Disconnect active host").unwrap();
 

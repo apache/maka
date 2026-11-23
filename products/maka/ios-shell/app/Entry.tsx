@@ -615,6 +615,8 @@ function App() {
   const quotedLine = signal<string | null>(null);
   const defaultDelivery = signal<'steer' | 'queue'>('steer');
   const queuedMessages = signal<string[]>([]);
+  const catalogError = signal<string | null>(null);
+  const watchError = signal<string | null>(null);
   const diffTitle = signal('platform/remote-client/src/client.rs');
   const diffLines = signal<DiffLineItem[]>(PREVIEW_DIFF_LINES);
   const diffTruncatedNotice = signal<string | null>(null);
@@ -710,7 +712,8 @@ function App() {
   const isSessionStillCurrent = (gen: number, epoch: string, sGen: number, sessionId: string) =>
     isHostStillCurrent(gen, epoch) && sGen === sessionSyncGen && activeSession()?.id === sessionId;
 
-  const stopWatchSubscription = () => {
+  const stopWatchSubscription = (clearError = true) => {
+    if (clearError) watchError.set(null);
     if (watchSub) {
       const id = watchSub.subscriptionId;
       watchSub = null;
@@ -726,7 +729,8 @@ function App() {
     }
   };
 
-  const stopCatalogSubscription = () => {
+  const stopCatalogSubscription = (clearError = true) => {
+    if (clearError) catalogError.set(null);
     if (catalogSub) {
       const id = catalogSub.subscriptionId;
       catalogSub = null;
@@ -934,7 +938,7 @@ function App() {
     epoch: string,
     sGen: number,
   ) => {
-    stopWatchSubscription();
+    stopWatchSubscription(false);
     subOpenSeq += 1;
     const subId = 'watch:' + sessionId + ':' + String(sGen) + ':' + String(subOpenSeq);
     const slot: SubSlot = {
@@ -959,11 +963,13 @@ function App() {
           return;
         }
         slot.generation = handle.generation;
+        watchError.set(null);
       },
       (err: Error) => {
-        if (watchSub === slot) watchSub = null;
+        if (watchSub !== slot) return;
+        watchSub = null;
         if (isSessionStillCurrent(gen, epoch, sGen, sessionId)) {
-          statusBanner.set('实时会话订阅失败（可点右上角“同步”重试）: ' + err.message);
+          watchError.set('实时会话订阅失败: ' + err.message);
         }
       },
     );
@@ -1032,7 +1038,7 @@ function App() {
     titleQuery = catalogQuery(),
     qGen = catalogQueryGen,
   ) => {
-    stopCatalogSubscription();
+    stopCatalogSubscription(false);
     subOpenSeq += 1;
     const subId =
       'catalog:' + epoch + ':' + String(gen) + ':' + String(qGen) + ':' + String(subOpenSeq);
@@ -1066,11 +1072,13 @@ function App() {
           return;
         }
         slot.generation = handle.generation;
+        catalogError.set(null);
       },
       (err: Error) => {
-        if (catalogSub === slot) catalogSub = null;
+        if (catalogSub !== slot) return;
+        catalogSub = null;
         if (isHostStillCurrent(gen, epoch) && qGen === catalogQueryGen) {
-          statusBanner.set('会话目录订阅失败（可点“同步”重试）: ' + err.message);
+          catalogError.set('会话目录订阅失败: ' + err.message);
         }
       },
     );
@@ -1103,6 +1111,7 @@ function App() {
     epoch = hostState().active?.epoch ?? '',
   ) => {
     if (!epoch || !isHostStillCurrent(gen, epoch)) return;
+    catalogError.set(null);
     catalogQueryGen += 1;
     const qGen = catalogQueryGen;
     catalogSubReceivedForQuery = false;
@@ -1554,8 +1563,8 @@ function App() {
       const slot = catalogSub;
       slot.ended = true;
       catalogSub = null;
-      if (payload.error && isHostStillCurrent(slot.hostGen, slot.hostEpoch)) {
-        statusBanner.set('会话目录同步中断: ' + payload.error);
+      if (isHostStillCurrent(slot.hostGen, slot.hostEpoch)) {
+        catalogError.set('会话目录同步中断' + (payload.error ? ': ' + payload.error : ''));
       }
     }
     if (matchesSubSlot(goalSub, payload.subscriptionId, payload.generation) && goalSub) {
@@ -1567,12 +1576,11 @@ function App() {
       slot.ended = true;
       watchSub = null;
       if (
-        payload.error &&
         slot.sessionGen !== undefined &&
         slot.sessionId !== undefined &&
         isSessionStillCurrent(slot.hostGen, slot.hostEpoch, slot.sessionGen, slot.sessionId)
       ) {
-        statusBanner.set('会话流式订阅中断: ' + payload.error);
+        watchError.set('会话流式订阅中断' + (payload.error ? ': ' + payload.error : ''));
       }
     }
   });
@@ -1893,6 +1901,18 @@ function App() {
     route.set('chat');
   };
 
+  const retrySubscriptions = () => {
+    const active = hostState().active;
+    if (!active || !hasAgentEndpoint(active)) return;
+    if (catalogError() !== null && !catalogSub) {
+      startCatalogSubscription(hostSyncGen, active.epoch);
+    }
+    const sess = activeSession();
+    if (watchError() !== null && sess && !watchSub) {
+      startWatchSubscription(sess.id, watchCursor, hostSyncGen, active.epoch, sessionSyncGen);
+    }
+  };
+
   const runVerifyLiveRpc = () => {
     const active = hostState().active;
     if (!active) {
@@ -1925,7 +1945,6 @@ function App() {
             return;
           }
           applyCatalogPage(page, false);
-          statusBanner.set('实时同步完成 · ' + String((page.sessions ?? []).length) + ' 个会话');
         },
         (err: Error) => {
           busy.set(false);
@@ -2536,22 +2555,24 @@ function App() {
                 </Text>
               </View>
 
-              <View
-                role="button"
-                accessibilityLabel="Verify live Host RPC"
-                onPress={runVerifyLiveRpc}
-                style={{
-                  minWidth: 40,
-                  minHeight: 36,
-                  paddingHorizontal: 9,
-                  borderRadius: 18,
-                  backgroundColor: palette().rowHover,
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                }}
-              >
-                <Text style={{ fontSize: 12.5, color: palette().ink2 }}>同步</Text>
-              </View>
+              <If when={catalogError() !== null || watchError() !== null}>
+                <View
+                  role="button"
+                  accessibilityLabel="Retry subscriptions"
+                  onPress={retrySubscriptions}
+                  style={{
+                    minWidth: 40,
+                    minHeight: 36,
+                    paddingHorizontal: 9,
+                    borderRadius: 18,
+                    backgroundColor: palette().rowHover,
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                  }}
+                >
+                  <Text style={{ fontSize: 12.5, color: palette().ink2 }}>重试</Text>
+                </View>
+              </If>
             </View>
           </View>
 
@@ -2626,6 +2647,29 @@ function App() {
               }}
             >
               <Text style={{ fontSize: 12.5, color: palette().ink }}>{statusBanner()}</Text>
+            </View>
+          </If>
+
+          <If when={catalogError() !== null}>
+            <View
+              style={{
+                paddingHorizontal: 16,
+                paddingVertical: 8,
+                backgroundColor: palette().accentSoft,
+              }}
+            >
+              <Text style={{ fontSize: 12.5, color: palette().ink }}>{catalogError()}</Text>
+            </View>
+          </If>
+          <If when={watchError() !== null}>
+            <View
+              style={{
+                paddingHorizontal: 16,
+                paddingVertical: 8,
+                backgroundColor: palette().accentSoft,
+              }}
+            >
+              <Text style={{ fontSize: 12.5, color: palette().ink }}>{watchError()}</Text>
             </View>
           </If>
 
@@ -3088,26 +3132,6 @@ function App() {
                   {formatBackendPill(currentBackend()) + ' ▾'}
                 </Text>
               </View>
-
-              <If when={activeRunId() !== null}>
-                <View
-                  role="button"
-                  accessibilityLabel="Toggle steer or queue delivery"
-                  onPress={() =>
-                    defaultDelivery.set(defaultDelivery() === 'steer' ? 'queue' : 'steer')
-                  }
-                  style={{
-                    paddingHorizontal: 10,
-                    paddingVertical: 5,
-                    borderRadius: 12,
-                    backgroundColor: palette().surface2,
-                  }}
-                >
-                  <Text style={{ fontSize: 11.5, color: palette().ink2 }}>
-                    {defaultDelivery() === 'steer' ? '立即纠偏' : '排队发送'}
-                  </Text>
-                </View>
-              </If>
             </View>
           </If>
 
