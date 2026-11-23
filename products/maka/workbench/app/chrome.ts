@@ -20,7 +20,7 @@
 // The window around the workbench on a graphical desktop: the headers along
 // the top edge are its title bar, and the application menu holds the
 // workbench's commands. Terminals keep their own title and menus.
-import { effect, host, platform } from 'nsh';
+import { computed, effect, host, platform } from 'nsh';
 import { currentWindow, isAvailable, Menu, type MenuItem, titleBar, Window } from 'nsh/desktop';
 import { appUpdater } from './appUpdater';
 import { tr } from './locale';
@@ -82,6 +82,26 @@ export function applicationMenu(actions: MenuActions) {
   if (!ownTitleBar) return;
   if (actions.checkForUpdates) appUpdater.init();
   const mac = platform.os === 'macos';
+  // Memoize only the menu-relevant status so 250ms download progress ticks do not rebuild NSMenu.
+  const updateMenuState = computed(
+    (): 'hidden' | 'check' | 'checking' | 'downloading' | 'ready' | 'installing' => {
+      if (!actions.checkForUpdates || !appUpdater.supported) return 'hidden';
+      const state = appUpdater.snapshot();
+      if (!state || state.channel === 'dev') return 'hidden';
+      switch (state.status) {
+        case 'ready':
+          return 'ready';
+        case 'installing':
+          return 'installing';
+        case 'checking':
+          return 'checking';
+        case 'downloading':
+          return 'downloading';
+        default:
+          return 'check';
+      }
+    },
+  );
   effect(() => {
     const settings = {
       label: `${tr('Settings')}…`,
@@ -94,10 +114,9 @@ export function applicationMenu(actions: MenuActions) {
       onSelect: () => host.post('terminal.exit'),
     };
     const updateItem = (): MenuItem | false => {
-      if (!actions.checkForUpdates || !appUpdater.supported) return false;
-      const state = appUpdater.snapshot();
-      if (!state || state.channel === 'dev') return false;
-      switch (state.status) {
+      switch (updateMenuState()) {
+        case 'hidden':
+          return false;
         case 'ready':
           return {
             label: tr('Restart to update…'),
@@ -115,7 +134,7 @@ export function applicationMenu(actions: MenuActions) {
             label: tr('Downloading update…'),
             onSelect: actions.openUpdates ?? actions.checkForUpdates,
           };
-        default:
+        case 'check':
           return {
             label: tr('Check for updates…'),
             onSelect: actions.checkForUpdates,

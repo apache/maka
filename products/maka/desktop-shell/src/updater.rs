@@ -65,7 +65,6 @@ pub(crate) struct Snapshot {
 struct State {
     snapshot: Snapshot,
     staged: Option<StagedUpdate>,
-    archive: Option<PathBuf>,
 }
 
 struct SwapState {
@@ -162,7 +161,6 @@ impl Controller {
             state: Mutex::new(State {
                 snapshot,
                 staged: None,
-                archive: None,
             }),
         });
         if controller.info.channel != Channel::Dev {
@@ -265,7 +263,6 @@ impl Controller {
                 let to_download = available.clone();
                 let snapshot = self.update_snapshot(|state| {
                     state.staged = None;
-                    state.archive = None;
                     state.snapshot.can_install = true;
                     state.snapshot.status = Status::Downloading;
                     state.snapshot.available = Some(available);
@@ -338,7 +335,6 @@ impl Controller {
             });
             guard.snapshot.error = None;
             guard.staged = None;
-            guard.archive = None;
             let snapshot = guard.snapshot.clone();
             drop(guard);
             self.emit(&snapshot);
@@ -395,10 +391,13 @@ impl Controller {
             }
         };
 
-        let staged = match maka_updater::stage(installation, archive.clone()).await {
+        let staged_result = maka_updater::stage(installation, archive.clone()).await;
+        // stage() unpacks into its own scratch directory and no longer references the archive;
+        // remove it immediately so deferring restart and quitting leaves no stale downloads behind.
+        let _ = tokio::fs::remove_file(&archive).await;
+        let staged = match staged_result {
             Ok(staged) => staged,
             Err(error) => {
-                let _ = tokio::fs::remove_file(&archive).await;
                 let message = error.to_string();
                 self.fail_download(user_initiated, &message, false);
                 return Err(message);
@@ -407,7 +406,6 @@ impl Controller {
 
         Ok(self.update_snapshot(|state| {
             state.staged = Some(staged);
-            state.archive = Some(archive);
             state.snapshot.status = Status::Ready;
             state.snapshot.progress = None;
             state.snapshot.error = None;
@@ -447,7 +445,7 @@ impl Controller {
     }
 
     pub(crate) async fn install_and_restart(&self) -> Result<(), String> {
-        let (staged, archive) = {
+        let staged = {
             let mut guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
             if guard.snapshot.status != Status::Ready {
                 return Err("No verified update is ready to install.".into());
@@ -455,13 +453,12 @@ impl Controller {
             let Some(staged) = guard.staged.take() else {
                 return Err("No staged update found.".into());
             };
-            let archive = guard.archive.take();
             guard.snapshot.status = Status::Installing;
             guard.snapshot.error = None;
             let snapshot = guard.snapshot.clone();
             drop(guard);
             self.emit(&snapshot);
-            (staged, archive)
+            staged
         };
 
         // Confirm the staged directory is still intact on disk before stopping the Host.
@@ -488,7 +485,6 @@ impl Controller {
                 let message = error.to_string();
                 self.update_snapshot(|state| {
                     state.staged = Some(staged);
-                    state.archive = archive;
                     state.snapshot.status = Status::Ready;
                     state.snapshot.error = Some(message.clone());
                 });
@@ -517,10 +513,6 @@ impl Controller {
                     return Err(message);
                 }
             };
-        if let Some(archive) = archive {
-            let _ = tokio::fs::remove_file(archive).await;
-        }
-
         if let Err(error) = maka_updater::spawn_restarted_desktop(&new_executable, Some(&self.root))
         {
             self.updating.send_replace(false);
@@ -596,7 +588,6 @@ mod tests {
                     error: None,
                 },
                 staged: None,
-                archive: None,
             }),
         };
         (rt, controller)

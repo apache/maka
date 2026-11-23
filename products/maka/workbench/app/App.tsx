@@ -108,6 +108,7 @@ function App(
   const settingsOpened = signal(saved?.settings !== null && saved?.settings !== undefined);
   const settingsModel = signal<ModelSelection | undefined>(saved?.settings?.model);
   const settingsPage = signal<string | undefined>(saved?.settings?.page);
+  const settingsNavigation = signal(0);
   const session = signal<ConversationSessionHandle | null>(null);
   windowTitle(() =>
     workspaceMode() === 'rooms'
@@ -308,6 +309,7 @@ function App(
       batch(() => {
         settingsModel.set(model);
         settingsPage.set(page);
+        settingsNavigation.set(settingsNavigation() + 1);
         settingsOpened.set(true);
       });
     },
@@ -633,6 +635,7 @@ function App(
         settingsViewContract,
         {
           opened: settingsOpened,
+          navigation: settingsNavigation,
           close: () => {
             if (!alive || blocked()) return;
             navigationGeneration++;

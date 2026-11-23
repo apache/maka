@@ -37,8 +37,10 @@ export function SidebarUpdateButton(props: {
 }) {
   appUpdater.init();
   const open = signal(false);
+  let alive = true;
   let holdingHover = false;
   const setOpen = (next: boolean) => {
+    if (!alive) return;
     open.set(next);
     if (holdingHover !== next) {
       holdingHover = next;
@@ -46,6 +48,7 @@ export function SidebarUpdateButton(props: {
     }
   };
   cleanup(() => {
+    alive = false;
     if (holdingHover) {
       holdingHover = false;
       props.holdSidebarHover?.(false);

@@ -253,6 +253,8 @@ export interface SettingsRoute {
 export interface SettingsViewInput {
   readonly page?: string;
   opened(): boolean;
+  /** Increments on explicit openSettings() requests so an already-open Settings dialog can navigate. */
+  navigation?(): number;
   close(): void;
   readonly model?: ModelSelection;
 }

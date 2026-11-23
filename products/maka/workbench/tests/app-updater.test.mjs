@@ -58,7 +58,7 @@ async function loadUpdaterModule(t) {
   return import(new URL(`appUpdater.ts?test=${sequence}`, appRoot));
 }
 
-test('appUpdater stays silent in sidebar until ready or installing', async (t) => {
+test('appUpdater stays silent in sidebar through background download until ready or installing', async (t) => {
   const { createAppUpdater } = await loadUpdaterModule(t);
   const calls = [];
   const listeners = new Map();
@@ -93,7 +93,6 @@ test('appUpdater stays silent in sidebar until ready or installing', async (t) =
           return { ...baseSnapshot, status: 'idle', available: null };
         }
         if (method === 'updater.check') return downloadingSnapshot;
-        if (method === 'updater.download') return readySnapshot;
         if (method === 'updater.installAndRestart') return null;
         throw new Error('unexpected ' + method);
       },
@@ -126,6 +125,7 @@ test('appUpdater stays silent in sidebar until ready or installing', async (t) =
     assert.equal(updater.sidebarVisible(), false, `sidebar should stay hidden for ${status}`);
   }
 
+  // Background progress updates stay silent in the sidebar while reporting percent for Settings.
   listeners.get('updater.state')({
     ...baseSnapshot,
     status: 'downloading',
@@ -134,7 +134,8 @@ test('appUpdater stays silent in sidebar until ready or installing', async (t) =
   assert.equal(updater.progressPercent(), 45);
   assert.equal(updater.sidebarVisible(), false);
 
-  await updater.download();
+  // Background staging completes and pushes ready; sidebar action surfaces without manual download.
+  listeners.get('updater.state')(readySnapshot);
   assert.equal(updater.snapshot().status, 'ready');
   assert.equal(updater.sidebarVisible(), true);
 
@@ -153,15 +154,18 @@ test('appUpdater stays silent in sidebar until ready or installing', async (t) =
 
   listeners.get('updater.state')(readySnapshot);
   await updater.installAndRestart();
-  assert.deepEqual(calls, [
-    'updater.state',
-    'updater.check',
-    'updater.download',
-    'updater.installAndRestart',
-  ]);
+  assert.deepEqual(calls, ['updater.state', 'updater.check', 'updater.installAndRestart']);
 
+  // Read-only installations expose manual download URL without surfacing a sidebar button.
+  listeners.get('updater.state')({
+    ...baseSnapshot,
+    canInstall: false,
+    status: 'available',
+    progress: null,
+  });
+  assert.equal(updater.sidebarVisible(), false);
   await updater.openDownload();
-  assert.equal(opened.length, 1);
+  assert.deepEqual(opened, [baseSnapshot.available.url]);
 });
 
 test('appUpdater preserves ready status when installAndRestart rejects after host stop failure', async (t) => {
