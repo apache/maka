@@ -132,14 +132,19 @@ fn WslReconnectView() -> impl IntoElement {
         desktop::window()
             .id("main")
             .attributes(attrs)
+            .restore_bounds(true)
             .content(body)
             .into_element()
     }
 }
 
-fn wsl_reconnect_config(errors: watch::Receiver<Option<String>>) -> nsh_engine::EngineConfig {
+fn wsl_reconnect_config(
+    errors: watch::Receiver<Option<String>>,
+    data_dir: Option<std::path::PathBuf>,
+) -> nsh_engine::EngineConfig {
     let mut config = nsh_engine::EngineConfig::new(Root::of::<WslReconnectView>());
     config.context = config.context.with(WslReconnect { errors });
+    config.data_dir = data_dir;
     config
 }
 
@@ -238,6 +243,7 @@ pub(crate) fn run_wsl(
         .expect("the admitted workbench owns its UI reload channel")
         .take_requests();
     refuse_reloads(reloading, runtime.handle());
+    let data_dir = config.data_dir.clone();
     let initial = shell.attach(config);
     let (closed_tx, closed_rx) = watch::channel(false);
     let following = runtime.spawn(follow_wsl(
@@ -245,6 +251,7 @@ pub(crate) fn run_wsl(
         bridge,
         disconnected,
         root,
+        data_dir,
         target,
         shell,
         exits,
@@ -336,6 +343,7 @@ async fn follow_wsl(
     bridge: wsl_stdio::Bridge,
     mut disconnected: oneshot::Receiver<()>,
     expected_root: String,
+    mut data_dir: Option<std::path::PathBuf>,
     target: wsl_stdio::Target,
     shell: Shell,
     mut exits: mpsc::UnboundedReceiver<()>,
@@ -357,12 +365,13 @@ async fn follow_wsl(
             break 'connected;
         }
         let (report_error, errors) = watch::channel(None);
+        let reconnect_data_dir = data_dir.clone();
         if !run_on_view(
             &mut window_started,
             &mut exits,
             &mut window_closed,
             move |view| {
-                view.load_with_config(wsl_reconnect_config(errors));
+                view.load_with_config(wsl_reconnect_config(errors, reconnect_data_dir));
             },
         )
         .await
@@ -422,6 +431,7 @@ async fn follow_wsl(
             .expect("the admitted workbench owns its UI reload channel")
             .take_requests();
         refuse_reloads(reloading, &runtime);
+        data_dir = config.data_dir.clone();
         let attached = shell.attach(config);
         if !run_on_view(
             &mut window_started,
@@ -569,7 +579,7 @@ mod tests {
         );
 
         let (_errors, receiver) = watch::channel(None);
-        window.load_with_config(wsl_reconnect_config(receiver));
+        window.load_with_config(wsl_reconnect_config(receiver, None));
         pump_until(
             || has_title(TITLE),
             "reconnect window attributes were not applied",
@@ -581,6 +591,102 @@ mod tests {
             || !unsafe { IsWindow(Some(hwnd)) }.as_bool(),
             "WM_CLOSE did not close the reconnect window",
         );
+    }
+
+    #[test]
+    fn wsl_reconnect_restores_saved_window_placement() {
+        use nsh_core::{
+            ApproxTextEngine, Command, EventKind, EventPayload, MountBatch, MountItem,
+            desktop::{DesktopCommand, WindowEvent, WindowMode, WindowPlacement, WindowState},
+            geometry::Bounds,
+        };
+        use nsh_engine::{Engine, Environment, Idiom, MountSink, Os};
+        use std::sync::mpsc;
+
+        struct ChannelSink(mpsc::Sender<MountBatch>);
+        impl MountSink for ChannelSink {
+            fn submit(&self, batch: MountBatch) {
+                let _ = self.0.send(batch);
+            }
+        }
+
+        let dir = std::env::temp_dir().join(format!(
+            "maka-wsl-reconnect-bounds-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let saved = WindowPlacement::new(
+            WindowMode::Normal,
+            Bounds::new(point(px(150.0), px(200.0)), size(px(1000.0), px(700.0))),
+        );
+        let start_reconnect = |data_dir: std::path::PathBuf| {
+            let (_errors, receiver) = watch::channel(None);
+            let mut config = wsl_reconnect_config(receiver, Some(data_dir));
+            config.environment = Environment {
+                os: Os::Windows,
+                idiom: Idiom::Desktop,
+                ..Environment::default()
+            };
+            let (tx, rx) = mpsc::channel();
+            let engine = Engine::start(config, || ApproxTextEngine, ChannelSink(tx)).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let (node, open) = loop {
+                let remain = deadline.saturating_duration_since(Instant::now());
+                assert!(
+                    !remain.is_zero(),
+                    "WslReconnectView did not emit OpenWindow"
+                );
+                let batch = rx.recv_timeout(remain).expect("reconnect mount batch");
+                if let Some(found) = batch.items.into_iter().find_map(|item| match item {
+                    MountItem::Command {
+                        id,
+                        command: Command::Desktop(command),
+                    } => match *command {
+                        DesktopCommand::OpenWindow(open) if open.options.id == "main" => {
+                            Some((id, open))
+                        }
+                        _ => None,
+                    },
+                    _ => None,
+                }) {
+                    break found;
+                }
+            };
+            (engine, node, open)
+        };
+        {
+            let (engine, node, open) = start_reconnect(dir.clone());
+            assert!(open.options.restore_bounds);
+            assert_eq!(
+                open.options.attributes.min_size,
+                Some(Some(size(px(MIN_SIZE.0), px(MIN_SIZE.1))))
+            );
+            assert_eq!(open.placement, None);
+            let state = WindowState::new(saved.bounds, saved);
+            engine.control().dispatch_event(
+                node,
+                EventKind::Window,
+                EventPayload::Window(Box::new(WindowEvent::State(Box::new(state)))),
+            );
+            let storage_file = dir.join("storage.json");
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !storage_file.exists() {
+                assert!(
+                    Instant::now() < deadline,
+                    "reconnect window placement was not persisted"
+                );
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            drop(engine);
+        }
+        let (engine, _node, open) = start_reconnect(dir.clone());
+        assert_eq!(open.placement, Some(saved));
+        drop(engine);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[link(name = "user32")]
