@@ -430,6 +430,22 @@ pub async fn check_with_config(
     }))
 }
 
+struct PartFileGuard(Option<PathBuf>);
+
+impl PartFileGuard {
+    fn disarm(&mut self) {
+        self.0 = None;
+    }
+}
+
+impl Drop for PartFileGuard {
+    fn drop(&mut self) {
+        if let Some(path) = self.0.take() {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
 /// Streams `update` into `dir`, verifying its exact SHA-256 and byte length.
 pub async fn download<F>(
     update: &AvailableUpdate,
@@ -451,44 +467,40 @@ where
     let part_path = dir.join(format!(".maka-update-{}.part", Uuid::new_v4()));
     let final_path = dir.join(format!("maka-{}{ext}", sanitize_filename(&update.version)));
 
-    let result = async {
-        let client = http_client(DOWNLOAD_TIMEOUT)?;
-        let response = client
-            .get(&update.url)
-            .send()
-            .await
-            .map_err(|e| Error::Http(format!("{}: {e}", update.url)))?;
-        if !response.status().is_success() {
-            return Err(Error::Http(format!(
-                "{}: HTTP {}",
-                update.url,
-                response.status()
-            )));
-        }
-        let total = update.size.or_else(|| response.content_length());
-        let mut verifier = nsh_updater::Download::new(sha256, update.size);
-        let mut file = tokio::fs::File::create(&part_path).await?;
-        let mut stream = response.bytes_stream();
-        on_progress(Progress { received: 0, total });
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk.map_err(|e| Error::Http(format!("{}: {e}", update.url)))?;
-            let received = verifier.update(&chunk)?;
-            file.write_all(&chunk).await?;
-            on_progress(Progress { received, total });
-        }
-        file.flush().await?;
-        drop(file);
-        verifier.finish()?;
-        let _ = tokio::fs::remove_file(&final_path).await;
-        tokio::fs::rename(&part_path, &final_path).await?;
-        Ok(final_path)
+    let client = http_client(DOWNLOAD_TIMEOUT)?;
+    let response = client
+        .get(&update.url)
+        .send()
+        .await
+        .map_err(|e| Error::Http(format!("{}: {e}", update.url)))?;
+    if !response.status().is_success() {
+        return Err(Error::Http(format!(
+            "{}: HTTP {}",
+            update.url,
+            response.status()
+        )));
     }
-    .await;
-
-    if result.is_err() {
-        let _ = tokio::fs::remove_file(&part_path).await;
+    let total = update.size.or_else(|| response.content_length());
+    let mut verifier = nsh_updater::Download::new(sha256, update.size);
+    // Declared before `file` so reverse drop order closes the handle before deleting
+    // the `.part` file on error or async task cancellation.
+    let mut part_guard = PartFileGuard(Some(part_path.clone()));
+    let mut file = tokio::fs::File::create(&part_path).await?;
+    let mut stream = response.bytes_stream();
+    on_progress(Progress { received: 0, total });
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| Error::Http(format!("{}: {e}", update.url)))?;
+        let received = verifier.update(&chunk)?;
+        file.write_all(&chunk).await?;
+        on_progress(Progress { received, total });
     }
-    result
+    file.flush().await?;
+    drop(file);
+    verifier.finish()?;
+    let _ = tokio::fs::remove_file(&final_path).await;
+    tokio::fs::rename(&part_path, &final_path).await?;
+    part_guard.disarm();
+    Ok(final_path)
 }
 
 /// Unpacks and verifies `archive` beside `installation` without modifying
@@ -1144,6 +1156,60 @@ mod tests {
         assert!(
             !dead_old_file.exists(),
             "dead process renamed binary leftover should be cleaned"
+        );
+    }
+
+    #[tokio::test]
+    async fn cancelled_download_removes_partial_file() {
+        use tokio::io::AsyncWriteExt as _;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (hold_tx, hold_rx) = tokio::sync::oneshot::channel::<()>();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let header = "HTTP/1.1 200 OK\r\nContent-Length: 262144\r\nConnection: close\r\n\r\n";
+            let _ = socket.write_all(header.as_bytes()).await;
+            let _ = socket.write_all(&vec![0x5au8; 131_072]).await;
+            let _ = socket.flush().await;
+            let _ = hold_rx.await;
+        });
+
+        let dir = tempfile::tempdir().unwrap();
+        let update = AvailableUpdate {
+            version: "0.2.0-nightly.99".into(),
+            notes: None,
+            url: format!("http://{addr}/maka.tar.gz"),
+            sha256: Some("0".repeat(64)),
+            size: Some(262_144),
+        };
+        let (received_tx, received_rx) = tokio::sync::oneshot::channel::<()>();
+        let mut received_tx = Some(received_tx);
+        let download_dir = dir.path().to_path_buf();
+        let task = tokio::spawn(async move {
+            let _ = download(&update, &download_dir, |progress| {
+                if progress.received >= 65_536
+                    && let Some(tx) = received_tx.take()
+                {
+                    let _ = tx.send(());
+                }
+            })
+            .await;
+        });
+
+        received_rx.await.unwrap();
+        task.abort();
+        let _ = task.await;
+        let _ = hold_tx.send(());
+        let _ = server.await;
+
+        let leftovers: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "expected no .part leftovers after abort, found: {leftovers:?}"
         );
     }
 }

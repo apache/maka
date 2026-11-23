@@ -153,7 +153,16 @@ export function ModelSettings(props: {
         pages().find((item) => item.id === requestedPage);
       if (!target) return;
       const from = contributed()?.key ?? null;
-      if (from === target.key) return;
+      if (from === target.key) {
+        const current = page();
+        if (current?.nested() && current.returnToRoot) {
+          leave(() => {
+            if (!alive || busy() || (contributed()?.key ?? null) !== target.key) return;
+            current.returnToRoot?.();
+          });
+        }
+        return;
+      }
       choose({ from, to: target.key });
     });
   });

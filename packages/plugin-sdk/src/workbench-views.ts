@@ -275,6 +275,8 @@ export interface SettingsPageNavigation {
   back(): boolean;
   /** Runs `next` now, or after the user discards the page's unsaved changes. */
   leave?(next: () => void): void;
+  /** Returns a nested sub-page to its own root after `leave()` clears any unsaved draft. */
+  returnToRoot?(): void;
   busy?(): boolean;
   /** The page's one command, drawn beside its title. */
   action?(): SettingsPageAction | null;

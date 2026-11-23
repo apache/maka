@@ -97,6 +97,10 @@ impl SwapFence {
         Some(SwapGuard(Arc::clone(self)))
     }
 
+    fn is_closing(&self) -> bool {
+        self.state.lock().unwrap_or_else(|e| e.into_inner()).closing
+    }
+
     fn close_and_wait(&self) {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         state.closing = true;
@@ -125,6 +129,7 @@ pub(crate) struct Controller {
     events: Arc<Mutex<Option<HostChannel>>>,
     runtime: Handle,
     swap: Arc<SwapFence>,
+    active_download: Mutex<Option<tokio::task::JoinHandle<()>>>,
     state: Mutex<State>,
 }
 
@@ -158,6 +163,7 @@ impl Controller {
             events,
             runtime: runtime.clone(),
             swap: SwapFence::new(),
+            active_download: Mutex::new(None),
             state: Mutex::new(State {
                 snapshot,
                 staged: None,
@@ -245,9 +251,10 @@ impl Controller {
             self.apply_check_result(result, can_install, user_initiated);
         if let Some(available) = auto_download {
             let downloader = Arc::clone(self);
-            self.runtime.spawn(async move {
+            let handle = self.runtime.spawn(async move {
                 let _ = downloader.perform_download(available, user_initiated).await;
             });
+            self.register_download(handle);
         }
         snapshot
     }
@@ -533,10 +540,43 @@ impl Controller {
         });
     }
 
-    /// Closes admission for any new filesystem swap and blocks normal desktop
-    /// shutdown until any already-admitted swap finishes and releases its `RootLease`.
+    fn register_download(&self, handle: tokio::task::JoinHandle<()>) {
+        let mut slot = self
+            .active_download
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if let Some(previous) = slot.replace(handle) {
+            previous.abort();
+        }
+        if self.swap.is_closing()
+            && let Some(active) = slot.take()
+        {
+            active.abort();
+        }
+    }
+
+    /// Closes admission for any new filesystem swap, waits for any in-flight swap
+    /// to release its `RootLease`, and cancels any active background download so its
+    /// `.part` guard cleans up before runtime shutdown.
     pub(crate) fn wait_for_in_flight_swap(&self) {
         self.swap.close_and_wait();
+        let download = self
+            .active_download
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
+        if let Some(handle) = download {
+            handle.abort();
+            if tokio::runtime::Handle::try_current().is_err() {
+                let _ = self.runtime.block_on(handle);
+            } else {
+                let runtime = self.runtime.clone();
+                let _ = std::thread::spawn(move || {
+                    let _ = runtime.block_on(handle);
+                })
+                .join();
+            }
+        }
     }
 
     pub(crate) fn snapshot_json(&self) -> JsonValue {
@@ -557,7 +597,9 @@ mod tests {
     use uuid::Uuid;
 
     fn test_controller(channel: Channel) -> (tokio::runtime::Runtime, Controller) {
-        let rt = tokio::runtime::Builder::new_current_thread()
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
             .build()
             .unwrap();
         let (_host_tx, host_rx) = watch::channel((PathBuf::new(), Uuid::nil()));
@@ -577,6 +619,7 @@ mod tests {
             events: Arc::default(),
             runtime: rt.handle().clone(),
             swap: SwapFence::new(),
+            active_download: Mutex::new(None),
             state: Mutex::new(State {
                 snapshot: Snapshot {
                     channel,
@@ -648,6 +691,41 @@ mod tests {
         let snap = manual.snapshot();
         assert_eq!(snap.status, Status::Error);
         assert_eq!(snap.error.as_deref(), Some("network reset"));
+    }
+
+    #[test]
+    fn shutdown_aborts_active_download_and_waits_for_part_cleanup() {
+        let (_rt, controller) = test_controller(Channel::Nightly);
+        let dir = std::env::temp_dir().join(format!("maka-updater-shutdown-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let part = dir.join(".maka-update-shutdown-test.part");
+        std::fs::write(&part, b"partial-bytes").unwrap();
+
+        struct Guard(PathBuf);
+        impl Drop for Guard {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_file(&self.0);
+            }
+        }
+
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let guard_path = part.clone();
+        let handle = controller.runtime.spawn(async move {
+            let _guard = Guard(guard_path);
+            let _ = started_tx.send(());
+            std::future::pending::<()>().await;
+        });
+        controller.register_download(handle);
+        started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(part.exists());
+
+        controller.wait_for_in_flight_swap();
+        let exists = part.exists();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            !exists,
+            "partial file should be removed before shutdown returns"
+        );
     }
 
     #[test]
