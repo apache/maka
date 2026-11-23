@@ -119,13 +119,7 @@ pub(crate) fn run_wsl(
         exits,
         mut folders,
         mut text_sizes,
-        mut notices,
     } = requests;
-    runtime.spawn(async move {
-        while let Some(call) = notices.recv().await {
-            call.reject("the Direct2D window does not support system notifications");
-        }
-    });
     runtime.spawn(async move {
         while let Some(call) = folders.recv().await {
             call.reject("the Windows folder dialog cannot choose Linux paths for a WSL Host");
@@ -176,6 +170,7 @@ fn window_options() -> AppOptions {
         title: TITLE.into(),
         size: SIZE,
         min_size: Some((MIN_SIZE.0 as i32, MIN_SIZE.1 as i32)),
+        notifications: true,
         ..Default::default()
     }
 }
@@ -361,13 +356,7 @@ fn carry_out(requests: Requests, runtime: &Runtime) {
         mut exits,
         mut folders,
         mut text_sizes,
-        mut notices,
     } = requests;
-    runtime.spawn(async move {
-        while let Some(call) = notices.recv().await {
-            call.reject("the Direct2D window does not support system notifications");
-        }
-    });
     runtime.spawn(async move {
         if exits.recv().await.is_some() {
             quit_app();

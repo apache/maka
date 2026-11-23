@@ -129,7 +129,7 @@ fn run(first: Connection, root: Root, runtime: tokio::runtime::Runtime) -> Resul
         let closing = quit.clone();
         window.connect_close_request(move |window| closing.close_request(window));
         install_shortcuts(app, &window, &quit);
-        carry_out(requests, app, &window, &view, &shell, quit);
+        carry_out(requests, &window, &view, quit);
         follow(
             window.downgrade(),
             view,
@@ -241,17 +241,14 @@ fn restore_if_unreachable(window: &gtk::ApplicationWindow, quit: &Quit) {
 
 fn carry_out(
     requests: Requests,
-    app: &gtk::Application,
     window: &gtk::ApplicationWindow,
     view: &Rc<AppView>,
-    shell: &Shell,
     quit: Rc<Quit>,
 ) {
     let Requests {
         mut exits,
         mut folders,
         mut text_sizes,
-        mut notices,
     } = requests;
     let context = glib::MainContext::default();
     let weak = window.downgrade();
@@ -295,39 +292,6 @@ fn carry_out(
                 return;
             };
             view.set_font_scale(Some(scale));
-        }
-    });
-    let action = gio::SimpleAction::new("notification-open", Some(glib::VariantTy::STRING));
-    let weak = window.downgrade();
-    let events = shell.events.clone();
-    action.connect_activate(move |_, parameter| {
-        if let Some(window) = weak.upgrade() {
-            window.present();
-        }
-        if let Some(tag) = parameter.and_then(|p| p.str())
-            && let Some(host) = events.lock().unwrap_or_else(|e| e.into_inner()).as_ref()
-        {
-            let _ = host.send("notification.open", serde_json::json!({ "tag": tag }));
-        }
-    });
-    app.add_action(&action);
-    let app = app.downgrade();
-    context.spawn_local(async move {
-        while let Some(call) = notices.recv().await {
-            let text = |key: &str| call.data()[key].as_str().map(str::to_owned);
-            match (text("tag"), text("title"), text("body"), app.upgrade()) {
-                (Some(tag), Some(title), Some(body), Some(app)) => {
-                    let notice = gio::Notification::new(&title);
-                    notice.set_body(Some(&body));
-                    notice.set_default_action_and_target_value(
-                        "app.notification-open",
-                        Some(&tag.to_variant()),
-                    );
-                    app.send_notification(Some(&tag), &notice);
-                    call.resolve(JsonValue::Null);
-                }
-                _ => call.reject("expected a tag, a title and a body in an open window"),
-            }
         }
     });
 }
