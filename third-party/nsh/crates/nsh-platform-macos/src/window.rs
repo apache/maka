@@ -1253,6 +1253,7 @@ pub(crate) fn hide(surface: &Surface, id: NodeId, window: &NSWindow) {
     if now {
         window.orderOut(None);
         lost_key(surface, window);
+        crate::app::sync_window_active(surface.key());
     }
 }
 
@@ -2224,6 +2225,7 @@ pub(crate) fn removed(surface: &Surface, view: &NshView) -> bool {
     let window = w.window.clone();
     close(w);
     lost_key(surface, &window);
+    crate::app::sync_window_active(surface.key());
     // A link made from its root would neither fire nor let the root go.
     surface.follow_windows();
     // Another window may be the primary one now.
@@ -2237,12 +2239,15 @@ pub(crate) fn close_all(surface: &Surface) {
     let windows: Vec<(NodeId, AppWindow)> = surface.windows.borrow_mut().drain().collect();
     for (id, w) in windows {
         dock::set(surface.key(), id, None);
+        let window = w.window.clone();
         close(w);
+        lost_key(surface, &window);
     }
     dock::set(surface.key(), ROOT_ID, None);
     surface.main_window.reset();
     surface.follow_windows();
     surface.window_environment();
+    crate::app::sync_window_active(surface.key());
 }
 
 fn close(w: AppWindow) {

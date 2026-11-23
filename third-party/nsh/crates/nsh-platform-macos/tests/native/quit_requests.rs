@@ -485,7 +485,7 @@ fn run_main_window_lifecycle_case(phase: &str) {
                     schedule(phase, 1);
                 } else if phase == "save" && step == 1 {
                     platform::quit_app();
-                } else {
+                } else if phase == "restore" && step == 0 {
                     let frame = win.frame();
                     assert!(
                         (frame.size.width - 920.0).abs() < 2.0,
@@ -494,6 +494,26 @@ fn run_main_window_lifecycle_case(phase: &str) {
                     assert!(
                         (frame.size.height - 680.0).abs() < 2.0,
                         "restored height: {frame:?}"
+                    );
+                    let dir =
+                        std::path::PathBuf::from(std::env::var("NSH_LIFECYCLE_DATA_DIR").unwrap());
+                    platform::with_running_view(move |view| {
+                        let mut next = nsh_engine::EngineConfig::new(platform::App::Rust(
+                            platform::Root::of::<MainWindowProbe>(),
+                        ));
+                        next.data_dir = Some(dir);
+                        view.load_with_config(next);
+                    });
+                    schedule(phase, 1);
+                } else {
+                    let frame = win.frame();
+                    assert!(
+                        (frame.size.width - 920.0).abs() < 2.0,
+                        "reloaded width: {frame:?}"
+                    );
+                    assert!(
+                        (frame.size.height - 680.0).abs() < 2.0,
+                        "reloaded height: {frame:?}"
                     );
                     platform::quit_app();
                 }
@@ -515,10 +535,18 @@ fn run_main_window_lifecycle_case(phase: &str) {
         std::process::ExitCode::SUCCESS
     );
     let events = active_events.lock().unwrap().clone();
-    assert!(
-        events.contains(&true),
-        "on_active must observe AppWindow activation: {events:?}"
-    );
+    let activations = events.iter().filter(|&&v| v).count();
+    if phase == "restore" {
+        assert!(
+            activations >= 2,
+            "on_active must drop during close_all and reactivate after reload: {events:?}"
+        );
+    } else {
+        assert!(
+            activations >= 1,
+            "on_active must observe AppWindow activation: {events:?}"
+        );
+    }
     assert_eq!(
         events.last().copied(),
         Some(false),
