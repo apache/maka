@@ -45,9 +45,18 @@ pub(super) const LIST: &str = "ListDossiers";
 pub(super) const READ: &str = "ReadDossier";
 pub(super) const STAGE: &str = "StageArtifact";
 pub(super) const PREFERENCES: &str = "UpdateDiscoveryPreferences";
+pub(super) const WATCH_SCOPE: &str = "UpdateWatchScope";
 pub(super) const REGISTER: &str = "RegisterWatch";
 pub(super) const PENDING: &str = "StagePendingAction";
-pub(super) const WORKER_TOOLS: &[&str] = &[COMPLETE, UPSERT, FINISH, STAGE, REGISTER, PENDING];
+pub(super) const WORKER_TOOLS: &[&str] = &[
+    COMPLETE,
+    UPSERT,
+    FINISH,
+    STAGE,
+    REGISTER,
+    PENDING,
+    WATCH_SCOPE,
+];
 pub(super) const VISIBLE_TOOLS: &[&str] = &[
     COMPLETE,
     MEMORY,
@@ -59,6 +68,7 @@ pub(super) const VISIBLE_TOOLS: &[&str] = &[
     REGISTER,
     PENDING,
     PREFERENCES,
+    WATCH_SCOPE,
 ];
 mod dossiers;
 pub(super) use dossiers::ScheduleOp;
@@ -72,7 +82,9 @@ pub(in crate::owner) mod changes;
 mod context;
 mod preferences;
 mod records;
+mod roots;
 mod watch_inputs;
+pub(in crate::owner) mod watch_scope;
 pub(in crate::owner) mod watches;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -624,7 +636,13 @@ impl Owner {
         let names =
             self.discovery_worker_tools(&names, source.configuration.tools.as_deref(), selection);
         // Optional tools must retain their displayed category and parent approval.
-        if selection.is_some_and(|selected| selected.len() + WORKER_TOOLS.len() != names.len()) {
+        if selection.is_some_and(|selected| {
+            selected.len()
+                != names
+                    .iter()
+                    .filter(|n| !WORKER_TOOLS.contains(&n.as_str()))
+                    .count()
+        }) {
             return Err("scheduler_discovery_tools_changed".into());
         }
         Ok(scheduler::DiscoveryToolGrant { profile, names })
@@ -681,10 +699,14 @@ impl Owner {
             })
             .cloned()
             .collect();
+        let reads_files = self.discovery_reads_files(&allowed);
         allowed.extend(
             names
                 .iter()
-                .filter(|name| WORKER_TOOLS.contains(&name.as_str()))
+                .filter(|name| {
+                    WORKER_TOOLS.contains(&name.as_str())
+                        && (name.as_str() != WATCH_SCOPE || reads_files)
+                })
                 .cloned(),
         );
         allowed.sort_unstable();
@@ -1079,6 +1101,14 @@ impl Owner {
                 .iter()
                 .any(|name| self.discovery_tool_group(name) == DiscoveryToolGroup::History);
         let (mut prompt, sources) = self.discovery_opening(mode, job, allowed_tools).await?;
+        let root = std::path::Path::new(&job.approval.target.workspace.path);
+        if let Some(survey) =
+            self.watch_scopes
+                .survey(root, allowed_tools, job.approval.language, now() as i64)
+        {
+            prompt.push_str("\n\n");
+            prompt.push_str(survey);
+        }
         prompt.push_str("\n\n");
         prompt.push_str(&investigation_prompt(
             job.approval.language,
@@ -1365,4 +1395,34 @@ pub(super) fn check_target(
     } else {
         Ok(())
     }
+}
+
+#[cfg(test)]
+async fn test_store() -> (
+    tempfile::TempDir,
+    Arc<RootStore>,
+    maka_agent_facts::durable::RunOwner,
+) {
+    use maka_agent_facts::durable::RunOwner;
+    use maka_event_log::root::{RootNamespaces, RootOwner};
+    let dir = tempfile::tempdir().unwrap();
+    let state = RootOwner::create(
+        &dir.path().join("state"),
+        &RootNamespaces {
+            ownership: dir.path().join("own"),
+            control: dir.path().join("ctl"),
+        },
+    )
+    .unwrap();
+    let migrations = maka_event_log::ROOT_MIGRATIONS
+        .iter()
+        .chain(maka_agent_state::MIGRATIONS)
+        .copied()
+        .collect::<Vec<_>>();
+    let root = Arc::new(RootStore::open(Arc::new(state), &migrations).await.unwrap());
+    let owner = RunOwner {
+        deployment: Uuid::new_v4(),
+        namespace: maka_plugin_core::composition::InstanceId(vec![Uuid::new_v4()]),
+    };
+    (dir, root, owner)
 }

@@ -44,6 +44,7 @@ pub(super) const COORDINATION_TOOLS: &[&str] = &[
     "ListDossiers",
     "ReadDossier",
     "UpdateDiscoveryPreferences",
+    discovery::WATCH_SCOPE,
     "CreateGoal",
     "GetGoal",
     "GoalStatus",

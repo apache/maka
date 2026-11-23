@@ -109,7 +109,7 @@ async fn opening_acknowledges_its_snapshot_and_preserves_concurrent_and_out_of_s
     let snapshot = store
         .change_snapshot(
             UnixMillis(11),
-            ChangeQuery::Opening { editing_limit: 0 },
+            ChangeQuery::Opening { limit: 64 },
             |path, _| path.starts_with("/work"),
         )
         .await
@@ -132,7 +132,7 @@ async fn opening_acknowledges_its_snapshot_and_preserves_concurrent_and_out_of_s
     let pending = store
         .change_snapshot(
             UnixMillis(14),
-            ChangeQuery::Opening { editing_limit: 0 },
+            ChangeQuery::Opening { limit: 64 },
             |_, _| true,
         )
         .await

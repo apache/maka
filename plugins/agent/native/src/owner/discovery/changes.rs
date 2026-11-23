@@ -17,9 +17,10 @@
  * under the License.
  */
 
-//! Observe configured workspace roots uniformly. All quiet periods use event time in milliseconds.
+//! Observe workspace content and explicit file watches. All quiet periods use event time in milliseconds.
+use super::roots::{CacheTags, DeltaRoots, Directories, TAG, host_path};
 use super::*;
-use cap_fs_ext::{DirExt, FollowSymlinks, MetadataExt, OpenOptionsFollowExt};
+use cap_fs_ext::{FollowSymlinks, MetadataExt, OpenOptionsFollowExt};
 use cap_std::fs::{Dir, OpenOptions};
 use maka_agent_state::discovery::{
     DiscoveryStore,
@@ -36,20 +37,20 @@ use std::{
     path::{Component, Path, PathBuf},
     time::UNIX_EPOCH,
 };
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{broadcast, mpsc, watch};
 
 const BATCH: usize = 128;
 
 #[derive(Clone, Copy)]
-struct Timing {
-    debounce: Duration,
+pub(in crate::owner) struct Timing {
+    pub(in crate::owner) debounce: Duration,
     window: Duration,
     cooldown: Duration,
 }
 impl Default for Timing {
     fn default() -> Self {
         Self {
-            debounce: Duration::from_secs(10),
+            debounce: Duration::from_secs(120),
             window: Duration::from_secs(4 * 60),
             cooldown: Duration::from_secs(10 * 60),
         }
@@ -59,77 +60,35 @@ struct ChangeTracker {
     store: DiscoveryStore,
     roots: Arc<BTreeMap<PathBuf, Dir>>,
     timing: Timing,
+    routing: watch::Receiver<Arc<Routing>>,
 }
 
-fn library_noise(relative: &Path) -> bool {
-    let mut parts = relative.iter();
-    let mut next = || parts.next().and_then(|p| p.to_str());
-    match next() {
-        Some("Application Support") => match next() {
-            Some("Google") => next() == Some("Chrome"),
-            Some("Chromium" | "Firefox" | "Arc" | "Safari" | "CrashReporter") => true,
-            _ => false,
-        },
-        Some("Mail") => next().is_some_and(|v| v.starts_with('V')) && next() == Some("MailData"),
-        Some(
-            "Preferences" | "Group Containers" | "HTTPStorages" | "Biomes" | "Biome"
-            | "Suggestions" | "CoreDuet" | "Accounts" | "Keychains" | "Safari",
-        ) => true,
-        _ => false,
-    }
-}
-
-fn ignored(path: &Path, private: &[PathBuf]) -> bool {
+pub(super) fn ignored(path: &Path, private: &[PathBuf]) -> bool {
     private.iter().any(|p| path.starts_with(p))
         || path
             .ancestors()
             .any(|p| match p.file_name().and_then(|s| s.to_str()) {
-                Some("Library") => library_noise(path.strip_prefix(p).expect("ancestor")),
                 Some(
-                    ".git"
-                    | "node_modules"
-                    | "target"
-                    | "Caches"
-                    | "CachedData"
-                    | "CacheStorage"
-                    | "Code Cache"
-                    | "GPUCache"
-                    | "DawnCache"
-                    | "Service Worker"
-                    | "IndexedDB"
-                    | "Local Storage"
-                    | "Session Storage"
-                    | "Crash Reports"
-                    | "Saved Application State"
-                    | "Cookies"
-                    | "Logs"
-                    | "WebKit"
-                    | "Metadata"
-                    | "Spotlight"
-                    | "Thumb"
-                    | "kvcomm"
-                    | "db_storage"
-                    | "app_data",
+                    ".git" | "__pycache__" | ".venv" | ".next" | ".nuxt" | ".Trash"
+                    | "node_modules" | "target" | "Caches" | "Logs",
                 ) => true,
-                _ => false,
+                Some(name) => [".photoslibrary", ".musiclibrary", ".tvlibrary"]
+                    .iter()
+                    .any(|s| name.ends_with(s)),
+                None => false,
             })
         || path
             .file_name()
             .and_then(|s| s.to_str())
             .is_some_and(|name| {
-                matches!(
-                    name,
-                    ".DS_Store" | "Local State" | "Preferences" | "History"
-                ) || name.starts_with("~$")
+                matches!(name, TAG | ".DS_Store")
+                    || name.starts_with("~$")
                     || [
                         ".tmp",
                         ".swp",
                         ".swo",
                         ".lock",
                         ".log",
-                        ".enc",
-                        ".statistic",
-                        ".material",
                         "-wal",
                         "-shm",
                         "-journal",
@@ -141,7 +100,11 @@ fn ignored(path: &Path, private: &[PathBuf]) -> bool {
             })
 }
 
-fn visible_in_workspace(path: &Path, directory: bool, is_root: impl Fn(&Path) -> bool) -> bool {
+pub(super) fn visible_in_workspace(
+    path: &Path,
+    directory: bool,
+    is_root: impl Fn(&Path) -> bool,
+) -> bool {
     let dir = if directory {
         path
     } else {
@@ -161,49 +124,192 @@ fn visible_in_workspace(path: &Path, directory: bool, is_root: impl Fn(&Path) ->
     false
 }
 
-fn file_events(
-    event: notify::Event,
-    private: &[PathBuf],
-    tx: &mpsc::Sender<FileWrite>,
-    watch_paths: &tokio::sync::broadcast::Sender<PathBuf>,
-    track_deltas: bool,
-    staging: &Path,
-) {
-    let kind = match event.kind {
-        EventKind::Create(CreateKind::File | CreateKind::Any)
-        | EventKind::Modify(ModifyKind::Name(
-            RenameMode::Both | RenameMode::To | RenameMode::Any,
-        )) => WriteKind::Created,
-        EventKind::Modify(
-            ModifyKind::Data(_) | ModifyKind::Any | ModifyKind::Metadata(MetadataKind::WriteTime),
-        ) => WriteKind::Modified,
-        EventKind::Remove(RemoveKind::File | RemoveKind::Any)
-        | EventKind::Modify(ModifyKind::Name(RenameMode::From)) => WriteKind::Removed,
-        _ => return,
-    };
-    let at = UnixMillis(now() as i64);
-    for (index, path) in event.paths.into_iter().enumerate() {
-        if !private.iter().any(|p| path.starts_with(p)) || path.starts_with(staging) {
-            let _ = watch_paths.send(path.clone());
-        }
-        if !track_deltas || ignored(&path, private) {
-            continue;
-        }
-        let kind = if index == 0
-            && matches!(
-                event.kind,
-                EventKind::Modify(ModifyKind::Name(RenameMode::Both))
-            ) {
-            WriteKind::Removed
-        } else {
-            kind
-        };
-        if let Ok(path) = path.into_os_string().into_string()
-            && tx.blocking_send(FileWrite { path, kind, at }).is_err()
-        {
+#[derive(Default)]
+struct Routing {
+    deltas: DeltaRoots,
+    files: BTreeMap<PathBuf, Vec<String>>,
+}
+
+impl Routing {
+    fn file_events(
+        &self,
+        event: notify::Event,
+        roots: &Directories,
+        tags: &mut CacheTags,
+        tx: &mpsc::Sender<FileWrite>,
+        watch_paths: &broadcast::Sender<String>,
+        reload: &watch::Sender<()>,
+    ) {
+        if !matches!(
+            event.kind,
+            EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_)
+        ) {
             return;
         }
+        let structural = matches!(
+            event.kind,
+            EventKind::Create(_) | EventKind::Remove(_) | EventKind::Modify(ModifyKind::Name(_))
+        );
+        let kind = match event.kind {
+            EventKind::Create(CreateKind::File | CreateKind::Any)
+            | EventKind::Modify(ModifyKind::Name(
+                RenameMode::Both | RenameMode::To | RenameMode::Any,
+            )) => Some(WriteKind::Created),
+            EventKind::Modify(
+                ModifyKind::Data(_)
+                | ModifyKind::Any
+                | ModifyKind::Metadata(MetadataKind::WriteTime),
+            ) => Some(WriteKind::Modified),
+            EventKind::Remove(RemoveKind::File | RemoveKind::Any)
+            | EventKind::Modify(ModifyKind::Name(RenameMode::From)) => Some(WriteKind::Removed),
+            _ => None,
+        };
+        let at = UnixMillis(now() as i64);
+        for (index, path) in event.paths.into_iter().enumerate() {
+            let Ok(path) = host_path(&path) else { continue };
+            let marker = path.file_name().is_some_and(|n| n == TAG);
+            if structural || marker {
+                tags.invalidate(path);
+            }
+            let parent = path.parent();
+            let home_child = parent.is_some() && parent == self.deltas.home.as_deref();
+            let tagged_root = marker
+                && parent.is_some_and(|p| {
+                    self.deltas.recursive.contains(p)
+                        || self
+                            .deltas
+                            .home
+                            .as_deref()
+                            .is_some_and(|home| p == home || p.parent() == Some(home))
+                });
+            if tagged_root
+                || (structural
+                    && home_child
+                    && path.file_name().is_some_and(roots::home_child)
+                    && !matches!(
+                        event.kind,
+                        EventKind::Create(CreateKind::File) | EventKind::Remove(RemoveKind::File)
+                    ))
+            {
+                reload.send_replace(());
+            }
+            let Some(kind) = kind else { continue };
+            if let Some(targets) = self.files.get(path) {
+                for target in targets {
+                    let _ = watch_paths.send(target.clone());
+                }
+            }
+            if marker
+                || !self.deltas.permits(path, false)
+                || path.parent().is_none_or(|dir| tags.ignored(dir, roots))
+            {
+                continue;
+            }
+            let kind = if index == 0
+                && matches!(
+                    event.kind,
+                    EventKind::Modify(ModifyKind::Name(RenameMode::Both))
+                ) {
+                WriteKind::Removed
+            } else {
+                kind
+            };
+            if tx
+                .blocking_send(FileWrite {
+                    path: path.to_str().expect("host path").into(),
+                    kind,
+                    at,
+                })
+                .is_err()
+            {
+                return;
+            }
+        }
     }
+}
+
+fn watch_files<W: Watcher>(
+    roots: Arc<Directories>,
+    mut updates: mpsc::Receiver<Routing>,
+    route: watch::Sender<Arc<Routing>>,
+    tx: mpsc::Sender<FileWrite>,
+    watch_paths: broadcast::Sender<String>,
+    reload: watch::Sender<()>,
+    config: notify::Config,
+) -> Result<(), String> {
+    let mut current = route.subscribe();
+    let dirs = roots.clone();
+    let mut tags = CacheTags::default();
+    let topology = reload.clone();
+    let mut watcher = W::new(
+        move |event: notify::Result<notify::Event>| match event {
+            Ok(event) if event.need_rescan() => {
+                tags = CacheTags::default();
+                topology.send_replace(());
+                tracing::warn!("Discovery filesystem event stream reported lost changes");
+            }
+            Ok(event) => {
+                if current.has_changed().unwrap_or(false) {
+                    tags = CacheTags::default();
+                }
+                let routing = current.borrow_and_update().clone();
+                routing.file_events(event, &dirs, &mut tags, &tx, &watch_paths, &topology);
+            }
+            Err(error) => tracing::warn!(%error, "Discovery filesystem watcher error"),
+        },
+        config.with_follow_symlinks(false),
+    )
+    .map_err(reason)?;
+    let mut installed: BTreeMap<PathBuf, RecursiveMode> = BTreeMap::new();
+    while let Some(routing) = updates.blocking_recv() {
+        let wanted = routing
+            .deltas
+            .subscriptions(&roots, routing.files.keys().map(PathBuf::as_path), |_| true)
+            .map_err(reason)?;
+        let new_home = routing
+            .deltas
+            .home
+            .as_ref()
+            .is_some_and(|p| !installed.contains_key(p) && wanted.contains_key(p));
+        route.send_replace(Arc::new(routing));
+        if wanted == installed {
+            continue;
+        }
+        let mut batch = watcher.paths_mut();
+        for (path, mode) in &installed {
+            if wanted.get(path) != Some(mode)
+                && let Err(error) = batch.remove(path)
+                && !matches!(
+                    error.kind,
+                    notify::ErrorKind::WatchNotFound | notify::ErrorKind::PathNotFound
+                )
+            {
+                return Err(reason(error));
+            }
+        }
+        let mut next = BTreeMap::new();
+        for (path, mode) in wanted {
+            if installed.get(&path) != Some(&mode)
+                && let Err(error) = batch.add(&path, mode)
+            {
+                if matches!(error.kind, notify::ErrorKind::PathNotFound)
+                    || matches!(&error.kind, notify::ErrorKind::Io(e) if matches!(e.kind(), io::ErrorKind::NotFound | io::ErrorKind::PermissionDenied))
+                {
+                    tracing::debug!(%error, ?path, "Discovery directory unavailable");
+                    continue;
+                }
+                return Err(reason(error));
+            }
+            next.insert(path, mode);
+        }
+        batch.commit().map_err(reason)?;
+        installed = next;
+        // Cover children created between the first enumeration and registration of the home directory.
+        if new_home {
+            reload.send_replace(());
+        }
+    }
+    Ok(())
 }
 
 fn inspect_files(mut writes: Vec<FileWrite>) -> Vec<FileWrite> {
@@ -227,31 +333,8 @@ fn inspect_files(mut writes: Vec<FileWrite>) -> Vec<FileWrite> {
 }
 
 impl ChangeTracker {
-    async fn observe_events(
-        &self,
-        owner: &Owner,
-        writes: &mut Vec<FileWrite>,
-        plan_roots: &mut Option<BTreeSet<PathBuf>>,
-    ) -> Result<Option<i64>, String> {
-        let mut candidates = Vec::new();
-        for write in writes.drain(..) {
-            let path = Path::new(&write.path);
-            if !visible_in_workspace(path, false, |dir| self.roots.contains_key(dir)) {
-                // Only hidden subtrees need the active plans to resolve their workspace prefixes.
-                let roots = match plan_roots {
-                    Some(roots) => roots,
-                    None => plan_roots.insert(owner.active_discovery_workspaces().await?),
-                };
-                if !visible_in_workspace(path, false, |dir| roots.contains(dir)) {
-                    continue;
-                }
-            }
-            candidates.push(write);
-        }
-        if candidates.is_empty() {
-            return Ok(None);
-        }
-        let files = tokio::task::spawn_blocking(move || inspect_files(candidates))
+    async fn observe_events(&self, writes: Vec<FileWrite>) -> Result<Option<i64>, String> {
+        let files = tokio::task::spawn_blocking(move || inspect_files(writes))
             .await
             .map_err(reason)?;
         if files.is_empty() {
@@ -286,19 +369,27 @@ impl ChangeTracker {
         }
         let roots = self.roots.clone();
         let cancel = stop.clone();
+        let routing = self.routing.borrow().clone();
         let debounce_ms = self.timing.debounce.as_millis() as i64;
         let results = tokio::task::spawn_blocking(move || {
             let mut results = Vec::with_capacity(probes.len());
+            let mut tags = CacheTags::default();
             for probe in probes {
                 if cancel.is_cancelled() {
                     break;
+                }
+                let path = host_path(Path::new(&probe.path)).expect("stored UTF-8 path");
+                if !routing.deltas.permits(path, false)
+                    || path.parent().is_none_or(|dir| tags.ignored(dir, &roots))
+                {
+                    results.push((probe, ProbeResult::Unreadable));
+                    continue;
                 }
                 if probe.cooldown_until.0 > at.0 {
                     let until = probe.cooldown_until;
                     results.push((probe, ProbeResult::RetryAt(until)));
                     continue;
                 }
-                let path = Path::new(&probe.path);
                 let fp = match fingerprint(&roots, path, &cancel) {
                     Ok(Some(fp)) => ProbeResult::Stable(fp),
                     Ok(None) => ProbeResult::Missing,
@@ -323,7 +414,8 @@ impl ChangeTracker {
 
     async fn run(&self, owner: &Owner, mut rx: mpsc::Receiver<FileWrite>) -> Result<(), String> {
         let mut schedules = owner.schedule_changes();
-        let mut plan_roots = None;
+        let mut scopes = self.routing.clone();
+        scopes.changed().await.map_err(reason)?;
         let mut plan_due = None;
         let mut probe_due = Some(0_i64);
         let mut writes = Vec::new();
@@ -342,13 +434,13 @@ impl ChangeTracker {
                 _ = owner.stop.cancelled() => return Ok(()),
                 result = schedules.changed() => {
                     result.map_err(reason)?;
-                    plan_roots = None;
+
                 }
+                result = scopes.changed() => { result.map_err(reason)?; }
                 _ = timer => {}
                 n = rx.recv_many(&mut writes, BATCH) => {
                     if n == 0 { return Ok(()) }
-                    if schedules.has_changed().map_err(reason)? { plan_roots = None; }
-                    let next = self.observe_events(owner, &mut writes, &mut plan_roots).await?;
+                    let next = self.observe_events(std::mem::take(&mut writes)).await?;
                     probe_due = probe_due.into_iter().chain(next).min();
                     continue;
                 }
@@ -384,16 +476,7 @@ pub(super) fn fingerprint_in(
     let Some(Component::Normal(name)) = relative.next_back() else {
         return Ok(None);
     };
-    let open_parent = || -> io::Result<Dir> {
-        let mut parent = dir.try_clone()?;
-        for component in relative.clone() {
-            let Component::Normal(part) = component else {
-                return Err(io::ErrorKind::InvalidInput.into());
-            };
-            parent = parent.open_dir_nofollow(part)?;
-        }
-        Ok(parent)
-    };
+    let open_parent = || -> io::Result<Dir> { roots::open_relative(dir, relative.as_path()) };
     let parent = open_parent()?;
     let meta = parent.symlink_metadata(name)?;
     if !meta.is_file() {
@@ -465,11 +548,9 @@ impl Owner {
                 let path = Path::new(&approval.target.workspace.path);
                 (plan.task.status == maka_scheduler::task::Status::Active
                     && plan.task.expires_at.is_none_or(|end| end > at)
-                    && self
-                        .workspace_roots
-                        .iter()
-                        .filter_map(workspace::Root::configured_directory)
-                        .any(|r| path.starts_with(r.path())))
+                    && path
+                        .ancestors()
+                        .any(|dir| self.watch_scopes.directories.contains_key(dir)))
                 .then(|| path.to_path_buf())
             })
             .collect())
@@ -495,112 +576,128 @@ impl Owner {
         let track_deltas = self.settings.bot
             && self.settings.scheduled_tasks
             && !self.settings.workspace_roots.is_empty();
+        let roots = self.watch_scopes.directories.clone();
         if !track_deltas {
             let mut registrations = self.watch_runner.changes.subscribe();
-            loop {
-                registrations.borrow_and_update();
-                if self
-                    .discovery
-                    .next_watch_due(maka_agent_facts::discovery::WatchKind::FileHash)
-                    .await
-                    .map_err(reason)?
-                    .is_some()
-                {
-                    break;
-                }
+            while self
+                .discovery
+                .next_watch_due(maka_agent_facts::discovery::WatchKind::FileHash)
+                .await
+                .map_err(reason)?
+                .is_none()
+            {
                 tokio::select! {
-                    _ = self.stop.cancelled()=>return Ok(()),
-                    result=registrations.changed()=>result.map_err(reason)?,
+                    _ = self.stop.cancelled() => return Ok(()),
+                    result = registrations.changed() => result.map_err(reason)?,
                 }
             }
         }
-        let state = self.store.owned_root().map_err(reason)?;
-        let mut private = vec![
-            state.canonical_path().into(),
-            state.control_directory().into(),
-            state.lock_path().into(),
-        ];
-        let configured = self.workspace_roots.clone();
-        let roots = tokio::task::spawn_blocking(move || {
-            configured
-                .iter()
-                .filter_map(workspace::Root::configured_directory)
-                .map(|r| {
-                    Ok((
-                        r.path().to_path_buf(),
-                        maka_fs_tools::directory::open(r.path(), &r.identity()?)?,
-                    ))
-                })
-                .collect::<io::Result<BTreeMap<_, _>>>()
-        })
-        .await
-        .map_err(reason)?
-        .map_err(reason)?;
+        let (route, routing) = watch::channel(Arc::new(Routing::default()));
         let tracker = ChangeTracker {
             store: self.discovery.clone(),
-            roots: Arc::new(roots),
-            timing: Timing::default(),
+            roots: roots.clone(),
+            timing: self.watch_scopes.timing,
+            routing,
         };
-        let paths: Vec<_> = tracker
-            .roots
-            .keys()
-            .filter(|p| !p.ancestors().skip(1).any(|a| tracker.roots.contains_key(a)))
-            .cloned()
-            .collect();
-        let (tx, mut rx) = mpsc::channel(BATCH * 2);
-        let (release, shutdown) = oneshot::channel::<()>();
+        let (tx, rx) = mpsc::channel(BATCH * 2);
+        let (updates, changes) = mpsc::channel(1);
         let watch_paths = self.watch_runner.paths.clone();
+        let (reload, topology) = watch::channel(());
         let watcher = tokio::task::spawn_blocking(move || {
-            let discovery = artifacts::discovery_dir(&state, true).map_err(reason)?;
-            artifacts::child(&discovery, "staging", true).map_err(reason)?;
-            let staging = state.canonical_path().join("discovery/staging");
-            let mut paths = paths;
-            if !paths.iter().any(|root| staging.starts_with(root)) {
-                paths.push(staging.clone())
-            }
-            private.push(maka_sandbox::native_task_namespace().map_err(reason)?);
-            let mut watcher = RecommendedWatcher::new(
-                move |event: notify::Result<notify::Event>| match event {
-                    Ok(event) if event.need_rescan() => {
-                        tracing::warn!("Discovery filesystem event stream reported lost changes")
-                    }
-                    Ok(event) => {
-                        file_events(event, &private, &tx, &watch_paths, track_deltas, &staging)
-                    }
-                    Err(error) => tracing::warn!(%error, "Discovery filesystem watcher error"),
-                },
-                notify::Config::default().with_follow_symlinks(false),
+            watch_files::<RecommendedWatcher>(
+                roots,
+                changes,
+                route,
+                tx,
+                watch_paths,
+                reload,
+                notify::Config::default(),
             )
-            .map_err(reason)?;
-            for path in paths {
-                watcher
-                    .watch(&path, RecursiveMode::Recursive)
-                    .map_err(reason)?;
-            }
-            Ok::<_, String>(watcher)
         });
-        // Drain the bounded callback channel during registration. Close it before joining the OS watcher.
-        let (watched, tracked) = tokio::join!(
+        tokio::try_join!(
+            async { watcher.await.map_err(reason)? },
+            self.watch_subscriptions(track_deltas, updates, topology),
             async {
-                let watcher = watcher.await.map_err(reason)??;
-                let _ = shutdown.await;
-                tokio::task::spawn_blocking(move || drop(watcher))
-                    .await
-                    .map_err(reason)
-            },
-            async {
-                let result = if track_deltas {
+                if track_deltas {
                     tracker.run(self, rx).await
                 } else {
-                    tokio::select! {_ = self.stop.cancelled()=>{}, _ = rx.recv()=>{}}
+                    self.stop.cancelled().await;
                     Ok(())
-                };
-                drop(release);
-                result
+                }
+            },
+        )?;
+        Ok(())
+    }
+
+    async fn file_watch_targets(&self) -> Result<BTreeMap<PathBuf, Vec<String>>, String> {
+        let state = self.store.owned_root().map_err(reason)?;
+        let discovery = host_path(state.canonical_path())
+            .map_err(reason)?
+            .join("discovery");
+        let mut files = BTreeMap::new();
+        for target in self.discovery.file_watch_targets().await.map_err(reason)? {
+            let path = discovery.join(&target);
+            files
+                .entry(host_path(&path).map_err(reason)?.to_owned())
+                .or_insert_with(Vec::new)
+                .push(target);
+        }
+        Ok(files)
+    }
+
+    async fn watch_subscriptions(
+        &self,
+        track: bool,
+        updates: mpsc::Sender<Routing>,
+        mut topology: watch::Receiver<()>,
+    ) -> Result<(), String> {
+        let mut scopes = self.watch_scopes.changed.subscribe();
+        let mut registrations = self.watch_runner.changes.subscribe();
+        let mut dossiers = self.discovery.subscribe();
+        let mut schedules = self.schedule_changes();
+        let mut active = if track {
+            self.active_discovery_workspaces().await?
+        } else {
+            BTreeSet::new()
+        };
+        let mut files = self.file_watch_targets().await?;
+        loop {
+            let deltas = if track {
+                let mut roots = active.clone();
+                roots.extend(self.watch_scopes.directories.keys().cloned());
+                self.watch_scopes
+                    .delta_roots(roots, watch_scope::ScopeView::Watcher)
+            } else {
+                DeltaRoots::default()
+            };
+            updates
+                .send(Routing {
+                    deltas,
+                    files: files.clone(),
+                })
+                .await
+                .map_err(reason)?;
+            loop {
+                tokio::select! {
+                    _ = self.stop.cancelled() => return Ok(()),
+                    result = scopes.changed() => { result.map_err(reason)?; break; }
+                    result = topology.changed() => { result.map_err(reason)?; break; }
+                    result = async { tokio::select! {
+                        r = registrations.changed() => r,
+                        r = dossiers.changed(), if !files.is_empty() => r,
+                    } } => {
+                        result.map_err(reason)?;
+                        let next = self.file_watch_targets().await?;
+                        if next != files { files = next; break; }
+                    }
+                    result = schedules.changed(), if track => {
+                        result.map_err(reason)?;
+                        let next = self.active_discovery_workspaces().await?;
+                        if next != active { active = next; break; }
+                    }
+                }
             }
-        );
-        watched?;
-        tracked
+        }
     }
 
     pub(super) async fn discovery_changes(
@@ -610,12 +707,17 @@ impl Owner {
         query: ChangeQuery,
     ) -> Result<ChangeSnapshot, String> {
         let selected = Path::new(&approval.target.workspace.path);
-        let roots: BTreeSet<_> = self
-            .workspace_roots
-            .iter()
-            .filter_map(workspace::Root::configured_directory)
-            .map(|r| discovery_root(r.path(), selected).to_path_buf())
+        let roots = self
+            .watch_scopes
+            .directories
+            .keys()
+            .map(|p| discovery_root(p, selected).to_owned())
             .collect();
+        let scope = self
+            .watch_scopes
+            .delta_roots(roots, watch_scope::ScopeView::Workspace);
+        let caps = self.watch_scopes.directories.clone();
+        let mut tags = CacheTags::default();
         let policy = match &approval.sandbox_ceiling {
             Some(maka_sandbox::Sandbox::Managed { filesystem, .. }) => {
                 Some(filesystem.compile().map_err(reason)?)
@@ -625,10 +727,20 @@ impl Owner {
         };
         self.discovery
             .change_snapshot(at, query, move |path, kind| {
-                visible_in_workspace(path, kind == DeltaKind::Directory, |dir| {
-                    roots.contains(dir)
-                }) && !ignored(path, &[])
+                let Ok(path) = host_path(path) else {
+                    return false;
+                };
+                let directory = kind == DeltaKind::Directory;
+                scope.permits(path, directory)
                     && policy.as_ref().is_none_or(|p| p.access(path).can_read())
+                    && !tags.ignored(
+                        if directory {
+                            path
+                        } else {
+                            path.parent().unwrap_or(path)
+                        },
+                        &caps,
+                    )
             })
             .await
             .map_err(reason)
@@ -643,12 +755,10 @@ impl Owner {
             workspace::open_workspace(&self.workspace_roots, selected, &self.managed_worktrees)
                 .await?;
         let root = PathBuf::from(&selected.path);
-        let state = self.store.owned_root().map_err(reason)?;
-        let private = vec![
-            state.canonical_path().into(),
-            state.control_directory().into(),
-            state.lock_path().into(),
-        ];
+        let scope = Arc::new(
+            self.watch_scopes
+                .delta_roots([root.clone()].into(), watch_scope::ScopeView::Workspace),
+        );
         let reserved = access::reserved_sandbox_floor(&self.store, selected).await?;
         let ceiling = match &approval.sandbox_ceiling {
             Some(maka_sandbox::Sandbox::External { .. }) => return Ok(vec![]),
@@ -659,15 +769,39 @@ impl Owner {
             return Ok(vec![]);
         };
         let policy = Arc::new(filesystem.compile().map_err(reason)?);
-        let can_list_root = policy.access(&root).can_read() && !ignored(&root, &private);
+        let can_list_root = policy.access(&root).can_read() && scope.permits(&root, true);
+        let caps = if root
+            .ancestors()
+            .any(|p| self.watch_scopes.directories.contains_key(p))
+        {
+            self.watch_scopes.directories.clone()
+        } else {
+            Arc::new([(root.clone(), dir.try_clone().map_err(reason)?)].into())
+        };
+        let includes = scope
+            .recursive
+            .iter()
+            .filter(|p| **p != root && scope.permits(p, true) && policy.access(p).can_read())
+            .filter_map(|p| p.to_str().map(str::to_owned))
+            .collect::<Vec<_>>();
         let base = root.clone();
+        let mut tags = CacheTags::default();
+        let scan_caps = caps.clone();
         let allowed = move |p: &Path| {
+            let Ok(p) = host_path(p) else { return false };
             p != base
-                && visible_in_workspace(p, true, |dir| dir == base)
-                && !ignored(p, &private)
+                && p.starts_with(&base)
+                && scope.permits(p, true)
                 && policy.access(p).can_read()
+                && !tags.source_ignored(p, &caps)
         };
         let at = UnixMillis(now() as i64);
+        if !includes.is_empty() {
+            self.discovery
+                .seed_cold_sources(includes, at)
+                .await
+                .map_err(reason)?;
+        }
         let mut cold = self
             .discovery
             .cold_sources(at, 4, allowed.clone())
@@ -677,9 +811,12 @@ impl Owner {
             cold.truncate(3);
             return Ok(cold);
         }
-        let permit = allowed.clone();
+        let mut permit = allowed.clone();
         let (batches, mut pending) = mpsc::channel(1);
         let scan = tokio::task::spawn_blocking(move || {
+            if CacheTags::default().ignored(&root, &scan_caps) {
+                return Ok(());
+            }
             let mut paths = Vec::with_capacity(BATCH);
             for entry in dir.entries()? {
                 let entry = entry?;
@@ -687,14 +824,11 @@ impl Owner {
                 if permit(&path)
                     && let Some(path) = path.to_str()
                 {
-                    let kind = entry.file_type()?;
-                    if kind.is_dir() || kind.is_file() {
-                        paths.push(path.to_owned());
-                        if paths.len() == BATCH {
-                            batches
-                                .blocking_send(std::mem::take(&mut paths))
-                                .map_err(io::Error::other)?;
-                        }
+                    paths.push(path.to_owned());
+                    if paths.len() == BATCH {
+                        batches
+                            .blocking_send(std::mem::take(&mut paths))
+                            .map_err(io::Error::other)?;
                     }
                 }
             }
@@ -725,17 +859,13 @@ impl Owner {
         let Some(_producer) = self.producer().await else {
             return Ok(None);
         };
-        let _gate = self.scheduler.gate.lock().await;
-        if self.scheduler.investigation.read().unwrap().is_some() {
-            return Ok(None);
-        }
-        let mut catalog = self.scheduler.load_change_plans().await?;
-        if catalog.plans.values().any(|s| {
-            s.plan
-                .pending
-                .as_ref()
-                .is_some_and(|f| matches!(f.effect, ScheduledEffect::Discovery { .. }))
-        }) {
+        let scopes = self.watch_scopes.changed.subscribe();
+        let schedules = self.schedule_changes();
+        let catalog = {
+            let _gate = self.scheduler.gate.lock().await;
+            self.scheduler.load_change_plans().await?
+        };
+        if catalog.has_pending_discovery() {
             return Ok(None);
         }
         let mut next_cooldown = None;
@@ -776,10 +906,31 @@ impl Owner {
             }
             let mut plan = plan.clone();
             let id = plan.task.id.clone();
-            plan.task.next_fire_at = Some(at.0);
-            plan.claim(at.0).map_err(reason)?;
-            if let Some(fire) = &mut plan.pending {
-                fire.source = maka_scheduler::plan::FireSource::FileChange;
+            if plan
+                .claim_preserving_schedule(at.0, FireSource::FileChange)
+                .map_err(reason)?
+                .is_none()
+            {
+                continue;
+            }
+            // Scope edits and other openings can invalidate the snapshot while the gate is free.
+            let _scope = self.watch_scopes.edits.lock().await;
+            let _gate = self.scheduler.gate.lock().await;
+            if scopes.has_changed().map_err(reason)? || schedules.has_changed().map_err(reason)? {
+                return Ok(Some(at.0));
+            }
+            let mut catalog = self.scheduler.load_change_plans().await?;
+            if catalog.has_pending_discovery()
+                || self.scheduler.investigation.read().unwrap().is_some()
+            {
+                return Ok(None);
+            }
+            if catalog
+                .plans
+                .get(&id)
+                .is_none_or(|live| live.revision != saved.revision)
+            {
+                return Ok(Some(at.0));
             }
             self.scheduler
                 .commit(&mut catalog, &id, Some(plan), None)
@@ -806,7 +957,7 @@ fn discovery_root<'a>(configured: &'a Path, selected: &'a Path) -> &'a Path {
 }
 
 fn file_change_cooldown_ms(schedule: &TaskSchedule) -> i64 {
-    const MAX_MS: i64 = 300_000;
+    const MAX_MS: i64 = 900_000;
     match schedule {
         TaskSchedule::Interval { every_seconds, .. } => {
             (i64::from(*every_seconds) * 1000 / 2).min(MAX_MS)
@@ -819,56 +970,174 @@ fn file_change_cooldown_ms(schedule: &TaskSchedule) -> i64 {
 mod tests {
     use super::*;
     use maka_agent_facts::discovery::SourceUri;
-    use maka_agent_facts::durable::RunOwner;
-    use maka_event_log::root::{RootNamespaces, RootOwner};
+
+    #[tokio::test]
+    async fn discovery_live_subscriptions_add_home_children_and_explicit_watch_parents() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = host_path(&temp.path().canonicalize().unwrap())
+            .unwrap()
+            .to_owned();
+        let guards = home.join(".guards");
+        std::fs::create_dir(&guards).unwrap();
+        let cap = Dir::open_ambient_dir(&home, cap_std::ambient_authority()).unwrap();
+        let dirs = Arc::new([(home.clone(), cap)].into());
+        let guard = guards.join("input");
+        let routing = |files| Routing {
+            deltas: DeltaRoots {
+                home: Some(home.clone()),
+                ..Default::default()
+            },
+            files,
+        };
+        let (updates, requests) = mpsc::channel(1);
+        let (route, _) = watch::channel(Arc::new(Routing::default()));
+        let (reload, mut topology) = watch::channel(());
+        let (tx, mut deltas) = mpsc::channel(64);
+        let (paths, mut targets) = broadcast::channel(64);
+        // The polling backend exercises the same live registration loop without an OS event service.
+        let worker = tokio::task::spawn_blocking(move || {
+            watch_files::<notify::PollWatcher>(
+                dirs,
+                requests,
+                route,
+                tx,
+                paths,
+                reload,
+                notify::Config::default()
+                    .with_poll_interval(Duration::from_millis(25))
+                    .with_compare_contents(true),
+            )
+        });
+        let wait = Duration::from_secs(5);
+        updates.send(routing(BTreeMap::new())).await.unwrap();
+        tokio::time::timeout(wait, topology.changed())
+            .await
+            .unwrap()
+            .unwrap();
+        let project = home.join("NewProject");
+        tokio::fs::create_dir(&project).await.unwrap();
+        tokio::time::timeout(wait, topology.changed())
+            .await
+            .unwrap()
+            .unwrap();
+        updates
+            .send(routing([(guard.clone(), vec!["guard".into()])].into()))
+            .await
+            .unwrap();
+        let doc = project.join("notes");
+        tokio::time::timeout(wait, async {
+            let (mut seen_doc, mut seen_guard) = (false, false);
+            let mut tick = tokio::time::interval(Duration::from_millis(50));
+            let mut version = 0;
+            while !(seen_doc && seen_guard) {
+                tokio::select! {
+                    _ = tick.tick() => {
+                        version += 1;
+                        for path in [&doc, &guard] { tokio::fs::write(path, version.to_string()).await.unwrap(); }
+                    }
+                    write = deltas.recv() => {
+                        let path = PathBuf::from(write.unwrap().path);
+                        if path != project { assert_eq!(path, doc); seen_doc = true; }
+                    }
+                    target = targets.recv() => { assert_eq!(target.unwrap(), "guard"); seen_guard = true; }
+                }
+            }
+        }).await.expect("recursive content and exact guard did not both receive updates");
+        drop(updates);
+        drop(deltas);
+        worker.await.unwrap().unwrap();
+    }
+
+    #[test]
+    fn discovery_home_events_reload_new_folders_and_route_guard_only_writes() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path();
+        let content = home.join("Notes");
+        let guards = home.join(".guards");
+        std::fs::create_dir(&content).unwrap();
+        std::fs::create_dir(&guards).unwrap();
+        let cap = Dir::open_ambient_dir(home, cap_std::ambient_authority()).unwrap();
+        let dirs = [(home.to_owned(), cap)].into();
+        let guarded = guards.join("input");
+        let routing = Routing {
+            deltas: DeltaRoots {
+                home: Some(home.to_owned()),
+                excluded: Arc::new([content.join("excluded")].into()),
+                ..Default::default()
+            },
+            files: [(guarded.clone(), vec!["guard-key".into()])].into(),
+        };
+        let (tx, mut writes) = mpsc::channel(8);
+        let (paths, mut targeted) = broadcast::channel(8);
+        let (reload, changed) = watch::channel(());
+        let mut tags = CacheTags::default();
+        let mut event = |path: PathBuf, kind| {
+            routing.file_events(
+                notify::Event::new(kind).add_path(path),
+                &dirs,
+                &mut tags,
+                &tx,
+                &paths,
+                &reload,
+            )
+        };
+        event(content.clone(), EventKind::Create(CreateKind::Folder));
+        assert!(changed.has_changed().unwrap());
+        let write = EventKind::Modify(ModifyKind::Any);
+        event(guarded, write);
+        event(guards.join("other"), write);
+        event(content.join("excluded/old"), write);
+        event(content.join("contract"), write);
+        assert_eq!(targeted.try_recv().unwrap(), "guard-key");
+        assert!(targeted.try_recv().is_err());
+        assert_eq!(
+            Path::new(&writes.try_recv().unwrap().path),
+            content.join("contract")
+        );
+        std::fs::write(
+            content.join(TAG),
+            b"Signature: 8a477f597d28d172789f06886806bc55",
+        )
+        .unwrap();
+        event(content.join(TAG), write);
+        event(content.join("cached"), write);
+        assert!(writes.try_recv().is_err());
+    }
 
     #[test]
     fn discovery_ignores_internal_outputs_and_temporary_files_at_any_depth() {
-        let home = Path::new("/var/folders/test/T/.tmp123456/home");
-        let private = [home.join("state")];
-        let tracked = |name: &str| {
-            let path = home.join(name);
-            !ignored(&path, &private) && visible_in_workspace(&path, false, |dir| dir == home)
+        let root = Path::new("/var/folders/test/T/.tmp123456/project");
+        let scope = DeltaRoots {
+            recursive: [root.to_owned(), root.join(".gemini/scratch/selected")].into(),
+            private: vec![root.join("state")],
+            ..Default::default()
         };
+        let tracked = |name: &str| scope.permits(&root.join(name), false);
         for path in [
             "state/discovery/staging/topic/draft.md",
-            "state/discovery/preferences.md",
-            "state/runtime-rust.sqlite-wal",
             ".git/refs/t",
             ".github/readme",
-            ".gemini/antigravity/brain/trace",
-            ".maka/state",
-            ".cache/package",
+            ".gemini/brain/trace",
+            ".gemini/scratch/other/spec.md",
+            ".gemini/scratch/selected/.cache/noise",
             "p/node_modules/a",
             "p/target/out",
-            "Library/Application Support/Google/Chrome/Default/Bookmarks",
-            "Library/Application Support/Chromium/Default/Service Worker/CacheStorage/index",
-            "Library/Application Support/Arc/User Data/profile",
-            "Library/Caches/com.apple.geod/counters/PLReqCounters.enc",
-            "Library/Caches/com.apple.geod/counters/index",
-            "Library/Mail/V10/MailData/Envelope Index",
-            "Library/Group Containers/group.example/data",
-            "Library/Preferences/com.example.plist",
-            "p/Service Worker/script",
-            "p/CacheStorage/index",
-            "p/GPUCache/index",
-            "p/db_storage/message",
-            "p/app_data/net/session",
-            "p/kvcomm/counters",
+            "p/__pycache__/module",
+            "p/Caches/index",
+            "p/Logs/output",
+            "p/CACHEDIR.TAG",
             ".DS_Store",
             "x.tmp",
             "~$doc",
             "x.swp",
+            "x.swo",
             "a.lock",
             "messages-wal",
             "messages-shm",
             "messages.db-journal",
-            "counter.statistic",
-            "counters.enc",
             "trace.log",
             "archive.crdownload",
-            "Local State",
-            "History",
+            "archive.part",
         ] {
             assert!(!tracked(path), "{path}");
         }
@@ -876,84 +1145,23 @@ mod tests {
             "staging/notes.md",
             "targeted/plan",
             "notes/.draft",
-            "Documents/contract.pdf",
-            "Downloads/quote.pdf",
-            "Desktop/plan.md",
-            "Library/Containers/com.tencent.xinWeChat/Data/Documents/xwechat_files/wxid/msg/file/quote.pdf",
-            "Library/Application Support/Google/Chrome notes/outline",
-            "Library/Mail/V10/Inbox/message",
+            ".gemini/scratch/selected/spec.md",
+            "History",
+            "Preferences",
+            "Local State",
+            "Documents/contract.enc",
+            "p/sample.statistic",
+            "p/scene.material",
+            "Service Worker/script",
+            "Library/Preferences/notes",
         ] {
             assert!(tracked(path), "{path}");
         }
     }
 
-    #[test]
-    fn discovery_hidden_ancestors_only_exempt_the_selected_or_configured_workspace() {
-        let home = Path::new("/Users/test");
-        let workspace = home.join(".gemini/antigravity/scratch/my-project");
-        let allowed = |path: PathBuf| {
-            visible_in_workspace(&path, false, |dir| dir == home || dir == workspace)
-                && !ignored(&path, &[])
-        };
-        assert!(allowed(workspace.join("spec.md")));
-        assert!(!allowed(workspace.join(".cache/noise")));
-        assert!(!allowed(home.join(".gemini/antigravity/brain/spec.md")));
-        assert!(!allowed(
-            home.join(".gemini/antigravity/scratch/other/spec.md")
-        ));
-    }
-
-    #[test]
-    fn discovery_narrows_only_strict_ancestors_of_the_plan_workspace() {
-        let home = Path::new("/home/test");
-        let selected = home.join("projects/app");
-        let roots = [home, Path::new("/other-root")].map(|r| discovery_root(r, &selected));
-        let can_wake = |path: &Path| visible_in_workspace(path, false, |dir| roots.contains(&dir));
-        assert!(!can_wake(&home.join("Downloads/other.txt")));
-        assert!(can_wake(&selected.join("spec.md")));
-        assert!(can_wake(Path::new("/other-root/terms.pdf")));
-        assert_eq!(discovery_root(home, home), home);
-    }
-
-    #[test]
-    fn discovery_file_change_cooldown_uses_half_the_interval_with_a_five_minute_ceiling() {
-        let interval = |every_seconds| TaskSchedule::Interval {
-            every_seconds,
-            start_at: 0,
-            cadence: Default::default(),
-        };
-        assert_eq!(file_change_cooldown_ms(&interval(1)), 500);
-        assert_eq!(file_change_cooldown_ms(&interval(1800)), 300_000);
-        assert_eq!(
-            file_change_cooldown_ms(&TaskSchedule::Cron {
-                expression: "0 * * * *".into(),
-                start_at: 0
-            }),
-            300_000
-        );
-    }
-
     #[tokio::test]
     async fn discovery_quiet_probes_and_cooldown_coalesce_across_restarts() {
-        let dir = tempfile::tempdir().unwrap();
-        let state = RootOwner::create(
-            &dir.path().join("state"),
-            &RootNamespaces {
-                ownership: dir.path().join("own"),
-                control: dir.path().join("ctl"),
-            },
-        )
-        .unwrap();
-        let migrations = maka_event_log::ROOT_MIGRATIONS
-            .iter()
-            .chain(maka_agent_state::MIGRATIONS)
-            .copied()
-            .collect::<Vec<_>>();
-        let root = RootStore::open(Arc::new(state), &migrations).await.unwrap();
-        let owner = RunOwner {
-            deployment: Uuid::new_v4(),
-            namespace: maka_plugin_core::composition::InstanceId(vec![Uuid::new_v4()]),
-        };
+        let (dir, root, owner) = test_store().await;
         let store = DiscoveryStore::new(root.data_writer().unwrap(), &owner).unwrap();
         let work = dir.path().join("arbitrary");
         std::fs::create_dir(&work).unwrap();
@@ -966,7 +1174,16 @@ mod tests {
             window: Duration::from_millis(240),
             cooldown: Duration::from_millis(600),
         };
+        let routing = watch::channel(Arc::new(Routing {
+            deltas: DeltaRoots {
+                recursive: [work.clone()].into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        }))
+        .1;
         let tracker = ChangeTracker {
+            routing: routing.clone(),
             store: store.clone(),
             roots: roots.clone(),
             timing,
@@ -984,7 +1201,7 @@ mod tests {
         let snapshot = |at| {
             store.change_snapshot(
                 UnixMillis(at),
-                ChangeQuery::Opening { editing_limit: 15 },
+                ChangeQuery::Opening { limit: 15 },
                 |_, _| true,
             )
         };
@@ -1034,6 +1251,7 @@ mod tests {
             .unwrap();
         let tracker = ChangeTracker {
             store: DiscoveryStore::new(root.data_writer().unwrap(), &owner).unwrap(),
+            routing,
             roots,
             timing,
         };

@@ -122,6 +122,8 @@ struct DiscoveryCapsule {
     thread_session_id: String,
     #[serde(default)]
     additional_deltas: usize,
+    #[serde(default)]
+    watch_scope_key: Option<String>,
 }
 
 struct FixtureSecret;
@@ -728,7 +730,8 @@ async fn create_discovery_capsule(client: &Client, nonce: &str) -> (DiscoveryCap
         DiscoveryCapsule {
             topic_id,
             thread_session_id,
-            additional_deltas: 17,
+            additional_deltas: 24,
+            watch_scope_key: None,
         },
         target,
     )
@@ -798,6 +801,34 @@ fn seed_discovery_tracking(root: &Path, saved: &DiscoveryCapsule, target: Value)
         [owner.as_str(), topic],
     ).unwrap();
     tx.commit().unwrap();
+}
+
+fn compat_watch_scope(workspace: &Path) -> Value {
+    json!({"include_roots":[{"path":workspace.join("compat-inbox"),"reason":"Incoming documents"}],
+        "exclude_roots":[{"path":workspace.join("build"),"reason":"Generated files"}], "surveyed_at":42})
+}
+
+fn seed_watch_scope(dirs: &EnvDirs, script_id: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let conn = Connection::open(dirs.root.join(maka_event_log::root::ROOT_DATABASE)).unwrap();
+    let suffix = format!("task:{script_id}");
+    let task_key: String = conn.query_row(
+        "SELECT key FROM plugin_data WHERE package_id='maka.agent.scheduler' AND scope_id='profile'
+         AND substr(key,-length(?1))=?1", [&suffix], |r| r.get(0),
+    ).unwrap();
+    fs::create_dir_all(dirs.workspace.join("compat-inbox")).unwrap();
+    let prefix = task_key.strip_suffix(&suffix).unwrap();
+    let digest = hex::encode(Sha256::digest(
+        dirs.workspace.as_os_str().as_encoded_bytes(),
+    ));
+    let key = format!("{prefix}discovery/watch-scope/{digest}");
+    conn.execute(
+        "INSERT INTO plugin_data(package_id,scope_id,key,revision,value_json)
+        VALUES ('maka.agent.scheduler','profile',?1,1,?2)",
+        [&key, &compat_watch_scope(&dirs.workspace).to_string()],
+    )
+    .unwrap();
+    key
 }
 
 async fn verify_dossiers(
@@ -946,16 +977,23 @@ async fn consume_upgraded_discovery_deltas(root: &Path, owner: &str, expected: u
         DiscoveryStore::new(data.clone(), &serde_json::from_str(owner).unwrap()).unwrap();
     let at = UnixMillis(1);
     let snapshot = || {
-        discovery.change_snapshot(at, ChangeQuery::Opening { editing_limit: 0 }, |path, _| {
+        discovery.change_snapshot(at, ChangeQuery::Opening { limit: 15 }, |path, _| {
             path == Path::new("annex.md") || path.starts_with("compat-inbox")
         })
     };
-    let ready = snapshot().await.unwrap();
-    assert_eq!(ready.deltas.len(), expected);
-    data.write(discovery.record_opening(OpeningSources::FollowUp(ready.deltas), false, at))
-        .await
-        .unwrap();
-    assert!(snapshot().await.unwrap().deltas.is_empty());
+    let mut remaining = expected;
+    loop {
+        let ready = snapshot().await.unwrap();
+        assert_eq!(ready.deltas.len(), remaining.min(15));
+        assert_eq!(ready.omitted_deltas, remaining - ready.deltas.len());
+        if remaining == 0 {
+            break;
+        }
+        remaining = ready.omitted_deltas;
+        data.write(discovery.record_opening(OpeningSources::FollowUp(ready.deltas), false, at))
+            .await
+            .unwrap();
+    }
     let cursor = discovery
         .get_source_cursor(SourceUri("annex.md".into()))
         .await
@@ -1210,7 +1248,7 @@ async fn produce_capsule(bin: &Path, capsule_dir: &Path) -> CapsuleManifest {
         .await;
         assert_eq!(room_post["kind"], "posted", "{room_post}");
 
-        let (discovery, target) = create_discovery_capsule(&client, &nonce).await;
+        let (mut discovery, target) = create_discovery_capsule(&client, &nonce).await;
 
         // 5. Subagent Preset.
         let preset = call(
@@ -1327,6 +1365,7 @@ async fn produce_capsule(bin: &Path, capsule_dir: &Path) -> CapsuleManifest {
         tokio::fs::remove_file(seed).await.unwrap();
 
         seed_discovery_tracking(&dirs.root, &discovery, target);
+        discovery.watch_scope_key = Some(seed_watch_scope(&dirs, &script_task_id));
         let migrations = verify_sqlite_integrity_and_migrations(&dirs.root);
         CapsuleManifest {
             format_version: 1,
@@ -1728,6 +1767,11 @@ async fn verify_capsule(bin: &Path, capsule_dir: &Path) {
         let captured_changes = manifest.migrations.get(maka_event_log::root::ROOT_DATABASE).is_some_and(|versions|versions.contains(&54));
         assert_eq!(pending, i64::from(manifest.discovery.is_some() && captured_changes));
         let owner = if let Some(dossier) = &manifest.discovery {
+            if let Some(key) = &dossier.watch_scope_key {
+                let value: String = conn.query_row("SELECT value_json FROM plugin_data WHERE package_id='maka.agent.scheduler'
+                    AND scope_id='profile' AND key=?1", [key], |r| r.get(0)).unwrap();
+                assert_eq!(serde_json::from_str::<Value>(&value).unwrap(), compat_watch_scope(&dirs.workspace));
+            }
             let (cycle, explored, owner): (u8, i64, String) = conn.query_row("SELECT p.broad_cycle,c.last_explored_at,d.owner FROM discovery_dossiers d
                 JOIN discovery_preferences p USING(owner) JOIN discovery_source_cursors c USING(owner)
                 WHERE d.topic_id=?1 AND c.source_uri='annex.md'", [&dossier.topic_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap();

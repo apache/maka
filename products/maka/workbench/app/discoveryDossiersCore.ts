@@ -78,6 +78,7 @@ export function pendingActionControls(
 ) {
   const awaiting = action.status === 'awaiting_confirm';
   const stale = action.status === 'stale';
+  const showButtons = awaiting || stale;
   const receipt = action.receipt;
   const reason =
     receipt && typeof receipt === 'object' && 'reason' in receipt ? receipt.reason : null;
@@ -91,10 +92,9 @@ export function pendingActionControls(
       ? 'Dossier check receipt'
       : null;
   return {
-    showConfirm: awaiting || stale,
+    showButtons,
     confirm: awaiting && !busy,
-    showDismiss: awaiting || stale,
-    dismiss: (awaiting || stale) && !busy,
+    dismiss: showButtons && !busy,
     notice,
   } as const;
 }

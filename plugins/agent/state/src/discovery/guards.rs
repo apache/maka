@@ -317,6 +317,19 @@ impl DiscoveryStore {
         }).await
     }
 
+    pub async fn file_watch_targets(&self) -> Result<Vec<String>, StoreError> {
+        self.read(|c, owner| {
+            let mut stmt = c.prepare_cached(
+                "SELECT DISTINCT target FROM discovery_watches INDEXED BY discovery_watch_file
+                WHERE owner=?1 AND kind='file_hash' AND next_check_at IS NOT NULL",
+            )?;
+            Ok(stmt
+                .query_map([owner], |r| r.get(0))?
+                .collect::<Result<_, _>>()?)
+        })
+        .await
+    }
+
     pub async fn wake_file_watches(
         &self,
         paths: Vec<String>,

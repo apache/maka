@@ -23,7 +23,7 @@ use futures_util::{StreamExt, stream};
 use maka_agent_facts::discovery::{WatchId, WatchKind, WatchRecord, WatchTrigger};
 use maka_agent_state::discovery::guards::{ScheduledWatch, WatchCheck};
 use serde_json::json;
-use std::{io, path::PathBuf};
+use std::io;
 use tokio::sync::{broadcast, watch};
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -133,7 +133,7 @@ impl HttpPredicate {
 
 pub(in crate::owner) struct WatchRunner {
     pub(super) changes: watch::Sender<()>,
-    pub(super) paths: broadcast::Sender<PathBuf>,
+    pub(super) paths: broadcast::Sender<String>,
     http_min: Duration,
     #[cfg(test)]
     pub(in crate::owner) file_checks: tokio::sync::Mutex<()>,
@@ -346,8 +346,8 @@ impl Owner {
     }
     async fn wake_watched_paths(
         &self,
-        first: Result<PathBuf, broadcast::error::RecvError>,
-        events: &mut broadcast::Receiver<PathBuf>,
+        first: Result<String, broadcast::error::RecvError>,
+        events: &mut broadcast::Receiver<String>,
     ) -> Result<(), String> {
         let mut affected = BTreeSet::new();
         if let Ok(path) = first {
@@ -362,17 +362,7 @@ impl Owner {
                 Err(_) => break,
             }
         }
-        let state = self.store.owned_root().map_err(reason)?;
-        let discovery = state.canonical_path().join("discovery");
-        let targets = affected
-            .iter()
-            .filter_map(|path| match path.strip_prefix(&discovery) {
-                Ok(staged) => staged
-                    .to_str()
-                    .map(|s| s.replace(std::path::MAIN_SEPARATOR, "/")),
-                Err(_) => path.to_str().map(str::to_owned),
-            })
-            .collect();
+        let targets = affected.into_iter().collect();
         self.discovery
             .wake_file_watches(targets, UnixMillis(now() as i64))
             .await
@@ -423,13 +413,16 @@ impl Owner {
     }
     async fn evaluate_watch(&self, w: ScheduledWatch) -> Result<(), String> {
         if w.watch.expires_at.is_some_and(|end| end.0 <= now() as i64) {
-            return self
-                .discovery
+            self.discovery
                 .reschedule_watch(w.watch.watch_id, None)
                 .await
-                .map_err(reason);
+                .map_err(reason)?;
+            if w.watch.kind == WatchKind::FileHash {
+                self.watch_runner.wake();
+            }
+            return Ok(());
         }
-        let auth: WatchAuthority = serde_json::from_value(w.authority.clone()).map_err(reason)?;
+        let auth = WatchAuthority::deserialize(&w.authority).map_err(reason)?;
         let mut retry_after = None;
         let (hash, matched, method) = match w.watch.kind {
             WatchKind::FileHash => {
@@ -460,8 +453,7 @@ impl Owner {
                     }
                     Err(e) => return Err(reason(e)),
                 };
-                let predicate: FilePredicate =
-                    serde_json::from_value(w.watch.predicate.clone()).map_err(reason)?;
+                let predicate = FilePredicate::deserialize(&w.watch.predicate).map_err(reason)?;
                 let matched = predicate
                     .expected_hash
                     .as_ref()
@@ -471,8 +463,7 @@ impl Owner {
             }
             WatchKind::HttpCheck => {
                 check_target(&self.session(&auth.target.session_id).await?, &auth.target)?;
-                let predicate: HttpPredicate =
-                    serde_json::from_value(w.watch.predicate.clone()).map_err(reason)?;
+                let predicate = HttpPredicate::deserialize(&w.watch.predicate).map_err(reason)?;
                 let client = self.watch_http_client().await?;
                 let get = async {
                     let mut response = client
@@ -524,8 +515,7 @@ impl Owner {
             }
             WatchKind::Deadline => {
                 check_target(&self.session(&auth.target.session_id).await?, &auth.target)?;
-                let p: DeadlinePredicate =
-                    serde_json::from_value(w.watch.predicate.clone()).map_err(reason)?;
+                let p = DeadlinePredicate::deserialize(&w.watch.predicate).map_err(reason)?;
                 if (now() as i64) < p.trigger_at_ms {
                     return self
                         .discovery
@@ -636,13 +626,7 @@ impl Owner {
         }
         let _gate = self.scheduler.gate.lock().await;
         let catalog = self.scheduler.load_change_plans().await?;
-        if self.scheduler.investigation.read().unwrap().is_some()
-            || catalog.plans.values().any(|s| {
-                s.plan
-                    .pending
-                    .as_ref()
-                    .is_some_and(|f| matches!(f.effect, ScheduledEffect::Discovery { .. }))
-            })
+        if self.scheduler.investigation.read().unwrap().is_some() || catalog.has_pending_discovery()
         {
             return Ok(());
         }
@@ -650,8 +634,8 @@ impl Owner {
         for (id, topic, observed, auth) in pending {
             let auth: WatchAuthority = serde_json::from_value(auth).map_err(reason)?;
             for saved in catalog.plans.values() {
-                let mut plan = saved.plan.clone();
-                let Some((approval, _)) = scheduler::file_change_grant(&plan) else {
+                let plan = &saved.plan;
+                let Some((approval, _)) = scheduler::file_change_grant(plan) else {
                     continue;
                 };
                 if plan.task.expires_at.is_some_and(|end| end <= at)
@@ -668,13 +652,15 @@ impl Owner {
                 if check_target(&session, &approval.target).is_err() {
                     continue;
                 }
-                plan.task.next_fire_at = Some(at);
-                plan.claim(at).map_err(reason)?;
-                let fire = plan
-                    .pending
-                    .as_mut()
-                    .ok_or("discovery_followup_not_claimed")?;
-                fire.source = FireSource::Watch;
+                let mut plan = plan.clone();
+                if plan
+                    .claim_preserving_schedule(at, FireSource::Watch)
+                    .map_err(reason)?
+                    .is_none()
+                {
+                    continue;
+                }
+                let fire = plan.pending.as_mut().expect("just claimed");
                 fire.intent = maka_scheduler::task::Intent::Text {
                     body: format!(
                         "Review dossier {} after its watch matched at {}.\n{}",

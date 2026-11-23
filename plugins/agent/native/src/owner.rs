@@ -223,6 +223,7 @@ pub(crate) struct Owner {
     pub(crate) discovery: maka_agent_state::discovery::DiscoveryStore,
     pub(super) services: maka_host_runtime::application::NativeServices,
     watch_runner: discovery::watches::WatchRunner,
+    watch_scopes: discovery::watch_scope::WatchScopes,
     wake_notify: tokio::sync::Notify,
     physical_changes: tokio::sync::watch::Sender<()>,
     pub recall: Arc<recall::Recall>,
@@ -378,14 +379,20 @@ impl Owner {
         let import_specs = settings.import_roots.clone();
         let managed = managed_worktrees.clone();
         let root_path = root.canonical_path().to_owned();
-        let (workspace_roots, import_roots) = tokio::task::spawn_blocking(move || {
-            Ok::<_, String>((
-                workspace::open_projects(workspace_specs, &managed)?,
-                workspace::open(import_specs, &root_path)?,
-            ))
-        })
-        .await
-        .map_err(|_| "agent_workspace_configuration_worker_failed")??;
+        let owned_root = root.clone();
+        let (workspace_roots, import_roots, watch_scopes) =
+            tokio::task::spawn_blocking(move || {
+                let roots = workspace::open_projects(workspace_specs, &managed)?;
+                let watch_scopes = discovery::watch_scope::WatchScopes::open(&roots, &owned_root)
+                    .map_err(|e| e.to_string())?;
+                Ok::<_, String>((
+                    roots,
+                    workspace::open(import_specs, &root_path)?,
+                    watch_scopes,
+                ))
+            })
+            .await
+            .map_err(|_| "agent_workspace_configuration_worker_failed")??;
         let home = std::env::home_dir();
         let workers = TaskTracker::new();
         let stop = CancellationToken::new();
@@ -453,6 +460,7 @@ impl Owner {
             persistence.store().clone(),
             prefix.clone(),
         ));
+        watch_scopes.restore(&scheduler).await?;
         if settings.scheduled_tasks {
             additional.extend(scheduler.tools());
         }
@@ -463,6 +471,7 @@ impl Owner {
                     discovery::STAGE
                         | discovery::REGISTER
                         | discovery::PENDING
+                        | discovery::WATCH_SCOPE
                         | discovery::PREFERENCES
                 )
         }));
@@ -607,6 +616,7 @@ impl Owner {
             durable,
             services: context.services().clone(),
             watch_runner: Default::default(),
+            watch_scopes,
             wake_notify: tokio::sync::Notify::new(),
             physical_changes: tokio::sync::watch::channel(()).0,
             prefix,
@@ -1323,6 +1333,7 @@ impl Owner {
                 let memory = *name == discovery::MEMORY;
                 (discovery::WORKER_TOOLS.contains(name)
                     && !investigation
+                    && !(*name == discovery::WATCH_SCOPE && (bot || dossier_thread))
                     && !(matches!(
                         *name,
                         discovery::STAGE | discovery::REGISTER | discovery::PENDING
@@ -1333,6 +1344,7 @@ impl Owner {
                             discovery::STAGE
                                 | discovery::REGISTER
                                 | discovery::PENDING
+                                | discovery::WATCH_SCOPE
                                 | discovery::PREFERENCES
                         )
                         && !self.permits_discovery_tool(name))

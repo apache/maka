@@ -454,8 +454,9 @@ impl Rig {
                 Box::pin(async move {
                     match Owner::open(context, configuration, catalog, state, helper, None).await {
                         Ok(mut owner) => {
-                            Arc::get_mut(&mut owner)
-                                .unwrap()
+                            let opened = Arc::get_mut(&mut owner).unwrap();
+                            opened.watch_scopes.timing.debounce = Duration::from_secs(10);
+                            opened
                                 .watch_runner
                                 .set_test_interval(Duration::from_secs(1));
                             if let Some(timeout) = model_idle_timeout {

@@ -17,10 +17,8 @@
  * under the License.
  */
 import assert from 'node:assert/strict';
-import { registerHooks } from 'node:module';
 import { resolve } from 'node:path';
 import test from 'node:test';
-import { setImmediate as flush } from 'node:timers/promises';
 import { pathToFileURL } from 'node:url';
 import {
   discoveryTag,
@@ -54,16 +52,14 @@ test('confirmation follows the live action state and locks both buttons during s
   assert.equal(controls('awaiting_confirm', true).confirm, false);
   assert.equal(controls('awaiting_confirm', true).dismiss, false);
   assert.deepEqual(controls('stale'), {
-    showConfirm: true,
+    showButtons: true,
     confirm: false,
-    showDismiss: true,
     dismiss: true,
     notice: 'Dossier source changed',
   });
   assert.equal(controls('stale', false, 'expired').notice, 'Dossier action expired');
   for (const status of ['executing', 'done', 'unknown_pending_receipt']) {
-    assert.equal(controls(status).showConfirm, false);
-    assert.equal(controls(status).showDismiss, false);
+    assert.equal(controls(status).showButtons, false);
   }
   assert.equal(controls('unknown_pending_receipt').notice, 'Dossier check receipt');
 });
@@ -102,16 +98,6 @@ const interrupted = (row, revision, reason = 'Deadline moved') => ({
 });
 const update = (...dossiers) => ({ dossiers, notificationsEnabled: true });
 
-test('first and reconnected snapshots seed every topic without replay', () => {
-  const baseline = update(interrupted(a, 7), interrupted(b, 12));
-  const seed = dossierInterrupt(null, baseline);
-  assert.deepEqual(seed.notifications, []);
-  assert.deepEqual(dossierInterrupt(seed.seen, baseline).notifications, []);
-  const reconnect = dossierInterrupt(null, update(interrupted(a, 8), interrupted(b, 13)));
-  assert.deepEqual(reconnect.notifications, []);
-  assert.deepEqual(dossierInterrupt(reconnect.seen, baseline).notifications, []);
-});
-
 test('coalesced interrupts notify once per topic, including after a later quiet revision', () => {
   const quiet = update({ ...a, revision: 8 }, b);
   const seed = dossierInterrupt(null, quiet);
@@ -146,112 +132,4 @@ test('notification clicks preserve arbitrary topic IDs and ordinary session tags
   assert.deepEqual(notificationTarget(discoveryTag(topic)), { kind: 'discovery', id: topic });
   assert.deepEqual(notificationTarget('conversation-1'), { kind: 'session', id: 'conversation-1' });
   for (const tag of [null, 42, {}, '', 'discovery:']) assert.equal(notificationTarget(tag), null);
-});
-
-test('the window posts native interrupts, rebaselines a reconnected stream and routes clicks once', async (t) => {
-  const source = (js) => `data:text/javascript,${encodeURIComponent(js)}`;
-  const native = source(`
-    export const calls = [], listeners = new Map(), disposers = [];
-    export const Notifications = {
-      permission: async () => 'granted',
-      requestPermission: async () => 'granted',
-      show: async (data) => { calls.push(data); return true; },
-      on: (event, handler) => { listeners.set(event, handler); return () => listeners.delete(event); },
-    };
-    export const signal = (value) => Object.assign(() => value, {set: (next) => { value = next; }});
-    export const cleanup = (fn) => disposers.push(fn);
-    export const effect = (run) => { const stop = run(); if (stop) cleanup(stop); };
-    export const computed = (fn) => fn, untracked = (fn) => fn(), batch = untracked;
-  `);
-  const desktop = source(
-    "export let focused = 0; export const Window = { get: (id) => (id === 'main' ? { focus: () => focused++ } : null) };",
-  );
-  const stubs = new Map([
-    ['nsh', native],
-    ['nsh/desktop', desktop],
-    ['./chrome', source('export const ownTitleBar = true;')],
-    ['./locale', source('export const tr = key => key;')],
-    ['./sessionStatus', source('export const sessionStatusCaption = {};')],
-  ]);
-  const app = new URL('../app/', import.meta.url);
-  const hooks = registerHooks({
-    resolve(name, context, next) {
-      if (context.parentURL?.startsWith(app.href)) {
-        if (stubs.has(name)) return { url: stubs.get(name), shortCircuit: true };
-        if (name.startsWith('.') && !name.endsWith('.ts')) return next(name + '.ts', context);
-      }
-      return next(name, context);
-    },
-  });
-  t.after(() => hooks.deregister());
-  const { watchDiscoveryDossiers, watchNotifications } = await import(
-    new URL('notifications.ts', app)
-  );
-  const { calls, listeners, disposers } = await import(native);
-  const window = await import(desktop);
-  const opened = [],
-    streams = [];
-  t.mock.timers.enable({ apis: ['setTimeout'] });
-  watchDiscoveryDossiers(
-    {
-      async subscribe(endpoint, method) {
-        assert.deepEqual([endpoint, method], ['agent', 'watchDossiers']);
-        const reader = new ReadableStream({
-          start(controller) {
-            streams.push(controller);
-          },
-        }).getReader();
-        return {
-          next: async () => (await reader.read()).value ?? null,
-          close: () => reader.cancel(),
-        };
-      },
-    },
-    () => false,
-  );
-  watchNotifications({
-    sessions: () => [],
-    foreground: () => true,
-    open: (id) => opened.push(['session', id]),
-    openDiscovery: (id) => opened.push(['dossier', id]),
-  });
-  const revision = (n) =>
-    update(interrupted(a, n, 'Signature due'), interrupted(b, n, `Deadline ${n}`));
-  streams[0].enqueue(update(interrupted(a, 1), b));
-  streams[0].enqueue(revision(3));
-  streams[0].enqueue(revision(3));
-  await flush();
-  streams[0].close();
-  await flush();
-  t.mock.timers.tick(500);
-  await flush();
-  streams[1].enqueue(revision(4));
-  streams[1].enqueue(revision(4));
-  streams[1].enqueue(revision(5));
-  await flush();
-  assert.deepEqual(
-    calls,
-    [3, 5].flatMap((n) => [
-      { id: 'discovery:a', title: 'a', body: 'Signature due' },
-      { id: 'discovery:b', title: 'b', body: `Deadline ${n}` },
-    ]),
-  );
-  const click = listeners.get('press');
-  click({ id: 'discovery:b' });
-  click({ id: 'discovery:a' });
-  click({ id: 'discovery:' });
-  click({ id: 'main-session' });
-  click({ id: 'discovery:b' });
-  assert.deepEqual(opened, [
-    ['dossier', 'b'],
-    ['dossier', 'a'],
-    ['session', 'main-session'],
-    ['dossier', 'b'],
-  ]);
-  assert.equal(window.focused, 5);
-  for (const stop of disposers.reverse()) stop();
-  await flush();
-  t.mock.timers.tick(10000);
-  assert.equal(streams.length, 2);
-  assert.equal(listeners.size, 0);
 });

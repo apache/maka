@@ -86,13 +86,14 @@ pub struct Delta {
 pub struct ChangeSnapshot {
     pub deltas: Vec<Delta>,
     pub cooling: Vec<(String, UnixMillis)>,
+    pub omitted_deltas: usize,
 }
 
 pub enum ChangeQuery {
     FirstReady,
-    /// Keep every ready delta version for acknowledgement with the frozen worker opening.
+    /// Retain at most this many rows per section and count the omitted eligible deltas.
     Opening {
-        editing_limit: usize,
+        limit: usize,
     },
 }
 
@@ -215,7 +216,7 @@ impl DiscoveryStore {
         &self,
         at: UnixMillis,
         query: ChangeQuery,
-        allowed: impl Fn(&Path, DeltaKind) -> bool + Send + 'static,
+        mut allowed: impl FnMut(&Path, DeltaKind) -> bool + Send + 'static,
     ) -> Result<ChangeSnapshot, StoreError> {
         self.read(move |c, owner| {
             let mut snapshot = ChangeSnapshot::default();
@@ -227,15 +228,19 @@ impl DiscoveryStore {
                 let path = r.get_ref(0)?.as_str().map_err(rusqlite::Error::from)?;
                 let kind = vocabulary(r, 1)?;
                 if allowed(Path::new(path), kind) {
+                    if matches!(query, ChangeQuery::Opening { limit } if snapshot.deltas.len() >= limit) {
+                        snapshot.omitted_deltas += 1;
+                        continue;
+                    }
                     snapshot.deltas.push(Delta { path: path.to_owned(), kind, at: UnixMillis(r.get(2)?) });
                     if matches!(query, ChangeQuery::FirstReady) { return Ok(snapshot); }
                 }
             }
-            let ChangeQuery::Opening { editing_limit } = query else { return Ok(snapshot); };
+            let ChangeQuery::Opening { limit } = query else { return Ok(snapshot); };
             let mut stmt = c.prepare_cached("SELECT source_uri,cooldown_until FROM discovery_source_cursors INDEXED BY discovery_cursor_cooldowns
                 WHERE owner=?1 AND cooldown_until>0 AND cooldown_until>?2 ORDER BY cooldown_until DESC")?;
             let mut rows = stmt.query(params![owner, at.0])?;
-            while snapshot.cooling.len() < editing_limit && let Some(r) = rows.next()? {
+            while snapshot.cooling.len() < limit && let Some(r) = rows.next()? {
                 let path = r.get_ref(0)?.as_str().map_err(rusqlite::Error::from)?;
                 if allowed(Path::new(path), DeltaKind::Directory) {
                     snapshot.cooling.push((path.to_owned(), UnixMillis(r.get(1)?)));
@@ -270,7 +275,7 @@ impl DiscoveryStore {
         &self,
         at: UnixMillis,
         limit: usize,
-        allowed: impl Fn(&Path) -> bool + Send + 'static,
+        mut allowed: impl FnMut(&Path) -> bool + Send + 'static,
     ) -> Result<Vec<String>, StoreError> {
         self.read(move |c, owner| {
             let mut stmt = c.prepare_cached(

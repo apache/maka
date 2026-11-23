@@ -91,13 +91,6 @@ const signals = {
   green: 'Dossier monitoring',
   done: 'Dossier done',
 } as const satisfies Record<DossierSummary['signal'], MessageKey>;
-const statuses = {
-  awaiting_confirm: 'Dossier awaiting confirmation',
-  stale: 'Dossier action stale',
-  executing: 'Dossier action executing',
-  done: 'Dossier action done',
-  unknown_pending_receipt: 'Dossier awaiting receipt',
-} as const satisfies Record<DossierDetail['pendingActions'][number]['status'], MessageKey>;
 const watches = {
   file_hash: 'Dossier file watch',
   http_check: 'Dossier web watch',
@@ -281,17 +274,15 @@ function PendingActionRow(props: {
       <If when={controls().notice !== null}>
         <Badge warning text={tr(controls().notice!)} />
       </If>
-      <If when={controls().showConfirm || controls().showDismiss || busy()}>
+      <If when={controls().showButtons || busy()}>
         <View style={{ ...rowStyle, flexWrap: 'wrap' }}>
-          <If when={controls().showConfirm}>
+          <If when={controls().showButtons}>
             <SettingsButton
               label={tr('Confirm dossier action')}
               tone="primary"
               disabled={!controls().confirm}
               onPress={() => void submit(false)}
             />
-          </If>
-          <If when={controls().showDismiss}>
             <SettingsButton
               label={tr('Dismiss dossier action')}
               tone="quiet"
@@ -305,7 +296,7 @@ function PendingActionRow(props: {
         </View>
       </If>
       <If when={status() === 'executing'}>
-        <Text style={mutedText()}>{tr(statuses[status()])}</Text>
+        <Text style={mutedText()}>{tr('Dossier action executing')}</Text>
       </If>
       <If when={error()}>
         <Text style={{ ...captionTextStyle, color: C.danger }}>{error()}</Text>

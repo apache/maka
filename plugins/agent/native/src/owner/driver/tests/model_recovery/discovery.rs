@@ -183,7 +183,9 @@ impl Fixture {
                                 | "StagePendingAction"
                                 | "StageArtifact"
                                 | "UpsertDossier"
-                        ) || chosen.contains_key(name)
+                        ) || (name == "UpdateWatchScope"
+                            && chosen.values().any(|group| group == "read_files"))
+                            || chosen.contains_key(name)
                     })
                     .collect::<Vec<_>>()
             ),
@@ -1267,6 +1269,7 @@ async fn discovery_approves_grouped_aliases_and_rechecks_the_parent_ceiling() {
             "RegisterWatch",
             "StageArtifact",
             "StagePendingAction",
+            "UpdateWatchScope",
             "UpsertDossier"
         ])
     );
@@ -1282,6 +1285,7 @@ async fn discovery_approves_grouped_aliases_and_rechecks_the_parent_ceiling() {
             "RegisterWatch",
             "StageArtifact",
             "StagePendingAction",
+            "UpdateWatchScope",
             "UpsertDossier"
         ]
     );
@@ -1418,6 +1422,7 @@ async fn discovery_standard_tools_pin_the_displayed_list_until_reapproved() {
             "RegisterWatch",
             "StageArtifact",
             "StagePendingAction",
+            "UpdateWatchScope",
             "UpsertDossier"
         ])
     );
@@ -2247,13 +2252,23 @@ async fn discovery_file_drop_in_another_authorized_root_wakes_only_an_active_pla
     assert!(
         paused["pendingFire"].is_null() && paused["task"]["runs"].as_array().unwrap().is_empty()
     );
-    f.change(&task, "resume").await;
+    let effect = &paused["task"]["effect"];
+    let names = f.preview(effect, Some(&task)).await;
+    let due = at().0 + 8_000;
+    let resumed = f.query("schedule", json!({"kind":"approve","taskId":task,"revision":paused["revision"],
+        "input":{"task":{"title":"Review new arrivals","intentBody":"","effect":effect,
+            "schedule":{"kind":"interval","everySeconds":1800,"startAt":due,"cadence":"after_completion"}},
+            "timezone":"UTC","misfire":"latest","approvedTools":names}})).await;
+    assert_eq!(resumed["kind"], "committed", "{resumed}");
     let (mut worker, request) = next(&listener).await;
     let messages = request["messages"].to_string();
     assert!(
         messages.contains("terms.pdf") && messages.contains("created"),
         "{messages}"
     );
+    assert_eq!(state.broad_cycle().await.unwrap(), 3);
+    let until_due = due.saturating_sub(at().0).max(0) as u64;
+    tokio::time::sleep(Duration::from_millis(until_due)).await;
     tool(
         &mut worker,
         "FinishNoChange",
@@ -2265,14 +2280,37 @@ async fn discovery_file_drop_in_another_authorized_root_wakes_only_an_active_pla
         "ok"
     );
     assert!(!state.has_ready_changes(at()).await.unwrap());
-    assert_eq!(state.broad_cycle().await.unwrap(), 3);
+    let (mut broad, request) = next(&listener).await;
+    assert!(
+        request["messages"]
+            .to_string()
+            .contains("Cold starting points")
+    );
+    let fire = owner
+        .scheduler
+        .change_basis(&task)
+        .await
+        .unwrap()
+        .unwrap()
+        .plan
+        .pending
+        .unwrap();
+    assert_eq!(fire.scheduled_at, due);
+    assert_eq!(state.broad_cycle().await.unwrap(), 0);
+    tool(
+        &mut broad,
+        "FinishNoChange",
+        json!({"note":"Explored cold sources"}),
+    )
+    .await;
+    f.settled(&task, 2).await;
     assert_bot_untouched(&f).await;
     drop(owner);
     f.close().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn discovery_file_change_waits_for_cooldown_and_consumes_the_whole_burst() {
+async fn discovery_file_change_waits_for_cooldown_and_drains_only_displayed_rows() {
     use maka_agent_facts::discovery::SourceUri;
     use maka_agent_state::discovery::changes::ChangeQuery;
     use maka_scheduler::plan::FireSource;
@@ -2290,10 +2328,11 @@ async fn discovery_file_change_waits_for_cooldown_and_consumes_the_whole_burst()
     let home = tokio::fs::canonicalize(f.rig.directory.path().join("workspace"))
         .await
         .unwrap();
+    let home = Path::new(maka_fs_tools::workspace::project::host_path(&home).unwrap());
     let project = home.join(project);
     let outside = home.join("Downloads/other.txt");
     let noise = home.join(".gemini/antigravity/brain/state");
-    let files: Vec<_> = (0..18)
+    let files: Vec<_> = (0..25)
         .map(|i| project.join(format!("project-{i}/spec.md")))
         .collect();
     for path in files.iter().chain([&outside, &noise]) {
@@ -2311,7 +2350,7 @@ async fn discovery_file_change_waits_for_cooldown_and_consumes_the_whole_burst()
     let ready = || {
         owner
             .discovery
-            .change_snapshot(at(), ChangeQuery::Opening { editing_limit: 0 }, |_, _| true)
+            .change_snapshot(at(), ChangeQuery::Opening { limit: 64 }, |_, _| true)
     };
     tokio::time::timeout(Duration::from_secs(40), async {
         let mut poll = tokio::time::interval(Duration::from_millis(100));
@@ -2323,7 +2362,7 @@ async fn discovery_file_change_waits_for_cooldown_and_consumes_the_whole_burst()
                 .iter()
                 .filter(|d| Path::new(&d.path).starts_with(&project))
                 .count()
-                == 18
+                == 25
                 && changes.deltas.iter().any(|d| Path::new(&d.path) == outside)
             {
                 break;
@@ -2369,7 +2408,7 @@ async fn discovery_file_change_waits_for_cooldown_and_consumes_the_whole_burst()
     let opening = request["messages"].to_string();
     assert_eq!(opening.matches("spec.md").count(), 15, "{opening}");
     assert!(
-        opening.contains("… (+3 more)") && !opening.contains("other.txt"),
+        opening.contains("… (+10 more)") && !opening.contains("other.txt"),
         "{opening}"
     );
     tool(
@@ -2378,7 +2417,45 @@ async fn discovery_file_change_waits_for_cooldown_and_consumes_the_whole_burst()
         json!({"note":"Reviewed the burst"}),
     )
     .await;
-    f.settled(&task, 2).await;
+    let completed = f.settled(&task, 2).await["task"]["lastFireAt"]
+        .as_i64()
+        .unwrap();
+    let overflow = ready().await.unwrap();
+    assert_eq!(overflow.deltas.len(), 11);
+    let (mut third, request) = next(&listener).await;
+    let fire = owner
+        .scheduler
+        .change_basis(&task)
+        .await
+        .unwrap()
+        .unwrap()
+        .plan
+        .pending
+        .unwrap();
+    assert_eq!(fire.source, FireSource::FileChange);
+    assert!(fire.scheduled_at >= completed + 5_000);
+    let later = request["messages"].to_string();
+    for delta in overflow
+        .deltas
+        .iter()
+        .filter(|d| Path::new(&d.path).starts_with(&project))
+    {
+        let parent = Path::new(&delta.path)
+            .parent()
+            .unwrap()
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(later.contains(&format!("{parent}/")) || later.contains(&format!("{parent}\\")));
+    }
+    tool(
+        &mut third,
+        "FinishNoChange",
+        json!({"note":"Reviewed the overflow"}),
+    )
+    .await;
+    f.settled(&task, 3).await;
     let remaining = ready().await.unwrap();
     assert_eq!(remaining.deltas.len(), 1);
     assert_eq!(Path::new(&remaining.deltas[0].path), outside);
@@ -2548,6 +2625,7 @@ async fn discovery_wander_starts_blind_rotates_sources_and_learns_only_in_follow
     .await;
     let (mut thread, req) = next(&listener).await;
     assert!(req["messages"].to_string().contains(topic));
+    assert!(model_tool_names(&req).contains(&"UpdateWatchScope"));
     tool(
         &mut thread,
         "UpdateDiscoveryPreferences",
@@ -2590,6 +2668,14 @@ async fn discovery_wander_starts_blind_rotates_sources_and_learns_only_in_follow
     };
     let prefix = system(&req);
     assert!(!model_tool_names(&req).contains(&"StageArtifact"));
+    tool(
+        &mut bot,
+        "UpdateWatchScope",
+        json!({"action":"add_exclude","path":"generated","reason":"Build outputs"}),
+    )
+    .await;
+    let (mut bot, req) = next(&listener).await;
+    assert_eq!(output(&req)["updated"], true, "{}", output(&req));
     tool(
         &mut bot,
         "UpdateDiscoveryPreferences",

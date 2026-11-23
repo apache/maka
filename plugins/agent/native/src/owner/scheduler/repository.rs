@@ -353,6 +353,15 @@ impl Scheduler {
     }
 }
 impl Catalog {
+    pub(in crate::owner) fn has_pending_discovery(&self) -> bool {
+        self.plans.values().any(|saved| {
+            saved
+                .plan
+                .pending
+                .as_ref()
+                .is_some_and(|fire| matches!(fire.effect, ScheduledEffect::Discovery { .. }))
+        })
+    }
     pub(in crate::owner) fn watch_fire(&self, plan: &Plan) -> Result<Vec<Mutation>, String> {
         Ok(prepare_commit(self, &plan.task.id, Some(plan))?.0)
     }

@@ -26,7 +26,7 @@ use std::{
 };
 
 /// Persist the original ceiling and session binding. Only a freshly opened directory grants access.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Serialize, Deserialize)]
 pub(super) struct WatchAuthority {
     pub target: ScheduledTarget,
     read_floor: maka_sandbox::Sandbox,

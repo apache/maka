@@ -84,6 +84,7 @@ enum Call {
     Register(watches::RegisterWatch),
     Pending(actions::StagePendingAction),
     Preferences(preferences::Update),
+    WatchScope(watch_scope::Update),
     List,
     Read(ReadTopic),
 }
@@ -100,6 +101,8 @@ impl scheduler::Scheduler {
              schemars::schema_for!(watches::RegisterWatch), ToolSemantics::ExclusiveStep),
             (PENDING, "Stage an exact connector mutation for desktop confirmation and finish this turn. Include every source file, staged input and overwrite destination. Use workspace paths or staging/<topic_id>/<path> for staged files.",
              schemars::schema_for!(actions::StagePendingAction), ToolSemantics::FinishTurn),
+            (WATCH_SCOPE, "Inspect or adjust this workspace’s discovery watch scope. Use concrete content directories and a brief reason for each. mark_surveyed can add includes and exclusions together.",
+             schemars::schema_for!(watch_scope::Update), ToolSemantics::ExclusiveStep),
             (PREFERENCES, "Save an explicit user instruction for future discovery. Append a concise natural-language rule, or replace the rules for one scope. The host records the date.",
              schemars::schema_for!(preferences::Update), ToolSemantics::ExclusiveStep),
             (FINISH,
@@ -146,6 +149,7 @@ impl scheduler::Scheduler {
                 REGISTER => serde_json::from_value(input).map(Call::Register),
                 PENDING => serde_json::from_value(input).map(Call::Pending),
                 STAGE => serde_json::from_value(input).map(Call::Stage),
+                WATCH_SCOPE => serde_json::from_value(input).map(Call::WatchScope),
                 PREFERENCES => serde_json::from_value(input).map(Call::Preferences),
                 FINISH => serde_json::from_value(input).map(Call::Finish),
                 LIST => serde_json::from_value::<DossiersRead>(input).map(|_| Call::List),
@@ -197,6 +201,7 @@ impl Owner {
             Call::Register(input) => self.register_watch(&context, input, cancel).await,
             Call::Pending(input) => self.stage_pending_action(&context, input, cancel).await,
             Call::Stage(stage) => self.stage_artifact(&context, stage, cancel).await,
+            Call::WatchScope(update) => self.update_watch_scope(&context, update).await,
             Call::Preferences(update) => self.update_discovery_preferences(&context, update).await,
             Call::Finish(input) => {
                 if input.note.trim().is_empty() || input.note.len() > records::MAX_TEXT_BYTES {
