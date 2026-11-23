@@ -741,7 +741,24 @@ async fn interactive_non_streaming_meta_filtered_and_ws_stall_disconnect() {
         .await
         .expect("WS client disconnect must wake TurnHandle::wait_closed()");
 
-    // Idle WS aborted by server.shutdown() must also wake TurnHandle::wait_closed() via RAII guard!
+    // Queued send_plan(stall().with_on_close(sig)) immediately followed by shutdown() must
+    // fire BOTH handle.closed_signal() and plan.on_close even if recv() never dequeues the plan!
+    let http_shutdown_req = tokio::spawn({
+        let client = client.clone();
+        let url = format!("{}/chat/completions", server.base_url());
+        async move {
+            let _ = post_json(
+                &client,
+                &url,
+                &json!({ "model": "gpt-4.1", "stream": true, "messages": [{ "role": "user", "content": "http-queued-shutdown" }] }),
+            )
+            .await;
+        }
+    });
+    let h_http_shutdown = server.next_turn().await.unwrap();
+    let http_handle_sig = h_http_shutdown.closed_signal();
+    let http_plan_sig = tokio_util::sync::CancellationToken::new();
+
     let (mut ws3, _) = tokio_tungstenite::connect_async(server.responses_ws_url())
         .await
         .unwrap();
@@ -751,10 +768,25 @@ async fn interactive_non_streaming_meta_filtered_and_ws_stall_disconnect() {
     .await
     .unwrap();
     let h_ws_shutdown = server.next_turn().await.unwrap();
+    let ws_handle_sig = h_ws_shutdown.closed_signal();
+    let ws_plan_sig = tokio_util::sync::CancellationToken::new();
+
+    h_http_shutdown.send_plan(TurnPlan::stall().with_on_close(http_plan_sig.clone()));
+    h_ws_shutdown.send_plan(TurnPlan::stall().with_on_close(ws_plan_sig.clone()));
     server.shutdown().await;
-    tokio::time::timeout(Duration::from_secs(2), h_ws_shutdown.wait_closed())
-        .await
-        .expect("shutdown() aborting idle WS must wake TurnHandle::wait_closed()");
+
+    for (label, sig) in [
+        ("http handle", http_handle_sig),
+        ("http plan.on_close", http_plan_sig),
+        ("ws handle", ws_handle_sig),
+        ("ws plan.on_close", ws_plan_sig),
+    ] {
+        tokio::time::timeout(Duration::from_secs(2), sig.cancelled())
+            .await
+            .unwrap_or_else(|_| panic!("shutdown() must trigger {label} close signal"));
+    }
+    http_shutdown_req.abort();
+    let _ = http_shutdown_req.await;
     drop(ws3);
 }
 

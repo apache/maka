@@ -26,7 +26,7 @@ use super::{
     sse_response,
 };
 use crate::codec::{WireFrame, create_encoder};
-use crate::handler::{InteractiveCommand, TurnContext, TurnDecision};
+use crate::handler::{CloseSignalGuard, InteractiveCommand, TurnContext, TurnDecision};
 use crate::pacing::{LatencyProfile, TurnPacer};
 use crate::plan::{CloseSignal, FinishReason, HttpErrorSpec, TurnEvent, Usage};
 use crate::protocol::{NormalizedRequest, Protocol, Transport, normalize_request};
@@ -683,7 +683,7 @@ impl HttpEventFeed {
                 };
                 match next {
                     Some(InteractiveCommand::Event(ev)) => FeedStep::Event(ev),
-                    Some(InteractiveCommand::Plan(_)) => {
+                    Some(InteractiveCommand::Plan { .. }) => {
                         unreachable!("TurnHandle::send_plan is rejected after incremental events")
                     }
                     None => FeedStep::Ended,
@@ -719,7 +719,7 @@ impl HttpEventFeed {
                                 *pending = Some(ev);
                                 return StallOutcome::Resumed;
                             }
-                            Some(InteractiveCommand::Plan(_)) => {
+                            Some(InteractiveCommand::Plan { .. }) => {
                                 unreachable!("TurnHandle::send_plan is rejected after incremental events")
                             }
                             None => true,
@@ -733,7 +733,7 @@ impl HttpEventFeed {
                                 *pending = Some(ev);
                                 return StallOutcome::Resumed;
                             }
-                            Some(InteractiveCommand::Plan(_)) => {
+                            Some(InteractiveCommand::Plan { .. }) => {
                                 unreachable!("TurnHandle::send_plan is rejected after incremental events")
                             }
                             None => true,
@@ -793,8 +793,8 @@ async fn execute_http_turn(
     // Unwrap interactive turns that reply with a full TurnPlan so they share 100% of
     // the Plan execution path (leading Delay+HttpError, TTFT/pacing, on_close, headers, etc.).
     let resolved = match decision {
-        TurnDecision::Plan(plan) => {
-            let close_guard = TurnCloseGuard(plan.on_close.clone(), None);
+        TurnDecision::Plan(mut plan) => {
+            let close_guard = TurnCloseGuard::new(CloseSignalGuard(plan.on_close.take()));
             ResolvedHttpDecision::Plan {
                 plan: Box::new(plan),
                 close_guard,
@@ -803,7 +803,8 @@ async fn execute_http_turn(
         TurnDecision::Interactive(mut stream) => {
             // Hold stream.closed in an RAII guard BEFORE the first await so client disconnect
             // (Hyper dropping this future) or server shutdown always wakes TurnHandle::wait_closed().
-            let mut close_guard = TurnCloseGuard(Some(CloseSignal(stream.closed.clone())), None);
+            let mut close_guard =
+                TurnCloseGuard::new(CloseSignalGuard(Some(CloseSignal(stream.closed.clone()))));
             let first = tokio::select! {
                 _ = state.shutdown.cancelled() => {
                     return full_json(
@@ -827,8 +828,8 @@ async fn execute_http_turn(
                         &state,
                     );
                 }
-                Some(InteractiveCommand::Plan(plan)) => {
-                    close_guard.1 = plan.on_close.clone();
+                Some(InteractiveCommand::Plan { plan, on_close }) => {
+                    close_guard.attach(on_close);
                     ResolvedHttpDecision::Plan { plan, close_guard }
                 }
                 Some(InteractiveCommand::Event(first_event)) => {

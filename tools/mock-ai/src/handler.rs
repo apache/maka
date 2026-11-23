@@ -18,8 +18,8 @@
  */
 
 use crate::plan::{
-    CompactionOutput, FinishReason, HttpErrorSpec, MidStreamErrorSpec, NativeToolEvent,
-    ToolCallSpec, TurnEvent, TurnPlan, Usage,
+    CloseSignal, CompactionOutput, FinishReason, HttpErrorSpec, MidStreamErrorSpec,
+    NativeToolEvent, ToolCallSpec, TurnEvent, TurnPlan, Usage,
 };
 use crate::protocol::NormalizedRequest;
 use bytes::Bytes;
@@ -88,11 +88,28 @@ impl SessionTracker {
     }
 }
 
+/// RAII guard guaranteeing a `CloseSignal` fires whenever dropped (whether on normal
+/// turn completion, disconnect, channel drop, or server shutdown).
+pub struct CloseSignalGuard(pub(crate) Option<CloseSignal>);
+
+impl Drop for CloseSignalGuard {
+    fn drop(&mut self) {
+        if let Some(sig) = &self.0 {
+            sig.notify();
+        }
+    }
+}
+
 /// Command delivered from an interactive `TurnHandle` to the server stream loop.
 pub enum InteractiveCommand {
     /// Execute a complete `TurnPlan` via the full Plan execution path (pacing, TTFT,
     /// leading `Delay` + `HttpError`, `on_close`, headers, non-streaming, etc.).
-    Plan(Box<TurnPlan>),
+    /// Carries `on_close` inside an RAII guard from send time so queued plans dropped
+    /// on disconnect/shutdown still notify callers.
+    Plan {
+        plan: Box<TurnPlan>,
+        on_close: CloseSignalGuard,
+    },
     /// Emit a single incremental `TurnEvent`.
     Event(Box<TurnEvent>),
 }
@@ -291,7 +308,11 @@ impl TurnHandle {
         if plan.response_id.is_none() {
             plan.response_id = self.response_id.lock().unwrap().take();
         }
-        match self.tx.try_send(InteractiveCommand::Plan(Box::new(plan))) {
+        let on_close = CloseSignalGuard(plan.on_close.take());
+        match self.tx.try_send(InteractiveCommand::Plan {
+            plan: Box::new(plan),
+            on_close,
+        }) {
             Ok(()) | Err(mpsc::error::TrySendError::Closed(_)) => {}
             Err(mpsc::error::TrySendError::Full(_)) => {
                 unreachable!("fresh TurnHandle channel always has capacity >= 1");

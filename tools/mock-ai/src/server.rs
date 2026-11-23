@@ -34,7 +34,7 @@ use crate::metrics::{
 use crate::pacing::{
     DynamicProfileManager, LatencyProfile, ProfileSnapshot, RuntimeProfile, ScenarioSchedule,
 };
-use crate::plan::{CloseSignal, HttpErrorSpec, TurnEvent, TurnPlan, Usage};
+use crate::plan::{HttpErrorSpec, TurnEvent, TurnPlan, Usage};
 use crate::protocol::{AuthPolicy, NormalizedRequest, Protocol};
 #[cfg(feature = "proxy")]
 use crate::proxy::{CassetteReplayer, ProxyRecordConfig, ProxyRecorder, ReplayConfig};
@@ -728,15 +728,21 @@ impl Drop for ActiveStreamGuard {
     }
 }
 
-pub(super) struct TurnCloseGuard(pub Option<CloseSignal>, pub Option<CloseSignal>);
-impl Drop for TurnCloseGuard {
-    fn drop(&mut self) {
-        if let Some(sig) = &self.0 {
-            sig.notify();
+pub(super) struct TurnCloseGuard {
+    _primary: crate::handler::CloseSignalGuard,
+    secondary: crate::handler::CloseSignalGuard,
+}
+
+impl TurnCloseGuard {
+    pub(super) fn new(primary: crate::handler::CloseSignalGuard) -> Self {
+        Self {
+            _primary: primary,
+            secondary: crate::handler::CloseSignalGuard(None),
         }
-        if let Some(sig) = &self.1 {
-            sig.notify();
-        }
+    }
+
+    pub(super) fn attach(&mut self, secondary: crate::handler::CloseSignalGuard) {
+        self.secondary = secondary;
     }
 }
 

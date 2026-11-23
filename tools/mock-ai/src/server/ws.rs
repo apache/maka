@@ -23,7 +23,9 @@ use super::{
     semantic_event_bytes,
 };
 use crate::codec::{WireFrame, create_encoder};
-use crate::handler::{InteractiveCommand, InteractiveStream, TurnContext, TurnDecision};
+use crate::handler::{
+    CloseSignalGuard, InteractiveCommand, InteractiveStream, TurnContext, TurnDecision,
+};
 use crate::pacing::{LatencyProfile, TurnPacer};
 use crate::plan::{CloseSignal, FinishReason, TurnEvent, TurnPlan, Usage};
 use crate::protocol::{NormalizedRequest, Protocol, Transport, normalize_request};
@@ -375,7 +377,7 @@ impl WsEventFeed {
                         _ = shutdown.cancelled() => return WsFeedStep::Aborted,
                         next = rx.recv() => match next {
                             Some(InteractiveCommand::Event(ev)) => return WsFeedStep::Event(ev),
-                            Some(InteractiveCommand::Plan(_)) => {
+                            Some(InteractiveCommand::Plan { .. }) => {
                                 unreachable!("TurnHandle::send_plan is rejected after incremental events")
                             }
                             None => return WsFeedStep::Ended,
@@ -432,7 +434,7 @@ impl WsEventFeed {
                                     *pending = Some(ev);
                                     return WsStallOutcome::Resumed;
                                 }
-                                Some(InteractiveCommand::Plan(_)) => {
+                                Some(InteractiveCommand::Plan { .. }) => {
                                     unreachable!("TurnHandle::send_plan is rejected after incremental events")
                                 }
                                 None => rx_open = false,
@@ -500,8 +502,8 @@ where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send,
 {
     let resolved = match decision {
-        TurnDecision::Plan(plan) => {
-            let close_guard = TurnCloseGuard(plan.on_close.clone(), None);
+        TurnDecision::Plan(mut plan) => {
+            let close_guard = TurnCloseGuard::new(CloseSignalGuard(plan.on_close.take()));
             ResolvedWsDecision::Plan {
                 plan: Box::new(plan),
                 close_guard,
@@ -510,7 +512,8 @@ where
         TurnDecision::Interactive(mut stream) => {
             // Hold stream.closed in an RAII guard BEFORE the first await so abort_all()
             // during shutdown or client disconnect always wakes TurnHandle::wait_closed().
-            let mut close_guard = TurnCloseGuard(Some(CloseSignal(stream.closed.clone())), None);
+            let mut close_guard =
+                TurnCloseGuard::new(CloseSignalGuard(Some(CloseSignal(stream.closed.clone()))));
             let first = loop {
                 tokio::select! {
                     _ = state.shutdown.cancelled() => return (false, None),
@@ -531,8 +534,8 @@ where
             };
             match first {
                 None => return (false, None),
-                Some(InteractiveCommand::Plan(plan)) => {
-                    close_guard.1 = plan.on_close.clone();
+                Some(InteractiveCommand::Plan { plan, on_close }) => {
+                    close_guard.attach(on_close);
                     ResolvedWsDecision::Plan { plan, close_guard }
                 }
                 Some(InteractiveCommand::Event(first_event)) => ResolvedWsDecision::Interactive {
