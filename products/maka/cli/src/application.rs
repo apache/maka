@@ -18,6 +18,8 @@
  */
 
 mod build_ui;
+mod command_line;
+use command_line::{BuildUi, sanitize_diagnostic};
 mod install;
 mod product;
 mod serve;
@@ -43,7 +45,7 @@ use serde::Serialize;
 #[derive(Subcommand)]
 pub(super) enum Command {
     /// Compile a plugin's NSH UI module and assets for packaging.
-    BuildUi(build_ui::BuildUi),
+    BuildUi(BuildUi),
     /// Author a checked business Host without Node or a source checkout.
     Compose(product::Compose),
     /// Preview selected bundled Host package updates; use --apply to synchronize.
@@ -262,19 +264,4 @@ async fn open_application_inspection(root: PathBuf) -> Result<maka_event_log::Ev
     })
     .await??;
     Ok(maka_transport::open_application_inspection(std::sync::Arc::new(owner)).await?)
-}
-
-// Authored identifiers and source errors can contain terminal control characters.
-// Keep headless CLI diagnostics safe independently of a presentation backend.
-fn sanitize_diagnostic(text: &str) -> String {
-    let mut output = String::with_capacity(text.len());
-    for character in text.chars() {
-        match character {
-            '\t' => output.push_str("    "),
-            '\n' => output.push(character),
-            character if !character.is_control() => output.push(character),
-            _ => {}
-        }
-    }
-    output
 }

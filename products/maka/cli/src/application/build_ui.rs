@@ -17,25 +17,11 @@
  * under the License.
  */
 
-use std::path::PathBuf;
-
-use clap::Args;
+use super::BuildUi;
 use maka_host_runtime::HostError;
 
-#[derive(Args)]
-pub(crate) struct BuildUi {
-    /// The plugin's NSH TSX or TypeScript entry module.
-    #[arg(long, value_name = "FILE")]
-    entry: PathBuf,
-    /// Directory for the compiled module, assets and manifest.json.
-    #[arg(long, value_name = "DIRECTORY")]
-    output: PathBuf,
-    /// Root containing every imported asset; defaults to the NSH app directory.
-    #[arg(long, value_name = "DIRECTORY")]
-    asset_root: Option<PathBuf>,
-}
-
 impl BuildUi {
+    #[cfg(not(target_os = "macos"))]
     pub(super) async fn run(self) -> Result<(), HostError> {
         let manifest = tokio::task::spawn_blocking(move || {
             maka_ui_build::compile(&self.entry, &self.output, self.asset_root.as_deref())
@@ -43,5 +29,20 @@ impl BuildUi {
         .await??;
         println!("{}", serde_json::to_string_pretty(&manifest)?);
         Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(super) async fn run(self) -> Result<(), HostError> {
+        crate::desktop::exec_shell(
+            "__maka-build-ui",
+            &[
+                ("--entry", Some(self.entry.as_os_str())),
+                ("--output", Some(self.output.as_os_str())),
+                (
+                    "--asset-root",
+                    self.asset_root.as_ref().map(|root| root.as_os_str()),
+                ),
+            ],
+        )
     }
 }

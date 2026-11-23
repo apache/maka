@@ -8698,12 +8698,15 @@ name = "maka-desktop-shell"
 version = "0.3.0"
 dependencies = [
  "block2 0.6.2",
+ "clap",
  "dispatch2",
  "embed-resource",
  "libc",
  "maka-app-client",
  "maka-event-log",
  "maka-host-runtime",
+ "maka-terminal-shell",
+ "maka-ui-build",
  "maka-updater",
  "maka-workbench",
  "maka-wsl-bridge",
@@ -9559,11 +9562,13 @@ dependencies = [
  "nsh-platform-tui",
  "nsh-platform-windows",
  "nsh-terminal",
+ "objc2-app-kit 0.3.2",
  "ratatui",
  "serde_json",
  "tempfile",
  "termina 0.4.0",
  "tokio",
+ "tracing-subscriber",
  "uuid",
 ]
 
