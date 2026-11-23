@@ -98,6 +98,7 @@ pub(crate) struct AppWindow {
     scale: Cell<f32>,
     /// A `WM_PAINT` is asked for.
     invalid: Cell<bool>,
+    repaint_after_frame: Cell<bool>,
     /// The size last reported to the core.
     reported: Cell<Option<Size<Points>>>,
     /// It was shown once (its first frame drawn).
@@ -313,6 +314,7 @@ fn open(surface: &Rc<Surface>, view: &NshView, open: &OpenWindow) {
         pixels: Cell::new((0, 0)),
         scale: Cell::new(1.0),
         invalid: Cell::new(false),
+        repaint_after_frame: Cell::new(false),
         reported: Cell::new(None),
         opened: Cell::new(false),
         opening_mode: Cell::new(None),
@@ -541,6 +543,10 @@ fn resized(surface: &Surface, window: &AppWindow) {
 /// Draws `window` (`WM_PAINT`, and at once when resized).
 fn paint(surface: &Rc<Surface>, window: &AppWindow) {
     window.invalid.set(false);
+    let Ok(mut swap) = window.swap.try_borrow_mut() else {
+        window.repaint_after_frame.set(true);
+        return;
+    };
     let web = window.web.borrow().upgrade();
     // Deferred: the swap chain posts `WM_NSH_PAINT` when it has room, so
     // `invalid` stays set (no second `WM_PAINT` meanwhile).
@@ -551,7 +557,7 @@ fn paint(surface: &Rc<Surface>, window: &AppWindow) {
             hwnd: window.hwnd,
             base: window.composition.as_deref(),
             composition: web.as_deref(),
-            swap: &mut window.swap.borrow_mut(),
+            swap: &mut swap,
             target_scale: &window.target_scale,
             size: window.pixels.get(),
             scale: window.scale.get(),
@@ -559,8 +565,12 @@ fn paint(surface: &Rc<Surface>, window: &AppWindow) {
             composed: &window.composed,
         },
     );
+    drop(swap);
+    let repaint = window.repaint_after_frame.take();
     if deferred {
         window.invalid.set(true);
+    } else if repaint {
+        invalidate(window);
     }
 }
 
