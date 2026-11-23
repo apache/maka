@@ -20,10 +20,10 @@
 use super::admin::handle_admin;
 use super::{
     ActiveStreamGuard, BoxBody, FlushStatus, PendingWsUpgrade, ServerState, TtftTracker,
-    TurnCloseGuard, classify_protocol, collect_headers, default_response_id,
-    enqueue_interactive_command, error_http_response, extract_stored_response_id, full_json,
-    is_responses_path, is_semantic_delta_frame, jitter_ms, json_with_headers, pacer_seed_for,
-    plan_usage_hint, semantic_event_bytes, spawn_tracked, sse_response,
+    TurnCloseGuard, classify_protocol, collect_headers, default_response_id, error_http_response,
+    extract_stored_response_id, full_json, is_responses_path, is_semantic_delta_frame, jitter_ms,
+    json_with_headers, pacer_seed_for, plan_usage_hint, semantic_event_bytes, spawn_tracked,
+    sse_response,
 };
 use crate::codec::{WireFrame, create_encoder};
 use crate::handler::{InteractiveCommand, TurnContext, TurnDecision};
@@ -43,7 +43,6 @@ use hyper::header::{self, HeaderName, HeaderValue};
 use hyper::{Method, Request, Response, StatusCode};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
-use std::collections::VecDeque;
 use std::io;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
@@ -632,7 +631,7 @@ enum HttpEventFeed {
         inferred_finish: FinishReason,
     },
     Interactive {
-        pending: VecDeque<TurnEvent>,
+        pending: Option<Box<TurnEvent>>,
         rx: mpsc::Receiver<InteractiveCommand>,
     },
 }
@@ -666,9 +665,9 @@ impl HttpEventFeed {
                     None => FeedStep::Ended,
                 }
             }
-            Self::Interactive { pending, rx } => loop {
-                if let Some(ev) = pending.pop_front() {
-                    return FeedStep::Event(Box::new(ev));
+            Self::Interactive { pending, rx } => {
+                if let Some(ev) = pending.take() {
+                    return FeedStep::Event(ev);
                 }
                 let next = if let Some(tx) = tx_closed {
                     tokio::select! {
@@ -683,10 +682,13 @@ impl HttpEventFeed {
                     }
                 };
                 match next {
-                    Some(cmd) => enqueue_interactive_command(pending, cmd),
-                    None => return FeedStep::Ended,
+                    Some(InteractiveCommand::Event(ev)) => FeedStep::Event(ev),
+                    Some(InteractiveCommand::Plan(_)) => {
+                        unreachable!("TurnHandle::send_plan is rejected after incremental events")
+                    }
+                    None => FeedStep::Ended,
                 }
-            },
+            }
         }
     }
 
@@ -713,9 +715,12 @@ impl HttpEventFeed {
                         _ = shutdown.cancelled() => return StallOutcome::Ended,
                         _ = tx.closed() => return StallOutcome::Ended,
                         next = rx.recv() => match next {
-                            Some(cmd) => {
-                                enqueue_interactive_command(pending, cmd);
+                            Some(InteractiveCommand::Event(ev)) => {
+                                *pending = Some(ev);
                                 return StallOutcome::Resumed;
+                            }
+                            Some(InteractiveCommand::Plan(_)) => {
+                                unreachable!("TurnHandle::send_plan is rejected after incremental events")
                             }
                             None => true,
                         }
@@ -724,9 +729,12 @@ impl HttpEventFeed {
                     tokio::select! {
                         _ = shutdown.cancelled() => return StallOutcome::Ended,
                         next = rx.recv() => match next {
-                            Some(cmd) => {
-                                enqueue_interactive_command(pending, cmd);
+                            Some(InteractiveCommand::Event(ev)) => {
+                                *pending = Some(ev);
                                 return StallOutcome::Resumed;
+                            }
+                            Some(InteractiveCommand::Plan(_)) => {
+                                unreachable!("TurnHandle::send_plan is rejected after incremental events")
                             }
                             None => true,
                         }
@@ -762,11 +770,12 @@ enum StallOutcome {
 enum ResolvedHttpDecision {
     Plan {
         plan: Box<crate::plan::TurnPlan>,
-        interactive_closed: Option<CloseSignal>,
+        close_guard: TurnCloseGuard,
     },
     Interactive {
         first: Box<TurnEvent>,
         stream: crate::handler::InteractiveStream,
+        close_guard: TurnCloseGuard,
     },
 }
 
@@ -784,14 +793,19 @@ async fn execute_http_turn(
     // Unwrap interactive turns that reply with a full TurnPlan so they share 100% of
     // the Plan execution path (leading Delay+HttpError, TTFT/pacing, on_close, headers, etc.).
     let resolved = match decision {
-        TurnDecision::Plan(plan) => ResolvedHttpDecision::Plan {
-            plan: Box::new(plan),
-            interactive_closed: None,
-        },
+        TurnDecision::Plan(plan) => {
+            let close_guard = TurnCloseGuard(plan.on_close.clone(), None);
+            ResolvedHttpDecision::Plan {
+                plan: Box::new(plan),
+                close_guard,
+            }
+        }
         TurnDecision::Interactive(mut stream) => {
+            // Hold stream.closed in an RAII guard BEFORE the first await so client disconnect
+            // (Hyper dropping this future) or server shutdown always wakes TurnHandle::wait_closed().
+            let mut close_guard = TurnCloseGuard(Some(CloseSignal(stream.closed.clone())), None);
             let first = tokio::select! {
                 _ = state.shutdown.cancelled() => {
-                    stream.closed.cancel();
                     return full_json(
                         StatusCode::SERVICE_UNAVAILABLE,
                         &json!({ "error": { "message": "server shutting down" } }),
@@ -801,7 +815,6 @@ async fn execute_http_turn(
             };
             match first {
                 None => {
-                    stream.closed.cancel();
                     return finish_http_error(
                         &req,
                         &HttpErrorSpec::new(
@@ -814,18 +827,18 @@ async fn execute_http_turn(
                         &state,
                     );
                 }
-                Some(InteractiveCommand::Plan(plan)) => ResolvedHttpDecision::Plan {
-                    plan,
-                    interactive_closed: Some(CloseSignal(stream.closed)),
-                },
+                Some(InteractiveCommand::Plan(plan)) => {
+                    close_guard.1 = plan.on_close.clone();
+                    ResolvedHttpDecision::Plan { plan, close_guard }
+                }
                 Some(InteractiveCommand::Event(first_event)) => {
                     if let TurnEvent::HttpError(spec) = *first_event {
-                        stream.closed.cancel();
                         return finish_http_error(&req, &spec, &rl_headers, turn_started, &state);
                     }
                     ResolvedHttpDecision::Interactive {
                         first: first_event,
                         stream,
+                        close_guard,
                     }
                 }
             }
@@ -845,26 +858,28 @@ async fn execute_http_turn(
         ttft_dur,
         close_guard,
     ) = match resolved {
-        ResolvedHttpDecision::Plan {
-            plan,
-            interactive_closed,
-        } => {
+        ResolvedHttpDecision::Plan { plan, close_guard } => {
             let plan = *plan;
-            let close_guard = TurnCloseGuard(plan.on_close.clone(), interactive_closed);
-            // Handle pre-stream HTTP error (including optional leading Delay before error).
-            for (idx, ev) in plan.events.iter().enumerate() {
-                match ev {
-                    TurnEvent::Delay { ms } if idx == 0 => {
-                        tokio::select! {
-                            _ = state.shutdown.cancelled() => break,
-                            _ = tokio::time::sleep(Duration::from_millis(*ms)) => {}
-                        }
-                    }
-                    TurnEvent::HttpError(spec) => {
-                        return finish_http_error(&req, spec, &rl_headers, turn_started, &state);
-                    }
-                    _ => break,
+            // Handle pre-stream HTTP error (including optional leading Delay before HttpError).
+            // Only sleep here when the prefix ends in HttpError so normal Delay -> Text plans
+            // sleep once inside the event loop.
+            match plan.events.as_slice() {
+                [TurnEvent::HttpError(spec), ..] => {
+                    return finish_http_error(&req, spec, &rl_headers, turn_started, &state);
                 }
+                [TurnEvent::Delay { ms }, TurnEvent::HttpError(spec), ..] => {
+                    tokio::select! {
+                        _ = state.shutdown.cancelled() => {
+                            return full_json(
+                                StatusCode::SERVICE_UNAVAILABLE,
+                                &json!({ "error": { "message": "server shutting down" } }),
+                            );
+                        }
+                        _ = tokio::time::sleep(Duration::from_millis(*ms)) => {}
+                    }
+                    return finish_http_error(&req, spec, &rl_headers, turn_started, &state);
+                }
+                _ => {}
             }
 
             let inferred_finish = plan.inferred_finish_reason();
@@ -902,14 +917,15 @@ async fn execute_http_turn(
                 close_guard,
             )
         }
-        ResolvedHttpDecision::Interactive { first, stream } => {
-            let close_guard = TurnCloseGuard(Some(CloseSignal(stream.closed)), None);
+        ResolvedHttpDecision::Interactive {
+            first,
+            stream,
+            close_guard,
+        } => {
             let response_id = stream.response_id.lock().unwrap().clone();
             let usage_hint = Usage::new(req.estimated_input_tokens.max(1), 0);
-            let mut pending = VecDeque::new();
-            pending.push_back(*first);
             let feed = HttpEventFeed::Interactive {
-                pending,
+                pending: Some(first),
                 rx: stream.events,
             };
             (

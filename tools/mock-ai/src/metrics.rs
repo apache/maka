@@ -824,7 +824,7 @@ impl RequestRecorder {
                 capacity,
                 max_bytes,
             } => {
-                if capacity == 0 || max_bytes == 0 {
+                if capacity == 0 || max_bytes == 0 || bytes > max_bytes {
                     return;
                 }
                 let mut guard = self.inner.lock().unwrap_or_else(|e| e.into_inner());
@@ -836,10 +836,8 @@ impl RequestRecorder {
                         guard.retained_bytes = guard.retained_bytes.saturating_sub(evicted.bytes());
                     }
                 }
-                if bytes <= max_bytes {
-                    guard.retained_bytes = guard.retained_bytes.saturating_add(bytes);
-                    guard.entries.push_back(entry);
-                }
+                guard.retained_bytes = guard.retained_bytes.saturating_add(bytes);
+                guard.entries.push_back(entry);
             }
         }
     }

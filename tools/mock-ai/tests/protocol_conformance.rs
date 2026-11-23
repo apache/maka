@@ -706,6 +706,26 @@ async fn interactive_non_streaming_meta_filtered_and_ws_stall_disconnect() {
         .await
         .expect("WS client disconnect must wake send_plan(TurnPlan::stall()) close signal");
 
+    // HTTP client disconnect BEFORE first reply must wake TurnHandle::wait_closed() via RAII guard!
+    let dropped_http = tokio::spawn({
+        let client = client.clone();
+        let url = format!("{}/chat/completions", server.base_url());
+        async move {
+            let _ = post_json(
+                &client,
+                &url,
+                &json!({ "model": "gpt-4.1", "stream": true, "messages": [{ "role": "user", "content": "http-drop-before-reply" }] }),
+            )
+            .await;
+        }
+    });
+    let h_http_drop = server.next_turn().await.unwrap();
+    dropped_http.abort();
+    let _ = dropped_http.await;
+    tokio::time::timeout(Duration::from_secs(2), h_http_drop.wait_closed())
+        .await
+        .expect("HTTP client disconnect before first reply must wake TurnHandle::wait_closed()");
+
     // Turn 3 on a new WS: client closes while TurnHandle is idle -> wait_closed() must wake promptly!
     let (mut ws2, _) = tokio_tungstenite::connect_async(server.responses_ws_url())
         .await
@@ -721,7 +741,21 @@ async fn interactive_non_streaming_meta_filtered_and_ws_stall_disconnect() {
         .await
         .expect("WS client disconnect must wake TurnHandle::wait_closed()");
 
+    // Idle WS aborted by server.shutdown() must also wake TurnHandle::wait_closed() via RAII guard!
+    let (mut ws3, _) = tokio_tungstenite::connect_async(server.responses_ws_url())
+        .await
+        .unwrap();
+    ws3.send(WsMessage::text(
+        json!({ "type": "response.create", "model": "gpt-4.1", "store": false, "input": "ws-shutdown" }).to_string(),
+    ))
+    .await
+    .unwrap();
+    let h_ws_shutdown = server.next_turn().await.unwrap();
     server.shutdown().await;
+    tokio::time::timeout(Duration::from_secs(2), h_ws_shutdown.wait_closed())
+        .await
+        .expect("shutdown() aborting idle WS must wake TurnHandle::wait_closed()");
+    drop(ws3);
 }
 
 #[tokio::test]
@@ -771,7 +805,7 @@ async fn intermediate_web_search_started_sse_comment_and_ring_control_budget() {
     let server = MockAiBuilder::new()
         .recorder(maka_mock_ai::RecorderMode::Ring {
             capacity: 1,
-            max_bytes: 16,
+            max_bytes: 180,
         })
         .scripted([plan])
         .start()
@@ -779,10 +813,18 @@ async fn intermediate_web_search_started_sse_comment_and_ring_control_budget() {
         .unwrap();
     let client = reqwest::Client::new();
 
-    // Oversized control request header must be dropped by Ring max_bytes budget.
+    let resp = post_json(
+        &client,
+        &format!("{}/responses", server.base_url()),
+        &json!({ "model": "gpt-5", "stream": true, "input": "search" }),
+    )
+    .await;
+    assert_eq!(server.recorded_requests().len(), 1);
+
+    // Oversized control request header must be rejected without evicting existing model history.
     let models_resp = client
         .get(format!("{}/models", server.base_url()))
-        .header("x-oversized", "a".repeat(200))
+        .header("x-oversized", "a".repeat(350))
         .send()
         .await
         .unwrap();
@@ -791,13 +833,11 @@ async fn intermediate_web_search_started_sse_comment_and_ring_control_budget() {
         server.control_plane_requests().is_empty(),
         "Ring max_bytes must also bound control-plane request entries"
     );
-
-    let resp = post_json(
-        &client,
-        &format!("{}/responses", server.base_url()),
-        &json!({ "model": "gpt-5", "stream": true, "input": "search" }),
-    )
-    .await;
+    assert_eq!(
+        server.recorded_requests().len(),
+        1,
+        "an oversized entry that cannot fit must not evict existing ring entries"
+    );
     assert_eq!(resp.status(), 200);
     let body = resp.text().await.unwrap();
     assert!(body.starts_with(": pending\n\n"), "{body}");

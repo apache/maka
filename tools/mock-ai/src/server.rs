@@ -62,11 +62,11 @@ use std::hash::{Hash, Hasher};
 use std::io;
 use std::net::SocketAddr;
 use std::panic::AssertUnwindSafe;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::net::TcpListener;
-use tokio::sync::mpsc;
+use tokio::sync::{Notify, mpsc};
 use tokio::task::JoinSet;
 use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::protocol::{Role, WebSocketConfig};
@@ -132,6 +132,8 @@ pub(crate) struct ServerState {
     #[cfg(feature = "proxy")]
     pub cassette_replayer: Option<Arc<CassetteReplayer>>,
     pub panics: Mutex<Vec<String>>,
+    pub active_bg_tasks: AtomicUsize,
+    pub bg_tasks_drained: Notify,
     pub next_seq: AtomicU64,
     pub next_conn_id: AtomicU64,
     pub shutdown: CancellationToken,
@@ -194,12 +196,25 @@ pub(super) fn panic_payload_to_string(payload: Box<dyn Any + Send>) -> String {
     }
 }
 
-/// Spawn a background task whose panics are captured onto `ServerState` instead of silently lost.
+struct BgTaskGuard(Arc<ServerState>);
+
+impl Drop for BgTaskGuard {
+    fn drop(&mut self) {
+        if self.0.active_bg_tasks.fetch_sub(1, Ordering::AcqRel) == 1 {
+            self.0.bg_tasks_drained.notify_waiters();
+        }
+    }
+}
+
+/// Spawn a background task whose panics are captured onto `ServerState` and whose
+/// lifetime is awaited before `shutdown()` / `shutdown_taking_panics()` collects panics.
 pub(super) fn spawn_tracked<F>(state: Arc<ServerState>, fut: F)
 where
     F: Future<Output = ()> + Send + 'static,
 {
+    state.active_bg_tasks.fetch_add(1, Ordering::AcqRel);
     tokio::spawn(async move {
+        let _bg_guard = BgTaskGuard(state.clone());
         if let Err(payload) = AssertUnwindSafe(fut).catch_unwind().await {
             state.record_panic(panic_payload_to_string(payload));
         }
@@ -355,12 +370,21 @@ impl MockAiServer {
         self.state.shutdown.clone()
     }
 
-    /// Shut down the server, wait for all connection tasks to drain, and return any
-    /// recorded handler/task panics without panicking during teardown.
+    /// Shut down the server, wait for all connection tasks and SSE writers to drain,
+    /// and return any recorded handler/task panics without panicking during teardown.
     pub async fn shutdown_taking_panics(mut self) -> Vec<String> {
         self.state.shutdown.cancel();
         if let Some(task) = self.task.take() {
             let _ = task.await;
+        }
+        // Connections are now fully drained so no new background writers can be spawned;
+        // wait for every in-flight writer (and its panic capture) to finish before reading panics.
+        loop {
+            let notified = self.state.bg_tasks_drained.notified();
+            if self.state.active_bg_tasks.load(Ordering::Acquire) == 0 {
+                break;
+            }
+            notified.await;
         }
         #[cfg(feature = "proxy")]
         if let Some(ref proxy) = self.state.proxy_recorder {
@@ -641,6 +665,8 @@ impl MockAiBuilder {
             #[cfg(feature = "proxy")]
             cassette_replayer: self.cassette_replayer,
             panics: Mutex::new(Vec::new()),
+            active_bg_tasks: AtomicUsize::new(0),
+            bg_tasks_drained: Notify::new(),
             next_seq: AtomicU64::new(0),
             next_conn_id: AtomicU64::new(0),
             shutdown: CancellationToken::new(),
@@ -1059,36 +1085,6 @@ pub(super) fn pacer_seed_for(req: &NormalizedRequest) -> u64 {
     req.session_key.hash(&mut h);
     req.sequence.hash(&mut h);
     h.finish()
-}
-
-pub(super) fn enqueue_interactive_command(
-    pending: &mut std::collections::VecDeque<TurnEvent>,
-    cmd: crate::handler::InteractiveCommand,
-) {
-    match cmd {
-        crate::handler::InteractiveCommand::Event(ev) => pending.push_back(*ev),
-        crate::handler::InteractiveCommand::Plan(plan) => {
-            let inferred = plan.inferred_finish_reason();
-            let mut has_terminal = false;
-            for ev in plan.events {
-                if matches!(
-                    ev,
-                    TurnEvent::Finish { .. }
-                        | TurnEvent::HttpError(_)
-                        | TurnEvent::MidStreamError(_)
-                        | TurnEvent::DropConnection
-                        | TurnEvent::TruncateEof
-                        | TurnEvent::Stall
-                ) {
-                    has_terminal = true;
-                }
-                pending.push_back(ev);
-            }
-            if !has_terminal {
-                pending.push_back(TurnEvent::Finish { reason: inferred });
-            }
-        }
-    }
 }
 
 pub(super) fn plan_usage_hint(plan: &TurnPlan, req: &NormalizedRequest) -> Usage {

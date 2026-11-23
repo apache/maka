@@ -27,6 +27,7 @@ use serde_json::Value;
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -126,6 +127,7 @@ pub struct TurnHandle {
     tx: mpsc::Sender<InteractiveCommand>,
     response_id: Arc<Mutex<Option<String>>>,
     closed: CancellationToken,
+    has_sent_event: AtomicBool,
 }
 
 impl TurnHandle {
@@ -143,6 +145,7 @@ impl TurnHandle {
     }
 
     pub async fn send(&self, event: TurnEvent) -> bool {
+        self.has_sent_event.store(true, Ordering::Relaxed);
         self.tx
             .send(InteractiveCommand::Event(Box::new(event)))
             .await
@@ -251,6 +254,7 @@ impl TurnHandle {
     }
 
     pub async fn stall(&self) {
+        self.has_sent_event.store(true, Ordering::Relaxed);
         let _ = self
             .tx
             .send(InteractiveCommand::Event(Box::new(TurnEvent::Stall)))
@@ -277,12 +281,22 @@ impl TurnHandle {
 
     /// Hand a complete `TurnPlan` to the server's Plan execution path (preserving pacing,
     /// leading `Delay` + `HttpError`, `on_close`, headers, and non-streaming semantics).
-    /// Non-blocking on a fresh `TurnHandle`.
+    /// Must be called as the first reply on a fresh `TurnHandle` (cannot follow incremental
+    /// `send`/`delta`/`stall` calls).
     pub fn send_plan(self, mut plan: TurnPlan) {
+        assert!(
+            !self.has_sent_event.load(Ordering::Relaxed),
+            "TurnHandle::send_plan must be the first reply on a TurnHandle"
+        );
         if plan.response_id.is_none() {
             plan.response_id = self.response_id.lock().unwrap().take();
         }
-        let _ = self.tx.try_send(InteractiveCommand::Plan(Box::new(plan)));
+        match self.tx.try_send(InteractiveCommand::Plan(Box::new(plan))) {
+            Ok(()) | Err(mpsc::error::TrySendError::Closed(_)) => {}
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                unreachable!("fresh TurnHandle channel always has capacity >= 1");
+            }
+        }
     }
 
     /// Convenience: reply with visible text + Finish(Stop).
@@ -362,6 +376,7 @@ impl TurnHandler for InteractiveHandler {
                 tx: ev_tx,
                 response_id: response_id.clone(),
                 closed: closed.clone(),
+                has_sent_event: AtomicBool::new(false),
             };
             if self.tx.send(handle).await.is_err() {
                 return None;
