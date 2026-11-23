@@ -296,11 +296,31 @@ async fn interrupted_steer_precedes_worker_completions_after_queue_rebuild() {
     assert!(rest.iter().map(|e| &e.entry).eq(&entries[1..]));
 }
 
-#[tokio::test]
-async fn reorder_preserves_interrupt_handoff_through_delivery_and_rebuild() {
-    use crate::queue::{Followup, PreparedEnqueue};
-    let directory = tempfile::tempdir().unwrap();
-    let (root, store) = open(directory.path(), true).await;
+async fn exec_sql<F>(store: &Store, f: F)
+where
+    F: FnOnce(&Connection) -> Result<(), StoreError> + Send + 'static,
+{
+    struct Raw<F>(F);
+    impl<F: FnOnce(&Connection) -> Result<(), StoreError> + Send + 'static> Statement for Raw<F> {
+        type Value = ();
+        type Output = ();
+        fn execute(self, c: &Connection) -> Result<Prepared<()>, StoreError> {
+            (self.0)(c)?;
+            Ok(Prepared {
+                value: (),
+                changed: true,
+                notification: Notification::NONE,
+            })
+        }
+        fn committed(_: ()) {}
+        fn isolated_rejection(_: &StoreError) -> bool {
+            false
+        }
+    }
+    store.data.write(Raw(f)).await.unwrap();
+}
+
+fn external_spec() -> (RunSpec, Vec<ContentBlob>) {
     let (mut spec, contents) = spec();
     spec.backend = BackendSpec::Executor {
         selection: maka_agent_facts::executor::Selection {
@@ -309,564 +329,386 @@ async fn reorder_preserves_interrupt_handoff_through_delivery_and_rebuild() {
         },
         descriptor: spec.input.clone(),
     };
-    let original = Admission::new(spec.clone(), UnixMillis(1), contents);
-    store.admit(original.clone()).await.unwrap();
-    let a = enqueue(&store, &spec, "ordinary-a", None).await;
-    let b = enqueue(&store, &spec, "ordinary-b", None).await;
-    let second = enqueue(&store, &spec, "promoted-interrupt", None).await;
-    let (interrupt, contents) = prepare_message(&spec, "interrupt", None);
-    let queue = store.queue();
+    (spec, contents)
+}
+
+async fn write_queue(
+    store: &Store,
+    session: &str,
+    at: i64,
+    followup: Option<crate::queue::Followup>,
+    edit: QueueEdit,
+    contents: Vec<ContentBlob>,
+) -> Result<crate::queue::QueueCommit, StoreError> {
+    let expected_revision = store.queue().read(session.into()).await?.revision;
+    let command = QueueCommand {
+        id: FactId::new(),
+        at: UnixMillis(at),
+        expected_revision,
+        edit,
+    };
     store
         .data
-        .write(PreparedEnqueue {
-            session: spec.session_id.clone(),
+        .write(crate::queue::PreparedEnqueue {
+            session: session.into(),
             contents,
             work_fence: None,
-            followup: Some(Followup::Interrupt {
-                run: original.run(),
-                stop: FactId::new(),
-            }),
-            command: QueueCommand {
-                id: FactId::new(),
-                at: UnixMillis(2),
-                expected_revision: 3,
-                edit: QueueEdit::Enqueue {
-                    request: Box::new(interrupt.clone()),
-                    placement: Placement::Followup,
-                },
-            },
+            followup,
+            command,
         })
         .await
-        .unwrap();
-    let handoff = queue
-        .interrupt_handoff(&store.frontier(original.run()).await.unwrap())
-        .await
-        .unwrap()
-        .unwrap();
-    store
-        .data
-        .write(PreparedEnqueue {
-            session: spec.session_id.clone(),
-            contents: vec![],
-            work_fence: None,
-            followup: Some(Followup::Resume(handoff)),
-            command: QueueCommand {
-                id: FactId::new(),
-                at: UnixMillis(3),
-                expected_revision: 4,
-                edit: QueueEdit::Promote {
-                    request: second.id.clone(),
-                    target: crate::queue::SteeringTarget {
-                        run: original.run(),
-                        expected_head: Head::from(&store.frontier(original.run()).await.unwrap()),
-                    },
-                },
-            },
-        })
-        .await
-        .unwrap();
-    assert_eq!(
-        queue
-            .entry_enqueued_at(spec.session_id.clone(), second.id.clone())
-            .await
-            .unwrap(),
-        Some(UnixMillis(1))
-    );
-    assert!(
-        queue
-            .pending_steer_revision(spec.session_id.clone(), second.id.clone(), original.run())
-            .await
-            .unwrap()
-            .is_some()
-    );
-    let before = queue.read(spec.session_id.clone()).await.unwrap();
-    let command = |requests| QueueCommand {
-        id: FactId::new(),
-        at: UnixMillis(3),
-        expected_revision: before.revision,
-        edit: QueueEdit::Reorder { requests },
+}
+
+async fn enqueue_at(store: &Store, basis: &RunSpec, msg: &str, at: i64) -> PreparedRequest {
+    let (req, contents) = prepare_message(basis, msg, None);
+    let edit = QueueEdit::Enqueue {
+        request: Box::new(req.clone()),
+        placement: Placement::Followup,
     };
-    assert!(
-        queue
-            .execute(
-                spec.session_id.clone(),
-                command(vec![
-                    b.id.clone(),
-                    interrupt.id.clone(),
-                    second.id.clone(),
-                    a.id.clone()
-                ]),
-                vec![]
-            )
-            .await
-            .is_err()
-    );
-    assert!(
-        queue
-            .execute(
-                spec.session_id.clone(),
-                command(vec![
-                    second.id.clone(),
-                    interrupt.id.clone(),
-                    b.id.clone(),
-                    a.id.clone()
-                ]),
-                vec![]
-            )
-            .await
-            .is_err()
-    );
-    assert_eq!(queue.read(spec.session_id.clone()).await.unwrap(), before);
-    queue
-        .execute(
-            spec.session_id.clone(),
-            command(vec![
-                interrupt.id.clone(),
-                second.id.clone(),
-                b.id.clone(),
-                a.id.clone(),
-            ]),
-            vec![],
-        )
+    write_queue(store, &basis.session_id, at, None, edit, contents)
         .await
         .unwrap();
-    queue.rebuild(spec.session_id.clone()).await.unwrap();
-    let reordered = queue.read(spec.session_id.clone()).await.unwrap();
-    assert_eq!(
-        reordered
-            .entries
-            .iter()
-            .map(|e| &e.request.id)
-            .collect::<Vec<_>>(),
-        vec![&interrupt.id, &second.id, &b.id, &a.id]
-    );
-    let handoff = queue
-        .interrupt_handoff(&store.frontier(original.run()).await.unwrap())
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(handoff.interrupted(), original.run());
-    let claim = store.claim(original.run()).await.unwrap();
-    let stopped = store.frontier(original.run()).await.unwrap();
+    req
+}
+
+async fn cancel_and_admit(
+    store: &Store,
+    session: &str,
+    prev: RunId,
+    next: PreparedRequest,
+    at: i64,
+) -> RunId {
+    let claim = store.claim(prev).await.unwrap();
+    let head = Head::from(&store.frontier(prev).await.unwrap());
+    let fact = Fact::RunTerminated {
+        terminal: Terminal::Cancelled,
+        diagnostic: None,
+    };
     store
         .append(
             &claim,
-            Head::from(&stopped),
-            vec![Change::new(
-                Fact::RunTerminated {
-                    terminal: Terminal::Cancelled,
-                    diagnostic: None,
-                },
-                UnixMillis(4),
-            )],
+            head,
+            vec![Change::new(fact, UnixMillis(at))],
             vec![],
         )
         .await
         .unwrap();
     drop(claim);
-    let successor = Admission::new(interrupt.spec, UnixMillis(5), vec![]).with_queue(Consume {
-        session: spec.session_id.clone(),
-        requests: vec![interrupt.id],
-        expected_revision: reordered.revision,
-    });
-    store.admit(successor.clone()).await.unwrap();
-    let handoff = queue
-        .interrupt_handoff(&store.frontier(successor.run()).await.unwrap())
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(handoff.interrupted(), original.run());
+    let rev = store.queue().read(session.into()).await.unwrap().revision;
+    let cut = Consume {
+        session: session.into(),
+        requests: vec![next.id],
+        expected_revision: rev,
+    };
+    let admission = Admission::new(next.spec, UnixMillis(at + 1), vec![]).with_queue(cut);
+    store.admit(admission.clone()).await.unwrap();
+    admission.run()
+}
 
-    // A successor is the frontier, while the durable provenance remains the
-    // original interrupted Run. Promote another pending message through it.
-    let view = store.frontier(successor.run()).await.unwrap();
-    let head = Head::from(&view);
-    let current = queue.read(spec.session_id.clone()).await.unwrap();
-    store
-        .data
-        .write(PreparedEnqueue {
-            session: spec.session_id.clone(),
-            contents: vec![],
-            work_fence: None,
-            followup: Some(Followup::Resume(handoff)),
-            command: QueueCommand {
-                id: FactId::new(),
-                at: UnixMillis(7),
-                expected_revision: current.revision,
-                edit: QueueEdit::Promote {
-                    request: b.id.clone(),
-                    target: crate::queue::SteeringTarget {
-                        run: successor.run(),
-                        expected_head: head,
-                    },
-                },
-            },
-        })
+#[tokio::test]
+async fn reorder_preserves_interrupt_handoffs_and_enqueue_times() {
+    use crate::queue::{Followup, SteeringTarget};
+
+    let dir = tempfile::tempdir().unwrap();
+    let (root, store) = open(dir.path(), true).await;
+    let (spec, contents) = external_spec();
+    let sid = &spec.session_id;
+    let orig = Admission::new(spec.clone(), UnixMillis(1), contents);
+    store.admit(orig.clone()).await.unwrap();
+
+    let a = enqueue_at(&store, &spec, "ordinary-a", 10).await;
+    let b = enqueue_at(&store, &spec, "ordinary-b", 20).await;
+    let second = enqueue_at(&store, &spec, "promoted-interrupt", 30).await;
+    let (intr, contents) = prepare_message(&spec, "interrupt", None);
+    let enq = QueueEdit::Enqueue {
+        request: Box::new(intr.clone()),
+        placement: Placement::Followup,
+    };
+    let f_int = Followup::Interrupt {
+        run: orig.run(),
+        stop: FactId::new(),
+    };
+    write_queue(&store, sid, 40, Some(f_int), enq, contents)
         .await
         .unwrap();
+
+    let q = store.queue();
+    let view = store.frontier(orig.run()).await.unwrap();
+    let handoff = q.interrupt_handoff(&view).await.unwrap().unwrap();
+    let target = SteeringTarget {
+        run: orig.run(),
+        expected_head: Head::from(&view),
+    };
+    let promo = QueueEdit::Promote {
+        request: second.id.clone(),
+        target,
+    };
+    write_queue(
+        &store,
+        sid,
+        50,
+        Some(Followup::Resume(handoff)),
+        promo,
+        vec![],
+    )
+    .await
+    .unwrap();
     assert!(
-        queue
-            .pending_steer_revision(spec.session_id.clone(), b.id.clone(), successor.run())
+        q.pending_steer_revision(sid.clone(), second.id.clone(), orig.run())
             .await
             .unwrap()
             .is_some()
     );
-    queue.rebuild(spec.session_id.clone()).await.unwrap();
-    drop(queue);
-    drop(store);
-    root.close().await.unwrap();
-    let (_root, store) = open(directory.path(), false).await;
-    let queue = store.queue();
-    assert_eq!(
-        queue
-            .entry_enqueued_at(spec.session_id.clone(), b.id.clone())
-            .await
-            .unwrap(),
-        Some(UnixMillis(1))
-    );
-    let resumed = queue
-        .interrupt_handoff(&store.frontier(successor.run()).await.unwrap())
+
+    let before = q.read(sid.clone()).await.unwrap();
+    for bad in [
+        vec![
+            b.id.clone(),
+            intr.id.clone(),
+            second.id.clone(),
+            a.id.clone(),
+        ],
+        vec![
+            second.id.clone(),
+            intr.id.clone(),
+            b.id.clone(),
+            a.id.clone(),
+        ],
+    ] {
+        let edit = QueueEdit::Reorder { requests: bad };
+        assert!(
+            write_queue(&store, sid, 60, None, edit, vec![])
+                .await
+                .is_err()
+        );
+    }
+    assert_eq!(q.read(sid.clone()).await.unwrap(), before);
+
+    let want = vec![
+        intr.id.clone(),
+        second.id.clone(),
+        b.id.clone(),
+        a.id.clone(),
+    ];
+    let reorder = QueueEdit::Reorder {
+        requests: want.clone(),
+    };
+    write_queue(&store, sid, 60, None, reorder, vec![])
+        .await
+        .unwrap();
+    let upd = QueueEdit::Update {
+        request: Box::new(a.clone()),
+    };
+    write_queue(&store, sid, 65, None, upd, vec![])
+        .await
+        .unwrap();
+    q.rebuild(sid.clone()).await.unwrap();
+    let ids: Vec<_> = q
+        .read(sid.clone())
         .await
         .unwrap()
-        .unwrap();
-    assert_eq!(resumed.interrupted(), original.run());
-
-    // Observe b itself after delivery, not the first successor's handoff.
-    let claim = store.claim(successor.run()).await.unwrap();
-    let view = store.frontier(successor.run()).await.unwrap();
-    store
-        .append(
-            &claim,
-            Head::from(&view),
-            vec![Change::new(
-                Fact::RunTerminated {
-                    terminal: Terminal::Cancelled,
-                    diagnostic: None,
-                },
-                UnixMillis(8),
-            )],
-            vec![],
-        )
-        .await
-        .unwrap();
-    drop(claim);
-    let current = queue.read(spec.session_id.clone()).await.unwrap();
-    let promoted = Admission::new(b.spec.clone(), UnixMillis(9), vec![]).with_queue(Consume {
-        session: spec.session_id.clone(),
-        requests: vec![b.id.clone()],
-        expected_revision: current.revision,
-    });
-    store.admit(promoted.clone()).await.unwrap();
-    let promoted_handoff = queue
-        .interrupt_handoff(&store.frontier(promoted.run()).await.unwrap())
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(promoted_handoff.interrupted(), original.run());
-
-    let (mut spec, contents) = self::spec();
-    spec.session_id = "timing-session".into();
-    let original = Admission::new(spec.clone(), UnixMillis(1), contents);
-    store.admit(original.clone()).await.unwrap();
-    let queue = store.queue();
-    let (a, ac) = prepare_message(&spec, "a", None);
-    let (b, bc) = prepare_message(&spec, "b", None);
-    for (revision, (request, contents, at)) in [(a.clone(), ac, 10), (b.clone(), bc, 30)]
+        .entries
         .into_iter()
-        .enumerate()
-    {
-        queue
-            .execute(
-                spec.session_id.clone(),
-                QueueCommand {
-                    id: FactId::new(),
-                    at: UnixMillis(at),
-                    expected_revision: revision as u64,
-                    edit: QueueEdit::Enqueue {
-                        request: Box::new(request),
-                        placement: Placement::Followup,
-                    },
-                },
-                contents,
-            )
-            .await
-            .unwrap();
-    }
-    queue
-        .execute(
-            spec.session_id.clone(),
-            QueueCommand {
-                id: FactId::new(),
-                at: UnixMillis(40),
-                expected_revision: 2,
-                edit: QueueEdit::Reorder {
-                    requests: vec![b.id.clone(), a.id.clone()],
-                },
-            },
-            vec![],
-        )
-        .await
-        .unwrap();
-    queue
-        .execute(
-            spec.session_id.clone(),
-            QueueCommand {
-                id: FactId::new(),
-                at: UnixMillis(50),
-                expected_revision: 3,
-                edit: QueueEdit::Update {
-                    request: Box::new(a.clone()),
-                },
-            },
-            vec![],
-        )
-        .await
-        .unwrap();
-    let assert_state = |entries: crate::queue::Queue| {
+        .map(|e| e.request.id)
+        .collect();
+    assert_eq!(ids, want);
+    for (id, at) in [(&a.id, 10), (&b.id, 20), (&second.id, 30), (&intr.id, 40)] {
         assert_eq!(
-            entries
-                .entries
-                .iter()
-                .map(|e| &e.request.id)
-                .collect::<Vec<_>>(),
-            vec![&b.id, &a.id]
+            q.entry_enqueued_at(sid.clone(), id.clone()).await.unwrap(),
+            Some(UnixMillis(at))
         );
+    }
+
+    // Successor keeps original provenance; another message promoted through it survives rebuild & delivery.
+    let succ = cancel_and_admit(&store, sid, orig.run(), intr, 70).await;
+    let view = store.frontier(succ).await.unwrap();
+    let handoff = q.interrupt_handoff(&view).await.unwrap().unwrap();
+    assert_eq!(handoff.interrupted(), orig.run());
+    let target = SteeringTarget {
+        run: succ,
+        expected_head: Head::from(&view),
     };
-    assert_state(queue.read(spec.session_id.clone()).await.unwrap());
-    for (id, at) in [(&a.id, 10), (&b.id, 30)] {
-        assert_eq!(
-            queue
-                .entry_enqueued_at(spec.session_id.clone(), id.clone())
-                .await
-                .unwrap(),
-            Some(UnixMillis(at))
-        );
-    }
-    queue.rebuild(spec.session_id.clone()).await.unwrap();
-    assert_state(queue.read(spec.session_id.clone()).await.unwrap());
-    assert_state(queue.read(spec.session_id.clone()).await.unwrap());
-    for (id, at) in [(&a.id, 10), (&b.id, 30)] {
-        assert_eq!(
-            queue
-                .entry_enqueued_at(spec.session_id.clone(), id.clone())
-                .await
-                .unwrap(),
-            Some(UnixMillis(at))
-        );
-    }
-    let head = Head::from(&store.frontier(original.run()).await.unwrap());
-    queue
-        .execute(
-            spec.session_id.clone(),
-            QueueCommand {
-                id: FactId::new(),
-                at: UnixMillis(60),
-                expected_revision: 4,
-                edit: QueueEdit::Promote {
-                    request: a.id.clone(),
-                    target: crate::queue::SteeringTarget {
-                        run: original.run(),
-                        expected_head: head,
-                    },
-                },
-            },
-            vec![],
-        )
-        .await
-        .unwrap();
+    let promo_b = QueueEdit::Promote {
+        request: b.id.clone(),
+        target,
+    };
+    write_queue(
+        &store,
+        sid,
+        80,
+        Some(Followup::Resume(handoff)),
+        promo_b,
+        vec![],
+    )
+    .await
+    .unwrap();
+    assert!(
+        q.pending_steer_revision(sid.clone(), b.id.clone(), succ)
+            .await
+            .unwrap()
+            .is_some()
+    );
+    q.rebuild(sid.clone()).await.unwrap();
     assert_eq!(
-        queue
-            .entry_enqueued_at(spec.session_id.clone(), a.id.clone())
+        q.entry_enqueued_at(sid.clone(), b.id.clone())
             .await
             .unwrap(),
+        Some(UnixMillis(20))
+    );
+    let promoted = cancel_and_admit(&store, sid, succ, b, 90).await;
+    let view = store.frontier(promoted).await.unwrap();
+    assert_eq!(
+        q.interrupt_handoff(&view)
+            .await
+            .unwrap()
+            .unwrap()
+            .interrupted(),
+        orig.run()
+    );
+
+    // In-place steering Promote on a model session also preserves original enqueue time.
+    let (mut mspec, mcontents) = self::spec();
+    mspec.session_id = "timing-session".into();
+    let msid = &mspec.session_id;
+    let mrun = Admission::new(mspec.clone(), UnixMillis(1), mcontents);
+    store.admit(mrun.clone()).await.unwrap();
+    let ma = enqueue_at(&store, &mspec, "ma", 10).await;
+    let mb = enqueue_at(&store, &mspec, "mb", 30).await;
+    let reorder = QueueEdit::Reorder {
+        requests: vec![mb.id.clone(), ma.id.clone()],
+    };
+    write_queue(&store, msid, 40, None, reorder, vec![])
+        .await
+        .unwrap();
+    let head = Head::from(&store.frontier(mrun.run()).await.unwrap());
+    let target = SteeringTarget {
+        run: mrun.run(),
+        expected_head: head,
+    };
+    let promo = QueueEdit::Promote {
+        request: ma.id.clone(),
+        target,
+    };
+    write_queue(&store, msid, 50, None, promo, vec![])
+        .await
+        .unwrap();
+    q.rebuild(msid.clone()).await.unwrap();
+    assert_eq!(
+        q.entry_enqueued_at(msid.clone(), ma.id).await.unwrap(),
         Some(UnixMillis(10))
     );
+    assert_eq!(
+        q.entry_enqueued_at(msid.clone(), mb.id).await.unwrap(),
+        Some(UnixMillis(30))
+    );
+    drop(q);
+    drop(store);
+    root.close().await.unwrap();
 }
 
 #[tokio::test]
 async fn upgrade_repairs_old_reorder_handoff_before_queue_is_used() {
-    use crate::queue::{Followup, PreparedEnqueue};
-    struct OldReorder(String, Vec<RequestId>);
-    impl Statement for OldReorder {
-        type Value = ();
-        type Output = ();
-        fn execute(self, c: &Connection) -> Result<Prepared<()>, StoreError> {
-            let body: Vec<u8> = c.query_row(
-                "SELECT b.payload FROM agent_queue_events e JOIN contents b ON b.id=e.body_content_id WHERE e.session=? AND e.revision=4",
-                [&self.0], |row| row.get(0),
-            )?;
-            let mut event: serde_json::Value = serde_json::from_slice(&body)?;
-            event["edit"]["requests"] = serde_json::to_value(&self.1)?;
-            let content = ContentBlob::json(&event)?.store(c)?;
-            c.execute(
-                "UPDATE agent_queue_events SET body_content_id=? WHERE session=? AND revision=4",
-                rusqlite::params![content, self.0],
-            )?;
-            for (position, id) in self.1.iter().enumerate() {
-                c.execute(
-                    "UPDATE agent_queue_items SET position=? WHERE session=? AND request=?",
-                    rusqlite::params![position as i64, self.0, id.0],
-                )?;
-            }
-            Ok(Prepared {
-                value: (),
-                changed: true,
-                notification: Notification::NONE,
-            })
-        }
-        fn committed(_: ()) {}
-        fn isolated_rejection(_: &StoreError) -> bool {
-            false
-        }
-    }
-    struct FixtureColumns(bool);
-    impl Statement for FixtureColumns {
-        type Value = ();
-        type Output = ();
-        fn execute(self, c: &Connection) -> Result<Prepared<()>, StoreError> {
-            if self.0 {
-                c.execute_batch("ALTER TABLE agent_queue_items ADD COLUMN enqueued_at INTEGER NOT NULL DEFAULT 0; ALTER TABLE agent_queue_items ADD COLUMN interrupted_run TEXT;")?;
-            } else {
-                c.execute_batch("ALTER TABLE agent_queue_items DROP COLUMN enqueued_at; ALTER TABLE agent_queue_items DROP COLUMN interrupted_run;")?;
-            }
-            Ok(Prepared {
-                value: (),
-                changed: true,
-                notification: Notification::NONE,
-            })
-        }
-        fn committed(_: ()) {}
-        fn isolated_rejection(_: &StoreError) -> bool {
-            false
-        }
-    }
-    let directory = tempfile::tempdir().unwrap();
-    let (root, store) = open_through(directory.path(), true, 53).await;
-    // Prepare canonical events using the current writer, then remove its v54
-    // projection columns to leave an actual v53 database before reopening.
-    store.data.write(FixtureColumns(true)).await.unwrap();
-    let (mut spec, contents) = spec();
-    spec.backend = BackendSpec::Executor {
-        selection: maka_agent_facts::executor::Selection {
-            executor: "external".into(),
-            settings: Default::default(),
-        },
-        descriptor: spec.input.clone(),
+    use crate::queue::Followup;
+
+    let dir = tempfile::tempdir().unwrap();
+    let (root, store) = open_through(dir.path(), true, 53).await;
+    // Seed canonical events with the current writer, then drop the v54 columns
+    // to leave a genuine v53 schema before reopening.
+    exec_sql(&store, |c| {
+        c.execute_batch("ALTER TABLE agent_queue_items ADD COLUMN enqueued_at INTEGER NOT NULL DEFAULT 0; ALTER TABLE agent_queue_items ADD COLUMN interrupted_run TEXT;")?;
+        Ok(())
+    }).await;
+
+    let (spec, contents) = external_spec();
+    let sid = spec.session_id.clone();
+    let orig = Admission::new(spec.clone(), UnixMillis(1), contents);
+    store.admit(orig.clone()).await.unwrap();
+    let a = enqueue_at(&store, &spec, "old-a", 10).await;
+    let b = enqueue_at(&store, &spec, "old-b", 20).await;
+    let (intr, contents) = prepare_message(&spec, "old-interrupt", None);
+    let enq = QueueEdit::Enqueue {
+        request: Box::new(intr.clone()),
+        placement: Placement::Followup,
     };
-    let original = Admission::new(spec.clone(), UnixMillis(1), contents);
-    store.admit(original.clone()).await.unwrap();
-    let a = enqueue(&store, &spec, "old-a", None).await;
-    let b = enqueue(&store, &spec, "old-b", None).await;
-    let (interrupt, contents) = prepare_message(&spec, "old-interrupt", None);
-    store
-        .data
-        .write(PreparedEnqueue {
-            session: spec.session_id.clone(),
-            contents,
-            work_fence: None,
-            followup: Some(Followup::Interrupt {
-                run: original.run(),
-                stop: FactId::new(),
-            }),
-            command: QueueCommand {
-                id: FactId::new(),
-                at: UnixMillis(2),
-                expected_revision: 2,
-                edit: QueueEdit::Enqueue {
-                    request: Box::new(interrupt.clone()),
-                    placement: Placement::Followup,
-                },
-            },
-        })
+    let f_int = Followup::Interrupt {
+        run: orig.run(),
+        stop: FactId::new(),
+    };
+    write_queue(&store, &sid, 40, Some(f_int), enq, contents)
         .await
         .unwrap();
-    let old_order = vec![b.id.clone(), interrupt.id.clone(), a.id.clone()];
-    let queue = store.queue();
-    queue
-        .execute(
-            spec.session_id.clone(),
-            QueueCommand {
-                id: FactId::new(),
-                at: UnixMillis(3),
-                expected_revision: 3,
-                edit: QueueEdit::Reorder {
-                    requests: vec![interrupt.id.clone(), b.id.clone(), a.id.clone()],
-                },
-            },
-            vec![],
-        )
+    let valid = QueueEdit::Reorder {
+        requests: vec![intr.id.clone(), b.id.clone(), a.id.clone()],
+    };
+    write_queue(&store, &sid, 50, None, valid, vec![])
         .await
         .unwrap();
-    store
-        .data
-        .write(OldReorder(spec.session_id.clone(), old_order))
-        .await
-        .unwrap();
-    // A session without reorders still needs its enqueue timestamp populated.
+
+    // Rewrite rev 4 to a historical invalid reorder that moved ordinary b ahead of interrupt.
+    let old_order = vec![b.id.clone(), intr.id.clone(), a.id.clone()];
+    let sid_copy = sid.clone();
+    exec_sql(&store, move |c| {
+        let body: Vec<u8> = c.query_row(
+            "SELECT b.payload FROM agent_queue_events e JOIN contents b ON b.id=e.body_content_id WHERE e.session=? AND e.revision=4",
+            [&sid_copy], |row| row.get(0),
+        )?;
+        let mut event: serde_json::Value = serde_json::from_slice(&body)?;
+        event["edit"]["requests"] = serde_json::to_value(&old_order)?;
+        let content = ContentBlob::json(&event)?.store(c)?;
+        c.execute("UPDATE agent_queue_events SET body_content_id=? WHERE session=? AND revision=4", rusqlite::params![content, sid_copy])?;
+        for (pos, id) in old_order.iter().enumerate() {
+            c.execute("UPDATE agent_queue_items SET position=? WHERE session=? AND request=?", rusqlite::params![pos as i64, sid_copy, id.0])?;
+        }
+        Ok(())
+    }).await;
+
+    // A session without reorders still needs its enqueue timestamp backfilled.
     let (mut plain, _) = self::spec();
     plain.session_id = "plain-upgrade".into();
-    let plain_request = enqueue(&store, &plain, "plain", None).await;
-    queue
-        .execute(
-            plain.session_id.clone(),
-            QueueCommand {
-                id: FactId::new(),
-                at: UnixMillis(9),
-                expected_revision: 1,
-                edit: QueueEdit::Retract {
-                    request: plain_request.id.clone(),
-                },
-            },
-            vec![],
-        )
+    let plain_req = enqueue_at(&store, &plain, "plain", 15).await;
+    let retract = QueueEdit::Retract {
+        request: plain_req.id.clone(),
+    };
+    write_queue(&store, &plain.session_id, 25, None, retract, vec![])
         .await
         .unwrap();
-    store.data.write(FixtureColumns(false)).await.unwrap();
-    drop(queue);
+
+    exec_sql(&store, |c| {
+        c.execute_batch("ALTER TABLE agent_queue_items DROP COLUMN enqueued_at; ALTER TABLE agent_queue_items DROP COLUMN interrupted_run;")?;
+        Ok(())
+    }).await;
     drop(store);
     root.close().await.unwrap();
 
-    let (root, store) = open(directory.path(), false).await;
-    let queue = store.queue();
+    let (root, store) = open(dir.path(), false).await;
+    let q = store.queue();
     assert_eq!(
-        queue
-            .entry_enqueued_at(plain.session_id.clone(), plain_request.id)
+        q.entry_enqueued_at(plain.session_id, plain_req.id)
             .await
             .unwrap(),
-        Some(UnixMillis(1))
+        Some(UnixMillis(15))
     );
+    for (id, at) in [(&a.id, 10), (&b.id, 20), (&intr.id, 40)] {
+        assert_eq!(
+            q.entry_enqueued_at(sid.clone(), id.clone()).await.unwrap(),
+            Some(UnixMillis(at))
+        );
+    }
+    let before = q.read(sid.clone()).await.unwrap();
+    let ids: Vec<_> = before.entries.iter().map(|e| &e.request.id).collect();
+    assert_eq!(ids, vec![&intr.id, &b.id, &a.id]);
+    let view = store.frontier(orig.run()).await.unwrap();
     assert_eq!(
-        queue
-            .entry_enqueued_at(spec.session_id.clone(), interrupt.id.clone())
+        q.interrupt_handoff(&view)
             .await
-            .unwrap(),
-        Some(UnixMillis(2))
+            .unwrap()
+            .unwrap()
+            .interrupted(),
+        orig.run()
     );
-    let before = queue.read(spec.session_id.clone()).await.unwrap();
-    assert_eq!(
-        before
-            .entries
-            .iter()
-            .map(|e| &e.request.id)
-            .collect::<Vec<_>>(),
-        vec![&interrupt.id, &b.id, &a.id]
-    );
-    let handoff = queue
-        .interrupt_handoff(&store.frontier(original.run()).await.unwrap())
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(handoff.interrupted(), original.run());
-    queue.rebuild(spec.session_id.clone()).await.unwrap();
-    assert_eq!(queue.read(spec.session_id.clone()).await.unwrap(), before);
-    assert_eq!(
-        queue
-            .entry_enqueued_at(spec.session_id.clone(), interrupt.id.clone())
-            .await
-            .unwrap(),
-        Some(UnixMillis(2))
-    );
-    drop(queue);
+    q.rebuild(sid.clone()).await.unwrap();
+    assert_eq!(q.read(sid).await.unwrap(), before);
+    drop(q);
     drop(store);
     root.close().await.unwrap();
 }
