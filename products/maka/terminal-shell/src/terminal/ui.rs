@@ -454,6 +454,9 @@ mod tests {
             pub fn ui_scale_factor(&self) -> f32 {
                 1.0
             }
+            pub fn dictation_storage_prefix(&self) -> String {
+                format!("dictation.{}.", self.scenario)
+            }
             #[getter]
             pub fn scenario(&self) -> String {
                 self.scenario.clone()

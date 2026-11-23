@@ -138,6 +138,19 @@ fn run(
         .get::<maka_workbench::reload::UiReload>()
         .map(|reload| reload.take_requests());
     let reload_config = config.clone();
+    #[cfg(target_os = "macos")]
+    {
+        use nsh_platform_macos::objc2::MainThreadMarker;
+        use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
+
+        // The terminal surface is offscreen, even inside the foreground-capable Maka.app.
+        let main = MainThreadMarker::new().ok_or("terminal surface requires the main thread")?;
+        if !NSApplication::sharedApplication(main)
+            .setActivationPolicy(NSApplicationActivationPolicy::Prohibited)
+        {
+            return Err("cannot set terminal activation policy".into());
+        }
+    }
     let platform = TerminalSurface::new(
         config,
         viewport,

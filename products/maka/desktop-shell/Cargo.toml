@@ -48,7 +48,10 @@ maka-wsl-bridge.workspace = true
 tokio = { workspace = true, features = ["process"] }
 nsh-platform-windows.workspace = true
 [target.'cfg(target_os = "macos")'.dependencies]
-nsh-platform-macos.workspace = true
+clap.workspace = true
+maka-terminal-shell.workspace = true
+maka-ui-build.workspace = true
+nsh-platform-macos = { workspace = true, features = ["terminal"] }
 block2 = { version = "0.6.2", default-features = false, features = ["std"] }
 dispatch2 = { version = "0.3.1", default-features = false, features = ["std", "objc2"] }
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "objc2-core-foundation", "objc2-core-graphics", "NSApplication", "NSAttributedString", "block2", "NSBezierPath", "NSBitmapImageRep", "NSColor", "NSColorSpace", "NSActionCell", "NSCell", "NSControl", "NSCursor", "NSDraggingItem", "NSDraggingSession", "NSEvent", "NSFont", "NSGraphics", "NSGraphicsContext", "NSImage", "NSImageCell", "NSImageRep", "NSImageView", "NSPanel", "NSPasteboard", "NSOpenPanel", "NSResponder", "NSSavePanel", "NSScreen", "NSStringDrawing", "NSText", "NSTextField", "NSTrackingArea", "NSView", "NSWindow", "NSWorkspace"] }
