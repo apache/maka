@@ -46,6 +46,7 @@ import type {
 } from '../../../../packages/plugin-sdk/src/index.js';
 import { createBrowsing } from './browsing';
 import { HostProvider, searchSessions, type Host, type Output } from './host';
+import { InlineCallout, RegionEmptyError } from './Feedback';
 import { Icon } from './Icon';
 import { SidebarUpdateButton } from './SidebarUpdateButton';
 import { tr, currentLocale } from './locale';
@@ -601,6 +602,15 @@ export function createRoomWorkspace(options: {
           </Button>
         </If>
         <Scroll style={{ flex: 1, minHeight: 0 }} contentStyle={{ gap: 2, paddingTop: 2 }}>
+          <If when={Boolean(browser.error()) && filteredRooms().length > 0}>
+            <InlineCallout
+              surface="chrome"
+              tone="danger"
+              message={browser.error()!}
+              action={{ label: tr('Retry'), onPress: () => void browser.refresh() }}
+              style={{ marginBottom: 4 }}
+            />
+          </If>
           <Each of={filteredRooms()} key={(session) => session.id}>
             {(session) => (
               <ContextMenu
@@ -667,8 +677,14 @@ export function createRoomWorkspace(options: {
               <Text style={{ ...captionTextStyle, color: C.secondary }}>{tr('Show more')}</Text>
             </Button>
           </If>
-          <If when={browser.error()}>
-            <Text style={{ ...captionTextStyle, color: C.warning }}>{browser.error()}</Text>
+          <If when={Boolean(browser.error()) && filteredRooms().length === 0 && !browser.loading()}>
+            <RegionEmptyError
+              compact
+              surface="chrome"
+              tone="danger"
+              title={browser.error()!}
+              retry={() => void browser.refresh()}
+            />
           </If>
           <If when={roomFilter() === 'all'}>
             <Button

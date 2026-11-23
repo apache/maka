@@ -17,15 +17,10 @@
  * under the License.
  */
 
-import { ErrorBoundary, Text, View } from 'nsh';
-import { Button } from 'nsh/base';
+import { ErrorBoundary, View } from 'nsh';
+import { RegionEmptyError } from '../Feedback';
 import { LoadingState } from '../Loading';
-import { C } from '../ui';
-import { tr } from '../locale';
 import { errorText, renderText } from '../text';
-const bodyTextStyle = { fontSize: 14, lineHeight: 20 };
-const captionTextStyle = { fontSize: 13, lineHeight: 18 };
-const controlStyle = { padding: 8, borderRadius: 6 };
 import type { Contribution, Plugins } from './registry';
 import type {
   UiContributionRef,
@@ -86,18 +81,11 @@ type ViewProps = {
 
 function PluginError(props: { reason: unknown; retry(): void }) {
   return (
-    <View style={{ gap: 8, padding: 8 }}>
-      <Text style={[{ ...bodyTextStyle, color: C.danger }, { userSelect: 'text' }]}>
-        {renderText(errorText(props.reason, 'Could not load this panel.'))}
-      </Text>
-      <Button
-        accessibilityLabel={tr('Retry')}
-        onPress={props.retry}
-        style={{ ...controlStyle, alignSelf: 'flex-start' }}
-      >
-        <Text style={{ ...captionTextStyle, color: C.accent }}>{tr('Retry')}</Text>
-      </Button>
-    </View>
+    <RegionEmptyError
+      tone="danger"
+      title={renderText(errorText(props.reason, 'Could not load this panel.'))}
+      retry={props.retry}
+    />
   );
 }
 
