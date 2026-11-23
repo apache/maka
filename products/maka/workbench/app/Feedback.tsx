@@ -195,10 +195,7 @@ export function Toaster(props: {
     if (pruned) heights.set(nextHeights);
   });
 
-  const displayItems = () => {
-    const all = items();
-    return platform.idiom === 'terminal' ? all.filter((item) => !item.persistent) : all;
-  };
+  const displayItems = () => items();
   const visibleItems = () => displayItems().slice(0, MAX_EXPANDED_TOASTS);
   const expanded = () => hovered() || detailsOpenId() !== null;
   const hiddenCount = () => Math.max(0, displayItems().length - MAX_COLLAPSED_TOASTS);

@@ -261,6 +261,8 @@ export type ConversationWindow = {
 
 // A pane opened beside the main one shares its catalog read and leaves the
 // window title, notifications, menu and app-wide shortcuts to the main pane.
+let nextConversationToastOwner = 1;
+
 export function createConversationUi(
   context: UiContext<UiHost, JSX.Element>,
   host: Host,
@@ -2011,14 +2013,15 @@ export function createConversationUi(
   const selectBrowsed = async (id: string, origin: string | null) => {
     const current = overlay();
     const instance = current?.kind === 'sessions' ? current.instance : null;
-    await switchSession(id, {
+    const opened = await switchSession(id, {
       sessionId: origin,
       instance: current?.instance ?? null,
     });
-    if (!alive || selected() !== id) return;
+    if (!opened || !alive || selected() !== id) return false;
     if (instance !== null) closeOverlay(instance);
     browserFocus.set(false);
     handle()?.focus();
+    return true;
   };
   const openRecalled = async (instance: number, origin: string | null, target: RecallTarget) => {
     if (!alive || overlay()?.instance !== instance || selected() !== origin) return false;
@@ -2048,7 +2051,9 @@ export function createConversationUi(
     },
     close: closeSidebar,
     collapse: (sessionId) => toggleSidebar({ sessionId, expanded: true }),
-    selectSession: selectBrowsed,
+    selectSession: async (id, origin) => {
+      await selectBrowsed(id, origin);
+    },
     changeSession: async (action, origin) => {
       await changeBrowsedSession(action, origin);
     },
@@ -2394,6 +2399,12 @@ export function createConversationUi(
       bind(input.shell);
       input.attach(sessionHandle);
       // Route transient action feedback, fork banner, and recovered-fork CTA to Mode A Toasts.
+      // Scope IDs per mounted pane so closing a split pane never dismisses the main pane's toast.
+      const toastOwner = nextConversationToastOwner++;
+      const statusToastId = `conversation.${toastOwner}.status`;
+      const forkToastId = `conversation.${toastOwner}.fork-notice`;
+      const recoveredToastId = `conversation.${toastOwner}.recovered-fork`;
+
       let lastStatus = '';
       effect(() => {
         const message = !connectionLost() ? status() : '';
@@ -2403,7 +2414,7 @@ export function createConversationUi(
         }
         if (message === lastStatus) return;
         lastStatus = message;
-        toast.show({ id: 'conversation.status', tone: 'info', message });
+        toast.show({ id: statusToastId, tone: 'info', message });
       });
 
       let shownForkId: string | null = null;
@@ -2413,14 +2424,14 @@ export function createConversationUi(
         if (!currentFork || currentFork.id !== currentId || connectionLost()) {
           if (shownForkId !== null) {
             shownForkId = null;
-            toast.dismiss('conversation.fork-notice');
+            toast.dismiss(forkToastId);
           }
           return;
         }
         if (shownForkId === currentFork.id) return;
         shownForkId = currentFork.id;
         toast.show({
-          id: 'conversation.fork-notice',
+          id: forkToastId,
           tone: 'info',
           message: tr('This is a fork of {title}. The original conversation is unchanged.', {
             title: currentFork.title,
@@ -2429,9 +2440,13 @@ export function createConversationUi(
             {
               label: tr('Back to original'),
               primary: true,
+              dismissOnPress: false,
               onPress: () => {
-                forkNotice.set(null);
-                void openBrowsed({ id: currentFork.source, origin: selected() });
+                void openBrowsed({ id: currentFork.source, origin: selected() }).then((opened) => {
+                  if (opened && alive && forkNotice()?.id === currentFork.id) {
+                    forkNotice.set(null);
+                  }
+                });
               },
             },
           ],
@@ -2444,14 +2459,14 @@ export function createConversationUi(
         if (!recovered) {
           if (shownRecoveredId !== null) {
             shownRecoveredId = null;
-            toast.dismiss('conversation.recovered-fork');
+            toast.dismiss(recoveredToastId);
           }
           return;
         }
         if (shownRecoveredId === recovered.id) return;
         shownRecoveredId = recovered.id;
         toast.show({
-          id: 'conversation.recovered-fork',
+          id: recoveredToastId,
           tone: 'info',
           persistent: true,
           dismissible: true,
@@ -2460,9 +2475,13 @@ export function createConversationUi(
             {
               label: tr('Open'),
               primary: true,
+              dismissOnPress: false,
               onPress: () => {
-                recoveredFork.set(null);
-                void openBrowsed({ id: recovered.id, origin: selected() });
+                void openBrowsed({ id: recovered.id, origin: selected() }).then((opened) => {
+                  if (opened && alive && recoveredFork()?.id === recovered.id) {
+                    recoveredFork.set(null);
+                  }
+                });
               },
             },
           ],
@@ -2470,9 +2489,9 @@ export function createConversationUi(
       });
 
       cleanup(() => {
-        if (lastStatus) toast.dismiss('conversation.status');
-        if (shownForkId !== null) toast.dismiss('conversation.fork-notice');
-        if (shownRecoveredId !== null) toast.dismiss('conversation.recovered-fork');
+        if (lastStatus) toast.dismiss(statusToastId);
+        if (shownForkId !== null) toast.dismiss(forkToastId);
+        if (shownRecoveredId !== null) toast.dismiss(recoveredToastId);
       });
 
       const shelfStatus = (): ComposerShelfStatus | null => {

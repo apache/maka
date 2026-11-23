@@ -79,6 +79,8 @@ import type { ComposerEditor } from '../../../../products/maka/workbench/app/Com
 import { MakaMark } from '../../../../products/maka/workbench/app/QuickBar';
 import logo from '../../../../products/maka/workbench/app/assets/maka.png';
 
+let nextComposerToastOwner = 1;
+
 export function Composer(props: ComposerViewInput<JSX.Element>) {
   const completion = createComposerCompletion({
     session: props.session,
@@ -436,6 +438,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
       </If>
     </View>
   );
+  const noticeToastId = `composer.${nextComposerToastOwner++}.notice`;
   let lastNoticeKey = '';
   effect(() => {
     const session = props.session();
@@ -447,10 +450,10 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
     }
     if (key === lastNoticeKey) return;
     lastNoticeKey = key;
-    toast.show({ id: 'composer.notice', tone: 'info', message });
+    toast.show({ id: noticeToastId, tone: 'info', message });
   });
   cleanup(() => {
-    if (lastNoticeKey) toast.dismiss('composer.notice');
+    if (lastNoticeKey) toast.dismiss(noticeToastId);
   });
 
   const shelfStatus = (): ComposerShelfStatus | null => {

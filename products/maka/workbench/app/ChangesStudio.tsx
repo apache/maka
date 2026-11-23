@@ -270,9 +270,10 @@ export function ChangesStudio(props: {
   const selectedCommitOid = signal(initialCache?.selectedCommitOid ?? '');
   const branchSearch = signal('');
 
-  const workingStatus = signal<GitStatus | null>(null);
-  const workingDiff = signal<GitWorkspaceDiff | null>(null);
-  const compareResult = signal<GitCompare | null>(null);
+  type ScopedGitData<T> = { scope: string; data: T };
+  const workingStatus = signal<ScopedGitData<GitStatus> | null>(null);
+  const workingDiff = signal<ScopedGitData<GitWorkspaceDiff> | null>(null);
+  const compareResult = signal<ScopedGitData<GitCompare> | null>(null);
   const loading = signal(!isPrMode());
   const loadError = signal('');
 
@@ -306,6 +307,9 @@ export function ChangesStudio(props: {
     if (tab === 'commit') return `commit:${wt}:${selectedCommitOid()}`;
     return `working:${wt}`;
   });
+  const dataScopeKey = computed(() => `${props.sessionId}:${scopeKey()}`);
+  const scopedData = <T,>(entry: ScopedGitData<T> | null): T | null =>
+    entry !== null && entry.scope === dataScopeKey() ? entry.data : null;
 
   const studio = () => props.reviewStore.studioViewState(props.sessionId, scopeKey());
   const patchStudio = (patch: Parameters<ReviewStore['patchStudioViewState']>[2]) =>
@@ -348,7 +352,9 @@ export function ChangesStudio(props: {
         selectedCommitOid: oid,
       });
 
+      const wtKey = wt ?? 'default';
       if (tab === 'working') {
+        const fetchedScope = `${sid}:working:${wtKey}`;
         const [st, diff] = await Promise.all([
           host.query('agent', 'gitStatus', {
             sessionId: sid,
@@ -360,10 +366,11 @@ export function ChangesStudio(props: {
           }),
         ]);
         if (!alive || seq !== fetchSeq) return;
-        workingStatus.set(st);
-        workingDiff.set(diff);
+        workingStatus.set(st ? { scope: fetchedScope, data: st } : null);
+        workingDiff.set(diff ? { scope: fetchedScope, data: diff } : null);
       } else if (tab === 'branch') {
         if (base) {
+          const fetchedScope = `${sid}:branch:${wtKey}:${base}`;
           const cmp = await host.query('agent', 'gitCompare', {
             sessionId: sid,
             ...(wt ? { worktreePath: wt } : {}),
@@ -371,12 +378,13 @@ export function ChangesStudio(props: {
             includePatch: true,
           });
           if (!alive || seq !== fetchSeq) return;
-          compareResult.set(cmp);
+          compareResult.set(cmp ? { scope: fetchedScope, data: cmp } : null);
         } else {
           compareResult.set(null);
         }
       } else if (tab === 'commit') {
         if (oid) {
+          const fetchedScope = `${sid}:commit:${wtKey}:${oid}`;
           const cmp = await host.query('agent', 'gitCompare', {
             sessionId: sid,
             ...(wt ? { worktreePath: wt } : {}),
@@ -384,7 +392,7 @@ export function ChangesStudio(props: {
             includePatch: true,
           });
           if (!alive || seq !== fetchSeq) return;
-          compareResult.set(cmp);
+          compareResult.set(cmp ? { scope: fetchedScope, data: cmp } : null);
         } else {
           compareResult.set(null);
         }
@@ -412,8 +420,8 @@ export function ChangesStudio(props: {
   const rawCombinedPatch = computed(() => {
     if (props.prDetail) return props.prDetail.patch?.patch ?? '';
     const tab = sourceTab();
-    if (tab === 'working') return workingDiff()?.patch ?? '';
-    return compareResult()?.patch?.patch ?? '';
+    if (tab === 'working') return scopedData(workingDiff())?.patch ?? '';
+    return scopedData(compareResult())?.patch?.patch ?? '';
   });
 
   const patchSections = computed(() => parseMultiFilePatch(rawCombinedPatch()));
@@ -470,7 +478,7 @@ export function ChangesStudio(props: {
     const tab = sourceTab();
     const wt = activeWorktree() ?? undefined;
     if (tab === 'working') {
-      const entries = workingStatus()?.entries ?? [];
+      const entries = scopedData(workingStatus())?.entries ?? [];
       const seen = new Set<string>();
       const out: FileRowItem[] = [];
       for (const entry of entries) {
@@ -510,7 +518,7 @@ export function ChangesStudio(props: {
       return out;
     }
 
-    const cmp = compareResult();
+    const cmp = scopedData(compareResult());
     if (!cmp) return [];
     const spec: GitCompareSpec =
       tab === 'branch'
