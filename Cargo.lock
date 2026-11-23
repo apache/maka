@@ -8493,6 +8493,8 @@ dependencies = [
  "maka-js-runtime",
  "maka-mock-ai",
  "maka-packages",
+ "maka-peer",
+ "maka-peer-mesh",
  "maka-plugin-core",
  "maka-process",
  "maka-product-native",
@@ -9177,6 +9179,50 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "maka-peer"
+version = "0.3.0"
+dependencies = [
+ "aws-lc-rs",
+ "base64 0.23.1",
+ "hex",
+ "maka-event-log",
+ "maka-host-runtime",
+ "maka-packages",
+ "rustls",
+ "rustls-pki-types",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-rustls",
+ "tokio-util",
+ "uuid",
+]
+
+[[package]]
+name = "maka-peer-mesh"
+version = "0.3.0"
+dependencies = [
+ "maka-event-log",
+ "maka-host-runtime",
+ "maka-packages",
+ "maka-peer",
+ "quinn",
+ "rustls",
+ "rustls-pki-types",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]

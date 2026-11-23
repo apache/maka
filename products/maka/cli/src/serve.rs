@@ -19,15 +19,19 @@
 
 use maka_host_runtime::{
     HostError,
-    application::host::{Host, LifecycleMode, Options, websocket::WebSocketListener},
+    application::host::{Channel, Host, LifecycleMode, Options, websocket::WebSocketListener},
 };
+use maka_peer::NodeIdentity;
+use maka_peer_mesh::{IncomingPeerStream, MeshTransportNode};
 use serde_json::json;
-use std::{path::Path, sync::Arc};
+use std::{net::SocketAddr, path::Path, sync::Arc};
+use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 pub(super) async fn run(
     path: &Path,
-    websocket: Option<std::net::SocketAddr>,
+    websocket: Option<SocketAddr>,
+    peer_listen: Option<SocketAddr>,
     expected_root: Option<&str>,
 ) -> Result<(), maka_host_runtime::HostError> {
     use maka_event_log::root::{ROOT_MARKER, RootNamespaces, RootOwner};
@@ -71,12 +75,32 @@ pub(super) async fn run(
     if expected_root.is_some() && deployment.is_none() {
         return Err("service State Root must have a supervised deployment".into());
     }
-    let websocket = match deployment
+    let mut websocket = match deployment
         .as_ref()
         .map(|deployment| deployment.websocket)
         .or(websocket)
     {
         Some(address) => Some(WebSocketListener::bind(address, Vec::new()).await?),
+        None => None,
+    };
+    let peer_ingress = match peer_listen {
+        Some(address) => {
+            let identity = NodeIdentity::load_or_create_async(crate::peer::identity_file_path(
+                owner.canonical_path(),
+            ))
+            .await
+            .map_err(|err| err.to_string())?;
+            let (peer_node, peer_rx) =
+                MeshTransportNode::bind(address, identity, None).map_err(|err| err.to_string())?;
+            let (channel_tx, channel_rx) = mpsc::channel::<Channel>(256);
+            match &mut websocket {
+                Some(listener) => listener.attach_streams(channel_rx),
+                None => {
+                    websocket = Some(WebSocketListener::from_streams(channel_rx, Vec::new())?);
+                }
+            }
+            Some((peer_node, peer_rx, channel_tx))
+        }
         None => None,
     };
     let host = crate::application::open_host(
@@ -97,30 +121,59 @@ pub(super) async fn run(
         None,
     )
     .await?;
-    serve_product(host, websocket).await
+    serve_product(host, websocket, peer_ingress).await
 }
 async fn serve_product(
     mut product: crate::application::ProductHost,
     websocket: Option<WebSocketListener>,
+    peer_ingress: Option<(
+        MeshTransportNode,
+        mpsc::Receiver<IncomingPeerStream>,
+        mpsc::Sender<Channel>,
+    )>,
 ) -> Result<(), HostError> {
     let result = async {
     let host = &product.host;
     let endpoint = super::endpoint::LocalEndpoint::bind()?;
     let cancellation = CancellationToken::new();
     let _signals = super::signals::watch(cancellation.clone())?;
-    let registration = host.publish_registration(
-        &endpoint.path,
-        websocket
-            .as_ref()
-            .map(|listener| listener.local_addr())
-            .transpose()?,
-    )?;
+    let tcp_ws_addr = websocket
+        .as_ref()
+        .and_then(|listener| listener.local_addr().ok());
+    let registration = host.publish_registration(&endpoint.path, tcp_ws_addr)?;
     let mut ready = json!({"kind":"ready","rootId":host.root_id(),"hostEpoch":host.epoch(),"socketPath":endpoint.path});
-    if let Some(listener) = &websocket {
-        ready["websocketUrl"] = format!("ws://{}/runtime-host", listener.local_addr()?).into();
+    if let Some(addr) = tcp_ws_addr {
+        ready["websocketUrl"] = format!("ws://{addr}/runtime-host").into();
     }
+    let peer_guard = if let Some((peer_node, mut peer_rx, channel_tx)) = peer_ingress {
+        ready["peerId"] = peer_node.peer_id().as_str().into();
+        ready["peerListen"] = peer_node.local_addr().to_string().into();
+        let forward_cancel = cancellation.clone();
+        let forward_task = tokio::spawn(async move {
+            loop {
+                let incoming = tokio::select! {
+                    biased;
+                    () = forward_cancel.cancelled() => break,
+                    next = peer_rx.recv() => match next {
+                        Some(incoming) => incoming,
+                        None => break,
+                    },
+                };
+                if channel_tx.send(Box::new(incoming.stream)).await.is_err() {
+                    break;
+                }
+            }
+        });
+        Some((peer_node, forward_task))
+    } else {
+        None
+    };
     println!("{ready}");
     let result = listen(endpoint, websocket, host.clone(), cancellation).await;
+    if let Some((peer_node, forward_task)) = peer_guard {
+        peer_node.shutdown();
+        let _ = forward_task.await;
+    }
     result.and(registration.remove().map_err(Into::into))
     }.await;
     let cleanup = product.shutdown().await;
