@@ -1064,10 +1064,20 @@ mod tests {
             "the area is reported before the first show"
         );
         assert!(!get(surface, id).unwrap().opened.get(), "not shown yet");
+        assert_eq!(
+            crate::file_requests::dialog_owner(surface),
+            hwnd,
+            "modal file/folder dialogs must target the visible app window rather than the hidden host"
+        );
         // SAFETY: the test's own window.
         unsafe {
             let _ = DestroyWindow(hwnd);
         }
         surface.windows.borrow_mut().clear();
+        assert_eq!(
+            crate::file_requests::dialog_owner(surface),
+            surface.hwnd(),
+            "embedded hosts without app windows fall back to the host HWND"
+        );
     }
 }

@@ -304,7 +304,12 @@ async fn follow(
         refuse_reloads(reloading, &tokio::runtime::Handle::current());
         configuration = shell.attach(config);
         let config = configuration.clone();
-        with_running_view(move |view| view.load_with_config(config));
+        with_running_view(move |view| {
+            if let Some(window) = view.view().window() {
+                window.orderOut(None);
+            }
+            view.load_with_config(config);
+        });
     }
     if let Some(bindings) = bindings {
         if !*updating.borrow() {

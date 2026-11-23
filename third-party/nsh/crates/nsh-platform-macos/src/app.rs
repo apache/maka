@@ -674,6 +674,7 @@ struct Running {
     window: Retained<NSWindow>,
     view: Rc<AppView>,
     keep_alive_on_close: bool,
+    active: Cell<bool>,
     on_active: Box<dyn Fn(bool)>,
     quit_options: QuitRequestOptions,
     quit_requests: QuitRequests,
@@ -988,12 +989,12 @@ define_class!(
     unsafe impl NSWindowDelegate for Delegate {
         #[unsafe(method(windowDidBecomeKey:))]
         fn window_did_become_key(&self, _notification: &NSNotification) {
-            window_active(true);
+            sync_running_active();
         }
 
         #[unsafe(method(windowDidResignKey:))]
         fn window_did_resign_key(&self, _notification: &NSNotification) {
-            window_active(false);
+            dispatch2::DispatchQueue::main().exec_async(sync_running_active);
         }
 
         // The user's close press: the app's `closeOnPress` says whether it
@@ -1071,16 +1072,34 @@ fn handle_quit_events(delegate: Option<&Delegate>) {
     }
 }
 
-/// Tells [`run_app_with_config`]'s caller whether the window has the keyboard.
-fn window_active(active: bool) {
+/// Tells [`run_app_with_config`]'s caller whether any window of its surface has the keyboard.
+pub(crate) fn sync_window_active(surface_key: u64) {
     RUNNING.with(|running| {
-        if let Some(running) = &*running.borrow() {
-            if !active {
-                crate::text_input::disarm(&running.view.surface);
-            }
-            (running.on_active)(active);
+        if let Some(running) = &*running.borrow()
+            && running.view.surface().key() == surface_key
+        {
+            update_running_active(running);
         }
     });
+}
+
+fn sync_running_active() {
+    RUNNING.with(|running| {
+        if let Some(running) = &*running.borrow() {
+            update_running_active(running);
+        }
+    });
+}
+
+fn update_running_active(running: &Running) {
+    let surface = running.view.surface();
+    let active = crate::window::is_key(&running.window) || crate::window::has_key_window(surface);
+    if !active {
+        crate::text_input::disarm(surface);
+    }
+    if running.active.replace(active) != active {
+        (running.on_active)(active);
+    }
 }
 
 /// Runs `f` with the standalone runner's view on AppKit's main thread. May be
@@ -1331,6 +1350,9 @@ fn stop_event_loop(app: &NSApplication) {
 /// Stops the standalone app's engine (its window closes).
 fn stop_running() {
     if let Some(running) = RUNNING.with(|r| r.borrow_mut().take()) {
+        if running.active.replace(false) {
+            (running.on_active)(false);
+        }
         if running.quit_requests.pending == Some(true) {
             NSApplication::sharedApplication(running.view.surface().mtm)
                 .replyToApplicationShouldTerminate(false);
@@ -1535,13 +1557,15 @@ fn run_window(
     if shown {
         show_launched(&window, view.surface(), options.background);
     }
-    on_active(window.isKeyWindow());
+    let initial_active = window.isKeyWindow();
+    on_active(initial_active);
     let view_surface = view.surface().clone();
     RUNNING.with(|r| {
         *r.borrow_mut() = Some(Running {
             window,
             view,
             keep_alive_on_close: options.keep_alive_on_close,
+            active: Cell::new(initial_active),
             on_active: Box::new(on_active),
             quit_options: QuitRequestOptions::default(),
             quit_requests: QuitRequests::default(),

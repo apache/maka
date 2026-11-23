@@ -91,6 +91,7 @@ fn WslReconnectView() -> impl IntoElement {
     let mut attrs = WindowAttributes::default();
     attrs.title = Some(TITLE.into());
     attrs.title_bar = Some(Default::default());
+    attrs.min_size = Some(Some(size(px(MIN_SIZE.0), px(MIN_SIZE.1))));
     attrs.close_on_press = Some(true);
     attrs.close_on_escape = Some(false);
     attrs.close_on_blur = Some(false);

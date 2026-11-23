@@ -1935,6 +1935,14 @@ pub(crate) fn app_key_window(mtm: MainThreadMarker) -> Option<Retained<NSWindow>
 
 /// Whether `window` has the keyboard (`WindowState.focused`): it is the
 /// key window, or the one that would be in a background app.
+/// Whether any app window owned by `surface` currently holds the keyboard.
+pub(crate) fn has_key_window(surface: &Surface) -> bool {
+    surface
+        .windows
+        .try_borrow()
+        .is_ok_and(|ws| ws.values().any(|w| is_key(&w.window)))
+}
+
 pub(crate) fn is_key(window: &NSWindow) -> bool {
     window.isKeyWindow()
         || (in_background(MainThreadMarker::from(window))
@@ -1965,6 +1973,7 @@ pub(crate) fn became_key(surface: &Surface, window: &NSWindow) {
     if let Some(id) = id_of(surface, window) {
         report(surface, id);
     }
+    crate::app::sync_window_active(surface.key());
 }
 
 /// `window` hid, minimized or closed: in a background app, when it was the
@@ -1977,7 +1986,7 @@ fn lost_key(surface: &Surface, window: &NSWindow) {
     BACKGROUND_KEY.with(|k| k.borrow_mut().take());
     match surface.root.ns().window() {
         Some(main) if main.isVisible() && !main.isMiniaturized() => became_key(surface, &main),
-        _ => {}
+        _ => crate::app::sync_window_active(surface.key()),
     }
 }
 
@@ -2470,6 +2479,12 @@ define_class!(
             Bool::YES
         }
 
+        #[unsafe(method(windowDidBecomeKey:))]
+        fn window_did_become_key(&self, _notification: &objc2_foundation::NSNotification) {
+            let (key, _) = *self.ivars();
+            crate::app::sync_window_active(key);
+        }
+
         #[unsafe(method(windowDidResignKey:))]
         fn window_did_resign_key(&self, _notification: &objc2_foundation::NSNotification) {
             let (key, id) = *self.ivars();
@@ -2478,6 +2493,7 @@ define_class!(
                 if let Some(surface) = Surface::with_key(key) {
                     resigned_key(&surface, id);
                 }
+                crate::app::sync_window_active(key);
             });
         }
     }

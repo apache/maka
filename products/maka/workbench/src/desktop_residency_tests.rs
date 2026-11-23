@@ -70,6 +70,15 @@ impl EmptyStream {
 }
 
 fn start(os: Os, idiom: Idiom, bootstrap: bool) -> (Headless, Arc<AtomicUsize>) {
+    start_with_data_dir(os, idiom, bootstrap, None)
+}
+
+fn start_with_data_dir(
+    os: Os,
+    idiom: Idiom,
+    bootstrap: bool,
+    data_dir: Option<std::path::PathBuf>,
+) -> (Headless, Arc<AtomicUsize>) {
     let mut registry = crate::bindings::ui_registry();
     registry.value("host", || Instance::new(EmptyHost));
     let sets = vec![nsh_base::registry(), registry];
@@ -108,6 +117,7 @@ fn start(os: Os, idiom: Idiom, bootstrap: bool) -> (Headless, Arc<AtomicUsize>) 
             ..Environment::default()
         },
         ui_sets: sets,
+        data_dir,
         ..EngineConfig::new(bundle)
     };
     let exits = Arc::new(AtomicUsize::new(0));
@@ -241,6 +251,70 @@ fn desktop_residency_is_owned_by_the_real_bootstrap_without_a_root_ui() {
     let quit = actions(&tray(&app).unwrap().menu)[1].id;
     select(&mut app, quit);
     assert_eq!(exits.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn bootstrap_main_window_declares_min_size_and_restores_saved_bounds() {
+    use nsh_core::{
+        desktop::{WindowEvent, WindowMode, WindowPlacement, WindowState},
+        geometry::{Bounds, Point},
+    };
+    let dir = std::env::temp_dir().join(format!(
+        "maka-bootstrap-bounds-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let saved = WindowPlacement::new(
+        WindowMode::Normal,
+        Bounds::new(
+            Point::new(px(140.0), px(95.0)),
+            Size::new(px(980.0), px(710.0)),
+        ),
+    );
+    {
+        let (mut app, _) = start_with_data_dir(Os::MacOs, Idiom::Desktop, true, Some(dir.clone()));
+        let (main_node, open) = app
+            .screen()
+            .commands()
+            .iter()
+            .find_map(|(id, c)| match c {
+                Command::Desktop(c) => match c.as_ref() {
+                    DesktopCommand::OpenWindow(open) if open.options.id == "main" => {
+                        Some((*id, open.clone()))
+                    }
+                    _ => None,
+                },
+                _ => None,
+            })
+            .expect("Bootstrap must declare <Window id=\"main\">");
+        assert_eq!(
+            open.options.attributes.min_size,
+            Some(Some(Size::new(px(640.0), px(480.0))))
+        );
+        assert!(open.options.restore_bounds);
+        assert_eq!(open.placement, None);
+        let state = WindowState::new(saved.bounds, saved);
+        app.engine().control().dispatch_event(
+            main_node,
+            EventKind::Window,
+            EventPayload::Window(Box::new(WindowEvent::State(Box::new(state)))),
+        );
+        assert!(app.settle());
+    }
+    let (app, _) = start_with_data_dir(Os::MacOs, Idiom::Desktop, true, Some(dir.clone()));
+    let restored = app.screen().commands().iter().find_map(|(_, c)| match c {
+        Command::Desktop(c) => match c.as_ref() {
+            DesktopCommand::OpenWindow(open) if open.options.id == "main" => open.placement,
+            _ => None,
+        },
+        _ => None,
+    });
+    assert_eq!(restored, Some(saved));
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]

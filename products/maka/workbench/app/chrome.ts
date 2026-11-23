@@ -27,6 +27,8 @@ import { tr } from './locale';
 export const ownTitleBar = isAvailable && platform.desktop && platform.idiom !== 'terminal';
 /** The headers' height, which the system's window controls are centered in. */
 export const TITLE_BAR_HEIGHT = 48;
+/** Minimum content size matching desktop-shell's `MIN_SIZE` (narrowest layout the sidebar folds for). */
+export const WINDOW_MIN_SIZE = { width: 640, height: 480 } as const;
 /** How far the desktop's content panel sits from the window's top, right and bottom edges. */
 export const PANEL_INSET = 8;
 
