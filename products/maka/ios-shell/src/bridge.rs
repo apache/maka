@@ -23,6 +23,8 @@
 //! remote credentials, PairingTicketV1 decoding + 6-digit SAS verification,
 //! and the active remote Maka Host WebSocket connection.
 
+use maka_peer::{NodeIdentity, PeerId};
+use maka_peer_mesh::MeshTransportDialer;
 use maka_remote_client::{
     HostViewFilter, OpenStream, PAIRING_URI_PREFIX, PairingTicketV1, RemoteHostClient,
     RemoteHostConnection, SavedHostProfile, SavedHostStore, tcp_endpoint_opener,
@@ -34,7 +36,8 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, VecDeque},
     fs,
-    io::Write,
+    io::{self, Write},
+    net::{Ipv4Addr, Ipv6Addr, SocketAddr},
     path::{Path, PathBuf},
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
@@ -65,13 +68,56 @@ pub const ALLOWED_HOST_CALLS: &[&str] = &[
     "ios.unsubscribe",
 ];
 
-/// Factory turning a Host endpoint URL into a transport stream opener.
-pub type EndpointOpener = Arc<dyn Fn(&str) -> Result<OpenStream, String> + Send + Sync>;
+/// Factory turning a pinned Host profile into a transport stream opener.
+pub type EndpointOpener =
+    Arc<dyn Fn(&SavedHostProfile) -> Result<OpenStream, String> + Send + Sync>;
+
+fn quic_endpoint(profile: &SavedHostProfile) -> Option<&str> {
+    profile.endpoints().iter().find_map(|endpoint| {
+        let (scheme, addr) = endpoint.trim().split_once("://")?;
+        scheme.eq_ignore_ascii_case("quic").then_some(addr)
+    })
+}
+
+fn default_opener(identity: NodeIdentity, runtime: Handle) -> EndpointOpener {
+    Arc::new(move |profile| {
+        let Some(endpoint) = quic_endpoint(profile) else {
+            let endpoints = profile.endpoints();
+            let endpoint = endpoints
+                .iter()
+                .find(|endpoint| endpoint.trim().starts_with("ws://"))
+                .unwrap_or(&endpoints[0]);
+            return tcp_endpoint_opener(endpoint).map_err(|err| err.to_string());
+        };
+        let target = PeerId::parse(profile.peer_id()).map_err(|err| err.to_string())?;
+        let remote = endpoint
+            .parse::<SocketAddr>()
+            .map_err(|err| format!("invalid QUIC address {endpoint}: {err}"))?;
+        let bind = match remote {
+            SocketAddr::V4(_) => SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0)),
+            SocketAddr::V6(_) => SocketAddr::from((Ipv6Addr::UNSPECIFIED, 0)),
+        };
+        let node = {
+            let _runtime = runtime.enter();
+            MeshTransportDialer::bind(bind, identity.clone()).map_err(|err| err.to_string())?
+        };
+        Ok(Arc::new(move || {
+            let node = node.clone();
+            let target = target.clone();
+            Box::pin(async move {
+                let stream = node
+                    .dial_direct(&target, remote)
+                    .await
+                    .map_err(io::Error::other)?;
+                Ok(Box::new(stream) as maka_remote_client::BoxedStream)
+            })
+        }))
+    })
+}
 
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct DeviceIdentityFile {
-    device_peer_id: String,
     client_instance: String,
 }
 
@@ -130,9 +176,7 @@ impl HostBridge {
         support_dir: impl Into<PathBuf>,
         runtime: Handle,
     ) -> Result<Self, String> {
-        let default_opener: EndpointOpener =
-            Arc::new(|endpoint| tcp_endpoint_opener(endpoint).map_err(|err| err.to_string()));
-        Self::attach_with_opener(channel, support_dir, runtime, default_opener)
+        Self::attach_inner(channel, support_dir.into(), runtime, None)
     }
 
     /// Attach using a custom transport stream opener (e.g. P2P Mesh carrier or
@@ -143,9 +187,21 @@ impl HostBridge {
         runtime: Handle,
         opener: EndpointOpener,
     ) -> Result<Self, String> {
-        let support_dir = support_dir.into();
+        Self::attach_inner(channel, support_dir.into(), runtime, Some(opener))
+    }
+
+    fn attach_inner(
+        channel: HostChannel,
+        support_dir: PathBuf,
+        runtime: Handle,
+        opener: Option<EndpointOpener>,
+    ) -> Result<Self, String> {
         fs::create_dir_all(&support_dir).map_err(|err| format!("create support dir: {err}"))?;
-        let identity = load_or_create_device_identity(&support_dir.join("device-identity.json"))?;
+        let device = load_or_create_device_identity(&support_dir.join("device-identity.json"))?;
+        let identity = NodeIdentity::load_or_create(&support_dir.join("peer-identity.json"))
+            .map_err(|err| err.to_string())?;
+        let device_peer_id = identity.peer_id().to_string();
+        let opener = opener.unwrap_or_else(|| default_opener(identity, runtime.clone()));
         let store = SavedHostStore::load_or_create(support_dir.join("saved-hosts.json"))
             .map_err(|err| err.to_string())?;
         let credentials = load_credentials(&support_dir.join("credentials.json"))?;
@@ -153,8 +209,8 @@ impl HostBridge {
         let bridge = Self {
             state: Arc::new(Mutex::new(BridgeState {
                 support_dir,
-                device_peer_id: identity.device_peer_id,
-                client_instance: identity.client_instance,
+                device_peer_id,
+                client_instance: device.client_instance,
                 store,
                 credentials,
                 active: None,
@@ -376,14 +432,26 @@ impl HostBridge {
         )
         .map_err(|err| err.to_string())?;
 
-        // Fail closed on pinned Peer ID mismatch BEFORE any network finalize or
-        // disk write takes place.
+        // Check the pin and transport against the last committed profile before
+        // sending a credential. Release the persistence gate before any network I/O.
         let (client_instance, device_peer_id, my_epoch) = {
+            let _persist_guard = self.persist_gate.lock().await;
             let mut state = self.state.lock().await;
             state
                 .store
                 .check_peer_for_root(profile.root_id(), profile.peer_id())
                 .map_err(|err| err.to_string())?;
+            if quic_endpoint(&profile).is_none()
+                && state
+                    .store
+                    .get(profile.root_id())
+                    .and_then(quic_endpoint)
+                    .is_some()
+            {
+                return Err(
+                    "This computer is already paired over QUIC; use a QUIC pairing code".into(),
+                );
+            }
             state.connection_epoch = state.connection_epoch.wrapping_add(1);
             (
                 state.client_instance.clone(),
@@ -395,13 +463,7 @@ impl HostBridge {
             .short_auth_code(&device_peer_id)
             .map_err(|err| err.to_string())?;
 
-        let endpoint = ticket
-            .endpoints()
-            .iter()
-            .find(|ep| ep.trim().starts_with("ws://"))
-            .or_else(|| ticket.endpoints().first())
-            .ok_or_else(|| "pairing ticket has no endpoints".to_owned())?;
-        let opener = (self.opener)(endpoint)?;
+        let opener = (self.opener)(&profile)?;
 
         // 1. Exchange one-time pairing credential on the remote Host (lock-free).
         RemoteHostClient::finalize_access(opener.clone(), ticket.pairing_token(), &client_instance)
@@ -547,13 +609,7 @@ impl HostBridge {
             )
         };
 
-        let endpoint = profile
-            .endpoints()
-            .iter()
-            .find(|ep| ep.trim().starts_with("ws://"))
-            .or_else(|| profile.endpoints().first())
-            .ok_or_else(|| "saved host has no endpoints".to_owned())?;
-        let opener = (self.opener)(endpoint)?;
+        let opener = (self.opener)(&profile)?;
         let connection = RemoteHostClient::connect(
             opener,
             bearer.into(),
@@ -1018,15 +1074,7 @@ fn load_or_create_device_identity(path: &Path) -> Result<DeviceIdentityFile, Str
         let raw = fs::read(path).map_err(|err| format!("read device identity: {err}"))?;
         return serde_json::from_slice(&raw).map_err(|err| format!("parse device identity: {err}"));
     }
-    let seed = Uuid::new_v4();
-    let digest = Sha256::digest(seed.as_bytes());
-    let mut peer_hex = String::with_capacity(64);
-    for byte in digest {
-        use std::fmt::Write as _;
-        let _ = write!(&mut peer_hex, "{byte:02x}");
-    }
     let identity = DeviceIdentityFile {
-        device_peer_id: format!("peer_{peer_hex}"),
         client_instance: format!("maka-ios-{}", Uuid::new_v4()),
     };
     write_private_json(path, &identity)?;

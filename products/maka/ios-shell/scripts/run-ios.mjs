@@ -82,6 +82,7 @@ function infoPlist(target) {
     <key>CFBundleShortVersionString</key><string>0.2.0</string>
     <key>CFBundleVersion</key><string>1</string>
     <key>UIApplicationSupportsMultipleScenes</key><false/>
+    <key>NSLocalNetworkUsageDescription</key><string>Maka connects to your paired computers on the local network.</string>
     <key>NSAppTransportSecurity</key>
     <dict>
         <key>NSAllowsLocalNetworking</key><true/>

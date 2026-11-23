@@ -29,6 +29,8 @@ path = "src/main.rs"
 
 [dependencies]
 log = "0.4.34"
+maka-peer.workspace = true
+maka-peer-mesh.workspace = true
 maka-remote-client.workspace = true
 nsh-base.workspace = true
 nsh-core.workspace = true

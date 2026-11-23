@@ -27,19 +27,15 @@ pub mod roster;
 pub mod transit;
 pub mod transport;
 
-pub use dialer::{
-    DEFAULT_HEDGE_DELAY, DialError, DialWinner, WinningPath, hedged_dial,
-};
+pub use dialer::{DEFAULT_HEDGE_DELAY, DialError, DialWinner, WinningPath, hedged_dial};
 pub use roster::{
     DialStrategy, DirectDialCandidate, MAX_MESH_MEMBERS, MeshAdAcceptOutcome, MeshError, MeshId,
     MeshMemberEntry, MeshRole, MeshRosterAcceptOutcome, MeshStateStore,
     PeerMeshMemberAdvertisementV1, PeerMeshRosterV1, PeerRouteResolution,
     SignedPeerMeshMemberAdvertisementV1, SignedPeerMeshRosterV1, TransitDialCandidate,
 };
-pub use transit::{
-    TransitCircuitGuard, TransitError, TransitPolicy, bridge_transit_streams,
-};
+pub use transit::{TransitCircuitGuard, TransitError, TransitPolicy, bridge_transit_streams};
 pub use transport::{
-    IncomingPeerStream, MESH_QUIC_ALPN, MeshTransportNode, PeerIo, PeerStream, QuicBiStream,
-    TransportError, parse_quic_socket_addr,
+    IncomingPeerStream, MESH_QUIC_ALPN, MeshTransportDialer, MeshTransportNode, PeerIo, PeerStream,
+    QuicBiStream, TransportError, parse_quic_socket_addr,
 };

@@ -68,6 +68,12 @@ struct LiveTestHost {
 
 impl LiveTestHost {
     async fn start() -> Self {
+        Self::start_with_streams(None).await
+    }
+
+    async fn start_with_streams(
+        streams: Option<tokio::sync::mpsc::Receiver<maka_host_runtime::application::host::Channel>>,
+    ) -> Self {
         let dir = tempfile::tempdir().unwrap();
         private_directory(dir.path()).unwrap();
         let root = Arc::new(
@@ -176,9 +182,12 @@ impl LiveTestHost {
         let socket =
             std::path::PathBuf::from(format!(r"\\.\pipe\maka-ios-test-{}", Uuid::new_v4()));
         let local = LocalListener::bind(&socket).unwrap();
-        let websocket = WebSocketListener::bind("127.0.0.1:0".parse().unwrap(), vec![])
+        let mut websocket = WebSocketListener::bind("127.0.0.1:0".parse().unwrap(), vec![])
             .await
             .unwrap();
+        if let Some(streams) = streams {
+            websocket.attach_streams(streams);
+        }
         let ws_addr = websocket.local_addr().unwrap();
         let stop = CancellationToken::new();
         let server = tokio::spawn({
@@ -220,6 +229,101 @@ fn make_ticket_uri(live: &LiveTestHost, host_name: &str, peer_id: &str) -> Strin
     .unwrap()
     .encode_uri()
     .unwrap()
+}
+
+#[tokio::test]
+async fn ios_shell_pins_mesh_peer_before_pairing_and_reconnects_over_quic() {
+    use maka_host_runtime::application::host::Channel;
+    use maka_peer::NodeIdentity;
+    use maka_peer_mesh::MeshTransportNode;
+
+    let identity = NodeIdentity::generate().unwrap();
+    let peer_id = identity.peer_id().clone();
+    let (node, mut incoming) =
+        MeshTransportNode::bind("127.0.0.1:0".parse().unwrap(), identity, None).unwrap();
+    let (tx, rx) = tokio::sync::mpsc::channel(8);
+    let forward = tokio::spawn(async move {
+        while let Some(next) = incoming.recv().await {
+            if tx.send(Box::new(next.stream) as Channel).await.is_err() {
+                break;
+            }
+        }
+    });
+    let live = LiveTestHost::start_with_streams(Some(rx)).await;
+    let tcp_decoy = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    tcp_decoy.set_nonblocking(true).unwrap();
+    let tcp = format!("ws://{}", tcp_decoy.local_addr().unwrap());
+    let quic = format!("  QUIC://{}  ", node.local_addr());
+    let ticket = |peer: &str, endpoints| {
+        PairingTicketV1::new(
+            &live.pairing.root_id,
+            "QUIC Host",
+            peer,
+            endpoints,
+            &live.pairing.credential,
+            "mesh-test",
+            now_ms() + 60_000,
+        )
+        .unwrap()
+        .encode_uri()
+        .unwrap()
+    };
+    let support = tempfile::tempdir().unwrap();
+    let attach = || {
+        HostBridge::attach(
+            HostChannel::new(),
+            support.path(),
+            tokio::runtime::Handle::current(),
+        )
+        .unwrap()
+    };
+    let bridge = attach();
+    let wrong = NodeIdentity::generate().unwrap();
+    let invalid = ticket(wrong.peer_id().as_str(), vec![tcp.clone(), quic.clone()]);
+    assert!(
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            bridge.pair_host(json!({ "uri": invalid }))
+        )
+        .await
+        .unwrap()
+        .is_err(),
+        "a TCP endpoint cannot bypass a failed QUIC peer pin"
+    );
+    let valid = ticket(peer_id.as_str(), vec![quic]);
+    bridge.pair_host(json!({ "uri": valid })).await.unwrap();
+    let downgrade = ticket(peer_id.as_str(), vec![tcp]);
+    assert!(
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            bridge.pair_host(json!({ "uri": downgrade }))
+        )
+        .await
+        .unwrap()
+        .is_err(),
+        "a TCP-only ticket cannot replace an established QUIC profile"
+    );
+    assert_eq!(
+        tcp_decoy.accept().unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+    bridge.disconnect_host().await.unwrap();
+
+    let restarted = attach();
+    restarted
+        .connect_host(json!({ "rootId": live.pairing.root_id }))
+        .await
+        .unwrap();
+    restarted
+        .host_query(json!({
+            "endpoint": "hostLogs", "method": "read",
+            "input": { "position": { "kind": "tail" } }
+        }))
+        .await
+        .unwrap();
+    restarted.disconnect_host().await.unwrap();
+    live.shutdown().await;
+    forward.abort();
 }
 
 #[test]
@@ -515,8 +619,9 @@ async fn concurrent_disconnect_and_remove_fence_inflight_connect_and_surface_clo
         let wire_cut = wire_cut.clone();
         let connect_entered = connect_entered.clone();
         let connect_release = connect_release.clone();
-        Arc::new(move |endpoint: &str| {
-            let base = tcp_endpoint_opener(endpoint).map_err(|err| err.to_string())?;
+        Arc::new(move |profile| {
+            let base =
+                tcp_endpoint_opener(&profile.endpoints()[0]).map_err(|err| err.to_string())?;
             let gate_enabled = gate_enabled.clone();
             let wire_cut = wire_cut.clone();
             let connect_entered = connect_entered.clone();
@@ -689,8 +794,9 @@ async fn stalled_remote_close_during_remove_does_not_block_persist_gate() {
         let stall_reads = stall_reads.clone();
         let read_stalled = read_stalled.clone();
         let waker_slot = waker_slot.clone();
-        Arc::new(move |endpoint: &str| {
-            let base = tcp_endpoint_opener(endpoint).map_err(|err| err.to_string())?;
+        Arc::new(move |profile| {
+            let base =
+                tcp_endpoint_opener(&profile.endpoints()[0]).map_err(|err| err.to_string())?;
             let stall_reads = stall_reads.clone();
             let read_stalled = read_stalled.clone();
             let waker_slot = waker_slot.clone();
@@ -3136,8 +3242,9 @@ async fn unsubscribe_records_cancel_write_error_as_cleanup_warning() {
     let fail_writes = Arc::new(AtomicBool::new(false));
     let opener: EndpointOpener = {
         let fail_writes = fail_writes.clone();
-        Arc::new(move |endpoint: &str| {
-            let base = tcp_endpoint_opener(endpoint).map_err(|err| err.to_string())?;
+        Arc::new(move |profile| {
+            let base =
+                tcp_endpoint_opener(&profile.endpoints()[0]).map_err(|err| err.to_string())?;
             let fail_writes = fail_writes.clone();
             Ok(Arc::new(move || {
                 let base = base.clone();

@@ -218,19 +218,36 @@ fn authenticated_remote_peer(connection: &Connection) -> Result<PeerId, Transpor
     peer_id_from_raw_public_key(end_entity).map_err(|_| TransportError::InvalidPeerIdentity)
 }
 
+/// Outbound QUIC transport for a client that does not accept mesh connections.
 #[derive(Clone)]
-struct NodeState {
+pub struct MeshTransportDialer {
     endpoint: Endpoint,
     identity: NodeIdentity,
-    transit_policy: TransitPolicy,
-    transit_roster: Arc<RwLock<Option<SignedPeerMeshRosterV1>>>,
-    peer_addresses: Arc<RwLock<BTreeMap<PeerId, SocketAddr>>>,
-    incoming_tx: mpsc::Sender<IncomingPeerStream>,
-    cancel: CancellationToken,
-    dial_timeout: Duration,
 }
 
-impl NodeState {
+impl MeshTransportDialer {
+    pub fn bind(bind_addr: SocketAddr, identity: NodeIdentity) -> Result<Self, TransportError> {
+        Ok(Self {
+            endpoint: Endpoint::client(bind_addr)?,
+            identity,
+        })
+    }
+
+    /// Opens a direct mutual-Ed25519 QUIC application stream to `target_peer`.
+    pub async fn dial_direct(
+        &self,
+        target_peer: &PeerId,
+        addr: SocketAddr,
+    ) -> Result<PeerStream, TransportError> {
+        let mut header = [0u8; 5];
+        header[..4].copy_from_slice(&STREAM_MAGIC);
+        header[4] = INTENT_DIRECT_APP;
+        Ok(Box::new(
+            self.open_stream_with_header(target_peer, addr, &header)
+                .await?,
+        ))
+    }
+
     async fn connect_quic(
         &self,
         expected_peer: &PeerId,
@@ -241,9 +258,9 @@ impl NodeState {
             .endpoint
             .connect_with(client_config, addr, PEER_TLS_SERVER_NAME)
             .map_err(|err| TransportError::Connect(err.to_string()))?;
-        let conn = tokio::time::timeout(self.dial_timeout, connecting)
+        let conn = tokio::time::timeout(DEFAULT_DIAL_TIMEOUT, connecting)
             .await
-            .map_err(|_| TransportError::Timeout(self.dial_timeout))?
+            .map_err(|_| TransportError::Timeout(DEFAULT_DIAL_TIMEOUT))?
             .map_err(|err| TransportError::Connection(err.to_string()))?;
         let verified = authenticated_remote_peer(&conn)?;
         if &verified != expected_peer {
@@ -260,9 +277,9 @@ impl NodeState {
         header: &[u8],
     ) -> Result<QuicBiStream, TransportError> {
         let conn = self.connect_quic(expected_peer, addr).await?;
-        let (mut send, recv) = tokio::time::timeout(self.dial_timeout, conn.open_bi())
+        let (mut send, recv) = tokio::time::timeout(DEFAULT_DIAL_TIMEOUT, conn.open_bi())
             .await
-            .map_err(|_| TransportError::Timeout(self.dial_timeout))?
+            .map_err(|_| TransportError::Timeout(DEFAULT_DIAL_TIMEOUT))?
             .map_err(|err| TransportError::Connection(err.to_string()))?;
         send.write_all(header).await?;
         send.flush().await?;
@@ -272,7 +289,19 @@ impl NodeState {
             _connection: conn,
         })
     }
+}
 
+#[derive(Clone)]
+struct NodeState {
+    dialer: MeshTransportDialer,
+    transit_policy: TransitPolicy,
+    transit_roster: Arc<RwLock<Option<SignedPeerMeshRosterV1>>>,
+    peer_addresses: Arc<RwLock<BTreeMap<PeerId, SocketAddr>>>,
+    incoming_tx: mpsc::Sender<IncomingPeerStream>,
+    cancel: CancellationToken,
+}
+
+impl NodeState {
     fn resolve_peer_addr(&self, peer_id: &PeerId) -> Option<SocketAddr> {
         self.peer_addresses
             .read()
@@ -319,14 +348,12 @@ impl MeshTransportNode {
         let cancel = CancellationToken::new();
         let transit_policy = TransitPolicy::new(identity.peer_id().clone(), max_transit_circuits);
         let state = NodeState {
-            endpoint,
-            identity,
+            dialer: MeshTransportDialer { endpoint, identity },
             transit_policy,
             transit_roster: Arc::new(RwLock::new(None)),
             peer_addresses: Arc::new(RwLock::new(BTreeMap::new())),
             incoming_tx,
             cancel,
-            dial_timeout: DEFAULT_DIAL_TIMEOUT,
         };
         let loop_state = state.clone();
         tokio::spawn(async move {
@@ -340,7 +367,7 @@ impl MeshTransportNode {
     }
 
     pub fn peer_id(&self) -> &PeerId {
-        self.state.identity.peer_id()
+        self.state.dialer.identity.peer_id()
     }
 
     pub fn active_transit_circuits(&self) -> usize {
@@ -390,14 +417,7 @@ impl MeshTransportNode {
         target_peer: &PeerId,
         addr: SocketAddr,
     ) -> Result<PeerStream, TransportError> {
-        let mut header = [0u8; 5];
-        header[..4].copy_from_slice(&STREAM_MAGIC);
-        header[4] = INTENT_DIRECT_APP;
-        let stream = self
-            .state
-            .open_stream_with_header(target_peer, addr, &header)
-            .await?;
-        Ok(Box::new(stream))
+        self.state.dialer.dial_direct(target_peer, addr).await
     }
 
     /// Opens an `A -> C -> B` mesh transit stream via `relay_peer` and runs an
@@ -420,6 +440,7 @@ impl MeshTransportNode {
 
         let mut relayed = self
             .state
+            .dialer
             .open_stream_with_header(relay_peer, relay_addr, &header)
             .await?;
         let mut status = [0u8; 1];
@@ -429,11 +450,11 @@ impl MeshTransportNode {
         match status[0] {
             RELAY_STATUS_OK => {
                 let e2e = tokio::time::timeout(
-                    self.state.dial_timeout,
-                    connect_e2e_tls(relayed, &self.state.identity, target_peer.clone()),
+                    DEFAULT_DIAL_TIMEOUT,
+                    connect_e2e_tls(relayed, &self.state.dialer.identity, target_peer.clone()),
                 )
                 .await
-                .map_err(|_| TransportError::Timeout(self.state.dial_timeout))??;
+                .map_err(|_| TransportError::Timeout(DEFAULT_DIAL_TIMEOUT))??;
                 Ok(Box::new(e2e))
             }
             RELAY_STATUS_DENIED => {
@@ -483,8 +504,8 @@ impl MeshTransportNode {
             |transit_candidate, relay_endpoint| {
                 let target = target.clone();
                 async move {
-                    let relay_addr = parse_quic_socket_addr(&relay_endpoint)
-                        .map_err(|err| err.to_string())?;
+                    let relay_addr =
+                        parse_quic_socket_addr(&relay_endpoint).map_err(|err| err.to_string())?;
                     self.dial_via_relay(&transit_candidate.relay_peer_id, relay_addr, &target)
                         .await
                         .map_err(|err| err.to_string())
@@ -500,10 +521,10 @@ impl MeshTransportNode {
         peer_id: &PeerId,
         addr: SocketAddr,
     ) -> Result<Duration, TransportError> {
-        let conn = self.state.connect_quic(peer_id, addr).await?;
-        let (mut send, mut recv) = tokio::time::timeout(self.state.dial_timeout, conn.open_bi())
+        let conn = self.state.dialer.connect_quic(peer_id, addr).await?;
+        let (mut send, mut recv) = tokio::time::timeout(DEFAULT_DIAL_TIMEOUT, conn.open_bi())
             .await
-            .map_err(|_| TransportError::Timeout(self.state.dial_timeout))?
+            .map_err(|_| TransportError::Timeout(DEFAULT_DIAL_TIMEOUT))?
             .map_err(|err| TransportError::Connection(err.to_string()))?;
         let mut ping = [0u8; 5];
         ping[..4].copy_from_slice(&STREAM_MAGIC);
@@ -529,7 +550,7 @@ impl MeshTransportNode {
     /// Stops accepting new connections and closes the underlying QUIC endpoint.
     pub fn shutdown(&self) {
         self.state.cancel.cancel();
-        self.state.endpoint.close(0u32.into(), b"shutdown");
+        self.state.dialer.endpoint.close(0u32.into(), b"shutdown");
     }
 }
 
@@ -538,14 +559,14 @@ async fn run_accept_loop(state: NodeState) {
         let incoming = tokio::select! {
             biased;
             () = state.cancel.cancelled() => break,
-            next = state.endpoint.accept() => match next {
+            next = state.dialer.endpoint.accept() => match next {
                 Some(incoming) => incoming,
                 None => break,
             },
         };
         let conn_state = state.clone();
         tokio::spawn(async move {
-            let conn = match tokio::time::timeout(conn_state.dial_timeout, incoming).await {
+            let conn = match tokio::time::timeout(DEFAULT_DIAL_TIMEOUT, incoming).await {
                 Ok(Ok(conn)) => conn,
                 _ => return,
             };
@@ -578,7 +599,8 @@ async fn handle_connection(state: NodeState, conn: Connection, remote_peer: Peer
             if let Err(err) =
                 handle_stream(stream_state, stream_conn, stream_peer.clone(), send, recv).await
             {
-                if matches!(err, TransportError::Io(ref io_err) if io_err.kind() == io::ErrorKind::UnexpectedEof) {
+                if matches!(err, TransportError::Io(ref io_err) if io_err.kind() == io::ErrorKind::UnexpectedEof)
+                {
                     tracing::debug!(peer = %stream_peer, error = %err, "peer mesh stream closed");
                 } else {
                     tracing::warn!(peer = %stream_peer, error = %err, "peer mesh stream failed");
@@ -660,16 +682,17 @@ async fn handle_stream(
                 write_relay_rejection(&mut send, "transit relay is not enabled on this node").await;
                 return Ok(());
             };
-            let guard = match state
-                .transit_policy
-                .admit_circuit(&roster, &remote_peer, &target_peer)
-            {
-                Ok(guard) => guard,
-                Err(err) => {
-                    write_relay_rejection(&mut send, &err.to_string()).await;
-                    return Ok(());
-                }
-            };
+            let guard =
+                match state
+                    .transit_policy
+                    .admit_circuit(&roster, &remote_peer, &target_peer)
+                {
+                    Ok(guard) => guard,
+                    Err(err) => {
+                        write_relay_rejection(&mut send, &err.to_string()).await;
+                        return Ok(());
+                    }
+                };
             let Some(target_addr) = state.resolve_peer_addr(&target_peer) else {
                 drop(guard);
                 write_relay_rejection(&mut send, "target peer address is not registered on relay")
@@ -680,6 +703,7 @@ async fn handle_stream(
             fwd_header[..4].copy_from_slice(&STREAM_MAGIC);
             fwd_header[4] = INTENT_TRANSIT_FORWARDED;
             let outbound = match state
+                .dialer
                 .open_stream_with_header(&target_peer, target_addr, &fwd_header)
                 .await
             {
@@ -719,7 +743,7 @@ async fn handle_stream(
                 _connection: conn,
             };
             let (origin_peer, e2e_stream) =
-                tokio::time::timeout(HEADER_TIMEOUT, accept_e2e_tls(bi, &state.identity))
+                tokio::time::timeout(HEADER_TIMEOUT, accept_e2e_tls(bi, &state.dialer.identity))
                     .await
                     .map_err(|_| TransportError::Timeout(HEADER_TIMEOUT))??;
             deliver_incoming(
