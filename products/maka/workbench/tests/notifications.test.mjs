@@ -26,7 +26,8 @@ import { setImmediate } from 'node:timers/promises';
 const appRoot = new URL('../app/', import.meta.url);
 const session = (id, activity, title = id) => ({ id, activity, title });
 
-async function setup(t, status = 'default', desktop = true) {
+async function setup(t, initialStatus = 'default', desktop = true) {
+  let status = initialStatus;
   const state = { sessions: [], foreground: false };
   const effects = { sessions: new Set(), foreground: new Set() };
   let observer;
@@ -121,7 +122,18 @@ async function setup(t, status = 'default', desktop = true) {
   };
   t.after(owner.dispose);
   owner.mount();
-  return { owner, state, permission, requestPermission, prompt, shown, presses, actions };
+  return {
+    owner,
+    setStatus: (next) => {
+      status = next;
+    },
+    permission,
+    requestPermission,
+    prompt,
+    shown,
+    presses,
+    actions,
+  };
 }
 
 test('one pending permission request delivers only the latest eligible transition per session', async (t) => {
@@ -149,15 +161,22 @@ test('one pending permission request delivers only the latest eligible transitio
   );
 });
 
-test('authorization rechecks the foreground even before another reactive update', async (t) => {
-  const { owner, state, prompt, shown } = await setup(t);
+test('enabling notifications in OS settings after denial takes effect without restart', async (t) => {
+  const { owner, setStatus, permission, requestPermission, shown } = await setup(t, 'denied');
   owner.update(session('a', 'working'));
-  owner.update(session('a', 'idle'));
+  owner.update(session('a', 'idle', 'First'));
   await setImmediate();
-  state.foreground = true;
-  prompt.resolve('granted');
-  await setImmediate();
+  assert.equal(permission.mock.callCount(), 1);
+  assert.equal(requestPermission.mock.callCount(), 0);
   assert.deepEqual(shown, []);
+
+  setStatus('granted');
+  owner.update(session('a', 'working', 'First'));
+  owner.update(session('a', 'waiting', 'First'));
+  await setImmediate();
+  assert.equal(permission.mock.callCount(), 2);
+  assert.equal(requestPermission.mock.callCount(), 0);
+  assert.deepEqual(shown, [{ id: 'a', title: 'First', body: 'Waiting for you' }]);
 });
 
 test('returning to the foreground retires pending alerts for that background interval', async (t) => {

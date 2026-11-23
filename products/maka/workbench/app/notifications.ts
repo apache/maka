@@ -27,7 +27,20 @@ import { ownTitleBar } from './chrome';
 import { tr } from './locale';
 import { sessionStatusCaption } from './sessionStatus';
 
-let permission: Promise<NotificationPermission> | undefined;
+let checking: Promise<NotificationPermission> | undefined;
+let requested = false;
+
+function resolvePermission(): Promise<NotificationPermission> {
+  return (checking ??= Notifications.permission()
+    .then((status) => {
+      if (status !== 'default' || requested) return status;
+      requested = true;
+      return Notifications.requestPermission();
+    })
+    .finally(() => {
+      checking = undefined;
+    }));
+}
 
 export function watchNotifications(props: {
   sessions(): BrowserSession[];
@@ -53,10 +66,8 @@ export function watchNotifications(props: {
   async function deliver() {
     delivering = true;
     try {
-      permission ??= Notifications.permission().then((status) =>
-        status === 'default' ? Notifications.requestPermission() : status,
-      );
-      if ((await permission) !== 'granted' || disposed || untracked(props.foreground)) return;
+      if ((await resolvePermission()) !== 'granted' || disposed || untracked(props.foreground))
+        return;
       for (const { id, title, activity } of pending.values()) {
         void Notifications.show({
           id,
@@ -65,7 +76,6 @@ export function watchNotifications(props: {
         }).catch((reason) => console.warn('Could not show notification:', reason));
       }
     } catch (reason) {
-      permission = undefined;
       console.warn('Could not check notification permission:', reason);
     } finally {
       pending.clear();
