@@ -136,3 +136,125 @@ impl<T: Send + 'static, S: Statement> Statement for SessionMetadataChange<T, S> 
             )
     }
 }
+
+impl RootStore {
+    pub async fn prepare_session_workspace_change<S, G>(
+        &self,
+        id: &str,
+        expected: u64,
+        workspace: S,
+        guard: G,
+        writer: &DataWriter,
+    ) -> Result<DataChange, StoreError>
+    where
+        S: Statement<Value = maka_sandbox::workspace::BindingRef>,
+        G: Statement,
+    {
+        self.validate_data_writer(writer)?;
+        let revision = self.session(id).await?.revision_guard(writer, expected)?;
+        // Shared Session pins protect the attachment until a reader has pinned
+        // its binding. Changing the reference needs both exclusive gates.
+        let pins = self
+            .gates
+            .try_write([
+                gates::Key::Session(id.to_owned()),
+                gates::Key::Work(id.to_owned()),
+            ])?
+            .ok_or(StoreError::SessionBusy)?;
+        Ok(writer.prepare(SessionWorkspaceChange {
+            custody: Arc::new(self.log.scoped(Arc::new(pins))),
+            revision,
+            workspace,
+            guard,
+        }))
+    }
+}
+
+struct SessionWorkspaceChange<S, G> {
+    custody: Arc<EventLog>,
+    revision: SessionRevisionGuard,
+    workspace: S,
+    guard: G,
+}
+
+impl<S, G> Statement for SessionWorkspaceChange<S, G>
+where
+    S: Statement<Value = maka_sandbox::workspace::BindingRef>,
+    G: Statement,
+{
+    type Value = G::Value;
+    type Output = G::Output;
+    const PREPARE_OFF_THREAD: bool = S::PREPARE_OFF_THREAD || G::PREPARE_OFF_THREAD;
+
+    fn retain(&self) -> Vec<Arc<dyn Send + Sync>> {
+        let mut retained = self.workspace.retain();
+        retained.extend(self.guard.retain());
+        retained.push(self.custody.clone());
+        retained
+    }
+
+    fn prepare(mut self) -> Result<Self, StoreError> {
+        self.workspace = self.workspace.prepare()?;
+        self.guard = self.guard.prepare()?;
+        Ok(self)
+    }
+
+    fn execute(self, connection: &SqliteConnection) -> Result<Prepared<Self::Value>, StoreError> {
+        self.revision.validate(connection)?;
+        let guard = self.guard.execute(connection)?;
+        let workspace = self.workspace.execute(connection)?;
+        let id = self.revision.session_id();
+        let change = crate::sessions::metadata::preview_metadata(
+            connection,
+            id,
+            self.revision.expected,
+            false,
+            |configuration: &mut serde_json::Value| {
+                let binding = serde_json::to_value(workspace.value)?;
+                if configuration["workspace"] != binding {
+                    let boundary = configuration["boundary_revision"]
+                        .as_u64()
+                        .and_then(|revision| revision.checked_add(1))
+                        .filter(|revision| *revision <= 9_007_199_254_740_991)
+                        .ok_or_else(|| {
+                            StoreError::InvalidTransition(
+                                "invalid permission boundary revision".into(),
+                            )
+                        })?;
+                    configuration["workspace"] = binding;
+                    configuration["boundary_revision"] = boundary.into();
+                }
+                Ok(())
+            },
+        )?;
+        let (_, changed) = change.apply(connection)?;
+        let notification = if changed {
+            Notification::METADATA.with_sessions([id.to_owned()])
+        } else {
+            Notification::NONE
+        };
+        Ok(Prepared {
+            value: guard.value,
+            changed: changed || workspace.changed || guard.changed,
+            notification: notification
+                .combine(workspace.notification)
+                .combine(guard.notification),
+        })
+    }
+
+    fn committed(value: Self::Value) -> Self::Output {
+        G::committed(value)
+    }
+
+    fn isolated_rejection(error: &StoreError) -> bool {
+        S::isolated_rejection(error)
+            || G::isolated_rejection(error)
+            || matches!(
+                error.underlying(),
+                StoreError::SessionRevisionConflict { .. }
+                    | StoreError::SessionNotFound
+                    | StoreError::SessionRetired
+                    | StoreError::SessionBusy
+            )
+    }
+}

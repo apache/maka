@@ -125,10 +125,10 @@ impl Owner {
     }
     /// The directory at `path` as a Project registration, with the path as
     /// the Host captured it.
-    async fn project_directory(
+    pub(super) async fn project_directory(
         &self,
         path: &str,
-    ) -> Result<Option<(ProjectRegistration, String)>, String> {
+    ) -> Result<Option<(ProjectRegistration, filesystem::ResolvedProject)>, String> {
         let Some(directory) = workspace::selected(
             self.workspace_roots.clone(),
             path,
@@ -155,14 +155,14 @@ impl Owner {
             self.managed_worktrees.clone(),
         )
         .await?
-        .is_none()
+        .is_none_or(|current| current.identity != physical.observation)
         {
             return Ok(None);
         }
         Ok(Some((
             ProjectRegistration {
                 identity: self.project_identity(&identity),
-                name: physical.name,
+                name: physical.name.clone(),
                 path: directory.path.clone(),
                 is_worktree: matches!(
                     physical.kind,
@@ -172,7 +172,7 @@ impl Owner {
                     }
                 ),
             },
-            directory.path,
+            physical,
         )))
     }
     pub async fn projects(&self, input: ProjectsRead) -> Result<ProjectsPage, String> {
@@ -266,9 +266,17 @@ impl Owner {
         &self,
         path: &str,
     ) -> Result<Option<PreparedProjectWorkspace>, String> {
-        let Some((registration, path)) = self.project_directory(path).await? else {
+        let Some((registration, _)) = self.project_directory(path).await? else {
             return Ok(None);
         };
+        self.create_project_workspace_at(registration).await
+    }
+
+    pub(super) async fn create_project_workspace_at(
+        &self,
+        registration: ProjectRegistration,
+    ) -> Result<Option<PreparedProjectWorkspace>, String> {
+        let path = registration.path.clone();
         let writer = self
             .store
             .data_writer()
@@ -326,7 +334,7 @@ impl Owner {
         if record.archived_at.is_some() {
             return Ok(None);
         }
-        let Some((registration, path)) = self.project_directory(path).await? else {
+        let Some((registration, _)) = self.project_directory(path).await? else {
             return Ok(None);
         };
         if registration.identity != record.identity
@@ -337,7 +345,7 @@ impl Owner {
         {
             return Ok(None);
         }
-        Ok(Some((record, path)))
+        Ok(Some((record, registration.path)))
     }
 
     pub(super) async fn select_project(
@@ -569,9 +577,10 @@ impl Owner {
                 if reference(&current) != project {
                     return Ok(NativeMutation::Returned(ProjectResult::Changed));
                 }
-                let Some((registration, path)) = self.project_directory(&path).await? else {
+                let Some((registration, _)) = self.project_directory(&path).await? else {
                     return Ok(NativeMutation::Returned(ProjectResult::Unavailable));
                 };
+                let path = &registration.path;
                 let other = self
                     .store
                     .project_by_identity(&registration.identity)
@@ -668,7 +677,7 @@ impl Owner {
                     .map_err(|_| "agent_root_unavailable")?;
                 let Some(mut selected) = workspace::initialize(
                     &self.workspace_roots,
-                    &path,
+                    path,
                     self.home.as_deref(),
                     &self.managed_worktrees,
                     root.canonical_path(),

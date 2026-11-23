@@ -495,6 +495,25 @@ pub enum SessionAction {
     Restore,
     Remove,
 }
+#[derive(Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentChangeSessionWorkspace")]
+pub struct ChangeSessionWorkspace {
+    #[schemars(length(min = 1))]
+    pub session_id: String,
+    #[schemars(range(min = 1, max = 9_007_199_254_740_991u64))]
+    pub expected_revision: u64,
+    #[schemars(length(min = 1))]
+    pub path: String,
+}
+#[derive(Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[schemars(rename = "AgentSessionWorkspaceChanged")]
+pub enum SessionWorkspaceChanged {
+    Changed,
+    RevisionConflict { expected: u64, actual: u64 },
+    Rejected { reason: Rejection },
+}
 #[derive(Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 #[schemars(rename = "AgentSessionChanged")]
@@ -943,6 +962,7 @@ pub enum CompletionRegistration {
 #[schemars(rename = "AgentSendRejection")]
 pub enum SendRejection {
     ModelUnavailable,
+    WorkspaceUnavailable,
     SkillsUnavailable,
     TurnStopped,
     OriginalOperationUnsettled,
@@ -2585,6 +2605,14 @@ pub fn contract() -> Contract {
                 (
                     "changeSession".into(),
                     method::<ChangeSession, SessionChanged>(MethodMode::Mutation),
+                ),
+                (
+                    "changeSessionWorkspace".into(),
+                    method::<ChangeSessionWorkspace, SessionWorkspaceChanged>(MethodMode::Mutation),
+                ),
+                (
+                    "sessionWorkspaceAvailable".into(),
+                    method::<SessionRead, bool>(MethodMode::Query),
                 ),
                 (
                     "selectBackend".into(),

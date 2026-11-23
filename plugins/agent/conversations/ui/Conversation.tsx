@@ -319,6 +319,9 @@ export type ConversationHandle = Omit<
   /** A null target follows the current live turn; `reload` reads the tail again. */
   jumpLatest(turnId: string | null, reload?: boolean): void;
   refresh(): Promise<any>;
+  sessionRevision(): number;
+  workspaceUnavailable(): boolean;
+  refreshWorkspace(): Promise<void>;
   reveal(anchor: RecallAnchor, current: () => boolean): Promise<void>;
   focusHistory(): void;
   focusActivity(turnId: string | null): void;
@@ -496,7 +499,15 @@ export function Conversation(props: ConversationProps) {
   const executionRevision = signal(0);
   const stoppingRun = signal<RunId | null>(null);
   const stopping = () => runId() !== null && stoppingRun() === runId();
+  const sessionRevision = signal(0);
   const workspace = signal('');
+  const workspaceUnavailable = signal(false);
+  let workspaceCheck = 0;
+  const refreshWorkspace = async () => {
+    const check = ++workspaceCheck;
+    const available = await host.query('agent', 'sessionWorkspaceAvailable', { sessionId });
+    if (alive && check === workspaceCheck) workspaceUnavailable.set(!available);
+  };
   const permissions = createSessionPermissions(host, sessionId, props.control);
   const goal = createSessionGoal(host, sessionId, props.control, permissions, () => goalBackend());
   const projectMcp = createProjectMcp(host, sessionId, props.control);
@@ -2083,11 +2094,16 @@ export function Conversation(props: ConversationProps) {
     acceptReadState(observed.session, observed.through);
     latestKnown = Math.max(latestKnown, observed.through);
     readLandmarks(observed.through);
-    title.set(observed.session.title);
-    archived.set(observed.session.archived);
-    workspace.set(observed.session.workspace.path);
-    permissions.observe(observed.session);
-    backend.set(observed.session.backend ?? observed.rememberedBackend ?? null);
+    if (observed.session.revision >= sessionRevision()) {
+      batch(() => {
+        sessionRevision.set(observed.session.revision);
+        title.set(observed.session.title);
+        archived.set(observed.session.archived);
+        workspace.set(observed.session.workspace.path);
+        permissions.observe(observed.session);
+        backend.set(observed.session.backend ?? observed.rememberedBackend ?? null);
+      });
+    }
     if (observed.through >= runThrough) {
       if (subscription === null) {
         overlay.observe(observed);
@@ -3119,6 +3135,14 @@ export function Conversation(props: ConversationProps) {
     quoted: QuoteRef[] = [],
     immediate = false,
   ) => {
+    const outcome = reply?.receipt?.outcome;
+    if (
+      outcome?.kind === 'returned' &&
+      outcome.result.kind === 'success' &&
+      outcome.result.value?.kind === 'rejected' &&
+      outcome.result.value.reason === 'workspace_unavailable'
+    )
+      void refreshWorkspace().catch(report);
     const accepted = acceptedSend(reply, sessionId);
     if (!accepted) return;
     if (
@@ -3870,6 +3894,12 @@ export function Conversation(props: ConversationProps) {
     return true;
   };
   const connected = () => transcriptStatus() === 'live' && !props.connectionLost();
+  effect(() => {
+    const check = connected() && !archived() && !!workspace();
+    workspaceUnavailable.set(false);
+    if (check) void refreshWorkspace().catch(report);
+    else workspaceCheck++;
+  });
   const predictedMessage = signal<ReturnType<ComposerPrediction['current']>>(null);
   const messagePrediction = createMessagePrediction({
     sessionId,
@@ -4021,6 +4051,9 @@ export function Conversation(props: ConversationProps) {
     goal,
     projectMcp,
     workspace,
+    sessionRevision,
+    workspaceUnavailable,
+    refreshWorkspace,
     empty: () =>
       ready() &&
       runId() === null &&

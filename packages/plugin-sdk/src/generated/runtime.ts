@@ -4263,6 +4263,7 @@ export type RoomDelivery =
     };
 export type AgentSendRejection =
   | 'model_unavailable'
+  | 'workspace_unavailable'
   | 'skills_unavailable'
   | 'turn_stopped'
   | 'original_operation_unsettled';

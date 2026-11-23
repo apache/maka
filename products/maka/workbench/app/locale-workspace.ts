@@ -68,6 +68,21 @@ export const workspaceMessages = {
     '無法載入專案 MCP 伺服器。',
   ],
   'Use folder {path}': ['Use folder {path}', '使用文件夹 {path}', '使用資料夾 {path}'],
+  'The workspace for this task is unavailable.': [
+    'The workspace for this task is unavailable.',
+    '当前任务的工作区不可用。',
+    '目前任務的工作區無法使用。',
+  ],
+  'Stop the current run and clear any queued messages before changing workspaces.': [
+    'Stop the current run and clear any queued messages before changing workspaces.',
+    '请先停止当前运行，并清理排队中的消息，再更改工作区。',
+    '請先停止目前的執行並清除排隊中的訊息，再變更工作區。',
+  ],
+  'Could not change workspace: {reason}': [
+    'Could not change workspace: {reason}',
+    '无法更改工作区：{reason}',
+    '無法變更工作區：{reason}',
+  ],
   'Choose another folder…': ['Choose another folder…', '选择其他文件夹…', '選擇其他資料夾…'],
   'Pin conversation': ['Pin conversation', '置顶对话', '置頂對話'],
   Pin: ['Pin', '置顶', '置頂'],

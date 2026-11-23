@@ -51,6 +51,20 @@ test('a rejected send keeps its reason and can be retried', () => {
   });
 });
 
+test('a missing workspace is a definitive non-delivery and can be retried', () => {
+  const result = sendReceiptFailure(
+    recorded({
+      kind: 'returned',
+      result: {
+        kind: 'success',
+        value: { kind: 'rejected', sessionId: 'conversation', reason: 'workspace_unavailable' },
+      },
+    }),
+  );
+  assert.equal(result?.retryable, true);
+  assert.equal(result?.detail.key, 'The workspace for this task is unavailable.');
+});
+
 test('a run that is still unsettled produces a definitive send failure', () => {
   const result = {
     kind: 'success',

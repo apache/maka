@@ -91,6 +91,7 @@ mod system_permission;
 mod title;
 mod todo;
 mod work;
+mod workspace_change;
 mod worktrees;
 use maka_agent_facts::composition::SourceKind;
 use maka_agent_facts::composition::SourceRevision;

@@ -53,6 +53,8 @@ export function sendReceiptFailure(
   switch (value.reason) {
     case 'turn_stopped':
       return { detail: message('Stopped before delivery. Your message is kept.'), retryable: true };
+    case 'workspace_unavailable':
+      return { detail: message('The workspace for this task is unavailable.'), retryable: true };
     case 'model_unavailable':
       return {
         detail: message('The selected model is unavailable. Try again or choose another model.'),

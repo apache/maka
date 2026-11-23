@@ -3480,6 +3480,107 @@ export const contracts: {
           },
           resources: {},
         },
+        changeSessionWorkspace: {
+          mode: 'mutation',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentChangeSessionWorkspace',
+            type: 'object',
+            properties: {
+              sessionId: {
+                type: 'string',
+                minLength: 1,
+              },
+              expectedRevision: {
+                type: 'integer',
+                format: 'uint64',
+                minimum: 1,
+                maximum: 9007199254740991,
+              },
+              path: {
+                type: 'string',
+                minLength: 1,
+              },
+            },
+            additionalProperties: false,
+            required: ['sessionId', 'expectedRevision', 'path'],
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentSessionWorkspaceChanged',
+            oneOf: [
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'changed',
+                  },
+                },
+                required: ['kind'],
+                additionalProperties: false,
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'revision_conflict',
+                  },
+                  expected: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  actual: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'expected', 'actual'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'rejected',
+                  },
+                  reason: {
+                    $ref: '#/$defs/AgentRejection',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'reason'],
+              },
+            ],
+            $defs: {
+              AgentRejection: {
+                type: 'string',
+                enum: [
+                  'preset_not_found',
+                  'preset_disabled',
+                  'preset_conflict',
+                  'preset_model_unavailable',
+                  'preset_thinking_level_unavailable',
+                  'preset_backend_conflict',
+                  'permission_change_requires_user',
+                  'title_invalid',
+                  'labels_invalid',
+                  'tools_unavailable',
+                  'busy',
+                  'workspace_unavailable',
+                  'session_unavailable',
+                  'history_unavailable',
+                  'closed',
+                ],
+              },
+            },
+          },
+          resources: {},
+        },
         checklist: {
           mode: 'query',
           input: {
@@ -45045,6 +45146,7 @@ export const contracts: {
                 type: 'string',
                 enum: [
                   'model_unavailable',
+                  'workspace_unavailable',
                   'skills_unavailable',
                   'turn_stopped',
                   'original_operation_unsettled',
@@ -52251,6 +52353,7 @@ export const contracts: {
                 type: 'string',
                 enum: [
                   'model_unavailable',
+                  'workspace_unavailable',
                   'skills_unavailable',
                   'turn_stopped',
                   'original_operation_unsettled',
@@ -52480,6 +52583,28 @@ export const contracts: {
                 format: 'uuid',
               },
             },
+          },
+          resources: {},
+        },
+        sessionWorkspaceAvailable: {
+          mode: 'query',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentSessionRead',
+            type: 'object',
+            properties: {
+              sessionId: {
+                type: 'string',
+                minLength: 1,
+              },
+            },
+            additionalProperties: false,
+            required: ['sessionId'],
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'boolean',
+            type: 'boolean',
           },
           resources: {},
         },

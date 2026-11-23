@@ -1232,6 +1232,30 @@ async fn verify_capsule(bin: &Path, capsule_dir: &Path) {
         .await;
         assert_eq!(updated_conn["kind"], "committed", "{updated_conn}");
 
+        let destination = dirs.workspace.join("post-upgrade-workspace");
+        fs::create_dir_all(&destination).unwrap();
+        let observed = call(
+            &client,
+            "agent",
+            "observe",
+            json!({"sessionId": manifest.primary_session_id}),
+            Attachments::new(),
+        )
+        .await;
+        let rebound = call(
+            &client,
+            "agent",
+            "changeSessionWorkspace",
+            json!({
+                "sessionId": manifest.primary_session_id,
+                "expectedRevision": observed["session"]["revision"],
+                "path": destination,
+            }),
+            Attachments::new(),
+        )
+        .await;
+        assert_eq!(rebound["kind"], "changed", "{rebound}");
+
         let followup = call(
             &client,
             "agent",

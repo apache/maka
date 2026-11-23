@@ -548,6 +548,9 @@ impl Rig {
                 "metadata",
                 "project",
                 "projects",
+                "sessionWorkspaceAvailable",
+                "changeSessionWorkspace",
+                "listFiles",
                 "stop",
             ]
         } else {
@@ -697,7 +700,11 @@ impl Rig {
         )
         .await?;
         self.host = Some(host.clone());
+        #[cfg(unix)]
         let socket = self.socket_directory.path().join("wait.sock");
+        #[cfg(windows)]
+        let socket =
+            std::path::PathBuf::from(format!(r"\\.\pipe\maka-agent-test-{}", Uuid::new_v4()));
         let listener = LocalListener::bind(&socket)?;
         let cancel = self.stop_serving.clone();
         self.serving = Some(tokio::spawn(async move {
@@ -3544,6 +3551,7 @@ mod model_recovery {
     mod preset_acceptance;
     mod presets;
     mod work_groups;
+    mod workspace_change;
 
     use super::*;
     use maka_process::lifetime::{ProcessIdentity, ProcessObservation};
