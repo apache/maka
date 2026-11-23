@@ -563,6 +563,46 @@ export function Conversation(props: ConversationProps) {
   const checkingModel = signal(false);
   const sending = () => freezeState().kind === 'reserving' || checkingModel();
   const activeSends = signal<Map<string, FrozenSend>>(new Map());
+  // A message that starts a run is shown in the conversation as it is sent,
+  // before the Host has saved or accepted it; one sent into a running run waits
+  // in the composer's list. `settledSends` are those whose accepted row took over.
+  const settledSends = signal<ReadonlySet<string>>(new Set());
+  // Decided once, as the message is sent: the run it starts must not move it.
+  const runStarters = new Map<string, boolean>();
+  const startsRun = (frozen: FrozenSend) => {
+    let starts = runStarters.get(frozen.id);
+    if (starts === undefined) {
+      starts = frozen.selection.expectedRunId === undefined && untracked(runId) === null;
+      runStarters.set(frozen.id, starts);
+    }
+    return starts;
+  };
+  const outgoing = computed<Row[]>(() => {
+    const freezing = freezeState();
+    const sends = [
+      ...(freezing.kind === 'reserving' ? [freezing.frozen] : []),
+      ...activeSends().values(),
+    ];
+    return sends
+      .filter((frozen) => startsRun(frozen) && !settledSends().has(frozen.id))
+      .map((frozen) => ({
+        key: `pending/local/${frozen.id}`,
+        quotes: frozen.edit.quotes,
+        messageId: `local/${frozen.id}`,
+        field: 'body',
+        role: 'user',
+        text: frozen.text,
+        attachments: frozen.files.map(
+          (file): AgentHistoryAttachment => ({
+            name: file.name,
+            mimeType: file.mimeType,
+            bytes: file.bytes,
+            kind: file.mimeType.startsWith('image/') ? 'image' : 'other',
+          }),
+        ),
+      }));
+  });
+  const shownPending = () => [...pendingMessages(), ...outgoing()];
   const sendErrors = signal<Map<string, UiText>>(new Map());
   const checkingSends = signal<Set<string>>(new Set());
   const restoringSends = signal<Set<string>>(new Set());
@@ -671,7 +711,7 @@ export function Conversation(props: ConversationProps) {
   const currentRow = (id: string) =>
     historyRows().byId.get(id) ??
     liveRows().byId.get(id) ??
-    pendingMessages().find((row) => stableRowId(row) === id);
+    shownPending().find((row) => stableRowId(row) === id);
   const processLive = computed<readonly ProcessRow[]>(() => (atHistoryTail() ? live() : []), {
     equals: sameProcessRows,
   });
@@ -804,7 +844,7 @@ export function Conversation(props: ConversationProps) {
     const sections = [...durableSections().values()];
     const live = processLive();
     const activity = processActivity();
-    const pending = atHistoryTail() ? pendingMessages() : undefined;
+    const pending = atHistoryTail() ? shownPending() : undefined;
     const active = runId() === null ? null : runTurn();
     const answer = answerTurn();
     // A live preview, including a late one, belongs to the same ordered
@@ -1110,7 +1150,8 @@ export function Conversation(props: ConversationProps) {
   const workingEntries: DisplayEntry[] = [{ kind: 'botWorking', key: 'bot/working' }];
   const ordinaryChatSections = computed(() => {
     const sections = chatDisplaySections();
-    if (!runAtWork()) return sections;
+    // A message on its way out is answered by the same row a run at work shows.
+    if (!runAtWork() && outgoing().length === 0) return sections;
     const running = runTurn();
     const headed =
       running !== null &&
@@ -3239,6 +3280,7 @@ export function Conversation(props: ConversationProps) {
         return;
       }
       const sent = await confirmSend(client, id);
+      if (alive) settledSends.set(new Set(settledSends()).add(id));
       if (alive)
         settleReply(
           sent.reply,
@@ -3682,6 +3724,7 @@ export function Conversation(props: ConversationProps) {
       });
     }
     for (const [id, frozen] of activeSends()) {
+      if (startsRun(frozen)) continue;
       statuses.set(id, {
         id,
         text: frozen.text,
@@ -3694,7 +3737,10 @@ export function Conversation(props: ConversationProps) {
       });
     }
     const freezing = freezeState();
-    if (freezing.kind !== 'idle')
+    if (
+      freezing.kind === 'failed' ||
+      (freezing.kind === 'reserving' && !startsRun(freezing.frozen))
+    )
       statuses.set(freezing.frozen.id, {
         id: freezing.frozen.id,
         text: freezing.frozen.text,

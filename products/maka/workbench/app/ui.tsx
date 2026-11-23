@@ -352,6 +352,8 @@ export function Disclosure(props: {
   reserveChevron?: boolean;
   /** On the desktop, what the row is, in place of the chevron. */
   icon?: Parameters<typeof Icon>[0]['name'];
+  /** Drawn in place of `icon`, for a row whose icon moves. */
+  mark?: JSX.Element;
   terminalInset?: number;
   onPress: () => void;
   children: JSX.Element;
@@ -404,7 +406,9 @@ export function Disclosure(props: {
             </If>
           }
         >
-          <Icon name={icon()!} color={C.muted} />
+          <If when={props.mark === undefined} else={props.mark}>
+            <Icon name={icon()!} color={C.muted} />
+          </If>
         </If>
         {props.children}
       </Button>

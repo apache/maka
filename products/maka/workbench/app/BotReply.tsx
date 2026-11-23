@@ -27,6 +27,7 @@ import { tr } from './locale';
 import { compactCopyInset, CompactReplyFooter, LocalMessageCopy } from './CompactReplyFooter';
 import type { replyMetrics } from './replyDetails';
 import { Icon } from './Icon';
+import { ShimmerText, ThinkingMark } from './Loading';
 import { splitSpecMarkdown } from './spec/session.ts';
 import { C, bodyTextStyle, captionTextStyle } from './ui';
 
@@ -276,10 +277,11 @@ export function BotWaiting(props: {
 export function BotWorking(props: { detail: () => string }) {
   return (
     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 8 }}>
-      <Icon name="activity" color={C.accent} />
-      <Text style={[{ ...captionTextStyle, color: C.muted }, { numberOfLines: 1 }]}>
-        {props.detail() ? `${tr('Working…')} · ${props.detail()}` : tr('Working…')}
-      </Text>
+      <ThinkingMark />
+      <ShimmerText
+        text={props.detail() ? `${tr('Working…')} · ${props.detail()}` : tr('Working…')}
+        style={captionTextStyle}
+      />
     </View>
   );
 }
