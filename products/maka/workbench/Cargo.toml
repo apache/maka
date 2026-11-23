@@ -25,6 +25,7 @@ publish.workspace = true
 build = "build.rs"
 
 [dependencies]
+zstd.workspace = true
 base64 = "0.23.1"
 clipboard-rs = { version = "0.3.5", features = ["wayland"] }
 image = { version = "0.25", default-features = false, features = ["bmp", "png"] }
@@ -67,6 +68,7 @@ objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std"
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "objc2-core-foundation", "NSArray", "NSData", "NSDictionary", "NSGeometry", "NSString", "NSURL"] }
 
 [build-dependencies]
+zstd.workspace = true
 cc = "1"
 maka-ui-build.workspace = true
 

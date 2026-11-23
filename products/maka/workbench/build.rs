@@ -68,8 +68,8 @@ fn main() {
             println!("cargo:rerun-if-changed={}", input.display());
         }
         maka_ui_build::write_if_changed(
-            &output.join(format!("{name}.js")),
-            &std::fs::read(module.module).expect("read shared UI surface"),
+            &output.join(format!("{name}.js.zst")),
+            &zstd::stream::compress_file(module.module, 9).expect("compress shared UI surface"),
         )
         .expect("write shared UI surface");
     }

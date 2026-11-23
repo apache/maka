@@ -146,7 +146,12 @@ pub(crate) fn all() -> Result<&'static BTreeMap<String, ProviderFacts>> {
     static FACTS: OnceLock<std::result::Result<BTreeMap<String, ProviderFacts>, String>> =
         OnceLock::new();
     FACTS
-        .get_or_init(|| parse(include_str!("../data/catalog-facts.json")))
+        .get_or_init(|| {
+            let bytes =
+                zstd::decode_all(&include_bytes!(concat!(env!("OUT_DIR"), "/catalog.zst"))[..])
+                    .map_err(|error| error.to_string())?;
+            parse(std::str::from_utf8(&bytes).map_err(|error| error.to_string())?)
+        })
         .as_ref()
         .map_err(|error| Error::Invalid(error.clone()))
 }

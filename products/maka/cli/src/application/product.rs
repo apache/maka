@@ -23,7 +23,11 @@ use maka_event_log::applications::PreparedApplication;
 use maka_js_runtime::plugin::Vm;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::{collections::BTreeMap, io::Write, path::PathBuf};
+use std::{
+    collections::BTreeMap,
+    io::{Read, Write},
+    path::PathBuf,
+};
 
 mod baseline;
 mod headless;
@@ -47,7 +51,8 @@ pub(crate) fn root_path(root: Option<PathBuf>) -> Result<PathBuf, HostError> {
 
 struct Bundled {
     name: &'static str,
-    files: &'static [(&'static str, &'static [u8])],
+    frame: &'static [u8],
+    files: &'static [(&'static str, usize)],
 }
 include!(concat!(env!("OUT_DIR"), "/product-assets.rs"));
 
@@ -73,10 +78,7 @@ struct Sources {
 impl Compose {
     pub(super) async fn run(self) -> Result<(), HostError> {
         let configuration = read_json(&self.configuration)?;
-        let version = bundle_fingerprint()?;
-        let packages = tokio::task::spawn_blocking(packages).await??;
-        let authoring = authoring()?;
-        verified_fingerprint(&authoring, &packages, &version)?;
+        let (packages, authoring) = tokio::task::spawn_blocking(load_product).await??;
         let (sources, installation, _) =
             author_with_source(configuration, &packages, &authoring).await?;
         tokio::task::spawn_blocking(move || export(self.output, sources, installation, packages))
@@ -90,11 +92,13 @@ fn packages() -> Result<BTreeMap<String, Package>, HostError> {
     BUNDLED
         .iter()
         .map(|bundled| {
-            let files = bundled
-                .files
-                .iter()
-                .map(|(name, bytes)| ((*name).into(), bytes.to_vec()))
-                .collect();
+            let mut reader = zstd::Decoder::with_buffer(bundled.frame)?;
+            let mut files = BTreeMap::new();
+            for &(name, size) in bundled.files {
+                let mut bytes = vec![0; size];
+                reader.read_exact(&mut bytes)?;
+                files.insert(name.into(), bytes);
+            }
             Ok((bundled.name.into(), Package::new(files)?))
         })
         .collect()
@@ -139,8 +143,11 @@ fn verified_fingerprint(
     }
     Ok(actual)
 }
-fn authoring() -> Result<String, HostError> {
-    Ok(AUTHORING.into())
+fn load_product() -> Result<(BTreeMap<String, Package>, String), HostError> {
+    let packages = packages()?;
+    let authoring = String::from_utf8(zstd::decode_all(AUTHORING)?)?;
+    verified_fingerprint(&authoring, &packages, PRODUCT_VERSION.trim_end())?;
+    Ok((packages, authoring))
 }
 
 async fn author_with_source(

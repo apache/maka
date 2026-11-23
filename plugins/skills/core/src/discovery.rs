@@ -185,7 +185,7 @@ async fn scan_impl(
                 document: source.document,
                 content_sha256: source.content_sha256,
                 shadowed_by: None,
-                resources: source.resources.capture(),
+                resources: source.resources,
             });
         }
     }
