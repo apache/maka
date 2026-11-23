@@ -56,7 +56,9 @@ async function setup(t, initialStatus = 'default', desktop = true) {
   const permission = t.mock.fn(async () => status);
   const requestPermission = t.mock.fn(() => prompt.promise);
   globalThis.__notificationFixture = {
+    batch: (fn) => fn(),
     cleanup: (fn) => cleanups.push(fn),
+    computed: (fn) => fn,
     effect(fn) {
       const run = () => {
         effects.sessions.delete(run);
@@ -64,6 +66,14 @@ async function setup(t, initialStatus = 'default', desktop = true) {
         track(run, fn);
       };
       run();
+    },
+    signal(initial) {
+      let current = initial;
+      const read = () => current;
+      read.set = (next) => {
+        current = next;
+      };
+      return read;
     },
     untracked: (read) => track(undefined, read),
     Notifications: {
@@ -81,7 +91,7 @@ async function setup(t, initialStatus = 'default', desktop = true) {
     Window: { get: (id) => ({ focus: () => actions.push(['focus', id]) }) },
   };
   const native = {
-    nsh: 'export const { cleanup, effect, Notifications, untracked } = globalThis.__notificationFixture;',
+    nsh: 'export const { batch, cleanup, computed, effect, Notifications, signal, untracked } = globalThis.__notificationFixture;',
     'nsh/desktop': 'export const { Window } = globalThis.__notificationFixture;',
     './chrome': `export const ownTitleBar = ${desktop};`,
     './locale': 'export const tr = key => key;',
@@ -111,6 +121,7 @@ async function setup(t, initialStatus = 'default', desktop = true) {
         sessions: () => read('sessions'),
         foreground: () => read('foreground'),
         open: (id) => actions.push(['open', id]),
+        openDiscovery: (topicId) => actions.push(['openDiscovery', topicId]),
       }),
     update: (...rows) => update('sessions', rows),
     foreground: (value) => update('foreground', value),
@@ -226,6 +237,15 @@ for (const status of ['granted', 'denied', 'unavailable']) {
     );
   });
 }
+
+test('discovery notification presses focus main and route to openDiscovery', async (t) => {
+  const { presses, actions } = await setup(t, 'granted');
+  presses.emit('press', { id: 'discovery:video_x' });
+  assert.deepEqual(actions, [
+    ['focus', 'main'],
+    ['openDiscovery', 'video_x'],
+  ]);
+});
 
 test('a terminal never subscribes or asks for notification permission', async (t) => {
   const { owner, permission, presses } = await setup(t, 'default', false);

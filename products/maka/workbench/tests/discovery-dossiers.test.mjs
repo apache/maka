@@ -152,8 +152,10 @@ test('the window posts native interrupts, rebaselines a reconnected stream and r
   const source = (js) => `data:text/javascript,${encodeURIComponent(js)}`;
   const native = source(`
     export const calls = [], listeners = new Map(), disposers = [];
-    export const host = {
-      call: async (method, data) => { calls.push({method, data}); },
+    export const Notifications = {
+      permission: async () => 'granted',
+      requestPermission: async () => 'granted',
+      show: async (data) => { calls.push(data); return true; },
       on: (event, handler) => { listeners.set(event, handler); return () => listeners.delete(event); },
     };
     export const signal = (value) => Object.assign(() => value, {set: (next) => { value = next; }});
@@ -162,7 +164,7 @@ test('the window posts native interrupts, rebaselines a reconnected stream and r
     export const computed = (fn) => fn, untracked = (fn) => fn(), batch = untracked;
   `);
   const desktop = source(
-    'export let focused = 0; export const currentWindow = () => ({focus: () => focused++});',
+    "export let focused = 0; export const Window = { get: (id) => (id === 'main' ? { focus: () => focused++ } : null) };",
   );
   const stubs = new Map([
     ['nsh', native],
@@ -230,29 +232,23 @@ test('the window posts native interrupts, rebaselines a reconnected stream and r
   assert.deepEqual(
     calls,
     [3, 5].flatMap((n) => [
-      {
-        method: 'notification.show',
-        data: { tag: 'discovery:a', title: 'a', body: 'Signature due' },
-      },
-      {
-        method: 'notification.show',
-        data: { tag: 'discovery:b', title: 'b', body: `Deadline ${n}` },
-      },
+      { id: 'discovery:a', title: 'a', body: 'Signature due' },
+      { id: 'discovery:b', title: 'b', body: `Deadline ${n}` },
     ]),
   );
-  const click = listeners.get('notification.open');
-  click({ tag: 'discovery:b' });
-  click({ tag: 'discovery:a' });
-  click({ tag: 'discovery:' });
-  click({ tag: 'main-session' });
-  click({ tag: 'discovery:b' });
+  const click = listeners.get('press');
+  click({ id: 'discovery:b' });
+  click({ id: 'discovery:a' });
+  click({ id: 'discovery:' });
+  click({ id: 'main-session' });
+  click({ id: 'discovery:b' });
   assert.deepEqual(opened, [
     ['dossier', 'b'],
     ['dossier', 'a'],
     ['session', 'main-session'],
     ['dossier', 'b'],
   ]);
-  assert.equal(window.focused, 3);
+  assert.equal(window.focused, 5);
   for (const stop of disposers.reverse()) stop();
   await flush();
   t.mock.timers.tick(10000);
