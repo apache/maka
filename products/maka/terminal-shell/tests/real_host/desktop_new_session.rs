@@ -1289,6 +1289,7 @@ async fn desktop_history_anchors_keep_the_reader_off_live_output_until_latest() 
             )
             .await;
     }
+    desktop.control("Jump to turn: History prompt 6").await;
     desktop.press("Jump to turn: History prompt 2").await;
     desktop.control("Return to latest").await;
     let copy = desktop.control("Copy user message").await;
