@@ -286,10 +286,27 @@ mod tests {
         ] {
             assert!(Resources::embedded(files).is_err());
         }
-        let captured = Resources::embedded(&[("binary", None)]).unwrap();
+        static FRAME: std::sync::LazyLock<Vec<u8>> =
+            std::sync::LazyLock::new(|| zstd::bulk::compress(b"deep", 9).unwrap());
+        static TEXT: std::sync::LazyLock<EmbeddedText> =
+            std::sync::LazyLock::new(|| EmbeddedText::new(&FRAME, "fixture"));
+        let path = "a/b/c/d/e/f/g/h/i/j";
+        let captured = Resources::embedded(&[(path, Some(&TEXT)), ("binary", None)]).unwrap();
         assert!(matches!(
             captured.files["binary"],
             Resource::Unavailable(DiscoveryFailure::ReadFailed)
         ));
+        let (_, page) = captured
+            .page(
+                "bundled:test",
+                &ReadInput {
+                    path: path.into(),
+                    offset: None,
+                    limit: None,
+                },
+            )
+            .unwrap();
+        assert_eq!(page.content, "deep");
+        assert_eq!(page.next, None);
     }
 }
