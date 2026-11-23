@@ -776,10 +776,10 @@ fn ios_shell_drives_live_agent_host_with_real_agent_contract_schemas() {
         DirectoryPage, GitWorkspaceDiffRead, History, HistoryChunk, HistoryOrder, HistoryPage,
         HistoryRowAddress, InteractionKind, InteractionRead, InteractionRespond, InteractionResult,
         InteractionSummary, List, Observation, PendingInteractions, PreviewField, PreviewPage,
-        PreviewPart, Project, ProjectRef, ProjectsPage, ProjectsRead, Queue, QueueEntry, QueueKind,
-        Run, RunBackend, RunState, ScheduleRead, ScheduledSummary, Schedules, Send as AgentSend,
-        SendResult, Session, SessionActivity, SessionKind, SessionPage, SessionRead, Watch,
-        Workspace, WorkspaceAccess, WorkspacePermissions,
+        PreviewPart, Project, ProjectRef, ProjectsPage, ProjectsRead, Run, RunBackend, RunState,
+        ScheduleRead, ScheduledSummary, Schedules, Send as AgentSend, SendResult, Session,
+        SessionActivity, SessionKind, SessionPage, SessionRead, Watch, Workspace, WorkspaceAccess,
+        WorkspacePermissions,
     };
     use maka_agent_facts::{
         durable::{
@@ -828,6 +828,23 @@ fn ios_shell_drives_live_agent_host_with_real_agent_contract_schemas() {
     let watch_opens = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let catalog_opens = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let list_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let queue_state = Arc::new(std::sync::Mutex::new(json!({
+        "revision": 2, "entries": [
+            {"messageId":"q-1", "kind":"followup", "preview":"短预览"},
+            {"messageId":"q-hidden", "kind":"followup", "preview":"内部完成", "origin":{"kind":"session_completion", "sessionId":"worker", "messageId":"msg"}},
+            {"messageId":"q-2", "kind":"followup", "preview":"第二条"},
+            {"messageId":"q-held", "kind":"held", "preview":"等待恢复"}
+        ]
+    })));
+    let queue_changed = Arc::new(Notify::new());
+    let queue_conflict = Arc::new(AtomicBool::new(true));
+    let queue_hold_reply = Arc::new(AtomicBool::new(false));
+    let queue_reply_entered = Arc::new(Notify::new());
+    let queue_reply_release = Arc::new(Notify::new());
+    let queue_body = Arc::new(std::sync::Mutex::new(String::new()));
+    let queue_edits = Arc::new(std::sync::Mutex::new(Vec::<Value>::new()));
+    let full_message = "完整正文超过预览范围：".to_string() + &"长内容".repeat(40) + "正文末尾";
+    *queue_body.lock().unwrap() = full_message.clone();
     let watch_cancelled = Arc::new(AtomicBool::new(false));
     let watch_cancel_notify = Arc::new(Notify::new());
     let perm_resolved = Arc::new(AtomicBool::new(false));
@@ -860,6 +877,14 @@ fn ios_shell_drives_live_agent_host_with_real_agent_contract_schemas() {
         watch_opens: Arc<std::sync::atomic::AtomicUsize>,
         catalog_opens: Arc<std::sync::atomic::AtomicUsize>,
         list_calls: Arc<std::sync::atomic::AtomicUsize>,
+        queue_state: Arc<std::sync::Mutex<Value>>,
+        queue_changed: Arc<Notify>,
+        queue_conflict: Arc<AtomicBool>,
+        queue_hold_reply: Arc<AtomicBool>,
+        queue_reply_entered: Arc<Notify>,
+        queue_reply_release: Arc<Notify>,
+        queue_body: Arc<std::sync::Mutex<String>>,
+        queue_edits: Arc<std::sync::Mutex<Vec<Value>>>,
         watch_cancelled: Arc<AtomicBool>,
         watch_cancel_notify: Arc<Notify>,
         perm_resolved: Arc<AtomicBool>,
@@ -951,6 +976,14 @@ fn ios_shell_drives_live_agent_host_with_real_agent_contract_schemas() {
             let watch_opens = self.watch_opens.clone();
             let catalog_opens = self.catalog_opens.clone();
             let list_calls = self.list_calls.clone();
+            let queue_state = self.queue_state.clone();
+            let queue_changed = self.queue_changed.clone();
+            let queue_conflict = self.queue_conflict.clone();
+            let queue_hold_reply = self.queue_hold_reply.clone();
+            let queue_reply_entered = self.queue_reply_entered.clone();
+            let queue_reply_release = self.queue_reply_release.clone();
+            let queue_body = self.queue_body.clone();
+            let queue_edits = self.queue_edits.clone();
             let watch_cancelled = self.watch_cancelled.clone();
             let watch_cancel_notify = self.watch_cancel_notify.clone();
             let perm_resolved = self.perm_resolved.clone();
@@ -1137,190 +1170,221 @@ fn ios_shell_drives_live_agent_host_with_real_agent_contract_schemas() {
                             .map_err(|e| HandlerError::from(e.to_string()))?;
                         assert_eq!(req.session_id, "sess-quic-01");
                         watch_opens.fetch_add(1, Ordering::SeqCst);
-                        // Opening the selected session can replace its initial watch.
-                        // Only the resume cursor can unlock the data after the break.
-                        if req.after == 12 {
+                        if req.after != 12 {
+                            assert_eq!(req.after, 10, "watch must resume from Observation.through");
+                            // 1. Real DeliveryPage::Events with Delivery + DeliveryFact::Delta
+                            let events_page = serde_json::to_value(&DeliveryPage::Events {
+                                through: 11,
+                                next_after: 11,
+                                events: vec![Delivery {
+                                    sequence: 11,
+                                    run_id: active_run,
+                                    turn_id: "t-1".into(),
+                                    fact: DeliveryFact::Delta {
+                                        step_id,
+                                        attempt_id,
+                                        part_id: "p-1".into(),
+                                        text: "真实 DeliveryPage 增量：".into(),
+                                    },
+                                }],
+                            })
+                            .unwrap();
+                            context
+                                .emit(events_page)
+                                .await
+                                .map_err(|e| HandlerError::from(e.to_string()))?;
+
+                            // 2. Real incremental multi-chunk DeliveryPage::Preview (thinking + body UTF-8 byte offsets)
+                            let think_a = "正在推演 ";
+                            let think_b = "RPK 链路";
+                            let think_total = (think_a.len() + think_b.len()) as u64;
+                            let body_a = "实时流式预览：";
+                            let body_b = "远端 QUIC 握手校验已就绪。";
+                            let body_total = (body_a.len() + body_b.len()) as u64;
+
+                            let emit_cut = |rev: u64,
+                                            ordinal: u64,
+                                            msg_id: &str,
+                                            text_kind: ContentKind,
+                                            offset: u64,
+                                            total_bytes: u64,
+                                            text: &str| {
+                                serde_json::to_value(&DeliveryPage::Preview {
+                                    page: PreviewPage::Cut {
+                                        host_epoch: "epoch-1".into(),
+                                        run_id: active_run,
+                                        turn_id: "t-1".into(),
+                                        step_id,
+                                        attempt_id,
+                                        revision: rev,
+                                        depends_on: 0,
+                                        first: true,
+                                        last: true,
+                                        parts: vec![PreviewPart {
+                                            ordinal: Some(ordinal),
+                                            message_id: msg_id.into(),
+                                            provider_part_id: Some("p-1".into()),
+                                            started_at: 1_795_300_000_000.0,
+                                            field: PreviewField::Text {
+                                                text_kind,
+                                                final_answer: false,
+                                            },
+                                            offset,
+                                            total_bytes,
+                                            text: text.into(),
+                                        }],
+                                    },
+                                })
+                                .unwrap()
+                            };
+
+                            context
+                                .emit(emit_cut(
+                                    1,
+                                    0,
+                                    "m-think-1",
+                                    ContentKind::Thinking,
+                                    0,
+                                    think_total,
+                                    think_a,
+                                ))
+                                .await
+                                .map_err(|e| HandlerError::from(e.to_string()))?;
+                            // Mid-stream transcript_changed (e.g. user prompt committed) must NOT wipe active preview.
                             context
                                 .emit(
-                                    serde_json::to_value(&DeliveryPage::Queue {
-                                        queue: Queue {
-                                            revision: 3,
-                                            entries: vec![QueueEntry {
-                                                origin: None,
-                                                message_id: "q-2".into(),
-                                                kind: QueueKind::Followup,
-                                                preview: "重连后收到的消息".into(),
-                                            }],
-                                        },
+                                    serde_json::to_value(&DeliveryPage::Events {
+                                        through: 12,
+                                        next_after: 12,
+                                        events: vec![Delivery {
+                                            sequence: 12,
+                                            run_id: active_run,
+                                            turn_id: "t-1".into(),
+                                            fact: DeliveryFact::TranscriptChanged,
+                                        }],
                                     })
                                     .unwrap(),
                                 )
                                 .await
                                 .map_err(|e| HandlerError::from(e.to_string()))?;
-                            context.scope().cancellation.cancelled().await;
-                            watch_cancelled.store(true, Ordering::SeqCst);
-                            watch_cancel_notify.notify_waiters();
-                            return Ok(HandlerValue::Json(Value::Null));
+                            context
+                                .emit(emit_cut(
+                                    2,
+                                    0,
+                                    "m-think-1",
+                                    ContentKind::Thinking,
+                                    think_a.len() as u64,
+                                    think_total,
+                                    think_b,
+                                ))
+                                .await
+                                .map_err(|e| HandlerError::from(e.to_string()))?;
+                            context
+                                .emit(emit_cut(
+                                    3,
+                                    1,
+                                    "m-preview-1",
+                                    ContentKind::Text,
+                                    0,
+                                    body_total,
+                                    body_a,
+                                ))
+                                .await
+                                .map_err(|e| HandlerError::from(e.to_string()))?;
+                            context
+                                .emit(emit_cut(
+                                    4,
+                                    1,
+                                    "m-preview-1",
+                                    ContentKind::Text,
+                                    body_a.len() as u64,
+                                    body_total,
+                                    body_b,
+                                ))
+                                .await
+                                .map_err(|e| HandlerError::from(e.to_string()))?;
                         }
-                        assert_eq!(req.after, 10, "watch must resume from Observation.through");
-
-                        // 1. Real DeliveryPage::Events with Delivery + DeliveryFact::Delta
-                        let events_page = serde_json::to_value(&DeliveryPage::Events {
-                            through: 11,
-                            next_after: 11,
-                            events: vec![Delivery {
-                                sequence: 11,
-                                run_id: active_run,
-                                turn_id: "t-1".into(),
-                                fact: DeliveryFact::Delta {
-                                    step_id,
-                                    attempt_id,
-                                    part_id: "p-1".into(),
-                                    text: "真实 DeliveryPage 增量：".into(),
-                                },
-                            }],
-                        })
-                        .unwrap();
-                        context
-                            .emit(events_page)
-                            .await
-                            .map_err(|e| HandlerError::from(e.to_string()))?;
-
-                        // 2. Real incremental multi-chunk DeliveryPage::Preview (thinking + body UTF-8 byte offsets)
-                        let think_a = "正在推演 ";
-                        let think_b = "RPK 链路";
-                        let think_total = (think_a.len() + think_b.len()) as u64;
-                        let body_a = "实时流式预览：";
-                        let body_b = "远端 QUIC 握手校验已就绪。";
-                        let body_total = (body_a.len() + body_b.len()) as u64;
-
-                        let emit_cut = |rev: u64,
-                                        ordinal: u64,
-                                        msg_id: &str,
-                                        text_kind: ContentKind,
-                                        offset: u64,
-                                        total_bytes: u64,
-                                        text: &str| {
-                            serde_json::to_value(&DeliveryPage::Preview {
-                                page: PreviewPage::Cut {
-                                    host_epoch: "epoch-1".into(),
-                                    run_id: active_run,
-                                    turn_id: "t-1".into(),
-                                    step_id,
-                                    attempt_id,
-                                    revision: rev,
-                                    depends_on: 0,
-                                    first: true,
-                                    last: true,
-                                    parts: vec![PreviewPart {
-                                        ordinal: Some(ordinal),
-                                        message_id: msg_id.into(),
-                                        provider_part_id: Some("p-1".into()),
-                                        started_at: 1_795_300_000_000.0,
-                                        field: PreviewField::Text {
-                                            text_kind,
-                                            final_answer: false,
-                                        },
-                                        offset,
-                                        total_bytes,
-                                        text: text.into(),
-                                    }],
-                                },
-                            })
-                            .unwrap()
-                        };
-
-                        context
-                            .emit(emit_cut(
-                                1,
-                                0,
-                                "m-think-1",
-                                ContentKind::Thinking,
-                                0,
-                                think_total,
-                                think_a,
-                            ))
-                            .await
-                            .map_err(|e| HandlerError::from(e.to_string()))?;
-                        // Mid-stream transcript_changed (e.g. user prompt committed) must NOT wipe active preview.
-                        context
-                            .emit(
-                                serde_json::to_value(&DeliveryPage::Events {
-                                    through: 12,
-                                    next_after: 12,
-                                    events: vec![Delivery {
-                                        sequence: 12,
-                                        run_id: active_run,
-                                        turn_id: "t-1".into(),
-                                        fact: DeliveryFact::TranscriptChanged,
-                                    }],
-                                })
-                                .unwrap(),
-                            )
-                            .await
-                            .map_err(|e| HandlerError::from(e.to_string()))?;
-                        context
-                            .emit(emit_cut(
-                                2,
-                                0,
-                                "m-think-1",
-                                ContentKind::Thinking,
-                                think_a.len() as u64,
-                                think_total,
-                                think_b,
-                            ))
-                            .await
-                            .map_err(|e| HandlerError::from(e.to_string()))?;
-                        context
-                            .emit(emit_cut(
-                                3,
-                                1,
-                                "m-preview-1",
-                                ContentKind::Text,
-                                0,
-                                body_total,
-                                body_a,
-                            ))
-                            .await
-                            .map_err(|e| HandlerError::from(e.to_string()))?;
-                        context
-                            .emit(emit_cut(
-                                4,
-                                1,
-                                "m-preview-1",
-                                ContentKind::Text,
-                                body_a.len() as u64,
-                                body_total,
-                                body_b,
-                            ))
-                            .await
-                            .map_err(|e| HandlerError::from(e.to_string()))?;
-
-                        // 3. Real DeliveryPage::Queue
-                        let queue_page = serde_json::to_value(&DeliveryPage::Queue {
-                            queue: Queue {
-                                revision: 2,
-                                entries: vec![QueueEntry {
-                                    origin: None,
-                                    message_id: "q-1".into(),
-                                    kind: QueueKind::Followup,
-                                    preview: "顺手跑一下 clippy".into(),
-                                }],
-                            },
-                        })
-                        .unwrap();
-                        context
-                            .emit(queue_page)
-                            .await
-                            .map_err(|e| HandlerError::from(e.to_string()))?;
-
-                        tokio::select! {
-                            _ = watch_break.notified() => return Err(HandlerError::from("watch-test-interruption")),
-                            _ = context.scope().cancellation.cancelled() => {},
+                        loop {
+                            let queue = queue_state.lock().unwrap().clone();
+                            context
+                                .emit(json!({"kind":"queue", "queue":queue}))
+                                .await
+                                .map_err(|e| HandlerError::from(e.to_string()))?;
+                            tokio::select! {
+                                _ = queue_changed.notified() => {},
+                                _ = watch_break.notified() => return Err(HandlerError::from("watch-test-interruption")),
+                                _ = context.scope().cancellation.cancelled() => break,
+                            }
                         }
                         watch_cancelled.store(true, Ordering::SeqCst);
                         watch_cancel_notify.notify_waiters();
                         Ok(HandlerValue::Json(Value::Null))
+                    }
+                    "queueMessage" => {
+                        let req: maka_agent_api::contract::QueueMessage =
+                            serde_json::from_value(input)
+                                .map_err(|e| HandlerError::from(e.to_string()))?;
+                        let revision = queue_state.lock().unwrap()["revision"].as_u64().unwrap();
+                        if req.expected_revision != revision {
+                            return to_val(
+                                &json!({"kind":"revision_conflict", "expected":req.expected_revision, "actual":revision}),
+                            );
+                        }
+                        assert_eq!(req.message_id, "q-1");
+                        let message = queue_body.lock().unwrap().clone();
+                        to_val(
+                            &json!({"kind":"ready", "revision":revision, "message":message, "hasAttachments":false, "quotes":[]}),
+                        )
+                    }
+                    "editQueue" => {
+                        let req: maka_agent_api::contract::QueueMutation =
+                            serde_json::from_value(input.clone())
+                                .map_err(|e| HandlerError::from(e.to_string()))?;
+                        let revision = {
+                            let mut state = queue_state.lock().unwrap();
+                            let revision = state["revision"].as_u64().unwrap();
+                            if queue_conflict.swap(false, Ordering::SeqCst) {
+                                *queue_body.lock().unwrap() = "对端更新后的真实正文".into();
+                                state["entries"][0]["preview"] = json!("对端更新后的真实正文");
+                                state["revision"] = json!(revision + 1);
+                                queue_changed.notify_one();
+                                return to_val(
+                                    &json!({"kind":"revision_conflict", "expected":req.expected_revision, "actual":revision + 1}),
+                                );
+                            }
+                            assert_eq!(req.expected_revision, revision);
+                            queue_edits.lock().unwrap().push(input["edit"].clone());
+                            if let Some(ids) = input["edit"]["messageIds"].as_array() {
+                                let entries = state["entries"].as_array().unwrap().clone();
+                                let mut sorted: Vec<Value> = ids
+                                    .iter()
+                                    .map(|id| {
+                                        entries
+                                            .iter()
+                                            .find(|e| e["messageId"] == *id)
+                                            .unwrap()
+                                            .clone()
+                                    })
+                                    .collect();
+                                sorted.extend(
+                                    entries.into_iter().filter(|e| e["kind"] != "followup"),
+                                );
+                                state["entries"] = json!(sorted);
+                            } else {
+                                *queue_body.lock().unwrap() =
+                                    input["edit"]["message"].as_str().unwrap().to_owned();
+                                state["entries"][0]["preview"] = json!("已保存的编辑");
+                            }
+                            state["revision"] = json!(revision + 1);
+                            revision + 1
+                        };
+                        if queue_hold_reply.swap(false, Ordering::SeqCst) {
+                            queue_reply_entered.notify_one();
+                            queue_reply_release.notified().await;
+                        } else {
+                            queue_changed.notify_one();
+                        }
+                        to_val(&json!({"kind":"committed", "revision":revision}))
                     }
                     "pendingInteractions" => {
                         let _req: SessionRead = serde_json::from_value(input)
@@ -1621,6 +1685,14 @@ fn ios_shell_drives_live_agent_host_with_real_agent_contract_schemas() {
         let wo_clone = watch_opens.clone();
         let co_clone = catalog_opens.clone();
         let lc_clone = list_calls.clone();
+        let qs_clone = queue_state.clone();
+        let qc_clone = queue_changed.clone();
+        let qconf_clone = queue_conflict.clone();
+        let qhold_clone = queue_hold_reply.clone();
+        let qentered_clone = queue_reply_entered.clone();
+        let qrelease_clone = queue_reply_release.clone();
+        let qbody_clone = queue_body.clone();
+        let qe_clone = queue_edits.clone();
         let wc_clone = watch_cancelled.clone();
         let wcn_clone = watch_cancel_notify.clone();
         let perm_clone = perm_resolved.clone();
@@ -1639,6 +1711,14 @@ fn ios_shell_drives_live_agent_host_with_real_agent_contract_schemas() {
                     let watch_opens = wo_clone.clone();
                     let catalog_opens = co_clone.clone();
                     let list_calls = lc_clone.clone();
+                    let queue_state = qs_clone.clone();
+                    let queue_changed = qc_clone.clone();
+                    let queue_conflict = qconf_clone.clone();
+                    let queue_hold_reply = qhold_clone.clone();
+                    let queue_reply_entered = qentered_clone.clone();
+                    let queue_reply_release = qrelease_clone.clone();
+                    let queue_body = qbody_clone.clone();
+                    let queue_edits = qe_clone.clone();
                     let watch_cancelled = wc_clone.clone();
                     let watch_cancel_notify = wcn_clone.clone();
                     let perm_resolved = perm_clone.clone();
@@ -1667,6 +1747,14 @@ fn ios_shell_drives_live_agent_host_with_real_agent_contract_schemas() {
                                         watch_opens,
                                         catalog_opens,
                                         list_calls,
+                                        queue_state,
+                                        queue_changed,
+                                        queue_conflict,
+                                        queue_hold_reply,
+                                        queue_reply_entered,
+                                        queue_reply_release,
+                                        queue_body,
+                                        queue_edits,
                                         watch_cancelled,
                                         watch_cancel_notify,
                                         perm_resolved,
@@ -1689,7 +1777,7 @@ fn ios_shell_drives_live_agent_host_with_real_agent_contract_schemas() {
                     "grant": {
                         "methods": [
                             "projects", "directories", "list", "catalog", "observe", "history",
-                            "watch", "pendingInteractions", "interaction", "respond", "send",
+                            "watch", "queueMessage", "editQueue", "pendingInteractions", "interaction", "respond", "send",
                             "gitWorkspaceDiff", "schedules"
                         ],
                         "recovery": false
@@ -1779,14 +1867,177 @@ fn ios_shell_drives_live_agent_host_with_real_agent_contract_schemas() {
     app.wait_for("text:/正在推演 RPK 链路/").unwrap();
     app.wait_for("text:/实时流式预览：远端 QUIC 握手校验已就绪/")
         .unwrap();
-    app.wait_for("text:/已排队 1 条消息: 顺手跑一下 clippy/")
-        .unwrap();
+    app.wait_for("text:/已排队 3 条消息/").unwrap();
     app.wait_for("text:cargo test -p maka-peer-mesh --locked")
         .unwrap();
     app.wait_for("text:第一题：先处理哪条链路？").unwrap();
     app.wait_for("text:第二题：验证优先级如何安排？").unwrap();
     app.wait_for("text:需要桌面端系统权限").unwrap();
     app.wait_for("label:Cancel system permission wait").unwrap();
+
+    app.press("label:Open queued messages").unwrap();
+    app.press("label:Edit queued q-1").unwrap();
+    app.wait_for("label:Queued message editor").unwrap();
+    assert_eq!(
+        app.screen()
+            .input_text("label:Queued message editor")
+            .unwrap(),
+        Some(full_message.as_str())
+    );
+    app.type_text("label:Queued message editor", "追加编辑")
+        .unwrap();
+    app.press("label:Save queued message").unwrap();
+    app.wait_for("text:/队列已变化/").unwrap();
+    assert!(
+        app.screen()
+            .input_text("label:Queued message editor")
+            .unwrap()
+            .unwrap()
+            .contains("追加编辑")
+    );
+    app.press("label:Review queued message").unwrap();
+    app.wait_for("label:Keep queued edit").unwrap();
+    app.wait_for("text:当前消息: 对端更新后的真实正文").unwrap();
+    assert!(
+        app.screen()
+            .input_text("label:Queued message editor")
+            .unwrap()
+            .unwrap()
+            .contains("正文末尾追加编辑")
+    );
+    app.press("label:Keep queued edit").unwrap();
+    queue_hold_reply.store(true, Ordering::SeqCst);
+    app.press("label:Save queued message").unwrap();
+    rt.block_on(async {
+        tokio::time::timeout(Duration::from_secs(3), queue_reply_entered.notified())
+            .await
+            .unwrap()
+    });
+    app.type_text("label:Queued message editor", "回执期间继续输入")
+        .unwrap();
+    queue_reply_release.notify_one();
+    app.wait_for("text:等待队列同步…").unwrap();
+    watch_break.notify_one();
+    app.wait_for("text:/会话流式订阅中断/").unwrap();
+    app.wait_for("text:/队列同步已中断/").unwrap();
+    assert!(
+        app.screen()
+            .input_text("label:Queued message editor")
+            .unwrap()
+            .unwrap()
+            .contains("回执期间继续输入")
+    );
+    app.press("label:Save queued message").unwrap();
+    assert_eq!(
+        queue_edits.lock().unwrap().len(),
+        1,
+        "stale queue must not issue a mutation"
+    );
+    app.press("label:Retry subscriptions").unwrap();
+    app.wait_for("text:/新的编辑已保留/").unwrap();
+    assert!(
+        app.screen()
+            .input_text("label:Queued message editor")
+            .unwrap()
+            .unwrap()
+            .contains("回执期间继续输入")
+    );
+    app.wait_for("text:已保存的编辑").unwrap();
+    watch_break.notify_one();
+    app.wait_for("text:/队列同步已中断/").unwrap();
+    app.press("label:Save queued message").unwrap();
+    assert_eq!(
+        queue_edits.lock().unwrap().len(),
+        1,
+        "stale queue must block edits even with no pending receipt"
+    );
+    app.press("label:Retry subscriptions").unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    while app.screen().matches("text:/队列同步已中断/").unwrap() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "queue snapshot was not restored"
+        );
+        app.wait(Duration::from_millis(10)).unwrap();
+    }
+    app.press("label:Review queued message").unwrap();
+    app.wait_for("label:Keep queued edit").unwrap();
+    app.press("label:Keep queued edit").unwrap();
+    queue_hold_reply.store(true, Ordering::SeqCst);
+    app.press("label:Save queued message").unwrap();
+    rt.block_on(async {
+        tokio::time::timeout(Duration::from_secs(3), queue_reply_entered.notified())
+            .await
+            .unwrap()
+    });
+    queue_reply_release.notify_one();
+    app.wait_for("text:等待队列同步…").unwrap();
+    watch_break.notify_one();
+    app.wait_for("text:/队列同步已中断/").unwrap();
+    app.press("label:Cancel queued edit").unwrap();
+    assert!(
+        !app.screen().matches("label:Queued message editor").unwrap(),
+        "must be able to exit editing while stale"
+    );
+    app.press("label:Retry subscriptions").unwrap();
+    app.wait_for("label:Move queued up q-2").unwrap();
+    app.press("label:Move queued up q-2").unwrap();
+    rt.block_on(async {
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                if queue_edits.lock().unwrap().len() == 3 {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+    });
+    let edits = queue_edits.lock().unwrap();
+    assert!(
+        edits[0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("正文末尾追加编辑")
+    );
+    assert!(
+        edits[1]["message"]
+            .as_str()
+            .unwrap()
+            .contains("回执期间继续输入")
+    );
+    assert_eq!(edits[2]["messageIds"], json!(["q-2", "q-hidden", "q-1"]));
+    drop(edits);
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    loop {
+        let texts = app.screen().texts();
+        let second = texts.iter().position(|text| *text == "第二条");
+        let first = texts.iter().position(|text| *text == "已保存的编辑");
+        if matches!((second, first), (Some(a), Some(b)) if a < b) {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "watch did not publish reordered rows: {texts:?}"
+        );
+        app.wait(Duration::from_millis(10)).unwrap();
+    }
+    app.press("label:Open queued messages").unwrap();
+    {
+        let mut queue = queue_state.lock().unwrap();
+        queue["revision"] = json!(queue["revision"].as_u64().unwrap() + 1);
+        queue["entries"] = json!([]);
+    }
+    queue_changed.notify_one();
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    while app.screen().matches("label:Open queued messages").unwrap() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "empty queue entry was not removed"
+        );
+        app.wait(Duration::from_millis(10)).unwrap();
+    }
 
     // 4. Approve real Permission with Session scope -> Host validates original permissions & scope!
     app.press("label:Allow session").unwrap();
@@ -1859,10 +2110,19 @@ fn ios_shell_drives_live_agent_host_with_real_agent_contract_schemas() {
     // Each failed stream is retried independently and delivers fresh data.
     let lists_before = list_calls.load(Ordering::SeqCst);
     let catalogs_before = catalog_opens.load(Ordering::SeqCst);
+    {
+        let mut queue = queue_state.lock().unwrap();
+        queue["revision"] = json!(queue["revision"].as_u64().unwrap() + 1);
+        queue["entries"] =
+            json!([{"messageId":"q-2", "kind":"followup", "preview":"重连后收到的消息"}]);
+    }
     watch_break.notify_one();
     app.wait_for("text:/会话流式订阅中断/").unwrap();
     app.press("label:Retry subscriptions").unwrap();
-    app.wait_for("text:/重连后收到的消息/").unwrap();
+    app.wait_for("text:/已排队 1 条消息/").unwrap();
+    app.press("label:Open queued messages").unwrap();
+    app.wait_for("text:重连后收到的消息").unwrap();
+    app.press("label:Open queued messages").unwrap();
     assert_eq!(catalog_opens.load(Ordering::SeqCst), catalogs_before);
     assert_eq!(list_calls.load(Ordering::SeqCst), lists_before);
     assert!(!app.shows("text:/会话流式订阅中断/"));

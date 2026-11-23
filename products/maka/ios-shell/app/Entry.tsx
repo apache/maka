@@ -19,6 +19,7 @@
 
 import {
   cleanup,
+  computed,
   mount,
   safeAreaInsets,
   Scroll,
@@ -40,6 +41,8 @@ import {
 } from './AppleCards';
 import {
   agentChangeSession,
+  agentEditQueue,
+  agentQueueMessage,
   agentControlGoal,
   agentCreateSession,
   agentGitWorkspaceDiff,
@@ -84,6 +87,8 @@ import {
   type AgentInteractionRecord,
   type AgentModelChoice,
   type AgentProject,
+  type AgentQueue,
+  type AgentQueueEntry,
   type AgentRoomMessage,
   type AgentScheduledSummary,
   type AgentSession,
@@ -614,9 +619,55 @@ function App() {
   const composerDraft = signal('');
   const quotedLine = signal<string | null>(null);
   const defaultDelivery = signal<'steer' | 'queue'>('steer');
-  const queuedMessages = signal<string[]>([]);
   const catalogError = signal<string | null>(null);
   const watchError = signal<string | null>(null);
+  const queue = signal<AgentQueue | null>(null);
+  const queueOpen = signal(false);
+  const queueEdit = signal<{
+    messageId: string;
+    revision: number;
+    text: string;
+    hasAttachments: boolean;
+    quotes: unknown[];
+  } | null>(null);
+  const queueReview = signal<{
+    revision: number;
+    message: string;
+    hasAttachments: boolean;
+    quotes: unknown[];
+  } | null>(null);
+  const queueFresh = signal(false);
+  const queueBusy = signal<
+    'request' | { revision: number; submitted: { messageId: string; text: string } | null } | null
+  >(null);
+  const queueError = signal<string | null>(null);
+  const queuedMessages = computed(() =>
+    (queue()?.entries ?? []).filter(
+      (entry) =>
+        (entry.kind === 'followup' || entry.kind === 'held') &&
+        entry.origin?.kind !== 'session_completion',
+    ),
+  );
+  const queueNeighbors = computed(() => {
+    const previous = new Map<string, string>();
+    const neighbors = new Map<string, { up: boolean; down: boolean }>();
+    for (const entry of queuedMessages()) {
+      const prev = previous.get(entry.kind);
+      neighbors.set(entry.messageId, { up: prev !== undefined, down: false });
+      if (prev !== undefined) neighbors.get(prev)!.down = true;
+      previous.set(entry.kind, entry.messageId);
+    }
+    return neighbors;
+  });
+  const resetQueue = () => {
+    queue.set(null);
+    queueFresh.set(false);
+    queueOpen.set(false);
+    queueEdit.set(null);
+    queueReview.set(null);
+    queueBusy.set(null);
+    queueError.set(null);
+  };
   const diffTitle = signal('platform/remote-client/src/client.rs');
   const diffLines = signal<DiffLineItem[]>(PREVIEW_DIFF_LINES);
   const diffTruncatedNotice = signal<string | null>(null);
@@ -713,6 +764,8 @@ function App() {
     isHostStillCurrent(gen, epoch) && sGen === sessionSyncGen && activeSession()?.id === sessionId;
 
   const stopWatchSubscription = (clearError = true) => {
+    queueFresh.set(false);
+    queueReview.set(null);
     if (clearError) watchError.set(null);
     if (watchSub) {
       const id = watchSub.subscriptionId;
@@ -969,6 +1022,8 @@ function App() {
         if (watchSub !== slot) return;
         watchSub = null;
         if (isSessionStillCurrent(gen, epoch, sGen, sessionId)) {
+          queueFresh.set(false);
+          queueReview.set(null);
           watchError.set('实时会话订阅失败: ' + err.message);
         }
       },
@@ -1175,7 +1230,7 @@ function App() {
     watchCursor = 0;
     streamingThinkingExpanded.set(true);
     resetLivePreview();
-    queuedMessages.set([]);
+    resetQueue();
     messages.set([]);
     historyBefore.set(null);
     historyThrough.set(null);
@@ -1248,7 +1303,7 @@ function App() {
     activeRunId.set(null);
     activeGoal.set(null);
     resetLivePreview();
-    queuedMessages.set([]);
+    resetQueue();
     messages.set([]);
     historyBefore.set(null);
     historyThrough.set(null);
@@ -1286,7 +1341,7 @@ function App() {
       draftBackend.set(null);
       activeRunId.set(null);
       activeGoal.set(null);
-      queuedMessages.set([]);
+      resetQueue();
       resetLivePreview();
       return;
     }
@@ -1318,7 +1373,7 @@ function App() {
     draftWorkspace.set(null);
     activeRunId.set(null);
     activeGoal.set(null);
-    queuedMessages.set([]);
+    resetQueue();
     resetLivePreview();
 
     if (!hasAgentEndpoint(active)) {
@@ -1416,6 +1471,23 @@ function App() {
     slot.subscriptionId === subId &&
     (slot.generation === null || slot.generation === generation);
 
+  const settleQueueReceipt = (pending: {
+    revision: number;
+    submitted: { messageId: string; text: string } | null;
+  }) => {
+    queueBusy.set(null);
+    const edit = queueEdit();
+    if (pending.submitted && edit?.messageId === pending.submitted.messageId) {
+      if (edit.text === pending.submitted.text) {
+        queueEdit.set(null);
+        queueReview.set(null);
+      } else {
+        queueReview.set(null);
+        queueError.set('已保存上次提交；新的编辑已保留，请查看当前版本。');
+      }
+    }
+  };
+
   const handleWatchPage = (
     page: AgentDeliveryPage,
     gen: number,
@@ -1486,10 +1558,13 @@ function App() {
     }
 
     if (page.kind === 'queue') {
-      const previews = (page.queue?.entries ?? [])
-        .filter((e) => e.kind !== 'in_flight')
-        .map((e) => e.preview);
-      queuedMessages.set(previews);
+      if (queue() !== null && page.queue.revision < queue()!.revision) return;
+      queue.set(page.queue);
+      queueFresh.set(true);
+      const pending = queueBusy();
+      if (pending !== null && pending !== 'request' && page.queue.revision >= pending.revision) {
+        settleQueueReceipt(pending);
+      }
       return;
     }
 
@@ -1580,6 +1655,8 @@ function App() {
         slot.sessionId !== undefined &&
         isSessionStillCurrent(slot.hostGen, slot.hostEpoch, slot.sessionGen, slot.sessionId)
       ) {
+        queueFresh.set(false);
+        queueReview.set(null);
         watchError.set('会话流式订阅中断' + (payload.error ? ': ' + payload.error : ''));
       }
     }
@@ -2083,6 +2160,132 @@ function App() {
     });
     messages.set(next);
     activeReactionMsgId.set(null);
+  };
+
+  const readQueuedMessage = (messageId: string, review: boolean) => {
+    const sess = activeSession();
+    const active = hostState().active;
+    const snapshot = queue();
+    if (
+      !sess ||
+      !active ||
+      !snapshot ||
+      !queueFresh() ||
+      queueBusy() !== null ||
+      (!review && queueEdit() !== null)
+    )
+      return;
+    const gen = hostSyncGen,
+      epoch = active.epoch,
+      sGen = sessionSyncGen;
+    queueBusy.set('request');
+    queueError.set(null);
+    agentQueueMessage(sess.id, messageId, snapshot.revision).then(
+      (result) => {
+        if (!isSessionStillCurrent(gen, epoch, sGen, sess.id)) return;
+        queueBusy.set(null);
+        if (
+          result.kind !== 'ready' ||
+          !queueFresh() ||
+          queue()?.revision !== result.revision ||
+          !queue()?.entries.some((e) => e.messageId === messageId)
+        ) {
+          queueError.set(
+            result.kind === 'missing'
+              ? '消息已不在队列中；编辑内容已保留。'
+              : '队列已变化，请重新查看当前消息。',
+          );
+          return;
+        }
+        if (review) {
+          queueReview.set(result);
+        } else {
+          queueEdit.set({
+            messageId,
+            revision: result.revision,
+            text: result.message,
+            hasAttachments: result.hasAttachments,
+            quotes: result.quotes,
+          });
+          queueReview.set(null);
+        }
+      },
+      (err: Error) => {
+        if (!isSessionStillCurrent(gen, epoch, sGen, sess.id)) return;
+        queueBusy.set(null);
+        queueError.set('读取排队消息失败: ' + err.message);
+      },
+    );
+  };
+
+  const changeQueue = (
+    revision: number,
+    edit:
+      | { kind: 'update'; messageId: string; message: string }
+      | { kind: 'reorder'; messageIds: string[] },
+  ) => {
+    const sess = activeSession();
+    const active = hostState().active;
+    if (!sess || !active || !queueFresh() || queueBusy() !== null) return;
+    if (queue()?.revision !== revision) {
+      queueError.set('队列已变化，请查看当前消息；编辑内容已保留。');
+      return;
+    }
+    const gen = hostSyncGen,
+      epoch = active.epoch,
+      sGen = sessionSyncGen;
+    queueBusy.set('request');
+    queueError.set(null);
+    agentEditQueue(sess.id, revision, edit).then(
+      (result) => {
+        if (!isSessionStillCurrent(gen, epoch, sGen, sess.id)) return;
+        if (result.kind === 'committed') {
+          const pending = {
+            revision: result.revision,
+            submitted:
+              edit.kind === 'update' ? { messageId: edit.messageId, text: edit.message } : null,
+          };
+          if (queueFresh() && (queue()?.revision ?? -1) >= result.revision) {
+            settleQueueReceipt(pending);
+          } else {
+            queueBusy.set(pending);
+          }
+        } else {
+          queueBusy.set(null);
+          queueError.set(
+            result.kind === 'revision_conflict'
+              ? '队列已变化，请查看当前消息；编辑内容已保留。'
+              : '队列修改被拒绝: ' + result.reason,
+          );
+        }
+      },
+      (err: Error) => {
+        if (!isSessionStillCurrent(gen, epoch, sGen, sess.id)) return;
+        queueBusy.set(null);
+        queueError.set('修改队列失败: ' + err.message);
+      },
+    );
+  };
+
+  const canMoveQueuedMessage = (entry: AgentQueueEntry, direction: -1 | 1) => {
+    if (!queueFresh() || queueEdit() !== null || queueBusy() !== null) return false;
+    const neighbors = queueNeighbors().get(entry.messageId);
+    return direction === -1 ? !!neighbors?.up : !!neighbors?.down;
+  };
+
+  const moveQueuedMessage = (entry: AgentQueueEntry, direction: -1 | 1) => {
+    const snapshot = queue();
+    if (!snapshot || entry.kind === 'in_flight' || queueEdit() !== null) return;
+    const lane = snapshot.entries.filter((item) => item.kind === entry.kind);
+    const index = lane.findIndex((item) => item.messageId === entry.messageId);
+    const visible = lane.filter((item) => item.origin?.kind !== 'session_completion');
+    const visibleIndex = visible.findIndex((item) => item.messageId === entry.messageId);
+    const target = visible[visibleIndex + direction];
+    if (index < 0 || visibleIndex < 0 || !target) return;
+    const targetIndex = lane.findIndex((item) => item.messageId === target.messageId);
+    const ids = lane.map((item) => item.messageId);
+    [ids[index], ids[targetIndex]] = [ids[targetIndex], ids[index]];
+    changeQueue(snapshot.revision, { kind: 'reorder', messageIds: ids });
   };
 
   const sendMessage = (overrideDelivery?: 'steer' | 'queue') => {
@@ -3029,26 +3232,191 @@ function App() {
           {/* Docked Goal Status & Controls Bar (Desktop Parity) */}
           <GoalBar goal={activeGoal} busy={busy} onControl={runGoalControl} />
 
-          {/* Host-Owned Queue Bar */}
-          <If when={queuedMessages().length > 0}>
+          <If when={queuedMessages().length > 0 || queueEdit() !== null}>
             <View
               style={{
                 marginHorizontal: 14,
                 marginBottom: 6,
-                paddingHorizontal: 12,
-                paddingVertical: 7,
                 borderRadius: 13,
                 backgroundColor: palette().surface,
                 borderWidth: 1,
                 borderColor: palette().line,
-                flexDirection: 'row',
-                alignItems: 'center',
-                justifyContent: 'space-between',
               }}
             >
-              <Text style={{ fontSize: 12, color: palette().ink2 }}>
-                {'已排队 ' + String(queuedMessages().length) + ' 条消息: ' + queuedMessages()[0]}
-              </Text>
+              <View
+                role="button"
+                accessibilityLabel="Open queued messages"
+                onPress={() => queueOpen.set(!queueOpen())}
+                style={{ paddingHorizontal: 12, paddingVertical: 8 }}
+              >
+                <Text style={{ fontSize: 12, color: palette().ink2 }}>
+                  {queuedMessages().length > 0
+                    ? '已排队 ' + String(queuedMessages().length) + ' 条消息 ▾'
+                    : '消息已不在队列 · 编辑保留 ▾'}
+                </Text>
+              </View>
+              <If when={queueOpen()}>
+                <Scroll style={{ maxHeight: 280 }}>
+                  <Each of={queuedMessages()} key={(entry) => entry.messageId}>
+                    {(entry) => (
+                      <View
+                        style={{
+                          paddingHorizontal: 12,
+                          paddingVertical: 6,
+                          borderTopWidth: 1,
+                          borderColor: palette().line,
+                        }}
+                      >
+                        <Text style={{ fontSize: 12, color: palette().ink }}>
+                          {entry().preview}
+                        </Text>
+                        <View style={{ flexDirection: 'row', gap: 14, paddingVertical: 5 }}>
+                          <If when={queueFresh() && queueEdit() === null && queueBusy() === null}>
+                            <View
+                              role="button"
+                              accessibilityLabel={'Edit queued ' + entry().messageId}
+                              onPress={() => readQueuedMessage(entry().messageId, false)}
+                            >
+                              <Text style={{ color: palette().ink2 }}>编辑</Text>
+                            </View>
+                          </If>
+                          <If when={canMoveQueuedMessage(entry(), -1)}>
+                            <View
+                              role="button"
+                              accessibilityLabel={'Move queued up ' + entry().messageId}
+                              onPress={() => moveQueuedMessage(entry(), -1)}
+                            >
+                              <Text style={{ color: palette().ink2 }}>上移</Text>
+                            </View>
+                          </If>
+                          <If when={canMoveQueuedMessage(entry(), 1)}>
+                            <View
+                              role="button"
+                              accessibilityLabel={'Move queued down ' + entry().messageId}
+                              onPress={() => moveQueuedMessage(entry(), 1)}
+                            >
+                              <Text style={{ color: palette().ink2 }}>下移</Text>
+                            </View>
+                          </If>
+                        </View>
+                      </View>
+                    )}
+                  </Each>
+                  <If when={queueEdit() !== null}>
+                    <View style={{ padding: 12, gap: 8 }}>
+                      <Input
+                        accessibilityLabel="Queued message editor"
+                        multiline
+                        value={queueEdit()?.text ?? ''}
+                        onChange={({ value }: { value: string }) => {
+                          const edit = queueEdit();
+                          if (edit) queueEdit.set({ ...edit, text: value });
+                        }}
+                        style={{
+                          height: 100,
+                          color: palette().ink,
+                          backgroundColor: palette().surface2,
+                        }}
+                      />
+                      <If
+                        when={queueEdit()?.hasAttachments || (queueEdit()?.quotes.length ?? 0) > 0}
+                      >
+                        <Text style={{ color: palette().ink2 }}>附件与引用将保留</Text>
+                      </If>
+                      <If when={queueReview() !== null}>
+                        <Text style={{ color: palette().ink2 }}>
+                          {'当前消息: ' + (queueReview()?.message ?? '')}
+                        </Text>
+                      </If>
+                      <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 14 }}>
+                        <View
+                          role="button"
+                          accessibilityLabel="Save queued message"
+                          onPress={() => {
+                            const edit = queueEdit();
+                            if (
+                              edit &&
+                              (edit.text.trim() || edit.hasAttachments || edit.quotes.length)
+                            )
+                              changeQueue(edit.revision, {
+                                kind: 'update',
+                                messageId: edit.messageId,
+                                message: edit.text,
+                              });
+                          }}
+                        >
+                          <Text style={{ color: palette().ink }}>保存</Text>
+                        </View>
+                        <View
+                          role="button"
+                          accessibilityLabel="Review queued message"
+                          onPress={() => {
+                            const edit = queueEdit();
+                            if (edit) readQueuedMessage(edit.messageId, true);
+                          }}
+                        >
+                          <Text style={{ color: palette().ink }}>查看当前版本</Text>
+                        </View>
+                        <If when={queueReview() !== null}>
+                          <View
+                            role="button"
+                            accessibilityLabel="Keep queued edit"
+                            onPress={() => {
+                              const edit = queueEdit(),
+                                review = queueReview();
+                              if (
+                                !queueFresh() ||
+                                !edit ||
+                                !review ||
+                                queue()?.revision !== review.revision
+                              ) {
+                                queueError.set('队列再次变化，请重新查看。');
+                                return;
+                              }
+                              queueEdit.set({
+                                ...edit,
+                                revision: review.revision,
+                                hasAttachments: review.hasAttachments,
+                                quotes: review.quotes,
+                              });
+                              queueReview.set(null);
+                              queueError.set(null);
+                            }}
+                          >
+                            <Text style={{ color: palette().ink }}>保留我的编辑</Text>
+                          </View>
+                        </If>
+                        <View
+                          role="button"
+                          accessibilityLabel="Cancel queued edit"
+                          onPress={() => {
+                            if (queueBusy() !== 'request' || !queueFresh()) {
+                              queueEdit.set(null);
+                              queueReview.set(null);
+                              queueError.set(null);
+                            }
+                          }}
+                        >
+                          <Text style={{ color: palette().ink }}>取消</Text>
+                        </View>
+                      </View>
+                    </View>
+                  </If>
+                  <If when={queueError() !== null}>
+                    <Text style={{ padding: 12, color: palette().danger }}>{queueError()}</Text>
+                  </If>
+                  <If when={!queueFresh()}>
+                    <Text style={{ padding: 12, color: palette().ink2 }}>
+                      队列同步已中断，请重试后再修改。
+                    </Text>
+                  </If>
+                  <If when={queueBusy() !== null}>
+                    <Text style={{ padding: 12, color: palette().ink2 }}>
+                      {queueBusy() === 'request' ? '正在更新队列…' : '等待队列同步…'}
+                    </Text>
+                  </If>
+                </Scroll>
+              </If>
             </View>
           </If>
 

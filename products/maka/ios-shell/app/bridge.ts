@@ -324,13 +324,29 @@ export interface AgentQueueEntry {
   messageId: string;
   kind: 'in_flight' | 'steering' | 'followup' | 'held';
   preview: string;
+  origin?: { kind: string } | null;
 }
+
+export interface AgentQueue {
+  revision: number;
+  entries: AgentQueueEntry[];
+}
+
+export type AgentQueueRead =
+  | { kind: 'ready'; revision: number; message: string; hasAttachments: boolean; quotes: unknown[] }
+  | { kind: 'revision_conflict'; expected: number; actual: number }
+  | { kind: 'missing'; reason: string };
+
+export type AgentQueueMutationResult =
+  | { kind: 'committed'; revision: number }
+  | { kind: 'revision_conflict'; expected: number; actual: number }
+  | { kind: 'rejected'; reason: string };
 
 export type AgentDeliveryPage =
   | { kind: 'room'; through: number }
   | { kind: 'events'; through: number; nextAfter: number; events: AgentDelivery[] }
   | { kind: 'preview'; page: AgentPreviewPage }
-  | { kind: 'queue'; queue: { revision: number; entries: AgentQueueEntry[] } }
+  | { kind: 'queue'; queue: AgentQueue }
   | {
       kind: 'interactions';
       pending: { revision: number; entries: AgentInteractionSummary[] };
@@ -781,6 +797,24 @@ export function agentHistory(
     includeThinking: true,
     view: 'conversation',
   });
+}
+
+export function agentQueueMessage(
+  sessionId: string,
+  messageId: string,
+  expectedRevision: number,
+): Promise<AgentQueueRead> {
+  return hostQuery('agent', 'queueMessage', { sessionId, messageId, expectedRevision });
+}
+
+export function agentEditQueue(
+  sessionId: string,
+  expectedRevision: number,
+  edit:
+    | { kind: 'update'; messageId: string; message: string }
+    | { kind: 'reorder'; messageIds: string[] },
+): Promise<AgentQueueMutationResult> {
+  return hostMutate('agent', 'editQueue', { sessionId, expectedRevision, edit });
 }
 
 export function agentSend(
