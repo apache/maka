@@ -59,7 +59,7 @@ pub(super) async fn open(base: &Path, initialize: bool) -> (RootStore, Store) {
     (root, store)
 }
 
-pub(super) fn spec() -> (RunSpec, Vec<ContentBlob>) {
+pub(crate) fn spec() -> (RunSpec, Vec<ContentBlob>) {
     let blob = ContentBlob::json(&RunInput::Message {
         content: MessageInput::from("fixture"),
         request_fingerprint: None,

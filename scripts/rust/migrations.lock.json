@@ -205,6 +205,10 @@
       "plugins/agent/state/migrations/0052_room_overhaul.sql": {
         "version": 52,
         "sha384": "28e5b10d41c45d63c3cb2e2a05e0e40e2ca3907cc973d024e607dd5d42ea3e9bff75dbd3f077d3f1e7e348cc9ebb7847"
+      },
+      "plugins/agent/state/migrations/0053_retry_streak.sql": {
+        "version": 53,
+        "sha384": "955400650fec7d2685028349418c2288bda65608f97ca049970b62160c56f9fb9434a752102403213e7bc4cdb8eacefc"
       }
     },
     "checkpoint-repository": {

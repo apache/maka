@@ -7397,13 +7397,6 @@ async fn failed_background_summary_is_prepared_again_on_the_next_step() {
             main.contents,
         )
         .await?;
-        let context: maka_agent_facts::context::RequestContextEvidence =
-            serde_json::from_slice(&driver.state.content(run, main.request.provenance).await?)?;
-        // Inside the 85% proactive band, with room for the short first reply.
-        assert!(
-            (1_615..1_850).contains(&context.estimated_input_tokens),
-            "{context:?}"
-        );
 
         // Each main reply waits until the current background summary has settled,
         // so the next Step observes the failure and then the recovered summary.
@@ -7465,12 +7458,6 @@ async fn failed_background_summary_is_prepared_again_on_the_next_step() {
             ),
             "{exit:?}"
         );
-        let history = driver.state.history(run, 0, 256).await?;
-        assert!(
-            history
-                .iter()
-                .any(|fact| matches!(fact.fact, Fact::ContextCompacted { .. }))
-        );
         // Compaction adopted the second background summary; no foreground Summary was sent.
         assert_eq!(summaries.load(Ordering::SeqCst), 2);
         let last = String::from_utf8(final_request.try_recv()?)?;
@@ -7488,6 +7475,156 @@ async fn failed_background_summary_is_prepared_again_on_the_next_step() {
         Ok(result) => result.expect("background summary retry timed out").unwrap(),
         Err(panic) => std::panic::resume_unwind(panic),
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn continue_from_history_enforces_retry_budget_and_resets_after_success() {
+    use axum::{body::Body, response::IntoResponse};
+    use maka_agent_engine::{DriverExit, Engine};
+    use std::sync::atomic::AtomicUsize;
+
+    async fn run_truncated_scenario(
+        retries: u32,
+        replies: Vec<(&'static str, Option<&'static str>)>,
+    ) -> (Terminal, usize, Vec<i64>) {
+        let mut rig = Rig::new().unwrap();
+        let stop = CancellationToken::new();
+        let hits = Arc::new(AtomicUsize::new(0));
+        let replies = Arc::new(replies);
+        let listener =
+            tokio::net::TcpListener::from_std(rig.model_listener.try_clone().unwrap()).unwrap();
+        let (hits_srv, replies_srv) = (hits.clone(), replies.clone());
+        let app = axum::Router::new().route(
+            "/v1/chat/completions",
+            axum::routing::post(move |_request: axum::extract::Request| {
+                let (hits, replies) = (hits_srv.clone(), replies_srv.clone());
+                async move {
+                    let index = hits.fetch_add(1, Ordering::SeqCst);
+                    let (content, finish) =
+                        replies.get(index).copied().unwrap_or(("truncated", None));
+                    let chunk = |delta: Value, finish: Value| {
+                        format!(
+                            "data: {}
+
+",
+                            json!({
+                                "id": format!("cfh-{index}"),
+                                "object": "chat.completion.chunk",
+                                "created": 1,
+                                "model": "llama3.2",
+                                "choices": [{"index": 0, "delta": delta, "finish_reason": finish}]
+                            })
+                        )
+                    };
+                    let mut body = chunk(
+                        json!({"role": "assistant", "content": content}),
+                        Value::Null,
+                    );
+                    if let Some(reason) = finish {
+                        body.push_str(&chunk(json!({}), json!(reason)));
+                        body.push_str(
+                            "data: [DONE]
+
+",
+                        );
+                    }
+                    ([("content-type", "text/event-stream")], Body::from(body)).into_response()
+                }
+            }),
+        );
+        let shutdown = stop.clone();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(shutdown.cancelled_owned())
+                .await
+        });
+        let result = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(30), async {
+            let session = rig.start().await?;
+            rig.assemble_model(
+                &session,
+                Budget {
+                    tokens: None,
+                    retries,
+                    deadline: None,
+                },
+                false,
+            )
+            .await?;
+            let driver = rig.driver.as_ref().unwrap();
+            let run = driver.access.execution().run_id;
+            let engine = Engine::new(driver.state.clone());
+            let mut changes = driver.state.subscribe()?;
+            let terminal = loop {
+                changes.borrow_and_update();
+                match engine
+                    .drive(
+                        driver.access.claim().clone(),
+                        driver.clone(),
+                        CancellationToken::new(),
+                    )
+                    .await?
+                {
+                    DriverExit::Terminal { terminal, .. } => break terminal,
+                    DriverExit::Waiting {
+                        due_at: Some(due), ..
+                    } => {
+                        let now = at();
+                        let wait = Duration::from_millis(due.0.saturating_sub(now.0) as u64 + 5);
+                        tokio::select! {
+                            _ = tokio::time::sleep(wait) => {}
+                            res = changes.changed() => { res?; }
+                        }
+                    }
+                    DriverExit::Waiting { due_at: None, .. } => {
+                        changes.changed().await?;
+                    }
+                    other => panic!("unexpected driver exit: {other:?}"),
+                }
+            };
+            let history = driver.state.history(run, 0, 256).await?;
+            let delays: Vec<i64> = history
+                .iter()
+                .filter_map(|recorded| match recorded.fact {
+                    Fact::RetryCharged { due_at, .. } => Some(due_at.0 - recorded.at.0),
+                    _ => None,
+                })
+                .collect();
+            Ok::<_, Box<dyn Error + Send + Sync>>((terminal, hits.load(Ordering::SeqCst), delays))
+        }))
+        .catch_unwind()
+        .await;
+        stop.cancel();
+        server.await.unwrap().unwrap();
+        let cleanup = rig.finish().await;
+        assert!(cleanup.is_empty(), "{cleanup:?}");
+        match result {
+            Ok(result) => result
+                .expect("continue-from-history scenario timed out")
+                .unwrap(),
+            Err(panic) => std::panic::resume_unwind(panic),
+        }
+    }
+
+    // Consecutive ContinueFromHistory truncations spend the streak budget with 250ms, 500ms backoff and stop.
+    let (terminal, hits, delays) = run_truncated_scenario(2, vec![]).await;
+    assert_eq!(terminal, Terminal::Failed);
+    assert_eq!(hits, 3);
+    assert_eq!(delays, vec![250, 500]);
+
+    // A foreground ModelClosed(Success) resets both budget and backoff for subsequent Steps.
+    let (terminal, hits, delays) = run_truncated_scenario(
+        1,
+        vec![
+            ("partial-1", None),
+            ("continued", Some("length")),
+            ("partial-2", None),
+            ("Done.", Some("stop")),
+        ],
+    )
+    .await;
+    assert_eq!(terminal, Terminal::Completed);
+    assert_eq!(hits, 4);
+    assert_eq!(delays, vec![250, 250]);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

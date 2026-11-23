@@ -376,6 +376,13 @@ pub const MIGRATIONS: &[maka_event_log::migration::Migration] = &[
         configure: None,
         data: None,
     },
+    maka_event_log::migration::Migration {
+        version: 53,
+        description: "persist consecutive retry streak state on runs",
+        sql: include_str!("../migrations/0053_retry_streak.sql"),
+        configure: None,
+        data: Some(sql::migrate_retry_streak),
+    },
 ];
 
 #[cfg(test)]
@@ -387,7 +394,7 @@ mod migration_tests {
             .chain(super::MIGRATIONS)
             .copied()
             .collect();
-        for through in [0, 41].into_iter().chain(46..=51) {
+        for through in [0, 41].into_iter().chain(46..=52) {
             let directory = tempfile::tempdir().unwrap();
             let path = directory.path().join("root.sqlite");
             let db = rusqlite::Connection::open(&path).unwrap();

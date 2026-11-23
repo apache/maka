@@ -56,6 +56,7 @@ pub struct RunView {
     pub terminal: Option<Terminal>,
     pub tokens: u64,
     pub retries: u32,
+    pub retry_streak: RetryStreak,
     pub output_limit_continuations: u32,
     pub retry_phase: RetryTransportPhase,
     pub(crate) finish_requested: bool,
@@ -70,6 +71,63 @@ pub struct RunView {
     pub waits: BTreeMap<WaitId, Wait>,
     pub blockers: BTreeMap<BlockerId, Blocker>,
     pub approvals: BTreeMap<ApprovalId, Approval>,
+}
+
+/// Consecutive retry budget state since the last successful foreground model
+/// closure (or Run start), including the one-time Primary-to-Fallback transition.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum RetryStreak {
+    Regular { charged: u32 },
+    FallbackTransitionPending { attempt: ModelAttemptId },
+    AfterFallbackTransition { charged: u32 },
+}
+
+impl Default for RetryStreak {
+    fn default() -> Self {
+        Self::Regular { charged: 0 }
+    }
+}
+
+impl RetryStreak {
+    pub fn can_charge(self, attempt: ModelAttemptId, budget: u32) -> bool {
+        match self {
+            Self::Regular { charged } | Self::AfterFallbackTransition { charged } => {
+                charged < budget
+            }
+            Self::FallbackTransitionPending { attempt: selected } => {
+                attempt == selected || budget > 0
+            }
+        }
+    }
+
+    pub fn backoff_exponent(self) -> u32 {
+        match self {
+            Self::Regular { charged } => charged,
+            Self::FallbackTransitionPending { .. } => 0,
+            Self::AfterFallbackTransition { charged } => charged.saturating_add(1),
+        }
+    }
+
+    pub(crate) fn on_retry_charged(self, attempt: ModelAttemptId) -> Result<Self, StoreError> {
+        let next = |charged: u32| {
+            charged
+                .checked_add(1)
+                .ok_or_else(|| StoreError::InvalidTransition("retry counter overflow".into()))
+        };
+        Ok(match self {
+            Self::Regular { charged } => Self::Regular {
+                charged: next(charged)?,
+            },
+            Self::FallbackTransitionPending { attempt: selected } if attempt == selected => {
+                Self::AfterFallbackTransition { charged: 0 }
+            }
+            Self::FallbackTransitionPending { .. } => Self::Regular { charged: 1 },
+            Self::AfterFallbackTransition { charged } => Self::AfterFallbackTransition {
+                charged: next(charged)?,
+            },
+        })
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -304,6 +362,7 @@ impl RunView {
             terminal: None,
             tokens: 0,
             retries: 0,
+            retry_streak: RetryStreak::default(),
             output_limit_continuations: 0,
             retry_phase: RetryTransportPhase::Primary,
             finish_requested: false,
@@ -321,19 +380,9 @@ impl RunView {
         })
     }
 
-    /// Retries charged while sending one prepared Step. Each new Step starts a
-    /// fresh budget, so failures recovered earlier in a long Run cannot exhaust it.
-    pub fn retries_for(&self, step: StepId, phase: RetryTransportPhase) -> u32 {
-        self.attempts
-            .values()
-            .filter(|attempt| {
-                attempt.step == step
-                    && attempt
-                        .retry
-                        .as_ref()
-                        .is_some_and(|retry| retry.phase == phase)
-            })
-            .count() as u32
+    pub fn can_charge_retry(&self, attempt: ModelAttemptId) -> bool {
+        self.retry_streak
+            .can_charge(attempt, self.spec.budget.retries)
     }
     pub fn finish_requested(&self) -> bool {
         self.finish_requested
@@ -1180,7 +1229,7 @@ impl RunView {
                     "transport fallback lacks original safe failed Main evidence",
                 )?;
                 // Retries before the one-way fallback are all Primary, so an exhausted
-                // Step budget implies this Run-wide count, which recorded Runs also meet.
+                // streak implies this Run-wide count, which historical Runs also meet.
                 require(
                     self.retry_pending == Some(*attempt)
                         && self.retries >= self.spec.budget.retries,
@@ -1197,6 +1246,7 @@ impl RunView {
                 self.effects_accounted()?;
                 self.retry_safe()?;
                 self.retry_phase = *phase;
+                self.retry_streak = RetryStreak::FallbackTransitionPending { attempt: *attempt };
             }
             Fact::ModelSourceFailureCaptured { attempt, failure } => {
                 failure
@@ -1519,6 +1569,12 @@ impl RunView {
                     {
                         self.output_limit_continuations =
                             self.output_limit_continuations.saturating_add(1);
+                    }
+                    if self.current_attempt == Some(*attempt)
+                        && diagnostic.is_none()
+                        && *outcome == maka_agent_facts::accounting::Outcome::Success
+                    {
+                        self.retry_streak = RetryStreak::default();
                     }
                     if diagnostic.is_some()
                         && self.current_attempt == Some(*attempt)
@@ -2133,10 +2189,8 @@ impl RunView {
                     "model attempt retry already charged",
                 )?;
                 require(
-                    u64::from(self.retries_for(current.step, *phase))
-                        < u64::from(self.spec.budget.retries)
-                            + u64::from(*phase == RetryTransportPhase::Fallback),
-                    "original transport phase retry budget exhausted",
+                    self.can_charge_retry(*attempt),
+                    "consecutive retry budget exhausted",
                 )?;
                 if let Some(
                     AttemptRecovery::FrozenRetrySafe {
@@ -2155,6 +2209,7 @@ impl RunView {
                 let retries = self.retries.checked_add(1).ok_or_else(|| {
                     StoreError::InvalidTransition("retry counter overflow".into())
                 })?;
+                let retry_streak = self.retry_streak.on_retry_charged(*attempt)?;
                 self.attempts
                     .get_mut(attempt)
                     .expect("validated attempt")
@@ -2164,6 +2219,7 @@ impl RunView {
                     diagnostic: diagnostic.clone(),
                 });
                 self.retries = retries;
+                self.retry_streak = retry_streak;
                 self.retry_due_at = Some(
                     self.retry_due_at
                         .map_or(*due_at, |previous| previous.max(*due_at)),

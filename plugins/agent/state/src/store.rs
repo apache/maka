@@ -1579,4 +1579,4 @@ impl Statement for StopRun {
 }
 
 #[cfg(test)]
-mod stop_tests;
+pub(crate) mod stop_tests;
