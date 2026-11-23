@@ -209,13 +209,13 @@ fn investigation_prompt(
 ) -> String {
     let draft = match language {
         Language::ZhCn => {
-            "让用户能一步做决定。遇到低成本、可撤回的工作，别停在风险提示：主动用 StageArtifact 在隔离沙箱里做好可直接使用的草稿、diff、清单或简报，把返回的记录附到 UpsertDossier.artifacts。原工作区只读。没有实质变化就用 FinishNoChange 静默收尾，这是正常结果，无需凑报告。"
+            "让用户能一步做决定。遇到低成本、可撤回的工作，别停在风险提示：主动用 StageArtifact 在隔离沙箱里做好可直接使用的草稿、diff、清单或简报，把返回的记录附到 UpsertDossier.artifacts。原工作区只读。没有实质变化就用 FinishNoChange 静默收尾，这是正常结果，无需凑报告。如果相关源文件哈希与内容自上轮以来没有实质变化，且用户未给出新反馈，请直接调用 FinishNoChange 结束本轮，不要对已有活档案或沙箱草稿做无新证据的反复润色改写。"
         }
         Language::ZhTw => {
-            "讓使用者能一步做決定。遇到低成本、可撤回的工作，別停在風險提醒：主動用 StageArtifact 在隔離沙箱裡做好可直接使用的草稿、diff、清單或簡報，把傳回的紀錄附到 UpsertDossier.artifacts。原工作區唯讀。沒有實質變化就用 FinishNoChange 安靜收尾，這是正常結果，無須硬湊報告。"
+            "讓使用者能一步做決定。遇到低成本、可撤回的工作，別停在風險提醒：主動用 StageArtifact 在隔離沙箱裡做好可直接使用的草稿、diff、清單或簡報，把傳回的紀錄附到 UpsertDossier.artifacts。原工作區唯讀。沒有實質變化就用 FinishNoChange 安靜收尾，這是正常結果，無須硬湊報告。若相關原始檔雜湊與內容自上輪以來沒有實質變化，且使用者未提供新回饋，請直接呼叫 FinishNoChange 結束本輪，不要對既有活檔案或沙箱草稿做無新證據的反覆潤飾改寫。"
         }
         Language::En => {
-            "Help the user decide in one click. Go beyond warnings. Whenever a low-cost, reversible draft, diff, checklist or brief would help, make it ready to use in the isolated sandbox with StageArtifact and attach its receipt to UpsertDossier.artifacts. Keep original workspace files read-only. FinishNoChange is the expected, healthy outcome when nothing material changed. Never manufacture a report."
+            "Help the user decide in one click. Go beyond warnings. Whenever a low-cost, reversible draft, diff, checklist or brief would help, make it ready to use in the isolated sandbox with StageArtifact and attach its receipt to UpsertDossier.artifacts. Keep original workspace files read-only. FinishNoChange is the expected, healthy outcome when nothing material changed. Never manufacture a report. If relevant source files have not materially changed since the last revision and the user has given no new feedback, call FinishNoChange immediately—do not repeatedly rewrite or polish existing dossiers or staged drafts without new evidence."
         }
     };
     let draft = format!("{draft} {}", monitoring_prompt(language));
@@ -1078,7 +1078,7 @@ impl Owner {
             || allowed_tools
                 .iter()
                 .any(|name| self.discovery_tool_group(name) == DiscoveryToolGroup::History);
-        let (mut prompt, shown) = self.discovery_opening(mode, job, allowed_tools).await?;
+        let (mut prompt, sources) = self.discovery_opening(mode, job, allowed_tools).await?;
         prompt.push_str("\n\n");
         prompt.push_str(&investigation_prompt(
             job.approval.language,
@@ -1101,7 +1101,7 @@ impl Owner {
             &job.approval.target.workspace.path,
             timezone,
         ));
-        Ok((prompt.into(), shown))
+        Ok((prompt.into(), sources))
     }
 
     async fn enqueue_discovery_worker(
@@ -1185,7 +1185,7 @@ impl Owner {
             return Err(CaptureError::RouteChanged);
         }
         basis.model = Some(job.approval.accepted_model.clone());
-        // Freeze the opening and acknowledge exactly its displayed deltas in the same Root transaction.
+        // Freeze the opening and acknowledge its snapshot in the same Root transaction.
         if !job.input.has_content() || allowed_tools != job.tools.names {
             let advance = job.mode.is_none()
                 && fire.source == FireSource::Schedule
@@ -1203,7 +1203,7 @@ impl Owner {
                 }
                 None => DiscoveryMode::FollowUp,
             };
-            let (input, shown) = self
+            let (input, sources) = self
                 .discovery_input(job, fire, &plan.timezone, &mode, &allowed_tools)
                 .await?;
             job.mode = Some(mode);
@@ -1213,7 +1213,7 @@ impl Owner {
             let records = self
                 .commit_discovery_writes(
                     self.discovery
-                        .record_opening(shown, advance, UnixMillis(now() as i64)),
+                        .record_opening(sources, advance, UnixMillis(now() as i64)),
                     vec![active],
                 )
                 .await

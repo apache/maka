@@ -38,8 +38,12 @@ impl Fixture {
         Self::with_tools(listener, &[]).await
     }
     async fn with_tools(listener: &TcpListener, extra: &[Value]) -> Self {
+        Self::in_workspace(listener, extra, "").await
+    }
+    async fn in_workspace(listener: &TcpListener, extra: &[Value], subdirectory: &str) -> Self {
         let mut rig = Rig::new().unwrap();
         let base = rig.directory.path().to_path_buf();
+        let workspace = base.join("workspace").join(subdirectory);
         let boot = bootstrap_with(
             &base,
             format!("http://{}/v1", listener.local_addr().unwrap()),
@@ -78,11 +82,8 @@ impl Fixture {
         .await
         .unwrap();
         std::fs::create_dir_all(base.join("other-workspace")).unwrap();
-        std::fs::write(
-            base.join("workspace").join("discovery.txt"),
-            "Observed fixture evidence",
-        )
-        .unwrap();
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::write(workspace.join("discovery.txt"), "Observed fixture evidence").unwrap();
         attach(&mut rig, &boot).await.unwrap();
         let client = rig.client.as_ref().unwrap();
         let catalog = call(client, "settings", "connections", json!({"kind":"start"}))
@@ -96,7 +97,7 @@ impl Fixture {
             "agent",
             "openBot",
             json!({
-                "workspace":{"kind":"directory","path":base.join("workspace")}
+                "workspace":{"kind":"directory","path":workspace}
             }),
         )
         .await
@@ -2240,6 +2241,121 @@ async fn discovery_file_drop_in_another_authorized_root_wakes_only_an_active_pla
     assert!(!state.has_ready_changes(at()).await.unwrap());
     assert_eq!(state.broad_cycle().await.unwrap(), 3);
     assert_bot_untouched(&f).await;
+    drop(owner);
+    f.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn discovery_file_change_waits_for_cooldown_and_consumes_the_whole_burst() {
+    use maka_agent_facts::discovery::SourceUri;
+    use maka_agent_state::discovery::changes::ChangeQuery;
+    use maka_scheduler::plan::FireSource;
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let project = ".gemini/antigravity/scratch/app";
+    let mut f = Fixture::in_workspace(&listener, &[], project).await;
+    let task = f
+        .create_scheduled(
+            "Review incoming files",
+            "Review the changes",
+            json!({"kind":"interval","everySeconds":10,"startAt":at().0 + 3_600_000}),
+        )
+        .await;
+    let home = tokio::fs::canonicalize(f.rig.directory.path().join("workspace"))
+        .await
+        .unwrap();
+    let project = home.join(project);
+    let outside = home.join("Downloads/other.txt");
+    let noise = home.join(".gemini/antigravity/brain/state");
+    let files: Vec<_> = (0..18)
+        .map(|i| project.join(format!("project-{i}/spec.md")))
+        .collect();
+    for path in files.iter().chain([&outside, &noise]) {
+        tokio::fs::create_dir_all(path.parent().unwrap())
+            .await
+            .unwrap();
+    }
+    f.reopen().await;
+    f.change(&task, "trigger_now").await;
+    let (mut first, _) = next(&listener).await;
+    for path in [&outside, &noise].into_iter().chain(&files) {
+        tokio::fs::write(path, "updated terms").await.unwrap();
+    }
+    let owner = f.owner();
+    let ready = || {
+        owner
+            .discovery
+            .change_snapshot(at(), ChangeQuery::Opening { editing_limit: 0 }, |_, _| true)
+    };
+    tokio::time::timeout(Duration::from_secs(40), async {
+        let mut poll = tokio::time::interval(Duration::from_millis(100));
+        loop {
+            poll.tick().await;
+            let changes = ready().await.unwrap();
+            if changes
+                .deltas
+                .iter()
+                .filter(|d| Path::new(&d.path).starts_with(&project))
+                .count()
+                == 18
+                && changes.deltas.iter().any(|d| Path::new(&d.path) == outside)
+            {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("watcher did not debounce the project burst and the separate Downloads change");
+    assert!(
+        owner
+            .discovery
+            .get_source_cursor(SourceUri(noise.to_str().unwrap().into()))
+            .await
+            .unwrap()
+            .is_none()
+    );
+
+    tool(
+        &mut first,
+        "FinishNoChange",
+        json!({"note":"First review complete"}),
+    )
+    .await;
+    let last = f.settled(&task, 1).await["task"]["lastFireAt"]
+        .as_i64()
+        .unwrap();
+    let (mut second, request) = next(&listener).await;
+    let fire = owner
+        .scheduler
+        .change_basis(&task)
+        .await
+        .unwrap()
+        .unwrap()
+        .plan
+        .pending
+        .unwrap();
+    assert_eq!(fire.source, FireSource::FileChange);
+    assert!(
+        fire.scheduled_at >= last + 5_000,
+        "early file wake after {} ms",
+        fire.scheduled_at - last
+    );
+    let opening = request["messages"].to_string();
+    assert_eq!(opening.matches("spec.md").count(), 15, "{opening}");
+    assert!(
+        opening.contains("… (+3 more)") && !opening.contains("other.txt"),
+        "{opening}"
+    );
+    tool(
+        &mut second,
+        "FinishNoChange",
+        json!({"note":"Reviewed the burst"}),
+    )
+    .await;
+    f.settled(&task, 2).await;
+    let remaining = ready().await.unwrap();
+    assert_eq!(remaining.deltas.len(), 1);
+    assert_eq!(Path::new(&remaining.deltas[0].path), outside);
     drop(owner);
     f.close().await;
 }

@@ -64,6 +64,92 @@ fn dossier(topic: &str, signal: DossierSignal, weight: f64, expected: u64) -> Do
         linked_task_ids: None,
     }
 }
+
+#[tokio::test]
+async fn opening_acknowledges_its_snapshot_and_preserves_concurrent_and_out_of_scope_deltas() {
+    use changes::{ChangeQuery, FileWrite, Fingerprint, OpeningSources, ProbeResult, WriteKind};
+    let (_dir, root, store) = fixture().await;
+    let write = |path: &str, at| FileWrite {
+        path: path.into(),
+        kind: WriteKind::Created,
+        at: UnixMillis(at),
+    };
+    let publish = |writes, at| {
+        let store = &store;
+        async move {
+            store.observe_writes(writes, 0, 100, 100).await.unwrap();
+            let probes = store.due_probes(UnixMillis(at), 100).await.unwrap();
+            store
+                .finish_probes(
+                    probes
+                        .into_iter()
+                        .map(|p| {
+                            let fp = Fingerprint {
+                                mtime: p.observed,
+                                hash: format!("hash-{}", p.observed.0),
+                            };
+                            (p, ProbeResult::Stable(fp))
+                        })
+                        .collect(),
+                )
+                .await
+                .unwrap();
+        }
+    };
+    publish(
+        vec![
+            write("/work/report", 10),
+            write("/work/terms", 10),
+            write("/other/quote", 10),
+            write("/work/later", 12),
+        ],
+        12,
+    )
+    .await;
+    let snapshot = store
+        .change_snapshot(
+            UnixMillis(11),
+            ChangeQuery::Opening { editing_limit: 0 },
+            |path, _| path.starts_with("/work"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(snapshot.deltas.len(), 2);
+    assert_eq!(
+        store.next_change_deadline(UnixMillis(11)).await.unwrap(),
+        Some(12)
+    );
+    publish(vec![write("/work/report", 13)], 13).await;
+    root.data_writer()
+        .unwrap()
+        .write(store.record_opening(
+            OpeningSources::FollowUp(snapshot.deltas),
+            false,
+            UnixMillis(14),
+        ))
+        .await
+        .unwrap();
+    let pending = store
+        .change_snapshot(
+            UnixMillis(14),
+            ChangeQuery::Opening { editing_limit: 0 },
+            |_, _| true,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        pending
+            .deltas
+            .into_iter()
+            .map(|d| (d.path, d.at.0))
+            .collect::<Vec<_>>(),
+        [
+            ("/work/report".into(), 13),
+            ("/work/later".into(), 12),
+            ("/other/quote".into(), 10)
+        ]
+    );
+}
 #[tokio::test]
 async fn reviews_preserve_material_order_and_stale_writers_cannot_overwrite() {
     use DossierSignal::*;

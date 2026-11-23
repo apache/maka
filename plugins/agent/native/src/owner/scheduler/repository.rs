@@ -219,7 +219,7 @@ impl Scheduler {
     pub(in crate::owner) async fn load(&self) -> Result<Catalog, String> {
         self.load_selected(Selection::All).await
     }
-    pub(super) async fn load_ready(&self, at: i64) -> Result<Catalog, String> {
+    pub(in crate::owner) async fn load_ready(&self, at: i64) -> Result<Catalog, String> {
         self.load_selected(Selection::Due(at)).await
     }
     pub(in crate::owner) async fn load_change_plans(&self) -> Result<Catalog, String> {

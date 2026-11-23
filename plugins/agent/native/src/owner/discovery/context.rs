@@ -19,7 +19,9 @@
 
 use super::*;
 use jiff::{Timestamp, tz::TimeZone};
-use maka_agent_state::discovery::changes::{ChangeSnapshot, Delta, IndexedDossier, OpeningSources};
+use maka_agent_state::discovery::changes::{
+    ChangeQuery, ChangeSnapshot, IndexedDossier, OpeningSources,
+};
 use std::path::Path;
 
 pub(super) fn timestamp(ms: u64) -> Option<String> {
@@ -83,8 +85,14 @@ impl Owner {
         }
 
         let changes = if self.discovery_reads_files(tools) {
-            self.discovery_changes(&job.approval, UnixMillis(now() as i64), ROW_LIMIT)
-                .await?
+            self.discovery_changes(
+                &job.approval,
+                UnixMillis(now() as i64),
+                ChangeQuery::Opening {
+                    editing_limit: ROW_LIMIT,
+                },
+            )
+            .await?
         } else {
             ChangeSnapshot::default()
         };
@@ -96,10 +104,10 @@ impl Owner {
         } else {
             Vec::new()
         };
-        let (mut prompt, shown) = header(
+        let mut prompt = header(
             job.approval.language,
             Path::new(&job.approval.target.workspace.path),
-            changes,
+            &changes,
             &dossiers,
         );
         let excerpt = self.discovery_preferences_excerpt().await?;
@@ -107,16 +115,16 @@ impl Owner {
             prompt.push_str("\n\n");
             prompt.push_str(&excerpt);
         }
-        Ok((prompt, OpeningSources::FollowUp(shown)))
+        Ok((prompt, OpeningSources::FollowUp(changes.deltas)))
     }
 }
 
 fn header(
     language: Language,
     workspace: &Path,
-    changes: ChangeSnapshot,
+    changes: &ChangeSnapshot,
     dossiers: &[IndexedDossier],
-) -> (String, Vec<Delta>) {
+) -> String {
     let guidance = match language {
         Language::ZhCn => "避开正在编辑的目录。可核查周边约束，或静默结束。",
         Language::ZhTw => "避開正在編輯的目錄。可核查周邊限制，或靜默結束。",
@@ -127,11 +135,17 @@ fn header(
         "Editing [dir,until_ms]",
         "Dossiers [topic_id,title,signal,revision,window_at]",
     ];
+    let overflow = |n| match language {
+        Language::ZhCn => format!("…（另有 {n} 项）"),
+        Language::ZhTw => format!("…（另有 {n} 項）"),
+        Language::En => format!("… (+{n} more)"),
+    };
     let mut remaining = HEADER_BYTES
         - labels.iter().map(|s| s.len()).sum::<usize>()
         - guidance.len()
         - 3
-        - 3 * "\nnone".len();
+        - 2 * "\nnone".len()
+        - (1 + overflow(changes.deltas.len()).len()).max("\nnone".len());
     let populated = [
         !changes.deltas.is_empty(),
         !changes.cooling.is_empty(),
@@ -157,6 +171,7 @@ fn header(
         changes
             .deltas
             .iter()
+            .take(ROW_LIMIT)
             .map(|d| {
                 serde_json::json!([d.kind.as_str(), path(&d.path, share - 40), d.at]).to_string()
             })
@@ -200,21 +215,23 @@ fn header(
         }
     }
     for (i, section) in sections.iter_mut().enumerate() {
-        let available = if i == 2 {
-            dossiers.len()
-        } else {
-            rows[i].len()
+        let available = match i {
+            0 => changes.deltas.len(),
+            1 => changes.cooling.len(),
+            _ => dossiers.len(),
         };
         if available == 0 {
             section.push_str("\nnone");
         } else if counts[i] < available {
-            section.push_str("\n…");
+            section.push('\n');
+            if i == 0 {
+                section.push_str(&overflow(available - counts[i]));
+            } else {
+                section.push('…');
+            }
         }
     }
-    (
-        format!("{}\n{guidance}", sections.join("\n")),
-        changes.deltas.into_iter().take(counts[0]).collect(),
-    )
+    format!("{}\n{guidance}", sections.join("\n"))
 }
 
 fn clipped(value: &str, bytes: usize, tail: bool) -> String {
@@ -258,11 +275,14 @@ fn clipped(value: &str, bytes: usize, tail: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use maka_agent_state::discovery::{DossierSignal, changes::DeltaKind};
+    use maka_agent_state::discovery::{
+        DossierSignal,
+        changes::{Delta, DeltaKind},
+    };
     #[test]
-    fn discovery_header_is_bounded_in_every_locale_and_acknowledges_only_displayed_paths() {
+    fn discovery_header_is_bounded_in_every_locale_and_counts_omitted_deltas() {
         for language in [Language::En, Language::ZhCn, Language::ZhTw] {
-            let changes = ChangeSnapshot {
+            let mut changes = ChangeSnapshot {
                 deltas: (0..30)
                     .map(|i| Delta {
                         path: format!("/work/合同-{i}.pdf"),
@@ -279,7 +299,7 @@ mod tests {
                 revision: 7,
                 window_at: Some(UnixMillis(3000)),
             }];
-            let (text, shown) = header(language, Path::new("/work"), changes, &topics);
+            let text = header(language, Path::new("/work"), &changes, &topics);
             assert!(text.len() <= HEADER_BYTES, "{text}");
             assert!(
                 text.contains(r#"["created","合同-0.pdf",2000]"#)
@@ -290,9 +310,29 @@ mod tests {
                 text.contains(r#"["signature","核对附件","red",7,3000]"#),
                 "{text}"
             );
-            assert_eq!(text.matches(".pdf").count(), shown.len());
-            assert!(shown.len() >= 10 && shown.len() <= ROW_LIMIT);
-            let (empty, _) = header(language, Path::new("/work"), ChangeSnapshot::default(), &[]);
+            assert_eq!(text.matches(".pdf").count(), ROW_LIMIT);
+            let expected = |n| match language {
+                Language::ZhCn => format!("…（另有 {n} 项）"),
+                Language::ZhTw => format!("…（另有 {n} 項）"),
+                Language::En => format!("… (+{n} more)"),
+            };
+            assert!(text.contains(&expected(15)), "{text}");
+            for delta in &mut changes.deltas {
+                delta.path = format!("/work/{}.pdf", "合同".repeat(200));
+            }
+            let text = header(language, Path::new("/work"), &changes, &topics);
+            let displayed = text.matches(".pdf").count();
+            assert!(
+                text.len() <= HEADER_BYTES && (1..ROW_LIMIT).contains(&displayed),
+                "{text}"
+            );
+            assert!(text.contains(&expected(30 - displayed)), "{text}");
+            let empty = header(
+                language,
+                Path::new("/work"),
+                &ChangeSnapshot::default(),
+                &[],
+            );
             assert_eq!(empty.matches("\nnone").count(), 3);
         }
     }

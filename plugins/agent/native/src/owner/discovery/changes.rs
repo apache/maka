@@ -23,7 +23,9 @@ use cap_fs_ext::{DirExt, FollowSymlinks, MetadataExt, OpenOptionsFollowExt};
 use cap_std::fs::{Dir, OpenOptions};
 use maka_agent_state::discovery::{
     DiscoveryStore,
-    changes::{ChangeSnapshot, FileWrite, Fingerprint, ProbeResult, WriteKind},
+    changes::{
+        ChangeQuery, ChangeSnapshot, DeltaKind, FileWrite, Fingerprint, ProbeResult, WriteKind,
+    },
 };
 use notify::{
     EventKind, RecommendedWatcher, RecursiveMode, Watcher,
@@ -59,24 +61,104 @@ struct ChangeTracker {
     timing: Timing,
 }
 
-pub(super) fn ignored(path: &Path, private: &[PathBuf]) -> bool {
+fn library_noise(relative: &Path) -> bool {
+    let mut parts = relative.iter();
+    let mut next = || parts.next().and_then(|p| p.to_str());
+    match next() {
+        Some("Application Support") => match next() {
+            Some("Google") => next() == Some("Chrome"),
+            Some("Chromium" | "Firefox" | "Arc" | "Safari" | "CrashReporter") => true,
+            _ => false,
+        },
+        Some("Mail") => next().is_some_and(|v| v.starts_with('V')) && next() == Some("MailData"),
+        Some(
+            "Preferences" | "Group Containers" | "HTTPStorages" | "Biomes" | "Biome"
+            | "Suggestions" | "CoreDuet" | "Accounts" | "Keychains" | "Safari",
+        ) => true,
+        _ => false,
+    }
+}
+
+fn ignored(path: &Path, private: &[PathBuf]) -> bool {
     private.iter().any(|p| path.starts_with(p))
-        || path.components().any(|part| {
-            matches!(
-                part.as_os_str().to_str(),
-                Some(".git" | "node_modules" | "target")
-            )
-        })
+        || path
+            .ancestors()
+            .any(|p| match p.file_name().and_then(|s| s.to_str()) {
+                Some("Library") => library_noise(path.strip_prefix(p).expect("ancestor")),
+                Some(
+                    ".git"
+                    | "node_modules"
+                    | "target"
+                    | "Caches"
+                    | "CachedData"
+                    | "CacheStorage"
+                    | "Code Cache"
+                    | "GPUCache"
+                    | "DawnCache"
+                    | "Service Worker"
+                    | "IndexedDB"
+                    | "Local Storage"
+                    | "Session Storage"
+                    | "Crash Reports"
+                    | "Saved Application State"
+                    | "Cookies"
+                    | "Logs"
+                    | "WebKit"
+                    | "Metadata"
+                    | "Spotlight"
+                    | "Thumb"
+                    | "kvcomm"
+                    | "db_storage"
+                    | "app_data",
+                ) => true,
+                _ => false,
+            })
         || path
             .file_name()
             .and_then(|s| s.to_str())
             .is_some_and(|name| {
-                name == ".DS_Store"
-                    || name.starts_with("~$")
-                    || [".tmp", ".swp", ".lock"]
-                        .iter()
-                        .any(|suffix| name.ends_with(suffix))
+                matches!(
+                    name,
+                    ".DS_Store" | "Local State" | "Preferences" | "History"
+                ) || name.starts_with("~$")
+                    || [
+                        ".tmp",
+                        ".swp",
+                        ".swo",
+                        ".lock",
+                        ".log",
+                        ".enc",
+                        ".statistic",
+                        ".material",
+                        "-wal",
+                        "-shm",
+                        "-journal",
+                        ".crdownload",
+                        ".part",
+                    ]
+                    .iter()
+                    .any(|suffix| name.ends_with(suffix))
             })
+}
+
+fn visible_in_workspace(path: &Path, directory: bool, is_root: impl Fn(&Path) -> bool) -> bool {
+    let dir = if directory {
+        path
+    } else {
+        path.parent().unwrap_or(path)
+    };
+    for ancestor in dir.ancestors() {
+        if is_root(ancestor) {
+            return true;
+        }
+        if ancestor
+            .file_name()
+            .is_some_and(|name| name.as_encoded_bytes().starts_with(b"."))
+        {
+            break;
+        }
+    }
+    false
 }
 
 fn file_events(
@@ -116,19 +198,6 @@ fn file_events(
         } else {
             kind
         };
-        let kind = if kind == WriteKind::Removed {
-            kind
-        } else {
-            match path.symlink_metadata() {
-                Ok(meta) if meta.is_file() => kind,
-                Ok(_) => continue,
-                Err(e) if e.kind() == io::ErrorKind::NotFound => WriteKind::Removed,
-                Err(error) => {
-                    tracing::debug!(%error, "Discovery could not inspect a filesystem event");
-                    continue;
-                }
-            }
-        };
         if let Ok(path) = path.into_os_string().into_string()
             && tx.blocking_send(FileWrite { path, kind, at }).is_err()
         {
@@ -137,7 +206,64 @@ fn file_events(
     }
 }
 
+fn inspect_files(mut writes: Vec<FileWrite>) -> Vec<FileWrite> {
+    writes.retain_mut(|write| {
+        if write.kind == WriteKind::Removed {
+            return true;
+        }
+        match Path::new(&write.path).symlink_metadata() {
+            Ok(meta) => meta.is_file(),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                write.kind = WriteKind::Removed;
+                true
+            }
+            Err(error) => {
+                tracing::debug!(%error, "Discovery could not inspect a filesystem event");
+                false
+            }
+        }
+    });
+    writes
+}
+
 impl ChangeTracker {
+    async fn observe_events(
+        &self,
+        owner: &Owner,
+        writes: &mut Vec<FileWrite>,
+        plan_roots: &mut Option<BTreeSet<PathBuf>>,
+    ) -> Result<Option<i64>, String> {
+        let mut candidates = Vec::new();
+        for write in writes.drain(..) {
+            let path = Path::new(&write.path);
+            if !visible_in_workspace(path, false, |dir| self.roots.contains_key(dir)) {
+                // Only hidden subtrees need the active plans to resolve their workspace prefixes.
+                let roots = match plan_roots {
+                    Some(roots) => roots,
+                    None => plan_roots.insert(owner.active_discovery_workspaces().await?),
+                };
+                if !visible_in_workspace(path, false, |dir| roots.contains(dir)) {
+                    continue;
+                }
+            }
+            candidates.push(write);
+        }
+        if candidates.is_empty() {
+            return Ok(None);
+        }
+        let files = tokio::task::spawn_blocking(move || inspect_files(candidates))
+            .await
+            .map_err(reason)?;
+        if files.is_empty() {
+            return Ok(None);
+        }
+        self.observe(files).await?;
+        self.store
+            .next_change_deadline(UnixMillis(now() as i64))
+            .await
+            .map_err(reason)
+    }
+
     async fn observe(&self, writes: Vec<FileWrite>) -> Result<(), String> {
         self.store
             .observe_writes(
@@ -197,39 +323,43 @@ impl ChangeTracker {
 
     async fn run(&self, owner: &Owner, mut rx: mpsc::Receiver<FileWrite>) -> Result<(), String> {
         let mut schedules = owner.schedule_changes();
-        let mut check_ready = true;
+        let mut plan_roots = None;
+        let mut plan_due = None;
+        let mut probe_due = Some(0_i64);
         let mut writes = Vec::new();
         loop {
-            let at = UnixMillis(now() as i64);
-            if check_ready {
-                self.flush(at, &owner.stop).await?;
-                if owner.stop.is_cancelled() {
-                    return Ok(());
-                }
-                owner.wake_changed_discovery(at).await?;
-            }
-            let due = self.store.next_change_deadline(at).await.map_err(reason)?;
+            let due = probe_due.into_iter().chain(plan_due).min();
             let timer = async {
-                match due {
-                    Some(due) => {
-                        tokio::time::sleep(Duration::from_millis(
-                            (due as u64).saturating_sub(now()),
-                        ))
-                        .await
-                    }
-                    None => std::future::pending().await,
+                let Some(due) = due else {
+                    return std::future::pending().await;
+                };
+                let delay = due.saturating_sub(now() as i64);
+                if delay > 0 {
+                    tokio::time::sleep(Duration::from_millis(delay as u64)).await;
                 }
             };
             tokio::select! { biased;
                 _ = owner.stop.cancelled() => return Ok(()),
-                n = rx.recv_many(&mut writes,BATCH) => {
-                    if n == 0 {return Ok(())}
-                    self.observe(std::mem::take(&mut writes)).await?;
-                    check_ready = due.is_some_and(|t| t <= now() as i64);
+                result = schedules.changed() => {
+                    result.map_err(reason)?;
+                    plan_roots = None;
                 }
-                _ = timer => check_ready = true,
-                result = schedules.changed() => {result.map_err(reason)?; check_ready = true;}
+                _ = timer => {}
+                n = rx.recv_many(&mut writes, BATCH) => {
+                    if n == 0 { return Ok(()) }
+                    if schedules.has_changed().map_err(reason)? { plan_roots = None; }
+                    let next = self.observe_events(owner, &mut writes, &mut plan_roots).await?;
+                    probe_due = probe_due.into_iter().chain(next).min();
+                    continue;
+                }
             }
+            let at = UnixMillis(now() as i64);
+            self.flush(at, &owner.stop).await?;
+            if owner.stop.is_cancelled() {
+                return Ok(());
+            }
+            plan_due = owner.wake_changed_discovery(at).await?;
+            probe_due = self.store.next_change_deadline(at).await.map_err(reason)?;
         }
     }
 }
@@ -318,6 +448,33 @@ pub(super) fn fingerprint_in(
 }
 
 impl Owner {
+    async fn active_discovery_workspaces(&self) -> Result<BTreeSet<PathBuf>, String> {
+        let _gate = self.scheduler.gate.lock().await;
+        // One-shot plans can select a hidden workspace for their scheduled opening too.
+        let catalog = self.scheduler.load_ready(i64::MAX).await?;
+        let at = now() as i64;
+        Ok(catalog
+            .plans
+            .values()
+            .filter_map(|saved| {
+                let plan = &saved.plan;
+                let Some(scheduler::Approval::Discovery { approval, .. }) = &plan.authorization
+                else {
+                    return None;
+                };
+                let path = Path::new(&approval.target.workspace.path);
+                (plan.task.status == maka_scheduler::task::Status::Active
+                    && plan.task.expires_at.is_none_or(|end| end > at)
+                    && self
+                        .workspace_roots
+                        .iter()
+                        .filter_map(workspace::Root::configured_directory)
+                        .any(|r| path.starts_with(r.path())))
+                .then(|| path.to_path_buf())
+            })
+            .collect())
+    }
+
     pub(in crate::owner) fn start_change_tracker(self: &Arc<Self>) {
         let owner = self.clone();
         self.producers.spawn(async move {
@@ -450,13 +607,14 @@ impl Owner {
         &self,
         approval: &BackgroundApproval,
         at: UnixMillis,
-        limit: usize,
+        query: ChangeQuery,
     ) -> Result<ChangeSnapshot, String> {
-        let roots: Vec<_> = self
+        let selected = Path::new(&approval.target.workspace.path);
+        let roots: BTreeSet<_> = self
             .workspace_roots
             .iter()
             .filter_map(workspace::Root::configured_directory)
-            .map(|r| r.path().to_path_buf())
+            .map(|r| discovery_root(r.path(), selected).to_path_buf())
             .collect();
         let policy = match &approval.sandbox_ceiling {
             Some(maka_sandbox::Sandbox::Managed { filesystem, .. }) => {
@@ -466,8 +624,10 @@ impl Owner {
             _ => None,
         };
         self.discovery
-            .change_snapshot(at, limit, move |path| {
-                roots.iter().any(|r| path.starts_with(r))
+            .change_snapshot(at, query, move |path, kind| {
+                visible_in_workspace(path, kind == DeltaKind::Directory, |dir| {
+                    roots.contains(dir)
+                }) && !ignored(path, &[])
                     && policy.as_ref().is_none_or(|p| p.access(path).can_read())
             })
             .await
@@ -503,7 +663,7 @@ impl Owner {
         let base = root.clone();
         let allowed = move |p: &Path| {
             p != base
-                && p.starts_with(&base)
+                && visible_in_workspace(p, true, |dir| dir == base)
                 && !ignored(p, &private)
                 && policy.access(p).can_read()
         };
@@ -556,18 +716,18 @@ impl Owner {
             .map_err(reason)
     }
 
-    async fn wake_changed_discovery(&self, at: UnixMillis) -> Result<(), String> {
+    async fn wake_changed_discovery(&self, at: UnixMillis) -> Result<Option<i64>, String> {
         if self.scheduler.investigation.read().unwrap().is_some()
             || !self.discovery.has_ready_changes(at).await.map_err(reason)?
         {
-            return Ok(());
+            return Ok(None);
         }
         let Some(_producer) = self.producer().await else {
-            return Ok(());
+            return Ok(None);
         };
         let _gate = self.scheduler.gate.lock().await;
         if self.scheduler.investigation.read().unwrap().is_some() {
-            return Ok(());
+            return Ok(None);
         }
         let mut catalog = self.scheduler.load_change_plans().await?;
         if catalog.plans.values().any(|s| {
@@ -576,8 +736,9 @@ impl Owner {
                 .as_ref()
                 .is_some_and(|f| matches!(f.effect, ScheduledEffect::Discovery { .. }))
         }) {
-            return Ok(());
+            return Ok(None);
         }
+        let mut next_cooldown = None;
         for saved in catalog.plans.values() {
             let plan = &saved.plan;
             let Some((approval, tools)) = scheduler::file_change_grant(plan) else {
@@ -599,12 +760,19 @@ impl Owner {
             if check_target(&source, &approval.target).is_err()
                 || !self.discovery_reads_files(&names)
                 || self
-                    .discovery_changes(approval, at, 1)
+                    .discovery_changes(approval, at, ChangeQuery::FirstReady)
                     .await?
                     .deltas
                     .is_empty()
             {
                 continue;
+            }
+            if let Some(last) = plan.task.last_fire_at {
+                let until = last.saturating_add(file_change_cooldown_ms(&plan.task.schedule));
+                if at.0 < until {
+                    next_cooldown = Some(next_cooldown.map_or(until, |t: i64| t.min(until)));
+                    continue;
+                }
             }
             let mut plan = plan.clone();
             let id = plan.task.id.clone();
@@ -617,9 +785,9 @@ impl Owner {
                 .commit(&mut catalog, &id, Some(plan), None)
                 .await?;
             self.scheduler.wake.notify_one();
-            break;
+            return Ok(None);
         }
-        Ok(())
+        Ok(next_cooldown)
     }
 
     pub(super) fn discovery_reads_files(&self, tools: &[String]) -> bool {
@@ -629,40 +797,140 @@ impl Owner {
     }
 }
 
+fn discovery_root<'a>(configured: &'a Path, selected: &'a Path) -> &'a Path {
+    if selected.starts_with(configured) && selected != configured {
+        selected
+    } else {
+        configured
+    }
+}
+
+fn file_change_cooldown_ms(schedule: &TaskSchedule) -> i64 {
+    const MAX_MS: i64 = 300_000;
+    match schedule {
+        TaskSchedule::Interval { every_seconds, .. } => {
+            (i64::from(*every_seconds) * 1000 / 2).min(MAX_MS)
+        }
+        _ => MAX_MS,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use maka_agent_facts::discovery::SourceUri;
     use maka_agent_facts::durable::RunOwner;
-    use maka_agent_state::discovery::changes::DeltaKind;
     use maka_event_log::root::{RootNamespaces, RootOwner};
 
     #[test]
     fn discovery_ignores_internal_outputs_and_temporary_files_at_any_depth() {
-        let private = [PathBuf::from("/work/state")];
+        let home = Path::new("/var/folders/test/T/.tmp123456/home");
+        let private = [home.join("state")];
+        let tracked = |name: &str| {
+            let path = home.join(name);
+            !ignored(&path, &private) && visible_in_workspace(&path, false, |dir| dir == home)
+        };
         for path in [
             "state/discovery/staging/topic/draft.md",
             "state/discovery/preferences.md",
             "state/runtime-rust.sqlite-wal",
             ".git/refs/t",
+            ".github/readme",
+            ".gemini/antigravity/brain/trace",
+            ".maka/state",
+            ".cache/package",
             "p/node_modules/a",
             "p/target/out",
+            "Library/Application Support/Google/Chrome/Default/Bookmarks",
+            "Library/Application Support/Chromium/Default/Service Worker/CacheStorage/index",
+            "Library/Application Support/Arc/User Data/profile",
+            "Library/Caches/com.apple.geod/counters/PLReqCounters.enc",
+            "Library/Caches/com.apple.geod/counters/index",
+            "Library/Mail/V10/MailData/Envelope Index",
+            "Library/Group Containers/group.example/data",
+            "Library/Preferences/com.example.plist",
+            "p/Service Worker/script",
+            "p/CacheStorage/index",
+            "p/GPUCache/index",
+            "p/db_storage/message",
+            "p/app_data/net/session",
+            "p/kvcomm/counters",
             ".DS_Store",
             "x.tmp",
             "~$doc",
             "x.swp",
             "a.lock",
+            "messages-wal",
+            "messages-shm",
+            "messages.db-journal",
+            "counter.statistic",
+            "counters.enc",
+            "trace.log",
+            "archive.crdownload",
+            "Local State",
+            "History",
         ] {
-            assert!(ignored(&Path::new("/work").join(path), &private), "{path}");
+            assert!(!tracked(path), "{path}");
         }
         for path in [
             "staging/notes.md",
-            ".github/readme",
             "targeted/plan",
             "notes/.draft",
+            "Documents/contract.pdf",
+            "Downloads/quote.pdf",
+            "Desktop/plan.md",
+            "Library/Containers/com.tencent.xinWeChat/Data/Documents/xwechat_files/wxid/msg/file/quote.pdf",
+            "Library/Application Support/Google/Chrome notes/outline",
+            "Library/Mail/V10/Inbox/message",
         ] {
-            assert!(!ignored(&Path::new("/work").join(path), &private), "{path}");
+            assert!(tracked(path), "{path}");
         }
+    }
+
+    #[test]
+    fn discovery_hidden_ancestors_only_exempt_the_selected_or_configured_workspace() {
+        let home = Path::new("/Users/test");
+        let workspace = home.join(".gemini/antigravity/scratch/my-project");
+        let allowed = |path: PathBuf| {
+            visible_in_workspace(&path, false, |dir| dir == home || dir == workspace)
+                && !ignored(&path, &[])
+        };
+        assert!(allowed(workspace.join("spec.md")));
+        assert!(!allowed(workspace.join(".cache/noise")));
+        assert!(!allowed(home.join(".gemini/antigravity/brain/spec.md")));
+        assert!(!allowed(
+            home.join(".gemini/antigravity/scratch/other/spec.md")
+        ));
+    }
+
+    #[test]
+    fn discovery_narrows_only_strict_ancestors_of_the_plan_workspace() {
+        let home = Path::new("/home/test");
+        let selected = home.join("projects/app");
+        let roots = [home, Path::new("/other-root")].map(|r| discovery_root(r, &selected));
+        let can_wake = |path: &Path| visible_in_workspace(path, false, |dir| roots.contains(&dir));
+        assert!(!can_wake(&home.join("Downloads/other.txt")));
+        assert!(can_wake(&selected.join("spec.md")));
+        assert!(can_wake(Path::new("/other-root/terms.pdf")));
+        assert_eq!(discovery_root(home, home), home);
+    }
+
+    #[test]
+    fn discovery_file_change_cooldown_uses_half_the_interval_with_a_five_minute_ceiling() {
+        let interval = |every_seconds| TaskSchedule::Interval {
+            every_seconds,
+            start_at: 0,
+            cadence: Default::default(),
+        };
+        assert_eq!(file_change_cooldown_ms(&interval(1)), 500);
+        assert_eq!(file_change_cooldown_ms(&interval(1800)), 300_000);
+        assert_eq!(
+            file_change_cooldown_ms(&TaskSchedule::Cron {
+                expression: "0 * * * *".into(),
+                start_at: 0
+            }),
+            300_000
+        );
     }
 
     #[tokio::test]
@@ -713,7 +981,13 @@ mod tests {
                 WriteKind::Modified
             },
         };
-        let snapshot = |at| store.change_snapshot(UnixMillis(at), 15, |_| true);
+        let snapshot = |at| {
+            store.change_snapshot(
+                UnixMillis(at),
+                ChangeQuery::Opening { editing_limit: 15 },
+                |_, _| true,
+            )
+        };
         let file = work.join("terms.md");
         std::fs::write(&file, "first").unwrap();
         tracker
