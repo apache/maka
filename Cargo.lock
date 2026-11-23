@@ -8531,6 +8531,7 @@ dependencies = [
  "uuid",
  "windows 0.62.2",
  "windows-sys 0.61.2",
+ "zstd 0.14.3",
 ]
 
 [[package]]
@@ -8649,6 +8650,7 @@ dependencies = [
  "tokio",
  "uuid",
  "windows-sys 0.61.2",
+ "zstd 0.14.3",
 ]
 
 [[package]]
@@ -9294,6 +9296,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "url",
+ "zstd 0.14.3",
 ]
 
 [[package]]
@@ -9472,17 +9475,20 @@ dependencies = [
 name = "maka-skills"
 version = "0.3.0"
 dependencies = [
+ "hex",
  "libc",
  "maka-agent-facts",
  "maka-capabilities",
  "schemars 1.2.3",
  "serde",
  "serde_json",
+ "sha2 0.11.1",
  "tempfile",
  "tokio",
  "tokio-util",
  "uuid",
  "yaml-rust2",
+ "zstd 0.14.3",
 ]
 
 [[package]]
@@ -9750,6 +9756,7 @@ dependencies = [
  "url",
  "usvg",
  "uuid",
+ "zstd 0.14.3",
 ]
 
 [[package]]

@@ -81,13 +81,11 @@ impl Tab {
         }
         // The same upstream selector engine and the same authored setup are
         // reused in this dedicated realm; no additional selector implementation.
-        let expression =
-            format!("(() => {{const module={{}};{INJECTED}\n{SETUP}\nreturn engine;}})()");
         let installed = cdp_value(
             self.frame_observation(
                 frame.session.as_deref(),
                 "Runtime.evaluate",
-                json!({"contextId":context,"expression":expression,"returnByValue":false,
+                json!({"contextId":context,"expression":ENGINE_EXPRESSION,"returnByValue":false,
                 "objectGroup":resources.group}),
             )
             .await?,

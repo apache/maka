@@ -49,16 +49,23 @@ pub struct UiScale {
     pub current: Box<dyn Fn() -> Result<f32, String> + Send + Sync>,
 }
 
+fn bundle_source(frame: &[u8]) -> String {
+    String::from_utf8(zstd::decode_all(frame).expect("bundled UI frame"))
+        .expect("bundled UI source")
+}
+
 /// The common loader for trusted UI packages, without a product root or assets.
 pub fn bootstrap_bundle() -> Bundle {
     let mut capabilities = Capabilities::all();
     capabilities.host = vec!["*".into()];
-    Bundle::source(include_str!(concat!(env!("OUT_DIR"), "/bootstrap.js")).into()).with_policy(
-        Policy {
-            declared: Some(capabilities),
-            ..Policy::development()
-        },
-    )
+    Bundle::source(bundle_source(include_bytes!(concat!(
+        env!("OUT_DIR"),
+        "/bootstrap.js.zst"
+    ))))
+    .with_policy(Policy {
+        declared: Some(capabilities),
+        ..Policy::development()
+    })
 }
 
 /// The dedicated, trusted system-permission surface; it observes original interactions.
@@ -68,11 +75,14 @@ fn system_permission_bundle() -> Bundle {
         "computerPermissions.close".into(),
         "appearance.textSize".into(),
     ];
-    Bundle::source(include_str!(concat!(env!("OUT_DIR"), "/computer-permission-setup.js")).into())
-        .with_policy(Policy {
-            declared: Some(capabilities),
-            ..Policy::development()
-        })
+    Bundle::source(bundle_source(include_bytes!(concat!(
+        env!("OUT_DIR"),
+        "/computer-permission-setup.js.zst"
+    ))))
+    .with_policy(Policy {
+        declared: Some(capabilities),
+        ..Policy::development()
+    })
 }
 
 /// Runs the UI bootstrap with the admitted Host bindings on `runtime`.

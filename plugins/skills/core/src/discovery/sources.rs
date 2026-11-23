@@ -18,19 +18,22 @@
  */
 
 use super::ScanError;
-use crate::SkillDocument;
+use crate::{
+    SkillDocument,
+    resources::{EmbeddedText, Resources},
+};
 
 #[derive(Debug, Clone)]
 pub(super) struct BundledSource {
     pub id: &'static str,
     pub document: SkillDocument,
     pub content_sha256: String,
-    pub(crate) resources: crate::resources::Embedded,
+    pub(crate) resources: Resources,
 }
 struct Bundled {
     id: &'static str,
     content: &'static str,
-    files: &'static [(&'static str, &'static [u8])],
+    files: &'static [(&'static str, Option<&'static EmbeddedText>)],
 }
 include!(concat!(env!("OUT_DIR"), "/bundled.rs"));
 
@@ -49,7 +52,7 @@ pub(super) fn bundled() -> Result<Vec<BundledSource>, ScanError> {
                         content_sha256: maka_agent_facts::artifact::content_digest(
                             content.as_bytes(),
                         ),
-                        resources: crate::resources::Embedded::new(files)?,
+                        resources: Resources::embedded(files)?,
                     })
                 })
                 .collect::<Result<Vec<_>, ScanError>>()
@@ -63,4 +66,29 @@ pub fn safe_source_id(id: &str) -> bool {
         && id
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bundled_resources_preserve_original_bytes_and_revision_hashes() {
+        for &(id, path, bytes) in ORIGINALS {
+            let skill = BUNDLED.iter().find(|skill| skill.id == id).unwrap();
+            let (_, resource) = skill.files.iter().find(|(name, _)| *name == path).unwrap();
+            match (resource, std::str::from_utf8(bytes)) {
+                (Some(text), Ok(_)) => {
+                    assert_eq!(text.content().as_bytes(), bytes, "{path}");
+                    assert_eq!(
+                        text.hash,
+                        maka_agent_facts::artifact::content_digest(bytes),
+                        "{path}"
+                    );
+                }
+                (None, Err(_)) => {}
+                _ => panic!("incorrect UTF-8 classification for {path}"),
+            }
+        }
+    }
 }

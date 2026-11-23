@@ -77,6 +77,7 @@ required-features = ["desktop-tests"]
 nsh-platform-macos = { workspace = true, features = ["terminal"] }
 
 [dependencies]
+zstd.workspace = true
 jiff.workspace = true
 maka-tools.workspace = true
 nsh-terminal.workspace = true
@@ -126,6 +127,7 @@ tempfile.workspace = true
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "tracing-log"] }
 
 [build-dependencies]
+zstd.workspace = true
 hex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
