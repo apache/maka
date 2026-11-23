@@ -19,7 +19,7 @@
 
 // The desktop window's appearance (Settings › General): its colors, its
 // palette and its text size, kept in the app's storage. Terminals keep their own.
-import { host as shell, setColorScheme, signal, Storage } from 'nsh';
+import { host as shell, platform, setColorScheme, signal, Storage } from 'nsh';
 import { ownTitleBar } from './chrome';
 import { parseHex, presetRecipes, type PaletteId, type PaletteRecipe } from './colorPalette';
 
@@ -27,8 +27,10 @@ export type ColorTheme = 'system' | 'light' | 'dark';
 export const colorThemes: ColorTheme[] = ['system', 'light', 'dark'];
 export const textSizes = [0.9, 1, 1.15, 1.3];
 
-export type TrayIcon = 'line' | 'bold' | 'tile';
-export const trayIcons: TrayIcon[] = ['line', 'bold', 'tile'];
+export type TrayIcon = 'line' | 'bold' | 'tile' | 'none';
+// Without its icon the window that was closed comes back from the Dock, which only macOS has.
+export const trayIcons: TrayIcon[] =
+  platform.os === 'macos' ? ['line', 'bold', 'tile', 'none'] : ['line', 'bold', 'tile'];
 
 export const paletteIds: PaletteId[] = [
   'default',

@@ -22,4 +22,4 @@ import line from './assets/tray-line.svg';
 import tile from './assets/tray-tile.svg';
 import type { TrayIcon } from './appearance';
 
-export const trayIconArtwork: Record<TrayIcon, typeof bold> = { line, bold, tile };
+export const trayIconArtwork: Record<Exclude<TrayIcon, 'none'>, typeof bold> = { line, bold, tile };

@@ -1193,6 +1193,7 @@ export const settingsMessages = {
   'Thin line': ['Thin line', '细线', '細線'],
   'Bold line': ['Bold line', '粗线', '粗線'],
   'Solid tile': ['Solid tile', '实心方块', '實心方塊'],
+  Hidden: ['Hidden', '不显示', '不顯示'],
   Mist: ['Mist', '雾蓝', '霧藍'],
   Sage: ['Sage', '鼠尾草', '鼠尾草'],
   Sand: ['Sand', '暖灰', '暖灰'],

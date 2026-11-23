@@ -691,6 +691,7 @@ function AppearanceRows() {
         label={tr('Palette')}
         value={appearance.palette()}
         preview={<Swatch id={appearance.palette()} />}
+        choicePreview={(value) => <Swatch id={value as PaletteId} />}
         choices={paletteIds.map((id) => ({ value: id, title: paletteLabel(id) }))}
         change={(value) => appearance.choosePalette(value as PaletteId)}
       />
@@ -707,10 +708,14 @@ function AppearanceRows() {
         label={trayIconRowLabel()}
         value={appearance.trayIcon()}
         preview={
-          <Image
-            src={trayIconArtwork[appearance.trayIcon()]}
-            style={[{ width: 18, height: 18, tintColor: C.text }, { pointerEvents: 'none' }]}
-          />
+          <Each of={trayIconShown()} key={(icon) => icon}>
+            {(icon) => (
+              <Image
+                src={trayIconArtwork[icon()]}
+                style={[{ width: 18, height: 18, tintColor: C.text }, { pointerEvents: 'none' }]}
+              />
+            )}
+          </Each>
         }
         choices={trayIcons.map((icon) => ({ value: icon, title: trayIconLabel(icon) }))}
         change={(value) => appearance.chooseTrayIcon(value as TrayIcon)}
@@ -719,6 +724,11 @@ function AppearanceRows() {
   );
 }
 
+const trayIconShown = (): Exclude<TrayIcon, 'none'>[] => {
+  const icon = appearance.trayIcon();
+  return icon === 'none' ? [] : [icon];
+};
+
 function trayIconRowLabel() {
   return platform.os === 'macos' ? tr('Menu bar icon') : tr('System tray icon');
 }
@@ -726,6 +736,7 @@ function trayIconRowLabel() {
 function trayIconLabel(icon: TrayIcon) {
   if (icon === 'line') return tr('Thin line');
   if (icon === 'bold') return tr('Bold line');
+  if (icon === 'none') return tr('Hidden');
   return tr('Solid tile');
 }
 
