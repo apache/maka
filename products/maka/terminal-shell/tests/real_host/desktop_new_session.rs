@@ -35,7 +35,7 @@ use std::{
     future::Future,
     path::Path,
     rc::Rc,
-    sync::{Arc, Mutex, atomic::Ordering},
+    sync::{Arc, Mutex},
     time::Duration,
 };
 use tokio::sync::{Notify, watch};
@@ -1109,7 +1109,7 @@ async fn desktop_creates_only_on_first_submission_and_preserves_the_confirmed_sn
         .collect();
     assert_eq!(messages.len(), 1);
     assert_eq!(messages[0]["attachments"].as_array().unwrap().len(), 1);
-    assert_eq!(fixture.request_count.load(Ordering::SeqCst), 1);
+    assert_eq!(fixture.request_count(), 1);
     desktop.close().await;
     fixture.finish().await;
 }
@@ -1262,7 +1262,7 @@ async fn desktop_continues_a_failed_run_without_duplicating_the_user_message() {
         .as_str()
         .unwrap();
     fixture.idle(&desktop.client, session).await;
-    assert_eq!(fixture.request_count.load(Ordering::SeqCst), 2);
+    assert_eq!(fixture.request_count(), 2);
     desktop.close().await;
     fixture.finish().await;
 }
@@ -1539,7 +1539,7 @@ async fn desktop_edits_a_message_in_place_and_forks_only_when_sent() {
         .unwrap()
         .to_owned();
     fixture.idle(&desktop.client, &fork).await;
-    assert_eq!(fixture.request_count.load(Ordering::SeqCst), 2);
+    assert_eq!(fixture.request_count(), 2);
     desktop.close().await;
     fixture.finish().await;
 }
@@ -1691,7 +1691,7 @@ async fn desktop_steering_freezes_each_message_and_queue_is_one_shot() {
         })
         .await;
     assert_eq!(
-        fixture.request_count.load(Ordering::SeqCst),
+        fixture.request_count(),
         2,
         "IME confirmation must not send a message"
     );
@@ -1799,7 +1799,7 @@ async fn desktop_steering_freezes_each_message_and_queue_is_one_shot() {
             "Preserve this draft after stopping.\n\n{queued_followup}"
         ))
         .await;
-    assert_eq!(fixture.request_count.load(Ordering::SeqCst), 3);
+    assert_eq!(fixture.request_count(), 3);
     desktop.close().await;
     fixture.finish().await;
 }
@@ -1899,7 +1899,7 @@ async fn desktop_file_gestures_preserve_drafts_and_stage_an_image() {
             })
             .await;
     }
-    assert_eq!(fixture.request_count.load(Ordering::SeqCst), 0);
+    assert_eq!(fixture.request_count(), 0);
     let bytes = STANDARD.decode(PNG).unwrap();
     let name = "image.png";
     desktop.paste_image(&bytes).await;

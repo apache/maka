@@ -142,7 +142,7 @@ pub(super) async fn desktop_room_reply_wakes_an_agent_without_mixing_drafts() {
             "kind": "image",
         }])
     );
-    assert_eq!(fixture.request_count.load(Ordering::SeqCst), 0);
+    assert_eq!(fixture.request_count(), 0);
     desktop.artifact("room-default-profile");
     desktop.press("Settings").await;
     desktop.press("Settings section General").await;

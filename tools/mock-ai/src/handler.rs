@@ -22,13 +22,15 @@ use crate::plan::{
     ToolCallSpec, TurnEvent, TurnPlan, Usage,
 };
 use crate::protocol::NormalizedRequest;
+use crate::schema_synth::WirePoisonConfig;
 use bytes::Bytes;
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
-use tokio::sync::{Notify, mpsc};
+use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 
 /// Execution context passed to handlers for every model turn.
 #[derive(Debug, Clone)]
@@ -86,6 +88,16 @@ impl SessionTracker {
     }
 }
 
+/// Metadata configured on an interactive turn before sending its first event.
+#[derive(Debug, Clone, Default)]
+pub struct InteractiveMeta {
+    pub response_id: Option<String>,
+    pub model_override: Option<String>,
+    pub response_headers: BTreeMap<String, String>,
+    pub close_connection: bool,
+    pub wire_poison: WirePoisonConfig,
+}
+
 /// Outcome returned by a `TurnHandler`: either a ready `TurnPlan` (zero channel overhead)
 /// or an interactive event stream driven step-by-step by test code.
 pub enum TurnDecision {
@@ -94,11 +106,9 @@ pub enum TurnDecision {
 }
 
 pub struct InteractiveStream {
-    pub events: mpsc::Receiver<TurnEvent>,
-    pub response_id: Option<String>,
-    pub response_headers: BTreeMap<String, String>,
-    pub close_connection: bool,
-    pub closed: Arc<Notify>,
+    pub events: mpsc::UnboundedReceiver<TurnEvent>,
+    pub meta: Arc<Mutex<InteractiveMeta>>,
+    pub closed: CancellationToken,
 }
 
 pub type HandlerFuture<'a> = Pin<Box<dyn Future<Output = Option<TurnDecision>> + Send + 'a>>;
@@ -115,8 +125,9 @@ pub trait TurnHandler: Send + Sync {
 pub struct TurnHandle {
     pub request: NormalizedRequest,
     pub context: TurnContext,
-    tx: mpsc::Sender<TurnEvent>,
-    closed: Arc<Notify>,
+    tx: mpsc::UnboundedSender<TurnEvent>,
+    meta: Arc<Mutex<InteractiveMeta>>,
+    closed: CancellationToken,
 }
 
 impl TurnHandle {
@@ -128,8 +139,52 @@ impl TurnHandle {
         &self.request.headers
     }
 
+    /// Set the wire response/message ID (must be called before sending the first event).
+    pub fn set_response_id(&self, id: impl Into<String>) {
+        self.meta.lock().unwrap().response_id = Some(id.into());
+    }
+
+    /// Override the echoed model name (must be called before sending the first event).
+    pub fn set_model_override(&self, model: impl Into<String>) {
+        self.meta.lock().unwrap().model_override = Some(model.into());
+    }
+
+    /// Attach an HTTP response header (must be called before sending the first event).
+    pub fn set_header(&self, name: impl Into<String>, value: impl Into<String>) {
+        self.meta
+            .lock()
+            .unwrap()
+            .response_headers
+            .insert(name.into(), value.into());
+    }
+
+    /// Force `Connection: close` on HTTP/1.1 (must be called before sending the first event).
+    pub fn set_close_connection(&self, close: bool) {
+        self.meta.lock().unwrap().close_connection = close;
+    }
+
+    /// Configure SSE framing poison for this turn (must be called before sending the first event).
+    pub fn set_wire_poison(&self, poison: WirePoisonConfig) {
+        self.meta.lock().unwrap().wire_poison = poison;
+    }
+
     pub async fn send(&self, event: TurnEvent) -> bool {
-        self.tx.send(event).await.is_ok()
+        self.tx.send(event).is_ok()
+    }
+
+    pub async fn stream_start(&self) -> bool {
+        self.send(TurnEvent::StreamStart).await
+    }
+
+    pub async fn flush_item(&self) -> bool {
+        self.send(TurnEvent::Flush).await
+    }
+
+    pub async fn sse_comment(&self, comment: impl Into<String>) -> bool {
+        self.send(TurnEvent::SseComment {
+            comment: comment.into(),
+        })
+        .await
     }
 
     pub async fn delta(&self, text: impl Into<String>) -> bool {
@@ -151,6 +206,20 @@ impl TurnHandle {
         .await
     }
 
+    pub async fn reasoning_encrypted(
+        &self,
+        text: impl Into<String>,
+        encrypted_content: impl Into<String>,
+    ) -> bool {
+        self.send(TurnEvent::Reasoning {
+            text: text.into(),
+            chunk_chars: 0,
+            signature: None,
+            encrypted_content: Some(encrypted_content.into()),
+        })
+        .await
+    }
+
     pub async fn tool_call(
         &self,
         id: impl Into<String>,
@@ -159,6 +228,18 @@ impl TurnHandle {
     ) -> bool {
         self.send(TurnEvent::ToolCall(ToolCallSpec::new(id, name, arguments)))
             .await
+    }
+
+    pub async fn custom_tool_call(
+        &self,
+        id: impl Into<String>,
+        name: impl Into<String>,
+        input: impl Into<String>,
+    ) -> bool {
+        self.send(TurnEvent::ToolCall(
+            ToolCallSpec::new(id, name, Value::String(input.into())).as_custom_tool(),
+        ))
+        .await
     }
 
     pub async fn native_tool(&self, tool: NativeToolEvent) -> bool {
@@ -182,79 +263,138 @@ impl TurnHandle {
     }
 
     pub async fn http_error(self, spec: HttpErrorSpec) {
-        let _ = self.tx.send(TurnEvent::HttpError(spec)).await;
+        let _ = self.tx.send(TurnEvent::HttpError(spec));
     }
 
     pub async fn mid_stream_error(self, spec: MidStreamErrorSpec) {
-        let _ = self.tx.send(TurnEvent::MidStreamError(spec)).await;
+        let _ = self.tx.send(TurnEvent::MidStreamError(spec));
     }
 
     pub async fn drop_connection(self) {
-        let _ = self.tx.send(TurnEvent::DropConnection).await;
+        let _ = self.tx.send(TurnEvent::DropConnection);
     }
 
     pub async fn truncate_eof(self) {
-        let _ = self.tx.send(TurnEvent::TruncateEof).await;
+        let _ = self.tx.send(TurnEvent::TruncateEof);
     }
 
     pub async fn stall(&self) {
-        let _ = self.tx.send(TurnEvent::Stall).await;
+        let _ = self.tx.send(TurnEvent::Stall);
     }
 
     pub async fn finish(self) {
-        let _ = self
-            .tx
-            .send(TurnEvent::Finish {
-                reason: FinishReason::Stop,
-            })
-            .await;
+        let _ = self.tx.send(TurnEvent::Finish {
+            reason: FinishReason::Stop,
+        });
     }
 
     pub async fn finish_with(self, reason: FinishReason) {
-        let _ = self.tx.send(TurnEvent::Finish { reason }).await;
+        let _ = self.tx.send(TurnEvent::Finish { reason });
     }
 
-    /// Clone the notification triggered when the server closes this turn's HTTP/WS stream.
-    pub fn closed_signal(&self) -> Arc<Notify> {
+    /// Apply a complete `TurnPlan` to this interactive turn (metadata + all events + auto-finish if needed).
+    /// Non-blocking: enqueues all events and releases the handle without waiting for the client to drain.
+    pub fn send_plan(self, plan: TurnPlan) {
+        let inferred_finish = plan.inferred_finish_reason();
+        {
+            let mut meta = self.meta.lock().unwrap();
+            if let Some(id) = plan.response_id {
+                meta.response_id = Some(id);
+            }
+            if let Some(model) = plan.model_override {
+                meta.model_override = Some(model);
+            }
+            for (k, v) in plan.response_headers {
+                meta.response_headers.insert(k, v);
+            }
+            if plan.close_connection {
+                meta.close_connection = true;
+            }
+            if plan.wire_poison.is_active() {
+                meta.wire_poison = plan.wire_poison;
+            }
+        }
+        let mut has_terminal = false;
+        // Pre-send Usage so Anthropic message_start gets exact token counts even if Usage was pushed late.
+        for ev in &plan.events {
+            if let TurnEvent::Usage(u) = ev {
+                let _ = self.tx.send(TurnEvent::Usage(u.clone()));
+                break;
+            }
+        }
+        for ev in plan.events {
+            if matches!(
+                ev,
+                TurnEvent::Finish { .. }
+                    | TurnEvent::HttpError(_)
+                    | TurnEvent::MidStreamError(_)
+                    | TurnEvent::DropConnection
+                    | TurnEvent::TruncateEof
+                    | TurnEvent::Stall
+            ) {
+                has_terminal = true;
+            }
+            let _ = self.tx.send(ev);
+        }
+        if !has_terminal {
+            let _ = self.tx.send(TurnEvent::Finish {
+                reason: inferred_finish,
+            });
+        }
+    }
+
+    /// Convenience: reply with visible text + Finish(Stop).
+    pub fn reply_text(self, text: impl Into<String>) {
+        self.send_plan(TurnPlan::text(text));
+    }
+
+    /// Convenience: reply with visible text + explicit Usage + Finish(Stop).
+    pub fn reply_text_with_usage(self, text: impl Into<String>, usage: Usage) {
+        self.send_plan(
+            TurnPlan::new()
+                .with_usage(usage)
+                .push_text(text)
+                .finish(FinishReason::Stop),
+        );
+    }
+
+    /// Convenience: reply with a single tool call + Finish(ToolCalls).
+    pub fn reply_tool_call(self, id: impl Into<String>, name: impl Into<String>, arguments: Value) {
+        self.send_plan(
+            TurnPlan::new()
+                .push_tool_call(id, name, arguments)
+                .finish(FinishReason::ToolCalls),
+        );
+    }
+
+    /// Clone the sticky token cancelled as soon as the server closes this turn's HTTP/WS stream.
+    pub fn closed_signal(&self) -> CancellationToken {
         self.closed.clone()
     }
 
-    /// Wait until the server connection task finishes writing or is closed by the client.
+    /// Wait until the server finishes writing this turn or the client disconnects.
+    /// Sticky and idempotent: returns immediately if already closed.
     pub async fn wait_closed(&self) {
-        self.closed.notified().await;
+        self.closed.cancelled().await;
     }
 }
 
 /// Interactive queue handler: pushes each incoming turn as a `TurnHandle` to the test driver.
 pub struct InteractiveHandler {
     tx: mpsc::Sender<TurnHandle>,
-    event_channel_capacity: usize,
 }
 
 impl InteractiveHandler {
     pub fn channel(request_capacity: usize) -> (Arc<Self>, mpsc::Receiver<TurnHandle>) {
         let (tx, rx) = mpsc::channel(request_capacity.max(1));
-        (
-            Arc::new(Self {
-                tx,
-                event_channel_capacity: 16,
-            }),
-            rx,
-        )
+        (Arc::new(Self { tx }), rx)
     }
 
     pub fn with_event_buffer(
         request_capacity: usize,
-        event_capacity: usize,
+        _event_capacity: usize,
     ) -> (Arc<Self>, mpsc::Receiver<TurnHandle>) {
-        let (tx, rx) = mpsc::channel(request_capacity.max(1));
-        (
-            Arc::new(Self {
-                tx,
-                event_channel_capacity: event_capacity.max(1),
-            }),
-            rx,
-        )
+        Self::channel(request_capacity)
     }
 }
 
@@ -263,12 +403,14 @@ impl TurnHandler for InteractiveHandler {
         let req_clone = req.clone();
         let ctx_clone = ctx.clone();
         Box::pin(async move {
-            let (ev_tx, ev_rx) = mpsc::channel(self.event_channel_capacity);
-            let closed = Arc::new(Notify::new());
+            let (ev_tx, ev_rx) = mpsc::unbounded_channel();
+            let meta = Arc::new(Mutex::new(InteractiveMeta::default()));
+            let closed = CancellationToken::new();
             let handle = TurnHandle {
                 request: req_clone,
                 context: ctx_clone,
                 tx: ev_tx,
+                meta: meta.clone(),
                 closed: closed.clone(),
             };
             if self.tx.send(handle).await.is_err() {
@@ -276,9 +418,7 @@ impl TurnHandler for InteractiveHandler {
             }
             Some(TurnDecision::Interactive(InteractiveStream {
                 events: ev_rx,
-                response_id: None,
-                response_headers: BTreeMap::new(),
-                close_connection: false,
+                meta,
                 closed,
             }))
         })
@@ -343,6 +483,34 @@ where
     fn handle<'a>(&'a self, req: &'a NormalizedRequest, ctx: &'a TurnContext) -> HandlerFuture<'a> {
         let plan = (self.0)(req, ctx);
         Box::pin(async move { Some(TurnDecision::Plan(plan)) })
+    }
+}
+
+/// Fallthrough predicate handler for use in `ChainHandler` (returns `Some(TurnPlan)` to handle,
+/// or `None` to delegate to the next handler such as `InteractiveHandler`).
+pub struct FilterHandler<F>(pub F);
+
+impl<F> TurnHandler for FilterHandler<F>
+where
+    F: Fn(&NormalizedRequest, &TurnContext) -> Option<TurnPlan> + Send + Sync + 'static,
+{
+    fn handle<'a>(&'a self, req: &'a NormalizedRequest, ctx: &'a TurnContext) -> HandlerFuture<'a> {
+        let plan = (self.0)(req, ctx);
+        Box::pin(async move { plan.map(TurnDecision::Plan) })
+    }
+}
+
+/// Async closure-backed handler for scenarios that need to await barriers or channels before replying.
+pub struct AsyncFnHandler<F>(pub F);
+
+impl<F, Fut> TurnHandler for AsyncFnHandler<F>
+where
+    F: Fn(NormalizedRequest, TurnContext) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = Option<TurnPlan>> + Send + 'static,
+{
+    fn handle<'a>(&'a self, req: &'a NormalizedRequest, ctx: &'a TurnContext) -> HandlerFuture<'a> {
+        let fut = (self.0)(req.clone(), ctx.clone());
+        Box::pin(async move { fut.await.map(TurnDecision::Plan) })
     }
 }
 

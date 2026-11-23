@@ -23,7 +23,7 @@
 //! with connection-local `store:false` state), Anthropic Messages (HTTP SSE/JSON), plus
 //! discovery/usage/storage control-plane endpoints, physics-based TTFT/TPS pacing, stateful
 //! RPM/TPM rate limiting, JSON Schema tool argument synthesis, inline invariant watchdog,
-//! Prometheus metrics, and transparent proxy record/replay on a single port.
+//! Prometheus metrics, and optional TLS / YAML rules / transparent proxy record & replay.
 
 pub mod codec;
 pub mod control;
@@ -32,36 +32,40 @@ pub mod metrics;
 pub mod pacing;
 pub mod plan;
 pub mod protocol;
+#[cfg(feature = "proxy")]
 pub mod proxy;
 pub mod ratelimit;
+#[cfg(feature = "rules")]
 pub mod rules;
 pub mod schema_synth;
 pub mod server;
+#[cfg(feature = "tls")]
 pub mod tls;
 pub mod watchdog;
 pub mod workload;
 
-pub use control::{ControlPlaneConfig, CustomRouteFn, ModelEntry, StoredResponses};
+pub use control::{ControlPlaneConfig, CustomResponse, CustomRouteFn, ModelEntry, StoredResponses};
 pub use handler::{
-    ChainHandler, FnHandler, InteractiveHandler, ScriptedHandler, SessionTracker, TurnContext,
-    TurnDecision, TurnHandle, TurnHandler,
+    AsyncFnHandler, ChainHandler, FilterHandler, FnHandler, InteractiveHandler, ScriptedHandler,
+    SessionTracker, TurnContext, TurnDecision, TurnHandle, TurnHandler,
 };
 pub use metrics::{
-    AtomicHistogram, DimensionCounter, HistogramSummary, MetricsSnapshot, RecordedRequest,
-    RecorderMode, RequestRecorder, ServerMetrics,
+    AtomicHistogram, DimensionCounter, HistogramSummary, MetricsSnapshot, RecordedControlRequest,
+    RecordedRequest, RecorderMode, RequestRecorder, ServerMetrics,
 };
 pub use pacing::{
     DynamicProfileManager, LatencyProfile, ProfileSnapshot, RuntimeProfile, ScenarioPhase,
     ScenarioSchedule, TurnPacer,
 };
 pub use plan::{
-    Citation, CompactionOutput, FinishReason, HttpErrorSpec, MidStreamErrorSpec, NativeToolEvent,
-    ToolCallSpec, TurnEvent, TurnPlan, Usage, WebSearchResult,
+    Citation, CloseSignal, CompactionOutput, FinishReason, HttpErrorSpec, MidStreamErrorSpec,
+    NativeToolEvent, ToolCallSpec, TurnEvent, TurnPlan, Usage, WebSearchResult,
 };
 pub use protocol::{
     AuthPolicy, NormalizedMessage, NormalizedRequest, NormalizedRole, NormalizedTool, Protocol,
     Transport,
 };
+#[cfg(feature = "proxy")]
 pub use proxy::{
     CassetteReplayer, CassetteWriter, ExchangeKind, ExchangeOutcome, ProxyRecordConfig,
     ProxyRecorder, RecordedExchange, ReplayConfig, ReplayMatchMode, TimedChunk,
@@ -70,22 +74,25 @@ pub use ratelimit::{
     RateLimitConfig, RateLimitDecision, RateLimitHeaders, RateLimitLease, RateLimitScope,
     RateLimiter,
 };
+#[cfg(feature = "rules")]
 pub use rules::{ConfigError, MockServerConfig, RuleEngine, RuleMatcher, RuleSpec};
 pub use schema_synth::{
     SynthMode, WirePoisonConfig, context_overflow_error, poison_sse_frame,
     synthesize_tool_arguments, try_synthesize_tool_arguments,
 };
 pub use server::{MockAiBuilder, MockAiServer, ServerTuning};
+#[cfg(feature = "tls")]
 pub use tls::{TlsServerConfig, UpstreamWsStream, build_tls_connector, connect_ws_upstream};
 pub use watchdog::{
     ProtocolWatchdog, ViolationKind, ViolationRecord, WatchdogConfig, WatchdogSnapshot,
 };
 pub use workload::{ChaosConfig, SyntheticToolTemplate, WorkloadConfig, WorkloadGenerator};
 
-use std::sync::Arc;
-
 /// Build a `MockAiBuilder` directly from a declarative `MockServerConfig` (JSON/YAML).
+#[cfg(feature = "rules")]
 pub fn builder_from_config(config: MockServerConfig) -> Result<MockAiBuilder, ConfigError> {
+    use std::sync::Arc;
+
     let mut handlers: Vec<Arc<dyn TurnHandler>> = Vec::new();
     let mut rule_engine_ref = None;
 

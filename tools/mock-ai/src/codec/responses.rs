@@ -478,6 +478,62 @@ impl WireEncoder for ResponsesEncoder {
                     out,
                 );
             }
+            TurnEvent::NativeTool(NativeToolEvent::WebSearchStarted { id, query }) => {
+                self.ensure_created(out);
+                self.close_reasoning(out);
+                self.close_message(out);
+                let item_id = if id.is_empty() {
+                    self.next_id("ws")
+                } else {
+                    id
+                };
+                let mut item = serde_json::Map::new();
+                item.insert("type".into(), json!("web_search_call"));
+                item.insert("id".into(), json!(item_id));
+                item.insert("status".into(), json!("in_progress"));
+                if !query.is_empty() {
+                    item.insert("action".into(), json!({ "type": "search", "query": query }));
+                }
+                self.emit(
+                    json!({
+                        "type": "response.output_item.added",
+                        "item": Value::Object(item),
+                    }),
+                    out,
+                );
+            }
+            TurnEvent::NativeTool(NativeToolEvent::WebSearchCompleted { id, query, results }) => {
+                self.ensure_created(out);
+                self.close_reasoning(out);
+                self.close_message(out);
+                let item_id = if id.is_empty() {
+                    self.next_id("ws")
+                } else {
+                    id
+                };
+                let sources: Vec<Value> = results
+                    .iter()
+                    .map(|r| json!({ "type": "url", "url": r.url, "title": r.title }))
+                    .collect();
+                let done_item = json!({
+                    "type": "web_search_call",
+                    "id": item_id,
+                    "status": "completed",
+                    "action": {
+                        "type": "search",
+                        "query": query,
+                        "sources": sources,
+                    },
+                });
+                self.completed_output.push(done_item.clone());
+                self.emit(
+                    json!({
+                        "type": "response.output_item.done",
+                        "item": done_item,
+                    }),
+                    out,
+                );
+            }
             TurnEvent::NativeCompaction(comp) => {
                 self.ensure_created(out);
                 self.close_reasoning(out);
@@ -542,6 +598,20 @@ impl WireEncoder for ResponsesEncoder {
             }
             TurnEvent::RawJson { value } => {
                 self.emit(value, out);
+            }
+            TurnEvent::StreamStart => {
+                self.ensure_created(out);
+            }
+            TurnEvent::Flush => {
+                self.close_reasoning(out);
+                self.close_message(out);
+            }
+            TurnEvent::SseComment { comment } => {
+                if self.stream && !self.websocket {
+                    out.push(WireFrame::Sse(bytes::Bytes::from(format!(
+                        ": {comment}\n\n"
+                    ))));
+                }
             }
             TurnEvent::RawBytes(bytes) => {
                 if self.websocket {

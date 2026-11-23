@@ -22,35 +22,58 @@ edition.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[features]
+default = ["rules", "proxy", "tls", "cli"]
+rules = ["dep:regex", "dep:yaml-rust2"]
+tls = ["dep:tokio-rustls", "dep:rustls-pemfile", "dep:rustls-platform-verifier"]
+proxy = ["tls", "dep:reqwest", "dep:sha2", "dep:base64"]
+cli = ["rules", "proxy", "tls", "dep:clap", "dep:tracing-subscriber"]
+
 [[bin]]
 name = "maka-mock-ai"
 path = "src/main.rs"
 test = false
+required-features = ["cli"]
+
+[[test]]
+name = "advanced_simulation"
+path = "tests/advanced_simulation.rs"
+required-features = ["rules", "proxy", "tls"]
+
+[[test]]
+name = "stress_and_scenarios"
+path = "tests/stress_and_scenarios.rs"
+required-features = ["rules"]
+
+[[test]]
+name = "protocol_conformance"
+path = "tests/protocol_conformance.rs"
 
 [dependencies]
-base64 = "0.23.1"
+base64 = { version = "0.23.1", optional = true }
 bytes = "1.12.1"
-clap.workspace = true
+clap = { workspace = true, optional = true }
 fastrand.workspace = true
 futures-util.workspace = true
 http-body-util = "0.1.5"
 hyper = { version = "1.12.0", features = ["server", "http1"] }
 hyper-util = { version = "0.1.21", features = ["tokio"] }
-regex.workspace = true
-reqwest = { workspace = true, features = ["stream"] }
-rustls-pemfile = "2.2.0"
-rustls-platform-verifier = "0.7.1"
+regex = { workspace = true, optional = true }
+reqwest = { workspace = true, features = ["stream"], optional = true }
+rustls-pemfile = { version = "2.2.0", optional = true }
+rustls-platform-verifier = { version = "0.7.1", optional = true }
 serde.workspace = true
 serde_json.workspace = true
-sha2.workspace = true
+sha2 = { workspace = true, optional = true }
 thiserror.workspace = true
 tokio.workspace = true
-tokio-rustls = { version = "0.26.6", default-features = false, features = ["aws_lc_rs", "tls12"] }
+tokio-rustls = { version = "0.26.6", default-features = false, features = ["aws_lc_rs", "tls12"], optional = true }
 tokio-tungstenite.workspace = true
 tokio-util.workspace = true
 tracing.workspace = true
-tracing-subscriber.workspace = true
-yaml-rust2 = { version = "0.13.0", default-features = false }
+tracing-subscriber = { workspace = true, optional = true }
+yaml-rust2 = { version = "0.13.0", default-features = false, optional = true }
 
 [dev-dependencies]
 maka-provider-protocol.workspace = true
+reqwest = { workspace = true, features = ["stream"] }

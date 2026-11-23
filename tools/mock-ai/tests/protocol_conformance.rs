@@ -494,3 +494,260 @@ async fn anthropic_messages_sse_and_compaction_conform_to_maka_decoder() {
     assert_eq!(finish2.raw_reason.as_deref(), Some("compaction"));
     assert_eq!(finish2.usage.as_ref().and_then(|u| u.output), Some(45));
 }
+
+#[tokio::test]
+async fn interactive_non_streaming_meta_filtered_and_ws_stall_disconnect() {
+    use maka_mock_ai::{CustomResponse, HttpErrorSpec};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    // 1) Filtered interactive mode + custom_route overriding /v1/models + control_plane_requests
+    let mut server = MockAiBuilder::new()
+        .custom_route(Arc::new(|method, path, headers, _body| {
+            if method == "GET" && path == "/v1/custom" {
+                Some(CustomResponse::text(200, "custom-body").with_header(
+                    "x-custom-tag",
+                    headers.get("x-in").cloned().unwrap_or_default(),
+                ))
+            } else {
+                None
+            }
+        }))
+        .interactive_filtered(8, |req, _| {
+            if req.last_user_text() == Some("warmup") {
+                Some(TurnPlan::text("auto-warmup"))
+            } else {
+                None
+            }
+        })
+        .start()
+        .await
+        .unwrap();
+
+    let client = reqwest::Client::new();
+
+    // Control plane request recording (GET /v1/models with custom header)
+    let models_resp = client
+        .get(format!("{}/models", server.base_url()))
+        .header("x-magpie-drawers", "1")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(models_resp.status(), 200);
+    let custom_resp = client
+        .get(format!("{}/custom", server.base_url()))
+        .header("x-in", "ok")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(custom_resp.status(), 200);
+    assert_eq!(custom_resp.headers()["x-custom-tag"], "ok");
+    assert_eq!(custom_resp.text().await.unwrap(), "custom-body");
+    let cp = server.control_plane_requests();
+    assert_eq!(cp.len(), 2);
+    assert_eq!(
+        cp[0].headers.get("x-magpie-drawers").map(String::as_str),
+        Some("1")
+    );
+
+    // Filtered auxiliary turn is handled automatically without entering interactive queue
+    let warmup = post_json(
+        &client,
+        &format!("{}/chat/completions", server.base_url()),
+        &json!({ "model": "gpt-4.1", "stream": false, "messages": [{ "role": "user", "content": "warmup" }] }),
+    )
+    .await;
+    assert_eq!(warmup.status(), 200);
+    assert!(warmup.text().await.unwrap().contains("auto-warmup"));
+
+    // Interactive non-streaming JSON + TurnHandle metadata (response_id, headers)
+    let non_stream_req = tokio::spawn({
+        let client = client.clone();
+        let url = format!("{}/chat/completions", server.base_url());
+        async move {
+            post_json(
+                &client,
+                &url,
+                &json!({ "model": "gpt-4.1", "stream": false, "messages": [{ "role": "user", "content": "json-turn" }] }),
+            )
+            .await
+        }
+    });
+    let h = server.next_turn().await.unwrap();
+    h.set_response_id("custom-id-1");
+    h.set_header("x-mock-turn", "yes");
+    h.reply_text("json-ok");
+    let r = non_stream_req.await.unwrap();
+    assert_eq!(r.status(), 200);
+    assert_eq!(r.headers()["x-mock-turn"], "yes");
+    let body: Value = serde_json::from_str(&r.text().await.unwrap()).unwrap();
+    assert_eq!(body["id"], "custom-id-1");
+    assert_eq!(body["choices"][0]["message"]["content"], "json-ok");
+
+    // Plain-text HTTP error
+    let err_req = tokio::spawn({
+        let client = client.clone();
+        let url = format!("{}/chat/completions", server.base_url());
+        async move {
+            post_json(
+                &client,
+                &url,
+                &json!({ "model": "gpt-4.1", "stream": true, "messages": [{ "role": "user", "content": "plain-err" }] }),
+            )
+            .await
+        }
+    });
+    let h_err = server.next_turn().await.unwrap();
+    h_err
+        .http_error(HttpErrorSpec::plain(400, "unknown INCLUDE_USAGE"))
+        .await;
+    let r_err = err_req.await.unwrap();
+    assert_eq!(r_err.status(), 400);
+    assert_eq!(r_err.headers()["content-type"], "text/plain");
+    assert_eq!(r_err.text().await.unwrap(), "unknown INCLUDE_USAGE");
+
+    // Interactive WebSocket: Stall unblocks on next event, and client close wakes wait_closed()
+    let (mut ws, _) = tokio_tungstenite::connect_async(server.responses_ws_url())
+        .await
+        .unwrap();
+    ws.send(WsMessage::text(
+        json!({ "type": "response.create", "model": "gpt-4.1", "store": false, "input": "ws-stall" }).to_string(),
+    ))
+    .await
+    .unwrap();
+    let h_ws = server.next_turn().await.unwrap();
+    assert!(h_ws.stream_start().await);
+    assert!(h_ws.reasoning_encrypted("thought", "enc-1").await);
+    assert!(h_ws.flush_item().await);
+    h_ws.stall().await;
+
+    // Drain response.created, reasoning delta, and reasoning output_item.done BEFORE unstalling!
+    let mut saw_created = false;
+    let mut saw_reasoning_done = false;
+    while !saw_reasoning_done {
+        let Some(Ok(WsMessage::Text(txt))) = ws.next().await else {
+            panic!("unexpected ws eof");
+        };
+        let v: Value = serde_json::from_str(&txt).unwrap();
+        if v["type"] == "response.created" {
+            saw_created = true;
+        }
+        if v["type"] == "response.output_item.done"
+            && v["item"]["type"] == "reasoning"
+            && v["item"]["encrypted_content"] == "enc-1"
+        {
+            saw_reasoning_done = true;
+        }
+    }
+    assert!(saw_created);
+    assert!(saw_reasoning_done);
+
+    // Unstall interactive WS by sending a new event + finish!
+    assert!(h_ws.delta("resumed").await);
+    h_ws.finish().await;
+    let mut saw_completed = false;
+    while let Some(Ok(WsMessage::Text(txt))) = ws.next().await {
+        let v: Value = serde_json::from_str(&txt).unwrap();
+        if v["type"] == "response.completed" {
+            saw_completed = true;
+            break;
+        }
+    }
+    assert!(saw_completed);
+
+    // Turn 2 on same WS: send_plan(TurnPlan::stall()) consumes TurnHandle, yet must keep stalling until client closes!
+    ws.send(WsMessage::text(
+        json!({ "type": "response.create", "model": "gpt-4.1", "store": false, "input": "ws-send-plan-stall" }).to_string(),
+    ))
+    .await
+    .unwrap();
+    let h_plan_stall = server.next_turn().await.unwrap();
+    let closed_sig = h_plan_stall.closed_signal();
+    h_plan_stall.send_plan(TurnPlan::stall());
+    assert!(
+        tokio::time::timeout(Duration::from_millis(80), ws.next())
+            .await
+            .is_err(),
+        "send_plan(TurnPlan::stall()) must keep WS open after TurnHandle is dropped"
+    );
+    drop(ws);
+    tokio::time::timeout(Duration::from_secs(2), closed_sig.cancelled())
+        .await
+        .expect("WS client disconnect must wake send_plan(TurnPlan::stall()) close signal");
+
+    // Turn 3 on a new WS: client closes while TurnHandle is idle -> wait_closed() must wake promptly!
+    let (mut ws2, _) = tokio_tungstenite::connect_async(server.responses_ws_url())
+        .await
+        .unwrap();
+    ws2.send(WsMessage::text(
+        json!({ "type": "response.create", "model": "gpt-4.1", "store": false, "input": "ws-close" }).to_string(),
+    ))
+    .await
+    .unwrap();
+    let h_close = server.next_turn().await.unwrap();
+    drop(ws2);
+    tokio::time::timeout(Duration::from_secs(2), h_close.wait_closed())
+        .await
+        .expect("WS client disconnect must wake TurnHandle::wait_closed()");
+
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn handler_panics_are_captured_and_surfaced() {
+    let server = MockAiBuilder::new()
+        .handler_fn(|_, _| {
+            panic!("expected test assertion failure");
+        })
+        .start()
+        .await
+        .unwrap();
+    let client = reqwest::Client::new();
+    let _ = client
+        .post(format!("{}/chat/completions", server.base_url()))
+        .header("content-type", "application/json")
+        .body(json!({ "model": "gpt-4.1", "stream": true, "messages": [{ "role": "user", "content": "boom" }] }).to_string())
+        .send()
+        .await;
+    // Wait briefly for connection task to be reaped by accept_loop.
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while server.panics().is_empty() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("handler panic must be recorded");
+    let panics = server.take_panics();
+    assert_eq!(panics.len(), 1);
+    assert!(
+        panics[0].contains("expected test assertion failure"),
+        "{panics:?}"
+    );
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn intermediate_web_search_started_and_sse_comment() {
+    let plan = TurnPlan::new()
+        .push_sse_comment("pending")
+        .push(TurnEvent::NativeTool(NativeToolEvent::WebSearchStarted {
+            id: "ws_1".into(),
+            query: "rust".into(),
+        }))
+        .push(TurnEvent::TruncateEof);
+    let server = MockAiBuilder::new().scripted([plan]).start().await.unwrap();
+    let client = reqwest::Client::new();
+    let resp = post_json(
+        &client,
+        &format!("{}/responses", server.base_url()),
+        &json!({ "model": "gpt-5", "stream": true, "input": "search" }),
+    )
+    .await;
+    assert_eq!(resp.status(), 200);
+    let body = resp.text().await.unwrap();
+    assert!(body.starts_with(": pending\n\n"), "{body}");
+    assert!(body.contains(r#""web_search_call""#), "{body}");
+    assert!(body.contains(r#""in_progress""#), "{body}");
+    assert!(!body.contains(r#""completed""#), "{body}");
+    server.shutdown().await;
+}
