@@ -76,6 +76,7 @@ mod patches;
 mod predictions;
 mod preferences;
 mod presets;
+mod project_worktrees;
 mod projects;
 mod queue;
 mod quick_question;

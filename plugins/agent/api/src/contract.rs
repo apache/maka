@@ -2503,6 +2503,18 @@ pub fn contract() -> Contract {
                     method::<GitSessionRead, Option<GitRevisions>>(MethodMode::Query),
                 ),
                 (
+                    "projectWorktrees".into(),
+                    method::<ProjectWorktreesRead, ProjectWorktrees>(MethodMode::Query),
+                ),
+                (
+                    "createProjectWorktree".into(),
+                    method::<ProjectWorktreeCreate, ProjectWorktreeCreated>(MethodMode::Mutation),
+                ),
+                (
+                    "checkoutProjectBranch".into(),
+                    method::<ProjectBranchCheckout, ProjectBranchCheckedOut>(MethodMode::Mutation),
+                ),
+                (
                     "gitCompare".into(),
                     method::<GitCompareRead, Option<GitCompare>>(MethodMode::Query),
                 ),

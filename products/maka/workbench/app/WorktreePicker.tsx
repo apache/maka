@@ -72,6 +72,7 @@ export function WorktreePicker(props: {
   onSelect(worktreePath: string | null): void;
   variant: 'card' | 'pill';
   align?: 'start' | 'end';
+  accessibilityLabel?: string;
   activeBranch?(): string | null | undefined;
 }) {
   const open = signal(false);
@@ -100,7 +101,7 @@ export function WorktreePicker(props: {
 
   const triggerTooltip = () => {
     const cur = selectedEntry();
-    if (!cur) return tr('Switch worktree');
+    if (!cur) return props.accessibilityLabel ?? tr('Switch worktree');
     const branch = branchDisplay();
     return branch ? cur.name + ' · ' + branch + '\n' + cur.path : cur.path;
   };
@@ -124,7 +125,7 @@ export function WorktreePicker(props: {
       trigger={
         props.variant === 'card' ? (
           <Button
-            accessibilityLabel={tr('Switch worktree')}
+            accessibilityLabel={props.accessibilityLabel ?? tr('Switch worktree')}
             tooltip={textTooltip(triggerTooltip)}
             style={{
               width: '100%',
@@ -190,7 +191,7 @@ export function WorktreePicker(props: {
           </Button>
         ) : (
           <Button
-            accessibilityLabel={tr('Switch worktree')}
+            accessibilityLabel={props.accessibilityLabel ?? tr('Switch worktree')}
             tooltip={textTooltip(triggerTooltip)}
             style={{
               maxWidth: '100%',

@@ -140,6 +140,7 @@ pub struct Fixture {
 pub struct Options {
     pub images: bool,
     pub session_tools: bool,
+    pub workspace_read: bool,
     pub code_mode: bool,
     pub responses: bool,
     pub usage_limits: bool,
@@ -247,19 +248,14 @@ impl Fixture {
                 .as_array()
                 .unwrap()
                 .iter()
-                .filter(|tool| options.session_tools
-                    && matches!(
-                        tool["name"].as_str(),
-                        Some(
-                            "SessionList"
-                                | "SessionRead"
-                                | "SessionCreate"
-                                | "SessionSend"
-                                | "SessionRespond"
-                                | "SessionStop"
-                                | "SessionManage"
-                        )
-                    ))
+                .filter(|tool| match tool["name"].as_str() {
+                    Some("Read") => options.workspace_read,
+                    Some(
+                        "SessionList" | "SessionRead" | "SessionCreate" | "SessionSend"
+                        | "SessionRespond" | "SessionStop" | "SessionManage",
+                    ) => options.session_tools,
+                    _ => false,
+                })
                 .collect::<Vec<_>>()
         );
         configuration["agent"]["automaticTitles"] = json!(false);
@@ -778,6 +774,7 @@ pub struct ReplyGate {
     armed: Arc<AtomicBool>,
     pub held: Arc<Notify>,
     release: Arc<Notify>,
+    unknown: Arc<AtomicBool>,
     worker: JoinHandle<()>,
 }
 impl ReplyGate {
@@ -789,6 +786,15 @@ impl ReplyGate {
     }
     pub fn send(directory: &Path, target: PathBuf) -> Self {
         Self::for_method(directory, target, "agent", "send", "mutation")
+    }
+    pub fn worktree(directory: &Path, target: PathBuf) -> Self {
+        Self::for_method(
+            directory,
+            target,
+            "agent",
+            "createProjectWorktree",
+            "mutation",
+        )
     }
     fn for_method(
         directory: &Path,
@@ -802,10 +808,12 @@ impl ReplyGate {
         let armed = Arc::new(AtomicBool::new(false));
         let held = Arc::new(Notify::new());
         let release = Arc::new(Notify::new());
+        let unknown = Arc::new(AtomicBool::new(false));
         let worker = tokio::spawn({
             let armed = armed.clone();
             let held = held.clone();
             let release = release.clone();
+            let unknown = unknown.clone();
             async move {
                 let mut connections = JoinSet::new();
                 loop {
@@ -813,6 +821,7 @@ impl ReplyGate {
                         accepted=listener.accept()=> {
                             let downstream=accepted.unwrap(); let upstream=ipc::connect(&target).await.unwrap();
                             let armed=armed.clone(); let held=held.clone(); let release=release.clone();
+                            let unknown = unknown.clone();
                             connections.spawn(async move {
                                 let (down_read,mut down_write)=tokio::io::split(downstream);
                                 let (up_read,mut up_write)=tokio::io::split(upstream);
@@ -832,12 +841,19 @@ impl ReplyGate {
                                 };
                                 let down=async move {
                                     let mut reader=up_read;
-                                    while let Ok(frame)=gate_read(&mut reader).await {
+                                    while let Ok(mut frame)=gate_read(&mut reader).await {
                                         if selected.load(Ordering::SeqCst)
                                             && serde_json::from_slice::<Value>(&frame).is_ok_and(|value|value["kind"]==reply)
                                             && armed.swap(false,Ordering::SeqCst) {
                                             held.notify_one();
                                             release.notified().await;
+                                            if unknown.swap(false, Ordering::SeqCst) {
+                                                let mut observed: Value = serde_json::from_slice(&frame).unwrap();
+                                                let outcome = &mut observed["reply"]["receipt"]["outcome"];
+                                                assert_eq!(outcome["kind"], "returned");
+                                                *outcome = json!({"kind":"unknown", "diagnostic":"Test withheld the confirmed outcome"});
+                                                frame = serde_json::to_vec(&observed).unwrap();
+                                            }
                                         }
                                         if gate_write(&mut down_write,&frame).await.is_err(){break;}
                                     }
@@ -856,6 +872,7 @@ impl ReplyGate {
             armed,
             held,
             release,
+            unknown,
             worker,
         }
     }
@@ -864,6 +881,10 @@ impl ReplyGate {
     }
     pub fn release(&self) {
         self.release.notify_one();
+    }
+    pub fn release_as_unknown(&self) {
+        self.unknown.store(true, Ordering::SeqCst);
+        self.release();
     }
 }
 impl Drop for ReplyGate {

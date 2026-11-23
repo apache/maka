@@ -275,11 +275,17 @@ export function SessionInspector(props: {
             </View>
             {divider()}
           </If>
-          {/* 1. Worktree reference & switcher */}
+          {/* Repository & changes */}
           <If when={Boolean(effectivePath())}>
-            <View style={{ paddingHorizontal: 12, paddingVertical: 12, gap: 8 }}>
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                <Text style={{ ...sectionTitleStyle, flex: 1 }}>{tr('Worktree reference')}</Text>
+            <View style={{ paddingHorizontal: 12, paddingVertical: 12, gap: 6 }}>
+              <View
+                style={{
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  gap: 8,
+                }}
+              >
+                <Text style={{ ...sectionTitleStyle, flex: 1 }}>{repoLabel()}</Text>
                 <Button
                   accessibilityLabel={tr('Refresh')}
                   tooltip={textTooltip(() => tr('Refresh'))}
@@ -298,35 +304,78 @@ export function SessionInspector(props: {
                 >
                   <Icon name="refresh" size={12} color={C.muted} />
                 </Button>
+                <If when={props.openChanges !== undefined}>
+                  <Popover
+                    open={repoMenuOpen()}
+                    onOpenChange={({ open }) => repoMenuOpen.set(open)}
+                    placement="bottom"
+                    align="end"
+                    offset={4}
+                    margin={8}
+                    popupStyle={{ ...floatingStyle(), width: 184 }}
+                    trigger={
+                      <Button
+                        accessibilityLabel={tr('More')}
+                        style={{
+                          ...controlStyle,
+                          width: 24,
+                          minHeight: 24,
+                          height: 24,
+                          paddingHorizontal: 0,
+                          paddingVertical: 0,
+                          alignItems: 'center',
+                        }}
+                        hoverStyle={{ backgroundColor: C.cardRaised }}
+                        focusStyle={quietFocusStyle()}
+                      >
+                        <Icon name="more" size={14} color={C.muted} />
+                      </Button>
+                    }
+                  >
+                    <View style={{ gap: 2 }}>
+                      <If when={props.openFiles !== undefined}>
+                        <Button
+                          accessibilityLabel={tr('Browse files')}
+                          onPress={() => {
+                            repoMenuOpen.set(false);
+                            props.openFiles?.();
+                          }}
+                          style={menuRowStyle()}
+                          hoverStyle={menuRowHoverStyle()}
+                          focusStyle={quietFocusStyle()}
+                        >
+                          <Icon name="folder" size={14} color={C.muted} />
+                          <Text style={{ ...captionTextStyle, color: C.text }}>{tr('Files')}</Text>
+                        </Button>
+                      </If>
+                      <If when={props.openLaunchpad !== undefined}>
+                        <Button
+                          accessibilityLabel={tr('New tab')}
+                          onPress={() => {
+                            repoMenuOpen.set(false);
+                            props.openLaunchpad?.();
+                          }}
+                          style={menuRowStyle()}
+                          hoverStyle={menuRowHoverStyle()}
+                          focusStyle={quietFocusStyle()}
+                        >
+                          <Icon name="globe" size={14} color={C.muted} />
+                          <Text style={{ ...captionTextStyle, color: C.text }}>
+                            {tr('New tab')}
+                          </Text>
+                        </Button>
+                      </If>
+                    </View>
+                  </Popover>
+                </If>
               </View>
-              <If
-                when={worktrees().length > 1 && props.selectWorktree !== undefined}
-                else={
-                  <View style={{ gap: 4, minWidth: 0 }}>
-                    <Text
-                      tooltip={textTooltip(() => effectivePath())}
-                      style={[
-                        { fontSize: 12, lineHeight: 16, color: C.text, minWidth: 0 },
-                        { numberOfLines: 1, userSelect: 'text' },
-                      ]}
-                    >
-                      {compactHomePath(effectivePath())}
-                    </Text>
-                    <Text
-                      style={[
-                        { fontSize: 12, lineHeight: 16, color: C.muted, minWidth: 0 },
-                        { numberOfLines: 1 },
-                      ]}
-                    >
-                      {currentWorktreeEntry()?.isMain === false
-                        ? tr('Linked checkout')
-                        : tr('Main checkout')}
-                      {revisions()?.headBranch ? ` · ${revisions()!.headBranch}` : ''}
-                    </Text>
-                  </View>
-                }
-              >
+
+              <If when={worktrees().length > 1 && props.selectWorktree !== undefined}>
+                <Text style={{ ...captionTextStyle, color: C.secondary }}>
+                  {tr('Changes from')}
+                </Text>
                 <WorktreePicker
+                  accessibilityLabel={tr('Choose worktree for changes')}
                   variant="card"
                   align="end"
                   worktrees={worktrees}
@@ -334,144 +383,83 @@ export function SessionInspector(props: {
                   activeBranch={() => revisions()?.headBranch}
                   onSelect={(path) => props.selectWorktree?.(path)}
                 />
-                <Text
-                  tooltip={textTooltip(() => effectivePath())}
-                  style={[
-                    { fontSize: 12, lineHeight: 16, color: C.muted, minWidth: 0 },
-                    { numberOfLines: 1, userSelect: 'text' },
-                  ]}
-                >
-                  {compactHomePath(effectivePath())}
+              </If>
+              <Text
+                tooltip={textTooltip(() => effectivePath())}
+                style={[
+                  { ...captionTextStyle, color: C.muted, minWidth: 0 },
+                  { numberOfLines: 1, userSelect: 'text' },
+                ]}
+              >
+                {compactHomePath(effectivePath())}
+              </Text>
+              <If when={worktrees().length <= 1 && revisions() !== null}>
+                <Text style={[{ ...captionTextStyle, color: C.muted }, { numberOfLines: 1 }]}>
+                  {currentWorktreeEntry()?.isMain === false
+                    ? tr('Linked checkout')
+                    : tr('Main checkout')}
+                  {revisions()?.headBranch ? ` · ${revisions()!.headBranch}` : ''}
                 </Text>
               </If>
-            </View>
-            {divider()}
-          </If>
-
-          {/* 2. Repository & Changes */}
-          <If when={Boolean(effectivePath()) && props.openChanges !== undefined}>
-            <View style={{ paddingHorizontal: 12, paddingVertical: 12, gap: 4 }}>
-              <View
-                style={{
-                  flexDirection: 'row',
-                  alignItems: 'center',
-                  gap: 8,
-                  marginBottom: 4,
-                }}
-              >
-                <Text style={{ ...sectionTitleStyle, flex: 1 }}>{repoLabel()}</Text>
-                <Popover
-                  open={repoMenuOpen()}
-                  onOpenChange={({ open }) => repoMenuOpen.set(open)}
-                  placement="bottom"
-                  align="end"
-                  offset={4}
-                  margin={8}
-                  popupStyle={{ ...floatingStyle(), width: 184 }}
-                  trigger={
-                    <Button
-                      accessibilityLabel={tr('More')}
-                      style={{
-                        ...controlStyle,
-                        width: 24,
-                        minHeight: 24,
-                        height: 24,
-                        paddingHorizontal: 0,
-                        paddingVertical: 0,
-                        alignItems: 'center',
-                      }}
-                      hoverStyle={{ backgroundColor: C.cardRaised }}
-                      focusStyle={quietFocusStyle()}
-                    >
-                      <Icon name="more" size={14} color={C.muted} />
-                    </Button>
-                  }
+              <If when={props.openChanges !== undefined}>
+                <Button
+                  accessibilityLabel={tr('Review workspace changes')}
+                  onPress={() => props.openChanges?.(selectedWorktree())}
+                  style={{
+                    minHeight: 32,
+                    paddingHorizontal: 8,
+                    paddingVertical: 4,
+                    marginHorizontal: -8,
+                    borderRadius: 8,
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    gap: 8,
+                  }}
+                  hoverStyle={{ backgroundColor: C.cardRaised }}
+                  activeStyle={quietActiveStyle()}
+                  focusStyle={quietFocusStyle()}
                 >
-                  <View style={{ gap: 2 }}>
-                    <If when={props.openFiles !== undefined}>
-                      <Button
-                        accessibilityLabel={tr('Browse files')}
-                        onPress={() => {
-                          repoMenuOpen.set(false);
-                          props.openFiles?.();
-                        }}
-                        style={menuRowStyle()}
-                        hoverStyle={menuRowHoverStyle()}
-                        focusStyle={quietFocusStyle()}
-                      >
-                        <Icon name="folder" size={14} color={C.muted} />
-                        <Text style={{ ...captionTextStyle, color: C.text }}>{tr('Files')}</Text>
-                      </Button>
-                    </If>
-                    <If when={props.openLaunchpad !== undefined}>
-                      <Button
-                        accessibilityLabel={tr('New tab')}
-                        onPress={() => {
-                          repoMenuOpen.set(false);
-                          props.openLaunchpad?.();
-                        }}
-                        style={menuRowStyle()}
-                        hoverStyle={menuRowHoverStyle()}
-                        focusStyle={quietFocusStyle()}
-                      >
-                        <Icon name="globe" size={14} color={C.muted} />
-                        <Text style={{ ...captionTextStyle, color: C.text }}>{tr('New tab')}</Text>
-                      </Button>
-                    </If>
-                  </View>
-                </Popover>
-              </View>
-
-              <Button
-                accessibilityLabel={tr('Review workspace changes')}
-                onPress={() => props.openChanges?.(selectedWorktree())}
-                style={{
-                  minHeight: 32,
-                  paddingHorizontal: 8,
-                  paddingVertical: 4,
-                  marginHorizontal: -8,
-                  borderRadius: 8,
-                  flexDirection: 'row',
-                  alignItems: 'center',
-                  gap: 8,
-                }}
-                hoverStyle={{ backgroundColor: C.cardRaised }}
-                activeStyle={quietActiveStyle()}
-                focusStyle={quietFocusStyle()}
-              >
-                <Icon name="diff" size={14} color={C.muted} />
-                <Text style={{ ...captionTextStyle, color: C.text, flex: 1 }}>{tr('Changes')}</Text>
-                <If
-                  when={
-                    diffStats() !== null && (diffStats()!.added > 0 || diffStats()!.deleted > 0)
-                  }
-                >
-                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-                    <Text
-                      style={{ fontSize: 12, lineHeight: 16, color: C.success, fontWeight: '500' }}
-                    >
-                      {`+${formatCount(diffStats()!.added)}`}
-                    </Text>
-                    <Text
-                      style={{ fontSize: 12, lineHeight: 16, color: C.danger, fontWeight: '500' }}
-                    >
-                      {`-${formatCount(diffStats()!.deleted)}`}
-                    </Text>
-                  </View>
-                </If>
-                <If
-                  when={
-                    diffStats() !== null &&
-                    diffStats()!.added === 0 &&
-                    diffStats()!.deleted === 0 &&
-                    diffStats()!.files > 0
-                  }
-                >
-                  <Text style={{ fontSize: 12, lineHeight: 16, color: C.muted }}>
-                    {tr('{count} files', { count: diffStats()!.files })}
+                  <Icon name="diff" size={14} color={C.muted} />
+                  <Text style={{ ...captionTextStyle, color: C.text, flex: 1 }}>
+                    {tr('Changes')}
                   </Text>
-                </If>
-              </Button>
+                  <If
+                    when={
+                      diffStats() !== null && (diffStats()!.added > 0 || diffStats()!.deleted > 0)
+                    }
+                  >
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                      <Text
+                        style={{
+                          fontSize: 12,
+                          lineHeight: 16,
+                          color: C.success,
+                          fontWeight: '500',
+                        }}
+                      >
+                        {`+${formatCount(diffStats()!.added)}`}
+                      </Text>
+                      <Text
+                        style={{ fontSize: 12, lineHeight: 16, color: C.danger, fontWeight: '500' }}
+                      >
+                        {`-${formatCount(diffStats()!.deleted)}`}
+                      </Text>
+                    </View>
+                  </If>
+                  <If
+                    when={
+                      diffStats() !== null &&
+                      diffStats()!.added === 0 &&
+                      diffStats()!.deleted === 0 &&
+                      diffStats()!.files > 0
+                    }
+                  >
+                    <Text style={{ fontSize: 12, lineHeight: 16, color: C.muted }}>
+                      {tr('{count} files', { count: diffStats()!.files })}
+                    </Text>
+                  </If>
+                </Button>
+              </If>
             </View>
             {divider()}
           </If>

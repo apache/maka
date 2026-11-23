@@ -72,6 +72,7 @@ const icons = {
   loader: { lucide: 'loader-circle', glyph: '◌' },
   unread: { lucide: 'circle', glyph: '●' },
   app: { lucide: 'app-window', glyph: '▢' },
+  laptop: { lucide: 'laptop-minimal', glyph: '▱' },
   calculator: { lucide: 'calculator', glyph: '=' },
   mic: { lucide: 'mic', glyph: '🎙' },
   camera: { lucide: 'camera', glyph: '◉' },

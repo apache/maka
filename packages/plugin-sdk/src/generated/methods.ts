@@ -88,6 +88,15 @@ export type AgentChangeMemoryInput_MemoryTemporal =
       start: number;
       end?: number | null;
     };
+export type AgentCheckoutProjectBranchOutput_AgentProjectBranchFailure =
+  | 'invalid_branch'
+  | 'branch_unavailable'
+  | 'already_exists'
+  | 'checked_out_elsewhere'
+  | 'overwrites_changes'
+  | 'git_required'
+  | 'unsupported'
+  | 'unavailable';
 /**
  * Hierarchical, stable source keys. Display aliases never become data identities.
  */
@@ -370,6 +379,18 @@ export type AgentCreatePresetOutput_ThinkingLevel =
   | 'xhigh'
   | 'max'
   | 'ultra';
+export type AgentCreateProjectWorktreeOutput_AgentProjectWorktreeFailure =
+  | 'invalid_name'
+  | 'invalid_branch'
+  | 'base_unavailable'
+  | 'branch_conflict'
+  | 'directory_conflict'
+  | 'snapshot_unavailable'
+  | 'git_required'
+  | 'location_not_allowed'
+  | 'unavailable'
+  | 'unsupported'
+  | 'unknown';
 export type AgentDeleteGitHubTokenOutput_AgentGitHubTokenSource =
   | 'manual'
   | 'env'
@@ -3052,6 +3073,22 @@ export interface ServiceMethods {
       input: Runtime.AgentChecklistRead;
       output: Runtime.AgentChecklist;
     };
+    checkoutProjectBranch: {
+      mode: 'mutation';
+      input: {
+        path: string;
+        branch: string;
+        create?: boolean;
+      };
+      output:
+        | {
+            kind: 'checked_out';
+          }
+        | {
+            kind: 'failed';
+            reason: AgentCheckoutProjectBranchOutput_AgentProjectBranchFailure;
+          };
+    };
     checkpointReceipt: {
       mode: 'query';
       input: {
@@ -3216,6 +3253,32 @@ export interface ServiceMethods {
           }
         | {
             kind: 'thinkingLevelUnavailable';
+          };
+    };
+    createProjectWorktree: {
+      mode: 'mutation';
+      input: {
+        path: string;
+        name: string;
+        branch: string;
+        /**
+         * A fully qualified ref in refs/heads or refs/remotes, resolved locally.
+         */
+        baseRef: string;
+        /**
+         * Capture the selected checkout's files and index, requiring this ref to be its HEAD.
+         */
+        includeChanges?: boolean;
+      };
+      output:
+        | {
+            kind: 'created';
+            worktree: AgentCreateProjectWorktreeOutput_AgentProjectWorktree;
+          }
+        | {
+            kind: 'failed';
+            reason: AgentCreateProjectWorktreeOutput_AgentProjectWorktreeFailure;
+            message: string;
           };
     };
     deleteGitHubToken: {
@@ -4009,6 +4072,28 @@ export interface ServiceMethods {
             trusted: boolean;
             servers: AgentProjectMcpOutput_AgentMcpServerView[];
             disabled: string[];
+          };
+    };
+    projectWorktrees: {
+      mode: 'query';
+      input: {
+        path: string;
+      };
+      output:
+        | {
+            kind: 'git';
+            root: string;
+            headBranch: string | null;
+            defaultBase: string | null;
+            branches: AgentProjectWorktreesOutput_AgentGitBranchEntry[];
+            uncommittedFiles: number | null;
+            worktrees: AgentProjectWorktreesOutput_AgentProjectWorktree[];
+          }
+        | {
+            kind: 'not_git';
+          }
+        | {
+            kind: 'unavailable';
           };
     };
     projects: {
@@ -5913,6 +5998,12 @@ export interface AgentCreatePresetOutput_ModelSelection {
   modelId: string;
   [k: string]: unknown | undefined;
 }
+export interface AgentCreateProjectWorktreeOutput_AgentProjectWorktree {
+  id: string;
+  name: string;
+  branch: string | null;
+  path: string;
+}
 export interface AgentDeleteGitHubTokenOutput_AgentGitHubAuthStatus {
   host: string;
   authenticated: boolean;
@@ -6543,6 +6634,17 @@ export interface AgentProjectMcpOutput_AgentMcpServerView {
   headers: string[];
   preapproved: boolean;
   readOnlyTools: string[];
+}
+export interface AgentProjectWorktreesOutput_AgentGitBranchEntry {
+  name: string;
+  oid: string;
+  remote: boolean;
+}
+export interface AgentProjectWorktreesOutput_AgentProjectWorktree {
+  id: string;
+  name: string;
+  branch: string | null;
+  path: string;
 }
 export interface AgentPublishCheckpointOutput_AgentHistoryCheckpointHead {
   revision: string;

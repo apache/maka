@@ -1114,6 +1114,372 @@ async fn desktop_creates_only_on_first_submission_and_preserves_the_confirmed_sn
     fixture.finish().await;
 }
 
+async fn desktop_creates_and_reopens_a_named_worktree() {
+    let mut fixture = Fixture::configured(Options {
+        workspace_read: true,
+        ..Default::default()
+    })
+    .await;
+    let project = fixture
+        .directory
+        .path()
+        .join("workspace")
+        .join("worktree-project");
+    std::fs::create_dir(&project).unwrap();
+    let git = |directory: &Path, args: &[&str]| {
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(directory)
+            .args(["-c", "user.name=Maka", "-c", "user.email=maka@example.test"])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "Git {args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout).unwrap().trim().to_owned()
+    };
+    git(&project, &["init", "-b", "main"]);
+    std::fs::write(project.join("tracked.txt"), "main").unwrap();
+    git(&project, &["add", "tracked.txt"]);
+    git(&project, &["commit", "-m", "Main"]);
+    git(
+        &project,
+        &["update-ref", "refs/remotes/origin/main", "refs/heads/main"],
+    );
+    git(&project, &["switch", "-c", "release-base"]);
+    const WORKTREE_FILE: &str = "WORKTREE_ONLY_FILE_CONTENT";
+    std::fs::write(project.join("tracked.txt"), WORKTREE_FILE).unwrap();
+    git(&project, &["commit", "-am", "Release"]);
+    let base = git(&project, &["rev-parse", "HEAD"]);
+    git(&project, &["switch", "main"]);
+    std::fs::write(project.join("main-only.txt"), "local draft").unwrap();
+
+    let other = project.with_file_name("other-project");
+    git(
+        &project,
+        &[
+            "clone",
+            "--quiet",
+            "--",
+            project.to_str().unwrap(),
+            other.to_str().unwrap(),
+        ],
+    );
+    git(&other, &["branch", "vanishing-base"]);
+
+    let gate = ReplyGate::worktree(fixture.directory.path(), fixture.address.clone());
+    let desktop = Desktop::open(&fixture, &gate.address).await;
+    desktop.new_draft().await;
+    desktop.press("Choose composer workspace").await;
+    desktop.press("Choose another folder…").await;
+    desktop.press("Browse folder Workspace").await;
+    desktop.press("Browse folder worktree-project").await;
+    desktop.press("Use this workspace folder").await;
+    desktop.press("Focus message composer").await;
+    desktop.type_text("FIRST_WORKTREE_MESSAGE").await;
+
+    desktop.press("Switch branch").await;
+    desktop.control("Create and check out new branch…").await;
+    assert!(desktop.controls("origin/main").is_empty());
+    desktop.artifact("local-branches");
+    desktop.press("release-base").await;
+    desktop
+        .until("local checkout stayed on main", || {
+            (git(&project, &["branch", "--show-current"]) == "release-base").then_some(())
+        })
+        .await;
+    desktop.press("Switch branch").await;
+    desktop.press("Create and check out new branch…").await;
+    desktop.expect_text("maka-").await;
+    desktop.artifact("create-local-branch");
+    desktop.type_text("maka-desktop-branch").await;
+    desktop.press("Create and check out").await;
+    desktop
+        .until("the new branch was not checked out", || {
+            (git(&project, &["branch", "--show-current"]) == "maka-desktop-branch").then_some(())
+        })
+        .await;
+    desktop.press("Switch branch").await;
+    desktop.press("main").await;
+    desktop
+        .until("the local branch did not switch back to main", || {
+            (git(&project, &["branch", "--show-current"]) == "main").then_some(())
+        })
+        .await;
+    assert_eq!(git(&project, &["rev-parse", "maka-desktop-branch"]), base);
+    desktop.press("Work location").await;
+    desktop.press("New local worktree").await;
+    let composer = desktop.platform.text_input_target();
+    desktop.press("Base branch").await;
+    desktop.target_after(composer).await;
+    desktop.type_text("release-base").await;
+    desktop.press("release-base").await;
+    assert_eq!(desktop.sessions().await.len(), 1);
+    assert_eq!(
+        git(&project, &["worktree", "list", "--porcelain"])
+            .lines()
+            .filter(|line| line.starts_with("worktree "))
+            .count(),
+        1
+    );
+
+    desktop.press("Focus message composer").await;
+    desktop.expect_text("FIRST_WORKTREE_MESSAGE").await;
+    gate.arm();
+    desktop.press("Send message").await;
+    desktop.held(&gate).await;
+    assert_eq!(desktop.sessions().await.len(), 1);
+    let first_creation = desktop
+        .client
+        .query("agent", "projectWorktrees", json!({"path": project}))
+        .await
+        .unwrap();
+    assert_eq!(first_creation["worktrees"].as_array().unwrap().len(), 1);
+    gate.release_as_unknown();
+    desktop.control("Send message").await;
+    desktop.press("Focus message composer").await;
+    desktop.expect_text("FIRST_WORKTREE_MESSAGE").await;
+    desktop.artifact("worktree-creation-unconfirmed");
+
+    // A known failure in a different project cannot settle the original attempt.
+    desktop.press("Choose composer workspace").await;
+    desktop.press("Choose another folder…").await;
+    desktop.press("Browse folder Workspace").await;
+    desktop.press("Browse folder other-project").await;
+    desktop.press("Use this workspace folder").await;
+    desktop
+        .press_until("Work location", "New local worktree")
+        .await;
+    desktop.press("New local worktree").await;
+    desktop.press("Base branch").await;
+    desktop.press("vanishing-base").await;
+    git(&other, &["update-ref", "-d", "refs/heads/vanishing-base"]);
+    gate.arm();
+    desktop.press("Send message").await;
+    desktop.held(&gate).await;
+    gate.release();
+    desktop.control("Send message").await;
+    desktop.press("Focus message composer").await;
+    desktop.expect_text("FIRST_WORKTREE_MESSAGE").await;
+    desktop.artifact("worktree-base-unavailable");
+    let other_worktrees = desktop
+        .client
+        .query("agent", "projectWorktrees", json!({"path": other}))
+        .await
+        .unwrap();
+    assert_eq!(other_worktrees["worktrees"], json!([]));
+    assert_eq!(desktop.sessions().await.len(), 1);
+
+    desktop.press("Choose composer workspace").await;
+    desktop
+        .press(&format!("Use folder {}", project.display()))
+        .await;
+    desktop
+        .press_until("Work location", "New local worktree")
+        .await;
+    desktop.press("New local worktree").await;
+    desktop.press("Focus message composer").await;
+    desktop.expect_text("FIRST_WORKTREE_MESSAGE").await;
+    desktop.submit().await;
+    let request = desktop.request(&mut fixture).await;
+    assert!(request.body.to_string().contains("FIRST_WORKTREE_MESSAGE"));
+    assert_eq!(
+        desktop
+            .client
+            .query("agent", "projectWorktrees", json!({"path": project}))
+            .await
+            .unwrap()["worktrees"],
+        first_creation["worktrees"],
+        "retry must reuse the checkout created before confirmation was lost"
+    );
+    request
+        .tool_call("Read", json!({"path": "tracked.txt"}))
+        .await;
+    let request = desktop.request(&mut fixture).await;
+    assert!(
+        request.body["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|message| {
+                message["role"] == "tool" && message["content"].to_string().contains(WORKTREE_FILE)
+            }),
+        "the relative Read ran outside the selected checkout: {}",
+        request.body["messages"]
+    );
+    desktop
+        .wait(
+            "the worktree model response did not finish",
+            request.finish(),
+        )
+        .await;
+
+    let sessions = desktop.sessions().await;
+    assert_eq!(sessions.len(), 2);
+    let id = sessions
+        .iter()
+        .find(|session| session["id"] != fixture.session)
+        .unwrap()["id"]
+        .as_str()
+        .unwrap();
+    desktop
+        .wait(
+            "the worktree conversation did not finish",
+            fixture.idle(&desktop.client, id),
+        )
+        .await;
+    let listed = desktop
+        .client
+        .query("agent", "projectWorktrees", json!({"path": project}))
+        .await
+        .unwrap();
+    let [worktree] = listed["worktrees"].as_array().unwrap().as_slice() else {
+        panic!("expected exactly one created worktree: {listed}");
+    };
+    let name = worktree["name"].as_str().unwrap();
+    let suffix = name.strip_prefix("maka-").expect("Maka worktree prefix");
+    assert_eq!(suffix.len(), 12);
+    assert!(suffix.bytes().all(|byte| byte.is_ascii_hexdigit()));
+    let checkout = Path::new(worktree["path"].as_str().unwrap());
+    assert_eq!(checkout.file_name().unwrap().to_str(), Some(name));
+    assert_eq!(git(checkout, &["branch", "--show-current"]), name);
+    assert_eq!(git(checkout, &["rev-parse", "HEAD"]), base);
+    assert_eq!(git(&project, &["branch", "--show-current"]), "main");
+    assert!(project.join("main-only.txt").is_file());
+    assert!(!checkout.join("main-only.txt").exists());
+    let observed = desktop
+        .client
+        .query("agent", "observe", json!({"sessionId": id}))
+        .await
+        .unwrap();
+    assert_eq!(observed["session"]["workspace"]["path"], worktree["path"]);
+    let registered = desktop
+        .client
+        .query(
+            "agent",
+            "projects",
+            json!({"kind": "directory", "path": project}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(registered["location"]["project"]["path"], worktree["path"]);
+
+    let desktop = desktop
+        .restart(&fixture, nsh_core::platform::Appearance::Light)
+        .await;
+    desktop.press("Work location").await;
+    desktop.control(name).await;
+    desktop.press("Copy worktree path").await;
+    let copied_path = desktop
+        .until("the reopened worktree path was not copied", || {
+            desktop.platform.take_clipboard_write()
+        })
+        .await;
+    assert_eq!(copied_path, checkout.to_str().unwrap());
+    desktop.press_until("Work location", "Local").await;
+    let reopened = desktop
+        .client
+        .query("agent", "projectWorktrees", json!({"path": project}))
+        .await
+        .unwrap();
+    assert_eq!(reopened["worktrees"], listed["worktrees"]);
+    desktop.press("Local").await;
+    desktop.press("Focus message composer").await;
+    desktop.type_text("PROJECT_SWITCH_DRAFT").await;
+    desktop
+        .press_until("Work location", "New local worktree")
+        .await;
+    desktop.press("New local worktree").await;
+    desktop.control("Base branch").await;
+
+    let plain = fixture.directory.path().join("workspace");
+    desktop.press("Choose composer workspace").await;
+    desktop
+        .press(&format!("Use folder {}", plain.display()))
+        .await;
+    desktop
+        .wait("plain folder was not selected", async {
+            loop {
+                let recent = desktop.client.recent_workspaces().await.unwrap();
+                if recent
+                    .first()
+                    .is_some_and(|item| item.path == plain.to_str().unwrap())
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
+    desktop.expect_text("PROJECT_SWITCH_DRAFT").await;
+    assert!(desktop.controls("Work location").is_empty());
+    assert!(desktop.controls("Base branch").is_empty());
+    assert!(desktop.controls("Switch branch").is_empty());
+    desktop.artifact("plain-folder-project");
+
+    desktop.press("New conversation in worktree-project").await;
+    desktop.control("Switch branch").await;
+    desktop.expect_text("PROJECT_SWITCH_DRAFT").await;
+    desktop.artifact("git-project-local");
+
+    desktop
+        .press_until("Work location", "New local worktree")
+        .await;
+    desktop.press("New local worktree").await;
+    let branch_chip = desktop.control("Base branch").await;
+    desktop.press_at(branch_chip.center());
+    desktop.control("origin/main").await;
+    let copy_choice = desktop.control("main · Includes local changes").await;
+    assert!(copy_choice.origin.y < branch_chip.origin.y);
+    assert!(
+        desktop
+            .controls("release-base")
+            .iter()
+            .all(|row| row.origin.y < branch_chip.origin.y)
+    );
+    desktop.artifact("worktree-starting-points");
+    desktop.press_at(copy_choice.center());
+    desktop.press("Focus message composer").await;
+    desktop.type_text("SECOND_WORKTREE_MESSAGE").await;
+    desktop.submit().await;
+    let request = desktop.request(&mut fixture).await;
+    assert!(request.body.to_string().contains("SECOND_WORKTREE_MESSAGE"));
+    desktop
+        .wait(
+            "the local-files worktree response did not finish",
+            request.finish(),
+        )
+        .await;
+    let updated = desktop
+        .client
+        .query("agent", "projectWorktrees", json!({"path": project}))
+        .await
+        .unwrap();
+    let first_path = worktree["path"].as_str().unwrap();
+    let [copied] = updated["worktrees"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|worktree| worktree["path"].as_str().filter(|path| *path != first_path))
+        .collect::<Vec<_>>()[..]
+    else {
+        panic!("expected one additional checkout with local changes: {updated}");
+    };
+    assert_eq!(
+        std::fs::read_to_string(Path::new(copied).join("main-only.txt")).unwrap(),
+        "local draft"
+    );
+    assert_eq!(
+        git(Path::new(copied), &["rev-parse", "HEAD"]),
+        git(&project, &["rev-parse", "HEAD"])
+    );
+    desktop.close().await;
+    fixture.finish().await;
+}
+
 async fn desktop_continues_a_failed_run_without_duplicating_the_user_message() {
     let mut fixture = Fixture::open().await;
     let desktop = Desktop::open_at(
@@ -2367,7 +2733,7 @@ async fn desktop_workspace_stage_inspector_worktrees_and_fullscreen_review() {
     // 2. Open Session Context Inspector with 12 subagents & 15 worktrees:
     //    Composer MUST NOT move or get pushed off screen even when all subagents are expanded!
     desktop.press("Toggle session details").await;
-    let inspector_wt = desktop.control("Switch worktree").await;
+    let inspector_wt = desktop.control("Choose worktree for changes").await;
     let inspector_changes = desktop.control("Review workspace changes").await;
     assert!(
         inspector_wt.size.height >= px(40.0)
@@ -2390,7 +2756,7 @@ async fn desktop_workspace_stage_inspector_worktrees_and_fullscreen_review() {
 
     // Open searchable, scrollable WorktreePicker from SessionInspector:
     // verify search box + bounded popup height, then filter and select long-branch worktree
-    desktop.press("Switch worktree").await;
+    desktop.press("Choose worktree for changes").await;
     let wt_filter = desktop.control("Filter worktrees…").await;
     assert!(
         wt_filter.bottom() <= px(800.0),
@@ -2415,7 +2781,7 @@ async fn desktop_workspace_stage_inspector_worktrees_and_fullscreen_review() {
                 .then_some(())
         })
         .await;
-    let wt_after_long = desktop.control("Switch worktree").await;
+    let wt_after_long = desktop.control("Choose worktree for changes").await;
     assert!(
         wt_after_long.size.height <= px(64.0) && wt_after_long.size.width >= px(220.0),
         "Long branch name squashed or wrapped worktree card in SessionInspector: {wt_after_long:?}"
@@ -2555,6 +2921,7 @@ pub(crate) const CASES: &[&str] = &[
     "desktop_composer_click_and_ime_follow_the_text_after_a_mention",
     "desktop_composer_previews_markdown_and_sends_its_source",
     "desktop_creates_only_on_first_submission_and_preserves_the_confirmed_snapshot",
+    "desktop_creates_and_reopens_a_named_worktree",
     "desktop_continues_a_failed_run_without_duplicating_the_user_message",
     "desktop_history_anchors_keep_the_reader_off_live_output_until_latest",
     #[cfg(target_os = "macos")]
@@ -2590,6 +2957,9 @@ pub(crate) fn run(name: &str) {
             .block_on(
                 desktop_creates_only_on_first_submission_and_preserves_the_confirmed_snapshot(),
             ),
+        "desktop_creates_and_reopens_a_named_worktree" => {
+            runtime.block_on(desktop_creates_and_reopens_a_named_worktree())
+        }
         "desktop_continues_a_failed_run_without_duplicating_the_user_message" => {
             runtime.block_on(desktop_continues_a_failed_run_without_duplicating_the_user_message())
         }

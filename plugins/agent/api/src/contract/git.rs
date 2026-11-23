@@ -24,7 +24,7 @@ pub use maka_fs_tools::git::{
     GitWorkspaceDiff, GitWorktreeEntry,
 };
 use schemars::JsonSchema;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -78,4 +78,122 @@ pub struct GitCompareDiffRead {
     pub path: WorkspacePath,
     #[serde(default)]
     pub worktree_path: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentProjectWorktreesRead")]
+pub struct ProjectWorktreesRead {
+    pub path: String,
+}
+
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentProjectWorktree")]
+pub struct ProjectWorktree {
+    pub id: String,
+    pub name: String,
+    #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<String>")]
+    pub branch: Option<String>,
+    pub path: String,
+}
+
+#[derive(Serialize, JsonSchema)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+#[schemars(rename = "AgentProjectWorktrees")]
+pub enum ProjectWorktrees {
+    Git {
+        root: String,
+        #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<String>")]
+        head_branch: Option<String>,
+        #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<String>")]
+        default_base: Option<String>,
+        branches: Vec<GitBranchEntry>,
+        #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<u64>")]
+        uncommitted_files: Option<u64>,
+        worktrees: Vec<ProjectWorktree>,
+    },
+    NotGit,
+    Unavailable,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentProjectWorktreeCreate")]
+pub struct ProjectWorktreeCreate {
+    pub path: String,
+    pub name: String,
+    pub branch: String,
+    /// A fully qualified ref in refs/heads or refs/remotes, resolved locally.
+    pub base_ref: String,
+    /// Capture the selected checkout's files and index, requiring this ref to be its HEAD.
+    #[serde(default)]
+    pub include_changes: bool,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+#[schemars(rename = "AgentProjectWorktreeFailure")]
+pub enum ProjectWorktreeFailure {
+    InvalidName,
+    InvalidBranch,
+    BaseUnavailable,
+    BranchConflict,
+    DirectoryConflict,
+    SnapshotUnavailable,
+    GitRequired,
+    LocationNotAllowed,
+    Unavailable,
+    Unsupported,
+    Unknown,
+}
+
+#[derive(Serialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[schemars(rename = "AgentProjectWorktreeCreated")]
+pub enum ProjectWorktreeCreated {
+    Created {
+        worktree: ProjectWorktree,
+    },
+    Failed {
+        reason: ProjectWorktreeFailure,
+        message: String,
+    },
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentProjectBranchCheckout")]
+pub struct ProjectBranchCheckout {
+    pub path: String,
+    pub branch: String,
+    #[serde(default)]
+    pub create: bool,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+#[schemars(rename = "AgentProjectBranchFailure")]
+pub enum ProjectBranchFailure {
+    InvalidBranch,
+    BranchUnavailable,
+    AlreadyExists,
+    CheckedOutElsewhere,
+    OverwritesChanges,
+    GitRequired,
+    Unsupported,
+    Unavailable,
+}
+
+#[derive(Serialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[schemars(rename = "AgentProjectBranchCheckedOut")]
+pub enum ProjectBranchCheckedOut {
+    CheckedOut,
+    Failed { reason: ProjectBranchFailure },
 }

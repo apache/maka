@@ -3588,6 +3588,75 @@ export const contracts: {
           },
           resources: {},
         },
+        checkoutProjectBranch: {
+          mode: 'mutation',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentProjectBranchCheckout',
+            type: 'object',
+            properties: {
+              path: {
+                type: 'string',
+              },
+              branch: {
+                type: 'string',
+              },
+              create: {
+                type: 'boolean',
+                default: false,
+              },
+            },
+            additionalProperties: false,
+            required: ['path', 'branch'],
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentProjectBranchCheckedOut',
+            oneOf: [
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'checked_out',
+                  },
+                },
+                required: ['kind'],
+                additionalProperties: false,
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'failed',
+                  },
+                  reason: {
+                    $ref: '#/$defs/AgentProjectBranchFailure',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'reason'],
+              },
+            ],
+            $defs: {
+              AgentProjectBranchFailure: {
+                type: 'string',
+                enum: [
+                  'invalid_branch',
+                  'branch_unavailable',
+                  'already_exists',
+                  'checked_out_elsewhere',
+                  'overwrites_changes',
+                  'git_required',
+                  'unsupported',
+                  'unavailable',
+                ],
+              },
+            },
+          },
+          resources: {},
+        },
         checkpointReceipt: {
           mode: 'query',
           input: {
@@ -8796,6 +8865,113 @@ export const contracts: {
               ThinkingLevel: {
                 type: 'string',
                 enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+              },
+            },
+          },
+          resources: {},
+        },
+        createProjectWorktree: {
+          mode: 'mutation',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentProjectWorktreeCreate',
+            type: 'object',
+            properties: {
+              path: {
+                type: 'string',
+              },
+              name: {
+                type: 'string',
+              },
+              branch: {
+                type: 'string',
+              },
+              baseRef: {
+                description:
+                  'A fully qualified ref in refs/heads or refs/remotes, resolved locally.',
+                type: 'string',
+              },
+              includeChanges: {
+                description:
+                  "Capture the selected checkout's files and index, requiring this ref to be its HEAD.",
+                type: 'boolean',
+                default: false,
+              },
+            },
+            additionalProperties: false,
+            required: ['path', 'name', 'branch', 'baseRef'],
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentProjectWorktreeCreated',
+            oneOf: [
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'created',
+                  },
+                  worktree: {
+                    $ref: '#/$defs/AgentProjectWorktree',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'worktree'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'failed',
+                  },
+                  reason: {
+                    $ref: '#/$defs/AgentProjectWorktreeFailure',
+                  },
+                  message: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'reason', 'message'],
+              },
+            ],
+            $defs: {
+              AgentProjectWorktree: {
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                  },
+                  name: {
+                    type: 'string',
+                  },
+                  branch: {
+                    type: ['string', 'null'],
+                  },
+                  path: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'name', 'branch', 'path'],
+              },
+              AgentProjectWorktreeFailure: {
+                type: 'string',
+                enum: [
+                  'invalid_name',
+                  'invalid_branch',
+                  'base_unavailable',
+                  'branch_conflict',
+                  'directory_conflict',
+                  'snapshot_unavailable',
+                  'git_required',
+                  'location_not_allowed',
+                  'unavailable',
+                  'unsupported',
+                  'unknown',
+                ],
               },
             },
           },
@@ -34136,6 +34312,132 @@ export const contracts: {
                   'preapproved',
                   'readOnlyTools',
                 ],
+              },
+            },
+          },
+          resources: {},
+        },
+        projectWorktrees: {
+          mode: 'query',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentProjectWorktreesRead',
+            type: 'object',
+            properties: {
+              path: {
+                type: 'string',
+              },
+            },
+            additionalProperties: false,
+            required: ['path'],
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentProjectWorktrees',
+            oneOf: [
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'git',
+                  },
+                  root: {
+                    type: 'string',
+                  },
+                  headBranch: {
+                    type: ['string', 'null'],
+                  },
+                  defaultBase: {
+                    type: ['string', 'null'],
+                  },
+                  branches: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/AgentGitBranchEntry',
+                    },
+                  },
+                  uncommittedFiles: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  worktrees: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/AgentProjectWorktree',
+                    },
+                  },
+                },
+                additionalProperties: false,
+                required: [
+                  'kind',
+                  'root',
+                  'headBranch',
+                  'defaultBase',
+                  'branches',
+                  'uncommittedFiles',
+                  'worktrees',
+                ],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'not_git',
+                  },
+                },
+                required: ['kind'],
+                additionalProperties: false,
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'unavailable',
+                  },
+                },
+                required: ['kind'],
+                additionalProperties: false,
+              },
+            ],
+            $defs: {
+              AgentGitBranchEntry: {
+                type: 'object',
+                properties: {
+                  name: {
+                    type: 'string',
+                  },
+                  oid: {
+                    type: 'string',
+                  },
+                  remote: {
+                    type: 'boolean',
+                  },
+                },
+                additionalProperties: false,
+                required: ['name', 'oid', 'remote'],
+              },
+              AgentProjectWorktree: {
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                  },
+                  name: {
+                    type: 'string',
+                  },
+                  branch: {
+                    type: ['string', 'null'],
+                  },
+                  path: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'name', 'branch', 'path'],
               },
             },
           },

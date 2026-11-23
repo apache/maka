@@ -333,6 +333,8 @@ export interface ComposerViewInput<Element = unknown> {
   readonly request: Element;
   stopAction(): () => void;
   chooseWorkspace(): void;
+  /** Optional project and checkout controls above a new conversation's composer. */
+  readonly workspaceBar?: Element;
   /** Optional product-owned directory switcher, in the existing composer location. */
   readonly workspacePicker?: Element;
   /** Optional product-owned usage limits indicator rendered in the composer toolbar. */

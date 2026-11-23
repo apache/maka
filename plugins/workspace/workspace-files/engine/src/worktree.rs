@@ -22,6 +22,7 @@
 mod checkout;
 mod ownership;
 mod patch;
+pub mod project;
 mod removal;
 
 use crate::workspace::{git, invalid};
