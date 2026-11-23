@@ -18,11 +18,17 @@
  */
 
 fn main() {
-    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
-        println!("cargo:rerun-if-changed=maka.ico");
-        println!("cargo:rerun-if-changed=windows.rc");
-        embed_resource::compile("windows.rc", embed_resource::NONE)
-            .manifest_required()
-            .expect("compile Windows desktop icon");
+    match std::env::var("CARGO_CFG_TARGET_OS").as_deref() {
+        Ok("macos") => {
+            println!("cargo:rustc-link-arg-bin=maka-desktop-shell=-Wl,-no_exported_symbols");
+        }
+        Ok("windows") => {
+            println!("cargo:rerun-if-changed=maka.ico");
+            println!("cargo:rerun-if-changed=windows.rc");
+            embed_resource::compile("windows.rc", embed_resource::NONE)
+                .manifest_required()
+                .expect("compile Windows desktop icon");
+        }
+        _ => {}
     }
 }
