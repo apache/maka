@@ -209,6 +209,10 @@
       "plugins/agent/state/migrations/0053_retry_streak.sql": {
         "version": 53,
         "sha384": "955400650fec7d2685028349418c2288bda65608f97ca049970b62160c56f9fb9434a752102403213e7bc4cdb8eacefc"
+      },
+      "plugins/agent/state/migrations/0054_queue_reorder_projection.sql": {
+        "version": 54,
+        "sha384": "0923ed37f19567d7aa3256be1c41b2b495f551bd7b71c4c97e4491cb3d18ef252c737b8f8f7af5708296778e9c3b0271"
       }
     },
     "checkpoint-repository": {

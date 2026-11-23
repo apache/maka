@@ -34,7 +34,7 @@ use std::{collections::BTreeSet, sync::Arc};
 mod sql;
 pub(crate) use sql::{
     DeliveryTarget, Event, consume, consume_external_steering, consume_steering, deliver_held,
-    release_steering, stop_completions, stop_queue,
+    rebuild_queue_projections, release_steering, stop_completions, stop_queue,
 };
 
 pub const GOAL_CONTROL_STOP: &str = "goal_control";
@@ -536,11 +536,11 @@ impl Query for PendingSteerRevision {
     fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
         use rusqlite::{OptionalExtension, params};
 
-        // Interrupt/resume steers occupy negative followup positions, including after a restart.
+        // Handoffs retain their original interrupted Run across restart and delivery.
         let mut statement = c.prepare_cached(
             "SELECT h.revision FROM agent_queue_items q JOIN agent_queue_heads h USING (session)
              WHERE q.session=?1 AND q.request=?2 AND q.state='pending'
-               AND ((q.lane='steering' AND q.target_run=?3) OR (q.lane='followup' AND q.position<0))",
+               AND ((q.lane='steering' AND q.target_run=?3) OR (q.lane='followup' AND q.interrupted_run IS NOT NULL))",
         )?;
         statement
             .query_row(

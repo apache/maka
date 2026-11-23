@@ -383,6 +383,13 @@ pub const MIGRATIONS: &[maka_event_log::migration::Migration] = &[
         configure: None,
         data: Some(sql::migrate_retry_streak),
     },
+    maka_event_log::migration::Migration {
+        version: 54,
+        description: "repair reordered queue projections",
+        sql: include_str!("../migrations/0054_queue_reorder_projection.sql"),
+        configure: None,
+        data: Some(queue::rebuild_queue_projections),
+    },
 ];
 
 #[cfg(test)]
@@ -394,7 +401,7 @@ mod migration_tests {
             .chain(super::MIGRATIONS)
             .copied()
             .collect();
-        for through in [0, 41].into_iter().chain(46..=52) {
+        for through in [0, 41].into_iter().chain(46..=53) {
             let directory = tempfile::tempdir().unwrap();
             let path = directory.path().join("root.sqlite");
             let db = rusqlite::Connection::open(&path).unwrap();
