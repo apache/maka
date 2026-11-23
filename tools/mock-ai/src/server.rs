@@ -295,15 +295,6 @@ impl MockAiServer {
         self.state.stored_responses.get(id)
     }
 
-    /// Snapshot of any panics raised inside connection/handler tasks.
-    pub fn panics(&self) -> Vec<String> {
-        self.state
-            .panics
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone()
-    }
-
     /// Take and clear any recorded handler/task panics (prevents `shutdown()`/`Drop` from panicking).
     pub fn take_panics(&self) -> Vec<String> {
         std::mem::take(&mut *self.state.panics.lock().unwrap_or_else(|e| e.into_inner()))
@@ -364,7 +355,9 @@ impl MockAiServer {
         self.state.shutdown.clone()
     }
 
-    pub async fn shutdown(mut self) {
+    /// Shut down the server, wait for all connection tasks to drain, and return any
+    /// recorded handler/task panics without panicking during teardown.
+    pub async fn shutdown_taking_panics(mut self) -> Vec<String> {
         self.state.shutdown.cancel();
         if let Some(task) = self.task.take() {
             let _ = task.await;
@@ -373,7 +366,16 @@ impl MockAiServer {
         if let Some(ref proxy) = self.state.proxy_recorder {
             proxy.flush().await;
         }
-        self.assert_no_panics();
+        self.take_panics()
+    }
+
+    pub async fn shutdown(self) {
+        let panics = self.shutdown_taking_panics().await;
+        assert!(
+            panics.is_empty(),
+            "mock-ai handler panicked: {}",
+            panics.join("; ")
+        );
     }
 }
 
@@ -476,10 +478,6 @@ impl MockAiBuilder {
     pub fn handler(mut self, handler: Arc<dyn TurnHandler>) -> Self {
         self.handler = Some(handler);
         self
-    }
-
-    pub fn chain(self, handlers: Vec<Arc<dyn TurnHandler>>) -> Self {
-        self.handler(Arc::new(ChainHandler::new(handlers)))
     }
 
     pub fn handler_fn<F>(self, f: F) -> Self
@@ -704,10 +702,13 @@ impl Drop for ActiveStreamGuard {
     }
 }
 
-pub(super) struct TurnCloseGuard(pub Option<CloseSignal>);
+pub(super) struct TurnCloseGuard(pub Option<CloseSignal>, pub Option<CloseSignal>);
 impl Drop for TurnCloseGuard {
     fn drop(&mut self) {
         if let Some(sig) = &self.0 {
+            sig.notify();
+        }
+        if let Some(sig) = &self.1 {
             sig.notify();
         }
     }
@@ -1058,6 +1059,36 @@ pub(super) fn pacer_seed_for(req: &NormalizedRequest) -> u64 {
     req.session_key.hash(&mut h);
     req.sequence.hash(&mut h);
     h.finish()
+}
+
+pub(super) fn enqueue_interactive_command(
+    pending: &mut std::collections::VecDeque<TurnEvent>,
+    cmd: crate::handler::InteractiveCommand,
+) {
+    match cmd {
+        crate::handler::InteractiveCommand::Event(ev) => pending.push_back(*ev),
+        crate::handler::InteractiveCommand::Plan(plan) => {
+            let inferred = plan.inferred_finish_reason();
+            let mut has_terminal = false;
+            for ev in plan.events {
+                if matches!(
+                    ev,
+                    TurnEvent::Finish { .. }
+                        | TurnEvent::HttpError(_)
+                        | TurnEvent::MidStreamError(_)
+                        | TurnEvent::DropConnection
+                        | TurnEvent::TruncateEof
+                        | TurnEvent::Stall
+                ) {
+                    has_terminal = true;
+                }
+                pending.push_back(ev);
+            }
+            if !has_terminal {
+                pending.push_back(TurnEvent::Finish { reason: inferred });
+            }
+        }
+    }
 }
 
 pub(super) fn plan_usage_hint(plan: &TurnPlan, req: &NormalizedRequest) -> Usage {

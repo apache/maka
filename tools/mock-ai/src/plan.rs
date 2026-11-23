@@ -203,15 +203,6 @@ pub enum NativeToolEvent {
         #[serde(default)]
         query: String,
     },
-    /// Complete a web search call previously started with `WebSearchStarted`.
-    WebSearchCompleted {
-        #[serde(default)]
-        id: String,
-        #[serde(default)]
-        query: String,
-        #[serde(default)]
-        results: Vec<WebSearchResult>,
-    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

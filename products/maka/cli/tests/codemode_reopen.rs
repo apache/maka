@@ -1720,11 +1720,10 @@ async fn cold_root(language: CodeLanguage) {
             cleanup.push(error);
         }
     }
-    let panics = server.take_panics();
+    let panics = server.shutdown_taking_panics().await;
     if !panics.is_empty() {
         cleanup.push(format!("model handler panics: {}", panics.join("; ")));
     }
-    server.shutdown().await;
     if !cleanup.is_empty() {
         eprintln!("codemode cleanup errors: {cleanup:?}");
     }

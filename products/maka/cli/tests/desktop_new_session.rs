@@ -187,8 +187,7 @@ impl ModelFixture {
 
     async fn close(&mut self) -> Result<()> {
         if let Some(server) = self.server.take() {
-            let panics = server.take_panics();
-            server.shutdown().await;
+            let panics = server.shutdown_taking_panics().await;
             if !panics.is_empty() {
                 return Err(panics.join("; "));
             }

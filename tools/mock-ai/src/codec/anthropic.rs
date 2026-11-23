@@ -486,48 +486,6 @@ impl WireEncoder for AnthropicEncoder {
                 );
                 self.completed_blocks.push(server_call);
             }
-            TurnEvent::NativeTool(NativeToolEvent::WebSearchCompleted { id, results, .. }) => {
-                self.ensure_started(out);
-                self.close_active(out);
-                let tool_id = if id.is_empty() {
-                    format!("srvtoolu_{}_{}", self.id, self.next_index)
-                } else {
-                    id
-                };
-                let res_idx = self.next_index;
-                self.next_index += 1;
-                let items: Vec<Value> = results
-                    .into_iter()
-                    .map(|r| {
-                        json!({
-                            "type": "web_search_result",
-                            "url": r.url,
-                            "title": r.title,
-                            "encrypted_content": r.encrypted_content.unwrap_or_else(|| "opaque".into()),
-                        })
-                    })
-                    .collect();
-                let res_block = json!({
-                    "type": "web_search_tool_result",
-                    "tool_use_id": tool_id,
-                    "content": items,
-                });
-                self.emit(
-                    "content_block_start",
-                    json!({
-                        "type": "content_block_start",
-                        "index": res_idx,
-                        "content_block": res_block,
-                    }),
-                    out,
-                );
-                self.emit(
-                    "content_block_stop",
-                    json!({ "type": "content_block_stop", "index": res_idx }),
-                    out,
-                );
-                self.completed_blocks.push(res_block);
-            }
             TurnEvent::NativeCompaction(comp) => {
                 self.ensure_started(out);
                 self.close_active(out);

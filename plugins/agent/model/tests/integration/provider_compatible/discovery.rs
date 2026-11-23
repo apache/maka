@@ -54,12 +54,13 @@ async fn compatible_connections_use_advertised_speeds_and_only_magpie_discovers_
                 ..Default::default()
             })
             .handler_fn(move |req, ctx| {
-                let expected_proto = if chat {
-                    Protocol::OpenaiChatCompletions
+                let (expected_proto, expected_path) = if chat {
+                    (Protocol::OpenaiChatCompletions, "/v1/chat/completions")
                 } else {
-                    Protocol::OpenaiResponsesHttp
+                    (Protocol::OpenaiResponsesHttp, "/v1/responses")
                 };
                 assert_eq!(req.protocol, expected_proto);
+                assert_eq!(req.path, expected_path);
                 assert!(!req.headers.contains_key("x-magpie-drawers"));
                 let expected_tier = match ctx.global_turn {
                     1 => None,

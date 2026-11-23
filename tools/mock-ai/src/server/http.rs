@@ -20,13 +20,13 @@
 use super::admin::handle_admin;
 use super::{
     ActiveStreamGuard, BoxBody, FlushStatus, PendingWsUpgrade, ServerState, TtftTracker,
-    TurnCloseGuard, classify_protocol, collect_headers, default_response_id, error_http_response,
-    extract_stored_response_id, full_json, is_responses_path, is_semantic_delta_frame, jitter_ms,
-    json_with_headers, pacer_seed_for, plan_usage_hint, semantic_event_bytes, spawn_tracked,
-    sse_response,
+    TurnCloseGuard, classify_protocol, collect_headers, default_response_id,
+    enqueue_interactive_command, error_http_response, extract_stored_response_id, full_json,
+    is_responses_path, is_semantic_delta_frame, jitter_ms, json_with_headers, pacer_seed_for,
+    plan_usage_hint, semantic_event_bytes, spawn_tracked, sse_response,
 };
 use crate::codec::{WireFrame, create_encoder};
-use crate::handler::{InteractiveMeta, TurnContext, TurnDecision};
+use crate::handler::{InteractiveCommand, TurnContext, TurnDecision};
 use crate::pacing::{LatencyProfile, TurnPacer};
 use crate::plan::{CloseSignal, FinishReason, HttpErrorSpec, TurnEvent, Usage};
 use crate::protocol::{NormalizedRequest, Protocol, Transport, normalize_request};
@@ -43,6 +43,7 @@ use hyper::header::{self, HeaderName, HeaderValue};
 use hyper::{Method, Request, Response, StatusCode};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
+use std::collections::VecDeque;
 use std::io;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
@@ -394,7 +395,7 @@ pub(super) async fn handle_http_request(
         Transport::Http,
         path,
         headers,
-        body_bytes.len(),
+        body_bytes,
         raw_body,
     );
     let turn_started = Instant::now();
@@ -631,8 +632,8 @@ enum HttpEventFeed {
         inferred_finish: FinishReason,
     },
     Interactive {
-        pending: Option<Box<TurnEvent>>,
-        rx: mpsc::UnboundedReceiver<TurnEvent>,
+        pending: VecDeque<TurnEvent>,
+        rx: mpsc::Receiver<InteractiveCommand>,
     },
 }
 
@@ -665,29 +666,27 @@ impl HttpEventFeed {
                     None => FeedStep::Ended,
                 }
             }
-            Self::Interactive { pending, rx } => {
-                if let Some(ev) = pending.take() {
-                    return FeedStep::Event(ev);
+            Self::Interactive { pending, rx } => loop {
+                if let Some(ev) = pending.pop_front() {
+                    return FeedStep::Event(Box::new(ev));
                 }
-                if let Some(tx) = tx_closed {
+                let next = if let Some(tx) = tx_closed {
                     tokio::select! {
-                        _ = shutdown.cancelled() => FeedStep::Aborted,
-                        _ = tx.closed() => FeedStep::Aborted,
-                        next = rx.recv() => match next {
-                            Some(ev) => FeedStep::Event(Box::new(ev)),
-                            None => FeedStep::Ended,
-                        }
+                        _ = shutdown.cancelled() => return FeedStep::Aborted,
+                        _ = tx.closed() => return FeedStep::Aborted,
+                        next = rx.recv() => next,
                     }
                 } else {
                     tokio::select! {
-                        _ = shutdown.cancelled() => FeedStep::Aborted,
-                        next = rx.recv() => match next {
-                            Some(ev) => FeedStep::Event(Box::new(ev)),
-                            None => FeedStep::Ended,
-                        }
+                        _ = shutdown.cancelled() => return FeedStep::Aborted,
+                        next = rx.recv() => next,
                     }
+                };
+                match next {
+                    Some(cmd) => enqueue_interactive_command(pending, cmd),
+                    None => return FeedStep::Ended,
                 }
-            }
+            },
         }
     }
 
@@ -714,8 +713,8 @@ impl HttpEventFeed {
                         _ = shutdown.cancelled() => return StallOutcome::Ended,
                         _ = tx.closed() => return StallOutcome::Ended,
                         next = rx.recv() => match next {
-                            Some(ev) => {
-                                *pending = Some(Box::new(ev));
+                            Some(cmd) => {
+                                enqueue_interactive_command(pending, cmd);
                                 return StallOutcome::Resumed;
                             }
                             None => true,
@@ -725,16 +724,14 @@ impl HttpEventFeed {
                     tokio::select! {
                         _ = shutdown.cancelled() => return StallOutcome::Ended,
                         next = rx.recv() => match next {
-                            Some(ev) => {
-                                *pending = Some(Box::new(ev));
+                            Some(cmd) => {
+                                enqueue_interactive_command(pending, cmd);
                                 return StallOutcome::Resumed;
                             }
                             None => true,
                         }
                     }
                 };
-                // Once TurnHandle is dropped (e.g. via send_plan(TurnPlan::stall())),
-                // keep stalling until client disconnect or server shutdown, matching Plan::Stall.
                 if rx_closed {
                     if let Some(tx) = tx_closed {
                         tokio::select! {
@@ -762,6 +759,17 @@ enum StallOutcome {
     Ended,
 }
 
+enum ResolvedHttpDecision {
+    Plan {
+        plan: Box<crate::plan::TurnPlan>,
+        interactive_closed: Option<CloseSignal>,
+    },
+    Interactive {
+        first: Box<TurnEvent>,
+        stream: crate::handler::InteractiveStream,
+    },
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn execute_http_turn(
     req: NormalizedRequest,
@@ -773,9 +781,76 @@ async fn execute_http_turn(
     turn_started: Instant,
     state: Arc<ServerState>,
 ) -> Response<BoxBody> {
-    let (mut feed, meta, pre_usage, usage_hint, mut pacer, ttft_dur, close_guard) = match decision {
-        TurnDecision::Plan(plan) => {
-            let close_guard = TurnCloseGuard(plan.on_close.clone());
+    // Unwrap interactive turns that reply with a full TurnPlan so they share 100% of
+    // the Plan execution path (leading Delay+HttpError, TTFT/pacing, on_close, headers, etc.).
+    let resolved = match decision {
+        TurnDecision::Plan(plan) => ResolvedHttpDecision::Plan {
+            plan: Box::new(plan),
+            interactive_closed: None,
+        },
+        TurnDecision::Interactive(mut stream) => {
+            let first = tokio::select! {
+                _ = state.shutdown.cancelled() => {
+                    stream.closed.cancel();
+                    return full_json(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        &json!({ "error": { "message": "server shutting down" } }),
+                    );
+                }
+                ev = stream.events.recv() => ev,
+            };
+            match first {
+                None => {
+                    stream.closed.cancel();
+                    return finish_http_error(
+                        &req,
+                        &HttpErrorSpec::new(
+                            500,
+                            "mock_aborted",
+                            "interactive TurnHandle dropped before reply",
+                        ),
+                        &rl_headers,
+                        turn_started,
+                        &state,
+                    );
+                }
+                Some(InteractiveCommand::Plan(plan)) => ResolvedHttpDecision::Plan {
+                    plan,
+                    interactive_closed: Some(CloseSignal(stream.closed)),
+                },
+                Some(InteractiveCommand::Event(first_event)) => {
+                    if let TurnEvent::HttpError(spec) = *first_event {
+                        stream.closed.cancel();
+                        return finish_http_error(&req, &spec, &rl_headers, turn_started, &state);
+                    }
+                    ResolvedHttpDecision::Interactive {
+                        first: first_event,
+                        stream,
+                    }
+                }
+            }
+        }
+    };
+
+    let (
+        mut feed,
+        response_id_override,
+        model_override,
+        mut response_headers,
+        close_connection,
+        wire_poison,
+        pre_usage,
+        usage_hint,
+        mut pacer,
+        ttft_dur,
+        close_guard,
+    ) = match resolved {
+        ResolvedHttpDecision::Plan {
+            plan,
+            interactive_closed,
+        } => {
+            let plan = *plan;
+            let close_guard = TurnCloseGuard(plan.on_close.clone(), interactive_closed);
             // Handle pre-stream HTTP error (including optional leading Delay before error).
             for (idx, ev) in plan.events.iter().enumerate() {
                 match ev {
@@ -809,20 +884,17 @@ async fn execute_http_turn(
                 TurnEvent::Usage(u) => Some(u.clone()),
                 _ => None,
             });
-            let meta = InteractiveMeta {
-                response_id: plan.response_id,
-                model_override: plan.model_override,
-                response_headers: plan.response_headers,
-                close_connection: plan.close_connection,
-                wire_poison: plan.wire_poison,
-            };
             let feed = HttpEventFeed::Plan {
                 events: plan.events.into_iter(),
                 inferred_finish,
             };
             (
                 feed,
-                meta,
+                plan.response_id,
+                plan.model_override,
+                plan.response_headers,
+                plan.close_connection,
+                plan.wire_poison,
                 pre_usage,
                 usage_hint,
                 Some(pacer),
@@ -830,44 +902,23 @@ async fn execute_http_turn(
                 close_guard,
             )
         }
-        TurnDecision::Interactive(mut stream) => {
-            let close_guard = TurnCloseGuard(Some(CloseSignal(stream.closed.clone())));
-            // Wait for the first event before committing HTTP headers so TurnHandle::http_error works
-            // and so TurnHandle metadata setters (response_id, headers, close_connection) take effect.
-            let first = tokio::select! {
-                _ = state.shutdown.cancelled() => {
-                    return full_json(
-                        StatusCode::SERVICE_UNAVAILABLE,
-                        &json!({ "error": { "message": "server shutting down" } }),
-                    );
-                }
-                ev = stream.events.recv() => ev,
-            };
-            let Some(first_event) = first else {
-                return finish_http_error(
-                    &req,
-                    &HttpErrorSpec::new(
-                        500,
-                        "mock_aborted",
-                        "interactive TurnHandle dropped before reply",
-                    ),
-                    &rl_headers,
-                    turn_started,
-                    &state,
-                );
-            };
-            if let TurnEvent::HttpError(spec) = first_event {
-                return finish_http_error(&req, &spec, &rl_headers, turn_started, &state);
-            }
-            let meta = stream.meta.lock().unwrap().clone();
+        ResolvedHttpDecision::Interactive { first, stream } => {
+            let close_guard = TurnCloseGuard(Some(CloseSignal(stream.closed)), None);
+            let response_id = stream.response_id.lock().unwrap().clone();
             let usage_hint = Usage::new(req.estimated_input_tokens.max(1), 0);
+            let mut pending = VecDeque::new();
+            pending.push_back(*first);
             let feed = HttpEventFeed::Interactive {
-                pending: Some(Box::new(first_event)),
+                pending,
                 rx: stream.events,
             };
             (
                 feed,
-                meta,
+                response_id,
+                None,
+                BTreeMap::new(),
+                false,
+                WirePoisonConfig::default(),
                 None,
                 usage_hint,
                 None,
@@ -877,16 +928,12 @@ async fn execute_http_turn(
         }
     };
 
-    let response_id = meta
-        .response_id
-        .unwrap_or_else(|| default_response_id(req.protocol, req.sequence));
-    let model = meta.model_override.unwrap_or_else(|| req.model.clone());
-    let mut response_headers = meta.response_headers;
+    let response_id =
+        response_id_override.unwrap_or_else(|| default_response_id(req.protocol, req.sequence));
+    let model = model_override.unwrap_or_else(|| req.model.clone());
     for (k, v) in rl_headers.to_header_pairs() {
         response_headers.entry(k.to_string()).or_insert(v);
     }
-    let close_connection = meta.close_connection;
-    let wire_poison = meta.wire_poison;
 
     // 1) Non-streaming JSON HTTP response (unified for both Plan and Interactive!)
     if !req.stream {

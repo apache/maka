@@ -502,38 +502,6 @@ impl WireEncoder for ResponsesEncoder {
                     out,
                 );
             }
-            TurnEvent::NativeTool(NativeToolEvent::WebSearchCompleted { id, query, results }) => {
-                self.ensure_created(out);
-                self.close_reasoning(out);
-                self.close_message(out);
-                let item_id = if id.is_empty() {
-                    self.next_id("ws")
-                } else {
-                    id
-                };
-                let sources: Vec<Value> = results
-                    .iter()
-                    .map(|r| json!({ "type": "url", "url": r.url, "title": r.title }))
-                    .collect();
-                let done_item = json!({
-                    "type": "web_search_call",
-                    "id": item_id,
-                    "status": "completed",
-                    "action": {
-                        "type": "search",
-                        "query": query,
-                        "sources": sources,
-                    },
-                });
-                self.completed_output.push(done_item.clone());
-                self.emit(
-                    json!({
-                        "type": "response.output_item.done",
-                        "item": done_item,
-                    }),
-                    out,
-                );
-            }
             TurnEvent::NativeCompaction(comp) => {
                 self.ensure_created(out);
                 self.close_reasoning(out);

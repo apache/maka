@@ -1182,11 +1182,10 @@ async fn browser_stage_presents_the_same_window_after_tool_settlement() {
         }
     }
     stop.cancel();
-    let panics = mock_ai.take_panics();
+    let panics = mock_ai.shutdown_taking_panics().await;
     if !panics.is_empty() {
         cleanup.push(format!("mock-ai handler panics: {}", panics.join("; ")));
     }
-    mock_ai.shutdown().await;
     if !collected {
         match tokio::time::timeout(Duration::from_secs(30), &mut server).await {
             Ok(Ok(Ok(()))) => {}

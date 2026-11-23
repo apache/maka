@@ -19,20 +19,21 @@
 
 use super::{
     ActiveStreamGuard, FlushStatus, ServerState, TtftTracker, TurnCloseGuard, default_response_id,
-    format_ws_error_frame, is_semantic_delta_frame, jitter_ms, pacer_seed_for, plan_usage_hint,
-    semantic_event_bytes,
+    enqueue_interactive_command, format_ws_error_frame, is_semantic_delta_frame, jitter_ms,
+    pacer_seed_for, plan_usage_hint, semantic_event_bytes,
 };
 use crate::codec::{WireFrame, create_encoder};
-use crate::handler::{InteractiveMeta, TurnContext, TurnDecision};
+use crate::handler::{InteractiveCommand, InteractiveStream, TurnContext, TurnDecision};
 use crate::pacing::{LatencyProfile, TurnPacer};
-use crate::plan::{CloseSignal, FinishReason, TurnEvent, Usage};
+use crate::plan::{CloseSignal, FinishReason, TurnEvent, TurnPlan, Usage};
 use crate::protocol::{NormalizedRequest, Protocol, Transport, normalize_request};
 #[cfg(feature = "proxy")]
 use crate::proxy::fingerprint_from_normalized;
 use crate::ratelimit::{RateLimitDecision, RateLimitLease};
+use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
@@ -75,7 +76,6 @@ pub(super) async fn handle_responses_websocket<S>(
             WsMessage::Close(_) => break,
             WsMessage::Text(text) => {
                 turn_on_connection += 1;
-                let prompt_bytes = text.len();
                 let raw_body: Value = match serde_json::from_str(&text) {
                     Ok(v) => v,
                     Err(err) => {
@@ -94,6 +94,7 @@ pub(super) async fn handle_responses_websocket<S>(
                         break;
                     }
                 };
+                let raw_wire_bytes = Bytes::from(text);
 
                 let seq = state.next_sequence();
                 let normalized = normalize_request(
@@ -105,7 +106,7 @@ pub(super) async fn handle_responses_websocket<S>(
                     },
                     path.clone(),
                     headers.clone(),
-                    prompt_bytes,
+                    raw_wire_bytes,
                     raw_body,
                 );
                 let turn_started = Instant::now();
@@ -319,8 +320,8 @@ enum WsEventFeed {
         inferred_finish: FinishReason,
     },
     Interactive {
-        pending: Option<Box<TurnEvent>>,
-        rx: mpsc::UnboundedReceiver<TurnEvent>,
+        pending: VecDeque<TurnEvent>,
+        rx: mpsc::Receiver<InteractiveCommand>,
     },
 }
 
@@ -363,34 +364,32 @@ impl WsEventFeed {
                     None => WsFeedStep::Ended,
                 }
             }
-            Self::Interactive { pending, rx } => {
-                if let Some(ev) = pending.take() {
-                    return WsFeedStep::Event(ev);
+            Self::Interactive { pending, rx } => loop {
+                if let Some(ev) = pending.pop_front() {
+                    return WsFeedStep::Event(Box::new(ev));
                 }
                 // Concurrently monitor client WS Ping/Close while waiting for the next test event
                 // so handle.wait_closed() wakes promptly when the client cancels/disconnects.
-                loop {
-                    tokio::select! {
-                        _ = shutdown.cancelled() => return WsFeedStep::Aborted,
-                        next = rx.recv() => match next {
-                            Some(ev) => return WsFeedStep::Event(Box::new(ev)),
-                            None => return WsFeedStep::Ended,
-                        },
-                        msg = ws.next() => match msg {
-                            Some(Ok(WsMessage::Ping(p))) => {
-                                if ws.send(WsMessage::Pong(p)).await.is_err() {
-                                    return WsFeedStep::Aborted;
-                                }
-                            }
-                            Some(Ok(WsMessage::Pong(_))) => {}
-                            None | Some(Ok(WsMessage::Close(_))) | Some(Err(_)) => {
+                tokio::select! {
+                    _ = shutdown.cancelled() => return WsFeedStep::Aborted,
+                    next = rx.recv() => match next {
+                        Some(cmd) => enqueue_interactive_command(pending, cmd),
+                        None => return WsFeedStep::Ended,
+                    },
+                    msg = ws.next() => match msg {
+                        Some(Ok(WsMessage::Ping(p))) => {
+                            if ws.send(WsMessage::Pong(p)).await.is_err() {
                                 return WsFeedStep::Aborted;
                             }
-                            _ => {}
                         }
+                        Some(Ok(WsMessage::Pong(_))) => {}
+                        None | Some(Ok(WsMessage::Close(_))) | Some(Err(_)) => {
+                            return WsFeedStep::Aborted;
+                        }
+                        _ => {}
                     }
                 }
-            }
+            },
         }
     }
 
@@ -424,12 +423,10 @@ impl WsEventFeed {
                         tokio::select! {
                             _ = shutdown.cancelled() => return WsStallOutcome::Ended,
                             next = rx.recv() => match next {
-                                Some(ev) => {
-                                    *pending = Some(Box::new(ev));
+                                Some(cmd) => {
+                                    enqueue_interactive_command(pending, cmd);
                                     return WsStallOutcome::Resumed;
                                 }
-                                // Keep stalling after TurnHandle is dropped (e.g. send_plan(TurnPlan::stall()))
-                                // until client disconnect or server shutdown, matching Plan::Stall.
                                 None => rx_open = false,
                             },
                             msg = ws.next() => match msg {
@@ -468,6 +465,17 @@ impl WsEventFeed {
     }
 }
 
+enum ResolvedWsDecision {
+    Plan {
+        plan: Box<TurnPlan>,
+        interactive_closed: Option<CloseSignal>,
+    },
+    Interactive {
+        first: Box<TurnEvent>,
+        stream: InteractiveStream,
+    },
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn execute_ws_turn<S>(
     ws: &mut WebSocketStream<S>,
@@ -482,9 +490,69 @@ async fn execute_ws_turn<S>(
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send,
 {
-    let (mut feed, meta, usage_hint, mut pacer, ttft_dur, _close_guard) = match decision {
-        TurnDecision::Plan(plan) => {
-            let close_guard = TurnCloseGuard(plan.on_close.clone());
+    let resolved = match decision {
+        TurnDecision::Plan(plan) => ResolvedWsDecision::Plan {
+            plan: Box::new(plan),
+            interactive_closed: None,
+        },
+        TurnDecision::Interactive(mut stream) => {
+            // Wait for the first command while still handling client WS Ping/Close,
+            // so handle.wait_closed() wakes promptly on disconnect and send_plan() gets full Plan semantics.
+            let first = loop {
+                tokio::select! {
+                    _ = state.shutdown.cancelled() => {
+                        stream.closed.cancel();
+                        return (false, None);
+                    }
+                    ev = stream.events.recv() => break ev,
+                    msg = ws.next() => match msg {
+                        Some(Ok(WsMessage::Ping(p))) => {
+                            if ws.send(WsMessage::Pong(p)).await.is_err() {
+                                stream.closed.cancel();
+                                return (false, None);
+                            }
+                        }
+                        Some(Ok(WsMessage::Pong(_))) => {}
+                        None | Some(Ok(WsMessage::Close(_))) | Some(Err(_)) => {
+                            stream.closed.cancel();
+                            return (false, None);
+                        }
+                        _ => {}
+                    }
+                }
+            };
+            match first {
+                None => {
+                    stream.closed.cancel();
+                    return (false, None);
+                }
+                Some(InteractiveCommand::Plan(plan)) => ResolvedWsDecision::Plan {
+                    plan,
+                    interactive_closed: Some(CloseSignal(stream.closed)),
+                },
+                Some(InteractiveCommand::Event(first_event)) => ResolvedWsDecision::Interactive {
+                    first: first_event,
+                    stream,
+                },
+            }
+        }
+    };
+
+    let (
+        mut feed,
+        response_id_override,
+        model_override,
+        usage_hint,
+        mut pacer,
+        ttft_dur,
+        _close_guard,
+    ) = match resolved {
+        ResolvedWsDecision::Plan {
+            plan,
+            interactive_closed,
+        } => {
+            let plan = *plan;
+            let close_guard = TurnCloseGuard(plan.on_close.clone(), interactive_closed);
             let inferred_finish = plan.inferred_finish_reason();
             let usage_hint = plan_usage_hint(&plan, req);
             let cached_tokens = usage_hint.cache_read_tokens.unwrap_or(0);
@@ -498,58 +566,45 @@ where
                 (plan.chunk_delay_ms > 0).then_some(plan.chunk_delay_ms),
             );
             let ttft_dur = pacer.compute_ttft(uncached_tokens, cached_tokens);
-            let meta = InteractiveMeta {
-                response_id: plan.response_id,
-                model_override: plan.model_override,
-                response_headers: plan.response_headers,
-                close_connection: plan.close_connection,
-                wire_poison: plan.wire_poison,
-            };
             let feed = WsEventFeed::Plan {
                 events: plan.events.into_iter(),
                 inferred_finish,
             };
-            (feed, meta, usage_hint, Some(pacer), ttft_dur, close_guard)
+            (
+                feed,
+                plan.response_id,
+                plan.model_override,
+                usage_hint,
+                Some(pacer),
+                ttft_dur,
+                close_guard,
+            )
         }
-        TurnDecision::Interactive(mut stream) => {
-            let close_guard = TurnCloseGuard(Some(CloseSignal(stream.closed.clone())));
-            // Wait for the first event while still handling client WS Ping/Close,
-            // so TurnHandle metadata setters take effect before creating the encoder.
-            let first = loop {
-                tokio::select! {
-                    _ = state.shutdown.cancelled() => return (false, None),
-                    ev = stream.events.recv() => break ev,
-                    msg = ws.next() => match msg {
-                        Some(Ok(WsMessage::Ping(p))) => {
-                            if ws.send(WsMessage::Pong(p)).await.is_err() {
-                                return (false, None);
-                            }
-                        }
-                        Some(Ok(WsMessage::Pong(_))) => {}
-                        None | Some(Ok(WsMessage::Close(_))) | Some(Err(_)) => {
-                            return (false, None);
-                        }
-                        _ => {}
-                    }
-                }
-            };
-            let Some(first_event) = first else {
-                return (false, None);
-            };
-            let meta = stream.meta.lock().unwrap().clone();
+        ResolvedWsDecision::Interactive { first, stream } => {
+            let close_guard = TurnCloseGuard(Some(CloseSignal(stream.closed)), None);
+            let response_id = stream.response_id.lock().unwrap().clone();
             let usage_hint = Usage::new(req.estimated_input_tokens.max(1), 0);
+            let mut pending = VecDeque::new();
+            pending.push_back(*first);
             let feed = WsEventFeed::Interactive {
-                pending: Some(Box::new(first_event)),
+                pending,
                 rx: stream.events,
             };
-            (feed, meta, usage_hint, None, Duration::ZERO, close_guard)
+            (
+                feed,
+                response_id,
+                None,
+                usage_hint,
+                None,
+                Duration::ZERO,
+                close_guard,
+            )
         }
     };
 
-    let response_id = meta
-        .response_id
+    let response_id = response_id_override
         .unwrap_or_else(|| default_response_id(Protocol::OpenaiResponsesWs, req.sequence));
-    let model = meta.model_override.unwrap_or_else(|| req.model.clone());
+    let model = model_override.unwrap_or_else(|| req.model.clone());
     let mut final_usage = usage_hint;
 
     let mut encoder = create_encoder(

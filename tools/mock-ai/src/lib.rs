@@ -46,8 +46,8 @@ pub mod workload;
 
 pub use control::{ControlPlaneConfig, CustomResponse, CustomRouteFn, ModelEntry, StoredResponses};
 pub use handler::{
-    AsyncFnHandler, ChainHandler, FilterHandler, FnHandler, InteractiveHandler, ScriptedHandler,
-    SessionTracker, TurnContext, TurnDecision, TurnHandle, TurnHandler,
+    ChainHandler, FnHandler, InteractiveHandler, ScriptedHandler, SessionTracker, TurnContext,
+    TurnDecision, TurnHandle, TurnHandler,
 };
 pub use metrics::{
     AtomicHistogram, DimensionCounter, HistogramSummary, MetricsSnapshot, RecordedControlRequest,

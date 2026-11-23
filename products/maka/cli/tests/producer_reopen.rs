@@ -1401,11 +1401,10 @@ async fn acceptance(producer: Producer, retry_workspace: bool) {
             cleanup.push(error);
         }
     }
-    let panics = server.take_panics();
+    let panics = server.shutdown_taking_panics().await;
     if !panics.is_empty() {
         cleanup.push(format!("model handler panics: {}", panics.join("; ")));
     }
-    server.shutdown().await;
     match outcome {
         Ok(Ok(Ok(()))) => {
             assert!(cleanup.is_empty(), "{cleanup:?}");

@@ -952,8 +952,7 @@ async fn produce_capsule(bin: &Path, capsule_dir: &Path) -> CapsuleManifest {
             m
         }
         Err(panic) => {
-            let _ = server.take_panics();
-            server.shutdown().await;
+            let _ = server.shutdown_taking_panics().await;
             std::panic::resume_unwind(panic);
         }
     };
@@ -1314,8 +1313,7 @@ async fn verify_capsule(bin: &Path, capsule_dir: &Path) {
             cleanup.expect("Host cleanup");
         }
         Err(panic) => {
-            let _ = server.take_panics();
-            server.shutdown().await;
+            let _ = server.shutdown_taking_panics().await;
             std::panic::resume_unwind(panic);
         }
     }

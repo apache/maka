@@ -466,12 +466,8 @@ async fn captured_language_reaches_native_notifications_without_becoming_provide
 async fn full_request_byte_count_matches_upload_and_stops_oversized_headers() {
     use maka_mock_ai::{FinishReason, MockAiBuilder, TurnPlan};
 
-    let server = MockAiBuilder::new()
-        .handler_fn(|_, _| TurnPlan::new().finish(FinishReason::Stop))
-        .start()
-        .await
-        .unwrap();
-    let url = server.base_url();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/v1", listener.local_addr().unwrap());
     let mut input = request(&url);
     input.provider.body_overlay = Some(serde_json::Map::from_iter([(
         "fixture".into(),
@@ -498,7 +494,18 @@ async fn full_request_byte_count_matches_upload_and_stops_oversized_headers() {
     assert!(
         matches!(error, maka_model::ModelError::ImageInputPayloadTooLarge { bytes: actual, limit } if actual == bytes && limit == bytes - 1)
     );
-    assert_eq!(server.request_count(), 0);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(80), listener.accept())
+            .await
+            .is_err(),
+        "oversized request must fail before opening a TCP connection"
+    );
+
+    let server = MockAiBuilder::new()
+        .handler_fn(|_, _| TurnPlan::new().finish(FinishReason::Stop))
+        .start_with_listener(listener)
+        .await
+        .unwrap();
 
     let mut input = request(&url);
     input.provider.body_overlay = Some(serde_json::Map::from_iter([(

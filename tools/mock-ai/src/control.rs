@@ -330,10 +330,6 @@ impl CustomResponse {
         }
     }
 
-    pub fn json(status: u16, value: &Value) -> Self {
-        Self::new(status, "application/json", value.to_string().into_bytes())
-    }
-
     pub fn text(status: u16, body: impl Into<String>) -> Self {
         Self::new(status, "text/plain", body.into().into_bytes())
     }

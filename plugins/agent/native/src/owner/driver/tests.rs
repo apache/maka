@@ -4096,7 +4096,7 @@ mod model_recovery {
             .handler_fn(move |req, _| {
                 assert_eq!(req.protocol, maka_mock_ai::Protocol::OpenaiResponsesWs);
                 let index = posts.fetch_add(1, Ordering::SeqCst);
-                let _ = requests.try_send(serde_json::to_vec(&req.raw_body).unwrap());
+                let _ = requests.try_send(req.raw_wire_bytes.to_vec());
                 match (index, first) {
                     (0, FirstResponse::Hold) => TurnPlan::stall(),
                     (0, FirstResponse::StartSearch) => TurnPlan::new()
