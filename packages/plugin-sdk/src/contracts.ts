@@ -60118,7 +60118,10 @@ export const contracts: {
               },
               Language: {
                 type: 'string',
-                enum: ['en', 'zh-CN', 'zh-TW'],
+                minLength: 2,
+                maxLength: 35,
+                description:
+                  'Resolved canonical BCP 47 language tag (for example en, zh-CN, zh-TW, zh-HK, ja, ko, es, fr, de, pt-BR, ru, it).',
               },
               ExecutionIdentity: {
                 type: 'object',
@@ -63042,7 +63045,10 @@ export const contracts: {
               },
               Language: {
                 type: 'string',
-                enum: ['en', 'zh-CN', 'zh-TW'],
+                minLength: 2,
+                maxLength: 35,
+                description:
+                  'Resolved canonical BCP 47 language tag (for example en, zh-CN, zh-TW, zh-HK, ja, ko, es, fr, de, pt-BR, ru, it).',
               },
             },
           },
@@ -69847,12 +69853,17 @@ export const contracts: {
                 ],
               },
               LanguagePreference: {
+                description: 'Language preference: "auto" or a canonical BCP 47 locale tag.',
                 type: 'string',
-                enum: ['auto', 'en', 'zh-CN', 'zh-TW'],
+                minLength: 2,
+                maxLength: 35,
               },
               Language: {
+                description:
+                  'Resolved canonical BCP 47 language tag (for example en, zh-CN, zh-TW, zh-HK, ja, ko, es, fr, de, pt-BR, ru, it).',
                 type: 'string',
-                enum: ['en', 'zh-CN', 'zh-TW'],
+                minLength: 2,
+                maxLength: 35,
               },
               ProfileAvatar: {
                 type: 'string',
@@ -75016,8 +75027,10 @@ export const contracts: {
                 ],
               },
               LanguagePreference: {
+                description: 'Language preference: "auto" or a canonical BCP 47 locale tag.',
                 type: 'string',
-                enum: ['auto', 'en', 'zh-CN', 'zh-TW'],
+                minLength: 2,
+                maxLength: 35,
               },
               ProfileAvatar: {
                 type: 'string',

@@ -17,23 +17,23 @@
  * under the License.
  */
 
-import { effect, Clipboard, computed, type JSX } from 'nsh';
+import { Clipboard, computed, type JSX } from 'nsh';
 import type { UiEmbeddedViewProps, UiModule } from '../../../packages/plugin-sdk/src/workbench.js';
 import {
   quickToolView,
   type QuickItem,
   type QuickToolInput,
 } from '../../../packages/plugin-sdk/src/workbench-views.js';
-import { currentLocale, tr } from '../../../products/maka/workbench/app/locale';
+import { localizedKeywords, tr } from '../../../products/maka/workbench/app/locale';
 import { search } from '../../shared/quick-search';
 import { symbols } from './symbols';
 
-const KEYWORDS = ['sym', 'symbol', '符号', '符號'];
+const keywords = () => localizedKeywords(['sym', 'symbol'], 'launcher.keywords.symbols');
 
 function Symbols(props: { input: QuickToolInput }) {
   const { input } = props;
   const items = computed(() =>
-    search(symbols, input.query(), KEYWORDS, ([, terms]) => [terms]).map(
+    search(symbols, input.query(), keywords(), ([, terms]) => [terms]).map(
       ({ item: [character, terms], match }): QuickItem => ({
         id: character,
         title: character,
@@ -49,13 +49,12 @@ function Symbols(props: { input: QuickToolInput }) {
   );
   input.attach({
     items,
-    entries: () => [{ id: 'symbols', title: tr('Symbols'), icon: 'symbol', keywords: KEYWORDS }],
+    entries: () => [{ id: 'symbols', title: tr('Symbols'), icon: 'symbol', keywords: keywords() }],
   });
   return null;
 }
 
-export const activate: UiModule<JSX.Element>['activate'] = (context) => {
-  effect(() => currentLocale.set(context.locale()));
+export const activate: UiModule<JSX.Element>['activate'] = () => {
   return {
     exports: {
       tool: {

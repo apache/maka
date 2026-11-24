@@ -723,13 +723,9 @@ impl Browsers {
     ) -> Result<(), ToolError> {
         validate_connections(&connections)?;
         if connections != self.connections && !self.targets.is_empty() {
-            return Err(failed(match language {
-                Language::En => {
-                    "browser configuration changed; reset Cua before using the new providers"
-                }
-                Language::ZhCn => "浏览器配置已改变；请先重置 Cua，再使用新的提供方",
-                Language::ZhTw => "瀏覽器設定已變更；請先重設 Cua，再使用新的提供者",
-            }));
+            return Err(failed(
+                crate::language::i18n_catalog::browser::config_changed(language),
+            ));
         }
         if connections != self.connections {
             self.clipboards.clear();
@@ -981,13 +977,9 @@ impl Browsers {
                     return Err(error);
                 }
                 if matches.len() != 1 {
-                    return Err(failed(match language {
-                        Language::En => {
-                            "browser selection is ambiguous or missing; select an ID from listBrowsers"
-                        }
-                        Language::ZhCn => "浏览器选择不明确或缺失；请从 listBrowsers 选择 ID",
-                        Language::ZhTw => "瀏覽器選擇不明確或缺少；請從 listBrowsers 選擇 ID",
-                    }));
+                    return Err(failed(
+                        crate::language::i18n_catalog::browser::selection_ambiguous(language),
+                    ));
                 }
                 Ok(matches[0].info())
             }),
@@ -1437,13 +1429,11 @@ impl Browsers {
                         }
                     }
                     if matches.len() != 1 {
-                        return Err(failed(match language {
-                            Language::En => {
-                                "tab selection is ambiguous or missing; choose an exact ID from listTabs"
-                            }
-                            Language::ZhCn => "标签页选择不明确或缺失；请从 listTabs 选择确切 ID",
-                            Language::ZhTw => "分頁選擇不明確或缺少；請從 listTabs 選擇確切 ID",
-                        }));
+                        return Err(failed(
+                            crate::language::i18n_catalog::browser::tab_selection_ambiguous(
+                                language,
+                            ),
+                        ));
                     }
                     let (provider, generation, tab, session_metadata) = matches.pop().unwrap();
                     if provider.extension().is_some()
@@ -1638,11 +1628,7 @@ impl Browsers {
             return Err(unknown("browser restarted after tab creation"));
         }
         let info = tabs.into_iter().find(|tab| tab.id == id).ok_or_else(|| {
-            unknown(match language {
-                Language::En => "created tab is not observable",
-                Language::ZhCn => "已创建的标签页不可观察",
-                Language::ZhTw => "已建立的分頁無法觀察",
-            })
+            unknown(crate::language::i18n_catalog::browser::created_tab_not_observable(language))
         })?;
         let mut bound = self
             .bind(
@@ -1832,11 +1818,9 @@ impl Browsers {
         let turn = invocation.turn();
         let execution = invocation.execution_correlation();
         let tab = self.targets.get(handle).ok_or_else(|| {
-            failed(match language {
-                Language::En => "stale_tab: bind it again",
-                Language::ZhCn => "stale_tab: 请重新绑定标签页",
-                Language::ZhTw => "stale_tab: 請重新綁定分頁",
-            })
+            failed(crate::language::i18n_catalog::browser::stale_tab_rebind(
+                language,
+            ))
         })?;
         let identity = tab.identity()?;
         self.use_tab(&identity, turn, execution, cancellation)
@@ -1894,11 +1878,9 @@ impl Browsers {
         let execution = invocation.execution_correlation();
         let closing = matches!(&action, Action::Close);
         let tab = self.targets.get(handle).ok_or_else(|| {
-            failed(match language {
-                Language::En => "stale_tab: bind it again",
-                Language::ZhCn => "stale_tab: 请重新绑定标签页",
-                Language::ZhTw => "stale_tab: 請重新綁定分頁",
-            })
+            failed(crate::language::i18n_catalog::browser::stale_tab_rebind(
+                language,
+            ))
         })?;
         let identity = tab.identity()?;
         self.use_tab(&identity, turn, execution, cancellation)
@@ -2551,13 +2533,9 @@ impl Tab {
             }
             if tokio::time::Instant::now() >= deadline {
                 self.navigation = None;
-                return Err(failed(match language {
-                    Language::En => {
-                        "page has not reached an observable document; call getAXState again, without repeating navigation"
-                    }
-                    Language::ZhCn => "页面尚无可观察的文档；请再次调用 getAXState，不要重复导航",
-                    Language::ZhTw => "頁面尚無可觀察的文件；請再次呼叫 getAXState，不要重複導覽",
-                }));
+                return Err(failed(
+                    crate::language::i18n_catalog::browser::page_not_observable(language),
+                ));
             }
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
@@ -2673,11 +2651,11 @@ impl Tab {
             self.disconnect().await?;
             self.refs.clear();
             self.frame = None;
-            return Err(failed(match call.language {
-                Language::En => "stale_tab: browser restarted or tab closed; bind the current tab",
-                Language::ZhCn => "stale_tab: 浏览器已重启或标签页已关闭；请绑定当前标签页",
-                Language::ZhTw => "stale_tab: 瀏覽器已重新啟動或分頁已關閉；請綁定目前分頁",
-            }));
+            return Err(failed(
+                crate::language::i18n_catalog::browser::stale_tab_closed_or_restarted(
+                    call.language,
+                ),
+            ));
         }
         self.info = tabs
             .into_iter()
@@ -2913,11 +2891,9 @@ impl Tab {
                 }
             }
             if self.frames().await? != frames {
-                return Err(failed(match language {
-                    Language::En => "frame changed during observation; observe again",
-                    Language::ZhCn => "观察期间框架已改变；请重新观察",
-                    Language::ZhTw => "觀察期間框架已變更；請重新觀察",
-                }));
+                return Err(failed(
+                    crate::language::i18n_catalog::browser::frame_changed(language),
+                ));
             }
             let (full, refs) = self.ax.render(&frame, &nodes, language)?;
             self.refs = refs;
@@ -2926,12 +2902,12 @@ impl Tab {
             } else {
                 full.clone()
             };
-            let label = match language {
-                Language::En => "Tab",
-                Language::ZhCn => "标签页",
-                Language::ZhTw => "分頁",
-            };
-            let state = format!("{label} {}: {}\n{body}", self.info.id, self.info.url);
+            let header = crate::language::i18n_catalog::browser::tab_header(
+                language,
+                &self.info.id,
+                &self.info.url,
+            );
+            let state = format!("{header}\n{body}");
             value["state"] = json!(state);
             self.previous = Some(full);
         }
@@ -2959,11 +2935,9 @@ impl Tab {
             value["image"] = json!({"type":"image","mimeType":"image/png","data":data});
         }
         if self.frame().await? != frame {
-            return Err(failed(match language {
-                Language::En => "document changed during observation; observe again",
-                Language::ZhCn => "观察期间文档已改变；请重新观察",
-                Language::ZhTw => "觀察期間文件已變更；請重新觀察",
-            }));
+            return Err(failed(
+                crate::language::i18n_catalog::browser::document_changed(language),
+            ));
         }
         self.frame = Some(frame);
         Ok(value)
@@ -3044,11 +3018,9 @@ impl Tab {
         check_input(cancellation)?;
         if self.frame.as_ref() != Some(&frame) {
             self.refs.clear();
-            return Err(failed(match language {
-                Language::En => "stale_document: observe after navigation before acting",
-                Language::ZhCn => "stale_document: 导航后请先观察，再操作",
-                Language::ZhTw => "stale_document: 導覽後請先觀察，再操作",
-            }));
+            return Err(failed(
+                crate::language::i18n_catalog::browser::stale_document_observe(language),
+            ));
         }
         Ok(())
     }

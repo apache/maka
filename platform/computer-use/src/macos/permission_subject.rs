@@ -384,7 +384,7 @@ mod tests {
             "Editor".into(),
             "org.example.Editor".into(),
             canonical.to_str().unwrap().into(),
-            Language::En,
+            Language::EN,
         )
         .unwrap();
         assert_eq!(

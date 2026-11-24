@@ -126,36 +126,21 @@ impl Notice<'_> {
                         format!("{status_only} (blocker: {blocker})")
                     }
                 };
-                return match language {
-                    Language::ZhCn => format!(
-                        "你派发的任务（messageId: {}）需要介入，尚未结束。用 {instruction} 查看待处理的提问或审批并在权限内处理，需要人工决策时转告用户；不要重复派发。任务结束后仍会通知你。",
-                        task.message_id
-                    ),
-                    Language::ZhTw => format!(
-                        "你派發的任務（messageId: {}）需要介入，尚未結束。用 {instruction} 查看待處理的提問或審批並在權限內處理，需要人工決策時轉告使用者；不要重複派發。任務結束後仍會通知你。",
-                        task.message_id
-                    ),
-                    _ => format!(
-                        "Your delegated task (messageId: {}) needs attention and has not finished. Inspect {instruction} within your existing authority; ask the user if human action is required. Do not redispatch the task. You will still be notified when it ends.",
-                        task.message_id
-                    ),
-                };
+                return maka_agent_facts::i18n::driver::delegated_task_needs_attention(
+                    language,
+                    &instruction,
+                    &task.message_id,
+                );
             }
         };
-        match language {
-            Language::ZhCn => format!(
-                "你派发的任务（messageId: {}）已结束，状态：{status}。如需完整记录可调用 {read_uri} 或 {session_read}。{inline_result}",
-                task.message_id
-            ),
-            Language::ZhTw => format!(
-                "你派發的任務（messageId: {}）已結束，狀態：{status}。如需完整記錄可呼叫 {read_uri} 或 {session_read}。{inline_result}",
-                task.message_id
-            ),
-            _ => format!(
-                "Your delegated task (messageId: {}) ended with status {status}. For full context or tool outputs, call {read_uri} or {session_read}.{inline_result}",
-                task.message_id
-            ),
-        }
+        maka_agent_facts::i18n::driver::delegated_task_ended(
+            language,
+            &inline_result,
+            &task.message_id,
+            &read_uri,
+            &session_read,
+            status,
+        )
     }
 }
 

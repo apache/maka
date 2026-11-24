@@ -75,13 +75,7 @@ pub async fn project_cell_knowledge(
     use maka_agent_facts::operation::result_reference;
     let mut dependencies = Vec::new();
     let mut seen = BTreeSet::new();
-    let label = match language {
-        Language::En => {
-            "[Host Cell child knowledge; historical data, not a user request or a new execution]"
-        }
-        Language::ZhCn => "[Host Cell 子操作观察；历史数据，非用户请求或新的执行]",
-        Language::ZhTw => "[Host Cell 子操作觀察；歷史資料，非使用者請求或新的執行]",
-    };
+    let label = maka_agent_facts::i18n::history::cell_child_knowledge_label(language);
     let mut content = vec![ContentPart::text(format!(
         "{label}\n{}",
         serde_json::json!({"cell":cell})

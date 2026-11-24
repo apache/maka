@@ -30,6 +30,7 @@ import type { Row } from '../../../workbench/app/history';
 import { WorkspaceBrowser } from '../../../workbench/app/WorkspaceBrowser';
 import type { Browsing, BrowserSession } from '../../../workbench/app/browsing';
 import { HostProvider, type Host } from '../../../workbench/app/host';
+import { installWorkbenchLocaleCatalog } from '../../../workbench/app/localeCatalog';
 import type {
   AgentBackendPreference,
   AgentSession,
@@ -579,8 +580,9 @@ function ActivityFollow() {
 }
 
 const scenario = (nativeHost as unknown as { scenario: string }).scenario;
-mount(() =>
-  scenario === 'activity-follow' ? (
+mount(() => {
+  installWorkbenchLocaleCatalog();
+  return scenario === 'activity-follow' ? (
     <ActivityFollow />
   ) : scenario.startsWith('workspace-pages') ? (
     <WorkspacePages busy={scenario === 'workspace-pages-busy'} />
@@ -595,5 +597,5 @@ mount(() =>
     />
   ) : (
     <Consent />
-  ),
-);
+  );
+});

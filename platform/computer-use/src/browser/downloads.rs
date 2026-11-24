@@ -293,7 +293,7 @@ impl Tab {
             failed("Extension download notifications are unavailable for this browser provider")
         })?;
         let session_metadata = self
-            .session_metadata(BrowserCall::new(invocation, cancellation, Language::En))
+            .session_metadata(BrowserCall::new(invocation, cancellation, Language::EN))
             .await?;
         controller
             .arm(

@@ -39,6 +39,7 @@ maka-app-client.workspace = true
 maka-capabilities.workspace = true
 maka-event-log.workspace = true
 maka-host-runtime.workspace = true
+maka-i18n.workspace = true
 maka-plugin-core.workspace = true
 maka-packages.workspace = true
 maka-process.workspace = true

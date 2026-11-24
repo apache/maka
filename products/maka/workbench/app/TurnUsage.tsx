@@ -304,12 +304,10 @@ export function TurnUsage(props: {
           </If>
           <If when={reading().kind === 'ready' && attempts().length > 0}>
             <Text style={{ color: C.muted }}>
-              {tr(
-                attempts().length === 1
-                  ? '{count} main model request in this turn'
-                  : '{count} main model requests in this turn',
-                { count: formatCount(attempts().length) },
-              )}
+              {tr('turn.main_model_requests_count', {
+                count: attempts().length,
+                formatted: formatCount(attempts().length),
+              })}
             </Text>
             <Each of={counters()} key={(counter) => counter.key}>
               {(counter) => {

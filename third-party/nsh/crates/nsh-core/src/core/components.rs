@@ -1440,9 +1440,10 @@ impl<M: TextEngine> Core<M> {
     pub(super) fn apply_environment(&mut self, environment: Environment) {
         let _entered = self.components.runtime.enter();
         let changed = self.components.environment != environment;
+        let locale_changed = self.components.environment.locale != environment.locale;
         let language_changed = self.components.environment.idiom != environment.idiom
             || self.components.environment.os != environment.os
-            || self.components.environment.locale != environment.locale
+            || locale_changed
             || self.components.environment.locale_settings.languages
                 != environment.locale_settings.languages;
         let keyboard_moved =
@@ -1468,6 +1469,9 @@ impl<M: TextEngine> Core<M> {
         }
         if language_changed {
             self.localize_platform();
+        }
+        if locale_changed {
+            self.locale_changed();
         }
         // A main window that keeps its placement saves it as it changes.
         if let Some(state) = environment.window_state {

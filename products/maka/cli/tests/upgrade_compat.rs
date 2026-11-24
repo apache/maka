@@ -1270,6 +1270,32 @@ async fn verify_capsule(bin: &Path, capsule_dir: &Path) {
         );
 
         // Stage 3: Live continuation on upgraded State Root.
+        let lang_updated = call(
+            &client,
+            "settings",
+            "updateAssistantPreferences",
+            json!({
+                "expectedRevision": prefs["revision"],
+                "mutation": {
+                    "kind": "language",
+                    "preference": "zh-HK"
+                }
+            }),
+            Attachments::new(),
+        )
+        .await;
+        assert_eq!(lang_updated["kind"], "committed", "{lang_updated}");
+        let prefs_after = call(
+            &client,
+            "settings",
+            "assistantPreferences",
+            json!({}),
+            Attachments::new(),
+        )
+        .await;
+        assert_eq!(prefs_after["language"], "zh-HK", "{prefs_after}");
+        assert_eq!(prefs_after["resolvedLanguage"], "zh-HK", "{prefs_after}");
+
         let updated_conn = call(
             &client,
             "settings",

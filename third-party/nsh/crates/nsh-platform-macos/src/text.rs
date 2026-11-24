@@ -30,7 +30,7 @@ use objc2_core_text::{
     CTWritingDirection, kCTFontAttributeName, kCTFontCascadeListAttribute,
     kCTFontFamilyNameAttribute, kCTFontFeatureSettingsAttribute, kCTFontOpenTypeFeatureTag,
     kCTFontOpenTypeFeatureValue, kCTFontTraitsAttribute, kCTFontWeightTrait,
-    kCTForegroundColorFromContextAttributeName, kCTKernAttributeName,
+    kCTForegroundColorFromContextAttributeName, kCTKernAttributeName, kCTLanguageAttributeName,
     kCTParagraphStyleAttributeName, kCTRunDelegateAttributeName, kCTRunDelegateCurrentVersion,
     kCTUnderlineStyleAttributeName,
 };
@@ -568,6 +568,17 @@ impl CoreTextEngine {
             unsafe { kCTParagraphStyleAttributeName },
             paragraph.as_ref(),
         );
+        if let Some(locale) = text.locale {
+            let language = CFString::from_str(locale.as_str());
+            set(
+                CFRange {
+                    location: 0,
+                    length,
+                },
+                unsafe { kCTLanguageAttributeName },
+                language.as_ref(),
+            );
+        }
         for span in &text.spans {
             let range = CFRange {
                 location: span.start as CFIndex,
@@ -4706,5 +4717,68 @@ mod cut_lines {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod cjk_locale_shaping {
+    use super::*;
+    use objc2_core_graphics::{CGBitmapContextCreate, CGColorSpace, CGContext};
+
+    fn rasterize_line(tag: &str, sample: &str) -> Vec<u8> {
+        let engine = CoreTextEngine::default();
+        let mut text = AttributedText {
+            locale: nsh_core::platform::Locale::parse(tag),
+            ..Default::default()
+        };
+        text.push(sample, ResolvedTextStyle::default());
+        let attr = engine.attributed_string(&text, &nsh_core::AttachmentAlignments::default());
+        let line = unsafe { CTLine::with_attributed_string(attr.as_ref()) };
+        let width = 128usize;
+        let height = 32usize;
+        let mut pixels = vec![0u8; width * height];
+        let space = CGColorSpace::new_device_gray().expect("gray colorspace");
+        let ctx = unsafe {
+            CGBitmapContextCreate(
+                pixels.as_mut_ptr().cast(),
+                width,
+                height,
+                8,
+                width,
+                Some(&space),
+                0,
+            )
+        }
+        .expect("bitmap context");
+        CGContext::set_gray_fill_color(Some(&ctx), 1.0, 1.0);
+        CGContext::set_text_position(Some(&ctx), 4.0, 8.0);
+        unsafe { line.draw(&ctx) };
+        pixels
+    }
+
+    #[test]
+    fn cjk_locales_render_distinct_han_variant_glyph_bitmaps() {
+        let renders: Vec<(&str, Vec<u8>)> = ["zh-CN", "zh-TW", "zh-HK", "ja", "ko"]
+            .into_iter()
+            .map(|tag| {
+                let pixels = rasterize_line(tag, "直骨海刃");
+                assert!(
+                    pixels.iter().any(|&p| p > 0),
+                    "{tag} rendered an empty bitmap"
+                );
+                (tag, pixels)
+            })
+            .collect();
+        let by_tag = |target: &str| {
+            renders
+                .iter()
+                .find(|(t, _)| *t == target)
+                .map(|(_, p)| p.as_slice())
+                .unwrap()
+        };
+        assert_ne!(by_tag("zh-CN"), by_tag("zh-TW"));
+        assert_ne!(by_tag("zh-TW"), by_tag("zh-HK"));
+        assert_ne!(by_tag("zh-CN"), by_tag("ja"));
+        assert_ne!(by_tag("ja"), by_tag("ko"));
     }
 }

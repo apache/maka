@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { Clipboard, effect, computed, platform, signal, type JSX } from 'nsh';
+import { Clipboard, computed, platform, signal, type JSX } from 'nsh';
 import type { ApplicationHost } from 'maka/host';
 import type { UiEmbeddedViewProps, UiModule } from '../../../packages/plugin-sdk/src/workbench.js';
 import {
@@ -26,10 +26,11 @@ import {
   type QuickAction,
   type QuickToolInput,
 } from '../../../packages/plugin-sdk/src/workbench-views.js';
-import { currentLocale, tr } from '../../../products/maka/workbench/app/locale';
+import { localizedKeywords, tr } from '../../../products/maka/workbench/app/locale';
 import { search } from '../../shared/quick-search';
 
-const KEYWORDS = ['app', 'apps', '应用', '應用', 'Search applications', '搜索应用', '搜尋應用程式'];
+const keywords = () =>
+  localizedKeywords(['app', 'apps', 'Search applications'], 'launcher.keywords.applications');
 const applicationName = (path: string) => path.slice(path.lastIndexOf('/') + 1, -'.app'.length);
 
 function Applications(props: { input: QuickToolInput; host: ApplicationHost }) {
@@ -48,7 +49,7 @@ function Applications(props: { input: QuickToolInput; host: ApplicationHost }) {
     return icons().get(path);
   };
   const items = computed(() =>
-    search(installed(), input.query(), KEYWORDS, (path) => [applicationName(path)], true).map(
+    search(installed(), input.query(), keywords(), (path) => [applicationName(path)], true).map(
       ({ item: path, match }): QuickItem => ({
         id: path,
         title: applicationName(path),
@@ -108,13 +109,12 @@ function Applications(props: { input: QuickToolInput; host: ApplicationHost }) {
   );
   input.attach({
     items,
-    entries: () => [{ id: 'search', title: tr('Applications'), icon: 'app', keywords: KEYWORDS }],
+    entries: () => [{ id: 'search', title: tr('Applications'), icon: 'app', keywords: keywords() }],
   });
   return null;
 }
 
 export const activate: UiModule<JSX.Element>['activate'] = (context) => {
-  effect(() => currentLocale.set(context.locale()));
   return {
     exports: {
       tool: {

@@ -18,16 +18,13 @@
  */
 
 import * as sdk from '../../../packages/plugin-sdk/src/index.js';
-import { empty, one, native } from '../../shared/package.js';
+import { empty, one, native, localizePackage, localizedTitle } from '../../shared/package.js';
 
-export default {
+export default localizePackage({
   schemaVersion: 1,
   id: 'maka.agent.settings',
   displayName: 'Settings',
   description: 'Configure connections, models, preferences and installed UI.',
-  localizations: {
-    'zh-CN': { displayName: '设置', description: '配置连接、模型、偏好与已安装界面。' },
-  },
   application: {
     host: native(sdk.nativeImplementations.settings),
     ui: {
@@ -47,72 +44,48 @@ export default {
         Settings: { kind: 'view', contract: 'maka.settings' },
         general: {
           kind: 'settings',
-          title: { fallback: 'General', translations: { 'zh-CN': '常规', 'zh-TW': '一般' } },
+          title: localizedTitle('General'),
         },
         connections: {
           kind: 'settings',
-          title: {
-            fallback: 'Models',
-            translations: { 'zh-CN': '模型', 'zh-TW': '模型' },
-          },
+          title: localizedTitle('Models'),
         },
         subagents: {
           kind: 'settings',
-          title: {
-            fallback: 'Subagents',
-            translations: { 'zh-CN': '子 Agent', 'zh-TW': '子 Agent' },
-          },
+          title: localizedTitle('Subagents'),
         },
         skills: {
           kind: 'settings',
-          title: { fallback: 'Skills', translations: { 'zh-CN': '技能', 'zh-TW': '技能' } },
+          title: localizedTitle('Skills'),
         },
         mcp: {
           kind: 'settings',
-          title: {
-            fallback: 'MCP servers',
-            translations: { 'zh-CN': 'MCP 服务器', 'zh-TW': 'MCP 伺服器' },
-          },
+          title: localizedTitle('MCP servers'),
         },
         'web-search': {
           kind: 'settings',
-          title: {
-            fallback: 'Web search',
-            translations: { 'zh-CN': '网页搜索', 'zh-TW': '網頁搜尋' },
-          },
+          title: localizedTitle('Web search'),
         },
         network: {
           kind: 'settings',
-          title: { fallback: 'Network', translations: { 'zh-CN': '网络', 'zh-TW': '網路' } },
+          title: localizedTitle('Network'),
         },
         plugins: {
           kind: 'settings',
-          title: {
-            fallback: 'Installed plugins',
-            translations: { 'zh-CN': '已安装插件', 'zh-TW': '已安裝外掛' },
-          },
+          title: localizedTitle('Installed plugins'),
         },
         marketplace: {
           kind: 'settings',
-          title: {
-            fallback: 'Plugin marketplace',
-            translations: { 'zh-CN': '插件市场', 'zh-TW': '外掛市集' },
-          },
+          title: localizedTitle('Plugin marketplace'),
         },
         appearanceTextSize: {
           kind: 'command',
-          title: { fallback: 'Change text size', translations: { 'zh-CN': '更改文字大小' } },
+          title: localizedTitle('Change text size'),
         },
         uiScaleReset: {
           kind: 'command',
-          title: {
-            fallback: 'Reset interface scale to 100%',
-            translations: { 'zh-CN': '重置界面缩放为 100%', 'zh-TW': '重設介面縮放為 100%' },
-          },
-          description: {
-            fallback: 'Interface scale',
-            translations: { 'zh-CN': '界面缩放', 'zh-TW': '介面縮放' },
-          },
+          title: localizedTitle('Reset interface scale to 100%'),
+          description: localizedTitle('Interface scale'),
           order: 0,
           shortcut: 'mod+alt+0',
           trigger: 'reset-scale',
@@ -120,4 +93,4 @@ export default {
       },
     },
   },
-};
+});

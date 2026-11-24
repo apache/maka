@@ -53,11 +53,12 @@ fn main() {
         ),
     ] {
         println!("cargo:rerun-if-changed={entry}");
-        let module = maka_ui_build::compile_cached(
+        let module = maka_ui_build::compile_cached_with_locales(
             std::path::Path::new(entry),
             &output.join(name),
             Some(repo),
             &compiler,
+            true,
         )
         .expect("bundle shared UI surface");
         assert!(

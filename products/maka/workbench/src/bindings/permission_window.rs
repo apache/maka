@@ -112,6 +112,9 @@ pub(super) async fn open(
     let revision = preferences["revision"]
         .as_u64()
         .ok_or("The Host returned an invalid language preference revision")?;
+    let resolved_language = preferences
+        .get("resolvedLanguage")
+        .and_then(serde_json::Value::as_str);
     let captured_owner = owner.clone();
     let registry = registry(move || {
         Instance::new(ApplicationHost {
@@ -130,7 +133,7 @@ pub(super) async fn open(
         ),
         (
             "languagePreference".into(),
-            serde_json::json!({"preference": language, "revision": revision}),
+            serde_json::json!({"preference": language, "revision": revision, "resolvedLanguage": resolved_language}),
         ),
     ]));
     sender

@@ -44,7 +44,7 @@ import type {
   ComputerStageController,
   ComputerTarget,
 } from './computerStageController';
-import { computerText } from './computerText';
+import { tr } from '../../../../products/maka/workbench/app/locale';
 
 type Size = { width: number; height: number };
 const OFFSET_X = 18;
@@ -60,7 +60,6 @@ export function ComputerStage(props: {
   onPresent(target: ComputerTarget): void;
 }) {
   const stage = props.controller;
-  const label = computerText;
   const candidates = computed(() => stage.targets().filter((target) => props.frameSize(target.id)));
   const hovered = signal(false);
   const focused = signal(false);
@@ -182,7 +181,7 @@ export function ComputerStage(props: {
   };
   return (
     <View
-      accessibilityLabel={label('Computer')}
+      accessibilityLabel={tr('computer.title')}
       pan={{ x: offsetX, y: offsetY }}
       onPanEnd={(event) => {
         if (event.cancelled) {
@@ -347,12 +346,12 @@ export function ComputerStage(props: {
                 }}
               >
                 <Text style={{ fontSize: 11, color: error() ? C.warning : C.secondary }}>
-                  {label(
+                  {tr(
                     stage.hidden()
-                      ? 'Computer'
+                      ? 'computer.title'
                       : error()
-                        ? 'Live view unavailable'
-                        : 'Waiting for live frame…',
+                        ? 'computer.live_view_unavailable'
+                        : 'computer.waiting_for_live_frame',
                   )}
                 </Text>
                 <If when={!stage.hidden() && error()}>
@@ -364,7 +363,7 @@ export function ComputerStage(props: {
             </If>
             <If when={!stage.hidden() && error()}>
               <Button
-                accessibilityLabel={label('Retry live view')}
+                accessibilityLabel={tr('computer.retry_live_view')}
                 onPress={stage.retry}
                 style={iconButton}
                 hoverStyle={controlHoverStyle()}
@@ -387,7 +386,9 @@ export function ComputerStage(props: {
                 {stage.targets().find((target) => target.id === presented())?.title}
               </Text>
               <Button
-                accessibilityLabel={label(stage.pinned() ? 'Unpin target' : 'Pin target')}
+                accessibilityLabel={tr(
+                  stage.pinned() ? 'computer.unpin_target' : 'computer.pin_target',
+                )}
                 onPress={inputAction(stage.togglePin, null)}
                 style={iconButton}
                 hoverStyle={controlHoverStyle()}
@@ -397,7 +398,7 @@ export function ComputerStage(props: {
               </Button>
               <If when={stage.pinned() || stage.selected() !== stage.snapshot()?.activeTargetId}>
                 <Button
-                  accessibilityLabel={label('Follow agent')}
+                  accessibilityLabel={tr('computer.follow_agent')}
                   onPress={inputAction(stage.follow, null)}
                   style={iconButton}
                   hoverStyle={controlHoverStyle()}
@@ -408,7 +409,9 @@ export function ComputerStage(props: {
               </If>
             </If>
             <Button
-              accessibilityLabel={label(stage.hidden() ? 'Show live view' : 'Hide live view')}
+              accessibilityLabel={tr(
+                stage.hidden() ? 'computer.show_live_view' : 'computer.hide_live_view',
+              )}
               onPress={inputAction(() => stage.hidden.set(!stage.hidden()), null)}
               style={iconButton}
               hoverStyle={controlHoverStyle()}

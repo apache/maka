@@ -125,7 +125,8 @@ pub(crate) async fn read(
     let language = snapshot
         .policy
         .language
-        .unwrap_or(configured_locale)
+        .as_ref()
+        .unwrap_or(&configured_locale)
         .resolve(native_language);
     super::connections::encode(Preferences {
         default_prediction_prompt:

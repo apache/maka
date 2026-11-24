@@ -905,6 +905,10 @@ impl TextEngine for PangoTextEngine {
             attachments.push((start as u32, top.0));
             attachment_extents.push((a.index, a.width.0));
         }
+        if let Some(locale) = text.locale {
+            let lang = pango::Language::from_string(locale.as_str());
+            attrs.insert(pango::AttrLanguage::new(&lang));
+        }
         layout.set_attributes(Some(&attrs));
         natural_line_heights(&layout, &attrs, s, &natural, &placeholders);
         let flush = match alignment {

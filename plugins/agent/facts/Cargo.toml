@@ -26,6 +26,7 @@ publish.workspace = true
 bytes = "1.12.1"
 maka-provider-protocol.workspace = true
 hex.workspace = true
+maka-i18n.workspace = true
 maka-plugin-core.workspace = true
 maka-sandbox.workspace = true
 base64 = "0.23.1"
@@ -40,6 +41,9 @@ serde_json.workspace = true
 thiserror.workspace = true
 tokio-util.workspace = true
 uuid.workspace = true
+
+[build-dependencies]
+maka-i18n-build.workspace = true
 
 [dev-dependencies]
 # The maka binary enables this through rolldown; tests must decode the same way.

@@ -292,7 +292,7 @@ async fn source_request_bytes(messages: &[crate::prompt::Message]) -> Vec<u8> {
         body_overlay: None,
     };
     let encoding =
-        WireEncoding::new(Language::En, &provider, &serde_json::Value::Null, &[]).unwrap();
+        WireEncoding::new(Language::EN, &provider, &serde_json::Value::Null, &[]).unwrap();
     let resources = ModelPreparationResources::new(PreparationPolicy {
         staging_bytes: 1024 * 1024,
         resident_bytes: 1024 * 1024,

@@ -126,30 +126,31 @@ impl ToolPreparer for Scheduler {
             use maka_agent_facts::display::Text;
             let title = match &input {
                 Input::Create { title, .. } => {
-                    let (en, zh, tw) = ("Create automation", "创建自动化", "建立自動化");
                     if let Some(title) = Text::single_line(title) {
                         let title = title.fallback;
-                        Text::localized(
-                            &format!("{en} · {title}"),
-                            &format!("{zh} · {title}"),
-                            &format!("{tw} · {title}"),
-                        )
+                        Text::for_locales(|locale| {
+                            maka_agent_facts::i18n::tool_title::create_automation_titled(
+                                locale, &title,
+                            )
+                        })
                     } else {
-                        Text::localized(en, zh, tw)
+                        Text::for_locales(|locale| {
+                            maka_agent_facts::i18n::tool_title::create_automation(locale).to_owned()
+                        })
                     }
                 }
-                Input::List { .. } => {
-                    Text::localized("List automations", "列出自动化", "列出自動化")
-                }
-                Input::Pause { .. } => {
-                    Text::localized("Pause automation", "暂停自动化", "暫停自動化")
-                }
-                Input::Resume { .. } => {
-                    Text::localized("Resume automation", "恢复自动化", "恢復自動化")
-                }
-                Input::Delete { .. } => {
-                    Text::localized("Delete automation", "删除自动化", "刪除自動化")
-                }
+                Input::List { .. } => Text::for_locales(|locale| {
+                    maka_agent_facts::i18n::tool_title::list_automations(locale).to_owned()
+                }),
+                Input::Pause { .. } => Text::for_locales(|locale| {
+                    maka_agent_facts::i18n::tool_title::pause_automation(locale).to_owned()
+                }),
+                Input::Resume { .. } => Text::for_locales(|locale| {
+                    maka_agent_facts::i18n::tool_title::resume_automation(locale).to_owned()
+                }),
+                Input::Delete { .. } => Text::for_locales(|locale| {
+                    maka_agent_facts::i18n::tool_title::delete_automation(locale).to_owned()
+                }),
             };
             Ok(PreparedEffect::new(move |cancellation| {
                 Box::pin(async move {

@@ -454,9 +454,13 @@ export function RoomComposer(props: {
     const rows: MentionChoice[] = [];
 
     const unmentionedMembers = activeMembers.filter((m) => !already.has(m.sessionId));
+    const allKeywords = tr('room.mention_all_keywords')
+      .split(',')
+      .map((item) => item.trim().toLowerCase())
+      .filter(Boolean);
     if (
       unmentionedMembers.length >= 2 &&
-      (!needle || 'all'.startsWith(needle) || '全体'.includes(needle) || '全體'.includes(needle))
+      (!needle || 'all'.startsWith(needle) || allKeywords.some((kw) => kw.includes(needle)))
     ) {
       rows.push({
         kind: 'all',

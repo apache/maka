@@ -25,6 +25,7 @@ import type {
 } from '../../../../../packages/plugin-sdk/src/index.js';
 import { createToolSource, OriginalToolSource } from '../../app/ToolSource';
 import type { Host } from '../../app/host';
+import { installWorkbenchLocaleCatalog } from '../../app/localeCatalog';
 
 const through = 20;
 const position = {
@@ -96,9 +97,12 @@ function originalArguments(sessionId: string) {
   );
 }
 
-mount(() => (
-  <View>
-    <OriginalToolSource source={originalArguments('session')} label="Original arguments" />
-    <OriginalToolSource source={originalArguments('mismatched')} label="Mismatched tool" />
-  </View>
-));
+mount(() => {
+  installWorkbenchLocaleCatalog();
+  return (
+    <View>
+      <OriginalToolSource source={originalArguments('session')} label="Original arguments" />
+      <OriginalToolSource source={originalArguments('mismatched')} label="Mismatched tool" />
+    </View>
+  );
+});

@@ -744,31 +744,62 @@ impl RecipeCursor<ContentRecipe> for NotificationCursor {
         })
     }
 }
+fn generated_owned(value: String, owned: &mut usize) -> Result<TextSource, ModelError> {
+    *owned = owned
+        .checked_add(value.capacity())
+        .ok_or_else(|| ModelError::Adapter("generated text allocation size overflow".into()))?;
+    Ok(recipe::generated::text(value))
+}
+
+fn splice_template(
+    template: &str,
+    slots: &[(&str, TextSource)],
+    owned: &mut usize,
+) -> Result<Vec<TextSource>, ModelError> {
+    let mut parts = Vec::new();
+    let mut rest = template;
+    while !rest.is_empty() {
+        let next = slots
+            .iter()
+            .filter_map(|(token, source)| rest.find(token).map(|pos| (pos, *token, source)))
+            .min_by_key(|(pos, _, _)| *pos);
+        match next {
+            Some((pos, token, source)) => {
+                if pos > 0 {
+                    parts.push(generated_owned(rest[..pos].to_owned(), owned)?);
+                }
+                parts.push(source.clone());
+                rest = &rest[pos + token.len()..];
+            }
+            None => {
+                parts.push(generated_owned(rest.to_owned(), owned)?);
+                break;
+            }
+        }
+    }
+    Ok(parts)
+}
+
 pub(super) fn notification_content(
     result: ToolResultRecipe,
     language: Language,
     budget: Arc<dyn SourceBudget>,
     owned: &mut usize,
 ) -> Result<Arc<dyn RecipeSource<ContentRecipe>>, ModelError> {
-    let (prefix, suffix) = match language {
-        Language::En => ("[Notification from tool ", "]\n"),
-        Language::ZhCn => ("[来自工具 ", " 的通知]\n"),
-        Language::ZhTw => ("[來自工具 ", " 的通知]\n"),
-    };
+    const ID_SLOT: &str = "\0ID\0";
     let failed = matches!(
         &result.output,
         ToolOutputRecipe::ErrorText(_) | ToolOutputRecipe::ErrorJson(_)
     );
-    let head = combined(
-        vec![
-            generated(prefix),
-            result.tool_call_id,
-            generated(suffix),
-            generated(if failed { "Error: " } else { "" }),
-        ],
-        budget,
-        owned,
-    )?;
+    let mut template = maka_agent_facts::i18n::wire::tool_notification(language, ID_SLOT);
+    template.push('\n');
+    let mut head_parts = splice_template(&template, &[(ID_SLOT, result.tool_call_id)], owned)?;
+    if failed {
+        head_parts.push(generated(maka_agent_facts::i18n::wire::tool_error_prefix(
+            language,
+        )));
+    }
+    let head = combined(head_parts, budget, owned)?;
     let output = match result.output {
         ToolOutputRecipe::Text(text) | ToolOutputRecipe::ErrorText(text) => {
             *owned += parts_metadata::<ContentRecipe>(1)?;
@@ -831,43 +862,15 @@ async fn audio_fallback(
             }
         },
     };
+    const MEDIA_SLOT: &str = "\0MEDIA\0";
     let digits = length
         .div_ceil(3)
         .checked_mul(4)
         .ok_or_else(|| ModelError::Adapter("base64 media length overflow".into()))?
         .to_string();
-    *owned = owned
-        .checked_add(digits.capacity())
-        .ok_or_else(|| ModelError::Adapter("generated text allocation size overflow".into()))?;
-    let length = recipe::generated::text(digits);
-    let (prefix, middle, suffix) = match language {
-        Language::En => (
-            "Audio input (",
-            ", ",
-            " base64 characters) is not supported by this model adapter. The audio remains in the tool evidence.",
-        ),
-        Language::ZhCn => (
-            "此模型适配器不支持音频输入（",
-            "，",
-            " 个 base64 字符）。音频仍保留在工具证据中。",
-        ),
-        Language::ZhTw => (
-            "此模型介接器不支援音訊輸入（",
-            "，",
-            " 個 base64 字元）。音訊仍保留在工具證據中。",
-        ),
-    };
-    Ok(text_part(combined(
-        vec![
-            generated(prefix),
-            media.media_type,
-            generated(middle),
-            length,
-            generated(suffix),
-        ],
-        budget,
-        owned,
-    )?))
+    let rendered = maka_agent_facts::i18n::wire::unsupported_audio(language, &digits, MEDIA_SLOT);
+    let pieces = splice_template(&rendered, &[(MEDIA_SLOT, media.media_type)], owned)?;
+    Ok(text_part(combined(pieces, budget, owned)?))
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Projection {
@@ -1138,55 +1141,30 @@ impl Compiler {
                                     | source::MediaKind::AudioMp3
                                     | source::MediaKind::AudioOther
                             );
-                            let kind = match (self.language, audio) {
-                                (Language::En, true) => "Audio",
-                                (Language::En, false) => "Image",
-                                (Language::ZhCn, true) => "音频",
-                                (Language::ZhCn, false) => "图像",
-                                (Language::ZhTw, true) => "音訊",
-                                (Language::ZhTw, false) => "影像",
+                            let kind = if audio {
+                                maka_agent_facts::i18n::wire::media_kind_audio(self.language)
+                            } else {
+                                maka_agent_facts::i18n::wire::media_kind_image(self.language)
                             };
                             if !labelled {
-                                let label = match self.language {
-                                    Language::En => combined(
-                                        vec![
-                                            generated(kind),
-                                            generated(" from tool "),
-                                            result.tool_name.clone(),
-                                            generated(" ("),
-                                            result.tool_call_id.clone(),
-                                            generated("):"),
-                                        ],
-                                        budget.clone(),
-                                        &mut self.owned_bytes,
-                                    )?,
-                                    Language::ZhCn => combined(
-                                        vec![
-                                            generated("来自工具 "),
-                                            result.tool_name.clone(),
-                                            generated("（"),
-                                            result.tool_call_id.clone(),
-                                            generated("）的"),
-                                            generated(kind),
-                                            generated("："),
-                                        ],
-                                        budget.clone(),
-                                        &mut self.owned_bytes,
-                                    )?,
-                                    Language::ZhTw => combined(
-                                        vec![
-                                            generated("來自工具 "),
-                                            result.tool_name.clone(),
-                                            generated("（"),
-                                            result.tool_call_id.clone(),
-                                            generated("）的"),
-                                            generated(kind),
-                                            generated("："),
-                                        ],
-                                        budget.clone(),
-                                        &mut self.owned_bytes,
-                                    )?,
-                                };
+                                const ID_SLOT: &str = "\0ID\0";
+                                const NAME_SLOT: &str = "\0NAME\0";
+                                let rendered = maka_agent_facts::i18n::wire::media_from_tool(
+                                    self.language,
+                                    ID_SLOT,
+                                    kind,
+                                    NAME_SLOT,
+                                );
+                                let label_parts = splice_template(
+                                    &rendered,
+                                    &[
+                                        (NAME_SLOT, result.tool_name.clone()),
+                                        (ID_SLOT, result.tool_call_id.clone()),
+                                    ],
+                                    &mut self.owned_bytes,
+                                )?;
+                                let label =
+                                    combined(label_parts, budget.clone(), &mut self.owned_bytes)?;
                                 self.media.push(text_part(label));
                                 labelled = true;
                             }
@@ -1194,16 +1172,14 @@ impl Compiler {
                                 media,
                                 provider_options: media_options,
                             });
-                            let suffix = match self.language {
-                                Language::En => " supplied below.",
-                                Language::ZhCn => "见下方。",
-                                Language::ZhTw => "見下方。",
-                            };
-                            projected.push(text_part(combined(
-                                vec![generated(kind), generated(suffix)],
-                                budget.clone(),
+                            let supplied = generated_owned(
+                                maka_agent_facts::i18n::wire::media_supplied_below(
+                                    self.language,
+                                    kind,
+                                ),
                                 &mut self.owned_bytes,
-                            )?));
+                            )?;
+                            projected.push(text_part(supplied));
                         } else {
                             projected.push(ContentRecipe::Media {
                                 media,

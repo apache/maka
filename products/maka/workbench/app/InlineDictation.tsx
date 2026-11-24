@@ -23,7 +23,7 @@ import { signal, View, Text } from 'nsh';
 import { Button } from 'nsh/base';
 import { Icon } from './Icon';
 import { LoadingIndicator } from './Loading';
-import { currentLocale, tr } from './locale';
+import { tr, type MessageKey } from './locale';
 import { C, composerIconSlot, textTooltip } from './ui';
 import type { ComposerEditor } from './ComposerEditor';
 import { dictateIntoDraft, speechEndpoint } from './composerDictation';
@@ -40,22 +40,39 @@ type Attachment = {
 type Phase = 'idle' | 'starting' | 'recording' | 'paused' | 'upload' | 'retry' | 'insert';
 const sessions = new Map<string, ReturnType<typeof controller>>();
 
-type Recording = Pick<
-  ReturnType<typeof host.messageDictation>,
-  'start' | 'level' | 'cancel' | 'finish'
->;
+const NATIVE_DICTATION_ERROR_KEYS = {
+  'dictation.error.selected_microphone_unavailable':
+    'dictation.error.selected_microphone_unavailable',
+  'dictation.error.microphone_start_failed': 'dictation.error.microphone_start_failed',
+  'dictation.error.microphone_permission_denied': 'dictation.error.microphone_permission_denied',
+  'dictation.error.already_active': 'dictation.error.already_active',
+  'dictation.error.chat_window_required': 'dictation.error.chat_window_required',
+  'dictation.error.app_bundle_required': 'dictation.error.app_bundle_required',
+  'dictation.error.model_connection_required': 'dictation.error.model_connection_required',
+  'dictation.error.off': 'dictation.error.off',
+  'dictation.error.macos_required': 'dictation.error.macos_required',
+  'dictation.error.no_audio_recorded': 'dictation.error.no_audio_recorded',
+} as const satisfies Record<string, MessageKey>;
+
+function localizeDictationError(reason: unknown): unknown {
+  const raw = reason instanceof Error ? reason.message : typeof reason === 'string' ? reason : null;
+  if (raw && raw in NATIVE_DICTATION_ERROR_KEYS) {
+    return tr(NATIVE_DICTATION_ERROR_KEYS[raw as keyof typeof NATIVE_DICTATION_ERROR_KEYS]);
+  }
+  return reason;
+}
+
+type Recording = Pick<ReturnType<typeof host.messageDictation>, 'level' | 'cancel' | 'finish'> & {
+  start(): Promise<boolean>;
+};
 export function attachDictation(
   id: string,
   attachment: Attachment,
   open: () => Recording = () => {
     const native = host.messageDictation();
     return {
-      start: async (chinese) =>
-        native.start(
-          chinese,
-          await dictationPreferences.recordingConnection(),
-          attachment.quickLauncher,
-        ),
+      start: async () =>
+        native.start(await dictationPreferences.recordingConnection(), attachment.quickLauncher),
       level: () => native.level(),
       cancel: () => native.cancel(),
       finish: () => native.finish(),
@@ -122,7 +139,7 @@ function controller(id: string, open: () => Recording) {
       range = { ...view.selection() };
       phase.set('starting');
       try {
-        const started = await native.start(currentLocale().startsWith('zh'));
+        const started = await native.start();
         if (recorder !== native) return;
         if (!started) {
           cancel();
@@ -162,7 +179,7 @@ function controller(id: string, open: () => Recording) {
       } catch (reason) {
         if (recorder === native) {
           cancel();
-          view?.error(reason);
+          view?.error(localizeDictationError(reason));
         }
       }
     },
@@ -202,7 +219,8 @@ function controller(id: string, open: () => Recording) {
         phase.set('insert');
       } catch (reason) {
         if (recorder === native) {
-          error.set(String(reason));
+          const localized = localizeDictationError(reason);
+          error.set(typeof localized === 'string' ? localized : String(localized));
           phase.set('retry');
         }
       }

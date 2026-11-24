@@ -23,8 +23,10 @@ import { attachDictation, DictationBar } from '../../app/InlineDictation';
 
 import { composerIconSlot } from '../../app/ui';
 import { Icon } from '../../app/Icon';
+import { installWorkbenchLocaleCatalog } from '../../app/localeCatalog';
 
 mount(() => {
+  installWorkbenchLocaleCatalog();
   const draft = signal('周五开会');
   const sent = signal('');
   let release: (() => void) | undefined;

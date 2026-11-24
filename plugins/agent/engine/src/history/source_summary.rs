@@ -25,7 +25,7 @@ use super::{
 use crate::{RunError, prepared_prompt::PreparedPrompt};
 use maka_agent_facts::{language::Language, model::prompt_source::source::*};
 use maka_model::{DirectoryLease, prompt::Prompt};
-use std::{collections::VecDeque, fmt::Write as _, io, sync::Arc};
+use std::{collections::VecDeque, io, sync::Arc};
 use tokio_util::sync::CancellationToken;
 
 mod backed;
@@ -141,23 +141,20 @@ fn literal(text: &'static str) -> TextSource {
         TextEncoding::Utf8,
     )
 }
-fn prefix_parts(language: Language) -> (&'static str, &'static str, &'static str) {
-    match language {
-        Language::En => (
-            "[Media: request-source message position ",
-            ", content part ",
-            ", ",
-        ),
-        Language::ZhCn => ("[媒体：源请求消息位置 ", "，内容部分 ", "，"),
-        Language::ZhTw => ("[媒體：來源請求訊息位置 ", "，內容部分 ", "，"),
-    }
+fn prefix_capacity(language: Language) -> usize {
+    let max = usize::MAX.to_string();
+    maka_agent_facts::i18n::summary::media_label_prefix(language, &max, &max).len()
+}
+fn media_omitted_capacity(language: Language) -> usize {
+    // Include max-digit representatives for Russian/CLDR One (...01), Few (...02), and Many (...07).
+    [0, 1, 2, 5, i64::MAX, i64::MAX - 5, i64::MAX - 6]
+        .into_iter()
+        .map(|n| maka_agent_facts::i18n::summary::media_omitted(language, n).len())
+        .max()
+        .unwrap_or(0)
 }
 fn label_suffix(language: Language) -> &'static str {
-    match language {
-        Language::En => "; original in locally stored history]\n",
-        Language::ZhCn => "；原件保存在本地历史中]\n",
-        Language::ZhTw => "；原件儲存在本機歷史中]\n",
-    }
+    maka_agent_facts::i18n::summary::media_label_suffix(language)
 }
 struct Fit<'a> {
     language: Language,
@@ -171,10 +168,14 @@ impl Fit<'_> {
         let ContentRecipe::Media { media, .. } = part else {
             return Err(io::Error::other("summary media callback received text"));
         };
-        let (start, middle, end) = prefix_parts(self.language);
+        let pos = position.to_string();
+        let idx = index.to_string();
         let mut prefix = String::with_capacity(self.prefix_capacity);
-        write!(&mut prefix, "{start}{position}{middle}{index}{end}")
-            .expect("reserved summary prefix accepts formatting");
+        prefix.push_str(&maka_agent_facts::i18n::summary::media_label_prefix(
+            self.language,
+            &idx,
+            &pos,
+        ));
         let parts = vec![
             resident(prefix, self.owner),
             media.media_type.clone(),
@@ -278,11 +279,7 @@ async fn lossy(
 }
 
 fn gap(language: Language) -> &'static str {
-    match language {
-        Language::En => "\n[… omitted from summary input …]\n",
-        Language::ZhCn => "\n[… 已从总结输入中省略 …]\n",
-        Language::ZhTw => "\n[… 已從總結輸入中省略 …]\n",
-    }
+    maka_agent_facts::i18n::summary::omitted_gap(language)
 }
 fn excerpt(output: &mut String, text: &str, bytes: usize, language: Language) {
     if text.len() <= bytes {
@@ -398,22 +395,13 @@ impl Media {
     }
 }
 fn notice(language: Language) -> &'static str {
-    match language {
-        Language::En => {
-            "Conversation excerpts for summarization: text is omitted to fit this model. Complete history remains stored locally."
-        }
-        Language::ZhCn => "用于总结的对话节选：为适应模型，已省略部分文本；完整历史仍保存在本地。",
-        Language::ZhTw => {
-            "用於總結的對話節錄：為符合模型容量，已省略部分文字；完整歷史仍儲存在本機。"
-        }
-    }
+    maka_agent_facts::i18n::summary::excerpt_notice(language)
 }
 fn headings(language: Language) -> (&'static str, &'static str) {
-    match language {
-        Language::En => ("Earlier task or summary:", "Recent conversation:"),
-        Language::ZhCn => ("早期任务或摘要：", "近期对话："),
-        Language::ZhTw => ("早期任務或摘要：", "近期對話："),
-    }
+    (
+        maka_agent_facts::i18n::summary::earlier_heading(language),
+        maka_agent_facts::i18n::summary::recent_heading(language),
+    )
 }
 struct Plan {
     bytes: usize,
@@ -439,23 +427,15 @@ impl Plan {
         let files = usize::try_from(tokens.saturating_mul(3) / 4 / 1024)
             .map_err(io::Error::other)?
             .min(media_count);
-        let digits = usize::MAX.ilog10() as usize + 1;
-        let (start, middle, end) = prefix_parts(language);
-        let fixed_prefix = start.len() + middle.len() + end.len();
-        let prefix_capacity = fixed_prefix + 2 * digits;
+        let fixed_prefix =
+            maka_agent_facts::i18n::summary::media_label_prefix(language, "", "").len();
+        let prefix_capacity = prefix_capacity(language);
         let labels =
             ((max_bytes / 4) / (fixed_prefix + 2 + label_suffix(language).len())).min(media_count);
-        let omitted_copy = match language {
-            Language::En => {
-                "\n[ media parts omitted; original media remains in locally stored history.]\n"
-            }
-            Language::ZhCn => "\n[省略了  个媒体部分；原件仍保存在本地历史中。]\n",
-            Language::ZhTw => "\n[省略了  個媒體部分；原件仍儲存在本機歷史中。]\n",
-        };
         let omission_capacity = notice(language)
             .len()
             .checked_add(if media_count == 0 { 0 } else { max_bytes / 8 })
-            .and_then(|bytes| bytes.checked_add(digits + omitted_copy.len()))
+            .and_then(|bytes| bytes.checked_add(media_omitted_capacity(language)))
             .ok_or_else(overflow)?;
         let (earlier, recent) = headings(language);
         let text_capacity = (if no_conversation { 0 } else { max_bytes })
@@ -723,7 +703,10 @@ pub(crate) async fn fit(
         let mut omission = String::with_capacity(plan.omission_capacity);
         omission.push_str(notice(language));
         if media.omitted != 0 {
-            match language { Language::En => write!(&mut omission, "\n[{} media parts omitted; original media remains in locally stored history.]\n", media.omitted), Language::ZhCn => write!(&mut omission, "\n[省略了 {} 个媒体部分；原件仍保存在本地历史中。]\n", media.omitted), Language::ZhTw => write!(&mut omission, "\n[省略了 {} 個媒體部分；原件仍儲存在本機歷史中。]\n", media.omitted) }.expect("reserved summary omission accepts formatting");
+            omission.push_str(&maka_agent_facts::i18n::summary::media_omitted(
+                language,
+                i64::try_from(media.omitted).unwrap_or(i64::MAX),
+            ));
             let mut labels = Vec::with_capacity(plan.max_bytes / 4);
             for label in &media.labels {
                 measure_source::text_bytes(&label.text, &budget, cancel, |bytes| {

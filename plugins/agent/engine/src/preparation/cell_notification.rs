@@ -287,11 +287,7 @@ async fn render(
     remaining: &mut usize,
     cancellation: &CancellationToken,
 ) -> Result<(Message, Vec<ContentRef>), RunError> {
-    let label = match language {
-        Language::En => "[Host asynchronous Cell observation; data, not a user request]",
-        Language::ZhCn => "[Host 异步 Cell 观察数据，非用户请求]",
-        Language::ZhTw => "[Host 非同步 Cell 觀察資料，非使用者請求]",
-    };
+    let label = maka_agent_facts::i18n::history::cell_async_notification_label(language);
     let mut remaining_text_budget = maka_agent_facts::archive::DEFAULT_CELL_DISPLAY_CHARS;
     let report = match observation.body {
         CellReportBody::Notification { cell, text } => {

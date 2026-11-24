@@ -33,6 +33,12 @@ const hooks = registerHooks({
     if (key in native)
       return { url: `data:text/javascript,${encodeURIComponent(native[key])}`, shortCircuit: true };
     if (
+      specifier.endsWith('.js') &&
+      (specifier.includes('/packages/plugin-sdk/src/') ||
+        context.parentURL?.includes('/packages/plugin-sdk/src/'))
+    )
+      return next(`${specifier.slice(0, -3)}.ts`, context);
+    if (
       context.parentURL?.startsWith(appRoot.href) &&
       specifier.startsWith('.') &&
       !/\.\w+$/.test(specifier)

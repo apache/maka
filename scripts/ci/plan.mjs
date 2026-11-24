@@ -29,6 +29,7 @@ const shared = [
   '.config',
   '.github/workflows',
   '.github/actions',
+  'locales.manifest.json',
   'package.json',
   'package-lock.json',
   'justfile',

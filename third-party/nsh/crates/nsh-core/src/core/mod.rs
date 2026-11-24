@@ -2708,6 +2708,29 @@ impl<M: TextEngine> Core<M> {
         }
     }
 
+    /// The active locale changed: rebuild every text and input block's
+    /// AttributedText and InputConfig with the new locale so platform text
+    /// engines re-shape locale-dependent glyphs (such as CJK Han variants).
+    pub(super) fn locale_changed(&mut self) {
+        self.fonts_changed();
+        let blocks: Vec<(Key, Kind)> = self
+            .nodes
+            .iter()
+            .filter(|(_, n)| {
+                matches!(n.kind, Kind::Text | Kind::Input) && !n.inline && n.layout.is_some()
+            })
+            .map(|(k, n)| (k as Key, n.kind))
+            .collect();
+        for (key, kind) in blocks {
+            if kind == Kind::Text {
+                self.mark(key, dirty::TEXT_BUILD);
+            } else {
+                self.measure_input(key);
+                self.mark(key, dirty::INPUT);
+            }
+        }
+    }
+
     /// The platform's views must get everything again, as new views do, and
     /// text is measured again: the unit the platform converted the values
     /// with changed (Android's density). The views stay, scrolled where they
@@ -4697,6 +4720,7 @@ impl<M: TextEngine> Core<M> {
         let multiline = node.input.as_ref().is_some_and(|i| i.config.multiline);
         let mut text = AttributedText {
             max_lines: if multiline { 0 } else { 1 },
+            locale: Some(self.components.environment.locale),
             ..AttributedText::default()
         };
         let style = scaled(
@@ -8727,6 +8751,7 @@ impl<M: TextEngine> Core<M> {
                         node.rtl && !node.text_style.text_align_physical,
                     );
                     config.rtl = node.text_style.writing_direction.unwrap_or(node.rtl);
+                    config.locale = Some(self.components.environment.locale);
                     // A built-in bar takes the indicator's place.
                     config.scrollbar_visible =
                         input.scrollbar != crate::ScrollbarSetting::Hidden && input.bar.is_none();
@@ -8989,6 +9014,7 @@ impl<M: TextEngine> Core<M> {
             align: directed_align(align, node.rtl && !physical),
             writing_direction: node.text_style.writing_direction,
             rtl: node.rtl,
+            locale: Some(self.components.environment.locale),
             max_lines,
             ellipsize,
             // A line clamp already keeps lines from wrapping past it, and
@@ -12515,6 +12541,7 @@ fn min_content_width<M: TextEngine>(
             let mut part = AttributedText {
                 no_wrap: true,
                 rtl: text.rtl,
+                locale: text.locale,
                 writing_direction: text.writing_direction,
                 ..Default::default()
             };

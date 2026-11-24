@@ -24,6 +24,24 @@ export { contracts } from './contracts.js';
 export { configurations } from './configurations.js';
 export type * from './workbench.js';
 export { defineUiViewContract } from './workbench.js';
+export {
+  SUPPORTED_LOCALES,
+  createI18n,
+  formatMessage,
+  negotiateLocale,
+  negotiateSingleLocale,
+  normalizeLocaleTag,
+  pluralCategory,
+  resolveDisplayText,
+  resolveLocale,
+  resolveLocalizedPresentation,
+  type LocaleCatalogBundle,
+  type LocaleMessages,
+  type PartialLocaleMessages,
+  type PluralCategory,
+  type SupportedLocaleInfo,
+  type SupportedLocaleTag,
+} from './i18n.js';
 
 import type {
   HostRequest,
