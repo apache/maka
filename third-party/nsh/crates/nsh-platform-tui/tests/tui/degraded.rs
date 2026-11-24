@@ -149,6 +149,94 @@ fn at_sixteen_colors_focus_is_reversed_in_the_accent_and_a_hover_is_gray() {
     );
 }
 
+/// Two filled buttons (the standard colors' gray, the fallback for a box
+/// the layout makes a surface), the first chosen: the other takes the
+/// pointer's hover and the keys' focus.
+const FILLED: &str = r##"
+    import { mount, View, Text } from "nsh";
+    import { Button } from "nsh/base";
+    mount(() => <View style={{ gap: 16 }}>
+        <View style={{ flexDirection: "row", gap: 16 }}>
+            <Button selected={true} onPress={() => {}}
+                style={{ backgroundColor: "#3f3f46", paddingHorizontal: 8 }}>
+                <Text>Chosen</Text></Button>
+            <Button onPress={() => {}}
+                style={{ backgroundColor: "#3f3f46", paddingHorizontal: 8 }}>
+                <Text>Filled</Text></Button>
+        </View>
+        <Text>ready</Text>
+    </View>);
+"##;
+
+#[test]
+fn without_the_terminals_colors_a_chosen_or_hovered_row_is_not_a_gray_band() {
+    for depth in [ColorDepth::TrueColor, ColorDepth::Ansi256] {
+        let code = nsh_bundler::compile_module("App.tsx", FILLED, &[]).unwrap();
+        let (mut view, rx) = surface_at(depth);
+        let mut terminal = Terminal::new(TestBackend::new(40, 6)).unwrap();
+        view.load(Bundle::source(code)).unwrap();
+        draw_until(&mut view, &mut terminal, &rx, "ready");
+        // The chosen button is reverse video on the terminal's own ground:
+        // its fallback fill would be a band its label fades into.
+        let buffer = terminal.backend().buffer();
+        let (x, y) = at(buffer, "Chosen");
+        for at in [x - 1, x] {
+            let cell = &buffer[(at, y)];
+            assert_eq!(cell.bg, Color::Reset, "{depth:?}: the chosen row at {at}");
+            assert!(
+                cell.modifier.contains(Modifier::REVERSED),
+                "{depth:?}: reversed at {at}"
+            );
+            assert!(
+                !cell.modifier.contains(Modifier::DIM),
+                "{depth:?}: its label reads at {at}"
+            );
+        }
+        // What the app declares stays: the chosen button is selected to a
+        // screen reader.
+        let selected: Vec<_> = view
+            .accessibility_snapshot()
+            .into_iter()
+            .filter(|node| node.state.selected)
+            .collect();
+        assert_eq!(selected.len(), 1, "{depth:?}: one chosen button");
+        // The other one keeps its fill at rest.
+        let (fx, fy) = at(buffer, "Filled");
+        assert_eq!(buffer[(fx - 1, fy)].bg, Color::DarkGray, "{depth:?}");
+        assert!(!buffer[(fx, fy)].modifier.contains(Modifier::REVERSED));
+        // Hovered, its ink is the accent: no band is mixed from colors the
+        // terminal did not give, and the accent reads on its own fill.
+        view.handle(mouse(MouseKind::Move, fx, fy));
+        draw_while(&mut view, &mut terminal, &rx, |buffer| {
+            buffer[(fx, fy)].fg == Color::Blue
+        });
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(fx, fy)].bg, Color::DarkGray, "{depth:?}: its fill");
+        assert!(!buffer[(fx, fy)].modifier.contains(Modifier::REVERSED));
+        // The keys on it: reversed in the accent, its fill dropped with it.
+        view.handle(mouse(MouseKind::Move, 39, 5));
+        draw_while(&mut view, &mut terminal, &rx, |buffer| {
+            buffer[(fx, fy)].fg != Color::Blue
+        });
+        view.handle(tab());
+        view.handle(tab());
+        draw_while(&mut view, &mut terminal, &rx, |buffer| {
+            buffer[(fx, fy)].modifier.contains(Modifier::REVERSED)
+        });
+        let buffer = terminal.backend().buffer();
+        let focused = &buffer[(fx, fy)];
+        assert_eq!(focused.fg, Color::Blue, "{depth:?}: the accent's reverse");
+        assert_eq!(focused.bg, Color::Reset, "{depth:?}: no band");
+        assert_eq!(buffer[(fx - 1, fy)].bg, Color::Reset, "{depth:?}");
+        // And the chosen button is still chosen.
+        assert!(
+            buffer[at(buffer, "Chosen")]
+                .modifier
+                .contains(Modifier::REVERSED)
+        );
+    }
+}
+
 #[test]
 fn a_disabled_control_is_struck_through_where_dim_is_the_only_gray() {
     for depth in [ColorDepth::Ansi16, ColorDepth::Monochrome] {

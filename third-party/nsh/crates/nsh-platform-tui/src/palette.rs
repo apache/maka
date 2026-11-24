@@ -318,8 +318,9 @@ pub(crate) fn stands_out(fill: nsh_core::Color, ground: Ground) -> Option<Color>
     (contrast >= STANDS_OUT).then_some(Color::Reset)
 }
 
-/// The backgrounds of hovered and pressed controls: the standard bright
-/// black for hover at 16 colors, none without colors.
+/// The backgrounds of hovered and pressed controls: a step from the
+/// terminal's own background toward its text, the standard bright black
+/// at 16 colors, and none where the terminal does not tell its colors.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub(crate) struct Bands {
     pub(crate) hover: Option<Color>,
@@ -328,8 +329,8 @@ pub(crate) struct Bands {
 
 impl Bands {
     /// The bands on a terminal whose own colors are `background` and
-    /// `foreground` (from OSC 11 and 10), else black and white (white and
-    /// black in the light scheme).
+    /// `foreground` (from OSC 11 and 10); without its background there is
+    /// nothing to step from and the bands are left out.
     pub(crate) fn new(
         scheme: ColorScheme,
         depth: ColorDepth,
@@ -348,8 +349,13 @@ impl Bands {
         if !matches!(depth, ColorDepth::TrueColor | ColorDepth::Ansi256) {
             return Self::default();
         }
+        // A band mixed from a guessed background lands on whatever the
+        // terminal really shows (a dark band on a light page) with no
+        // contrast to it: only a step from its own is a step.
+        let Some(background) = background else {
+            return Self::default();
+        };
         let page = Ground::page(scheme, depth);
-        let background = background.unwrap_or(page.rgb);
         let foreground = foreground.unwrap_or(page.foreground);
         let band = |share: f32| {
             let rgb = std::array::from_fn(|i| {
@@ -1311,9 +1317,6 @@ mod tests {
 
     #[test]
     fn hover_and_press_bands_mix_the_terminals_background_toward_its_foreground() {
-        let bands = Bands::new(ColorScheme::Dark, ColorDepth::TrueColor, None, None);
-        assert_eq!(bands.hover, Some(Color::Rgb(26, 26, 26)));
-        assert_eq!(bands.press, Some(Color::Rgb(46, 46, 46)));
         let known = Bands::new(
             ColorScheme::Dark,
             ColorDepth::TrueColor,
@@ -1321,8 +1324,23 @@ mod tests {
             Some([0xf0, 0xf0, 0xf0]),
         );
         assert_eq!(known.hover, Some(Color::Rgb(0x26, 0x35, 0x43)));
-        let light = Bands::new(ColorScheme::Light, ColorDepth::Ansi256, None, None);
-        assert!(matches!(light.hover, Some(Color::Indexed(_))));
+        assert_eq!(known.press, Some(Color::Rgb(0x38, 0x45, 0x53)));
+        // Its own background with a guessed text is still a step from it.
+        let no_text = Bands::new(
+            ColorScheme::Dark,
+            ColorDepth::Ansi256,
+            Some([0, 0, 0]),
+            None,
+        );
+        assert!(matches!(no_text.hover, Some(Color::Indexed(_))));
+        // No background to step from: no band, whatever the depth.
+        for depth in [ColorDepth::TrueColor, ColorDepth::Ansi256] {
+            let bands = Bands::new(ColorScheme::Dark, depth, None, None);
+            assert_eq!(bands.hover, None, "{depth:?}");
+            assert_eq!(bands.press, None, "{depth:?}");
+        }
+        let light = Bands::new(ColorScheme::Light, ColorDepth::TrueColor, None, None);
+        assert_eq!(light.hover, None);
         // The 16 colors have no faint step: a hover is their dark gray,
         // a press has no band (reverse video).
         let few = Bands::new(ColorScheme::Dark, ColorDepth::Ansi16, None, None);

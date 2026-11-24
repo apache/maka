@@ -1498,17 +1498,24 @@ impl Painter<'_> {
             mark_disclosure(self.buffer, inner_visible, open, look);
         }
         if !visible.is_empty() && !hidden && !scrim {
+            let few = matches!(
+                ground.depth,
+                crate::ColorDepth::Ansi16 | crate::ColorDepth::Monochrome
+            );
             let marks = Marks {
                 bands: self.bands,
                 emphasis,
                 mono: ground.depth == crate::ColorDepth::Monochrome,
-                few: matches!(
-                    ground.depth,
-                    crate::ColorDepth::Ansi16 | crate::ColorDepth::Monochrome
-                ),
+                few,
                 popup: popup_item,
                 lined_group: layer.lined_group,
                 pointer_focus: self.tree.pointer_focus,
+                // No bands and no tone of its own to stand on: the terminal
+                // did not tell its colors, so the states mark the ink.
+                no_bands: !few
+                    && self.bands.hover.is_none()
+                    && palette::tone_fill(fill, ground.depth).is_none(),
+                neutral_fill: (bandless_fill == Some(Color::DarkGray)).then_some(Color::DarkGray),
             };
             match ground.ramp {
                 Some(ramp) => mark_surface(
@@ -2752,6 +2759,14 @@ struct Marks {
     lined_group: bool,
     /// The pointer moved the focus (`Mounter::pointer_focus`).
     pointer_focus: bool,
+    /// The terminal gives no hover or press band (it did not tell its
+    /// colors): a hover or press is the control's ink in the accent (or
+    /// reversed) instead of a band.
+    no_bands: bool,
+    /// The fallback fill of a bandless box without a tone of its own (the
+    /// standard colors' gray, [`palette::bandless_fill`]): a reverse drawn
+    /// over it reads as a band, so the states that mark a row drop it.
+    neutral_fill: Option<Color>,
 }
 
 /// The states a view's marks show: its own and those projected on it as
@@ -2839,10 +2854,18 @@ fn mark_state(
     }
     // A tab the app underlines keeps its underline alone, as with colors.
     let tab = view.props.accessibility.role == AccessibilityRole::Tab;
-    if selected && !inner.is_empty() && !(tab && underlined(buffer, inner)) {
+    let chosen = selected && !inner.is_empty() && !(tab && underlined(buffer, inner));
+    // A selection is reverse video and the focus the accent's or, without
+    // colors, reversed and underlined: the box's fallback fill under either
+    // would show as a band the label fades into.
+    if (chosen || focused) && !inner.is_empty() {
+        clear_fill(buffer, visible, marks.neutral_fill);
+    }
+    if chosen {
         for y in inner.y..inner.bottom() {
             for x in inner.x..inner.right() {
-                buffer[(x, y)].modifier.insert(Modifier::REVERSED);
+                let cell = &mut buffer[(x, y)];
+                cell.modifier = (cell.modifier | Modifier::REVERSED) - Modifier::DIM;
             }
         }
     }
@@ -2897,17 +2920,27 @@ fn mark_state(
             Some(band) => fill(buffer, visible, band),
             None => label(buffer, inner, Modifier::REVERSED),
         }
-    } else if hovered
-        && !selected
-        && let Some(band) = marks.bands.hover
-        // The standard colors' gray is no faint step: it marks a control
-        // (a button, a row), never a whole pressable panel (a table).
-        && (band != Color::DarkGray || inner.height < CONTAINER_ROWS)
-    {
-        fill(buffer, visible, band);
-        // Dim text on that gray would barely read.
-        if band == Color::DarkGray {
-            drawn(buffer, visible, |_| {});
+    } else if hovered && !selected {
+        match marks.bands.hover {
+            // The standard colors' gray is no faint step: it marks a control
+            // (a button, a row), never a whole pressable panel (a table).
+            Some(band) if band != Color::DarkGray || inner.height < CONTAINER_ROWS => {
+                fill(buffer, visible, band);
+                // Dim text on that gray would barely read.
+                if band == Color::DarkGray {
+                    drawn(buffer, visible, |_| {});
+                }
+            }
+            Some(_) => {}
+            // No band to paint it (the terminal did not tell its colors):
+            // the hover marks the control's ink in the accent, which reads
+            // on the app's own fill whatever the terminal's palette. As with
+            // the standard colors' gray, it marks a control, not a whole
+            // pressable panel.
+            None if marks.no_bands && inner.height < CONTAINER_ROWS => {
+                drawn(buffer, visible, |cell| cell.fg = ACCENT);
+            }
+            None => {}
         }
     }
     if disabled {
@@ -3632,6 +3665,28 @@ fn fill(buffer: &mut Buffer, rect: Rect, color: Color) {
     for y in rect.y..rect.bottom() {
         for x in rect.x..rect.right() {
             buffer[(x, y)].bg = color;
+        }
+    }
+}
+
+/// Drops a bandless box's fallback fill from `rect`, so a reverse over it
+/// stands on the terminal's own ground instead of on a band. A glyph in
+/// the fill's own color takes the default foreground, as on the fill.
+fn clear_fill(buffer: &mut Buffer, rect: Rect, fill: Option<Color>) {
+    let Some(fill) = fill else {
+        return;
+    };
+    for y in rect.y..rect.bottom() {
+        for x in rect.x..rect.right() {
+            let cell = &mut buffer[(x, y)];
+            if cell.bg != fill {
+                continue;
+            }
+            cell.bg = Color::Reset;
+            if cell.fg == fill {
+                cell.fg = Color::Reset;
+                cell.modifier -= Modifier::DIM;
+            }
         }
     }
 }

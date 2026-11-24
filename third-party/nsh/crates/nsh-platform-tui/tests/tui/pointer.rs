@@ -33,12 +33,12 @@ fn hover_styles_and_events_follow_the_pointer_and_clear_outside_the_surface() {
     assert_ne!(rest, Color::Reset, "the fill at rest");
     view.handle(mouse(MouseKind::Move, 1, 0));
     draw_until(&mut view, &mut terminal, &rx, "inside");
-    // A hovered pressable view is a faint band: the terminal's background
-    // (black here) a tenth of the way to its foreground; the app's hover
-    // fill draws nothing.
-    let band = Color::Rgb(26, 26, 26);
+    // A hovered view keeps the fill the app gave it: with no background
+    // from the terminal there is no band to mix, and a tone's color is
+    // drawn at truecolor, so the app's hover fill shows.
+    let hovered = Color::Rgb(0xef, 0x44, 0x44);
     for (x, y) in [(0, 0), (9, 1)] {
-        assert_eq!(terminal.backend().buffer()[(x, y)].bg, band, "{x},{y}");
+        assert_eq!(terminal.backend().buffer()[(x, y)].bg, hovered, "{x},{y}");
     }
     assert!(!reversed(terminal.backend().buffer(), 1, 1));
     assert_eq!(terminal.backend().buffer()[(10, 0)].bg, Color::Reset);
@@ -48,13 +48,14 @@ fn hover_styles_and_events_follow_the_pointer_and_clear_outside_the_surface() {
 }
 
 #[test]
-fn moving_off_a_hovered_view_onto_empty_cells_redraws_without_its_band() {
+fn moving_off_a_hovered_view_onto_empty_cells_redraws_without_its_mark() {
     let code = nsh_bundler::compile_module(
         "App.tsx",
         r##"
         import { mount, View, Text } from "nsh";
         mount(() => <View>
-            <View style={{ width: 80, height: 32 }} onPress={() => {}} />
+            <View style={{ width: 80, height: 32 }} onPress={() => {}}>
+                <Text>target</Text></View>
             <Text>ready</Text>
         </View>);
     "##,
@@ -65,14 +66,17 @@ fn moving_off_a_hovered_view_onto_empty_cells_redraws_without_its_band() {
     let mut terminal = Terminal::new(TestBackend::new(40, 8)).unwrap();
     view.load(Bundle::source(code)).unwrap();
     draw_until(&mut view, &mut terminal, &rx, "ready");
-    let band = Color::Rgb(26, 26, 26);
+    let marked = |buffer: &ratatui_core::buffer::Buffer| buffer[(1, 0)].fg;
+    assert_ne!(marked(terminal.backend().buffer()), Color::Blue);
     assert_eq!(view.handle(mouse(MouseKind::Move, 1, 0)), Handled::Yes);
     terminal
         .draw(|frame| view.render(frame, frame.area()))
         .unwrap();
-    assert_eq!(terminal.backend().buffer()[(1, 0)].bg, band);
+    // No band from the terminal's colors (it gives none): the hover is the
+    // label's ink in the accent.
+    assert_eq!(marked(terminal.backend().buffer()), Color::Blue);
     // Onto Cells no view claims, in the surface: the hover is gone and the
-    // move is used, so the embedder's loop draws the band away (nothing in
+    // move is used, so the embedder's loop draws the mark away (nothing in
     // the app changes to wake it otherwise).
     while rx.try_recv().is_ok() {}
     assert_eq!(view.handle(mouse(MouseKind::Move, 20, 0)), Handled::Yes);
@@ -80,7 +84,7 @@ fn moving_off_a_hovered_view_onto_empty_cells_redraws_without_its_band() {
     terminal
         .draw(|frame| view.render(frame, frame.area()))
         .unwrap();
-    assert_eq!(terminal.backend().buffer()[(1, 0)].bg, Color::Reset);
+    assert_ne!(marked(terminal.backend().buffer()), Color::Blue);
     // A move that changes nothing over empty Cells stays the embedder's.
     while rx.try_recv().is_ok() {}
     assert_eq!(view.handle(mouse(MouseKind::Move, 21, 0)), Handled::Ignored);
@@ -256,22 +260,24 @@ fn dragging_clears_active_styles() {
     let mut terminal = Terminal::new(TestBackend::new(40, 8)).unwrap();
     view.load(Bundle::source(code)).unwrap();
     draw_until(&mut view, &mut terminal, &rx, "Hold");
-    // Pressed is a stronger band than hovered; a drag ends the press.
-    let press = Color::Rgb(46, 46, 46);
-    let until = |view: &mut nsh_platform_tui::AppView,
-                 terminal: &mut Terminal<TestBackend>,
-                 pressed: bool| {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        loop {
-            terminal
-                .draw(|frame| view.render(frame, frame.area()))
-                .unwrap();
-            if (terminal.backend().buffer()[(1, 1)].bg == press) == pressed {
-                break;
+    // Pressed the app's active fill shows (no band is mixed from colors the
+    // terminal did not give); a drag ends the press.
+    let rest = Color::Rgb(0x12, 0x34, 0x56);
+    let pressed = Color::Rgb(0xef, 0x44, 0x44);
+    let until =
+        |view: &mut nsh_platform_tui::AppView, terminal: &mut Terminal<TestBackend>, down: bool| {
+            let expected = if down { pressed } else { rest };
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            loop {
+                terminal
+                    .draw(|frame| view.render(frame, frame.area()))
+                    .unwrap();
+                if terminal.backend().buffer()[(1, 1)].bg == expected {
+                    break;
+                }
+                rx.recv_deadline(deadline).unwrap();
             }
-            rx.recv_deadline(deadline).unwrap();
-        }
-    };
+        };
     view.handle(mouse(MouseKind::Down(Left), 1, 0));
     until(&mut view, &mut terminal, true);
     view.handle(mouse(MouseKind::Move, 4, 0));
