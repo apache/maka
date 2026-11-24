@@ -238,7 +238,7 @@ async fn exercise(rig: &mut Rig, expire: bool, recovery: bool) -> TestResult<()>
                 "ScheduledTask".into(),
             ]),
         },
-        lease_millis: if expire { 2_000 } else { 120_000 },
+        lease_millis: if expire { 15_000 } else { 120_000 },
     };
     let ClaimResult::Granted { grant, .. } = repository.claim(request.clone()).await? else {
         return Err("grant missing".into());
