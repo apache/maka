@@ -172,10 +172,12 @@ pub(crate) struct Notes {
     pub(crate) changed: bool,
     /// The selection changed (`EN_SELCHANGE`).
     pub(crate) selection: bool,
-    /// A composition started, with the selection (UTF-16) and the text's
-    /// length at that moment.
+    /// A composition started and has not ended yet, with the selection
+    /// (UTF-16) and the text's length at that moment. When
+    /// [`Self::composition_end`] is also set, this composition started after
+    /// the prior one ended.
     pub(crate) composition_start: Option<(u32, u32, u32)>,
-    /// The composition ended.
+    /// A composition the field already knew about ended.
     pub(crate) composition_end: bool,
 }
 
@@ -199,6 +201,10 @@ const NOTES_LATER: u32 = u32::MAX;
 struct Host {
     vtbl: *const HostVtbl,
     refs: Cell<u32>,
+    /// The window the text services were created on: `TxGetWindow` and the
+    /// input context stay here (moving them to `shown_in` leaves compositions
+    /// lost, upstream #2094), so `update_ime` keeps this window's IMC attached
+    /// whenever any window's field takes IME input.
     hwnd: HWND,
     /// The window the field shows in (`hwnd`'s, or one of the app's own):
     /// where its client points are on the screen.
@@ -357,6 +363,33 @@ impl Editor {
     /// Takes the notifications since the last time.
     pub(crate) fn take_notes(&self) -> Notes {
         self.host().notes.take()
+    }
+
+    /// Delivers `EN_STARTCOMPOSITION` through `tx_notify`, for tests that
+    /// exercise composition transitions without an IME.
+    #[cfg(test)]
+    pub(crate) fn start_composition(&self) {
+        // SAFETY: `self.host` is a live `Host` for the lifetime of `self`.
+        unsafe {
+            let _ = tx_notify(
+                self.host.cast_mut().cast(),
+                EN_STARTCOMPOSITION,
+                std::ptr::null_mut(),
+            );
+        }
+    }
+
+    /// Delivers `EN_ENDCOMPOSITION` through `tx_notify`.
+    #[cfg(test)]
+    pub(crate) fn end_composition(&self) {
+        // SAFETY: `self.host` is a live `Host` for the lifetime of `self`.
+        unsafe {
+            let _ = tx_notify(
+                self.host.cast_mut().cast(),
+                EN_ENDCOMPOSITION,
+                std::ptr::null_mut(),
+            );
+        }
     }
 
     /// The caret the services placed.
@@ -1175,7 +1208,6 @@ unsafe extern "system" fn tx_notify(this: This, code: u32, _: *mut c_void) -> HR
         EN_CHANGE => notes.changed = true,
         EN_SELCHANGE => notes.selection = true,
         EN_STARTCOMPOSITION => {
-            notes.composition_end = false;
             let services = host.services.get();
             if !services.is_null() {
                 // SAFETY: queries the services answer from a notification
@@ -1196,7 +1228,13 @@ unsafe extern "system" fn tx_notify(this: This, code: u32, _: *mut c_void) -> HR
                 }
             }
         }
-        EN_ENDCOMPOSITION => notes.composition_end = true,
+        EN_ENDCOMPOSITION => {
+            // A composition that started since the field last looked ended
+            // unseen: its commit stays in the text as a plain edit.
+            if notes.composition_start.take().is_none() {
+                notes.composition_end = true;
+            }
+        }
         _ => return S_OK,
     }
     host.notes.set(notes);
@@ -1209,13 +1247,13 @@ unsafe extern "system" fn tx_notify(this: This, code: u32, _: *mut c_void) -> HR
 }
 
 unsafe extern "system" fn tx_imm_get_context(this: This) -> HIMC {
-    // SAFETY: the window the field shows in (its app window, or the host's).
-    unsafe { ImmGetContext(host(this).shown_in.get()) }
+    // SAFETY: the host's window (moving IMC to shown_in breaks composition, #2094).
+    unsafe { ImmGetContext(host(this).hwnd) }
 }
 
 unsafe extern "system" fn tx_imm_release_context(this: This, himc: HIMC) {
     // SAFETY: a context from `tx_imm_get_context`.
-    let _ = unsafe { ImmReleaseContext(host(this).shown_in.get(), himc) };
+    let _ = unsafe { ImmReleaseContext(host(this).hwnd, himc) };
 }
 
 unsafe extern "system" fn tx_get_selection_bar_width(_: This, out: *mut i32) -> HRESULT {
@@ -1230,7 +1268,7 @@ unsafe extern "system" fn tx_is_double_click_pending(_: This) -> BOOL {
 
 unsafe extern "system" fn tx_get_window(this: This, out: *mut HWND) -> HRESULT {
     // SAFETY: a live host and an out value.
-    unsafe { *out = host(this).shown_in.get() };
+    unsafe { *out = host(this).hwnd };
     S_OK
 }
 
@@ -1534,17 +1572,5 @@ mod tests {
         pump(60);
         assert_eq!(handed.get(), 0);
         assert!(TIMERS.with(|t| t.borrow().is_empty()));
-    }
-
-    #[test]
-    fn show_in_updates_tx_get_window() {
-        let (e, _) = editor();
-        let target = HWND(0x1234usize as *mut c_void);
-        e.show_in(target);
-        let mut reported = HWND::default();
-        // SAFETY: `e.host` is a live `Host` vtable pointer for the duration of `e`.
-        let hr = unsafe { tx_get_window(e.host as *mut c_void, &mut reported) };
-        assert!(hr.is_ok());
-        assert_eq!(reported, target);
     }
 }
