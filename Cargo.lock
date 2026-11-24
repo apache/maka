@@ -9293,6 +9293,7 @@ dependencies = [
  "maka-workspace-support",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
  "tokio-util",
  "uuid",

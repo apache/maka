@@ -419,9 +419,17 @@ export const suites = {
   },
   'windows-shell': {
     workspace: 'root',
-    packages: ['maka-process', 'maka-settings-native', 'maka-host-runtime', 'maka-sandbox'],
+    packages: [
+      'maka-process',
+      'maka-processes-native',
+      'maka-settings-native',
+      'maka-host-runtime',
+      'maka-sandbox',
+    ],
     cargoArgs: [
       '--locked',
+      '-p',
+      'maka-processes-native',
       '-p',
       'maka-process',
       '-p',
@@ -433,6 +441,8 @@ export const suites = {
     ],
     targetArgs: ['--lib', '--test', 'integration'],
     filter: [
+      '(package(=maka-processes-native) & test(managed_worktree_shell_keeps_writes_inside_its_workspace))',
+      '(package(=maka-sandbox) & kind(lib) & (test(resolved_path_projection) | test(target_identity_survives_rename_and_does_not_adopt_a_replacement_or_deleted_id)))',
       '(package(=maka-process) & test(git_bash))',
       '(package(=maka-settings-native) & test(shell_setting_rejects_invalid_bash_and_persists_valid_host_choice))',
       'binary_id(=maka-process::integration)',
@@ -547,6 +557,8 @@ export const workers = [
     ],
     cargoScope: [
       '--locked',
+      '-p',
+      'maka-processes-native',
       '-p',
       'maka-cli',
       '-p',

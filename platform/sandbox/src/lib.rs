@@ -30,6 +30,7 @@ mod path;
 mod policy;
 pub mod workspace;
 pub use network::{Destination, Network};
+pub use path::policy_path_from_resolved;
 pub use policy::{Approval, ApprovalKind, Mode, Permissions, Sandbox};
 pub mod launch;
 
