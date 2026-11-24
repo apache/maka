@@ -33,7 +33,7 @@ export function nativeDesktop() {
   cleanup(() => Tray.set(null));
   effect(() => {
     const icon = appearance.trayIcon();
-    if (icon === 'none') {
+    if (!appearance.trayIconKnown() || icon === 'none') {
       Tray.set(null);
       return;
     }

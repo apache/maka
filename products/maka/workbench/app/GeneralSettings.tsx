@@ -732,15 +732,13 @@ function AppearanceRows() {
       <SettingsSelect
         label={trayIconRowLabel()}
         value={appearance.trayIcon()}
-        preview={
-          <Each of={trayIconShown()} key={(icon) => icon}>
-            {(icon) => (
-              <Image
-                src={trayIconArtwork[icon()]}
-                style={[{ width: 18, height: 18, tintColor: C.text }, { pointerEvents: 'none' }]}
-              />
-            )}
-          </Each>
+        preview={<If when={trayIconShown()}>{(icon) => <TrayArtwork icon={icon()} />}</If>}
+        choicePreview={(value) =>
+          value === 'none' ? (
+            <View style={{ width: 18, height: 18 }} />
+          ) : (
+            <TrayArtwork icon={value as ShownTrayIcon} />
+          )
         }
         choices={trayIcons.map((icon) => ({ value: icon, title: trayIconLabel(icon) }))}
         change={(value) => appearance.chooseTrayIcon(value as TrayIcon)}
@@ -749,10 +747,19 @@ function AppearanceRows() {
   );
 }
 
-const trayIconShown = (): Exclude<TrayIcon, 'none'>[] => {
+type ShownTrayIcon = Exclude<TrayIcon, 'none'>;
+const trayIconShown = (): ShownTrayIcon | null => {
   const icon = appearance.trayIcon();
-  return icon === 'none' ? [] : [icon];
+  return icon === 'none' ? null : icon;
 };
+function TrayArtwork(props: { icon: ShownTrayIcon }) {
+  return (
+    <Image
+      src={trayIconArtwork[props.icon]}
+      style={[{ width: 18, height: 18, tintColor: C.text }, { pointerEvents: 'none' }]}
+    />
+  );
+}
 
 function trayIconRowLabel() {
   return platform.os === 'macos' ? tr('Menu bar icon') : tr('System tray icon');

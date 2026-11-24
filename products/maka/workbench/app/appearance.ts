@@ -85,6 +85,8 @@ function createAppearanceOwner() {
   const palette = signal<PaletteId>('default');
   const custom = signal<PaletteRecipe>(presetRecipes.mist);
   const trayIcon = signal<TrayIcon>('bold');
+  // Only macOS can hide the icon, and must not show it before the saved choice is read.
+  const trayIconKnown = signal(platform.os !== 'macos' || !ownTitleBar);
   let initialization: Initialization = {
     kind: 'uninitialized',
     pending: new Set([THEME, TEXT_SIZE, PALETTE, CUSTOM_PALETTE, TRAY_ICON]),
@@ -142,6 +144,8 @@ function createAppearanceOwner() {
     palette: () => palette(),
     custom: () => custom(),
     trayIcon: () => trayIcon(),
+    /** The tray icon is the saved choice, or the default where none is saved. */
+    trayIconKnown: () => trayIconKnown(),
     chooseTheme(value: ColorTheme) {
       selected(THEME);
       theme.set(value);
@@ -170,14 +174,17 @@ function createAppearanceOwner() {
     chooseTrayIcon(value: TrayIcon) {
       selected(TRAY_ICON);
       trayIcon.set(value);
+      trayIconKnown.set(true);
       persist(TRAY_ICON, value);
     },
     /** The next text size up (1) or down (-1), or the default (0): the View menu's. */
     stepTextSize(step: number) {
       const size = Math.round(textSize() * defaultTextSize);
+      // A saved ratio between two sizes becomes the size it is shown as.
       const next =
         step === 0 ? defaultTextSize : Math.min(maxTextSize, Math.max(minTextSize, size + step));
-      if (next !== size || step === 0) chooseTextSize(textScale(next));
+      const scale = textScale(next);
+      if (scale !== textSize()) chooseTextSize(scale);
     },
     saving: () => persistence.kind === 'saving',
     whenIdle: () => (persistence.kind === 'saving' ? persistence.completion : Promise.resolve()),
@@ -200,7 +207,7 @@ function createAppearanceOwner() {
         }),
         restore(TRAY_ICON, (value) => {
           if (trayIcons.includes(value as TrayIcon)) trayIcon.set(value as TrayIcon);
-        }),
+        }).then(() => trayIconKnown.set(true)),
         restore(TEXT_SIZE, (value) => {
           const scale = Number(value);
           if (value !== null && validTextScale(scale)) {
