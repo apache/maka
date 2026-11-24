@@ -64,7 +64,7 @@ import { MessageQuotes } from './MessageQuotes';
 import { MessageCopy, readOriginal, type OriginalMessage } from './MessageCopy';
 import type { ImagePreview } from './ImageThumbnail';
 import type { InlineEdit } from './MessageEdit';
-import { LoadingIndicator } from './Loading';
+import { LoadingIndicator, ThinkingPeek } from './Loading';
 import { useHost } from './host';
 import { createText, errorText } from './text';
 
@@ -477,6 +477,24 @@ export function MessageRow({
             .replace(/\s+/g, ' ')
             .trim(),
         );
+        // A thought still being written passes through a short window under its
+        // first line, unless the whole of it is open.
+        const streamingThought = () => {
+          const line = firstLine();
+          if (
+            platform.idiom === 'terminal' ||
+            !line ||
+            !row().preview ||
+            row().closedAt != null ||
+            expanded()
+          )
+            return null;
+          return (
+            text()
+              .slice(line.index + line[0].length)
+              .trim() || null
+          );
+        };
         // Thinking that is only a bold title has nothing more to show; any other
         // single line may be longer than its one-line preview.
         const detailed = () => {
@@ -646,7 +664,7 @@ export function MessageRow({
                         <Disclosure
                           label={summary()}
                           tooltip={summary()}
-                          icon="thinking"
+                          leading="none"
                           foldable={detailed()}
                           open={expanded() && detailed()}
                           onPress={inputAction(setExpanded, {
@@ -685,6 +703,12 @@ export function MessageRow({
                             {preview()}
                           </Text>
                         </Disclosure>
+                        <If when={streamingThought() !== null}>
+                          <ThinkingPeek
+                            text={() => streamingThought() ?? ''}
+                            inset={disclosureContentInset(24)}
+                          />
+                        </If>
                         <If when={expanded() && detailed()}>
                           <View
                             style={{

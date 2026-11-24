@@ -34,6 +34,7 @@ import {
   shouldHideAcceptedQueuedStatus,
   shouldProjectPendingSend,
   unsettledSends,
+  workingRowActive,
 } from './sendReceipt';
 import { createHistoryPrefetch, HISTORY_LOOKAHEAD_VIEWPORTS } from './historyPrefetch';
 import { quietWaits, retrying, waitActivity } from './runWaits';
@@ -70,13 +71,14 @@ import {
   Canvas,
   cleanup,
   computed,
+  createAnimatedValue,
   effect,
   inputAction,
+  List,
   signal,
   Text,
   untracked,
   View,
-  List,
 } from 'nsh';
 import type { ListRef, ReadonlyListSource, ViewRef } from 'nsh';
 import { Button } from 'nsh/base';
@@ -227,6 +229,7 @@ import {
 import {
   groupWork,
   TurnPanel,
+  liveActivityTitle,
   TurnSummary,
 } from '../../../../products/maka/workbench/app/TurnPanel';
 import { turnImages } from '../../../../products/maka/workbench/app/ToolImage';
@@ -328,8 +331,8 @@ export type ConversationHandle = Omit<
   reveal(anchor: RecallAnchor, current: () => boolean): Promise<void>;
   focusHistory(): void;
   focusActivity(turnId: string | null): void;
-  /** The title its header shows. */
-  title(): string;
+  /** The title its header shows, or null until the session metadata has loaded. */
+  title(): string | null;
   /** Latest user/assistant messages for the fullscreen floating mini-preview. */
   recentMessages?(): readonly { id: string; role: 'user' | 'assistant'; text: string }[];
 };
@@ -364,6 +367,12 @@ type ConversationProps = {
     text: string,
     send: boolean,
   ): Promise<boolean>;
+  /** The message this conversation was opened to send, before `takePrefill` takes it. */
+  firstMessage?(): {
+    text: string;
+    quotes?: readonly QuoteRef[];
+    files?: readonly { name: string; bytes: number; image?: boolean }[];
+  } | null;
   /** Text for an empty draft once it loads, taken once (a fork made to edit or regenerate). */
   takePrefill?(available: boolean): {
     text: string;
@@ -480,7 +489,7 @@ export function Conversation(props: ConversationProps) {
   const queued = signal<AgentQueue | null>(null);
   // Held messages wait for the user's next message; they do not keep the Session busy.
   const runnableQueued = () => queued()?.entries.some((entry) => entry.kind !== 'held') ?? false;
-  const title = signal(sessionId);
+  const title = signal<string | null>(null);
   const archived = signal(false);
   const run = signal<ConversationStatus>('loading');
   const runId = signal<RunId | null>(null);
@@ -583,30 +592,75 @@ export function Conversation(props: ConversationProps) {
   // row took over.
   const settledSends = signal<ReadonlySet<string>>(new Set());
   const startsRun = (frozen: FrozenSend) => frozen.selection.expectedRunId === undefined;
+  type OptimisticAttachment = {
+    name: string;
+    bytes: number;
+    mimeType?: string;
+    image?: boolean;
+  };
+  // Local optimistic user rows carry the full text from byte zero, so they lay
+  // out in the same Markdown/plain form as their saved transcript row.
+  const localUserRow = (input: {
+    key: string;
+    messageId: string;
+    text: string;
+    quotes?: readonly QuoteRef[];
+    files?: readonly OptimisticAttachment[];
+  }): Row => ({
+    key: input.key,
+    quotes: input.quotes ? [...input.quotes] : [],
+    messageId: input.messageId,
+    field: 'body',
+    role: 'user',
+    text: input.text,
+    prefix: true,
+    attachments: (input.files ?? []).map((file): AgentHistoryAttachment => {
+      const isImage = file.image === true || (file.mimeType?.startsWith('image/') ?? false);
+      return {
+        name: file.name,
+        mimeType: file.mimeType ?? (isImage ? 'image/*' : ''),
+        bytes: file.bytes,
+        kind: isImage ? 'image' : 'other',
+      };
+    }),
+  });
+  // A conversation opened to send a message shows it from its first frame, while
+  // its draft and model are still being read; the send itself takes over from it.
+  const opening = signal(props.firstMessage?.() ?? null);
+  // Opened to send, the conversation comes in over the page it was sent from
+  // instead of replacing it in one frame.
+  const openingFade = untracked(opening) !== null && !reduceMotion();
+  const arriving = createAnimatedValue(openingFade ? 0 : 1);
+  if (openingFade) void arriving.timing(1, { duration: 200, easing: 'easeOut' });
+  cleanup(() => arriving.stop());
   const outgoing = computed<Row[]>(() => {
     const freezing = freezeState();
+    const first = opening();
+    if (first !== null)
+      return [
+        localUserRow({
+          key: 'pending/local/opening',
+          messageId: 'local/opening',
+          text: first.text,
+          quotes: first.quotes,
+          files: first.files,
+        }),
+      ];
     return unsettledSends(
       freezing.kind === 'reserving' ? freezing.frozen : undefined,
       activeSends(),
       settledSends(),
     )
       .filter(startsRun)
-      .map((frozen) => ({
-        key: `pending/local/${frozen.id}`,
-        quotes: frozen.edit.quotes,
-        messageId: `local/${frozen.id}`,
-        field: 'body',
-        role: 'user',
-        text: frozen.text,
-        attachments: frozen.files.map(
-          (file): AgentHistoryAttachment => ({
-            name: file.name,
-            mimeType: file.mimeType,
-            bytes: file.bytes,
-            kind: file.mimeType.startsWith('image/') ? 'image' : 'other',
-          }),
-        ),
-      }));
+      .map((frozen) =>
+        localUserRow({
+          key: `pending/local/${frozen.id}`,
+          messageId: `local/${frozen.id}`,
+          text: frozen.text,
+          quotes: frozen.edit.quotes,
+          files: frozen.files,
+        }),
+      );
   });
   const shownPending = () => [...pendingMessages(), ...outgoing()];
   const sendErrors = signal<Map<string, UiText>>(new Map());
@@ -680,7 +734,11 @@ export function Conversation(props: ConversationProps) {
   const turnState = (id: string) => {
     let state = turnStates.get(id);
     if (!state) {
-      state = { expanded: signal<boolean | null>(null), ran: false };
+      state = {
+        expanded: signal<boolean | null>(null),
+        ran: false,
+        thought: signal<string | null>(null),
+      };
       turnStates.set(id, state);
     }
     return state;
@@ -850,7 +908,11 @@ export function Conversation(props: ConversationProps) {
     const sections = [...durableSections().values()];
     const live = processLive();
     const activity = processActivity();
-    const pending = atHistoryTail() ? shownPending() : undefined;
+    const pending = atHistoryTail()
+      ? shownPending()
+      : historyWindow() === null && opening() !== null
+        ? outgoing()
+        : undefined;
     const active = runId() === null ? null : runTurn();
     const answer = answerTurn();
     // A live preview, including a late one, belongs to the same ordered
@@ -1078,8 +1140,31 @@ export function Conversation(props: ConversationProps) {
     }
   >();
   // A retry or a child run keeps the run at work; an approval has its own card.
-  const runAtWork = () =>
-    run() === 'running' || (run() === 'waiting' && quietWaits(execution()).length > 0);
+  // An accepted pending send bridges the gap until the run is admitted.
+  const atWork = () =>
+    workingRowActive({
+      run: run(),
+      quietWait: quietWaits(execution()).length > 0,
+      pendingCount: pendingMessages().length,
+      outgoingCount: outgoing().length,
+    });
+  // Keep the active turn's latest thought on turnState so folding the turn,
+  // running tools, recycling rows, or switching tabs never collapses its peek.
+  let keptThoughtTurn: string | null = null;
+  effect(() => {
+    const activeTurn = runTurn();
+    if (keptThoughtTurn !== null && keptThoughtTurn !== activeTurn) {
+      turnStates.get(keptThoughtTurn)?.thought.set(null);
+      keptThoughtTurn = null;
+    }
+    if (activeTurn === null) return;
+    keptThoughtTurn = activeTurn;
+    const live = activity();
+    if (live.kind === 'thinking' && live.rowId) {
+      const text = currentRow(live.rowId)?.text.trim() || null;
+      if (text !== null) turnState(activeTurn).thought.set(text);
+    }
+  });
   const chatDisplaySections = computed(() =>
     projectionSections().map((section) => {
       const cache = chatSections.get(section);
@@ -1157,7 +1242,7 @@ export function Conversation(props: ConversationProps) {
   const ordinaryChatSections = computed(() => {
     const sections = chatDisplaySections();
     // A message on its way out is answered by the same row a run at work shows.
-    if (!runAtWork() && outgoing().length === 0) return sections;
+    if (!atWork()) return sections;
     const running = runTurn();
     const headed =
       running !== null &&
@@ -1187,12 +1272,7 @@ export function Conversation(props: ConversationProps) {
     // this row in place instead of arriving above an already shown reply.
     const working = (turnId: string | undefined) => {
       const running = runTurn();
-      if (
-        !(runAtWork() || outgoing().length > 0) ||
-        workingShown ||
-        (turnId !== undefined && turnId !== running)
-      )
-        return;
+      if (!atWork() || workingShown || (turnId !== undefined && turnId !== running)) return;
       const headed = result.some(
         (item) =>
           running !== null &&
@@ -3198,22 +3278,13 @@ export function Conversation(props: ConversationProps) {
     ) {
       pendingMessages.set([
         ...pendingMessages().filter((row) => row.messageId !== accepted.messageId),
-        {
+        localUserRow({
           key: `pending/${accepted.messageId}`,
-          quotes: quoted,
           messageId: accepted.messageId,
-          field: 'body',
-          role: 'user',
           text,
-          attachments: files.map(
-            (file): AgentHistoryAttachment => ({
-              name: file.name,
-              mimeType: file.mimeType,
-              bytes: file.bytes,
-              kind: file.mimeType.startsWith('image/') ? 'image' : 'other',
-            }),
-          ),
-        },
+          quotes: quoted,
+          files,
+        }),
       ]);
     }
   };
@@ -3317,15 +3388,11 @@ export function Conversation(props: ConversationProps) {
       } else {
         sent = await confirmSend(client, id);
       }
-      if (alive) settledSends.set(new Set(settledSends()).add(id));
       if (alive)
-        settleReply(
-          sent.reply,
-          frozen.text,
-          frozen.files,
-          frozen.edit.quotes,
-          frozen.selection.expectedRunId === undefined,
-        );
+        batch(() => {
+          settledSends.set(new Set(settledSends()).add(id));
+          settleReply(sent.reply, frozen.text, frozen.files, frozen.edit.quotes, startsRun(frozen));
+        });
     } catch (reason) {
       if (alive && errorMessage(reason) === 'agent_workspace_unavailable') {
         sendError(id, new UiError('The workspace for this task is unavailable.'));
@@ -4068,7 +4135,7 @@ export function Conversation(props: ConversationProps) {
   const ownHandle: ConversationHandle = {
     sessionId,
     prediction,
-    title: () => title() || tr('Untitled conversation'),
+    title: () => (title() === null ? null : title() || tr('Untitled conversation')),
     recentMessages() {
       const merged: { id: string; role: 'user' | 'assistant'; text: string }[] = [];
       for (const row of [...rows(), ...live()]) {
@@ -4127,6 +4194,7 @@ export function Conversation(props: ConversationProps) {
       rows().length === 0 &&
       live().length === 0 &&
       unresolved().length === 0 &&
+      opening() === null &&
       activeSends().size === 0 &&
       freezeState().kind === 'idle' &&
       pendingMessages().length === 0 &&
@@ -4451,11 +4519,28 @@ export function Conversation(props: ConversationProps) {
   // A fork made to regenerate a reply sends its prefilled text once sending is possible,
   // unless the draft was changed first.
   effect(() => {
+    if (opening() === null) return;
+    const attachmentFailed =
+      attachments.error() !== '' ||
+      attachments
+        .rows()
+        .some(
+          (row) => row.kind !== 'unknown' && row.kind !== 'reading' && row.kind !== 'uploading',
+        );
+    if (attachmentFailed || savingFailed() || archived()) {
+      batch(() => {
+        opening.set(null);
+        if (attachmentFailed) autoSend.set(null);
+      });
+    }
+  });
+  effect(() => {
     const pending = autoSend();
     if (pending === null || sendBlockedReasonFor(false) || modelLoading()) return;
     untracked(() => {
       batch(() => {
         autoSend.set(null);
+        opening.set(null);
         if (pending.first || draft() === pending.text)
           void send(pending.text, undefined, pending.first);
       });
@@ -4497,6 +4582,7 @@ export function Conversation(props: ConversationProps) {
         draftReady.set(true);
         const empty = !hasComposerContent(stored.text, stored.attachments, stored.quotes);
         const prefill = props.takePrefill?.(empty) ?? null;
+        if (!empty || !prefill?.send) opening.set(null);
         if (prefill) {
           try {
             if (empty) {
@@ -4518,7 +4604,10 @@ export function Conversation(props: ConversationProps) {
         unresolved.set(operations);
         receiptsKnown.set(true);
         if (operations.length) await recover();
-      })().catch(report);
+      })().catch((reason) => {
+        if (alive) opening.set(null);
+        report(reason);
+      });
     }),
   );
 
@@ -4719,6 +4808,14 @@ export function Conversation(props: ConversationProps) {
                 row={currentRow}
                 expanded={() => turnExpanded(turn())}
                 canFold={() => workFold(turn()) !== 'unavailable'}
+                doing={() =>
+                  initial.turnKey === runTurn()
+                    ? liveActivityTitle(
+                        activity(),
+                        latestToolActivity(toolActivity(), runId(), runTurn()),
+                      )
+                    : null
+                }
                 images={{
                   sessionId,
                   through: () => latestKnown,
@@ -4881,7 +4978,9 @@ export function Conversation(props: ConversationProps) {
                     quoteBotMessage(
                       message,
                       sessionId,
-                      message.discovery ? tr('Proactive discovery') : title(),
+                      message.discovery
+                        ? tr('Proactive discovery')
+                        : (title() ?? tr('New conversation')),
                       text,
                       Date.now(),
                     ),
@@ -5102,10 +5201,11 @@ export function Conversation(props: ConversationProps) {
         flexShrink: 0,
         minHeight: 0,
         backgroundColor: C.panel,
+        opacity: arriving,
       }}
     >
       <Header
-        title={title() || tr('Untitled conversation')}
+        title={title() === null ? tr('New conversation') : title() || tr('Untitled conversation')}
         workspace={workspace()}
         commands={props.commands}
         browser={props.browser()}

@@ -61,7 +61,7 @@ const icons = {
   conversation: { lucide: 'message-square', glyph: '▱' },
   user: { lucide: 'user-round', glyph: '●' },
   inbox: { lucide: 'inbox', glyph: '?' },
-  thinking: { custom: 'thinking', glyph: '◌' },
+  thinking: { lucide: 'brain', glyph: '◌' },
   statusRecorded: { lucide: 'circle-dot', glyph: '●' },
   statusSuccess: { lucide: 'circle-check', glyph: '✓' },
   statusError: { lucide: 'circle-x', glyph: '×' },
@@ -114,12 +114,6 @@ const icons = {
 >;
 
 const customIcons = {
-  // Thought wears Maka's own mark: the bar, the peak and the fold inside it.
-  thinking: [
-    { tag: 'path', d: 'M9.15 1.95h5.7' },
-    { tag: 'path', d: 'M2 21.5 12 5.3l10 16.2' },
-    { tag: 'path', d: 'M7.4 12.75 12 20.4l4.6-7.65' },
-  ],
   panelRight: [
     { tag: 'rect', x: 3, y: 3, width: 18, height: 18, rx: 2 },
     { tag: 'path', d: 'M15 3v18' },

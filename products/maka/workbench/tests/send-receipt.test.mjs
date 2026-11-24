@@ -27,7 +27,9 @@ import {
   shouldHideAcceptedQueuedStatus,
   shouldProjectPendingSend,
   unsettledSends,
+  workingRowActive,
 } from '../../../../plugins/agent/conversations/ui/sendReceipt.ts';
+import { acceptedSend } from '../app/history.ts';
 
 const recorded = (outcome) => ({ kind: 'recorded', outcome, cleanup: { kind: 'confirmed' } });
 
@@ -246,4 +248,52 @@ test('a sent message leaves its own row once its operation is accepted', () => {
   const inFlight = new Map([['operation-7', send]]);
   assert.deepEqual(unsettledSends(undefined, inFlight, new Set(['draft-send-1'])), [send]);
   assert.deepEqual(unsettledSends(undefined, inFlight, new Set(['operation-7'])), []);
+});
+
+test('working row bridges idle queued receipt into admitted run and clears on rejection', () => {
+  const queuedReply = {
+    receipt: recorded({
+      kind: 'returned',
+      result: {
+        kind: 'success',
+        value: { kind: 'queued', sessionId: 's1', messageId: 'm1', revision: 1 },
+      },
+    }),
+  };
+  const accepted = acceptedSend(queuedReply, 's1');
+  const projected = shouldProjectPendingSend(accepted, {
+    immediate: true,
+    activeRunId: null,
+    atHistoryTail: true,
+  });
+  assert.equal(projected, true);
+  // Outgoing settled, accepted pending row keeps the working row alive until admitted.
+  assert.equal(
+    workingRowActive({ run: 'idle', quietWait: false, pendingCount: 1, outgoingCount: 0 }),
+    true,
+  );
+  // Once admitted arrives and history clears pending, admitted keeps the working row alive.
+  assert.equal(
+    workingRowActive({ run: 'admitted', quietWait: false, pendingCount: 0, outgoingCount: 0 }),
+    true,
+  );
+
+  const rejectedReply = {
+    receipt: recorded({
+      kind: 'returned',
+      result: {
+        kind: 'success',
+        value: { kind: 'rejected', sessionId: 's1', reason: 'model_unavailable' },
+      },
+    }),
+  };
+  const rejected = acceptedSend(rejectedReply, 's1');
+  assert.equal(
+    shouldProjectPendingSend(rejected, { immediate: true, activeRunId: null, atHistoryTail: true }),
+    false,
+  );
+  assert.equal(
+    workingRowActive({ run: 'idle', quietWait: false, pendingCount: 0, outgoingCount: 0 }),
+    false,
+  );
 });

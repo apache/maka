@@ -2287,7 +2287,7 @@ export function createConversationUi(
     floatingComposer: () =>
       selected() === null ? null : (
         <StageFloatingComposer
-          title={() => handle()?.title() ?? tr('Untitled conversation')}
+          title={() => handle()?.title() ?? tr('New conversation')}
           session={composerSession}
           stop={() => stopAction()()}
           exitFullscreen={() => resources.setFullscreen(false)}
@@ -2804,6 +2804,21 @@ export function createConversationUi(
                     await changeBrowsedSession(action, id());
                   }}
                   edit={(action, text, send) => changeBrowsedSession(action, id(), { text, send })}
+                  firstMessage={() => {
+                    const prefill = prefills.get(id());
+                    if (!prefill?.send) return null;
+                    return {
+                      text: prefill.text,
+                      files: prefill.files?.map((file) => {
+                        const meta = file.metadata() as { name: string; bytes: number };
+                        return {
+                          name: meta.name,
+                          bytes: meta.bytes,
+                          image: Boolean(file.imageUri()),
+                        };
+                      }),
+                    };
+                  }}
                   takePrefill={(available: boolean) => {
                     const prefill = prefills.get(id()) ?? null;
                     prefills.delete(id());

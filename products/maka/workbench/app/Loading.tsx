@@ -19,13 +19,16 @@
 
 import {
   cleanup,
+  computed,
   createAnimatedValue,
   effect,
   platform,
   reduceMotion,
   signal,
   Text,
+  untracked,
   View,
+  type ViewRef,
 } from 'nsh';
 import { appearance } from './appearance';
 import { tr } from './locale';
@@ -34,6 +37,8 @@ import {
   MARK_SAMPLES,
   MARK_STROKE,
   MARK_STROKES,
+  freshWords,
+  markPhase,
   strokeAt,
   thoughtTail,
 } from './thinkingMark';
@@ -155,6 +160,107 @@ export function ShimmerText(props: { text: string; style: object }) {
   );
 }
 
+/**
+ * One line of text that changes: the text it had leaves upward as it fades and
+ * the new one comes up into its place, so a row whose label follows the work
+ * does not blink from one label to the next.
+ */
+export function FadingText(props: {
+  text: string;
+  style: object;
+  color: string;
+  shimmer?: boolean;
+}) {
+  const still = () => platform.idiom === 'terminal' || reduceMotion();
+  const shown = signal(props.text);
+  const leaving = signal<string | null>(null);
+  const leavingWidth = signal<number | undefined>(undefined);
+  const mix = createAnimatedValue(1);
+  let change = 0;
+  let width = 0;
+  let root: ViewRef | undefined;
+  effect(() => {
+    const next = props.text;
+    const current = untracked(shown);
+    if (next === current) return;
+    shown.set(next);
+    if (still()) return;
+    leavingWidth.set(width > 0 ? width : undefined);
+    leaving.set(current);
+    // What follows the title glides to where the new one ends. Only that: an
+    // animation of the whole turn would also delay the list following its end.
+    root?.animateLayout({ type: 'easeInEaseOut', duration: 200 });
+    const mine = ++change;
+    mix.set(0);
+    void mix.timing(1, { duration: 240, easing: 'easeOut' }).then(() => {
+      if (mine === change) leaving.set(null);
+    });
+  });
+  cleanup(() => mix.stop());
+  return (
+    <View
+      ref={(view) => {
+        root = view;
+      }}
+      onLayout={({ bounds }) => {
+        width = bounds.size.width;
+      }}
+      style={{ flexShrink: 1, minWidth: 0 }}
+    >
+      <View
+        style={{
+          opacity: mix,
+          transform: [{ translateY: mix.interpolate({ inputRange: [0, 1], outputRange: [5, 0] }) }],
+        }}
+      >
+        <If
+          when={props.shimmer}
+          else={
+            <Text
+              style={[
+                { ...props.style, color: props.color },
+                { numberOfLines: 1, textOverflow: 'ellipsis' },
+              ]}
+            >
+              {shown()}
+            </Text>
+          }
+        >
+          <ShimmerText text={shown()} style={props.style} />
+        </If>
+      </View>
+      <If when={leaving() !== null}>
+        <View
+          accessibilityElementsHidden
+          style={[
+            {
+              position: 'absolute',
+              left: 0,
+              top: 0,
+              // Its own measured width, not the width of the title that took its place.
+              width: leavingWidth(),
+              opacity: mix.interpolate({ inputRange: [0, 0.6, 1], outputRange: [1, 0, 0] }),
+              transform: [
+                { translateY: mix.interpolate({ inputRange: [0, 1], outputRange: [0, -5] }) },
+              ],
+            },
+            { pointerEvents: 'none' },
+          ]}
+        >
+          <Text
+            style={[
+              { ...props.style, color: props.color },
+              { numberOfLines: 1, textOverflow: 'ellipsis' },
+            ]}
+          >
+            {leaving() ?? ''}
+          </Text>
+        </View>
+      </If>
+    </View>
+  );
+}
+
 export function ThinkingMark(props: { size?: number }) {
   const size = () => props.size ?? 16;
   const cycle = createAnimatedValue(0);
@@ -172,9 +278,8 @@ export function ThinkingMark(props: { size?: number }) {
   if (platform.idiom === 'terminal') return <Icon name="thinking" color={C.text} />;
   const unit = () => size() / 16;
   const inputRange = Array.from({ length: MARK_SAMPLES + 1 }, (_, at) => at / MARK_SAMPLES);
-  // Every mark is at the place in the loop the clock gives, so one that takes
-  // another's place, as a step follows a step, carries the motion on.
-  const phase = (Date.now() % MARK_CYCLE) / MARK_CYCLE;
+  const { phase, gone } = markPhase(Date.now());
+  cleanup(() => gone(Date.now()));
   return (
     <View
       accessibilityElementsHidden
@@ -210,6 +315,7 @@ export function ThinkingMark(props: { size?: number }) {
                       { translateX: along((at) => at.x * unit()) },
                       { translateY: along((at) => at.y * unit()) },
                       { rotate: along((at) => `${angle + at.turn}deg`) },
+                      { scale: along((at) => at.scale) },
                     ],
               }}
             />
@@ -228,39 +334,72 @@ const PEEK_LINES = 3;
  * three lines that the text passes through, fading out at its top and bottom.
  * Only the content's background may sit behind it.
  */
-export function ThinkingPeek(props: { text(): string }) {
+export function ThinkingPeek(props: { text(): string; inset?: number }) {
   const shown = createAnimatedValue(reduceMotion() ? 1 : 0);
   if (!reduceMotion()) void shown.timing(1, { duration: 220 });
   // New lines push the text up; it slides there instead of jumping.
   const pushed = createAnimatedValue(0);
   let height = 0;
+  // The window grows with the text to three lines, the text starting under the
+  // header; past that the text passes through it. It keeps the height it has
+  // reached: a new, short thought does not shrink it.
+  const reached = signal(0);
+  const overflowing = signal(false);
+  let frame: ViewRef | undefined;
   cleanup(() => {
     shown.stop();
     pushed.stop();
   });
-  const tail = () => thoughtTail(props.text());
+  const words = computed(() => freshWords(thoughtTail(props.text())));
+  // The newest words, counted back from the last, each fainter than the one before it.
+  const fresh = (back: number) => words().fresh.at(-1 - back) ?? '';
   // Text grows with the window's text size, and the window with it.
   const line = () => PEEK_LINE * appearance.textSize();
   const fade = (from: string, to: string) => `linear-gradient(180deg, ${from} 0%, ${to} 100%)`;
   return (
     <View
+      ref={(view) => {
+        frame = view;
+      }}
       style={{
-        height: line() * PEEK_LINES + 6,
-        paddingBottom: 6,
+        // The window is as high as the text has reached, up to three lines; the
+        // text is measured apart from it, so the height can follow in a glide.
+        height: reached() + 6,
         marginTop: 4,
-        marginLeft: 24,
+        marginLeft: props.inset ?? 24,
         overflow: 'hidden',
-        justifyContent: 'flex-end',
         opacity: shown,
       }}
     >
       <View
-        style={{ transform: [{ translateY: pushed }] }}
+        style={{
+          position: 'absolute',
+          left: 0,
+          right: 0,
+          // Past three lines the text passes through: its end stays in view.
+          ...(overflowing() ? { bottom: 6 } : { top: 0 }),
+          transform: [{ translateY: pushed }],
+        }}
         onLayout={({ bounds }) => {
-          const grown = bounds.size.height - height;
+          const window = line() * PEEK_LINES;
+          const before = Math.max(0, height - window);
           height = bounds.size.height;
-          if (grown <= 0 || grown > line() * PEEK_LINES || reduceMotion()) return;
-          pushed.set(grown);
+          const over = Math.max(0, height - window);
+          const reach = Math.max(reached(), Math.min(height, window));
+          if (reach !== reached()) {
+            // Only the window and what it pushes: the list keeps following at once.
+            if (!reduceMotion()) frame?.animateLayout({ type: 'easeInEaseOut', duration: 200 });
+            reached.set(reach);
+          }
+          overflowing.set(over > 0);
+          if (over === 0) {
+            if (before > 0) pushed.set(0);
+            return;
+          }
+          // Only what is pushed out at the top moves the text in view.
+          const moved = over - before;
+          if (moved <= 0 || moved > window || reduceMotion()) return;
+          pushed.set(moved);
           void pushed.timing(0, { duration: 260, easing: 'easeOut' });
         }}
       >
@@ -270,7 +409,11 @@ export function ThinkingPeek(props: { text(): string }) {
             { userSelect: 'none' },
           ]}
         >
-          {tail()}
+          {words().settled}
+          <Text style={{ color: `${C.muted}e0` }}>{fresh(3)}</Text>
+          <Text style={{ color: `${C.muted}c0` }}>{fresh(2)}</Text>
+          <Text style={{ color: `${C.muted}9c` }}>{fresh(1)}</Text>
+          <Text style={{ color: `${C.muted}78` }}>{fresh(0)}</Text>
         </Text>
       </View>
       <View
@@ -282,6 +425,7 @@ export function ThinkingPeek(props: { text(): string }) {
             left: 0,
             right: 0,
             height: line() * 1.5,
+            opacity: overflowing() ? 1 : 0,
             backgroundImage: fade(C.panel, `${C.panel}00`),
           },
           { pointerEvents: 'none' },
@@ -295,7 +439,7 @@ export function ThinkingPeek(props: { text(): string }) {
             bottom: 0,
             left: 0,
             right: 0,
-            height: 10,
+            height: 6,
             backgroundImage: fade(`${C.panel}00`, C.panel),
           },
           { pointerEvents: 'none' },
