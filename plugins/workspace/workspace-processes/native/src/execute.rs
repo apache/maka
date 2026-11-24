@@ -77,7 +77,7 @@ pub(super) fn capture(
     if workspace.worktree.is_some() {
         installed_filesystem
             .rules
-            .push(Rule::subtree(&path, Access::Write));
+            .push(Rule::subtree(workspace.path.as_str(), Access::Write));
     }
     let installation = Sandbox::Managed {
         filesystem: installed_filesystem,
@@ -372,6 +372,98 @@ impl Processes {
 mod tests {
     use super::*;
     use maka_agent_facts::configuration::policy::{ShellPolicy, ShellPreference};
+
+    #[cfg(windows)]
+    #[test]
+    fn managed_worktree_shell_keeps_writes_inside_its_workspace() {
+        use maka_fs_tools::worktree::Worktrees;
+        use std::{fs, process::Command, sync::atomic::AtomicBool};
+
+        let fixture = tempfile::tempdir().unwrap();
+        let source = fixture.path().join("source");
+        let state = fixture.path().join("state");
+        fs::create_dir(&source).unwrap();
+        for args in [
+            &["init", "--quiet", "--object-format=sha1"][..],
+            &[
+                "-c",
+                "user.name=Maka tests",
+                "-c",
+                "user.email=tests@maka.invalid",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "--quiet",
+                "--allow-empty",
+                "-m",
+                "base",
+            ],
+        ] {
+            let result = Command::new("git")
+                .current_dir(&source)
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_CONFIG_GLOBAL", "NUL")
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                result.status.success(),
+                "{}",
+                String::from_utf8_lossy(&result.stderr)
+            );
+        }
+
+        let worktrees = Worktrees::open(&state.join("subagent-worktrees")).unwrap();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let binding = worktrees
+            .plan(&source, &"a".repeat(64), cancel.clone())
+            .unwrap();
+        worktrees.ensure(&binding, &cancel).unwrap();
+        let workspace = binding.directory().to_owned();
+        let configuration: ResolvedConfiguration = serde_json::from_value(serde_json::json!({
+            "title": "Worktree", "titleIsManual": false, "labels": [],
+            "workspace": {"path": workspace, "worktree": binding},
+            "binding": {"id": uuid::Uuid::new_v4(), "permissionEpoch": 0},
+            "permissions": {"access": "workspace_write", "requestPermissions": false},
+            "boundary_revision": 0
+        }))
+        .unwrap();
+        let settings = Configuration {
+            isolated_workspaces: true,
+            filesystem: Policy::uniform(Access::Read),
+            network: Network::Allowed,
+            helper: Some(std::env::current_exe().unwrap()),
+            setup_directory: None,
+            session_owner: None,
+        };
+        let shell = ShellPolicy {
+            preference: ShellPreference::Auto,
+            executable: String::new(),
+            titles: false,
+        };
+        let state = fs::canonicalize(state).unwrap();
+        let captured = capture(
+            &configuration,
+            &settings,
+            &state,
+            &shell,
+            &Sandbox::Disabled,
+        )
+        .unwrap();
+        let Sandbox::Managed { filesystem, .. } = captured.executor.sandbox() else {
+            panic!("expected a managed workspace sandbox");
+        };
+        let policy = filesystem.compile().unwrap();
+        assert_eq!(
+            policy.access(&captured.executor.cwd().join("output")),
+            Access::Write
+        );
+        let state = maka_fs_tools::workspace::project::host_path(&state).unwrap();
+        assert_eq!(
+            policy.access(&std::path::Path::new(state).join("private")),
+            Access::Deny
+        );
+    }
 
     /// A full-access Session can run a Run captured below full access, such as a
     /// read-only external recovery Run. Its commands start without network.

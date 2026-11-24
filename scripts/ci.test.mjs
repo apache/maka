@@ -312,6 +312,45 @@ test('Windows process and account-guard regressions are selected from their actu
   }
 });
 
+test('Windows Host policy path regressions run for their actual consumers', () => {
+  const packages = [
+    [
+      'maka-processes-native',
+      'plugins/workspace/workspace-processes/native/src/execute.rs',
+      'managed_worktree_shell_keeps_writes_inside_its_workspace',
+    ],
+    ['maka-sandbox', 'platform/sandbox/src/path.rs', 'resolved_path_projection'],
+  ].map(([name, path, filter]) => ({
+    name,
+    id: name,
+    source: null,
+    manifest_path: join(root, dirname(dirname(path)), 'Cargo.toml'),
+    path,
+    filter,
+  }));
+  const metadata = {
+    root: {
+      packages,
+      workspace_members: packages.map(({ id }) => id),
+      resolve: { nodes: packages.map(({ id }) => ({ id, deps: [] })) },
+    },
+  };
+  for (const pkg of packages) {
+    const plan = createPlan({
+      root,
+      changes: [pkg.path],
+      metadata,
+      revision: 'test',
+      baseline: 'base',
+    });
+    const worker = plan.workers.find(({ id }) => id === 'native-windows');
+    assert.ok(worker.suites.includes('windows-shell'));
+    assert.ok(worker.cargoScope.includes(pkg.name));
+    assert.ok(suites['windows-shell'].cargoArgs.includes(pkg.name));
+    assert.ok(plan.suites['windows-shell'].filter.includes(pkg.filter));
+  }
+});
+
 test('Desktop regressions compile only the native-desktop CLI test target with default features', () => {
   const plan = full();
   assert.equal(

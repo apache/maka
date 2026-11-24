@@ -148,7 +148,9 @@ impl ShellExecutor {
     pub fn new(cwd: impl AsRef<Path>, sandbox: maka_sandbox::Sandbox) -> Result<Self, ToolError> {
         let cwd = std::fs::canonicalize(cwd).map_err(|e| failed(e.to_string()))?;
         #[cfg(windows)]
-        let cwd = dunce::simplified(&cwd).to_owned();
+        let cwd = maka_sandbox::policy_path_from_resolved(&cwd)
+            .map_err(|error| failed(error.to_string()))?
+            .into_owned();
         if !cwd.is_dir() || cwd.to_str().is_none() {
             return Err(failed("Shell cwd must be a UTF-8 directory"));
         }
@@ -177,6 +179,10 @@ impl ShellExecutor {
             return Err(failed("Shell cwd must be an absolute UTF-8 directory"));
         }
         let directory = directory::Directory::capture(&cwd, directory).map_err(failed)?;
+        #[cfg(windows)]
+        let cwd = maka_sandbox::policy_path_from_resolved(&cwd)
+            .map_err(|error| failed(error.to_string()))?
+            .into_owned();
         Ok(Self {
             cwd,
             directory: Some(std::sync::Arc::new(directory)),
