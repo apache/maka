@@ -30,7 +30,7 @@
   "pkg.maka.conversations.description": "瀏覽對話、閱讀歷史記錄並協調工作階段任務。",
   "pkg.maka.file-search.description": "在 macOS 的快速啟動器輸入「檔案」或 f 加名稱，尋找所選檔案夾中的檔案。",
   "pkg.maka.quick-library.description": "在設定中管理片段、筆記和連結，在快速啟動器中隨時搜尋。",
-  "pkg.maka.screenshot.description": "在 macOS 的快速啟動器中截取熒幕區域並複製到剪貼簿。",
+  "pkg.maka.screenshot.description": "在 macOS 和 Windows 的快速啟動器中截取熒幕區域。",
   "pkg.maka.workbench.description": "透過 UI 貢獻組合 Maka 工作台佈局。",
   "title.Add connections, API keys and models": "新增連線、API 密鑰和模型",
   "title.Add to queue": "加入隊列",

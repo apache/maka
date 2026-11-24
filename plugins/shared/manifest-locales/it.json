@@ -55,7 +55,7 @@
   "pkg.maka.file-search.displayName": "Ricerca file",
   "pkg.maka.quick-library.description": "Frammenti, note e link gestiti nelle Impostazioni, a portata di ricerca nell’avvio rapido.",
   "pkg.maka.quick-library.displayName": "Libreria rapida",
-  "pkg.maka.screenshot.description": "Cattura un’area dello schermo negli appunti dall’avvio rapido su macOS.",
+  "pkg.maka.screenshot.description": "Cattura un’area dello schermo dall’avvio rapido su macOS e Windows.",
   "pkg.maka.screenshot.displayName": "Screenshot",
   "pkg.maka.symbols.description": "Digita \"sym\" seguito da un nome nell’avvio rapido per copiare un’emoji o un simbolo.",
   "pkg.maka.symbols.displayName": "Simboli",

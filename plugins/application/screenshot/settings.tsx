@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { host, signal, Storage, View, type JSX } from 'nsh';
+import { host, platform, signal, Storage, View, type JSX } from 'nsh';
 import { Button } from 'nsh/base';
 import {
   SettingsBody,
@@ -162,12 +162,19 @@ export function ScreenshotSettingsPage(props: { settings: ScreenshotSettings }):
       <SettingsSection title={tr('Saving')}>
         <SettingsRow
           label={tr('Save to')}
-          description={settings.current().folder ?? tr('Where macOS saves its screenshots')}
+          description={
+            settings.current().folder ??
+            (platform.os === 'windows'
+              ? tr('Choose when saving')
+              : tr('Where macOS saves its screenshots'))
+          }
           trailing={
             <View style={{ flexDirection: 'row', gap: 4 }}>
               <If when={settings.current().folder !== null}>
                 <SettingsButton
-                  label={tr('Use macOS’s folder')}
+                  label={
+                    platform.os === 'windows' ? tr('Choose when saving') : tr('Use macOS’s folder')
+                  }
                   tone="quiet"
                   onPress={() => settings.change({ folder: null })}
                 />
@@ -202,7 +209,9 @@ export function ScreenshotSettingsPage(props: { settings: ScreenshotSettings }):
         <SettingsSwitch
           label={tr('Snap to boxes in the picture')}
           description={tr(
-            'Besides windows and their controls, blocks of one color and outlined boxes, such as buttons and fields in web pages and terminals.',
+            platform.os === 'windows'
+              ? 'Snap to solid-color blocks and outlined rectangles in the screenshot.'
+              : 'Besides windows and their controls, blocks of one color and outlined boxes, such as buttons and fields in web pages and terminals.',
           )}
           checked={settings.current().pictureBoxes}
           onPress={() => settings.change({ pictureBoxes: !settings.current().pictureBoxes })}

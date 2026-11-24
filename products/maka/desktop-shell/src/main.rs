@@ -43,6 +43,8 @@ mod permission_window;
 #[cfg(target_os = "macos")]
 mod screenshot;
 #[cfg(windows)]
+mod screenshot_windows;
+#[cfg(windows)]
 use direct2d as backend;
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 mod host;

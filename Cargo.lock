@@ -8737,6 +8737,7 @@ version = "0.3.0"
 dependencies = [
  "block2 0.6.2",
  "clap",
+ "clipboard-win",
  "dispatch2",
  "embed-resource",
  "libc",
@@ -8758,10 +8759,12 @@ dependencies = [
  "objc2-core-graphics",
  "objc2-foundation 0.3.2",
  "objc2-screen-capture-kit",
+ "png 0.18.1",
  "serde",
  "serde_json",
  "tokio",
  "uuid",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

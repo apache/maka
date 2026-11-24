@@ -55,7 +55,7 @@
   "pkg.maka.file-search.displayName": "Recherche de fichiers",
   "pkg.maka.quick-library.description": "Des extraits, notes et liens gérés dans les Paramètres, accessibles en une recherche depuis le lanceur rapide.",
   "pkg.maka.quick-library.displayName": "Bibliothèque rapide",
-  "pkg.maka.screenshot.description": "Capturer une zone de l’écran vers le presse-papiers depuis le lanceur rapide sur macOS.",
+  "pkg.maka.screenshot.description": "Capturer une zone de l’écran depuis le lanceur rapide sur macOS et Windows.",
   "pkg.maka.screenshot.displayName": "Capture d’écran",
   "pkg.maka.symbols.description": "Saisissez « sym » ou « symbole » suivi d’un nom dans le lanceur rapide pour copier un emoji ou un symbole.",
   "pkg.maka.symbols.displayName": "Symboles",

@@ -125,11 +125,13 @@ pub(crate) const NEAR: i64 = 2;
 
 /// A window on the picture and the controls in it, from Accessibility and from the picture.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg(any(target_os = "macos", test))]
 pub(crate) struct Window {
     pub area: Area,
     pub elements: Vec<Area>,
 }
 
+#[cfg(target_os = "macos")]
 impl Window {
     /// Adds controls or boxes found in the window, leaving out those that are the window again.
     pub fn add(&mut self, areas: impl IntoIterator<Item = Area>) {
@@ -144,6 +146,7 @@ impl Window {
 
 /// What a click at `pixel` takes, smallest first: the controls under it in the front-most window
 /// there, that window, then the whole picture.
+#[cfg(any(target_os = "macos", test))]
 pub(crate) fn targets(windows: &[Window], pixel: Pixel, whole: Area) -> Vec<Area> {
     let mut found: Vec<Area> = windows
         .iter()
@@ -161,6 +164,7 @@ pub(crate) fn targets(windows: &[Window], pixel: Pixel, whole: Area) -> Vec<Area
 
 /// The edges a dragged corner at `pixel` sticks to: those of the front-most window there and its
 /// controls, or the whole picture's.
+#[cfg(target_os = "macos")]
 pub(crate) fn edges_near(windows: &[Window], pixel: Pixel, whole: Area) -> Vec<Area> {
     let mut edges = vec![whole];
     if let Some(window) = windows.iter().find(|window| window.area.contains(pixel)) {
@@ -171,6 +175,7 @@ pub(crate) fn edges_near(windows: &[Window], pixel: Pixel, whole: Area) -> Vec<A
 }
 
 /// `pixel` moved, on each axis, onto the nearest edge of `areas` within `slop`.
+#[cfg(any(target_os = "macos", test))]
 pub(crate) fn snap(pixel: Pixel, areas: &[Area], slop: i64) -> Pixel {
     let nearest = |value: i64, lines: &mut dyn Iterator<Item = i64>| {
         lines

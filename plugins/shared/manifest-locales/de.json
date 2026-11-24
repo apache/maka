@@ -55,7 +55,7 @@
   "pkg.maka.file-search.displayName": "Dateisuche",
   "pkg.maka.quick-library.description": "Textbausteine, Notizen und Links aus den Einstellungen – im Schnellstarter sofort durchsuchbar.",
   "pkg.maka.quick-library.displayName": "Schnellbibliothek",
-  "pkg.maka.screenshot.description": "Einen Bildschirmbereich unter macOS über den Schnellstarter in die Zwischenablage aufnehmen.",
+  "pkg.maka.screenshot.description": "Einen Bildschirmbereich unter macOS und Windows über den Schnellstarter aufnehmen.",
   "pkg.maka.screenshot.displayName": "Bildschirmfoto",
   "pkg.maka.symbols.description": "Geben Sie im Schnellstarter „sym“ oder „Symbol“ und einen Namen ein, um ein Emoji oder Symbol zu kopieren.",
   "pkg.maka.symbols.displayName": "Symbole",

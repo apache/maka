@@ -55,7 +55,7 @@
   "pkg.maka.file-search.displayName": "ファイル検索",
   "pkg.maka.quick-library.description": "設定で管理するスニペット、メモ、リンクをクイックランチャーからすぐに検索できます。",
   "pkg.maka.quick-library.displayName": "クイックライブラリ",
-  "pkg.maka.screenshot.description": "macOS のクイックランチャーから画面の領域をキャプチャしてクリップボードにコピーします。",
+  "pkg.maka.screenshot.description": "macOS と Windows のクイックランチャーから画面の領域をキャプチャします。",
   "pkg.maka.screenshot.displayName": "スクリーンショット",
   "pkg.maka.symbols.description": "クイックランチャーで「記号」または sym に続けて名前を入力し、絵文字や記号をコピーします。",
   "pkg.maka.symbols.displayName": "記号",

@@ -55,7 +55,7 @@
   "pkg.maka.file-search.displayName": "Búsqueda de archivos",
   "pkg.maka.quick-library.description": "Fragmentos, notas y enlaces gestionados en Configuración, a una búsqueda de distancia en el lanzador rápido.",
   "pkg.maka.quick-library.displayName": "Biblioteca rápida",
-  "pkg.maka.screenshot.description": "Captura una región de la pantalla al portapapeles desde el lanzador rápido en macOS.",
+  "pkg.maka.screenshot.description": "Captura una región de la pantalla desde el lanzador rápido en macOS y Windows.",
   "pkg.maka.screenshot.displayName": "Captura de pantalla",
   "pkg.maka.symbols.description": "Escribe \"símbolo\" o \"sym\" y un nombre en el lanzador rápido para copiar un emoji o símbolo.",
   "pkg.maka.symbols.displayName": "Símbolos",

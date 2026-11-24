@@ -20,11 +20,12 @@
 //! Rectangles seen in the picture itself, flat blocks of color and outlined boxes, for the many
 //! apps (web views, Electron, terminals) whose controls Accessibility does not describe.
 
-use super::{
-    area::{Area, NEAR},
-    paint::bitmap,
-};
+use super::area::{Area, NEAR};
+#[cfg(target_os = "macos")]
+use super::paint::bitmap;
+#[cfg(target_os = "macos")]
 use objc2_core_foundation::{CGPoint, CGRect, CGSize};
+#[cfg(target_os = "macos")]
 use objc2_core_graphics::{
     CGBitmapContextGetBytesPerRow, CGBitmapContextGetData, CGContext, CGImage,
 };
@@ -43,7 +44,59 @@ pub(super) struct Pixels<'a> {
     pub stride: usize,
 }
 
+#[cfg(any(windows, test))]
+impl Pixels<'_> {
+    pub(super) fn visible_border(&self, area: Area) -> bool {
+        const SAMPLES: i64 = 12;
+        let pixel = |x: i64, y: i64| {
+            let offset = y as usize * self.stride + x as usize * 4;
+            &self.data[offset..offset + 3]
+        };
+        let side = |x: i64, y: i64, dx: i64, dy: i64, length: i64| {
+            let mut visible = 0;
+            for index in 0..SAMPLES {
+                let along = length * (2 * index + 1) / (2 * SAMPLES);
+                let x = x + dy.abs() * along;
+                let y = y + dx.abs() * along;
+                let outside = pixel(x + dx, y + dy);
+                if pixel(x, y)
+                    .iter()
+                    .zip(outside)
+                    .any(|(inside, outside)| inside.abs_diff(*outside) >= 10)
+                {
+                    visible += 1;
+                }
+            }
+            visible * 2 >= SAMPLES
+        };
+        let sides = [
+            (area.x > 0, area.x, area.y, -1, 0, area.height),
+            (
+                area.right() + 1 < self.width as i64,
+                area.right(),
+                area.y,
+                1,
+                0,
+                area.height,
+            ),
+            (area.y > 0, area.x, area.y, 0, -1, area.width),
+            (
+                area.bottom() + 1 < self.height as i64,
+                area.x,
+                area.bottom(),
+                0,
+                1,
+                area.width,
+            ),
+        ];
+        sides
+            .into_iter()
+            .all(|(available, x, y, dx, dy, length)| !available || side(x, y, dx, dy, length))
+    }
+}
+
 /// The boxes in `picture` at least `smallest` pixels on each side.
+#[cfg(target_os = "macos")]
 pub(super) fn find(picture: &CGImage, smallest: i64) -> Vec<Area> {
     let width = CGImage::width(Some(picture));
     let height = CGImage::height(Some(picture));
@@ -371,5 +424,30 @@ mod tests {
         canvas.fill(frame, [255, 255, 255]);
         canvas.outline(frame, [100, 100, 100]);
         assert_eq!(canvas.rectangles(), [frame]);
+    }
+
+    #[test]
+    fn windows_snap_ignores_near_blank_tiles_and_open_shapes_but_keeps_controls() {
+        let mut canvas = Canvas::new(180, 100);
+        let tile = Area::spanning((10, 10), (33, 33));
+        let button = Area::spanning((48, 10), (71, 33));
+        let field = Area::spanning((85, 10), (153, 33));
+        let open = Area::spanning((10, 52), (80, 80));
+        canvas.fill(tile, [238; 3]);
+        canvas.fill(button, [215; 3]);
+        canvas.outline(field, [195; 3]);
+        canvas.outline(open, [30; 3]);
+        canvas.fill(Area::spanning((10, 53), (10, 79)), BACKGROUND);
+        let pixels = Pixels {
+            data: &canvas.data,
+            width: canvas.width,
+            height: canvas.height,
+            stride: canvas.width * 4,
+        };
+        let mut found = canvas.rectangles();
+        assert!(found.contains(&tile) && found.contains(&open));
+        found.retain(|area| pixels.visible_border(*area));
+        assert!(found.contains(&button) && found.contains(&field));
+        assert!(!found.contains(&tile) && !found.contains(&open));
     }
 }
