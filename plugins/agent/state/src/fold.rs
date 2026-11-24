@@ -493,32 +493,13 @@ impl RunView {
     pub fn recovery_failure_diagnostic(&self) -> Option<String> {
         use maka_agent_facts::external_publication::ExternalPublicationBlocker;
         Some(match self.recovery_failure()? {
-            BlockerKind::OperationUnknown { tool, reference } => {
-                match self
-                    .tools
+            BlockerKind::OperationUnknown { tool, reference } => unknown_receipt_diagnostic(
+                self.tools
                     .get(&tool_key(tool))
-                    .and_then(|tool| tool.receipt.as_ref())
-                {
-                    Some(Receipt::Recorded {
-                        outcome: OperationOutcome::Unknown { diagnostic },
-                        cleanup: OperationCleanup::Confirmed,
-                    }) => diagnostic.clone(),
-                    Some(
-                        Receipt::Recorded {
-                            outcome: OperationOutcome::Unknown { diagnostic },
-                            ..
-                        }
-                        | Receipt::Unavailable { diagnostic },
-                    ) => format!(
-                        "{}. The call may still be running; its end was not confirmed.",
-                        diagnostic.trim_end_matches('.')
-                    ),
-                    _ => format!(
-                        "Could not determine the outcome of {}.{}; the call may still be running.",
-                        reference.export, reference.method
-                    ),
-                }
-            }
+                    .and_then(|tool| tool.receipt.as_ref()),
+                Some(reference),
+                "Could not determine the outcome of an operation.",
+            ),
             BlockerKind::ToolCleanupUnconfirmed { diagnostic, .. } => {
                 format!("A tool call may still be running; its end was not confirmed: {diagnostic}")
             }
@@ -546,8 +527,25 @@ impl RunView {
                 }
             }
             .into(),
-            BlockerKind::ExternalEffectUnknown { .. } => {
-                "Could not determine the outcome of an external agent operation.".into()
+            BlockerKind::ExternalEffectUnknown { task, operation } => {
+                let effect = self
+                    .external
+                    .as_ref()
+                    .filter(|current| current.task == *task)
+                    .and_then(|current| current.effects.get(operation));
+                unknown_receipt_diagnostic(
+                    effect
+                        .and_then(|effect| effect.observation.as_ref())
+                        .map(|reply| &reply.receipt),
+                    effect.and_then(|effect| {
+                        effect
+                            .observation
+                            .as_ref()
+                            .map(|reply| &reply.reference)
+                            .or(effect.reference.as_ref())
+                    }),
+                    "Could not determine the outcome of an external agent operation.",
+                )
             }
             BlockerKind::ProviderEffectUnknown { .. } => {
                 "Could not determine the outcome of a tool run by the model provider.".into()
@@ -577,33 +575,44 @@ impl RunView {
     }
 
     pub fn blocks_followup(&self) -> bool {
-        self.blocks_successor(|tool| {
-            // A new turn does not reuse the original tool outcome.
-            matches!(
-                tool.receipt,
-                Some(Receipt::Recorded {
-                    outcome: OperationOutcome::Unknown { .. },
-                    cleanup: OperationCleanup::Confirmed,
-                })
-            )
-        })
+        self.blocks_successor(
+            |tool| {
+                // A new turn does not reuse the original tool outcome.
+                matches!(
+                    tool.receipt,
+                    Some(Receipt::Recorded {
+                        outcome: OperationOutcome::Unknown { .. },
+                        cleanup: OperationCleanup::Confirmed,
+                    })
+                )
+            },
+            crate::external_effects::ExternalEffect::ended_unknown,
+        )
     }
 
     pub fn blocks_continuation(&self) -> bool {
-        self.blocks_successor(|_| false)
+        self.blocks_successor(|_| false, |_| false)
     }
 
-    fn blocks_successor(&self, ignore_unknown: impl Fn(&Tool) -> bool) -> bool {
+    fn blocks_successor(
+        &self,
+        ignore_unknown_tool: impl Fn(&Tool) -> bool,
+        ignore_unknown_external: impl Fn(&crate::external_effects::ExternalEffect) -> bool,
+    ) -> bool {
         (self.terminal == Some(Terminal::Failed) || self.cancelled_by_risk)
-            && self.has_unsettled_recovery_except(ignore_unknown)
+            && self.has_unsettled_recovery_except(ignore_unknown_tool, ignore_unknown_external)
             && !self.interrupted_host_calls()
     }
 
     pub fn has_unsettled_recovery(&self) -> bool {
-        self.has_unsettled_recovery_except(|_| false)
+        self.has_unsettled_recovery_except(|_| false, |_| false)
     }
 
-    fn has_unsettled_recovery_except(&self, ignore_unknown: impl Fn(&Tool) -> bool) -> bool {
+    fn has_unsettled_recovery_except(
+        &self,
+        ignore_unknown_tool: impl Fn(&Tool) -> bool,
+        ignore_unknown_external: impl Fn(&crate::external_effects::ExternalEffect) -> bool,
+    ) -> bool {
         let closed_native_process = matches!(&self.spec.backend, BackendSpec::Executor { selection, .. }
             if selection.executor == "external")
             && self
@@ -627,8 +636,16 @@ impl RunView {
             }
             if let BlockerKind::OperationUnknown { tool, reference } = reason {
                 return !self.tools.get(&tool_key(tool)).is_some_and(|tool| {
-                    tool.original.as_ref() == Some(reference) && ignore_unknown(tool)
+                    tool.original.as_ref() == Some(reference) && ignore_unknown_tool(tool)
                 });
+            }
+            if let BlockerKind::ExternalEffectUnknown { task, operation } = reason {
+                return !self
+                    .external
+                    .as_ref()
+                    .filter(|current| current.task == *task)
+                    .and_then(|current| current.effects.get(operation))
+                    .is_some_and(&ignore_unknown_external);
             }
             if let BlockerKind::OriginalAdmissionUnknown { tool } = reason {
                 return self
@@ -654,14 +671,14 @@ impl RunView {
                     | BlockerKind::ExternalPublicationItem { .. }
             )
         }) || self.tools.values().any(|tool| {
-            !ignore_unknown(tool) && !sealed_provider_call(tool) && self.tool_unsettled(tool)
+            !ignore_unknown_tool(tool) && !sealed_provider_call(tool) && self.tool_unsettled(tool)
         }) || self.attempts.values().any(attempt_unsettled)
             || self.cells.values().any(|cell| cell.has_unsettled_effects())
             || self.external.as_ref().is_some_and(|task| {
                 task.admitted
                     && (task.closed.is_none() && !closed_native_process
                         || task.cleanup != OperationCleanup::Confirmed
-                        || task.effects.values().any(|effect| effect.pending())
+                        || task.effects.values().any(|effect| effect.unsettled())
                         || task.publication.as_ref().is_some_and(|publication| {
                             !publication.quiescent() || publication.unknown()
                         }))
@@ -764,12 +781,14 @@ impl RunView {
                     .values()
                     .filter(|effect| effect.admitted)
                     .all(|effect| {
-                        !effect
-                            .observation
-                            .as_ref()
-                            .is_some_and(|reply| receipt_blocks_effects(&reply.receipt))
-                            && !matches!(effect.cleanup, OperationCleanup::Failed { .. })
-                            && !(effect.known() && effect.cleanup != OperationCleanup::Confirmed)
+                        effect.ended_unknown()
+                            || (!effect
+                                .observation
+                                .as_ref()
+                                .is_some_and(|reply| receipt_blocks_effects(&reply.receipt))
+                                && !matches!(effect.cleanup, OperationCleanup::Failed { .. })
+                                && !(effect.known()
+                                    && effect.cleanup != OperationCleanup::Confirmed))
                     })
             }),
             "external task has unresolved original effects or cleanup",
@@ -2890,6 +2909,37 @@ fn tool_unsettled(tool: &Tool) -> bool {
 }
 pub(crate) fn tool_pending(tool: &Tool) -> bool {
     tool.accepted.is_none() || tool_unsettled(tool)
+}
+
+fn unknown_receipt_diagnostic<R>(
+    receipt: Option<&maka_plugin_core::operation::Receipt<R>>,
+    reference: Option<&RecoveryRef>,
+    fallback: &str,
+) -> String {
+    use maka_plugin_core::operation::{OperationOutcome, Receipt};
+    match receipt {
+        Some(Receipt::Recorded {
+            outcome: OperationOutcome::Unknown { diagnostic },
+            cleanup: OperationCleanup::Confirmed,
+        }) => diagnostic.clone(),
+        Some(
+            Receipt::Recorded {
+                outcome: OperationOutcome::Unknown { diagnostic },
+                ..
+            }
+            | Receipt::Unavailable { diagnostic },
+        ) => format!(
+            "{}. The call may still be running; its end was not confirmed.",
+            diagnostic.trim_end_matches('.')
+        ),
+        _ => match reference {
+            Some(reference) => format!(
+                "Could not determine the outcome of {}.{}; the call may still be running.",
+                reference.export, reference.method
+            ),
+            None => fallback.into(),
+        },
+    }
 }
 
 fn receipt_blocks_effects<R>(receipt: &maka_plugin_core::operation::Receipt<R>) -> bool {

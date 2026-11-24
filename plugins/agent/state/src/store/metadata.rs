@@ -401,7 +401,7 @@ fn terminal_needs_catalog(
         c,
         run,
         "SELECT body FROM agent_external_effects WHERE run=? AND pending=1",
-        |effect| effect.admitted && effect.pending(),
+        |effect| effect.admitted && effect.unsettled(),
     )? {
         return Ok(true);
     }

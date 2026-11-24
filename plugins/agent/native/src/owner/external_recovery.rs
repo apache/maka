@@ -145,7 +145,7 @@ impl Owner {
         };
         let mut calls = BTreeMap::new();
         for (&operation, effect) in &task.effects {
-            if !effect.pending() {
+            if !effect.unsettled() {
                 continue;
             }
             if !effect.admitted || effect.returned.is_some() {

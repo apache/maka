@@ -266,6 +266,24 @@ fn project(
             })?;
             message.references.push(output.clone());
         }
+        Rule::ExternalObserved {
+            diagnostic,
+            observation,
+        } => {
+            message.role = Role::ToolResult;
+            field(
+                &mut message,
+                Field::Result,
+                &maka_agent_facts::tool_output::ended_unknown_message(diagnostic),
+                false,
+            );
+            field(
+                &mut message,
+                Field::Receipt,
+                &serde_json::to_string(observation)?,
+                false,
+            );
+        }
         Rule::Returned { result, receipt } => {
             let returned = tool_return(c, fact.run, result)?;
             message.role = Role::ToolResult;

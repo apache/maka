@@ -222,6 +222,28 @@ pub enum CellFinalEvidence {
     Interrupted { report: crate::durable::ContentRef },
 }
 
+/// Extract the diagnostic from a Host operation reply whose physical execution
+/// ended (cleanup confirmed) even though its external outcome remained unknown.
+pub fn ended_unknown_diagnostic(
+    reply: &maka_plugin_core::operation::OperationReply,
+) -> Option<&str> {
+    match &reply.receipt {
+        Receipt::Recorded {
+            outcome: OperationOutcome::Unknown { diagnostic },
+            cleanup: maka_plugin_core::operation::OperationCleanup::Confirmed,
+        } => Some(diagnostic.as_str()),
+        _ => None,
+    }
+}
+
+/// Format an ended tool call whose external outcome could not be confirmed.
+pub fn ended_unknown_message(diagnostic: &str) -> String {
+    format!(
+        "The call ended, but its result is unknown: {}. It may or may not have          taken effect. Check the current state before deciding what to do next;          do not simply repeat the call.",
+        diagnostic.trim_end_matches('.')
+    )
+}
+
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum AcceptedToolResult {

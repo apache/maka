@@ -2150,6 +2150,330 @@ async fn assert_restricted_retry_history(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn external_effect_ended_unknown_releases_followup_and_projects_history() -> TestResult<()> {
+    use maka_agent_facts::external_effects::{
+        ExternalEffectDescriptor, ExternalEffectEvent, ExternalEffectKey,
+    };
+    use maka_agent_state::{SessionObligation, SessionQuiescence};
+    use maka_plugin_core::{
+        contract::Transport,
+        deployment::DeploymentRef,
+        operation::{
+            OperationOutcome, OperationReply, Receipt, RecoveryContract, RecoveryProtocol,
+            RecoveryRef,
+        },
+    };
+
+    let mut rig = Rig::new()?;
+    let result = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(30), async {
+        let session = rig
+            .start_configured(None, |config| {
+                config["external"] = json!({"runtimes":{"codex":true}});
+            })
+            .await?;
+        rig.assemble_backend(
+            &session,
+            Budget {
+                tokens: None,
+                retries: 0,
+                deadline: None,
+            },
+            false,
+            true,
+        )
+        .await?;
+        let driver = rig.driver.as_ref().unwrap().clone();
+        let run = driver.access.execution().run_id;
+        let owner = driver.owner.run_owner();
+        let task = ExternalTaskId::new();
+        let key = ExternalEffectKey {
+            task,
+            operation: Uuid::new_v4(),
+        };
+        let binding = maka_agent_facts::executor::Binding {
+            executor_id: "external".to_string().try_into()?,
+            package_id: "maka.agent".into(),
+            entry_id: "maka.agent".into(),
+            activation: "fixture".into(),
+        };
+        let task_descriptor = ContentBlob::json(&maka_agent_facts::executor::TaskDescriptor {
+            protocol: maka_agent_facts::executor::NATIVE_TASK_PROTOCOL.into(),
+            source: binding.clone(),
+            payload: json!({}),
+        })?;
+        let descriptor = ContentBlob::json(&ExternalEffectDescriptor {
+            schema_version: SCHEMA_VERSION,
+            protocol: "fixture".into(),
+            execution: driver.access.execution().clone(),
+            key,
+            origin: maka_agent_facts::tool_call::ToolOrigin::External {
+                task,
+                operation: key.operation,
+                package_id: binding.package_id,
+                entry_id: binding.entry_id,
+                activation: binding.activation,
+            },
+            operation_id: format!("external:{task}:{}", key.operation),
+            name: "cua_repl".into(),
+            input: json!({"code": "await app.paste('hi')"}),
+            definition: ToolDefinition {
+                name: "cua_repl".into(),
+                description: "Computer Use REPL".into(),
+                input_schema: json!({}),
+                provider: None,
+                freeform: None,
+                output_schema: None,
+            },
+            catalog_digest: maka_agent_engine::digest(&json!({}))?,
+            resources: vec![],
+        })?;
+        let digest = format!("sha256-{}", "d".repeat(64));
+        let reference = RecoveryRef {
+            source: DeploymentRef {
+                state_domain: "b".repeat(64),
+                deployment: owner.deployment,
+                revision: 1,
+            },
+            namespace: owner.namespace.clone(),
+            export: "computer".into(),
+            method: "evaluate".into(),
+            operation: Uuid::new_v4(),
+            fingerprint: digest.clone(),
+            contract: RecoveryContract {
+                name: "maka.workspace.Computer".into(),
+                version: 1,
+                transport: Transport::Remote,
+                digest,
+            },
+            recovery: RecoveryProtocol::JournalV1,
+        };
+        let diagnostic =
+            "paste did not produce an observable change; inspect the UI before trying another action";
+        let observed = |cleanup| Fact::ExternalEffect {
+            event: ExternalEffectEvent::Observed {
+                key,
+                observation: OperationReply {
+                    reference: reference.clone(),
+                    receipt: Receipt::Recorded {
+                        outcome: OperationOutcome::Unknown {
+                            diagnostic: diagnostic.into(),
+                        },
+                        cleanup,
+                    },
+                },
+            },
+        };
+        rig.append(
+            vec![
+                Fact::ExternalTaskPrepared {
+                    task,
+                    descriptor: task_descriptor.reference().clone(),
+                    live_workspace: true,
+                },
+                Fact::ExternalTaskAdmitted { task },
+            ],
+            vec![task_descriptor],
+        )
+        .await?;
+        rig.append(
+            vec![
+                Fact::ExternalEffect {
+                    event: ExternalEffectEvent::Prepared {
+                        key,
+                        descriptor: descriptor.reference().clone(),
+                    },
+                },
+                Fact::ExternalEffect {
+                    event: ExternalEffectEvent::Admitted {
+                        key,
+                        approval: None,
+                    },
+                },
+                Fact::ExternalEffect {
+                    event: ExternalEffectEvent::Bound {
+                        key,
+                        reference: reference.clone(),
+                    },
+                },
+                observed(OperationCleanup::Unconfirmed),
+                Fact::Blocked {
+                    blocker: BlockerId::new(),
+                    reason: BlockerKind::ExternalEffectUnknown {
+                        task,
+                        operation: key.operation,
+                    },
+                },
+                Fact::ExternalTaskCleanupObserved {
+                    task,
+                    cleanup: OperationCleanup::Confirmed,
+                },
+                Fact::ExternalTaskClosed {
+                    task,
+                    outcome: Terminal::Failed,
+                    diagnostic: None,
+                    final_message: None,
+                },
+                Fact::RunTerminated {
+                    terminal: Terminal::Failed,
+                    diagnostic: Some(
+                        "Could not determine the outcome of an external agent operation.".into(),
+                    ),
+                },
+            ],
+            vec![descriptor],
+        )
+        .await?;
+
+        let page = live(&rig, &session, wire::Position::Tail).await?;
+        let failures: Vec<_> = page["chunks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|row| row["role"] == "failure")
+            .map(|row| row["text"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            failures,
+            [
+                "paste did not produce an observable change; inspect the UI before trying another action. The call may still be running; its end was not confirmed."
+            ]
+        );
+
+        let connection_id = driver
+            .owner
+            .configuration
+            .catalog()
+            .await?
+            .connections
+            .into_iter()
+            .next()
+            .ok_or("missing fixture model connection")?
+            .connection_id;
+        let client = rig.client.as_ref().unwrap();
+        let message = json!({
+            "sessionId": session,
+            "message": "Continue after inspecting the UI",
+            "backend": {"kind": "model", "connectionId": connection_id, "modelId": "llama3.2"},
+            "delivery": "queue",
+        });
+        let blocked = model_recovery::call(client, "agent", "send", message.clone()).await?;
+        assert_eq!(blocked["reason"], "original_operation_unsettled", "{blocked}");
+        assert_eq!(
+            driver.state.session_quiescence(owner.clone(), session.clone()).await?,
+            SessionQuiescence::Busy(SessionObligation::ExternalEffect)
+        );
+
+        driver
+            .state
+            .observe(run, vec![Change::new(observed(OperationCleanup::Confirmed), at())], vec![])
+            .await?;
+
+        assert_eq!(
+            driver
+                .state
+                .frontier(run)
+                .await?
+                .recovery_failure_diagnostic()
+                .as_deref(),
+            Some(diagnostic)
+        );
+        let page = live(&rig, &session, wire::Position::Tail).await?;
+        let tool_results: Vec<_> = page["chunks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|row| row["role"] == "tool_result")
+            .collect();
+        assert_eq!(tool_results.len(), 1, "{page}");
+        assert_eq!(tool_results[0]["tool"]["call"]["name"], "cua_repl");
+        assert_eq!(tool_results[0]["tool"]["call"]["pending"], false);
+        assert_eq!(tool_results[0]["tool"]["result"]["settlement"], "unknown");
+        assert_eq!(tool_results[0]["tool"]["result"]["isError"], true);
+        let reader = model_reader(&driver)?;
+        let detail = serde_json::to_value(
+            crate::service::history::source(
+                &driver.owner,
+                reader.scope(),
+                serde_json::from_value(json!({
+                    "sessionId": session,
+                    "through": page["through"],
+                    "source": {"kind": "row", "position": tool_results[0]["position"]},
+                    "field": "result",
+                    "position": {"kind": "start"},
+                }))?,
+            )
+            .await?,
+        )?;
+        reader.finish().await?;
+        assert!(
+            detail["source"]["text"]
+                .as_str()
+                .unwrap_or_default()
+                .contains(diagnostic),
+            "{detail}"
+        );
+
+        // Snapshot projection and rebuilt Recall index agree with live history.
+        let history = driver.state.session_history(owner.clone(), session.clone());
+        let cut = history.capture().await?;
+        let snapshot = history
+            .capture_snapshot(
+                CaptureRequest {
+                    id: SnapshotId::new(),
+                    cut,
+                },
+                CancellationToken::new(),
+            )
+            .await?;
+        let frozen = serde_json::to_value(
+            crate::service::history::snapshot_page(
+                &snapshot,
+                wire::Position::Tail,
+                true,
+                wire::HistoryView::Conversation,
+                &CancellationToken::new(),
+            )
+            .await?,
+        )?;
+        assert!(frozen["chunks"].as_array().unwrap().iter().any(|row| {
+            row["role"] == "tool_result" && row["tool"]["result"]["settlement"] == "unknown"
+        }));
+
+        assert_eq!(
+            driver
+                .state
+                .session_quiescence(owner.clone(), session.clone())
+                .await?,
+            SessionQuiescence::Quiescent
+        );
+
+        let continued = model_recovery::call(
+            client,
+            "agent",
+            "continueRun",
+            json!({
+                "sessionId": session,
+                "sourceRunId": run,
+                "sourceHighWater": driver.state.frontier(run).await?.revision,
+                "model": {"connectionId": connection_id, "modelId": "llama3.2"},
+            }),
+        )
+        .await?;
+        assert_eq!(continued["reason"], "safety_check_failed", "{continued}");
+
+        let sent = model_recovery::call(client, "agent", "send", message).await?;
+        assert_eq!(sent["kind"], "queued", "{sent}");
+        Ok::<_, Box<dyn Error + Send + Sync>>(())
+    }))
+    .catch_unwind()
+    .await;
+    let cleanup = rig.finish().await;
+    assert!(matches!(&result, Ok(Ok(Ok(())))), "{result:?}");
+    assert!(cleanup.is_empty(), "{cleanup:?}");
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn history_shows_only_the_final_model_failure() -> TestResult<()> {
     use axum::http::StatusCode;
     use maka_agent_engine::DriverExit;

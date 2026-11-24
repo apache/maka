@@ -338,7 +338,7 @@ impl RunView {
             && task
                 .effects
                 .iter()
-                .all(|(id, effect)| !effect.pending() || missing.contains_key(id))
+                .all(|(id, effect)| !effect.unsettled() || missing.contains_key(id))
             && self.tools.values().all(|tool| !self.tool_unsettled(tool))
             && !self.attempts.values().any(super::attempt_unsettled)
             && self
@@ -380,6 +380,6 @@ impl RunView {
         *terminal == Terminal::Cancelled
             && self.stopped
             && task.cleanup == OperationCleanup::Confirmed
-            && task.effects.values().all(|effect| !effect.pending())
+            && task.effects.values().all(|effect| !effect.unsettled())
     }
 }

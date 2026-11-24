@@ -465,14 +465,18 @@ impl NativeExternalEffects {
         {
             let mut source = active.lock().await;
             source.execution_owned = true;
-            source.physical = !matches!(
-                &result,
-                Err(ToolError::OutcomeUnknown(_)
-                    | ToolError::OperationUnknown { .. }
+            source.physical = match &result {
+                Err(ToolError::OperationUnknown { observation, .. }) => {
+                    ended_unknown_reply(observation)
+                }
+                Err(
+                    ToolError::OutcomeUnknown(_)
                     | ToolError::CleanupUnconfirmed(_)
                     | ToolError::OperationCleanupUnconfirmed { .. }
-                    | ToolError::Persistence(_))
-            );
+                    | ToolError::Persistence(_),
+                ) => false,
+                _ => true,
+            };
             source.custody = Some(Box::new(custody));
         }
         // No shared-tracker task waits for its own Root settlement. The same
@@ -1239,7 +1243,9 @@ impl NativeExternalEffects {
         }
         if let Some(error) = operation_return_error(&reply) {
             self.cleanup.observe_tool(&error);
-            self.block(key).await?;
+            if !ended_unknown_reply(&reply) {
+                self.block(key).await?;
+            }
             return Err(error);
         }
         let original = self
@@ -1390,7 +1396,9 @@ impl NativeExternalEffects {
                     self.observe_reply(key, reply).await?;
                     if let Some(error) = operation_return_error(reply) {
                         self.cleanup.observe_tool(&error);
-                        self.block(key).await?;
+                        if !ended_unknown_reply(reply) {
+                            self.block(key).await?;
+                        }
                         return Err(error);
                     }
                 }
@@ -1415,7 +1423,13 @@ impl NativeExternalEffects {
                 };
                 self.observe_reply(key, observation).await?;
                 self.cleanup.observe_tool(&error);
-                self.block(key).await?;
+                if !matches!(
+                    &error,
+                    ToolError::OperationUnknown { observation, .. }
+                        if ended_unknown_reply(observation)
+                ) {
+                    self.block(key).await?;
+                }
                 Err(error)
             }
             Err(
@@ -1697,6 +1711,10 @@ fn display_projection(
         Some(archived) => Ok(archived),
         None => Ok(projection),
     }
+}
+
+fn ended_unknown_reply(reply: &OperationReply) -> bool {
+    maka_agent_facts::tool_output::ended_unknown_diagnostic(reply).is_some()
 }
 
 fn operation_return_error(reply: &OperationReply) -> Option<ToolError> {

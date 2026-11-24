@@ -526,3 +526,258 @@ fn missing_external_return_releases_followup_but_preserves_the_original_receipt(
     assert_eq!(original.missing_return, None);
     assert!(!view.blocks_followup());
 }
+
+#[test]
+fn ended_unknown_external_effect_releases_followup_and_surfaces_diagnostic_after_cleanup() {
+    use maka_agent_facts::{
+        executor::Selection,
+        external_effects::{ExternalEffectEvent, ExternalEffectKey},
+    };
+    use maka_plugin_core::{
+        contract::Transport,
+        deployment::DeploymentRef,
+        operation::{
+            OperationOutcome, OperationReply, Receipt, RecoveryContract, RecoveryProtocol,
+            RecoveryRef,
+        },
+    };
+
+    let descriptor = ContentBlob::new(b"original".to_vec()).reference().clone();
+    let spec = spec(
+        BackendSpec::Executor {
+            selection: Selection {
+                executor: "external".into(),
+                settings: Default::default(),
+            },
+            descriptor: descriptor.clone(),
+        },
+        &descriptor,
+    );
+    let owner = spec.owner.clone();
+    let spec_ref = ContentBlob::json(&spec).unwrap().reference().clone();
+    let mut view = RunView::admitted(RunId::new(), spec).unwrap();
+    let key = ExternalEffectKey {
+        task: ExternalTaskId::new(),
+        operation: Uuid::new_v4(),
+    };
+    let digest = format!("sha256-{}", "b".repeat(64));
+    let reference = RecoveryRef {
+        source: DeploymentRef {
+            state_domain: "a".repeat(64),
+            deployment: owner.deployment,
+            revision: 1,
+        },
+        namespace: owner.namespace,
+        export: "computer".into(),
+        method: "evaluate".into(),
+        operation: Uuid::new_v4(),
+        fingerprint: digest.clone(),
+        contract: RecoveryContract {
+            name: "maka.workspace.Computer".into(),
+            version: 1,
+            transport: Transport::Remote,
+            digest,
+        },
+        recovery: RecoveryProtocol::JournalV1,
+    };
+    let diagnostic =
+        "paste did not produce an observable change; inspect the UI before trying another action";
+    let observed = |cleanup| Fact::ExternalEffect {
+        event: ExternalEffectEvent::Observed {
+            key,
+            observation: OperationReply {
+                reference: reference.clone(),
+                receipt: Receipt::Recorded {
+                    outcome: OperationOutcome::Unknown {
+                        diagnostic: diagnostic.into(),
+                    },
+                    cleanup,
+                },
+            },
+        },
+    };
+    for fact in [
+        Fact::RunAdmitted { spec: spec_ref },
+        Fact::ExternalTaskPrepared {
+            task: key.task,
+            descriptor: descriptor.clone(),
+            live_workspace: true,
+        },
+        Fact::ExternalTaskAdmitted { task: key.task },
+        Fact::ExternalEffect {
+            event: ExternalEffectEvent::Prepared {
+                key,
+                descriptor: descriptor.clone(),
+            },
+        },
+        Fact::ExternalEffect {
+            event: ExternalEffectEvent::Admitted {
+                key,
+                approval: None,
+            },
+        },
+        Fact::ExternalEffect {
+            event: ExternalEffectEvent::Bound {
+                key,
+                reference: reference.clone(),
+            },
+        },
+        observed(OperationCleanup::Unconfirmed),
+        Fact::Blocked {
+            blocker: BlockerId::new(),
+            reason: BlockerKind::ExternalEffectUnknown {
+                task: key.task,
+                operation: key.operation,
+            },
+        },
+        Fact::ExternalTaskCleanupObserved {
+            task: key.task,
+            cleanup: OperationCleanup::Confirmed,
+        },
+        Fact::RunTerminated {
+            terminal: Terminal::Failed,
+            diagnostic: None,
+        },
+    ] {
+        apply(&mut view, fact);
+    }
+
+    assert_eq!(
+        view.recovery_failure_diagnostic().as_deref(),
+        Some(
+            "paste did not produce an observable change; inspect the UI before trying another action. The call may still be running; its end was not confirmed."
+        )
+    );
+    assert!(view.blocks_followup());
+    assert!(view.blocks_continuation());
+
+    apply(&mut view, observed(OperationCleanup::Confirmed));
+    let effect = &view.external.as_ref().unwrap().effects[&key.operation];
+    assert!(effect.ended_unknown());
+    assert!(!effect.unsettled());
+    assert!(!effect.known());
+    assert_eq!(
+        view.recovery_failure_diagnostic().as_deref(),
+        Some(diagnostic)
+    );
+    assert!(view.blocks_continuation());
+    assert!(!view.blocks_followup());
+}
+
+#[test]
+fn ended_unknown_external_effect_allows_same_turn_followup_effects_and_clean_stop() {
+    use maka_agent_facts::{
+        executor::Selection,
+        external_effects::{ExternalEffectEvent, ExternalEffectKey},
+    };
+    use maka_plugin_core::{
+        contract::Transport,
+        deployment::DeploymentRef,
+        operation::{
+            OperationOutcome, OperationReply, Receipt, RecoveryContract, RecoveryProtocol,
+            RecoveryRef,
+        },
+    };
+
+    let descriptor = ContentBlob::new(b"original".to_vec()).reference().clone();
+    let spec = spec(
+        BackendSpec::Executor {
+            selection: Selection {
+                executor: "external".into(),
+                settings: Default::default(),
+            },
+            descriptor: descriptor.clone(),
+        },
+        &descriptor,
+    );
+    let owner = spec.owner.clone();
+    let spec_ref = ContentBlob::json(&spec).unwrap().reference().clone();
+    let mut view = RunView::admitted(RunId::new(), spec).unwrap();
+    let task = ExternalTaskId::new();
+    let key = ExternalEffectKey {
+        task,
+        operation: Uuid::new_v4(),
+    };
+    let digest = format!("sha256-{}", "c".repeat(64));
+    let reference = RecoveryRef {
+        source: DeploymentRef {
+            state_domain: "a".repeat(64),
+            deployment: owner.deployment,
+            revision: 1,
+        },
+        namespace: owner.namespace,
+        export: "computer".into(),
+        method: "evaluate".into(),
+        operation: Uuid::new_v4(),
+        fingerprint: digest.clone(),
+        contract: RecoveryContract {
+            name: "maka.workspace.Computer".into(),
+            version: 1,
+            transport: Transport::Remote,
+            digest,
+        },
+        recovery: RecoveryProtocol::JournalV1,
+    };
+    for fact in [
+        Fact::RunAdmitted { spec: spec_ref },
+        Fact::ExternalTaskPrepared {
+            task,
+            descriptor: descriptor.clone(),
+            live_workspace: true,
+        },
+        Fact::ExternalTaskAdmitted { task },
+        Fact::ExternalEffect {
+            event: ExternalEffectEvent::Prepared {
+                key,
+                descriptor: descriptor.clone(),
+            },
+        },
+        Fact::ExternalEffect {
+            event: ExternalEffectEvent::Admitted {
+                key,
+                approval: None,
+            },
+        },
+        Fact::ExternalEffect {
+            event: ExternalEffectEvent::Bound {
+                key,
+                reference: reference.clone(),
+            },
+        },
+        Fact::ExternalEffect {
+            event: ExternalEffectEvent::Observed {
+                key,
+                observation: OperationReply {
+                    reference,
+                    receipt: Receipt::Recorded {
+                        outcome: OperationOutcome::Unknown {
+                            diagnostic: "paste did not produce an observable change".into(),
+                        },
+                        cleanup: OperationCleanup::Confirmed,
+                    },
+                },
+            },
+        },
+    ] {
+        apply(&mut view, fact);
+    }
+
+    // The ended-unknown call does not block the external agent from admitting a
+    // subsequent inspection tool call in the same turn.
+    view.check_effect_admission().unwrap();
+
+    for fact in [
+        Fact::StopRequested {
+            diagnostic: "user stopped".into(),
+            requester: StopRequester::User,
+        },
+        Fact::ExternalTaskCleanupObserved {
+            task,
+            cleanup: OperationCleanup::Confirmed,
+        },
+    ] {
+        apply(&mut view, fact);
+    }
+    assert!(view.external_terminal_allowed(&Terminal::Cancelled));
+    assert!(!view.has_unsettled_recovery());
+}

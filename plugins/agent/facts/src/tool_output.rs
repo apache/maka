@@ -28,7 +28,7 @@ pub use maka_plugin_core::operation::OperationReply;
 mod acceptance;
 pub use acceptance::{
     AcceptedToolResult, CellFinalEvidence, OperationProjection, ReturnedToolResult,
-    StoredOperationReturn, StoredToolResult,
+    StoredOperationReturn, StoredToolResult, ended_unknown_diagnostic, ended_unknown_message,
 };
 pub mod audio;
 mod durable;

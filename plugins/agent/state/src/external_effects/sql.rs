@@ -354,7 +354,11 @@ pub(crate) fn native_source_pending(
         ));
     }
     reference.validate().map_err(|e| invalid(e.to_string()))?;
-    Ok(!stopped && terminal.is_none() && task.closed.is_none() && !effect.known())
+    Ok(!stopped
+        && terminal.is_none()
+        && task.closed.is_none()
+        && !effect.known()
+        && !effect.ended_unknown())
 }
 
 pub(crate) fn verify_native_source(
