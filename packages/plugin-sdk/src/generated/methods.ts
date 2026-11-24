@@ -3049,6 +3049,27 @@ export interface ServiceMethods {
       input: Runtime.AgentChangeSession;
       output: Runtime.AgentSessionChanged;
     };
+    changeSessionWorkspace: {
+      mode: 'mutation';
+      input: {
+        sessionId: string;
+        expectedRevision: number;
+        path: string;
+      };
+      output:
+        | {
+            kind: 'changed';
+          }
+        | {
+            kind: 'revision_conflict';
+            expected: number;
+            actual: number;
+          }
+        | {
+            kind: 'rejected';
+            reason: Runtime.AgentRejection;
+          };
+    };
     checklist: {
       mode: 'query';
       input: Runtime.AgentChecklistRead;
@@ -4508,6 +4529,11 @@ export interface ServiceMethods {
         requested: boolean;
         runId?: Runtime.RunId | null;
       };
+    };
+    sessionWorkspaceAvailable: {
+      mode: 'query';
+      input: Runtime.AgentSessionRead;
+      output: boolean;
     };
     setCompactionPrompt: {
       mode: 'mutation';

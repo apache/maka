@@ -112,6 +112,23 @@ impl Handler for Agent {
                     .await?
                     .complete(&context)
             }),
+            "changeSessionWorkspace" => {
+                handler_rpc(&mut args, |owner, input, context| async move {
+                    owner
+                        .change_session_workspace(decode(input)?, context.scope())
+                        .await?
+                        .complete(&context)
+                })
+            }
+            "sessionWorkspaceAvailable" => {
+                json_rpc(&mut args, |owner, input, context| async move {
+                    encode(
+                        owner
+                            .session_workspace_available(decode(input)?, context.scope())
+                            .await?,
+                    )
+                })
+            }
             "selectBackend" => handler_rpc(&mut args, |owner, input, context| async move {
                 let operation = context.operation().ok_or("agent_mutation_required")?;
                 owner

@@ -759,6 +759,7 @@ impl Owner {
                         session_id: target.clone(),
                         reason: match reason {
                             SendRejection::ModelUnavailable => "agent_model_unavailable",
+                            SendRejection::WorkspaceUnavailable => "agent_workspace_unavailable",
                             SendRejection::SkillsUnavailable => "agent_skills_unavailable",
                             SendRejection::TurnStopped => "agent_turn_stopped",
                             SendRejection::OriginalOperationUnsettled => {

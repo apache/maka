@@ -877,6 +877,7 @@ fn format_rejection(reason: &Rejection) -> &'static str {
 fn format_send_rejection(reason: &SendRejection) -> &'static str {
     match reason {
         SendRejection::ModelUnavailable => "model unavailable",
+        SendRejection::WorkspaceUnavailable => "workspace unavailable",
         SendRejection::SkillsUnavailable => "skills unavailable",
         SendRejection::TurnStopped => "turn stopped",
         SendRejection::OriginalOperationUnsettled => "original operation unsettled",

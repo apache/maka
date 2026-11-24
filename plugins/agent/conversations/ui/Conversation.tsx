@@ -27,6 +27,7 @@ import { createTrajectoryRequests } from './trajectoryRequests';
 import {
   DRAFT_QUOTE_LIMIT,
   appendDraftQuote,
+  confirmAfterProjectMcp,
   mergeRestoredIntoHeldDraft,
   restoredDraftQuotes,
   sendReceiptFailure,
@@ -49,6 +50,7 @@ import {
   createText,
   createTransientText,
   UiError,
+  errorMessage,
   errorText,
   isObservationCancelled,
   renderText,
@@ -320,6 +322,9 @@ export type ConversationHandle = Omit<
   /** A null target follows the current live turn; `reload` reads the tail again. */
   jumpLatest(turnId: string | null, reload?: boolean): void;
   refresh(): Promise<any>;
+  sessionRevision(): number;
+  workspaceUnavailable(): boolean;
+  refreshWorkspace(): Promise<void>;
   reveal(anchor: RecallAnchor, current: () => boolean): Promise<void>;
   focusHistory(): void;
   focusActivity(turnId: string | null): void;
@@ -497,7 +502,15 @@ export function Conversation(props: ConversationProps) {
   const executionRevision = signal(0);
   const stoppingRun = signal<RunId | null>(null);
   const stopping = () => runId() !== null && stoppingRun() === runId();
+  const sessionRevision = signal(0);
   const workspace = signal('');
+  const workspaceUnavailable = signal(false);
+  let workspaceCheck = 0;
+  const refreshWorkspace = async () => {
+    const check = ++workspaceCheck;
+    const available = await host.query('agent', 'sessionWorkspaceAvailable', { sessionId });
+    if (alive && check === workspaceCheck) workspaceUnavailable.set(!available);
+  };
   const permissions = createSessionPermissions(host, sessionId, props.control);
   const goal = createSessionGoal(host, sessionId, props.control, permissions, () => goalBackend());
   const projectMcp = createProjectMcp(host, sessionId, props.control);
@@ -2123,11 +2136,16 @@ export function Conversation(props: ConversationProps) {
     acceptReadState(observed.session, observed.through);
     latestKnown = Math.max(latestKnown, observed.through);
     readLandmarks(observed.through);
-    title.set(observed.session.title);
-    archived.set(observed.session.archived);
-    workspace.set(observed.session.workspace.path);
-    permissions.observe(observed.session);
-    backend.set(observed.session.backend ?? observed.rememberedBackend ?? null);
+    if (observed.session.revision >= sessionRevision()) {
+      batch(() => {
+        sessionRevision.set(observed.session.revision);
+        title.set(observed.session.title);
+        archived.set(observed.session.archived);
+        workspace.set(observed.session.workspace.path);
+        permissions.observe(observed.session);
+        backend.set(observed.session.backend ?? observed.rememberedBackend ?? null);
+      });
+    }
     if (observed.through >= runThrough) {
       if (subscription === null) {
         overlay.observe(observed);
@@ -3159,6 +3177,14 @@ export function Conversation(props: ConversationProps) {
     quoted: QuoteRef[] = [],
     immediate = false,
   ) => {
+    const outcome = reply?.receipt?.outcome;
+    if (
+      outcome?.kind === 'returned' &&
+      outcome.result.kind === 'success' &&
+      outcome.result.value?.kind === 'rejected' &&
+      outcome.result.value.reason === 'workspace_unavailable'
+    )
+      void refreshWorkspace().catch(report);
     const accepted = acceptedSend(reply, sessionId);
     if (!accepted) return;
     if (
@@ -3240,6 +3266,7 @@ export function Conversation(props: ConversationProps) {
       return tr(
         'This conversation is archived. Restore it in Sessions to send; your draft is kept.',
       );
+    if (workspaceUnavailable()) return tr('The workspace for this task is unavailable.');
     if (!draftReady() || restoringSends().size > 0) return tr('Loading the saved draft…');
     if (savingFailed()) return tr('The draft could not be saved. Sending is unavailable.');
     if (attachments.blocked()) return attachments.blocked();
@@ -3273,12 +3300,23 @@ export function Conversation(props: ConversationProps) {
   const confirmFrozen = async (id: string, frozen: FrozenSend) => {
     activeSends.set(new Map(activeSends()).set(id, frozen));
     try {
-      if (frozen.selection.backend?.kind === 'model' && !(await projectMcp.check())) {
-        await abandonSend(client, id);
-        sendError(id, new UiError('Approve workspace connections, then retry this message.'));
-        return;
+      let sent;
+      if (frozen.selection.backend?.kind === 'model') {
+        const result = await confirmAfterProjectMcp(
+          projectMcp.check,
+          async () => {
+            await abandonSend(client, id);
+          },
+          () => confirmSend(client, id),
+        );
+        if (result.kind === 'approval_required') {
+          sendError(id, new UiError('Approve workspace connections, then retry this message.'));
+          return;
+        }
+        sent = result.value;
+      } else {
+        sent = await confirmSend(client, id);
       }
-      const sent = await confirmSend(client, id);
       if (alive) settledSends.set(new Set(settledSends()).add(id));
       if (alive)
         settleReply(
@@ -3289,7 +3327,12 @@ export function Conversation(props: ConversationProps) {
           frozen.selection.expectedRunId === undefined,
         );
     } catch (reason) {
-      sendError(id, reason);
+      if (alive && errorMessage(reason) === 'agent_workspace_unavailable') {
+        sendError(id, new UiError('The workspace for this task is unavailable.'));
+        void refreshWorkspace().catch(report);
+      } else {
+        sendError(id, reason);
+      }
     } finally {
       try {
         if (alive) await refreshSends();
@@ -3467,6 +3510,7 @@ export function Conversation(props: ConversationProps) {
     }
   };
   const retryOriginal = async (id: string) => {
+    if (workspaceUnavailable()) return;
     const freezing = freezeState();
     if (freezing.kind !== 'idle' && freezing.frozen.id === id) {
       await freezeSend(freezing.frozen);
@@ -3720,7 +3764,7 @@ export function Conversation(props: ConversationProps) {
                     : acceptedQueued(original) && sendDeliveries().get(original.id) !== 'unknown'
                       ? tr('Received · waiting for the next step')
                       : tr('Delivery not confirmed. Check status before retrying.'),
-        retryable: canRetry && !busy,
+        retryable: canRetry && !busy && !workspaceUnavailable(),
         busy,
       });
     }
@@ -3917,6 +3961,12 @@ export function Conversation(props: ConversationProps) {
     return true;
   };
   const connected = () => transcriptStatus() === 'live' && !props.connectionLost();
+  effect(() => {
+    const check = connected() && !archived() && !!workspace();
+    workspaceUnavailable.set(false);
+    if (check) void refreshWorkspace().catch(report);
+    else workspaceCheck++;
+  });
   const predictedMessage = signal<ReturnType<ComposerPrediction['current']>>(null);
   const messagePrediction = createMessagePrediction({
     sessionId,
@@ -4068,6 +4118,9 @@ export function Conversation(props: ConversationProps) {
     goal,
     projectMcp,
     workspace,
+    sessionRevision,
+    workspaceUnavailable,
+    refreshWorkspace,
     empty: () =>
       ready() &&
       runId() === null &&

@@ -70,6 +70,7 @@ const CONTROL_METHODS: &[&str] = &[
     "editQueue",
     "metadata",
     "changeSession",
+    "changeSessionWorkspace",
     "fork",
     "openBot",
     "changeGoal",
@@ -209,7 +210,7 @@ fn control_correlation(method: &str, input: &Value, owner: &ServiceOwner) -> Res
     }
     if matches!(
         method,
-        "metadata" | "setCompactionPrompt" | "changeSession" | "fork"
+        "metadata" | "setCompactionPrompt" | "changeSession" | "changeSessionWorkspace" | "fork"
     ) {
         let revision = input
             .get("expectedRevision")

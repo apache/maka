@@ -21,6 +21,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   appendDraftQuote,
+  confirmAfterProjectMcp,
   mergeRestoredIntoHeldDraft,
   sendReceiptFailure,
   shouldHideAcceptedQueuedStatus,
@@ -29,6 +30,38 @@ import {
 } from '../../../../plugins/agent/conversations/ui/sendReceipt.ts';
 
 const recorded = (outcome) => ({ kind: 'recorded', outcome, cleanup: { kind: 'confirmed' } });
+
+test('a deleted workspace during project MCP preflight abandons the unconfirmed send', async () => {
+  const unavailable = new Error('agent_workspace_unavailable');
+  let abandoned = false;
+  await assert.rejects(
+    confirmAfterProjectMcp(
+      async () => {
+        throw unavailable;
+      },
+      async () => {
+        abandoned = true;
+      },
+      async () => assert.fail('a failed preflight must not confirm the send'),
+    ),
+    (reason) => reason === unavailable,
+  );
+  assert.equal(abandoned, true);
+});
+
+test('a failure after send confirmation starts does not abandon the original', async () => {
+  const transport = new Error('lost confirmation response');
+  await assert.rejects(
+    confirmAfterProjectMcp(
+      async () => true,
+      async () => assert.fail('the original may already have been delivered'),
+      async () => {
+        throw transport;
+      },
+    ),
+    (reason) => reason === transport,
+  );
+});
 
 test('a Host handler failure displays its reason without offering an unsafe retry', () => {
   const result = { kind: 'failure', diagnostic: 'agent_execution_unavailable' };
@@ -50,6 +83,20 @@ test('a rejected send keeps its reason and can be retried', () => {
     },
     retryable: true,
   });
+});
+
+test('a missing workspace is a definitive non-delivery and can be retried', () => {
+  const result = sendReceiptFailure(
+    recorded({
+      kind: 'returned',
+      result: {
+        kind: 'success',
+        value: { kind: 'rejected', sessionId: 'conversation', reason: 'workspace_unavailable' },
+      },
+    }),
+  );
+  assert.equal(result?.retryable, true);
+  assert.equal(result?.detail.key, 'The workspace for this task is unavailable.');
 });
 
 test('a run that is still unsettled produces a definitive send failure', () => {

@@ -177,6 +177,7 @@ type OverlayTarget = {
   sessionId: string | null;
 } & (
   | { kind: 'commands' | 'workspaces' | 'sessions' }
+  | { kind: 'change-workspace'; sessionId: string; revision: number }
   // `within`: the search starts in the open conversation only.
   | { kind: 'search'; within?: boolean }
   | { kind: 'models'; focusOnClose?: 'composer' }
@@ -324,6 +325,21 @@ export function createConversationUi(
     title: string;
   } | null>(null);
   const handle = signal<ConversationHandle | null>(null);
+  const selectedCatalogRevision = computed(
+    () => browsing.sessions().find((session) => session.id === selected())?.revision,
+  );
+  effect(() => {
+    const owner = handle();
+    const revision = selectedCatalogRevision();
+    if (
+      owner &&
+      owner.sessionId === selected() &&
+      revision !== undefined &&
+      owner.sessionRevision() > 0 &&
+      revision > owner.sessionRevision()
+    )
+      untracked(() => void owner.refresh().catch(report));
+  });
   const pending = signal<PendingDraft | null>(null);
   const updatePending = (patch: Partial<Omit<PendingDraft, 'revision'>>) => {
     const current = pending();
@@ -674,6 +690,7 @@ export function createConversationUi(
   const controlLabels: Readonly<Partial<Record<string, MessageKey>>> = {
     changeGoal: 'Update goal',
     changeSession: 'Update conversation',
+    changeSessionWorkspace: 'Choose workspace',
     compact: 'Compact conversation',
     continueRun: 'Continue response',
     create: 'New conversation',
@@ -715,6 +732,13 @@ export function createConversationUi(
     if (result.kind === 'failure') throw new Error(result.diagnostic);
     return result.value;
   };
+  const revisionControls = [
+    'metadata',
+    'changeSession',
+    'changeSessionWorkspace',
+    'fork',
+    'setCompactionPrompt',
+  ];
   const control: Control = async (method, input) => {
     const urgent = method === 'stop' || method === 'stopComputerApp';
     if (!urgent && !controlsKnown()) throw new ActionPending();
@@ -722,10 +746,7 @@ export function createConversationUi(
     const unresolved = originals.find(
       (original) =>
         (original.method === method ||
-          (['metadata', 'changeSession', 'fork', 'setCompactionPrompt'].includes(method) &&
-            ['metadata', 'changeSession', 'fork', 'setCompactionPrompt'].includes(
-              original.method,
-            ))) &&
+          (revisionControls.includes(method) && revisionControls.includes(original.method))) &&
         original.sessionId === (input.sessionId ?? null) &&
         (method !== 'stop' || original.correlation.runId === input.runId) &&
         (method !== 'continueRun' ||
@@ -1009,6 +1030,64 @@ export function createConversationUi(
       await browsing.refresh();
     } catch (reason) {
       report(reason);
+    }
+  };
+  const chooseSessionWorkspace = async (owner: ConversationHandle) => {
+    try {
+      const { session } = await owner.refresh();
+      if (handle() === owner && !session.archived)
+        open({ kind: 'change-workspace', sessionId: owner.sessionId, revision: session.revision });
+    } catch (reason) {
+      report(reason);
+    }
+  };
+  const busyWorkspaceMessage =
+    'Stop the current run and clear any queued messages before changing workspaces.';
+  const changeSessionWorkspace = async (
+    target: Extract<Overlay, { kind: 'change-workspace' }>,
+    path: string,
+  ) => {
+    const owner = handle();
+    if (!alive || !owner || owner.sessionId !== target.sessionId || selected() !== target.sessionId)
+      return;
+    try {
+      error.set('');
+      const result: import('../../../../packages/plugin-sdk/src/index.js').ServiceMethods['agent']['changeSessionWorkspace']['output'] =
+        await control('changeSessionWorkspace', {
+          sessionId: target.sessionId,
+          expectedRevision: target.revision,
+          path,
+        });
+      if (result.kind === 'revision_conflict')
+        throw new UiError('This conversation changed. Open the workspace picker again.');
+      if (result.kind === 'rejected') {
+        switch (result.reason) {
+          case 'busy':
+            throw new UiError(busyWorkspaceMessage);
+          case 'workspace_unavailable':
+            throw new UiError('The selected workspace is unavailable. Choose another folder.');
+          default:
+            throw new UiError(
+              'Could not change the workspace. Reopen the conversation and try again.',
+            );
+        }
+      }
+      if (alive && handle() === owner) {
+        await owner.refresh();
+        await owner.refreshWorkspace();
+        owner.focus();
+      }
+      if (alive) await browsing.refresh();
+    } catch (reason) {
+      if (handle() === owner) {
+        if (reason instanceof UiError || reason instanceof ActionPending) report(reason);
+        else {
+          console.warn('Could not change workspace:', reason);
+          report(
+            new UiError('Could not change the workspace. Reopen the conversation and try again.'),
+          );
+        }
+      }
     }
   };
   const newConversation = (sessionId: string | null) => {
@@ -2545,6 +2624,21 @@ export function createConversationUi(
 
       const request = (
         <View style={{ minHeight: 0, flexShrink: 1 }}>
+          <If when={handle()?.workspaceUnavailable()}>
+            <InlineCallout
+              tone="warning"
+              message={tr('The workspace for this task is unavailable.')}
+              action={{
+                label: tr('Choose workspace'),
+                primary: true,
+                onPress: () => {
+                  const owner = handle();
+                  if (owner) void chooseSessionWorkspace(owner);
+                },
+              }}
+              style={{ marginBottom: 8 }}
+            />
+          </If>
           <If when={selected() === null && Boolean(workspaceError())}>
             <InlineCallout
               tone="warning"
@@ -3038,7 +3132,7 @@ export function createConversationUi(
                       </View>
                     </Dialog>
                   );
-                if (current.kind === 'workspaces')
+                if (current.kind === 'workspaces' || current.kind === 'change-workspace')
                   return (
                     <WorkspacePicker
                       instance={current.instance}
@@ -3052,11 +3146,19 @@ export function createConversationUi(
                           alive &&
                           selected() === current.sessionId &&
                           owner?.sessionId === current.sessionId
-                        )
+                        ) {
                           void owner.refresh().catch(report);
+                          void owner.refreshWorkspace().catch(report);
+                        }
                         if (alive) void browsing.refresh().catch(report);
                       }}
-                      create={(workspace, label) => create(workspace, current.sessionId, label)}
+                      create={(workspace, label) => {
+                        if (current.kind !== 'change-workspace')
+                          return create(workspace, current.sessionId, label);
+                        if (workspace.kind !== 'directory')
+                          throw new Error('Workspace picker must return a directory');
+                        return changeSessionWorkspace(current, workspace.path);
+                      }}
                     />
                   );
                 return (
