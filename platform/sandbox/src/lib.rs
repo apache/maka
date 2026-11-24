@@ -56,7 +56,7 @@ pub enum Error {
     CleanupUnconfirmed(String),
 }
 
-#[cfg(all(test, windows))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use filesystem::{Access, Policy, Rule};
@@ -71,6 +71,11 @@ mod tests {
         }
         .compile()
         .unwrap();
+        assert_eq!(policy.access(&namespace), Access::Deny);
         assert_eq!(policy.access(&namespace.join("task")), Access::Deny);
+        assert_eq!(
+            policy.access(&namespace.parent().unwrap().join("other")),
+            Access::Write
+        );
     }
 }
