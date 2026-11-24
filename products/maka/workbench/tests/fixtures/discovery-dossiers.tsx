@@ -43,6 +43,7 @@ mount(() => {
     updatedAt: 1000,
     watches: [],
     pendingActions: [],
+    revisions: [],
   });
   const first = dossier('one', 'Contract');
   first.artifacts = [{ path: 'draft.md', purpose: 'Review copy' }];
@@ -182,6 +183,36 @@ mount(() => {
         case 'setDossierMuted':
           update(input.topicId, { muted: input.muted });
           return null;
+        case 'setDossierResolved':
+          update(input.topicId, { signal: input.resolved ? 'done' : 'yellow' });
+          return null;
+        case 'chooseDossierOption': {
+          const target = files().find((d) => d.topicId === input.topicId);
+          if (target) {
+            const revs =
+              target.revisions && target.revisions.length > 0
+                ? target.revisions.map((r) =>
+                    r.revision === input.revision ? { ...r, chosenKey: input.key } : r,
+                  )
+                : [
+                    {
+                      revision: target.revision,
+                      at: target.lastMaterialChangeAt,
+                      title: target.title,
+                      signal: target.signal,
+                      summaryMd: target.summaryMd,
+                      artifacts: target.artifacts,
+                      choices: [],
+                      chosenKey: input.key,
+                    },
+                  ];
+            update(input.topicId, {
+              revisions: revs,
+              ...(input.resolve ? { signal: 'done' as const } : {}),
+            });
+          }
+          return null;
+        }
         case 'dismissPendingAction':
           if (input.actionId !== 'review') throw Error('Wrong pending action');
           update('one', { pendingActions: [] });

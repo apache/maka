@@ -2312,6 +2312,8 @@ pub fn contract() -> Contract {
                 ("readDossierArtifact".into(), method::<DossierArtifactRead, String>(MethodMode::Query)),
                 ("watchDossiers".into(), method::<DossiersRead, DossiersUpdate>(MethodMode::Subscription)),
                 ("setDossierMuted".into(), method::<DossierMute, ()>(MethodMode::Mutation)),
+                ("setDossierResolved".into(), method::<DossierResolve, ()>(MethodMode::Mutation)),
+                ("chooseDossierOption".into(), method::<DossierChoose, ()>(MethodMode::Mutation)),
                 ("setDiscoveryNotifications".into(), method::<DiscoveryNotifications, ()>(MethodMode::Mutation)),
                 ("dropDiscoveryLead".into(), method::<DiscoveryLead, DossierRead>(MethodMode::Mutation)),
                 ("confirmPendingAction".into(), method::<PendingActionRequest, ConfirmPendingActionResult>(MethodMode::Mutation)),

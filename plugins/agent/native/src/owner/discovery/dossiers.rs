@@ -93,7 +93,7 @@ impl scheduler::Scheduler {
     pub(in crate::owner) fn dossier_tools(self: &Arc<Self>) -> Vec<ToolRegistration> {
         [
             (UPSERT,
-             "Save one topic with expected_revision (zero for creation). schedule_ops can revise the intent_body of linked once tasks or cancel them. Use interrupt when the user needs to act now.",
+             "Save one topic with expected_revision (zero for creation). Write summary_md as a self-contained update so readers do not need prior revisions to understand it; set change_note to a brief 1-line note when updating or correcting earlier findings. When asking the user to pick between concrete actions, populate choices (2-3 clickable options with key, label, detail, recommended, resolves, and instruction) instead of only prose bullets. schedule_ops can revise the intent_body of linked once tasks or cancel them. Use interrupt when the user needs to act now.",
              schemars::schema_for!(Upsert), ToolSemantics::ExclusiveStep),
             (STAGE, "Prepare a ready-to-use UTF-8 draft, diff, checklist or brief in this topic’s isolated staging directory. Workers pass the receipt verbatim in UpsertDossier.artifacts. In a dossier thread the draft attaches to that topic automatically. input_paths are source files in the authorized workspace.",
              schemars::schema_for!(artifacts::StageArtifact), ToolSemantics::ExclusiveStep),
@@ -592,6 +592,8 @@ impl Owner {
                 priority_weight: 100.,
                 window_at: None,
                 summary_md: summary,
+                change_note: None,
+                choices: vec![],
                 artifacts: vec![],
                 linked_task_ids: None,
             },

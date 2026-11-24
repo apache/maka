@@ -908,6 +908,44 @@ impl Handler for Agent {
                 let input: DossierMute = decode(input)?;
                 context.complete_change(Value::Null, owner.prepare_dossier_mute(input)?)
             }),
+            "setDossierResolved" => handler_rpc(&mut args, |owner, input, context| async move {
+                discovery_desktop(&context)?;
+                context.operation().ok_or("agent_mutation_required")?;
+                let input: DossierResolve = decode(input)?;
+                let state = owner.discovery.resolve_statement(
+                    input.topic_id,
+                    input.resolved,
+                    maka_agent_facts::durable::UnixMillis(maka_agent_authority::now() as i64),
+                );
+                context.complete_change(
+                    Value::Null,
+                    owner
+                        .store
+                        .data_writer()
+                        .map_err(|e| e.to_string())?
+                        .prepare(state),
+                )
+            }),
+            "chooseDossierOption" => handler_rpc(&mut args, |owner, input, context| async move {
+                discovery_desktop(&context)?;
+                context.operation().ok_or("agent_mutation_required")?;
+                let input: DossierChoose = decode(input)?;
+                let state = owner.discovery.choose_statement(
+                    input.topic_id,
+                    input.revision,
+                    input.key,
+                    input.resolve,
+                    maka_agent_facts::durable::UnixMillis(maka_agent_authority::now() as i64),
+                );
+                context.complete_change(
+                    Value::Null,
+                    owner
+                        .store
+                        .data_writer()
+                        .map_err(|e| e.to_string())?
+                        .prepare(state),
+                )
+            }),
             "setDiscoveryNotifications" => {
                 handler_rpc(&mut args, |owner, input, context| async move {
                     discovery_desktop(&context)?;

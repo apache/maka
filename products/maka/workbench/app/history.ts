@@ -191,6 +191,28 @@ export function recentMessages(rows: readonly Row[]) {
   return merged.slice(-6);
 }
 
+export function dossierThreadMessages(rows: readonly Row[]) {
+  const merged: { id: string; role: 'user' | 'assistant'; text: string; at?: number }[] = [];
+  for (const row of rows) {
+    if (
+      (row.role === 'user' || row.role === 'assistant') &&
+      row.field === 'body' &&
+      !row.origin &&
+      row.text.trim().length > 0
+    ) {
+      const prev = merged.at(-1);
+      const id = stableRowId(row);
+      if (prev && prev.id === id) {
+        prev.text = row.text;
+        if (row.timestamp !== undefined) prev.at = row.timestamp;
+      } else {
+        merged.push({ id, role: row.role, text: row.text, at: row.timestamp });
+      }
+    }
+  }
+  return merged.slice(-40);
+}
+
 export function activityMessage(origin: MessageOrigin | null | undefined): boolean {
   return origin?.kind === 'automation' || senderSession(origin) !== null;
 }

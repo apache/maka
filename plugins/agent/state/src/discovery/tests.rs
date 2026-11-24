@@ -56,6 +56,8 @@ fn dossier(topic: &str, signal: DossierSignal, weight: f64, expected: u64) -> Do
         topic_id: TopicId(topic.into()),
         title: topic.into(),
         summary_md: "evidence".into(),
+        change_note: None,
+        choices: vec![],
         expected_revision: Some(expected),
         signal,
         priority_weight: weight,
@@ -388,4 +390,70 @@ async fn discovery_cold_openings_preserve_other_cursor_fields_and_cycle_independ
             .last_explored_at,
         UnixMillis(14)
     );
+}
+
+#[tokio::test]
+async fn dossier_revisions_choices_and_resolution_persist_in_plugin_data() {
+    let (_dir, _root, s) = fixture().await;
+    let topic = TopicId("key-rot".into());
+    let mut v1 = dossier("key-rot", DossierSignal::Yellow, 1.0, 0);
+    v1.summary_md = "15 occurrences found".into();
+    s.upsert_dossier(v1, UnixMillis(100)).await.unwrap();
+
+    let mut v2 = dossier("key-rot", DossierSignal::Yellow, 2.0, 1);
+    v2.summary_md = "28 occurrences found".into();
+    v2.change_note = Some("Full scan found 13 more occurrences".into());
+    v2.choices = vec![
+        DossierChoice {
+            key: "A".into(),
+            label: "Close dossier".into(),
+            detail: "Mark as resolved".into(),
+            recommended: true,
+            resolves: true,
+            instruction: "Close it".into(),
+        },
+        DossierChoice {
+            key: "B".into(),
+            label: "Run v2 script".into(),
+            detail: "Dry run first".into(),
+            recommended: false,
+            resolves: false,
+            instruction: "Run dry-run".into(),
+        },
+    ];
+    s.upsert_dossier(v2, UnixMillis(200)).await.unwrap();
+
+    let detail = s.detail(topic.clone()).await.unwrap().unwrap();
+    assert_eq!(detail.revisions.len(), 2);
+    assert_eq!(detail.revisions[0].revision, 1);
+    assert_eq!(detail.revisions[0].summary_md, "15 occurrences found");
+    assert_eq!(detail.revisions[1].revision, 2);
+    assert_eq!(
+        detail.revisions[1].change_note.as_deref(),
+        Some("Full scan found 13 more occurrences")
+    );
+    assert_eq!(detail.revisions[1].choices.len(), 2);
+
+    s.data
+        .write(s.choose_statement(topic.clone(), 2, "A".into(), true, UnixMillis(250)))
+        .await
+        .unwrap();
+    let chosen = s.detail(topic.clone()).await.unwrap().unwrap();
+    assert_eq!(chosen.dossier.signal, DossierSignal::Done);
+    assert_eq!(chosen.revisions[1].chosen_key.as_deref(), Some("A"));
+
+    s.data
+        .write(s.resolve_statement(topic.clone(), false, UnixMillis(260)))
+        .await
+        .unwrap();
+    let reopened = s.detail(topic.clone()).await.unwrap().unwrap();
+    assert_eq!(reopened.dossier.signal, DossierSignal::Yellow);
+
+    let mut v3 = dossier("key-rot", DossierSignal::Red, 3.0, 2);
+    v3.summary_md = "New leaked key in staging".into();
+    s.upsert_dossier(v3, UnixMillis(300)).await.unwrap();
+    let updated = s.detail(topic).await.unwrap().unwrap();
+    assert_eq!(updated.dossier.signal, DossierSignal::Red);
+    assert_eq!(updated.revisions.len(), 3);
+    assert_eq!(updated.revisions[1].chosen_key.as_deref(), Some("A"));
 }

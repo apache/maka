@@ -4234,6 +4234,39 @@ export const contracts: {
           },
           resources: {},
         },
+        chooseDossierOption: {
+          mode: 'mutation',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'DossierChoose',
+            type: 'object',
+            properties: {
+              topicId: {
+                type: 'string',
+              },
+              revision: {
+                type: 'integer',
+                format: 'uint64',
+                minimum: 0,
+              },
+              key: {
+                type: 'string',
+              },
+              resolve: {
+                type: 'boolean',
+                default: false,
+              },
+            },
+            additionalProperties: false,
+            required: ['topicId', 'revision', 'key'],
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'null',
+            type: 'null',
+          },
+          resources: {},
+        },
         codeDefinition: {
           mode: 'query',
           input: {
@@ -9812,6 +9845,13 @@ export const contracts: {
                       $ref: '#/$defs/PendingActionRecord',
                     },
                   },
+                  revisions: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/DossierRevision',
+                    },
+                    default: [],
+                  },
                 },
                 additionalProperties: false,
                 required: [
@@ -9972,6 +10012,81 @@ export const contracts: {
               PendingActionStatus: {
                 type: 'string',
                 enum: ['awaiting_confirm', 'stale', 'executing', 'done', 'unknown_pending_receipt'],
+              },
+              DossierRevision: {
+                type: 'object',
+                properties: {
+                  revision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  at: {
+                    type: 'integer',
+                    format: 'int64',
+                  },
+                  title: {
+                    type: 'string',
+                  },
+                  signal: {
+                    $ref: '#/$defs/DossierSignal',
+                  },
+                  summaryMd: {
+                    type: 'string',
+                  },
+                  changeNote: {
+                    type: ['string', 'null'],
+                    default: null,
+                  },
+                  artifacts: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/DossierArtifact',
+                    },
+                    default: [],
+                  },
+                  choices: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/DossierChoice',
+                    },
+                    default: [],
+                  },
+                  chosenKey: {
+                    type: ['string', 'null'],
+                    default: null,
+                  },
+                },
+                additionalProperties: false,
+                required: ['revision', 'at', 'title', 'signal', 'summaryMd'],
+              },
+              DossierChoice: {
+                type: 'object',
+                properties: {
+                  key: {
+                    type: 'string',
+                  },
+                  label: {
+                    type: 'string',
+                  },
+                  detail: {
+                    type: 'string',
+                    default: '',
+                  },
+                  recommended: {
+                    type: 'boolean',
+                    default: false,
+                  },
+                  resolves: {
+                    type: 'boolean',
+                    default: false,
+                  },
+                  instruction: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['key', 'label', 'instruction'],
               },
             },
           },
@@ -53802,6 +53917,30 @@ export const contracts: {
             },
             additionalProperties: false,
             required: ['topicId', 'muted'],
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'null',
+            type: 'null',
+          },
+          resources: {},
+        },
+        setDossierResolved: {
+          mode: 'mutation',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'DossierResolve',
+            type: 'object',
+            properties: {
+              topicId: {
+                type: 'string',
+              },
+              resolved: {
+                type: 'boolean',
+              },
+            },
+            additionalProperties: false,
+            required: ['topicId', 'resolved'],
           },
           output: {
             $schema: 'https://json-schema.org/draft/2020-12/schema',

@@ -23,6 +23,7 @@ import { Button, Input, Select } from 'nsh/base';
 import { ChoiceIndicator } from './ChoiceIndicator';
 import { Icon } from './Icon';
 import { tr } from './locale';
+import { motionEnabled } from './roomMotion';
 import {
   C,
   captionTextStyle,
@@ -768,6 +769,7 @@ export function SettingsButton(props: {
   /** Shows only the icon; the label still names the button. */
   iconOnly?: boolean;
   autoFocus?: boolean;
+  tactile?: boolean;
 }) {
   const primary = () => props.tone === 'primary';
   const quiet = () => props.tone === 'quiet';
@@ -792,7 +794,10 @@ export function SettingsButton(props: {
         backgroundColor: primary() ? C.accent : quiet() ? undefined : C.raised,
       }}
       hoverStyle={primary() ? { backgroundColor: C.accentHover } : controlHoverStyle()}
-      activeStyle={primary() ? { backgroundColor: C.accentHover } : { backgroundColor: C.line }}
+      activeStyle={{
+        backgroundColor: primary() ? C.accentHover : C.line,
+        transform: props.tactile && motionEnabled() ? [{ scale: 0.96 }] : undefined,
+      }}
       focusStyle={primary() ? { backgroundColor: C.accentHover } : controlFocusStyle()}
       disabledStyle={controlDisabledStyle}
     >

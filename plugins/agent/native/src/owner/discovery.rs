@@ -1295,6 +1295,8 @@ impl Owner {
             signal: maka_agent_facts::discovery::DossierSignal::Yellow,
             priority_weight: 0.0,
             summary_md: text,
+            change_note: None,
+            choices: vec![],
             window_at: None,
             artifacts: vec![],
             linked_task_ids: None,

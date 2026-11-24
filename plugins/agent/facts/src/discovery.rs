@@ -154,6 +154,38 @@ pub struct DiscoveryInterrupt {
     pub at: UnixMillis,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DossierChoice {
+    pub key: String,
+    pub label: String,
+    #[serde(default)]
+    pub detail: String,
+    #[serde(default)]
+    pub recommended: bool,
+    #[serde(default)]
+    pub resolves: bool,
+    pub instruction: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DossierRevision {
+    pub revision: u64,
+    pub at: UnixMillis,
+    pub title: String,
+    pub signal: DossierSignal,
+    pub summary_md: String,
+    #[serde(default)]
+    pub change_note: Option<String>,
+    #[serde(default)]
+    pub artifacts: Vec<DossierArtifact>,
+    #[serde(default)]
+    pub choices: Vec<DossierChoice>,
+    #[serde(default)]
+    pub chosen_key: Option<String>,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DossierDetail {
@@ -161,6 +193,8 @@ pub struct DossierDetail {
     pub dossier: DossierRecord,
     pub watches: Vec<WatchRecord>,
     pub pending_actions: Vec<PendingActionRecord>,
+    #[serde(default)]
+    pub revisions: Vec<DossierRevision>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]

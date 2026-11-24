@@ -48,6 +48,10 @@ pub struct DossierUpsert {
     pub window_at: Option<UnixMillis>,
     pub summary_md: String,
     #[serde(default)]
+    pub change_note: Option<String>,
+    #[serde(default)]
+    pub choices: Vec<DossierChoice>,
+    #[serde(default)]
     pub artifacts: Vec<StagedArtifact>,
     /// Omission preserves existing bindings. An empty list explicitly unlinks them.
     pub linked_task_ids: Option<Vec<String>>,
@@ -332,9 +336,14 @@ impl DiscoveryStore {
         self.read(move |c, owner| {
             get(c, owner, &topic)?
                 .map(|dossier| {
+                    let mut revisions = read_revisions(c, owner, &topic)?;
+                    if revisions.is_empty() {
+                        revisions.push(synthesize_revision(&dossier));
+                    }
                     Ok(DossierDetail {
                         watches: tracking::watches(c, owner, &topic)?,
                         pending_actions: tracking::actions(c, owner, &topic, true)?,
+                        revisions,
                         dossier,
                     })
                 })
@@ -377,6 +386,64 @@ impl DiscoveryStore {
         at: UnixMillis,
     ) -> Result<(), StoreError> {
         self.data.write(self.mute_statement(topic, muted, at)).await
+    }
+    pub fn resolve_statement(
+        &self,
+        topic: TopicId,
+        resolved: bool,
+        at: UnixMillis,
+    ) -> impl Statement<Value = DiscoveryCommit<()>, Output = ()> + use<> {
+        let signal = if resolved {
+            DossierSignal::Done
+        } else {
+            DossierSignal::Yellow
+        };
+        self.mutation(true, move |c, owner| {
+            require_dossier(c.execute(
+                "UPDATE discovery_dossiers SET signal=?3, updated_at=max(updated_at,?4) WHERE owner=?1 AND topic_id=?2",
+                params![owner, topic.0, signal.as_str(), at.0],
+            )?)
+        })
+    }
+    pub fn choose_statement(
+        &self,
+        topic: TopicId,
+        revision: u64,
+        key: String,
+        resolve: bool,
+        at: UnixMillis,
+    ) -> impl Statement<Value = DiscoveryCommit<()>, Output = ()> + use<> {
+        self.mutation(true, move |c, owner| {
+            let trimmed = key.trim();
+            if trimmed.is_empty() || trimmed.len() > 16 || trimmed.chars().any(char::is_control) {
+                return Err(crate::store::invalid("invalid dossier choice key"));
+            }
+            let Some(dossier) = get(c, owner, &topic)? else {
+                return Err(crate::store::invalid("unknown discovery topic"));
+            };
+            let mut revisions = read_revisions(c, owner, &topic)?;
+            if revisions.is_empty() {
+                revisions.push(synthesize_revision(&dossier));
+            }
+            if let Some(entry) = revisions.iter_mut().find(|r| r.revision == revision) {
+                entry.chosen_key = Some(trimmed.to_owned());
+            } else if let Some(last) = revisions.last_mut() {
+                last.chosen_key = Some(trimmed.to_owned());
+            }
+            write_revisions(c, owner, &topic, &revisions)?;
+            if resolve {
+                c.execute(
+                    "UPDATE discovery_dossiers SET signal=?3, updated_at=max(updated_at,?4) WHERE owner=?1 AND topic_id=?2",
+                    params![owner, topic.0, DossierSignal::Done.as_str(), at.0],
+                )?;
+            } else {
+                c.execute(
+                    "UPDATE discovery_dossiers SET updated_at=max(updated_at,?3) WHERE owner=?1 AND topic_id=?2",
+                    params![owner, topic.0, at.0],
+                )?;
+            }
+            Ok(())
+        })
     }
     pub fn thread_at_revision(
         &self,
@@ -594,6 +661,83 @@ fn list(c: &Connection, owner: &str) -> Result<Vec<DossierSummary>, StoreError> 
     Ok(result)
 }
 
+const REVISION_PACKAGE: &str = "maka.agent.discovery";
+const MAX_REVISIONS: usize = 20;
+
+fn revision_key(topic: &TopicId) -> String {
+    format!("revisions:{}", topic.0)
+}
+
+fn synthesize_revision(dossier: &DossierRecord) -> DossierRevision {
+    DossierRevision {
+        revision: dossier.revision,
+        at: dossier.last_material_change_at,
+        title: dossier.title.clone(),
+        signal: dossier.signal,
+        summary_md: dossier.summary_md.clone(),
+        change_note: None,
+        artifacts: dossier.artifacts.clone(),
+        choices: vec![],
+        chosen_key: None,
+    }
+}
+
+fn read_revisions(
+    c: &Connection,
+    owner: &str,
+    topic: &TopicId,
+) -> Result<Vec<DossierRevision>, StoreError> {
+    let raw: Option<Option<String>> = c
+        .query_row(
+            "SELECT value_json FROM plugin_data WHERE package_id=?1 AND scope_id=?2 AND key=?3",
+            params![REVISION_PACKAGE, owner, revision_key(topic)],
+            |row| row.get(0),
+        )
+        .optional()?;
+    match raw.flatten() {
+        Some(text) => Ok(serde_json::from_str(&text).unwrap_or_default()),
+        None => Ok(Vec::new()),
+    }
+}
+
+fn write_revisions(
+    c: &Connection,
+    owner: &str,
+    topic: &TopicId,
+    revisions: &[DossierRevision],
+) -> Result<(), StoreError> {
+    let start = revisions.len().saturating_sub(MAX_REVISIONS);
+    let encoded = serde_json::to_string(&revisions[start..])?;
+    c.execute(
+        "INSERT INTO plugin_data(package_id, scope_id, key, revision, value_json)
+         VALUES (?1, ?2, ?3, 1, ?4)
+         ON CONFLICT(package_id, scope_id, key) DO UPDATE SET
+             revision = revision + 1,
+             value_json = excluded.value_json",
+        params![REVISION_PACKAGE, owner, revision_key(topic), encoded],
+    )?;
+    Ok(())
+}
+
+fn sanitize_choices(choices: Vec<DossierChoice>) -> Vec<DossierChoice> {
+    choices
+        .into_iter()
+        .filter(|c| {
+            !c.key.trim().is_empty()
+                && !c.label.trim().is_empty()
+                && !c.instruction.trim().is_empty()
+        })
+        .take(4)
+        .map(|mut c| {
+            c.key = c.key.trim().chars().take(16).collect();
+            c.label = c.label.trim().to_owned();
+            c.detail = c.detail.trim().to_owned();
+            c.instruction = c.instruction.trim().to_owned();
+            c
+        })
+        .collect()
+}
+
 fn upsert(
     c: &Connection,
     owner: &str,
@@ -608,12 +752,17 @@ fn upsert(
     {
         return Err(crate::store::invalid("invalid discovery dossier"));
     }
-    let artifacts: Vec<_> = input
+    let artifact_list: Vec<_> = input
         .artifacts
         .into_iter()
         .map(DossierArtifact::from)
         .collect();
-    let artifacts = serde_json::to_string(&artifacts)?;
+    let artifacts = serde_json::to_string(&artifact_list)?;
+    let choices = sanitize_choices(input.choices);
+    let change_note = input
+        .change_note
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty());
     let links = input
         .linked_task_ids
         .map(|mut ids| {
@@ -651,7 +800,7 @@ fn upsert(
             },
         )
         .optional()?;
-    let (previous, changed, reweighted) = old.unwrap_or((0, true, false));
+    let (previous, mut changed, reweighted) = old.unwrap_or((0, true, false));
     if let Some(expected) = input.expected_revision
         && expected != previous
     {
@@ -660,6 +809,17 @@ fn upsert(
             actual: previous.to_string(),
         });
     }
+    let mut existing_revisions = read_revisions(c, owner, &input.topic_id)?;
+    let choices_changed =
+        !choices.is_empty() && existing_revisions.last().map(|r| &r.choices) != Some(&choices);
+    if choices_changed {
+        changed = true;
+    }
+    let previous_record = if changed && previous > 0 && existing_revisions.is_empty() {
+        get(c, owner, &input.topic_id)?
+    } else {
+        None
+    };
     let revision = previous + u64::from(changed);
     if changed {
         c.execute(
@@ -676,6 +836,21 @@ fn upsert(
             params![owner, input.topic_id.0, input.title, input.signal.as_str(), input.priority_weight,
                     window, input.summary_md, artifacts, links, sql_revision(revision)?, at.0],
         )?;
+        if let Some(prev) = previous_record {
+            existing_revisions.push(synthesize_revision(&prev));
+        }
+        existing_revisions.push(DossierRevision {
+            revision,
+            at,
+            title: input.title,
+            signal: input.signal,
+            summary_md: input.summary_md,
+            change_note,
+            artifacts: artifact_list,
+            choices,
+            chosen_key: None,
+        });
+        write_revisions(c, owner, &input.topic_id, &existing_revisions)?;
     } else if reweighted {
         c.execute(
             "UPDATE discovery_dossiers SET priority_weight=?3, last_checked_at=max(last_checked_at,?4),

@@ -3087,6 +3087,16 @@ export interface ServiceMethods {
         publication?: AgentCheckpointReceiptOutput_AgentCheckpointPublication | null;
       };
     };
+    chooseDossierOption: {
+      mode: 'mutation';
+      input: {
+        topicId: string;
+        revision: number;
+        key: string;
+        resolve?: boolean;
+      };
+      output: null;
+    };
     codeDefinition: {
       mode: 'query';
       input: {
@@ -4617,6 +4627,14 @@ export interface ServiceMethods {
       };
       output: null;
     };
+    setDossierResolved: {
+      mode: 'mutation';
+      input: {
+        topicId: string;
+        resolved: boolean;
+      };
+      output: null;
+    };
     skillCandidates: {
       mode: 'query';
       /**
@@ -6068,6 +6086,7 @@ export interface AgentDossierOutput_DossierDetail {
   updatedAt: number;
   watches: AgentDossierOutput_WatchRecord[];
   pendingActions: AgentDossierOutput_PendingActionRecord[];
+  revisions?: AgentDossierOutput_DossierRevision[];
 }
 export interface AgentDossierOutput_DossierArtifact {
   path: string;
@@ -6106,6 +6125,25 @@ export interface AgentDossierOutput_PendingActionRecord {
   expiresAt: number;
   createdAt: number;
   updatedAt: number;
+}
+export interface AgentDossierOutput_DossierRevision {
+  revision: number;
+  at: number;
+  title: string;
+  signal: AgentDossierOutput_DossierSignal;
+  summaryMd: string;
+  changeNote?: string | null;
+  artifacts?: AgentDossierOutput_DossierArtifact[];
+  choices?: AgentDossierOutput_DossierChoice[];
+  chosenKey?: string | null;
+}
+export interface AgentDossierOutput_DossierChoice {
+  key: string;
+  label: string;
+  detail?: string;
+  recommended?: boolean;
+  resolves?: boolean;
+  instruction: string;
 }
 export interface AgentDossiersOutput_DossierSummary {
   topicId: string;

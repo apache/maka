@@ -559,6 +559,8 @@ impl Rig {
                 "readDossierArtifact",
                 "watchDossiers",
                 "setDossierMuted",
+                "setDossierResolved",
+                "chooseDossierOption",
                 "setDiscoveryNotifications",
                 "dropDiscoveryLead",
                 "confirmPendingAction",

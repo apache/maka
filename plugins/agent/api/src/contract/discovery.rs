@@ -56,6 +56,23 @@ pub struct DossierMute {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DossierResolve {
+    pub topic_id: TopicId,
+    pub resolved: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DossierChoose {
+    pub topic_id: TopicId,
+    pub revision: u64,
+    pub key: String,
+    #[serde(default)]
+    pub resolve: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct DiscoveryNotifications {
     pub enabled: bool,

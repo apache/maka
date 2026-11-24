@@ -2708,6 +2708,7 @@ export function createConversationUi(
                     flex: 1,
                     minHeight: 0,
                     position: 'relative',
+                    flexDirection: 'column',
                     display: discoveryOpen() ? 'none' : 'flex',
                   }
             }
