@@ -1094,12 +1094,17 @@ test('finds a settled assistant message past sixteen interleaved stretches', asy
       });
       await read.text(runId, `${runId}-text`, 'turn-resumed-0');
     }
+    // Since #6301 the reader appends the assistant-card image markdown
+    // (`'\n' + markdown`, empty for card-less messages), so compare the
+    // trimmed text like the reader's own consumers do.
     assert.equal(
-      await readAssistantMessage({
-        sessionId,
-        turnId: 'turn-resumed-0',
-        messageId: 'resumed-17-text',
-      }),
+      (
+        await readAssistantMessage({
+          sessionId,
+          turnId: 'turn-resumed-0',
+          messageId: 'resumed-17-text',
+        })
+      )?.trim(),
       'resumed-17-text',
     );
   });
