@@ -401,10 +401,24 @@ fn transport_cause(mut error: &(dyn std::error::Error + 'static)) -> (bool, Stri
     }
 }
 
+fn transient_connect_tunnel(detail: &str) -> bool {
+    // hyper-util's TunnelError is private, so match its transient HTTP CONNECT
+    // variants only when reqwest already proved the failure happened during
+    // connection setup (before any request bytes were sent).
+    matches!(
+        detail,
+        "tunnel error: unexpected end of file" | "tunnel error: unsuccessful"
+    )
+}
+
 pub(super) fn failure(error: reqwest::Error) -> Error {
     let error = error.without_url();
     let (source_transient, detail) = transport_cause(&error);
-    if error.is_timeout() || error.is_dns() || source_transient {
+    if error.is_timeout()
+        || error.is_dns()
+        || source_transient
+        || (error.is_connect() && transient_connect_tunnel(&detail))
+    {
         Error::Provider(ProviderFailure::new(
             ProviderFailureReason::Network,
             format!("model HTTP transport interrupted: {detail}"),
@@ -413,5 +427,159 @@ pub(super) fn failure(error: reqwest::Error) -> Error {
         ))
     } else {
         Error::Adapter(format!("model HTTP request failed: {detail}"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use maka_agent_facts::configuration::policy::{NetworkProxy, ProxyProtocol};
+    use std::time::Duration;
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::TcpListener,
+    };
+
+    #[tokio::test]
+    async fn proxy_tunnel_interruptions_retry_while_proxy_auth_and_invalid_tls_do_not() {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            for (response, expect_retryable, expected_detail) in [
+                (
+                    Some(&b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n"[..]),
+                    true,
+                    "tunnel error: unsuccessful",
+                ),
+                (None, true, "tunnel error: unexpected end of file"),
+                (
+                    Some(
+                        &b"HTTP/1.1 407 Proxy Authentication Required\r\nContent-Length: 0\r\n\r\n"
+                            [..],
+                    ),
+                    false,
+                    "tunnel error: proxy authorization required",
+                ),
+            ] {
+                let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let proxy_addr = listener.local_addr().unwrap();
+                let proxy = tokio::spawn(async move {
+                    let (mut socket, _) = listener.accept().await.unwrap();
+                    let mut head = Vec::new();
+                    while !head.ends_with(b"\r\n\r\n") {
+                        let mut byte = [0];
+                        if socket.read(&mut byte).await.unwrap() == 0 {
+                            break;
+                        }
+                        head.push(byte[0]);
+                    }
+                    if let Some(reply) = response {
+                        socket.write_all(reply).await.unwrap();
+                    }
+                    socket.shutdown().await.unwrap();
+                });
+
+                let policy = maka_network::Policy::from_settings(
+                    &NetworkProxy {
+                        enabled: true,
+                        protocol: ProxyProtocol::Http,
+                        host: proxy_addr.ip().to_string(),
+                        port: proxy_addr.port(),
+                        auth_enabled: false,
+                        username: String::new(),
+                        bypass_list: Vec::new(),
+                        auto_bypass_domains: Vec::new(),
+                    },
+                    None,
+                )
+                .unwrap();
+                let network = Pool::default().get(&policy).unwrap();
+                let error = network
+                    .request(
+                        http::Request {
+                            method: maka_plugin_core::http::Method::Get,
+                            url: "https://upstream.example/?api_key=must-not-appear".into(),
+                            headers: Vec::new(),
+                            body: Default::default(),
+                        },
+                        CancellationToken::new(),
+                    )
+                    .await
+                    .err()
+                    .expect("proxy CONNECT failure must fail the request");
+                proxy.await.unwrap();
+
+                let message = error.to_string();
+                assert!(
+                    !message.contains("must-not-appear"),
+                    "request URLs must stay private: {message}"
+                );
+                if expect_retryable {
+                    let Error::Provider(failure) = error else {
+                        panic!("transient proxy tunnel error must be retryable: {message}");
+                    };
+                    assert_eq!(failure.reason(), ProviderFailureReason::Network);
+                    assert!(failure.retryable() && failure.replay_safe());
+                    assert!(
+                        failure.message().contains(expected_detail),
+                        "expected {expected_detail:?} in {message}"
+                    );
+                } else {
+                    assert!(
+                        matches!(error, Error::Adapter(_)),
+                        "proxy auth failure must stay non-retryable: {message}"
+                    );
+                    assert!(
+                        message.contains(expected_detail),
+                        "expected {expected_detail:?} in {message}"
+                    );
+                }
+            }
+
+            // Guard that is_connect() matching does not turn invalid TLS into a retryable failure.
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!(
+                "https://{}/?api_key=must-not-appear",
+                listener.local_addr().unwrap()
+            );
+            let server = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut record = [0; 5];
+                socket.read_exact(&mut record).await.unwrap();
+                let mut hello = vec![0; usize::from(u16::from_be_bytes([record[3], record[4]]))];
+                socket.read_exact(&mut hello).await.unwrap();
+                socket
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+                    .await
+                    .unwrap();
+                socket.shutdown().await.unwrap();
+            });
+            let network = Pool::default()
+                .get(&maka_network::Policy::default())
+                .unwrap();
+            let error = network
+                .request(
+                    http::Request {
+                        method: maka_plugin_core::http::Method::Get,
+                        url,
+                        headers: Vec::new(),
+                        body: Default::default(),
+                    },
+                    CancellationToken::new(),
+                )
+                .await
+                .err()
+                .expect("invalid TLS must fail");
+            server.await.unwrap();
+            let message = error.to_string();
+            assert!(
+                !message.contains("must-not-appear"),
+                "request URLs must stay private: {message}"
+            );
+            assert!(
+                matches!(error, Error::Adapter(_)),
+                "invalid TLS must not become a retryable connection failure: {message}"
+            );
+        })
+        .await
+        .unwrap();
     }
 }
