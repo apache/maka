@@ -9361,6 +9361,7 @@ version = "0.3.0"
 dependencies = [
  "cap-fs-ext",
  "cap-std",
+ "dunce",
  "flatbuffers",
  "globset",
  "hex",
