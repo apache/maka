@@ -32,7 +32,7 @@ serde_json.workspace = true
 sha2.workspace = true
 uuid.workspace = true
 globset = "0.4.20"
-schemars.workspace = true
+schemars = { workspace = true, features = ["uuid1"] }
 serde.workspace = true
 thiserror.workspace = true
 url = "2.5.8"

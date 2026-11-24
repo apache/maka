@@ -308,6 +308,13 @@ impl Owner {
         Ok(())
     }
 
+    fn isolated_runtime(&self) -> maka_process::isolated::SandboxRuntime {
+        let runtime = maka_process::isolated::SandboxRuntime::default();
+        #[cfg(target_os = "linux")]
+        let runtime = runtime.with_network_helper(self.helper.clone());
+        runtime
+    }
+
     pub(crate) fn preview_epoch(&self) -> &str {
         &self.revision.activation
     }

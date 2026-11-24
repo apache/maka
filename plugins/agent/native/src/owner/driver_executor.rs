@@ -994,6 +994,7 @@ impl ExternalPorts for DriverExecutor {
                     &agent.helper,
                     &actual,
                     &privacy,
+                    &agent.isolated_runtime(),
                     self.cancellation.child_token(),
                 )
                 .await

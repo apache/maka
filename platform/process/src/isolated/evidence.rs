@@ -17,14 +17,14 @@
  * under the License.
  */
 
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 use super::ChildExited;
 use super::{BaselineReader, Descriptor, Error, SnapshotProof, TaskReceipt};
 #[cfg(unix)]
 use super::{Closure, Started};
 use std::{fs::File, io, path::PathBuf};
 
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 mod watch {
     use super::*;
     use notify::{Config, EventHandler, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
@@ -229,13 +229,13 @@ mod watch {
         }
     }
 }
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 pub use watch::EvidenceWatch;
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(unix))]
 pub struct EvidenceWatch {
     _private: (),
 }
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(unix))]
 impl EvidenceWatch {
     pub async fn open(_: &Descriptor, _: EvidenceInterest) -> Result<Self, Error> {
         Err(Error::IsolationUnavailable(
@@ -304,7 +304,7 @@ pub(super) fn pin(path: &std::path::Path) -> io::Result<Pinned> {
         path: path.to_owned(),
     })
 }
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 fn snapshot(pinned: &Pinned) -> io::Result<Option<SnapshotProof>> {
     let proof: Option<SnapshotProof> = read_json(open_regular(&pinned.owner, "snapshot.json")?)?;
     if proof
@@ -355,7 +355,7 @@ fn read_closure(pinned: &Pinned) -> io::Result<Option<Closure>> {
     }
     Ok(Some(closure))
 }
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 fn read_cleanup(pinned: &Pinned) -> io::Result<Option<CleanupEvidence>> {
     let Some(closure) = read_closure(pinned)? else {
         return Ok(None);
@@ -386,14 +386,14 @@ pub(super) fn group_closed(resource: &std::path::Path) -> io::Result<bool> {
 }
 pub async fn cleanup_evidence(descriptor: &Descriptor) -> Result<Option<CleanupEvidence>, Error> {
     let path = descriptor.resource_ref.clone();
-    #[cfg(target_os = "macos")]
+    #[cfg(unix)]
     {
         tokio::task::spawn_blocking(move || read_cleanup(&pin(&path)?))
             .await
             .map_err(io::Error::other)?
             .map_err(Error::Io)
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(unix))]
     {
         let _ = path;
         Err(Error::IsolationUnavailable(
@@ -401,7 +401,7 @@ pub async fn cleanup_evidence(descriptor: &Descriptor) -> Result<Option<CleanupE
         ))
     }
 }
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 fn ready(pinned: &Pinned, interest: EvidenceInterest) -> io::Result<bool> {
     match interest {
         EvidenceInterest::Cleanup => Ok(read_closure(pinned)?.is_some()),
@@ -453,7 +453,7 @@ impl ClosedEvidence {
 /// The caller must select the descriptor from its admitted original resource
 /// receipt and independently validate the original native protocol identities.
 pub async fn closed_evidence(descriptor: &Descriptor) -> Result<Option<ClosedEvidence>, Error> {
-    if !cfg!(target_os = "macos") {
+    if !super::os::SUPPORTED {
         return Err(Error::IsolationUnavailable(
             "native task evidence is unavailable on this platform".into(),
         ));

@@ -79,12 +79,20 @@ fn main() -> std::process::ExitCode {
     {
         let mut args = std::env::args_os().skip(2);
         let result = match (args.next(), args.next()) {
+            (Some(probe), None) if probe == maka_process::isolated::PROBE => {
+                return std::process::ExitCode::SUCCESS;
+            }
             (Some(resource), None) => tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
                 .and_then(|runtime| {
+                    let sandbox_runtime = maka_process::isolated::SandboxRuntime::default();
+                    #[cfg(target_os = "linux")]
+                    let sandbox_runtime =
+                        sandbox_runtime.with_network_helper(std::env::current_exe()?);
                     let result = runtime.block_on(maka_process::isolated::run_helper(
                         std::path::Path::new(&resource),
+                        &sandbox_runtime,
                     ));
                     // Tokio's stdin read can outlive its cancelled relay; this process exits next.
                     runtime.shutdown_background();

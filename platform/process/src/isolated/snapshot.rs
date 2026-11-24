@@ -196,10 +196,10 @@ fn copy_directory(
             if !input.metadata()?.is_file() {
                 return Err(io::Error::other("snapshot source changed type"));
             }
-            clone_file(&input, &base, &mut proof.capture_cost)?;
+            clone_file(&input, &base, &relative, &mut proof.capture_cost)?;
             let base_file = open_file(&base)?;
             proof.capture_cost.logical_file_bytes += base_file.metadata()?.len();
-            clone_file(&base_file, &work, &mut proof.capture_cost)?;
+            clone_file(&base_file, &work, &relative, &mut proof.capture_cost)?;
             set_mode(&work, mode(&original))?;
             set_mode(&base, 0o400)?;
             SnapshotKind::File
@@ -218,42 +218,27 @@ fn copy_directory(
     Ok(())
 }
 
-/// fclonefileat creates a new inode with independently writable COW contents.
-/// Only explicit filesystem/cross-device lack of COW permits a byte copy;
-/// permission and other errors remain errors rather than a disguised fallback.
-fn clone_file(input: &fs::File, output: &Path, cost: &mut CaptureCost) -> io::Result<()> {
-    #[cfg(target_os = "macos")]
-    {
-        let parent = fs::File::open(
-            output
-                .parent()
-                .ok_or_else(|| io::Error::other("clone destination parent"))?,
-        )?;
-        match rustix::fs::fclonefileat(
-            input,
-            &parent,
-            output
-                .file_name()
-                .ok_or_else(|| io::Error::other("clone destination name"))?,
-            rustix::fs::CloneFlags::NOOWNERCOPY,
-        ) {
-            Ok(()) => {
-                cost.cow_clones += 1;
-                return Ok(());
-            }
-            Err(rustix::io::Errno::XDEV | rustix::io::Errno::OPNOTSUPP) => {}
-            Err(error) => return Err(error.into()),
+#[cfg(unix)]
+fn clone_file(
+    input: &fs::File,
+    output: &Path,
+    relative: &Path,
+    cost: &mut CaptureCost,
+) -> io::Result<()> {
+    let parent = fs::File::open(output.parent().expect("snapshot entry has a parent"))?;
+    let name = output.file_name().expect("snapshot entry has a name");
+    match super::fs::copy_file(input, &parent, name, relative).map_err(io::Error::other)? {
+        super::fs::Copy::Reflink => cost.cow_clones += 1,
+        super::fs::Copy::Bytes(bytes) => {
+            cost.byte_copies += 1;
+            cost.copied_bytes += bytes;
         }
     }
-    let mut source = input.try_clone()?;
-    let mut destination = fs::OpenOptions::new()
-        .create_new(true)
-        .write(true)
-        .open(output)?;
-    let bytes = io::copy(&mut source, &mut destination)?;
-    cost.byte_copies += 1;
-    cost.copied_bytes += bytes;
     Ok(())
+}
+#[cfg(not(unix))]
+fn clone_file(_: &fs::File, _: &Path, _: &Path, _: &mut CaptureCost) -> io::Result<()> {
+    Err(unsupported("snapshot copying unavailable"))
 }
 fn open_file(path: &Path) -> io::Result<fs::File> {
     let mut options = fs::OpenOptions::new();

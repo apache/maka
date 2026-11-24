@@ -29,6 +29,7 @@ maka-agent-facts.workspace = true
 alacritty_terminal = { version = "0.26.0", default-features = false }
 maka-sandbox.workspace = true
 maka-network.workspace = true
+notify = "8.2.1"
 serde.workspace = true
 schemars.workspace = true
 serde_json.workspace = true
@@ -42,8 +43,6 @@ unicode-width = "0.2.2"
 libc.workspace = true
 rustix = { version = "1.1.5", features = ["pty", "termios", "fs", "process", "net"] }
 
-[target.'cfg(target_os = "macos")'.dependencies]
-notify = "8.2.1"
 
 [target.'cfg(windows)'.dependencies]
 dunce = "1.0.5"

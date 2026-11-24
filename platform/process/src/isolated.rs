@@ -25,6 +25,8 @@ pub use baseline::{BaselineEntry, BaselineReader};
 mod candidate;
 pub use candidate::{CandidateCapture, FrozenCandidate};
 mod evidence;
+#[cfg(unix)]
+mod fs;
 pub use evidence::{
     CleanupEvidence, ClosedEvidence, EvidenceInterest, EvidenceWatch, cleanup_evidence,
     closed_evidence,
@@ -32,8 +34,10 @@ pub use evidence::{
 mod home;
 pub use home::{FrozenHome, HomeCapture, HomeEntries, HomeEntry, HomeEntryKind};
 mod helper;
+mod os;
 #[cfg(unix)]
 pub(crate) use helper::ExternalOwner;
+pub use os::SandboxRuntime;
 #[cfg(unix)]
 mod session;
 mod snapshot;
@@ -56,6 +60,7 @@ use std::{
 use tokio_util::sync::CancellationToken;
 
 pub const HELPER: &str = "--maka-isolated-task-helper";
+pub const PROBE: &str = "--probe";
 
 const INITIAL_HOME_DIRECTORIES: &[&str] = &[
     ".codex",
@@ -223,7 +228,7 @@ pub struct TaskOwner {
     helper_executable: PathBuf,
     read_ceiling: Policy,
     bound_command: Option<BoundCommand>,
-    home_capture: HomeCapture,
+    home_capture: Option<HomeCapture>,
     home_seed: home::SeedState,
     snapshot: Option<SnapshotProof>,
     live_workspace: Option<PathBuf>,
@@ -334,7 +339,7 @@ impl NoLaunchSeal {
         let resource = self.owner.resource.clone();
         let frozen = self.snapshot.clone();
         tokio::task::spawn_blocking(move || {
-            #[cfg(target_os = "macos")]
+            #[cfg(unix)]
             {
                 let pinned = evidence::pin(&resource)?;
                 if frozen.get().is_none() {
@@ -350,7 +355,7 @@ impl NoLaunchSeal {
                     },
                 )
             }
-            #[cfg(not(target_os = "macos"))]
+            #[cfg(not(unix))]
             {
                 let _ = (resource, frozen);
                 Err(io::Error::new(
@@ -404,6 +409,7 @@ impl TaskOwner {
         helper_executable: &Path,
         actual: &Sandbox,
         privacy: &Policy,
+        runtime: &SandboxRuntime,
         cancellation: CancellationToken,
     ) -> Result<Self, Error> {
         Self::prepare_owner(
@@ -412,6 +418,7 @@ impl TaskOwner {
             helper_executable,
             actual,
             Some(privacy),
+            runtime,
             cancellation,
         )
         .await
@@ -431,6 +438,7 @@ impl TaskOwner {
             helper_executable,
             &Sandbox::Disabled,
             None,
+            &SandboxRuntime::default(),
             cancellation,
         )
         .await
@@ -442,9 +450,10 @@ impl TaskOwner {
         helper_executable: &Path,
         actual: &Sandbox,
         privacy: Option<&Policy>,
+        runtime: &SandboxRuntime,
         cancellation: CancellationToken,
     ) -> Result<Self, Error> {
-        if !cfg!(target_os = "macos") {
+        if !os::SUPPORTED {
             return Err(Error::IsolationUnavailable(
                 "this platform has no proven persistent native task boundary".into(),
             ));
@@ -478,21 +487,6 @@ impl TaskOwner {
         // StateRoot is never a source for a private task, even in full access mode.
         reads.deny_globs.push(literal_glob(&state_root)?);
         reads.compile().map_err(sandbox_error)?;
-        if privacy.is_some() {
-            let probe = Sandbox::Managed {
-                filesystem: reads.clone(),
-                network: Network::Denied,
-            };
-            // Execute the real wrapper before copying a byte or starting any CLI.
-            let status = launch_snapshot_command(Path::new("/usr/bin/true"), &source, &probe, &[])?
-                .status()
-                .await?;
-            if !status.success() {
-                return Err(Error::IsolationUnavailable(format!(
-                    "OS sandbox probe failed: {status}"
-                )));
-            }
-        }
         let namespace = tokio::task::spawn_blocking(maka_sandbox::native_task_namespace)
             .await
             .map_err(io::Error::other)??;
@@ -532,6 +526,27 @@ impl TaskOwner {
         })
         .await
         .map_err(io::Error::other)??;
+        if privacy.is_some() {
+            let probe = Sandbox::Managed {
+                filesystem: read_ceiling.clone(),
+                network: Network::Denied,
+            };
+            let mut command = Command::new(&helper_executable, &source);
+            command.env_clear().arg(HELPER).arg(PROBE);
+            let mut diagnostics = Vec::new();
+            let status = run_sandboxed_helper(
+                runtime.apply(command.sandbox(&probe).map_err(sandbox_error)?),
+                &cancellation,
+                &mut diagnostics,
+            )
+            .await?;
+            if !status.success() {
+                return Err(Error::IsolationUnavailable(format!(
+                    "OS sandbox probe failed: {status}: {}",
+                    String::from_utf8_lossy(&diagnostics).trim(),
+                )));
+            }
+        }
         let resource = tokio::task::spawn_blocking(move || -> io::Result<PathBuf> {
             let builder = std::fs::DirBuilder::new();
             #[cfg(unix)]
@@ -591,12 +606,8 @@ impl TaskOwner {
             let mut copy_policy = reads.clone();
             // These metadata/copy exceptions belong only to trusted private custody,
             // never to the source read ceiling recorded in SnapshotProof.
-            copy_policy.rules.push(Rule::exact(
-                resource
-                    .parent()
-                    .ok_or_else(|| io::Error::other("private namespace"))?,
-                Access::Read,
-            ));
+            let namespace = resource.parent().expect("task resource has a namespace");
+            os::allow_traversal(&mut copy_policy, namespace);
             copy_policy
                 .rules
                 .push(Rule::subtree(&resource, Access::Write));
@@ -617,23 +628,19 @@ impl TaskOwner {
                 },
             )
             .await?;
-            let args = [OsString::from(HELPER), resource.clone().into_os_string()];
-            let mut copy =
-                launch_snapshot_command(&helper_executable, &source, &copy_sandbox, &args)?;
+            let mut copy = Command::new(&helper_executable, &source);
+            copy.env_clear().arg(HELPER).arg(&resource);
             let stderr = tokio::fs::OpenOptions::new()
                 .write(true)
                 .create_new(true)
                 .open(resource.join("owner/snapshot.stderr"))
-                .await?
-                .into_std()
-                .await;
-            copy.stderr(std::process::Stdio::from(stderr));
-            copy.kill_on_drop(true);
-            let mut child = copy.spawn()?;
-            let status = tokio::select! {
-                result = child.wait() => result?,
-                _ = cancellation.cancelled() => { child.kill().await?; return Err(Error::Cancelled); }
-            };
+                .await?;
+            let status = run_sandboxed_helper(
+                runtime.apply(copy.sandbox(&copy_sandbox).map_err(sandbox_error)?),
+                &cancellation,
+                stderr,
+            )
+            .await?;
             if !status.success() {
                 return Err(Error::IsolationUnavailable(format!(
                     "authorized workspace snapshot failed: {status}; evidence {}",
@@ -645,16 +652,11 @@ impl TaskOwner {
             )
             .map_err(io::Error::other)?;
             let mut execution = reads;
-            execution.rules.push(Rule::exact(
-                resource
-                    .parent()
-                    .ok_or_else(|| io::Error::other("private namespace"))?,
-                Access::Read,
-            ));
+            os::allow_traversal(&mut execution, namespace);
             // Remove all original writes. Only these independently owned directories
             // may be changed; equal-path or nested source grants cannot reopen them.
             execution.rules.push(Rule::subtree(&resource, Access::Deny));
-            execution.rules.push(Rule::exact(&resource, Access::Read));
+            os::allow_traversal(&mut execution, &resource);
             for child in ["workspace", "home", "tmp"] {
                 execution
                     .rules
@@ -694,11 +696,16 @@ impl TaskOwner {
             .await?;
             (None, Sandbox::Disabled)
         };
-        let home_resource = resource.clone();
-        let home_capture =
-            tokio::task::spawn_blocking(move || HomeCapture::from_resource(&home_resource))
-                .await
-                .map_err(io::Error::other)??;
+        let home_capture = if snapshot.is_some() {
+            let home_resource = resource.clone();
+            Some(
+                tokio::task::spawn_blocking(move || HomeCapture::from_resource(&home_resource))
+                    .await
+                    .map_err(io::Error::other)??,
+            )
+        } else {
+            None
+        };
         Ok(Self {
             resource,
             helper_executable,
@@ -782,8 +789,8 @@ impl TaskOwner {
     }
 
     /// Retain original HOME custody before consuming this owner in spawn.
-    pub fn home_capture(&self) -> HomeCapture {
-        self.home_capture.clone()
+    pub fn home_capture(&self) -> Option<&HomeCapture> {
+        self.home_capture.as_ref()
     }
 
     /// Stream a broker-authorized immutable profile into this fresh HOME.
@@ -958,10 +965,8 @@ impl TaskOwner {
         // actual CLI changes into the live workspace via the manifest.
         let mut launch = Command::new(&self.helper_executable, self.resource.join("workspace"));
         launch.env_clear().arg(HELPER).arg(&self.resource);
-        #[cfg(target_os = "macos")]
-        {
-            launch.private_stdio = true;
-        }
+        os::set_helper_namespace(&mut launch, &self.resource);
+        os::private_stdio(&mut launch);
         #[cfg(unix)]
         {
             launch.external_owner = Some(self.resource.clone());
@@ -1223,39 +1228,48 @@ fn sandbox_error(error: maka_sandbox::Error) -> Error {
     Error::IsolationUnavailable(error.to_string())
 }
 
-fn launch_snapshot_command(
-    executable: &Path,
-    cwd: &Path,
-    sandbox: &Sandbox,
-    args: &[OsString],
-) -> Result<tokio::process::Command, Error> {
-    let launch = sandbox.prepare(cwd).map_err(sandbox_error)?;
-    let mut command = match launch {
-        maka_sandbox::launch::Launch::Direct => {
-            return Err(Error::IsolationUnavailable(
-                "snapshot requires OS enforcement".into(),
-            ));
-        }
-        maka_sandbox::launch::Launch::Wrapped {
-            program,
-            args: prefix,
-            ..
-        } => {
-            let mut c = tokio::process::Command::new(program);
-            c.args(prefix).arg(executable);
-            c
+async fn run_sandboxed_helper(
+    mut command: Command,
+    cancellation: &CancellationToken,
+    mut diagnostics: impl tokio::io::AsyncWrite + Unpin,
+) -> Result<std::process::ExitStatus, Error> {
+    use tokio::io::AsyncWriteExt;
+    if cancellation.is_cancelled() {
+        return Err(Error::Cancelled);
+    }
+    os::private_stdio(&mut command);
+    let crate::pipe::Spawned {
+        mut child,
+        stdin,
+        mut stdout,
+        mut stderr,
+    } = crate::pipe::spawn(command)
+        .await
+        .map_err(io::Error::other)?;
+    drop(stdin);
+    let output = async move {
+        let mut discarded = tokio::io::sink();
+        tokio::try_join!(
+            tokio::io::copy(&mut stdout, &mut discarded),
+            tokio::io::copy(&mut stderr, &mut diagnostics),
+        )?;
+        diagnostics.flush().await
+    };
+    let wait = async {
+        tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => {
+                child.terminate().await?;
+                child.wait().await?;
+                Ok(None)
+            }
+            status = child.wait() => status.map(Some),
         }
     };
-    command
-        .args(args)
-        .current_dir(cwd)
-        .env_clear()
-        .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
-        .kill_on_drop(true)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
-    Ok(command)
+    let (status, output) = tokio::join!(wait, output);
+    let status = status?;
+    output?;
+    status.ok_or(Error::Cancelled)
 }
 async fn write_json_new(path: &Path, value: &impl Serialize) -> io::Result<()> {
     use tokio::io::AsyncWriteExt;
@@ -1269,11 +1283,10 @@ async fn write_json_new(path: &Path, value: &impl Serialize) -> io::Result<()> {
     file.sync_all().await
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 fn publish_proof(resource: &Path, name: &str, value: &impl Serialize) -> io::Result<()> {
     use rustix::fs::{AtFlags, Mode, OFlags, openat, unlinkat};
     use std::io::Write;
-    use std::os::fd::AsRawFd;
     let pinned = evidence::pin(resource)?;
     let owner = &pinned.owner;
     let bytes = serde_json::to_vec(value).map_err(io::Error::other)?;
@@ -1296,23 +1309,7 @@ fn publish_proof(resource: &Path, name: &str, value: &impl Serialize) -> io::Res
         let written = (|| {
             file.write_all(&bytes)?;
             file.sync_all()?;
-            let from = std::ffi::CString::new(pending.as_str()).map_err(io::Error::other)?;
-            let to = std::ffi::CString::new(name).map_err(io::Error::other)?;
-            // SAFETY: both owned directory FDs are pinned for this call; the C strings
-            // remain live. EXCL atomically refuses replacement of immutable evidence.
-            if unsafe {
-                libc::renameatx_np(
-                    owner.as_raw_fd(),
-                    from.as_ptr(),
-                    owner.as_raw_fd(),
-                    to.as_ptr(),
-                    libc::RENAME_EXCL,
-                )
-            } != 0
-            {
-                return Err(io::Error::last_os_error());
-            }
-            Ok(())
+            fs::rename_noreplace(owner, &pending, name)
         })();
         if written.is_err() {
             let _ = unlinkat(owner, pending.as_str(), AtFlags::empty());
@@ -1321,11 +1318,4 @@ fn publish_proof(resource: &Path, name: &str, value: &impl Serialize) -> io::Res
     }
     owner.sync_all()?;
     Ok(())
-}
-#[cfg(all(unix, not(target_os = "macos")))]
-fn publish_proof(_: &Path, _: &str, _: &impl Serialize) -> io::Result<()> {
-    Err(io::Error::new(
-        io::ErrorKind::Unsupported,
-        "native physical proof unavailable",
-    ))
 }

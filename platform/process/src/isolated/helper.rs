@@ -29,8 +29,8 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 /// Private current-executable role. Never reconstruct a task from a descriptor:
 /// create_new owner/started is a one-shot effect fence, not a resumable lease.
-pub async fn run_helper(resource: &Path) -> io::Result<i32> {
-    if !cfg!(target_os = "macos") {
+pub async fn run_helper(resource: &Path, runtime: &super::SandboxRuntime) -> io::Result<i32> {
+    if !super::os::SUPPORTED {
         return Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "persistent native task isolation unavailable",
@@ -82,14 +82,11 @@ pub async fn run_helper(resource: &Path) -> io::Result<i32> {
                 cwd.unwrap_or_else(|| resource.join("workspace")),
             );
             command.env_clear().args(args);
-            #[cfg(target_os = "macos")]
-            {
-                command.private_stdio = true;
-            }
+            super::os::private_stdio(&mut command);
             for (key, value) in environment {
                 command.env(key, value);
             }
-            let command = command.sandbox(&sandbox).map_err(io::Error::other)?;
+            let command = runtime.apply(command.sandbox(&sandbox).map_err(io::Error::other)?);
             #[cfg(unix)]
             {
                 let status = if let Some(size) = size {
@@ -429,7 +426,7 @@ impl Control {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 enum Publication {
     Ready(u64),
     Pending {
@@ -440,14 +437,14 @@ enum Publication {
     Failed(std::sync::Arc<tokio::task::JoinError>),
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 fn publish_control(
     resource: std::path::PathBuf,
     mut next: u64,
     interrupt: bool,
 ) -> (u64, io::Result<()>) {
     use rustix::fs::{AtFlags, Mode, OFlags, openat, unlinkat};
-    use std::{io::Write, os::fd::AsRawFd};
+    use std::io::Write;
     let result = (|| {
         let successor = next
             .checked_add(1)
@@ -465,22 +462,7 @@ fn publish_control(
         let written = (|| {
             file.write_all(if interrupt { b"I" } else { b"T" })?;
             file.sync_all()?;
-            let from = std::ffi::CString::new(pending.as_str()).map_err(io::Error::other)?;
-            let to = std::ffi::CString::new(name).map_err(io::Error::other)?;
-            // SAFETY: the pinned owner FD and owned C strings live through the call;
-            // EXCL refuses to overwrite any original control publication.
-            if unsafe {
-                libc::renameatx_np(
-                    pinned.owner.as_raw_fd(),
-                    from.as_ptr(),
-                    pinned.owner.as_raw_fd(),
-                    to.as_ptr(),
-                    libc::RENAME_EXCL,
-                )
-            } != 0
-            {
-                return Err(io::Error::last_os_error());
-            }
+            super::fs::rename_noreplace(&pinned.owner, &pending, &name)?;
             // Handoff precedes directory durability and cannot be rolled back.
             next = successor;
             pinned.owner.sync_all()
@@ -504,7 +486,6 @@ fn publish_control(
 #[cfg(unix)]
 pub(crate) struct ExternalOwner {
     resource: std::path::PathBuf,
-    #[cfg(target_os = "macos")]
     publication: Publication,
     checking: Option<tokio::task::JoinHandle<io::Result<bool>>>,
 }
@@ -513,67 +494,45 @@ impl ExternalOwner {
     pub(crate) fn new(resource: std::path::PathBuf) -> Self {
         Self {
             resource,
-            #[cfg(target_os = "macos")]
             publication: Publication::Ready(0),
             checking: None,
         }
     }
     /// Join the already admitted effect; cancellation leaves the same handle here.
     pub(crate) async fn settle_control(&mut self) -> io::Result<Option<bool>> {
-        #[cfg(target_os = "macos")]
-        {
-            let (interrupt, completed) = match &mut self.publication {
-                Publication::Ready(_) => return Ok(None),
-                Publication::Failed(error) => return Err(io::Error::other(error.clone())),
-                Publication::Pending { interrupt, work } => (*interrupt, work.await),
-            };
-            match completed {
-                Ok((next, result)) => {
-                    self.publication = Publication::Ready(next);
-                    result.map(|()| Some(interrupt))
-                }
-                Err(error) => {
-                    let error = std::sync::Arc::new(error);
-                    self.publication = Publication::Failed(error.clone());
-                    Err(io::Error::other(error))
-                }
+        let (interrupt, completed) = match &mut self.publication {
+            Publication::Ready(_) => return Ok(None),
+            Publication::Failed(error) => return Err(io::Error::other(error.clone())),
+            Publication::Pending { interrupt, work } => (*interrupt, work.await),
+        };
+        match completed {
+            Ok((next, result)) => {
+                self.publication = Publication::Ready(next);
+                result.map(|()| Some(interrupt))
             }
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            Ok(None)
+            Err(error) => {
+                let error = std::sync::Arc::new(error);
+                self.publication = Publication::Failed(error.clone());
+                Err(io::Error::other(error))
+            }
         }
     }
     pub(crate) async fn control(&mut self, interrupt: bool) -> io::Result<()> {
-        #[cfg(target_os = "macos")]
-        {
-            if self.settle_control().await? == Some(interrupt) {
-                return Ok(());
-            }
-            let Publication::Ready(next) = &self.publication else {
-                unreachable!("original control joined");
-            };
-            let next = *next;
-            let resource = self.resource.clone();
-            self.publication = Publication::Pending {
-                interrupt,
-                work: tokio::task::spawn_blocking(move || {
-                    publish_control(resource, next, interrupt)
-                }),
-            };
-            self.settle_control().await.map(|_| ())
+        if self.settle_control().await? == Some(interrupt) {
+            return Ok(());
         }
-        #[cfg(not(target_os = "macos"))]
-        {
-            let _ = interrupt;
-            Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                "private task control unavailable",
-            ))
-        }
+        let Publication::Ready(next) = &self.publication else {
+            unreachable!("original control joined");
+        };
+        let next = *next;
+        let resource = self.resource.clone();
+        self.publication = Publication::Pending {
+            interrupt,
+            work: tokio::task::spawn_blocking(move || publish_control(resource, next, interrupt)),
+        };
+        self.settle_control().await.map(|_| ())
     }
     pub(crate) fn io_settled(&self) -> bool {
-        #[cfg(target_os = "macos")]
         if matches!(self.publication, Publication::Pending { .. }) {
             return false;
         }

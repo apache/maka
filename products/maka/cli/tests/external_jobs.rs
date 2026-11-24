@@ -17,7 +17,7 @@
  * under the License.
  */
 
-#![cfg(target_os = "macos")]
+#![cfg(unix)]
 
 #[path = "support/host.rs"]
 mod host;
@@ -534,7 +534,7 @@ impl Rig {
         }
         Ok(committed)
     }
-    fn resource(&self, pid: u64) -> Result<Descriptor> {
+    async fn resource(&self, pid: u64) -> Result<Descriptor> {
         let events = self.controller.events();
         if !events
             .iter()
@@ -546,28 +546,42 @@ impl Rig {
             .iter()
             .find(|e| e["kind"] == "ready" && e["pid"] == pid)
             .ok_or("missing ACP worker ready")?;
-        let db = rusqlite::Connection::open_with_flags(
-            self.sandbox.root.join("runtime-rust.sqlite"),
-            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-        )
-        .map_err(|e| e.to_string())?;
         let label = format!("\"label\":\"{}\"", ready["job"].as_str().unwrap());
-        let path: String = db.query_row(
-            "SELECT json_extract(CAST(c.payload AS TEXT), '$.payload.privateResource.resourceRef')
-               FROM agent_runs r JOIN contents c
-                 ON c.content_sha256 = json_extract(r.external, '$.binding.digest')
-              WHERE json_extract(CAST(c.payload AS TEXT), '$.payload.recovery.binding.task.session') = ?1
-                AND instr(json_extract(CAST(c.payload AS TEXT), '$.payload.request.content.text'), ?2) > 0
-              ORDER BY r.rowid DESC LIMIT 1",
-            rusqlite::params![ready["thread"].as_str(), label],
-            |row| row.get(0),
-        ).map_err(|error| error.to_string())?;
-        Ok(Descriptor {
-            resource_ref: path.into(),
-        })
+        let thread = ready["thread"].as_str().unwrap();
+        let path = self.sandbox.root.join("runtime-rust.sqlite");
+        // The provider can report ready before the Host commits the recovery binding.
+        phase("record original ACP recovery binding", async {
+            let mut tick = tokio::time::interval(Duration::from_millis(20));
+            loop {
+                tick.tick().await;
+                let path = path.clone();
+                let thread = thread.to_owned();
+                let label = label.clone();
+                let resource = tokio::task::spawn_blocking(move || {
+                    use rusqlite::OptionalExtension;
+                    let db = rusqlite::Connection::open_with_flags(
+                        path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+                    )?;
+                    db.query_row(
+                        "SELECT json_extract(CAST(c.payload AS TEXT), '$.payload.privateResource.resourceRef')
+                           FROM agent_runs r JOIN contents c
+                             ON c.content_sha256 = json_extract(r.external, '$.binding.digest')
+                          WHERE json_extract(CAST(c.payload AS TEXT), '$.payload.recovery.binding.task.session') = ?1
+                            AND instr(json_extract(CAST(c.payload AS TEXT), '$.payload.request.content.text'), ?2) > 0
+                          ORDER BY r.rowid DESC LIMIT 1",
+                        rusqlite::params![thread, label],
+                        |row| row.get::<_, String>(0),
+                    ).optional()
+                }).await.map_err(|error| error.to_string())?
+                  .map_err(|error| error.to_string())?;
+                if let Some(resource) = resource {
+                    return Ok(Descriptor { resource_ref: resource.into() });
+                }
+            }
+        }).await
     }
     async fn transcript(&mut self, pid: u64) -> Result<Transcript> {
-        let descriptor = self.resource(pid)?;
+        let descriptor = self.resource(pid).await?;
         self.evidence.push(tokio::spawn(sealed(descriptor)));
         let result = self.evidence.last_mut().unwrap().await;
         self.evidence.pop();
@@ -1186,6 +1200,123 @@ async fn run_case(crash: bool) {
     }
 }
 
+#[tokio::test]
+async fn managed_task_snapshots_and_freezes_private_workspace_and_home()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    use maka_sandbox::{
+        Destination, Network, Sandbox as ProcessSandbox,
+        filesystem::{Access, Policy},
+    };
+    let temp = tempfile::tempdir()?;
+    let source = temp.path().join("source");
+    let state = temp.path().join("root");
+    std::fs::create_dir(&source)?;
+    std::fs::create_dir(&state)?;
+    std::fs::write(source.join("document"), b"original")?;
+    std::fs::write(state.join("secret"), b"private")?;
+    let helper = std::env::var_os("CARGO_BIN_EXE_maka").ok_or("missing CLI helper")?;
+    let policy = ProcessSandbox::Managed {
+        filesystem: Policy::uniform(Access::Read),
+        network: Network::destination(Destination::new("127.0.0.1", 9)?),
+    };
+    let mut owner = isolated::TaskOwner::prepare(
+        &source,
+        &state,
+        Path::new(&helper),
+        &policy,
+        &Policy::uniform(Access::Read),
+        &isolated::SandboxRuntime::default(),
+        CancellationToken::new(),
+    )
+    .await?;
+    let descriptor = owner.descriptor();
+    owner.seed_home([
+        Ok(isolated::HomeEntry {
+            relative_path: PathBuf::from(".config/profile"),
+            mode: 0o700,
+            kind: isolated::HomeEntryKind::Directory,
+        }),
+        Ok(isolated::HomeEntry {
+            relative_path: PathBuf::from(".config/profile-link"),
+            mode: 0o777,
+            kind: isolated::HomeEntryKind::Symlink {
+                target: PathBuf::from("profile"),
+            },
+        }),
+    ])?;
+    let home = owner.home_capture().cloned().expect("managed HOME custody");
+    let candidate = owner.candidate_capture()?;
+    let shell = std::fs::canonicalize("/bin/sh")?;
+    let mut command = maka_process::Command::private_task(shell);
+    command
+        .args([
+            "-eu",
+            "-c",
+            r#"
+                test "$(cat document)" = original
+                test ! -r "$1"
+                test -n "$HTTP_PROXY"
+                printf candidate > document
+                printf config > "$HOME/.config/profile-link/settings"
+            "#,
+            "managed-task",
+        ])
+        .arg(state.canonicalize()?.join("secret"));
+    command.env("PATH", "/usr/bin:/bin");
+    owner.bind_command(&command, &policy).await?;
+    let mut watch = EvidenceWatch::open(&descriptor, EvidenceInterest::Cleanup).await?;
+    let process = owner.spawn_pipe(command).await?;
+    let maka_process::pipe::Spawned {
+        mut child,
+        stdin,
+        stdout: _,
+        mut stderr,
+    } = process;
+    drop(stdin);
+    let mut diagnostics = String::new();
+    let (status, _) = tokio::time::timeout(Duration::from_secs(45), async {
+        tokio::try_join!(child.wait(), stderr.read_to_string(&mut diagnostics))
+    })
+    .await??;
+    let observed = tokio::time::timeout(Duration::from_secs(45), watch.wait()).await;
+    watch.close().await?;
+    observed??;
+    assert!(status.success(), "{status}: {diagnostics}");
+
+    let evidence = isolated::closed_evidence(&descriptor)
+        .await?
+        .expect("closed managed task evidence");
+    assert!(evidence.snapshot.is_some());
+    assert_eq!(std::fs::read(source.join("document")).unwrap(), b"original");
+    let candidate = candidate.freeze().await?;
+    let isolated::BaselineEntry::File { mut file, .. } =
+        candidate.open_entry(Path::new("document"))?
+    else {
+        panic!("candidate did not contain document");
+    };
+    let mut contents = String::new();
+    file.read_to_string(&mut contents)?;
+    assert_eq!(contents, "candidate");
+    let home = home.freeze().await?;
+    let settings = home
+        .entries()?
+        .find_map(|entry| match entry {
+            Ok(entry) if entry.relative_path == Path::new(".config/profile/settings") => {
+                Some(Ok(entry.kind))
+            }
+            Ok(_) => None,
+            Err(error) => Some(Err(error)),
+        })
+        .transpose()?;
+    let Some(isolated::HomeEntryKind::File { mut file }) = settings else {
+        panic!("frozen HOME did not contain settings");
+    };
+    contents.clear();
+    file.read_to_string(&mut contents)?;
+    assert_eq!(contents, "config");
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn quitting_host_reaps_the_active_original_external_process() {
     let mut rig = Rig::new().await.expect("owned external job fixture");
@@ -1306,7 +1437,7 @@ async fn antigravity_keeps_the_peer_alive_while_a_worker_fails_to_close() {
                 rig.controller.event("ACP-stuck-close", "close_pending"),
             )
             .await?;
-            let original = rig.resource(first["pid"].as_u64().unwrap())?;
+            let original = rig.resource(first["pid"].as_u64().unwrap()).await?;
             assert!(
                 isolated::cleanup_evidence(&original)
                     .await
@@ -1396,7 +1527,7 @@ async fn antigravity_can_continue_after_host_restarts_during_a_prompt() {
             .await?;
             let pid = original["pid"].as_u64().unwrap();
             assert!(
-                isolated::closed_evidence(&rig.resource(pid)?)
+                isolated::closed_evidence(&rig.resource(pid).await?)
                     .await
                     .map_err(|e| e.to_string())?
                     .is_none()

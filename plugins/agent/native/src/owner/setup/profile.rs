@@ -321,7 +321,10 @@ impl ProfileBroker {
             .await
             .map_err(persistence)??;
         }
-        let capture = task.home_capture();
+        let capture = task
+            .home_capture()
+            .cloned()
+            .ok_or_else(|| Error::Invalid("setup task has no private HOME".into()))?;
         Ok((
             task,
             SeededProfile {

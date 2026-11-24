@@ -90,6 +90,9 @@ pub fn command_for(
     if let Some(path) = std::env::var_os("PATH") {
         command.env("PATH", path);
     }
+    if let Some(temp) = std::env::var_os("TMPDIR") {
+        command.env("TMPDIR", temp);
+    }
     command
 }
 

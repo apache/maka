@@ -262,6 +262,7 @@ impl SetupAccess for SetupSource {
                 &self.owner.helper,
                 &caller,
                 &privacy,
+                &self.owner.isolated_runtime(),
                 context.scope().cancellation.child_token(),
             )
             .await
