@@ -20,7 +20,7 @@
 use maka_agent_facts::access::ManagedPrincipalKind;
 use maka_config::{
     ConfigurationStore,
-    access::{AccessCreateMode, AccessCredential, CredentialState},
+    access::{AccessCreateMode, AccessCredential, CredentialState, PeerId},
 };
 use maka_event_log::root::{RootNamespaces, RootOwner};
 use std::sync::Arc;
@@ -189,4 +189,45 @@ async fn racing_finalizers_bind_once_and_owner_snapshot_survives_revocation_and_
             .is_none()
     );
     reopened.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn transport_peer_grants_are_durable_and_scoped_to_one_host_publication() {
+    let (temp, namespaces, store) = setup().await;
+    let grant = "host-publication";
+    let peer = PeerId::new("transport-key".into()).unwrap();
+    store
+        .grant_host_peer_access(peer.clone(), grant.into())
+        .await
+        .unwrap();
+    store.close().await.unwrap();
+
+    let reopen = || async {
+        let owner = RootOwner::open_existing(&temp.path().join("root"), &namespaces).unwrap();
+        ConfigurationStore::for_root(Arc::new(owner)).await.unwrap()
+    };
+    let store = reopen().await;
+    assert!(
+        store
+            .has_host_peer_access(peer.clone(), grant.into())
+            .await
+            .unwrap()
+    );
+    assert!(
+        !store
+            .has_host_peer_access(peer.clone(), "different-publication".into())
+            .await
+            .unwrap()
+    );
+    assert!(store.revoke_host_peer_access(peer.clone()).await.unwrap());
+    store.close().await.unwrap();
+
+    let store = reopen().await;
+    assert!(
+        !store
+            .has_host_peer_access(peer, grant.into())
+            .await
+            .unwrap()
+    );
+    store.close().await.unwrap();
 }
