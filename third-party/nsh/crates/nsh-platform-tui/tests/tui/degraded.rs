@@ -149,20 +149,25 @@ fn at_sixteen_colors_focus_is_reversed_in_the_accent_and_a_hover_is_gray() {
     );
 }
 
-/// Two filled buttons (the standard colors' gray, the fallback for a box
-/// the layout makes a surface), the first chosen: the other takes the
-/// pointer's hover and the keys' focus.
+/// Three filled buttons (the standard colors' gray, the fallback for a box
+/// the layout makes a surface) and a search field whose arrows move the
+/// choice, as the workspace picker's do.
 const FILLED: &str = r##"
-    import { mount, View, Text } from "nsh";
-    import { Button } from "nsh/base";
+    import { keymap, mount, signal, View, Text } from "nsh";
+    import { Button, Input } from "nsh/base";
+    const index = signal(0);
+    const row = (name, i) => (
+        <Button accessibilityLabel={name} selected={index() === i} onPress={() => {}}
+            style={{ backgroundColor: "#3f3f46", paddingHorizontal: 8 }}>
+            <Text>{name}</Text></Button>
+    );
     mount(() => <View style={{ gap: 16 }}>
+        <Input value="" autoFocus style={{ width: 160, height: 16 }}
+            ref={(node) => keymap.bind("down", () => index.update((i) => Math.min(2, i + 1)), {
+                when: "always", repeat: true, within: node,
+            })} />
         <View style={{ flexDirection: "row", gap: 16 }}>
-            <Button selected={true} onPress={() => {}}
-                style={{ backgroundColor: "#3f3f46", paddingHorizontal: 8 }}>
-                <Text>Chosen</Text></Button>
-            <Button onPress={() => {}}
-                style={{ backgroundColor: "#3f3f46", paddingHorizontal: 8 }}>
-                <Text>Filled</Text></Button>
+            {[row("First", 0), row("Second", 1), row("Third", 2)]}
         </View>
         <Text>ready</Text>
     </View>);
@@ -173,66 +178,103 @@ fn without_the_terminals_colors_a_chosen_or_hovered_row_is_not_a_gray_band() {
     for depth in [ColorDepth::TrueColor, ColorDepth::Ansi256] {
         let code = nsh_bundler::compile_module("App.tsx", FILLED, &[]).unwrap();
         let (mut view, rx) = surface_at(depth);
-        let mut terminal = Terminal::new(TestBackend::new(40, 6)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(40, 8)).unwrap();
         view.load(Bundle::source(code)).unwrap();
         draw_until(&mut view, &mut terminal, &rx, "ready");
+        // What the app declares: one chosen button, by name.
+        let chosen = |view: &AppView| {
+            let chosen: Vec<_> = view
+                .accessibility_snapshot()
+                .into_iter()
+                .filter(|node| node.state.selected)
+                .collect();
+            assert_eq!(chosen.len(), 1, "{depth:?}: one chosen button");
+            chosen[0].label.clone()
+        };
         // The chosen button is reverse video on the terminal's own ground:
         // its fallback fill would be a band its label fades into.
         let buffer = terminal.backend().buffer();
-        let (x, y) = at(buffer, "Chosen");
-        for at in [x - 1, x] {
-            let cell = &buffer[(at, y)];
-            assert_eq!(cell.bg, Color::Reset, "{depth:?}: the chosen row at {at}");
+        let first = at(buffer, "First");
+        let second = at(buffer, "Second");
+        let third = at(buffer, "Third");
+        for at in [(first.0 - 1, first.1), first] {
+            let cell = &buffer[at];
+            assert_eq!(cell.bg, Color::Reset, "{depth:?}: the chosen row at {at:?}");
             assert!(
                 cell.modifier.contains(Modifier::REVERSED),
-                "{depth:?}: reversed at {at}"
+                "{depth:?}: reversed at {at:?}"
             );
             assert!(
                 !cell.modifier.contains(Modifier::DIM),
-                "{depth:?}: its label reads at {at}"
+                "{depth:?}: its label reads at {at:?}"
             );
         }
-        // What the app declares stays: the chosen button is selected to a
-        // screen reader.
-        let selected: Vec<_> = view
-            .accessibility_snapshot()
-            .into_iter()
-            .filter(|node| node.state.selected)
-            .collect();
-        assert_eq!(selected.len(), 1, "{depth:?}: one chosen button");
-        // The other one keeps its fill at rest.
-        let (fx, fy) = at(buffer, "Filled");
-        assert_eq!(buffer[(fx - 1, fy)].bg, Color::DarkGray, "{depth:?}");
-        assert!(!buffer[(fx, fy)].modifier.contains(Modifier::REVERSED));
-        // Hovered, its ink is the accent: no band is mixed from colors the
-        // terminal did not give, and the accent reads on its own fill.
-        view.handle(mouse(MouseKind::Move, fx, fy));
+        assert_eq!(chosen(&view), "First", "{depth:?}: the app's choice");
+        // The others keep their fill at rest.
+        for at in [second, third] {
+            assert_eq!(buffer[(at.0 - 1, at.1)].bg, Color::DarkGray, "{depth:?}");
+            assert!(!buffer[at].modifier.contains(Modifier::REVERSED));
+        }
+        // The keys move the choice, and the mark and the state with it.
+        view.handle(Input::Key {
+            key: "down".into(),
+            modifiers: Default::default(),
+            release: false,
+        });
         draw_while(&mut view, &mut terminal, &rx, |buffer| {
-            buffer[(fx, fy)].fg == Color::Blue
+            buffer[second].modifier.contains(Modifier::REVERSED)
         });
         let buffer = terminal.backend().buffer();
-        assert_eq!(buffer[(fx, fy)].bg, Color::DarkGray, "{depth:?}: its fill");
-        assert!(!buffer[(fx, fy)].modifier.contains(Modifier::REVERSED));
-        // The keys on it: reversed in the accent, its fill dropped with it.
-        view.handle(mouse(MouseKind::Move, 39, 5));
+        assert_eq!(
+            buffer[(second.0 - 1, second.1)].bg,
+            Color::Reset,
+            "{depth:?}"
+        );
+        assert_eq!(
+            buffer[(first.0 - 1, first.1)].bg,
+            Color::DarkGray,
+            "{depth:?}"
+        );
+        assert!(!buffer[first].modifier.contains(Modifier::REVERSED));
+        assert_eq!(chosen(&view), "Second", "{depth:?}: moved");
+        // Hovered, a button is its ink in the accent on its own ground: no
+        // band is mixed from colors the terminal did not give.
+        view.handle(mouse(MouseKind::Move, third.0, third.1));
         draw_while(&mut view, &mut terminal, &rx, |buffer| {
-            buffer[(fx, fy)].fg != Color::Blue
+            buffer[third].fg == Color::Blue
+        });
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[third].bg, Color::Reset, "{depth:?}: no band");
+        assert_eq!(buffer[(third.0 - 1, third.1)].bg, Color::Reset, "{depth:?}");
+        assert!(!buffer[third].modifier.contains(Modifier::REVERSED));
+        // The keys on a button: reversed in the accent, its fill dropped too.
+        view.handle(mouse(MouseKind::Move, 39, 7));
+        draw_while(&mut view, &mut terminal, &rx, |buffer| {
+            buffer[third].fg != Color::Blue
         });
         view.handle(tab());
         view.handle(tab());
         draw_while(&mut view, &mut terminal, &rx, |buffer| {
-            buffer[(fx, fy)].modifier.contains(Modifier::REVERSED)
+            buffer[second].fg == Color::Blue
         });
         let buffer = terminal.backend().buffer();
-        let focused = &buffer[(fx, fy)];
-        assert_eq!(focused.fg, Color::Blue, "{depth:?}: the accent's reverse");
+        let focused = &buffer[second];
         assert_eq!(focused.bg, Color::Reset, "{depth:?}: no band");
-        assert_eq!(buffer[(fx - 1, fy)].bg, Color::Reset, "{depth:?}");
-        // And the chosen button is still chosen.
         assert!(
-            buffer[at(buffer, "Chosen")]
-                .modifier
-                .contains(Modifier::REVERSED)
+            focused.modifier.contains(Modifier::REVERSED),
+            "{depth:?}: reversed"
+        );
+        assert_eq!(
+            buffer[(second.0 - 1, second.1)].bg,
+            Color::Reset,
+            "{depth:?}"
+        );
+        // And the chosen button is still the app's choice.
+        assert_eq!(chosen(&view), "Second", "{depth:?}: still chosen");
+        assert_eq!(
+            buffer[(first.0 - 1, first.1)].bg,
+            Color::DarkGray,
+            "{depth:?}"
         );
     }
 }

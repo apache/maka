@@ -2933,12 +2933,19 @@ fn mark_state(
             }
             Some(_) => {}
             // No band to paint it (the terminal did not tell its colors):
-            // the hover marks the control's ink in the accent, which reads
-            // on the app's own fill whatever the terminal's palette. As with
-            // the standard colors' gray, it marks a control, not a whole
+            // the hover marks the control's ink in the accent, on the
+            // terminal's own ground, as the selection does. As with the
+            // standard colors' gray, it marks a control, not a whole
             // pressable panel.
             None if marks.no_bands && inner.height < CONTAINER_ROWS => {
-                drawn(buffer, visible, |cell| cell.fg = ACCENT);
+                let text = (visible.y..visible.bottom())
+                    .any(|y| (visible.x..visible.right()).any(|x| buffer[(x, y)].symbol() != " "));
+                // A box of no glyphs keeps its fill: there is no ink to mark,
+                // and dropping the fill would drop the box itself.
+                if text {
+                    clear_fill(buffer, visible, marks.neutral_fill);
+                    drawn(buffer, visible, |cell| cell.fg = ACCENT);
+                }
             }
             None => {}
         }
