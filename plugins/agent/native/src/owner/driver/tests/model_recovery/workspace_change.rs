@@ -26,17 +26,9 @@ async fn missing_workspace_can_be_replaced_without_moving_peer_sessions() {
 
     let mut rig = Rig::new().expect("workspace recovery fixture");
     let base = rig.directory.path().to_owned();
-    let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
-        .await
-        .unwrap();
-    let boot = bootstrap(
-        &base,
-        format!("http://{}/v1", listener.local_addr().unwrap()),
-        false,
-    )
-    .await
-    .unwrap();
-    let (mut requests, provider) = bot_tools::observed_provider(listener);
+    let mut provider = MockAiBuilder::new().interactive(1).start().await.unwrap();
+    let boot = bootstrap(&base, provider.base_url(), false).await.unwrap();
+    let mut requests = provider.take_interactive_rx().unwrap();
     let outcome = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(60), async {
         let root = rig.directory.path().join("workspace");
         let old = root.join("old");
@@ -79,9 +71,7 @@ async fn missing_workspace_can_be_replaced_without_moving_peer_sessions() {
         assert_eq!(available(id).await?, true);
         let session = id.as_str().ok_or("session ID missing")?;
         let sent = call("send", json!({"sessionId": id, "message": "remember the original task"})).await?;
-        let (_, reply) = requests.recv().await.ok_or("initial model request missing")?;
-        reply.send(bot_tools::completion(json!({"role":"assistant","content":"original answer"}), "stop"))
-            .map_err(|_| "initial model request closed")?;
+        requests.recv().await.ok_or("initial model request missing")?.reply_text("original answer");
         quiescent_message(client, session, &sent["messageId"]).await?;
         let observed = call("observe", json!({"sessionId": id})).await?;
         let revision = observed["session"]["revision"].as_u64().ok_or("session revision missing")?;
@@ -131,10 +121,9 @@ async fn missing_workspace_can_be_replaced_without_moving_peer_sessions() {
         );
         let sent = call("send", json!({"sessionId": id, "message": "continue in the new folder"})).await?;
         assert_eq!(sent["kind"], "queued");
-        let (request, reply) = requests.recv().await.ok_or("replacement model request missing")?;
-        assert!(request["messages"].to_string().contains("remember the original task"));
-        reply.send(bot_tools::completion(json!({"role":"assistant","content":"replacement answer"}), "stop"))
-            .map_err(|_| "replacement model request closed")?;
+        let request = requests.recv().await.ok_or("replacement model request missing")?;
+        assert!(request.body()["messages"].to_string().contains("remember the original task"));
+        request.reply_text("replacement answer");
         quiescent_message(client, session, &sent["messageId"]).await?;
 
         std::fs::create_dir(&old)?;
@@ -207,9 +196,7 @@ async fn missing_workspace_can_be_replaced_without_moving_peer_sessions() {
         ));
         let sent = sent?;
         assert_eq!(sent["kind"], "queued");
-        let (_, reply) = requests.recv().await.ok_or("queued model request missing")?;
-        reply.send(bot_tools::completion(json!({"role":"assistant","content":"queued answer"}), "stop"))
-            .map_err(|_| "queued model request closed")?;
+        requests.recv().await.ok_or("queued model request missing")?.reply_text("queued answer");
         quiescent_message(client, session, &sent["messageId"]).await?;
         let observed = call("observe", json!({"sessionId": id})).await?;
         let revision = observed["session"]["revision"].as_u64().ok_or("session revision missing")?;
@@ -218,7 +205,7 @@ async fn missing_workspace_can_be_replaced_without_moving_peer_sessions() {
     }))
     .catch_unwind()
     .await;
-    provider.abort();
+    provider.shutdown().await;
     let cleanup = rig.finish().await;
     assert!(matches!(&outcome, Ok(Ok(Ok(())))), "{outcome:?}");
     assert!(cleanup.is_empty(), "{cleanup:?}");
