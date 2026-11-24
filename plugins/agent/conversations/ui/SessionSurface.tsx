@@ -158,6 +158,7 @@ import {
   type WorkspaceBrowserProps,
 } from '../../../../products/maka/workbench/app/WorkspaceBrowser';
 import { createBotWorkers } from '../../../../products/maka/workbench/app/botWorkers';
+import { appUpdater } from '../../../../products/maka/workbench/app/appUpdater';
 import {
   applicationMenu,
   ownTitleBar,
@@ -1958,6 +1959,15 @@ export function createConversationUi(
       nextSession: () => stepSession(1),
       previousSession: () => stepSession(-1),
       settings: () => invokeOwn('settings'),
+      openUpdates: () => {
+        overlay.set(null);
+        shell()?.openSettings(undefined, 'general');
+      },
+      checkForUpdates: () => {
+        overlay.set(null);
+        shell()?.openSettings(undefined, 'general');
+        void appUpdater.check();
+      },
       sidebarShown,
       toggleSidebar: () => toggleSidebar({ sessionId: selected(), expanded: sidebarShown() }),
       textSize: changeTextSize,

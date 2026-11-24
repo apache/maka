@@ -47,6 +47,7 @@ import type {
 import { createBrowsing } from './browsing';
 import { HostProvider, searchSessions, type Host, type Output } from './host';
 import { Icon } from './Icon';
+import { SidebarUpdateButton } from './SidebarUpdateButton';
 import { tr, currentLocale } from './locale';
 import {
   Header,
@@ -690,25 +691,29 @@ export function createRoomWorkspace(options: {
             </Button>
           </If>
         </Scroll>
-        <Button
-          accessibilityLabel={tr('Settings')}
-          onPress={() => {
-            options.closeNavigation();
-            options.openSettings();
-          }}
-          style={{
-            flexDirection: 'row',
-            alignItems: 'center',
-            gap: 10,
-            padding: 10,
-            borderRadius: 10,
-          }}
-          hoverStyle={{ backgroundColor: C.surface }}
-          focusStyle={controlFocusStyle()}
-        >
-          <Icon name="settings" color={C.secondary} />
-          <Text style={{ ...bodyTextStyle, color: C.secondary }}>{tr('Settings')}</Text>
-        </Button>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+          <Button
+            accessibilityLabel={tr('Settings')}
+            onPress={() => {
+              options.closeNavigation();
+              options.openSettings();
+            }}
+            style={{
+              flex: 1,
+              flexDirection: 'row',
+              alignItems: 'center',
+              gap: 10,
+              padding: 10,
+              borderRadius: 10,
+            }}
+            hoverStyle={{ backgroundColor: C.surface }}
+            focusStyle={controlFocusStyle()}
+          >
+            <Icon name="settings" color={C.secondary} />
+            <Text style={{ ...bodyTextStyle, color: C.secondary }}>{tr('Settings')}</Text>
+          </Button>
+          <SidebarUpdateButton />
+        </View>
       </View>
     </HostProvider>
   );

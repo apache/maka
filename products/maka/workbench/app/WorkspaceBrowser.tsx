@@ -76,6 +76,7 @@ import {
 } from './sessionLifecycle';
 import { sessionStatusCaption } from './sessionStatus';
 import { ownTitleBar, TITLE_BAR_HEIGHT, windowDrag } from './chrome';
+import { SidebarUpdateButton } from './SidebarUpdateButton';
 
 export type WorkspaceBrowserProps = {
   openRooms?: (() => void) | undefined;
@@ -1812,6 +1813,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
             <Icon name="archive" color={navIcon()} />
           </Button>
         </If>
+        <SidebarUpdateButton holdSidebarHover={props.holdSidebarHover} />
       </View>
       <If when={automationsOpen()}>
         <Automations

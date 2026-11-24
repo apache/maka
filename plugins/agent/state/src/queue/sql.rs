@@ -304,7 +304,7 @@ pub(crate) fn deliver_held(
         steering,
     };
     let next = cas(c, session, revision(c, session)?)?;
-    project(c, session, next, &event, true)?;
+    project(c, session, next, &event, at, true)?;
     record(
         c,
         session,
@@ -368,37 +368,25 @@ pub(super) fn interrupt_handoff(
     frontier: RunId,
     message: Option<&str>,
 ) -> Result<Option<InterruptHandoff>, StoreError> {
-    // Priority positions encode the revision of the enqueue or promotion that
-    // requested the resume, including entries written before this Host started.
-    let position: Option<i64> = match message {
-        None => c
-            .query_row(
-                "SELECT position FROM agent_queue_items
-             WHERE session=? AND state='pending' AND lane='followup' AND position<0
-             ORDER BY position DESC LIMIT 1",
-                [session],
-                |r| r.get(0),
-            )
-            .optional()?,
-        Some(message) => c
-            .query_row(
-                "SELECT position FROM agent_queue_items WHERE session=? AND message=?
-             AND state='delivered' AND accepted_run=? AND position<0",
-                params![session, message, frontier.to_string()],
-                |r| r.get(0),
-            )
-            .optional()?,
+    // The stored run is the original interrupted Run, not the current frontier.
+    // A delivered message associates its successor through accepted_run.
+    // Negative ranks let the pending lookup seek past ordinary followups.
+    let origin: Option<String> = match message {
+        None => c.query_row(
+            "SELECT interrupted_run FROM agent_queue_items
+             WHERE session=? AND state='pending' AND lane='followup' AND position<0 AND interrupted_run IS NOT NULL
+             ORDER BY position DESC, request DESC LIMIT 1",
+            [session], |r| r.get(0),
+        ).optional()?,
+        Some(message) => c.query_row(
+            "SELECT interrupted_run FROM agent_queue_items
+             WHERE session=? AND message=? AND state='delivered' AND accepted_run=? AND interrupted_run IS NOT NULL",
+            params![session, message, frontier.to_string()], |r| r.get(0),
+        ).optional()?,
     };
-    let Some(position) = position else {
+    let Some(origin) = origin else {
         return Ok(None);
     };
-    let origin: String = c.query_row(
-        "SELECT json_extract(CAST(b.payload AS TEXT), '$.resume_after_interrupt')
-         FROM agent_queue_events e JOIN contents b ON b.id=e.body_content_id
-         WHERE e.session=? AND e.revision=?",
-        params![session, position - i64::MIN],
-        |r| r.get(0),
-    )?;
     let interrupted = RunId::try_from(
         uuid::Uuid::parse_str(&origin).map_err(|_| invalid("invalid interrupted Run"))?,
     )
@@ -668,7 +656,7 @@ pub(super) fn write(
         followup(c, session, &event, fence)?;
     }
     let next = cas(c, session, command.expected_revision)?;
-    project(c, session, next, &event, true)?;
+    project(c, session, next, &event, command.at, true)?;
     record(c, session, next, command.id, command.at, &event)?;
     Ok((QueueCommit { revision: next }, true))
 }
@@ -729,7 +717,7 @@ pub(crate) fn stop_queue(
     }
     let event = Event::Held { requests: hold };
     let next = cas(c, session, expected_revision)?;
-    project(c, session, next, &event, true)?;
+    project(c, session, next, &event, stop.at, true)?;
     record(
         c,
         session,
@@ -780,6 +768,7 @@ fn project(
     session: &str,
     next: u64,
     event: &Event,
+    at: UnixMillis,
     check: bool,
 ) -> Result<(), StoreError> {
     match event {
@@ -788,11 +777,13 @@ fn project(
             resume_after_interrupt,
             ..
         } => {
-            // Interrupted turns resume ahead of ordinary followups. Both groups
-            // keep revision order in the existing indexed position column.
+            // Reserve negative ranks for handoffs, ordered by insertion. The
+            // queue revision is bounded by MAX_SAFE_INTEGER in cas().
             let revision = to_sql_integer(next)?;
             let position = if resume_after_interrupt.is_some() {
-                i64::MIN + revision
+                revision
+                    - (maka_agent_facts::configuration::validation::MAX_SAFE_INTEGER as i64)
+                    - 1
             } else {
                 revision
             };
@@ -855,7 +846,7 @@ fn project(
                             target = Some(caller.to_string());
                         }
                     }
-                    c.execute("INSERT INTO agent_queue_items(session,request,message,owner,position,lane,target_run,state,entry_json) VALUES(?,?,?,?,?,?,?,'pending',?)",params![session,request.id.0,request.message_id,serde_json::to_string(&request.spec.owner)?,position,lane,target,serde_json::to_string(&entry)?])?;
+                    c.execute("INSERT INTO agent_queue_items(session,request,message,owner,position,lane,target_run,state,entry_json,enqueued_at,interrupted_run) VALUES(?,?,?,?,?,?,?,'pending',?,?,?)",params![session,request.id.0,request.message_id,serde_json::to_string(&request.spec.owner)?,position,lane,target,serde_json::to_string(&entry)?,at.0,resume_after_interrupt.map(|run| run.to_string())])?;
                 }
                 QueueEdit::Update { request } => {
                     let mut old = pending(c, session, &request.id)?;
@@ -936,30 +927,48 @@ fn project(
                         update_entry(c, session, &entry)?;
                     }
                     c.execute(
-                        "UPDATE agent_queue_items SET position=? WHERE session=? AND request=?",
-                        params![position, session, request.0],
+                        "UPDATE agent_queue_items SET position=?, interrupted_run=? WHERE session=? AND request=?",
+                        params![position, resume_after_interrupt.map(|run| run.to_string()), session, request.0],
                     )?;
                 }
                 QueueEdit::Reorder { requests } => {
                     if requests.is_empty() {
                         return Err(invalid("empty queue reorder"));
                     }
-                    let first = pending(c, session, &requests[0])?;
-                    let (lane, _) = placement_columns(&first.placement);
-                    let count: i64 = c.query_row("SELECT count(*) FROM agent_queue_items WHERE session=? AND state='pending' AND lane=?",params![session,lane],|r|r.get(0))?;
-                    let unique: BTreeSet<_> = requests.iter().collect();
-                    if count
-                        != i64::try_from(requests.len())
-                            .map_err(|_| invalid("queue length exceeds SQLite range"))?
-                        || unique.len() != requests.len()
+                    let lane: String = c.query_row(
+                        "SELECT lane FROM agent_queue_items WHERE session=? AND request=? AND state='pending'",
+                        params![session, requests[0].0], |r| r.get(0),
+                    ).optional()?.ok_or_else(|| invalid("queue request is no longer pending"))?;
+                    let rows: Vec<(String, bool)> = c.prepare_cached(
+                        "SELECT request, interrupted_run IS NOT NULL FROM agent_queue_items WHERE session=? AND state='pending' AND lane=? ORDER BY position, request",
+                    )?.query_map(params![session, lane], |r| Ok((r.get(0)?, r.get(1)?)))?
+                        .collect::<Result<_, _>>()?;
+                    let requested: BTreeSet<_> = requests.iter().map(|r| r.0.as_str()).collect();
+                    if requested.len() != requests.len()
+                        || rows.len() != requests.len()
+                        || rows.iter().any(|(id, _)| !requested.contains(id.as_str()))
                     {
                         return Err(invalid("reorder must name exactly the pending lane"));
                     }
-                    for (position, request) in requests.iter().enumerate() {
-                        let item = pending(c, session, request)?;
-                        if placement_columns(&item.placement).0 != lane {
-                            return Err(invalid("reorder crosses queue lanes"));
-                        }
+                    let priority: Vec<_> = rows
+                        .iter()
+                        .filter(|(_, interrupted)| *interrupted)
+                        .map(|(id, _)| id.as_str())
+                        .collect();
+                    if check
+                        && requests
+                            .iter()
+                            .take(priority.len())
+                            .map(|r| r.0.as_str())
+                            .ne(priority.iter().copied())
+                    {
+                        return Err(invalid("reorder cannot move interrupt handoffs"));
+                    }
+                    let priority_set: BTreeSet<_> = priority.iter().copied().collect();
+                    let ordinary = requests
+                        .iter()
+                        .filter(|request| !priority_set.contains(request.0.as_str()));
+                    for (position, request) in ordinary.enumerate() {
                         c.execute(
                             "UPDATE agent_queue_items SET position=? WHERE session=? AND request=?",
                             params![
@@ -1172,27 +1181,13 @@ pub(super) fn entry_enqueued_at(
 ) -> Result<Option<UnixMillis>, StoreError> {
     id(session)?;
     id(&request.0)?;
-    let position: Option<i64> = c
-        .query_row(
-            "SELECT position FROM agent_queue_items WHERE session=? AND request=?",
-            params![session, request.0],
-            |r| r.get(0),
-        )
-        .optional()?;
-    let Some(position) = position else {
-        return Ok(None);
-    };
-    let revision = if position < 0 {
-        position.wrapping_sub(i64::MIN)
-    } else {
-        position
-    };
-    let at: i64 = c.query_row(
-        "SELECT at FROM agent_queue_events WHERE session=? AND revision=?",
-        params![session, revision],
-        |r| r.get(0),
-    )?;
-    Ok(Some(UnixMillis(at)))
+    Ok(c.query_row(
+        "SELECT enqueued_at FROM agent_queue_items WHERE session=? AND request=?",
+        params![session, request.0],
+        |r| r.get::<_, i64>(0),
+    )
+    .optional()?
+    .map(UnixMillis))
 }
 pub(super) fn resolve(
     c: &Connection,
@@ -1281,23 +1276,40 @@ pub(super) fn ready(
         })
         .collect()
 }
+pub(crate) fn rebuild_queue_projections(c: &Connection) -> Result<(), StoreError> {
+    let mut after = String::new();
+    loop {
+        let sessions: Vec<String> = c.prepare_cached(
+            "SELECT DISTINCT session FROM agent_queue_events WHERE session>? ORDER BY session LIMIT 128",
+        )?.query_map([&after], |row| row.get(0))?.collect::<Result<_, _>>()?;
+        if sessions.is_empty() {
+            break;
+        }
+        for session in sessions {
+            rebuild(c, &session)?;
+            after = session;
+        }
+    }
+    Ok(())
+}
+
 pub(super) fn rebuild(c: &Connection, session: &str) -> Result<QueueCommit, StoreError> {
     id(session)?;
     c.execute("DELETE FROM agent_queue_items WHERE session=?", [session])?;
     c.execute("DELETE FROM agent_queue_heads WHERE session=?", [session])?;
     let mut after = 0;
     loop {
-        let rows = c.prepare_cached("SELECT e.revision,c.payload FROM agent_queue_events e JOIN contents c ON c.id=e.body_content_id WHERE e.session=? AND e.revision>? ORDER BY e.revision LIMIT 128")?.query_map(params![session,to_sql_integer(after)?],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,Vec<u8>>(1)?)))?.collect::<Result<Vec<_>,_>>()?;
+        let rows = c.prepare_cached("SELECT e.revision,c.payload,e.at FROM agent_queue_events e JOIN contents c ON c.id=e.body_content_id WHERE e.session=? AND e.revision>? ORDER BY e.revision LIMIT 128")?.query_map(params![session,to_sql_integer(after)?],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,Vec<u8>>(1)?,r.get::<_,i64>(2)?)))?.collect::<Result<Vec<_>,_>>()?;
         if rows.is_empty() {
             break;
         }
-        for (revision, body) in rows {
+        for (revision, body, at) in rows {
             let revision = from_sql_integer(revision)?;
             if after.checked_add(1) != Some(revision) {
                 return Err(invalid("noncontiguous queue canonical stream"));
             }
             let event: Event = serde_json::from_slice(&body)?;
-            project(c, session, revision, &event, false)?;
+            project(c, session, revision, &event, UnixMillis(at), false)?;
             head(c, session, revision)?;
             after = revision;
         }
@@ -1342,7 +1354,7 @@ pub(crate) fn consume(
             ));
         }
     }
-    project(c, &cut.session, next, &event, true)?;
+    project(c, &cut.session, next, &event, at, true)?;
     record(c, &cut.session, next, command, at, &event)
 }
 
@@ -1385,7 +1397,7 @@ pub(crate) fn consume_steering(
             "RequestSpec did not capture the exact steering source prefix",
         ));
     }
-    project(c, &cut.session, next, &event, true)?;
+    project(c, &cut.session, next, &event, at, true)?;
     record(c, &cut.session, next, command, at, &event)
 }
 
@@ -1486,7 +1498,7 @@ pub(crate) fn consume_external_steering(
             "external steering descriptor did not freeze the exact ordered request/source/resources prefix",
         ));
     }
-    project(c, &cut.session, next, &event, true)?;
+    project(c, &cut.session, next, &event, at, true)?;
     record(c, &cut.session, next, command, at, &event)
 }
 

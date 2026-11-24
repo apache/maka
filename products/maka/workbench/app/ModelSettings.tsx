@@ -24,6 +24,7 @@ import {
   platform,
   signal,
   Text,
+  untracked,
   View,
   windowSize,
   type Signal,
@@ -135,6 +136,36 @@ export function ModelSettings(props: {
       props.route.set({ instance: target.instance.instance, id: target.id });
     });
   };
+  let seenNavigation = props.input.navigation?.() ?? 0;
+  effect(() => {
+    const next = props.input.navigation?.() ?? 0;
+    if (next === seenNavigation) return;
+    seenNavigation = next;
+    untracked(() => {
+      const requestedPage = props.input.page;
+      if (!requestedPage || !alive || busy()) return;
+      const targetRoute =
+        requestedPage === 'external-agents'
+          ? props.defaultRoute
+          : { instance: props.context.instance, id: requestedPage };
+      const target =
+        pages().find((item) => matches(item, targetRoute)) ??
+        pages().find((item) => item.id === requestedPage);
+      if (!target) return;
+      const from = contributed()?.key ?? null;
+      if (from === target.key) {
+        const current = page();
+        if (current?.nested() && current.returnToRoot) {
+          leave(() => {
+            if (!alive || busy() || (contributed()?.key ?? null) !== target.key) return;
+            current.returnToRoot?.();
+          });
+        }
+        return;
+      }
+      choose({ from, to: target.key });
+    });
+  });
   const closeNow = () => {
     if (alive && !busy()) props.input.close();
   };
