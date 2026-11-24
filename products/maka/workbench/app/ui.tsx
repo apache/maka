@@ -21,7 +21,15 @@ import { tr } from './locale';
 import { Text, View } from 'nsh';
 import type { JSX, ViewRef } from 'nsh';
 import { Button, TitleBar, Tooltip } from 'nsh/base';
-import { colorScheme, keymap, LayoutAnimation, platform, reduceMotion, windowSize } from 'nsh';
+import {
+  colorScheme,
+  computed,
+  keymap,
+  LayoutAnimation,
+  platform,
+  reduceMotion,
+  windowSize,
+} from 'nsh';
 import { Icon } from './Icon';
 import {
   controlsLeft,
@@ -352,12 +360,15 @@ export function Disclosure(props: {
   reserveChevron?: boolean;
   /** On the desktop, what the row is, in place of the chevron. */
   icon?: Parameters<typeof Icon>[0]['name'];
+  /** Draws what stands in place of `icon`, for a row whose icon moves. */
+  mark?: () => JSX.Element;
   terminalInset?: number;
   onPress: () => void;
   children: JSX.Element;
   trailing?: JSX.Element;
 }) {
   const icon = () => (platform.idiom === 'terminal' ? undefined : props.icon);
+  const marked = computed(() => props.mark !== undefined);
   return (
     <View
       style={{
@@ -404,7 +415,9 @@ export function Disclosure(props: {
             </If>
           }
         >
-          <Icon name={icon()!} color={C.muted} />
+          <If when={marked()} else={<Icon name={icon()!} color={C.muted} />}>
+            {props.mark?.()}
+          </If>
         </If>
         {props.children}
       </Button>

@@ -33,6 +33,7 @@ import {
 import { Button, Input } from 'nsh/base';
 import type { SettingsProviderSummary } from '../../../../packages/plugin-sdk/src/index';
 import type { ModelSettingsOwner } from './settings';
+import { InlineCallout, RegionEmptyError } from './Feedback';
 import { Icon } from './Icon';
 import { tr, currentLocale } from './locale';
 import { providerLabel } from './settingsLabels';
@@ -65,7 +66,17 @@ export function ProviderPicker(props: { owner: ModelSettingsOwner }) {
   let list: ListRef | undefined;
   let input: InputRef | undefined;
   let removeKeys = () => {};
-  cleanup(() => removeKeys());
+  const releaseInlineError = owner.claimInlineError();
+  cleanup(() => {
+    removeKeys();
+    releaseInlineError();
+  });
+  const retryProviders = async () => {
+    const failed = owner.failedProvider();
+    if (failed) await owner.chooseProvider(failed);
+    else await owner.loadProviders(false);
+    if (owner.page() === 'providers') input?.focus();
+  };
   const disabled = () =>
     owner.busy() ||
     !owner.pendingKnown() ||
@@ -216,6 +227,17 @@ export function ProviderPicker(props: { owner: ModelSettingsOwner }) {
           </Button>
         </If>
       </View>
+      <If when={Boolean(owner.error()) && rows().length > 0}>
+        <InlineCallout
+          tone="danger"
+          message={owner.error()}
+          action={{
+            label: tr('Retry'),
+            disabled: owner.busy(),
+            onPress: () => void retryProviders(),
+          }}
+        />
+      </If>
       <List
         ref={(node) => {
           list = node;
@@ -228,20 +250,36 @@ export function ProviderPicker(props: { owner: ModelSettingsOwner }) {
           if (!owner.error() && !owner.openingProvider()) void owner.loadProviders(true);
         }}
         empty={
-          <If when={!owner.loading() && !owner.error()}>
-            <Text
-              style={{
-                ...captionTextStyle,
-                color: C.muted,
-                paddingVertical: 16,
-                // In line with the list's headings and rows.
-                paddingHorizontal: settingsInset,
+          <If
+            when={!owner.loading() && Boolean(owner.error())}
+            else={
+              <If when={!owner.loading()}>
+                <Text
+                  style={{
+                    ...captionTextStyle,
+                    color: C.muted,
+                    paddingVertical: 16,
+                    // In line with the list's headings and rows.
+                    paddingHorizontal: settingsInset,
+                  }}
+                >
+                  {owner.providerQuery().trim()
+                    ? tr('No matching providers.')
+                    : tr('No providers available.')}
+                </Text>
+              </If>
+            }
+          >
+            <RegionEmptyError
+              tone="danger"
+              title={owner.error()}
+              action={{
+                label: tr('Retry'),
+                primary: true,
+                disabled: owner.busy(),
+                onPress: () => void retryProviders(),
               }}
-            >
-              {owner.providerQuery().trim()
-                ? tr('No matching providers.')
-                : tr('No providers available.')}
-            </Text>
+            />
           </If>
         }
         contentStyle={{ paddingRight: platform.idiom === 'terminal' ? 0 : 8 }}
@@ -284,39 +322,11 @@ export function ProviderPicker(props: { owner: ModelSettingsOwner }) {
           );
         }}
       </List>
-      <View style={{ minHeight: 32, flexDirection: 'row', alignItems: 'center' }}>
-        <If
-          when={owner.loading()}
-          else={
-            <If when={owner.error()}>
-              <Button
-                accessibilityLabel={
-                  owner.failedProvider()
-                    ? tr('Retry opening provider')
-                    : tr('Retry loading providers')
-                }
-                disabled={owner.busy()}
-                onPress={async () => {
-                  const failed = owner.failedProvider();
-                  if (failed) await owner.chooseProvider(failed);
-                  else await owner.loadProviders(false);
-                  if (owner.page() === 'providers') input?.focus();
-                }}
-                style={controlStyle}
-                hoverStyle={controlHoverStyle()}
-                focusStyle={controlFocusStyle()}
-                activeStyle={{ backgroundColor: C.line }}
-              >
-                <Text style={{ ...captionTextStyle, color: C.text }}>{tr('Retry')}</Text>
-              </Button>
-            </If>
-          }
-        >
-          <Text style={{ ...captionTextStyle, color: C.muted }}>
-            {owner.openingProvider() ? '' : tr('Loading providers…')}
-          </Text>
-        </If>
-      </View>
+      <If when={owner.loading() && !owner.openingProvider()}>
+        <View style={{ minHeight: 28, flexDirection: 'row', alignItems: 'center' }}>
+          <Text style={{ ...captionTextStyle, color: C.muted }}>{tr('Loading providers…')}</Text>
+        </View>
+      </If>
     </View>
   );
 }

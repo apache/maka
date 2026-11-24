@@ -18,14 +18,15 @@
  */
 
 import type { HistoryRowAddress } from '../../../../packages/plugin-sdk/src/index.js';
-import { createText, UiError, errorText, message as uiMessage } from './text';
+import { UiError, errorText, renderText } from './text';
 import { tr } from './locale';
-import { cleanup, computed, inputAction, signal, Text, View } from 'nsh';
+import { toast } from './toastStore';
+import { cleanup, computed, inputAction, signal } from 'nsh';
 import { Clipboard } from 'nsh';
 import { useHost } from './host';
 import { messageBytes, sameHistoryRow, type Row } from './history';
 import type { MessageMenu } from './messageMenu';
-import { C, IconButton } from './ui';
+import { IconButton } from './ui';
 
 export type OriginalMessage = {
   sessionId: string;
@@ -99,11 +100,12 @@ export function MessageCopy(props: {
 }) {
   const host = useHost();
   const busy = signal(false);
-  const notice = createText();
-  const failed = signal(false);
+  const copied = signal(false);
   let alive = true;
+  let resetTimer: ReturnType<typeof setTimeout> | null = null;
   cleanup(() => {
     alive = false;
+    if (resetTimer !== null) clearTimeout(resetTimer);
   });
   const target = computed<OriginalMessage | null>(
     () => {
@@ -130,20 +132,26 @@ export function MessageCopy(props: {
   const copy = async (original: OriginalMessage | null) => {
     if (original === null || !owns(original) || busy()) return;
     busy.set(true);
-    notice.set('');
-    failed.set(false);
     try {
       const content = await readOriginal(host, original, () => owns(original));
       if (content === null) return;
       await Clipboard.writeText(content);
-      if (owns(original))
-        notice.set(
-          original.role === 'user' ? uiMessage('User message copied') : uiMessage('Message copied'),
-        );
+      if (owns(original)) {
+        copied.set(true);
+        if (resetTimer !== null) clearTimeout(resetTimer);
+        resetTimer = setTimeout(() => {
+          resetTimer = null;
+          if (alive) copied.set(false);
+        }, 1500);
+      }
     } catch (reason) {
       if (owns(original)) {
-        failed.set(true);
-        notice.set(errorText(reason, 'Could not copy to the clipboard.'));
+        copied.set(false);
+        toast.show({
+          id: 'message.copy',
+          tone: 'danger',
+          message: renderText(errorText(reason, 'Could not copy to the clipboard.')),
+        });
       }
     } finally {
       if (owns(original)) busy.set(false);
@@ -157,29 +165,13 @@ export function MessageCopy(props: {
     action: () => (target() === null ? null : inputAction(copy, target())),
   });
   return (
-    <View
-      style={{
-        flexDirection: 'row',
-        flexWrap: 'wrap',
-        alignItems: 'center',
-        gap: 8,
-        minWidth: 0,
-        maxWidth: '100%',
-      }}
-    >
-      <If when={notice() && (!props.compact || failed())}>
-        <Text style={{ color: failed() ? C.danger : C.muted, fontSize: 12, lineHeight: 16 }}>
-          {notice()}
-        </Text>
-      </If>
-      <IconButton
-        compact={props.compact}
-        label={label()}
-        tooltip={busy() ? tr('Reading original message…') : undefined}
-        icon={notice() && !failed() ? 'check' : 'copy'}
-        disabled={target() === null}
-        onPress={inputAction(copy, target())}
-      />
-    </View>
+    <IconButton
+      compact={props.compact}
+      label={label()}
+      tooltip={busy() ? tr('Reading original message…') : copied() ? tr('Copied') : undefined}
+      icon={copied() ? 'check' : 'copy'}
+      disabled={target() === null}
+      onPress={inputAction(copy, target())}
+    />
   );
 }

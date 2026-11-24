@@ -65,7 +65,9 @@ import {
 } from './Workbench';
 import { createWorkbenchPlugins, type PanelRoute } from './plugins/context';
 import { PluginPanel } from './plugins/PluginPanel';
+import { Toaster } from './Feedback';
 import { currentLocale, tr } from './locale';
+import { toast } from './toastStore';
 import { bodyTextStyle, C, controlStyle, controlHoverStyle, controlFocusStyle } from './ui';
 
 type Configuration = {
@@ -292,6 +294,37 @@ function App(
     const reason = runtime.updateError();
     return reason instanceof Error ? reason.message : String(reason);
   };
+  const CONNECTION_TOAST_ID = 'workbench.connection-interrupted';
+  effect(() => {
+    if (platform.idiom === 'terminal') return;
+    currentLocale();
+    const reason = runtime.updateError();
+    if (reason === null) {
+      toast.dismiss(CONNECTION_TOAST_ID);
+      return;
+    }
+    toast.upsert(CONNECTION_TOAST_ID, {
+      tone: 'warning',
+      persistent: true,
+      dismissible: false,
+      message: tr('Connection interrupted. Reconnect to continue; your draft is kept.'),
+      details: {
+        label: tr('Details'),
+        text: connectionDiagnostic(),
+      },
+      actions: [
+        {
+          label: tr('Retry'),
+          primary: true,
+          dismissOnPress: false,
+          onPress: runtime.retryUpdates,
+        },
+      ],
+    });
+  });
+  cleanup(() => {
+    toast.dismiss(CONNECTION_TOAST_ID);
+  });
   const conversationPaneVisible = () => shell.visible() && !previewFullscreen() && !previewDialog();
   const shell: ConversationShell = {
     sessionId: selected,
@@ -579,7 +612,7 @@ function App(
           },
         })}
       </WorkspaceSurface>
-      <If when={runtime.updateError() !== null}>
+      <If when={platform.idiom === 'terminal' && runtime.updateError() !== null}>
         <View
           style={{
             flexDirection: 'row',
@@ -650,6 +683,7 @@ function App(
         },
         { loading: false },
       )}
+      <Toaster />
     </View>
   );
 }

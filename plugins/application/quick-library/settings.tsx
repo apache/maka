@@ -21,6 +21,7 @@ import { computed, signal, Text, type JSX, type Signal } from 'nsh';
 import {
   SettingsBody,
   SettingsButton,
+  SettingsProblem,
   SettingsRow,
   SettingsSection,
 } from '../../../products/maka/workbench/app/SettingsPage';
@@ -186,23 +187,21 @@ export function LibrarySettings(props: { library: Library; kind: LibraryKind }) 
   };
   return (
     <SettingsBody
-      footerShown={draft() !== null || library.failure() !== null}
+      footerShown={draft() !== null}
       footer={
         <>
-          <If when={library.failure() !== null || problem() !== null}>
+          <If when={problem() !== null}>
             <Text
               style={{
                 flex: 1,
                 minWidth: 0,
                 fontSize: 12,
                 lineHeight: 18,
-                color: C.warning,
+                color: C.danger,
                 userSelect: 'text',
               }}
             >
-              {library.failure() !== null
-                ? renderText(errorText(library.failure(), 'Could not load or save shortcuts.'))
-                : tr(problem()!)}
+              {tr(problem()!)}
             </Text>
           </If>
           <If when={draft() !== null}>
@@ -217,6 +216,11 @@ export function LibrarySettings(props: { library: Library; kind: LibraryKind }) 
         </>
       }
     >
+      <If when={library.failure() !== null}>
+        <SettingsProblem
+          message={renderText(errorText(library.failure(), 'Could not load or save shortcuts.'))}
+        />
+      </If>
       <Each
         of={sections.filter((section) => section.kind === props.kind)}
         key={(section: (typeof sections)[number]) => section.kind}
