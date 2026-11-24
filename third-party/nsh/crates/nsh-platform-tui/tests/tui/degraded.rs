@@ -299,8 +299,8 @@ const STYLED: &str = r##"
     mount(() => <View style={{ gap: 16 }}>
         <Button accessibilityLabel="Hover" onPress={() => {}}
             style={{ paddingHorizontal: 8 }}
-            hoverStyle={{ backgroundColor: "#3f3f46" }}>
-            <Text>Hover</Text></Button>
+            hoverStyle={{ backgroundColor: "#37393e" }}>
+            <Text style={{ color: "#f0f1f3" }}>Hover</Text></Button>
         <Button accessibilityLabel="Press" onPress={() => {}}
             style={{ paddingHorizontal: 8 }}
             activeStyle={{ backgroundColor: "#3f3f46" }}>
@@ -349,6 +349,10 @@ fn without_the_terminals_colors_a_state_fill_is_not_a_band() {
         );
         assert_eq!(buffer[(hover.0 - 1, hover.1)].bg, Color::Reset, "{depth:?}");
         assert_eq!(buffer[hover].fg, Color::Reset, "{depth:?}: its own ink");
+        assert!(
+            !buffer[hover].modifier.contains(Modifier::DIM),
+            "{depth:?}: hover fill must not dim its label"
+        );
         assert!(!buffer[hover].modifier.contains(Modifier::REVERSED));
         // A button filled at rest keeps that fill on hover.
         assert_eq!(

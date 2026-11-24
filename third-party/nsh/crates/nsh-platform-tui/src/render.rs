@@ -539,13 +539,28 @@ impl Painter<'_> {
         );
         // A divider's box (a menu's separator, its fill the app's line
         // color) is its line of `─` alone: a line is no band.
+        // A terminal that did not tell its colors has no hover band
+        // (`Bands::new`), so a hovered control uses its resting fill for both
+        // its bandless fill and the ground its children's ink is measured
+        // against; states with marks of their own (focus, press, selection,
+        // disabled) keep theirs.
+        let states = shown_states(view, self.tree.pointer_focus);
+        let hovering = ground.ramp.is_none()
+            && self.bands.hover.is_none()
+            && states & state::HOVERED != 0
+            && states & (state::FOCUSED | state::PRESSED | state::DISABLED) == 0
+            && !view.props.accessibility.state.disabled
+            && !banded(view);
         let fill = if blank || rule_box || scrim {
             nsh_core::Color::TRANSPARENT
         } else {
-            let color = view
-                .animated
-                .background
-                .unwrap_or(view.style.background_color);
+            let color = if hovering {
+                view.rest_fill
+            } else {
+                view.animated
+                    .background
+                    .unwrap_or(view.style.background_color)
+            };
             // A terminal draws one color per Cell: a gradient over no
             // fill of its own fills with its first stop.
             match view.style.effects.as_deref() {
@@ -827,33 +842,20 @@ impl Painter<'_> {
             && view.input.is_none()
             && !edges.any()
             && !(layer.overlay && !layer.boxed);
-        // A terminal that did not tell its colors has no hover band
-        // (`Bands::new`), so the app's own hover fill (its raised step)
-        // would show as a bandless gray across a control that is unfilled
-        // at rest. A hovered control is drawn with the fill it has at rest;
-        // one filled at rest keeps that fill. A state with a mark of its own
-        // (focus, press, a selection) is not a hover.
-        let states = shown_states(view, self.tree.pointer_focus);
-        let hovering = parent.ramp.is_none()
-            && self.bands.hover.is_none()
-            && states & state::HOVERED != 0
-            && states & (state::FOCUSED | state::PRESSED) == 0
-            && !banded(view);
-        let bandless_source = if hovering { view.rest_fill } else { fill };
         let bandless_fill = bandless
             .then(|| {
                 // A swatch's Cells keep their own colors, as with surfaces.
                 if picture {
-                    palette::bandless_swatch(bandless_source, parent)
+                    palette::bandless_swatch(fill, parent)
                 } else {
-                    palette::bandless_fill(bandless_source, parent)
+                    palette::bandless_fill(fill, parent)
                 }
             })
             .flatten();
         let bandless_reversed = bandless
             && small
             && parent.depth == crate::ColorDepth::Monochrome
-            && palette::surface(bandless_source, parent) != Surface::None;
+            && palette::surface(fill, parent) != Surface::None;
         let mut framed = None;
         // The line a frame drawn around the box puts on its right: the
         // Cell after its last column.
