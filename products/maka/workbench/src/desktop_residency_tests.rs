@@ -79,6 +79,16 @@ fn start_with_data_dir(
     bootstrap: bool,
     data_dir: Option<std::path::PathBuf>,
 ) -> (Headless, Arc<AtomicUsize>) {
+    start_with_options(os, idiom, bootstrap, data_dir, false)
+}
+
+fn start_with_options(
+    os: Os,
+    idiom: Idiom,
+    bootstrap: bool,
+    data_dir: Option<std::path::PathBuf>,
+    start_hidden: bool,
+) -> (Headless, Arc<AtomicUsize>) {
     let mut registry = crate::bindings::ui_registry();
     registry.value("host", || Instance::new(EmptyHost));
     let sets = vec![nsh_base::registry(), registry];
@@ -120,6 +130,11 @@ fn start_with_data_dir(
         data_dir,
         ..EngineConfig::new(bundle)
     };
+    if start_hidden {
+        let mut params = config.host.params();
+        params.insert("startHidden".into(), JsonValue::Bool(true));
+        config.host.set_params(params);
+    }
     let exits = Arc::new(AtomicUsize::new(0));
     let received = exits.clone();
     config.host.handle("terminal.exit", move |_| {
@@ -236,6 +251,59 @@ fn desktop_residency_keeps_draft_and_work_across_close_reopen_and_ui_changes() {
     assert!(!app.window_state("main").unwrap().unwrap().visible);
     app.press_window_close("other").unwrap();
     assert!(app.window_state("other").unwrap().is_none());
+}
+
+#[test]
+fn bootstrap_start_hidden_keeps_main_window_hidden_until_tray_reopens_it() {
+    use nsh_core::desktop::WindowRequest;
+    let (mut app, _) = start_with_options(Os::MacOs, Idiom::Desktop, true, None, true);
+    let main_node = app
+        .screen()
+        .commands()
+        .iter()
+        .find_map(|(id, c)| match c {
+            Command::Desktop(c) => match c.as_ref() {
+                DesktopCommand::OpenWindow(open) if open.options.id == "main" => Some(*id),
+                _ => None,
+            },
+            _ => None,
+        })
+        .expect("Bootstrap must declare <Window id=\"main\">");
+    let open_pos = app
+        .screen()
+        .commands()
+        .iter()
+        .position(|(id, c)| {
+            *id == main_node
+                && matches!(
+                    c,
+                    Command::Desktop(c) if matches!(c.as_ref(), DesktopCommand::OpenWindow(_))
+                )
+        })
+        .unwrap();
+    assert!(
+        app.screen().commands()[open_pos + 1..]
+            .iter()
+            .any(|(id, c)| {
+                *id == main_node
+                    && matches!(
+                        c,
+                        Command::Desktop(c)
+                            if matches!(c.as_ref(), DesktopCommand::Request(WindowRequest::Hide))
+                    )
+            }),
+        "startHidden must emit WindowRequest::Hide right after OpenWindow during initial bootstrap mount"
+    );
+    assert!(
+        !app.window_state("main").unwrap().unwrap().visible,
+        "startHidden must keep main window hidden after startup"
+    );
+    let open = actions(&tray(&app).unwrap().menu)[0].id;
+    select(&mut app, open);
+    assert!(
+        app.window_state("main").unwrap().unwrap().visible,
+        "tray Open Maka must reopen a startHidden main window"
+    );
 }
 
 #[test]

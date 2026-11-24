@@ -28,6 +28,9 @@ export function nativeDesktop() {
   const main = currentWindow();
 
   main.set({ closeOnPress: false });
+  if ((host.params as { startHidden?: boolean }).startHidden === true) {
+    main.hide();
+  }
   cleanup(main.on('closePress', () => main.hide()));
   cleanup(Application.on('reopen', () => main.focus()));
   cleanup(() => Tray.set(null));

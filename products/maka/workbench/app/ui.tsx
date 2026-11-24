@@ -431,7 +431,8 @@ export function SidebarTitleRow(props: {
   let underPointer = false;
   return (
     <TitleBar style={{ height: TITLE_BAR_HEIGHT }}>
-      <View style={{ paddingLeft: 4 }}>
+      {/* TitleBar sits at x=12 inside the sidebar and clears L; match the collapsed header at max(16, L). */}
+      <View style={{ paddingLeft: Math.max(0, 16 - Math.max(12, controlsLeft(true))) }}>
         <SidebarToggle
           expanded={!props.pin}
           hover={(inside) => {
