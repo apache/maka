@@ -17,9 +17,7 @@
  * under the License.
  */
 
-#[allow(dead_code)]
-#[path = "../support/host.rs"]
-mod fixture;
+use crate::host_support as fixture;
 
 use iroh::{Endpoint, EndpointAddr, EndpointId, RelayMode, RelayUrl, SecretKey, endpoint::presets};
 use iroh_relay::server::{RelayConfig, Server, ServerConfig};

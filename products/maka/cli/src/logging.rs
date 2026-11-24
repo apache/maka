@@ -79,6 +79,16 @@ fn extension_browser_trace_requested(
             .is_some_and(|origin| origin.starts_with("chrome-extension://"))
 }
 
+/// Keep operator-only output off the diagnostics stream published by HostLogs.
+pub(super) fn operator_stderr() -> std::io::Result<std::fs::File> {
+    let stderr = std::io::stderr();
+    #[cfg(unix)]
+    let owned = std::os::fd::AsFd::as_fd(&stderr).try_clone_to_owned()?;
+    #[cfg(windows)]
+    let owned = std::os::windows::io::AsHandle::as_handle(&stderr).try_clone_to_owned()?;
+    Ok(owned.into())
+}
+
 /// Dedicated Host processes keep stderr attached through final error reporting
 /// and runtime shutdown. The caller supplies an already validated append file.
 pub(super) fn capture(file: std::fs::File) -> std::io::Result<()> {

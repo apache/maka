@@ -17,18 +17,102 @@
  * under the License.
  */
 
+use clap::Args;
 use maka_host_runtime::{
     HostError,
     application::host::{Host, LifecycleMode, Options, websocket::WebSocketListener},
 };
+use maka_remote_pairing::RelayEndpoint;
+use maka_remote_transport::{Relay, host::HostPeerTransport};
 use serde_json::json;
-use std::{path::Path, sync::Arc};
+use std::{
+    net::SocketAddr,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 use tokio_util::sync::CancellationToken;
+
+#[derive(Args)]
+pub(super) struct Serve {
+    #[command(flatten)]
+    root: super::args::Root,
+    #[arg(long)]
+    websocket: Option<SocketAddr>,
+    /// Self-hosted relay URL (repeatable). Relay modifiers require a single URL.
+    #[arg(long)]
+    relay: Vec<String>,
+    #[arg(long, requires = "relay")]
+    relay_quic_port: Option<u16>,
+    #[arg(long, requires = "relay", conflicts_with = "relay_ca_der")]
+    relay_cert_sha256: Option<String>,
+    #[arg(long, requires = "relay")]
+    relay_ca_der: Option<PathBuf>,
+    #[arg(long, requires = "relay", conflicts_with = "relay_auth_token_env")]
+    relay_auth_token: Option<String>,
+    #[arg(long, requires = "relay")]
+    relay_auth_token_env: Option<String>,
+    /// Disable direct IP transports.
+    #[arg(long, requires = "relay")]
+    relay_only: bool,
+}
+
+pub(super) struct Remote {
+    relays: Vec<Relay>,
+    relay_only: bool,
+    pairing_output: std::fs::File,
+}
+
+impl Serve {
+    pub async fn run(self) -> Result<(), HostError> {
+        #[cfg(windows)]
+        crate::windows::own_process_tree()?;
+        let remote = if self.relay.is_empty() {
+            None
+        } else {
+            if self.relay.len() > 1
+                && (self.relay_quic_port.is_some()
+                    || self.relay_cert_sha256.is_some()
+                    || self.relay_ca_der.is_some()
+                    || self.relay_auth_token.is_some()
+                    || self.relay_auth_token_env.is_some())
+            {
+                return Err(
+                    "relay TLS, QUIC port and Bearer options require exactly one --relay".into(),
+                );
+            }
+            let ca = match self.relay_ca_der {
+                Some(path) => Some(tokio::fs::read(path).await?),
+                None => None,
+            };
+            let token = crate::relay::bearer(self.relay_auth_token, self.relay_auth_token_env)?;
+            let public_routes: Vec<_> = self
+                .relay
+                .into_iter()
+                .map(|url| RelayEndpoint {
+                    url,
+                    quic_port: self.relay_quic_port,
+                    cert_sha256: self.relay_cert_sha256.clone(),
+                })
+                .collect();
+            let relays = public_routes
+                .iter()
+                .map(|route| Relay::new(route, ca.clone(), token.clone()))
+                .collect::<Result<_, _>>()?;
+            Some(Remote {
+                relays,
+                relay_only: self.relay_only,
+                pairing_output: crate::logging::operator_stderr()?,
+            })
+        };
+        run(&self.root.root, self.websocket, None, remote).await
+    }
+}
 
 pub(super) async fn run(
     path: &Path,
     websocket: Option<std::net::SocketAddr>,
     expected_root: Option<&str>,
+    remote: Option<Remote>,
 ) -> Result<(), maka_host_runtime::HostError> {
     use maka_event_log::root::{ROOT_MARKER, RootNamespaces, RootOwner};
     let namespaces = RootNamespaces::for_current_account()?;
@@ -97,34 +181,96 @@ pub(super) async fn run(
         None,
     )
     .await?;
-    serve_product(host, websocket).await
+    serve_product(host, websocket, remote).await
 }
 async fn serve_product(
     mut product: crate::application::ProductHost,
     websocket: Option<WebSocketListener>,
+    remote: Option<Remote>,
 ) -> Result<(), HostError> {
     let result = async {
-    let host = &product.host;
-    let endpoint = super::endpoint::LocalEndpoint::bind()?;
-    let cancellation = CancellationToken::new();
-    let _signals = super::signals::watch(cancellation.clone())?;
-    let registration = host.publish_registration(
-        &endpoint.path,
-        websocket
-            .as_ref()
-            .map(|listener| listener.local_addr())
-            .transpose()?,
-    )?;
-    let mut ready = json!({"kind":"ready","rootId":host.root_id(),"hostEpoch":host.epoch(),"socketPath":endpoint.path});
-    if let Some(listener) = &websocket {
-        ready["websocketUrl"] = format!("ws://{}/runtime-host", listener.local_addr()?).into();
-    }
-    println!("{ready}");
-    let result = listen(endpoint, websocket, host.clone(), cancellation).await;
-    result.and(registration.remove().map_err(Into::into))
+        let host = &product.host;
+        let endpoint = super::endpoint::LocalEndpoint::bind()?;
+        let cancellation = CancellationToken::new();
+        let _signals = super::signals::watch(cancellation.clone())?;
+        let mut ready = json!({"kind":"ready","rootId":host.root_id(),"hostEpoch":host.epoch(),"socketPath":endpoint.path});
+        let websocket_addr = websocket.as_ref().map(WebSocketListener::local_addr).transpose()?;
+        if let Some(address) = websocket_addr {
+            ready["websocketUrl"] = format!("ws://{address}/runtime-host").into();
+        }
+        let remote = if let Some(remote) = remote {
+            let pairing_output = pairing_notices(remote.pairing_output)?;
+            let transport = HostPeerTransport::bind(host, &remote.relays, remote.relay_only).await?;
+            let registered = tokio::select! {
+                () = cancellation.cancelled() => None,
+                result = transport.wait_for_relay() => Some(result),
+            };
+            let relays = match registered {
+                Some(Ok(relays)) => relays,
+                Some(Err(error)) => {
+                    transport.close().await;
+                    return Err(error);
+                }
+                None => {
+                    transport.close().await;
+                    return Ok(());
+                }
+            };
+            ready["peerId"] = host.device_identity().public_key().to_string().into();
+            ready["relays"] = serde_json::to_value(relays)?;
+            Some((transport, pairing_output))
+        } else {
+            None
+        };
+
+        let registration = host.publish_registration(&endpoint.path, websocket_addr)?;
+        println!("{ready}");
+        let result = if let Some((transport, pairing_output)) = remote {
+            let (sender, ingress) = HostPeerTransport::ingress();
+            let serve = host.serve_with_peers(endpoint.listener, websocket, Some(ingress), cancellation.clone());
+            let peers = transport.serve(sender, cancellation.clone(), move |peer, sas| {
+                let event = json!({"kind":"peerSas","peerId":peer.as_str(),"sas":sas});
+                // Advisory, local-only output must not backpressure peer admission.
+                let _ = pairing_output.try_send(format!("{event}\n"));
+            });
+            tokio::pin!(serve, peers);
+            tokio::select! {
+                result = &mut serve => {
+                    cancellation.cancel();
+                    result.map_err(HostError::from).and(peers.await)
+                }
+                result = &mut peers => {
+                    cancellation.cancel();
+                    result.and(serve.await.map_err(Into::into))
+                }
+            }
+        } else {
+            listen(endpoint, websocket, host.clone(), cancellation).await
+        };
+        result.and(registration.remove().map_err(Into::into))
     }.await;
     let cleanup = product.shutdown().await;
     result.and(cleanup)
+}
+
+fn pairing_notices(
+    mut output: std::fs::File,
+) -> std::io::Result<std::sync::mpsc::SyncSender<String>> {
+    use std::io::Write as _;
+    // One pending notice behind the writer. A local pipe may never drain:
+    // detach this thread instead of enlisting a Tokio worker shutdown must join.
+    let (tx, rx) = std::sync::mpsc::sync_channel::<String>(1);
+    std::thread::Builder::new()
+        .name("maka-peer-sas".into())
+        .spawn(move || {
+            for line in rx {
+                if let Err(error) = output.write_all(line.as_bytes()) {
+                    eprintln!("could not report peer SAS to the local operator: {error}");
+                    break;
+                }
+            }
+        })?;
+    Ok(tx)
 }
 
 pub(super) async fn listen(

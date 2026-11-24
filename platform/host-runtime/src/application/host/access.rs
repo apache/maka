@@ -94,13 +94,7 @@ impl Host {
         match authority {
             Authority::Local => Ok(Principal::Local),
             Authority::AuthenticatedPeer { peer_id } => {
-                let grant = self.access_grant.lock().unwrap().clone();
-                if !self
-                    .access
-                    .has_host_peer_access(peer_id.clone(), grant)
-                    .await
-                    .map_err(|error| error.to_string())?
-                {
+                if !self.peer_has_current_grant(peer_id).await? {
                     return Err("transport peer does not grant this application source".into());
                 }
                 Ok(Principal::AuthenticatedPeer(peer_id.clone()))
@@ -163,6 +157,20 @@ impl Host {
         let grant = self.access_grant.lock().unwrap().clone();
         self.access
             .grant_host_peer_access(peer_id, grant)
+            .await
+            .map_err(|error| error.to_string())
+    }
+
+    /// Check whether a transport's pairing window can end without closing it.
+    pub async fn has_peer_access(&self, peer_id: &PeerId) -> Result<bool> {
+        let _gate = self.access_gate.lock().await;
+        self.peer_has_current_grant(peer_id).await
+    }
+
+    async fn peer_has_current_grant(&self, peer_id: &PeerId) -> Result<bool> {
+        let grant = self.access_grant.lock().unwrap().clone();
+        self.access
+            .has_host_peer_access(peer_id.clone(), grant)
             .await
             .map_err(|error| error.to_string())
     }

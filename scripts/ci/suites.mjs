@@ -398,7 +398,7 @@ export const suites = {
     targetArgs: ['--bin', 'maka', '--test', 'integration'],
     filter:
       '(binary_id(=maka-cli::bin/maka) & test(deployment::host_identity::tests::)) | ' +
-      '(binary_id(=maka-cli::integration) & test(terminal_shell::))',
+      '(binary_id(=maka-cli::integration) & (test(terminal_shell::) | test(remote_transport::)))',
     extraInputs: [
       ...distributionInputs,
       'scripts/rust/build-cli.mjs',

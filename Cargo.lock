@@ -7863,6 +7863,7 @@ dependencies = [
  "rustls-cert-file-reader",
  "rustls-cert-reloadable-resolver",
  "rustls-pki-types",
+ "rustls-platform-verifier",
  "serde",
  "serde_bytes",
  "serde_json",
@@ -9028,6 +9029,7 @@ dependencies = [
  "maka-product-native",
  "maka-providers",
  "maka-remote-pairing",
+ "maka-remote-transport",
  "maka-sandbox",
  "maka-schema",
  "maka-settings-native",
@@ -9896,6 +9898,36 @@ dependencies = [
  "thiserror 2.0.21",
  "url",
  "zeroize",
+]
+
+[[package]]
+name = "maka-remote-transport"
+version = "0.3.0"
+dependencies = [
+ "futures-util",
+ "hex",
+ "httparse",
+ "iroh",
+ "iroh-relay",
+ "log",
+ "maka-event-log",
+ "maka-host-runtime",
+ "maka-packages",
+ "maka-remote-pairing",
+ "rcgen",
+ "rustls",
+ "serde_json",
+ "sha2 0.11.1",
+ "subtle",
+ "tempfile",
+ "tokio",
+ "tokio-rustls",
+ "tokio-tungstenite 0.30.0",
+ "tokio-util",
+ "tracing",
+ "url",
+ "uuid",
+ "x509-parser 0.18.1",
 ]
 
 [[package]]
@@ -14652,6 +14684,7 @@ version = "0.14.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8774e05a7d0de114588e6a28fe7e71694b82614ed569d86d8b389dfbc98b8ad8"
 dependencies = [
+ "aws-lc-rs",
  "pem",
  "ring",
  "rustls-pki-types",
@@ -18461,7 +18494,10 @@ checksum = "17a073bfed563fa236697a068031408a93cd9522e08abf9933ead3e73411bd71"
 dependencies = [
  "futures-util",
  "log",
+ "rustls",
+ "rustls-pki-types",
  "tokio",
+ "tokio-rustls",
  "tungstenite 0.30.0",
 ]
 
@@ -18859,6 +18895,8 @@ dependencies = [
  "httparse",
  "log",
  "rand 0.10.3",
+ "rustls",
+ "rustls-pki-types",
  "sha1 0.11.0",
  "thiserror 2.0.21",
 ]
@@ -20784,6 +20822,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d43b0f71ce057da06bc0851b23ee24f3f86190b07203dd8f567d0b706a185202"
 dependencies = [
  "asn1-rs 0.7.2",
+ "aws-lc-rs",
  "data-encoding",
  "der-parser 10.0.0",
  "lazy_static",
