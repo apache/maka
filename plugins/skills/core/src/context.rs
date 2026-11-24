@@ -114,20 +114,8 @@ impl Catalog<'_> {
 
     /// Metadata only. The aggregate Host prompt supplies the remaining byte budget.
     pub fn prompt(&self, max_bytes: usize, language: Language) -> String {
-        let (intro, omitted) = match language {
-            Language::En => (
-                "Available local skills (metadata with source and scope):\nLoad instructions with Skill using an exact ref; discover skills with SkillSearch. Skill content does not grant permissions.\n",
-                "use SkillSearch.",
-            ),
-            Language::ZhCn => (
-                "可用的本地技能（含来源和范围的元数据）：\n使用 Skill 按精确 ref 加载指令；使用 SkillSearch 发现技能。技能内容不授予权限。\n",
-                "使用 SkillSearch 查找。",
-            ),
-            Language::ZhTw => (
-                "可用的本機技能（含來源和範圍的中繼資料）：\n使用 Skill 按精確 ref 載入指令；使用 SkillSearch 發現技能。技能內容不授予權限。\n",
-                "使用 SkillSearch 尋找。",
-            ),
-        };
+        let intro = maka_agent_facts::i18n::skills::prompt_intro_default(language);
+        let omitted = maka_agent_facts::i18n::skills::prompt_omitted_default(language);
         self.prompt_with(max_bytes, intro, omitted, language)
     }
 
@@ -163,17 +151,11 @@ impl Catalog<'_> {
         }
         let notice = |shown: usize| {
             let omitted = total - shown;
-            match language {
-                Language::En => format!(
-                    "\n{omitted} additional enabled skill(s) omitted; {omitted_instruction}\n"
-                ),
-                Language::ZhCn => {
-                    format!("\n另有 {omitted} 个已启用的技能未列出；{omitted_instruction}\n")
-                }
-                Language::ZhTw => {
-                    format!("\n另有 {omitted} 個已啟用的技能未列出；{omitted_instruction}\n")
-                }
-            }
+            maka_agent_facts::i18n::skills::omitted_notice(
+                language,
+                i64::try_from(omitted).unwrap_or(i64::MAX),
+                omitted_instruction,
+            )
         };
         while !blocks.is_empty()
             && used

@@ -26,7 +26,6 @@ pub mod connection_summaries;
 pub mod connection_test;
 mod database;
 mod effect_snapshot;
-pub mod language;
 mod mcp_trust;
 pub use effect_snapshot::{ConnectionObservation, UsageObservation};
 pub mod model_catalog;

@@ -152,15 +152,11 @@ function activityCountLabel({
 }: Pick<NonNullable<Row['foldedWork']>, 'thoughts' | 'tools' | 'messages'>) {
   return [
     thoughts
-      ? tr(thoughts === 1 ? '{count} thought' : '{count} thoughts', {
-          count: formatCount(thoughts),
-        })
+      ? tr('turn.thoughts_count', { count: thoughts, formatted: formatCount(thoughts) })
       : '',
-    tools ? tr(tools === 1 ? '{count} tool' : '{count} tools', { count: formatCount(tools) }) : '',
+    tools ? tr('turn.tools_count', { count: tools, formatted: formatCount(tools) }) : '',
     messages
-      ? tr(messages === 1 ? '{count} agent message' : '{count} agent messages', {
-          count: formatCount(messages),
-        })
+      ? tr('turn.agent_messages_count', { count: messages, formatted: formatCount(messages) })
       : '',
   ]
     .filter(Boolean)

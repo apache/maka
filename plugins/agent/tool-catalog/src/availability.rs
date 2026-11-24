@@ -233,11 +233,9 @@ impl Availability {
         use maka_agent_facts::display::Text;
         let title = Text::single_line(&input.query).map(|query| {
             let query = query.fallback;
-            Text::localized(
-                &format!("Find tools · {query}"),
-                &format!("查找工具 · {query}"),
-                &format!("尋找工具 · {query}"),
-            )
+            Text::for_locales(|locale| {
+                maka_agent_facts::i18n::tool_title::find_tools(locale, &query)
+            })
         });
         let availability = self.clone();
         let effect = PreparedEffect::new(move |_| {

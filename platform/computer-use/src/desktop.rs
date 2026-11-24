@@ -558,13 +558,9 @@ impl Session {
         if let Some(backend) = &self.backend
             && windows != matches!(backend, Backend::Windows { .. })
         {
-            return Err(failed(match language {
-                Language::En => {
-                    "desktop configuration changed; reset Cua before switching desktops"
-                }
-                Language::ZhCn => "桌面配置已改变；请先重置 Cua，再切换桌面",
-                Language::ZhTw => "桌面設定已變更；請先重設 Cua，再切換桌面",
-            }));
+            return Err(failed(
+                crate::language::i18n_catalog::desktop::config_changed(language),
+            ));
         }
         if self.backend.is_none() {
             self.backend = Some(if windows {
@@ -1164,7 +1160,7 @@ mod tests {
         let execution = crate::ExecutionCorrelation::new("run-1").unwrap();
 
         let (result, ()) = tokio::join!(
-            owner.finish_turn("session-1", "turn-1", &execution, Language::En),
+            owner.finish_turn("session-1", "turn-1", &execution, Language::EN),
             async {
                 let remove = receiver.recv_remove().await.expect("remove request");
                 assert_eq!(remove.id, configured.id);
@@ -1196,7 +1192,7 @@ mod tests {
         let execution = crate::ExecutionCorrelation::new("run-2").unwrap();
 
         let (result, ()) = tokio::join!(
-            owner.finish_turn("session-1", "turn-2", &execution, Language::En),
+            owner.finish_turn("session-1", "turn-2", &execution, Language::EN),
             async {
                 let remove = receiver.recv_remove().await.expect("remove request");
                 assert_eq!(remove.id, expected_id);

@@ -96,12 +96,7 @@ import {
   errorMessage,
   message as uiMessage,
 } from '../../../../products/maka/workbench/app/text';
-import {
-  currentLocale,
-  displayText,
-  tr,
-  type MessageKey,
-} from '../../../../products/maka/workbench/app/locale';
+import { displayText, tr, type MessageKey } from '../../../../products/maka/workbench/app/locale';
 import {
   loadDraft,
   searchSessions,
@@ -281,7 +276,6 @@ export function createConversationUi(
   side?: { browsing: Browsing },
 ) {
   const runtime = context.runtime;
-  effect(() => currentLocale.set(context.locale()));
   const shell = signal<ConversationShell | null>(null);
   const bind = (next: ConversationShell) => {
     if (shell() !== next) shell.set(next);

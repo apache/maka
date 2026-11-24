@@ -241,7 +241,7 @@ pub(super) async fn execute(
                     on_screen_only: Some(false),
                 })
                 .await
-                .map_err(|error| crate::driver::native_error(&error, Language::En))?
+                .map_err(|error| crate::driver::native_error(&error, Language::EN))?
                 .windows
                 .into_iter()
                 .find(|window| {
@@ -267,7 +267,7 @@ pub(super) async fn execute(
                     session: None,
                 })
                 .await
-                .map_err(|error| crate::driver::native_error(&error, Language::En))?
+                .map_err(|error| crate::driver::native_error(&error, Language::EN))?
                 .into(),
         ),
         NativePresentStep::Raise => NativePresentReply::Effect(
@@ -277,7 +277,7 @@ pub(super) async fn execute(
                     json!({"pid":binding.pid,"window_id":binding.window_id}).to_string(),
                 )
                 .await
-                .map_err(|error| crate::driver::native_error(&error, Language::En))?
+                .map_err(|error| crate::driver::native_error(&error, Language::EN))?
                 .into(),
         ),
     };

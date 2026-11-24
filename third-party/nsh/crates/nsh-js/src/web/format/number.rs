@@ -112,6 +112,107 @@ impl Format {
     };
 }
 
+/// ECMA-402 rounding modes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub(crate) enum RoundingMode {
+    Ceil,
+    Floor,
+    Expand,
+    Trunc,
+    HalfCeil,
+    HalfFloor,
+    #[default]
+    HalfExpand,
+    HalfTrunc,
+    HalfEven,
+}
+
+impl RoundingMode {
+    pub(crate) fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "ceil" => Some(Self::Ceil),
+            "floor" => Some(Self::Floor),
+            "expand" => Some(Self::Expand),
+            "trunc" => Some(Self::Trunc),
+            "halfCeil" => Some(Self::HalfCeil),
+            "halfFloor" => Some(Self::HalfFloor),
+            "halfExpand" => Some(Self::HalfExpand),
+            "halfTrunc" => Some(Self::HalfTrunc),
+            "halfEven" => Some(Self::HalfEven),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Ceil => "ceil",
+            Self::Floor => "floor",
+            Self::Expand => "expand",
+            Self::Trunc => "trunc",
+            Self::HalfCeil => "halfCeil",
+            Self::HalfFloor => "halfFloor",
+            Self::HalfExpand => "halfExpand",
+            Self::HalfTrunc => "halfTrunc",
+            Self::HalfEven => "halfEven",
+        }
+    }
+}
+
+/// Exact CLDR plural operands computed from the ECMA-402 rounded decimal digits.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct PluralOperands {
+    pub(crate) i_is_zero: bool,
+    pub(crate) i_is_one: bool,
+    pub(crate) i_exact: Option<u64>,
+    pub(crate) mod10: u8,
+    pub(crate) mod100: u8,
+    pub(crate) div_million: bool,
+    pub(crate) v: usize,
+    pub(crate) f_nonzero: bool,
+}
+
+impl PluralOperands {
+    /// Returns None for NaN / Infinity (which always map to "other").
+    pub(crate) fn from_f64(
+        value: f64,
+        rounding: Rounding,
+        mode: RoundingMode,
+        strip_if_integer: bool,
+    ) -> Option<Self> {
+        let Value::Finite(decimal) = Value::from_f64(value) else {
+            return None;
+        };
+        let (rounded, mut min_frac) = decimal.rounded_with_mode(rounding, mode);
+        if strip_if_integer && rounded.is_integer() {
+            min_frac = 0;
+        }
+        let (int, frac) = rounded.split(1, min_frac);
+        let bytes = int.as_bytes();
+        let i_is_zero = bytes.iter().all(|&b| b == b'0');
+        let i_is_one = int == "1";
+        let mod10 = bytes.last().map_or(0, |&b| b - b'0');
+        let mod100 = int
+            .get(int.len().saturating_sub(2)..)
+            .and_then(|s| s.parse::<u8>().ok())
+            .unwrap_or(0);
+        let div_million =
+            !i_is_zero && bytes.len() > 6 && bytes[bytes.len() - 6..].iter().all(|&b| b == b'0');
+        let i_exact = int.parse::<u64>().ok();
+        let v = frac.len();
+        let f_nonzero = frac.bytes().any(|b| b != b'0');
+        Some(Self {
+            i_is_zero,
+            i_is_one,
+            i_exact,
+            mod10,
+            mod100,
+            div_million,
+            v,
+            f_nonzero,
+        })
+    }
+}
+
 /// The fraction digits of a currency (ISO 4217).
 pub(crate) fn currency_digits(code: &str) -> u8 {
     match code {
@@ -214,23 +315,77 @@ impl Decimal {
         self.digits.is_empty()
     }
 
+    fn is_integer(&self) -> bool {
+        self.digits.len() as i32 <= self.point
+    }
+
     /// The power of ten of the first digit (`1234`: 3).
     fn magnitude(&self) -> i32 {
         self.point - 1
     }
 
-    /// Keeps the first `keep` digits, rounding half away from zero.
-    fn round(&mut self, keep: i32) {
-        if keep < 0 {
-            self.digits.clear();
-            self.point = 0;
+    /// Keeps the first `keep` digits using the given ECMA-402 `RoundingMode`.
+    fn round_with_mode(&mut self, keep: i32, mode: RoundingMode) {
+        use std::cmp::Ordering;
+
+        if self.digits.is_empty() {
+            return;
+        }
+        if keep >= self.digits.len() as i32 {
+            return;
+        }
+        let cmp_half = if keep < 0 {
+            // Dropped tail is strictly non-zero and strictly less than half a ULP.
+            Ordering::Less
+        } else {
+            let k = keep as usize;
+            match self.digits[k].cmp(&b'5') {
+                Ordering::Less => Ordering::Less,
+                Ordering::Greater => Ordering::Greater,
+                Ordering::Equal => {
+                    if self.digits[k + 1..].iter().any(|&d| d != b'0') {
+                        Ordering::Greater
+                    } else {
+                        Ordering::Equal
+                    }
+                }
+            }
+        };
+        let kept_is_odd = if keep > 0 {
+            (self.digits[keep as usize - 1] - b'0') % 2 == 1
+        } else {
+            false
+        };
+        let up = match mode {
+            RoundingMode::Trunc => false,
+            RoundingMode::Expand => true,
+            RoundingMode::Ceil => !self.negative,
+            RoundingMode::Floor => self.negative,
+            RoundingMode::HalfExpand => cmp_half != Ordering::Less,
+            RoundingMode::HalfTrunc => cmp_half == Ordering::Greater,
+            RoundingMode::HalfCeil => {
+                cmp_half == Ordering::Greater || (cmp_half == Ordering::Equal && !self.negative)
+            }
+            RoundingMode::HalfFloor => {
+                cmp_half == Ordering::Greater || (cmp_half == Ordering::Equal && self.negative)
+            }
+            RoundingMode::HalfEven => {
+                cmp_half == Ordering::Greater || (cmp_half == Ordering::Equal && kept_is_odd)
+            }
+        };
+        if keep <= 0 {
+            if up {
+                self.digits.clear();
+                self.digits.push(b'1');
+                self.point = self.point - keep + 1;
+            } else {
+                self.digits.clear();
+                self.point = 0;
+            }
+            self.normalize();
             return;
         }
         let k = keep as usize;
-        if k >= self.digits.len() {
-            return;
-        }
-        let up = self.digits[k] >= b'5';
         self.digits.truncate(k);
         if up {
             let mut i = k;
@@ -254,15 +409,20 @@ impl Decimal {
 
     /// Rounded with `rounding`; the minimum fraction digits to show.
     fn rounded(&self, rounding: Rounding) -> (Decimal, usize) {
+        self.rounded_with_mode(rounding, RoundingMode::HalfExpand)
+    }
+
+    /// Rounded with `rounding` and `mode`; the minimum fraction digits to show.
+    fn rounded_with_mode(&self, rounding: Rounding, mode: RoundingMode) -> (Decimal, usize) {
         let fraction = |min: u8, max: u8| {
             let mut d = self.clone();
-            d.round(d.point + i32::from(max));
+            d.round_with_mode(d.point + i32::from(max), mode);
             (d, usize::from(min), -i32::from(max))
         };
         let significant = |min: u8, max: u8| {
             let mut d = self.clone();
             let magnitude = d.point - i32::from(max);
-            d.round(i32::from(max));
+            d.round_with_mode(i32::from(max), mode);
             let shown = if d.is_zero() {
                 i32::from(min) - 1
             } else {

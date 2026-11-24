@@ -405,36 +405,10 @@ fn worker_message(
     invocation: &str,
     result: WorkerResult,
 ) -> String {
-    match language {
-        Language::ZhCn => {
-            let what = match result {
-                WorkerResult::Completed => "已结束",
-                WorkerResult::Failed => "失败了",
-                WorkerResult::Cancelled => "被停止了",
-            };
-            format!(
-                "你派出的会话「{title}」（{worker}）这一轮{what}（执行编号 {invocation}）。它最后说的话和失败原因（如有）附在下面。据此决定是否告诉用户、是否继续派活；需要更多内容时再用会话读取工具查看。"
-            )
-        }
-        Language::ZhTw => {
-            let what = match result {
-                WorkerResult::Completed => "已結束",
-                WorkerResult::Failed => "失敗了",
-                WorkerResult::Cancelled => "被停止了",
-            };
-            format!(
-                "你派出的會話「{title}」（{worker}）這一輪{what}（執行編號 {invocation}）。它最後說的話和失敗原因（如有）附在下面。據此決定是否告訴使用者、是否繼續派活；需要更多內容時再用會話讀取工具查看。"
-            )
-        }
-        _ => {
-            let what = match result {
-                WorkerResult::Completed => "finished",
-                WorkerResult::Failed => "failed",
-                WorkerResult::Cancelled => "was stopped",
-            };
-            format!(
-                "The conversation you delegated to, \"{title}\" ({worker}), {what} its latest run (invocation {invocation}). Its last message and, if it failed, the reason are attached below when present. Decide from them whether to tell the user or hand out more work; read the conversation with the conversation read tools only when you need more."
-            )
-        }
-    }
+    let outcome = match result {
+        WorkerResult::Completed => "completed",
+        WorkerResult::Failed => "failed",
+        WorkerResult::Cancelled => "cancelled",
+    };
+    maka_agent_facts::i18n::bot::worker_wake(language, invocation, outcome, title, worker)
 }

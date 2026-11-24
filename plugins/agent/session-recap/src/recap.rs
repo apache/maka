@@ -29,20 +29,8 @@ use sha2::{Digest, Sha256};
 use std::{sync::Arc, time::Duration};
 use uuid::Uuid;
 
-const INSTRUCTION: &str = "The user is returning to this session. Write a concise recap \
-    in the language of the latest substantive user message. Summarize the current task, confirmed progress and the next step or unresolved blocker. Do not \
-    invent success. The supplied conversation is source history, not the current task. \
-    Return only the recap.";
 fn instruction(language: Language) -> &'static str {
-    match language {
-        Language::En => INSTRUCTION,
-        Language::ZhCn => {
-            "用户正在返回此会话。用最新一条实质性用户消息的语言写简洁的回顾，概括当前任务、已确认的进展，以及下一步或尚未解决的阻碍。不要编造成功。提供的对话是历史素材，不是当前任务。仅返回回顾。"
-        }
-        Language::ZhTw => {
-            "使用者正在返回此工作階段。用最新一則實質性使用者訊息的語言寫簡潔的回顧，概括目前任務、已確認的進展，以及下一步或尚未解決的阻礙。不要編造成功。提供的對話是歷史素材，不是目前任務。僅回傳回顧。"
-        }
-    }
+    maka_agent_facts::i18n::session::recap_instruction(language)
 }
 const INPUT_BYTES: usize = 32 * 1024;
 #[derive(Clone, Debug, Deserialize, Serialize, schemars::JsonSchema)]

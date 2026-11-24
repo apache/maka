@@ -17,13 +17,13 @@
  * under the License.
  */
 
-import { effect, Clipboard, computed, type JSX } from 'nsh';
+import { Clipboard, computed, type JSX } from 'nsh';
 import type { UiEmbeddedViewProps, UiModule } from '../../../packages/plugin-sdk/src/workbench.js';
 import {
   quickToolView,
   type QuickToolInput,
 } from '../../../packages/plugin-sdk/src/workbench-views.js';
-import { currentLocale, tr } from '../../../products/maka/workbench/app/locale';
+import { tr } from '../../../products/maka/workbench/app/locale';
 import { calculate } from './calculate';
 
 function Calculator(props: { input: QuickToolInput }) {
@@ -51,8 +51,7 @@ function Calculator(props: { input: QuickToolInput }) {
   return null;
 }
 
-export const activate: UiModule<JSX.Element>['activate'] = (context) => {
-  effect(() => currentLocale.set(context.locale()));
+export const activate: UiModule<JSX.Element>['activate'] = () => {
   return {
     exports: {
       tool: {

@@ -833,9 +833,17 @@ impl MenuLabels {
                     label.map(|label| (*role, label))
                 })
                 .collect(),
-            edit_menu: text("Edit"),
+            edit_menu: if mac {
+                text("Edit")
+            } else {
+                text("Windows Edit").or_else(|| text("Edit"))
+            },
             window_menu: text("Window"),
-            delete: text("Delete"),
+            delete: if mac {
+                text("Delete")
+            } else {
+                text("Windows Delete").or_else(|| text("Delete"))
+            },
         }
     }
 
@@ -1345,8 +1353,16 @@ mod tests {
             ("zh-CN", "复制", "退出"),
             ("zh-Hant-TW", "複製", "結束"),
             ("zh-TW", "複製", "結束"),
+            ("zh-HK", "複製", "結束"),
             ("zh-MO", "複製", "結束"),
-            ("fr-FR", "Copy", "Quit"),
+            ("ko-KR", "복사", "종료"),
+            ("es-ES", "Copiar", "Salir"),
+            ("fr-FR", "Copier", "Quitter"),
+            ("de-DE", "Kopieren", "Beenden"),
+            ("pt-BR", "Copiar", "Sair"),
+            ("ru-RU", "Копировать", "Выход"),
+            ("it-IT", "Copia", "Esci"),
+            ("sv-SE", "Copy", "Quit"),
         ] {
             let locale = crate::platform::Locale::parse(locale).unwrap();
             let labels = MenuLabels::for_locale(locale, false);

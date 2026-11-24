@@ -388,6 +388,8 @@ pub struct AttributedText {
     /// The block is laid out right to left: `auto` alignment is the right
     /// side.
     pub rtl: bool,
+    /// Active BCP 47 locale for platform glyph selection (such as CJK Han unification variants).
+    pub locale: Option<crate::platform::Locale>,
     /// A long press copies the text (`userSelect: "text"` or `select-text`;
     /// drawing only): `Some(false)` when set off, `None` when not set, which
     /// is not selectable except where text is by default (desktop
@@ -982,6 +984,7 @@ impl AttributedText {
             links,
             writing_direction,
             rtl,
+            locale,
             selectable,
             selection_color,
             attachments,
@@ -997,6 +1000,7 @@ impl AttributedText {
             && links == &other.links
             && writing_direction == &other.writing_direction
             && rtl == &other.rtl
+            && locale == &other.locale
             && selectable == &other.selectable
             && selection_color == &other.selection_color
             && attachments == &other.attachments
@@ -1067,6 +1071,7 @@ impl AttributedText {
             links,
             writing_direction,
             rtl,
+            locale,
             selectable,
             selection_color,
             attachments,
@@ -1084,6 +1089,7 @@ impl AttributedText {
             && links == &other.links
             && writing_direction == &other.writing_direction
             && rtl == &other.rtl
+            && locale == &other.locale
             && selectable == &other.selectable
             && selection_color == &other.selection_color
             && attachments == &other.attachments
@@ -1095,6 +1101,7 @@ impl AttributedText {
         self.align == other.align
             && self.writing_direction == other.writing_direction
             && self.rtl == other.rtl
+            && self.locale == other.locale
             && self.max_lines == other.max_lines
             && self.ellipsize == other.ellipsize
             && self.no_wrap == other.no_wrap
@@ -1113,7 +1120,13 @@ impl AttributedText {
     pub fn layout_hash(&self) -> u64 {
         let mut h = std::hash::DefaultHasher::new();
         self.text.hash(&mut h);
-        (self.align as u8, self.writing_direction, self.rtl).hash(&mut h);
+        (
+            self.align as u8,
+            self.writing_direction,
+            self.rtl,
+            self.locale,
+        )
+            .hash(&mut h);
         (self.max_lines, self.ellipsize, self.no_wrap).hash(&mut h);
         for s in &self.spans {
             (s.start, s.end, s.style.font_weight).hash(&mut h);

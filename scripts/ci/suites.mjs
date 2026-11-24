@@ -129,7 +129,15 @@ export const suites = {
     extraInputPackages: [
       {
         inputs: sharedProductContractInputs,
-        packages: [...productConsumers, 'maka-agent-native', 'maka-skills', 'maka-skills-native'],
+        packages: [
+          ...productConsumers,
+          'maka-i18n',
+          'maka-agent-facts',
+          'maka-computer-use',
+          'maka-agent-native',
+          'maka-skills',
+          'maka-skills-native',
+        ],
       },
       { inputs: uiProductInputs, packages: productConsumers },
       { inputs: skillInputs, packages: skillConsumers },
@@ -411,7 +419,7 @@ export const suites = {
   },
   'windows-shell': {
     workspace: 'root',
-    packages: ['maka-process', 'maka-settings-native', 'maka-host-runtime'],
+    packages: ['maka-process', 'maka-settings-native', 'maka-host-runtime', 'maka-sandbox'],
     cargoArgs: [
       '--locked',
       '-p',
@@ -420,6 +428,8 @@ export const suites = {
       'maka-settings-native',
       '-p',
       'maka-host-runtime',
+      '-p',
+      'maka-sandbox',
     ],
     targetArgs: ['--lib', '--test', 'integration'],
     filter: [
@@ -427,6 +437,7 @@ export const suites = {
       '(package(=maka-settings-native) & test(shell_setting_rejects_invalid_bash_and_persists_valid_host_choice))',
       'binary_id(=maka-process::integration)',
       '(package(=maka-host-runtime) & test(sandbox::windows::guards::tests::))',
+      '(package(=maka-sandbox) & kind(lib) & test(native_task_namespace_can_be_denied_by_policy))',
     ].join(' | '),
   },
   native: {
@@ -552,6 +563,8 @@ export const workers = [
       'maka-settings-native',
       '-p',
       'maka-host-runtime',
+      '-p',
+      'maka-sandbox',
       '-p',
       'maka-skills-native',
       '-p',

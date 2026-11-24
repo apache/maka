@@ -254,6 +254,20 @@ test('Node tooling tests under scripts/ map to tooling instead of triggering ful
   assert.deepEqual(plan.workers, []);
 });
 
+test('locales.manifest.json triggers a full CI plan including contracts, product, and native builds', () => {
+  const plan = createPlan({
+    root,
+    changes: ['locales.manifest.json'],
+    metadata: {},
+    revision: 'test',
+    baseline: 'base',
+  });
+  assert.equal(plan.full, true);
+  for (const id of ['tooling', 'contracts', 'product', 'root', 'native-build']) {
+    assert.ok(plan.suites[id], `expected suite ${id}`);
+  }
+});
+
 test('skill and product inputs still select the native Windows skills consumer', () => {
   for (const path of [
     'skills/maka-generative-ui/SKILL.md',
@@ -272,10 +286,11 @@ test('skill and product inputs still select the native Windows skills consumer',
   }
 });
 
-test('Windows process and account-guard regressions are selected from their actual consumers', () => {
+test('Windows process, sandbox and account-guard regressions are selected from their actual consumers', () => {
   const packages = [
     ['maka-host-runtime', 'platform/host-runtime'],
     ['maka-process', 'platform/process'],
+    ['maka-sandbox', 'platform/sandbox'],
   ].map(([name, path]) => ({
     name,
     id: name,
@@ -292,6 +307,7 @@ test('Windows process and account-guard regressions are selected from their actu
   for (const path of [
     'platform/host-runtime/src/sandbox/windows/guards.rs',
     'platform/process/tests/integration/conpty.rs',
+    'platform/sandbox/src/lib.rs',
   ]) {
     const plan = createPlan({
       root,
@@ -305,9 +321,19 @@ test('Windows process and account-guard regressions are selected from their actu
     assert.ok(worker.suites.includes('windows-shell'));
     assert.match(plan.suites['windows-shell'].filter, /binary_id\(=maka-process::integration\)/);
     assert.match(plan.suites['windows-shell'].filter, /sandbox::windows::guards::tests::/);
+    assert.match(
+      plan.suites['windows-shell'].filter,
+      /native_task_namespace_can_be_denied_by_policy/,
+    );
     assert.ok(!suites['windows-shell'].cargoArgs.includes('--workspace'));
-    for (const pkg of ['maka-process', 'maka-settings-native', 'maka-host-runtime']) {
+    for (const pkg of [
+      'maka-process',
+      'maka-settings-native',
+      'maka-host-runtime',
+      'maka-sandbox',
+    ]) {
       assert.ok(suites['windows-shell'].cargoArgs.includes(pkg));
+      assert.ok(worker.cargoScope.includes(pkg));
     }
   }
 });

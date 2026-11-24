@@ -676,7 +676,7 @@ impl ApplicationHost {
     /// The native startup language, using the same resolver as the desktop.
     #[getter]
     pub fn system_locale(&self) -> String {
-        maka_ui_support::locale::system()
+        maka_i18n::system_locale()
     }
 
     /// The optional session initially requested by the launcher.

@@ -3017,6 +3017,87 @@ const report = (v) => text(String(v));
     }
 
     #[test]
+    fn intl_plural_rules_and_traditional_chinese_dates() {
+        let host = Host::new().unwrap();
+        let mut languages = serde_json::Map::new();
+        for lang in ["zh", "ja", "ko", "es", "fr", "de", "pt", "ru", "it", "sv"] {
+            let data = nsh_i18n::language_data(lang).unwrap();
+            languages.insert(lang.into(), serde_json::from_str(data).unwrap());
+        }
+        host.cx
+            .with(|cx| crate::web::add_languages(cx.as_raw().as_ptr(), languages));
+        host.eval_source(&format!(
+            r#"{REPORT}
+            report([0, 1, 1.5, 2].map((n) => new Intl.PluralRules("en").select(n)).join(","));
+            report(new Intl.PluralRules("en", {{ minimumFractionDigits: 1 }}).select(1));
+            report([1, 1.5, 2, 2.5, 3, 11, 21, 22, 23].map((n) => new Intl.PluralRules("en", {{ type: "ordinal" }}).select(n)).join(","));
+            report([0, 0.5, 1, 1.5, 2, 1000000].map((n) => new Intl.PluralRules("fr").select(n)).join(","));
+            report(new Intl.PluralRules("fr", {{ minimumFractionDigits: 1 }}).select(1000000));
+            report([0, 0.5, 1, 1.5, 2, 1000000].map((n) => new Intl.PluralRules("pt-BR").select(n)).join(","));
+            report([1, 1000000].map((n) => new Intl.PluralRules("es").select(n)).join(","));
+            report(new Intl.PluralRules("es", {{ minimumFractionDigits: 1 }}).select(1));
+            report(new Intl.PluralRules("it", {{ minimumFractionDigits: 1 }}).select(1));
+            report([8, 8.5, 11, 80, 800].map((n) => new Intl.PluralRules("it", {{ type: "ordinal" }}).select(n)).join(","));
+            report([1, 2, 11, 12, 21, 22].map((n) => new Intl.PluralRules("sv", {{ type: "ordinal" }}).select(n)).join(","));
+            report([0, 1, 2, 5, 11, 21, 1.5].map((n) => new Intl.PluralRules("ru").select(n)).join(","));
+            report([NaN, Infinity, -Infinity].map((n) => new Intl.PluralRules("ru").select(n)).join(","));
+            report(["zh-CN", "zh-HK", "ja", "ko"].map((l) => new Intl.PluralRules(l).select(1)).join(","));
+            report([0, 1, 1.5, 1000000].map((n) => new Intl.PluralRules("pt-PT").select(n)).join(","));
+            report([0, 1, 1.5, 1000000].map((n) => new Intl.PluralRules("pt-BR").select(n)).join(","));
+            report(new Intl.PluralRules("en", {{ minimumFractionDigits: 1, trailingZeroDisplay: "stripIfInteger" }}).select(1));
+            report(new Intl.PluralRules("en", {{ minimumFractionDigits: 1, maximumFractionDigits: 1, trailingZeroDisplay: "stripIfInteger" }}).select(1.001));
+            report([1.2, 0.2, -1.2].map((n) => new Intl.PluralRules("en", {{ maximumFractionDigits: 0, roundingMode: "ceil" }}).select(n)).join(","));
+            report(new Intl.PluralRules("en", {{ maximumFractionDigits: 0, roundingMode: "floor" }}).select(-1.2));
+            report([0.5, 1.5].map((n) => new Intl.PluralRules("en", {{ maximumFractionDigits: 0, roundingMode: "halfEven" }}).select(n)).join(","));
+            const opts = new Intl.PluralRules("ru", {{ minimumFractionDigits: 1, roundingMode: "ceil", trailingZeroDisplay: "stripIfInteger" }}).resolvedOptions();
+            report(opts.locale + "|" + opts.type + "|" + opts.minimumFractionDigits + "|" + opts.roundingMode + "|" + opts.trailingZeroDisplay + "|" + opts.pluralCategories.join(","));
+            const reentrant = new Intl.PluralRules("en");
+            report(reentrant.select({{ valueOf() {{ reentrant.select(1); return 2; }} }}));
+            try {{ new Intl.PluralRules("en", {{ type: "bogus" }}); }} catch (e) {{ report(e.name); }}
+            try {{ new Intl.PluralRules("en", {{ minimumFractionDigits: 4, maximumFractionDigits: 2 }}); }} catch (e) {{ report(e.name); }}
+            const at = Date.UTC(2026, 9, 16, 15, 4, 5);
+            report(new Intl.DateTimeFormat("zh-TW", {{ timeZone: "UTC", hour: "numeric", hour12: false }}).format(at));
+            report(new Intl.DateTimeFormat("zh-HK", {{ timeZone: "UTC", hour: "numeric", hour12: false }}).format(at));
+            report(new Intl.DateTimeFormat("zh-CN", {{ timeZone: "UTC", hour: "numeric", hour12: false }}).format(at));
+            "#
+        ))
+        .unwrap();
+        assert_eq!(
+            reported(&host),
+            [
+                "other,one,other,other",
+                "other",
+                "one,other,two,other,few,other,one,two,few",
+                "one,one,one,one,other,many",
+                "other",
+                "one,one,one,one,other,many",
+                "one,many",
+                "one",
+                "other",
+                "many,other,many,many,many",
+                "one,one,other,other,one,one",
+                "many,one,few,many,many,one,other",
+                "other,other,other",
+                "other,other,other,other",
+                "other,one,other,many",
+                "one,one,one,many",
+                "one",
+                "one",
+                "other,one,one",
+                "other",
+                "other,other",
+                "ru|cardinal|1|ceil|stripIfInteger|one,few,many,other",
+                "other",
+                "RangeError",
+                "RangeError",
+                "15時",
+                "15時",
+                "15时",
+            ]
+        );
+    }
+
+    #[test]
     fn timers_fire_in_order_and_cancel() {
         let host = Host::new().unwrap();
         host.eval_source(

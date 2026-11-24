@@ -27,7 +27,7 @@ import {
   type ComputerFrameSource,
 } from './computerFrames';
 import type { ComputerStageController, ComputerTarget } from './computerStageController';
-import { computerText } from './computerText';
+import { tr } from '../../../../products/maka/workbench/app/locale';
 
 function frameAuthority(value: ComputerFrame): string {
   return JSON.stringify([value.sessionId, value.bindingId, value.targetId, value.revision]);
@@ -173,7 +173,7 @@ export function ComputerStageView(props: {
                             width: area.width - 48,
                             height: area.height - 48,
                           })
-                        : Promise.reject(new Error(computerText('Window placement unavailable')));
+                        : Promise.reject(new Error(tr('computer.window_placement_unavailable')));
                       void action.catch(props.report);
                     }}
                     renderFrame={(target) => {

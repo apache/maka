@@ -42,6 +42,7 @@ fn existing_attachment_literals_and_engines_remain_compatible() {
         test_ids: Vec::new(),
         copy_texts: Vec::new(),
         writing_direction: None,
+        locale: None,
         rtl: false,
         selectable: None,
         selection_color: None,

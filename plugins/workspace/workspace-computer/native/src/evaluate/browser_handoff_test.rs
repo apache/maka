@@ -66,7 +66,7 @@ async fn turn(fixture: &Fixture) {
         .wait_terminal(fixture.execution.run_id)
         .await
         .unwrap();
-    sessions::drain_ended_turns(&fixture.owner, &fixture.entry, Language::En)
+    sessions::drain_ended_turns(&fixture.owner, &fixture.entry, Language::EN)
         .await
         .unwrap();
 }

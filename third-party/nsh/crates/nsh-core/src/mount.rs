@@ -654,6 +654,8 @@ pub struct InputConfig {
     pub auto_fill: crate::ops::AutoFill,
     /// The text runs right to left.
     pub rtl: bool,
+    /// Active BCP 47 locale for platform glyph selection (such as CJK Han unification variants).
+    pub locale: Option<crate::platform::Locale>,
     /// No caret is drawn (`caret={false}`).
     pub caret_hidden: bool,
     /// `inputAccessoryViewID` as set.
@@ -724,6 +726,7 @@ impl Default for InputConfig {
             caret_color: None,
             auto_fill: crate::ops::AutoFill::Default,
             rtl: false,
+            locale: None,
             caret_hidden: false,
             accessory_id: None,
             accessory: None,

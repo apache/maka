@@ -207,9 +207,7 @@ function computerOutput(value: unknown, reset: boolean): ToolSection[] | null {
       const item = record(part);
       return item?.kind === 'text' && typeof item.text === 'string' ? [item.text] : [];
     });
-    const state = /^(?:REPL state|REPL 状态|REPL 狀態): "(fresh|ready|reset_required)"$/.exec(
-      text.at(-1) ?? '',
-    )?.[1];
+    const state = /^[^:\n]+:\s*"(fresh|ready|reset_required)"$/.exec(text.at(-1) ?? '')?.[1];
     if (state) text.pop();
     return [
       ...section('Computer output', text.join('\n\n')),

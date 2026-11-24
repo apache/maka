@@ -18,16 +18,13 @@
  */
 
 import * as sdk from '../../../packages/plugin-sdk/src/index.js';
-import { native } from '../../shared/package.js';
-export default {
+import { native, localizePackage } from '../../shared/package.js';
+export default localizePackage({
   schemaVersion: 1,
   id: 'maka.agent.settings-authentication',
   displayName: 'Provider sign-in',
   description: 'Sign in to supported model providers.',
-  localizations: {
-    'zh-CN': { displayName: '服务商登录', description: '登录受支持的模型服务商。' },
-  },
   application: {
     host: native(sdk.nativeImplementations.settingsAuthentication),
   },
-};
+});

@@ -33,7 +33,7 @@ use tokio_util::sync::CancellationToken;
 fn request(base_url: &str) -> ModelRequest {
     ModelRequest {
         operation: maka_agent_facts::context::ModelOperation::Inference,
-        language: maka_agent_facts::language::Language::En,
+        language: maka_agent_facts::language::Language::EN,
         provider: ProviderConfig {
             image_input: None,
             adapter: None,
@@ -422,8 +422,8 @@ async fn captured_language_reaches_native_notifications_without_becoming_provide
     tokio::time::timeout(Duration::from_secs(20), async {
         let executor = ModelExecutor::new(Duration::from_secs(10)).unwrap();
         for (language, expected) in [
-            (Language::ZhCn, "[来自工具 call-原文 的通知]"),
-            (Language::ZhTw, "[來自工具 call-原文 的通知]"),
+            (Language::ZH_CN, "[来自工具 call-原文 的通知]"),
+            (Language::ZH_TW, "[來自工具 call-原文 的通知]"),
         ] {
             let server = MockAiBuilder::new()
                 .handler_fn(|_, _| TurnPlan::text("seen"))

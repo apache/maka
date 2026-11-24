@@ -1143,13 +1143,7 @@ pub(crate) fn operation_uuid(
     Uuid::from_bytes(bytes)
 }
 fn mutation_result(reply: OperationReply, language: Language) -> Result<ToolSuccess, ToolError> {
-    let unknown = match language {
-        Language::En => {
-            "The operation result is unknown. Check the current state and continue from there."
-        }
-        Language::ZhCn => "操作结果尚未确认，请检查当前状态后继续。",
-        Language::ZhTw => "操作結果尚未確認，請檢查目前狀態後繼續。",
-    };
+    let unknown = maka_agent_facts::i18n::driver::operation_result_unknown(language);
     match &reply.receipt {
         Receipt::Recorded { outcome, .. } => match outcome {
             OperationOutcome::Returned { result } => {

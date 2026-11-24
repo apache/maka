@@ -43,7 +43,7 @@ product *args: setup
 
 # Check the root workspace, product, tooling and terminal; setup runs once.
 [group('Checks')]
-check: setup fmt-check typecheck test-js test test-termina licenses migrations
+check: setup fmt-check typecheck test-js test test-termina licenses migrations i18n
 
 # Format Rust, JavaScript, TypeScript and project metadata.
 [group('Checks')]
@@ -92,6 +92,11 @@ licenses: setup
 [group('Checks')]
 migrations:
     node scripts/ci.mjs check migrations
+
+# Verify all locale catalogs, ICU placeholders, and localized docs stay synchronized.
+[group('Checks')]
+i18n:
+    node scripts/ci.mjs check i18n
 
 # Build a source-bound native npm package without publishing.
 [group('Release')]

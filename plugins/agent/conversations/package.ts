@@ -18,7 +18,7 @@
  */
 
 import { contracts } from '../../../packages/plugin-sdk/src/index.js';
-import { one } from '../../shared/package.js';
+import { one, localizePackage, localizedTitle } from '../../shared/package.js';
 
 const target = {
   type: 'object',
@@ -30,17 +30,11 @@ const target = {
   additionalProperties: false,
 };
 
-export default {
+export default localizePackage({
   schemaVersion: 1,
   id: 'maka.conversations',
   displayName: 'Conversations',
   description: 'Browse conversations, read history and coordinate session work.',
-  localizations: {
-    'zh-CN': {
-      displayName: '会话',
-      description: '浏览会话、阅读历史并协调会话任务。',
-    },
-  },
   application: {
     ui: {
       module: 'ui/index.js',
@@ -96,254 +90,123 @@ export default {
         },
         commands: {
           kind: 'command',
-          title: {
-            fallback: 'Commands',
-            translations: {
-              'zh-CN': '命令',
-            },
-          },
+          title: localizedTitle('Commands'),
         },
         browse: {
           kind: 'command',
-          title: {
-            fallback: 'Browse sessions',
-            translations: {
-              'zh-CN': '浏览会话',
-            },
-          },
+          title: localizedTitle('Browse sessions'),
         },
         sessions: {
           kind: 'command',
-          title: {
-            fallback: 'Sessions',
-            translations: { 'zh-CN': '对话', 'zh-TW': '對話' },
-          },
-          description: {
-            fallback: 'Resume a conversation',
-            translations: { 'zh-CN': '继续对话', 'zh-TW': '繼續對話' },
-          },
+          title: localizedTitle('Sessions'),
+          description: localizedTitle('Resume a conversation'),
           order: 10,
           shortcut: 'mod+o',
           trigger: 'resume',
         },
         find: {
           kind: 'command',
-          title: {
-            fallback: 'Find in conversation',
-            translations: { 'zh-CN': '在对话中查找', 'zh-TW': '在對話中尋找' },
-          },
-          description: {
-            fallback: 'Search the messages in this conversation',
-            translations: {
-              'zh-CN': '搜索此对话中的消息',
-              'zh-TW': '搜尋此對話中的訊息',
-            },
-          },
+          title: localizedTitle('Find in conversation'),
+          description: localizedTitle('Search the messages in this conversation'),
           order: 15,
           trigger: 'find',
         },
         new: {
           kind: 'command',
-          title: {
-            fallback: 'New conversation',
-            translations: { 'zh-CN': '新建对话', 'zh-TW': '新增對話' },
-          },
-          description: {
-            fallback: 'A fresh start in your workspace',
-            translations: {
-              'zh-CN': '在工作区中开启新对话',
-              'zh-TW': '在工作區中開啟新對話',
-            },
-          },
+          title: localizedTitle('New conversation'),
+          description: localizedTitle('A fresh start in your workspace'),
           order: 20,
           shortcut: 'mod+n',
           trigger: 'new',
         },
         bot: {
           kind: 'command',
-          title: {
-            fallback: 'Open Bot',
-            translations: { 'zh-CN': '打开 Bot', 'zh-TW': '開啟 Bot' },
-          },
-          description: {
-            fallback: 'Your persistent Bot conversation, created on first use',
-            translations: {
-              'zh-CN': '常驻的 Bot 对话，首次使用时创建',
-              'zh-TW': '常駐的 Bot 對話，首次使用時建立',
-            },
-          },
+          title: localizedTitle('Open Bot'),
+          description: localizedTitle('Your persistent Bot conversation, created on first use'),
           order: 25,
           trigger: 'bot',
         },
         workspace: {
           kind: 'command',
-          title: {
-            fallback: 'Choose workspace',
-            translations: { 'zh-CN': '选择工作区', 'zh-TW': '選擇工作區' },
-          },
-          description: {
-            fallback: 'Start a conversation in another folder',
-            translations: {
-              'zh-CN': '在其他文件夹中开始对话',
-              'zh-TW': '在其他資料夾中開始對話',
-            },
-          },
+          title: localizedTitle('Choose workspace'),
+          description: localizedTitle('Start a conversation in another folder'),
           order: 30,
           trigger: 'workspace',
         },
         models: {
           kind: 'command',
-          title: {
-            fallback: 'Models',
-            translations: { 'zh-CN': '模型', 'zh-TW': '模型' },
-          },
-          description: {
-            fallback: 'Choose the model for this conversation',
-            translations: {
-              'zh-CN': '为此对话选择模型',
-              'zh-TW': '為此對話選擇模型',
-            },
-          },
+          title: localizedTitle('Models'),
+          description: localizedTitle('Choose the model for this conversation'),
           order: 40,
           shortcut: 'mod+g',
           trigger: 'model',
         },
         settings: {
           kind: 'command',
-          title: {
-            fallback: 'Connections & models',
-            translations: { 'zh-CN': '连接与模型', 'zh-TW': '連線與模型' },
-          },
-          description: {
-            fallback: 'Add connections, API keys and models',
-            translations: {
-              'zh-CN': '添加连接、API 密钥和模型',
-              'zh-TW': '新增連線、API 金鑰和模型',
-            },
-          },
+          title: localizedTitle('Connections & models'),
+          description: localizedTitle('Add connections, API keys and models'),
           order: 50,
           trigger: 'settings',
         },
         files: {
           kind: 'command',
-          title: {
-            fallback: 'Files',
-            translations: { 'zh-CN': '文件', 'zh-TW': '檔案' },
-          },
-          description: {
-            fallback: 'Browse workspace files and current changes',
-            translations: {
-              'zh-CN': '浏览工作区文件和当前更改',
-              'zh-TW': '瀏覽工作區檔案和目前變更',
-            },
-          },
+          title: localizedTitle('Files'),
+          description: localizedTitle('Browse workspace files and current changes'),
           order: 60,
           trigger: 'files',
         },
         goal: {
           kind: 'command',
-          title: {
-            fallback: 'Goal',
-            translations: { 'zh-CN': '目标', 'zh-TW': '目標' },
-          },
-          description: {
-            fallback: 'Manage a Goal, or start one with /goal followed by an objective',
-            translations: {
-              'zh-CN': '管理目标，或输入 /goal 加目标内容直接开始',
-              'zh-TW': '管理目標，或輸入 /goal 加目標內容直接開始',
-            },
-          },
+          title: localizedTitle('Goal'),
+          description: localizedTitle(
+            'Manage a Goal, or start one with /goal followed by an objective',
+          ),
           order: 65,
           trigger: 'goal',
           takesArgument: true,
         },
         compact: {
           kind: 'command',
-          title: {
-            fallback: 'Compact conversation',
-            translations: {
-              'zh-CN': '压缩对话上下文',
-              'zh-TW': '壓縮對話上下文',
-            },
-          },
-          description: {
-            fallback: 'Summarize context for the next request',
-            translations: {
-              'zh-CN': '为下一次请求整理上下文摘要',
-              'zh-TW': '為下一次請求整理上下文摘要',
-            },
-          },
+          title: localizedTitle('Compact conversation'),
+          description: localizedTitle('Summarize context for the next request'),
           order: 70,
           trigger: 'compact',
           takesArgument: true,
         },
         latest: {
           kind: 'command',
-          title: {
-            fallback: 'Jump to latest',
-            translations: { 'zh-CN': '跳到最新消息', 'zh-TW': '跳到最新訊息' },
-          },
-          description: {
-            fallback: 'Return to the newest messages',
-            translations: { 'zh-CN': '返回最新消息', 'zh-TW': '返回最新訊息' },
-          },
+          title: localizedTitle('Jump to latest'),
+          description: localizedTitle('Return to the newest messages'),
           order: 80,
           shortcut: 'mod+l',
           trigger: 'latest',
         },
         'history-focus': {
           kind: 'command',
-          title: {
-            fallback: 'Focus conversation',
-            translations: { 'zh-CN': '聚焦对话', 'zh-TW': '聚焦對話' },
-          },
-          description: {
-            fallback: 'Scroll the whole conversation',
-            translations: { 'zh-CN': '滚动整个对话', 'zh-TW': '捲動整個對話' },
-          },
+          title: localizedTitle('Focus conversation'),
+          description: localizedTitle('Scroll the whole conversation'),
           order: 90,
           shortcut: 'alt+up',
           trigger: 'history',
         },
         'activity-focus': {
           kind: 'command',
-          title: {
-            fallback: 'Focus activity',
-            translations: { 'zh-CN': '聚焦活动面板', 'zh-TW': '聚焦活動面板' },
-          },
-          description: {
-            fallback: 'Read this turn’s independent activity panel',
-            translations: {
-              'zh-CN': '阅读本轮独立的活动面板',
-              'zh-TW': '閱讀本輪獨立的活動面板',
-            },
-          },
+          title: localizedTitle('Focus activity'),
+          description: localizedTitle('Read this turn’s independent activity panel'),
           order: 100,
           shortcut: 'alt+down',
           trigger: 'activity',
         },
         queue: {
           kind: 'command',
-          title: {
-            fallback: 'Add to queue',
-            translations: { 'zh-CN': '加入队列', 'zh-TW': '加入佇列' },
-          },
-          description: {
-            fallback: 'Send the current draft after this turn',
-            translations: { 'zh-CN': '本轮结束后发送当前草稿', 'zh-TW': '本輪結束後傳送目前草稿' },
-          },
+          title: localizedTitle('Add to queue'),
+          description: localizedTitle('Send the current draft after this turn'),
           order: 105,
         },
         stop: {
           kind: 'command',
-          title: {
-            fallback: 'Stop',
-            translations: { 'zh-CN': '停止', 'zh-TW': '停止' },
-          },
-          description: {
-            fallback: 'Cancel the current run',
-            translations: { 'zh-CN': '停止当前执行', 'zh-TW': '停止目前執行' },
-          },
+          title: localizedTitle('Stop'),
+          description: localizedTitle('Cancel the current run'),
           order: 110,
           hint: { fallback: 'Esc' },
           trigger: 'stop',
@@ -351,4 +214,4 @@ export default {
       },
     },
   },
-};
+});

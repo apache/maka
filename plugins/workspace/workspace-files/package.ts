@@ -18,15 +18,12 @@
  */
 
 import * as sdk from '../../../packages/plugin-sdk/src/index.js';
-import { native, one } from '../../shared/package.js';
-export default {
+import { native, one, localizePackage, localizedTitle } from '../../shared/package.js';
+export default localizePackage({
   schemaVersion: 1,
   id: 'maka.agent.workspace-files',
   displayName: 'Workspace files',
   description: 'Read and modify files within granted workspace access.',
-  localizations: {
-    'zh-CN': { displayName: '工作区文件', description: '在获准的工作区范围内读取和修改文件。' },
-  },
   application: {
     host: native(sdk.nativeImplementations.workspaceFiles),
     ui: {
@@ -45,35 +42,20 @@ export default {
         workspace: { kind: 'view', contract: 'maka.workspace.preview' },
         changes: {
           kind: 'panel',
-          title: {
-            fallback: 'Changes',
-            translations: { 'zh-CN': '更改', 'zh-TW': '變更' },
-          },
+          title: localizedTitle('Changes'),
         },
         'change-diff': {
           kind: 'panel',
-          title: {
-            fallback: 'Current diff',
-            translations: { 'zh-CN': '当前差异', 'zh-TW': '目前差異' },
-          },
+          title: localizedTitle('Current diff'),
         },
         'show-changes': {
           kind: 'command',
-          title: {
-            fallback: 'Changes',
-            translations: { 'zh-CN': '更改', 'zh-TW': '變更' },
-          },
-          description: {
-            fallback: 'Show the files changed in this workspace',
-            translations: {
-              'zh-CN': '查看此工作区中更改的文件',
-              'zh-TW': '查看此工作區中變更的檔案',
-            },
-          },
+          title: localizedTitle('Changes'),
+          description: localizedTitle('Show the files changed in this workspace'),
         },
         glob: { kind: 'tool_renderer', presentation: 'maka.workspace.Files@1/glob' },
         grep: { kind: 'tool_renderer', presentation: 'maka.workspace.Files@1/grep' },
       },
     },
   },
-};
+});

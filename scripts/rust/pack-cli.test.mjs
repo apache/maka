@@ -20,7 +20,7 @@
 import assert from 'node:assert/strict';
 import childProcess, { execFileSync } from 'node:child_process';
 import { syncBuiltinESMExports } from 'node:module';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -42,6 +42,10 @@ test('native archives carry the CLI and desktop shell without a terminal sidecar
   const previous = process.cwd();
   try {
     await writeFile(join(root, 'Cargo.toml'), '[workspace.package]\nversion = "0.2.0"\n');
+    await copyFile(
+      new URL('../../locales.manifest.json', import.meta.url),
+      join(root, 'locales.manifest.json'),
+    );
     const png = Buffer.alloc(33);
     Buffer.from('\x89PNG\r\n\x1a\n', 'latin1').copy(png);
     png.write('IHDR', 12, 'latin1');

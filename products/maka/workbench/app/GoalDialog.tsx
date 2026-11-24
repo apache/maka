@@ -36,7 +36,7 @@ import type { ComposerGoal } from '../../../../packages/plugin-sdk/src/composer-
 import type { GoalStatus } from '../../../../packages/plugin-sdk/src/index.js';
 import { formatDuration } from './duration';
 import { TokenCount } from './TokenCount';
-import { tr, type MessageKey } from './locale';
+import { currentLocale, tr, type MessageKey } from './locale';
 import { SettingsEditor, SettingsField } from './SettingsField';
 import { LoadingIndicator, LoadingState } from './Loading';
 import { Icon } from './Icon';
@@ -206,7 +206,7 @@ export function createGoalContent(props: {
               >
                 <Text style={{ ...captionTextStyle, color: C.secondary }}>
                   {tr('Retrying at {time}', {
-                    time: new Date(current()!.retryAt!).toLocaleString(),
+                    time: new Date(current()!.retryAt!).toLocaleString(currentLocale()),
                   })}
                 </Text>
               </If>

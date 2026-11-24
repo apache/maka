@@ -139,11 +139,7 @@ fn blocks(
             ));
         };
         // Keep the filename as a separate ordinary text block for all protocol versions.
-        let label = match language {
-            maka_agent_facts::language::Language::En => "Attachment: ",
-            maka_agent_facts::language::Language::ZhCn => "附件：",
-            maka_agent_facts::language::Language::ZhTw => "附件：",
-        };
+        let label = maka_agent_facts::i18n::history::acp_attachment_prefix(language);
         let name = json!({"type":"text","text":format!("{label}{}", attachment.name)});
         blocks.push(name);
         blocks.push(block);

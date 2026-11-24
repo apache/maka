@@ -152,7 +152,6 @@ function App(
     alive = false;
     navigationGeneration++;
   });
-  effect(() => currentLocale.set(runtime.locale()));
   const mainWindow = currentWindow();
   const plugins = createWorkbenchPlugins(runtime, {
     sessionId: selected,

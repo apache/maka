@@ -18,15 +18,12 @@
  */
 
 import * as sdk from '../../../packages/plugin-sdk/src/index.js';
-import { one, native } from '../../shared/package.js';
-export default {
+import { one, native, localizePackage } from '../../shared/package.js';
+export default localizePackage({
   schemaVersion: 1,
   id: 'maka.agent.deployment-gateway',
   displayName: 'Plugin management access',
   description: 'Connect plugin settings to the host’s plugin manager.',
-  localizations: {
-    'zh-CN': { displayName: '插件管理连接', description: '将插件设置连接到主机的插件管理器。' },
-  },
   application: {
     host: {
       ...native(sdk.nativeImplementations.gateway),
@@ -36,4 +33,4 @@ export default {
       },
     },
   },
-};
+});

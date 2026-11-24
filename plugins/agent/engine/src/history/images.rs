@@ -20,9 +20,5 @@
 use maka_agent_facts::language::Language;
 
 pub(crate) fn no_vision(language: Language) -> &'static str {
-    match language {
-        Language::En => "Image was read, but the selected model does not support image input.",
-        Language::ZhCn => "已读取图片，但所选模型不支持图片输入。",
-        Language::ZhTw => "已讀取圖片，但所選模型不支援圖片輸入。",
-    }
+    maka_agent_facts::i18n::history::no_vision(language)
 }

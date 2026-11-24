@@ -563,6 +563,10 @@ impl InputState {
             s.font_weight,
             s.italic,
         );
+        let locale_name = config
+            .locale
+            .map(|locale| HSTRING::from(locale.as_str()))
+            .unwrap_or_default();
         // SAFETY: COM calls with valid strings and live objects.
         let format = unsafe {
             crate::gfx::dwrite()
@@ -577,7 +581,7 @@ impl InputState {
                     },
                     DWRITE_FONT_STRETCH_NORMAL,
                     s.font_size.0.max(1.0),
-                    &HSTRING::new(),
+                    &locale_name,
                 )
                 .ok()?
         };
@@ -2286,6 +2290,7 @@ pub(crate) fn config(surface: &Rc<Surface>, view: &NshView, config: &InputConfig
         (
             old.style != config.style
                 || old.multiline != config.multiline
+                || old.locale != config.locale
                 || input.font_generation.get() != crate::text::font_generation(),
             old.editable != config.editable || old.secure != config.secure,
         )

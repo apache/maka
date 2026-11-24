@@ -399,11 +399,7 @@ impl NativeExternalEffects {
         // The prepared effect names its exact established interaction. The T1
         // transaction consumes that grant against the original descriptor.
         let approval = effect.approval_id();
-        let display = effect.display(match self.access.spec().language {
-            maka_agent_facts::language::Language::En => "en",
-            maka_agent_facts::language::Language::ZhCn => "zh-CN",
-            maka_agent_facts::language::Language::ZhTw => "zh-TW",
-        });
+        let display = effect.display(self.access.spec().language.tag());
         let display = change(ExternalEffectEvent::DisplayRecorded { key, display });
         let admitted = change(ExternalEffectEvent::Admitted { key, approval });
         let revision = self

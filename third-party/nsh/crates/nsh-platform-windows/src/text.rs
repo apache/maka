@@ -1305,6 +1305,10 @@ impl DWriteTextEngine {
             .map_or_else(ResolvedTextStyle::default, |s| s.style);
         let face = self.face(&base);
         let custom = if face.custom { self.custom() } else { None };
+        let locale_name = t
+            .locale
+            .map(|locale| HSTRING::from(locale.as_str()))
+            .unwrap_or_default();
         // SAFETY: COM calls on live objects with valid strings.
         unsafe {
             let format = self
@@ -1316,7 +1320,7 @@ impl DWriteTextEngine {
                     font_style(base.italic),
                     DWRITE_FONT_STRETCH_NORMAL,
                     base.font_size.0.max(0.1),
-                    &HSTRING::new(),
+                    &locale_name,
                 )
                 .ok()?;
             if let Some(fallback) = &face.fallback

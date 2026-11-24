@@ -20,6 +20,7 @@
 import { mount } from 'nsh';
 import { TrajectoryRequestInspector } from '../../app/TrajectoryLedger';
 import type { AgentHistoryRequest } from '../../app/trajectory';
+import { installWorkbenchLocaleCatalog } from '../../app/localeCatalog';
 
 const request: AgentHistoryRequest = {
   order: { path: [1], itemIndex: 0 },

@@ -524,11 +524,7 @@ impl Tab {
         language: Language,
     ) -> Result<DomElement, ToolError> {
         let element = self.refs.get(&index).cloned().ok_or_else(|| {
-            failed(match language {
-                Language::En => "stale_element: read getAXState first",
-                Language::ZhCn => "stale_element: 请先读取 getAXState",
-                Language::ZhTw => "stale_element: 請先讀取 getAXState",
-            })
+            failed(crate::language::i18n_catalog::browser::stale_element_read_ax(language))
         })?;
         let element = match element {
             ElementRef::Dom(element) => element,
@@ -545,11 +541,9 @@ impl Tab {
             .ok_or_else(|| failed("element frame was not proven"))?;
         if !self.frames().await?.contains(frame) {
             self.refs.clear();
-            return Err(failed(match language {
-                Language::En => "stale_element: frame navigated or detached; observe again",
-                Language::ZhCn => "stale_element: 框架已导航或分离；请重新观察",
-                Language::ZhTw => "stale_element: 框架已導覽或分離；請重新觀察",
-            }));
+            return Err(failed(
+                crate::language::i18n_catalog::browser::stale_element_frame_detached(language),
+            ));
         }
         Ok(element)
     }
@@ -649,13 +643,8 @@ impl Tab {
                 "arguments":[{"value":point[0]},{"value":point[1]},{"value":width},{"value":height}],"returnByValue":true
             })).await?;
             if let Some(details) = checked.get("exceptionDetails") {
-                let guidance = match language {
-                    Language::En => {
-                        "iframe owner occluded, transformed or detached; use a fresh tab screenshot"
-                    }
-                    Language::ZhCn => "iframe 所属元素被遮挡、变换或分离；请重新获取标签页截图",
-                    Language::ZhTw => "iframe 所屬元素被遮擋、變換或分離；請重新取得分頁擷取畫面",
-                };
+                let guidance =
+                    crate::language::i18n_catalog::browser::iframe_owner_unavailable(language);
                 return Err(failed(format!("{details}\n{guidance}")));
             }
             let checked = &checked["result"]["value"];
