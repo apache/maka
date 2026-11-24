@@ -18,15 +18,10 @@
  */
 
 import { Text, View, cleanup, computed, effect, signal, windowSize } from 'nsh';
-import type { InputRef, JSX, ViewRef } from 'nsh';
+import type { InputRef, JSX } from 'nsh';
 import { Button, Command, Input, Popover, Select } from 'nsh/base';
 import type { ServiceMethods } from '../../../../packages/plugin-sdk/src/generated/methods.js';
 import type { BrowserProject } from '../../../../products/maka/workbench/app/browsing';
-import {
-  controlsLeft,
-  controlsRight,
-  dialogTop,
-} from '../../../../products/maka/workbench/app/chrome';
 import type { Host } from '../../../../products/maka/workbench/app/host';
 import { Icon } from '../../../../products/maka/workbench/app/Icon';
 import { tr, type MessageKey } from '../../../../products/maka/workbench/app/locale';
@@ -247,30 +242,11 @@ function WorkspaceSelect(props: WorkspaceMenuProps) {
 
 function BranchMenu(props: WorkspaceMenuProps & { footer?: JSX.Element }) {
   const choices = computed(() => new Map(props.choices.map((choice) => [choice.value, choice])));
-  const height = signal(branchMenuHeight);
-  const popupHeight = () => Math.min(height(), windowSize().height - menuAnchor.margin * 2);
-  let trigger: ViewRef | undefined;
-  const openAtTrigger = async () => {
-    const position = await trigger?.measure();
-    if (position) {
-      const { width } = windowSize();
-      const popupWidth = Math.min(props.width, width - menuAnchor.margin * 2);
-      const left = Math.min(position.pagePosition.x, width - menuAnchor.margin - popupWidth);
-      const overlapsControls =
-        left < controlsLeft(true) || left + popupWidth > width - controlsRight(true);
-      const top = overlapsControls ? dialogTop(menuAnchor.margin) : menuAnchor.margin;
-      const roomAbove = Math.floor(position.pagePosition.y) - top - menuAnchor.offset;
-      height.set(Math.max(112, Math.min(branchMenuHeight, roomAbove)));
-    }
-    props.onOpenChange(true);
-  };
+  const popupHeight = () => Math.min(branchMenuHeight, Math.floor(windowSize().height * 0.4));
   return (
     <Popover
       open={props.open}
-      onOpenChange={({ open }) => {
-        if (open) void openAtTrigger();
-        else props.onOpenChange(false);
-      }}
+      onOpenChange={({ open }) => props.onOpenChange(open)}
       {...menuAnchor}
       style={{ flexShrink: 1, minWidth: 0 }}
       popupStyle={{
@@ -288,9 +264,6 @@ function BranchMenu(props: WorkspaceMenuProps & { footer?: JSX.Element }) {
           disabledStyle={controlDisabledStyle}
         >
           <View
-            ref={(node) => {
-              trigger = node;
-            }}
             tooltip={props.description ? textTooltip(() => props.description!) : undefined}
             style={{
               ...chipStyle,
