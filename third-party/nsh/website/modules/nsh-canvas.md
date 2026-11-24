@@ -40,6 +40,7 @@ Give the canvas a size through its style (`width` / `height`, `flex: 1`, `aspect
 
 ```tsx
 import { Canvas, mount, signal, Text, View } from "nsh";
+import { Window } from "nsh/desktop";
 
 function App() {
   const values = signal([12, 30, 22, 48, 36, 60, 52, 75]);
@@ -63,7 +64,11 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 ## Animating without redrawing
@@ -100,7 +105,7 @@ type CanvasPaint = string | CanvasGradient | AnimatedNode;
 
 ## CanvasRenderingContext2D
 
-The context `draw` receives. Calls only record operations; the platform draws them after `draw` returns.
+The context `draw` receives. Drawing calls record operations for the platform to replay after `draw` returns.
 
 ### State and transforms
 
@@ -168,6 +173,10 @@ closePath(): void;
 ```
 
 All coordinates are `CanvasNumber`s. Angles are in radians, clockwise from the x axis. `roundRect`'s `radii` is one radius or 2–4 as in CSS `border-radius` (top left first).
+
+### Hit testing
+
+`isPointInPath(path?, x, y, rule?)` tests whether a point is inside the fill. `isPointInStroke(path?, x, y)` tests the stroke. Both return a boolean synchronously for the current path or a supplied `Path2D`. For an example, see the [Canvas guide](../docs/canvas.md#the-2d-operations).
 
 ### Drawing
 
@@ -292,4 +301,4 @@ On the web, the image fits the browser's canvas limit as well (Safari on iOS and
 
 ## Not supported
 
-Pixel access (`getImageData`, `putImageData`), `filter`, `isPointInPath` and SVG images are not available. An invalid color or font drops that one operation, as in HTML Canvas.
+Pixel access (`getImageData`, `putImageData`), `filter` and SVG images are not available. An invalid color or font drops that one operation, as in HTML Canvas.

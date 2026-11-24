@@ -1,4 +1,5 @@
 import { mount, signal, Text, View } from "nsh";
+import { Window } from "nsh/desktop";
 import { DataTable, type DataTableColumn, type DataTableRef, type DataTableSort } from "nsh/base";
 
 // Every interaction of `DataTable` for `data-table-interactions.test.tsx`:
@@ -140,4 +141,4 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => <Window id="main">{App}</Window>);

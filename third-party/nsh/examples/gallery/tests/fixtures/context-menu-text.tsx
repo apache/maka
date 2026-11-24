@@ -1,4 +1,5 @@
 import { mount, signal, Text, View } from "nsh";
+import { Window } from "nsh/desktop";
 import { ContextMenu, MenuItem, Select, TextView } from "nsh/base";
 
 // A context menu whose trigger holds a text view (#2010), and a select
@@ -39,4 +40,4 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => <Window id="main">{App}</Window>);

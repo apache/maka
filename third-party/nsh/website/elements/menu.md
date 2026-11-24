@@ -1,6 +1,6 @@
 ---
 title: Menu
-description: "Menu and ContextMenu with MenuItem, MenuSeparator and Submenu: a popup with cascading submenus on desktops and iPads in a regular width, a sheet with submenus in place on phones, styled by the app; MenuButton for the system's own menu, and ContextMenu's items for the system's context menu on iOS."
+description: "Menu and ContextMenu with MenuItem, MenuSeparator and Submenu: a popup with cascading submenus on desktops and iPads in a regular width, a sheet with submenus in place on phones, styled by the app; MenuButton for the system's own menu, and ContextMenu's items for the system's context menu on iOS and Android."
 group: base
 demo: el-menu
 ---
@@ -161,7 +161,8 @@ it. A view's own `onContextMenu` tells these openings apart by `pointerType`, wh
 
 When you control `open` and set it to `true` yourself, for a shortcut of your own or for a list that has the focus
 while one of its rows is the one asked about, the menu opens the same way: below the trigger, with the keyboard
-focus on its first enabled item, and closing it gives the focus back to the trigger.
+focus on its first enabled item, and closing it gives the focus back to the trigger. On macOS and iOS, a menu a pointer opened
+gives it back where it was before it opened: a press there gives the trigger no focus, so your app's shortcuts keep their keys.
 
 ## Checkable items
 
@@ -355,7 +356,8 @@ menu()
 ## The system's menu: MenuButton
 
 `Menu` draws a menu in your app's look on every device. When an app wants the system's own menu instead (the iOS
-pull-down menu, with its placement, motion and Liquid Glass on iOS 26), `MenuButton` shows one from a trigger you draw:
+pull-down menu, with its placement, motion and Liquid Glass on iOS 26; Android's popup menu), `MenuButton` shows one
+from a trigger you draw:
 
 ```tsx
 import { MenuButton } from "nsh/base";
@@ -367,7 +369,7 @@ import { MenuButton } from "nsh/base";
     { id: "settings", label: "Settings", icon: "gearshape" },
     { id: "read", label: "Mark all as read", disabled: !unread() },
     { id: "", label: "Language", items: languages.map((l) => ({ id: l.id, label: l.label, checked: l.id === lang() })) },
-    { id: "", label: "Appearance", inline: true, items: [
+    { id: "", label: "Appearance", inline: true, singleSelection: true, items: [
       { id: "light", label: "Light", checked: !dark() },
       { id: "dark", label: "Dark", checked: dark() },
     ] },
@@ -381,8 +383,13 @@ import { MenuButton } from "nsh/base";
 ```
 
 The items are data, each with an `id` of yours that `onSelect({ id })` reports; a check, `disabled` and `destructive`
-(red on iOS) are the item's state, the app's to change; an item with `items` is a submenu, or with `inline` a section
-shown in place under its `label`. The children, `class` and `style` are the trigger, drawn by the app on every platform.
+(red on iOS, the theme's error color on Android) are the item's state, the app's to change; an item with `items` is a submenu, or with `inline` a section
+shown in place under its `label`. With `singleSelection`, a submenu's or a section's own actions are one choice (a sort
+order, an appearance) and the app checks one: iOS shows it as a single-selection menu, Android as radio buttons, the
+desktops as check marks; without it, checks are independent. The choice is that menu's own actions: a section or
+submenu inside it sets its own. A menu whose items are all one choice puts them in an untitled `inline` section with
+`singleSelection` (`{ id: "", label: "", inline: true, singleSelection: true, items }`). The children, `class` and
+`style` are the trigger, drawn by the app on every platform.
 
 - **iOS and Mac Catalyst**: the trigger is covered by a transparent `UIButton` whose `UIMenu` is its primary action:
   a tap, VoiceOver's activation or a hardware keyboard opens it at once, without waiting for JS. `icon` is an SF
@@ -390,27 +397,36 @@ shown in place under its `label`. The children, `class` and `style` are the trig
   content under it. New `items` change the menu the next time it opens.
 - **Desktops (macOS, Windows, Linux)**: a press shows the items as the platform's context menu at the pointer (as
   `Menu.popup` from `nsh/desktop`), sections between separators; `icon`, `title` and `destructive` are not shown.
-- **Android and the web**: there is no system menu for a view; the trigger shows and opens nothing. Use `Menu` there,
-  picked by `platform.os`.
+- **Android**: a transparent button over the trigger opens the system's popup menu below it at once, lined up with the
+  trigger's end when the trigger is in the end half of the window. `title` is the menu's first row, which cannot be
+  chosen (TalkBack reads it as a disabled item); `svg`, an SVG document, is the item's icon, drawn in the item's text
+  color on Android 10 and later (`icon` is iOS's). Checks, radio buttons, submenus and sections are the system's.
+- **The web**: there is no system menu for a view; the trigger shows and opens nothing. Use `Menu` there, picked by
+  `platform.os`.
 
 | Prop | Rust | Type | Default | Description |
 |---|---|---|---|---|
 | `items` | `.items(..)` | `MenuButtonItem[]` | `[]` | The menu's items, in order. |
-| `title` | `.title(..)` | `string` | none | iOS: the menu's title, above its items. |
+| `title` | `.title(..)` | `string` | none | iOS and Android: the menu's title, above its items. |
 | `disabled` | `.disabled(..)` | `boolean` | `false` | It cannot be pressed and opens nothing. |
 | `accessibilityLabel` | `.accessibility_label(..)` | `string` | none | What screen readers say for the button. |
+| `accessibilityHint` | `.accessibility_hint(..)` | `string` | none | Explains what opening the menu offers, as a view's `accessibilityHint`. |
 | `class`, `style`, `children` | style methods, `.child(..)` | | none | The trigger the app draws. |
 
-`MenuButtonItem` is `{ id, label, icon?, checked?, disabled?, destructive?, items?, inline? }` (Rust:
-`MenuButtonItem::new(id, label)`, `::submenu(label, items)`, `::section(label, items)`, then `.icon(..)`,
-`.checked(..)`, `.disabled(..)`, `.destructive(..)`). Its one event is `onSelect({ id })` (Rust:
+`accessibilityHint` follows reactive values; setting it to `undefined` removes the hint. On iOS and Android, the
+hint reaches the native button that screen readers activate.
+
+`MenuButtonItem` is `{ id, label, icon?, svg?, checked?, disabled?, destructive?, items?, inline?, singleSelection? }`
+(Rust: `MenuButtonItem::new(id, label)`, `::submenu(label, items)`, `::section(label, items)`, then `.icon(..)`,
+`.svg(..)`, `.checked(..)`, `.disabled(..)`, `.destructive(..)`, `.single_selection(..)`). Its one event is `onSelect({ id })` (Rust:
 `.on_select(|id: &SharedString| ..)`), after the menu closed.
 
-## The system's context menu on iOS
+## The system's context menu on iOS and Android
 
 On iOS a held finger on a message, a photo or a row usually brings up the system's context menu: the view lifts over
-the blurred screen, with the system's haptics and motion, and the menu shows beside it. Give a `ContextMenu` the same
-items as `MenuButton` and iOS shows that menu, while the children stay the menu of the other platforms:
+the blurred screen, with the system's haptics and motion, and the menu shows beside it. On Android it brings up the
+system's popup menu by the view. Give a `ContextMenu` the same items as `MenuButton` and iOS and Android show that
+menu, while the children stay the menu of the other platforms:
 
 ```tsx
 import { ContextMenu, MenuItem } from "nsh/base";
@@ -436,11 +452,15 @@ import { ContextMenu, MenuItem } from "nsh/base";
   the menu is made from `items` (`MenuButtonItem`s, SF Symbol icons, `title` above them). `onOpenChange`, `onOpen`,
   `onSelect({ id })`, `onCancel` and `onClose` report what happened, as for the drawn menu. The system opens this menu
   only for the user: `open` set to `true` shows nothing, and `open` set to `false` closes it.
-- **Android, the desktops and the web**: `items`, `title` and `onSelect` are not used. The children are the menu, drawn
-  as without `items`, and each `MenuItem`'s `onSelect` reports the choice.
+- **Android**: a held finger opens the system's popup menu, with the system's long-press haptic, below the trigger and
+  lined up with its end (below the held point when the trigger's bottom is out of sight). `title` is its first row
+  and `svg` the items' icons, as for `MenuButton`; `preview` is not used. It reports the same events, and unlike iOS
+  the app can open it: `open` set to `true` shows it below the trigger.
+- **The desktops and the web**: `items`, `title` and `onSelect` are not used. The children are the menu, drawn as
+  without `items`, and each `MenuItem`'s `onSelect` reports the choice.
 
-The trigger's own presses keep working beside the held finger. Without `items`, iOS shows the drawn menu, as the other
-platforms do.
+The trigger's own presses keep working beside the held finger. Without `items`, iOS and Android show the drawn menu,
+as the other platforms do.
 
 ### A preview in place of the trigger
 
@@ -492,8 +512,8 @@ iOS only.
 | `disabled` | `.disabled(..)` | `boolean` | `false` | Nothing opens it: not the secondary button, held fingers, the keyboard or a screen reader. |
 | `offset` | `.offset(..)` | `number` | `0` | As a popup: the gap between the pointer and the popup. |
 | `margin` | `.margin(..)` | `number` | `0` | As a popup: the distance it keeps from the edges of the safe area. |
-| `items` | `.items(..)` | `MenuButtonItem[]` | `[]` | iOS only: the system's context menu, in place of the children. Not used on the other platforms, which draw the children. |
-| `title` | `.title(..)` | `string` | none | iOS only: the system's menu's title, above its items. Not used on the other platforms. |
+| `items` | `.items(..)` | `MenuButtonItem[]` | `[]` | iOS and Android: the system's context menu, in place of the children. Not used on the other platforms, which draw the children. |
+| `title` | `.title(..)` | `string` | none | iOS and Android: the system's menu's title, above its items. Not used on the other platforms. |
 | `preview` | `.preview(..)` | `JSX.Element` | none | iOS only, with `items`: what the system lifts beside its menu in place of the trigger. Made when a finger goes down, gone once the menu closed. |
 
 ### MenuItem

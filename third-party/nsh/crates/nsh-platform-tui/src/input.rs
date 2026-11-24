@@ -496,14 +496,7 @@ impl Pointer {
             && let Some(control) = control
         {
             if let Some((id, nsh_core::input::Candidate::Pan { .. })) = drag.active {
-                pan_event(
-                    tree,
-                    control,
-                    id,
-                    EventKind::PanEnd,
-                    drag.page - drag.start,
-                    &drag.velocity,
-                );
+                pan_event(tree, control, id, EventKind::PanEnd, &drag);
             }
             drag.report(control, nsh_core::TouchPhase::Cancel);
         }
@@ -597,7 +590,7 @@ impl Pointer {
             if tree.responder.is_some()
                 && let Some((id, nsh_core::input::Candidate::Pan { .. })) = drag.active
             {
-                pan_event(tree, control, id, EventKind::PanEnd, moved, &drag.velocity);
+                pan_event(tree, control, id, EventKind::PanEnd, &drag);
                 drag.active = None;
             }
             drag.activated =
@@ -622,14 +615,7 @@ impl Pointer {
                 }
                 if let Some((id, nsh_core::input::Candidate::Pan { .. })) = drag.active {
                     tree.animator.pan_began(id);
-                    pan_event(
-                        tree,
-                        control,
-                        id,
-                        EventKind::PanStart,
-                        Point::default(),
-                        &drag.velocity,
-                    );
+                    pan_event(tree, control, id, EventKind::PanStart, &drag);
                 }
             }
             if let Some((id, candidate)) = drag.active {
@@ -655,7 +641,7 @@ impl Pointer {
                 return Handled::Yes;
             }
             if let Some((id, nsh_core::input::Candidate::Pan { .. })) = drag.active {
-                pan_event(tree, control, id, EventKind::PanEnd, moved, &drag.velocity);
+                pan_event(tree, control, id, EventKind::PanEnd, &drag);
             }
             self.release_states(tree, Some(control));
             drag.report(control, nsh_core::TouchPhase::End);
@@ -703,6 +689,13 @@ impl Pointer {
                 self.cancel(tree, Some(control));
                 if let Some(hit) = hit {
                     let mut grab = nsh_core::input::Grab::default();
+                    // An edge pan's edges are the terminal area's.
+                    let surface = nsh_core::Size::new(
+                        cells.width() * f32::from(area.width),
+                        cells.height() * f32::from(area.height),
+                    );
+                    let options = nsh_core::input::GrabOptions::new(true, false, false, true)
+                        .start(page, surface);
                     let mut node = Some(hit.node);
                     while let Some(id) = node {
                         let Some(view) = tree.get(id) else {
@@ -719,7 +712,7 @@ impl Pointer {
                                     view.scroll.as_ref().map(|s| s.horizontal),
                                     view.props.pan_activation,
                                 ),
-                                nsh_core::input::GrabOptions::new(true, false, false, true),
+                                options,
                             );
                         }
                         node = if id == scope { None } else { view.parent };
@@ -857,23 +850,22 @@ pub(crate) fn dispatch(
     );
 }
 
-fn pan_event(
-    tree: &Mounter,
-    control: &EngineControl,
-    id: NodeId,
-    kind: EventKind,
-    translation: Point<Points>,
-    velocity: &nsh_core::input::VelocityTracker,
-) {
+fn pan_event(tree: &Mounter, control: &EngineControl, id: NodeId, kind: EventKind, drag: &Drag) {
     if !tree.get(id).is_some_and(|view| view.events.contains(kind)) {
         return;
     }
     let (value_x, value_y) = tree.animator.pan_values(id);
-    let (velocity_x, velocity_y) = velocity.velocity();
+    let (velocity_x, velocity_y) = drag.velocity.velocity();
+    // The start reports no translation: the finger moved past the slop.
+    let translation = match kind {
+        EventKind::PanStart => Point::default(),
+        _ => drag.page - drag.start,
+    };
     control.dispatch_event(
         id,
         kind,
         EventPayload::Pan {
+            origin: drag.start,
             translation,
             velocity_x,
             velocity_y,

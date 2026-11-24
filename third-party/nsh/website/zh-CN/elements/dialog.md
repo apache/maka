@@ -11,7 +11,7 @@ Dialog 在应用其余内容之上、在它自己的原生窗口层中呈现内�
 
 Dialog 负责行为，外观交给应用：它的样式设定弹出层（包含子元素的视图）的样式，在 TSX 中 `backdropClass` / `backdropStyle` 在它后面加一层背景。
 
-在 macOS 上，关闭对话框后，键盘焦点会回到打开前的输入框或控件，包括 `Editor` 和 `RichEditor`，前提是该控件仍在当前作用域中可见。如果其他控件已经取得焦点，则保留它的焦点。
+在 macOS 和 Linux 上，关闭对话框后，键盘焦点会回到打开前的输入框或控件，包括 `Editor` 和 `RichEditor`，前提是该控件仍在当前作用域中可见。如果其他控件已经取得焦点，则保留它的焦点。
 
 ```rust tabs
 use nsh_base::{button, dialog};

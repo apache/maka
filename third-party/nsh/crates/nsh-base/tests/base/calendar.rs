@@ -240,7 +240,9 @@ impl std::ops::DerefMut for App {
 /// On a Mac (a pointer, Tab stops at pressables), at noon UTC on
 /// 2026-10-28.
 fn start(props: HarnessProps) -> App {
-    let mut app = launch(Root::new::<Harness>(move || props.clone()));
+    let mut app = launch(nsh_testing::windowed_root_with::<Harness>(move || {
+        props.clone()
+    }));
     app.wait_for("text:prev").unwrap();
     app
 }
@@ -496,7 +498,10 @@ fn right_to_left_left_is_the_next_day_and_right_the_previous() {
         value: d(2026, 10, 30).into(),
         ..props()
     };
-    let mut app = launch_in(Root::new::<Harness>(move || props.clone()), true);
+    let mut app = launch_in(
+        nsh_testing::windowed_root_with::<Harness>(move || props.clone()),
+        true,
+    );
     app.wait_for("text:prev").unwrap();
     for _ in 0..5 {
         app.press_key("tab").unwrap();
@@ -615,7 +620,7 @@ impl Cost {
 /// A plain calendar of `months` showing `value`, with its cost counted.
 fn start_plain(months: u32, value: Date) -> (Headless, Arc<Cost>) {
     let mut app = launch_headless(
-        Root::new::<Plain>(move || PlainProps { months, value }),
+        nsh_testing::windowed_root_with::<Plain>(move || PlainProps { months, value }),
         false,
     );
     let cost = Arc::new(Cost::default());
@@ -743,7 +748,7 @@ fn states_draw_nothing_and_a_turn_draws_the_days_it_brings_once() {
         drawn.len() - 1
     };
     let mut app = launch_headless(
-        Root::new::<Counted>(move || CountedProps { run: run as u32 }),
+        nsh_testing::windowed_root_with::<Counted>(move || CountedProps { run: run as u32 }),
         false,
     );
     let made = Arc::new(AtomicUsize::new(0));

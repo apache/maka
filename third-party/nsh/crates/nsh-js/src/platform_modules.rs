@@ -1,5 +1,6 @@
 //! The small runtime modules: `nsh/android`
-//! (`isAvailable`, `BackHandler.on("press", …)` over the registry's module),
+//! (`isAvailable`, `BackHandler.on("press" | "progress", …)` over the
+//! registry's module),
 //! `nsh/ios` (`isAvailable`, `InputAccessoryView`), `nsh/mobile`
 //! (`isAvailable`, with the registry's `TabBar`), `nsh`'s `WebView` and
 //! `Video` (their host elements as components, which the compiler makes
@@ -35,6 +36,9 @@ pub(crate) struct PlatformModules {
     /// `BackHandler.on("press", …)` listeners, in order (id, owned
     /// function).
     back: RefCell<Vec<(u32, JsValue)>>,
+    /// `BackHandler.on("progress", …)` listeners, in order (id, owned
+    /// function).
+    back_progress: RefCell<Vec<(u32, JsValue)>>,
     /// `host.on` listeners, in order (id, event, owned function).
     host_listeners: RefCell<Vec<(u32, String, JsValue)>>,
     next: std::cell::Cell<u32>,
@@ -43,7 +47,13 @@ pub(crate) struct PlatformModules {
 impl PlatformModules {
     /// Frees the values held (the state is unregistered).
     pub(crate) fn free_all(&mut self, raw: *mut JsContext) {
-        for (_, f) in self.back.borrow_mut().drain(..) {
+        let back = self.back.borrow_mut().drain(..).collect::<Vec<_>>();
+        let progress = self
+            .back_progress
+            .borrow_mut()
+            .drain(..)
+            .collect::<Vec<_>>();
+        for (_, f) in back.into_iter().chain(progress) {
             // SAFETY: owned values; no JS runs from here on.
             unsafe { qjs::JS_FreeValue(raw, f) };
         }
@@ -104,7 +114,7 @@ unsafe extern "C" fn nothing(
 // --- nsh/android ------------------------------------------------------------------------
 
 /// `BackHandler`: the registry's module (`exitApp`) with listeners of the
-/// hardware back button.
+/// hardware back button and of the back gesture's steps.
 fn back_handler(cx: *mut JsContext) -> JsValue {
     let handler = crate::components::runtime_module(cx, "nsh/mobile", "BackHandler")
         // SAFETY: a new object when the runtime has none.
@@ -115,22 +125,34 @@ fn back_handler(cx: *mut JsContext) -> JsValue {
     handler
 }
 
-/// `BackHandler.on("press", f)`: a function that removes the listener,
-/// which goes by itself with the owner it was added under (the component
-/// rendering), or when hot module replacement runs the module that added
-/// it again.
+/// The `BackHandler` events: their listeners and the root's event that
+/// calls them.
+fn back_listeners(m: &PlatformModules, kind: EventKind) -> &RefCell<Vec<(u32, JsValue)>> {
+    match kind {
+        EventKind::BackProgress => &m.back_progress,
+        _ => &m.back,
+    }
+}
+
+/// `BackHandler.on("press" | "progress", f)`: a function that removes the
+/// listener, which goes by itself with the owner it was added under (the
+/// component rendering), or when hot module replacement runs the module
+/// that added it again.
 unsafe extern "C" fn add_back_listener(
     cx: *mut JsContext,
     _this: JsValue,
     argc: c_int,
     argv: *mut JsValue,
 ) -> JsValue {
-    if dom::string_arg(cx, arg(argc, argv, 0)).as_deref() != Some("press") {
-        // SAFETY: throws on a live context.
-        return unsafe {
-            qjs::JS_ThrowTypeError(cx, c"BackHandler.on: the event is \"press\"".as_ptr())
-        };
-    }
+    let kind = match dom::string_arg(cx, arg(argc, argv, 0)).as_deref() {
+        Some("press") => EventKind::BackPress,
+        Some("progress") => EventKind::BackProgress,
+        _ => {
+            let message = c"BackHandler.on: the event is \"press\" or \"progress\"";
+            // SAFETY: throws on a live context.
+            return unsafe { qjs::JS_ThrowTypeError(cx, message.as_ptr()) };
+        }
+    };
     let f = arg(argc, argv, 1);
     // SAFETY: an inline check.
     if !unsafe { qjs::JS_IsFunction(cx, f) } {
@@ -141,13 +163,18 @@ unsafe extern "C" fn add_back_listener(
     m.next.set(id);
     // SAFETY: a dup the listeners own.
     let first = {
-        let mut back = m.back.borrow_mut();
+        let mut back = back_listeners(m, kind).borrow_mut();
         back.push((id, unsafe { qjs::JS_DupValue(cx, f) }));
         back.len() == 1
     };
     if first {
-        let on = reactive::new_function(cx, c"onBackPress", on_back_press, 0);
-        let r = dom::set_handler(cx, 1, EventKind::BackPress, on);
+        let on = match kind {
+            EventKind::BackProgress => {
+                reactive::new_function(cx, c"onBackProgress", on_back_progress, 1)
+            }
+            _ => reactive::new_function(cx, c"onBackPress", on_back_press, 0),
+        };
+        let r = dom::set_handler(cx, 1, kind, on);
         // SAFETY: ours.
         unsafe { qjs::JS_FreeValue(cx, on) };
         if let Err(e) = r {
@@ -158,7 +185,10 @@ unsafe extern "C" fn add_back_listener(
         cx,
         remove_back_listener,
         0,
-        &mut [qjs::JS_NewFloat64(id as f64)],
+        &mut [
+            qjs::JS_NewFloat64(id as f64),
+            qjs::JS_NewFloat64(kind as u32 as f64),
+        ],
     );
     let remove = crate::web::js::V::own(cx, remove);
     crate::keymap::undo_with_owner(cx, &remove);
@@ -173,11 +203,19 @@ unsafe extern "C" fn remove_back_listener(
     _magic: c_int,
     data: *mut JsValue,
 ) -> JsValue {
-    let mut id = 0f64;
-    // SAFETY: one data value, the listener's id.
-    unsafe { qjs::JS_ToFloat64(cx, &mut id, *data) };
+    let (mut id, mut kind) = (0f64, 0f64);
+    // SAFETY: two data values, the listener's id and its event's kind.
+    unsafe {
+        qjs::JS_ToFloat64(cx, &mut id, *data);
+        qjs::JS_ToFloat64(cx, &mut kind, *data.add(1));
+    }
+    let kind = if kind as u32 == EventKind::BackProgress as u32 {
+        EventKind::BackProgress
+    } else {
+        EventKind::BackPress
+    };
     let (gone, empty) = {
-        let mut back = modules(cx).back.borrow_mut();
+        let mut back = back_listeners(modules(cx), kind).borrow_mut();
         let i = back.iter().position(|(i, _)| *i == id as u32);
         (i.map(|i| back.remove(i).1), back.is_empty())
     };
@@ -185,10 +223,64 @@ unsafe extern "C" fn remove_back_listener(
         // SAFETY: owned.
         unsafe { qjs::JS_FreeValue(cx, f) };
         if empty {
-            let _ = dom::set_handler(cx, 1, EventKind::BackPress, UNDEFINED);
+            let _ = dom::set_handler(cx, 1, kind, UNDEFINED);
         }
     }
     UNDEFINED
+}
+
+/// A step of the back gesture (`{ phase, progress, edge? }`): every
+/// listener hears it, the newest first, as the views' did before. A
+/// listener that throws leaves the next ones called; the first error is
+/// thrown once they all ran.
+unsafe extern "C" fn on_back_progress(
+    cx: *mut JsContext,
+    _this: JsValue,
+    argc: c_int,
+    argv: *mut JsValue,
+) -> JsValue {
+    let e = arg(argc, argv, 0);
+    let listeners: Vec<JsValue> = modules(cx)
+        .back_progress
+        .borrow()
+        .iter()
+        .rev()
+        // SAFETY: dups for the calls.
+        .map(|&(_, f)| unsafe { qjs::JS_DupValue(cx, f) })
+        .collect();
+    let mut first = None;
+    let mut fatal = false;
+    for f in listeners {
+        if !fatal {
+            let mut args = [e];
+            // SAFETY: a call of an owned function with a borrowed argument,
+            // then its result.
+            unsafe {
+                let r = qjs::JS_Call(cx, f, UNDEFINED, 1, args.as_mut_ptr());
+                if qjs::JS_IsException(r) {
+                    let error = crate::web::js::take_exception(cx);
+                    // An interrupt stops them all.
+                    if qjs::JS_IsUncatchableError(error.raw()) {
+                        first = Some(error);
+                        fatal = true;
+                    } else {
+                        first.get_or_insert(error);
+                    }
+                } else {
+                    qjs::JS_FreeValue(cx, r);
+                }
+            }
+        }
+        // SAFETY: ours.
+        unsafe { qjs::JS_FreeValue(cx, f) };
+    }
+    match first {
+        Some(error) => {
+            let _ = crate::web::js::throw(cx, error);
+            qjs::JS_EXCEPTION
+        }
+        None => UNDEFINED,
+    }
 }
 
 /// The back button: the newest listener first; when none handles it (`true`
@@ -263,6 +355,27 @@ export interface BackListeners {
    * stack pops, else the app exits. The returned function stops listening;
    * a listener added while a component renders stops with the component. */
   on(event: "press", listener: () => boolean | void): () => void;
+  /** Follows the system's back gesture (predictive back, Android 14 and
+   * later): `listener` hears each step of a gesture no modal takes, from
+   * `"start"` to `"end"` (the `press` follows) or `"cancel"`, the most
+   * recently added listener first. While one listens, the stacks leave the
+   * gesture to the app and do not preview their pop. The returned function
+   * stops listening; a listener added while a component renders stops with
+   * the component. */
+  on(event: "progress", listener: (event: BackProgressEvent) => void): () => void;
+}
+
+/** A step of the system's back gesture (`BackHandler.on("progress", ..)`). */
+export interface BackProgressEvent {
+  /** Where it is in the gesture: the finger started it, moved, let go to
+   * go back (the `press` follows), or let go without going back (or the
+   * system cancelled it). */
+  phase: "start" | "move" | "end" | "cancel";
+  /** How far the gesture went, from 0 to 1, as the system reports it. */
+  progress: number;
+  /** The screen edge the swipe started at; absent when the system names
+   * none. */
+  edge?: "left" | "right";
 }
 "#;
 

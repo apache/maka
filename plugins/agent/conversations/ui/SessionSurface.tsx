@@ -38,7 +38,7 @@ import {
 } from 'nsh';
 import { Button, Dialog, TextView } from 'nsh/base';
 import { CompactComposer } from './CompactComposer';
-import { Window, isAvailable as desktopAvailable } from 'nsh/desktop';
+import { currentWindow, isAvailable as desktopAvailable } from 'nsh/desktop';
 import { ComputerStageView } from './ComputerStageView';
 import { createComputerStage, type ComputerSnapshot } from './computerStageController';
 import type { ComputerFrameSource } from './computerFrames';
@@ -2306,8 +2306,9 @@ export function createConversationUi(
         service.subscribe('watchStage', { sessionId }) as Promise<UiSubscription<ComputerSnapshot>>,
     };
   });
+  const mainWindow = platform.desktop && platform.idiom !== 'terminal' ? currentWindow() : null;
   const computerVisible = computed(() => {
-    const state = Window.get('main')?.state();
+    const state = mainWindow?.state();
     const surface = shell();
     return (
       platform.desktop &&

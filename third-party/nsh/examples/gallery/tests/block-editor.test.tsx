@@ -8,7 +8,7 @@ const REVIEW = "Review the pricing page copy";
 
 /** The demo on a phone, or on a desktop (`desktop`), whose pointer shows the handles. */
 async function openDemo(desktop = false) {
-  const app = await open("../App.tsx", desktop ? { platform: "macos", width: 1200, height: 900 } : undefined);
+  const app = await open("../App.tsx", desktop ? { platform: "macos", width: 1200, height: 900, storage: { lastDemo: "Block editor" } } : undefined);
   await app.press("role:button[Block editor]");
   await app.waitFor(ITEM);
   return app;
@@ -249,7 +249,7 @@ test("a pointer resting where the menu opens does not take the highlight, and ea
 });
 
 test("the handle follows the pointer's block as the document scrolls, and goes with Select All", async () => {
-  const app = await open("../App.tsx", { platform: "macos", width: 1200, height: 520 });
+  const app = await open("../App.tsx", { platform: "macos", width: 1200, height: 520, storage: { lastDemo: "Block editor" } });
   await app.press("role:button[Block editor]");
   await app.waitFor("Q4 launch plan");
   const handle = "role:button[Drag to move, press for the menu]";

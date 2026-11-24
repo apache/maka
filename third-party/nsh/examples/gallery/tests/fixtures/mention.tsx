@@ -2,6 +2,7 @@
 // input keeps the focus: `up`, `down` and `enter` bound with
 // `{ when: "always" }` take the keys before the input does.
 import { mount, signal, Text, View } from "nsh";
+import { Window } from "nsh/desktop";
 import { Input } from "nsh/base";
 import { keymap } from "nsh";
 
@@ -37,4 +38,4 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => <Window id="main">{App}</Window>);

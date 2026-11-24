@@ -5,17 +5,20 @@
 //! the main thread and returns when it is done). Java speaks pixels; the
 //! agent points (the display's density apart).
 
-use std::{sync::Weak, time::Duration};
+use std::{
+    sync::Weak,
+    time::{Duration, Instant},
+};
 
 use jni::{
     JNIEnv,
-    objects::{JByteArray, JClass, JFloatArray, JObject, JString, JValue},
+    objects::{JByteArray, JClass, JFloatArray, JObject, JObjectArray, JString, JValue},
 };
 use nsh_core::{
     NodeId,
     geometry::{Bounds, Point, Points, Size, point},
 };
-use nsh_testing::agent::{Key, Native};
+use nsh_testing::agent::{Key, Native, SystemName};
 
 use crate::{host::Host, java::with_env};
 
@@ -31,6 +34,9 @@ const MOVE_STEP: f32 = 20.0;
 /// How long a finger rests before it lifts at the end of a scroll, so the
 /// scroll view keeps no velocity (no fling after it).
 const REST: Duration = Duration::from_millis(120);
+/// How long a system menu takes to show a submenu's items or to close, at
+/// most.
+const MENU_MOVES: Duration = Duration::from_secs(2);
 /// `MotionEvent.ACTION_*`.
 const DOWN: i32 = 0;
 const UP: i32 = 1;
@@ -143,6 +149,82 @@ impl AndroidNative {
         });
     }
 
+    /// Whether a system menu is open: false once the app is gone.
+    fn menu_open(&self) -> bool {
+        self.call(|env, class, _| env.call_static_method(class, "menuOpen", "()Z", &[])?.z())
+    }
+
+    /// The middle of the open system menu's row labelled `label`, in the
+    /// menu's window (pixels).
+    fn menu_item_point(&self, label: &str) -> Option<(f32, f32)> {
+        self.call(|env, class, _| {
+            let label = env.new_string(label)?;
+            let array = env
+                .call_static_method(
+                    class,
+                    "menuItemPoint",
+                    "(Ljava/lang/String;)[F",
+                    &[JValue::Object(&label)],
+                )?
+                .l()?;
+            if array.is_null() {
+                return Ok(None);
+            }
+            let mut at = [0.0f32; 2];
+            env.get_float_array_region(JFloatArray::from(array), 0, &mut at)?;
+            Ok(Some((at[0], at[1])))
+        })
+    }
+
+    /// The labels of the open system menu's rows.
+    fn menu_labels(&self) -> Vec<String> {
+        self.call(|env, class, _| {
+            let array = env
+                .call_static_method(class, "menuLabels", "()[Ljava/lang/String;", &[])?
+                .l()?;
+            let array = JObjectArray::from(array);
+            let mut labels = Vec::new();
+            for i in 0..env.get_array_length(&array)? {
+                let label = env.get_object_array_element(&array, i)?;
+                labels.push(env.get_string(&JString::from(label))?.into());
+            }
+            Ok(labels)
+        })
+    }
+
+    /// A finger's `action` at (`x`, `y`) in the open system menu's window
+    /// (pixels).
+    fn menu_touch(&self, action: i32, x: f32, y: f32) -> Result<(), String> {
+        let done = self.call(|env, class, _| {
+            env.call_static_method(
+                class,
+                "menuTouch",
+                "(IFF)Z",
+                &[JValue::Int(action), JValue::Float(x), JValue::Float(y)],
+            )?
+            .z()
+        });
+        if done {
+            Ok(())
+        } else {
+            Err("the menu closed".into())
+        }
+    }
+
+    /// Waits for the system menu to go after it was `done`.
+    fn menu_closed(&self, done: &str) -> Result<(), String> {
+        let since = Instant::now();
+        while self.menu_open() {
+            if since.elapsed() > MENU_MOVES {
+                return Err(format!(
+                    "the menu stays open after it was {done} (a disabled item?)"
+                ));
+            }
+            std::thread::sleep(FRAME * 4);
+        }
+        Ok(())
+    }
+
     fn floats(&self, method: &str, sig: &str, id: Option<NodeId>) -> Option<Vec<f32>> {
         self.call(|env, class, view| {
             let mut args = vec![JValue::Object(view)];
@@ -168,6 +250,15 @@ impl Native for AndroidNative {
         Some(Bounds::new(
             point(Points(b[0] / d), Points(b[1] / d)),
             Size::new(Points(b[2] / d), Points(b[3] / d)),
+        ))
+    }
+
+    fn scroll_room(&self, id: NodeId, horizontal: bool) -> Option<(Points, Points)> {
+        let room = self.floats("scrollRoom", "(Lcom/longbridge/nsh/NshView;I)[F", Some(id))?;
+        let at = if horizontal { 0 } else { 2 };
+        Some((
+            Points(room[at] / self.density),
+            Points(room[at + 1] / self.density),
         ))
     }
 
@@ -223,7 +314,13 @@ impl Native for AndroidNative {
         self.swipe(from, (from.0 - delta.x.0, from.1 - delta.y.0), REST);
     }
 
-    fn drag(&self, from: Point<Points>, to: Point<Points>) {
+    fn drag(
+        &self,
+        from: Point<Points>,
+        to: Point<Points>,
+        options: nsh_testing::DragOptions,
+    ) -> Result<(), String> {
+        nsh_testing::agent::refuse_custom_drag("drag", options)?;
         // A touchscreen samples a finger several times a frame: its first
         // moves stay within the touch slop, so the views under it decide
         // who takes the drag as they do for a real one.
@@ -248,6 +345,7 @@ impl Native for AndroidNative {
         xs.push(self.px(to.x.0));
         ys.push(self.px(to.y.0));
         self.path(&xs, &ys, frame / SAMPLES);
+        Ok(())
     }
 
     fn type_text(&self, text: &str) {
@@ -377,6 +475,97 @@ impl Native for AndroidNative {
         let [x, y] = at.ok_or_else(|| format!("the dialog has no button {text:?}"))?;
         self.tap(x / self.density, y / self.density, TAP);
         Ok(())
+    }
+
+    fn system_control(&self, name: SystemName<'_>) -> Option<Bounds<Points>> {
+        let (test_id, label) = match name {
+            SystemName::TestId(id) => (Some(id), None),
+            SystemName::Label(label) => (None, Some(label)),
+            _ => return None,
+        };
+        let b = self.call(|env, class, view| {
+            let test_id = match test_id {
+                Some(id) => JObject::from(env.new_string(id)?),
+                None => JObject::null(),
+            };
+            let label = match label {
+                Some(label) => JObject::from(env.new_string(label)?),
+                None => JObject::null(),
+            };
+            let array = env
+                .call_static_method(
+                    class,
+                    "systemControl",
+                    "(Lcom/longbridge/nsh/NshView;Ljava/lang/String;Ljava/lang/String;)[F",
+                    &[
+                        JValue::Object(view),
+                        JValue::Object(&test_id),
+                        JValue::Object(&label),
+                    ],
+                )?
+                .l()?;
+            if array.is_null() {
+                return Ok(None);
+            }
+            let mut out = [0.0f32; 4];
+            env.get_float_array_region(JFloatArray::from(array), 0, &mut out)?;
+            Ok(Some(out))
+        })?;
+        let d = self.density;
+        Some(Bounds::new(
+            point(Points(b[0] / d), Points(b[1] / d)),
+            Size::new(Points(b[2] / d), Points(b[3] / d)),
+        ))
+    }
+
+    fn system_menu_open(&self) -> bool {
+        self.menu_open()
+    }
+
+    fn choose_menu_item(&self, path: &[String]) -> Result<(), String> {
+        for label in path {
+            // A submenu's items show in place of its menu's once it opens;
+            // a menu that opens slides in: tapped once its row stays put.
+            let since = Instant::now();
+            let mut last = None;
+            let (x, y) = loop {
+                let at = self.menu_item_point(label);
+                if let Some(at) = at
+                    && last == Some(at)
+                {
+                    break at;
+                }
+                if at.is_some() {
+                    last = at;
+                    std::thread::sleep(FRAME * 4);
+                    continue;
+                }
+                last = None;
+                if !self.menu_open() {
+                    return Err(format!("the menu closed before it showed {label:?}"));
+                }
+                if since.elapsed() > MENU_MOVES {
+                    return Err(format!(
+                        "the menu has no item {label:?}; it shows: {}",
+                        self.menu_labels().join(", ")
+                    ));
+                }
+                std::thread::sleep(FRAME * 4);
+            };
+            self.menu_touch(DOWN, x, y)?;
+            std::thread::sleep(TAP);
+            self.menu_touch(UP, x, y)?;
+        }
+        self.menu_closed("chosen")
+    }
+
+    fn close_menu(&self) -> Result<(), String> {
+        let done =
+            self.call(|env, class, _| env.call_static_method(class, "closeMenu", "()Z", &[])?.z());
+        if !done {
+            return Err("no context menu is open".into());
+        }
+        self.menu_closed("closed")
     }
 
     fn animating(&self) -> bool {

@@ -1,4 +1,5 @@
 import { mount, signal, Text, View } from "nsh";
+import { Window } from "nsh/desktop";
 import { ContextMenu, MenuItem } from "nsh/base";
 
 // A context menu whose open state the app owns, and a row beside it that
@@ -32,4 +33,4 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => <Window id="main">{App}</Window>);

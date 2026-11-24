@@ -10,7 +10,7 @@
 //! private: they are looked up at run time (development hosts only), as
 //! UI test tools for iOS do.
 
-use std::{ffi::c_void, sync::OnceLock};
+use std::{cell::Cell, ffi::c_void, sync::OnceLock};
 
 use objc2::{
     MainThreadMarker, MainThreadOnly, Message, msg_send, rc::Retained, runtime::AnyObject,
@@ -83,6 +83,15 @@ const HAND: u32 = 3;
 const RANGE: u32 = 1 << 0;
 const TOUCH: u32 = 1 << 1;
 const POSITION: u32 = 1 << 2;
+/// `IOHIDDigitizerEventMask`'s `FromEdgeTip`: the touch screen's mark on
+/// a finger that came in over the screen's edge. UIKit reads it into the
+/// touch, and screen edge pans (the navigation stack's back swipe among
+/// them) begin only for touches that carry it.
+const FROM_EDGE_TIP: u32 = 1 << 11;
+/// How near the screen's edge (points) a finger lands to come in over it:
+/// its contact reaches the edge, as a real finger's starting a swipe
+/// from the edge does.
+const EDGE: f64 = 10.0;
 /// `kIOHIDEventFieldDigitizerIsDisplayIntegrated`: a touch screen's.
 const DISPLAY_INTEGRATED: u32 = (11 << 16) | 25;
 /// `kIOHIDEventFieldDigitizerMajorRadius`, `…MinorRadius`.
@@ -177,11 +186,39 @@ pub(crate) enum Phase {
     Up,
 }
 
+thread_local! {
+    /// The edge mark of the finger down now: set where it lands, kept on
+    /// all its events as the touch screen keeps it, cleared as it lifts.
+    static FROM_EDGE: Cell<u32> = const { Cell::new(0) };
+}
+
+/// Whether `(x, y)` (the window's points, which the events give as the
+/// screen's) lies at the edge of `window`'s screen.
+fn at_edge(window: &UIWindow, x: f64, y: f64) -> bool {
+    let screen = window.screen().bounds();
+    let (left, top) = (screen.origin.x, screen.origin.y);
+    let (right, bottom) = (left + screen.size.width, top + screen.size.height);
+    x - left <= EDGE || right - x <= EDGE || y - top <= EDGE || bottom - y <= EDGE
+}
+
 /// One finger touching at `(x, y)` (the window's points), in `phase`.
 pub(crate) fn touch(window: &UIWindow, x: f64, y: f64, phase: Phase) -> bool {
     let Some(hid) = hid() else { return false };
     let mtm = window.mtm();
     let touching = u8::from(phase != Phase::Up);
+    if phase == Phase::Down {
+        let edge = if at_edge(window, x, y) {
+            FROM_EDGE_TIP
+        } else {
+            0
+        };
+        FROM_EDGE.set(edge);
+    }
+    let edge = if phase == Phase::Up {
+        FROM_EDGE.replace(0)
+    } else {
+        FROM_EDGE.get()
+    };
     let mask = match phase {
         Phase::Move => POSITION,
         Phase::Down | Phase::Up => RANGE | TOUCH,
@@ -216,7 +253,7 @@ pub(crate) fn touch(window: &UIWindow, x: f64, y: f64, phase: Phase) -> bool {
             time,
             1,
             2,
-            mask,
+            mask | edge,
             x,
             y,
             0.0,

@@ -153,6 +153,35 @@ fn run_app_with(
 }
 
 #[test]
+fn web_links_of_the_apps_hosts_and_paths_reach_the_listener() {
+    // As a packaged app's `app.json`, or its `nsh.json`, claims them.
+    let links = nsh_core::url_scheme::AppLinks::from_json(&serde_json::json!({
+        "links": [
+            { "host": "example.com", "paths": ["/orders/*"] },
+            { "host": "*.shop.example" }
+        ]
+    }));
+    assert_eq!(links.web().len(), 2);
+    let launch = [
+        "https://example.com/orders/7?ref=mail".to_owned(),
+        // Another path, host, scheme or port of the claimed host's.
+        "https://example.com/blog/1".to_owned(),
+        "https://other.test/orders/7".to_owned(),
+        "http://example.com/orders/8".to_owned(),
+        "https://example.com:8443/orders/9".to_owned(),
+        "https://eu.shop.example/cart".to_owned(),
+        "myapp://launch".to_owned(),
+    ];
+    let text = run_app(bundle().with_links(links), &["myapp"], &launch, |control| {
+        open(control, "https://EXAMPLE.com/orders/later")
+    });
+    assert_eq!(
+        text,
+        "links: https://example.com/orders/7?ref=mail https://eu.shop.example/cart myapp://launch https://EXAMPLE.com/orders/later done"
+    );
+}
+
+#[test]
 fn links_of_the_apps_schemes_reach_the_listener_in_order() {
     let launch = [
         "myapp://launch?ref=mail".to_owned(),

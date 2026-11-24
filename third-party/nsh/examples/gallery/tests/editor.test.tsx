@@ -46,7 +46,7 @@ test("the Editor demo finds, replaces and switches samples", async () => {
 // macOS), wide enough for the full presentation of the area (its problems
 // in an open bottom dock, not a sheet) and tall enough for every line of
 // the TypeScript sample to be on screen above them.
-const desktop = { platform: "macos", width: 1200, height: 2400 } as const;
+const desktop = { platform: "macos", width: 1200, height: 2400, storage: { lastDemo: "Editor" } } as const;
 
 test("the server's diagnostics are marked, counted and listed", async () => {
   const app = await open("../App.tsx", desktop);

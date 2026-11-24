@@ -1315,7 +1315,7 @@ pub(crate) fn simulate(surface: &Rc<Surface>, action: Simulated) {
 #[cfg(feature = "dev")]
 fn focus_native(widget: &gtk::Widget) {
     if let Some(text) = text_inside(widget)
-        && text.grab_focus_without_selecting()
+        && focus_text(&text)
     {
         return;
     }
@@ -1332,11 +1332,36 @@ fn focus_native(widget: &gtk::Widget) {
     }
 }
 
-/// `widget` if it is a `GtkText`, else the first inside it.
+/// Focuses a text field. A line takes the focus itself
+/// (`grab_focus_without_selecting`); an area (`GtkTextView`) is the
+/// window's focus widget (`GtkRoot::set_focus`): `grab_focus` refuses a
+/// widget whose own or an ancestor's `can-focus` is off
+/// (`get_effective_can_focus`), which NSH turns off on the views a modal
+/// keeps the keyboard from (`ScreenNav::scope_focus`), and a press focuses
+/// the field it lands in regardless.
 #[cfg(feature = "dev")]
-fn text_inside(widget: &gtk::Widget) -> Option<gtk::Text> {
-    if let Some(text) = widget.downcast_ref::<gtk::Text>() {
-        return Some(text.clone());
+fn focus_text(widget: &gtk::Widget) -> bool {
+    if let Some(line) = widget.downcast_ref::<gtk::Text>() {
+        return line.grab_focus_without_selecting();
+    }
+    if !widget.is_sensitive() {
+        return false;
+    }
+    match widget.root() {
+        Some(root) => {
+            root.set_focus(Some(widget));
+            true
+        }
+        None => false,
+    }
+}
+
+/// The text field in `widget`: a line's `GtkText`, an area's
+/// `GtkTextView`, or the first of either inside it.
+#[cfg(feature = "dev")]
+fn text_inside(widget: &gtk::Widget) -> Option<gtk::Widget> {
+    if widget.is::<gtk::Text>() || widget.is::<gtk::TextView>() {
+        return Some(widget.clone());
     }
     let mut child = widget.first_child();
     while let Some(c) = child {
@@ -1445,16 +1470,18 @@ fn pick_in(view: &NshView, p: graphene::Point) -> Option<Hit> {
                 s.kind,
                 ViewKind::Scroll | ViewKind::Image | ViewKind::Stack | ViewKind::Input
             );
+        let at = point(Points(p.x()), Points(p.y()));
         let HitArea {
             in_slop, children, ..
         } = input::hit_area(
-            point(Points(p.x()), Points(p.y())),
+            at,
             s.frame.size,
             s.props.hit_slop,
             s.overflow,
             clip,
             laid_out(s.kind, s.id),
-        );
+        )
+        .clipped(s.style.clip_path(), at, s.frame.size);
         (s.props.pointer_events, in_slop, children)
     };
     let own = || (pe != PointerEvents::BoxNone && in_slop).then(|| hit(view, None));
@@ -1660,7 +1687,10 @@ fn down(surface: &Rc<Surface>, key: Key, x: f32, y: f32, time: f64, modifiers: g
         area.is_some() || (!touch && !native && crate::text::selectable(&hit.view.state()));
     // The gate follows the first pointer only, as on the other platforms.
     let first = input.pointers.borrow().is_empty();
-    let options = GrabOptions::new(touch, native, selects, first);
+    // Where the pointer is from the edges of the root it is measured in.
+    let root_size = event_root(surface).state().frame.size;
+    let options = GrabOptions::new(touch, native, selects, first)
+        .start(point(Points(x), Points(y)), root_size);
     let mut grab = Grab::default();
     for v in &views {
         let s = v.state();
@@ -1798,8 +1828,8 @@ fn motion(surface: &Rc<Surface>, key: Key, x: f32, y: f32, time: f64) {
     let (tx, ty) = (x - p.start.0, y - p.start.1);
     let activated = Gate::step(&mut p.gate, &mut p.candidates, Points(tx), Points(ty));
     // The view's JS responder takes the drag over: nothing native starts
-    // meanwhile.
-    if activated.is_some() && p.mode == Mode::Idle {
+    // meanwhile, but the view's own pan.
+    if p.mode == Mode::Idle && input::activation_frees(activated, &p.candidates) {
         p.mode = Mode::Free;
     }
     if p.reporting {
@@ -1815,9 +1845,10 @@ fn motion(surface: &Rc<Surface>, key: Key, x: f32, y: f32, time: f64) {
     // take the gesture (and block native drags) before one starts.
     let js_pending = p.reporting && !moved;
     if p.mode == Mode::Idle && distance > PAN_SLOP.0 && !js_pending {
-        // While the gate decides, the candidates around it wait (the
-        // pointer stays idle and they are asked again on the next move).
-        if p.gate.is_none() {
+        // While the gate decides, or a pan's `panActivation`, the candidates
+        // around wait (the pointer stays idle and they are asked again on
+        // the next move).
+        if !input::waits(&p.candidates, p.gate.as_ref(), Points(tx), Points(ty)) {
             p.mode = Mode::Free;
         }
         let started = if surface.input.js_block.get() {
@@ -2215,9 +2246,11 @@ fn released_inside(surface: &Surface, view: &NshView, x: f32, y: f32) -> bool {
 
 // --- Pans ---------------------------------------------------------------------------
 
-fn pan_payload(surface: &Surface, id: NodeId, t: (f32, f32), v: (f32, f32)) -> EventPayload {
+fn pan_payload(surface: &Surface, id: NodeId, p: &Pointer, t: (f32, f32)) -> EventPayload {
     let (value_x, value_y) = surface.anim.borrow().pan_values(id);
+    let v = p.velocity.velocity();
     EventPayload::Pan {
+        origin: point(Points(p.start.0), Points(p.start.1)),
         translation: point(Points(t.0), Points(t.1)),
         velocity_x: v.0,
         velocity_y: v.1,
@@ -2233,7 +2266,7 @@ fn pan_start(surface: &Rc<Surface>, view: &NshView, p: &Pointer) {
     };
     surface.anim.borrow_mut().pan_began(id);
     if events.contains(EventKind::PanStart) {
-        let payload = pan_payload(surface, id, (0.0, 0.0), p.velocity.velocity());
+        let payload = pan_payload(surface, id, p, (0.0, 0.0));
         surface.event(id, EventKind::PanStart, payload);
     }
 }
@@ -2257,7 +2290,7 @@ fn pan_end(surface: &Rc<Surface>, view: &NshView, p: &Pointer, write: bool) {
     }
     if events.contains(EventKind::PanEnd) {
         let t = (p.x - p.start.0, p.y - p.start.1);
-        let payload = pan_payload(surface, id, t, p.velocity.velocity());
+        let payload = pan_payload(surface, id, p, t);
         surface.event(id, EventKind::PanEnd, payload);
     }
 }
@@ -2914,11 +2947,21 @@ fn wheel_input(
                 );
             }
             let (dx, dy) = if notches {
-                let s = view.state();
-                (
-                    dx * notch(s.frame.size.width.0),
-                    dy * notch(s.frame.size.height.0),
-                )
+                // A notch is a line, GtkScrolledWindow's length for the
+                // view; a `smoothWheel` view glides it, and
+                // `wheelLineHeight` sets its own.
+                let line = {
+                    let s = view.state();
+                    point(
+                        Points(notch(s.frame.size.width.0)),
+                        Points(notch(s.frame.size.height.0)),
+                    )
+                };
+                match crate::scroll::wheel_notch(surface, &view, dx * line.x.0, dy * line.y.0, line)
+                {
+                    Some(d) => d,
+                    None => return true,
+                }
             } else {
                 (dx, dy)
             };
@@ -3258,5 +3301,30 @@ mod tests {
     fn wheel_notches_scale_with_the_view() {
         assert!((notch(1000.0) - 100.0).abs() < 0.01);
         assert_eq!(notch(0.0), 1.0);
+    }
+
+    /// A press focuses a multiline field: `grab_focus` refuses a widget
+    /// whose `can-focus` is off through an ancestor (as the views a modal
+    /// scopes out have), so the text view is made the window's focus
+    /// widget instead (and the keys go to it).
+    #[cfg(feature = "dev")]
+    #[test]
+    fn a_press_focuses_a_text_view_under_a_can_focus_off_view() {
+        crate::gtk_test::run(|| {
+            let host = gtk::Box::new(gtk::Orientation::Vertical, 0);
+            // What `ScreenNav::scope_focus` does to the views outside the
+            // newest modal: `can-focus` off holds for their descendants.
+            host.set_can_focus(false);
+            let text = gtk::TextView::new();
+            host.append(&text);
+            let window = gtk::Window::new();
+            window.set_child(Some(&host));
+            window.present();
+            assert!(!text.grab_focus(), "GTK refuses it under the view");
+            focus_native(text.upcast_ref::<gtk::Widget>());
+            let focused = RootExt::focus(&window);
+            window.destroy();
+            assert_eq!(focused, Some(text.upcast::<gtk::Widget>()));
+        });
     }
 }

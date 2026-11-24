@@ -228,6 +228,61 @@ fn dragging_selects_text_and_replacing_it_is_one_edit() {
 }
 
 #[test]
+fn select_text_on_focus_selects_all_unless_the_press_selects() {
+    use nsh_platform_tui::{MouseButton::Left, MouseKind};
+    let (mut view, mut terminal, rx) = field("defaultValue=\"abcdef\" selectTextOnFocus");
+    // Tab's focus selects all.
+    draw_until(&mut view, &mut terminal, &rx, "sel:0-6");
+    view.handle(key("Right"));
+    draw_until(&mut view, &mut terminal, &rx, "sel:6-6");
+    let press = |view: &mut nsh_platform_tui::AppView, steps: &[(MouseKind, u16)], shift| {
+        for &(kind, column) in steps {
+            let mut input = super::app::mouse(kind, column, 0);
+            if let nsh_platform_tui::Input::Mouse(mouse) = &mut input {
+                mouse.modifiers.shift = shift;
+            }
+            view.handle(input);
+        }
+    };
+    // A click that focuses selects all; one on the focused field places the caret.
+    view.handle(key("Escape"));
+    press(
+        &mut view,
+        &[(MouseKind::Down(Left), 2), (MouseKind::Up(Left), 2)],
+        false,
+    );
+    draw_until(&mut view, &mut terminal, &rx, "sel:0-6");
+    press(
+        &mut view,
+        &[(MouseKind::Down(Left), 3), (MouseKind::Up(Left), 3)],
+        false,
+    );
+    draw_until(&mut view, &mut terminal, &rx, "sel:3-3");
+    // A drag that focuses selects its own range.
+    view.handle(key("Escape"));
+    press(
+        &mut view,
+        &[
+            (MouseKind::Down(Left), 1),
+            (MouseKind::Move, 4),
+            (MouseKind::Up(Left), 4),
+        ],
+        false,
+    );
+    draw_until(&mut view, &mut terminal, &rx, "sel:1-4");
+    // A Shift-click that focuses extends the field's selection.
+    view.handle(key("End"));
+    draw_until(&mut view, &mut terminal, &rx, "sel:6-6");
+    view.handle(key("Escape"));
+    press(
+        &mut view,
+        &[(MouseKind::Down(Left), 2), (MouseKind::Up(Left), 2)],
+        true,
+    );
+    draw_until(&mut view, &mut terminal, &rx, "sel:2-6");
+}
+
+#[test]
 fn controlled_round_trips_do_not_erase_a_burst_of_typing() {
     let code = nsh_bundler::compile_module(
         "App.tsx",
@@ -652,4 +707,20 @@ fn a_field_that_grows_with_its_wrapped_text_shows_its_first_row_again() {
     draw_until(&mut view, &mut terminal, &rx, "changes:1 height:32");
     draw_until(&mut view, &mut terminal, &rx, "abcdefghijklmnopqrs");
     terminal.backend_mut().assert_cursor_position((4, 1));
+}
+
+#[test]
+fn escape_and_c_g_report_their_key_press_before_leaving_the_field() {
+    let (mut view, mut terminal, rx) = field("");
+    view.handle(key("A"));
+    draw_until(&mut view, &mut terminal, &rx, "key:A");
+    view.handle(key("Escape"));
+    draw_until(&mut view, &mut terminal, &rx, "key:Escape");
+    assert!(!terminal.backend().cursor_visible(), "Escape still leaves");
+    view.handle(key("Tab"));
+    view.handle(key("B"));
+    draw_until(&mut view, &mut terminal, &rx, "key:B");
+    view.handle(modified("g", true, false, false));
+    draw_until(&mut view, &mut terminal, &rx, "key:Escape");
+    assert!(!terminal.backend().cursor_visible(), "C-g still leaves");
 }

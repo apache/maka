@@ -1,13 +1,14 @@
 // Two tabs with a stack each, the one not selected `display: none`: going
 // back acts on the stack that shows (`nsh_core::navigation::shown_in_layout`).
 import { Text, View, mount, signal } from "nsh";
+import { Window } from "nsh/desktop";
 import { Button, NavPage, NavStack, createNavStack } from "nsh/base";
 
 const a = createNavStack<string>(["a0"]);
 const b = createNavStack<string>(["b0"]);
 const tab = signal<"a" | "b">("a");
 
-mount(() => (
+mount(() => <Window id="main">{() => (
   <View style={{ flex: 1 }}>
     <View style={{ flexDirection: "row" }}>
       <Button onPress={() => a.push(`a${a.routes().length}`)}><Text>Push A</Text></Button>
@@ -22,4 +23,4 @@ mount(() => (
       <NavStack state={b} style={{ flex: 1 }}>{(route) => <NavPage><Text>{route}</Text></NavPage>}</NavStack>
     </View>
   </View>
-));
+)}</Window>);

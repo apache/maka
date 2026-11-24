@@ -1,4 +1,5 @@
 import { mount, signal, Text, View } from "nsh";
+import { Window } from "nsh/desktop";
 
 // A picker of two panels, one shown at a time, each closing when the
 // pointer leaves it. Switching panels removes the one under the pointer:
@@ -38,4 +39,4 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => <Window id="main">{App}</Window>);

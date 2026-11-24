@@ -268,6 +268,21 @@ style id:changed objectPosition left 50% top 0%
 tap id:flip
 style id:changed objectPosition left 50% top 100%
 covers [styles] objectPosition
+# paint-clip-path
+tap id:case-paint-clip-path
+expect Clip path
+style id:one clipPath inset(4 4 4 4 round 0 0 0 0)
+style id:two clipPath inset(10% 2 10% 2 round 0 0 0 0)
+style id:four clipPath inset(1 2 3 4 round 6 6 6 6)
+style id:corners clipPath inset(0 0 0 0 round 2 4 6 8)
+nostyle id:none clipPath
+nostyle id:unclipped clipPath
+style id:panel clipPath inset(0 0 100% 100% round 12 12 12 12)
+style id:panel transitionProperty clip-path
+style id:panel transitionDuration 420
+tap id:open
+style id:panel clipPath inset(0 0 0 0 round 12 12 12 12)
+covers [styles] clipPath
 # paint-motion
 tap id:case-paint-motion
 expect Motion
@@ -352,6 +367,8 @@ expect Plain
 frame id:plain 0 64 39 17
 frame id:big 0 81 53 39
 style id:big fontSize 32
+frame id:tall 0 120 22 30
+frame id:tall-two 0 150 40 40
 style id:tall fontSize 10
 style id:tall lineHeight 30
 style id:tall-two lineHeight 20
@@ -426,8 +443,10 @@ style span:outer color #007affff
 style span:inner color #007affff
 # A hidden span keeps its characters and their place: as wide as shown.
 expect Seen unseen words
-frame id:hidden-span 0 942 131 17
-frame id:shown-span 0 959 131 17
+# The mixed spans above use the largest font (20) and line height (24): three lines.
+frame id:spans 0 947 390 72
+frame id:hidden-span 0 1019 131 17
+frame id:shown-span 0 1036 131 17
 style span:inner fontSize 16
 covers [styles] fontFamily
 covers [styles] fontSize
@@ -490,7 +509,12 @@ style id:field borderColor #ccccccff
 style id:target backgroundColor #888888ff
 style id:target opacity 0.4
 state id:target hovered
+style id:target borderWidth 0
 style id:target backgroundColor #888888ff
+state id:target focused
+style id:target borderWidth 0
+state id:target pressed
+style id:target borderWidth 0
 state id:target none
 tap id:target
 expect Outer: 1
@@ -501,20 +525,27 @@ tap id:toggle
 expect Disabled: false
 style id:target backgroundColor #00ff00ff
 style id:target opacity 1
+state id:target focused
+style id:target borderWidth 4
 state id:target hovered
+style id:target borderWidth 2
 style id:target backgroundColor #0000ffff
 state id:target hovered pressed
+style id:target borderWidth 8
 style id:target backgroundColor #ff0000ff
 state id:target none
 style id:target backgroundColor #00ff00ff
 tap id:target
 expect Presses: 2
 expect Outer: 1
-# Disabled once more: the state style comes back.
+# Disable it while its hover border is visible.
+state id:target hovered
+style id:target borderWidth 2
 tap id:toggle
 expect Disabled: true
 style id:target backgroundColor #888888ff
 style id:target opacity 0.4
+style id:target borderWidth 0
 covers [props] activeStyle
 covers [props] hoverStyle
 covers [props] focusStyle

@@ -40,6 +40,7 @@ pub fn App() -> impl IntoElement {
 
 ```tsx tabs
 import { Canvas, mount, View } from "nsh";
+import { Window } from "nsh/desktop";
 
 function App() {
   return (
@@ -60,7 +61,11 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 A canvas takes everything a [view](../elements/view.md) takes (styles, classes, touch handlers, accessibility, refs) plus its drawing. It needs a size from its style or layout; its content is the drawing. Coordinates are in points, with the origin at the top left.
@@ -142,7 +147,7 @@ The operations are a subset of the HTML Canvas 2D API: `CanvasRenderingContext2D
 
 **Rectangles**: `fillRect`, `strokeRect`, `clearRect`.
 
-**Text**: `fillText(text, x, y, maxWidth?)`, `strokeText(...)`, `measureText(text)` (measured synchronously by the platform's text engine with the current `font`; only `width`). In Rust, `measure_text(font, text)` gives the width.
+**Text**: `fillText(text, x, y, maxWidth?)`, `strokeText(...)`, `measureText(text)` (measured synchronously by the platform's text engine with the current `font`: `width`, and the font's extent above and below the baseline on that line, `fontBoundingBoxAscent` and `fontBoundingBoxDescent`). In Rust, `measure_text(font, text)` gives the width and `text_metrics(font, text)` all of them.
 
 **Hit testing**: `isPointInPath(path?, x, y, rule?)` and `isPointInStroke(path?, x, y)` (`path_contains`, `stroke_contains`, `is_point_in_path` and `is_point_in_stroke` on a `Painter`) answer synchronously, computed from the recorded geometry (the current transform, path, `lineWidth` and `lineCap`). Keep the drawing and the paths you drew to find the shape under a tap:
 
@@ -407,6 +412,7 @@ pub fn ring() -> impl IntoElement {
 ```tsx tabs
 import { Canvas, mount, signal, Text, View } from "nsh";
 import { createAnimatedValue, Easing } from "nsh";
+import { Window } from "nsh/desktop";
 
 function Ring() {
   const progress = createAnimatedValue(0.3);
@@ -446,7 +452,11 @@ function Ring() {
   );
 }
 
-mount(Ring);
+mount(() => (
+  <Window id="main">
+    <Ring />
+  </Window>
+));
 ```
 
 The arc's end angle is `progress.mul(2π).sub(π/2)`: a node, so the ring sweeps natively for 900 ms while the drawing was recorded once (and once more for the label, which reads a signal). A clock's second hand works the same way: `rotate(seconds.mul(π / 30))` with `seconds` animated linearly.

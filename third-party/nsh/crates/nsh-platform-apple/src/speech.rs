@@ -11,8 +11,22 @@
 //! granted `speech`), listens, and reports to the root as
 //! [`EventKind::Speech`] events. One session runs at a time, on the main
 //! thread: the microphone is one.
+//!
+//! Several surfaces, each with its own engine, can run in one process, and
+//! session ids are each engine's. A session belongs to its engine's
+//! [`Listener`]: commands act only on their own engine's session, a start
+//! ends another engine's session and reports its end to that engine, and a
+//! surface that stops ends its session (the microphone goes off).
 
-use std::{cell::RefCell, ffi::CStr, ptr, sync::OnceLock};
+use std::{
+    cell::RefCell,
+    ffi::CStr,
+    ptr,
+    sync::{
+        OnceLock,
+        atomic::{AtomicU64, Ordering},
+    },
+};
 
 use block2::RcBlock;
 use dispatch2::DispatchQueue;
@@ -39,12 +53,140 @@ const AUTHORIZED: isize = 3;
 
 thread_local! {
     /// The session running, on the main thread.
-    static SESSION: RefCell<Option<Session>> = const { RefCell::new(None) };
+    static SESSION: RefCell<Sessions<Session>> = const { RefCell::new(Sessions::new()) };
+}
+
+/// Which [`Listener`], so which engine, a session belongs to.
+type Owner = u64;
+
+/// One engine's speech recognition, kept by its surface: its session ends
+/// when [`Self::end`] is called or it is dropped, as the surface stops (the
+/// core's abort cannot reach the platform once the engine is gone).
+pub struct Listener {
+    owner: Owner,
+}
+
+impl Default for Listener {
+    fn default() -> Self {
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+        Listener {
+            owner: NEXT.fetch_add(1, Ordering::Relaxed),
+        }
+    }
+}
+
+impl Listener {
+    /// Ends this engine's session, if one runs, without reporting it: the
+    /// engine is stopping. On the main thread.
+    pub fn end(&self) {
+        // The thread's storage may be gone when a surface is dropped late.
+        let running = SESSION
+            .try_with(|s| s.borrow_mut().take_owner(self.owner))
+            .ok()
+            .flatten();
+        if let Some(running) = running {
+            close(running.session);
+        }
+    }
+}
+
+impl Drop for Listener {
+    fn drop(&mut self) {
+        self.end();
+    }
+}
+
+/// The session running in the process and whose it is. Only bookkeeping:
+/// closing and reporting what it returns is the caller's.
+struct Sessions<S> {
+    running: Option<Running<S>>,
+    /// The next session's token.
+    next: u64,
+}
+
+/// A session and what identifies it.
+struct Running<S> {
+    owner: Owner,
+    /// The id its engine gave it, which its commands and events carry.
+    id: u32,
+    /// Unique in the process: the recognizer's callbacks and timers find
+    /// their session by it, never one started after.
+    token: u64,
+    session: S,
+}
+
+/// A session a start ended to make room for another.
+struct Displaced<S> {
+    running: Running<S>,
+    /// It is another engine's, which nothing told: its end is reported to
+    /// it. The starting engine's own session was already ended by its core.
+    report: bool,
+}
+
+impl<S> Sessions<S> {
+    const fn new() -> Self {
+        Sessions {
+            running: None,
+            next: 1,
+        }
+    }
+
+    /// Ends the session running, if any, for one of `owner`'s to start.
+    fn displace(&mut self, owner: Owner) -> Option<Displaced<S>> {
+        self.running.take().map(|running| Displaced {
+            report: running.owner != owner,
+            running,
+        })
+    }
+
+    /// Runs `owner`'s session `id`, returning its token. The one running
+    /// was displaced first.
+    fn insert(&mut self, owner: Owner, id: u32, session: S) -> u64 {
+        debug_assert!(self.running.is_none());
+        let token = self.next;
+        self.next += 1;
+        self.running = Some(Running {
+            owner,
+            id,
+            token,
+            session,
+        });
+        token
+    }
+
+    /// `owner`'s session `id`, if it runs.
+    fn find(&mut self, owner: Owner, id: u32) -> Option<&mut Running<S>> {
+        self.running
+            .as_mut()
+            .filter(|r| r.owner == owner && r.id == id)
+    }
+
+    /// Ends `owner`'s session `id`, if it runs.
+    fn take(&mut self, owner: Owner, id: u32) -> Option<Running<S>> {
+        self.find(owner, id)?;
+        self.running.take()
+    }
+
+    /// The session of `token`, if it still runs.
+    fn by_token(&mut self, token: u64) -> Option<&mut Running<S>> {
+        self.running.as_mut().filter(|r| r.token == token)
+    }
+
+    /// Ends the session of `token`, if it still runs.
+    fn take_token(&mut self, token: u64) -> Option<Running<S>> {
+        self.by_token(token)?;
+        self.running.take()
+    }
+
+    /// Ends `owner`'s session, whichever runs.
+    fn take_owner(&mut self, owner: Owner) -> Option<Running<S>> {
+        self.running.as_ref().filter(|r| r.owner == owner)?;
+        self.running.take()
+    }
 }
 
 /// The session running.
 struct Session {
-    id: u32,
     request: SpeechRequest,
     control: EngineControl,
     /// Set once it listens; `None` while the user is asked.
@@ -65,12 +207,14 @@ struct Audio {
     _recognizer: Retained<AnyObject>,
 }
 
-/// Applies `command`, reporting through `control`. On the main thread.
-pub fn command(control: &EngineControl, command: &SpeechCommand) {
+/// Applies `command` of the engine `listener` belongs to, reporting
+/// through `control`. On the main thread.
+pub fn command(listener: &Listener, control: &EngineControl, command: &SpeechCommand) {
+    let owner = listener.owner;
     match command {
-        SpeechCommand::Start { id, request } => start(control, *id, request.clone()),
-        SpeechCommand::Stop { id } => stop(*id),
-        SpeechCommand::Abort { id } => abort(*id),
+        SpeechCommand::Start { id, request } => start(owner, control, *id, request.clone()),
+        SpeechCommand::Stop { id } => stop(owner, *id),
+        SpeechCommand::Abort { id } => abort(owner, *id),
         _ => {}
     }
 }
@@ -83,10 +227,26 @@ fn report(control: &EngineControl, id: u32, event: SpeechEvent) {
     );
 }
 
-fn start(control: &EngineControl, id: u32, request: SpeechRequest) {
-    // The one running is aborted first: the core already ended it.
-    if let Some(running) = SESSION.with(|s| s.borrow().as_ref().map(|s| s.id)) {
-        abort(running);
+fn start(owner: Owner, control: &EngineControl, id: u32, request: SpeechRequest) {
+    // The microphone is one: the session running ends first.
+    if let Some(displaced) = SESSION.with(|s| s.borrow_mut().displace(owner)) {
+        let Running {
+            id: displaced_id,
+            session,
+            ..
+        } = displaced.running;
+        let displaced_control = session.control.clone();
+        close(session);
+        // Another engine's session lost the microphone.
+        if displaced.report {
+            report(
+                &displaced_control,
+                displaced_id,
+                SpeechEvent::End {
+                    error: Some(SpeechError::AudioCapture),
+                },
+            );
+        }
     }
     if !frameworks() {
         report(
@@ -112,28 +272,31 @@ fn start(control: &EngineControl, id: u32, request: SpeechRequest) {
         );
         return;
     }
-    SESSION.with(|s| {
-        *s.borrow_mut() = Some(Session {
+    let token = SESSION.with(|s| {
+        s.borrow_mut().insert(
+            owner,
             id,
-            request,
-            control: control.clone(),
-            audio: None,
-            stopping: false,
-            text: String::new(),
-        })
+            Session {
+                request,
+                control: control.clone(),
+                audio: None,
+                stopping: false,
+                text: String::new(),
+            },
+        )
     });
     let Some(recognizer) = AnyClass::get(c"SFSpeechRecognizer") else {
-        finish(id, Some(SpeechError::Unavailable));
+        finish(token, Some(SpeechError::Unavailable));
         return;
     };
     // The handler runs on a queue of the framework's.
     let handler = RcBlock::new(move |status: isize| {
         main(move || {
             if status != AUTHORIZED {
-                finish(id, Some(SpeechError::NotAllowed));
+                finish(token, Some(SpeechError::NotAllowed));
                 return;
             }
-            ask_microphone(id);
+            ask_microphone(token);
         });
     });
     // SAFETY: Speech's documented class method (iOS 10, macOS 10.15),
@@ -144,21 +307,21 @@ fn start(control: &EngineControl, id: u32, request: SpeechRequest) {
 }
 
 /// Asks for the microphone, then listens.
-fn ask_microphone(id: u32) {
-    if !running(id) {
+fn ask_microphone(token: u64) {
+    if !running(token) {
         return;
     }
     let Some(device) = AnyClass::get(c"AVCaptureDevice") else {
-        finish(id, Some(SpeechError::AudioCapture));
+        finish(token, Some(SpeechError::AudioCapture));
         return;
     };
     let handler = RcBlock::new(move |granted: Bool| {
         let granted = granted.as_bool();
         main(move || {
             if granted {
-                listen(id);
+                listen(token);
             } else {
-                finish(id, Some(SpeechError::NotAllowed));
+                finish(token, Some(SpeechError::NotAllowed));
             }
         });
     });
@@ -175,35 +338,35 @@ fn ask_microphone(id: u32) {
     }
 }
 
-/// Starts the microphone and the recognizer for session `id`.
-fn listen(id: u32) {
-    let Some((request, control, stopping)) = SESSION.with(|s| {
-        s.borrow()
-            .as_ref()
-            .filter(|s| s.id == id)
-            .map(|s| (s.request.clone(), s.control.clone(), s.stopping))
+/// Starts the microphone and the recognizer for the session of `token`.
+fn listen(token: u64) {
+    let Some((id, request, control, stopping)) = SESSION.with(|s| {
+        s.borrow_mut().by_token(token).map(|r| {
+            let s = &r.session;
+            (r.id, s.request.clone(), s.control.clone(), s.stopping)
+        })
     }) else {
         return;
     };
     if stopping {
-        finish(id, None);
+        finish(token, None);
         return;
     }
-    match open(id, &request) {
+    match open(token, &request) {
         Ok(audio) => {
             SESSION.with(|s| {
-                if let Some(session) = s.borrow_mut().as_mut().filter(|s| s.id == id) {
-                    session.audio = Some(audio);
+                if let Some(running) = s.borrow_mut().by_token(token) {
+                    running.session.audio = Some(audio);
                 }
             });
             report(&control, id, SpeechEvent::Start);
         }
-        Err(error) => finish(id, Some(error)),
+        Err(error) => finish(token, Some(error)),
     }
 }
 
-/// The recognizer and the microphone listening for session `id`.
-fn open(id: u32, request: &SpeechRequest) -> Result<Audio, SpeechError> {
+/// The recognizer and the microphone listening for the session of `token`.
+fn open(token: u64, request: &SpeechRequest) -> Result<Audio, SpeechError> {
     let (Some(recognizer_class), Some(request_class), Some(engine_class), Some(queue_class)) = (
         AnyClass::get(c"SFSpeechRecognizer"),
         AnyClass::get(c"SFSpeechAudioBufferRecognitionRequest"),
@@ -279,7 +442,7 @@ fn open(id: u32, request: &SpeechRequest) -> Result<Audio, SpeechError> {
         }
 
         let handler = RcBlock::new(move |result: *mut AnyObject, error: *mut AnyObject| {
-            recognized(id, result.as_ref(), error.as_ref());
+            recognized(token, result.as_ref(), error.as_ref());
         });
         let task: Option<Retained<AnyObject>> = msg_send![
             &recognizer,
@@ -296,18 +459,17 @@ fn open(id: u32, request: &SpeechRequest) -> Result<Audio, SpeechError> {
     }
 }
 
-/// The recognizer's `result` or `error` for session `id`.
+/// The recognizer's `result` or `error` for the session of `token`.
 ///
 /// # Safety
 ///
 /// `result` is an `SFSpeechRecognitionResult` and `error` an `NSError`; on
 /// the main thread.
-unsafe fn recognized(id: u32, result: Option<&AnyObject>, error: Option<&AnyObject>) {
-    let Some(control) = SESSION.with(|s| {
-        s.borrow()
-            .as_ref()
-            .filter(|s| s.id == id)
-            .map(|s| s.control.clone())
+unsafe fn recognized(token: u64, result: Option<&AnyObject>, error: Option<&AnyObject>) {
+    let Some((id, control)) = SESSION.with(|s| {
+        s.borrow_mut()
+            .by_token(token)
+            .map(|r| (r.id, r.session.control.clone()))
     }) else {
         return;
     };
@@ -320,13 +482,13 @@ unsafe fn recognized(id: u32, result: Option<&AnyObject>, error: Option<&AnyObje
             (text.to_string(), is_final)
         };
         SESSION.with(|s| {
-            if let Some(session) = s.borrow_mut().as_mut() {
-                session.text = text.clone();
+            if let Some(running) = s.borrow_mut().by_token(token) {
+                running.session.text = text.clone();
             }
         });
         report(&control, id, SpeechEvent::Result { text, is_final });
         if is_final {
-            finish(id, None);
+            finish(token, None);
             return;
         }
     }
@@ -338,11 +500,19 @@ unsafe fn recognized(id: u32, result: Option<&AnyObject>, error: Option<&AnyObje
             (domain.to_string(), code)
         };
         log::debug!("speech recognition ended: {domain} {code}");
-        let stopping = SESSION.with(|s| s.borrow().as_ref().is_some_and(|s| s.stopping));
+        let stopping = SESSION.with(|s| {
+            s.borrow_mut()
+                .by_token(token)
+                .is_some_and(|r| r.session.stopping)
+        });
         let error = speech_error(&domain, code, stopping);
         // A stop that heard something ends with it, final.
         if error.is_none() {
-            let text = SESSION.with(|s| s.borrow().as_ref().map(|s| s.text.clone()));
+            let text = SESSION.with(|s| {
+                s.borrow_mut()
+                    .by_token(token)
+                    .map(|r| r.session.text.clone())
+            });
             if let Some(text) = text.filter(|t| !t.is_empty()) {
                 report(
                     &control,
@@ -354,7 +524,7 @@ unsafe fn recognized(id: u32, result: Option<&AnyObject>, error: Option<&AnyObje
                 );
             }
         }
-        finish(id, error);
+        finish(token, error);
     }
 }
 
@@ -377,30 +547,27 @@ fn speech_error(domain: &str, code: isize, stopping: bool) -> Option<SpeechError
     }
 }
 
-/// Stops listening to session `id`: the recognizer finishes what it heard.
-fn stop(id: u32) {
+/// Stops listening to `owner`'s session `id`: the recognizer finishes what
+/// it heard.
+fn stop(owner: Owner, id: u32) {
     let listening = SESSION.with(|s| {
         let mut s = s.borrow_mut();
-        let Some(session) = s.as_mut().filter(|s| s.id == id) else {
-            return false;
-        };
-        session.stopping = true;
-        if let Some(audio) = &session.audio {
-            // SAFETY: AVAudioEngine's and the request's documented API.
-            unsafe { silence(audio) };
-            true
-        } else {
-            false
-        }
+        let running = s.find(owner, id)?;
+        running.session.stopping = true;
+        let audio = running.session.audio.as_ref()?;
+        // Under the borrow: the recognizer's handlers run on the main
+        // queue (`open`), never inside `silence`, so none comes back here.
+        // SAFETY: AVAudioEngine's and the request's documented API.
+        unsafe { silence(audio) };
+        Some(running.token)
     });
-    if listening {
+    if let Some(token) = listening {
         // A recognizer that never answers still ends the session.
         later(3000, move || {
             let text = SESSION.with(|s| {
-                s.borrow()
-                    .as_ref()
-                    .filter(|s| s.id == id)
-                    .map(|s| (s.text.clone(), s.control.clone()))
+                s.borrow_mut()
+                    .by_token(token)
+                    .map(|r| (r.session.text.clone(), r.session.control.clone()))
             });
             if let Some((text, control)) = text {
                 if !text.is_empty() {
@@ -413,41 +580,25 @@ fn stop(id: u32) {
                         },
                     );
                 }
-                finish(id, None);
+                finish(token, None);
             }
         });
     }
 }
 
-/// Ends session `id` at once; the core already reported its end.
-fn abort(id: u32) {
-    let session = SESSION.with(|s| {
-        let mut s = s.borrow_mut();
-        if s.as_ref().is_some_and(|s| s.id == id) {
-            s.take()
-        } else {
-            None
-        }
-    });
-    if let Some(session) = session {
-        close(session);
+/// Ends `owner`'s session `id` at once; the core already reported its end.
+fn abort(owner: Owner, id: u32) {
+    if let Some(running) = SESSION.with(|s| s.borrow_mut().take(owner, id)) {
+        close(running.session);
     }
 }
 
-/// Ends session `id`, reporting its end (with `error`).
-fn finish(id: u32, error: Option<SpeechError>) {
-    let session = SESSION.with(|s| {
-        let mut s = s.borrow_mut();
-        if s.as_ref().is_some_and(|s| s.id == id) {
-            s.take()
-        } else {
-            None
-        }
-    });
-    if let Some(session) = session {
-        let control = session.control.clone();
-        close(session);
-        report(&control, id, SpeechEvent::End { error });
+/// Ends the session of `token`, reporting its end (with `error`).
+fn finish(token: u64, error: Option<SpeechError>) {
+    if let Some(running) = SESSION.with(|s| s.borrow_mut().take_token(token)) {
+        let control = running.session.control.clone();
+        close(running.session);
+        report(&control, running.id, SpeechEvent::End { error });
     }
 }
 
@@ -483,8 +634,8 @@ unsafe fn silence(audio: &Audio) {
     }
 }
 
-fn running(id: u32) -> bool {
-    SESSION.with(|s| s.borrow().as_ref().is_some_and(|s| s.id == id))
+fn running(token: u64) -> bool {
+    SESSION.with(|s| s.borrow_mut().by_token(token).is_some())
 }
 
 /// Runs `f` on the main thread.
@@ -619,5 +770,60 @@ mod tests {
         assert_eq!(error("NSURLErrorDomain", -1009), Some(SpeechError::Network));
         assert_eq!(error("SomeDomain", 1), Some(SpeechError::Failed));
         assert_eq!(speech_error("SomeDomain", 1, true), None);
+    }
+
+    /// Two engines' listeners; their session ids are their own and collide.
+    const A: Owner = 1;
+    const B: Owner = 2;
+
+    #[test]
+    fn another_engines_stop_and_abort_leave_a_session_alone() {
+        let mut sessions = Sessions::new();
+        sessions.insert(A, 1, "a");
+        assert!(sessions.find(B, 1).is_none());
+        assert!(sessions.take(B, 1).is_none());
+        assert!(sessions.find(A, 2).is_none());
+        let running = sessions.take(A, 1).expect("A's own abort ends it");
+        assert_eq!((running.owner, running.id, running.session), (A, 1, "a"));
+        assert!(sessions.running.is_none());
+    }
+
+    #[test]
+    fn another_engines_start_ends_a_session_and_reports_it() {
+        let mut sessions = Sessions::new();
+        sessions.insert(A, 1, "a");
+        let displaced = sessions.displace(B).expect("the microphone is one");
+        assert!(displaced.report, "A's core still waits for its end");
+        assert_eq!((displaced.running.owner, displaced.running.id), (A, 1));
+        sessions.insert(B, 1, "b");
+        // A session of the starting engine's own was ended by its core.
+        let replaced = sessions.displace(B).expect("B's session runs");
+        assert!(!replaced.report);
+        assert!(sessions.displace(B).is_none());
+    }
+
+    #[test]
+    fn a_stopping_surface_ends_its_own_session_only() {
+        let mut sessions = Sessions::new();
+        sessions.insert(A, 1, "a");
+        assert!(sessions.take_owner(B).is_none());
+        assert_eq!(sessions.take_owner(A).map(|r| r.session), Some("a"));
+        assert!(sessions.running.is_none());
+    }
+
+    #[test]
+    fn callbacks_of_an_ended_session_miss_the_next() {
+        let mut sessions = Sessions::new();
+        // An engine that restarts counts its ids from the start again.
+        let first = sessions.insert(A, 1, "first");
+        sessions.take_owner(A);
+        let second = sessions.insert(A, 1, "second");
+        assert_ne!(first, second);
+        assert!(sessions.by_token(first).is_none());
+        assert!(sessions.take_token(first).is_none());
+        assert_eq!(
+            sessions.take_token(second).map(|r| r.session),
+            Some("second")
+        );
     }
 }

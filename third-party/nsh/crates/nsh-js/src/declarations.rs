@@ -41,6 +41,8 @@ export interface CommonProps<S = ViewStyle, R = ViewRef> extends TouchProps, Hos
   android?: AndroidProps;
   /** macOS-only props (`macos={{…}}`; ignored elsewhere). */
   macos?: MacOSProps;
+  /** Windows-only props (`windows={{…}}`; ignored elsewhere). */
+  windows?: WindowsProps;
   /** Desktop-only props (macOS, Windows, Linux and desktop browsers;
    * ignored on mobile). */
   desktop?: DesktopProps;
@@ -102,6 +104,8 @@ export interface AndroidProps extends AndroidHostProps {}
 /** macOS-only props of every element (`macos={{…}}`); elements add their own. */
 export interface MacOSProps extends MacOSHostProps {}
 
+/** Windows-only props of every element (`windows={{…}}`). */
+export interface WindowsProps extends WindowsHostProps {}
 /** `<View>` */
 export interface ViewProps extends CommonProps, ViewHostProps {
   style?: StyleProp<ViewStyle>;
@@ -276,7 +280,14 @@ pub(crate) const REFS: &[(&str, Option<&str>, &str, &[&str])] = &[
         "ViewRef",
         None,
         "A native node: what `ref` receives, and what an element is. Its methods send commands to its\nview, in order with the changes before them.",
-        &["focus", "blur", "measure", "reveal", "animateLayout"],
+        &[
+            "focus",
+            "blur",
+            "clearSelection",
+            "measure",
+            "reveal",
+            "animateLayout",
+        ],
     ),
     (
         "InputRef",
@@ -1006,6 +1017,30 @@ mod tests {
             .find(|(path, _)| path == "nsh/types.d.ts")
             .unwrap();
         assert!(!types.contains("picker-types"), "{types}");
+    }
+
+    /// `panActivation` is declared once, from its Rust value, with its way
+    /// and edge; a pan's event says where it started.
+    #[test]
+    fn pan_activation_and_pan_event_are_declared_with_way_edge_and_origin() {
+        let files = type_definitions(&[]);
+        let (_, types) = files
+            .iter()
+            .find(|(path, _)| path == "nsh/types.d.ts")
+            .expect("nsh/types.d.ts");
+        assert_eq!(
+            types.matches("export interface PanActivation {").count(),
+            1,
+            "{types}"
+        );
+        assert!(types.contains("direction?: PanDirection;"), "{types}");
+        assert!(types.contains("edge?: PanEdge;"), "{types}");
+        let pan_event = types
+            .split("export interface PanEvent {")
+            .nth(1)
+            .and_then(|rest| rest.split("\n}").next())
+            .expect("PanEvent");
+        assert!(pan_event.contains("origin: Point;"), "{pan_event}");
     }
 
     #[test]

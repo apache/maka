@@ -56,6 +56,15 @@ pub(crate) fn offer(view: &NshView) {
     }
 }
 
+/// Whether GTK's focus traversal (Tab, Shift+Tab, the focus GTK hands out
+/// as a window maps) passes over `view` and everything in it: a disabled
+/// view takes its subtree out of it, the native fields in it too, as the
+/// headless runner and a browser's disabled `fieldset` do. `focus()` grabs
+/// the focus directly and is not affected.
+pub(crate) fn skips_subtree(view: &NshView) -> bool {
+    view.state().props.accessibility.state.disabled
+}
+
 /// After [`offer`]: a stop Tab passed over goes back to unfocusable.
 pub(crate) fn offered(view: &NshView) {
     if TABBING.get() && !view.is_focus() {
@@ -228,7 +237,24 @@ fn focused_stop(surface: &Surface, focus: Option<gtk::Widget>) -> Option<NshView
 /// (the main window, or one of the app's own). Nothing when the window has
 /// no focused view any more.
 pub(crate) fn focused_view(surface: &Surface, window: &gtk::Window) -> Option<NshView> {
-    focused_stop(surface, GtkWindowExt::focus(window))
+    let focus = GtkWindowExt::focus(window);
+    focused_stop(surface, focus.clone()).or_else(|| unfocused_root(surface, window, focus.as_ref()))
+}
+
+/// The root view of `window` when nothing in it has the keyboard focus
+/// (`focus` is none, or the root itself): the raw keys go there and bubble
+/// from it. A native field or any other focus is not "nothing".
+fn unfocused_root(
+    surface: &Surface,
+    window: &gtk::Window,
+    focus: Option<&gtk::Widget>,
+) -> Option<NshView> {
+    let root = crate::window::root_at(surface, &window.surface()?)?;
+    match focus {
+        None => Some(root),
+        Some(focus) if focus == root.upcast_ref::<gtk::Widget>() => Some(root),
+        Some(_) => None,
+    }
 }
 
 /// Watches the keys a native popup receives while it owns the keyboard
@@ -391,7 +417,18 @@ pub(crate) fn press(
         (Some(event), Some(widget)) => crate::chrome::menu_shortcut(surface, widget, event),
         _ => false,
     };
-    let Some(view) = focused_stop(surface, focus) else {
+    // No focus at all: the window's root hears the raw keys (a browser's
+    // `document.body`), with no default of a focused stop. A native field
+    // keeps its keys.
+    let target = match focused_stop(surface, focus.clone()) {
+        Some(view) => Some((view, false)),
+        None => window
+            .as_ref()
+            .and_then(|window| unfocused_root(surface, window, focus.as_ref()))
+            .filter(|root| crate::keyboard::listens(surface, root))
+            .map(|root| (root, true)),
+    };
+    let Some((view, at_root)) = target else {
         // A native field (or no focus) has no view to notify: the app's
         // bindings first, then the menu's shortcuts, then Tab's traversal.
         if event.is_some_and(|event| crate::keymap::claims(surface, event)) {
@@ -405,7 +442,9 @@ pub(crate) fn press(
         }
         return false;
     };
-    if !crate::keyboard::listens(surface, &view) || crate::keyboard::native_owns(&view) {
+    if !at_root
+        && (!crate::keyboard::listens(surface, &view) || crate::keyboard::native_owns(&view))
+    {
         // A view with no raw keys (or a native input/content that owns its
         // keys) keeps the original path: the app's bindings (GTK's
         // controller) first, then the menu's shortcut, then the defaults.
@@ -451,6 +490,14 @@ pub(crate) fn press(
     // key is the app's, not a traversal or a context menu.
     if menu_shortcut() {
         return true;
+    }
+    if at_root {
+        // The root is no stop: nothing to press or open a menu on, but Tab
+        // still moves the focus into the window.
+        if is_tab(keyval) {
+            arm_tab();
+        }
+        return false;
     }
     // Tab's traversal is a default too: it is armed here, then GTK moves the
     // focus right after this, in the same dispatch.
@@ -1213,6 +1260,32 @@ mod tests {
     }
 
     #[test]
+    fn an_unfocused_window_uses_its_content_capture() {
+        run(|| {
+            let surface = surface();
+            views(&surface);
+            props(&surface, ROOT_ID, |props| props.key_content = Some(2));
+            props(&surface, 2, |props| props.key_capture = KeyCapture::All);
+            let window = show(&surface);
+            let content = view(&surface, 2);
+            assert!(wait_until(|| content.is_mapped()));
+            assert!(GtkWindowExt::focus(&window).is_none());
+
+            let captured = press(
+                &surface,
+                Some(window.upcast_ref()),
+                None,
+                gdk::Key::AudioPlay,
+                0,
+                gdk::ModifierType::empty(),
+                0,
+            );
+            window.destroy();
+            assert!(captured, "the window content captures keys without focus");
+        });
+    }
+
+    #[test]
     fn a_tab_press_arms_the_traversal_without_focus() {
         run(|| {
             let surface = surface();
@@ -1412,6 +1485,98 @@ mod tests {
                 "the focus leaves with the field"
             );
             window.destroy();
+        });
+    }
+
+    /// The issue's layout: a stop (2), a disabled panel (3) with a field (4)
+    /// and a stop (5) in it, then a stop (6). Tab and Shift+Tab pass over
+    /// the panel while it is disabled and enter it again once it is not.
+    #[test]
+    fn tab_passes_over_a_disabled_subtree() {
+        run(|| {
+            let surface = surface();
+            let mut items = Vec::new();
+            for (id, parent, kind, y) in [
+                (2, ROOT_ID, ViewKind::View, 0.0),
+                (3, ROOT_ID, ViewKind::View, 40.0),
+                (4, 3, ViewKind::Input, 0.0),
+                (5, 3, ViewKind::View, 40.0),
+                (6, ROOT_ID, ViewKind::View, 120.0),
+            ] {
+                items.extend([
+                    MountItem::Create { id, kind },
+                    MountItem::Insert {
+                        parent,
+                        child: id,
+                        before: None,
+                    },
+                    MountItem::Frame {
+                        id,
+                        frame: frame(0.0, y, 100.0, 30.0),
+                    },
+                ]);
+                if id == 4 {
+                    items.push(MountItem::Input {
+                        id,
+                        config: Box::default(),
+                    });
+                } else if id != 3 {
+                    let mut events = EventMask::default();
+                    events.set(EventKind::Press, true);
+                    items.push(MountItem::Events { id, events });
+                }
+            }
+            apply(&surface, &items);
+            let disable = |on: bool| props(&surface, 3, |p| p.accessibility.state.disabled = on);
+            disable(true);
+            let window = show(&surface);
+            let (before, field, inside, after) = (
+                view(&surface, 2),
+                view(&surface, 4),
+                view(&surface, 5),
+                view(&surface, 6),
+            );
+            assert!(wait_until(|| after.is_mapped()));
+            let back = |w: &gtk::Window| {
+                TABBING.set(true);
+                w.child_focus(gtk::DirectionType::TabBackward);
+                TABBING.set(false);
+            };
+            let in_field = || {
+                GtkWindowExt::focus(&window).is_some_and(|f| {
+                    f.is_ancestor(&field) || f == *field.upcast_ref::<gtk::Widget>()
+                })
+            };
+
+            tab(&window);
+            assert!(
+                before.is_focus(),
+                "Tab enters the first stop: {:?}",
+                GtkWindowExt::focus(&window).map(|w| (
+                    w.type_().name(),
+                    w.downcast_ref::<NshView>().map(|v| v.state().id)
+                ))
+            );
+            tab(&window);
+            assert!(after.is_focus(), "Tab passes over the disabled panel");
+            back(&window);
+            assert!(before.is_focus(), "Shift+Tab passes over it too");
+
+            disable(false);
+            tab(&window);
+            assert!(in_field(), "an enabled panel's field is a stop again");
+            tab(&window);
+            assert!(inside.is_focus(), "and so is its pressable view");
+
+            // Disabled again while the focus is on the stop before it.
+            back(&window);
+            back(&window);
+            assert!(before.is_focus());
+            disable(true);
+            tab(&window);
+            let passed = after.is_focus();
+            window.destroy();
+            assert!(passed, "a panel disabled later is passed over");
         });
     }
 

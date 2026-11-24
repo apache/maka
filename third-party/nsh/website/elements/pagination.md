@@ -34,6 +34,7 @@ fn results() -> impl IntoElement {
 ```tsx tabs
 import { mount, signal } from "nsh";
 import { Pagination } from "nsh/base";
+import { Window } from "nsh/desktop";
 
 function App() {
   const page = signal(1);
@@ -51,7 +52,11 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 `Pagination` comes from [`nsh/base`](../modules/nsh-base.md), the `nsh-base` crate in Rust. In Rust,

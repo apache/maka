@@ -9,11 +9,12 @@
 //! gestures on the area: a long press selects the word under the finger
 //! (a drag after it extends by words), two handles (a stem and a round
 //! knob in the tint, subviews of the area kept in front) move the ends, a
-//! tap clears, and the edit menu (`UIEditMenuInteraction` from iOS 16,
+//! tap clears (a finger that scrolls a scroll view is no tap), and the edit menu (`UIEditMenuInteraction` from iOS 16,
 //! `UIMenuController` before) offers Copy and Select All, which the
 //! responder answers as the first responder (so do ⌘C and ⌘A on hardware
-//! keyboards). As in UIKit's text views, touch selection plays a selection
-//! haptic when the long press selects and each time a drag moves an end.
+//! keyboards). As in UIKit's text views, the long press plays an impact
+//! (the weight of a long press opening a menu) when it selects, and each
+//! time a drag moves an end a selection tick.
 //! Pointers (Mac Catalyst's mouse, iPad trackpads) select as on the
 //! desktops: a press and drag, double and triple clicks, Shift extends; no
 //! handles or haptics then.
@@ -51,9 +52,9 @@ use objc2_core_foundation::{CGFloat, CGPoint, CGRect, CGSize};
 use objc2_foundation::{NSArray, NSNumber, NSObject, NSString};
 use objc2_ui_kit::{
     UIGestureRecognizer, UIGestureRecognizerDelegate, UIGestureRecognizerState,
-    UILongPressGestureRecognizer, UIMenu, UIMenuElement, UIPanGestureRecognizer, UIResponder,
-    UIScrollView, UISelectionFeedbackGenerator, UITapGestureRecognizer, UITouch,
-    UITraitEnvironment, UIView,
+    UIImpactFeedbackGenerator, UIImpactFeedbackStyle, UILongPressGestureRecognizer, UIMenu,
+    UIMenuElement, UIPanGestureRecognizer, UIResponder, UIScrollView, UISelectionFeedbackGenerator,
+    UITapGestureRecognizer, UITouch, UITraitEnvironment, UIView,
 };
 
 use crate::{native_view::NshView, text_view::TextView};
@@ -306,6 +307,8 @@ pub(crate) struct AreaIvars {
     menu_shown: Cell<bool>,
     /// The haptic of touch selection, made on first use.
     feedback: RefCell<Option<Retained<UISelectionFeedbackGenerator>>>,
+    /// The haptic of a long press selecting, made on first use.
+    press_feedback: RefCell<Option<Retained<UIImpactFeedbackGenerator>>>,
     /// The area's node id.
     id: Cell<NodeId>,
     /// JS listens to the area's `onSelectionChange`.
@@ -395,7 +398,7 @@ define_class!(
                     self.redraw();
                 }
                 if selected {
-                    self.selection_haptic();
+                    self.press_haptic();
                 }
             } else if state == UIGestureRecognizerState::Changed {
                 let changed = {
@@ -574,15 +577,20 @@ define_class!(
         }
 
         /// Taps and pointer presses leave the presses of the views in the
-        /// area alone (long presses and handle drags take the touches).
+        /// area alone (long presses and handle drags take the touches). A
+        /// finger that scrolls a scroll view is no tap, as in a text view:
+        /// once the scroll begins, the tap fails and the selection stays.
         #[unsafe(method(gestureRecognizer:shouldRecognizeSimultaneouslyWithGestureRecognizer:))]
         fn should_recognize_simultaneously(
             &self,
             recognizer: &UIGestureRecognizer,
-            _other: &UIGestureRecognizer,
+            other: &UIGestureRecognizer,
         ) -> bool {
-            recognizer.isKindOfClass(UITapGestureRecognizer::class())
-                || self.is_pointer(recognizer)
+            if recognizer.isKindOfClass(UITapGestureRecognizer::class()) {
+                !is_scroll_pan(other)
+            } else {
+                self.is_pointer(recognizer)
+            }
         }
 
         /// Scroll views around wait for a handle's drag to fail.
@@ -616,12 +624,20 @@ define_class!(
             if long_press && !on_handle {
                 // A finger down that may become a selection: ready the
                 // haptic before the long press selects.
-                self.prepare_haptic();
+                self.prepare_press_haptic();
             }
             !(ours && on_handle)
         }
     }
 );
+
+/// Whether `recognizer` is a scroll view's drag.
+fn is_scroll_pan(recognizer: &UIGestureRecognizer) -> bool {
+    recognizer.isKindOfClass(UIPanGestureRecognizer::class())
+        && recognizer
+            .view()
+            .is_some_and(|v| v.isKindOfClass(UIScrollView::class()))
+}
 
 impl AreaResponder {
     /// Makes `area` a selectable view.
@@ -734,6 +750,11 @@ impl AreaResponder {
             // Selectable texts select alone again.
             update_texts(&area);
         }
+    }
+
+    /// Clears the selection (`ref.clearSelection()`).
+    pub(crate) fn clear(&self) {
+        self.clear_selection();
     }
 
     /// A mount batch was applied: while something is selected, the
@@ -862,10 +883,41 @@ impl AreaResponder {
             .clone()
     }
 
+    /// The haptic of a long press selecting, made on first use: a medium
+    /// impact, the weight of a long press opening a menu.
+    // `initWithStyle:` is deprecated from iOS 17.5 for
+    // `feedbackGeneratorForView:`, which iOS 15 lacks.
+    #[allow(deprecated)]
+    fn press_feedback(&self) -> Retained<UIImpactFeedbackGenerator> {
+        self.ivars()
+            .press_feedback
+            .borrow_mut()
+            .get_or_insert_with(|| {
+                UIImpactFeedbackGenerator::initWithStyle(
+                    self.mtm().alloc(),
+                    UIImpactFeedbackStyle::Medium,
+                )
+            })
+            .clone()
+    }
+
     /// Readies the Taptic Engine for [`Self::selection_haptic`]; UIKit
     /// keeps it ready for a few seconds.
     fn prepare_haptic(&self) {
         self.feedback().prepare();
+    }
+
+    /// Readies the Taptic Engine for [`Self::press_haptic`].
+    fn prepare_press_haptic(&self) {
+        self.press_feedback().prepare();
+    }
+
+    /// A long press selected: heavier than the ticks that follow, as in
+    /// UIKit's text views.
+    fn press_haptic(&self) {
+        self.press_feedback().impactOccurred();
+        // Ready for the ticks of the drag after it.
+        self.prepare_haptic();
     }
 
     /// Touch selection changed: the tick UIKit's text views play.

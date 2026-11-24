@@ -4,11 +4,12 @@
 // an OtpInput (its caret blinking while focused). Steps and results:
 // `docs/dev/performance.md` "Input controls".
 import { mount, Text, View } from "nsh";
+import { Window } from "nsh/desktop";
 import { NumberInput, OtpInput, Select, TimeField } from "nsh/base";
 
 const ITEMS = Array.from({ length: 10_000 }, (_, i) => ({ value: `item${i}`, title: `Item ${i}` }));
 
-mount(() => (
+mount(() => <Window id="main">{() => (
   <View style={{ padding: 20, gap: 12 }}>
     <Select
       items={ITEMS}
@@ -31,4 +32,4 @@ mount(() => (
       caretStyle={{ width: 2, height: 20, backgroundColor: "black" }}
     />
   </View>
-));
+)}</Window>);

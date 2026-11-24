@@ -112,14 +112,18 @@ Writes an app bundle:
 .nsh/out/<Name>.app/Contents/
   Info.plist
   MacOS/<Name>               the executable: a Rust app's own runner, built with its crate; nsh's release runner for TSX
+  PlugIns/<Ext>.appex        prebuilt app extensions listed in nsh.json `macos.extensions`, when set
   Resources/nsh/bundle.nshc  a TSX app, compiled
   Resources/nsh/assets/…     the assets it imports (a Rust crate's `assets!()` too)
   Resources/nsh/app.json     the window title, the app's appearance, its activation policy and nsh.json's window options
   Resources/AppIcon.icns     the icon, when nsh.json names one (converted with sips)
 ```
 
-The `.app` is signed ad hoc, so it runs on the Mac that built it. To distribute it, sign it with a Developer ID and
-notarize it. `--run` opens the app after packaging it.
+Without `--sign`, the `.app` is signed ad hoc so it runs on the Mac that built it. Pass `--sign <identity>` (for
+example `"Developer ID Application: …"`) to sign any nested extensions and the app with Hardened Runtime and a secure
+timestamp (`codesign --options runtime --timestamp`), ready to notarize and distribute; NSH verifies the signed bundle
+with `codesign --verify --deep --strict`. `--run` opens the app after packaging it. See
+[Packaging: macOS](./packaging.md#macos).
 
 The app logs its warnings, its errors and its `console.log` and `console.info` lines to the unified log, with its id
 as the subsystem: Console shows them, and so does `log stream --predicate 'subsystem == "com.example.notes"'`. Its
@@ -165,7 +169,7 @@ tooltip) and opens its window from there:
 
 ```tsx
 import { mount } from "nsh";
-import { currentWindow, Tray } from "nsh/desktop";
+import { currentWindow, Tray, Window } from "nsh/desktop";
 import icon from "./tray.svg";
 
 function App() {
@@ -177,7 +181,11 @@ function App() {
   return <Inbox />;
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 A menu bar app often offers to open at login: when the user turns that on, `Application.setLaunchAtLogin(true)` registers the app
@@ -285,6 +293,14 @@ Native components are registered with `AppView::register_component`; see
 [Native components](./native-components.md#registering-on-macos-rust). `set_ui_sets(sets)` sets the UI sets every
 engine serves: NSH's (`nsh_base::registry()`) and your crates' (`my_app::registry()`, which `#[native_module]`
 makes), so the TSX a view loads imports your Rust components and modules too.
+
+## Notifications from other code
+
+Remote notifications, and those other native code schedules, never reach `Notifications`' `press`: they go to the
+handler Rust code sets with `nsh_platform_apple::notifications::set_foreign_handler`, as on
+[iOS](./ios.md#notifications-from-other-code). The handler decides how they show while the app is in front and hears
+their presses. An embedded app gets them only when the embedding app hands it the notifications
+(`AppOptions::notifications`) and has no notification center delegate of its own.
 
 ## What differs on macOS
 

@@ -6,7 +6,6 @@
     "defaultSize": { "width": 300, "height": 280 },
     "resizable": false,
     "maximizable": false,
-    "closeOnPress": false,
-    "defaultVisible": false
+    "closeOnPress": false
   }
 }

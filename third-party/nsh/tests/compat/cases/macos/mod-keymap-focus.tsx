@@ -3,15 +3,17 @@
 // on macOS (`platform macos`), where Tab moves the keyboard focus between
 // views: with the focus on no control the binding hears Return; with it on a
 // view that takes presses, Return and Space press that view and the binding
-// stays quiet; Mod+Return still fires its own binding there.
+// stays quiet; Mod+Return still fires its own binding there. Both bind for
+// the whole app (`scope: "app"`): a binding in a `<Window>` defaults to that
+// window, and this case's hardware keyboard drives the app.
 import { keymap, Text, View, signal } from "nsh";
 
 function App() {
   const allows = signal(0);
   const denies = signal(0);
   const sends = signal(0);
-  keymap.bind("enter", () => allows.set(allows() + 1), { when: "notEditing" });
-  keymap.bind("mod+enter", () => sends.set(sends() + 1));
+  keymap.bind("enter", () => allows.set(allows() + 1), { when: "notEditing", scope: "app" });
+  keymap.bind("mod+enter", () => sends.set(sends() + 1), { scope: "app" });
   return (
     <View style={{ flex: 1, paddingTop: 64 }}>
       <Text>{`Allows: ${allows()} Denies: ${denies()} Sends: ${sends()}`}</Text>

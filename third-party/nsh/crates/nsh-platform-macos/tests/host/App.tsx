@@ -6,7 +6,7 @@
 // `nsh test --target macos` do (`App.test.tsx`).
 import { keymap, mount, signal, Text, View, WebView, type WebViewRef } from "nsh";
 import { Input } from "nsh/base";
-import { Menu } from "nsh/desktop";
+import { Menu, Window } from "nsh/desktop";
 
 // The page reports each input event's `isTrusted` with the field's value.
 const PAGE = `<!doctype html><body style="margin:0">
@@ -58,4 +58,4 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => <Window id="main">{App}</Window>);

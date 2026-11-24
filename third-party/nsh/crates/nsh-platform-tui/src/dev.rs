@@ -137,6 +137,7 @@ impl DevSession {
                 capabilities,
                 app_id,
                 window,
+                application,
                 limits,
             } => {
                 let result = (|| -> Result<_, String> {
@@ -155,6 +156,7 @@ impl DevSession {
                     let bundle = bundle
                         .with_app_id(app_id.as_deref())
                         .with_main_window(window.as_deref())
+                        .with_application(application.as_deref())
                         .with_capabilities_json(capabilities.as_deref())?;
                     Ok((bundle, Limits::development(limits.as_deref())?))
                 })();

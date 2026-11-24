@@ -53,6 +53,7 @@ fn due_date() -> impl IntoElement {
 ```tsx tabs
 import { mount, signal, Text } from "nsh";
 import { Calendar, type CalendarValue } from "nsh/base";
+import { Window } from "nsh/desktop";
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const WEEKDAYS = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"];
@@ -87,7 +88,11 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 `Calendar` 来自 [`nsh/base`](../modules/nsh-base.md)，在 Rust 中是 `nsh-base` crate。在 Rust 中，`calendar()` 创建一个日历，每个属性有一个设置方法（`.value(..)`、`.range(..)`、`.number_of_months(..)`），每个事件有一个监听方法（`.on_change(..)`）。它的值是 `Date`（`Date::Single`、`Date::Range`，由一个 `chrono::NaiveDate` 或一对日期构成），禁用的日期是 `Matcher`。

@@ -6,14 +6,18 @@
 //! action emits `select` with the app's id.
 //!
 //! The button is what VoiceOver reaches inside the element (named by
-//! `accessibilityLabel`): the app's content under it is drawn, not read
-//! twice.
+//! `accessibilityLabel`, with `accessibilityHint` describing its action):
+//! the app's content under it is drawn, not read twice.
 
-use std::{ptr::NonNull, rc::Rc};
+use std::{cell::Cell, ptr::NonNull, rc::Rc};
 
 use block2::RcBlock;
+use dispatch2::{DispatchQueue, MainThreadBound};
 use nsh_core::JsonValue;
-use objc2::{ClassType, MainThreadMarker, MainThreadOnly, define_class, msg_send, rc::Retained};
+use objc2::{
+    ClassType, MainThreadMarker, MainThreadOnly, define_class, msg_send,
+    rc::{Retained, Weak},
+};
 use objc2_foundation::{NSArray, NSObject, NSString};
 use objc2_ui_kit::{
     UIAction, UIButton, UIButtonType, UIControl, UIImage, UIMenu, UIMenuElement,
@@ -34,6 +38,8 @@ pub(crate) struct Entry {
     destructive: bool,
     items: Vec<Entry>,
     inline: bool,
+    /// Its actions are one choice (`UIMenuOptions.singleSelection`).
+    single_selection: bool,
 }
 
 /// How deep submenus nest: past it, an entry's `items` are dropped, so a
@@ -76,6 +82,7 @@ fn parse_level(items: &[JsonValue], depth: usize) -> Vec<Entry> {
                     Vec::new()
                 },
                 inline: flag("inline"),
+                single_selection: flag("singleSelection"),
             }
         })
         .collect()
@@ -93,6 +100,20 @@ fn attributes(entry: &Entry, disabled: bool) -> UIMenuElementAttributes {
     attributes
 }
 
+/// A submenu's or a section's options.
+fn options(entry: &Entry) -> UIMenuOptions {
+    let mut options = UIMenuOptions::empty();
+    if entry.inline {
+        options |= UIMenuOptions::DisplayInline;
+    }
+    // iOS 15, the deployment target: its actions are one choice, the one
+    // the app's `checked` turns on.
+    if entry.single_selection {
+        options |= UIMenuOptions::SingleSelection;
+    }
+    options
+}
+
 fn symbol(name: &str) -> Option<Retained<UIImage>> {
     if name.is_empty() {
         return None;
@@ -104,14 +125,26 @@ fn symbol(name: &str) -> Option<Retained<UIImage>> {
     image
 }
 
-/// What a chosen action does with its id.
-pub(crate) type Choose = Rc<dyn Fn(String)>;
+/// What a chosen action does with its id, told whether the action is one
+/// of a single-selection menu's own.
+pub(crate) type Choose = Rc<dyn Fn(String, bool)>;
 
 /// The menu's elements for `entries`; each action passes its id to
 /// `choose`.
 pub(crate) fn elements(
     entries: &[Entry],
     disabled: bool,
+    choose: &Choose,
+    mtm: MainThreadMarker,
+) -> Retained<NSArray<UIMenuElement>> {
+    level(entries, disabled, false, choose, mtm)
+}
+
+/// One menu's elements; `single` when that menu is a single selection.
+fn level(
+    entries: &[Entry],
+    disabled: bool,
+    single: bool,
     choose: &Choose,
     mtm: MainThreadMarker,
 ) -> Retained<NSArray<UIMenuElement>> {
@@ -122,7 +155,7 @@ pub(crate) fn elements(
             if entry.items.is_empty() {
                 let id = entry.id.clone();
                 let choose = choose.clone();
-                let handler = RcBlock::new(move |_: NonNull<UIAction>| choose(id.clone()));
+                let handler = RcBlock::new(move |_: NonNull<UIAction>| choose(id.clone(), single));
                 // SAFETY: the handler is a block UIKit copies and runs on
                 // the main thread once the menu closes with this action.
                 let action = unsafe {
@@ -144,17 +177,18 @@ pub(crate) fn elements(
                 }
                 Retained::into_super(action)
             } else {
-                let options = if entry.inline {
-                    UIMenuOptions::DisplayInline
-                } else {
-                    UIMenuOptions::empty()
-                };
-                let children = elements(&entry.items, disabled || entry.disabled, choose, mtm);
+                let children = level(
+                    &entry.items,
+                    disabled || entry.disabled,
+                    entry.single_selection,
+                    choose,
+                    mtm,
+                );
                 let menu = UIMenu::menuWithTitle_image_identifier_options_children(
                     &NSString::from_str(&entry.label),
                     image.as_deref(),
                     None,
-                    options,
+                    options(entry),
                     &children,
                     mtm,
                 );
@@ -230,8 +264,11 @@ fn lists_only<T>(listed: &[*const T], me: *const T) -> bool {
 
 struct SystemMenuButton {
     button: Retained<NshMenuButton>,
-    entries: Vec<Entry>,
+    entries: Rc<Vec<Entry>>,
     title: String,
+    /// How many menus the props made: a menu replaced since is never made
+    /// again ([`set_menu`]).
+    made: Rc<Cell<u64>>,
     context: ComponentContext,
     mtm: MainThreadMarker,
 }
@@ -239,13 +276,53 @@ struct SystemMenuButton {
 impl SystemMenuButton {
     /// Gives the button the menu of its entries and title.
     fn make_menu(&self) {
-        let context = self.context.clone();
-        let choose: Choose = Rc::new(move |id| context.emit("select", JsonValue::from(id)));
-        let children = elements(&self.entries, false, &choose, self.mtm);
-        let menu =
-            UIMenu::menuWithTitle_children(&NSString::from_str(&self.title), &children, self.mtm);
-        self.button.setMenu(Some(&menu));
+        self.made.set(self.made.get() + 1);
+        let source = Source {
+            entries: self.entries.clone(),
+            title: Rc::from(self.title.as_str()),
+            made: self.made.clone(),
+            context: self.context.clone(),
+        };
+        set_menu(&self.button, source, self.mtm);
     }
+}
+
+/// What a button's menu is made of.
+#[derive(Clone)]
+struct Source {
+    entries: Rc<Vec<Entry>>,
+    title: Rc<str>,
+    made: Rc<Cell<u64>>,
+    context: ComponentContext,
+}
+
+/// Gives `button` the menu of `source`. UIKit moves a single-selection
+/// menu's check itself and the button keeps its menu, so a choice there
+/// makes the menu again, which shows the app's checks; on the main queue's
+/// next turn (the chosen action belongs to the menu it replaces), and only
+/// while no newer items made another.
+fn set_menu(button: &NshMenuButton, source: Source, mtm: MainThreadMarker) {
+    let made = source.made.get();
+    let again = (Weak::new(button), source.clone());
+    let context = source.context.clone();
+    let choose: Choose = Rc::new(move |id, single| {
+        context.emit("select", JsonValue::from(id));
+        if single {
+            let again = MainThreadBound::new(again.clone(), mtm);
+            DispatchQueue::main().exec_async(move || {
+                let mtm = MainThreadMarker::new().expect("the main queue");
+                let (button, source) = again.into_inner(mtm);
+                if source.made.get() == made
+                    && let Some(button) = button.load()
+                {
+                    set_menu(&button, source, mtm);
+                }
+            });
+        }
+    });
+    let children = elements(&source.entries, false, &choose, mtm);
+    let menu = UIMenu::menuWithTitle_children(&NSString::from_str(&source.title), &children, mtm);
+    button.setMenu(Some(&menu));
 }
 
 impl NativeComponent for SystemMenuButton {
@@ -257,8 +334,8 @@ impl NativeComponent for SystemMenuButton {
         match name {
             "items" => {
                 let entries = parse_items(value.and_then(JsonValue::as_array).map_or(&[], |v| v));
-                if entries != self.entries {
-                    self.entries = entries;
+                if entries != *self.entries {
+                    self.entries = Rc::new(entries);
                     self.make_menu();
                 }
             }
@@ -283,6 +360,12 @@ impl NativeComponent for SystemMenuButton {
                 let () =
                     unsafe { msg_send![&*self.button, setAccessibilityLabel: label.as_deref()] };
             }
+            "accessibilityHint" => {
+                let hint = value.and_then(JsonValue::as_str).map(NSString::from_str);
+                // SAFETY: `accessibilityHint` is UIAccessibility's NSString
+                // property, which every NSObject has. Nil clears the hint.
+                let () = unsafe { msg_send![&*self.button, setAccessibilityHint: hint.as_deref()] };
+            }
             _ => {}
         }
     }
@@ -301,8 +384,9 @@ pub(crate) fn factory() -> ComponentFactory {
         button.setShowsMenuAsPrimaryAction(true);
         let component = SystemMenuButton {
             button,
-            entries: Vec::new(),
+            entries: Rc::new(Vec::new()),
             title: String::new(),
+            made: Rc::new(Cell::new(0)),
             context,
             mtm,
         };
@@ -313,9 +397,10 @@ pub(crate) fn factory() -> ComponentFactory {
 
 #[cfg(test)]
 mod tests {
+    use objc2_ui_kit::UIMenuOptions;
     use serde_json::json;
 
-    use super::{Entry, MAX_DEPTH, lists_only, parse_items};
+    use super::{Entry, MAX_DEPTH, lists_only, options, parse_items};
 
     #[test]
     fn only_the_buttons_own_list_is_cleared_on_removal() {
@@ -367,5 +452,28 @@ mod tests {
                 ..Entry::default()
             }
         );
+    }
+
+    /// A section or submenu marked as one choice is a single-selection
+    /// menu; the others keep independent checks.
+    #[test]
+    fn single_selection_menus_are_one_choice() {
+        let entries = parse_items(&[
+            json!({ "id": "", "label": "Sort by", "inline": true, "singleSelection": true, "items": [
+                { "id": "name", "label": "Name", "checked": true },
+            ] }),
+            json!({ "id": "", "label": "Repeat", "singleSelection": true, "items": [
+                { "id": "daily", "label": "Daily", "checked": false },
+            ] }),
+            json!({ "id": "", "label": "Show", "items": [
+                { "id": "hidden", "label": "Hidden files", "checked": true },
+            ] }),
+        ]);
+        assert_eq!(
+            options(&entries[0]),
+            UIMenuOptions::DisplayInline | UIMenuOptions::SingleSelection
+        );
+        assert_eq!(options(&entries[1]), UIMenuOptions::SingleSelection);
+        assert_eq!(options(&entries[2]), UIMenuOptions::empty());
     }
 }

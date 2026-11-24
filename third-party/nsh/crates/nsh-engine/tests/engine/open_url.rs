@@ -1,7 +1,9 @@
 //! `openUrl` of `nsh/device`: the platform opens what the embedding app's
 //! URL handler does not take, what the handler takes never reaches the
 //! platform, and refused URLs and capabilities reject; a `TextView` with
-//! `links="open"` opens its links, and a `Link` its `href`.
+//! `links="open"` opens its links, and a `Link` its `href`. And
+//! `nsh/mobile`'s `AppSettings.open`: sent to a platform that has the app's
+//! settings page, rejected at once elsewhere.
 
 use std::time::Duration;
 
@@ -412,4 +414,92 @@ fn a_rust_root_opens_urls_under_its_declared_capabilities() {
     let (text, urls) = opened_by(Root::of::<Opener>());
     assert_eq!(text, "web true share true");
     assert_eq!(urls, ["https://example.com/a", "smb://server/share"]);
+}
+
+const SETTINGS_APP: &str = r#"import { mount, signal, Text } from "nsh";
+import { AppSettings } from "nsh/mobile";
+
+const log = signal<string[]>([]);
+const say = (s: string) => log.set([...log(), s]);
+
+AppSettings.available().then((yes: boolean) => say(`available ${yes}`));
+const pending = AppSettings.open();
+say(`promise ${typeof pending.then}`);
+pending.then(
+  ({ opened }) => say(`opened ${opened}`),
+  (e: Error & { code?: string }) => say(`rejected ${e.code}`),
+);
+
+mount(() => <Text>{log().join(" | ")}</Text>);
+"#;
+
+/// Runs [`SETTINGS_APP`] on a platform that has the app's settings page or
+/// not, answering each request with `opened`, until it shows `last`.
+/// Returns the text and how many requests reached the platform.
+fn open_settings(app_settings: bool, opened: bool, last: &str) -> (String, usize) {
+    let (tx, rx) = crossbeam_channel::unbounded();
+    let config = EngineConfig {
+        viewport: Size::new(px(400.0), px(600.0)),
+        environment: nsh_engine::Environment {
+            app_settings,
+            ..Default::default()
+        },
+        ..EngineConfig::new(bundle(SETTINGS_APP))
+    };
+    let engine = Engine::start(config, || ApproxTextEngine, ChannelSink(tx)).unwrap();
+    let mut text = String::new();
+    let mut requests = 0;
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        let Ok(batch) = rx.recv_timeout(Duration::from_millis(100)) else {
+            continue;
+        };
+        for item in batch.items {
+            match item {
+                MountItem::Text { text: shown, .. } => text = shown.text.to_string(),
+                MountItem::Command {
+                    id,
+                    command: Command::OpenAppSettings { id: request },
+                } => {
+                    assert_eq!(id, ROOT_ID);
+                    requests += 1;
+                    engine.control().dispatch_event(
+                        ROOT_ID,
+                        EventKind::OpenAppSettings,
+                        EventPayload::Map(vec![
+                            ("id", PayloadValue::Number(f64::from(request))),
+                            ("opened", PayloadValue::Bool(opened)),
+                        ]),
+                    );
+                }
+                _ => {}
+            }
+        }
+        if text.contains(last) && text.contains("available") {
+            return (text, requests);
+        }
+    }
+    panic!("no text with {last:?}; last: {text}");
+}
+
+#[test]
+fn the_platform_opens_the_apps_settings_page() {
+    let (text, requests) = open_settings(true, true, "opened true");
+    assert_eq!(requests, 1);
+    assert!(text.contains("promise function"), "{text}");
+    assert!(text.contains("available true"), "{text}");
+
+    // The system did not open it: false, never a rejection.
+    let (text, _) = open_settings(true, false, "opened false");
+    assert!(!text.contains("rejected"), "{text}");
+}
+
+#[test]
+fn the_apps_settings_page_rejects_at_once_where_the_platform_has_none() {
+    let (text, requests) =
+        open_settings(false, true, "rejected ERR_FEATURE_UNAVAILABLE_ON_PLATFORM");
+    assert_eq!(requests, 0, "nothing reaches the platform");
+    assert!(text.contains("promise function"), "{text}");
+    assert!(text.contains("available false"), "{text}");
+    assert!(!text.contains("opened"), "{text}");
 }

@@ -716,11 +716,11 @@ fn offscreen_children(
 fn draw_children(cx: &mut DrawCx<'_>, view: &NshView, base: Mat4) {
     view.with_children(|children| {
         for child in children {
-            let origin = {
+            let place = {
                 let s = child.state();
-                view.state().child_origin(s.frame, s.shift)
+                view.state().child_place(s.frame, s.shift)
             };
-            crate::render::draw_view(cx, child, base, origin);
+            crate::render::draw_view(cx, child, base, place);
         }
     });
 }

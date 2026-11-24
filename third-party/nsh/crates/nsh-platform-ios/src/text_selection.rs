@@ -228,8 +228,9 @@ impl TextView {
         self.ivars().selection.range.get() == Some((0, self.text_length()))
     }
 
-    /// The selected text, without the placeholders of attachments and
-    /// hidden runs (`None` when nothing is left of it).
+    /// The selected text as a copy gives it
+    /// ([`nsh_core::AttributedText::copied_text`]; `None` when nothing is
+    /// left of it).
     pub(crate) fn selected_string(&self) -> Option<String> {
         let (a, b) = self.ivars().selection.range.get().filter(|(a, b)| a < b)?;
         let text = self.ivars().text.borrow();

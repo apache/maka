@@ -336,38 +336,6 @@ fn a_scroll_view_whose_content_overflows_shows_its_bar() {
 }
 
 #[component]
-fn Content() -> impl IntoElement {
-    const PNG: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAACCAIAAAAW4yFwAAAADUlEQVR4nGP4zwAC/wEIAAH/2ZC7NQAAAABJRU5ErkJggg==";
-    view()
-        .flex_1()
-        .child(
-            image(PNG)
-                .label("Chart")
-                .w(px(80.0))
-                .h(px(16.0))
-                .bg(nsh_core::color::rgb(0x123456)),
-        )
-        .child(image(PNG).w(px(80.0)).h(px(16.0)))
-        .child(text("ready"))
-}
-
-#[test]
-fn images_keep_their_box_blank() {
-    let (mut view, rx) = surface();
-    let mut terminal = Terminal::new(TestBackend::new(12, 4)).unwrap();
-    view.load(App::Rust(Root::new::<Content>(|| ()))).unwrap();
-    draw_until(&mut view, &mut terminal, &rx, "ready");
-    let buffer = terminal.backend().buffer();
-    let drawn: String = buffer.content.iter().map(|cell| cell.symbol()).collect();
-    assert_eq!(drawn.replace(' ', ""), "ready", "no placeholder: {drawn:?}");
-    // A row each, blank: the text is below them, and the first one's fill
-    // is not drawn.
-    let row: String = (0..12).map(|x| buffer[(x, 2)].symbol()).collect();
-    assert!(row.starts_with("ready"), "{drawn:?}");
-    assert!(buffer.content.iter().all(|cell| cell.bg == Color::Reset));
-}
-
-#[component]
 fn Small() -> impl IntoElement {
     let bordered = || {
         view()
@@ -970,4 +938,84 @@ fn a_padded_popup_triggers_arrow_stands_in_its_middle() {
         first.chars().nth(arrow + 1) == Some(' '),
         "and after it: {first:?}"
     );
+}
+
+/// Rows parted by a line on their top, filled under the pointer (a
+/// list of links), in a card.
+#[component]
+fn HoveredRows() -> impl IntoElement {
+    // A link: a control around the row its look is on.
+    let row = |label: &'static str, first: bool| {
+        view().on_press(|_: &()| {}).child(
+            view()
+                .hover(|s| s.bg(nsh_core::color::rgb(0xef4444)))
+                .flex_row()
+                .px(px(16.0))
+                .py(px(6.0))
+                .border_t(px(if first { 0.0 } else { 1.0 }))
+                .border_color(nsh_core::color::rgb(0x444444))
+                .child(
+                    view()
+                        .flex_1()
+                        .child(text(label))
+                        .child(text(format!("{label} note"))),
+                ),
+        )
+    };
+    view().flex_1().child(
+        view()
+            .border_1()
+            .border_color(nsh_core::color::rgb(0x444444))
+            .p(px(12.0))
+            .child(row("One", true))
+            .child(row("Two", false))
+            .child(row("Three", false)),
+    )
+}
+
+#[test]
+fn a_rows_hover_fill_moves_nothing() {
+    let (mut view, rx) = super::dock::surfaces();
+    let mut terminal = Terminal::new(TestBackend::new(40, 16)).unwrap();
+    view.load(App::Rust(Root::new::<HoveredRows>(|| ())))
+        .unwrap();
+    draw_until(&mut view, &mut terminal, &rx, "Three note");
+    let find = |terminal: &Terminal<TestBackend>, word: &str| super::dock::find(terminal, word);
+    let words = ["Two", "Two note", "Three", "Three note"];
+    let before = words.map(|w| find(&terminal, w));
+    let (x, y) = find(&terminal, "Two note").unwrap();
+    let resting = terminal.backend().buffer()[(x, y)].bg;
+    view.handle(super::app::mouse(nsh_platform_tui::MouseKind::Move, x, y));
+    super::app::draw_until_true(
+        &mut view,
+        &mut terminal,
+        &rx,
+        "the hover's band",
+        |terminal| {
+            find(terminal, "Two note")
+                .is_some_and(|(x, y)| terminal.backend().buffer()[(x, y)].bg != resting)
+        },
+    );
+    // Whatever the hover commits after lands, and nothing more comes: a
+    // row that moved off the pointer would lose its hover and come back,
+    // over and over.
+    let mut settled = false;
+    for _ in 0..20 {
+        if rx
+            .recv_timeout(std::time::Duration::from_millis(300))
+            .is_err()
+        {
+            settled = true;
+            break;
+        }
+        terminal
+            .draw(|frame| view.render(frame, frame.area()))
+            .unwrap();
+    }
+    assert!(settled, "the hover keeps laying the rows out");
+    terminal
+        .draw(|frame| view.render(frame, frame.area()))
+        .unwrap();
+    // The band shows; the line over the row and the rows stay.
+    assert_eq!(before, words.map(|w| find(&terminal, w)));
 }

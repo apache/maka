@@ -133,7 +133,7 @@ view()
 </View>
 ```
 
-任何元素上的 `disabled`（Rust 中的 `.disabled(..)`）都会应用 `disabled:` 类（`.disabled_style(..)`），并把它的按下处理器从挂载内容中移除，因此也不会显示按下反馈：
+任何元素上的 `disabled`（Rust 中的 `.disabled(..)`）都会应用 `disabled:` 类（`.disabled_style(..)`），并移除按下事件处理器。禁用期间，元素会跳过自身的 `hover:`、`active:`、`focus:`、`focus-visible:` 和 `focus-within:` 类。`checked:` 等表示控件取值的类仍随控件的值变化。
 
 ```rust tabs
 view()
@@ -166,7 +166,7 @@ view()
 - **过渡按属性组生效**：`transition` 对颜色、不透明度、阴影和变换做动画，`transition-all` 还包括圆角和边框宽度；滤镜、背景滤镜、渐变和布局会直接取新值。
 - **`focus-visible:` 与浏览器的 `:focus-visible` 一致**：在焦点显示时应用。Tab、组内的方向键和快捷键会显示焦点；按压或轻点不会；应用移动的焦点（`focus()`、日历或对话框打开时）在按键之后显示，在按压之后不显示；文本输入框获得焦点时总是显示。`focus:` 在元素获得焦点时就会应用，因此键盘的焦点环写在 `focus-visible:` 上。组件自己保留焦点时，按键作用的那一行（树的行、列表高亮的选项）在作为这一行时应用 `focus:`，组件的焦点显示时还应用 `focus-visible:`。
 - **状态背景色显示在渐变之上。** 在 CSS 中渐变会盖住 `background-color`，因此 `bg-linear-*` 表面上的 `active:bg-*` 永远看不到；在 NSH 中，来自 `active:`、`hover:`、`focus:` 或 `group-*:` 的背景色会在该状态期间替换渐变（除非该状态设置了自己的渐变，例如 `active:from-*`）。`activeStyle` 等状态样式以及动画背景色也是如此。
-- **文字与触摸的设置都是样式键**：`line-clamp-*` 设置 `numberOfLines`，`text-ellipsis` 和 `text-clip` 设置 `textOverflow`，`truncate` 两者都设置，`select-*` 设置 `userSelect`，`pointer-events-*` 设置 `pointerEvents`，因此它们可以用在状态变体中，并且和所有类一样会被内联 `style` 覆盖；`caret-*`、`placeholder:text-*` 和 `selection:bg-*` 同样设置 `caretColor`、`placeholderColor` 和 `selectionColor` 样式。在 Rust 中它们是 `Styled` 方法（`.number_of_lines(..)`、`.truncate()`、`.text_overflow(..)`、`.select_text()`、`.pointer_events(..)` 等）。`whitespace-nowrap` 以类的形式让文本保持一行。`object-*` 设置图片和视频的 `objectFit` 与 `objectPosition` 样式，样式中的同名键会像其他样式一样替换它们。
+- **文字与触摸的设置都是样式键**：`line-clamp-*` 设置 `numberOfLines`，`text-ellipsis` 和 `text-clip` 设置 `textOverflow`，`truncate` 两者都设置，`select-*` 设置 `userSelect`，`pointer-events-*` 设置 `pointerEvents`，因此它们可以用在状态变体中，并且和所有类一样会被内联 `style` 覆盖；`caret-*`、`placeholder:text-*` 和 `selection:bg-*` 同样设置 `caretColor`、`placeholderColor` 和 `selectionColor` 样式。在 Rust 中它们是 `Styled` 方法（`.number_of_lines(..)`、`.truncate()`、`.text_overflow(..)`、`.select_text()`、`.pointer_events(..)` 等）。`whitespace-nowrap`（`.whitespace_nowrap()`）让文本保持一行，`text-pretty`（`.text_pretty()`）避免末行孤字；它们没有样式键，设在视图上会作用到其中的文本。`object-*` 设置图片和视频的 `objectFit` 与 `objectPosition` 样式，样式中的同名键会像其他样式一样替换它们。
 - **支持的范围**：Tailwind 4 中在原生层有意义的工具类和变体。`peer-*` 变体、伪元素（`before:`、`after:`）和任意属性（`[mask-type:luminance]`）会报告为未知类；NSH 在原生层没有对应含义的工具类也都是未知类，因此一个类不会有与浏览器不同的含义。渲染提示类（`antialiased`、`will-change-transform`、`appearance-none`、`box-border` 等）会被接受，但不改变任何东西。
 
 其余部分都与 Tailwind 4 文档一致：调色板、透明度修饰符（`bg-black/40`）、任意值（`bg-[#34c759]`、`w-[72px]`、`grid-cols-[1fr_2fr]`；`p`、`px`、`py`、`pt`、`pr`、`pb`、`pl` 和 `m` 系列工具类还接受环境变量，`pt-[env(safe-area-inset-top)]`、`pb-[calc(env(keyboard-inset-height)+49px)]`，见[安全区域](../elements/safe-area.md)和[键盘](../elements/keyboard.md)）、分数（`w-1/2`、`translate-x-1/2`）、阴影和 ring、渐变（`bg-linear-to-r`、`bg-radial`、`bg-conic` 配合 `from-` / `via-` / `to-`，或直接写出的渐变 `bg-[linear-gradient(45deg,#f00,#00f)]`，也可带 Tailwind 的 `image:` 提示）、滤镜、`backdrop-blur-*`、`mix-blend-*`、变换、`transition-*` 和 `duration-*`、`animate-spin` / `ping` / `pulse` / `bounce`，以及网格，每一项在 Rust 中都有对应的类型化方法。[滤镜与混合](./styling.md#滤镜与混合) 的平台限制对类名同样适用。

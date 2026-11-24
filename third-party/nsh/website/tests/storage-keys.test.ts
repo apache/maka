@@ -22,7 +22,9 @@ test('storage round-trips arbitrary string keys and clears only its namespace', 
     setItem: (key: string, value: string) => { kept.set(key, value); },
     removeItem: (key: string) => { kept.delete(key); },
   };
-  const player = { str: (text: string) => text, storage: (f: () => unknown) => f() };
+  // `storage_load` also starts following other tabs' changes (`followStorage`),
+  // which needs a window: nsh.test.mjs covers it.
+  const player = { str: (text: string) => text, storage: (f: () => unknown) => f(), followStorage: () => {} };
   const storage = makeImports.call(player, localStorage);
   const prefix = 'nsh:/app/:';
   const entries = new Map(['__proto__', 'constructor', 'toString', '', '键😀'].map((key) => [key, `value:${key}`]));

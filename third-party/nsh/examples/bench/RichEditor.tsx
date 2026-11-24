@@ -1,6 +1,7 @@
 // Retained-row update benchmark: 1,000 paragraphs of 80 ASCII characters.
 // Each press inserts or removes one character in the first paragraph.
 import { mount, Text, View } from "nsh";
+import { Window } from "nsh/desktop";
 import {
   Button, chain, createRichEditor, insertText, RichEditor, setTextSelection, StarterKit,
 } from "nsh/base";
@@ -28,4 +29,4 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => <Window id="main">{App}</Window>);

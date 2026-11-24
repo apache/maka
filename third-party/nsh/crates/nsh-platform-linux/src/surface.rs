@@ -174,8 +174,9 @@ pub(crate) struct Surface {
     pub(crate) host_tokens: RefCell<Option<nsh_engine::Tokens>>,
     /// JS asked for a display frame.
     js_frame: Cell<bool>,
-    /// The tick callback runs.
-    ticking: Cell<bool>,
+    /// The view whose frame clock runs the tick callback
+    /// ([`crate::window::tick_root`]), while it runs.
+    ticking: RefCell<Option<NshView>>,
     /// Frame callbacks of the platform's own animations (transitions,
     /// screen transitions, scroll glides), called on every frame until
     /// they are done, each with its deadline ([`Next::At`]; a new one's is
@@ -298,7 +299,7 @@ impl Surface {
             host_environment: Cell::default(),
             host_tokens: RefCell::new(None),
             js_frame: Cell::new(false),
-            ticking: Cell::new(false),
+            ticking: RefCell::new(None),
             frame_callbacks: RefCell::default(),
             last_frame: Cell::new(0.0),
             last_run: Cell::new(0.0),
@@ -361,11 +362,26 @@ impl Surface {
         }
         let fps = Rc::new(crate::fps::Fps::new());
         crate::fps::install(self.root.upcast_ref(), &fps);
+        crate::fps::start_logging(&fps);
         if let Some(overlay) = self.fps_overlay.borrow().upgrade() {
             crate::fps::show(&overlay, &fps);
         }
         self.control(|c| c.set_perf_monitor(Some(fps.monitor.clone())));
         *self.fps.borrow_mut() = Some(fps);
+        crate::window::fps_follow_any(self);
+    }
+
+    /// The performance monitor measures and shows in app `<Window>`
+    /// `window` (content in `overlay`), or the host window for `None`.
+    pub(crate) fn fps_follow(&self, window: Option<(&gtk::Widget, &gtk::Overlay)>) {
+        if let Some(fps) = self.fps.borrow().as_ref() {
+            crate::fps::follow(fps, window, self.fps_overlay.borrow().upgrade());
+        }
+    }
+
+    /// The app `<Window>` the performance monitor follows, if any.
+    pub(crate) fn fps_window(&self) -> Option<gtk::Widget> {
+        self.fps.borrow().as_ref().and_then(|f| f.window())
     }
 
     #[cfg(test)]
@@ -695,13 +711,8 @@ impl Surface {
             s.frame.size.width.0 = width;
             s.frame.size.height.0 = height;
         }
-        let mut env = self.environment.get();
-        env.window = nsh_core::Size::new(nsh_core::Points(width), nsh_core::Points(height));
-        self.environment.set(env);
-        self.control(|c| {
-            c.resize(Size::new(Points(width), Points(height)));
-            c.set_environment(env);
-        });
+        self.control(|c| c.resize(Size::new(Points(width), Points(height))));
+        crate::system::window_environment(self);
         crate::navigation::surface_resized(self, width, height);
         crate::system::surface_resized(self, width, height);
         crate::window::main_resized(self);
@@ -842,6 +853,15 @@ impl Surface {
             || !self.frame_callbacks.borrow().is_empty()
     }
 
+    /// The view ticking now, else the root: where the tick callback stays
+    /// while the window list is held ([`crate::window::tick_root`]).
+    pub(crate) fn ticking_or_root(&self) -> NshView {
+        self.ticking
+            .borrow()
+            .clone()
+            .unwrap_or_else(|| self.root.clone())
+    }
+
     /// Runs the tick callback while animations run, frame callbacks are
     /// left or JS wants a frame, and keeps their deadlines
     /// ([`Surface::keep_deadline`]).
@@ -850,14 +870,23 @@ impl Surface {
             return;
         }
         self.keep_deadline();
-        if self.ticking.replace(true) {
+        // The clock of a window that shows: a hidden window's (the main
+        // window under Window Model v2 while only the app's own show)
+        // never ticks, which left animations to the deadline timer.
+        let root = crate::window::tick_root(self);
+        if self.ticking.borrow().as_ref() == Some(&root) {
             return;
         }
+        *self.ticking.borrow_mut() = Some(root.clone());
         let weak = Rc::downgrade(self);
-        self.root.add_tick_callback(move |_, clock| {
+        root.add_tick_callback(move |view, clock| {
             let Some(surface) = weak.upgrade() else {
                 return glib::ControlFlow::Break;
             };
+            // Another window's clock took over.
+            if surface.ticking.borrow().as_ref() != Some(view) {
+                return glib::ControlFlow::Break;
+            }
             // GDK frame times are microseconds; the animation graph runs on
             // seconds. Never before a frame a deadline ran meanwhile.
             let now = clock.frame_time() as f64 / 1_000_000.0;
@@ -865,7 +894,7 @@ impl Surface {
             if surface.wants_frames() {
                 glib::ControlFlow::Continue
             } else {
-                surface.ticking.set(false);
+                *surface.ticking.borrow_mut() = None;
                 glib::ControlFlow::Break
             }
         });
@@ -940,6 +969,10 @@ impl Surface {
         self.last_frame.set(now);
         self.last_run.set(monotonic());
         if self.anim.borrow().animating() {
+            // Frame clock frames and deadline runs both step here, so it
+            // keeps the plain tick, without the first frame's stall
+            // compensation (`Animator::tick_frame`) the other backends give
+            // their display frames.
             self.anim.borrow_mut().tick(now);
             self.write_animations();
         }

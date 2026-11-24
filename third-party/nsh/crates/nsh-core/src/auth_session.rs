@@ -13,11 +13,16 @@
 //!   callback comes back as a link of a scheme the app claims (`nsh.json`
 //!   `schemes`), which the core takes as the session's result; the user
 //!   coming back to the app without one cancels it.
-//! - Elsewhere (desktops, the web, tests): the system browser through
-//!   [`crate::element::open_url`], and the callback comes back as a link of
-//!   a scheme the app claims, as on Android. Nothing tells the core the user
+//! - The macOS, Windows and Linux backends, and tests: the system
+//!   browser through [`crate::element::open_url`], and the callback comes
+//!   back as a link of a scheme the app claims, as on Android. Nothing tells the core the user
 //!   gave up there, so such a session ends only with its callback or a
 //!   later session; without a claimed scheme it fails at once.
+//! - Where no link of the app's schemes reaches it
+//!   ([`Environment::scheme_links()`](crate::platform::Environment::scheme_links()):
+//!   the web, whose page hears only its own address, and the GPUI and
+//!   terminal backends), nothing could bring the callback back, and the
+//!   session fails at once, claimed scheme or not.
 //!
 //! The flow: the call checks the request ([`AuthSessionRequest::check`])
 //! and the app's `openUrl` capability for the page's URL. Where the
@@ -180,7 +185,8 @@ impl AuthSessionError {
     }
 
     /// Nothing here shows the page or brings its callback back (no
-    /// in-app session, and the callback scheme is not one the app claims).
+    /// in-app session, and the callback scheme is not one the app claims
+    /// or the platform hands the app no links of its schemes).
     pub fn unavailable(message: impl Into<String>) -> Self {
         Self {
             code: Some(crate::element::codes::UNAVAILABLE.into()),

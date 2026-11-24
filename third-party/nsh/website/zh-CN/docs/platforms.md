@@ -27,9 +27,10 @@ NSH 运行在手机、桌面、终端和网页上：iOS、Android、macOS、Wind
 - **[GPUI](./gpui.md)** 用姊妹项目 GPUI Kit 所基于的 [GPUI](https://gpui-kit.com) 绘制应用，在 macOS、Windows 和 Linux 上表现一致：它是嵌入 GPUI 和 GPUI Kit 应用的后端，这些应用把 `AppView` 放进自己的元素树。独立的桌面应用用各操作系统自己的后端（AppKit、Win32、GTK 4）运行和打包。
 - **[TUI](./tui.md)** 把应用绘制在终端的字符 Cell 网格上，使用终端自己的颜色，以键盘为主，也支持鼠标：`nsh run --target tui` 在当前终端中运行应用，ratatui 应用用 `AppView` 嵌入应用。
 - **[Web](./web.md)** 把应用渲染成浏览器页面里的 HTML：`nsh package --target web` 发布一个静态网站，可部署到任意 Web 服务器或 CDN，Rust 应用的引擎和 crate 编译为 WebAssembly；你自己的网页可以用 `createPlayer` 或 iframe 嵌入应用。本站的在线示例和 [Playground](/playground) 也由它运行。
-- **Mac Catalyst** 在 Mac 上用 iPhone 尺寸的窗口（390×844）运行 iOS 后端，用于开发。用 `--target catalyst` 选择它，快速查看应用在手机上的样子。
 
 社区还在同一个引擎上构建了更多平台，每个平台有自己的仓库，`nsh` 命令行按名字运行它们：[`nsh-platform-miniprogram`](https://github.com/huacnlee/nsh-platform-miniprogram) 在微信小程序中运行应用（`--target miniprogram`）。[构建平台](./platform-extensions.md)介绍了如何构建一个平台。
+
+**开发工具：**Mac Catalyst 在 Mac 上用 iPhone 尺寸的窗口（390×844）运行 iOS 后端（`--target catalyst`），仅在确有需要时使用：检查 Catalyst 特有的行为，或在 Mac Catalyst 应用中嵌入 NSH。Mac 应用请用默认的 `macos`；要看应用在手机上的效果，请用 `--target ios`。
 
 ## 开发与打包
 
@@ -50,6 +51,8 @@ nsh package App.tsx --target macos
 每个桌面操作系统用自己的后端打包应用，后端只为运行它的机器构建：Mac 应用在 Mac 上打包，Windows 应用在 Windows 上打包，Linux 应用在 Linux 上打包。各目标的输出、签名和图标见[打包](./packaging.md)。
 
 ## 嵌入原生应用
+
+各平台的分步指引见[嵌入现有应用](./embedding.md)。
 
 | 平台 | 宿主视图 | 运行 | 发布形式 | 宿主语言 |
 |---|---|---|---|---|
@@ -105,7 +108,7 @@ extern "system" fn Java_com_example_app_RuntimeBridge_configure(
 应用的大部分代码不需要判断平台：元素、样式、布局和模块在各处行为一致。平台确实不同的地方，NSH 给它一个固定的位置（[平台特定代码](./platform-specific.md)）：
 
 - **环境说明应用运行在哪里**：Rust 里是 `os()`、`idiom()` 和 `is_desktop()`（`nsh_core::prelude`），TSX 里是 `nsh` 的 `platform.os`、`platform.idiom`、`platform.desktop` 和 `platform.select`。操作系统是 iOS、Android、macOS、Windows、Linux 或 Web；在终端里，idiom 为 `"terminal"`，操作系统是本机自己的系统。
-- **平台专属属性**在 TSX 里放在 `ios={{…}}`、`android={{…}}`、`web={{…}}` 或 `desktop={{…}}` 里（`desktop`：macOS、Windows、Linux、桌面浏览器和终端）。
+- **平台专属属性**在 TSX 里放在 `ios={{…}}`、`android={{…}}`、`macos={{…}}`、`windows={{…}}`、`web={{…}}` 或 `desktop={{…}}` 里（`desktop`：macOS、Windows、Linux、桌面浏览器和终端）。
 - **输入跟随平台。** 手机上是触摸和软键盘；桌面上是鼠标、触控板和键盘。
 
 应用的组件用 NSH 的基础元素绘制，所以在桌面上和在手机上一样运行，样子也相同。桌面布局用基础元素（`view`、`text`、`scroll`、`virtual_list` 等；TSX 里是 `View`、`Text`、`Scroll`、`List` 等）加上对桌面的判断搭建，示例应用 gallery 的桌面布局就是这样做的：

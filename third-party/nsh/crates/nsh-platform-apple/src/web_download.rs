@@ -13,6 +13,12 @@
 //! (write nothing). The finish and failure callbacks report
 //! `EventKind::DownloadEnd`.
 //!
+//! WebKit follows a download's redirects itself, after the navigation
+//! delegate checked only where the download began. The delegate asks
+//! [`Allows`] before each redirect is requested and refuses one the app's
+//! `webview` grant does not allow; the core still checks the response's
+//! final URL in the offer.
+//!
 //! This crate never decides a state, names a destination or touches a file
 //! policy: staging and publication are `nsh-core`'s. It creates no file —
 //! WebKit creates the staging leaf the core named — and it deletes none. The
@@ -52,6 +58,10 @@ use objc2_foundation::{NSData, NSError, NSString, NSURL, NSURLRequest, NSURLResp
 /// listener), even after the view is released.
 pub type Emit = Rc<dyn Fn(EventKind, EventPayload)>;
 
+/// Whether a download may follow a redirect to a URL: what the app's
+/// `webview` grant allows a top-level navigation to.
+pub type Allows = Rc<dyn Fn(&str) -> bool>;
+
 /// The `WKDownload`s of one web view, with WebKit's download delegate.
 ///
 /// Made once per web view, on the main thread, and dropped with its host
@@ -62,10 +72,12 @@ pub struct Transport {
 }
 
 impl Transport {
-    /// The transport of a web view, reporting through `emit`.
-    pub fn new(mtm: MainThreadMarker, emit: Emit) -> Rc<Self> {
+    /// The transport of a web view, reporting through `emit` and
+    /// following only the redirects `allows` grants.
+    pub fn new(mtm: MainThreadMarker, emit: Emit, allows: Allows) -> Rc<Self> {
         let state = Rc::new(State {
             emit,
+            allows,
             active: RefCell::new(HashMap::new()),
         });
         let delegate = DownloadDelegate::new(mtm, state.clone());
@@ -278,6 +290,7 @@ fn report_gone(state: &State, id: &str) {
 /// The transport's downloads and how they are reported.
 struct State {
     emit: Emit,
+    allows: Allows,
     active: RefCell<HashMap<usize, Entry>>,
 }
 
@@ -409,6 +422,58 @@ define_class!(
             // Reported outside the borrow: a sink dispatches an event whose
             // handling may reach this transport again.
             (self.ivars().state.emit)(EventKind::DownloadOffer, download_offer(&offer));
+        }
+
+        /// WebKit is about to request a redirect's URL. A download stays
+        /// within the hosts its web view may show, as its navigations do:
+        /// a redirect elsewhere is cancelled before it is requested. The
+        /// core hears of it as an offer at that URL, which it refuses (the
+        /// app hears `ERR_ACCESS_DENIED`) and releases.
+        #[unsafe(method(download:willPerformHTTPRedirection:newRequest:decisionHandler:))]
+        fn redirect(
+            &self,
+            download: &AnyObject,
+            _response: &NSURLResponse,
+            request: &NSURLRequest,
+            decide: &block2::Block<dyn Fn(isize)>,
+        ) {
+            let url = request
+                .URL()
+                .and_then(|url| url.absoluteString())
+                .map(|url| url.to_string())
+                .unwrap_or_default();
+            let state = &self.ivars().state;
+            // WKDownloadRedirectPolicyCancel = 0, Allow = 1.
+            if (state.allows)(&url) {
+                decide.call((1,));
+                return;
+            }
+            log::warn!(target: "js", "web view download redirect to {url} is not granted");
+            let offer = {
+                let mut active = state.active.borrow_mut();
+                active
+                    .get_mut(&download_key(download))
+                    .filter(|entry| !entry.offered)
+                    .map(|entry| {
+                        entry.offered = true;
+                        DownloadOffer {
+                            id: entry.id.clone(),
+                            url: url.clone(),
+                            filename: file_name(url_file_name(&url)),
+                            mime_type: None,
+                            bytes: None,
+                            method: entry.method.clone(),
+                            source: WebDownloadSource::Transfer,
+                        }
+                    })
+            };
+            // Reported before the cancellation, outside the borrow: the
+            // failure WebKit reports for it must reach the core after the
+            // offer, as the stop of a download it knows.
+            if let Some(offer) = offer {
+                (state.emit)(EventKind::DownloadOffer, download_offer(&offer));
+            }
+            decide.call((0,));
         }
 
         /// WebKit finished writing the staging file: report its size.

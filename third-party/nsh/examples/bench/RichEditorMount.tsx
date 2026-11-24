@@ -1,5 +1,6 @@
 // Initial RichEditor reconciliation: 200 paragraphs of 80 ASCII characters.
 import { mount, View } from "nsh";
+import { Window } from "nsh/desktop";
 import { createRichEditor, RichEditor, StarterKit } from "nsh/base";
 
 const content = Array.from({ length: 200 }, (_, i) =>
@@ -15,4 +16,4 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => <Window id="main">{App}</Window>);

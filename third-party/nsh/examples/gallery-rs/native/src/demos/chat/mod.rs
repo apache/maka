@@ -707,7 +707,7 @@ impl ChatState {
     fn act(self, action: Action) {
         match action {
             Action::Copy(key, text) => {
-                set_clipboard(text);
+                drop(set_clipboard(text));
                 self.copied.set(Some(key.clone()));
                 let copied = self.copied;
                 let timer = self.owner.run(|| {

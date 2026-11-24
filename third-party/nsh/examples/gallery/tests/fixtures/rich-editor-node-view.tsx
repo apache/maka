@@ -1,4 +1,5 @@
 import { context, mount, signal, Text, View } from "nsh";
+import { Window } from "nsh/desktop";
 import {
   RichEditor, StarterKit, chain, createRichEditor, defineExtension, insertText, setNodeSelection, setTextSelection, undo,
   type RichNodeViewProps,
@@ -66,4 +67,4 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => <Window id="main">{App}</Window>);

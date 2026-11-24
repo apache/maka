@@ -1,12 +1,12 @@
 ---
 title: nsh/mobile
-description: iOS 和 Android 的 API：系统标签栏 TabBar、系统日期时间选择器 DateTimePicker、iOS 的系统分段控件 SegmentedControl、系统开关 Switch、触感反馈 Haptics、iOS 的 InputAccessoryView、Android 的 BackHandler，以及 isAvailable。
+description: iOS 和 Android 的 API：系统标签栏 TabBar、系统日期时间选择器 DateTimePicker、iOS 的系统分段控件 SegmentedControl、系统开关 Switch、触感反馈 Haptics、系统设置中本应用的页面 AppSettings、iOS 的 InputAccessoryView、Android 的 BackHandler，以及 isAvailable。
 order: 12.2
 ---
 
 # nsh/mobile
 
-`nsh/mobile` 收录 iOS 和 Android 的专属能力：两者都有的系统标签栏 `TabBar`、系统日期时间选择器 [`DateTimePicker`](#datetimepicker)、系统开关 [`Switch`](#switch) 和设备的触感反馈 [`Haptics`](#haptics)；iOS 的系统分段控件 [`SegmentedControl`](#segmentedcontrol) 和 [`InputAccessoryView`](#inputaccessoryview)，键盘上方的工具栏；Android 的 [`BackHandler`](#backhandler)，返回键。Rust 代码使用 `nsh_core::mobile` 和 `nsh_core::prelude`；TSX 导入 `nsh/mobile`。这个模块在所有平台上都可以导入，所以同一个 bundle 能在各处运行：在其他平台上，它的组件不占空间、调用立即返回，`isAvailable` 告诉你当前是否在 iOS 或 Android 上（`nsh` 的 `platform.os` 区分具体平台）。桌面的能力在 [nsh/desktop](./nsh-desktop.md) 中。
+`nsh/mobile` 收录 iOS 和 Android 的专属能力：两者都有的系统标签栏 `TabBar`、系统日期时间选择器 [`DateTimePicker`](#datetimepicker)、系统开关 [`Switch`](#switch)、设备的触感反馈 [`Haptics`](#haptics) 和系统设置中本应用的页面 [`AppSettings`](#appsettings)；iOS 的系统分段控件 [`SegmentedControl`](#segmentedcontrol) 和 [`InputAccessoryView`](#inputaccessoryview)，键盘上方的工具栏；Android 的 [`BackHandler`](#backhandler)，返回键。Rust 代码使用 `nsh_core::mobile` 和 `nsh_core::prelude`；TSX 导入 `nsh/mobile`。这个模块在所有平台上都可以导入，所以同一个 bundle 能在各处运行：在其他平台上，它的组件不占空间、调用立即返回，`isAvailable` 告诉你当前是否在 iOS 或 Android 上（`nsh` 的 `platform.os` 区分具体平台）。桌面的能力在 [nsh/desktop](./nsh-desktop.md) 中。
 
 ```rust tabs
 use nsh_core::mobile::{
@@ -17,6 +17,7 @@ use nsh_core::mobile::{
 
 ```tsx tabs
 import {
+  AppSettings,
   BackHandler,
   DateTimePicker,
   Haptics,
@@ -47,7 +48,7 @@ import type {
 const isAvailable: boolean;
 ```
 
-在 iOS、iOS 模拟器、Mac Catalyst 和 Android 上为 `true`，其他平台为 `false`。Rust：`matches!(os(), Os::Ios | Os::Android)`。
+在 iOS、iOS 模拟器、Mac Catalyst 和 Android 上为 `true`，其他平台为 `false`。Rust：`matches!(os(), Os::Ios | Os::Android)`。Mac 上没有应用自己的设置页，所以在 Mac Catalyst 上 `isAvailable` 为 `true`，而 [`AppSettings.available()`](#appsettings) 为 `false`。
 
 ## TabBar
 
@@ -87,6 +88,7 @@ fn sections() -> impl IntoElement {
 import { mount, signal, Text, View } from "nsh";
 import { TabBar } from "nsh/mobile";
 import { platform } from "nsh";
+import { Window } from "nsh/desktop";
 
 function App() {
   const section = signal(0);
@@ -106,7 +108,11 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 `TabBar` 来自 `nsh/mobile`，在 Rust 中是 `nsh_core::mobile`。选中状态属于应用：一次点按通过 `onChange` 报告该标签的索引（`{ index }`），标签栏像系统的一样立即显示这次选择，应用显示那一部分并把索引作为 `selectedIndex` 传回。样式没有给定高度时，高度是系统的。在 Rust 中，`tab_bar()` 创建它，每个 prop 一个 setter（`.items(..)`、`.selected_index(..)`），每个事件一个监听方法（`.on_change(..)`），以及带类型的样式方法；`TabBarItem::new(title).icon(name).badge(text)` 创建一个标签。
@@ -126,7 +132,7 @@ mount(App);
 | 字段 | Rust | 类型 | 说明 |
 |---|---|---|---|
 | `title` | `TabBarItem::new(title)` | `string` | 标签的标题，屏幕阅读器会读出它。 |
-| `icon` | `.icon(name)` | `string` | 标签的图标，用平台对它的称呼：iOS 上是 [SF Symbol](https://developer.apple.com/sf-symbols/)（`"house"`），Android 上是应用的 drawable（`res/drawable/home.xml` 写作 `"home"`，`"android:ic_menu_search"` 是系统的）。用 `platform.select` 按平台选择。 |
+| `icon` | `.icon(name)` | `string` | 标签的图标，用平台对它的称呼：iOS 上是 [SF Symbol](https://developer.apple.com/sf-symbols/)（`"house"`），Android 上是应用的 drawable（`nsh.json` 旁的 `android/res/drawable/home.xml` 写作 `"home"`，`"android:ic_menu_search"` 是系统的）。`nsh package --target android` 会把 `android/res/` 编译进 APK，目录结构与 Gradle 模块的 `src/main/res/` 相同（矢量 drawable、按密度放置的 PNG）；`nsh run` 的开发宿主只有系统的。用 `platform.select` 按平台选择。 |
 | `badge` | `.badge(text)` | `string` | 标签的角标：一段文字，例如 `"3"` 或 `"New"`，或者 `""` 表示没有文字的角标；不设置（默认）则不显示。采用系统的角标外观，屏幕阅读器会随标签的标题读出它：它的文字；`""` 则读出系统对没有文字的角标的说法（VoiceOver 的；在 Android 上是系统的“新通知”，使用设备的语言）。 |
 
 ### 事件
@@ -371,8 +377,15 @@ function Note() {
 ```ts
 const BackHandler: {
   on(event: "press", listener: () => boolean | void): () => void;
+  on(event: "progress", listener: (event: BackProgressEvent) => void): () => void;
   exitApp(): void;
 };
+
+interface BackProgressEvent {
+  phase: "start" | "move" | "end" | "cancel";
+  progress: number;
+  edge?: "left" | "right";
+}
 ```
 
 系统返回键和返回手势。对话框先处理返回操作（关闭对话框）；然后运行 `BackHandler` 的监听器，最后添加的最先运行；都不处理时，最上层的导航栈出栈，没有可返回的页面时应用退出。
@@ -380,6 +393,7 @@ const BackHandler: {
 | 成员 | Rust | 说明 |
 |---|---|---|
 | `on("press", listener)` | `on_back_press(listener)` | `listener` 处理了这次返回时返回 `true`。返回一个停止监听的函数；在组件渲染（或 effect 运行）期间添加的监听器随之停止，Rust 与 TSX 都是如此。 |
+| `on("progress", listener)` | `on_back_progress(listener)` | 在 Android 14 及更高版本上跟随返回手势：对话框没有接管的手势，`listener` 收到它的每一步，`start`、`move`，然后是 `end`（紧接着是返回操作）或 `cancel`，带有从 0 到 1 的 `progress` 和滑动开始的边缘 `edge`。有监听器时，导航栈把手势交给应用，不再预览弹出。见[跟随返回手势](../docs/navigation.md#跟随返回手势)。 |
 | `exitApp()` | 监听器返回 `false` | 退出应用。Rust 监听器返回 `false` 时，返回操作继续传递，由导航栈返回或应用退出。 |
 
 ```rust tabs
@@ -427,6 +441,63 @@ function Editor() {
 
 > [!NOTE]
 > 监听器在系统已经派发了返回操作之后才运行：主线程从不等待应用的代码。只要注册了至少一个监听器，对话框不处理的返回操作就由 NSH 接管；没有监听器返回 `true` 时，由 NSH 自己让最上层的导航栈返回或退出应用。
+
+## AppSettings
+
+在 iOS 和 Android 上可用；其他平台上 `open` 立即 reject。
+
+```ts
+const AppSettings: {
+  open(): Promise<AppSettingsResult>;
+  available(): Promise<boolean>;
+};
+
+interface AppSettingsResult {
+  opened: boolean;
+}
+```
+
+打开系统设置中本应用自己的页面，用户在那里重新打开曾经拒绝的权限（相机、照片、通知）：权限一旦被拒绝，只有系统设置能改回来，所以应用解释为什么需要权限时，通常会附一个“打开设置”按钮。iOS 打开“设置”应用中本应用的页面，Android 打开应用信息页；嵌入的视图打开宿主应用的页面。
+
+| 成员 | Rust | 说明 |
+|---|---|---|
+| `open()` | `open_app_settings()` | 打开这个页面；结果是 `{ opened }`，表示系统是否打开了它。 |
+| `available()` | `app_settings_available()` | 当前能否用 `open()` 打开这个页面；显示按钮之前先问它。 |
+
+- 没有应用自己的设置页的地方（macOS、Windows、Linux、Web、终端、`nsh test`，以及在 Mac 上运行的 iPhone 或 iPad 应用，包括 Mac Catalyst），`available()` 为 `false`，`open()` 以一个 `Error` reject，其 `code` 为 `"ERR_FEATURE_UNAVAILABLE_ON_PLATFORM"`（Rust：`AppSettingsError::Unavailable`）。在 macOS 上，想打开某个隐私面板的应用可以用 [`openUrl`](./nsh.md#openurl) 打开它。
+- 它作用于整个应用：声明了能力的应用需要 `"application": true`（见[沙箱与能力](../docs/sandbox-and-capabilities.md#application)）。没有它时 `available()` 为 `false`，`open()` 以 `"ERR_ACCESS_DENIED"` reject，`permission` 为 `"application"`（Rust：`AppSettingsError::Denied`）。
+- `open()` 从不抛出：所有失败都以 reject 报告。在 Rust 中，两者都是可在任务中等待（或直接丢弃）的回答。
+
+```rust tabs
+use nsh_core::prelude::*;
+
+fn open_settings_button() -> impl IntoElement {
+    let can_open = signal(false);
+    spawn(async move { can_open.set(app_settings_available().await) });
+    when(move || can_open.get(), || {
+        view()
+            .child(text("打开设置"))
+            .on_press(|_| drop(open_app_settings()))
+    })
+}
+```
+
+```tsx tabs
+import { Text, View, signal } from "nsh";
+import { AppSettings } from "nsh/mobile";
+
+function OpenSettingsButton() {
+  const canOpen = signal(false);
+  AppSettings.available().then(canOpen.set);
+  return (
+    <If when={canOpen()}>
+      <View onPress={() => AppSettings.open()}>
+        <Text>打开设置</Text>
+      </View>
+    </If>
+  );
+}
+```
 
 ## Haptics
 

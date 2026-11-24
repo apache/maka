@@ -21,9 +21,9 @@
 use std::cell::Cell;
 
 use nsh_core::{
-    BlendMode, BorderStyle, BoxShadow, Color, CornerRadii, Filter, GlassEffect, Gradient,
-    GradientKind, GradientSize, MacOsBackdrop, MacOsBackdropBlending, MacOsBackdropMaterial,
-    MacOsBackdropState, ViewStyle,
+    BlendMode, BorderStyle, BoxShadow, ClipInset, Color, CornerRadii, Filter, GlassEffect,
+    Gradient, GradientKind, GradientSize, MacOsBackdrop, MacOsBackdropBlending,
+    MacOsBackdropMaterial, MacOsBackdropState, ViewStyle,
     geometry::{Points, px},
 };
 use objc2::{
@@ -120,6 +120,8 @@ pub(crate) struct Visual {
     backdrop: Option<Backdrop>,
     /// `maskImage`'s layer, held so it is not rebuilt every frame.
     mask_image: Option<Retained<CAGradientLayer>>,
+    /// `clipPath`'s shape layer.
+    clip: Option<Retained<CAShapeLayer>>,
 }
 
 /// What draws a view's backdrop.
@@ -518,6 +520,37 @@ pub(crate) fn drop_shadow(style: &ViewStyle) -> Option<(f32, f32, f32, Color)> {
         .max_by(|a, b| a.2.total_cmp(&b.2))
 }
 
+/// `clip`'s outline in a box of `size`, as a path
+/// ([`ClipInset::outline`]).
+fn clip_outline(clip: &ClipInset, size: CGSize) -> CFRetained<CGMutablePath> {
+    use nsh_core::{Point, shape::Segment};
+    let path = CGMutablePath::new();
+    let cg = |p: Point<Points>| (p.x.0 as CGFloat, p.y.0 as CGFloat);
+    let (p, m) = (Some(&*path), std::ptr::null());
+    let size = nsh_core::geometry::size(px(size.width as f32), px(size.height as f32));
+    clip.outline(size, &mut |s| {
+        // SAFETY: a valid mutable path and a null transform.
+        unsafe {
+            match s {
+                Segment::Move(to) => {
+                    let (x, y) = cg(to);
+                    CGMutablePath::move_to_point(p, m, x, y)
+                }
+                Segment::Line(to) => {
+                    let (x, y) = cg(to);
+                    CGMutablePath::add_line_to_point(p, m, x, y)
+                }
+                Segment::Cubic([c1, c2, to]) => {
+                    let ((a, b), (c, d), (x, y)) = (cg(c1), cg(c2), cg(to));
+                    CGMutablePath::add_curve_to_point(p, m, a, b, c, d, x, y)
+                }
+                Segment::Close => CGMutablePath::close_subpath(p),
+            }
+        }
+    });
+    path
+}
+
 impl Visual {
     /// It holds no layer, as a new one.
     pub(crate) fn is_empty(&self) -> bool {
@@ -530,6 +563,7 @@ impl Visual {
             foreground_blur,
             backdrop,
             mask_image,
+            clip,
         } = self;
         shadows.is_none()
             && insets.is_none()
@@ -539,6 +573,7 @@ impl Visual {
             && foreground_blur.is_none()
             && backdrop.is_none()
             && mask_image.is_none()
+            && clip.is_none()
     }
 
     /// Shapes the effect layers of `view` (in its own `layer`) after
@@ -609,33 +644,75 @@ impl Visual {
         });
         let masked = effects.is_some_and(|e| !e.mask_images.is_empty());
         self.set_backdrop(view, style, blur, masked, local, radii);
-        // Last: the mask covers everything above, the backdrop's view included.
-        self.set_mask_image(
+        // Last: the masks cover everything above, the backdrop's view
+        // included.
+        self.set_masks(
             layer,
             effects.map_or(&[][..], |e| &e.mask_images[..]),
+            style.clip_path(),
             local,
         );
     }
 
-    /// `mask-image`: a gradient whose alpha decides how much of the view is
-    /// drawn. Set on the view's own layer, so it masks the content, the
-    /// background, the shadows and the backdrop's view alike.
+    /// `clip-path` and `mask-image`, on the view's own layer, so they cover
+    /// the content, the background, the shadows, the backdrop's view and the
+    /// children alike. The clip path's shape masks the layer, and the
+    /// gradient masks that shape (a mask's own mask applies to it); either
+    /// alone masks the layer.
     ///
-    /// CSS composites several mask layers; this draws the topmost one, which
-    /// is what a fade along one edge needs (as on iOS).
-    fn set_mask_image(&mut self, layer: &CALayer, masks: &[Gradient], local: CGRect) {
-        let Some(mask) = masks.first() else {
-            if self.mask_image.take().is_some() {
-                // SAFETY: clearing the mask.
-                unsafe { layer.setMask(None) };
+    /// `mask-image`: a gradient whose alpha decides how much of the view is
+    /// drawn. CSS composites several mask layers; this draws the topmost one,
+    /// which is what a fade along one edge needs (as on iOS).
+    fn set_masks(
+        &mut self,
+        layer: &CALayer,
+        masks: &[Gradient],
+        clip: Option<&ClipInset>,
+        local: CGRect,
+    ) {
+        // Only a mask of ours is taken off: the decoration may have masked
+        // the layer to its corners in the same pass.
+        let ours = layer.mask().is_some_and(|m| {
+            let m: &CALayer = &m;
+            self.clip.as_deref().is_some_and(|c| std::ptr::eq(m, &**c))
+                || self
+                    .mask_image
+                    .as_deref()
+                    .is_some_and(|g| std::ptr::eq(m, &**g))
+        });
+        let gradient = match masks.first() {
+            Some(mask) => {
+                let g = self.mask_image.get_or_insert_with(CAGradientLayer::new);
+                g.setFrame(local);
+                shape_gradient(g, mask, local.size);
+                Some(g.clone())
             }
-            return;
+            None => self.mask_image.take().and(None),
         };
-        let g = self.mask_image.get_or_insert_with(CAGradientLayer::new);
-        g.setFrame(local);
-        shape_gradient(g, mask, local.size);
-        // SAFETY: the layer owns the mask, which has no superlayer of its own.
-        unsafe { layer.setMask(Some(g)) };
+        let shape = match clip {
+            Some(clip) => {
+                let s = self.clip.get_or_insert_with(CAShapeLayer::new);
+                s.setFrame(local);
+                s.setPath(Some(&clip_outline(clip, local.size)));
+                Some(s.clone())
+            }
+            None => self.clip.take().and(None),
+        };
+        let top: Option<&CALayer> = match (&shape, &gradient) {
+            (Some(shape), gradient) => {
+                // SAFETY: the shape owns the gradient as its mask, which has
+                // no superlayer of its own.
+                unsafe { shape.setMask(gradient.as_deref().map(|g| &**g)) };
+                Some(shape)
+            }
+            (None, Some(gradient)) => Some(gradient),
+            (None, None) => None,
+        };
+        if top.is_some() || ours {
+            // SAFETY: the layer owns the mask, which has no superlayer of
+            // its own (or none).
+            unsafe { layer.setMask(top) };
+        }
     }
 
     fn set_shadows(
@@ -1394,11 +1471,8 @@ mod tests {
     fn blur_style(radius: f32) -> ViewStyle {
         ViewStyle {
             effects: Some(Arc::new(nsh_core::Effects {
-                box_shadows: Vec::new(),
-                background_images: Vec::new(),
-                filters: Vec::new(),
                 backdrop_filters: vec![Filter::Blur(px(radius))],
-                mask_images: Vec::new(),
+                ..nsh_core::Effects::default()
             })),
             ..ViewStyle::default()
         }

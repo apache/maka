@@ -10,7 +10,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use nsh_core::prelude::*;
+use nsh_core::{element::desktop, prelude::*};
 use nsh_platform_macos::{
     self as platform,
     objc2::{MainThreadMarker, MainThreadOnly, rc::Retained},
@@ -24,6 +24,15 @@ use nsh_platform_macos::{
 #[component]
 fn Blank() -> impl IntoElement {
     view().size_full().test_id("app")
+}
+
+#[component]
+fn Windowed() -> impl IntoElement {
+    desktop::window()
+        .id("main")
+        .title("NSH FPS window")
+        .default_size(size(px(480.0), px(320.0)))
+        .content(|| view().size_full().test_id("app"))
 }
 
 /// The performance monitor's panel among `view`'s descendants.
@@ -164,4 +173,37 @@ pub(super) fn run() {
 
     surface.stop();
     window.close();
+
+    run_windowed(mtm);
+}
+
+/// Under Window Model v2, the host's `AppView` stays hidden and content
+/// renders in an app `<Window>`: the FPS HUD must attach to that visible
+/// window's container rather than the hidden host view.
+fn run_windowed(mtm: MainThreadMarker) {
+    let options = platform::AppOptions {
+        fps: true,
+        ..Default::default()
+    };
+    let host: Rc<platform::AppView> = platform::AppView::new(mtm, options);
+    host.load(platform::App::Rust(platform::Root::of::<Windowed>()));
+
+    let app = NSApplication::sharedApplication(mtm);
+    let find_window = || {
+        app.windows()
+            .iter()
+            .find(|w| w.title().to_string() == "NSH FPS window" && w.isVisible())
+    };
+    until("the app <Window> showing", || find_window().is_some());
+    let app_window = find_window().expect("app window");
+    let content = app_window.contentView().expect("app window contentView");
+    until("the HUD attaching to the app <Window>", || {
+        panel(&content).is_some_and(|p| p.frame().size.width > 200.0)
+    });
+    assert!(
+        panel(&host.view()).is_none(),
+        "the HUD must move off the hidden host container"
+    );
+
+    host.stop();
 }

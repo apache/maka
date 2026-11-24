@@ -14,12 +14,14 @@ use nsh_core::{
 };
 use nsh_platform_macos as platform;
 use platform::{
-    objc2::{MainThreadMarker, MainThreadOnly},
+    objc2::{MainThreadMarker, MainThreadOnly, msg_send, rc::Retained, sel},
     objc2_app_kit::{
         NSApplication, NSBackingStoreType, NSScreen, NSWindow, NSWindowButton, NSWindowStyleMask,
     },
     objc2_foundation::{NSDate, NSPoint, NSRect, NSSize, NSString},
 };
+
+const TITLE: &str = "NSH title bar";
 
 /// The bar the app asks for: 0 the system's, else its height.
 static WANT: AtomicU32 = AtomicU32::new(0);
@@ -28,6 +30,8 @@ static TOP: AtomicU32 = AtomicU32::new(u32::MAX);
 
 #[component]
 fn Bar() -> impl IntoElement {
+    let window = desktop::current_window();
+    let for_interval = window.clone();
     let applied = signal(0u32);
     set_interval(Duration::from_millis(10), move || {
         let want = WANT.load(Ordering::SeqCst);
@@ -45,11 +49,21 @@ fn Bar() -> impl IntoElement {
             }
             let mut attributes = WindowAttributes::default();
             attributes.title_bar = Some(bar);
-            desktop::main_window().set(attributes);
+            for_interval.set(attributes);
         }
     });
-    effect(|| TOP.store(desktop::title_bar().top.0 as u32, Ordering::SeqCst));
+    effect(move || TOP.store(window.title_bar().top.0 as u32, Ordering::SeqCst));
     view().flex_1().bg(rgb(0xe0e5ed))
+}
+
+/// The app root: the host, with the one window the test reads.
+#[component]
+fn App() -> impl IntoElement {
+    desktop::window()
+        .id("main")
+        .title(TITLE)
+        .default_size(size(px(480.0), px(300.0)))
+        .content(bar)
 }
 
 fn pump(ms: u64) {
@@ -150,8 +164,9 @@ pub(super) fn run() {
         NSScreen::screens(mtm).count() > 0,
         "native title bar checks need a display"
     );
+    // The hidden host window; `App` opens the titled window under test.
     // SAFETY: The window is created on the process main thread.
-    let window = unsafe {
+    let host = unsafe {
         NSWindow::initWithContentRect_styleMask_backing_defer(
             NSWindow::alloc(mtm),
             NSRect::new(NSPoint::new(700.0, 300.0), NSSize::new(480.0, 300.0)),
@@ -165,27 +180,92 @@ pub(super) fn run() {
     };
     // SAFETY: This scope retains the window until after it closes.
     unsafe {
-        window.setReleasedWhenClosed(false);
+        host.setReleasedWhenClosed(false);
     }
-    window.setTitle(&NSString::from_str("NSH title bar"));
+    host.setTitle(&NSString::from_str("NSH title bar host"));
     let mut options = platform::AppOptions::default();
     options.size = (480, 300);
     let surface = platform::AppView::new(mtm, options);
-    window.setContentView(Some(&surface.view()));
-    surface.load(platform::App::Rust(platform::Root::of::<Bar>()));
-    window.makeKeyAndOrderFront(None);
+    host.setContentView(Some(&surface.view()));
+    surface.load(platform::App::Rust(platform::Root::of::<App>()));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let window: Retained<NSWindow> = loop {
+        if let Some(found) = app
+            .windows()
+            .iter()
+            .find(|w| w.title().to_string() == TITLE && w.isVisible())
+        {
+            break found;
+        }
+        assert!(Instant::now() < deadline, "app window never appeared");
+        pump(10);
+    };
     set_bar(0, 0);
     let system = lights(&window);
 
     set_bar(36, 36);
     assert_centered(&window, &system, 36.0, "36-point bar");
 
-    let mut frame = window.frame();
-    frame.size.width += 160.0;
-    frame.size.height += 120.0;
-    window.setFrame_display(frame, true);
+    set_bar(46, 46);
+    assert_centered(&window, &system, 46.0, "46-point bar");
+
+    // Live-resize frames arrive faster than the window-state settle timer:
+    // every frame must place all three buttons before display, including
+    // ZoomButton (the last button AppKit updates in `_updateButtonPositions`).
+    // SAFETY: optional AppKit live-resize bracket on the main thread.
+    let live_bracket: bool =
+        unsafe { msg_send![&*window, respondsToSelector: sel!(_startLiveResize)] };
+    if live_bracket {
+        // SAFETY: checked with `respondsToSelector:` on the main thread.
+        unsafe {
+            let _: () = msg_send![&*window, _startLiveResize];
+        }
+    }
+    for step in 0..6 {
+        let mut frame = window.frame();
+        frame.size.width += if step % 2 == 0 { 24.0 } else { -12.0 };
+        frame.size.height += if step % 2 == 0 { 18.0 } else { -8.0 };
+        window.setFrame_display(frame, true);
+        window.displayIfNeeded();
+        assert_centered(
+            &window,
+            &system,
+            46.0,
+            &format!("46-point bar during live resize frame {step}"),
+        );
+        pump(16);
+        assert_centered(
+            &window,
+            &system,
+            46.0,
+            &format!("46-point bar after live resize pump {step}"),
+        );
+    }
+    if live_bracket {
+        // SAFETY: matches `_startLiveResize` above.
+        unsafe {
+            let _: () = msg_send![&*window, _endLiveResize];
+        }
+    }
     pump(200);
-    assert_centered(&window, &system, 36.0, "36-point bar after a resize");
+    assert_centered(&window, &system, 46.0, "46-point bar after live resize");
+
+    // `setTitle:` triggers AppKit's titlebar relayout without a window resize.
+    window.setTitle(&NSString::from_str("NSH title bar renamed"));
+    pump(50);
+    assert_centered(&window, &system, 46.0, "46-point bar after setTitle");
+    window.setTitle(&NSString::from_str(TITLE));
+    pump(50);
+
+    // A partial AppKit layout moving only ZoomButton must still re-center it.
+    let zoom = window
+        .standardWindowButton(NSWindowButton::ZoomButton)
+        .unwrap();
+    let mut origin = zoom.frame().origin;
+    origin.y += 7.0;
+    zoom.setFrameOrigin(origin);
+    pump(50);
+    assert_centered(&window, &system, 46.0, "46-point bar after ZoomButton move");
 
     set_bar(60, 60);
     assert_centered(&window, &system, 60.0, "60-point bar");
@@ -206,11 +286,17 @@ pub(super) fn run() {
         window.makeKeyAndOrderFront(None);
         pump(100);
         assert_offset(&window, &system, "offset after show");
-        for _ in 0..3 {
+        for step in 0..3 {
             let mut frame = window.frame();
             frame.size.width += 30.0;
             frame.size.height += 20.0;
             window.setFrame_display(frame, true);
+            window.displayIfNeeded();
+            assert_offset(
+                &window,
+                &system,
+                &format!("offset immediately after resize {step}"),
+            );
             pump(100);
             assert_offset(&window, &system, "offset after resize");
             window.resignKeyWindow();
@@ -218,6 +304,11 @@ pub(super) fn run() {
             pump(100);
             assert_offset(&window, &system, "offset after becoming key");
         }
+        window.setTitle(&NSString::from_str("NSH title bar offset renamed"));
+        pump(50);
+        assert_offset(&window, &system, "offset after setTitle");
+        window.setTitle(&NSString::from_str(TITLE));
+        pump(50);
         if bar == 52 {
             // A layout notification can arrive after AppKit reset only
             // close, while the other two still have the custom offset.
@@ -242,6 +333,7 @@ pub(super) fn run() {
     println!("title bar: centered and offset buttons survive resize and key changes");
     surface.stop();
     window.close();
+    host.close();
 }
 
 fn assert_offset(window: &NSWindow, system: &[(f64, f64)], when: &str) {

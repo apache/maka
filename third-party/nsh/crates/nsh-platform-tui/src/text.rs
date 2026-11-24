@@ -152,10 +152,17 @@ fn glyphs(text: &AttributedText, cells: CellSize, alignments: &AttachmentAlignme
             let attachment = attachment.map(|(index, a)| {
                 let font = FontExtent::new(cells.height(), Points::ZERO, cells.height() / 2.0);
                 let (ascent, descent) = alignments.extent(a, font);
+                // Its rows as a whole, split at the baseline's nearest row
+                // line: rounding each side up would give a one-row view
+                // centered on the text (`middle`) a row above and below.
+                let rows = ((ascent + descent) / cells.height() - 1.0e-4)
+                    .ceil()
+                    .max(0.0) as usize;
+                let above = ((ascent / cells.height() + 0.5).floor().max(0.0) as usize).min(rows);
                 Attachment {
                     index,
-                    ascent: (ascent / cells.height()).ceil() as usize,
-                    descent: (descent / cells.height()).ceil() as usize,
+                    ascent: above,
+                    descent: rows - above,
                 }
             });
             // A hidden run (`visibility: "hidden"`) keeps its Cells and

@@ -50,7 +50,10 @@ fn focused_child(surface: &Surface) -> Option<windows::Win32::Foundation::HWND> 
     use windows::Win32::UI::Input::KeyboardAndMouse::GetFocus;
     // SAFETY: a plain query.
     let focus = unsafe { GetFocus() };
-    (!focus.is_invalid() && focus != surface.hwnd()).then_some(focus)
+    // The app's own windows (the host's and those it opens) take keys
+    // through their input root ([`crate::agent`]'s focused window).
+    (!focus.is_invalid() && focus != surface.hwnd() && crate::window::surface_of(focus).is_none())
+        .then_some(focus)
 }
 
 /// Types `text` into the focused page (posted as `WM_CHAR`s to its window,
@@ -138,39 +141,58 @@ pub(crate) fn press(surface: &Rc<Surface>, vk: u16, modifiers: Modifiers) {
     }
 }
 
-/// Resizes the window so that its client area is `w` x `h` points.
-pub(crate) fn resize(surface: &Rc<Surface>, w: f32, h: f32) {
+/// Resizes the window the test acts on so that its client area is `w` x `h`
+/// points: the targeted window, else the focused one, else the first open
+/// one, else the host.
+/// The window of the app's own a desktop test step acts in, as the user
+/// would: `target` (a window [`crate::agent`] was told to act in), else
+/// the focused one, else the first open one (a background host focuses no
+/// window: it stands in, as the headless model does). The host is never a
+/// user window: `None` only when the app shows none.
+fn user_window(surface: &Rc<Surface>, target: NodeId) -> Option<NodeId> {
+    if target != nsh_core::ROOT_ID {
+        return Some(target);
+    }
+    let ids = crate::app_window::ids(surface);
+    crate::app_window::focused_hwnd(surface)
+        .and_then(|hwnd| {
+            ids.iter()
+                .copied()
+                .find(|&id| crate::app_window::hwnd_of(surface, id) == Some(hwnd))
+        })
+        .or_else(|| ids.first().copied())
+}
+
+pub(crate) fn resize(surface: &Rc<Surface>, target: NodeId, w: f32, h: f32) {
     use windows::Win32::{
         Foundation::RECT,
-        UI::{
-            HiDpi::AdjustWindowRectExForDpi,
-            WindowsAndMessaging::{
-                GWL_EXSTYLE, GWL_STYLE, GetWindowLongW, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOZORDER,
-                SetWindowPos, WINDOW_EX_STYLE, WINDOW_STYLE,
-            },
+        UI::WindowsAndMessaging::{
+            GetClientRect, GetWindowRect, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOZORDER, SetWindowPos,
         },
     };
-    let hwnd = surface.hwnd();
+    let hwnd = user_window(surface, target)
+        .and_then(|id| crate::app_window::hwnd_of(surface, id))
+        .unwrap_or_else(|| surface.hwnd());
     let dpi = crate::window::dpi(hwnd);
     let s = dpi as f32 / 96.0;
-    let mut rect = RECT {
-        left: 0,
-        top: 0,
-        right: (w * s).round() as i32,
-        bottom: (h * s).round() as i32,
-    };
-    // SAFETY: plain calls on the surface's window.
+    let (w, h) = ((w * s).round() as i32, (h * s).round() as i32);
+    // SAFETY: plain calls on the surface's window, with local out values.
     unsafe {
-        let style = WINDOW_STYLE(GetWindowLongW(hwnd, GWL_STYLE) as u32);
-        let ex = WINDOW_EX_STYLE(GetWindowLongW(hwnd, GWL_EXSTYLE) as u32);
-        let _ = AdjustWindowRectExForDpi(&mut rect, style, false, ex, dpi);
+        // The client area is `w` x `h`: the window grows by its frame as it
+        // is now, which a window drawing its own title bar has none of at
+        // the top (`AdjustWindowRectEx` would add the system's caption).
+        let (mut outer, mut inner) = (RECT::default(), RECT::default());
+        let _ = GetWindowRect(hwnd, &mut outer);
+        let _ = GetClientRect(hwnd, &mut inner);
+        let frame_w = (outer.right - outer.left) - (inner.right - inner.left);
+        let frame_h = (outer.bottom - outer.top) - (inner.bottom - inner.top);
         let _ = SetWindowPos(
             hwnd,
             None,
             0,
             0,
-            rect.right - rect.left,
-            rect.bottom - rect.top,
+            w + frame_w,
+            h + frame_h,
             SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
         );
     }
@@ -179,16 +201,21 @@ pub(crate) fn resize(surface: &Rc<Surface>, w: f32, h: f32) {
 /// A picture of what the window shows, as a PNG: captured as DWM composes
 /// it, web views included, at the window's scale (`PrintWindow` with
 /// `PW_RENDERFULLCONTENT`, whatever covers the window); drawn offscreen
-/// at that scale when the window cannot be captured.
-pub(crate) fn screenshot(surface: &Rc<Surface>) -> Result<Vec<u8>, String> {
-    picture(surface, surface.hwnd(), None)
+/// at that scale when the window cannot be captured. The window is the one
+/// the steps act in ([`user_window`]); the host's own (hidden) window only
+/// while the app shows none.
+pub(crate) fn screenshot(surface: &Rc<Surface>, target: NodeId) -> Result<Vec<u8>, String> {
+    match user_window(surface, target) {
+        Some(id) => window_screenshot(surface, id),
+        None => picture(surface, surface.hwnd(), None),
+    }
 }
 
 /// [`screenshot`] of the window of the app's own that shows dialog root
 /// `window` (`ROOT_ID`: the main window).
 pub(crate) fn window_screenshot(surface: &Rc<Surface>, window: NodeId) -> Result<Vec<u8>, String> {
     if window == ROOT_ID {
-        return screenshot(surface);
+        return screenshot(surface, ROOT_ID);
     }
     let (Some(hwnd), Some(root)) = (
         crate::app_window::hwnd_of(surface, window),

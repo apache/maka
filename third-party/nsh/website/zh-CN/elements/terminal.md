@@ -16,6 +16,7 @@ demo: el-terminal
 ```tsx tabs
 import { mount } from "nsh";
 import { Terminal, type TerminalRef } from "nsh/base";
+import { Window } from "nsh/desktop";
 
 function App() {
   let term: TerminalRef | undefined;
@@ -33,7 +34,11 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 ```rust tabs

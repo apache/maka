@@ -186,10 +186,11 @@ The `cursor` style follows updates while the mouse rests over a view. When a bat
 Windows applies the new shape or `"none"` after the whole batch, using the view under the pointer.
 The title bar and resize borders keep their system cursors.
 
-An app opens windows of its own with [`<Window>` and `Window.open`](../modules/nsh-desktop.md#windows): each is a
+An app declares its windows with [`<Window>` and `Window.open`](../modules/nsh-desktop.md#windows): each is a
 top-level window drawn by the app's engine and running in its one JS runtime, so it shares the app's signals and
-modules directly. A normal window has its own taskbar button; dialogs, panels and popups are owned by their parent
-window. Closing the main window closes them and ends the app.
+modules directly. A normal window has its own taskbar button; dialogs, panels and popups with a parent are owned by
+that window. The app host is an invisible message-only dispatcher with a hidden surface: closing any user window
+closes only that window, and closing the last one quits only when the app's quit mode says so (the Windows default).
 
 ### Keyboard
 
@@ -219,7 +220,6 @@ Different, or not supported:
   page does not blur it. `baseUrl` takes `http(s)` URLs. A native component that brings a window of its own
   stays above everything NSH draws.
 - **Video**: the formats the installed codecs decode; no poster; the control bar always shows with `controls`.
-- **Zooming scroll views** (`zoomTo`, the zoom props); the scroll indicator cannot be dragged.
 - **`mixBlendMode` and `backdropFilter`** are drawn, but not inside a view that has a `filter` or a 3D transform;
   `borderCurve: "continuous"` draws circular corners.
 - **Text**: head and middle ellipses on a single line only (more lines get a tail ellipsis); color emoji from COLR
@@ -227,8 +227,7 @@ Different, or not supported:
 - **Text inputs**: keyboard types and autofill do not apply (there is no software keyboard); Tab moves between text
   fields. A right click opens the edit menu (Undo, Cut, Copy, Paste, Delete, Select All), as on selectable text (Copy,
   Select All).
-- **Accessibility** (UI Automation): alert dialogs and toasts are not exposed; headings report
-  level 1.
+- **Accessibility** (UI Automation): alert dialogs and toasts are not exposed.
 - **Input accessory views** and the **status bar** (no desktop equivalent).
 
 ## See also

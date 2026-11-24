@@ -1,4 +1,5 @@
 import { mount, signal, Text, View } from "nsh";
+import { Window } from "nsh/desktop";
 import { Editor, Input } from "nsh/base";
 
 function App() {
@@ -15,4 +16,4 @@ function App() {
     <Text>{`under=${under()} over=${over()}`}</Text>
   </View>;
 }
-mount(App);
+mount(() => <Window id="main">{App}</Window>);

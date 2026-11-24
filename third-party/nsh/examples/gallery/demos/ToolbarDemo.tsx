@@ -1,4 +1,4 @@
-import { Canvas, cleanup, computed, createAnimatedValue, Easing, effect, Image, type JSX, LayoutAnimation, keymap, Path2D, platform, reduceMotion, signal, Text, View, type ViewStyle } from "nsh";
+import { Canvas, cleanup, computed, createAnimatedValue, Easing, effect, Image, type JSX, LayoutAnimation, keymap, Path2D, platform, reduceMotion, signal, Text, View, type TextStyle, type ViewStyle } from "nsh";
 import { Button as BaseButton, Link, Menu, MenuItem, MenuSeparator, Popover, Slider, Toggle, ToggleGroup, Toolbar, ToolbarGroup, ToolbarSeparator } from "nsh/base";
 import { alpha, Badge, Caption, Card, chart, colors, DemoPage, finish, focusRing, hovered, menuIndicator, menuItemGlyph, menuItemLabel, menuItemLook, menuItemSize, MenuMark, menuSeparator, motion, photoUrl, PopIn, popoverLook, sliderFill, sliderLook, terminal, TERMINAL_GAP, Tip, toggleGlyph, toggleLabel, toggleLook, type ToggleLookOptions, toggleSizes, toolbarRule, toolbarTrack, LastEvent, LabeledToggle, menuPopup } from "../ui";
 import { Field } from "./OverlayUi";
@@ -77,8 +77,8 @@ type Icon = { icon?: LucideIconName; glyph?: GlyphName };
  * A tool's icon, or its glyph. A terminal draws no icons: there it is the tool's `short` label (its `label` when
  * unset), as text.
  */
-function ToolIcon(props: Icon & { tint: string; size?: number; label: string; short?: string }) {
-  if (terminal) return <Text style={{ fontSize: TOOL.text, color: props.tint }}>{props.short ?? props.label}</Text>;
+function ToolIcon(props: Icon & { tint: string; size?: number; label: string; short?: string; face?: TextStyle }) {
+  if (terminal) return <Text style={{ fontSize: TOOL.text, color: props.tint, ...props.face }}>{props.short ?? props.label}</Text>;
   return (
     <>
       <If when={props.icon}>
@@ -118,7 +118,7 @@ function Trigger(props: { label: string; open: boolean; wide?: boolean; tip: JSX
 }
 
 /** An on / off tool of a toolbar: a `Toggle`, the on fill while pressed; an icon, and a label after it when `text` is set. */
-function Mark(props: Icon & { label: string; short?: string; text?: string; shortcut?: string; pressed: boolean; disabled?: boolean; onChange: (pressed: boolean) => void }) {
+function Mark(props: Icon & { label: string; short?: string; face?: TextStyle; text?: string; shortcut?: string; pressed: boolean; disabled?: boolean; onChange: (pressed: boolean) => void }) {
   const look: ToggleLookOptions = { text: !!props.text, disabled: () => props.disabled };
   const pressed = () => props.pressed;
   return (
@@ -131,7 +131,7 @@ function Mark(props: Icon & { label: string; short?: string; text?: string; shor
       {...toggleLook(look)}
     >
       <If when={!(terminal && props.text)}>
-        <ToolIcon icon={props.icon} glyph={props.glyph} label={props.label} short={props.short} tint={toggleGlyph(pressed).tint} />
+        <ToolIcon icon={props.icon} glyph={props.glyph} label={props.label} short={props.short} face={props.face} tint={toggleGlyph(pressed).tint} />
       </If>
       <If when={props.text}>
         <Text style={toggleLabel(pressed, look)}>{props.text}</Text>
@@ -169,11 +169,12 @@ function AlignGlyph(props: { align: Align; tint: string }) {
   );
 }
 
-const MARKS: { value: string; icon: LucideIconName; label: string; short?: string; shortcut: string }[] = [
-  { value: "bold", icon: "bold", label: "Bold", shortcut: keymap.label("mod+b") },
-  { value: "italic", icon: "italic", label: "Italic", shortcut: keymap.label("mod+i") },
-  { value: "underline", icon: "underline", label: "Underline", shortcut: keymap.label("mod+u") },
-  { value: "strike", icon: "strikethrough", label: "Strikethrough", short: "Strike", shortcut: keymap.label("mod+shift+x") },
+/** The marks; in a terminal each is its letter, set in the mark it toggles, as the icons draw it. */
+const MARKS: { value: string; icon: LucideIconName; label: string; short: string; face: TextStyle; shortcut: string }[] = [
+  { value: "bold", icon: "bold", label: "Bold", short: "B", face: { fontWeight: "700" }, shortcut: keymap.label("mod+b") },
+  { value: "italic", icon: "italic", label: "Italic", short: "I", face: { fontStyle: "italic" }, shortcut: keymap.label("mod+i") },
+  { value: "underline", icon: "underline", label: "Underline", short: "U", face: { textDecorationLine: "underline" }, shortcut: keymap.label("mod+u") },
+  { value: "strike", icon: "strikethrough", label: "Strikethrough", short: "S", face: { textDecorationLine: "line-through" }, shortcut: keymap.label("mod+shift+x") },
 ];
 const ALIGNS: { value: Align; label: string; short?: string }[] = [
   { value: "left", label: "Align left", short: "Left" },
@@ -273,10 +274,11 @@ export function ToolbarDemo() {
     // A narrow pane folds the alignment into the overflow menu; a narrower one (a phone) folds more, a tool at a
     // time, until the bar fits: "⋯" stays in reach at any width.
     const width = signal(0);
-    // A terminal's bar wraps its labels instead (the widths here are the icons').
-    const compact = () => !terminal && width() > 0 && width() < (pointer ? 470 : 520);
+    // A terminal's bar, whose tools are words, folds the alignment at any width and keeps the rest in its one row
+    // (the widths here are the icons').
+    const compact = () => terminal || (width() > 0 && width() < (pointer ? 470 : 520));
     const folds = computed(() => {
-      if (!compact()) return 0;
+      if (terminal || !compact()) return 0;
       let n = 0;
       while (n < FOLDS.length && compactWidth(n) > width()) n++;
       return n;
@@ -316,8 +318,10 @@ export function ToolbarDemo() {
             {...menuPopup({ minWidth: 190 })}
             onOpenChange={({ open }) => blockOpen.set(open)}
             trigger={
-              <Trigger label={`Block: ${block()}`} tip={<Tip label="Turn into" />} open={blockOpen()} wide>
-                <LucideIcon name={BLOCKS.find((b) => b.value === block())!.icon} size={TOOL.icon} tint={colors.text} />
+              <Trigger label={`Block: ${block()}`} tip={<Tip label="Turn into" />} open={blockOpen()} wide={!terminal}>
+                <If when={!terminal}>
+                  <LucideIcon name={BLOCKS.find((b) => b.value === block())!.icon} size={TOOL.icon} tint={colors.text} />
+                </If>
                 <If when={!compact() || terminal}>
                   <Text style={{ fontSize: TOOL.text, color: colors.text }}>{block()}</Text>
                 </If>
@@ -335,7 +339,7 @@ export function ToolbarDemo() {
           {/* A toggle group inside the toolbar is one of its groups: its toggles are the toolbar's items. */}
           <ToggleGroup style={{ flexDirection: "row", gap: GAP }}>
             <Each of={MARKS.filter((m) => !folded(m.value))}>
-              {(m) => <Mark icon={m().icon} label={m().label} short={m().short} shortcut={m().shortcut} pressed={has(m().value)} onChange={(on) => toggleMark(m(), on)} />}
+              {(m) => <Mark icon={m().icon} label={m().label} short={m().short} face={m().face} shortcut={m().shortcut} pressed={has(m().value)} onChange={(on) => toggleMark(m(), on)} />}
             </Each>
           </ToggleGroup>
           <If when={!compact()}>
@@ -444,7 +448,7 @@ export function ToolbarDemo() {
         </View>
         <Caption
           label={pointer ? "Tab in, ← → to move" : "Press a tool; what the bar has no room for folds into ⋯"}
-          note={`${state().marks.length} ${state().marks.length === 1 ? "mark" : "marks"}, ${ALIGNED[state().align]}${compact() ? `, ${1 + folds()} folded` : ""}`}
+          note={`${state().marks.length} ${state().marks.length === 1 ? "mark" : "marks"}, ${ALIGNED[state().align]}${compact() && !terminal ? `, ${1 + folds()} folded` : ""}`}
         />
       </Card>
     );

@@ -39,7 +39,7 @@ requestAnimationFrame ──────────────┘             
 
 Published apps behave as desktop apps in desktop browsers and as phone apps in phone browsers:
 
-- **Wheels and touchpads** scroll the innermost scroll view along their axis that can still move (a vertical wheel scrolls a horizontal list when nothing vertical can), and stay on it until the scroll ends; wheel notches glide, paging and snapping views move one page per scroll. Ctrl + wheel and touchpad pinches pinch views with native pinch values instead of zooming the page. Dragging with the mouse does not scroll, as on the desktop platforms: mouse drags go to pans, the responder system and text selection. Scroll views report `onScrollDragStart` / `onScrollDragEnd`, `onMomentumStart` / `End` and `onScrollEnd` as on the desktop platforms.
+- **Wheels and touchpads** scroll the innermost scroll view along their axis that can still move (a vertical wheel scrolls a horizontal list when nothing vertical can), and stay on it until the scroll ends; where the browser would scroll that same view it does, with its own smooth wheel and the touchpad's momentum, so a mouse feels as on any page; paging and snapping views move one page per scroll. Ctrl + wheel and touchpad pinches pinch views with native pinch values instead of zooming the page. Dragging with the mouse does not scroll, as on the desktop platforms: mouse drags go to pans, the responder system and text selection. Scroll views report `onScrollDragStart` / `onScrollDragEnd`, `onMomentumStart` / `End` and `onScrollEnd` as on the desktop platforms.
 - **Keyboard**: Tab and Shift+Tab move between pressables and inputs (the app's `focus-visible:` styles show the keyboard focus); Return presses the focused pressable, Space presses it when released; arrows, Page Up / Page Down, Space, Home and End scroll the scroll view around the focus or under the mouse; Escape leaves a field, closes the dialog, then goes back. `keymap` shortcuts work in the browser, matched on the spot (`mod` is Command in Safari and Chrome on a Mac, Control elsewhere).
 - **Going back**: Escape, Alt+Left (Cmd+[ on a Mac) and the mouse's back button close the newest dialog or pop the innermost shown stack (a stack in a tab that is not selected keeps its pages), as the Android back button does; `popOnBack` and `onBackPress` work as there. When the app is the whole page, every page pushed on a shown stack and every open dialog is a browser history entry, so the browser's back button goes back in the app. `nsh.json` `web.history` decides it for the packaged page and the dev server's: `false` keeps the browser's history to the page's own entries, `true` adds the app's in an iframe too.
 - **Addresses**: when the app is the whole page, [`UrlScheme.setUrl(url)`](../modules/nsh.md#urlscheme) sets the address of the current history entry, resolved against the page's address (or the site's `web.base`), and `UrlScheme.url()` reads it. The browser's back button goes back in the app: the stack's pages go back and the address becomes the entry's. An address the user types (a `#fragment`) is an entry of the app's at the pages shown, and a back or forward to an entry of the same pages tells the app the entry's address with [`UrlScheme.on("change")`](../modules/nsh.md#urlschemeonchange). `setUrl(url, { history: "push" })` makes such an entry for an address of the app's own, a tab or a filter.
@@ -562,11 +562,12 @@ import { Head } from "nsh/web";
 </NavPage>
 ```
 
-The main window's title is the page's title too, which is how an app written in Rust titles its tab: set it as the
-desktops do (`currentWindow().set({ title })` in TSX), and a mounted `Head`'s title wins over it. An empty title brings
-back the page's own `<title>`. A Rust app's nsh.json `window.title` titles its tab from launch, as it titles its window
-on the desktops. Each entry of the browser's history keeps the title its page had, so set the title in the same turn as
-the page or address it belongs to.
+The page's title comes from a mounted `Head`; a Rust app's root window title (nsh.json `window.title`, or a root
+`WindowAttributes` title) titles the tab when no head sets one. An empty title brings back the page's own `<title>`.
+The web has one surface and no window of the app's own: `currentWindow()` is that surface, whose title is the page's, and TSX
+titles the page with `<Head title>` (or nsh.json's `window.title`) rather than `currentWindow().set({ title })`. Each entry of the
+browser's history keeps the title its page had, so set the title in the same turn as the page or address it belongs
+to.
 
 ```rust
 use nsh_core::{desktop::WindowAttributes, element::desktop::main_window};

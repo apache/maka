@@ -19,6 +19,8 @@
 
 import { mount, Text, View } from 'nsh';
 import { Button } from 'nsh/base';
+import { Window } from 'nsh/desktop';
+import { TITLE_BAR_HEIGHT, WINDOW_MIN_SIZE } from './chrome';
 import { createPlugins } from './plugins/registry';
 import { PluginInstances, renderContribution } from './plugins/RuntimeView';
 import { errorText, renderText } from './text';
@@ -87,4 +89,15 @@ function Bootstrap() {
     </View>
   );
 }
-mount(Bootstrap);
+mount(() => (
+  <Window
+    id="main"
+    title="Maka"
+    titleBar={{ style: 'hidden', height: TITLE_BAR_HEIGHT }}
+    minSize={WINDOW_MIN_SIZE}
+    restoreBounds
+    closeOnPress={false}
+  >
+    <Bootstrap />
+  </Window>
+));

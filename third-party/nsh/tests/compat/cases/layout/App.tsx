@@ -3,6 +3,7 @@
 // `id:case-<case>` (a one-point view over the corner, out of the layout);
 // the steps after it are that case's.
 import { type JSX, View, mount, signal } from "nsh";
+import { Window } from "nsh/desktop";
 import CoreRegisterFont from "./core-register-font";
 import CoreTheme from "./core-theme";
 import LayoutBox from "./layout-box";
@@ -26,7 +27,7 @@ const cases: Record<string, () => JSX.Element> = {
 };
 const shown = signal("");
 
-mount(() => (
+mount(() => <Window id="main">{() => (
   <>
     {() => {
       const Case = cases[shown()];
@@ -38,4 +39,4 @@ mount(() => (
       ))}
     </View>
   </>
-));
+)}</Window>);

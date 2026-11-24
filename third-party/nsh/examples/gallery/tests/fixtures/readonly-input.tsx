@@ -1,4 +1,5 @@
 import { mount, platform, signal, Text, View } from "nsh";
+import { Window } from "nsh/desktop";
 import { Input } from "nsh/base";
 
 const VALUE = "test1 test2 test3";
@@ -23,4 +24,4 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => <Window id="main">{App}</Window>);

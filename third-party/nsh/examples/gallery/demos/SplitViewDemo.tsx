@@ -12,7 +12,7 @@ import { alpha, colors, density, focusRing, header, hovered, PageHeader, radius,
 // buttons); elsewhere they stand side by side. Where the window is compact one
 // column shows: a selection brings the next one in front, and back returns.
 // The look is the gallery's: the sidebar on its own surface, a hairline
-// between the columns, the selection in the brand's tint.
+// between the columns, a neutral selection; the columns resize by their edges.
 
 type Mailbox = { id: string; title: string; icon: LucideIconName };
 
@@ -147,10 +147,10 @@ function MailboxRow(props: { mailbox: Mailbox; selected: boolean; onPress: () =>
         gap: 10,
         paddingHorizontal: 10,
         borderRadius: radius.control,
-        backgroundColor: props.selected ? colors.sidebarSelected : "transparent",
+        backgroundColor: props.selected ? alpha(colors.text, 0.07) : "transparent",
       }}
     >
-      {!terminal && <LucideIcon name={props.mailbox.icon} size={16} tint={props.selected ? colors.accent : colors.muted} />}
+      {!terminal && <LucideIcon name={props.mailbox.icon} size={16} tint={props.selected ? colors.text : colors.muted} />}
       <Text style={{ flex: 1, numberOfLines: 1, fontSize: density.body, fontWeight: props.selected ? "600" : "500", color: colors.text }}>{props.mailbox.title}</Text>
       {unread() > 0 && <Text style={{ fontSize: density.note, fontVariant: ["tabular-nums"], color: colors.muted }}>{String(unread())}</Text>}
     </View>
@@ -159,7 +159,7 @@ function MailboxRow(props: { mailbox: Mailbox; selected: boolean; onPress: () =>
 
 /** A message of a mailbox: who sent it and when, its subject, the start of
  * its text; a dot while unread. */
-function MessageRow(props: { message: Message; selected: boolean; first: boolean; onPress: () => void }) {
+function MessageRow(props: { message: Message; selected: boolean; onPress: () => void }) {
   const m = props.message;
   return (
     <View
@@ -171,24 +171,23 @@ function MessageRow(props: { message: Message; selected: boolean; first: boolean
       focusVisibleStyle={focusRing()}
       style={{
         flexDirection: "row",
-        gap: 10,
-        paddingVertical: 12,
-        paddingEnd: 16,
-        paddingStart: 10,
-        borderTopWidth: props.first ? 0 : 1,
-        borderTopColor: colors.line,
-        backgroundColor: props.selected ? alpha(colors.accent, 0.12) : "transparent",
+        gap: 8,
+        paddingVertical: 10,
+        paddingEnd: 12,
+        paddingStart: 6,
+        borderRadius: radius.control,
+        backgroundColor: props.selected ? alpha(colors.text, 0.07) : "transparent",
       }}
     >
-      <View style={{ width: 8, paddingTop: 6, alignItems: "center" }}>
-        {m.unread && <View style={{ width: 7, height: 7, borderRadius: 4, backgroundColor: colors.accent }} />}
+      <View style={{ width: 10, paddingTop: 6, alignItems: "center" }}>
+        {m.unread && <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: colors.text }} />}
       </View>
       <View style={{ flex: 1, gap: 3 }}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
           <Text style={{ flex: 1, numberOfLines: 1, fontSize: density.body, fontWeight: m.unread ? "600" : "500", color: colors.text }}>{m.from}</Text>
           <Text style={{ fontSize: density.note, fontVariant: ["tabular-nums"], color: colors.faint }}>{m.time}</Text>
         </View>
-        <Text style={{ numberOfLines: 1, fontSize: density.note + 1, color: colors.text }}>{m.subject}</Text>
+        <Text style={{ numberOfLines: 1, fontSize: density.note + 1, fontWeight: m.unread ? "500" : "400", color: colors.text }}>{m.subject}</Text>
         <Text style={{ numberOfLines: 2, fontSize: density.note, lineHeight: density.note + 5, color: colors.muted }}>{m.body[0]}</Text>
       </View>
     </View>
@@ -196,8 +195,7 @@ function MessageRow(props: { message: Message; selected: boolean; first: boolean
 }
 
 /** A column's page: the system's header on iOS and Android, the gallery's
- * header slot elsewhere, the column's surface under its content and a
- * hairline after it (`border`). `left` leads the header slot, `systemLeft`
+ * header slot elsewhere, and the column's surface under its content. `left` leads the header slot, `systemLeft`
  * the system's header (beside its own back and sidebar buttons). */
 function Column(props: {
   title: string;
@@ -205,6 +203,7 @@ function Column(props: {
   systemLeft?: JSX.Element;
   right?: JSX.Element;
   surface: string;
+  /** The hairline after the column's body, where the columns stand side by side. */
   border?: string;
   /** The sidebar: its header on its surface. */
   sidebar?: boolean;
@@ -214,7 +213,7 @@ function Column(props: {
     <NavPage
       title={props.title}
       // The hairline runs down the whole column, its header included.
-      style={{ backgroundColor: props.surface, ...divider(props.border) }}
+      style={{ backgroundColor: props.surface }}
       {...header}
       headerLeft={ios || android ? props.systemLeft : undefined}
       headerRight={ios || android ? props.right : undefined}
@@ -222,7 +221,7 @@ function Column(props: {
       // others take the page's, over a hairline.
       header={<PageHeader title={props.title} root left={props.left} right={props.right} background={props.sidebar ? props.surface : undefined} />}
     >
-      <View style={{ flex: 1 }}>{props.children}</View>
+      <View style={{ flex: 1, ...divider(props.border) }}>{props.children}</View>
     </NavPage>
   );
 }
@@ -283,7 +282,7 @@ export function SplitViewDemo() {
       columnVisibility={visibility()}
       onColumnVisibilityChange={({ columnVisibility }) => visibility.set(columnVisibility)}
       sidebar={
-        <NavStack state={sidebarNav}>
+                <NavStack state={sidebarNav}>
           {() => (
             <Column title="Mailboxes" sidebar surface={colors.sidebar} border={colors.sidebarBorder} left={galleryBack()} systemLeft={galleryBack()}>
               <Scroll style={{ flex: 1 }}>
@@ -298,7 +297,7 @@ export function SplitViewDemo() {
         </NavStack>
       }
       content={
-        <NavStack state={listNav}>
+                <NavStack state={listNav}>
           {() => (
             <Column
               title={box().title}
@@ -308,12 +307,14 @@ export function SplitViewDemo() {
               systemLeft={back("Mailboxes", "all")}
             >
               <Scroll style={{ flex: 1 }}>
+                <View style={{ padding: 8, gap: 2 }}>
                 <Each of={messagesIn(mailbox())}>
-                  {(m, i) => <MessageRow message={m()} first={i() === 0} selected={!compact() && selected() === m().id} onPress={() => openMessage(m().id)} />}
+                  {(m) => <MessageRow message={m()} selected={!compact() && selected() === m().id} onPress={() => openMessage(m().id)} />}
                 </Each>
                 <If when={messagesIn(mailbox()).length === 0}>
                   <Text style={{ padding: 24, textAlign: "center", fontSize: density.body, color: colors.muted }}>No messages</Text>
                 </If>
+                </View>
               </Scroll>
             </Column>
           )}
@@ -342,17 +343,17 @@ export function SplitViewDemo() {
                 <If when={message()} else={<Text style={{ margin: 24, textAlign: "center", fontSize: density.body, color: colors.muted }}>No message selected</Text>}>
                   {(m) => (
                     <Scroll style={{ flex: 1 }}>
-                      <View style={{ paddingHorizontal: platform.desktop ? 28 : 18, paddingVertical: 20, gap: 18, maxWidth: 720 }}>
+                      <View style={{ paddingHorizontal: platform.desktop ? 28 : 18, paddingVertical: 20, gap: 16, maxWidth: 720 }}>
                         <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
-                          <View style={{ width: 40, height: 40, borderRadius: 20, alignItems: "center", justifyContent: "center", backgroundColor: alpha(colors.accent, 0.16) }}>
-                            <Text style={{ fontSize: 15, fontWeight: "600", color: colors.accent }}>{m().from.split(" ").map((w) => w[0]).join("").slice(0, 2)}</Text>
+                          <View style={{ width: 40, height: 40, borderRadius: 20, alignItems: "center", justifyContent: "center", backgroundColor: alpha(colors.text, 0.08) }}>
+                            <Text style={{ fontSize: 14, fontWeight: "600", color: colors.muted }}>{m().from.split(" ").map((w) => w[0]).join("").slice(0, 2)}</Text>
                           </View>
                           <View style={{ flex: 1, gap: 2 }}>
                             <Text style={{ fontSize: density.body, fontWeight: "600", color: colors.text }}>{m().from}</Text>
                             <Text style={{ fontSize: density.note, color: colors.muted }}>{`To me · ${m().time}`}</Text>
                           </View>
                         </View>
-                        <Text style={{ fontSize: 20, lineHeight: 26, fontWeight: "600", color: colors.text }}>{m().subject}</Text>
+                        <View style={{ height: 1, backgroundColor: colors.line }} />
                         <View style={{ gap: 12 }}>
                           {m().body.map((p) => (
                             <Text style={{ fontSize: platform.desktop ? 14 : 16, lineHeight: platform.desktop ? 21 : 24, color: colors.text }}>{p}</Text>

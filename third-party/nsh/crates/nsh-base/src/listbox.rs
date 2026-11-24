@@ -600,6 +600,18 @@ impl Listbox {
                 }
             });
         });
+        // The search field went away (searchable turned off, the list
+        // open or not): what it held filters nothing any more, so every
+        // item shows again.
+        effect(move || {
+            if !lb.searchable.get() {
+                untracked(|| {
+                    if !lb.own_query.get().is_empty() {
+                        lb.own_query.set(String::new());
+                    }
+                });
+            }
+        });
         // The app's query changed while the list is open (it followed the
         // field, or set its own): as a typed one, the first match.
         let last = stored(None::<SharedString>);

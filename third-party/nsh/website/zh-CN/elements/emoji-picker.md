@@ -38,6 +38,7 @@ fn picker() -> impl IntoElement {
 ```tsx tabs
 import { mount, signal, Text } from "nsh";
 import { EmojiPicker } from "nsh/base";
+import { Window } from "nsh/desktop";
 
 function App() {
   const message = signal("");
@@ -60,7 +61,11 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 `EmojiPicker` 来自 [`nsh/base`](../modules/nsh-base.md)，在 Rust 里是 `nsh-base` crate。在 Rust 中用 `emoji_picker()` 创建，每个 prop 对应一个设置方法，每个事件对应一个监听方法，另有类型化的样式方法。它本身不弹出：桌面上放进 [`Popover`](./popover.md)，手机上放进 [`Sheet`](./sheet.md)，也可以直接放在页面里。

@@ -66,6 +66,7 @@ fn sections() -> impl IntoElement {
 ```tsx tabs
 import { mount, signal, Text, View } from "nsh";
 import { Tab, Tabs } from "nsh/base";
+import { Window } from "nsh/desktop";
 
 function App() {
   const section = signal("overview");
@@ -96,7 +97,11 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 `Tab` and `Tabs` come from [`nsh/base`](../modules/nsh-base.md), the `nsh-base` crate in Rust. The value is the
@@ -126,6 +131,7 @@ the typed style methods and `.child(..)` for their content.
 
 | Prop | Rust | Type | Default | Description |
 |---|---|---|---|---|
+| `orientation` | `.orientation(..)` | `"horizontal" \| "vertical"` | none | The direction the list runs, which picks the arrow keys that move between its tabs: Left and Right in a row, Up and Down in a column. The other pair is left to the page (a scroll view around the list). Without it both pairs move, as a list laid out either way, and no orientation is reported. It does not lay the list out: the app's `class` does (`flex-row` for a row). Read when the list is made. Screen readers hear it where the platform has a property for it (the web's `aria-orientation`). |
 | `indicatorClass` | `.indicator_class(..)` | `string` | none | The Tailwind classes of the indicator on the selected tab: its look and its place across the list (`bottom-0 h-0.5` for an underline in a row, `inset-y-1` for a pill). Along the list it spans the selected tab, inside its own margins on that axis. With `indicatorClass` or `indicatorStyle` the list has an indicator. |
 | `indicatorStyle` | `.indicator_style(\|s\| ..)` | `StyleProp<ViewStyle>` | none | The style of the indicator, over `indicatorClass`. |
 | `accessibilityLabel` | `.accessibility_label(..)` | `string` | none | The name of the list ("Sections", "Views"), which screen readers say as they enter it. |
@@ -207,6 +213,8 @@ A disabled tab takes no presses, and screen readers announce it as dimmed. Its `
   own. Its `accessibilityLabel` names the list; give one wherever no text next to the list says what its tabs switch.
 - `disabled` is announced as the platform announces it (VoiceOver, TalkBack, UI Automation, the browser's accessibility
   tree).
+- Where the platform has a property for a list's orientation, screen readers hear it: the web's `aria-orientation`
+  follows `orientation` when the app sets one.
 - On macOS and the web the list is one stop of the keyboard focus, and the arrow keys move between its tabs (below).
 - The indicator is hidden from screen readers and takes no focus: the tabs alone are the list's elements.
 
@@ -220,15 +228,20 @@ On macOS and the web, where Tab reaches the views that take presses, a `Tabs` li
 | Key | What it does |
 |---|---|
 | Tab, Shift+Tab | Enters the list at the selected tab (the first tab that is not disabled while none is), and leaves it in one step. |
-| Right, Down | Moves the focus to the next tab, from the last to the first. |
-| Left, Up | Moves the focus to the previous tab, from the first to the last. |
+| Right | Moves the focus to the next tab, from the last to the first, in a horizontal list and in one without an `orientation`. |
+| Left | Moves the focus to the previous tab, from the first to the last, in a horizontal list and in one without an `orientation`. |
+| Down | Moves the focus to the next tab, from the last to the first, in a vertical list and in one without an `orientation`. |
+| Up | Moves the focus to the previous tab, from the first to the last, in a vertical list and in one without an `orientation`. |
 | Home, End | Moves the focus to the first or the last tab. |
 | Space, Return | Presses the focused tab. |
 
 The arrow keys skip disabled tabs, and the tab they move to reports `onPress`, so the app selects it as the focus
-moves: the section follows the focus. Both pairs of arrows move, whatever the list's layout, which is the app's
-class. In a right-to-left layout the row runs from the right, so Left and Right trade places: Left moves to the next
-tab and Right to the previous; Up, Down, Home and End keep theirs. `focus-visible:` styles show where the focus is. A `Tab` outside a `Tabs` is a stop of its own.
+moves: the section follows the focus. `orientation` picks the pair that moves (`horizontal`: Left and Right;
+`vertical`: Up and Down); without it both pairs move, as a list laid out either way. The other pair is left to the
+page, so a scroll view around the list scrolls with it. The layout is separate, the app's `class`. In a
+right-to-left layout a horizontal list runs from the right, so Left and Right trade places: Left moves to the next
+tab and Right to the previous; Up, Down, Home and End keep theirs. `focus-visible:` styles show where the focus is. A
+`Tab` outside a `Tabs` is a stop of its own.
 
 ## Platform notes
 

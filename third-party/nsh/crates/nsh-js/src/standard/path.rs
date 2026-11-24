@@ -8,19 +8,29 @@ use rquickjs::{
 
 pub(crate) struct PathModule;
 
+/// Browser paths use `/` on every host: Windows' separator is mapped back.
+fn portable(path: String) -> String {
+    if cfg!(windows) {
+        path.replace('\\', "/")
+    } else {
+        path
+    }
+}
+
 fn resolve(parts: Rest<String>) -> String {
     let start = parts
         .0
         .iter()
         .rposition(|part| part.starts_with('/'))
         .unwrap_or(0);
-    quickjs_jit_stdlib::path::join_path(
+    portable(quickjs_jit_stdlib::path::join_path(
         std::iter::once("/").chain(parts.0[start..].iter().map(String::as_str)),
-    )
+    ))
 }
 
 fn relative(from: String, to: String) -> Result<String> {
     quickjs_jit_stdlib::path::relative(resolve(Rest(vec![from])), resolve(Rest(vec![to])))
+        .map(portable)
 }
 
 impl ModuleDef for PathModule {

@@ -108,12 +108,20 @@ fn keyboard_parent(surface: &Surface, view: &NshView) -> Option<NshView> {
     (parent.id() != view.id() && parent.root() == view.root()).then_some(parent)
 }
 
+/// The core's logical content view of an unfocused window.
+fn key_start(surface: &Surface, view: &NshView) -> NshView {
+    let content = view.state().props.key_content;
+    content
+        .and_then(|id| surface.mounter.try_borrow().ok()?.views.get(&id).cloned())
+        .unwrap_or_else(|| view.clone())
+}
+
 /// Whether `view` or a logical ancestor hears a raw key event, or captures
 /// keys: only then does a key need a [`KeyEvent`], its capture rules and
 /// the per-key state. A view that hears none takes
 /// [`crate::key_focus`]'s original path, with nothing built.
 pub(crate) fn listens(surface: &Surface, view: &NshView) -> bool {
-    let mut current = Some(view.clone());
+    let mut current = Some(key_start(surface, view));
     while let Some(view) = current {
         {
             let state = view.state();
@@ -157,7 +165,7 @@ pub(crate) fn captures(
     group: i32,
 ) -> bool {
     let stroke = shortcut_stroke(view, event, keycode, state, group);
-    let mut current = Some(view.clone());
+    let mut current = Some(key_start(surface, view));
     while let Some(view) = current {
         let state = view.state();
         if !state.props.accessibility.state.disabled

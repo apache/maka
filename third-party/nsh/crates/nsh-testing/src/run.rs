@@ -13,7 +13,7 @@ use std::{
     future::Future,
     io::Write,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, MutexGuard},
+    sync::{Arc, Mutex},
     task::Poll,
     time::{Duration, Instant},
 };
@@ -194,6 +194,7 @@ impl nsh_dev::protocol::TestNetwork for HostRoutes {
                 HttpBody::Bytes(request.body)
             },
             follow_redirects: request.follow_redirects,
+            cache: nsh_engine::HttpCache::parse(&request.cache).unwrap_or_default(),
         };
         if self.live {
             self.requests.record(request);
@@ -283,9 +284,6 @@ pub fn run_file(
     file: &Path,
     report: &mut dyn FnMut(&TestResult),
 ) -> Result<Vec<TestResult>, String> {
-    // One test file at a time in a process: the VM's calls find its session.
-    static RUNNING: Mutex<()> = Mutex::new(());
-    let _running = RUNNING.lock().unwrap_or_else(|e| e.into_inner());
     let file = dunce::canonicalize(file).map_err(|e| format!("{}: {e}", file.display()))?;
     let (bundle, source_map, asset_root) = compile_test_file(run, &file)?;
     let (events, results) = crossbeam_channel::unbounded();
@@ -296,9 +294,9 @@ pub fn run_file(
         apps: Mutex::new(Vec::new()),
         events: events.clone(),
     });
-    *current() = Some(session.clone());
     let ended = drive(
         run,
+        &session,
         bundle,
         &asset_root,
         &events,
@@ -306,15 +304,16 @@ pub fn run_file(
         source_map.as_deref(),
         report,
     );
-    *current() = None;
     session.close_apps(0);
     ended
 }
 
 /// Starts the test file's VM and collects what it reports until its tests
 /// ended.
+#[allow(clippy::too_many_arguments)]
 fn drive(
     run: &TestRun,
+    session: &Arc<Session>,
     bundle: Bundle,
     asset_root: &Path,
     events: &Sender<Event>,
@@ -339,8 +338,18 @@ fn drive(
         events: events.clone(),
         images: images.clone(),
     };
-    let vm = Engine::start(config, || ApproxTextEngine, sink)
-        .map_err(|e| format!("the test file's engine did not start: {e}"))?;
+    // The VM's calls find the session on its thread (the text engine is
+    // made there): files run side by side, each with its own.
+    let vm_session = session.clone();
+    let vm = Engine::start(
+        config,
+        move || {
+            CURRENT.set(Some(vm_session));
+            ApproxTextEngine
+        },
+        sink,
+    )
+    .map_err(|e| format!("the test file's engine did not start: {e}"))?;
     images.lock().unwrap().start(vm.control());
     let mut out = Vec::new();
     loop {
@@ -588,16 +597,17 @@ pub(crate) struct Session {
     events: Sender<Event>,
 }
 
-fn current() -> MutexGuard<'static, Option<Arc<Session>>> {
-    static CURRENT: Mutex<Option<Arc<Session>>> = Mutex::new(None);
-    CURRENT.lock().unwrap_or_else(|e| e.into_inner())
+thread_local! {
+    /// The test file whose VM runs on this thread.
+    static CURRENT: std::cell::RefCell<Option<Arc<Session>>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 impl Session {
     /// The test file being run.
     pub(crate) fn current() -> Result<Arc<Session>, String> {
-        current()
-            .clone()
+        CURRENT
+            .with_borrow(Clone::clone)
             .ok_or_else(|| "nsh/test runs in `nsh test` only".to_owned())
     }
 

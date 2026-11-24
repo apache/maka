@@ -3,7 +3,7 @@
 // `Nav.test.tsx` runs it on the macOS host.
 import { mount, signal, Text, View, WebView } from "nsh";
 import { Button, createNavStack, NavPage, NavStack } from "nsh/base";
-import { Menu } from "nsh/desktop";
+import { Menu, Window } from "nsh/desktop";
 
 type Route = "root" | "detail";
 
@@ -34,4 +34,4 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => <Window id="main">{App}</Window>);

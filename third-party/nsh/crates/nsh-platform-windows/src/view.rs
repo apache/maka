@@ -202,7 +202,13 @@ impl ViewState {
             shift: (0.0, 0.0),
             fade: 1.0,
             concealed: false,
-            scroll: matches!(kind, ViewKind::Scroll).then(ScrollState::default),
+            // Its children are drawn, hit and exposed through the zoom
+            // ([`ViewState::child_place`]).
+            scroll: matches!(kind, ViewKind::Scroll).then(|| {
+                let mut s = ScrollState::default();
+                s.can_zoom = true;
+                s
+            }),
             text: None,
             image: None,
             canvas: None,
@@ -240,20 +246,8 @@ impl ViewState {
     pub(crate) fn radii(&self) -> [f32; 4] {
         let s = &self.style;
         let corners = s.corner_radius.to_array();
-        let mut r: [f32; 4] = std::array::from_fn(|i| corners[i].unwrap_or(s.border_radius).0);
-        let (w, h) = (self.frame.size.width.0, self.frame.size.height.0);
-        let sums = [r[0] + r[1], r[1] + r[2], r[2] + r[3], r[3] + r[0]];
-        let lens = [w, h, w, h];
-        let f = sums
-            .iter()
-            .zip(lens)
-            .filter(|(s, _)| **s > 0.0)
-            .map(|(s, l)| l / s)
-            .fold(1.0f32, f32::min);
-        if f < 1.0 {
-            r.iter_mut().for_each(|v| *v *= f);
-        }
-        r
+        let r: [f32; 4] = std::array::from_fn(|i| corners[i].unwrap_or(s.border_radius).0);
+        crate::geom::fit_radii(self.frame.size.width.0, self.frame.size.height.0, r)
     }
 
     /// True if its children are clipped to its rounded bounds.
@@ -308,8 +302,17 @@ impl ViewState {
 
     /// Where a child at `frame` (with its `shift`) goes in this view's
     /// coordinates: its frame's origin, less the scroll offset, mirrored in
-    /// a right-to-left list.
+    /// a right-to-left list; in a zoomed scroll view, where its zoomed
+    /// origin shows ([`ViewState::child_scale`]).
     pub(crate) fn child_origin(&self, frame: Bounds<Points>, shift: (f32, f32)) -> (f32, f32) {
+        if let Some(s) = self.scroll.as_ref().filter(|s| s.zooms() || s.zoom != 1.0) {
+            let at = nsh_core::geometry::point(
+                frame.origin.x + Points(shift.0),
+                frame.origin.y + Points(shift.1),
+            );
+            let p = s.to_viewport(self.frame.size, at);
+            return (p.x.0, p.y.0);
+        }
         let (sx, sy) = self.scroll.as_ref().map_or((0.0, 0.0), |s| {
             let o = s.origin();
             (o.x.0, o.y.0)
@@ -319,6 +322,34 @@ impl ViewState {
             x = self.frame.size.width.0 - x - frame.size.width.0;
         }
         (x, frame.origin.y.0 - sy + shift.1)
+    }
+
+    /// How much the children are scaled: a zoomed scroll view's zoom, 1
+    /// for any other view.
+    pub(crate) fn child_scale(&self) -> f32 {
+        self.scroll.as_ref().map_or(1.0, |s| s.zoom)
+    }
+
+    /// The transform from a child's coordinates to this view's, before
+    /// the child's own transform: its place ([`ViewState::child_origin`])
+    /// and the zoom ([`ViewState::child_scale`]).
+    pub(crate) fn child_place(&self, frame: Bounds<Points>, shift: (f32, f32)) -> Mat4 {
+        let (x, y) = self.child_origin(frame, shift);
+        let place = Mat4::new().translate(x, y);
+        match self.child_scale() {
+            1.0 => place,
+            z => place.scale(z, z),
+        }
+    }
+
+    /// The transform from `child`'s coordinates to this view's: its place
+    /// ([`ViewState::child_place`]) and its own transform.
+    pub(crate) fn child_matrix(&self, child: &ViewState) -> Mat4 {
+        let place = self.child_place(child.frame, child.shift);
+        match child.transform() {
+            Some(t) => Mat4::mul(&t, &place),
+            None => place,
+        }
     }
 }
 
@@ -733,11 +764,7 @@ impl NshView {
                 drop(s);
                 return self.attached_root(&view).then_some(m);
             };
-            let (x, y) = parent.state().child_origin(s.frame, s.shift);
-            let mut local = Mat4::new().translate(x, y);
-            if let Some(t) = s.transform() {
-                local = Mat4::mul(&t, &local);
-            }
+            let local = parent.state().child_matrix(&s);
             drop(s);
             m = Mat4::mul(&m, &local);
             view = parent;
@@ -760,11 +787,7 @@ impl NshView {
         while let Some(parent) = view.parent_view() {
             {
                 let s = view.state();
-                let (x, y) = parent.state().child_origin(s.frame, s.shift);
-                let mut local = Mat4::new().translate(x, y);
-                if let Some(t) = s.transform() {
-                    local = Mat4::mul(&t, &local);
-                }
+                let local = parent.state().child_matrix(&s);
                 m = Mat4::mul(&m, &local);
             }
             let clip = {

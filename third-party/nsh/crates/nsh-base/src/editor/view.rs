@@ -1550,6 +1550,7 @@ fn sink(ed: Ed, lh: impl Fn() -> Points + Clone + 'static) -> impl IntoElement {
         .multiline(true)
         // The app's scroll bars belong to the text area, not the caret sink.
         .scrollbar(false)
+        .auto_focus(props.auto_focus)
         .auto_correct(false)
         .auto_capitalize(AutoCapitalize::None)
         .paste_behavior(PasteBehavior::Report)

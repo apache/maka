@@ -2,8 +2,8 @@ import { type Bounds, type JSX, computed, effect, type InputRef, mount, Scroll, 
 import { Animated, createAnimatedValue, Easing } from "nsh";
 import { fpsEnabled, platform, setFpsEnabled, windowSize } from "nsh";
 import process from "process";
-import { Application, isAvailable as desktopWindows, Menu as AppMenu, titleBar } from "nsh/desktop";
-import { AlertDialog, Input, Menu, MenuItem, NavPage, NavStack, Scrollbar } from "nsh/base";
+import { Window, Application, isAvailable as desktopWindows, Menu as AppMenu } from "nsh/desktop";
+import { AlertDialog, Input, Menu, MenuItem, NavPage, NavStack, Scrollbar, TitleBar as WindowTitleBar } from "nsh/base";
 import { keymap } from "nsh";
 import { Storage } from "nsh";
 import { Icon, LucideIcon, type LucideIconName } from "./icons";
@@ -169,8 +169,11 @@ const allGroups: { title: string; demos: DemoEntry[] }[] = [
   },
 ];
 
-/** The demos a terminal has nothing to show for, left out of its index. */
-const TERMINAL_HIDDEN: Record<string, true> = { Image: true, Shader: true, WebView: true, Video: true, Photos: true };
+/**
+ * The demos left out of a terminal's index: those it has nothing to show for, a rich editor (formatting a terminal
+ * cannot show) and notifications (a terminal posts none).
+ */
+const TERMINAL_HIDDEN: Record<string, true> = { Shader: true, WebView: true, Video: true, RichEditor: true, Notifications: true };
 const keyboardAvailable = !terminal && (platform.desktop || platform.os === "web");
 const groups = allGroups.map((g) => ({
   ...g,
@@ -398,7 +401,8 @@ function SidebarToggle() {
 }
 
 /** The sidebar's search: filters the demos by name or group as you type
- * (Ctrl+K / Cmd+K focuses it, Escape clears it). */
+ * (Ctrl+K / Cmd+K focuses it, Enter opens the demo named or else the first
+ * found, Escape clears it). */
 function Search() {
   let input: InputRef | undefined;
   keymap.bind("mod+k", () => input?.focus());
@@ -417,6 +421,12 @@ function Search() {
       value={query()}
       onChange={({ value }) => query.set(value)}
       onKeyPress={(e) => e.key === "Escape" && query.set("")}
+      onSubmit={() => {
+        const demos = found().flatMap((g) => g.demos);
+        const q = query().trim().toLowerCase();
+        const demo = demos.find((d) => d.name.toLowerCase() === q) ?? demos[0];
+        if (demo) select(demo);
+      }}
       placeholder={`Search demos  ${keymap.label("mod+k")}`}
       accessibilityLabel="Search demos"
     />
@@ -585,20 +595,21 @@ function Sidebar() {
           borderEndColor: colors.sidebarBorder,
         }}
       >
-        <View
-          desktop={{ windowDrag: true }}
-          style={
-            terminal
-              ? { height: TERMINAL_ROW, flexDirection: "row", alignItems: "center", justifyContent: "flex-end", paddingHorizontal: TERMINAL_COLUMN, marginBottom: TERMINAL_ROW }
-              : { height: 44, flexDirection: "row", alignItems: "center", paddingStart: (rtl() ? 0 : titleBar().left) + 16, paddingEnd: 10 }
-          }
-        >
-          {/* The mark at the sidebar's top start, past the window's controls (at the left, so right to left the sidebar is clear of them). */}
-          {!terminal && <Logo size={22} />}
-          {!terminal && <Text style={{ marginStart: 8, fontSize: 15, fontWeight: "600", color: colors.text, letterSpacing: -0.2 }}>NSH</Text>}
-          <View style={{ flex: 1 }} />
-          <SidebarToggle />
-        </View>
+        {/* The sidebar's part of the window's title bar: it steps aside of the window's controls only where it meets them (at the left, so right to left the sidebar is clear of them). */}
+        <WindowTitleBar>
+          <View
+            style={
+              terminal
+                ? { flex: 1, height: TERMINAL_ROW, flexDirection: "row", alignItems: "center", justifyContent: "flex-end", paddingHorizontal: TERMINAL_COLUMN, marginBottom: TERMINAL_ROW }
+                : { flex: 1, height: 44, flexDirection: "row", alignItems: "center", paddingStart: 16, paddingEnd: 10 }
+            }
+          >
+            {!terminal && <Logo size={22} />}
+            {!terminal && <Text style={{ marginStart: 8, fontSize: 15, fontWeight: "600", color: colors.text, letterSpacing: -0.2 }}>NSH</Text>}
+            <View style={{ flex: 1 }} />
+            <SidebarToggle />
+          </View>
+        </WindowTitleBar>
         <Search />
         <DemoList />
         <View
@@ -719,23 +730,13 @@ function DemoPane() {
   return (
     <View style={{ flex: 1, backgroundColor: colors.background }}>
       <View style={terminal ? { height: 2 * TERMINAL_ROW, borderBottomWidth: 1, borderBottomColor: colors.line } : undefined}>
+        {/* The content pane's part of the window's title bar: clear of the window's controls only while it meets them (the sidebar hidden, or right to left). */}
+        <WindowTitleBar style={terminal ? undefined : { borderBottomWidth: 1, borderBottomColor: colors.line }}>
         <View
-          desktop={{ windowDrag: true }}
           style={
             terminal
-              ? { height: TERMINAL_ROW, flexDirection: "row", alignItems: "center", gap: TERMINAL_COLUMN, paddingHorizontal: TERMINAL_COLUMN }
-              : {
-                  height: 44,
-                  flexDirection: "row",
-                  alignItems: "center",
-                  gap: 6,
-                  // Clear of the window's controls, at the left: the start
-                  // while the sidebar is hidden, the end right to left.
-                  paddingStart: sidebarOpen() ? 32 : (rtl() ? 0 : titleBar().left) + 12,
-                  paddingEnd: rtl() ? titleBar().left + 12 : 16,
-                  borderBottomWidth: 1,
-                  borderBottomColor: colors.line,
-                }
+              ? { flex: 1, height: TERMINAL_ROW, flexDirection: "row", alignItems: "center", gap: TERMINAL_COLUMN, paddingHorizontal: TERMINAL_COLUMN }
+              : { flex: 1, height: 43, flexDirection: "row", alignItems: "center", gap: 6, paddingStart: sidebarOpen() ? 32 : 12, paddingEnd: 16 }
           }
         >
           <If when={!sidebarOpen()}>
@@ -749,6 +750,7 @@ function DemoPane() {
           </If>
           <Text style={{ numberOfLines: 1, flex: 1, fontSize: 13, fontWeight: "600", color: colors.text }}>{selected().name}</Text>
         </View>
+        </WindowTitleBar>
       </View>
       <View style={{ flex: 1 }}>
         {(() => {
@@ -925,4 +927,4 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => <Window id="main">{App}</Window>);

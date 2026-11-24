@@ -40,6 +40,7 @@ interface CanvasSize {
 
 ```tsx
 import { Canvas, mount, signal, Text, View } from "nsh";
+import { Window } from "nsh/desktop";
 
 function App() {
   const values = signal([12, 30, 22, 48, 36, 60, 52, 75]);
@@ -63,7 +64,11 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 ## 不重绘的动画
@@ -100,7 +105,7 @@ type CanvasPaint = string | CanvasGradient | AnimatedNode;
 
 ## CanvasRenderingContext2D
 
-`draw` 收到的上下文。调用只会记录操作；`draw` 返回后由平台绘制。
+`draw` 收到的上下文。绘制调用记录操作，`draw` 返回后由平台回放。
 
 ### 状态与变换
 
@@ -168,6 +173,10 @@ closePath(): void;
 ```
 
 所有坐标都是 `CanvasNumber`。角度以弧度为单位，从 x 轴顺时针计算。`roundRect` 的 `radii` 是一个半径，或像 CSS `border-radius` 那样的 2–4 个半径（从左上角开始）。
+
+### 命中测试
+
+`isPointInPath(path?, x, y, rule?)` 测试点是否在填充区域内。`isPointInStroke(path?, x, y)` 测试点是否在描边区域内。两者都可测试当前路径或传入的 `Path2D`，并同步返回布尔值。示例见[画布指南](../docs/canvas.md#2d-操作)。
 
 ### 绘制
 
@@ -292,4 +301,4 @@ url.set(URL.createObjectURL(png)); // <Image src={url()} />, or its bytes: await
 
 ## 不支持的功能
 
-不支持像素访问（`getImageData`、`putImageData`）、`filter`、`isPointInPath` 和 SVG 图片。与 HTML Canvas 一样，无效的颜色或字体只会让那一个操作被丢弃。
+不支持像素访问（`getImageData`、`putImageData`）、`filter` 和 SVG 图片。与 HTML Canvas 一样，无效的颜色或字体只会让那一个操作被丢弃。

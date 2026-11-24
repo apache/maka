@@ -1,4 +1,5 @@
 import { mount, View } from "nsh";
+import { Window } from "nsh/desktop";
 import { Input } from "nsh/base";
 
 // A field and a text area that take ten characters each, and a text area
@@ -13,4 +14,4 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => <Window id="main">{App}</Window>);

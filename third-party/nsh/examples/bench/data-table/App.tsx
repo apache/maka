@@ -1,4 +1,5 @@
 import { mount, signal } from "nsh";
+import { Window } from "nsh/desktop";
 import { DataTable, type DataTableColumn } from "nsh/base";
 
 // The DataTable scroll workload: 100 000 rows × 20 columns, the app serving
@@ -38,4 +39,4 @@ function App() {
   );
 }
 
-mount(() => <App />);
+mount(() => <Window id="main">{() => <App />}</Window>);

@@ -4,11 +4,9 @@
 // its docks toggled, its panels closed; and on a phone, its compact
 // presentation. nsh/test drags by offsets, so the demo's geometry is fixed
 // in any window 1000 wide or more: the area is 700 wide (a 200 left dock,
-// a 500 center whose first group is 300 wide), its tabs 112 × 36 in a bar
-// 37 high (its bottom border). A drag from the middle of `main.rs` (the
-// first group's second tab, at 168, 18 in the center) lands where these
-// steps say. Headless, the app runs as macOS: a tab drags once the pointer
-// moves (touch screens hold it first).
+// a 500 center whose first group is 300 wide). Tabs size to their titles,
+// so drops must stay inside the current strip. Headless, the app runs as
+// macOS: a tab drags once the pointer moves (touch screens hold it first).
 import { beforeEach, describe, expect, open, test } from "nsh/test";
 import type { App } from "nsh/test";
 
@@ -169,7 +167,7 @@ describe("on a phone", () => {
 
   test("a tab dragged along the strip reorders it, splitting nothing", async () => {
     // From the middle of the second tab to the first tab's leading half.
-    await app.drag("id:tab-main", { x: -130, y: 0 });
+    await app.drag("id:tab-main", { x: -105, y: 0 });
     await app.waitFor("Center: main.rs, README.md | Preview");
   });
 });

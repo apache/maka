@@ -614,11 +614,11 @@ fn the_surface_reports_the_machines_operating_system() {
 #[test]
 fn apps_read_the_terminal_idiom_the_real_os_and_the_desktop_module() {
     let expected = if cfg!(target_os = "macos") {
-        "macos terminal true d"
+        "macos terminal false d"
     } else if cfg!(target_os = "windows") {
-        "windows terminal true d"
+        "windows terminal false d"
     } else {
-        "linux terminal true d"
+        "linux terminal false d"
     };
     let code = nsh_bundler::compile_module(
         "App.tsx",

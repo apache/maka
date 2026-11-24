@@ -592,6 +592,9 @@ pub fn DatePicker(props: DatePickerProps, cx: Scope<DatePickerEvent>) -> impl In
     let edits_time = computed(move || props.time_precision.get().is_some() && !props.range.get());
 
     let anchor = element_ref();
+    // Opened by a pointer, the list gives the keyboard focus back where it
+    // was as it closes, not to the trigger (`back`).
+    crate::popup::note_focus_origin(move || open.get(), anchor);
     let width = signal(None::<Points>);
     let focused = signal(false);
     let closed_by = stored(None::<OpenChangeReason>);
@@ -728,6 +731,8 @@ pub fn DatePicker(props: DatePickerProps, cx: Scope<DatePickerEvent>) -> impl In
         render_item: props.render_item,
     };
     let field_config = FieldConfig {
+        min: Prop::bind(|| None),
+        max: Prop::bind(|| None),
         precision: Prop::bind(move || props.time_precision.get().unwrap_or_default()),
         hour_cycle: props.hour_cycle,
         disabled: props.disabled,

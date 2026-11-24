@@ -1,7 +1,8 @@
 //! The platform's services for Rust components on the engine: the fonts
 //! the UI sets' crates ship are registered before the first render, tasks
 //! wait for display frames, components set the layout direction and read
-//! the pixel ratio, the device, the locale and whether the app is in use;
+//! the pixel ratio, the device, the locale and whether the app is in use,
+//! and their language reaches the platform's own words;
 //! they speak, move the screen reader and set the status bar with their
 //! dialogs; they read the desktop window's state, a move once it stops,
 //! and the displays.
@@ -20,8 +21,10 @@ use nsh_base::dialog;
 use nsh_core::{
     ApproxTextEngine, AttributedText, Command, EventKind, EventPayload, MountBatch, MountItem,
     Points, ROOT_ID, Size, StatusBarSetting, StatusBarStyle, TextEngine, TextLayout,
-    desktop::{Display, DisplayId, WindowMode, WindowPlacement, WindowState},
-    element::{AssetFile, AssetKind, Registry, Root},
+    desktop::{
+        DesktopCommand, Display, DisplayId, WindowEvent, WindowMode, WindowPlacement, WindowState,
+    },
+    element::{AssetFile, AssetKind, Registry, Root, desktop::window},
     geometry::{Bounds, point, size},
     platform::{
         Idiom, Languages, Lifecycle, Locale, LocaleSettings, Os, TemperatureUnit, TimeZone,
@@ -716,10 +719,75 @@ fn components_speak_move_the_reader_and_set_the_status_bar() {
     assert_eq!(focused[0].0, texts["The note"]);
 }
 
+/// Shows the app in Traditional Chinese, or the user's language again.
+#[component]
+fn AppLanguage() -> impl IntoElement {
+    view()
+        .flex_1()
+        .child(text("Chinese").on_press(|_: &()| {
+            nsh_core::i18n::set_locale(Some(Locale::parse("zh-Hant-TW").unwrap()))
+        }))
+        .child(text("System").on_press(|_: &()| nsh_core::i18n::set_locale(None)))
+}
+
+#[test]
+fn the_app_language_reaches_the_platform_state_words() {
+    let (engine, rx, _) = start::<AppLanguage>(Environment::default());
+    let mut texts = HashMap::new();
+    // Presses the text `label` (none: only the first render) and returns
+    // the languages of the app's text sent to the platform since.
+    let mut step = |press: Option<&str>| {
+        if let Some(label) = press {
+            engine
+                .control()
+                .dispatch_event(texts[label], EventKind::Press, EventPayload::None);
+        }
+        let mut sent = Vec::new();
+        while let Ok(batch) = rx.recv_timeout(Duration::from_millis(300)) {
+            for item in batch.items {
+                match item {
+                    MountItem::Text { id, text, .. } => {
+                        texts.insert(text.text.clone(), id);
+                    }
+                    MountItem::Command {
+                        id,
+                        command: Command::TextLocale(locale),
+                    } => {
+                        assert_eq!(id, ROOT_ID);
+                        sent.push(locale.to_string());
+                    }
+                    _ => {}
+                }
+            }
+        }
+        sent
+    };
+    // The user's English is the platform's own default: nothing is sent.
+    assert_eq!(step(None), Vec::<String>::new());
+    // The app picks its language whatever the user's (the system's English
+    // stays the user's).
+    assert_eq!(step(Some("Chinese")), ["zh-Hant-TW"]);
+    assert_eq!(step(Some("Chinese")), Vec::<String>::new());
+    assert_eq!(step(Some("System")), ["en-US"]);
+    // The user's language changes while the app follows it.
+    engine.control().set_environment(Environment {
+        locale: Locale::parse("ja-JP").unwrap(),
+        ..Environment::default()
+    });
+    assert_eq!(step(None), ["ja-JP"]);
+    // The app's choice wins over the user's language.
+    assert_eq!(step(Some("Chinese")), ["zh-Hant-TW"]);
+}
+
 /// Shows the window's x, mode and whether it is minimized, and how many
 /// displays there are.
 #[component]
 fn WindowInfo() -> impl IntoElement {
+    window().id("main").content(window_info_text)
+}
+
+#[component]
+fn WindowInfoText() -> impl IntoElement {
     view().child(text(move || {
         let displays = nsh_core::element::desktop::displays().len();
         match nsh_core::element::desktop::window_state() {
@@ -740,12 +808,9 @@ fn WindowInfo() -> impl IntoElement {
 }
 
 /// A window at `x`, 800 × 600, in `mode`'s mode.
-fn window_at(x: f32, mode: WindowMode) -> Environment {
+fn window_state_at(x: f32, mode: WindowMode) -> WindowState {
     let bounds = Bounds::new(point(px(x), px(0.0)), size(px(800.0), px(600.0)));
-    Environment {
-        window_state: Some(WindowState::new(bounds, WindowPlacement::new(mode, bounds))),
-        ..Environment::default()
-    }
+    WindowState::new(bounds, WindowPlacement::new(mode, bounds))
 }
 
 fn display(id: u64, x: f32) -> Display {
@@ -777,10 +842,13 @@ fn advance(engine: &Engine, ms: u64) {
 }
 
 #[test]
-fn components_read_the_window_once_it_stops_and_the_displays() {
+fn components_read_their_windows_state_and_the_displays() {
     let (tx, rx) = crossbeam_channel::unbounded();
     let config = EngineConfig {
-        environment: window_at(0.0, WindowMode::Normal),
+        environment: Environment {
+            os: Os::MacOs,
+            ..Environment::default()
+        },
         clock: nsh_core::time::Clock::manual(
             std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(1_767_225_600),
         ),
@@ -800,60 +868,61 @@ fn components_read_the_window_once_it_stops_and_the_displays() {
         },
     )
     .unwrap();
-    let mut last = String::new();
+    advance(&engine, 0);
+    let mut first = Vec::new();
+    while let Ok(batch) = rx.try_recv() {
+        first.extend(batch.items);
+    }
+    let mut last = first
+        .iter()
+        .rev()
+        .find_map(|item| match item {
+            MountItem::Text { text, .. } => Some(text.text.clone()),
+            _ => None,
+        })
+        .unwrap_or_default();
+    // The window opened; the platform has reported no state yet.
+    assert_eq!(last, "no window, displays 2");
+    let window = first
+        .iter()
+        .find_map(|item| match item {
+            MountItem::Command {
+                id,
+                command: Command::Desktop(command),
+            } if matches!(&**command, DesktopCommand::OpenWindow(_)) => Some(*id),
+            _ => None,
+        })
+        .expect("the window opens");
+    // Its state is the platform's, reported as it arrives.
+    let report = |state: WindowState| {
+        engine.control().dispatch_event(
+            window,
+            EventKind::Window,
+            EventPayload::Window(Box::new(WindowEvent::State(Box::new(state)))),
+        );
+    };
+    report(window_state_at(0.0, WindowMode::Normal));
     advance(&engine, 0);
     assert_eq!(
         last_text(&rx, &mut last),
         "x 0 windowed minimized false displays 2"
     );
-    // A drag: held back while the window moves, reported 150 ms after it
-    // stopped.
-    engine
-        .control()
-        .set_environment(window_at(10.0, WindowMode::Normal));
-    advance(&engine, 100);
-    engine
-        .control()
-        .set_environment(window_at(20.0, WindowMode::Normal));
-    advance(&engine, 100);
-    assert_eq!(
-        last_text(&rx, &mut last),
-        "x 0 windowed minimized false displays 2"
-    );
-    advance(&engine, 60);
+    report(window_state_at(20.0, WindowMode::Normal));
+    advance(&engine, 0);
     assert_eq!(
         last_text(&rx, &mut last),
         "x 20 windowed minimized false displays 2"
     );
-    // Another part of the environment while the window moves does not
-    // hold it longer.
-    engine
-        .control()
-        .set_environment(window_at(30.0, WindowMode::Normal));
-    advance(&engine, 100);
-    engine.control().set_environment(Environment {
-        font_scale: 1.5,
-        ..window_at(30.0, WindowMode::Normal)
-    });
-    advance(&engine, 60);
-    assert_eq!(
-        last_text(&rx, &mut last),
-        "x 30 windowed minimized false displays 2"
-    );
-    // A change of mode or minimizing comes at once, with the bounds of then.
-    engine
-        .control()
-        .set_environment(window_at(0.0, WindowMode::Maximized));
+    // A change of mode or minimizing comes with the bounds of then.
+    report(window_state_at(0.0, WindowMode::Maximized));
     advance(&engine, 0);
     assert_eq!(
         last_text(&rx, &mut last),
         "x 0 maximized minimized false displays 2"
     );
-    let mut minimized = window_at(0.0, WindowMode::Maximized);
-    if let Some(state) = &mut minimized.window_state {
-        state.minimized = true;
-    }
-    engine.control().set_environment(minimized);
+    let mut minimized = window_state_at(0.0, WindowMode::Maximized);
+    minimized.minimized = true;
+    report(minimized);
     advance(&engine, 0);
     assert_eq!(
         last_text(&rx, &mut last),
@@ -866,11 +935,6 @@ fn components_read_the_window_once_it_stops_and_the_displays() {
         last_text(&rx, &mut last),
         "x 0 maximized minimized true displays 1"
     );
-    // Off desktops there is no window and no display.
-    engine.control().set_environment(Environment::default());
-    engine.control().set_displays(Vec::new());
-    advance(&engine, 0);
-    assert_eq!(last_text(&rx, &mut last), "no window, displays 0");
 }
 
 /// A login item the system keeps on until it is turned off.

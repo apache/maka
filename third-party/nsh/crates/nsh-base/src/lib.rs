@@ -76,6 +76,8 @@ mod tabs;
 mod term;
 pub mod terminal;
 pub mod text_view;
+#[cfg(not(target_arch = "wasm32"))]
+mod updater_prompt;
 
 /// `EmojiPicker`'s emoji (`emoji_picker/emoji.tsv`): the native runtimes
 /// embed them; `nsh` publishes them next to a web runtime, which fetches
@@ -93,6 +95,7 @@ pub use crate::emoji_picker::EMOJI_DATA;
 pub const MATH_FONTS: &[u8] = include_bytes!("../fonts/katex.pack.zst");
 mod theme;
 mod time_field;
+mod title_bar;
 mod toast;
 mod toggle;
 mod toolbar;
@@ -192,7 +195,8 @@ pub use crate::{
     },
     navigation::{dialog, nav_page, nav_stack},
     number_input::{
-        NumberInput, NumberInputElement, NumberInputEvent, NumberInputProps, number_input,
+        NumberInput, NumberInputApi, NumberInputElement, NumberInputEvent, NumberInputProps,
+        number_input,
     },
     otp_input::{
         OtpInput, OtpInputApi, OtpInputCompleteEvent, OtpInputElement, OtpInputEvent,
@@ -253,6 +257,7 @@ pub use crate::{
         HourCycle, TimeField, TimeFieldElement, TimeFieldEvent, TimeFieldProps,
         TimeFieldSegmentEntry, TimeOfDay, TimePrecision, TimeSegment, time_field,
     },
+    title_bar::{TitleBar, TitleBarElement, TitleBarProps, title_bar, title_bar_insets},
     toast::{
         Anchor, SwipeDirection, Toast, ToastAdvance, ToastElement, ToastEvent, ToastManager,
         ToastMotion, ToastOptions, ToastProps, ToastStack, ToastStackElement, ToastStackEvent,
@@ -339,8 +344,8 @@ pub mod parts {
         MenuButton, MenuItem, MenuSeparator, NumberInput, OtpInput, Pagination, Popover, Progress,
         Radio, RadioGroup, ResizablePanel, ResizablePanelGroup, Scrollbar, Select, Sheet, Slider,
         SplitView, Submenu, Switch, Tab, Table, TableBody, TableCaption, TableCell, TableFooter,
-        TableHead, TableHeader, TableRow, Tabs, TextView, TimeField, Toast, ToastStack, Toggle,
-        ToggleGroup, Toolbar, ToolbarGroup, ToolbarSeparator, Tooltip, Tree,
+        TableHead, TableHeader, TableRow, Tabs, TextView, TimeField, TitleBar, Toast, ToastStack,
+        Toggle, ToggleGroup, Toolbar, ToolbarGroup, ToolbarSeparator, Tooltip, Tree,
     };
     #[cfg(feature = "editor")]
     use crate::{DiffView, Editor};
@@ -413,6 +418,7 @@ pub mod parts {
             .register::<Tabs>()
             .register::<Toggle>()
             .register::<ToggleGroup>()
+            .register::<TitleBar>()
             .register::<Toolbar>()
             .register::<ToolbarGroup>()
             .register::<ToolbarSeparator>()
@@ -517,6 +523,10 @@ pub mod parts {
             .register::<TextView>()
             .class::<crate::text_view::TextViewLinkTarget>()
             .module::<TextView>();
+        // The window of `promptForUpdate`, which shows the notes in a
+        // `TextView`. Apps on the web do not update.
+        #[cfg(not(target_arch = "wasm32"))]
+        registry.setup(crate::updater_prompt::install);
     }
 
     /// The `Editor`: a code editor.
@@ -590,6 +600,24 @@ pub fn specs() -> Vec<Arc<ComponentSpec>> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn press_controls_declare_optional_accessibility_hints() {
+        let declarations = nsh_core::element::declarations(&super::registry(), &[]);
+        for name in ["Button", "Link", "Switch", "Checkbox", "MenuButton"] {
+            let props = declarations
+                .split_once(&format!("export interface {name}Props"))
+                .unwrap()
+                .1
+                .split_once("\n}")
+                .unwrap()
+                .0;
+            assert!(
+                props.contains("accessibilityHint?: string | null;"),
+                "{props}"
+            );
+        }
+    }
+
     /// The exports are named after the types (`std::any::type_name`): a
     /// renamed type, or a compiler that formats type names differently,
     /// changes what apps import.
@@ -675,6 +703,7 @@ mod tests {
                 "Terminal",
                 "TextView",
                 "TimeField",
+                "TitleBar",
                 "Toast",
                 "ToastStack",
                 "Toggle",

@@ -86,6 +86,15 @@ impl App {
         self.focus_count(selector) > 0
     }
 
+    /// Whether a view was told to let go of the keyboard focus.
+    fn blur_sent(&self) -> bool {
+        self.app
+            .screen()
+            .commands()
+            .iter()
+            .any(|(_, c)| *c == Command::Blur)
+    }
+
     /// How many times the view `selector` names was told to take the
     /// focus.
     fn focus_count(&self, selector: &str) -> usize {
@@ -213,7 +222,7 @@ fn SelectScreen(props: ScreenProps) -> impl IntoElement {
 
 fn select_app(looks: bool, reduce_motion: bool) -> App {
     start(
-        Root::new::<SelectScreen>(move || ScreenProps { looks }),
+        nsh_testing::windowed_root_with::<SelectScreen>(move || ScreenProps { looks }),
         reduce_motion,
     )
 }
@@ -243,9 +252,11 @@ fn a_select_list_stays_with_its_ending_look_until_its_exit_ran() {
     assert!(app.app.shows("Pear"), "kept while it goes");
     assert_eq!(app.popup_opacity(), 0.0, "with its ending look");
     assert!(app.popup_inert(), "taking no presses");
+    // A press opened it with nothing focused, so nothing has the keyboard
+    // as it goes: the trigger does not take it.
     assert!(
-        app.focus_sent("role:combobox"),
-        "the trigger has the keyboard again as the list starts to go"
+        !app.focus_sent("role:combobox"),
+        "the trigger takes no keyboard as the list starts to go"
     );
     assert!(
         app.app.shows("Log: openChange:true open openChange:false"),
@@ -347,7 +358,7 @@ fn SearchScreen(_props: ScreenProps) -> impl IntoElement {
 /// field: only Pear shows.
 fn searched() -> App {
     let mut app = start(
-        Root::new::<SearchScreen>(|| ScreenProps { looks: true }),
+        nsh_testing::windowed_root_with::<SearchScreen>(|| ScreenProps { looks: true }),
         false,
     );
     app.app.press("role:combobox").unwrap();
@@ -441,7 +452,7 @@ fn ComboboxScreen(props: ScreenProps) -> impl IntoElement {
 #[test]
 fn a_combobox_list_comes_in_and_goes_with_its_looks() {
     let mut app = start(
-        Root::new::<ComboboxScreen>(|| ScreenProps { looks: true }),
+        nsh_testing::windowed_root_with::<ComboboxScreen>(|| ScreenProps { looks: true }),
         false,
     );
     app.app.press("text:Pick").unwrap();
@@ -515,7 +526,7 @@ fn DatePickerScreen(props: ScreenProps) -> impl IntoElement {
 #[test]
 fn a_date_picker_calendar_comes_in_and_goes_with_its_looks() {
     let mut app = start(
-        Root::new::<DatePickerScreen>(|| ScreenProps { looks: true }),
+        nsh_testing::windowed_root_with::<DatePickerScreen>(|| ScreenProps { looks: true }),
         false,
     );
     app.app.press("id:trigger").unwrap();
@@ -532,9 +543,11 @@ fn a_date_picker_calendar_comes_in_and_goes_with_its_looks() {
     assert!(app.shows_calendar(), "kept while it goes");
     assert_eq!(app.popup_opacity(), 0.0, "with its ending look");
     assert!(app.popup_inert(), "taking no presses");
+    // A press opened it with nothing focused: the keyboard leaves the
+    // calendar as it starts to go, back where it was, not to the trigger.
     assert!(
-        app.focus_sent("id:trigger"),
-        "the trigger has the keyboard again as the calendar starts to go"
+        app.blur_sent() && !app.focus_sent("id:trigger"),
+        "the keyboard leaves the calendar as it starts to go"
     );
     app.app.run_for(Duration::from_millis(150)).unwrap();
     assert!(!app.shows_calendar(), "gone once its 200 ms ran");
@@ -649,9 +662,11 @@ fn SelectChoice(props: ChoiceProps) -> impl IntoElement {
 #[test]
 fn a_select_choice_that_focuses_another_field_keeps_the_focus_there() {
     a_choice_gives_the_focus_back_unless_it_moved_it(
-        |p| Root::new::<SelectChoice>(move || p.clone()),
+        |p| nsh_testing::windowed_root_with::<SelectChoice>(move || p.clone()),
         "role:combobox",
         |app| {
+            // The trigger has the keyboard (Tab) as the press opens it.
+            app.press_key("tab").unwrap();
             app.press("role:combobox").unwrap();
             app.wait_for("role:listbox").unwrap();
         },
@@ -702,7 +717,7 @@ fn ComboboxChoice(props: ChoiceProps) -> impl IntoElement {
 fn a_combobox_choice_that_focuses_another_field_keeps_the_focus_there() {
     // The focus goes back to the combobox's input.
     a_choice_gives_the_focus_back_unless_it_moved_it(
-        |p| Root::new::<ComboboxChoice>(move || p.clone()),
+        |p| nsh_testing::windowed_root_with::<ComboboxChoice>(move || p.clone()),
         "role:combobox",
         |app| {
             app.press("text:Pick").unwrap();
@@ -762,7 +777,7 @@ fn a_date_picker_choice_that_focuses_another_field_keeps_the_focus_there() {
     // From the keyboard: Return opens the calendar with the keyboard on
     // today's day, and Return again chooses it.
     a_choice_gives_the_focus_back_unless_it_moved_it(
-        |p| Root::new::<DatePickerChoice>(move || p.clone()),
+        |p| nsh_testing::windowed_root_with::<DatePickerChoice>(move || p.clone()),
         "id:trigger",
         |app| {
             app.press_key("tab").unwrap();

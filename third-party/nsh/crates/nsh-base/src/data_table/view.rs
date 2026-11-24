@@ -304,6 +304,11 @@ fn hit_layer(dt: Dt, lead: Lead) -> impl IntoElement {
             view()
                 .flex_row()
                 .items_stretch()
+                // No shorter than the viewport: the room below the last row
+                // (all of the body, of a table with no rows) is the
+                // horizontal scroll view's too, so a wheel or a pan there
+                // moves the columns.
+                .min_h(relative(1.0))
                 .h(move || Length::from(px(height_dt.geo().y.extent() as f32)))
                 .on_layout({
                     let dt = dt.clone();
@@ -350,6 +355,7 @@ fn hit_layer(dt: Dt, lead: Lead) -> impl IntoElement {
                                 .relative()
                                 .min_w(relative(1.0))
                                 .w(move || Length::from(px(content_width(&width_dt))))
+                                .min_h(relative(1.0))
                                 .h(move || Length::from(px(strip_dt.geo().y.extent() as f32)))
                                 .on(EventKind::Press, move |p: &EventPayload| {
                                     if let EventPayload::Press(e) = p {
@@ -1905,6 +1911,7 @@ fn overlays(dt: Dt) -> impl IntoElement {
     let props = dt.props;
     let empty_dt = dt.clone();
     let top_dt = dt.clone();
+    let wheel_dt = dt.clone();
     let is_empty = move || empty_dt.row_count() == 0 && !empty_dt.props.loading.get();
     let loading = move || props.loading.get();
     view()
@@ -1921,7 +1928,29 @@ fn overlays(dt: Dt) -> impl IntoElement {
                     .inset_0()
                     .flex_col()
                     .items_center()
-                    .justify_center(),
+                    .justify_center()
+                    // Only what the app put in it takes the pointer: a wheel
+                    // or a pan on the room around it is the hit layer's,
+                    // which scrolls the columns.
+                    .pointer_events(PointerEvents::BoxNone)
+                    // What the app put in it lies over the hit layer, not
+                    // in it: a wheel there moves the columns from here.
+                    .on_wheel({
+                        let dt = wheel_dt.clone();
+                        move |e: &nsh_core::WheelEvent| {
+                            let g = untracked(|| dt.geo());
+                            let delta = e.delta.points(px(g.row_height));
+                            let max = (g.x.extent() - g.x.viewport).max(0.0) as f32;
+                            let x = (dt.scroll_x.get_untracked().0 + delta.x.0).clamp(0.0, max);
+                            dt.hscroll.scroll_to(
+                                Point {
+                                    x: px(x),
+                                    y: Points::ZERO,
+                                },
+                                false,
+                            );
+                        }
+                    }),
                 props,
                 DataTablePart::Empty,
             )

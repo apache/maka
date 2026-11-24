@@ -1,6 +1,7 @@
 // Dictation: the button starts a speech session (and stops the one
 // listening); the transcript shows as it grows, then how the session ended.
 import { mount, signal, Speech, type SpeechSession, Text, View } from "nsh";
+import { Window } from "nsh/desktop";
 
 function App() {
   const state = signal("idle");
@@ -37,4 +38,4 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => <Window id="main">{App}</Window>);

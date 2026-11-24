@@ -44,6 +44,7 @@ fn picker() -> impl IntoElement {
 ```tsx tabs
 import { mount, signal, Text } from "nsh";
 import { EmojiPicker } from "nsh/base";
+import { Window } from "nsh/desktop";
 
 function App() {
   const message = signal("");
@@ -66,7 +67,11 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 `EmojiPicker` comes from [`nsh/base`](../modules/nsh-base.md), the `nsh-base` crate in Rust. In Rust,

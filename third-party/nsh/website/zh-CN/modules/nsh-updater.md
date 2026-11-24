@@ -6,11 +6,12 @@ order: 12.7
 
 # nsh/updater
 
-`nsh/updater` 为打包后的应用检查新版本、下载并替换应用。更新从哪里来由 [`nsh.json` 的 `"updater"`](#nshjson) 决定，调用模块的代码无法指定。每一步都在 Rust 中校验：清单签名、版本更新、压缩包的大小和 SHA-256。界面由你自己画，模块负责返回状态和完成工作。从设置来源到发布版本的完整流程见[应用更新](../docs/app-updates.md)。
+`nsh/updater` 为打包后的应用检查新版本、下载并替换应用。更新从哪里来由 [`nsh.json` 的 `"updater"`](#nshjson) 决定，调用模块的代码无法指定。每一步都在 Rust 中校验：清单签名、版本更新、压缩包的大小和 SHA-256。`promptForUpdate()` 用内置的提示询问用户；想自己画界面时，其他函数负责返回状态和完成工作。从设置来源到发布版本的完整流程见[应用更新](../docs/app-updates.md)。
 
 它也能只更新应用的代码：一个更新构建号的[签名包](../docs/signed-packages.md)，应用在所有原生平台（包括 iOS 和 Android）下次启动时运行它（见 [OTA 更新](#ota-更新)）。
 
 ```tsx
+import { promptForUpdate } from "nsh/updater";
 import { checkForUpdate, downloadUpdate, installAndRestart, installOnQuit } from "nsh/updater";
 import { checkForPackage, downloadPackage, restartToPackage, runningPackage, shellInfo } from "nsh/updater";
 ```
@@ -24,6 +25,29 @@ import { checkForPackage, downloadPackage, restartToPackage, runningPackage, she
 | Web、开发运行、没有 `"updater"` 的应用 | 返回 `null` | 拒绝 | `checkForPackage` 返回 `null`，`runningPackage()` 为 `null`，`shellInfo()` 没有 `version` |
 
 它不需要任何能力声明，`capabilities.network` 对它不生效，因为应用代码无法决定这些请求发往哪里。请求走平台自己的网络栈，和 `fetch` 一样。
+
+## promptForUpdate
+
+```ts
+function promptForUpdate(options?: UpdatePromptOptions | null): Promise<void>;
+
+interface UpdatePromptOptions {
+  channel?: string | null;
+  locale?: string | null;
+  quiet?: boolean | null;
+}
+```
+
+像 [`checkForUpdate`](#checkforupdate) 一样检查新版本（`channel` 和 `locale` 与它的选项相同），然后用 NSH 内置的提示询问用户，就像 macOS 应用的 Sparkle：新版本、更新说明、「Skip This Version」「Remind Me Later」和「Install Update」，接着是下载进度和「Install and Relaunch」或「Install on Quit」。桌面上它是一个独立的小窗口；iOS 和 Android 上 `canInstall` 为 false，用系统提示框，「Update」打开更新的 `url`。样式固定。
+
+提示把用户选择的「跳过这个版本」和「以后自动下载并安装更新」保存在应用的数据目录。传 `quiet: true`（启动时或后台检查）时，已是最新版本、检查失败或用户跳过了这个版本都不显示任何东西；用户选择自动更新后，更新会在后台下载，并在应用退出时安装，不再询问。不传时（「检查更新…」菜单项），用户也会看到已是最新版本或检查失败的提示。提示显示后或没有需要显示的内容时 resolve，从不 reject。
+
+```tsx
+promptForUpdate({ quiet: true }); // 启动时
+<Button onPress={() => promptForUpdate()}>Check for Updates…</Button>;
+```
+
+提示文字为英文。应用名称来自 `nsh.json` 的 `"name"`。
 
 ## checkForUpdate
 
@@ -81,7 +105,7 @@ interface UpdateProgress {
 }
 ```
 
-把上一次 `checkForUpdate` 找到的更新压缩包下载到应用的数据目录，收到数据时调用 `onProgress`（服务器未给出大小时没有 `total`），然后按清单校验大小和 SHA-256。没有找到更新或 `canInstall` 为 false 时以 `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM` reject；下载失败或校验不符时也会 reject。
+把上一次 `checkForUpdate` 找到的更新压缩包下载到应用的数据目录，收到数据时调用 `onProgress`（服务器未给出大小时没有 `total`），然后按清单校验大小和 SHA-256。下载中途中断后会按资源保留分片文件，下次调用时在服务器支持的情况下通过 HTTP `Range` 请求断点续传；服务器忽略 `Range` 或资源已变更时则从头下载。没有找到更新或 `canInstall` 为 false 时以 `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM` reject；下载失败或校验不符时也会 reject。
 
 ```tsx
 const progress = signal(0);
@@ -138,7 +162,7 @@ interface PackageUpdate {
 function downloadPackage(onProgress?: ((progress: UpdateProgress) => void) | null): Promise<void>;
 ```
 
-下载上一次 `checkForPackage` 找到的包，按清单核对大小和 SHA-256，并按应用下次启动时的方式验证它：由某个根密钥认证的发布密钥签名、属于本应用、构建号比当前运行的以及之前运行过的都新、适用于当前运行时。之后它在应用的数据目录中等待下次启动。上次检查没有找到包时以 `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM` 拒绝；下载失败或包被拒绝时以说明原因的错误（`package refused: …`）拒绝，且不留下任何文件。
+下载上一次 `checkForPackage` 找到的包，按清单核对大小和 SHA-256，并按应用下次启动时的方式验证它：由某个根密钥认证的发布密钥签名、属于本应用、构建号比当前运行的以及之前运行过的都新、适用于当前运行时。之后它在应用的数据目录中等待下次启动。下载中途中断后会按包保留分片文件，下次调用时在服务器支持的情况下通过 HTTP `Range` 请求断点续传；服务器忽略 `Range` 或包已变更时则从头下载。上次检查没有找到包时以 `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM` 拒绝；下载失败或包被拒绝时以说明原因的错误（`package refused: …`）拒绝，被拒绝的包不会留下任何文件。
 
 ### restartToPackage
 
@@ -251,4 +275,12 @@ export const install = () =>
 
 ## Rust
 
-Rust 应用（`nsh.json` 的 `"root"`）直接使用 `nsh-updater` crate，并自带 HTTP 客户端：`Config::check` 校验清单，`Download` 校验压缩包，`Installation::install` 替换应用，`nsh_core::element::desktop::restart()` 启动新版本（[应用更新](../docs/app-updates.md#rust-应用)）。
+Rust 应用（`nsh.json` 的 `"root"`）用 `nsh_core::runtime::prompt_for_update` 显示同样的提示，作为任务运行：
+
+```rust
+use nsh_core::runtime::{UpdatePromptOptions, prompt_for_update};
+
+spawn(prompt_for_update(UpdatePromptOptions::default().quiet(true)));
+```
+
+自己实现流程时，直接使用 `nsh-updater` crate，并自带 HTTP 客户端：`Config::check` 校验清单，`Download` 校验压缩包，`Installation::install` 替换应用，`nsh_core::element::desktop::restart()` 启动新版本（[应用更新](../docs/app-updates.md#rust-应用)）。

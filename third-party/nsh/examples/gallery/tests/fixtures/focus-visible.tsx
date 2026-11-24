@@ -6,6 +6,7 @@
 // shows (`focus-visible:`). A view in `display: none` is not on screen, so
 // the markers tell the test what a ring would show.
 import { mount, Text, View, type ViewRef } from "nsh";
+import { Window } from "nsh/desktop";
 import { DatePicker, Tree } from "nsh/base";
 
 const files = [
@@ -69,4 +70,4 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => <Window id="main">{App}</Window>);

@@ -3,7 +3,9 @@
 //! accessor), the windows (`crate::window`) and `Menu`, `Tray` and
 //! `GlobalShortcut`, whose items call the app's functions: the menus are decoded natively
 //! into [`MenuItem`]s with an id per item, the functions kept by id, and
-//! the platform's [`EventKind::Menu`] calls the chosen item's.
+//! the platform's [`EventKind::Menu`] calls the chosen item's. Replacing
+//! the application menu keeps its previous functions for one replacement
+//! so queued clicks can still resolve their original items.
 
 use std::{
     cell::{Cell, RefCell},
@@ -13,8 +15,8 @@ use std::{
 };
 
 use nsh_core::{
-    Command, EventKind, HeaderItem, HeaderItemContent, HeaderSystemItem, ImageSource, Op, Prop,
-    ROOT_ID, ScreenProp,
+    Command, EventKind, HeaderItem, HeaderItemContent, HeaderSystemItem, ImageSource, NodeId, Op,
+    Prop, ROOT_ID, ScreenProp,
     desktop::{
         DesktopCommand, MenuAction, MenuBarMode, MenuItem, MenuRole, Shortcut, Tray,
         TrayTitlePlacement, TrayTitleRun,
@@ -43,6 +45,8 @@ type Functions = Vec<(u32, JsValue)>;
 pub(crate) struct Menus {
     /// The application menu's functions (id, owned function).
     app: RefCell<Vec<(u32, JsValue)>>,
+    /// The previous application menu's functions, for queued clicks.
+    retired: RefCell<Vec<(u32, JsValue)>>,
     /// The last context menu's functions.
     popup: RefCell<Vec<(u32, JsValue)>>,
     /// Trailing iOS header bar button functions, by screen node id.
@@ -66,6 +70,7 @@ impl Default for Menus {
     fn default() -> Self {
         Menus {
             app: RefCell::default(),
+            retired: RefCell::default(),
             popup: RefCell::default(),
             header: RefCell::default(),
             tray: RefCell::default(),
@@ -142,6 +147,7 @@ impl Menus {
             .app
             .get_mut()
             .drain(..)
+            .chain(self.retired.get_mut().drain(..))
             .chain(self.popup.get_mut().drain(..))
             .chain(self.tray.get_mut().drain(..))
             .chain(
@@ -437,11 +443,25 @@ fn keep(cx: *mut JsContext, slot: &RefCell<Vec<(u32, JsValue)>>, functions: Vec<
     }
 }
 
+/// Keeps one replaced application menu alive for clicks already queued.
+fn keep_app(cx: *mut JsContext, functions: Vec<(u32, JsValue)>) {
+    let m = menus(cx);
+    let retired = m.retired.replace(m.app.replace(functions));
+    for (_, f) in retired {
+        free(cx, f);
+    }
+}
+
 fn send(cx: *mut JsContext, command: DesktopCommand) -> Result<(), JsValue> {
+    send_to(cx, ROOT_ID, command)
+}
+
+/// Queues `command` for node `id`.
+fn send_to(cx: *mut JsContext, id: NodeId, command: DesktopCommand) -> Result<(), JsValue> {
     dom::push_op(
         cx,
         Op::Command {
-            id: ROOT_ID,
+            id,
             command: Command::Desktop(Box::new(command)),
         },
     )
@@ -473,12 +493,12 @@ unsafe extern "C" fn set_application_menu(
     }
     let list = arg(argc, argv, 0);
     let result = if nullish(list) {
-        keep(cx, &menus(cx).app, Vec::new());
+        keep_app(cx, Vec::new());
         send(cx, DesktopCommand::SetMenu(None))
     } else {
         match decode(cx, list) {
             Ok((items, functions)) => {
-                keep(cx, &menus(cx).app, functions);
+                keep_app(cx, functions);
                 let items = MenuItem::with_inline_expanded(&items).into();
                 listen(cx).and_then(|()| send(cx, DesktopCommand::SetMenu(Some(items))))
             }
@@ -547,7 +567,16 @@ unsafe fn popup_menu(
     } else {
         None
     };
-    match listen(cx).and_then(|()| send(cx, DesktopCommand::PopupMenu { items, at })) {
+    // On Windows a popup belongs to the window the app is working in, not
+    // the hidden app host: its HWND owns the menu and its client origin
+    // places `at`. macOS and Linux show the app's menus as one app menu, so
+    // the app root keeps them there. The app root (the host) also remains
+    // the target when no window is focused.
+    let target = match os(cx) {
+        Os::Windows => crate::window::focused_node(cx).unwrap_or(ROOT_ID),
+        _ => ROOT_ID,
+    };
+    match listen(cx).and_then(|()| send_to(cx, target, DesktopCommand::PopupMenu { items, at })) {
         Ok(()) => promise,
         Err(e) => {
             free(cx, promise);
@@ -598,7 +627,7 @@ unsafe extern "C" fn on_menu(
         return UNDEFINED;
     }
     let m = menus(cx);
-    let f = [&m.app, &m.popup, &m.tray]
+    let f = [&m.app, &m.retired, &m.popup, &m.tray]
         .into_iter()
         .find_map(|slot| {
             slot.borrow()
@@ -1227,14 +1256,14 @@ pub(crate) const EXPORTS: &[Item] = &[
     (
         "isAvailable",
         Export::Value(|cx| {
-            if os(cx).is_desktop() {
+            if crate::window::windows_supported(cx) {
                 qjs::JS_TRUE
             } else {
                 qjs::JS_FALSE
             }
         }),
         Ts::value(
-            "True where this module's window and menu APIs work: macOS, Windows and\nLinux. `platform.desktop` (desktop behavior) also holds in browsers in the\ndesktop idiom, where the browser keeps its own window and menus.",
+            "True where this module's window and menu APIs work: macOS, Windows and\nLinux, but not a terminal app (which has one surface and no windows).\n`platform.desktop` (desktop behavior) also holds in browsers in the desktop\nidiom, where the browser keeps its own window and menus.",
             "boolean",
         ),
     ),
@@ -1250,7 +1279,7 @@ pub(crate) const EXPORTS: &[Item] = &[
         "Window",
         Export::Value(crate::window::window_export),
         Ts::value(
-            "A window of the app's own (desktops), rendered from the app's one engine:\nit shares the app's signals, context and theme. Open while `open` is not\nfalse and the user has not closed it (`onOpenChange` tells the app); it\ncloses when it unmounts. `Window.open` is the same imperatively;\n`Window.get` finds an open window by id. Off the desktops `<Window>`\nrenders nothing and `Window.open` throws `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM`.",
+            "A window of the app's own (desktops), rendered from the app's one engine:\nit shares the app's signals, context and theme. Open while `open` is not\nfalse and the user has not closed it (`onOpenChange` tells the app); it\ncloses when it unmounts. `Window.open` is the same imperatively;\n`Window.get` finds an open window by id. Off the desktops there are no\nwindows: `<Window>` renders its content, while open, as part of the app's\none surface, and `Window.open` throws `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM`.",
             "WindowComponent",
         ),
     ),
@@ -1258,7 +1287,7 @@ pub(crate) const EXPORTS: &[Item] = &[
         "currentWindow",
         Export::Function(crate::window::current_window, 0),
         Ts::function(
-            "The window the calling component renders in: the nearest `<Window>` (or\n`Window.open`'s) around it, else the main window. Call it while\nrendering and keep the `WindowRef`: outside a component (an event\nhandler, a timer, after an `await`) it throws a `TypeError`.",
+            "The window the calling component renders in: the nearest `<Window>` (or\n`Window.open`'s) around it. Call it while rendering and keep the\n`WindowRef`: outside a component (an event handler, a timer, after an\n`await`) it throws a `TypeError`. In the app root it is the main window's\nref: the implicit first window `mount` gives a plain root, which it does\nnot open when the root declares `<Window>` scenes; off the desktops it is\nthe app's one surface.",
             &["(): WindowRef"],
         ),
     ),
@@ -1266,7 +1295,7 @@ pub(crate) const EXPORTS: &[Item] = &[
         "windows",
         Export::Function(crate::window::all_windows, 0),
         Ts::function(
-            "The open windows (reactive): the main window, then the app's own in\nthe order they opened.",
+            "The app's open windows (reactive), in the order they opened; off the\ndesktops it is the app's one surface.",
             &["(): WindowRef[]"],
         ),
     ),
@@ -1344,7 +1373,7 @@ export interface WindowProps extends WindowOptions {
   onBoundsChange?: (event: { bounds: Bounds }) => void;
   /** It moved to another display. */
   onDisplayChange?: (event: { display: Display }) => void;
-  /** What it shows; `currentWindow()` in it is this window. */
+  /** What it shows; on the desktops `currentWindow()` in it is this window. */
   children?: JSX.Element;
   /** Takes the window's `WindowRef` once it opens (a variable, a signal or a
    * function); each opening gives a new one. */
@@ -1354,24 +1383,24 @@ export interface WindowProps extends WindowOptions {
 /** `Window`: the component, and opening and finding windows imperatively. */
 export interface WindowComponent {
   (props: WindowProps): JSX.Element;
-  /** Renders `component` in a window of its own and returns it, or returns
-   * the open window of the same `id`. Throws `ERR_ACCESS_DENIED`
+  /** Renders `component` in a window of its own and returns it, or focuses
+   * and returns the open window of the same `id`. Throws `ERR_ACCESS_DENIED`
    * (`permission: "windows"`) when the app's capabilities do not grant
    * the window, and `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM` off the
    * desktops. */
   open(component: () => JSX.Element, options: WindowOptions): WindowRef;
-  /** The open window with `id` (`"main"`: the main window), or `null`
-   * (reactive). */
+  /** The open window with `id`, or `null` (reactive). */
   get(id: string): WindowRef | null;
 }
 
-/** A window: the main window or one of the app's own. Requests return
- * nothing: the platform may decline or adjust them, and `state()` reports
- * what happened. A closed window's requests do nothing. */
+/** A window of the app's own. Requests return nothing: the platform may
+ * decline or adjust them, and `state()` reports what happened. A closed
+ * window's requests do nothing. */
 export interface WindowRef {
-  /** The app's id for it (`"main"`: the main window). */
+  /** The app's id for it. */
   readonly id: string;
-  /** It is the main window. */
+  /** Its id is `"main"` (a conventional first-window id; there is no
+   * privileged window). */
   readonly main: boolean;
   /** The window that owns it, or `null`. */
   readonly parent: WindowRef | null;
@@ -1551,11 +1580,12 @@ export type MenuItem =
 export interface MenuModule {
   /** Sets the application menu, a submenu per top-level item (`File`,
    * `Edit`, …): macOS's menu bar, whose first menu is the app menu (titled
-   * with the app's name), or the window's menu bar on Windows and Linux,
-   * which is not shown while the title bar is hidden (its shortcuts still
-   * work: show its menus with `Menu.popup` from a title bar of the app's
-   * own). Call it again to change it (in an `effect`, it follows the
-   * signals it reads); `null` restores the platform's default menu. */
+   * with the app's name). On Windows and Linux the application menu belongs
+   * to the hidden app host and is not shown on the platforms' own bars in
+   * this version (per-window menu bars are not implemented; its shortcuts
+   * still work, and the app draws its own controls for the rest). Call it
+   * again to change it (in an `effect`, it follows the signals it reads);
+   * `null` restores the platform's default menu. */
   setApplicationMenu(items: readonly (MenuItem | null | undefined | false)[] | null): void;
   /** When the window's menu bar shows on Windows and Linux where the app's
    * window draws the application menu as a bar (the GPUI backend):
@@ -1673,5 +1703,75 @@ mod tests {
         names.sort();
         roles.sort();
         assert_eq!(names, roles);
+    }
+
+    #[test]
+    fn a_click_queued_before_the_menu_was_replaced_still_runs() {
+        use std::{cell::Cell, ffi::c_int};
+
+        use super::{UNDEFINED, keep_app, on_menu, reactive};
+
+        thread_local! {
+            static CALLS: Cell<u32> = const { Cell::new(0) };
+        }
+        unsafe extern "C" fn record(
+            _cx: *mut super::qjs::JSContext,
+            _this: super::JsValue,
+            _argc: c_int,
+            _argv: *mut super::JsValue,
+        ) -> super::JsValue {
+            CALLS.with(|c| c.set(c.get() + 1));
+            UNDEFINED
+        }
+
+        let host = crate::Host::new().unwrap();
+        host.with_raw(|cx| {
+            CALLS.with(|c| c.set(0));
+            let event = |id: u32| {
+                // SAFETY: `cx` is the host's live context.
+                let e = unsafe { super::qjs::JS_NewObject(cx) };
+                // SAFETY: `e` is this block's live object, in `cx`.
+                unsafe {
+                    super::qjs::JS_SetPropertyStr(
+                        cx,
+                        e,
+                        c"id".as_ptr(),
+                        super::qjs::JS_NewFloat64(f64::from(id)),
+                    )
+                };
+                e
+            };
+            // SAFETY: `e` is a live object owned here; its result and
+            // `e` are freed once read.
+            let on = |id: u32| unsafe {
+                let mut e = event(id);
+                let r = on_menu(cx, UNDEFINED, 1, &mut e);
+                super::qjs::JS_FreeValue(cx, r);
+                super::qjs::JS_FreeValue(cx, e);
+            };
+            let function = || reactive::new_function(cx, c"f", record, 0);
+            let calls = || CALLS.with(|c| c.get());
+
+            // A preceding click replaced the menu while item 7's click
+            // was queued against the old menu.
+            keep_app(cx, vec![(7, function())]);
+            keep_app(cx, vec![(9, function())]);
+            on(7);
+            assert_eq!(calls(), 1, "the click's item still resolves");
+            on(9);
+            assert_eq!(calls(), 2);
+            // One replacement later, the first menu's functions retire.
+            keep_app(cx, vec![(11, function())]);
+            on(7);
+            assert_eq!(calls(), 2, "a freed function cannot run");
+            on(11);
+            assert_eq!(calls(), 3);
+            // Clearing the menu retains the previous generation too.
+            keep_app(cx, Vec::new());
+            on(11);
+            assert_eq!(calls(), 4, "a click of the previous menu still runs");
+            on(9);
+            assert_eq!(calls(), 4);
+        });
     }
 }

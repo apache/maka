@@ -1,7 +1,7 @@
 //! The surface's environment: one signal per part
 //! (window, safe area, keyboard, color scheme, font scale, screen reader,
 //! reduced motion, pixel ratio, locale, locale settings, lifecycle, the
-//! wake count, the
+//! wake count, the network, the
 //! desktop window's state and the displays)
 //! written when the platform reports a
 //! change, read through read-only accessors; `nsh/device` (`platform`) and
@@ -55,11 +55,12 @@ enum Part {
     PerfStats,
     Shaders,
     WakeCount,
+    Network,
     HorizontalSizeClass,
     VerticalSizeClass,
 }
 
-const PARTS: usize = 20;
+const PARTS: usize = 21;
 
 /// The environment's part of a context's state.
 pub(crate) struct Env {
@@ -597,10 +598,28 @@ pub(crate) fn set_environment(cx: *mut JsContext, next: &Environment) -> Result<
     if changed(&|p| p.wake_count == next.wake_count) {
         writes.push((Part::WakeCount, number(next.wake_count as f32)));
     }
+    if changed(&|p| p.network == next.network) {
+        let network = &next.network;
+        writes.push((
+            Part::Network,
+            object(
+                cx,
+                &[
+                    (c"online", boolean(network.online())),
+                    (c"kind", string(cx, network.kind.name())),
+                    (c"expensive", boolean(network.expensive)),
+                    (c"constrained", boolean(network.constrained)),
+                    (c"cellularData", string(cx, network.cellular_data.name())),
+                ],
+            ),
+        ));
+    }
     if changed(&|p| p.shaders == next.shaders) {
         writes.push((Part::Shaders, boolean(next.shaders)));
     }
-    if changed(&|p| p.window_state == next.window_state) {
+    let prev_window_state = previous.and_then(|p| p.window_state);
+    let window_state_changed = changed(&|p| p.window_state == next.window_state);
+    if window_state_changed {
         writes.push((
             Part::WindowState,
             crate::window::state_value(cx, next.window_state.as_ref()),
@@ -614,8 +633,13 @@ pub(crate) fn set_environment(cx: *mut JsContext, next: &Environment) -> Result<
             reactive::set_signal(cx, e.signals[part as usize].get(), value);
         }
     });
-    // The main window's listeners (`WindowRef.on`).
-    crate::window::main_changed(cx, next.window_state);
+    if window_state_changed && crate::window::is_embedded(cx) {
+        crate::window::embedded_main_state_changed(
+            cx,
+            prev_window_state.as_ref(),
+            next.window_state.as_ref(),
+        );
+    }
     let failed = reactive::finish_value(cx, UNDEFINED);
     // SAFETY: an inline tag check.
     if unsafe { qjs::JS_IsException(failed) } {
@@ -696,25 +720,28 @@ fn accessor(cx: *mut JsContext, part: Part) -> JsValue {
     unsafe { qjs::JS_DupValue(cx, env(cx).accessors[part as usize].get()) }
 }
 
-/// The main window's hidden title bar area accessor (owned).
-pub(crate) fn title_bar(cx: *mut JsContext) -> JsValue {
-    accessor(cx, Part::TitleBar)
-}
-
 /// The displays the platform reported last.
 pub(crate) fn display_list(cx: *mut JsContext) -> Vec<Display> {
     env(cx).displays.borrow().clone()
 }
 
-/// The main window's state accessor (owned): `WindowRef.state()` of the
-/// main window.
-pub(crate) fn window_state(cx: *mut JsContext) -> JsValue {
-    accessor(cx, Part::WindowState)
-}
-
 /// `displays()` (`nsh/desktop`): the displays (owned).
 pub(crate) fn displays(cx: *mut JsContext) -> JsValue {
     accessor(cx, Part::Displays)
+}
+
+/// Reads (and tracks) the host window's state signal (`Part::WindowState`).
+pub(crate) fn read_window_state(cx: *mut JsContext) -> JsValue {
+    let f = env(cx).accessors[Part::WindowState as usize].get();
+    // SAFETY: a call of an accessor owned by the environment.
+    unsafe { qjs::JS_Call(cx, f, UNDEFINED, 0, ptr::null_mut()) }
+}
+
+/// Reads (and tracks) the host window's title bar signal (`Part::TitleBar`).
+pub(crate) fn read_title_bar(cx: *mut JsContext) -> JsValue {
+    let f = env(cx).accessors[Part::TitleBar as usize].get();
+    // SAFETY: a call of an accessor owned by the environment.
+    unsafe { qjs::JS_Call(cx, f, UNDEFINED, 0, ptr::null_mut()) }
 }
 
 pub(crate) fn current(cx: *mut JsContext) -> Environment {
@@ -1055,6 +1082,14 @@ pub(crate) const DEVICE_EXPORTS: &[Item] = &[
         ),
     ),
     (
+        "network",
+        Export::Value(|cx| accessor(cx, Part::Network)),
+        Ts::value(
+            "How the device reaches the network now (reactive): whether it is\n`online`, the `kind` of link its default route takes, whether that link\nis `expensive` or `constrained` (Low Data Mode, Data Saver), and on iOS\nwhether the user lets the app use cellular data (`cellularData`). An\neffect that reads it runs again when the route changes: a request that\nfailed offline waits for `online` and tries again at once, one refused\nwhile `cellularData` is `\"restricted\"` points the user to the system's\nsettings. iOS and macOS follow the system's path monitor, Android its\ndefault network, the web `navigator.onLine` and `navigator.connection`;\nelsewhere `kind` stays `\"unknown\"`, which counts as online.",
+            "Accessor<NetworkState>",
+        ),
+    ),
+    (
         "platform",
         Export::Value(platform),
         Ts::value(
@@ -1108,6 +1143,35 @@ export interface PerfStats {
   /** The share of recent frames that took longer than one refresh, from 0
    * to 1 (`0.05` is 5%), as Rust's `dropped` (a `Percentage`) reads it. */
   readonly dropped: number;
+}
+
+/** The kind of link the device's default route takes (`network().kind`):
+ * `"none"` offline, `"unknown"` where the platform does not say. */
+export type NetworkKind = "unknown" | "none" | "wifi" | "cellular" | "wired" | "other";
+
+/** Whether the user lets the app use cellular data
+ * (`network().cellularData`): iOS's `CTCellularData`. `"unknown"` until the
+ * user decides (the first launch on a device that asks for wireless data)
+ * and on every platform but iOS; `"restricted"` while the user keeps
+ * cellular data (or, where the system asks for wireless data, all data)
+ * from the app, which only the system's settings change. */
+export type CellularDataState = "unknown" | "restricted" | "notRestricted";
+
+/** How the device reaches the network (`network()`). */
+export interface NetworkState {
+  /** A route to the network exists: false only when the platform knows
+   * there is none (`kind` `"none"`). */
+  readonly online: boolean;
+  /** The kind of link the default route takes. */
+  readonly kind: NetworkKind;
+  /** The link costs the user: cellular data, a phone's hotspot, a metered
+   * network. */
+  readonly expensive: boolean;
+  /** The user asked to use less data on this link: Low Data Mode (iOS,
+   * macOS), Data Saver (Android), the browser's `saveData`. */
+  readonly constrained: boolean;
+  /** Whether the user lets the app use cellular data (iOS). */
+  readonly cellularData: CellularDataState;
 }
 
 /** The user's locale settings beside the locale (`localeSettings()`). */

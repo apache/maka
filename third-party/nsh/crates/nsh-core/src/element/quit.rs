@@ -37,11 +37,25 @@ pub(crate) type QuitListener = Rc<dyn Fn() -> QuitFuture>;
 /// A quit request listener ([`super::desktop::on_quit_request`]).
 pub(crate) type QuitRequestListener = Rc<dyn Fn()>;
 
+/// A listener of the OS asking the app to show itself
+/// ([`super::desktop::on_reopen`]).
+pub(crate) type ReopenListener = Rc<dyn Fn()>;
+
+/// A listener of the app's last window closing
+/// ([`super::desktop::on_last_window_closed`]).
+pub(crate) type LastWindowClosedListener = Rc<dyn Fn()>;
+
 /// The quit listeners, in the order they were added.
 pub(crate) type QuitListeners = Listeners<QuitListener>;
 
 /// The quit request listeners, in the order they were added.
 pub(crate) type QuitRequestListeners = Listeners<QuitRequestListener>;
+
+/// The reopen listeners, in the order they were added.
+pub(crate) type ReopenListeners = Listeners<ReopenListener>;
+
+/// The last-window-closed listeners, in the order they were added.
+pub(crate) type LastWindowClosedListeners = Listeners<LastWindowClosedListener>;
 
 /// Listeners of the app's quitting, in the order they were added.
 pub(crate) struct Listeners<L> {

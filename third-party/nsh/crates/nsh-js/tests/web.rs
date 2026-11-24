@@ -1,6 +1,6 @@
 //! Web APIs installed by the host: encoding, URL, headers, abort and fetch.
 
-use nsh_core::Op;
+use nsh_core::{Op, platform::HttpCache};
 use nsh_js::{FetchEvent, FetchOp, Host, HttpBody, HttpHead, HttpRequest, NetworkQueue};
 
 /// The requests started in `queue`.
@@ -922,6 +922,31 @@ fn fetch_answers_locally_aborts_and_redirects() {
     assert_eq!(
         read_out(&host),
         r#"["early AbortError","hi","text/plain","blob!","5",true,"late AbortError","redirect true","head null"]"#
+    );
+}
+
+#[test]
+fn fetch_hands_the_cache_mode_to_the_network() {
+    let host = Host::new().unwrap();
+    host.eval_source(
+        r#"
+        fetch("https://example.com/a");
+        fetch("https://example.com/b", { cache: "no-store" });
+        fetch(new Request("https://example.com/c", { cache: "reload" }));
+        "#,
+    )
+    .unwrap();
+    host.run_jobs();
+    let caches: Vec<_> = take(&host)
+        .into_iter()
+        .filter_map(|(_, op)| match op {
+            FetchOp::Start(r) => Some(r.cache),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        caches,
+        [HttpCache::Default, HttpCache::NoStore, HttpCache::Reload]
     );
 }
 

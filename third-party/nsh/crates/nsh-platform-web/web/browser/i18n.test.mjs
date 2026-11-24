@@ -58,6 +58,35 @@ test("setLocale checks its tag and tells the engine", () => {
   assert.equal(calls[0][0], 407);
 });
 
+test("addTranslations merges locales, updates keys, and notifies the engine", () => {
+  const { t, availableLocales, addTranslations, calls } = i18n();
+  addTranslations({});
+  assert.equal(calls.length, 1);
+
+  addTranslations({
+    en: { hello: "Hi", extra: "Loaded" },
+    fr: { hello: "Bonjour" },
+  });
+  assert.equal(t("hello"), "Hi");
+  assert.equal(t("extra"), "Loaded");
+  assert.equal(t("only.en"), "English");
+  assert.equal(t("greet", { name: "Ada" }), "Hello, Ada!");
+  assert.equal(t("hello", { locale: "fr" }), "Bonjour");
+  assert.equal(t("hello", { locale: "zh" }), "你好");
+  assert.deepEqual(availableLocales(), ["en", "fr", "zh", "zh-Hant"]);
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1][0], 409);
+  assert.deepEqual(JSON.parse(calls[1][1]), {
+    en: { hello: "Hi", extra: "Loaded" },
+    fr: { hello: "Bonjour" },
+  });
+
+  for (const bad of [null, undefined, "en", 42, [], { en: null }, { en: [] }, { en: { hello: 123 } }]) {
+    assert.throws(() => addTranslations(bad), TypeError);
+  }
+  assert.equal(calls.length, 2);
+});
+
 test("the browser serves every export of nsh-js's nsh/i18n", async () => {
   const source = await readFile(new URL("../../../nsh-js/src/i18n.rs", import.meta.url), "utf8");
   const start = source.indexOf("pub(crate) const EXPORTS: &[Item] = &[");

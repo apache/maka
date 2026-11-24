@@ -42,12 +42,17 @@ pub fn App() -> impl IntoElement {
 
 ```tsx tabs
 import { mount, WebView } from "nsh";
+import { Window } from "nsh/desktop";
 
 function App() {
   return <WebView src="https://en.m.wikipedia.org/wiki/Swift_(programming_language)" style={{ flex: 1 }} />;
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 ### 来源
@@ -145,6 +150,7 @@ pub fn browser() -> impl IntoElement {
 
 ```tsx tabs
 import { mount, signal, Text, View, WebView, type WebViewNavigation, type WebViewRef } from "nsh";
+import { Window } from "nsh/desktop";
 
 function Browser() {
   let web!: WebViewRef;
@@ -175,7 +181,11 @@ function Browser() {
   );
 }
 
-mount(Browser);
+mount(() => (
+  <Window id="main">
+    <Browser />
+  </Window>
+));
 ```
 
 ### 页面与应用之间的消息
@@ -228,6 +238,7 @@ pub fn App() -> impl IntoElement {
 
 ```tsx tabs
 import { mount, signal, Text, View, WebView, type WebViewRef } from "nsh";
+import { Window } from "nsh/desktop";
 
 const page = `<!doctype html>
 <html><head><meta name="viewport" content="width=device-width"></head>
@@ -262,7 +273,11 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 ref 的 `inject_java_script`（`injectJavaScript(script)`）可以随时在当前页面中运行代码；`injected_java_script` 和 `injected_java_script_before_content`（`injectedJavaScript`、`injectedJavaScriptBeforeContentLoaded`）在每次页面加载时运行，分别在页面自己的脚本之后或之前，适合用来安装钩子：
@@ -543,6 +558,7 @@ pub fn player() -> impl IntoElement {
 
 ```tsx tabs
 import { mount, signal, Text, Video, type VideoRef, View } from "nsh";
+import { Window } from "nsh/desktop";
 
 function Player() {
   let video!: VideoRef;
@@ -572,7 +588,11 @@ function Player() {
   );
 }
 
-mount(Player);
+mount(() => (
+  <Window id="main">
+    <Player />
+  </Window>
+));
 ```
 
 播放由属性控制：用 signal 设置 `paused`、`muted`、`volume` 和 `rate`，播放器随之变化。已播放到结尾的视频，取消暂停后从头再播。ref 提供 `seek(seconds)`。

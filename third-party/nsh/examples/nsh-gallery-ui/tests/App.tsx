@@ -1,4 +1,5 @@
 import { mount, signal, Text, View } from "nsh";
+import { Window } from "nsh/desktop";
 import { colorScheme, setColorScheme } from "nsh";
 import { Button, Card, colors, Segmented, Toggle } from "..";
 
@@ -19,4 +20,4 @@ function App() {
     </View>
   );
 }
-mount(App);
+mount(() => <Window id="main">{App}</Window>);

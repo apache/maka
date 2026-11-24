@@ -5,7 +5,7 @@
 use std::sync::{Arc, Mutex};
 
 use nsh_base::switch;
-use nsh_core::{EdgeInsets, MountBatch, MountItem, NodeId, Size, element::Root, prelude::*};
+use nsh_core::{EdgeInsets, MountBatch, MountItem, NodeId, Size, prelude::*};
 use nsh_engine::EngineConfig;
 use nsh_testing::Headless;
 
@@ -15,7 +15,7 @@ type Seen = Arc<Mutex<Vec<MountItem>>>;
 fn start<C: Component<Props = ()>>() -> (Headless, Seen) {
     let config = EngineConfig {
         viewport: Size::new(px(390.0), px(844.0)),
-        ..EngineConfig::new(Root::of::<C>())
+        ..EngineConfig::new(nsh_testing::windowed_root::<C>())
     };
     let mut app = Headless::start(config).unwrap();
     let seen = Seen::default();

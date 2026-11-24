@@ -1,13 +1,14 @@
 import { openUrl, signal, Text } from "nsh";
-import { checkForUpdate, downloadUpdate, installAndRestart } from "nsh/updater";
+import { checkForUpdate, downloadUpdate, installAndRestart, promptForUpdate } from "nsh/updater";
 import type { AppUpdate } from "nsh/updater";
 import { Button, Card, colors, DemoPage } from "../ui";
 
 /**
  * nsh/updater: asks the source in nsh.json's "updater" for a newer version,
  * then downloads it and replaces the app, or sends the user to its link
- * where the app cannot replace itself. The gallery names no source, so here
- * the check answers that there is nothing to install.
+ * where the app cannot replace itself. promptForUpdate does all of it in
+ * NSH's built-in prompt. The gallery names no source, so here the check
+ * answers that there is nothing to install.
  */
 export function UpdaterDemo() {
   const status = signal("Not checked yet");
@@ -47,7 +48,8 @@ export function UpdaterDemo() {
     return (
       <Card icon="system" title="App update" subtitle="From GitHub Releases or a host of your own">
         <Text style={{ fontSize: 14, color: colors.text }}>{status()}</Text>
-        <Button label="Check for updates" onPress={check} />
+        <Button label="Check for Updates…" onPress={() => promptForUpdate()} />
+        <Button label="Check with a UI of your own" onPress={check} />
         {update() ? <Button label="Install" onPress={install} /> : null}
       </Card>
     );

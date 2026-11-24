@@ -1,4 +1,5 @@
 import { List, mount, Scroll, signal, Text, View } from "nsh";
+import { Window } from "nsh/desktop";
 import { Button, Dialog, Input, Sheet } from "nsh/base";
 
 const people = ["Alice", ...Array.from({ length: 39 }, (_, i) => `Person ${i + 2}`)];
@@ -55,4 +56,4 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => <Window id="main">{App}</Window>);

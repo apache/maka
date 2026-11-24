@@ -357,6 +357,7 @@ fn handle(ui: &Rc<RefCell<DevUi>>, event: DevEvent) {
             app_id,
             limits,
             window,
+            application,
         } => {
             hide_status(ui);
             let mut bundle = match format {
@@ -383,7 +384,9 @@ fn handle(ui: &Rc<RefCell<DevUi>>, event: DevEvent) {
             }
             // The window is open already: the engine applies its
             // attributes with the first commit.
-            bundle = bundle.with_main_window(window.as_deref());
+            bundle = bundle
+                .with_main_window(window.as_deref())
+                .with_application(application.as_deref());
             bundle = match bundle
                 .with_app_id(app_id.as_deref())
                 .with_capabilities_json(capabilities.as_deref())
@@ -454,7 +457,7 @@ fn handle(ui: &Rc<RefCell<DevUi>>, event: DevEvent) {
 fn app_came(view: &AppView, app: &App) {
     let visible = app
         .main_window()
-        .is_none_or(nsh_core::desktop::MainWindowOptions::visible_at_launch);
+        .is_some_and(nsh_core::desktop::MainWindowOptions::visible_at_launch);
     crate::app::dev_app_came(view.surface(), visible);
 }
 

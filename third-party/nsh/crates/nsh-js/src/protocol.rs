@@ -172,6 +172,7 @@ pub(crate) fn decode_command<'js>(
     Ok(Some(match name {
         "focus" => Command::Focus,
         "blur" => Command::Blur,
+        "clearSelection" => Command::ClearSelection,
         "reload" => Command::Reload,
         "goBack" => Command::GoBack,
         "goForward" => Command::GoForward,

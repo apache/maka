@@ -139,7 +139,10 @@ fn start(controlled: bool, desktop: bool) -> (Headless, Arc<AtomicUsize>) {
 
 /// [`start`] with `props`.
 fn start_with(props: ScreenProps, desktop: bool) -> (Headless, Arc<AtomicUsize>) {
-    start_root(Root::new::<HoverScreen>(move || props.clone()), desktop)
+    start_root(
+        nsh_testing::windowed_root_with::<HoverScreen>(move || props.clone()),
+        desktop,
+    )
 }
 
 /// `root` on a Mac (or an iPhone) on a manual clock, counting the mount
@@ -525,7 +528,7 @@ fn InToolbar(props: BarProps) -> impl IntoElement {
 #[test]
 fn what_a_hover_card_shows_is_no_part_of_the_toolbar_its_trigger_is_in() {
     let (mut app, _) = start_root(
-        Root::new::<InToolbar>(|| BarProps { disabled: false }),
+        nsh_testing::windowed_root_with::<InToolbar>(|| BarProps { disabled: false }),
         true,
     );
     app.wait_for("Apply").unwrap();
@@ -541,7 +544,10 @@ fn what_a_hover_card_shows_is_no_part_of_the_toolbar_its_trigger_is_in() {
 
 #[test]
 fn a_disabled_toolbar_leaves_its_hover_cards_buttons_enabled() {
-    let (mut app, _) = start_root(Root::new::<InToolbar>(|| BarProps { disabled: true }), true);
+    let (mut app, _) = start_root(
+        nsh_testing::windowed_root_with::<InToolbar>(|| BarProps { disabled: true }),
+        true,
+    );
     app.wait_for("Apply").unwrap();
     app.press("text:Apply").unwrap();
     app.wait_for("text:reached:Apply").unwrap();

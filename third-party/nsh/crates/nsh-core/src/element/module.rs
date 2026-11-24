@@ -375,15 +375,26 @@ impl ModuleCx {
     }
 
     /// Puts `text` on the system clipboard (TS: `Clipboard.writeText`).
-    pub fn set_clipboard(&mut self, text: impl Into<String>) {
-        self.actions
-            .push(super::services::set_clipboard(text.into()));
+    /// The answer says whether the system clipboard took it.
+    pub fn set_clipboard(
+        &mut self,
+        text: impl Into<String>,
+    ) -> super::Answer<super::ClipboardWrite> {
+        let (answer, action) = super::services::set_clipboard(text.into());
+        self.actions.push(action);
+        answer
     }
 
     /// Puts `item`, its text and its HTML, on the system clipboard (TS:
     /// `Clipboard.write`).
-    pub fn set_clipboard_item(&mut self, item: super::ClipboardItem) {
-        self.actions.push(super::services::set_clipboard_item(item));
+    /// The answer says whether the system clipboard took it.
+    pub fn set_clipboard_item(
+        &mut self,
+        item: super::ClipboardItem,
+    ) -> super::Answer<super::ClipboardWrite> {
+        let (answer, action) = super::services::set_clipboard_item(item);
+        self.actions.push(action);
+        answer
     }
 
     /// Puts the image of a `data:` URI on the system clipboard (TS:
@@ -411,6 +422,16 @@ impl ModuleCx {
     #[doc(hidden)]
     pub fn set_translations(&mut self, translations: crate::i18n::Translations) {
         self.actions.push(Action::Translations(translations));
+    }
+
+    /// Merges translations into the core's dictionary (`nsh-js` and web:
+    /// `addTranslations`).
+    #[doc(hidden)]
+    pub fn add_translations(
+        &mut self,
+        map: std::collections::HashMap<String, std::collections::HashMap<String, String>>,
+    ) {
+        self.actions.push(Action::AddTranslations(map));
     }
 
     /// Asks the platform for `action` (the runtime's own modules).

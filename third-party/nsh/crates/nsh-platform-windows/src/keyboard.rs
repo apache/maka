@@ -136,7 +136,12 @@ fn window_root(surface: &Surface, view: &NshView) -> bool {
 /// parents; only this interest/capture walk follows the override.
 fn walk_keyboard(surface: &Surface, view: &NshView, mut f: impl FnMut(&NshView) -> bool) -> bool {
     let window = window_of(surface, view);
-    let mut current = Some(view.clone());
+    let content = view.state().props.key_content;
+    let mut current = Some(
+        content
+            .and_then(|id| surface.view(id))
+            .unwrap_or_else(|| view.clone()),
+    );
     // Bounded: a routing override is core's, but a broken one must not hang
     // the window.
     for _ in 0..1024 {
@@ -213,6 +218,25 @@ pub(crate) fn focused_any(surface: &Surface) -> Option<NshView> {
         }
     }
     None
+}
+
+/// The view the raw keys of window `window` go to: its focused custom
+/// view, else its root when nothing in it has the keyboard (no custom
+/// view, no text field), as a browser reports a key at `document.body`.
+/// The root is no stop: it is only notified, never pressed.
+pub(crate) fn key_target(surface: &Surface, window: NodeId) -> Option<NshView> {
+    if let Some(view) = focused_in(surface, window) {
+        return Some(view);
+    }
+    if crate::text_input::focused(surface).is_some_and(|field| window_of(surface, &field) == window)
+    {
+        return None;
+    }
+    if window == nsh_core::ROOT_ID {
+        Some(surface.root.clone())
+    } else {
+        crate::app_window::root_view(surface, window)
+    }
 }
 
 /// Whether the focus held for `view` is still valid: a stop, and not
@@ -472,6 +496,7 @@ fn key_name(event: &KeyEvent) -> SharedString {
         0xB5 => Some("LaunchMediaPlayer"),
         0xB6 => Some("LaunchApplication1"),
         0xB7 => Some("LaunchApplication2"),
+        0xFA => Some("MediaPlay"),
         _ => None,
     };
     if let Some(named) = named {
@@ -823,7 +848,7 @@ fn core_event(event: &KeyEvent, down: bool, default_prevented: bool) -> nsh_core
 /// capture consumed it (no native default follows).
 pub(crate) fn press(surface: &std::rc::Rc<Surface>, event: &KeyEvent) -> bool {
     let window = surface.input_root().id();
-    let Some(view) = focused_in(surface, window) else {
+    let Some(view) = key_target(surface, window) else {
         return false;
     };
     if !listens(surface, &view) {
@@ -961,7 +986,7 @@ fn opens_context_menu(event: &KeyEvent) -> bool {
 /// focus now), with the capture rule that matches the release.
 pub(crate) fn release(surface: &std::rc::Rc<Surface>, event: &KeyEvent) {
     let window = surface.input_root().id();
-    let Some(view) = focused_in(surface, window) else {
+    let Some(view) = key_target(surface, window) else {
         return;
     };
     if !listens(surface, &view) {
@@ -1025,7 +1050,7 @@ pub(crate) fn suppress_translation(msg: &mut MSG) -> bool {
 /// consumed by a mounted capture rule: the decision [`press`] makes when
 /// the message is dispatched.
 fn captured_now(surface: &Surface, window: NodeId, event: &KeyEvent) -> bool {
-    let Some(view) = focused_in(surface, window) else {
+    let Some(view) = key_target(surface, window) else {
         return false;
     };
     if !listens(surface, &view) {
@@ -1151,6 +1176,8 @@ mod tests {
             (0x11, "Control"),
             (0x12, "Alt"),
             (0x5B, "Meta"),
+            (0xB3, "MediaPlayPause"),
+            (0xFA, "MediaPlay"),
             (0x70, "F1"),
             (0x74, "F5"),
             (0x87, "F24"),

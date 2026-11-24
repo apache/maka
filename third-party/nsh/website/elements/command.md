@@ -53,6 +53,7 @@ fn palette() -> impl IntoElement {
 ```tsx tabs
 import { mount, signal, Text, View } from "nsh";
 import { Command, type CommandItem } from "nsh/base";
+import { Window } from "nsh/desktop";
 
 const commands: CommandItem[] = [
   { id: "new", label: "New File", group: "File", shortcut: "mod+n" },
@@ -89,7 +90,11 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 `Command` comes from [`nsh/base`](../modules/nsh-base.md), the `nsh-base` crate in Rust. The query is the app's when it

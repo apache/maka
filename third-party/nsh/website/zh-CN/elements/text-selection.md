@@ -107,6 +107,8 @@ const quote = signal("");
 </View>
 ```
 
+在可选择视图（或它里面的视图）的 ref 上调用 `clearSelection()` 会清除选区，效果和点击别处一样：高亮消失，`onSelectionChange` 收到 `""`。选区上方的操作栏在完成操作后调用它即可。Rust 中为 `ElementRef::clear_selection`。
+
 ### 读取为 Markdown 或 HTML
 
 设置了 `selectable` 的 `TextView` 可以通过 ref 在需要时读取选区：`selectedText({ format })` 返回选中的文字（`"plain"`，默认值，与复制得到的相同），或把选中的那部分文档按 `"markdown"`、`"html"` 返回。内容由选区覆盖的节点重新生成，所以周围的强调、链接、列表项和代码块都会保留（有序列表保留编号，表格的行保留表头）。选中全部时，若文档本来就是这种格式，则原样返回源文。没有选中内容时返回 `""`。Rust 中为 `TextViewApi::selected_text`，传入 `TextSelectionOptions::format(TextSelectionFormat::Markdown)`。
@@ -168,7 +170,7 @@ Web 之外，一个词是一串字母、数字和 `_`，双击只选择这个词
 - **嵌套的视图**：一个可选择视图放在另一个之中时，属于外层视图，一个选区覆盖两者。
 - **TextView**：设置了 `selectable` 的 [`TextView`](./text-view.md) 自己作为一体选择：它的段落、列表项、单元格和代码块一起选择。放在可选择视图中时，它加入外层的选区。
 - **单独的文字**：不在任何可选择视图中、设置了 `userSelect: "text"` 的文字单独选择，见 [Text](./text.md#属性)。
-- **外观**是平台的高亮，颜色为每段文字的 `selectionColor`（`selection:text-*`）。
+- **外观**是平台的高亮，颜色为每段文字的 `selectionColor`（`selection:bg-*`）。没有设置颜色的文字取外层最近的视图上设置的颜色：视图的 `selection:bg-*` 类，或 Rust 中的 `.selection_color(..)`（优先于类）。在可选择视图上设置一次就能给整个选区着色；Android 上选择手柄也用这个颜色。
 - **分成多段文字的一行**：把一行排成多段文字的 Rust 组件（软换行的代码行）给后面的各段设置 `.continues_text(true)`；复制时这一行完整给出，断开处没有换行，三击会选中它的所有部分。[`DiffView`](./diff-view.md) 的换行就是这样处理的。
 - **列表**：在虚拟化的 [List](./list.md) 中，选区覆盖已挂载的行；回收到视野之外的行会离开选区。
 

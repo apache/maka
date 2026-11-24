@@ -14,7 +14,7 @@ Native Shell（简称 NSH）是一个全平台的 Native UI 框架。你用一�
 
 ## Native 的含义
 
-NSH 所说的 Native 有两层：平台的基础设施，以及平台的交互方式。
+NSH 所说的 Native 有两层：平台的基础设施，以及平台的交互方式。应用自行定义界面外观，也可以在支持的平台上选用 Liquid Glass 等系统材质。
 
 **平台的基础设施。** 每个平台都有自己的后端，建立在这个平台已有的界面技术之上：
 
@@ -91,6 +91,7 @@ pub fn Counter() -> impl IntoElement {
 
 ```tsx tabs
 import { mount, signal, Text, View } from "nsh";
+import { Window } from "nsh/desktop";
 
 function Counter() {
   const count = signal(0);
@@ -108,7 +109,7 @@ function Counter() {
   );
 }
 
-mount(Counter);
+mount(() => <Window id="main"><Counter /></Window>);
 ```
 
 一个视图（`view()`、`<View>`）在 iOS 上成为 `UIView`，在 Android 上成为 `ViewGroup`，在 macOS 上成为 `NSView`，在 Linux 上成为 GTK 控件，在 Windows 上成为用 Direct2D 绘制的保留视图，在 Web 上成为 HTML 元素；文本成为 Native 文本视图，按钮的按压反馈（`.active(..)`、`activeStyle`）在主线程上运行。点击时，`count.update` 改变一个 signal，只有读取它的那段文本会更新：组件函数不会再次运行。Rust 应用从头到尾都是 Native 代码；在 TSX 应用里，只有模块自己的代码是 JavaScript。
@@ -169,7 +170,7 @@ NSH 最初是为了让 Native 应用在发布之后接收新界面，这仍然�
 
 - **发布之后下发。** 模块是应用在运行时下载的签名包（`.nshpkg`）。应用在运行它之前，会用自己信任的密钥和吊销列表校验签名（[签名包](./signed-packages.md)）。宿主应用集成运行时，业务团队基于它的 API 开发模块，并按自己的节奏下发。
 - **宿主始终掌控。** 每个模块运行在自己的 QuickJS 虚拟机里，内存、调用时长和节点数都有上限，只能使用宿主授予的能力：网络主机、网页、状态栏（[沙箱与能力](./sandbox-and-capabilities.md)）。多个模块可以并排运行。
-- **和应用的其他部分一样。** 模块用平台自己的界面渲染，宿主还能注册自己的 Native 视图——地图、播放器、设计系统组件——供模块使用（[原生组件](./native-components.md)）。
+- **模块可以沿用应用的设计。** 模块可以复用应用的组件样式，宿主还能注册自己的 Native 视图——地图、播放器、设计系统组件——供模块使用（[原生组件](./native-components.md)）。
 
 同一套机制让应用可以**用界面来回答**。模型写出一个小的 TSX 模块（一个表单、一张图表、一张预订卡片），你的服务器检查、构建并签名，应用以 Native 方式显示它：
 
@@ -208,7 +209,8 @@ NSH 为用 AI 编写的软件而设计，完整的应用和生成的界面都是
 | [Web](./web.md) | 现代浏览器 | HTML | `createPlayer`、iframe |
 | [TUI](./tui.md) | macOS、Windows、Linux 上的终端 | ratatui | `AppView`（ratatui 区域） |
 | [GPUI](./gpui.md) | 桌面平台 | GPUI | `AppView`（GPUI、GPUI Kit 应用） |
-| Mac Catalyst | macOS | UIKit | 开发用（`--target catalyst`） |
+
+作为开发工具，Mac Catalyst（`--target catalyst`）在 Mac 上运行 iOS 后端，用于 Catalyst 特有的工作。
 
 <div class="diagram-scroll">
 <img class="diagram diagram-light" src="/diagrams/platforms-light.svg" alt="一个模块，多个宿主：同一个 bundle 和 Rust 运行时运行在 iOS、Android、Linux、使用 AppKit 的 macOS 和使用 Win32 / Direct2D 的 Windows 上，GPUI 覆盖三个桌面平台，网页则用 HTML 绘制。">

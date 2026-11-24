@@ -1,6 +1,6 @@
 ---
 title: Platform-specific code
-description: Writing one app for phones, desktops and browsers - platform-only props in ios={{}} / android={{}} / macos={{}} / desktop={{}} / web={{}}, the nsh/mobile and nsh/desktop modules, platform.os and platform.select, and platform Tailwind variants.
+description: Writing one app for phones, desktops and browsers - platform-only props in ios={{}} / android={{}} / macos={{}} / windows={{}} / desktop={{}} / web={{}}, the nsh/mobile and nsh/desktop modules, platform.os and platform.select, and platform Tailwind variants.
 order: 17
 group: platforms
 ---
@@ -11,7 +11,7 @@ One NSH bundle runs on iOS, Android, macOS, Windows and Linux (and in Mac Cataly
 
 | Rust | TSX | For |
 |---|---|---|
-| [Builder methods (`.ripple(..)`, `.input_accessory(..)`)](#platform-only-props) | [`ios={{…}}`, `android={{…}}`, `macos={{…}}`, `desktop={{…}}`, `web={{…}}`](#platform-only-props) | Props only one platform has. |
+| [Builder methods (`.ripple(..)`, `.input_accessory(..)`)](#platform-only-props) | [`ios={{…}}`, `android={{…}}`, `macos={{…}}`, `windows={{…}}`, `desktop={{…}}`, `web={{…}}`](#platform-only-props) | Props only one platform has. |
 | [`on_back_press`, `nsh_core::element::desktop`](#platform-modules) | [`nsh/mobile`, `nsh/desktop`](#platform-modules) | APIs only mobile platforms or only desktops have. |
 | [`os()`, `idiom()`, `is_desktop()`](#platformos-and-platformselect) | [`platform.os`, `platform.desktop`, `platform.select`](#platformos-and-platformselect) | Choosing values or code per platform. |
 | [`.when(os() == Os::Ios, ..)`](#platform-variants-in-tailwind) | [`ios:` / `android:` / `web:` classes](#platform-variants-in-tailwind) | Styles per platform. |
@@ -20,11 +20,11 @@ One NSH bundle runs on iOS, Android, macOS, Windows and Linux (and in Mac Cataly
 
 Every platform is desktop or mobile, by one rule. Desktop is macOS, Windows, Linux, and browsers in the desktop idiom (a mouse and a wide window, [the web](./web.md)). Mobile is iOS, Android, and browsers in the phone or tablet idiom; Mac Catalyst runs the iOS backend, so it is mobile too, with `ios={{…}}` props. `desktop={{…}}` props, `platform.select({ desktop, mobile })`, `platform.desktop` and `platform.idiom === "desktop"` all follow this rule, as do `nsh/base`'s components (a menu is a popup on desktops and a sheet on mobile) and, in Rust, `is_desktop()`.
 
-`nsh/desktop`'s `isAvailable` answers a narrower question: whether that module's window and menu APIs work, which they do on macOS, Windows and Linux. Gate layout, density and input on `platform.desktop`, and calls of `Window` and `Menu` on `isAvailable`.
+`nsh/desktop`'s `isAvailable` answers a narrower question: whether that module's window and menu APIs work, which they do on macOS, Windows and Linux, but not in a terminal app. Gate layout, density and input on `platform.desktop`, and calls of `Window` and `Menu` on `isAvailable`.
 
 ## Platform-only props
 
-In Rust, a prop one platform has is a builder method like any other (`.ripple(..)`, `.elevation(..)` for Android, `.input_accessory(..)` for iOS, `.macos_backdrop(..)` for macOS, `.window_drag(..)` for the desktops); the other platforms leave it aside. In TSX, props that exist on one platform only are grouped in an object named after it. Each element accepts `ios`, `android`, `macos`, `desktop` (macOS, Windows, Linux, and browsers in the desktop idiom) and `web` (browsers); on other platforms the object is ignored, and on its own platform only its keys are applied. macOS applies both `macos` and `desktop`; a desktop browser applies both `desktop` and `web`.
+In Rust, a prop one platform has is a builder method like any other (`.ripple(..)`, `.elevation(..)` for Android, `.input_accessory(..)` for iOS, `.macos_backdrop(..)` for macOS, `.windows_backdrop(..)` for Windows, `.window_drag(..)` for the desktops); the other platforms leave it aside. In TSX, props that exist on one platform only are grouped in an object named after it. Each element accepts `ios`, `android`, `macos`, `windows`, `desktop` (macOS, Windows, Linux, and browsers in the desktop idiom) and `web` (browsers); on other platforms the object is ignored, and on its own platform only its keys are applied. macOS applies both `macos` and `desktop`, Windows both `windows` and `desktop`; a desktop browser applies both `desktop` and `web`.
 
 ```rust tabs
 use nsh_base::dialog;
@@ -84,9 +84,10 @@ What exists today:
 |---|---|---|---|
 | `.ripple(Ripple { .. })` | `android={{ ripple }}` | every element | The material ripple while pressed: color, borderless, radius, foreground. |
 | `.elevation(..)` | `android={{ elevation }}` | every element | The material shadow, in points, from the view's shape. |
-| | `android={{ accessibilityLiveRegion }}` | every element | `"none"`, `"polite"` or `"assertive"`: TalkBack announces the view's changes. |
+| | `android={{ accessibilityLiveRegion }}` | every element | `"none"`, `"polite"` or `"assertive"`: TalkBack announces the view's changes. The same prop without the bag does it on the other platforms too (`aria-live` on the web, a live region on Windows, an announcement on macOS). |
 | `.status_bar_translucent(..)` | `android={{ statusBarTranslucent }}` | `Dialog` | The dialog's content reaches under the status bar. |
 | `.input_accessory(..)` | `ios={{ inputAccessoryViewID }}` | `Input` | The `InputAccessoryView` shown over the keyboard. |
+| `.input_accessory(..)` | `inputAccessoryViewID` | `RichEditor` | The `InputAccessoryView` shown over the keyboard while the editor has the focus. |
 | `.auto_fill(..)` | `ios={{ textContentType }}` | `Input` | iOS's names for autofill types (Rust's `AutoFill` covers both platforms). |
 | `.supported_orientations(..)` | `ios={{ supportedOrientations }}` | `Dialog` | The orientations it allows. |
 | `.supported_orientations(..)` | `ios={{ supportedOrientations }}`, `android={{ supportedOrientations }}` | `NavPage` | The orientations the screen may take while the page is shown ([NavPage](../elements/nav-stack.md#navpage-props)). |
@@ -101,8 +102,9 @@ What exists today:
 | `.window_control(..)` | `desktop={{ windowControl }}` | every element | The view is the window's minimize, maximize or close button, drawn by the app. |
 | `.window_resize(..)` | `desktop={{ windowResize }}` | every element | Pressing it resizes a frameless window by an edge or a corner. |
 | `.macos_backdrop(..)` | `macos={{ backdrop }}` | every element | An `NSVisualEffectView` material, blending and state on macOS; see [Filters and blending](./styling.md#filters-and-blending). |
+| `.windows_backdrop(..)` | `windows={{ backdrop }}` | every element | The system's blur of what is behind a transparent window, under the view, on Windows 11 and later; see [Filters and blending](./styling.md#filters-and-blending). |
 
-In TSX, `macos={{…}}`, `desktop={{…}}` and `web={{…}}` are accepted everywhere. The types (`IOSProps`, `AndroidProps`, `MacOSProps`, `DesktopProps` and their per-element forms) tell your editor what each element takes.
+In TSX, `macos={{…}}`, `windows={{…}}`, `desktop={{…}}` and `web={{…}}` are accepted everywhere. The types (`IOSProps`, `AndroidProps`, `MacOSProps`, `WindowsProps`, `DesktopProps` and their per-element forms) tell your editor what each element takes.
 
 What an element means on every platform is a top-level prop (in Rust a method of the same name), applied where it means something: `NavPage`'s `title`, `headerStyle`, `headerLargeTitle` and `headerBackTitle` set up the system header of iOS and Android, its `header` slot is the header of the desktops and the web, and `Dialog`'s `presentation` picks iOS's sheets. `AlertDialog.show`'s `closeOnBackdropPress`, `pagingEnabled`, `refreshing`, `hitSlop` and the rest work on every platform. A platform's own system feature goes in its object, and when several platforms have it, in each of theirs under the same name: `WebView`'s `allowsBackForwardNavigationGestures`, the system's swipes through the page history, is in `ios={{…}}` and `desktop={{…}}`.
 
@@ -119,6 +121,7 @@ In Rust, the APIs only one platform has are functions of `nsh_core::prelude` (`o
 | Rust | TSX | Description |
 |---|---|---|
 | `on_back_press(listener)` | `BackHandler.on("press", listener)` | Listens to the back button after dialogs, before stacks; return `true` when handled. The listener goes with the component (or effect) that added it; in TSX the call also returns a function that stops it earlier. |
+| `on_back_progress(listener)` | `BackHandler.on("progress", listener)` | Follows the back gesture (Android 14 and later): `start`, `move`, then `end` (the press follows) or `cancel`, with the `progress` from 0 to 1 and the `edge` it started at. While one listens, the stacks do not preview their pop. |
 | | `BackHandler.exitApp()` | Leaves the app. |
 
 ```rust tabs
@@ -185,7 +188,7 @@ Rust apps draw their own title bars with `nsh_core::element::desktop` ([Building
 | `titleBar` | The hidden title bar's height and the room the system's window controls take (reactive). |
 | `windowState`, `displays` | The current window's bounds, mode and display, and the displays (reactive). |
 | `Menu` | `setApplicationMenu(items)` (the menu bar, with shortcuts) and `popup(items, at?)` (context menus). An item's `icon` is an image as `<Image>`'s `src` takes it, so menus show the app's own icon set: an SVG takes the color of the menu's text, a bitmap keeps its colors. macOS and Windows show it; GTK's menus show no icon beside a label. |
-| `isAvailable` | `true` where the window and menu APIs work: macOS, Windows and Linux. Desktop browsers have `platform.desktop` and keep the browser's window and menus. |
+| `isAvailable` | `true` where the window and menu APIs work: macOS, Windows and Linux, but not a terminal app. Desktop browsers have `platform.desktop` and keep the browser's window and menus. |
 
 See [nsh/desktop](../modules/nsh-desktop.md).
 

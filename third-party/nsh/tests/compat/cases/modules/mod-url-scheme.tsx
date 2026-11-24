@@ -1,9 +1,9 @@
 // A case of the API's test suite (docs/dev/compatibility.md):
-// `UrlScheme` with the schemes the domain's nsh.json claims: `on("open")`
-// returns a function that stops listening, and nothing arrives while no
-// link opens the app; `url()` is `null` until `setUrl` gives the address
-// (no page here), with `history: "push"` too, and a wrong `setUrl` (a
-// `history` it does not know included) is a `TypeError`; `on("change")`
+// `UrlScheme` with the schemes and web links the domain's nsh.json claims:
+// `on("open")` returns a function that stops listening, and nothing arrives
+// while no link opens the app; `url()` is `null` until `setUrl` gives the
+// address (no page here), with `history: "push"` too, and a wrong `setUrl`
+// (a `history` it does not know included) is a `TypeError`; `on("change")`
 // hears no move of the address the app makes itself, and also returns a
 // function that stops it. Its script checks each.
 import { UrlScheme, Text, View, signal } from "nsh";

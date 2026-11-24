@@ -12,6 +12,33 @@
 use nsh_core::{Bounds, Point, Points, Size};
 use windows_numerics::Matrix3x2;
 
+/// Corner radii (clockwise from the top left) fitted to a `w` x `h` box as
+/// CSS fits them, by the core's rule ([`nsh_core::canvas::fit_radii`]): where
+/// the radii of a side add up to more than the side, all four shrink by the
+/// same factor, so a corner alone on its sides may take a whole side while
+/// two that meet share it in proportion. The one rule for what is filled,
+/// clipped and stroked, so a view's background, its clip and its border
+/// agree.
+pub(crate) fn fit_radii(w: f32, h: f32, radii: [f32; 4]) -> [f32; 4] {
+    let [top_left, top_right, bottom_right, bottom_left] = radii.map(Points);
+    let fit = nsh_core::canvas::fit_radii(
+        Size::new(Points(w.max(0.0)), Points(h.max(0.0))),
+        nsh_core::Corners {
+            top_left,
+            top_right,
+            bottom_right,
+            bottom_left,
+        },
+    );
+    [
+        fit.top_left,
+        fit.top_right,
+        fit.bottom_right,
+        fit.bottom_left,
+    ]
+    .map(|r| r.0)
+}
+
 /// A rectangle of `width` x `height` at `(x, y)`.
 pub(crate) fn rect(x: f32, y: f32, width: f32, height: f32) -> Bounds<Points> {
     Bounds {
@@ -271,10 +298,37 @@ fn invert3(m: &[[f32; 3]; 3]) -> Option<[[f32; 3]; 3]> {
 
 #[cfg(test)]
 mod tests {
-    use super::Mat4;
+    use super::{Mat4, fit_radii};
 
     fn close(a: (f32, f32), b: (f32, f32)) -> bool {
         (a.0 - b.0).abs() < 1e-3 && (a.1 - b.1).abs() < 1e-3
+    }
+
+    #[test]
+    fn radii_fit_the_box_as_in_css() {
+        let fit_radii = |w, h, r| fit_radii(w, h, r).map(|r: f32| (r * 100.0).round() / 100.0);
+        // They fit: unchanged.
+        assert_eq!(
+            fit_radii(240.0, 120.0, [10.0, 20.0, 30.0, 40.0]),
+            [10.0, 20.0, 30.0, 40.0]
+        );
+        // A corner alone on its sides takes the whole short side, not half.
+        assert_eq!(
+            fit_radii(240.0, 120.0, [200.0, 0.0, 0.0, 0.0]),
+            [120.0, 0.0, 0.0, 0.0]
+        );
+        // Equal corners: half the short side (a pill).
+        assert_eq!(fit_radii(240.0, 120.0, [999.0; 4]), [60.0; 4]);
+        // Corners that meet share the side in proportion.
+        assert_eq!(
+            fit_radii(100.0, 400.0, [90.0, 30.0, 0.0, 0.0]),
+            [75.0, 25.0, 0.0, 0.0]
+        );
+        assert_eq!(fit_radii(0.0, 50.0, [8.0; 4]), [0.0; 4]);
+        assert_eq!(
+            fit_radii(100.0, 100.0, [-5.0, 10.0, 0.0, 0.0]),
+            [0.0, 10.0, 0.0, 0.0]
+        );
     }
 
     #[test]

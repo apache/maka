@@ -172,6 +172,11 @@ impl VideoItem {
         if reopened {
             self.open(surface, p.source.as_deref(), base);
         }
+        // `paused` is acted on when it changes (or for a new source): `Play`
+        // on a video that ended starts it over, and one the control bar
+        // paused would play on, whenever another prop (the volume, say)
+        // changed.
+        let toggled = reopened || old.as_ref().is_none_or(|o| o.paused != p.paused);
         *self.props.borrow_mut() = Some(p.clone());
         self.status.playing.set(!p.paused);
         let engine = self.engine.borrow().clone();
@@ -185,9 +190,9 @@ impl VideoItem {
                 let rate = if p.rate > 0.0 { p.rate as f64 } else { 1.0 };
                 let _ = engine.SetDefaultPlaybackRate(rate);
                 let _ = engine.SetPlaybackRate(rate);
-                if p.paused {
+                if toggled && p.paused {
                     let _ = engine.Pause();
-                } else if !self.status.failed.get() {
+                } else if toggled && !self.status.failed.get() {
                     let _ = engine.Play();
                 }
             }

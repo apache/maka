@@ -44,6 +44,12 @@ key tab
 key space
 expect Opens: 1 Flips: 1
 covers [nsh] keymap
+# mod-keymap-over-focused
+tap id:case-mod-keymap-over-focused
+# A binding made with `overFocused` fires.
+key mod+enter
+expect Runs: 1
+covers [nsh] keymap
 # mod-standard-system
 tap id:case-mod-standard-system
 expect console.identity=true
@@ -182,16 +188,17 @@ covers [events] DockArea.onZoomChange
 covers [events] DockArea.onPanelActiveChange
 # mod-access-denied
 tap id:case-mod-access-denied
-# The app declares files only: the clipboard, the picker, opening URLs and
-# the network are refused. Each call's promise rejects with
-# ERR_ACCESS_DENIED, the capability and what was asked for; fetch with a
-# TypeError, as every failed fetch.
+# The app declares files only: the clipboard, the picker, opening URLs, the
+# app's settings page (`application`) and the network are refused. Each
+# call's promise rejects with ERR_ACCESS_DENIED, the capability and what was
+# asked for; fetch with a TypeError, as every failed fetch.
 tap id:run
 expect Clipboard: Error ERR_ACCESS_DENIED clipboard ""
 expect Clipboard denied: 7 of 7
 expect Picker: Error ERR_ACCESS_DENIED picker ""
 expect Picker files: Error ERR_ACCESS_DENIED picker ""
 expect Open: Error ERR_ACCESS_DENIED openUrl "https://example.com/docs"
+expect App settings: Error ERR_ACCESS_DENIED application ""
 expect Image size: Error ERR_ACCESS_DENIED network "https://example.com/a.png"
 expect Image prefetch: Error ERR_ACCESS_DENIED network "https://example.com/b.png"
 expect Fetch: TypeError ERR_ACCESS_DENIED network "https://example.com/data"
@@ -201,6 +208,7 @@ expect Global WebSocket: error,1006,false
 covers [nsh] Clipboard
 covers [nsh] Picker
 covers [nsh] openUrl
+covers [nsh/mobile] AppSettings
 covers [nsh] Image
 # web-send-input
 tap id:case-web-send-input

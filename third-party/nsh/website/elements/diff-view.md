@@ -36,6 +36,7 @@ fn review() -> impl IntoElement {
 ```tsx tabs
 import { mount } from "nsh";
 import { DiffView } from "nsh/base";
+import { Window } from "nsh/desktop";
 
 const OLD = `fn total(prices: &[u32]) -> u32 {
     prices.iter().sum()
@@ -50,7 +51,11 @@ function App() {
   return <DiffView oldValue={OLD} newValue={NEW} language="rust" class="flex-1" />;
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 The view fills the box the app gives it (`flex-1`, a height) and scrolls inside: vertically through the rows, and

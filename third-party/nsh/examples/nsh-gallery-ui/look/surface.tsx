@@ -230,7 +230,10 @@ export function RowLabel(props: { label: string; detail?: string; strong?: boole
     <View style={terminal ? { flex: 1, flexDirection: "row", flexWrap: "wrap" } : { flex: 1, minWidth: pointer ? LABEL_MIN : undefined, gap: 2 }}>
       <Text
         style={{
+          // The gap is the label's own end padding, so a label longer than
+          // its column still keeps it before the detail.
           minWidth: terminal ? (props.width ?? LABEL_WIDTH) + TERMINAL_GAP : undefined,
+          paddingEnd: terminal ? TERMINAL_GAP : undefined,
           flexShrink: 0,
           fontSize: controlSize.label,
           fontWeight: props.strong ? "600" : "400",

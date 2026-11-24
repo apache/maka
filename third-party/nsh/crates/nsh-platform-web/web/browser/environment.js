@@ -24,6 +24,7 @@ export function createEnvironment(reactive, invoke, dom) {
     titleBar: { height: 0, left: 0, right: 0 }, keyboard: { height: 0, duration: 0.25 },
     colorScheme: "light", fontScale: 1, pixelRatio: 1, locale: "en-US", reduceMotion: false, screenReader: false, host: false,
     lifecycle: "active", shaders: true, wakeCount: 0,
+    network: { online: true, kind: "unknown", expensive: false, constrained: false, cellularData: "unknown" },
     horizontalSizeClass: "compact", verticalSizeClass: "compact",
     localeSettings: { languages: ["en-US"], timeZone: "UTC", hourCycle: "h12", firstDayOfWeek: 7,
       measurementSystem: "us", temperatureUnit: "fahrenheit" } };
@@ -64,6 +65,9 @@ export function createEnvironment(reactive, invoke, dom) {
     shadersAvailable: () => fields.shaders(),
     // The engine's count; a page has no system sleep to hear, so it stays 0.
     wakeCount: () => fields.wakeCount(),
+    // The page's `navigator.onLine` and `navigator.connection`, as the
+    // engine reports them.
+    network: () => fields.network(),
     // A browser page has no performance monitor (its developer tools measure it),
     // so no stats either.
     fpsEnabled: () => false,

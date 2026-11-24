@@ -33,7 +33,14 @@ mod ffi {
     pub(crate) fn font_x_height(_font: &str) -> f32 {
         8.0
     }
-    pub(crate) fn register_font(_: &str, _: &[u8], _: u16, _: bool) {}
+    thread_local! {
+        /// The `FontFace`s added: family and weight range.
+        pub(crate) static REGISTERED: std::cell::RefCell<Vec<(String, u16, u16)>> =
+            const { std::cell::RefCell::new(Vec::new()) };
+    }
+    pub(crate) fn register_font(family: &str, _: &[u8], weight: u16, max_weight: u16, _: bool) {
+        REGISTERED.with(|r| r.borrow_mut().push((family.to_owned(), weight, max_weight)));
+    }
     pub(crate) fn text_cluster_boxes(
         _: &str,
         _: &str,
@@ -50,3 +57,4 @@ mod ffi {
 
 mod clamp;
 mod edits;
+mod register_font;

@@ -32,6 +32,7 @@ fn table() -> impl IntoElement {
 ```tsx tabs
 import { mount } from "nsh";
 import { DataTable, type DataTableColumn } from "nsh/base";
+import { Window } from "nsh/desktop";
 
 const columns: DataTableColumn[] = [
   { key: "name", title: "Name", width: 160, sortable: true },
@@ -49,7 +50,11 @@ function App() {
   return <DataTable columns={columns} data={rows} class="flex-1" />;
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 表格填满应用给它的盒子（`flex-1`、一个高度），在其中滚动：纵向滚动所有行，横向滚动所有列，带滚动条（`scrollbar={false}` 隐藏滚动条，`bounces={false}` 关闭有回弹的平台上的边缘回弹）。
@@ -67,6 +72,8 @@ mount(App);
 | `width` | 宽度，单位为点。默认 `120`。 |
 | `minWidth`、`maxWidth` | 拖动或适配宽度时的最小和最大宽度。默认 `20` 和 `1200`。 |
 | `fitPadding` | 应用的内边距、图标或徽标需要的额外宽度，适配列宽时加到最宽的标题或单元格文字上。 |
+| `grow` | 各列在表格中留出的空余宽度里它所占的份额，加在它的宽度上（见[铺满宽度](#filling-the-width)）。默认无。 |
+| `autoFit` | 表格第一次有它的文字时，把它适配到最宽的文字和标题（见[铺满宽度](#filling-the-width)）。默认 `false`。 |
 | `align` | `"start"`（默认）、`"center"` 或 `"end"`（用于数字），单元格和标题一致。 |
 | `sortable` | 标题末端有一个排序按钮，按下会请求排序（见[排序](#sorting)）。 |
 | `fixed` | 其他列在它下面滚动时它固定在哪一侧：`true` 或 `"left"` 固定在左侧，排在其他列之前；`"right"` 固定在右侧，排在其他列之后（滚动列放得下时紧跟在它们后面，放不下时贴住表格右边缘）。固定列保持各自的顺序。 |
@@ -178,6 +185,7 @@ const page = signal({ start: 0, rows: load(0) });
 | Tab、Shift+Tab | 移动到下一列或上一列。 |
 | Page Up、Page Down | 按页移动行。 |
 | Home、End | 移动到第一个或最后一个。 |
+| Enter、Return | 激活获得焦点的行（`onRowActivate({ row })`），除非表格内的输入框或控件先接住了按键。 |
 | Escape | 先清除选择，再交出键盘。 |
 | 复制快捷键 | 把选中内容的文字放到剪贴板（`copy()`）。 |
 
@@ -207,6 +215,28 @@ const page = signal({ start: 0, rows: load(0) });
 ## 调整和移动列
 
 拖动列的尾部边缘会在 `minWidth` 和 `maxWidth` 之内调整宽度，`onColumnResize({ key, width })` 报告每一步。连续按两次边缘会把该列适配到最宽的文本和标题。拖动标题会移动列，并用一条线显示将放下的位置；`onColumnMove` 报告 `{ key, from, to, order }`，其中 `order` 是所有列当前顺序的 `key`。固定列只能在同一侧的固定列之间移动。`resizableColumns` 和 `movableColumns` 对整个表格开关这两项，列自己的 `resizable` 和 `movable` 优先。
+
+<a id="filling-the-width"></a>
+
+## 铺满宽度
+
+应用事先不知道内容的列（查询结果、文件的字段）从内容和表格取得宽度。带 `autoFit` 的列在表格第一次有它的文字时，像 `fitColumn` 那样适配到最宽的文字和标题；在此之前用它的 `width`。每个 `key` 只适配一次：之后的数据不改变宽度，实时数据不会让列跳动；新 `key` 的列在它的行到来时适配。
+
+各列比表格窄时，它们留出的宽度按 `grow` 的比例分给带 `grow` 的列，如同 CSS 的 `flex-grow`：加在它们的宽度（或适配出的宽度）上，各自不超过 `maxWidth`。份额随表格宽度变化；各列比表格宽时都不再伸长，表格横向滚动。用户调整过宽度、或应用设过宽度（`setColumnWidth`、`fitColumn`）的列保持那个宽度，不再伸长。伸长和自动适配本身不报告 `onColumnResize`；`columnWidths()` 给出显示的宽度。
+
+```tsx
+<DataTable
+  columns={result.columns.map((name, i) => ({
+    key: `${result.id}:${i}`,
+    title: name,
+    align: numeric[i] ? "end" : "start",
+    autoFit: true,
+    grow: numeric[i] ? 0 : 1,
+  }))}
+  data={result.rows}
+  class="flex-1"
+/>
+```
 
 <a id="live-data"></a>
 
@@ -381,6 +411,7 @@ const columns: DataTableColumn[] = [
 | `onRowPress` | `.on_row_press(\|event: &DataTablePress\| ..)` | 按下了一行或一个单元格：`{ row, column?, clicks, shift, control, alt, platform }`。 |
 | `onColumnPress` | `.on_column_press(\|event: &DataTableColumnPress\| ..)` | 按下了一个标题：`{ column, clicks, shift, control, alt, platform }`。 |
 | `onDoublePress` | `.on_double_press(\|target: &DataTableTarget\| ..)` | 一行、一个单元格或一个标题被连按两次：`{ target }`，一个 `{ row?, column? }`。 |
+| `onRowActivate` | `.on_row_activate(\|row: &u32\| ..)` | 获得焦点的行被激活（Enter / Return）：`{ row }`，与 `onRowPress` 报告的数字相同。 |
 | `onContextMenu` | `.on_context_menu(\|event: &DataTableContextMenu\| ..)` | 请求了上下文菜单：`{ row?, column?, x, y }`，位置位于根视图中。 |
 | `onSortChange` | `.on_sort_change(\|sort: &Option<DataTableSort>\| ..)` | 按下了排序按钮：`{ sort }`，下一个排序 `{ key, direction }` 或 `null`。 |
 | `onColumnResize` | `.on_column_resize(\|key: &SharedString, width: &Points\| ..)` | 列被调整宽度（`{ key, width }`），拖动的每一步都会触发，适配设置宽度时再触发一次。 |

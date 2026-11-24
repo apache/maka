@@ -13,8 +13,8 @@ use nsh_core::prelude::*;
 use serde_json::Value;
 
 use super::{
-    controller::{BlockItem, Rv},
-    geometry::Hit,
+    controller::{BlockItem, Rv, Tree},
+    geometry::{Geometry, Hit},
     parts::Part,
     render::part,
 };
@@ -312,43 +312,127 @@ pub(crate) fn cell(wrapper: View, rv: &Rv, item: ReadSignal<BlockItem>) -> View 
         }))
 }
 
-/// The handles, grips and drop line of the tables, over the content.
+/// A table the controls are drawn for: its block and its node.
+#[derive(Clone)]
+struct TableItem {
+    id: u64,
+    node: Node,
+}
+
+impl PartialEq for TableItem {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id && self.node.ptr_eq(&other.node)
+    }
+}
+
+/// The handles and grips of the tables, over the content, the inner
+/// tables' over the outer's. Each table's are a region of their own that
+/// runs again when that table moves or changes: every block's layout comes
+/// as an event of its own, and one region over all the tables would lay
+/// every table out again for each block.
 pub(crate) fn controls(rv: Rv) -> impl IntoElement {
-    dynamic(move || {
-        rv.doc_rev.get();
-        let preview = rv.table_preview.get();
-        if !rv.props.editable.get() || (rv.tree.borrow().tables.is_empty() && preview.is_none()) {
+    let props = rv.props;
+    let list_rv = rv.clone();
+    let tables = computed(move || {
+        list_rv.doc_rev.get();
+        if !props.editable.get() {
             return Vec::new();
         }
-        rv.layout_rev.get();
-        rv.sel_rev.get();
-        let layouts = rv.table_layouts();
-        let active = rv.active_table();
-        let mut out: Vec<AnyElement> = Vec::new();
-        for layout in &layouts {
-            if layout.resizable && is_desktop() {
-                out.extend(resize_handles(&rv, layout, preview));
-            }
-            if Some(layout.pos) == active {
-                out.extend(grips(&rv, layout));
-            }
+        list_rv
+            .tree
+            .borrow()
+            .tables
+            .iter()
+            .map(|(id, node)| TableItem {
+                id: *id,
+                node: node.clone(),
+            })
+            .collect::<Vec<_>>()
+    });
+    // The block of the table the selection is in: the tables' regions run
+    // again when it changes, for the two tables it concerns, not on every
+    // move of the selection.
+    let active_rv = rv.clone();
+    let active = computed(move || {
+        active_rv.sel_rev.get();
+        active_rv.doc_rev.get();
+        let pos = active_rv.active_table()?;
+        active_rv.tree.borrow().id_at(pos)
+    });
+    each(
+        tables,
+        |t: &TableItem| t.id,
+        move |item, _| table_controls(rv.clone(), item, active),
+    )
+}
+
+/// The line showing where a dragged row or column drops, over the tables'
+/// controls.
+pub(crate) fn drop_line(rv: Rv) -> impl IntoElement {
+    dynamic(move || {
+        if !rv.props.editable.get() {
+            return None;
         }
-        if let Some(TablePreview::Drop(line)) = preview {
-            out.push(
-                part(
-                    view()
-                        .absolute()
-                        .left(Length::from(line.origin.x))
-                        .top(Length::from(line.origin.y))
-                        .w(Length::from(line.size.width))
-                        .h(Length::from(line.size.height))
-                        .pointer_events(PointerEvents::None)
-                        .bg(move || theme().primary),
-                    &rv,
-                    Part::TableDropIndicator,
-                )
-                .into_element(),
-            );
+        let Some(TablePreview::Drop(line)) = rv.table_preview.get() else {
+            return None;
+        };
+        Some(part(
+            view()
+                .absolute()
+                .left(Length::from(line.origin.x))
+                .top(Length::from(line.origin.y))
+                .w(Length::from(line.size.width))
+                .h(Length::from(line.size.height))
+                .pointer_events(PointerEvents::None)
+                .bg(move || theme().primary),
+            &rv,
+            Part::TableDropIndicator,
+        ))
+    })
+}
+
+/// A table's resize handles (desktops) and, while the selection is in it,
+/// its grips, placed from its layout: they follow its frame, its cells'
+/// and the boxes around it ([`Rv::watch_table`]), not every block's.
+fn table_controls(
+    rv: Rv,
+    item: ReadSignal<TableItem>,
+    active: Memo<Option<u64>>,
+) -> impl IntoElement {
+    let id = item.get_untracked().id;
+    let moved = rv.watch_table(id);
+    let selected = computed(move || active.get() == Some(id));
+    // Its own resize's preview: another table's resize does not wake it.
+    let preview_rv = rv.clone();
+    let preview = computed(move || {
+        let preview = preview_rv.table_preview.get()?;
+        let table = match preview {
+            TablePreview::ColWidth { table, .. } | TablePreview::RowHeight { table, .. } => table,
+            TablePreview::Drop(_) => return None,
+        };
+        preview_rv.doc_rev.get();
+        (preview_rv.block_pos(id) == Some(table)).then_some(preview)
+    });
+    dynamic(move || {
+        let it = item.get();
+        let selected = selected.get();
+        let (_, resizable, _) = options(&it.node);
+        let handles = resizable && is_desktop();
+        // Nothing to draw: its layout is not followed either.
+        if !handles && !selected {
+            return Vec::new();
+        }
+        moved.get();
+        let preview = preview.get();
+        let Some(layout) = rv.table_layout(id, &it.node) else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        if handles {
+            out.extend(resize_handles(&rv, &layout, preview));
+        }
+        if selected {
+            out.extend(grips(&rv, &layout));
         }
         out
     })
@@ -559,65 +643,56 @@ impl Rv {
     pub(crate) fn table_layouts(&self) -> Vec<TableLayout> {
         let tree = self.tree.borrow();
         let geo = self.geo.borrow();
-        let mut out = Vec::with_capacity(tree.tables.len());
-        for (table_id, table_node) in &tree.tables {
-            let Some(table_pos) = tree.pos(*table_id) else {
-                continue;
-            };
-            let (Some(origin), Some((_, frame))) =
-                (geo.origin(*table_id), geo.frames.get(table_id))
-            else {
-                continue;
-            };
-            let bounds = Bounds::new(origin, frame.size);
-            let map = TableMap::get(table_node);
-            let start = table_pos + 1;
-            let mut lefts = vec![None; map.width];
-            let mut rights = vec![None; map.width];
-            let mut tops = vec![None; map.height];
-            let mut bottoms = vec![None; map.height];
-            for cell in tree.children.get(table_id).into_iter().flatten() {
-                let Some(rect) = tree
-                    .pos(cell.id)
-                    .and_then(|p| p.checked_sub(start))
-                    .and_then(|p| map.try_find_cell(p))
-                else {
-                    continue;
-                };
-                let (Some(o), Some((_, f))) = (geo.origin(cell.id), geo.frames.get(&cell.id))
-                else {
-                    continue;
-                };
-                lefts[rect.left] = Some(o.x);
-                rights[rect.right - 1] = Some(o.x + f.size.width);
-                tops[rect.top] = Some(o.y);
-                bottoms[rect.bottom - 1] = Some(o.y + f.size.height);
-            }
-            let cols = edges(
-                &lefts,
-                &rights,
-                bounds.origin.x,
-                bounds.origin.x + bounds.size.width,
-            );
-            let rows = edges(
-                &tops,
-                &bottoms,
-                bounds.origin.y,
-                bounds.origin.y + bounds.size.height,
-            );
-            let (min_width, resizable, last_column_resizable) = options(table_node);
-            out.push(TableLayout {
-                pos: table_pos,
-                bounds,
-                cols,
-                rows,
-                min_width,
-                resizable,
-                last_column_resizable,
-            });
-        }
+        let mut out: Vec<TableLayout> = tree
+            .tables
+            .iter()
+            .filter_map(|(id, node)| layout_of(&tree, &geo, *id, node))
+            .collect();
         crate::sort::sort_by_key(&mut out, |t| t.pos);
         out
+    }
+
+    /// Table `id` (`node`) as laid out.
+    fn table_layout(&self, id: u64, node: &Node) -> Option<TableLayout> {
+        layout_of(&self.tree.borrow(), &self.geo.borrow(), id, node)
+    }
+
+    /// Table `id`'s revision of its layout, which [`Self::table_moved`]
+    /// moves, for as long as the scope it is watched in lasts.
+    pub(crate) fn watch_table(&self, id: u64) -> ReadSignal<u64> {
+        let rev = signal(0_u64);
+        self.table_revs.borrow_mut().insert(id, rev);
+        let revs = self.table_revs.clone();
+        cleanup(move || {
+            let mut revs = revs.borrow_mut();
+            // A scope watching it again since keeps its own.
+            if revs.get(&id) == Some(&rev) {
+                revs.remove(&id);
+            }
+        });
+        rev.read_only()
+    }
+
+    /// Box `id`, in box `parent`, moved or resized, or where its children
+    /// start did: the layouts of the tables it is part of change. They are
+    /// the table it is, the table whose cell it is, and the tables in it.
+    pub(crate) fn table_moved(&self, id: u64, parent: Option<u64>) {
+        let moved: Vec<Signal<u64>> = {
+            let revs = self.table_revs.borrow();
+            if revs.is_empty() {
+                return;
+            }
+            let tree = self.tree.borrow();
+            let inner = tree.table_holders.get(&id).map_or(&[][..], Vec::as_slice);
+            [id].into_iter()
+                .chain(parent)
+                .chain(inner.iter().copied())
+                .filter_map(|table| revs.get(&table).copied())
+                .collect()
+        };
+        for rev in moved {
+            rev.update(|r| *r += 1);
+        }
     }
 
     /// The table the selection is in (the innermost), by position.
@@ -703,7 +778,7 @@ impl Rv {
             _ => None,
         };
         if let Some(selection) = selection {
-            self.set_selection(selection, false);
+            self.set_pointer_selection(selection, false);
         }
         if is_desktop() {
             *self.table_gesture.borrow_mut() = Some(TableGesture {
@@ -961,6 +1036,59 @@ fn index_at(lines: &[(Points, Points)], v: Points) -> Option<usize> {
         return Some(i);
     }
     Some(if v < lines[0].0 { 0 } else { lines.len() - 1 })
+}
+
+/// Table `table_id` (`table_node`) as laid out, from its cells' frames.
+fn layout_of(tree: &Tree, geo: &Geometry, table_id: u64, table_node: &Node) -> Option<TableLayout> {
+    let table_pos = tree.pos(table_id)?;
+    let (Some(origin), Some((_, frame))) = (geo.origin(table_id), geo.frames.get(&table_id)) else {
+        return None;
+    };
+    let bounds = Bounds::new(origin, frame.size);
+    let map = TableMap::get(table_node);
+    let start = table_pos + 1;
+    let mut lefts = vec![None; map.width];
+    let mut rights = vec![None; map.width];
+    let mut tops = vec![None; map.height];
+    let mut bottoms = vec![None; map.height];
+    for cell in tree.children.get(&table_id).into_iter().flatten() {
+        let Some(rect) = tree
+            .pos(cell.id)
+            .and_then(|p| p.checked_sub(start))
+            .and_then(|p| map.try_find_cell(p))
+        else {
+            continue;
+        };
+        let (Some(o), Some((_, f))) = (geo.origin(cell.id), geo.frames.get(&cell.id)) else {
+            continue;
+        };
+        lefts[rect.left] = Some(o.x);
+        rights[rect.right - 1] = Some(o.x + f.size.width);
+        tops[rect.top] = Some(o.y);
+        bottoms[rect.bottom - 1] = Some(o.y + f.size.height);
+    }
+    let cols = edges(
+        &lefts,
+        &rights,
+        bounds.origin.x,
+        bounds.origin.x + bounds.size.width,
+    );
+    let rows = edges(
+        &tops,
+        &bottoms,
+        bounds.origin.y,
+        bounds.origin.y + bounds.size.height,
+    );
+    let (min_width, resizable, last_column_resizable) = options(table_node);
+    Some(TableLayout {
+        pos: table_pos,
+        bounds,
+        cols,
+        rows,
+        min_width,
+        resizable,
+        last_column_resizable,
+    })
 }
 
 /// Each line's start and end from the cells starting and ending at it,

@@ -55,6 +55,7 @@ fn plans() -> impl IntoElement {
 ```tsx tabs
 import { mount, signal, Text, View } from "nsh";
 import { Radio, RadioGroup } from "nsh/base";
+import { Window } from "nsh/desktop";
 
 function App() {
   const plan = signal("basic");
@@ -78,7 +79,11 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 `Radio` and `RadioGroup` come from [`nsh/base`](../modules/nsh-base.md), the `nsh-base` crate in Rust. The value is

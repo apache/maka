@@ -1830,6 +1830,31 @@ mod tests {
         assert!(names.contains(&"getHTML"), "{names:?}");
     }
 
+    /// A whole document keeps its own attributes, as Tiptap's
+    /// `createDocument` does, given as JSON or as a JSON string: an app's
+    /// top node may hold some (a note's frontmatter).
+    #[test]
+    fn a_document_keeps_its_attributes() {
+        let schema = crate::rich_editor::model::SchemaSpec::from_json(&json!({
+            "nodes": [
+                ["doc", { "content": "paragraph+", "attrs": { "front": { "default": null } } }],
+                ["paragraph", { "content": "text*" }],
+                ["text", {}]
+            ]
+        }))
+        .unwrap();
+        let json = json!({
+            "type": "doc",
+            "attrs": { "front": "tags: [a]" },
+            "content": [{ "type": "paragraph" }]
+        });
+        let doc = doc_of(&schema, &Content::Json(json.clone()), None).unwrap();
+        assert_eq!(doc.attrs().get("front"), Some(&json!("tags: [a]")));
+        let text = Content::Text(json.to_string());
+        let doc = doc_of(&schema, &text, Some(RichFormat::Json)).unwrap();
+        assert_eq!(doc.attrs().get("front"), Some(&json!("tags: [a]")));
+    }
+
     fn editor(markdown: &str) -> EditorSession {
         let schema = starter::schema();
         let doc = doc_of(

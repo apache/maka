@@ -51,6 +51,8 @@ are methods of the `Scrollable` trait, which lists share.
 | `scrollable` | `.scrollable(..)` | `boolean` | `true` | The user can scroll it. |
 | `scrollbar` | `.scrollbar(..)` | `boolean \| ScrollbarTheme` | `true` | The scroll indicator shows: the platform's, or the app's [built-in bar](./scrollbar.md#built-in-bars) once it set a theme; an object is a theme of the view's own. |
 | `bounces` | `.bounces(..)` | `boolean` | `true` | Overscroll past the edges. |
+| `smoothWheel` | `.smooth_wheel(..)` | `boolean` | `false` | A mouse wheel's notches glide to where they point, eased in and out over 100–200 ms as in Chrome, a run of notches one motion. macOS, Windows, Linux and GPUI (not while the system reduces motion); iOS, Android and the web keep the system's and the browser's scrolling. Trackpads are unchanged. |
+| `wheelLineHeight` | `.wheel_line_height(px(..))` | `number` | `0` | How far a mouse wheel's line scrolls, in points; 0 keeps the platform's (10 on macOS, 16 on Windows, a length after the view's on Linux). 40 is what Chrome and Safari scroll a line on macOS. The desktops. |
 | `pagingEnabled` | `.paging(..)` | `boolean` | `false` | Stops at multiples of the viewport. |
 | `snapToInterval` | `.snap_interval(px(..))` | `number` | `0` | Stops at multiples of this length (0: off). |
 | `snapToOffsets` | `.snap_offsets(..)` | `number[]` | | Stops at these offsets. |

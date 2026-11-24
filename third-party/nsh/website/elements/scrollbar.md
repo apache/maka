@@ -61,6 +61,7 @@ fn inbox(rows: impl IntoElement) -> impl IntoElement {
 ```tsx tabs
 import { mount, Scroll, Text, View, type YNode } from "nsh";
 import { Scrollbar } from "nsh/base";
+import { Window } from "nsh/desktop";
 
 function App() {
   let list: YNode | undefined;
@@ -83,7 +84,11 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 `Scrollbar` comes from [`nsh/base`](../modules/nsh-base.md), the `nsh-base` crate in Rust. In Rust, `scrollbar()` makes
@@ -147,7 +152,9 @@ A later `setTheme` restyles the bars, and `Scrollbar.setTheme(null)` gives the v
 view takes a theme of its own as its `scrollbar` prop (`<Scroll scrollbar={{ mode: "always", vertical: { … } }}>`),
 whether or not the app set one; `scrollbar={false}` leaves a view without a bar. A list laid out in its parent's
 viewport (`viewport="parent"`) scrolls with that view and its bar. A multiline `Input` gets the bar of its vertical look
-too, over its text, which it scrolls as the text view's own indicator does.
+too, over its text, which it scrolls as the text view's own indicator does. The bar lies over the whole input, its
+padding included, while the text shows only inside the padding, on every platform. In Rust, `.scrollbar(theme)` takes a
+`ScrollbarTheme` on a scroll view or a multiline input, as `.scrollbar(true)` and `.scrollbar(false)` do.
 
 ## The scroll view it moves
 
@@ -164,6 +171,8 @@ scroll view's edge in a `relative` box around both, or anywhere else on the scre
 - A vertical bar follows a vertical scroll view; `axis="horizontal"` makes a bar for a horizontal one (place it along
   the bottom edge). One bar per axis.
 - Lists work alike: the thumb follows the list's whole length as rows are measured and added.
+- So does a multiline `Input`: turn its own bar off with `scrollbar={false}` and name it in `scroll`; the bar follows its
+  text and scrolls it. The input reports its scrolling only while a bar follows it.
 
 ## When it shows
 

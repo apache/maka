@@ -7,7 +7,7 @@
 // the app opens is the viewer's pin, which shows while the pointer is over
 // the viewer.
 import { mount, platform, signal, Text, View } from "nsh";
-import { currentWindow, focusedWindow, Window, type WindowOptions, type WindowRef, type WindowState, windows } from "nsh/desktop";
+import { currentWindow, focusedWindow, Window, type WindowOptions, type WindowState, windows } from "nsh/desktop";
 
 const round = (n: number) => Math.round(n);
 
@@ -61,13 +61,9 @@ const popupLog = signal("none");
 const dialogLog = signal("none");
 const guardLog = signal("none");
 
-/** The main window, kept from the app's render: handlers have no window
- * to ask `currentWindow()` about. */
-let main: WindowRef;
-
 /** The main window's bottom left corner, where the windows open. */
 function corner(): WindowOptions["defaultPosition"] {
-  const b = main.state()?.bounds;
+  const b = Window.get("main")?.state()?.bounds;
   return b ? { x: b.origin.x + 24, y: b.origin.y + b.size.height - 200 } : "center";
 }
 
@@ -148,8 +144,8 @@ function Action(props: { label: string; onPress: () => void }) {
   );
 }
 
-function App() {
-  main = currentWindow();
+function Main() {
+  const main = currentWindow();
   return (
     <View style={{ flex: 1 }}>
       <View style={{ position: "absolute", left: 12, top: 12, right: 340, gap: 2 }}>
@@ -218,6 +214,16 @@ function App() {
           }}
         />
       </View>
+    </View>
+  );
+}
+
+function App() {
+  return (
+    <>
+      <Window id="main">
+        <Main />
+      </Window>
       {/* A panel, controlled: the app closing it hears no onOpenChange. */}
       <Window
         id="panel"
@@ -281,7 +287,7 @@ function App() {
       >
         <Text>Inside guard</Text>
       </Window>
-    </View>
+    </>
   );
 }
 

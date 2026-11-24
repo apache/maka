@@ -1,3 +1,4 @@
 import { mount, Text } from "nsh";
+import { Window } from "nsh/desktop";
 
-mount(() => <Text>The app</Text>);
+mount(() => <Window id="main">{() => <Text>The app</Text>}</Window>);

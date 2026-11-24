@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>NSMicrophoneUsageDescription</key><string>The app listens to the microphone while you dictate, and its web pages use it.</string>
+    <key>NSSpeechRecognitionUsageDescription</key><string>The app turns what you say into text.</string>
+    <key>NSCameraUsageDescription</key><string>The app's web pages use the camera.</string>
+</dict>
+</plist>

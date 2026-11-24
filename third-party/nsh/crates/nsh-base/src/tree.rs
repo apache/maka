@@ -494,6 +494,12 @@ pub struct TreeProps {
     /// `depth`, a chevron, a badge), for the rows in view; without it a
     /// row shows the item's label.
     pub render_item: Prop<Option<Renderer<TreeEntry>>>,
+    /// What shows above the rows, inside the tree's scroll view: it scrolls
+    /// with them, as a `List`'s `header` does (pinned items, a heading).
+    pub header: Prop<Option<Slot>>,
+    /// What shows instead of the rows while no item shows (no items, a
+    /// filter that left none), as a `List`'s `empty` does.
+    pub empty: Prop<Option<Slot>>,
 }
 
 /// The events of a [`Tree`].
@@ -1049,7 +1055,9 @@ pub fn Tree(props: TreeProps, cx: Scope<TreeEvent>) -> impl IntoElement {
             scroll_to(row, v);
         }
     })
-    .element_ref(&list);
+    .element_ref(&list)
+    .header(props.header.place(|header| header))
+    .empty(props.empty.place(|empty| empty));
     view()
         .element_ref(&root)
         .role(AccessibilityRole::Tree)

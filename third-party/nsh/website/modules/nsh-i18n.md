@@ -1,18 +1,19 @@
 ---
 title: nsh/i18n
-description: "The app's translations, read from its locales/ files in rust-i18n's formats, and the language it shows: t, setLocale, availableLocales."
+description: "The app's translations, read from its locales/ files in rust-i18n's formats or added at run time, and the language it shows: t, setLocale, availableLocales, addTranslations."
 order: 12.6
 ---
 
 # nsh/i18n
 
 `nsh/i18n` shows the app's text in the user's language. The translations are the app's `locales/` files, in
-[rust-i18n](https://github.com/longbridge/rust-i18n)'s formats, which the build reads and the bundle carries; the
-API is rust-i18n's, and Rust components have the same as `t!`, `set_locale` and `available_locales` in
-`nsh_core::prelude`. [I18n](../docs/i18n.md) walks through translating an app.
+[rust-i18n](https://github.com/longbridge/rust-i18n)'s formats, which the build reads and the bundle carries, plus any
+added at run time with `addTranslations`; the API is rust-i18n's, and Rust components have the same as `t!`,
+`set_locale`, `available_locales` and `add_translations` in `nsh_core::prelude`. [I18n](../docs/i18n.md) walks through
+translating an app.
 
 ```tsx
-import { availableLocales, setLocale, t } from "nsh/i18n";
+import { addTranslations, availableLocales, setLocale, t } from "nsh/i18n";
 ```
 
 It works on every platform, the web included.
@@ -53,7 +54,26 @@ A string that is not a language tag throws a `RangeError`. The choice lasts whil
 function availableLocales(): string[];
 ```
 
-The languages the app has translations in, as its files name them, sorted (`["en", "ja", "zh-CN"]`).
+The languages the app has translations in, sorted (`["en", "ja", "zh-CN"]`). Reading it subscribes to changes in the
+translations, so a list that renders it updates when `addTranslations` adds a language.
+
+## addTranslations
+
+```ts
+function addTranslations(translations: Record<string, Record<string, string>>): void;
+```
+
+Merges `translations` (keys and their text by language) into this surface's dictionary at run time: keys for an
+existing language overwrite only those keys and leave the rest untouched, and new languages are added. Views reading
+`t` (and Rust's `t!`) and `availableLocales()` update in place without restarting. Throws a `TypeError` if
+`translations` is not a plain object mapping locale strings to plain objects of string values.
+
+```tsx
+addTranslations({
+  en: { "settings.title": "Settings" },
+  fr: { hello: "Bonjour" },
+});
+```
 
 ## Files
 

@@ -32,7 +32,9 @@ use maka_workbench::{
 };
 use nsh_engine::JsonValue;
 use nsh_platform_macos::{
-    AppOptions, objc2::MainThreadMarker, quit_app, run_app_with_config, with_running_view,
+    AppOptions,
+    objc2::{ClassType, MainThreadMarker, runtime::NSObjectProtocol},
+    quit_app, run_app_with_config, with_running_view,
 };
 use std::{
     sync::{
@@ -159,6 +161,32 @@ pub fn run(first: Connection, root: Root, runtime: Runtime) -> Result<(), String
     }
 }
 
+/// Returns the frame of a visible standard workbench window (excluding the
+/// hidden host window, panels, and AppKit's status-bar tray window).
+fn visible_main_frame(
+    host_window: Option<&objc2_app_kit::NSWindow>,
+) -> Option<objc2_foundation::NSRect> {
+    let mtm = MainThreadMarker::new()?;
+    let windows = objc2_app_kit::NSApplication::sharedApplication(mtm).windows();
+    let mut fallback = None;
+    for window in windows {
+        if host_window.is_some_and(|host| std::ptr::eq(&*window, host))
+            || !window.isVisible()
+            || window.isKindOfClass(objc2_app_kit::NSPanel::class())
+            || window.level() != objc2_app_kit::NSNormalWindowLevel
+            || !window.canBecomeMainWindow()
+        {
+            continue;
+        }
+        let frame = window.frame();
+        if window.isKeyWindow() || window.isMainWindow() {
+            return Some(frame);
+        }
+        fallback.get_or_insert(frame);
+    }
+    fallback
+}
+
 fn permission_requests(connection: &Connection) -> mpsc::UnboundedReceiver<SystemPermissionWindow> {
     let (send, receive) = mpsc::unbounded_channel();
     connection.bindings.set_system_permission_windows(send);
@@ -233,13 +261,21 @@ async fn follow(
         let (closed, closing) = tokio::sync::oneshot::channel();
         with_running_view(move |view| {
             permissions::close_all();
+            let host_window = view.view().window();
+            let visible_frame = visible_main_frame(host_window.as_deref());
             view.stop();
-            let _ = closed.send(());
+            if let (Some(frame), Some(window)) = (visible_frame, host_window.as_deref()) {
+                // Keep the host window in the main window's place while reconnecting
+                // without stealing focus from another app.
+                window.setFrame_display(frame, false);
+                window.orderFront(None);
+            }
+            let _ = closed.send(visible_frame.is_some());
         });
-        tokio::select! {
+        let mut was_shown = tokio::select! {
             _ = quit.changed() => break,
-            _ = closing => {}
-        }
+            shown = closing => shown.unwrap_or(false),
+        };
         host::detach(
             bindings.take().expect("a connected Host owns bindings"),
             &endpoint,
@@ -276,6 +312,7 @@ async fn follow(
                             window.makeKeyAndOrderFront(None);
                         }
                     });
+                    was_shown = true;
                 }
             }
             if *quit.borrow() {
@@ -304,7 +341,17 @@ async fn follow(
         refuse_reloads(reloading, &tokio::runtime::Handle::current());
         configuration = shell.attach(config);
         let config = configuration.clone();
-        with_running_view(move |view| view.load_with_config(config));
+        if !was_shown {
+            let mut params = config.host.params();
+            params.insert("startHidden".into(), JsonValue::Bool(true));
+            config.host.set_params(params);
+        }
+        with_running_view(move |view| {
+            if let Some(window) = view.view().window() {
+                window.orderOut(None);
+            }
+            view.load_with_config(config);
+        });
     }
     if let Some(bindings) = bindings {
         if !*updating.borrow() {

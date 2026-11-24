@@ -37,6 +37,7 @@ fn ring(progress: f32) -> impl IntoElement {
 
 ```tsx tabs
 import { Canvas, mount } from "nsh";
+import { Window } from "nsh/desktop";
 
 function Ring(props: { progress: number }) {
   return (
@@ -59,7 +60,11 @@ function Ring(props: { progress: number }) {
   );
 }
 
-mount(() => <Ring progress={0.7} />);
+mount(() => (
+  <Window id="main">
+    <Ring progress={0.7} />
+  </Window>
+));
 ```
 
 在 TSX 中，`Canvas` 会创建原生画布视图、测量它的尺寸，再把上下文和尺寸传给你的 `draw` 函数（参见 [Canvas API](../modules/nsh-canvas.md)）。在 Rust 中，`canvas(..)` 接收一个 `Painter`，或返回 `Painter` 的闭包：闭包读取的内容变化时会重新绘制；绘制依赖尺寸时，尺寸来自 `on_layout`。

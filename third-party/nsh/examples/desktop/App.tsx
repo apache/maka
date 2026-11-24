@@ -8,7 +8,7 @@
 import { effect, mount, signal, Text, View } from "nsh";
 import { Input } from "nsh/base";
 import { colorScheme, platform } from "nsh";
-import { currentWindow, Menu, type MenuItem, titleBar } from "nsh/desktop";
+import { Window, currentWindow, Menu, type MenuItem, titleBar } from "nsh/desktop";
 
 const mac = platform.os === "macos";
 
@@ -187,4 +187,4 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => <Window id="main">{App}</Window>);

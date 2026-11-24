@@ -109,7 +109,14 @@ fn next(rx: &Receiver<MountBatch>, mut done: impl FnMut(&Seen) -> bool) -> Seen 
 
 fn press(engine: &Engine, keymap: &Keymap, keystroke: &str, editing: bool) {
     let keystroke = Keystroke::parse(keystroke, Os::MacOs).unwrap();
-    let KeyMatch::Fire(id) = keymap.find(keystroke, editing, false) else {
+    // The window the window's bindings belong to; the app root's are
+    // app-wide and take any window.
+    let window = keymap
+        .bindings()
+        .iter()
+        .find_map(|binding| binding.window)
+        .unwrap_or(ROOT_ID);
+    let KeyMatch::Fire(id) = keymap.find_in(window, keystroke, editing, false) else {
         panic!("{keystroke:?} is not bound");
     };
     engine.control().dispatch_event(
@@ -121,6 +128,7 @@ fn press(engine: &Engine, keymap: &Keymap, keystroke: &str, editing: bool) {
 
 const APP: &str = r#"import { mount, signal, Text } from "nsh";
 import { keymap } from "nsh";
+import { Window } from "nsh/desktop";
 
 const log = signal("");
 const say = (s: string) => log.set(s);
@@ -143,10 +151,10 @@ function Panel() {
 }
 
 mount(() => (
-  <>
+  <Window id="main">
     <Text>{`log ${log()}`}</Text>
     <Panel />
-  </>
+  </Window>
 ));
 "#;
 
@@ -193,6 +201,7 @@ fn key_commands_run_their_handlers() {
 
 const UNBIND: &str = r#"import { mount, signal, Text } from "nsh";
 import { keymap } from "nsh";
+import { Window } from "nsh/desktop";
 
 const panel = signal(true);
 const off = keymap.bind("mod+k", () => {});
@@ -204,7 +213,7 @@ setTimeout(() => off(), 50);
 setTimeout(() => off(), 60);
 setTimeout(() => panel.set(false), 100);
 
-mount(() => <If when={panel()}><Panel /></If>);
+mount(() => <Window id="main"><If when={panel()}><Panel /></If></Window>);
 "#;
 
 #[test]
@@ -234,6 +243,7 @@ fn js_and_view(view_first: bool) -> String {
     format!(
         r#"import {{ mount, signal, Text }} from "nsh";
 import {{ keymap }} from "nsh";
+import {{ Window }} from "nsh/desktop";
 import {{ Shortcut }} from "test/ui";
 
 const VIEW_FIRST = {view_first};
@@ -245,10 +255,10 @@ keymap.bind("mod+t", () => shown.set(!shown()));
 if (VIEW_FIRST) setTimeout(escape, 50); else escape();
 
 mount(() => (
-  <>
+  <Window id="main">
     <Text>{{`log ${{log()}}`}}</Text>
     <If when={{shown()}}><Shortcut keys="shift+enter" /></If>
-  </>
+  </Window>
 ));
 "#
     )

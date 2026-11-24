@@ -21,6 +21,7 @@ use nsh_core::{
     EventKind, EventPayload, MountBatch, MountItem, NodeId, PayloadValue, Points, Size,
     canvas::render::RenderFailure,
     geometry::{DevicePixels, point, px, size},
+    platform::{Network, NetworkKind},
 };
 use nsh_engine::{
     App, Assets, Bundle, ColorScheme, Edges, Engine, EngineConfig, EngineControl, Environment,
@@ -641,19 +642,7 @@ pub(crate) unsafe fn host<'a>(handle: jlong) -> &'a Arc<Host> {
 fn init_tls_verifier(env: &mut JNIEnv<'_>, view: &JObject<'_>) {
     static DONE: std::sync::Once = std::sync::Once::new();
     DONE.call_once(|| {
-        let context = env
-            .call_method(view, "getContext", "()Landroid/content/Context;", &[])
-            .and_then(|context| context.l())
-            .and_then(|context| {
-                env.call_method(
-                    &context,
-                    "getApplicationContext",
-                    "()Landroid/content/Context;",
-                    &[],
-                )
-            })
-            .and_then(|context| context.l());
-        let context = match context {
+        let context = match crate::context::application_context(env, view) {
             Ok(context) => context,
             Err(err) => {
                 let _ = env.exception_clear();
@@ -694,6 +683,7 @@ extern "system" fn Java_com_longbridge_nsh_Native_create(
     support_dir: JString<'_>,
     cache_dir: JString<'_>,
 ) -> jlong {
+    crate::context::init(&mut env, &view);
     #[cfg(feature = "websocket")]
     init_tls_verifier(&mut env, &view);
     let Ok(view) = env.new_global_ref(view) else {
@@ -1236,13 +1226,11 @@ extern "system" fn Java_com_longbridge_nsh_Native_load(
     } else {
         env.get_string(&capabilities).ok().map(String::from)
     };
-    // `app.json` next to the bundle (`nsh package`): the app's id.
+    // `app.json` next to the bundle (`nsh package`).
     if !app.is_null()
         && let Ok(app) = env.get_string(&app)
     {
-        let app = serde_json::from_str::<serde_json::Value>(&String::from(app)).ok();
-        let id = app.as_ref().and_then(|app| app.get("id")?.as_str());
-        bundle = bundle.with_app_id(id);
+        bundle = with_app_json(bundle, &String::from(app));
     }
     #[cfg_attr(not(feature = "js"), allow(unused_mut))]
     let mut bundle = match bundle.with_capabilities_json(declared.as_deref()) {
@@ -1341,7 +1329,9 @@ extern "system" fn Java_com_longbridge_nsh_Native_resize(
 /// `values`: safe area top, right, bottom, left, keyboard height, keyboard
 /// animation duration, font scale, right to left (1), reduce motion (1),
 /// density, screen reader (1), API level, idiom (0 phone, 1 pad, 3 TV),
-/// app state (0 resumed, 1 paused, 2 stopped), 24-hour time (1).
+/// app state (0 resumed, 1 paused, 2 stopped), 24-hour time (1), the
+/// default network's kind (`NetworkState.java`: 0 unknown, 1 none, 2 Wi-Fi,
+/// 3 cellular, 4 wired, 5 other), metered (1), Data Saver on it (1).
 /// `locale`: `Locale.getDefault()`'s language tag; `regional`: the format
 /// locale's, with Android 14's regional preferences as its extension.
 #[unsafe(no_mangle)]
@@ -1358,7 +1348,7 @@ extern "system" fn Java_com_longbridge_nsh_Native_environment(
 ) {
     // SAFETY: Java passes its live handle.
     let host = unsafe { host(handle) };
-    let mut v = [0f32; 15];
+    let mut v = [0f32; 18];
     if env.get_float_array_region(&values, 0, &mut v).is_err() {
         return;
     }
@@ -1383,6 +1373,9 @@ extern "system" fn Java_com_longbridge_nsh_Native_environment(
     environment.share = true;
     // A Custom Tab, ended by the callback link (`AuthSession.java`).
     environment.auth_session = true;
+    // The app's details in the system's settings (`SystemUi.java`
+    // `openAppSettings`).
+    environment.app_settings = true;
     environment.os_version = (v[11] as u16, 0);
     environment.idiom = match v[12] as u8 {
         1 => Idiom::Pad,
@@ -1395,6 +1388,16 @@ extern "system" fn Java_com_longbridge_nsh_Native_environment(
         2 => Lifecycle::Background,
         _ => Lifecycle::Active,
     };
+    environment.network = Network::new(match v[15] as u8 {
+        1 => NetworkKind::None,
+        2 => NetworkKind::Wifi,
+        3 => NetworkKind::Cellular,
+        4 => NetworkKind::Wired,
+        5 => NetworkKind::Other,
+        _ => NetworkKind::Unknown,
+    })
+    .expensive(v[16] != 0.0)
+    .constrained(v[17] != 0.0);
     if let Ok(tag) = env.get_string(&locale) {
         environment.locale = Locale::parse(&String::from(tag)).unwrap_or_default();
     }
@@ -1726,6 +1729,48 @@ extern "system" fn Java_com_longbridge_nsh_Native_paste(
             EventKind::Paste,
             EventPayload::Paste(Box::new(paste)),
         );
+    }
+}
+
+/// A file drag's enter or drop (`FileDrops.java`): `kind` is
+/// `onFileDragEnter` or `onFileDrop`, `uris` the files' `file:` URLs; a
+/// drop's point (`x`, `y`) is in the surface's points, as `pageX` / `pageY`.
+#[unsafe(no_mangle)]
+extern "system" fn Java_com_longbridge_nsh_Native_fileDrop(
+    mut env: JNIEnv<'_>,
+    _: JClass<'_>,
+    handle: jlong,
+    id: jint,
+    kind: jint,
+    uris: jni::objects::JObjectArray<'_>,
+    x: jfloat,
+    y: jfloat,
+) {
+    // SAFETY: Java passes its live handle.
+    let host = unsafe { host(handle) };
+    let Some(kind @ (EventKind::FileDragEnter | EventKind::FileDrop)) = encode::kind_from(kind)
+    else {
+        return;
+    };
+    let mut list = Vec::new();
+    for i in 0..env.get_array_length(&uris).unwrap_or(0) {
+        let Ok(uri) = env.get_object_array_element(&uris, i) else {
+            continue;
+        };
+        if let Ok(uri) = env.get_string(&JString::from(uri)) {
+            list.push(String::from(uri));
+        }
+    }
+    let payload = if kind == EventKind::FileDrop {
+        EventPayload::FileDropAt {
+            uris: list,
+            page_position: point(px(x), px(y)),
+        }
+    } else {
+        EventPayload::FileDrop(list)
+    };
+    if let Some(control) = host.control() {
+        control.dispatch_event(id as NodeId, kind, payload);
     }
 }
 
@@ -2385,7 +2430,7 @@ extern "system" fn Java_com_longbridge_nsh_Native_scroll(
 }
 
 /// A multiline input's text scrolled, or its text or size changed, while a
-/// built-in bar replaces its indicator (`InputConfig::replaced`): the engine
+/// bar of the app's follows it (`InputConfig::report_scroll`): the engine
 /// learns the offset, the text's size and the viewport's (points).
 #[unsafe(no_mangle)]
 extern "system" fn Java_com_longbridge_nsh_Native_inputScroll(
@@ -2478,8 +2523,10 @@ extern "system" fn Java_com_longbridge_nsh_Native_hasPan(
 }
 
 /// A drag on view `id`: `state` 0 began, 1 moved, 2 ended, 3 cancelled;
-/// translation and velocity in points (per second).
+/// translation and velocity in points (per second), from where the finger
+/// went down in the root view, `(ox, oy)`.
 #[unsafe(no_mangle)]
+#[allow(clippy::too_many_arguments)]
 extern "system" fn Java_com_longbridge_nsh_Native_pan(
     mut env: JNIEnv<'_>,
     _: JClass<'_>,
@@ -2490,6 +2537,8 @@ extern "system" fn Java_com_longbridge_nsh_Native_pan(
     ty: jfloat,
     vx: jfloat,
     vy: jfloat,
+    ox: jfloat,
+    oy: jfloat,
 ) -> jfloatArray {
     // SAFETY: Java passes its live handle.
     let host = unsafe { host(handle) };
@@ -2502,8 +2551,10 @@ extern "system" fn Java_com_longbridge_nsh_Native_pan(
         ui.pan_moved(id as u32, tx, ty);
     }
     let (value_x, value_y) = ui.pan_values(id as u32);
+    let origin = point(px(ox), px(oy));
     let payload = if state == 3 {
         EventPayload::PanCancelled {
+            origin,
             translation: point(px(tx), px(ty)),
             velocity_x: vx,
             velocity_y: vy,
@@ -2512,6 +2563,7 @@ extern "system" fn Java_com_longbridge_nsh_Native_pan(
         }
     } else {
         EventPayload::Pan {
+            origin,
             translation: point(px(tx), px(ty)),
             velocity_x: vx,
             velocity_y: vy,
@@ -3001,5 +3053,82 @@ extern "system" fn Java_com_longbridge_nsh_Native_hostCallFree(
     if call != 0 {
         // SAFETY: as in `hostReply`.
         drop(unsafe { Box::from_raw(call as *mut nsh_engine::HostCall) });
+    }
+}
+
+/// A packaged app's `app.json` (`nsh package`): its id and the links it
+/// claims (its URL schemes and web links), read as `Bundle::read` reads
+/// them on the other platforms.
+fn with_app_json(bundle: Bundle, json: &str) -> Bundle {
+    let app = serde_json::from_str::<serde_json::Value>(json).ok();
+    let id = app.as_ref().and_then(|app| app.get("id")?.as_str());
+    let bundle = bundle.with_app_id(id);
+    let Some(app) = app else {
+        return bundle;
+    };
+    // A newer NSH's: what this runtime cannot claim is left out.
+    let (links, ignored) = nsh_core::url_scheme::AppLinks::from_json_lenient(&app);
+    for what in ignored {
+        log::warn!("app.json: {what}, ignored");
+    }
+    let mut links = links;
+    // The files it opens (the share sheet's) come as `file:` URLs
+    // (`nsh_core::file_type`).
+    if nsh_core::file_type::declares_file_types(&app) {
+        let schemes = links.schemes().to_vec();
+        links.set_schemes(
+            schemes
+                .into_iter()
+                .chain([nsh_core::file_type::FILE_SCHEME.to_owned()]),
+        );
+    }
+    bundle.with_links(links)
+}
+
+#[cfg(test)]
+mod app_json_tests {
+    use super::*;
+
+    #[test]
+    fn a_packaged_app_claims_its_schemes() {
+        let bundle = with_app_json(
+            Bundle::source(String::new()),
+            r#"{"id":"dev.example.links","schemes":["example.links"]}"#,
+        );
+        assert_eq!(bundle.app_id.as_deref(), Some("dev.example.links"));
+        assert_eq!(bundle.links.schemes(), ["example.links"]);
+        assert!(bundle.links.web().is_empty());
+    }
+
+    #[test]
+    fn a_packaged_app_with_file_types_takes_files() {
+        let bundle = with_app_json(
+            Bundle::source(String::new()),
+            r#"{"id":"dev.example.files","schemes":["example"],"fileTypes":[{"name":"Image","extensions":["png"],"mimeTypes":["image/png"]}]}"#,
+        );
+        assert_eq!(bundle.links.schemes(), ["example", "file"]);
+        let none = with_app_json(Bundle::source(String::new()), r#"{"id":"dev.example"}"#);
+        assert!(none.links.schemes().is_empty());
+    }
+
+    #[test]
+    fn a_packaged_app_claims_its_web_links() {
+        let bundle = with_app_json(
+            Bundle::source(String::new()),
+            r#"{"id":"dev.example.links","links":[{"host":"example.com","paths":["/orders/*"]},{"host":"not a host"}]}"#,
+        );
+        assert_eq!(bundle.links.web().len(), 1);
+        assert_eq!(bundle.links.web()[0].host(), "example.com");
+        assert_eq!(bundle.links.web()[0].paths(), ["/orders/*"]);
+        assert!(bundle.links.schemes().is_empty());
+        assert_eq!(bundle.links.check("https://example.com/orders/7"), Ok(()));
+        assert!(bundle.links.check("https://example.com/blog").is_err());
+    }
+
+    #[test]
+    fn an_app_without_schemes_claims_none() {
+        let bundle = with_app_json(Bundle::source(String::new()), r#"{"id":"dev.example"}"#);
+        assert_eq!(bundle.app_id.as_deref(), Some("dev.example"));
+        assert!(bundle.links.is_empty());
     }
 }

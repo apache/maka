@@ -127,6 +127,17 @@ pub struct DataTableColumn {
     /// (`"right"`), after them; fixed columns keep their order.
     #[prop(default)]
     pub fixed: ColumnFixed,
+    /// Its share of the width the columns leave free while they are
+    /// narrower than the table, added to its width, as CSS's `flex-grow`
+    /// (default none: it keeps its width). Shares follow the table's width;
+    /// a column the user or the app resizes keeps that width instead.
+    #[prop(skip_none)]
+    pub grow: Option<f32>,
+    /// Fits it to its widest text and title, as the ref's `fitColumn` does,
+    /// once the table first holds rows with text in it (default false). Later data
+    /// leaves the width as it is; it grows from the fitted width.
+    #[prop(default)]
+    pub auto_fit: bool,
     /// Whether a drag of its edge resizes it (default the table's
     /// `resizableColumns`).
     #[prop(skip_none)]
@@ -522,6 +533,12 @@ pub enum DataTableEvent {
     /// A row, cell or title was pressed twice.
     #[args(target)]
     DoublePress(DataTableTarget),
+    /// The focused row was activated (Enter / Return): the row, the number
+    /// `onRowPress` reports. It fires only when no text input or control
+    /// inside the table takes the key, and not at all while nothing
+    /// selects a row.
+    #[args(row)]
+    RowActivate(u32),
     /// A context menu was asked for (a secondary press, a long press) at a
     /// cell, a row's number or a title: the app opens its `Menu` at the
     /// point.

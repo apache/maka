@@ -1,4 +1,5 @@
 import { mount, signal, Text, View } from "nsh";
+import { Window } from "nsh/desktop";
 import hello from "../notes/hello.txt?url";
 import beside from "./beside.txt?url";
 
@@ -30,4 +31,4 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => <Window id="main">{App}</Window>);

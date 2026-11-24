@@ -121,10 +121,13 @@ impl WindowsNative {
     fn click(&self, at: Point<Points>, hold: Duration, button: u8) {
         let (x, y) = (at.x.0, at.y.0);
         let target = self.target.load(Ordering::Relaxed) as NodeId;
-        // A press in a window activates it, as a click does.
-        self.on_main(move |s| activate(s, target));
-        // A real pointer arrives before it presses (hover state).
         self.in_target(move |s| {
+            // A press in a window activates it, as a click does. In the same
+            // turn of the UI thread as the press: what the app shows for the
+            // focus it gets (a batch applied between the two) must not move
+            // the view from under the point found before.
+            activate(s, target);
+            // A real pointer arrives before it presses (hover state).
             synth::pointer(s, PointerKind::Move, x, y, 0, 0);
             synth::pointer(s, PointerKind::Down, x, y, button, 1 << button);
         });
@@ -195,7 +198,13 @@ impl Native for WindowsNative {
         }
     }
 
-    fn drag(&self, from: Point<Points>, to: Point<Points>) {
+    fn drag(
+        &self,
+        from: Point<Points>,
+        to: Point<Points>,
+        options: nsh_testing::DragOptions,
+    ) -> Result<(), String> {
+        nsh_testing::agent::refuse_custom_drag("drag", options)?;
         let (x, y) = (from.x.0, from.y.0);
         self.in_target(move |s| {
             synth::pointer(s, PointerKind::Move, x, y, 0, 0);
@@ -212,6 +221,7 @@ impl Native for WindowsNative {
         }
         let (x, y) = (last.x.0, last.y.0);
         self.in_target(move |s| synth::pointer(s, PointerKind::Up, x, y, 0, 0));
+        Ok(())
     }
 
     fn type_text(&self, text: &str) {
@@ -312,7 +322,8 @@ impl Native for WindowsNative {
     }
 
     fn screenshot(&self) -> Result<Vec<u8>, String> {
-        self.on_main(synth::screenshot)
+        let target = self.target.load(Ordering::Relaxed) as NodeId;
+        self.on_main(move |s| synth::screenshot(s, target))
             .unwrap_or_else(|| Err("the window is gone".into()))
     }
 
@@ -322,7 +333,8 @@ impl Native for WindowsNative {
     }
 
     fn resize(&self, width: Points, height: Points) -> Result<(), String> {
-        self.on_main(move |s| synth::resize(s, width.0, height.0))
+        let target = self.target.load(Ordering::Relaxed) as NodeId;
+        self.on_main(move |s| synth::resize(s, target, width.0, height.0))
             .ok_or_else(|| "the window is gone".to_owned())
     }
 

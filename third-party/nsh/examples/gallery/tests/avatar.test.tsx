@@ -1,7 +1,8 @@
 // The Avatar demo: a team whose presence dots change on a press, a stacked
 // group whose overflow counts the members not shown, and pictures that load,
-// fail or are missing. Headless runs load no images, so every avatar with a
-// picture stays loading and shows its fallback: the initials of its name.
+// fail or are missing. Headless runs load no images, so there every avatar
+// with a picture stays loading and shows its fallback; a platform's host
+// (`--target`) loads them, so these steps hold either way.
 import { beforeEach, expect, open, test } from "nsh/test";
 import type { App } from "nsh/test";
 
@@ -12,11 +13,11 @@ beforeEach(async () => {
   await app.waitFor("Team");
 });
 
-test("an avatar shows the initials of its name until its picture loads", async () => {
-  await app.waitFor("JL");
-  expect(app.shows("FW")).toBe(true);
+test("an avatar without a picture or whose picture failed shows its initials", async () => {
   // Without a picture, at once; the one without a name shows the app's glyph.
-  expect(app.shows("DK")).toBe(true);
+  await app.waitFor("DK");
+  // The picture that fails, once it has: the initials of its name.
+  await app.waitFor("AT");
   // The statuses the demo heard: the two without a picture have nothing to load.
   expect(app.count("text:Nothing to load")).toBe(2);
 });

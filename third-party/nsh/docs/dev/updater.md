@@ -8,11 +8,17 @@ in `crates/nsh-core/src/runtime/updater.rs`, the toolchain's side in `crates/nsh
 
 1. `nsh.json`'s `"updater"` (`github` or `url`, `channels`, `publicKey`) is checked by `nsh package`, which adds it with the app's
    id and version to the package's assets as `nsh-updater.json`, and leaves `<name>-<version>-<os>-<arch>.<ext>`.
-2. `nsh update-manifest` writes `latest.json` and `latest.json.sig` for one version's archives.
+2. `nsh update-manifest` writes `latest.json` and `latest.json.sig` for one version's archives; with `--previous`,
+   a zstd patch per platform from the previous version (`Asset::deltas`, `nsh_updater::delta`).
 3. `checkForUpdate` reads the asset, gets the manifest, checks the signature, the id and that the version is newer.
    With `{ channel }` it reads that channel's manifest instead (`Config::channel`); a name the asset does not declare
    rejects before any request.
-4. `downloadUpdate` streams the asset into `<data dir>/updates`, checking its size and SHA-256.
+4. `downloadUpdate` streams the asset into `<data dir>/updates/download-<sha256>.part` (resuming an existing partial
+   with HTTP `Range`), checks its size and SHA-256, and renames it to `download-<sha256>`. When `Available::delta`
+   offers a patch from the running version it goes first: the installed app written as the patch's reference
+   (`delta::base`: entries sorted, no modes, owners or times, so publisher and app write the same bytes) must hash to
+   `base`, the patch downloads resumably as `delta-<result>.patch`, and what it makes, a `.tar` of the new app, must
+   hash to `result`; any failure logs and downloads the archive.
 5. `installAndRestart` unpacks next to the app, checks the new app, swaps it in, then restarts the app as
    `Application.restart()` does (`DesktopCommand::Restart`): this run quits, and the new version starts once it has
    exited (`nsh_core::restart`). Or `installOnQuit` unpacks and checks it now (`Installation::stage`) and leaves the
@@ -37,10 +43,11 @@ update" means the dev server's reload on save (`nsh run`) and is not used for it
    (`PackageAsset`). `platforms` may be empty: a release can be a package alone.
 3. `checkForPackage` offers it when its build is newer than the running one (the running package's, else
    `Config::build`) and `minRuntime` is at most this runtime (`Config::check_package`).
-4. `downloadPackage` writes `<data dir>/<app id>/updates/next.nshpkg.part`, checks size and SHA-256, verifies it
-   with the roots as the launcher will (`UpdaterHost::verify_package`, the engine's
-   `updates::verify_download`: signature, certificate, revocations, app id, build, runtime; nothing accepted),
-   then renames it to `next.nshpkg`. Any failure removes the part.
+4. `downloadPackage` writes `<data dir>/<app id>/updates/next-<sha256>.nshpkg.part` (resuming an existing partial with
+   HTTP `Range`), checks size and SHA-256, verifies it with the roots as the launcher will (`UpdaterHost::verify_package`,
+   the engine's `updates::verify_download`: signature, certificate, revocations, app id, build, runtime; nothing
+   accepted), then renames it to `next.nshpkg`. Transport and HTTP failures keep the part for the next call; a refused
+   package (hash, size or verification failure) removes it.
 5. The launchers (`nsh-{macos,linux,windows,ios}-app`, Android's `AppActivity` through `Native.load`) call
    `nsh_engine::updates::launch` / `package_to_run`. A `trying.nshpkg` left by the last launch crashed: it is
    deleted. A `next.nshpkg` that verifies, is the app's and newer than the shipped build is renamed to
@@ -105,8 +112,16 @@ packages' are removed at launch). `runningPackage()` is `Bundle::package`. `shel
 - **Rust apps** (`nsh.json` `"root"`) have no JS modules: they use `nsh-updater` directly and bring their own HTTP.
   After verifying the archive, they call `Installation::install`, then `nsh_core::element::desktop::restart()` as
   `installAndRestart` does, or `Installation::stage` and, when their app quits, `Staged::finish`.
-- **Concurrent calls** are refused while a check, download or install is in progress. Downloads use exclusively
-  created unique files, so a retry cannot truncate a previously verified archive.
+- **Concurrent calls** are refused while a check, download or install is in progress. Downloads stream into a `.part`
+  file keyed to the asset's manifest SHA-256 (`download-<sha256>.part`, `next-<sha256>.nshpkg.part`), guarded by a
+  `<part>.lock` file lock across processes, and rename it into place only after verification, so an interrupted or
+  failing retry cannot truncate a previously verified archive or package. `UpdaterHost::get(url, from, sink)` sends
+  `Accept-Encoding: identity` (so byte offsets match the raw asset on every platform HTTP stack) and
+  `Range: bytes=<offset>-` when resuming, following redirects hop-by-hop in `UpdaterOverNetwork` so `Range` survives
+  cross-origin asset redirects (such as GitHub Releases) and never downgrades from HTTPS to plain HTTP. If the server
+  ignores `Range` (`200 OK`), returns `416` or a mismatched `Content-Range`, or the assembled file fails its hash after
+  resuming, the updater discards the partial and falls back once to a fresh full download; stale `.part` files for
+  earlier hashes are removed when a newer asset starts.
 - **Packages run on trial, by file name.** Renaming `next.nshpkg` to `trying.nshpkg` marks the trial in one step, and
   a download during a trial writes `next.nshpkg` without touching the package that runs. Accepting only once healthy
   keeps the rollback floor (`TrustStore::accept_receipt`) at a build that ran.

@@ -2,12 +2,14 @@
 // restart a video with. `Video.test.tsx` runs it on the macOS host.
 // clip.mp4: `ffmpeg -f lavfi -i testsrc=duration=3:size=64x64:rate=10 -c:v libx264 -profile:v baseline -pix_fmt yuv420p clip.mp4`
 import { mount, signal, Text, Video, type VideoRef, View } from "nsh";
+import { Window } from "nsh/desktop";
 import { Button } from "nsh/base";
 
 function App() {
   let video!: VideoRef;
   const paused = signal(true);
   const pauseAtEnd = signal(true);
+  const volume = signal(1);
   const duration = signal<number | null>(null);
   const time = signal(0);
   const ends = signal(0);
@@ -24,6 +26,7 @@ function App() {
         src="asset:/clip.mp4"
         paused={paused()}
         muted
+        volume={volume()}
         style={{ width: 160, height: 160, backgroundColor: "#000000" }}
         onLoad={(e) => duration.set(e.duration)}
         onProgress={(e) => time.set(e.currentTime)}
@@ -65,6 +68,9 @@ function App() {
       >
         <Text>Seek to start</Text>
       </Button>
+      <Button onPress={() => volume.set(volume() === 1 ? 0.5 : 1)} style={{ minHeight: 44 }}>
+        <Text>{`Volume ${volume()}`}</Text>
+      </Button>
       <Button onPress={() => pauseAtEnd.set(false)} style={{ minHeight: 44 }}>
         <Text>{pauseAtEnd() ? "Keep playing at end" : "Keeps playing at end"}</Text>
       </Button>
@@ -72,4 +78,4 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => <Window id="main">{App}</Window>);

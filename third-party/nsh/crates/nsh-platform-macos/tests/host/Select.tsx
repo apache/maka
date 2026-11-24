@@ -1,6 +1,7 @@
 // A selectable view that shows where its selection is, as a bar of actions
 // above the selection needs it. `Select.test.tsx` runs it on the macOS host.
 import { mount, signal, Text, View } from "nsh";
+import { Window } from "nsh/desktop";
 
 function App() {
   const selected = signal("none");
@@ -30,4 +31,4 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => <Window id="main">{App}</Window>);

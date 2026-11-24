@@ -21,13 +21,15 @@ use std::{
     cell::{Cell, RefCell},
     ffi::{CString, c_int},
     panic::{AssertUnwindSafe, catch_unwind},
+    rc::Rc,
     sync::Arc,
 };
 
 use nsh_core::{
     Command, EventKind, Op, Prop,
     element::{
-        ComponentSpec, FunctionCall, JsEvent, JsIn, JsResult, ModuleSpec, PropKind, RustCall,
+        ComponentSpec, FunctionCall, JsEvent, JsIn, JsResult, ModuleSpec, PropDecode, PropKind,
+        RustCall,
     },
 };
 use rquickjs::qjs;
@@ -63,6 +65,23 @@ pub(crate) struct Components {
     /// `(read) => props` reading the latest value of signal `read`, made
     /// the first time a component's function renders (owned).
     props_of: Cell<Option<JsValue>>,
+    /// The props each component's effect reads ([`props_run`]), by spec
+    /// index, made the first time it runs: its own value and renderer
+    /// props and the host props it does not declare, with their names'
+    /// atoms (owned), so a run allocates nothing for its keys.
+    prop_keys: RefCell<Vec<Option<Rc<[PropKey]>>>>,
+    /// The atoms of events' handler props (`press` -> `onPress`), by event
+    /// name, made the first time (owned).
+    handlers: RefCell<FxHashMap<Box<str>, qjs::JSAtom>>,
+}
+
+/// A prop a component's effect reads.
+struct PropKey {
+    name: &'static str,
+    /// `name`'s atom (owned by [`Components`]).
+    atom: qjs::JSAtom,
+    /// Its decoder; `None` for a host prop.
+    decode: Option<PropDecode>,
 }
 
 /// What a component's own function rendered for a key: JS's holder, the
@@ -95,6 +114,16 @@ impl Components {
             // SAFETY: as above.
             unsafe { qjs::JS_FreeValue(raw, f) };
         }
+        for keys in self.prop_keys.borrow_mut().drain(..).flatten() {
+            for key in keys.iter() {
+                // SAFETY: atoms the table owned.
+                unsafe { qjs::JS_FreeAtom(raw, key.atom) };
+            }
+        }
+        for (_, atom) in self.handlers.borrow_mut().drain() {
+            // SAFETY: as above.
+            unsafe { qjs::JS_FreeAtom(raw, atom) };
+        }
     }
 }
 
@@ -109,13 +138,30 @@ fn new_string(cx: *mut JsContext, s: &str) -> JsValue {
 }
 
 fn get(cx: *mut JsContext, obj: JsValue, key: &str) -> JsValue {
-    let k = CString::new(key).unwrap_or_default();
-    // SAFETY: a property read of a live value (undefined for non-objects).
+    // SAFETY: a property read of a live value (undefined for non-objects);
+    // the atom is freed.
     unsafe {
         if !qjs::JS_IsObject(obj) {
             return UNDEFINED;
         }
-        qjs::JS_GetPropertyStr(cx, obj, k.as_ptr())
+        let atom = qjs::JS_NewAtomLen(cx, key.as_ptr().cast(), key.len() as _);
+        if atom == qjs::JS_ATOM_NULL {
+            return qjs::JS_EXCEPTION;
+        }
+        let v = qjs::JS_GetProperty(cx, obj, atom);
+        qjs::JS_FreeAtom(cx, atom);
+        v
+    }
+}
+
+/// `obj[atom]` (undefined for non-objects).
+fn get_atom(cx: *mut JsContext, obj: JsValue, atom: qjs::JSAtom) -> JsValue {
+    // SAFETY: a property read of a live value.
+    unsafe {
+        if !qjs::JS_IsObject(obj) {
+            return UNDEFINED;
+        }
+        qjs::JS_GetProperty(cx, obj, atom)
     }
 }
 
@@ -125,12 +171,39 @@ fn has(cx: *mut JsContext, obj: JsValue, key: &str) -> bool {
         if !qjs::JS_IsObject(obj) {
             return false;
         }
-        let k = CString::new(key).unwrap_or_default();
-        let atom = qjs::JS_NewAtom(cx, k.as_ptr());
+        let atom = qjs::JS_NewAtomLen(cx, key.as_ptr().cast(), key.len() as _);
         let r = qjs::JS_HasProperty(cx, obj, atom);
         qjs::JS_FreeAtom(cx, atom);
         r == 1
     }
+}
+
+/// Whether `obj` has property `atom` (false for non-objects and for an
+/// atom that could not be made).
+fn has_atom(cx: *mut JsContext, obj: JsValue, atom: qjs::JSAtom) -> bool {
+    // SAFETY: a property check of a live value.
+    unsafe {
+        atom != qjs::JS_ATOM_NULL
+            && qjs::JS_IsObject(obj)
+            && qjs::JS_HasProperty(cx, obj, atom) == 1
+    }
+}
+
+/// The atom of event `event`'s handler prop (`press` -> `onPress`), made
+/// the first time (owned by [`Components`]); `JS_ATOM_NULL` when it could
+/// not be made.
+fn handler_atom(cx: *mut JsContext, event: &str) -> qjs::JSAtom {
+    let c = components(cx);
+    if let Some(&atom) = c.handlers.borrow().get(event) {
+        return atom;
+    }
+    let name = handler_name(event);
+    // SAFETY: a new atom, owned by the table.
+    let atom = unsafe { qjs::JS_NewAtomLen(cx, name.as_ptr().cast(), name.len() as _) };
+    if atom != qjs::JS_ATOM_NULL {
+        c.handlers.borrow_mut().insert(event.into(), atom);
+    }
+    atom
 }
 
 /// `press` -> `onPress`.
@@ -815,10 +888,55 @@ pub(crate) fn component(
 }
 
 fn spec_of(cx: *mut JsContext, data: *mut JsValue) -> Arc<ComponentSpec> {
+    spec_at(cx, spec_index(cx, data))
+}
+
+fn spec_at(cx: *mut JsContext, index: usize) -> Arc<ComponentSpec> {
+    components(cx).specs.borrow()[index].clone()
+}
+
+/// The spec index a component's function data holds.
+fn spec_index(cx: *mut JsContext, data: *mut JsValue) -> usize {
     let mut index = 0f64;
     // SAFETY: one data value, a number (`component`).
     unsafe { qjs::JS_ToFloat64(cx, &mut index, *data) };
-    components(cx).specs.borrow()[index as usize].clone()
+    index as usize
+}
+
+/// The props the effect of the component of spec `index` reads, made the
+/// first time; `None` with an exception pending when an atom could not be
+/// made (nothing is kept, so the next run tries again).
+fn prop_keys(cx: *mut JsContext, index: usize, spec: &ComponentSpec) -> Option<Rc<[PropKey]>> {
+    let c = components(cx);
+    if let Some(Some(keys)) = c.prop_keys.borrow().get(index) {
+        return Some(keys.clone());
+    }
+    let mut keys: Vec<PropKey> = Vec::new();
+    let names = spec
+        .props
+        .iter()
+        .filter(|p| matches!(p.kind, PropKind::Value | PropKind::Renderer))
+        .map(|p| (p.name, p.decode))
+        .chain(spec.host_props().map(|h| (h, None)));
+    for (name, decode) in names {
+        // SAFETY: a new atom, owned by the table (or freed below).
+        let atom = unsafe { qjs::JS_NewAtomLen(cx, name.as_ptr().cast(), name.len() as _) };
+        if atom == qjs::JS_ATOM_NULL {
+            for key in &keys {
+                // SAFETY: the atoms made above.
+                unsafe { qjs::JS_FreeAtom(cx, key.atom) };
+            }
+            return None;
+        }
+        keys.push(PropKey { name, atom, decode });
+    }
+    let keys: Rc<[PropKey]> = keys.into();
+    let mut all = c.prop_keys.borrow_mut();
+    if all.len() <= index {
+        all.resize(index + 1, None);
+    }
+    all[index] = Some(keys.clone());
+    Some(keys)
 }
 
 /// A function returning `props[key]` (read when the renderer calls it).
@@ -840,11 +958,20 @@ unsafe extern "C" fn read_prop(
     _magic: c_int,
     data: *mut JsValue,
 ) -> JsValue {
-    // SAFETY: two data values (`prop_reader`).
-    let (props, key) = unsafe { (*data, *data.add(1)) };
-    match string_arg(cx, key) {
-        Some(key) => get(cx, props, &key),
-        None => qjs::JS_EXCEPTION,
+    // SAFETY: two data values (`prop_reader`): the props and the key, a
+    // string; the atom is freed.
+    unsafe {
+        let (props, key) = (*data, *data.add(1));
+        if !qjs::JS_IsObject(props) {
+            return UNDEFINED;
+        }
+        let atom = qjs::JS_ValueToAtom(cx, key);
+        if atom == qjs::JS_ATOM_NULL {
+            return qjs::JS_EXCEPTION;
+        }
+        let v = qjs::JS_GetProperty(cx, props, atom);
+        qjs::JS_FreeAtom(cx, atom);
+        v
     }
 }
 
@@ -971,7 +1098,7 @@ fn render_component(
     let handled: Box<[&'static str]> = spec
         .events
         .iter()
-        .filter(|e| has(cx, props, &handler_name(e.name)))
+        .filter(|e| has_atom(cx, props, handler_atom(cx, e.name)))
         .map(|e| e.name)
         .collect();
     let handles_events = !handled.is_empty();
@@ -1111,13 +1238,11 @@ unsafe extern "C" fn props_run(
 ) -> JsValue {
     // SAFETY: four data values (`render_component`).
     let (node, props, prev, index) = unsafe { (*data, *data.add(1), *data.add(2), data.add(3)) };
-    let spec = spec_of(cx, index);
-    let keys = spec
-        .props
-        .iter()
-        .filter(|p| matches!(p.kind, PropKind::Value | PropKind::Renderer))
-        .map(|p| (p.name, p.decode))
-        .chain(spec.host_props().map(|h| (h, None)));
+    let index = spec_index(cx, index);
+    let spec = spec_at(cx, index);
+    let Some(keys) = prop_keys(cx, index, &spec) else {
+        return qjs::JS_EXCEPTION;
+    };
     // Every prop is read and set whatever another one did, so each stays
     // tracked and the good ones reach the view; the first error is thrown
     // at the end (an uncatchable one, an interrupt, at once).
@@ -1132,8 +1257,9 @@ unsafe extern "C" fn props_run(
         first.get_or_insert(e);
         false
     };
-    for (i, (key, decode)) in keys.enumerate() {
-        let value = get(cx, props, key);
+    for (i, k) in keys.iter().enumerate() {
+        let (key, decode) = (k.name, k.decode);
+        let value = get_atom(cx, props, k.atom);
         // SAFETY: live values; the array keeps a dup of the new value.
         unsafe {
             if qjs::JS_IsException(value) {
@@ -1292,71 +1418,80 @@ unsafe extern "C" fn on_native_event(
             *data.add(4),
         )
     };
+    /// What an event's name asks for.
+    enum Named {
+        Children,
+        /// `$render` (true) or `$unrender`.
+        Render(bool),
+        /// The handler prop's atom.
+        Handler(qjs::JSAtom),
+    }
     let event = arg(argc, argv, 0);
     let name = get(cx, event, "name");
-    let name_str = string_arg(cx, name);
-    if name_str.as_deref() == Some(CHILDREN) {
-        // SAFETY: ours; the signal takes the data.
-        unsafe { qjs::JS_FreeValue(cx, name) };
-        if !unsafe { qjs::JS_IsUndefined(lazy) } {
-            reactive::set_signal(cx, lazy, get(cx, event, "data"));
-        }
-        return UNDEFINED;
-    }
-    if matches!(name_str.as_deref(), Some(RENDER | UNRENDER)) {
-        // SAFETY: ours.
-        unsafe { qjs::JS_FreeValue(cx, name) };
-        // SAFETY: an inline tag check.
-        if unsafe { qjs::JS_IsUndefined(renders) } {
+    let named = dom::with_str(cx, name, |n| match n {
+        CHILDREN => Named::Children,
+        RENDER => Named::Render(true),
+        UNRENDER => Named::Render(false),
+        n => Named::Handler(handler_atom(cx, n)),
+    });
+    // SAFETY: ours.
+    unsafe { qjs::JS_FreeValue(cx, name) };
+    let Some(named) = named else {
+        return qjs::JS_EXCEPTION;
+    };
+    let atom = match named {
+        Named::Children => {
+            // SAFETY: an inline tag check; the signal takes the data.
+            if !unsafe { qjs::JS_IsUndefined(lazy) } {
+                reactive::set_signal(cx, lazy, get(cx, event, "data"));
+            }
             return UNDEFINED;
         }
-        let (mut host_id, mut owner_id) = (0f64, 0f64);
-        // SAFETY: numbers (`render_component`).
-        unsafe {
-            qjs::JS_ToFloat64(cx, &mut host_id, host);
-            qjs::JS_ToFloat64(cx, &mut owner_id, owner);
+        Named::Render(render) => {
+            // SAFETY: an inline tag check.
+            if unsafe { qjs::JS_IsUndefined(renders) } {
+                return UNDEFINED;
+            }
+            let (mut host_id, mut owner_id) = (0f64, 0f64);
+            // SAFETY: numbers (`render_component`).
+            unsafe {
+                qjs::JS_ToFloat64(cx, &mut host_id, host);
+                qjs::JS_ToFloat64(cx, &mut owner_id, owner);
+            }
+            let data = Owned(cx, get(cx, event, "data"));
+            let state = Renders {
+                props,
+                renders,
+                host: host_id as nsh_core::NodeId,
+                owner: owner_id as u32,
+            };
+            let r = if render {
+                state.render(cx, data.1)
+            } else {
+                state.unrender(cx, data.1)
+            };
+            return match r {
+                Ok(()) => UNDEFINED,
+                Err(e) => e,
+            };
         }
-        let data = Owned(cx, get(cx, event, "data"));
-        let state = Renders {
-            props,
-            renders,
-            host: host_id as nsh_core::NodeId,
-            owner: owner_id as u32,
-        };
-        let r = if name_str.as_deref() == Some(RENDER) {
-            state.render(cx, data.1)
-        } else {
-            state.unrender(cx, data.1)
-        };
-        return match r {
-            Ok(()) => UNDEFINED,
-            Err(e) => e,
-        };
+        Named::Handler(atom) => atom,
+    };
+    if atom == qjs::JS_ATOM_NULL {
+        return qjs::JS_EXCEPTION;
     }
-    let handler = string_arg(cx, name).map(|n| get(cx, props, &handler_name(&n)));
+    let handler = get_atom(cx, props, atom);
     // SAFETY: values got are freed; the handler is called with the data.
     unsafe {
-        qjs::JS_FreeValue(cx, name);
-        let Some(handler) = handler else {
-            return qjs::JS_EXCEPTION;
-        };
         if !qjs::JS_IsFunction(cx, handler) {
             qjs::JS_FreeValue(cx, handler);
             return UNDEFINED;
         }
         // One argument: the event's data, one object (`api-naming.md`
         // "Payloads").
-        let mut args = vec![get(cx, event, "data")];
-        let r = qjs::JS_Call(
-            cx,
-            handler,
-            UNDEFINED,
-            args.len() as c_int,
-            args.as_mut_ptr(),
-        );
-        for arg in args {
-            qjs::JS_FreeValue(cx, arg);
-        }
+        let mut args = [get(cx, event, "data")];
+        let r = qjs::JS_Call(cx, handler, UNDEFINED, 1, args.as_mut_ptr());
+        qjs::JS_FreeValue(cx, args[0]);
         qjs::JS_FreeValue(cx, handler);
         r
     }
@@ -1420,10 +1555,11 @@ impl Renders {
         let entry =
             crate::web::js::new_array(ctx, vec![V::dup(ctx, holder.1), V::num(f64::from(root))])
                 .map_err(|_| qjs::JS_EXCEPTION)?;
-        let key = CString::new(slot).unwrap_or_default();
-        // SAFETY: the object takes a dup of the entry.
+        // SAFETY: the object takes the entry; the atom is freed.
         unsafe {
-            qjs::JS_SetPropertyStr(ctx, self.renders, key.as_ptr(), entry.take());
+            let atom = qjs::JS_NewAtomLen(ctx, slot.as_ptr().cast(), slot.len() as _);
+            qjs::JS_SetProperty(ctx, self.renders, atom, entry.take());
+            qjs::JS_FreeAtom(ctx, atom);
         }
         match old {
             Some((holder, root)) => {
@@ -1457,11 +1593,11 @@ impl Renders {
         if !unsafe { qjs::JS_IsObject(entry.1) } {
             return None;
         }
-        let key = CString::new(slot).unwrap_or_default();
         // SAFETY: reads of the entry (an array made by `render`); the
-        // property goes.
+        // property goes. Its key is the whole slot, as `get` reads it (a
+        // key may hold a NUL).
         unsafe {
-            let atom = qjs::JS_NewAtom(ctx, key.as_ptr());
+            let atom = qjs::JS_NewAtomLen(ctx, slot.as_ptr().cast(), slot.len() as _);
             qjs::JS_DeleteProperty(ctx, self.renders, atom, 0);
             qjs::JS_FreeAtom(ctx, atom);
             let holder = Owned(ctx, qjs::JS_GetPropertyUint32(ctx, entry.1, 0));

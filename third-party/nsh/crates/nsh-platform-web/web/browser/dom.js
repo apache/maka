@@ -1,12 +1,12 @@
 // The JSX facade delegates node ownership, value reconciliation, prop
 // decoding and layout operations to Rust.
-const PLATFORM_PROPS = new Set(["ios", "android", "macos", "desktop", "web"]);
+const PLATFORM_PROPS = new Set(["ios", "android", "macos", "windows", "desktop", "web"]);
 
 export function createDom(invoke, values, reactive, live, wake) {
   const handlers = new WeakMap(), owners = new WeakMap(), heldProps = new WeakMap();
   let touches, measure, hot, platform, base;
   const prototype = Object.create(null);
-  for (const name of ["focus", "blur", "scrollTo", "zoomTo", "scrollToIndex", "scrollToEnd", "reveal", "reload", "goBack", "goForward", "stopLoading", "injectJavaScript", "postMessage", "insertText", "sendInput", "load", "seek"]) {
+  for (const name of ["focus", "blur", "clearSelection", "scrollTo", "zoomTo", "scrollToIndex", "scrollToEnd", "reveal", "reload", "goBack", "goForward", "stopLoading", "injectJavaScript", "postMessage", "insertText", "sendInput", "load", "seek"]) {
     prototype[name] = function (argument) { const id = values.nodeIds.get(this); if (id === undefined) throw new TypeError("nsh: not a node"); return call(314, [id, name, argument]); };
   }
   // A page's web view is an iframe whose document the app may not read:
@@ -21,6 +21,9 @@ export function createDom(invoke, values, reactive, live, wake) {
   };
   prototype.setSelection = function (start, end = start) { return call(314, [values.nodeIds.get(this), "setSelection", { start: Number(start), end: Number(end) }]); };
   prototype.command = function (name, args) { return call(314, [values.nodeIds.get(this), "native", { name, args }]); };
+  // A layout animation of this node's change whose `update` phase is
+  // `transition` (an empty phase when it is not an object), as nsh-js sends it.
+  prototype.animateLayout = function (transition) { const id = values.nodeIds.get(this); if (id === undefined) throw new TypeError("nsh: not a node"); return call(314, [id, "layoutAnimation", { update: Object(transition) === transition ? transition : {} }]); };
   prototype.scrollToOffset = function (options) { return this.scrollTo({ x: options?.offset, y: options?.offset, animated: options?.animated }); };
   prototype.measure = function () { return measure(this); };
   prototype.measureScrollPosition = function () { return measure(this, "scrollPosition"); };
@@ -87,11 +90,12 @@ export function createDom(invoke, values, reactive, live, wake) {
     const previous = heldProps.get(node)?.get(name);
     hold(node, name, value);
     if (!(name === "desktop" ? platform?.desktop : name === platform?.os)) return;
+    const set = (key, value) => prop(node, name === "windows" ? `windows.${key}` : key, value);
     const next = value !== null && typeof value === "object" ? value : {};
     if (previous !== null && typeof previous === "object") {
-      for (const key of Object.keys(previous)) if (!Object.hasOwn(next, key)) prop(node, key, undefined);
+      for (const key of Object.keys(previous)) if (!Object.hasOwn(next, key)) set(key, undefined);
     }
-    for (const key of Object.keys(next)) prop(node, key, next[key]);
+    for (const key of Object.keys(next)) set(key, next[key]);
   };
   const dynamic = (value, depth = 0) => typeof value === "function" || (depth < 64 && Array.isArray(value) && value.some(item => dynamic(item, depth + 1)));
   const itemMemo = fn => reactive.computed(() => { const value = fn(); return typeof value === "function" ? itemMemo(value) : value; });

@@ -35,7 +35,7 @@ use std::{
 use crate::Error;
 
 /// Names what this code leaves next to the app or in it.
-const STAGING: &str = ".nsh-updater-";
+pub(crate) const STAGING: &str = ".nsh-updater-";
 const OLD: &str = ".nsh-updater-old-";
 /// An update unpacked and checked, waiting to replace the app
 /// (`<STAGED><pid>-<app's directory name>`, [`Installation::stage`]).
@@ -99,6 +99,12 @@ impl Installation {
             return false;
         };
         fs::remove_dir(&probe).is_ok()
+    }
+
+    /// Writes the installed app as the reference of a patch to it
+    /// ([`crate::delta::base`]), returning its SHA-256.
+    pub fn delta_base(&self, out: impl std::io::Write) -> Result<String, Error> {
+        crate::delta::base(&self.root, out)
     }
 
     /// Where the new app is unpacked: the directory it can be renamed from.
@@ -391,11 +397,27 @@ fn unpack(archive: &Path, into: &Path) -> Result<(), Error> {
             tar.set_preserve_permissions(true);
             unpack_tar(&mut tar, into).map_err(|e| Error::Install(format!("unpack: {e}")))
         }
+        _ if is_tar(&mut file)? => {
+            let mut tar = tar::Archive::new(file);
+            tar.set_preserve_permissions(true);
+            unpack_tar(&mut tar, into).map_err(|e| Error::Install(format!("unpack: {e}")))
+        }
         b"PK" => zip::ZipArchive::new(file)
             .and_then(|mut zip| zip.extract(into))
             .map_err(|e| Error::Install(format!("unpack: {e}"))),
-        _ => Err(Error::Install("not a .tar.gz or .zip".into())),
+        _ => Err(Error::Install("not a .tar.gz, .tar or .zip".into())),
     }
+}
+
+/// Whether `file` is a plain `.tar` (a patched update, [`crate::delta`]):
+/// `ustar` at offset 257. Leaves the file at its start.
+fn is_tar(file: &mut fs::File) -> std::io::Result<bool> {
+    use std::io::{Read as _, Seek as _, SeekFrom};
+    let mut magic = [0u8; 5];
+    file.seek(SeekFrom::Start(257))?;
+    let tar = file.read_exact(&mut magic).is_ok() && &magic == b"ustar";
+    file.rewind()?;
+    Ok(tar)
 }
 
 /// As [`tar::Archive::unpack`], without the AppleDouble files (`._<name>`)
@@ -705,6 +727,30 @@ mod tests {
 
     /// `tar -czf` on a Mac, as the guide has a developer archive an app they
     /// signed themselves.
+    #[test]
+    fn a_patch_from_the_installed_app_installs() {
+        let dir = TempDir::new();
+        let (root, exe) = package(dir.path(), name(), "com.example.app", "1.0.0");
+        let build = dir.path().join("build");
+        let (new, _) = package(&build, name(), "com.example.app", "2.0.0");
+        fs::write(resources(&new).join("added"), "x").unwrap();
+        sign(&new);
+        let installation = Installation::of(&exe, "com.example.app", CONFIG).unwrap();
+        let mut base = Vec::new();
+        installation.delta_base(&mut base).unwrap();
+        let mut tar = Vec::new();
+        let result = crate::delta::tree(&new, &mut tar).unwrap();
+        let mut patch = Vec::new();
+        crate::delta::make(&base, &tar, &mut patch).unwrap();
+
+        let patched = build.join("patched.tar");
+        let out = fs::File::create(&patched).unwrap();
+        crate::delta::apply(&base, &patch[..], out, &result).unwrap();
+        installation.install(&patched).unwrap();
+        assert_eq!(version(&root), "2.0.0");
+        assert!(resources(&root).join("added").exists());
+    }
+
     #[test]
     fn apple_double_files_are_not_installed() {
         let dir = TempDir::new();

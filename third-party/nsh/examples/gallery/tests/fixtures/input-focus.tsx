@@ -1,5 +1,6 @@
 import { mount, platform, signal, Text, View, type InputRef } from "nsh";
 import { Input } from "nsh/base";
+import { Window } from "nsh/desktop";
 import { Button } from "../../../nsh-gallery-ui";
 
 // #2226: identical long fields expose a shared field editor's stale scroll.
@@ -33,4 +34,4 @@ function App() {
     </View>
   );
 }
-mount(App);
+mount(() => <Window id="main">{App}</Window>);

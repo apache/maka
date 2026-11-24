@@ -2,6 +2,7 @@
 // volume out of range), and a voice message streamed by a player, whose
 // state and position show.
 import { AudioPlayer, mount, signal, Sound, Text, View } from "nsh";
+import { Window } from "nsh/desktop";
 
 /// A WAV file of `ms` milliseconds of silence (8 kHz, 16-bit mono).
 function silenceBytes(ms: number): Uint8Array {
@@ -113,4 +114,4 @@ function App() {
   );
 }
 
-mount(() => <App />);
+mount(() => <Window id="main">{() => <App />}</Window>);

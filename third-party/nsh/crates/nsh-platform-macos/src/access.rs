@@ -77,7 +77,7 @@ fn spoken(text: &AttributedText) -> std::borrow::Cow<'_, str> {
     if text.attachments.is_empty() {
         text.visible_text()
     } else {
-        std::borrow::Cow::Owned(text.copied_text(0..text.len_utf16()))
+        std::borrow::Cow::Owned(text.text_without_attachments(0..text.len_utf16()))
     }
 }
 

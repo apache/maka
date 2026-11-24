@@ -72,13 +72,19 @@ pub(crate) fn rule_line() -> View {
     line_colored(rule, Some(|| crate::theme::theme().border))
 }
 
-/// A column of [`QUOTE_BAR`]s as tall as the view its parent stretches it
-/// to (a row's height): one glyph a row, in the [`ACCENT`].
-/// By itself it is one Cell, so it never makes its row taller.
-pub(crate) fn quote_bar() -> View {
+/// A column of `glyph` (a line and the blanks around it) as tall as the
+/// view its parent stretches it to (a row's height): the glyph on every
+/// row, in `color`. By itself it is one row, so it never makes its row
+/// taller: a quote's bar, a table's sides beside cells that wrap.
+pub(crate) fn glyph_column(
+    glyph: impl Into<SharedString>,
+    color: impl IntoReactive<AdaptiveColor>,
+) -> View {
+    let glyph: SharedString = glyph.into();
     let cell = cell_height();
     let rows = signal(0usize);
     view()
+        .select_none()
         .flex_none()
         .overflow_hidden()
         .on_layout(move |frame: &Bounds<Points>| {
@@ -87,19 +93,24 @@ pub(crate) fn quote_bar() -> View {
                 rows.set(n);
             }
         })
-        .child(text(" "))
+        // Its width: the glyph's on one row, blank.
+        .child(text(" ".repeat(glyph.chars().count())))
         .child(
-            text(move || {
-                SharedString::from(vec![QUOTE_BAR.to_string(); rows.get().max(1)].join("\n"))
-            })
-            .absolute()
-            .top(px(0.0))
-            .left(px(0.0))
-            .bottom(px(0.0))
-            .text_overflow(EllipsizeMode::Clip)
-            .pointer_events(PointerEvents::None)
-            .text_color(ACCENT),
+            text(move || SharedString::from(vec![glyph.as_ref(); rows.get().max(1)].join("\n")))
+                .absolute()
+                .top(px(0.0))
+                .left(px(0.0))
+                .bottom(px(0.0))
+                .text_overflow(EllipsizeMode::Clip)
+                .pointer_events(PointerEvents::None)
+                .text_color(color),
         )
+}
+
+/// A column of [`QUOTE_BAR`]s down a quote, in the [`ACCENT`]
+/// ([`glyph_column`]).
+pub(crate) fn quote_bar() -> View {
+    glyph_column(QUOTE_BAR.to_string(), ACCENT)
 }
 
 /// `content` after a [`quote_bar`] down its left side and a Cell's gap: a
@@ -122,6 +133,7 @@ fn line_colored(
     let cell = cell_width();
     let columns = signal(0usize);
     view()
+        .select_none()
         .on_layout(move |frame: &Bounds<Points>| {
             let n = columns_in(frame.size.width, cell);
             if columns.get_untracked() != n {
@@ -160,6 +172,7 @@ pub(crate) fn filled_line(
             .text_overflow(EllipsizeMode::Clip)
     };
     view()
+        .select_none()
         .on_layout(move |frame: &Bounds<Points>| {
             let n = columns_in(frame.size.width, cell);
             if columns.get_untracked() != n {
@@ -377,10 +390,11 @@ pub const CHECKBOX_CHECKED: Mark = [("[", Tone::Text), ("✓", Tone::Accent), ("
 pub const CHECKBOX_UNCHECKED: Mark = [("[", Tone::Muted), (" ", Tone::Muted), ("]", Tone::Muted)];
 /// A checkbox neither checked nor unchecked: the dash in [`ACCENT`].
 pub const CHECKBOX_MIXED: Mark = [("[", Tone::Text), ("–", Tone::Accent), ("]", Tone::Text)];
-/// A selected radio: the dot in [`ACCENT`].
-pub const RADIO_CHECKED: Mark = [("(", Tone::Text), ("●", Tone::Accent), (")", Tone::Text)];
-/// An unselected radio: muted parentheses.
-pub const RADIO_UNCHECKED: Mark = [("(", Tone::Muted), (" ", Tone::Muted), (")", Tone::Muted)];
+/// A selected radio: the dot in [`ACCENT`], in a checkbox's brackets, so
+/// a form's marks line up as one column of the same width.
+pub const RADIO_CHECKED: Mark = [("[", Tone::Text), ("●", Tone::Accent), ("]", Tone::Text)];
+/// An unselected radio: muted brackets.
+pub const RADIO_UNCHECKED: Mark = [("[", Tone::Muted), (" ", Tone::Muted), ("]", Tone::Muted)];
 /// An on switch: a checked checkbox, as terminal apps show an on / off
 /// setting (a knob on a track would read as a slider).
 pub const SWITCH_ON: Mark = CHECKBOX_CHECKED;
@@ -584,8 +598,8 @@ mod tests {
         assert_eq!(t(checkbox_mark(true, false)), "[✓]");
         assert_eq!(t(checkbox_mark(false, false)), "[ ]");
         assert_eq!(t(checkbox_mark(true, true)), "[–]");
-        assert_eq!(t(radio_mark(true)), "(●)");
-        assert_eq!(t(radio_mark(false)), "( )");
+        assert_eq!(t(radio_mark(true)), "[●]");
+        assert_eq!(t(radio_mark(false)), "[ ]");
         assert_eq!(t(switch_mark(true)), "[✓]");
         assert_eq!(t(switch_mark(false)), "[ ]");
         // On is the accent, off is muted.

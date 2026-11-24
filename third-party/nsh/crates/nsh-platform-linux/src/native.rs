@@ -725,8 +725,13 @@ impl VideoHost {
             stream.set_muted(p.muted);
             stream.set_volume(p.volume.clamp(0.0, 1.0) as f64);
             stream.set_loop(p.repeat);
-            self.status.playing.set(!p.paused);
-            stream.set_playing(!p.paused && !self.status.failed.get());
+            // `paused` is acted on when it changes (or for a new source): a
+            // stream that ended, or that `gtk::Video`'s controls paused,
+            // stays so when another prop (the volume, say) changes.
+            if reopened || p.paused != old.paused {
+                self.status.playing.set(!p.paused);
+                stream.set_playing(!p.paused && !self.status.failed.get());
+            }
             let waiting = !p.paused && !self.status.loaded.get() && !self.status.failed.get();
             self.status.set_buffering(&self.emitter, waiting);
         }
@@ -877,6 +882,12 @@ impl VideoHost {
             && stream.is_seekable()
         {
             stream.seek((seconds.max(0.0) * 1e6) as i64);
+            // A stream that ended stopped playing: a seek on one the app
+            // has not paused plays it on from there, as the other
+            // platforms do.
+            if self.status.playing.get() && !stream.is_playing() && !self.status.failed.get() {
+                stream.set_playing(true);
+            }
         }
     }
 }

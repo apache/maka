@@ -2,11 +2,7 @@
 //! size is, the one its emulator starts at (80 × 24) included.
 
 use nsh_base::{TerminalEvent, terminal};
-use nsh_core::{
-    Size,
-    element::{Root, measure_text},
-    prelude::*,
-};
+use nsh_core::{Size, element::measure_text, prelude::*};
 use nsh_engine::EngineConfig;
 use nsh_testing::Headless;
 
@@ -42,7 +38,9 @@ fn Harness(props: HarnessProps) -> impl IntoElement {
 fn start(cols: u16) -> Headless {
     let config = EngineConfig {
         viewport: Size::new(px(1200.0), px(800.0)),
-        ..EngineConfig::new(Root::new::<Harness>(move || HarnessProps { cols }))
+        ..EngineConfig::new(nsh_testing::windowed_root_with::<Harness>(move || {
+            HarnessProps { cols }
+        }))
     };
     Headless::start(config).expect("the engine starts")
 }
@@ -87,7 +85,9 @@ fn Dragged(_props: HarnessProps) -> impl IntoElement {
 fn a_drag_resizes_the_terminal_once_it_settles_not_at_every_column() {
     let config = EngineConfig {
         viewport: Size::new(px(1200.0), px(800.0)),
-        ..EngineConfig::new(Root::new::<Dragged>(|| HarnessProps { cols: 80 }))
+        ..EngineConfig::new(nsh_testing::windowed_root_with::<Dragged>(|| {
+            HarnessProps { cols: 80 }
+        }))
     };
     let mut app = Headless::start(config).expect("the engine starts");
     app.wait_for("text:Sizes 80x24, 90x24").unwrap();

@@ -11,8 +11,10 @@ fn start_any(doc: Value) -> Headless {
     let mut config = EngineConfig {
         viewport: Size::new(px(800.0), px(900.0)),
         // Made in the engine, as `start`'s.
-        ..EngineConfig::new(Root::new::<Harness>(move || HarnessProps {
-            session: Some(session(doc.clone())),
+        ..EngineConfig::new(nsh_testing::windowed_root_with::<Harness>(move || {
+            HarnessProps {
+                session: Some(session(doc.clone())),
+            }
         }))
     };
     config.environment.os = Os::Linux;
@@ -27,8 +29,10 @@ fn start_manual(doc: Value) -> Headless {
     let mut config = EngineConfig {
         viewport: Size::new(px(800.0), px(900.0)),
         clock: nsh_engine::Clock::manual(std::time::SystemTime::now()),
-        ..EngineConfig::new(Root::new::<Harness>(move || HarnessProps {
-            session: Some(session(doc.clone())),
+        ..EngineConfig::new(nsh_testing::windowed_root_with::<Harness>(move || {
+            HarnessProps {
+                session: Some(session(doc.clone())),
+            }
         }))
     };
     config.environment.os = Os::Linux;
@@ -295,6 +299,25 @@ fn paste_html(app: &mut Headless, text: &str, html: &str) {
     paste.text = text.into();
     paste.html = html.into();
     app.paste("id:editor", &paste).unwrap();
+}
+
+#[test]
+fn dropped_text_goes_in_where_it_is_let_go() {
+    let mut app = start(paragraphs(&[""]));
+    app.drop_text("id:editor", "dropped", "").unwrap();
+    tree(&mut app, r#"doc(paragraph("dropped"))"#);
+}
+
+#[test]
+fn dropped_html_keeps_its_formatting() {
+    let mut app = start(paragraphs(&[""]));
+    app.drop_text(
+        "id:editor",
+        "some bold",
+        "<p>some <strong>bold</strong></p>",
+    )
+    .unwrap();
+    tree(&mut app, r#"doc(paragraph("some ", bold("bold")))"#);
 }
 
 #[test]

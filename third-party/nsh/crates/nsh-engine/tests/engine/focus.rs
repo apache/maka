@@ -1,7 +1,8 @@
 //! `focusable` in a TSX app: a view that takes no presses is a stop of the
 //! keyboard focus with `focusable={true}`, without taking the presses of
 //! the pressable around it; it hears `onFocus` / `onBlur` and takes its
-//! `focusStyle` while the platform reports it focused.
+//! `focusStyle` while the platform reports it focused. A view around them
+//! hears `onFocusIn` / `onFocusOut` as the focus comes in and leaves.
 
 use std::time::{Duration, Instant};
 
@@ -42,10 +43,14 @@ mount(App);
 "#;
 
 fn start() -> (Engine, Receiver<MountBatch>) {
-    let dir = crate::temporary_root().join(format!("nsh-focus-{}", std::process::id()));
+    start_with(APP, "app")
+}
+
+fn start_with(app: &str, name: &str) -> (Engine, Receiver<MountBatch>) {
+    let dir = crate::temporary_root().join(format!("nsh-focus-{name}-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let entry = dir.join("App.tsx");
-    std::fs::write(&entry, APP).unwrap();
+    std::fs::write(&entry, app).unwrap();
     let bundle = nsh_bundler::bundle(&nsh_bundler::BundleOptions {
         entry,
         minify: false,
@@ -162,4 +167,61 @@ fn a_focusable_view_is_a_stop_without_taking_presses() {
     control.dispatch_event(chart.0, EventKind::Blur, EventPayload::None);
     let blurred = until_log(&rx, "log focus|blur");
     assert_eq!(opacity(&blurred, chart.0), Some(1.0));
+}
+
+const PANEL: &str = r#"import { mount, signal, Text, View } from "nsh";
+
+function App() {
+  const log = signal<string[]>([]);
+  const note = (s: string) => log.update((l) => [...l, s]);
+  return (
+    <View>
+      <View testID="panel" onFocusIn={() => note("in")} onFocusOut={() => note("out")}>
+        <View testID="a" focusable style={{ height: 20 }} />
+        <View testID="b" focusable style={{ height: 20 }} />
+      </View>
+      <View testID="c" focusable style={{ height: 20 }} />
+      <Text>{"log " + log().join("|")}</Text>
+    </View>
+  );
+}
+
+mount(App);
+"#;
+
+/// `onFocusIn` / `onFocusOut`: a panel hears the focus come into it and
+/// leave it, not moves between the views inside it.
+#[test]
+fn a_panel_hears_the_focus_come_in_and_leave() {
+    let (engine, rx) = start_with(PANEL, "panel");
+    let first = until_log(&rx, "log ");
+    let id = |wanted: &str| -> NodeId {
+        first
+            .iter()
+            .flat_map(|b| &b.items)
+            .find_map(|i| match i {
+                MountItem::ViewProps { id, props } if props.test_id.as_deref() == Some(wanted) => {
+                    Some(*id)
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("{wanted} is mounted"))
+    };
+    let (a, b, c) = (id("a"), id("b"), id("c"));
+    let control = engine.control();
+    let focus = |from: Option<NodeId>, to: NodeId| {
+        if let Some(from) = from {
+            control.set_states(from, 0);
+            control.dispatch_event(from, EventKind::Blur, EventPayload::None);
+        }
+        control.set_states(to, state::FOCUSED);
+        control.dispatch_event(to, EventKind::Focus, EventPayload::None);
+    };
+    focus(None, a);
+    until_log(&rx, "log in");
+    focus(Some(a), b);
+    focus(Some(b), c);
+    until_log(&rx, "log in|out");
+    focus(Some(c), b);
+    until_log(&rx, "log in|out|in");
 }

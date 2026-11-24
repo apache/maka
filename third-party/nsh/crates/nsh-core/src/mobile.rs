@@ -10,6 +10,19 @@
 //! and shows nothing. Common controls belong to `nsh/base`; this module
 //! exposes the system's own controls where an app needs the platform's
 //! exact look and behavior, rather than a parallel set of styled controls.
+//!
+//! It also opens the app's own page in the system's settings
+//! ([`open_app_settings`], TS `AppSettings.open`), where the user turns
+//! back on a permission they denied: iOS's Settings app at the app,
+//! Android's App info. The core sends [`crate::Command::OpenAppSettings`]
+//! to a platform whose [`crate::platform::Environment::app_settings`] is
+//! set, which reports whether the system opened the page as
+//! [`crate::EventKind::OpenAppSettings`]. Elsewhere (the desktops, the web,
+//! a terminal, and an iPhone or iPad app running on a Mac, which has no
+//! page of the app's own) it fails at once with
+//! [`AppSettingsError::Unavailable`]. It acts on the application as a whole
+//! (the embedding app's page, for an embedded view), so an app that
+//! declares capabilities needs `application`.
 
 use chrono::{Datelike, NaiveDate, NaiveDateTime, NaiveTime, Timelike};
 
@@ -598,15 +611,104 @@ pub fn DateTimePicker(
         .into_element()
 }
 
+// --- The app's page in the system's settings ---------------------------------
+
+/// Why [`open_app_settings`] failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum AppSettingsError {
+    /// The platform has no settings page of the app's own (TS:
+    /// `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM`): only iOS and Android have
+    /// one ([`app_settings_available`]).
+    Unavailable,
+    /// The app declares capabilities without `application` (TS:
+    /// `ERR_ACCESS_DENIED`, `permission` `"application"`).
+    Denied,
+}
+
+impl std::fmt::Display for AppSettingsError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unavailable => f.write_str(
+                "AppSettings.open: this platform has no settings page of the app's own (iOS and \
+                 Android have one)",
+            ),
+            Self::Denied => f.write_str(
+                "AppSettings.open: the application is not granted: add `\"application\": true` to \
+                 capabilities in nsh.json",
+            ),
+        }
+    }
+}
+
+impl std::error::Error for AppSettingsError {}
+
+impl AppSettingsError {
+    /// The error JS gets: an `Error` with the code to branch on.
+    pub(crate) fn js(self) -> crate::element::JsError {
+        match self {
+            Self::Unavailable => crate::element::JsError::Error(self.to_string())
+                .with_code(crate::element::codes::UNAVAILABLE),
+            Self::Denied => {
+                crate::element::JsError::access_denied(self.to_string(), "application", "")
+            }
+        }
+    }
+}
+
+/// Opens the app's own page in the system's settings (TS:
+/// `AppSettings.open` of `nsh/mobile`): where the user turns back on a
+/// permission they denied, as an "Open Settings" button beside the app's
+/// explanation does. To await in a task: whether the system opened the
+/// page; it fails with [`AppSettingsError::Unavailable`] where the platform
+/// has no such page (all but iOS and Android; [`app_settings_available`])
+/// and with [`AppSettingsError::Denied`] for an app that declares
+/// capabilities without `application`. Drop it when the answer does not
+/// matter.
+pub fn open_app_settings() -> crate::element::Answer<Result<bool, AppSettingsError>> {
+    let (answer, slot) = crate::element::Answer::new();
+    crate::element::act(crate::element::Action::OpenAppSettings(slot));
+    answer
+}
+
+/// Whether [`open_app_settings`] opens the app's page in the system's
+/// settings here (TS: `AppSettings.available()` of `nsh/mobile`): on iOS
+/// and Android, when the app's capabilities grant `application`. To await
+/// in a task, before showing an "Open Settings" button.
+pub fn app_settings_available() -> crate::element::Answer<bool> {
+    let (answer, slot) = crate::element::Answer::new();
+    crate::element::act(crate::element::Action::AppSettingsAvailable(slot));
+    answer
+}
+
 #[cfg(test)]
 mod tests {
     use chrono::{NaiveDate, NaiveTime};
     use serde_json::json;
 
     use super::{
-        DateTimePickerMode, DateTimePickerValue, SegmentedControlItem, TabBarItem, segments_json,
-        tabs_json,
+        AppSettingsError, DateTimePickerMode, DateTimePickerValue, SegmentedControlItem,
+        TabBarItem, segments_json, tabs_json,
     };
+
+    #[test]
+    fn app_settings_errors_carry_their_codes() {
+        let unavailable = AppSettingsError::Unavailable.js();
+        assert_eq!(
+            unavailable.code(),
+            Some("ERR_FEATURE_UNAVAILABLE_ON_PLATFORM")
+        );
+        assert!(
+            unavailable.message().contains("AppSettings.open"),
+            "{unavailable:?}"
+        );
+        let denied = AppSettingsError::Denied.js();
+        assert_eq!(denied.code(), Some("ERR_ACCESS_DENIED"));
+        assert!(
+            denied.message().contains("\"application\": true"),
+            "{denied:?}"
+        );
+    }
 
     #[test]
     fn picker_values_are_iso_strings_of_minutes() {

@@ -81,6 +81,20 @@ pub(crate) fn tab_value(a: AreaCx, panel: &PanelId) -> Option<DockTab> {
     })
 }
 
+/// The toolbar at the end of the tab bar of `group`: what `renderToolbar`
+/// draws for its displayed tab, nothing without the prop or a shown panel.
+pub(crate) fn toolbar(a: AreaCx, group: Memo<Option<Group>>) -> AnyElement {
+    let value = computed(move || {
+        let shown = group.with(|g| g.as_ref().and_then(|g| shown_of(a, g)))?;
+        tab_value(a, &shown)
+    });
+    dynamic(move || {
+        let render = a.props.render_toolbar.get()?;
+        let value = value.get()?;
+        Some(render.render(value.panel.to_string(), value))
+    })
+}
+
 /// The tabs of a tab bar: `tabs` in a row in a horizontal scroll view, so
 /// tabs that do not fit scroll instead of running past the bar's end. The
 /// scroll view is as wide as its tabs and shrinks to the room the bar
@@ -141,7 +155,8 @@ pub(crate) fn tab_group(a: AreaCx, node: NodeId) -> AnyElement {
                         };
                         tab(a, id, Some(node), value, tab_refs.clone())
                     },
-                ))),
+                )))
+                .child(toolbar(a, group)),
         )
         .child(
             view()

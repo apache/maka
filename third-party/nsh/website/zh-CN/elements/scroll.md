@@ -46,6 +46,8 @@ scroll().flex_1().child(
 | `scrollable` | `.scrollable(..)` | `boolean` | `true` | 用户可以滚动。 |
 | `scrollbar` | `.scrollbar(..)` | `boolean \| ScrollbarTheme` | `true` | 显示滚动条：平台的滚动指示器，或应用设置主题后的[内置滚动条](./scrollbar.md#内置滚动条)；对象是该视图自己的主题。 |
 | `bounces` | `.bounces(..)` | `boolean` | `true` | 允许越过边缘回弹。 |
+| `smoothWheel` | `.smooth_wheel(..)` | `boolean` | `false` | 鼠标滚轮每一格平滑滑到目标位置，像 Chrome 那样在 100–200 ms 内先加速后减速，连续拨动是一整段滑动。macOS、Windows、Linux 和 GPUI 生效（系统开启减弱动态效果时不滑）；iOS、Android 和 Web 沿用系统和浏览器自己的滚动。触控板不受影响。 |
+| `wheelLineHeight` | `.wheel_line_height(px(..))` | `number` | `0` | 鼠标滚轮每行滚动多少点；0 保持平台默认（macOS 10，Windows 16，Linux 随视图大小）。Chrome 和 Safari 在 macOS 上每行 40 点。桌面平台生效。 |
 | `pagingEnabled` | `.paging(..)` | `boolean` | `false` | 停在视口尺寸的整数倍处。 |
 | `snapToInterval` | `.snap_interval(px(..))` | `number` | `0` | 停在该长度的整数倍处（0 表示关闭）。 |
 | `snapToOffsets` | `.snap_offsets(..)` | `number[]` | | 停在这些偏移量处。 |

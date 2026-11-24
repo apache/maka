@@ -33,8 +33,9 @@ pub(crate) struct RunArgs {
     /// (`--section settings`, any case).
     #[arg(long)]
     section: Option<String>,
-    /// Where to run: `macos` (the AppKit host), `catalyst`, `ios` (a
-    /// simulator), `android`, `linux`, `windows` or `gpui` (the GPUI host);
+    /// Where to run: `macos` (the AppKit host), `linux`, `windows`, `ios` (a
+    /// simulator), `android`, `gpui` (the GPUI host) or `catalyst` (only for
+    /// Catalyst-specific work);
     /// default: the machine's own backend (`macos` on macOS, `linux` on
     /// Linux, `windows` on Windows), else `android`.
     #[arg(long)]

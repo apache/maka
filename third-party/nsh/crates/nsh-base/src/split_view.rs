@@ -47,9 +47,9 @@
 //! The columns are a dock area's (`dock/`, the code `DockArea` runs, in this
 //! component's view so the slots it places are its own): the sidebar is the
 //! left dock and the content and the detail split the center, at fixed
-//! widths ([`SIDEBAR_WIDTH`], [`CONTENT_WIDTH`]) that nothing resizes: no
-//! handle at the sidebar's edge or between the columns, for a pointer or a
-//! screen reader; nothing draws tabs. Where the window is horizontally compact
+//! widths to start ([`SIDEBAR_WIDTH`], [`CONTENT_WIDTH`]) that the user
+//! resizes, as a desktop's split view: a handle at the sidebar's edge and
+//! between the columns, for a pointer or a screen reader; nothing draws tabs. Where the window is horizontally compact
 //! (`horizontal_size_class()`, below 600 points of its width, as UIKit
 //! collapses a split by its size class) the area takes its compact
 //! presentation: the center shows one column at a time, the first the
@@ -196,7 +196,7 @@ pub enum SplitViewEvent {
 /// their own: on iOS and Mac Catalyst a `UISplitViewController` whose
 /// columns are those stacks (its sidebar floats on iPadOS 26, comes in with
 /// a swipe from the edge and the system's button, and follows the window as
-/// it turns or is resized), elsewhere columns at fixed widths. Where the
+/// it turns or is resized), elsewhere columns the user resizes. Where the
 /// window is horizontally compact (a phone, a narrow window: its horizontal
 /// size class, `horizontalSizeClass()`) one column shows: on iOS one
 /// navigation stack of the columns' pages, which goes back from a column's
@@ -374,7 +374,7 @@ fn column_sizes(data: &JsonValue) -> [Option<Size<Points>>; 3] {
 
 // --- Elsewhere: the dock area ----------------------------------------------
 
-/// The columns outside iOS: a dock area of fixed widths whose layout
+/// The columns outside iOS: a dock area of resizable widths whose layout
 /// follows the visibility, in this view (the slots it places are this
 /// component's).
 fn dock_columns(props: SplitViewProps, visibility: Visibility, triple: Memo<bool>) -> View {
@@ -408,9 +408,9 @@ fn dock_columns(props: SplitViewProps, visibility: Visibility, triple: Memo<bool
         tab_bar_style: Prop::new(Style::from(StyleRefinement::default().hidden())),
         ..DockAreaProps::default()
     };
-    // Nothing the user does in the area changes its layout: no tabs, no
-    // handles (`resizable` off), no drawers.
-    let a = AreaCx::new(area, |_| {}, false);
+    // The user resizes the columns by their handles (`resizable` on);
+    // nothing else changes the area's layout: no tabs, no drawers.
+    let a = AreaCx::new(area, |_| {}, true);
     area_view(a)
 }
 

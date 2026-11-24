@@ -8,7 +8,9 @@
 //! features.
 //!
 //! ```ignore
-//! let mut app = nsh_testing::Headless::start(EngineConfig::new(Root::of::<my_app::App>())).unwrap();
+//! let mut app =
+//!     nsh_testing::Headless::start(EngineConfig::new(nsh_testing::windowed_root::<my_app::App>()))
+//!         .unwrap();
 //! app.wait_for("Count: 0")?;
 //! app.press("Tap")?;
 //! app.wait_for("Count: 1")?;
@@ -29,6 +31,7 @@
 
 #[cfg(feature = "agent")]
 pub mod agent;
+mod drag;
 #[cfg(feature = "js")]
 mod driver;
 mod failure;
@@ -41,6 +44,7 @@ pub mod menu;
 mod module;
 #[cfg(feature = "js")]
 mod page_host;
+pub mod root;
 #[cfg(feature = "js")]
 mod run;
 #[cfg(feature = "js")]
@@ -75,6 +79,13 @@ pub use self::headless::{
 #[cfg(feature = "js")]
 #[allow(deprecated)]
 pub use self::module::MobilePlatform;
+pub use self::{
+    drag::DragOptions,
+    failure::{SCREEN_TEXT_LIMIT, screen_texts},
+    root::{RootProps, WindowedRoot, WindowedRootWith, windowed_root, windowed_root_with},
+    screen::{LayoutNode, LayoutScroll, LayoutText, Pick, Screen},
+    storage::MemoryStorage,
+};
 #[cfg(feature = "js")]
 pub use self::{
     driver::Host,
@@ -87,11 +98,6 @@ pub use self::{
         TestRun, TestStatus, run_file,
     },
     runner::{PROTOCOL, Reply, RunnerMessage, TestRequest, runner},
-};
-pub use self::{
-    failure::{SCREEN_TEXT_LIMIT, screen_texts},
-    screen::{LayoutNode, LayoutScroll, LayoutText, Pick, Screen},
-    storage::MemoryStorage,
 };
 
 /// The sets the entry `nsh test` makes for a test file is built against
@@ -147,10 +153,11 @@ fn build(
     let app = unsafe { Bundle::bytecode(bytecode) }
         .with_capabilities_json(capabilities.as_deref())
         .map_err(|e| format!("{}: {e}", entry.display()))?
-        // The schemes it claims and its main window's launch options, as a
+        // The links it claims and its main window's launch options, as a
         // packaged app's runner reads them.
-        .with_url_schemes(bundle.url_schemes)
-        .with_main_window(bundle.main_window.as_deref());
+        .with_links(bundle.links)
+        .with_main_window(bundle.main_window.as_deref())
+        .with_application(bundle.application.as_deref());
     Ok((app, bundle.source_map, bundle.asset_root))
 }
 
@@ -159,9 +166,13 @@ fn build(
 #[cfg(feature = "bundle")]
 pub fn compiler(ui_sets: Vec<Registry>) -> Compile {
     Arc::new(move |entry: &Path, kind: Entry| {
-        // An app's directory: its `App.tsx`.
+        // An app's directory: the entry its `nsh.json` names, else its
+        // `App.tsx`.
         let entry = &if entry.is_dir() {
-            entry.join("App.tsx")
+            nsh_bundler::app_dir::config_entry(entry)
+                .ok()
+                .flatten()
+                .unwrap_or_else(|| entry.join(nsh_bundler::app_dir::ENTRY))
         } else {
             entry.to_owned()
         };

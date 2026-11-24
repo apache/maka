@@ -9,8 +9,9 @@ use taffy::{
 use crate::{
     css,
     effects::{
-        BackdropMaterial, BlendMode, BoxShadow, Cursor, Effects, Filter, GlassEffect, Gradient,
-        KeyframeAnimation, Keyframes, MacOsBackdrop, Outline, Transition, TransitionProps,
+        BackdropMaterial, BlendMode, BoxShadow, ClipInset, Cursor, Effects, Filter, GlassEffect,
+        Gradient, KeyframeAnimation, Keyframes, MacOsBackdrop, Outline, Transition,
+        TransitionProps,
     },
     element::PropEnum,
     geometry::{
@@ -746,6 +747,9 @@ pub struct ViewStyle {
     pub glass_tint_color: Option<Color>,
     /// The macOS backdrop from `macos={{ backdrop }}`, projected at mount time.
     pub macos_backdrop: Option<MacOsBackdrop>,
+    /// The Windows backdrop from `windows={{ backdrop }}`, projected at
+    /// mount time.
+    pub windows_backdrop: Option<crate::WindowsBackdrop>,
     /// `outline*`.
     pub outline: Outline,
     /// `visibility: "hidden"`: not drawn and not touchable, still laid out.
@@ -1033,6 +1037,12 @@ impl ViewStyle {
         }
     }
 
+    /// `clipPath`: the shape everything the view draws is clipped to.
+    #[inline]
+    pub fn clip_path(&self) -> Option<&ClipInset> {
+        self.effects.as_deref().and_then(|e| e.clip_path.as_ref())
+    }
+
     /// The radius of each corner (before fitting them to a size with
     /// [`CornerRadii::fit`]).
     pub fn radii(&self) -> CornerRadii {
@@ -1080,6 +1090,7 @@ impl ViewStyle {
         glass_effect: GlassEffect::None,
         glass_tint_color: None,
         macos_backdrop: None,
+        windows_backdrop: None,
         outline: Outline::NONE,
         hidden: false,
         cursor: Cursor::Auto,
@@ -1846,6 +1857,7 @@ style_keys! {
     Filter = "filter": View "string" "CSS filters of the view and its content: `brightness()`, `contrast()`, `grayscale()`, `hue-rotate()`, `invert()`, `saturate()`, `sepia()`, `opacity()`, `blur()`, `drop-shadow()`.",
     BackdropFilter = "backdropFilter": View "string" "CSS filters of what is behind the view (`blur(10px)`).",
     MaskImage = "maskImage": View "string" "A CSS gradient whose alpha decides how much of the view is drawn, fully where opaque and not at all where transparent: `linear-gradient(...)`, `radial-gradient(...)`, `conic-gradient(...)`. Masks everything the view draws, its backdrop filter included, whose blur then draws without the system material's tint. Not drawn on Windows and GPUI.",
+    ClipPath = "clipPath": View "string" "CSS's `clip-path` with an `inset()` shape: `\"inset(8px 0 0 50% round 12px)\"` moves each edge in (one to four lengths or percentages of the width or height, as `margin`) and rounds the corners (`round`, one to four radii in points), or `\"none\"`. Everything the view draws, the views in it included, shows only inside the shape, and only there does a press reach the view or the views in it. It transitions (`transitionProperty: \"clip-path\"`, or `all`), each edge and radius on its own, so a panel can open out of a corner; to or from `none` it changes at once, as in CSS.",
     GlassEffect = "glassEffect": View "\"none\" | \"regular\" | \"clear\"" "A glass material behind the view's content (Apple's Liquid Glass). Drawn on iOS 26 and macOS 26 and later; elsewhere the view's `backdropFilter` is drawn as before, so give a glass view a blur to fall back to.",
     GlassTintColor = "glassTintColor": View "ColorValue" "A tint of the glass material (`glassEffect`; iOS 26 and macOS 26 and later): the color the native glass takes on, or `null` for the system default. A transparent color is an explicit tint, not a reset. Has no effect without glass; the blur fallback on earlier systems stays unchanged.",
     MixBlendMode = "mixBlendMode": View "\"normal\" | \"multiply\" | \"screen\" | \"overlay\" | \"darken\" | \"lighten\" | \"color-dodge\" | \"color-burn\" | \"hard-light\" | \"soft-light\" | \"difference\" | \"exclusion\" | \"hue\" | \"saturation\" | \"color\" | \"luminosity\" | \"plus-darker\" | \"plus-lighter\"" "How the view blends with what is behind it.",
@@ -2090,6 +2102,8 @@ pub enum PropertyValue {
     Shadows(Rc<[(BoxShadow, bool)]>),
     /// `backgroundImage`, `maskImage`.
     Gradients(Rc<[Gradient]>),
+    /// `clipPath` (`None`: `none`).
+    ClipPath(Option<ClipInset>),
     /// `filter`, `backdropFilter`, each with whether a `drop-shadow()`
     /// names its color.
     Filters(Rc<[(Filter, bool)]>),
@@ -2880,6 +2894,7 @@ fn transition_properties(s: &str) -> Option<TransitionProps> {
                 TransitionProps::SHAPE
             }
             "filter" => TransitionProps::FILTER,
+            "clip-path" | "clipPath" => TransitionProps::CLIP_PATH,
             // Properties that do not animate natively.
             "backdrop-filter" | "display" | "visibility" | "content-visibility" | "overlay"
             | "pointer-events" => 0,
@@ -3420,6 +3435,10 @@ impl StyleKey {
             K::MaskImage => PropertyValue::Gradients(match keyword(value)? {
                 None | Some("none") => Rc::from([]),
                 Some(s) => css::gradients(s).ok_or(StyleError::InvalidValue)?.into(),
+            }),
+            K::ClipPath => PropertyValue::ClipPath(match keyword(value)? {
+                None | Some("none") => None,
+                Some(s) => Some(css::clip_inset(s).ok_or(StyleError::InvalidValue)?),
             }),
             K::Filter => PropertyValue::Filters(match keyword(value)? {
                 None => Rc::from([]),
@@ -4085,6 +4104,10 @@ impl Style {
             (K::MaskImage, V::Gradients(list)) => {
                 let list = list.to_vec();
                 self.edit_effects(|e| e.mask_images = list);
+            }
+            (K::ClipPath, V::ClipPath(clip)) => {
+                let clip = *clip;
+                self.edit_effects(|e| e.clip_path = clip);
             }
             (K::Filter, V::Filters(list)) => {
                 // A `drop-shadow()` without a color is the text color's.
@@ -5390,6 +5413,103 @@ mod tests {
             s.set("maskImage", StyleValue::Str("url(a.png)")),
             Err(StyleError::InvalidValue)
         );
+    }
+
+    #[test]
+    fn clip_path_parses_css_inset_shapes() {
+        use crate::geometry::{Corners, Edges, px};
+        let clip = |v: &str| {
+            let mut s = Style::default();
+            s.set("clipPath", StyleValue::Str(v))
+                .map(|()| s.view.clip_path().copied())
+        };
+        let insets = |c: ClipInset| (c.offsets, c.fractions.map(|f| f.0), c.radii);
+        // One to four edges as `margin` takes them, lengths and percentages.
+        assert_eq!(
+            insets(clip("inset(10px)").unwrap().unwrap()),
+            (Edges::all(px(10.0)), Edges::all(0.0), Corners::all(px(0.0)))
+        );
+        assert_eq!(
+            insets(clip("inset(1px 2px 3px 4px round 5px)").unwrap().unwrap()),
+            (
+                Edges::from([px(1.0), px(2.0), px(3.0), px(4.0)]),
+                Edges::all(0.0),
+                Corners::all(px(5.0))
+            )
+        );
+        assert_eq!(
+            insets(clip("inset(0 0 100% 100% round 12px)").unwrap().unwrap()),
+            (
+                Edges::all(px(0.0)),
+                Edges::from([0.0, 0.0, 1.0, 1.0]),
+                Corners::all(px(12.0))
+            )
+        );
+        assert_eq!(
+            insets(clip("inset(10% 4px)").unwrap().unwrap()),
+            (
+                Edges::from([px(0.0), px(4.0), px(0.0), px(4.0)]),
+                Edges::from([0.1, 0.0, 0.1, 0.0]),
+                Corners::all(px(0.0))
+            )
+        );
+        assert_eq!(
+            insets(clip("inset(1px 2px 3px)").unwrap().unwrap()).0,
+            Edges::from([px(1.0), px(2.0), px(3.0), px(2.0)])
+        );
+        // Radii spread from the top left as `border-radius` spreads them.
+        let radii = |v: &str| clip(v).unwrap().unwrap().radii.to_array();
+        assert_eq!(
+            radii("inset(0 round 1px 2px)"),
+            [1.0, 2.0, 1.0, 2.0].map(px)
+        );
+        assert_eq!(
+            radii("inset(0 round 1px 2px 3px)"),
+            [1.0, 2.0, 3.0, 2.0].map(px)
+        );
+        assert_eq!(
+            radii("inset(0 round 1px 2px 3px 4px)"),
+            [1.0, 2.0, 3.0, 4.0].map(px)
+        );
+        // Negative edges reach outside the box.
+        assert_eq!(clip("inset(-8px)").unwrap().unwrap().offsets.top, px(-8.0));
+        // `none` and null clear it.
+        assert_eq!(clip("none"), Ok(None));
+        let mut s = Style::default();
+        s.set("clipPath", StyleValue::Str("inset(4px)")).unwrap();
+        s.set("clipPath", StyleValue::Null).unwrap();
+        assert!(s.view.clip_path().is_none());
+        assert!(s.view.effects.is_none());
+        // Other shapes and forms NSH does not draw are rejected.
+        for bad in [
+            "inset()",
+            "inset(1px 2px 3px 4px 5px)",
+            "inset(1px round)",
+            "inset(round 4px)",
+            "inset(1px round 10%)",
+            "inset(1px round -2px)",
+            "inset(1px round 2px / 4px)",
+            "inset(1px",
+            "inset(red)",
+            "circle(10px)",
+            "polygon(0 0, 10px 0, 0 10px)",
+            "url(#clip)",
+        ] {
+            assert_eq!(clip(bad), Err(StyleError::InvalidValue), "{bad}");
+        }
+    }
+
+    #[test]
+    fn clip_path_transitions_as_its_own_property() {
+        let props = |v: &str| {
+            let mut s = Style::default();
+            s.set("transitionProperty", StyleValue::Str(v)).unwrap();
+            s.view.transition.unwrap().properties
+        };
+        assert_eq!(props("clip-path").0, TransitionProps::CLIP_PATH);
+        assert_eq!(props("clipPath").0, TransitionProps::CLIP_PATH);
+        assert!(props("all").has(TransitionProps::CLIP_PATH));
+        assert!(!props("border-radius").has(TransitionProps::CLIP_PATH));
     }
 
     #[test]

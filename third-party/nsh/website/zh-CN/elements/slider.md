@@ -59,6 +59,7 @@ fn strength(level: Signal<SliderValue>) -> impl IntoElement {
 ```tsx tabs
 import { mount, signal, Text } from "nsh";
 import { Slider } from "nsh/base";
+import { Window } from "nsh/desktop";
 
 function App() {
   const strength = signal(64);
@@ -79,7 +80,11 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 `Slider` 来自 [`nsh/base`](../modules/nsh-base.md)，在 Rust 中是 `nsh-base` crate。在 Rust 中，`slider()`

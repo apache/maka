@@ -178,8 +178,9 @@ pub struct AppOptions {
     /// second launch hands its arguments and working directory to the
     /// first (GApplication's `command-line`, over D-Bus, keyed on
     /// [`app_id`](Self::app_id)) and exits before it opens a window; the
-    /// first brings its window forward and tells the app
-    /// (`Application.on("secondInstance", ...)`).
+    /// first reports `reopen` and hands the launch to the app
+    /// (`Application.on("secondInstance", ...)`); the host itself stays
+    /// hidden.
     pub single_instance: bool,
     /// The file types the app opens (nsh.json `fileTypes`), for
     /// [`run_app`]: its desktop entry lists their MIME types, it runs once,
@@ -351,7 +352,7 @@ impl AppView {
         };
         self.surface.native.set_access(Arc::new(access));
         let options = self.options.borrow();
-        let config = EngineConfig {
+        let mut config = EngineConfig {
             app,
             viewport: nsh_core::Size::new(px(0.0), px(0.0)),
             trace: options.trace,
@@ -389,6 +390,9 @@ impl AppView {
             login_item: self.login_item(&options),
         };
         crate::image::set_asset_base(&self.surface, options.asset_base.clone());
+        if !self.standalone.get() {
+            config.context = config.context.with(nsh_engine::EmbeddedHost);
+        }
         self.surface
             .native
             .set_asset_base(options.asset_base.clone());
@@ -397,7 +401,10 @@ impl AppView {
 
     /// Loads the host's engine configuration unchanged except for the native
     /// viewport and environment. Its asset reader also serves image views.
-    pub fn load_with_config(&self, config: EngineConfig) {
+    pub fn load_with_config(&self, mut config: EngineConfig) {
+        if !self.standalone.get() {
+            config.context = config.context.with(nsh_engine::EmbeddedHost);
+        }
         let access = match &config.app {
             App::Js(bundle) => bundle.policy.access(),
             App::Rust(_) => nsh_engine::Policy::default().access(),
@@ -706,7 +713,8 @@ pub fn run_app(source: AppSource, mut options: AppOptions) -> glib::ExitCode {
             for file in files {
                 view.open_url(&file.uri());
             }
-            crate::window::activate_main(&view.surface);
+            // The host stays hidden: the app's `reopen` listeners choose.
+            crate::window::reopen(&view.surface);
         }
     });
     let shown_line = shown.clone();
@@ -751,7 +759,7 @@ pub fn run_app(source: AppSource, mut options: AppOptions) -> glib::ExitCode {
             for url in urls {
                 view.open_url(&url);
             }
-            crate::window::activate_main(&view.surface);
+            crate::window::reopen(&view.surface);
         }
         gtk::glib::ExitCode::SUCCESS
     });
@@ -759,7 +767,7 @@ pub fn run_app(source: AppSource, mut options: AppOptions) -> glib::ExitCode {
     app.connect_activate(move |app| {
         let Some(source) = source.borrow_mut().take() else {
             if let Some((_, view)) = &*shown.borrow() {
-                crate::window::activate_main(&view.surface);
+                crate::window::reopen(&view.surface);
             }
             return;
         };
@@ -829,12 +837,9 @@ pub fn run_app(source: AppSource, mut options: AppOptions) -> glib::ExitCode {
         // A development host's window waits for its app, which brings the
         // window's options ([`crate::dev`]).
         let held = app_of.is_err();
-        // nsh.json `window.defaultVisible: false`: the window is made and
-        // the app runs in it, unseen, until it shows it (a tray app). GTK
-        // keeps the mode `launch_main` asked for until it first shows.
+        // The host never shows: the app opens the windows it declares.
         let present = !held && launch.visible_at_launch();
         if !held && !present {
-            log::info!("the main window starts hidden (nsh.json window.defaultVisible: false)");
             crate::window::launch_hidden(&view.surface);
         }
         match app_of {

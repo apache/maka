@@ -12,13 +12,12 @@ use std::sync::{Arc, Mutex};
 use nsh_base::{SliderValue, slider};
 use nsh_core::{
     EventKind, EventPayload, MountItem, PayloadValue, Size,
-    element::Root,
     geometry::{Axis, point},
     platform::Os,
     prelude::*,
 };
 use nsh_engine::EngineConfig;
-use nsh_testing::Headless;
+use nsh_testing::{DragOptions, Headless};
 
 #[derive(Clone, PartialEq, Props)]
 struct HarnessProps {
@@ -113,7 +112,9 @@ fn start(props: HarnessProps) -> Headless {
 fn start_in(props: HarnessProps, rtl: bool) -> Headless {
     let mut config = EngineConfig {
         viewport: Size::new(px(400.0), px(844.0)),
-        ..EngineConfig::new(Root::new::<Harness>(move || props.clone()))
+        ..EngineConfig::new(nsh_testing::windowed_root_with::<Harness>(move || {
+            props.clone()
+        }))
     };
     config.environment.os = Os::MacOs;
     config.environment.rtl = rtl;
@@ -143,12 +144,22 @@ fn a_drag_reports_each_value_on_the_step_then_its_end_once() {
     assert!(app.shows("Value 40"));
     assert_eq!(app.screen().count("role:adjustable").unwrap(), 1);
     // 40 points of 200: a fifth of the range, by steps of 5.
-    app.drag("label:Volume", point(px(40.0), px(0.0))).unwrap();
+    app.drag(
+        "label:Volume",
+        point(px(40.0), px(0.0)),
+        DragOptions::default(),
+    )
+    .unwrap();
     app.wait_for("text:Value 60").unwrap();
     app.wait_for("text:Changes 45, 50, 55, 60").unwrap();
     app.wait_for("text:Ends 60").unwrap();
     // Past the end: held at the maximum, each value reported once.
-    app.drag("label:Volume", point(px(150.0), px(0.0))).unwrap();
+    app.drag(
+        "label:Volume",
+        point(px(150.0), px(0.0)),
+        DragOptions::default(),
+    )
+    .unwrap();
     app.wait_for("text:Value 100").unwrap();
     app.wait_for("text:Ends 60, 100").unwrap();
     assert!(app.shows("Changes 45, 50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 100"));
@@ -159,7 +170,12 @@ fn a_vertical_slider_has_its_minimum_at_the_bottom() {
     let mut props = controlled(40.0);
     props.vertical = true;
     let mut app = start(props);
-    app.drag("label:Volume", point(px(0.0), px(-40.0))).unwrap();
+    app.drag(
+        "label:Volume",
+        point(px(0.0), px(-40.0)),
+        DragOptions::default(),
+    )
+    .unwrap();
     app.wait_for("text:Value 60").unwrap();
     app.wait_for("text:Ends 60").unwrap();
 }
@@ -169,17 +185,37 @@ fn a_ranges_thumbs_never_cross_and_part_the_way_the_pointer_goes() {
     let mut app = start(controlled((20.0, 60.0)));
     assert_eq!(app.screen().count("role:adjustable").unwrap(), 2);
     // The start stops at the end.
-    app.drag("label:Low", point(px(100.0), px(0.0))).unwrap();
+    app.drag(
+        "label:Low",
+        point(px(100.0), px(0.0)),
+        DragOptions::default(),
+    )
+    .unwrap();
     app.wait_for("text:Value 60-60").unwrap();
     app.wait_for("text:Ends 60-60").unwrap();
     // Two thumbs at one value: dragging the end's toward the minimum moves
     // the start, which can go there.
-    app.drag("label:High", point(px(-40.0), px(0.0))).unwrap();
+    app.drag(
+        "label:High",
+        point(px(-40.0), px(0.0)),
+        DragOptions::default(),
+    )
+    .unwrap();
     app.wait_for("text:Value 40-60").unwrap();
     // And the start's toward the maximum moves itself, up to the end.
-    app.drag("label:Low", point(px(60.0), px(0.0))).unwrap();
+    app.drag(
+        "label:Low",
+        point(px(60.0), px(0.0)),
+        DragOptions::default(),
+    )
+    .unwrap();
     app.wait_for("text:Value 60-60").unwrap();
-    app.drag("label:Low", point(px(30.0), px(0.0))).unwrap();
+    app.drag(
+        "label:Low",
+        point(px(30.0), px(0.0)),
+        DragOptions::default(),
+    )
+    .unwrap();
     app.wait_for("text:Value 60-75").unwrap();
 }
 
@@ -247,7 +283,12 @@ fn right_to_left_a_vertical_slider_keeps_its_keys() {
     app.press_key("left").unwrap();
     app.wait_for("text:Value 40").unwrap();
     // A drag up raises it, as in a left-to-right layout.
-    app.drag("label:Volume", point(px(0.0), px(-40.0))).unwrap();
+    app.drag(
+        "label:Volume",
+        point(px(0.0), px(-40.0)),
+        DragOptions::default(),
+    )
+    .unwrap();
     app.wait_for("text:Value 60").unwrap();
 }
 
@@ -268,7 +309,12 @@ fn a_disabled_slider_takes_no_drag_key_or_step() {
     props.disabled = true;
     let mut app = start(props);
     assert!(!app.screen().enabled("label:Volume").unwrap());
-    app.drag("label:Volume", point(px(40.0), px(0.0))).unwrap();
+    app.drag(
+        "label:Volume",
+        point(px(40.0), px(0.0)),
+        DragOptions::default(),
+    )
+    .unwrap();
     // No thumb to Tab to.
     app.press_key("tab").unwrap();
     app.press_key("right").unwrap();
@@ -283,7 +329,12 @@ fn a_controlled_slider_shows_the_apps_value() {
     let mut props = controlled(40.0);
     props.refusing = true;
     let mut app = start(props);
-    app.drag("label:Volume", point(px(40.0), px(0.0))).unwrap();
+    app.drag(
+        "label:Volume",
+        point(px(40.0), px(0.0)),
+        DragOptions::default(),
+    )
+    .unwrap();
     // What the user asked for is reported, the app's value stays.
     app.wait_for("text:Ends 60").unwrap();
     assert!(app.shows("Changes 45, 50, 55, 60"));
@@ -299,10 +350,20 @@ fn an_uncontrolled_slider_keeps_its_own_value() {
     let mut props = controlled(40.0);
     props.uncontrolled = true;
     let mut app = start(props);
-    app.drag("label:Volume", point(px(40.0), px(0.0))).unwrap();
+    app.drag(
+        "label:Volume",
+        point(px(40.0), px(0.0)),
+        DragOptions::default(),
+    )
+    .unwrap();
     app.wait_for("text:Ends 60").unwrap();
     // The next drag starts where the last ended.
-    app.drag("label:Volume", point(px(20.0), px(0.0))).unwrap();
+    app.drag(
+        "label:Volume",
+        point(px(20.0), px(0.0)),
+        DragOptions::default(),
+    )
+    .unwrap();
     app.wait_for("text:Ends 60, 70").unwrap();
     app.press_key("tab").unwrap();
     app.press_key("right").unwrap();
@@ -356,8 +417,12 @@ fn a_drag_moves_the_thumb_natively_before_the_app_answers() {
     props.refusing = true;
     let (mut app, sent) = start_watching(props);
     // 40 points of 200 from 40%: 60%, 120 points along the indicator.
-    app.drag_and_hold("label:Volume", point(px(40.0), px(0.0)))
-        .unwrap();
+    app.drag_and_hold(
+        "label:Volume",
+        point(px(40.0), px(0.0)),
+        DragOptions::default(),
+    )
+    .unwrap();
     app.wait_for("text:Changes 45, 50, 55, 60").unwrap();
     assert_eq!(sent.lock().unwrap().lefts.last(), Some(&120.0));
     assert!(app.shows("Value 40"));
@@ -372,8 +437,12 @@ fn right_to_left_the_thumb_sits_from_the_right_and_a_drag_left_raises_it() {
     props.refusing = true;
     let (mut app, sent) = start_watching_in(props, true);
     // 40% from the right end of 200: 80 from it, 120 from the left.
-    app.drag_and_hold("label:Volume", point(px(-40.0), px(0.0)))
-        .unwrap();
+    app.drag_and_hold(
+        "label:Volume",
+        point(px(-40.0), px(0.0)),
+        DragOptions::default(),
+    )
+    .unwrap();
     app.wait_for("text:Changes 45, 50, 55, 60").unwrap();
     // 60% from the right: 80 from the left.
     assert_eq!(sent.lock().unwrap().lefts.last(), Some(&80.0));
@@ -385,8 +454,12 @@ fn right_to_left_the_thumb_sits_from_the_right_and_a_drag_left_raises_it() {
 #[test]
 fn screen_readers_hear_a_drags_value_at_its_end() {
     let (mut app, sent) = start_watching(controlled(40.0));
-    app.drag_and_hold("label:Volume", point(px(40.0), px(0.0)))
-        .unwrap();
+    app.drag_and_hold(
+        "label:Volume",
+        point(px(40.0), px(0.0)),
+        DragOptions::default(),
+    )
+    .unwrap();
     app.wait_for("text:Value 60").unwrap();
     // No screen reader runs: the moves send the thumb no value.
     assert!(

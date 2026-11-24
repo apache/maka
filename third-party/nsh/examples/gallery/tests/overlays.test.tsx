@@ -49,6 +49,24 @@ test("Escape cancels a popover without navigating away", async () => {
   await app.waitFor("Share a document");
 });
 
+test("on a desktop, Escape clears the selection inside a popover before it closes it", async () => {
+  const desk = await open("../App.tsx", { platform: "linux", clock: {} });
+  await desk.press("role:button[Popover]");
+  await desk.waitFor("Escape inside first");
+  await desk.press("Labels");
+  await desk.waitFor("labels opened · triggerPress");
+  await desk.press("Research");
+  // The list captures Escape while a label is selected: the popover stays.
+  await desk.keyboard.press("escape");
+  await desk.waitFor("selection Research cleared");
+  expect(desk.texts()).not.toContain("labels closed · cancel");
+  expect(desk.shows("text:Urgent")).toBe(true);
+  // Nothing left to clear: the next Escape closes it.
+  await desk.keyboard.press("escape");
+  await desk.waitFor("labels closed · cancel");
+  await desk.waitFor("text:Urgent", { state: "gone" });
+});
+
 test("choosing a reminder closes its popover, and its trigger shows the choice", async () => {
   await show("Popover", "Remind me");
   await app.press("Remind me");

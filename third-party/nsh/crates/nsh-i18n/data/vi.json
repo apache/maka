@@ -21,12 +21,43 @@
     "hourSuffix": "",
     "numeric": [["day", "/"], ["month", "/"], ["year", ""]],
     "shortYear2digit": false,
-    "text": null,
-    "textLong": null,
+    "text": [["day", " "], ["month", ", "], ["year", ""]],
+    "textLong": [["day", " "], ["month", " "], ["year", ""]],
     "weekdayFirst": true,
     "weekdaySep": ", ",
     "dateTimeSep": " ",
-    "names": null,
+    "names": {
+      "months": [
+        "tháng 1",
+        "tháng 2",
+        "tháng 3",
+        "tháng 4",
+        "tháng 5",
+        "tháng 6",
+        "tháng 7",
+        "tháng 8",
+        "tháng 9",
+        "tháng 10",
+        "tháng 11",
+        "tháng 12"
+      ],
+      "monthsShort": [
+        "thg 1",
+        "thg 2",
+        "thg 3",
+        "thg 4",
+        "thg 5",
+        "thg 6",
+        "thg 7",
+        "thg 8",
+        "thg 9",
+        "thg 10",
+        "thg 11",
+        "thg 12"
+      ],
+      "weekdays": ["Chủ Nhật", "Thứ Hai", "Thứ Ba", "Thứ Tư", "Thứ Năm", "Thứ Sáu", "Thứ Bảy"],
+      "weekdaysShort": ["CN", "Thứ 2", "Thứ 3", "Thứ 4", "Thứ 5", "Thứ 6", "Thứ 7"]
+    },
     "cjk": false
   }
 }

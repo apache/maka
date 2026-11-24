@@ -816,7 +816,7 @@ const IGNORED: [(u16, &str, &str); 8] = [
     ),
     (
         ignored::BEHAVIOR,
-        "paging, snapping, `contentInset`, `scrollbarInset`, `contentOffset`, `bounces`, `scrollsToTop`, `scrollable` and `keyboardDismissMode`",
+        "paging, snapping, `contentInset`, `scrollbarInset`, `contentOffset`, `bounces`, `scrollsToTop`, `smoothWheel`, `wheelLineHeight`, `scrollable` and `keyboardDismissMode`",
         AROUND,
     ),
     (ignored::SCROLLBAR, "`scrollbar`", AROUND),

@@ -1,4 +1,5 @@
 import { mount, signal, Text, View } from "nsh";
+import { Window } from "nsh/desktop";
 import { DataTable, type DataTableColumn, type DataTableRef } from "nsh/base";
 
 const ROWS = Array.from({ length: 20 }, (_, i) => ({
@@ -40,4 +41,4 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => <Window id="main">{App}</Window>);

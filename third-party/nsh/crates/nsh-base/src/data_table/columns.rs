@@ -9,6 +9,11 @@
 //! the end. Fixed columns stay where the scrolling columns pass under them;
 //! those at the end stand right after the scrolling columns while these fit,
 //! at the end of the view once they overflow it (as CSS's `sticky`).
+//!
+//! A column's *base* width is its spec's, or what a drag, a fit or the app
+//! set since. The width it shows is the base plus its share of the room the
+//! columns leave free in the view ([`Spec::grow`], as CSS's `flex-grow`),
+//! until the user or the app sets its width: from then on it keeps that one.
 
 use std::ops::Range;
 
@@ -23,6 +28,8 @@ pub(crate) struct Spec {
     pub(crate) max: f32,
     /// Where it stays while the others scroll.
     pub(crate) fixed: ColumnFixed,
+    /// Its share of the room the columns leave free (0: none).
+    pub(crate) grow: f32,
 }
 
 /// The zone of a column with `fixed`, in display order.
@@ -38,8 +45,18 @@ fn zone(fixed: ColumnFixed) -> u8 {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct Columns {
     specs: Vec<Spec>,
-    /// Widths by definition index.
+    /// The widths shown, by definition index: the bases and what they grow.
     widths: Vec<f32>,
+    /// The base widths, by definition index.
+    bases: Vec<f32>,
+    /// The columns whose width the user or the app set, by definition
+    /// index: they no longer grow.
+    settled: Vec<bool>,
+    /// The columns fitted to their content once (`autoFit`), by definition
+    /// index.
+    fitted: Vec<bool>,
+    /// The width the columns are shown in, which those that grow fill.
+    room: f64,
     /// Definition indexes in display order.
     order: Vec<usize>,
     /// Display indexes by definition index.
@@ -57,14 +74,19 @@ impl Columns {
     /// The layout of `specs` in their order, the fixed ones moved to their
     /// ends (keeping their order among themselves).
     pub(crate) fn new(specs: Vec<Spec>) -> Columns {
-        let widths = specs.iter().map(|s| clamp(s, s.width)).collect();
+        let widths: Vec<f32> = specs.iter().map(|s| clamp(s, s.width)).collect();
+        let n = specs.len();
         let mut order: Vec<usize> = (0..specs.len()).collect();
         crate::sort::sort_by_key(&mut order, |&i| zone(specs[i].fixed));
         let count = |f| specs.iter().filter(|s| s.fixed == f).count();
         let (fixed, end) = (count(ColumnFixed::Left), count(ColumnFixed::Right));
         let mut columns = Columns {
             specs,
+            bases: widths.clone(),
             widths,
+            settled: vec![false; n],
+            fitted: vec![false; n],
+            room: 0.0,
             order,
             shown: Vec::new(),
             starts: Vec::new(),
@@ -86,12 +108,15 @@ impl Columns {
         old_of: impl Fn(usize) -> Option<usize>,
     ) -> Columns {
         let mut next = Columns::new(specs);
+        next.room = self.room;
         for (new, spec) in next.specs.clone().iter().enumerate() {
-            if let Some(old) = old_of(new).filter(|&old| old < self.widths.len()) {
+            if let Some(old) = old_of(new).filter(|&old| old < self.bases.len()) {
+                next.fitted[new] = self.fitted[old];
                 // A width the user dragged survives; a width the app changed
                 // (its own spec differs) wins.
                 if self.specs[old].width == spec.width {
-                    next.widths[new] = clamp(spec, self.widths[old]);
+                    next.bases[new] = clamp(spec, self.bases[old]);
+                    next.settled[new] = self.settled[old];
                 }
             }
         }
@@ -106,6 +131,7 @@ impl Columns {
             (zone(next.specs[n].fixed), position[n], n)
         });
         next.reindex();
+        next.grow();
         next.rebuild(0);
         next
     }
@@ -268,18 +294,92 @@ impl Columns {
         first..end.min(n)
     }
 
-    /// Sets definition `def`'s width (clamped to its limits); whether it
-    /// changed.
+    /// Sets definition `def`'s width (clamped to its limits), which it then
+    /// keeps instead of growing; whether a width shown changed.
     pub(crate) fn set_width(&mut self, def: usize, width: f32) -> bool {
-        let width = clamp(&self.specs[def], width);
-        if self.widths[def] == width {
+        self.settled[def] = true;
+        self.set_base(def, width)
+    }
+
+    /// Sets definition `def`'s base width (clamped to its limits), which it
+    /// still grows from; whether a width shown changed.
+    pub(crate) fn set_base(&mut self, def: usize, width: f32) -> bool {
+        self.bases[def] = clamp(&self.specs[def], width);
+        self.relayout()
+    }
+
+    /// Sets the width the columns are shown in; whether a width shown
+    /// changed.
+    pub(crate) fn set_room(&mut self, room: f64) -> bool {
+        if self.room == room {
             return false;
         }
-        self.widths[def] = width;
-        if let Some(display) = self.display_of(def) {
-            self.rebuild(display);
+        self.room = room;
+        self.relayout()
+    }
+
+    /// Whether definition `def` was fitted to its content once.
+    pub(crate) fn fitted(&self, def: usize) -> bool {
+        self.fitted[def]
+    }
+
+    /// Notes that definition `def` was fitted to its content once.
+    pub(crate) fn mark_fitted(&mut self, def: usize) {
+        self.fitted[def] = true;
+    }
+
+    /// The widths shown again from the bases and the room; whether one
+    /// changed.
+    fn relayout(&mut self) -> bool {
+        let before = std::mem::take(&mut self.widths);
+        self.grow();
+        if before == self.widths {
+            return false;
         }
+        self.rebuild(0);
         true
+    }
+
+    /// The widths shown: the bases, and while they leave room free, the
+    /// columns that grow share it by their `grow`, each up to its `max`
+    /// (what one cannot take goes to the others). Shares are whole points,
+    /// the last column that grows taking what rounding leaves, so the
+    /// columns fill the room exactly.
+    fn grow(&mut self) {
+        self.widths.clone_from(&self.bases);
+        let total: f64 = self.bases.iter().map(|&w| w as f64).sum();
+        let mut free = (self.room - total).floor();
+        let mut growing: Vec<usize> = (0..self.specs.len())
+            .filter(|&i| self.specs[i].grow > 0.0 && !self.settled[i])
+            .collect();
+        while free >= 1.0 && !growing.is_empty() {
+            let weight: f64 = growing.iter().map(|&i| self.specs[i].grow as f64).sum();
+            // A column its share would take past its `max` takes up to it,
+            // and the others share the rest.
+            let capped = growing.iter().position(|&i| {
+                let share = free * self.specs[i].grow as f64 / weight;
+                self.widths[i] as f64 + share > self.specs[i].max as f64
+            });
+            if let Some(at) = capped {
+                let i = growing.remove(at);
+                let max = self.specs[i].max.max(self.specs[i].min);
+                free -= (max - self.widths[i]) as f64;
+                self.widths[i] = max;
+                continue;
+            }
+            let last = growing.len() - 1;
+            let mut given = 0.0;
+            for (k, &i) in growing.iter().enumerate() {
+                let share = if k == last {
+                    free - given
+                } else {
+                    (free * self.specs[i].grow as f64 / weight).floor()
+                };
+                self.widths[i] += share as f32;
+                given += share;
+            }
+            break;
+        }
     }
 
     /// Whether the column at `display` is fixed (at either side): it never
@@ -335,7 +435,93 @@ mod tests {
             min: 20.0,
             max: 400.0,
             fixed: fixed.into(),
+            grow: 0.0,
         }
+    }
+
+    fn growing(width: f32, grow: f32) -> Spec {
+        Spec {
+            grow,
+            ..spec(width, false)
+        }
+    }
+
+    #[test]
+    fn growing_columns_share_the_free_room_by_their_grow() {
+        // a(100) b(50, grow 1) c(50, grow 3) in 400: 200 free, b takes a
+        // quarter, c the rest.
+        let mut c = Columns::new(vec![
+            spec(100.0, false),
+            growing(50.0, 1.0),
+            growing(50.0, 3.0),
+        ]);
+        assert_eq!(c.widths(), [100.0, 50.0, 50.0], "no room yet");
+        assert!(c.set_room(400.0));
+        assert_eq!(c.widths(), [100.0, 100.0, 200.0]);
+        assert_eq!(c.total(), 400.0);
+        assert!(!c.set_room(400.0));
+        // Narrower than the columns: nothing grows (the table scrolls).
+        assert!(c.set_room(150.0));
+        assert_eq!(c.widths(), [100.0, 50.0, 50.0]);
+    }
+
+    #[test]
+    fn growing_columns_fill_the_room_in_whole_points() {
+        let mut c = Columns::new(vec![
+            growing(10.0, 1.0),
+            growing(10.0, 1.0),
+            growing(10.0, 1.0),
+        ]);
+        c.set_room(130.5);
+        assert_eq!(c.widths(), [43.0, 43.0, 44.0]);
+    }
+
+    #[test]
+    fn a_growing_column_stops_at_its_max_and_the_others_take_the_rest() {
+        // 1500 free: a stops at its max (400), b takes the other 1200.
+        let mut c = Columns::new(vec![growing(100.0, 1.0), growing(100.0, 1.0)]);
+        c.specs[1].max = 2000.0;
+        c.set_room(1700.0);
+        assert_eq!(c.widths(), [400.0, 1300.0]);
+    }
+
+    #[test]
+    fn a_column_the_user_sizes_stops_growing() {
+        let mut c = Columns::new(vec![growing(100.0, 1.0), growing(100.0, 1.0)]);
+        c.set_room(400.0);
+        assert_eq!(c.widths(), [200.0, 200.0]);
+        // Dragged to 150: it keeps 150, the other takes the room left.
+        assert!(c.set_width(0, 150.0));
+        assert_eq!(c.widths(), [150.0, 250.0]);
+        c.set_room(500.0);
+        assert_eq!(c.widths(), [150.0, 350.0]);
+    }
+
+    #[test]
+    fn a_fitted_base_still_grows() {
+        let mut c = Columns::new(vec![growing(100.0, 1.0), spec(100.0, false)]);
+        c.set_room(500.0);
+        assert_eq!(c.widths(), [400.0, 100.0]);
+        // Fitted to 180, it still fills the room: what it shows is the same.
+        assert!(!c.set_base(0, 180.0));
+        assert_eq!(c.widths(), [400.0, 100.0]);
+        // Narrower than the columns, it shows its base.
+        assert!(c.set_room(250.0));
+        assert_eq!(c.widths(), [180.0, 100.0]);
+    }
+
+    #[test]
+    fn an_update_keeps_the_room_what_was_fitted_and_what_was_sized() {
+        let mut c = Columns::new(vec![growing(100.0, 1.0), growing(100.0, 1.0)]);
+        c.set_room(400.0);
+        c.set_width(0, 150.0);
+        c.mark_fitted(1);
+        let next = c.updated(vec![growing(100.0, 1.0), growing(100.0, 1.0)], Some);
+        assert_eq!(next.widths(), [150.0, 250.0]);
+        assert!(next.fitted(1) && !next.fitted(0));
+        // A width the app changes grows again from there.
+        let next = c.updated(vec![growing(120.0, 1.0), growing(100.0, 1.0)], Some);
+        assert_eq!(next.widths(), [210.0, 190.0]);
     }
 
     /// a(100) B(60, start) c(80) D(50, end) e(120): B leads, D closes.

@@ -24,6 +24,7 @@ demo: guide-device
 | `locale_settings()` | `localeSettings()`（`nsh`） | 用户的语言与地区设置：偏好语言、时区、12 小时制或 24 小时制、每周的第一天、度量单位和温度单位（[语言与地区设置](#语言与地区设置)）。 |
 | `lifecycle()` | `lifecycle()`（`nsh`） | 应用是否正在使用：`active`、`inactive`（可见但没有焦点）或 `background`（[在后台](#在后台)）。 |
 | `wake_count()` | `wakeCount()`（`nsh`） | 应用运行期间系统从睡眠中唤醒的次数（[睡眠之后](#睡眠之后)）。 |
+| `network()` | `network()`（`nsh`） | 设备怎样连到网络：是否在线，Wi-Fi、蜂窝还是有线，是否昂贵或受限，以及在 iOS 上应用能否使用蜂窝数据（[网络](#网络)）。 |
 | `reduce_motion()`、`screen_reader()` | `reduceMotion()`、`screenReaderEnabled()`（`nsh`） | 见[无障碍](./accessibility.md)。 |
 
 ```rust tabs
@@ -55,6 +56,7 @@ pub fn App() -> impl IntoElement {
 ```tsx tabs
 import { mount, Text, View, safeArea } from "nsh";
 import { colorScheme, fontScale, windowSize } from "nsh";
+import { Window } from "nsh/desktop";
 
 function App() {
   return (
@@ -66,12 +68,16 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 ## 窗口尺寸与响应式布局
 
-`window()`（TSX：`windowSize()`）是 NSH 渲染目标 surface 的尺寸：手机上是屏幕，iPad 分屏或 Mac 上是窗口，嵌入时是宿主视图。用它来改变布局，而不只是改变尺寸：
+`window()`（TSX：`windowSize()`）是 NSH 渲染目标 surface 的尺寸：手机上是屏幕，iPad 分屏时是窗口，嵌入时是宿主视图。桌面平台上应用宿主不可见，所以这是宿主 surface 的尺寸，不是调用方窗口的尺寸；窗口内的布局应读取它自己的 `state()?.contentBounds` 和 `state()?.scaleFactor`。用它来改变布局，而不只是改变尺寸：
 
 ```rust tabs
 use nsh_core::prelude::*;
@@ -388,6 +394,28 @@ effect(() => {
 
 独立应用以及嵌入 AppKit、Win32 和 GTK 应用中的视图在 macOS、Windows 和 Linux 上统计唤醒（Linux 通过 systemd 的 `logind`）。在 iOS 和 Android 上，设备睡眠会把应用移到后台，由 `lifecycle()` 报告。在测试中，`nsh/test` 的 `app.wake()` 会唤醒系统（[测试](./testing-and-trace.md#操作步骤)）。
 
+## 网络
+
+`network()`（TSX 中同名）说明设备现在怎样连到网络：`online`（只有系统确知没有路由时才为 false）、路由所走链路的 `kind`（`"wifi"`、`"cellular"`、`"wired"`、`"other"`，离线为 `"none"`，平台不报告时为 `"unknown"`，按在线处理）、这条链路是否 `expensive`（蜂窝数据、手机热点、按流量计费的网络）或 `constrained`（低数据模式、流量节省程序），以及在 iOS 上用户是否允许应用使用蜂窝数据（`cellularData`：`"unknown"`、`"restricted"` 或 `"notRestricted"`）。读取它的 effect 会在路由变化时重新运行，所以离线时失败的请求可以等网络回来后立刻重试，而不是按定时器重试：
+
+```rust tabs
+effect(move || {
+    if network().online() && sync.failed_offline() {
+        sync.retry();
+    }
+});
+```
+
+```tsx tabs
+effect(() => {
+  if (network().online && sync.failedOffline()) sync.retry();
+});
+```
+
+在中国大陆销售的 iPhone 上，应用第一次联网时系统会询问用户是否允许它使用无线数据，用户回答之前应用的请求都会失败。在此之前 `cellularData` 为 `"unknown"`：在 `"unknown"` 时失败的请求等它变化后再重试；在 `"restricted"`（用户选了「关闭」，或蜂窝网络下只允许 WLAN）时失败的请求应告诉用户，`nsh/mobile` 的 `AppSettings.open()` 会打开应用在「设置」里的页面，用户在那里修改。
+
+iOS 和 macOS 跟随系统的路径监视器（Network.framework），iOS 另外跟随 CoreTelephony 的蜂窝数据状态。Android 跟随默认网络（`ConnectivityManager`，需要 `ACCESS_NETWORK_STATE` 权限，`nsh package` 和 Android SDK 的 AAR 都会声明；没有这个权限时 kind 保持 `"unknown"`）。Web 读取 `navigator.onLine`，以及浏览器提供时的 `navigator.connection`（桌面浏览器不报告链路：在线时为 `"unknown"`）。Windows、Linux、GPUI 和终端报告 `"unknown"`。有路由不代表一定能连上：`online` 的链路上服务器仍可能不可达，应用仍要处理失败的请求。在测试中，`nsh/test` 的 `app.setNetworkState({ kind: "none" })` 让设备离线（[测试](./testing-and-trace.md#操作步骤)）。
+
 ## 安全区域
 
 刘海、Home 指示条、状态栏、Android 导航栏、Mac Catalyst 的标题栏以及窗口化 iPad 应用的窗口控件会遮挡 surface 的一部分。NSH 应用在所有平台上都是全屏绘制，被遮挡的部分以 inset 的形式提供。在 iPadOS 26 及更高版本上，窗口化应用的前缘 inset 与其顶部前缘角落的窗口控件一样宽，覆盖整条前缘；全屏和 iPhone 上就是普通的安全区。
@@ -514,6 +542,22 @@ if let Some(dir) = data_dir() {
 }
 ```
 
+## 应用的版本
+
+Rust 中的 `app_info()`、TSX 中 `nsh` 的 `appInfo()`（[`appInfo`](../modules/nsh.md#appinfo)）是应用构建时的信息：id、名称、
+版本号、构建号，以及是否为开发构建。打包产物报告 `nsh package` 给包的名称和版本（包括 `--id`、`--name`、`--version`、
+`--build`），没有给出时版本为 `1.0.0`、构建号为 `1`；其他构建报告 `nsh.json` 中的值，没有的项为 `None`。`nsh run`、`nsh dev`
+和 `nsh test` 构建的 Rust 应用是开发构建；`nsh package` 构建的不是。TSX 应用中 `app_info()` 为
+`None`，由 JS 的 `appInfo()` 报告。
+
+```rust
+use nsh_core::prelude::*;
+
+if let Some(info) = app_info() {
+    let about = format!("{} ({})", info.version.unwrap_or_default(), info.build.unwrap_or(0));
+}
+```
+
 ## 像素密度
 
 Rust 中的 `pixel_ratio()` 和 `round_to_nearest_pixel(points)`，以及 TSX 中 `nsh` 的 `pixelRatio()`，在点与设备像素之间换算。
@@ -538,7 +582,7 @@ import { pixelRatio } from "nsh";
 <View style={{ height: 1 / pixelRatio(), backgroundColor: "#d0d7de" }} />
 ```
 
-`pixel_ratio()` 和 `pixelRatio()` 都是响应式的，窗口被移到另一块密度不同的屏幕上时，细线会随之调整。
+`pixel_ratio()` 和 `pixelRatio()` 都是响应式的。桌面平台上它们报告宿主显示器的缩放比例；窗口被移到另一块密度不同的屏幕上时，它自己的比例在 `state()?.scaleFactor` 中。
 
 ## 从右到左
 

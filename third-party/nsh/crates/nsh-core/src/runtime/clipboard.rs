@@ -82,22 +82,29 @@ pub(crate) struct Clipboard;
 
 #[module]
 impl Clipboard {
-    /// Puts `text` on the clipboard, replacing what it holds.
-    pub(crate) async fn write_text(text: String, sys: System) -> Result<(), JsError> {
+    /// Puts `text` on the clipboard, replacing what it holds. Resolves to
+    /// `"written"` when the system clipboard took it, `"failed"` when it
+    /// refused it, `"requested"` where the platform does not say (iOS,
+    /// Android, Linux, a terminal); the clipboard is never read back.
+    pub(crate) async fn write_text(
+        text: String,
+        sys: System,
+    ) -> Result<crate::element::ClipboardWrite, JsError> {
         granted(&sys)?;
-        crate::prelude::set_clipboard(text);
-        Ok(())
+        Ok(crate::prelude::set_clipboard(text).await)
     }
 
     /// Puts `item` on the clipboard, replacing what it holds: its
     /// `text` as plain text and its `html`, when given, as the platform's
     /// HTML type, which apps that read formatting (mail, documents, rich
     /// text editors) paste. Where the platform has no HTML on the clipboard
-    /// (a terminal) the text only.
-    pub(crate) async fn write(item: ClipboardItem, sys: System) -> Result<(), JsError> {
+    /// (a terminal) the text only. Resolves as `writeText` does.
+    pub(crate) async fn write(
+        item: ClipboardItem,
+        sys: System,
+    ) -> Result<crate::element::ClipboardWrite, JsError> {
         granted(&sys)?;
-        crate::prelude::set_clipboard_item(item);
-        Ok(())
+        Ok(crate::prelude::set_clipboard_item(item).await)
     }
 
     /// The clipboard's text, `""` when it holds none. On iOS, reading it

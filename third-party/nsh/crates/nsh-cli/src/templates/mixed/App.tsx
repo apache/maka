@@ -1,7 +1,8 @@
 import { mount, signal, Text, View } from "nsh";
+import { Window } from "nsh/desktop";
 import { Badge, Counter, Format } from "__SPECIFIER__";
 
-// Its count lives in Rust (`src/lib.rs`).
+// Its count lives in Rust (`__EXT__/src/lib.rs`).
 const counter = new Counter();
 
 function App() {
@@ -23,4 +24,4 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => <Window id="main">{App}</Window>);

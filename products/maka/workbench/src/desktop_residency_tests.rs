@@ -70,6 +70,25 @@ impl EmptyStream {
 }
 
 fn start(os: Os, idiom: Idiom, bootstrap: bool) -> (Headless, Arc<AtomicUsize>) {
+    start_with_data_dir(os, idiom, bootstrap, None)
+}
+
+fn start_with_data_dir(
+    os: Os,
+    idiom: Idiom,
+    bootstrap: bool,
+    data_dir: Option<std::path::PathBuf>,
+) -> (Headless, Arc<AtomicUsize>) {
+    start_with_options(os, idiom, bootstrap, data_dir, false)
+}
+
+fn start_with_options(
+    os: Os,
+    idiom: Idiom,
+    bootstrap: bool,
+    data_dir: Option<std::path::PathBuf>,
+    start_hidden: bool,
+) -> (Headless, Arc<AtomicUsize>) {
     let mut registry = crate::bindings::ui_registry();
     registry.value("host", || Instance::new(EmptyHost));
     let sets = vec![nsh_base::registry(), registry];
@@ -108,8 +127,14 @@ fn start(os: Os, idiom: Idiom, bootstrap: bool) -> (Headless, Arc<AtomicUsize>) 
             ..Environment::default()
         },
         ui_sets: sets,
+        data_dir,
         ..EngineConfig::new(bundle)
     };
+    if start_hidden {
+        let mut params = config.host.params();
+        params.insert("startHidden".into(), JsonValue::Bool(true));
+        config.host.set_params(params);
+    }
     let exits = Arc::new(AtomicUsize::new(0));
     let received = exits.clone();
     config.host.handle("terminal.exit", move |_| {
@@ -229,6 +254,59 @@ fn desktop_residency_keeps_draft_and_work_across_close_reopen_and_ui_changes() {
 }
 
 #[test]
+fn bootstrap_start_hidden_keeps_main_window_hidden_until_tray_reopens_it() {
+    use nsh_core::desktop::WindowRequest;
+    let (mut app, _) = start_with_options(Os::MacOs, Idiom::Desktop, true, None, true);
+    let main_node = app
+        .screen()
+        .commands()
+        .iter()
+        .find_map(|(id, c)| match c {
+            Command::Desktop(c) => match c.as_ref() {
+                DesktopCommand::OpenWindow(open) if open.options.id == "main" => Some(*id),
+                _ => None,
+            },
+            _ => None,
+        })
+        .expect("Bootstrap must declare <Window id=\"main\">");
+    let open_pos = app
+        .screen()
+        .commands()
+        .iter()
+        .position(|(id, c)| {
+            *id == main_node
+                && matches!(
+                    c,
+                    Command::Desktop(c) if matches!(c.as_ref(), DesktopCommand::OpenWindow(_))
+                )
+        })
+        .unwrap();
+    assert!(
+        app.screen().commands()[open_pos + 1..]
+            .iter()
+            .any(|(id, c)| {
+                *id == main_node
+                    && matches!(
+                        c,
+                        Command::Desktop(c)
+                            if matches!(c.as_ref(), DesktopCommand::Request(WindowRequest::Hide))
+                    )
+            }),
+        "startHidden must emit WindowRequest::Hide right after OpenWindow during initial bootstrap mount"
+    );
+    assert!(
+        !app.window_state("main").unwrap().unwrap().visible,
+        "startHidden must keep main window hidden after startup"
+    );
+    let open = actions(&tray(&app).unwrap().menu)[0].id;
+    select(&mut app, open);
+    assert!(
+        app.window_state("main").unwrap().unwrap().visible,
+        "tray Open Maka must reopen a startHidden main window"
+    );
+}
+
+#[test]
 fn desktop_residency_is_owned_by_the_real_bootstrap_without_a_root_ui() {
     let (mut app, exits) = start(Os::Linux, Idiom::Desktop, true);
     app.wait_for("text:This deployment has no root UI selected.")
@@ -241,6 +319,70 @@ fn desktop_residency_is_owned_by_the_real_bootstrap_without_a_root_ui() {
     let quit = actions(&tray(&app).unwrap().menu)[1].id;
     select(&mut app, quit);
     assert_eq!(exits.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn bootstrap_main_window_declares_min_size_and_restores_saved_bounds() {
+    use nsh_core::{
+        desktop::{WindowEvent, WindowMode, WindowPlacement, WindowState},
+        geometry::{Bounds, Point},
+    };
+    let dir = std::env::temp_dir().join(format!(
+        "maka-bootstrap-bounds-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let saved = WindowPlacement::new(
+        WindowMode::Normal,
+        Bounds::new(
+            Point::new(px(140.0), px(95.0)),
+            Size::new(px(980.0), px(710.0)),
+        ),
+    );
+    {
+        let (mut app, _) = start_with_data_dir(Os::MacOs, Idiom::Desktop, true, Some(dir.clone()));
+        let (main_node, open) = app
+            .screen()
+            .commands()
+            .iter()
+            .find_map(|(id, c)| match c {
+                Command::Desktop(c) => match c.as_ref() {
+                    DesktopCommand::OpenWindow(open) if open.options.id == "main" => {
+                        Some((*id, open.clone()))
+                    }
+                    _ => None,
+                },
+                _ => None,
+            })
+            .expect("Bootstrap must declare <Window id=\"main\">");
+        assert_eq!(
+            open.options.attributes.min_size,
+            Some(Some(Size::new(px(640.0), px(480.0))))
+        );
+        assert!(open.options.restore_bounds);
+        assert_eq!(open.placement, None);
+        let state = WindowState::new(saved.bounds, saved);
+        app.engine().control().dispatch_event(
+            main_node,
+            EventKind::Window,
+            EventPayload::Window(Box::new(WindowEvent::State(Box::new(state)))),
+        );
+        assert!(app.settle());
+    }
+    let (app, _) = start_with_data_dir(Os::MacOs, Idiom::Desktop, true, Some(dir.clone()));
+    let restored = app.screen().commands().iter().find_map(|(_, c)| match c {
+        Command::Desktop(c) => match c.as_ref() {
+            DesktopCommand::OpenWindow(open) if open.options.id == "main" => open.placement,
+            _ => None,
+        },
+        _ => None,
+    });
+    assert_eq!(restored, Some(saved));
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]

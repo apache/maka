@@ -33,6 +33,7 @@ fn invoices() -> impl IntoElement {
 ```tsx tabs
 import { mount, Text } from "nsh";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "nsh/base";
+import { Window } from "nsh/desktop";
 
 function App() {
   return (
@@ -53,7 +54,11 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 `Table` 及其部件来自 [`nsh/base`](../modules/nsh-base.md)，在 Rust 中是 `nsh-base` crate，由 `table()`、`table_header()`、`table_body()`、`table_footer()`、`table_row()`、`table_head()`、`table_cell()` 和 `table_caption()` 创建，配合类型化的样式方法和 `.child(..)`。行把单元格横向排列；单元格的宽度由应用设置，使各列对齐。

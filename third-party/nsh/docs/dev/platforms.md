@@ -113,9 +113,12 @@ What the platform provides on that OS is in the environment as well, as NSH's ow
 `Environment::tab_bar` (on by default) is the system's tab bar on iOS and Android (`nsh/mobile`'s `TabBar`, which
 mounts the native component `TAB_BAR_COMPONENT` the platform registers; off: `TabBar` takes no room and `isAvailable` is
 false), and `Environment::clipboard_images` (`None` by default: as NSH's own backends on the OS, none on Android; `Some` from a platform built outside NSH) is images on the clipboard
-(off: `Clipboard`'s image calls reject with `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM` before reaching the platform). The
-Mini Program platform turns both off. The other services follow the same pattern (`screen_color`, `file_requests`,
-`speech`, `notifications`, `audio`: what the platform answers).
+(off: `Clipboard`'s image calls reject with `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM` before reaching the platform), and
+`Environment::scheme_links` (`None` by default: as NSH's native backends on the OS, none on the web; the GPUI and
+terminal backends say `Some(false)`) is links of the app's schemes reaching it (off: `open_auth_session` fails at once
+unless the platform shows sign-in sessions itself). The Mini Program platform turns the first two off; as it hands the
+app no links of its schemes, it should say `Some(false)` for the third. The other services follow the same pattern
+(`screen_color`, `file_requests`, `speech`, `notifications`, `audio`: what the platform answers).
 
 ## WebAssembly hosts
 

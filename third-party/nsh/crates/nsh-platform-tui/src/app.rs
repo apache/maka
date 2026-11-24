@@ -122,6 +122,26 @@ pub struct TerminalCapabilities {
     /// drawn as a hyperlink to its `href`. Without it, as on the Linux
     /// console, which shows the sequence, links are plain text.
     pub hyperlinks: bool,
+    /// How the terminal shows pictures.
+    pub graphics: Graphics,
+    /// The size of a Cell in the terminal's pixels (`CSI 16 t`), which
+    /// pictures are fitted at with [`Graphics::KittyPlaceholders`];
+    /// `None`: guessed from the Cell's proportion in points.
+    pub cell_pixels: Option<nsh_core::Size<nsh_core::geometry::DevicePixels>>,
+}
+
+/// How a terminal shows pictures (image views).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub enum Graphics {
+    /// Upper half blocks (`▀`), two pixels a Cell in the terminal's colors,
+    /// at 256 colors or more; with fewer, an image keeps its box blank.
+    #[default]
+    Blocks,
+    /// The kitty graphics protocol's Unicode placeholders (kitty, Ghostty),
+    /// at 24-bit color: pictures at the terminal's own pixels, placed in
+    /// the Cells as text is.
+    KittyPlaceholders,
 }
 
 /// The colors a terminal shows.
@@ -149,6 +169,8 @@ impl Default for TerminalCapabilities {
             foreground_color: None,
             command_key: false,
             hyperlinks: true,
+            graphics: Graphics::default(),
+            cell_pixels: None,
         }
     }
 }
@@ -310,6 +332,8 @@ impl AppView {
             // report Command: Ctrl stands in for it, and labels say so.
             ctrl_for_command: OS == nsh_core::platform::Os::MacOs
                 && !options.capabilities.command_key,
+            // No link of the app's schemes reaches a terminal app.
+            scheme_links: Some(false),
             ..Default::default()
         };
         let clipboard = options
@@ -321,8 +345,17 @@ impl AppView {
         let fps = options.fps || nsh_engine::perf::enabled_by_env();
         let output = crate::perf::SharedOutput::default();
         output.enabled.set(fps);
+        let mut tree = Mounter::default();
+        tree.menus.ctrl_for_command = environment.ctrl_for_command;
         let mut images = crate::image::ImageStore::default();
-        let _ = images.set_protocol(options.image_protocol);
+        images.configure(
+            options.capabilities.graphics,
+            options.capabilities.colors,
+            options.capabilities.cell_pixels,
+            options.cells,
+            output.graphics.clone(),
+            options.image_protocol,
+        );
         Self {
             perf: fps.then(crate::perf::Monitor::new),
             output,
@@ -336,11 +369,7 @@ impl AppView {
             #[cfg(feature = "dev")]
             test: None,
             surface,
-            tree: {
-                let mut tree = Mounter::default();
-                tree.menus.ctrl_for_command = environment.ctrl_for_command;
-                tree
-            },
+            tree,
             images,
             scratch: Buffer::default(),
             area: Rect::default(),
@@ -1151,6 +1180,9 @@ impl AppView {
             }
             _ => None,
         };
+        if let Some(modality) = modality {
+            self.tree.pointer_focus = modality == nsh_core::platform::InputModality::Pointer;
+        }
         if let (Some(modality), Some(engine)) = (modality, self.surface.control()) {
             engine.set_input_modality(modality);
         }
@@ -2050,7 +2082,8 @@ impl AppView {
             id,
             last,
             clicks,
-            anchor,
+            mut anchor,
+            select_all,
         }) = self.field_drag
         {
             if self.keyboard.focused != Some(id)
@@ -2065,7 +2098,12 @@ impl AppView {
                     && let Some(view) = self.tree.get_mut(id)
                 {
                     let field = view.field.as_mut().unwrap();
-                    field.drag(view.input.as_ref().unwrap(), position, clicks, anchor);
+                    let config = view.input.as_ref().unwrap();
+                    // The press's drag selects from where it went down.
+                    if select_all {
+                        anchor = field.click(config, last, false, clicks);
+                    }
+                    field.drag(config, position, clicks, anchor);
                     field.report(id, &control, false);
                 }
                 self.field_drag = if matches!(mouse.kind, MouseKind::Up(_)) {
@@ -2076,6 +2114,7 @@ impl AppView {
                         last: position,
                         clicks,
                         anchor,
+                        select_all: select_all && position == last,
                     })
                 };
                 return true;
@@ -2115,25 +2154,37 @@ impl AppView {
             // way up, after the focus the field takes now.
             let press = self.pointer.take_press(id);
             self.pointer.cancel(&mut self.tree, Some(&control));
-            self.keyboard.focus(Some(id), &mut self.tree, &control);
+            let shift = mouse.modifiers.shift;
+            let clicks = self.pointer.clicks();
+            // A plain press that focuses a field which selects its text on
+            // focus leaves the whole text selected until the press drags.
+            let select_all = !shift
+                && clicks <= 1
+                && self.keyboard.focused != Some(id)
+                && self
+                    .tree
+                    .get(id)
+                    .and_then(|view| view.input.as_ref())
+                    .is_some_and(|config| config.select_text_on_focus);
+            self.keyboard
+                .focus_field(Some(id), &mut self.tree, &control, !shift);
             self.field_press = press.map(|(press, origin)| {
                 (press, origin, hit.map(|hit| hit.area).unwrap_or_default())
             });
-            let clicks = self.pointer.clicks();
             let view = self.tree.get_mut(id).unwrap();
             let field = view.field.as_mut().unwrap();
-            let anchor = field.click(
-                view.input.as_ref().unwrap(),
-                position,
-                mouse.modifiers.shift,
-                clicks,
-            );
+            let anchor = if select_all {
+                (0, 0)
+            } else {
+                field.click(view.input.as_ref().unwrap(), position, shift, clicks)
+            };
             field.report(id, &control, false);
             self.field_drag = Some(FieldDrag {
                 id,
                 last: position,
-                clicks: if mouse.modifiers.shift { 1 } else { clicks },
+                clicks: if shift { 1 } else { clicks },
                 anchor,
+                select_all,
             });
             true
         } else {
@@ -2541,6 +2592,10 @@ impl AppView {
             {
                 self.surface.wake.notify();
             }
+            for id in std::mem::take(&mut self.tree.clear_selection_requests) {
+                self.selection.clear_in(&self.tree, id);
+                self.surface.wake.notify();
+            }
             if let Some(control) = self.surface.control() {
                 let scope = crate::navigation::focus_scope(&self.tree);
                 let mut keep = Vec::new();
@@ -2603,6 +2658,7 @@ impl AppView {
             perf.pending.draw = drawing.elapsed();
             perf.draw(area, buffer);
         }
+        self.images.finish(buffer);
         let painted = if self.options.capabilities.hyperlinks {
             &self.tree.links
         } else {
@@ -2698,6 +2754,9 @@ struct FieldDrag {
     last: Position,
     clicks: u32,
     anchor: (usize, usize),
+    /// The press focused a field that selected its whole text, which stays
+    /// selected unless the press drags.
+    select_all: bool,
 }
 
 impl Widget for &mut AppView {

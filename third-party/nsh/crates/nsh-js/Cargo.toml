@@ -42,6 +42,10 @@ libc.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "time", "net", "sync", "io-util", "macros"] }
 futures-util.workspace = true
 tokio-tungstenite.workspace = true
+# The global `WebSocket`'s TLS: its own crypto provider (ring), since the
+# runner of an app that never imports `websocket` selects none.
+rustls.workspace = true
+webpki-roots.workspace = true
 
 # The browser uses the same QuickJS and portable standard library.
 [target.'cfg(target_arch = "wasm32")'.dependencies]

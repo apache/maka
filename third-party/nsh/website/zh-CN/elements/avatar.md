@@ -33,6 +33,7 @@ fn author(name: &'static str, picture: &'static str) -> impl IntoElement {
 ```tsx tabs
 import { mount } from "nsh";
 import { Avatar } from "nsh/base";
+import { Window } from "nsh/desktop";
 
 function App() {
   return (
@@ -46,7 +47,11 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 `Avatar` 和 `AvatarGroup` 来自 [`nsh/base`](../modules/nsh-base.md)，在 Rust 中是 `nsh-base` crate。在 Rust 中，`avatar()` 和 `avatar_group()` 创建它们，每个 prop 有一个 setter（`.src(..)`、`.fallback_delay(..)`），头像本身用带类型的样式方法设置，显示在图片之上的内容用 `.child(..)` 添加。

@@ -479,6 +479,9 @@ pub fn Select(props: SelectProps, cx: Scope<SelectEvent>) -> impl IntoElement {
     // fills it with): the combobox, what takes the keyboard, and what the
     // list is placed against.
     let anchor = element_ref();
+    // Opened by a pointer, the list gives the keyboard focus back where it
+    // was as it closes, not to the trigger (`back`).
+    crate::popup::note_focus_origin(move || open.get(), anchor);
     // Its width, once it is laid out.
     let width = signal(None::<Points>);
     let focused = signal(false);

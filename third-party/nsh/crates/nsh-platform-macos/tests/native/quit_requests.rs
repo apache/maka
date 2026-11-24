@@ -14,7 +14,7 @@ use nsh_core::{
         Owner, create_root,
         desktop::{
             cancel_quit_request, current_window, on_app_quit, on_quit_request, quit,
-            set_quit_request_options,
+            set_quit_request_options, window,
         },
     },
     prelude::*,
@@ -27,7 +27,7 @@ use nsh_platform_macos::{
         runtime::{AnyClass, AnyObject},
     },
     objc2_app_kit::{NSApplication, NSWindow},
-    objc2_foundation::{NSArray, NSRunLoop},
+    objc2_foundation::{NSArray, NSPoint, NSRect, NSRunLoop, NSSize},
 };
 
 static READY: AtomicBool = AtomicBool::new(false);
@@ -45,6 +45,29 @@ thread_local! {
 
 fn case() -> String {
     std::env::var("NSH_QUIT_CHECK_CASE").unwrap()
+}
+
+/// The app's one window: the app root is the invisible host.
+#[component]
+fn App() -> impl IntoElement {
+    window().id("main").content(guarded)
+}
+
+/// Standalone main window matching Maka's `<Window id="main" minSize restoreBounds>`.
+#[component]
+#[allow(clippy::field_reassign_with_default)]
+fn MainWindowProbe() -> impl IntoElement {
+    let mut attrs = WindowAttributes::default();
+    attrs.title = Some("MainWindowLifecycleProbe".into());
+    attrs.min_size = Some(Some(size(px(640.0), px(480.0))));
+    window()
+        .id("main")
+        .attributes(attrs)
+        .restore_bounds(true)
+        .content(|| {
+            READY.store(true, SeqCst);
+            view().size_full().child(text("Main window probe"))
+        })
 }
 
 #[component]
@@ -418,8 +441,131 @@ fn drive(stage: usize) {
     later(stage + 1);
 }
 
+fn run_main_window_lifecycle_case(phase: &str) {
+    let dir = std::path::PathBuf::from(std::env::var("NSH_LIFECYCLE_DATA_DIR").unwrap());
+    let active_events = std::sync::Arc::new(std::sync::Mutex::new(Vec::<bool>::new()));
+    let observed = active_events.clone();
+    let phase_owned = phase.to_owned();
+    fn schedule(phase: String, step: usize) {
+        dispatch2::DispatchQueue::main()
+            .after(dispatch2::DispatchTime::NOW.time(250_000_000), move || {
+                let mtm = MainThreadMarker::new().unwrap();
+                let app = NSApplication::sharedApplication(mtm);
+                let Some(win) = app
+                    .windows()
+                    .iter()
+                    .find(|w| w.title().to_string() == "MainWindowLifecycleProbe" && w.isVisible())
+                else {
+                    schedule(phase, step);
+                    return;
+                };
+                let min = win.contentMinSize();
+                assert_eq!(
+                    (min.width.round() as i32, min.height.round() as i32),
+                    (640, 480)
+                );
+                if phase == "save" && step == 0 {
+                    let frame = win.frame();
+                    let content = win.contentRectForFrameRect(frame).size;
+                    assert!(
+                        (content.width - 1280.0).abs() < 2.0,
+                        "initial content width: {content:?}"
+                    );
+                    assert!(
+                        (content.height - 820.0).abs() < 2.0,
+                        "initial content height: {content:?}"
+                    );
+                    win.setFrame_display(
+                        NSRect::new(
+                            NSPoint::new(frame.origin.x + 20.0, frame.origin.y + 20.0),
+                            NSSize::new(920.0, 680.0),
+                        ),
+                        true,
+                    );
+                    schedule(phase, 1);
+                } else if phase == "save" && step == 1 {
+                    platform::quit_app();
+                } else if phase == "restore" && step == 0 {
+                    let frame = win.frame();
+                    assert!(
+                        (frame.size.width - 920.0).abs() < 2.0,
+                        "restored width: {frame:?}"
+                    );
+                    assert!(
+                        (frame.size.height - 680.0).abs() < 2.0,
+                        "restored height: {frame:?}"
+                    );
+                    let dir =
+                        std::path::PathBuf::from(std::env::var("NSH_LIFECYCLE_DATA_DIR").unwrap());
+                    platform::with_running_view(move |view| {
+                        let mut next = nsh_engine::EngineConfig::new(platform::App::Rust(
+                            platform::Root::of::<MainWindowProbe>(),
+                        ));
+                        next.data_dir = Some(dir);
+                        view.load_with_config(next);
+                    });
+                    schedule(phase, 1);
+                } else {
+                    let frame = win.frame();
+                    assert!(
+                        (frame.size.width - 920.0).abs() < 2.0,
+                        "reloaded width: {frame:?}"
+                    );
+                    assert!(
+                        (frame.size.height - 680.0).abs() < 2.0,
+                        "reloaded height: {frame:?}"
+                    );
+                    platform::quit_app();
+                }
+            })
+            .unwrap();
+    }
+    schedule(phase_owned, 0);
+    let mut config =
+        nsh_engine::EngineConfig::new(platform::App::Rust(platform::Root::of::<MainWindowProbe>()));
+    config.data_dir = Some(dir);
+    let mut options = platform::AppOptions::default();
+    options.title = "MainWindowLifecycleHost".into();
+    options.size = (1280, 820);
+    options.background = true;
+    assert_eq!(
+        platform::run_app_with_config(config, options, move |active| {
+            observed.lock().unwrap().push(active);
+        }),
+        std::process::ExitCode::SUCCESS
+    );
+    let events = active_events.lock().unwrap().clone();
+    let activations = events.iter().filter(|&&v| v).count();
+    if phase == "restore" {
+        assert!(
+            activations >= 2,
+            "on_active must drop during close_all and reactivate after reload: {events:?}"
+        );
+    } else {
+        assert!(
+            activations >= 1,
+            "on_active must observe AppWindow activation: {events:?}"
+        );
+    }
+    assert_eq!(
+        events.last().copied(),
+        Some(false),
+        "on_active must settle false on quit: {events:?}"
+    );
+    println!("lifecycle {phase} ok");
+}
+
 #[allow(clippy::field_reassign_with_default)]
 pub(super) fn run_case() {
+    if let Some(phase) = case().strip_prefix("app-window-lifecycle-") {
+        std::thread::spawn(|| {
+            std::thread::sleep(Duration::from_secs(15));
+            eprintln!("lifecycle check timed out");
+            std::process::exit(2);
+        });
+        run_main_window_lifecycle_case(phase);
+        return;
+    }
     std::thread::spawn(|| {
         std::thread::sleep(Duration::from_secs(if case() == "system-timeout" {
             130
@@ -433,10 +579,10 @@ pub(super) fn run_case() {
     let mut options = platform::AppOptions::default();
     options.title = "Quit request check".into();
     options.keep_alive_on_close = case() == "close-retained" || case() == "system-retained-close";
-    let source = platform::AppSource::Rust(platform::Root::of::<Guarded>());
+    let source = platform::AppSource::Rust(platform::Root::of::<App>());
     #[cfg(feature = "dev")]
     let source = if case().starts_with("reload-") {
-        platform::set_root(platform::Root::of::<Guarded>);
+        platform::set_root(platform::Root::of::<App>);
         let server =
             nsh_dev::DevServer::start("127.0.0.1:0".parse().unwrap(), "", None, |_| {}).unwrap();
         server.publish_root();
@@ -507,4 +653,30 @@ pub(super) fn run() {
         }
         println!("quit_requests: {case}: {expected}");
     }
+    let dir = std::env::temp_dir().join(format!("nsh-macos-lifecycle-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    for phase in ["save", "restore"] {
+        let output = Command::new(std::env::current_exe().unwrap())
+            .arg("--ignored")
+            .env(
+                "NSH_QUIT_CHECK_CASE",
+                format!("app-window-lifecycle-{phase}"),
+            )
+            .env("NSH_LIFECYCLE_DATA_DIR", &dir)
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            output.status.success(),
+            "lifecycle-{phase}: {stdout}\n{stderr}"
+        );
+        assert!(
+            stdout.contains(&format!("lifecycle {phase} ok")),
+            "lifecycle-{phase}: {stdout}\n{stderr}"
+        );
+        println!("quit_requests: app-window-lifecycle-{phase}: ok");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
 }

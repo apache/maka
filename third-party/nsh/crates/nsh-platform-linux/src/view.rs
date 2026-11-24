@@ -442,6 +442,18 @@ mod imp {
             }
             // Masked after the filters, as CSS does.
             let masked = crate::decor::push_mask(snapshot, &state);
+            // `clipPath`: everything below is drawn inside it, the view's
+            // shadows, border and children included.
+            let clip_path = state.style.clip_path().map(|c| c.resolve(state.frame.size));
+            if let Some((r, radii)) = clip_path {
+                let rect = graphene::Rect::new(
+                    r.origin.x.0,
+                    r.origin.y.0,
+                    r.size.width.0,
+                    r.size.height.0,
+                );
+                snapshot.push_rounded_clip(&rounded(rect, radii.to_array().map(|r| r.0)));
+            }
             let filters = crate::decor::push_filters(snapshot, &state);
             let (phase, changed) = self.damage.get();
             let phase = phase ^ changed;
@@ -452,7 +464,18 @@ mod imp {
             let soft = crate::decor::soft_shadows(obj.upcast_ref(), &state);
             crate::decor::draw_background(snapshot, &state, soft, obj.upcast_ref());
             let clip = state.clips();
-            if clip {
+            // A continuous-cornered clip is drawn in pieces from a node of
+            // what it clips ([`crate::decor::append_clipped`]), not as a
+            // path mask over all of it.
+            let piecewise = if clip {
+                crate::decor::piecewise_clip(obj.upcast_ref(), &state)
+            } else {
+                None
+            };
+            let outer = snapshot;
+            let inner = piecewise.as_ref().map(|_| gtk::Snapshot::new());
+            let snapshot = inner.as_ref().unwrap_or(outer);
+            if clip && piecewise.is_none() {
                 crate::decor::push_clip(snapshot, &state);
             }
             // The view's own content stays inside it, as a UIKit view's
@@ -489,13 +512,21 @@ mod imp {
             if !above {
                 crate::scroll::draw_indicator(snapshot, &state);
             }
-            if clip {
+            if let (Some(piecewise), Some(inner)) = (&piecewise, &inner) {
+                if let Some(node) = inner.clone().to_node() {
+                    crate::decor::append_clipped(outer, piecewise, &node);
+                }
+            } else if clip {
                 snapshot.pop();
             }
+            let snapshot = outer;
             if !above {
                 crate::decor::draw_border(snapshot, &state);
             }
             for _ in 0..filters {
+                snapshot.pop();
+            }
+            if clip_path.is_some() {
                 snapshot.pop();
             }
             if masked {
@@ -518,6 +549,9 @@ mod imp {
     impl WidgetImpl for NshView {
         fn focus(&self, direction: gtk::DirectionType) -> bool {
             let view = self.obj();
+            if crate::key_focus::skips_subtree(&view) {
+                return false;
+            }
             crate::key_focus::offer(&view);
             let moved = self.parent_focus(direction);
             crate::key_focus::offered(&view);
@@ -613,10 +647,13 @@ mod imp {
                 return false;
             }
             let h = s.props.hit_slop.map(|v| v.0);
+            let at = nsh_core::geometry::point(Points(x as f32), Points(y as f32));
             x >= -(h.left as f64)
                 && y >= -(h.top as f64)
                 && x < (s.frame.size.width.0 + h.right) as f64
                 && y < (s.frame.size.height.0 + h.bottom) as f64
+                // Outside its clip path, nothing of it is hit.
+                && s.style.clip_path().is_none_or(|c| c.contains(s.frame.size, at))
         }
     }
 }

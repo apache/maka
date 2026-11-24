@@ -299,6 +299,15 @@ pub enum Inline {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         color: Option<String>,
     },
+    /// Text in styles the document gives it (`<span style="color: …">`,
+    /// `<font color="…">`; the `textStyle` of `RichEditor` and Tiptap).
+    TextStyle {
+        /// Its content.
+        content: Vec<Inline>,
+        /// Its color, a CSS color; the text's own when not given.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        color: Option<String>,
+    },
     /// Superscript (`<sup>`).
     Superscript {
         /// Its content.
@@ -385,6 +394,7 @@ pub(crate) fn inline_text(inlines: &[Inline], out: &mut String) {
             | Inline::Strikethrough { content }
             | Inline::Underline { content }
             | Inline::Highlight { content, .. }
+            | Inline::TextStyle { content, .. }
             | Inline::Superscript { content }
             | Inline::Subscript { content }
             | Inline::Small { content }
@@ -843,6 +853,7 @@ export type TextViewInline =
   | { type: \"text\"; text: string }
   | { type: \"strong\" | \"emphasis\" | \"strikethrough\" | \"underline\" | \"superscript\" | \"subscript\" | \"small\"; content: TextViewInline[] }
   | { type: \"highlight\"; content: TextViewInline[]; color?: string }
+  | { type: \"textStyle\"; content: TextViewInline[]; color?: string }
   | { type: \"code\"; code: string }
   | { type: \"keyboard\"; text: string }
   | { type: \"link\"; url: string; title?: string; content: TextViewInline[] }
@@ -1056,6 +1067,31 @@ mod tests {
         assert_eq!(
             json,
             serde_json::json!({ "type": "highlight", "content": [], "color": "#336699" })
+        );
+    }
+
+    #[test]
+    fn text_styles_are_tagged_text_style_with_an_optional_color() {
+        let styled: Inline = serde_json::from_value(serde_json::json!({
+            "type": "textStyle", "content": [{ "type": "text", "text": "x" }]
+        }))
+        .unwrap();
+        assert_eq!(
+            styled,
+            Inline::TextStyle {
+                content: vec![Inline::text("x")],
+                color: None
+            }
+        );
+        assert_eq!(styled.plain_text(), "x");
+        let json = serde_json::to_value(Inline::TextStyle {
+            content: vec![],
+            color: Some("#e54545".into()),
+        })
+        .unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({ "type": "textStyle", "content": [], "color": "#e54545" })
         );
     }
 }

@@ -1,4 +1,5 @@
 import { mount, signal, Text, View } from "nsh";
+import { Window } from "nsh/desktop";
 import flag from "./flag.png";
 
 // What `fetch` answers for a file the app ships (`asset:/`) and for one it
@@ -27,4 +28,4 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => <Window id="main">{App}</Window>);

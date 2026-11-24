@@ -1,5 +1,6 @@
 // First sets and non-prefix replacements of Markdown with definitions.
 import { mount, signal, Text, View } from "nsh";
+import { Window } from "nsh/desktop";
 import { Button, TextView } from "nsh/base";
 
 const section = "## Part\n\nSome **bold** text with `code`, [docs] and a note[^a].\n\n";
@@ -23,4 +24,4 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => <Window id="main">{App}</Window>);

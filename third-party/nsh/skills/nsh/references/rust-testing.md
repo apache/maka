@@ -207,6 +207,7 @@ test("counts taps", async () => {
 
 ```sh
 nsh test                       # cargo test for each crate, then every test file
+nsh test --release             # release cargo test, optimized runner/hosts, minified bundles
 nsh test --filter "counts"     # by name
 nsh test nsh.json --trace      # headless: what the root mounts, and the time of each commit
 ```
@@ -223,7 +224,7 @@ name. `nsh test --target` skips the Rust tests and says so, so a flow that must 
 ```sh
 nsh test --target macos      # also linux (xvfb-run -a on a machine without a display), windows, gpui
 nsh test --target ios        # an iOS simulator
-nsh test --target android    # the first device or emulator adb lists
+nsh test --target android    # --device <serial> or ANDROID_SERIAL, else the first adb lists
 nsh test --target web        # headless Chrome, Edge or Chromium
 nsh test --target tui        # an in-memory terminal, suited to CI
 nsh test form.test.tsx --target macos    # one file

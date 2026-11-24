@@ -41,6 +41,14 @@ use windows::{
 
 use crate::surface::Surface;
 
+/// The window that owns modal file/folder dialogs: the focused app window,
+/// else any open app window, else the host window (for embedded views).
+pub(crate) fn dialog_owner(surface: &Surface) -> HWND {
+    crate::app_window::focused_hwnd(surface)
+        .or_else(|| crate::app_window::all_hwnds(surface).into_iter().next())
+        .unwrap_or_else(|| surface.hwnd())
+}
+
 /// Carries out request `id`.
 pub(crate) fn request(surface: &Rc<Surface>, id: u32, request: &FileRequest) {
     let mut control = None;
@@ -48,7 +56,7 @@ pub(crate) fn request(surface: &Rc<Surface>, id: u32, request: &FileRequest) {
     let Some(control) = control else { return };
     // A window handle is an address the other thread only hands to the
     // dialog as its owner.
-    let owner = surface.hwnd().0 as isize;
+    let owner = dialog_owner(surface).0 as isize;
     let request = request.clone();
     let spawned = std::thread::Builder::new()
         .name("nsh-paths".into())
@@ -67,7 +75,7 @@ pub(crate) fn choose_directory(
     surface: &Surface,
     done: impl FnOnce(Result<Option<PathBuf>, String>) + Send + 'static,
 ) {
-    let owner = surface.hwnd().0 as isize;
+    let owner = dialog_owner(surface).0 as isize;
     let ui = crate::window::UiThread::current();
     // Transfer the callback only after spawning, so a spawn failure is answerable.
     type Done = Box<dyn FnOnce(Result<Option<PathBuf>, String>) + Send>;

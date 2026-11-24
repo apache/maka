@@ -624,9 +624,11 @@ extension NshAppView {
     }
 
     /// Hands `url`, one the embedding app was opened with (its scene's
-    /// `openURLContexts`, for example), to the running app: its
-    /// `UrlScheme.on("open")` listeners get it (`nsh`). While no app runs, the
-    /// next one loaded gets it.
+    /// `openURLContexts`, or the `webpageURL` of a Universal Link that
+    /// reaches `scene(_:continue:)`), to the running app: its
+    /// `UrlScheme.on("open")` listeners get it (`nsh`) when it is of a scheme
+    /// or a web link the app claims. While no app runs, the next one loaded
+    /// gets it.
     public func openURL(_ url: URL) {
         do {
             try check(url.absoluteString.withCString { nsh_app_open_url(app, $0) })

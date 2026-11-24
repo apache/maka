@@ -28,7 +28,9 @@ final class SelectionHandle extends View {
     final boolean start;
     private final View anchor;
     private final Owner owner;
-    private final android.graphics.drawable.Drawable drawable;
+    private android.graphics.drawable.Drawable drawable;
+    /** The tint asked for (null: the theme's). */
+    private Integer color;
     private final android.widget.PopupWindow popup;
     /** The hotspot's x in the drawable: where it points. */
     private final int hotspot;
@@ -41,15 +43,8 @@ final class SelectionHandle extends View {
         this.anchor = anchor;
         this.start = start;
         this.owner = owner;
-        android.content.res.TypedArray a = getContext().obtainStyledAttributes(new int[] {
-            start ? android.R.attr.textSelectHandleLeft : android.R.attr.textSelectHandleRight
-        });
-        android.graphics.drawable.Drawable d = a.getDrawable(0);
-        a.recycle();
-        if (d == null) d = new android.graphics.drawable.ColorDrawable(0xff3b82f6);
-        drawable = d.mutate();
-        int w = Math.max(1, drawable.getIntrinsicWidth()), h = Math.max(1, drawable.getIntrinsicHeight());
-        drawable.setBounds(0, 0, w, h);
+        drawable = themed();
+        int w = drawable.getBounds().width(), h = drawable.getBounds().height();
         hotspot = start ? w * 3 / 4 : w / 4;
         tint(color);
         popup = new android.widget.PopupWindow(this, w, h, false);
@@ -59,9 +54,29 @@ final class SelectionHandle extends View {
         popup.setWindowLayoutType(android.view.WindowManager.LayoutParams.TYPE_APPLICATION_SUB_PANEL);
     }
 
+    /**
+     * A fresh copy of the theme's handle, tinted as the theme says (its
+     * drawable carries the theme's tint, `colorControlActivated`).
+     */
+    private android.graphics.drawable.Drawable themed() {
+        android.content.res.TypedArray a = getContext().obtainStyledAttributes(new int[] {
+            start ? android.R.attr.textSelectHandleLeft : android.R.attr.textSelectHandleRight
+        });
+        android.graphics.drawable.Drawable d = a.getDrawable(0);
+        a.recycle();
+        if (d == null) d = new android.graphics.drawable.ColorDrawable(0xff3b82f6);
+        d = d.mutate();
+        d.setBounds(0, 0, Math.max(1, d.getIntrinsicWidth()), Math.max(1, d.getIntrinsicHeight()));
+        return d;
+    }
+
     void tint(Integer color) {
+        if (java.util.Objects.equals(this.color, color)) return;
+        // Without a color the theme's tint stays: `setTintList(null)` would
+        // clear it too and draw the handle's untinted (white) bitmap.
         if (color != null) drawable.setTint(color);
-        else drawable.setTintList(null);
+        else if (this.color != null) drawable = themed();
+        this.color = color;
         invalidate();
     }
 

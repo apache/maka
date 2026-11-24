@@ -18,18 +18,21 @@
  */
 
 import { cleanup, effect, host, platform } from 'nsh';
-import { isAvailable, Tray, Window } from 'nsh/desktop';
+import { Application, currentWindow, isAvailable, Tray } from 'nsh/desktop';
 import { appearance } from './appearance';
 import { tr } from './locale';
 
 /** The Bootstrap owner outlives replaceable UI contributions. */
 export function nativeDesktop() {
   if (!isAvailable || !platform.desktop || platform.idiom === 'terminal') return;
-  const main = Window.get('main');
-  if (!main) return;
+  const main = currentWindow();
 
   main.set({ closeOnPress: false });
+  if ((host.params as { startHidden?: boolean }).startHidden === true) {
+    main.hide();
+  }
   cleanup(main.on('closePress', () => main.hide()));
+  cleanup(Application.on('reopen', () => main.focus()));
   cleanup(() => Tray.set(null));
   effect(() => {
     const icon = appearance.trayIcon();

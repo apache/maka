@@ -1,4 +1,5 @@
 import { Keyboard, mount, signal, Text, View } from "nsh";
+import { Window } from "nsh/desktop";
 import { Dialog, Input } from "nsh/base";
 
 /** An input in a Dialog: Keyboard.dismiss must blur it (Android: another window). */
@@ -32,4 +33,4 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => <Window id="main">{App}</Window>);
