@@ -337,6 +337,7 @@ export function createConversationUi(
       owner &&
       owner.sessionId === selected() &&
       revision !== undefined &&
+      owner.sessionRevision() > 0 &&
       revision > owner.sessionRevision()
     )
       untracked(() => void owner.refresh().catch(report));
@@ -1047,17 +1048,26 @@ export function createConversationUi(
       return;
     try {
       error.set('');
-      const result = await control('changeSessionWorkspace', {
-        sessionId: target.sessionId,
-        expectedRevision: target.revision,
-        path,
-      });
-      if (result.kind === 'rejected' && result.reason === 'busy')
-        throw new UiError(busyWorkspaceMessage);
-      if (result.kind !== 'changed')
-        throw new UiError('Could not change workspace: {reason}', {
-          reason: result.reason ?? result.kind,
+      const result: import('../../../../packages/plugin-sdk/src/index.js').ServiceMethods['agent']['changeSessionWorkspace']['output'] =
+        await control('changeSessionWorkspace', {
+          sessionId: target.sessionId,
+          expectedRevision: target.revision,
+          path,
         });
+      if (result.kind === 'revision_conflict')
+        throw new UiError('This conversation changed. Open the workspace picker again.');
+      if (result.kind === 'rejected') {
+        switch (result.reason) {
+          case 'busy':
+            throw new UiError(busyWorkspaceMessage);
+          case 'workspace_unavailable':
+            throw new UiError('The selected workspace is unavailable. Choose another folder.');
+          default:
+            throw new UiError(
+              'Could not change the workspace. Reopen the conversation and try again.',
+            );
+        }
+      }
       if (alive && handle() === owner) {
         await owner.refresh();
         await owner.refreshWorkspace();
@@ -1066,11 +1076,13 @@ export function createConversationUi(
       if (alive) await browsing.refresh();
     } catch (reason) {
       if (handle() === owner) {
-        report(
-          errorMessage(reason) === 'agent_session_workspace_busy'
-            ? new UiError(busyWorkspaceMessage)
-            : reason,
-        );
+        if (reason instanceof UiError || reason instanceof ActionPending) report(reason);
+        else {
+          console.warn('Could not change workspace:', reason);
+          report(
+            new UiError('Could not change the workspace. Reopen the conversation and try again.'),
+          );
+        }
       }
     }
   };
@@ -3163,8 +3175,10 @@ export function createConversationUi(
                           alive &&
                           selected() === current.sessionId &&
                           owner?.sessionId === current.sessionId
-                        )
+                        ) {
                           void owner.refresh().catch(report);
+                          void owner.refreshWorkspace().catch(report);
+                        }
                         if (alive) void browsing.refresh().catch(report);
                       }}
                       create={(workspace, label) => {

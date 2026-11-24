@@ -548,6 +548,7 @@ impl Rig {
                 "metadata",
                 "project",
                 "projects",
+                "projectMcp",
                 "sessionWorkspaceAvailable",
                 "changeSessionWorkspace",
                 "listFiles",

@@ -145,7 +145,7 @@ impl RootStore {
         workspace: S,
         guard: G,
         writer: &DataWriter,
-    ) -> Result<DataChange, StoreError>
+    ) -> Result<impl Statement<Value = G::Value, Output = G::Output> + use<S, G>, StoreError>
     where
         S: Statement<Value = maka_sandbox::workspace::BindingRef>,
         G: Statement,
@@ -161,12 +161,20 @@ impl RootStore {
                 gates::Key::Work(id.to_owned()),
             ])?
             .ok_or(StoreError::SessionBusy)?;
-        Ok(writer.prepare(SessionWorkspaceChange {
-            custody: Arc::new(self.log.scoped(Arc::new(pins))),
+        let custody = Arc::new(self.log.scoped(Arc::new(pins)));
+        let revision = custody
+            .connection
+            .read(move |connection| {
+                revision.validate(connection)?;
+                Ok(revision)
+            })
+            .await?;
+        Ok(SessionWorkspaceChange {
+            custody,
             revision,
             workspace,
             guard,
-        }))
+        })
     }
 }
 
@@ -215,7 +223,7 @@ where
                     let boundary = configuration["boundary_revision"]
                         .as_u64()
                         .and_then(|revision| revision.checked_add(1))
-                        .filter(|revision| *revision <= 9_007_199_254_740_991)
+                        .filter(|revision| *revision <= crate::sessions::MAX_SAFE_INTEGER)
                         .ok_or_else(|| {
                             StoreError::InvalidTransition(
                                 "invalid permission boundary revision".into(),

@@ -87,6 +87,9 @@ async fn missing_workspace_can_be_replaced_without_moving_peer_sessions() {
         let revision = observed["session"]["revision"].as_u64().ok_or("session revision missing")?;
         std::fs::remove_dir(&old)?;
         assert_eq!(available(id).await?, false);
+        let preflight = call("projectMcp", json!({"sessionId": id})).await
+            .expect_err("desktop MCP preflight must reject the missing workspace");
+        assert_eq!(preflight.to_string(), "agent_workspace_unavailable");
         let send = call("send", json!({"sessionId": id, "message": "hello"})).await?;
         assert_eq!(send["kind"], "rejected");
         assert_eq!(send["reason"], "workspace_unavailable");
@@ -105,6 +108,7 @@ async fn missing_workspace_can_be_replaced_without_moving_peer_sessions() {
         assert_eq!(changed["kind"], "changed");
         assert_eq!(change(revision, &new).await?["kind"], "revision_conflict");
         assert_eq!(available(id).await?, true);
+        call("projectMcp", json!({"sessionId": id})).await?;
         assert_eq!(available(peer_id).await?, false);
         let observed = call("observe", json!({"sessionId": id})).await?;
         assert_eq!(&observed["session"]["id"], id);
@@ -196,10 +200,10 @@ async fn missing_workspace_can_be_replaced_without_moving_peer_sessions() {
         assert!(matches!(rejected,
             Receipt::Recorded {
                 outcome: OperationOutcome::Returned {
-                    result: OperationResult::Failure { diagnostic },
+                    result: OperationResult::Success { value },
                 },
                 cleanup: OperationCleanup::Confirmed,
-            } if diagnostic == "agent_session_workspace_busy"
+            } if value == json!({"kind":"rejected", "reason":"busy"})
         ));
         let sent = sent?;
         assert_eq!(sent["kind"], "queued");

@@ -27,6 +27,7 @@ import { createTrajectoryRequests } from './trajectoryRequests';
 import {
   appendDraftQuote,
   DRAFT_QUOTE_LIMIT,
+  confirmAfterProjectMcp,
   mergeRestoredIntoHeldDraft,
   restoredDraftQuotes,
   sendReceiptFailure,
@@ -48,6 +49,7 @@ import {
   createText,
   createTransientText,
   UiError,
+  errorMessage,
   errorText,
   isObservationCancelled,
   renderText,
@@ -3224,6 +3226,7 @@ export function Conversation(props: ConversationProps) {
       return tr(
         'This conversation is archived. Restore it in Sessions to send; your draft is kept.',
       );
+    if (workspaceUnavailable()) return tr('The workspace for this task is unavailable.');
     if (!draftReady() || restoringSends().size > 0) return tr('Loading the saved draft…');
     if (savingFailed()) return tr('The draft could not be saved. Sending is unavailable.');
     if (attachments.blocked()) return attachments.blocked();
@@ -3257,12 +3260,23 @@ export function Conversation(props: ConversationProps) {
   const confirmFrozen = async (id: string, frozen: FrozenSend) => {
     activeSends.set(new Map(activeSends()).set(id, frozen));
     try {
-      if (frozen.selection.backend?.kind === 'model' && !(await projectMcp.check())) {
-        await abandonSend(client, id);
-        sendError(id, new UiError('Approve workspace connections, then retry this message.'));
-        return;
+      let sent;
+      if (frozen.selection.backend?.kind === 'model') {
+        const result = await confirmAfterProjectMcp(
+          projectMcp.check,
+          async () => {
+            await abandonSend(client, id);
+          },
+          () => confirmSend(client, id),
+        );
+        if (result.kind === 'approval_required') {
+          sendError(id, new UiError('Approve workspace connections, then retry this message.'));
+          return;
+        }
+        sent = result.value;
+      } else {
+        sent = await confirmSend(client, id);
       }
-      const sent = await confirmSend(client, id);
       if (alive)
         settleReply(
           sent.reply,
@@ -3272,7 +3286,12 @@ export function Conversation(props: ConversationProps) {
           frozen.selection.expectedRunId === undefined,
         );
     } catch (reason) {
-      sendError(id, reason);
+      if (alive && errorMessage(reason) === 'agent_workspace_unavailable') {
+        sendError(id, new UiError('The workspace for this task is unavailable.'));
+        void refreshWorkspace().catch(report);
+      } else {
+        sendError(id, reason);
+      }
     } finally {
       try {
         if (alive) await refreshSends();
@@ -3448,6 +3467,7 @@ export function Conversation(props: ConversationProps) {
     }
   };
   const retryOriginal = async (id: string) => {
+    if (workspaceUnavailable()) return;
     const freezing = freezeState();
     if (freezing.kind !== 'idle' && freezing.frozen.id === id) {
       await freezeSend(freezing.frozen);
@@ -3701,7 +3721,7 @@ export function Conversation(props: ConversationProps) {
                     : acceptedQueued(original) && sendDeliveries().get(original.id) !== 'unknown'
                       ? tr('Received · waiting for the next step')
                       : tr('Delivery not confirmed. Check status before retrying.'),
-        retryable: canRetry && !busy,
+        retryable: canRetry && !busy && !workspaceUnavailable(),
         busy,
       });
     }

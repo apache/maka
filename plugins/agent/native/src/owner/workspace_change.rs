@@ -25,6 +25,7 @@ use maka_event_log::{
     writeback::{Notification, Prepared, Statement},
 };
 use maka_fs_tools::workspace::project::{ResolvedProject, resolve_selected_sync};
+use serde::Serialize;
 
 impl Owner {
     pub(crate) async fn session_workspace_available(
@@ -108,15 +109,12 @@ impl Owner {
         {
             return Ok(rejected(Rejection::Busy));
         }
-        let Some((registration, target)) = self.project_directory(&input.path).await? else {
-            return Ok(rejected(Rejection::WorkspaceUnavailable));
-        };
-        let Some(projects::PreparedProjectWorkspace { workspace, project }) =
-            self.create_project_workspace_at(registration).await?
+        let writer = guard.data_writer().clone();
+        let Some((projects::PreparedProjectWorkspace { workspace, project }, target)) =
+            self.prepare_project_workspace(&input.path, &writer).await?
         else {
             return Ok(rejected(Rejection::WorkspaceUnavailable));
         };
-        let writer = guard.data_writer().clone();
         let (_, workspace) = match self
             .store
             .prepare_creation_workspace(
@@ -153,17 +151,14 @@ impl Owner {
             )
             .await
         {
-            Ok(change) => Ok(NativeMutation::Commit {
-                value: SessionWorkspaceChanged::Changed,
-                change,
+            Ok(statement) => Ok(NativeMutation::Computed {
+                change: writer
+                    .prepare_result(|_| Ok(WorkspaceChangeCompletion::Ready(statement)))
+                    .map_err(|error| error.to_string())?,
             }),
-            Err(error) => match error.underlying() {
-                StoreError::SessionBusy => Ok(rejected(Rejection::Busy)),
-                StoreError::SessionNotFound | StoreError::SessionRetired => {
-                    Ok(rejected(Rejection::SessionUnavailable))
-                }
-                _ => Err(error.to_string()),
-            },
+            Err(error) => workspace_change_rejection(&error)
+                .map(NativeMutation::Returned)
+                .ok_or_else(|| error.to_string()),
         }
     }
 }
@@ -216,15 +211,7 @@ impl Statement for WorkspaceChange {
         self,
         connection: &rusqlite::Connection,
     ) -> Result<Prepared<Self::Value>, StoreError> {
-        self.guard
-            .validate(connection)
-            .map_err(|cause| match cause {
-                StoreError::SessionBusy => StoreError::StatementRejected {
-                    diagnostic: "agent_session_workspace_busy".into(),
-                    cause: Arc::new(cause),
-                },
-                cause => cause,
-            })?;
+        self.guard.validate(connection)?;
         Ok(Prepared {
             value: self.root,
             changed: false,
@@ -241,5 +228,107 @@ impl Statement for WorkspaceChange {
             error,
             StoreError::InvalidTransition(_) | StoreError::StatementRejected { .. }
         )
+    }
+}
+
+fn workspace_change_rejection(error: &StoreError) -> Option<SessionWorkspaceChanged> {
+    let reason = match creation::rejection_cause(error) {
+        StoreError::SessionRevisionConflict { expected, actual } => {
+            return Some(SessionWorkspaceChanged::RevisionConflict {
+                expected: *expected,
+                actual: *actual,
+            });
+        }
+        StoreError::SessionBusy => Rejection::Busy,
+        StoreError::SessionNotFound | StoreError::SessionRetired => Rejection::SessionUnavailable,
+        _ if matches!(error.underlying(), StoreError::StatementRejected { diagnostic, .. }
+            if diagnostic == "agent_workspace_unavailable") =>
+        {
+            Rejection::WorkspaceUnavailable
+        }
+        _ => creation::creation_rejection(error)?,
+    };
+    Some(SessionWorkspaceChanged::Rejected { reason })
+}
+
+#[derive(Serialize)]
+#[serde(transparent)]
+struct WorkspaceChangeResult {
+    result: SessionWorkspaceChanged,
+    #[serde(skip)]
+    notify: Option<Arc<maka_event_log::root::RootOwner>>,
+}
+
+enum WorkspaceChangeCompletion<S> {
+    Ready(S),
+    Rejected(SessionWorkspaceChanged),
+}
+impl<S: Statement<Value = Arc<maka_event_log::root::RootOwner>, Output = ()>> Statement
+    for WorkspaceChangeCompletion<S>
+{
+    type Value = WorkspaceChangeResult;
+    type Output = SessionWorkspaceChanged;
+    const PREPARE_OFF_THREAD: bool = S::PREPARE_OFF_THREAD;
+
+    fn retain(&self) -> Vec<Arc<dyn std::marker::Send + Sync>> {
+        match self {
+            Self::Ready(statement) => statement.retain(),
+            Self::Rejected(_) => Vec::new(),
+        }
+    }
+
+    fn prepare(self) -> Result<Self, StoreError> {
+        match self {
+            Self::Ready(statement) => match statement.prepare() {
+                Ok(statement) => Ok(Self::Ready(statement)),
+                Err(error) => workspace_change_rejection(&error)
+                    .map(Self::Rejected)
+                    .ok_or(error),
+            },
+            Self::Rejected(_) => Ok(self),
+        }
+    }
+
+    fn execute(
+        self,
+        connection: &rusqlite::Connection,
+    ) -> Result<Prepared<Self::Value>, StoreError> {
+        let result = match self {
+            Self::Ready(statement) => creation::creation_sql(
+                connection,
+                || statement.execute(connection),
+                workspace_change_rejection,
+            )?,
+            Self::Rejected(result) => Err(result),
+        };
+        Ok(match result {
+            Ok(prepared) => Prepared {
+                value: WorkspaceChangeResult {
+                    result: SessionWorkspaceChanged::Changed,
+                    notify: Some(prepared.value),
+                },
+                changed: prepared.changed,
+                notification: prepared.notification,
+            },
+            Err(result) => Prepared {
+                value: WorkspaceChangeResult {
+                    result,
+                    notify: None,
+                },
+                changed: false,
+                notification: Notification::NONE,
+            },
+        })
+    }
+
+    fn committed(value: Self::Value) -> Self::Output {
+        if let Some(root) = value.notify {
+            WorkspaceChange::committed(root);
+        }
+        value.result
+    }
+
+    fn isolated_rejection(_: &StoreError) -> bool {
+        false
     }
 }

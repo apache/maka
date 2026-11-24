@@ -78,10 +78,20 @@ export const workspaceMessages = {
     '请先停止当前运行，并清理排队中的消息，再更改工作区。',
     '請先停止目前的執行並清除排隊中的訊息，再變更工作區。',
   ],
-  'Could not change workspace: {reason}': [
-    'Could not change workspace: {reason}',
-    '无法更改工作区：{reason}',
-    '無法變更工作區：{reason}',
+  'This conversation changed. Open the workspace picker again.': [
+    'This conversation changed. Open the workspace picker again.',
+    '此会话已变更，请重新打开工作区选择器。',
+    '此對話已變更，請重新開啟工作區選擇器。',
+  ],
+  'The selected workspace is unavailable. Choose another folder.': [
+    'The selected workspace is unavailable. Choose another folder.',
+    '所选工作区不可用，请选择其他文件夹。',
+    '所選工作區無法使用，請選擇其他資料夾。',
+  ],
+  'Could not change the workspace. Reopen the conversation and try again.': [
+    'Could not change the workspace. Reopen the conversation and try again.',
+    '无法更改工作区，请重新打开会话后重试。',
+    '無法變更工作區，請重新開啟對話後再試。',
   ],
   'Choose another folder…': ['Choose another folder…', '选择其他文件夹…', '選擇其他資料夾…'],
   'Pin conversation': ['Pin conversation', '置顶对话', '置頂對話'],

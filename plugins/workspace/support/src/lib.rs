@@ -419,6 +419,19 @@ pub async fn initialize(
     private_root: &Path,
     control: &Path,
 ) -> Result<Option<Workspace>, String> {
+    initialize_observed(roots, path, home, managed, private_root, control)
+        .await
+        .map(|selected| selected.map(|(workspace, _)| workspace))
+}
+
+pub async fn initialize_observed(
+    roots: &[Root],
+    path: &str,
+    home: Option<&Path>,
+    managed: &Path,
+    private_root: &Path,
+    control: &Path,
+) -> Result<Option<(Workspace, directory::Observation)>, String> {
     let roots = roots.to_vec();
     let path = path.to_owned();
     let home = home.map(Path::to_owned);
@@ -447,11 +460,14 @@ pub async fn initialize(
         if root.validate(&path).is_err() || directory::open(&path, &located.identity).is_err() {
             return Ok(None);
         }
-        Ok(Some(Workspace {
-            worktree: None,
-            project_id: None,
-            path: host_path(&path)?,
-        }))
+        Ok(Some((
+            Workspace {
+                worktree: None,
+                project_id: None,
+                path: host_path(&path)?,
+            },
+            located.identity,
+        )))
     })
     .await
     .map_err(|_| "agent_workspace_unavailable".to_owned())?

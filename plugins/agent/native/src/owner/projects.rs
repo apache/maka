@@ -123,12 +123,7 @@ impl Owner {
             path,
         })
     }
-    /// The directory at `path` as a Project registration, with the path as
-    /// the Host captured it.
-    pub(super) async fn project_directory(
-        &self,
-        path: &str,
-    ) -> Result<Option<(ProjectRegistration, filesystem::ResolvedProject)>, String> {
+    async fn project_directory(&self, path: &str) -> Result<Option<ProjectRegistration>, String> {
         let Some(directory) = workspace::selected(
             self.workspace_roots.clone(),
             path,
@@ -144,10 +139,6 @@ impl Owner {
         else {
             return Ok(None);
         };
-        let Ok(identity) = physical.identity() else {
-            return Ok(None);
-        };
-        // The directory picker observation is still the basis after Git inspection.
         if workspace::selected(
             self.workspace_roots.clone(),
             path,
@@ -159,27 +150,32 @@ impl Owner {
         {
             return Ok(None);
         }
-        Ok(Some((
-            ProjectRegistration {
-                identity: self.project_identity(&identity),
-                name: physical.name.clone(),
-                path: directory.path.clone(),
-                is_worktree: matches!(
-                    physical.kind,
-                    filesystem::ProjectKind::Git {
-                        is_worktree: true,
-                        ..
-                    }
-                ),
-            },
-            physical,
-        )))
+        Ok(self.project_registration(directory.path, &physical))
+    }
+
+    fn project_registration(
+        &self,
+        path: String,
+        physical: &filesystem::ResolvedProject,
+    ) -> Option<ProjectRegistration> {
+        Some(ProjectRegistration {
+            identity: self.project_identity(&physical.identity().ok()?),
+            name: physical.name.clone(),
+            path,
+            is_worktree: matches!(
+                physical.kind,
+                filesystem::ProjectKind::Git {
+                    is_worktree: true,
+                    ..
+                }
+            ),
+        })
     }
     pub async fn projects(&self, input: ProjectsRead) -> Result<ProjectsPage, String> {
         let records = self.project_records().await?;
         let result = match input {
             ProjectsRead::Directory { path } => {
-                let Some((location, _)) = self.project_directory(&path).await? else {
+                let Some(location) = self.project_directory(&path).await? else {
                     return Ok(ProjectsPage::Unavailable);
                 };
                 let project = match records
@@ -266,37 +262,28 @@ impl Owner {
         &self,
         path: &str,
     ) -> Result<Option<PreparedProjectWorkspace>, String> {
-        let Some((registration, _)) = self.project_directory(path).await? else {
-            return Ok(None);
-        };
-        self.create_project_workspace_at(registration).await
-    }
-
-    pub(super) async fn create_project_workspace_at(
-        &self,
-        registration: ProjectRegistration,
-    ) -> Result<Option<PreparedProjectWorkspace>, String> {
-        let path = registration.path.clone();
         let writer = self
             .store
             .data_writer()
             .map_err(|error| error.to_string())?;
-        let project = match self
-            .store
-            .plan_available_project(registration, now(), &writer)
-            .await
-        {
-            Ok(project) => project,
-            Err(StoreError::Project(_)) => return Ok(None),
-            Err(error) => return Err(error.to_string()),
-        };
+        Ok(self
+            .prepare_project_workspace(path, &writer)
+            .await?
+            .map(|(workspace, _)| workspace))
+    }
+
+    pub(super) async fn prepare_project_workspace(
+        &self,
+        path: &str,
+        writer: &DataWriter,
+    ) -> Result<Option<(PreparedProjectWorkspace, filesystem::ResolvedProject)>, String> {
         let root = self
             .store
             .owned_root()
             .map_err(|_| "agent_root_unavailable")?;
-        let Some(mut workspace) = workspace::initialize(
+        let Some((mut workspace, identity)) = workspace::initialize_observed(
             &self.workspace_roots,
-            &path,
+            path,
             self.home.as_deref(),
             &self.managed_worktrees,
             root.canonical_path(),
@@ -306,8 +293,32 @@ impl Owner {
         else {
             return Ok(None);
         };
+        let Ok(physical) =
+            filesystem::resolve_selected(std::path::Path::new(&workspace.path)).await
+        else {
+            return Ok(None);
+        };
+        if physical.observation != identity {
+            return Ok(None);
+        }
+        let Some(registration) = self.project_registration(workspace.path.clone(), &physical)
+        else {
+            return Ok(None);
+        };
+        let project = match self
+            .store
+            .plan_available_project(registration, now(), writer)
+            .await
+        {
+            Ok(project) => project,
+            Err(StoreError::Project(_)) => return Ok(None),
+            Err(error) => return Err(error.to_string()),
+        };
         workspace.project_id = Some(project.project_id());
-        Ok(Some(PreparedProjectWorkspace { workspace, project }))
+        Ok(Some((
+            PreparedProjectWorkspace { workspace, project },
+            physical,
+        )))
     }
 
     pub(super) async fn project_accepts_session(
@@ -334,7 +345,7 @@ impl Owner {
         if record.archived_at.is_some() {
             return Ok(None);
         }
-        let Some((registration, _)) = self.project_directory(path).await? else {
+        let Some(registration) = self.project_directory(path).await? else {
             return Ok(None);
         };
         if registration.identity != record.identity
@@ -472,7 +483,7 @@ impl Owner {
         let archiving = matches!(&input, ProjectChange::Archive { .. });
         match input {
             ProjectChange::Register { path, expected } => {
-                let Some((registration, _)) = self.project_directory(&path).await? else {
+                let Some(registration) = self.project_directory(&path).await? else {
                     return Ok(NativeMutation::Returned(ProjectResult::Unavailable));
                 };
                 let current = self
@@ -577,7 +588,7 @@ impl Owner {
                 if reference(&current) != project {
                     return Ok(NativeMutation::Returned(ProjectResult::Changed));
                 }
-                let Some((registration, _)) = self.project_directory(&path).await? else {
+                let Some(registration) = self.project_directory(&path).await? else {
                     return Ok(NativeMutation::Returned(ProjectResult::Unavailable));
                 };
                 let path = &registration.path;
