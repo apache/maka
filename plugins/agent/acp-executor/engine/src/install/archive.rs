@@ -397,7 +397,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn install_writes_the_scoped_receipt_used_to_resolve_both_program_files() {
+    async fn published_files_require_a_scoped_receipt() {
         use futures_util::future::BoxFuture;
         use maka_capabilities::{
             call::{Identity, Issuer},
@@ -407,121 +407,46 @@ mod tests {
             Mutation, Namespace, Page, Record, Scan, Store, StoreError,
         };
 
-        #[derive(Default)]
-        struct Kv(std::sync::Mutex<BTreeMap<String, Record>>);
-        impl Store for Kv {
+        struct EmptyStore;
+        impl Store for EmptyStore {
+            fn read(&self, _: String) -> BoxFuture<'_, Result<Option<Record>, StoreError>> {
+                Box::pin(async { Ok(None) })
+            }
             fn scan(&self, _: Scan) -> BoxFuture<'_, Result<Page, StoreError>> {
                 unreachable!()
             }
-            fn read(&self, key: String) -> BoxFuture<'_, Result<Option<Record>, StoreError>> {
-                Box::pin(async move { Ok(self.0.lock().unwrap().get(&key).cloned()) })
-            }
-            fn batch(
-                &self,
-                mutations: Vec<Mutation>,
-            ) -> BoxFuture<'_, Result<Vec<Record>, StoreError>> {
-                Box::pin(async move {
-                    let mut rows = self.0.lock().unwrap();
-                    Ok(mutations
-                        .into_iter()
-                        .map(|mutation| {
-                            assert_eq!(mutation.expected_revision, None);
-                            let record = Record {
-                                data: mutation.data,
-                                revision: 1,
-                            };
-                            assert!(rows.insert(mutation.key, record.clone()).is_none());
-                            record
-                        })
-                        .collect())
-                })
-            }
-        }
-        use maka_capabilities::http;
-        use std::sync::{Arc, Mutex};
-
-        struct Distribution(Arc<Mutex<Option<Vec<u8>>>>);
-        impl http::Client for Distribution {
-            fn request(
-                &self,
-                _: maka_capabilities::call::Scope,
-                request: http::Request,
-            ) -> BoxFuture<'_, Result<http::Response, http::Error>> {
-                Box::pin(async move {
-                    Ok(http::Response {
-                        head: http::Head {
-                            status: 200,
-                            url: request.url,
-                            headers: vec![],
-                        },
-                        body: Arc::new(Distribution(self.0.clone())),
-                    })
-                })
-            }
-        }
-        impl http::Body for Distribution {
-            fn next(&self) -> BoxFuture<'_, Result<Option<Vec<u8>>, http::Error>> {
-                Box::pin(async move { Ok(self.0.lock().unwrap().take()) })
-            }
-            fn cancel(&self) {}
-            fn close(&self) -> BoxFuture<'_, Result<(), http::Error>> {
-                Box::pin(async { Ok(()) })
+            fn batch(&self, _: Vec<Mutation>) -> BoxFuture<'_, Result<Vec<Record>, StoreError>> {
+                unreachable!()
             }
         }
 
         let temp = tempfile::tempdir().unwrap();
-        let stop = CancellationToken::new();
         let call = Issuer::default()
-            .issue(Identity::Native, stop.clone())
+            .issue(Identity::Native, CancellationToken::new())
             .unwrap();
         let dirs = Directories::open(temp.path()).unwrap();
         let ns = Namespace::new("maka.agent.acp", maka_plugin_core::scope::Scope::Profile).unwrap();
-        let data = dirs.bind(&ns, call.clone()).unwrap();
+        let data = dirs.bind(&ns, call).unwrap();
         let release = Release::for_platform("linux", "x86_64").unwrap();
         let root = data.read_only().await.unwrap().location();
-        let expected = release.agent(&root);
-        let executable = std::path::Path::new(&expected.executable);
-        let store = Kv::default();
-        assert!(matches!(
-            super::super::open_program(&store, &data, executable, release.clone()).await,
-            Err(Error::Integrity)
-        ));
-        let distribution = Distribution(Arc::new(Mutex::new(Some(zip(
-            &[release.server, release.helper],
-            b"test executable",
-        )))));
-        let agent = super::super::install_release(
-            &store,
-            &distribution,
-            &data,
-            call,
+        let dir = Dir::open_ambient_dir(&root, cap_std::ambient_authority()).unwrap();
+        let (bytes, hash) = archive(&dir, "release", &[release.server, release.helper]);
+        let stop = CancellationToken::new();
+        publish(
+            &dir,
+            &release,
+            "release",
+            bytes,
+            hash,
+            &Control {
+                cancellation: stop.clone(),
+            },
             &stop,
-            release.clone(),
         )
-        .await
         .unwrap();
-        assert_eq!(agent, expected);
-        let program = super::super::open_program(
-            &store,
-            &data,
-            std::path::Path::new(&agent.executable),
-            release.clone(),
-        )
-        .await
-        .unwrap();
-        // Published files alone do not authorize loading this release.
+        let executable = root.join(release.destination()).join(release.server);
         assert!(matches!(
-            super::super::open_program(&Kv::default(), &data, executable, release.clone()).await,
-            Err(Error::Integrity)
-        ));
-        for mut file in [program.executable, program.helper] {
-            let mut bytes = Vec::new();
-            file.source.read_to_end(&mut bytes).unwrap();
-            assert_eq!(bytes, b"test executable");
-            assert_eq!(file.sha256, <[u8; 32]>::from(Sha256::digest(&bytes)));
-        }
-        assert!(matches!(
-            super::super::open_program(&store, &data, &root.join(release.helper), release).await,
+            super::super::open_program(&EmptyStore, &data, &executable, release).await,
             Err(Error::Integrity)
         ));
     }

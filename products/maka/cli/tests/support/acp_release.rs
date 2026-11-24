@@ -109,6 +109,10 @@ async fn official_receipt_delivers_both_release_files_to_the_private_task()
     let data = Directories::open(&root)?.bind(&ns, call.clone())?;
     let agent = install::antigravity(&kv, &archive, &data, call, &stop).await?;
     let executable = Path::new(&agent.executable);
+    assert!(matches!(
+        install::installed_program(&kv, &data, &executable.with_file_name("unlisted"),).await,
+        Err(install::Error::Integrity)
+    ));
     let program = install::installed_program(&kv, &data, executable).await?;
     let expected = [
         (program.executable.name, program.executable.sha256),

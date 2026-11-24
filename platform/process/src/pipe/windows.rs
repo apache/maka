@@ -211,19 +211,72 @@ impl OwnedJob {
     }
 
     async fn finish(&mut self) -> io::Result<()> {
-        if !matches!(self.tree, TreeState::Settled) {
-            if let Isolation::Mxc(owner) = &mut self.isolation {
-                owner.finish().await?;
-            }
-            self.terminate()?;
-            while !self.job.is_empty()? {
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-            self.tree = TreeState::Settled;
+        if matches!(self.tree, TreeState::Settled) {
+            return Ok(());
         }
-        if let Isolation::Account(runner) = &mut self.isolation {
-            runner.finish().await?;
+        if let Isolation::Mxc(owner) = &mut self.isolation {
+            owner.finish().await?;
         }
+        self.tree
+            .drain(&self.job, async {
+                if let Isolation::Account(runner) = &mut self.isolation {
+                    runner.finish().await?;
+                }
+                Ok(())
+            })
+            .await
+    }
+}
+
+impl TreeState {
+    async fn drain(
+        &mut self,
+        job: &Job,
+        cleanup: impl Future<Output = io::Result<()>>,
+    ) -> io::Result<()> {
+        job.terminate(130)?;
+        *self = Self::Terminated;
+        while !job.is_empty()? {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        cleanup.await?;
+        *self = Self::Settled;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn drained_job_with_failed_cleanup_keeps_local_resources_open() -> io::Result<()> {
+        let mut root = std::process::Command::new("cmd.exe")
+            .args(["/d", "/c", "exit 0"])
+            .spawn()?;
+        let status = root.wait()?;
+        let mut child = Child {
+            pid: root.id(),
+            process: root.into(),
+            status: Some(status),
+            owner: Owner::Job(OwnedJob {
+                job: Job::new()?,
+                tree: TreeState::Owned,
+                isolation: Isolation::Unmanaged,
+            }),
+        };
+        let Owner::Job(owner) = &mut child.owner else {
+            unreachable!()
+        };
+        let failure = owner
+            .tree
+            .drain(&owner.job, async {
+                Err(io::Error::other("account cleanup failed"))
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(failure.to_string(), "account cleanup failed");
+        assert!(!child.local_resources_closed());
         Ok(())
     }
 }

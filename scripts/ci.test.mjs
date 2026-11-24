@@ -296,6 +296,8 @@ test('Windows process, sandbox and account-guard regressions are selected from t
   const packages = [
     ['maka-host-runtime', 'platform/host-runtime'],
     ['maka-process', 'platform/process'],
+    ['maka-cli', 'products/maka/cli'],
+    ['maka-agent-native', 'plugins/agent/native'],
     ['maka-sandbox', 'platform/sandbox'],
   ].map(([name, path]) => ({
     name,
@@ -313,6 +315,8 @@ test('Windows process, sandbox and account-guard regressions are selected from t
   for (const path of [
     'platform/host-runtime/src/sandbox/windows/guards.rs',
     'platform/process/tests/integration/conpty.rs',
+    'products/maka/cli/tests/integration/sandbox/windows/isolated.rs',
+    'plugins/agent/native/src/executor/external/claude/interactive.rs',
     'platform/sandbox/src/lib.rs',
   ]) {
     const plan = createPlan({
@@ -331,9 +335,16 @@ test('Windows process, sandbox and account-guard regressions are selected from t
       plan.suites['windows-shell'].filter,
       /native_task_namespace_can_be_denied_by_policy/,
     );
+    assert.ok(
+      plan.suites['windows-shell'].filter.includes(
+        '(binary_id(=maka-cli::integration) & test(sandbox::isolated::))',
+      ),
+    );
     assert.ok(!suites['windows-shell'].cargoArgs.includes('--workspace'));
     for (const pkg of [
       'maka-process',
+      'maka-cli',
+      'maka-agent-native',
       'maka-settings-native',
       'maka-host-runtime',
       'maka-sandbox',

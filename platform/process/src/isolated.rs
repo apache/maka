@@ -1223,8 +1223,7 @@ fn selected_executable(
             "selected executable must be absolute".into(),
         ));
     }
-    let canonical = dunce::canonicalize(path)?;
-    let path = dunce::simplified(path);
+    let canonical = maka_sandbox::canonical_policy_path(path)?;
     let original = original.compile().map_err(sandbox_error)?;
     let current = match current {
         Sandbox::Disabled => Policy::uniform(Access::Read),
@@ -1258,8 +1257,9 @@ fn selected_executable(
     } else {
         path
     };
+    let spelling = maka_sandbox::policy_path_from_resolved(spelling).map_err(sandbox_error)?;
     let target = mapped.as_deref().unwrap_or(canonical.as_path());
-    for spelling in [spelling, target] {
+    for spelling in [spelling.as_ref(), target] {
         if !original.access(spelling).can_read() || !current.access(spelling).can_read() {
             return Err(Error::IsolationUnavailable(
                 "selected executable is denied by the original or current caller ceiling".into(),

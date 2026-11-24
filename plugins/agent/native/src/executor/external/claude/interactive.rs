@@ -93,12 +93,14 @@ pub(in crate::executor::external) async fn execute(
         let cwd_path = tokio::fs::canonicalize(cwd)
             .await
             .map_err(|error| Error::Provider(error.to_string()))?;
-        let cwd = cwd_path
+        let policy_path = maka_sandbox::policy_path_from_resolved(&cwd_path)
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        let cwd = policy_path
             .to_str()
             .ok_or_else(|| Error::Invalid("Claude cwd must be UTF-8".into()))?
             .to_owned();
         let status = bridge.directory().join("context.json");
-        let mut cursor = Cursor::fence(transcript(config, &cwd_path, &session)?, resume).await?;
+        let mut cursor = Cursor::fence(transcript(config, &cwd, &session)?, resume).await?;
         cursor.status_path = Some(status.clone());
         let mcp_path = bridge.directory().join("mcp.json");
         tokio::fs::write(
@@ -431,7 +433,7 @@ async fn context_usage(path: &Path, session: &str, row: &Value) -> Option<Output
     ))
 }
 
-fn transcript(config: &NativeCommand, cwd: &Path, session: &str) -> Result<PathBuf, Error> {
+fn transcript(config: &NativeCommand, cwd: &str, session: &str) -> Result<PathBuf, Error> {
     let root = configuration_directory(|key| {
         config
             .env
@@ -441,8 +443,6 @@ fn transcript(config: &NativeCommand, cwd: &Path, session: &str) -> Result<PathB
     })?;
     // Native Claude encodes each non-ASCII-alphanumeric UTF-16 code unit as '-'.
     let project: String = cwd
-        .to_str()
-        .ok_or_else(|| Error::Invalid("Claude cwd must be UTF-8".into()))?
         .encode_utf16()
         .map(|ch| {
             if ch <= 127 && (ch as u8).is_ascii_alphanumeric() {
@@ -1169,6 +1169,28 @@ impl LiveTurn<'_> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn transcript_uses_the_windows_launch_directory_spelling() {
+        let config = NativeCommand {
+            executable: "claude".into(),
+            args: vec![],
+            env: [("CLAUDE_CONFIG_DIR".into(), "config".into())].into(),
+        };
+        let cwd = r"C:\Work\my.repo";
+        #[cfg(windows)]
+        let projected =
+            maka_sandbox::policy_path_from_resolved(Path::new(r"\\?\C:\Work\my.repo")).unwrap();
+        #[cfg(windows)]
+        assert_eq!(projected.to_str(), Some(cwd));
+        assert_eq!(
+            transcript(&config, cwd, "session").unwrap(),
+            Path::new("config")
+                .join("projects")
+                .join("C--Work-my-repo")
+                .join("session.jsonl")
+        );
+    }
 
     fn submitted(markers: &str, prompt: &str, images: usize) -> input::Submitted {
         input::Submitted {

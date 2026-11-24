@@ -95,5 +95,7 @@ pub(super) fn set_helper_namespace(_command: &mut Command, _resource: &Path) {
 
 pub(super) async fn canonical(path: &Path) -> std::io::Result<std::path::PathBuf> {
     let canonical = tokio::fs::canonicalize(path).await?;
-    Ok(dunce::simplified(&canonical).to_owned())
+    Ok(maka_sandbox::policy_path_from_resolved(&canonical)
+        .map_err(std::io::Error::other)?
+        .into_owned())
 }

@@ -27,9 +27,11 @@ use maka_process::isolated::{FrozenHome, TaskOwner};
 use profile::{PreparedProfile, ProfileBroker, SeededProfile};
 
 pub(crate) fn host_homes() -> std::io::Result<Vec<std::path::PathBuf>> {
-    let mut homes = vec![dunce::canonicalize(maka_sandbox::account_home()?)?];
+    let mut homes = vec![maka_sandbox::canonical_policy_path(
+        maka_sandbox::account_home()?,
+    )?];
     if let Some(home) = std::env::var_os("HOME").filter(|home| !home.is_empty()) {
-        let home = dunce::canonicalize(home)?;
+        let home = maka_sandbox::canonical_policy_path(home)?;
         if !homes.contains(&home) {
             homes.push(home);
         }
@@ -237,22 +239,23 @@ impl SetupAccess for SetupSource {
                 .map_err(|error| Error::Provider(error.to_string()))?
                 .map_err(|error| Error::Provider(error.to_string()))?;
             let root_policy = root.clone();
-            #[cfg(windows)]
             let setup_source = source.path().to_owned();
             let privacy = tokio::task::spawn_blocking(move || {
                 use maka_sandbox::filesystem::{Access, Policy, Rule};
-                let mut rules = vec![Rule::subtree(dunce::simplified(&root_policy), Access::Deny)];
+                let mut rules = vec![Rule::subtree(
+                    maka_sandbox::policy_path_from_resolved(&root_policy)
+                        .map_err(|error| Error::Provider(error.to_string()))?,
+                    Access::Deny,
+                )];
                 rules.extend(
                     host_homes()
                         .map_err(|error| Error::Provider(error.to_string()))?
                         .into_iter()
                         .map(|home| Rule::subtree(home, Access::Deny)),
                 );
-                // Windows TEMP normally lives under USERPROFILE. This freshly
-                // created empty setup source is the only exception to that HOME denial.
-                #[cfg(windows)]
+                // TMPDIR can be inside a denied HOME. Grant only the fresh empty source.
                 rules.push(Rule::subtree(
-                    dunce::canonicalize(&setup_source)
+                    maka_sandbox::canonical_policy_path(&setup_source)
                         .map_err(|error| Error::Provider(error.to_string()))?,
                     Access::Read,
                 ));

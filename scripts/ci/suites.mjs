@@ -420,6 +420,8 @@ export const suites = {
   'windows-shell': {
     workspace: 'root',
     packages: [
+      'maka-cli',
+      'maka-agent-native',
       'maka-process',
       'maka-processes-native',
       'maka-settings-native',
@@ -430,6 +432,10 @@ export const suites = {
     ],
     cargoArgs: [
       '--locked',
+      '-p',
+      'maka-cli',
+      '-p',
+      'maka-agent-native',
       '-p',
       'maka-processes-native',
       '-p',
@@ -447,6 +453,9 @@ export const suites = {
     ],
     targetArgs: ['--lib', '--test', 'integration'],
     filter: [
+      '(binary_id(=maka-cli::integration) & test(sandbox::isolated::))',
+      '(package(=maka-agent-native) & test(transcript_uses_the_windows_launch_directory_spelling))',
+      '(package(=maka-process) & test(drained_job_with_failed_cleanup_keeps_local_resources_open))',
       '(package(=maka-processes-native) & test(managed_worktree_shell_keeps_writes_inside_its_workspace))',
       '(package(=maka-sandbox) & kind(lib) & (test(resolved_path_projection) | test(target_identity_survives_rename_and_does_not_adopt_a_replacement_or_deleted_id)))',
       '(package(=maka-process) & test(git_bash))',
@@ -571,6 +580,8 @@ export const workers = [
       'maka-processes-native',
       '-p',
       'maka-cli',
+      '-p',
+      'maka-agent-native',
       '-p',
       'maka-desktop-shell',
       '-p',

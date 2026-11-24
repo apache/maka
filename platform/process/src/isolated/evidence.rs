@@ -488,8 +488,8 @@ pub(super) fn open_resource(resource: &std::path::Path) -> io::Result<File> {
         .ok_or_else(|| invalid("invalid task resource name"))?;
     if !resource.is_absolute()
         || resource.parent() != Some(namespace.as_path())
-        || dunce::canonicalize(&namespace)? != namespace
-        || dunce::canonicalize(resource)? != resource
+        || maka_sandbox::canonical_policy_path(&namespace)? != namespace
+        || maka_sandbox::canonical_policy_path(resource)? != resource
     {
         return Err(invalid(
             "task evidence must name its canonical private namespace resource",

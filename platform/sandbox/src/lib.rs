@@ -30,13 +30,18 @@ mod path;
 mod policy;
 pub mod workspace;
 pub use network::{Destination, Network};
-pub use path::policy_path_from_resolved;
+pub use path::{canonical_policy_path, policy_path_from_resolved};
 pub use policy::{Approval, ApprovalKind, Mode, Permissions, Sandbox};
 pub mod launch;
 
 /// Address of the private native-task namespace. This does not grant access.
 pub fn native_task_namespace() -> std::io::Result<std::path::PathBuf> {
-    Ok(dunce::canonicalize(std::env::temp_dir())?.join("maka-native-tasks"))
+    #[cfg(target_os = "linux")]
+    // SAFETY: geteuid has no preconditions.
+    let name = format!("maka-native-tasks-{}", unsafe { libc::geteuid() });
+    #[cfg(not(target_os = "linux"))]
+    let name = "maka-native-tasks";
+    Ok(canonical_policy_path(std::env::temp_dir())?.join(name))
 }
 #[cfg(target_os = "linux")]
 mod linux;
