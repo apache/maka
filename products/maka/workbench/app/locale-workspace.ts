@@ -174,6 +174,8 @@ export const workspaceMessages = {
       '当前目录或基准分支使用了暂不支持的 Git 功能。请另选目录或分支。',
       '目前的目錄或基準分支使用了尚未支援的 Git 功能。請另選目錄或分支。',
     ],
+  'Preparing worktree…': ['Preparing worktree…', '正在准备工作树…', '正在準備工作樹…'],
+  'Confirming worktree…': ['Confirming worktree…', '正在确认工作树…', '正在確認工作樹…'],
   'Could not confirm worktree creation. Send again to check the same worktree.': [
     'Could not confirm worktree creation. Send again to check the same worktree.',
     '无法确认工作树是否已建好。再点一次发送会检查同一个工作树。',

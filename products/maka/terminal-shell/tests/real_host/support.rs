@@ -775,6 +775,7 @@ pub struct ReplyGate {
     pub held: Arc<Notify>,
     release: Arc<Notify>,
     unknown: Arc<AtomicBool>,
+    prevent: Arc<AtomicBool>,
     worker: JoinHandle<()>,
 }
 impl ReplyGate {
@@ -786,6 +787,9 @@ impl ReplyGate {
     }
     pub fn send(directory: &Path, target: PathBuf) -> Self {
         Self::for_method(directory, target, "agent", "send", "mutation")
+    }
+    pub fn create(directory: &Path, target: PathBuf) -> Self {
+        Self::for_method(directory, target, "agent", "create", "mutation")
     }
     pub fn worktree(directory: &Path, target: PathBuf) -> Self {
         Self::for_method(
@@ -809,11 +813,13 @@ impl ReplyGate {
         let held = Arc::new(Notify::new());
         let release = Arc::new(Notify::new());
         let unknown = Arc::new(AtomicBool::new(false));
+        let prevent = Arc::new(AtomicBool::new(false));
         let worker = tokio::spawn({
             let armed = armed.clone();
             let held = held.clone();
             let release = release.clone();
             let unknown = unknown.clone();
+            let prevent = prevent.clone();
             async move {
                 let mut connections = JoinSet::new();
                 loop {
@@ -822,18 +828,28 @@ impl ReplyGate {
                             let downstream=accepted.unwrap(); let upstream=ipc::connect(&target).await.unwrap();
                             let armed=armed.clone(); let held=held.clone(); let release=release.clone();
                             let unknown = unknown.clone();
+                            let prevent = prevent.clone();
                             connections.spawn(async move {
                                 let (down_read,mut down_write)=tokio::io::split(downstream);
                                 let (up_read,mut up_write)=tokio::io::split(upstream);
                                 let selected=Arc::new(AtomicBool::new(false)); let mark=selected.clone();
+                                let prevented = Arc::new(AtomicBool::new(false));
+                                let mark_prevented = prevented.clone();
                                 let up=async move {
                                     let mut reader=down_read;
                                     let mut opening=true;
-                                    while let Ok(frame)=gate_read(&mut reader).await {
+                                    while let Ok(mut frame)=gate_read(&mut reader).await {
                                         if opening && let Ok(value)=serde_json::from_slice::<Value>(&frame)
                                             && value.get("endpoint").is_some() && value.get("method").is_some() {
                                             opening=false;
                                             if value["endpoint"]==endpoint && value["method"]==method {mark.store(true,Ordering::SeqCst);}
+                                        }
+                                        if mark.load(Ordering::SeqCst) && prevent.load(Ordering::SeqCst)
+                                            && serde_json::from_slice::<Value>(&frame).is_ok_and(|value| {
+                                                value["kind"] == "confirm" || value["kind"] == "commit"
+                                            }) && prevent.swap(false, Ordering::SeqCst) {
+                                            mark_prevented.store(true, Ordering::SeqCst);
+                                            frame = br#"{"kind":"cancel"}"#.to_vec();
                                         }
                                         if gate_write(&mut up_write,&frame).await.is_err(){break;}
                                     }
@@ -841,7 +857,29 @@ impl ReplyGate {
                                 };
                                 let down=async move {
                                     let mut reader=up_read;
+                                    let mut reference = None;
                                     while let Ok(mut frame)=gate_read(&mut reader).await {
+                                        if selected.load(Ordering::SeqCst)
+                                            && let Ok(mut observed) = serde_json::from_slice::<Value>(&frame) {
+                                            if observed["kind"] == "prepared" {
+                                                reference = Some(observed["reference"].take());
+                                            } else if observed["kind"] == "aborted" && prevented.load(Ordering::SeqCst) {
+                                                // Confirmation never reached the Host. Exercise a provider's
+                                                // recorded before-start outcome with the original reference.
+                                                frame = serde_json::to_vec(&json!({
+                                                    "kind": "mutation",
+                                                    "reply": {
+                                                        "reference": reference.take().unwrap(),
+                                                        "receipt": {
+                                                            "kind": "recorded",
+                                                            "outcome": {"kind": "not_executed", "proof": {"kind": "provider_prevented_before_start"}},
+                                                            "cleanup": {"kind": "confirmed"},
+                                                        },
+                                                    },
+                                                    "cleanup": observed["cleanup"].take(),
+                                                })).unwrap();
+                                            }
+                                        }
                                         if selected.load(Ordering::SeqCst)
                                             && serde_json::from_slice::<Value>(&frame).is_ok_and(|value|value["kind"]==reply)
                                             && armed.swap(false,Ordering::SeqCst) {
@@ -873,6 +911,7 @@ impl ReplyGate {
             held,
             release,
             unknown,
+            prevent,
             worker,
         }
     }
@@ -885,6 +924,9 @@ impl ReplyGate {
     pub fn release_as_unknown(&self) {
         self.unknown.store(true, Ordering::SeqCst);
         self.release();
+    }
+    pub fn prevent_before_dispatch(&self) {
+        self.prevent.store(true, Ordering::SeqCst);
     }
 }
 impl Drop for ReplyGate {

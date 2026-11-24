@@ -18,7 +18,7 @@
  */
 
 import { Clipboard, Text, View, cleanup, computed, effect, signal, windowSize } from 'nsh';
-import type { JSX, ViewRef } from 'nsh';
+import type { InputRef, JSX, ViewRef } from 'nsh';
 import { Button, Command, Input, Popover, Select } from 'nsh/base';
 import type { ServiceMethods } from '../../../../packages/plugin-sdk/src/generated/methods.js';
 import type { BrowserProject } from '../../../../products/maka/workbench/app/browsing';
@@ -381,6 +381,7 @@ export function SessionWorkspaces(props: {
   const openMenu = signal<Menu | null>(null);
   const branchDraft = signal<string | null>(null);
   const branchError = createText();
+  let branchInput: InputRef | undefined;
   const recentProjects = signal<ReadonlyMap<string, RecentProject>>(new Map());
   let preloaded: { path: string; result: WorktreeResult } | null = null;
   let read = 0;
@@ -844,13 +845,21 @@ export function SessionWorkspaces(props: {
         </View>
       </If>
       <If when={branchDraft() !== null}>
-        <ModalDialog size="alert" onCancel={closeBranchDialog}>
+        <ModalDialog
+          size="alert"
+          onOpen={() => {
+            branchInput?.focus();
+            branchInput?.setSelection(branchPrefix.length, branchPrefix.length);
+          }}
+          onCancel={closeBranchDialog}
+        >
           <DialogHeader title={tr('Create and check out branch')} />
           <View style={{ gap: 6 }}>
             <Text style={{ ...captionTextStyle, color: C.secondary }}>{tr('Branch name')}</Text>
             <Input
-              autoFocus
-              ref={(node) => node.setSelection(branchPrefix.length, branchPrefix.length)}
+              ref={(node) => {
+                branchInput = node;
+              }}
               accessibilityLabel={tr('Branch name')}
               value={branchDraft() ?? ''}
               readonly={choosing()}

@@ -1199,7 +1199,8 @@ async fn desktop_creates_and_reopens_a_named_worktree() {
     );
     git(&other, &["branch", "vanishing-base"]);
 
-    let gate = ReplyGate::worktree(fixture.directory.path(), fixture.address.clone());
+    let create_gate = ReplyGate::create(fixture.directory.path(), fixture.address.clone());
+    let gate = ReplyGate::worktree(fixture.directory.path(), create_gate.address.clone());
     let desktop = Desktop::open(&fixture, &gate.address).await;
     desktop.new_draft().await;
     desktop.choose_workspace_folder(&project).await;
@@ -1269,10 +1270,40 @@ async fn desktop_creates_and_reopens_a_named_worktree() {
 
     desktop.press("Focus message composer").await;
     desktop.expect_text("FIRST_WORKTREE_MESSAGE").await;
+    gate.prevent_before_dispatch();
+    desktop.press("Send message").await;
+    desktop.control("Base branch").await;
+    desktop.artifact("worktree-not-started");
+    desktop.press("Base branch").await;
+    desktop.press("release-base").await;
+    desktop.press("Base branch").await;
+    desktop.press("origin/main").await;
+    assert_eq!(desktop.sessions().await.len(), 1);
+    assert_eq!(
+        desktop
+            .client
+            .query("agent", "projectWorktrees", json!({"path": project}))
+            .await
+            .unwrap()["worktrees"],
+        json!([]),
+        "a blocked confirmation must not create a worktree"
+    );
+
     gate.arm();
     desktop.press("Send message").await;
     desktop.held(&gate).await;
     assert_eq!(desktop.sessions().await.len(), 1);
+    assert!(
+        desktop
+            .wait(
+                "worktree wait check did not finish",
+                tokio::time::timeout(Duration::from_millis(600), fixture.next_request()),
+            )
+            .await
+            .is_err(),
+        "the model must not receive the draft before the checkout is confirmed"
+    );
+    desktop.artifact("preparing-worktree");
     let first_creation = desktop
         .client
         .query("agent", "projectWorktrees", json!({"path": project}))
@@ -1320,9 +1351,33 @@ async fn desktop_creates_and_reopens_a_named_worktree() {
     desktop.press("New local worktree").await;
     desktop.press("Focus message composer").await;
     desktop.expect_text("FIRST_WORKTREE_MESSAGE").await;
+    gate.arm();
+    create_gate.prevent_before_dispatch();
+    desktop.submit().await;
+    desktop.held(&gate).await;
+    assert!(
+        desktop
+            .wait(
+                "worktree confirmation wait check did not finish",
+                tokio::time::timeout(Duration::from_millis(600), fixture.next_request()),
+            )
+            .await
+            .is_err(),
+        "the model must wait for the original worktree confirmation"
+    );
+    desktop.artifact("confirming-worktree");
+    gate.release();
+    desktop.control("Send message").await;
+    desktop.press("Focus message composer").await;
+    desktop.expect_text("FIRST_WORKTREE_MESSAGE").await;
+    assert_eq!(desktop.sessions().await.len(), 1);
+    desktop.artifact("conversation-not-started");
+    desktop.type_text("FIRST_WORKTREE_MESSAGE_RETRIED").await;
     desktop.submit().await;
     let request = desktop.request(&mut fixture).await;
-    assert!(request.body.to_string().contains("FIRST_WORKTREE_MESSAGE"));
+    let message = request.body["messages"].as_array().unwrap().last().unwrap();
+    assert_eq!(message["role"], "user");
+    assert_eq!(message["content"], "FIRST_WORKTREE_MESSAGE_RETRIED");
     for branch in ["release-base", "main"] {
         assert_eq!(
             mutate(
@@ -1348,7 +1403,7 @@ async fn desktop_creates_and_reopens_a_named_worktree() {
     request
         .tool_call("Read", json!({"path": "tracked.txt"}))
         .await;
-    let request = desktop.request(&mut fixture).await;
+    let mut request = desktop.request(&mut fixture).await;
     assert!(
         request.body["messages"]
             .as_array()
@@ -1360,6 +1415,7 @@ async fn desktop_creates_and_reopens_a_named_worktree() {
         "the relative Read ran outside the selected checkout: {}",
         request.body["messages"]
     );
+    request.delta("Worktree message received.").await;
     desktop
         .wait(
             "the worktree model response did not finish",
@@ -1416,12 +1472,15 @@ async fn desktop_creates_and_reopens_a_named_worktree() {
         .await
         .unwrap();
     assert_eq!(registered["location"]["project"]["path"], worktree["path"]);
+    desktop.control("Copy user message").await;
+    desktop.artifact("worktree-conversation-sent");
 
     let desktop = desktop
         .restart(&fixture, nsh_core::platform::Appearance::Light)
         .await;
     desktop.press("Work location").await;
     desktop.control(name).await;
+    desktop.artifact("worktree-reopened");
     let _ = desktop.platform.take_clipboard_write();
     desktop.press("Copy worktree path").await;
     let copied_path = desktop
