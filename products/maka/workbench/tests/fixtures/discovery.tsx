@@ -36,6 +36,8 @@ mount(() => {
     revision = 0;
   let failDetailOnce = false;
   let disabledModel = false;
+  let extraReader = false;
+  let rejectNext: string | null = null;
   const opened = signal('none');
   const calls = signal('none');
   let publish = () => {};
@@ -57,7 +59,7 @@ mount(() => {
   });
   const catalog = (profile: string) => {
     const groups: Record<string, string> = { Read: 'read_files', DiscoveryMemory: 'history' };
-    if (disabledModel) groups.NewReader = 'read_files';
+    if (disabledModel || extraReader) groups.NewReader = 'read_files';
     if (profile === 'session')
       Object.assign(groups, {
         Shell: 'commands',
@@ -142,6 +144,12 @@ mount(() => {
   } as unknown as Host;
   const control = async (_method: string, input: any) => {
     calls.set(input.kind);
+    if (rejectNext) {
+      const reason = rejectNext;
+      rejectNext = null;
+      if (reason === 'scheduler_authorization_changed') session.boundaryRevision++;
+      return { kind: 'rejected', reason };
+    }
     if (input.kind === 'create' || input.kind === 'approve') {
       const effect = input.input.task.effect;
       const names = catalog(effect.workerTools).names.filter(
@@ -306,6 +314,28 @@ mount(() => {
         task: { ...detail.task, status: 'paused', lastError: 'scheduler_authorization_changed' },
       };
       publish();
+    },
+    { when: 'always' },
+  );
+  keymap.bind(
+    'mod+shift+t',
+    () => {
+      extraReader = true;
+      rejectNext = 'scheduler_discovery_tools_changed';
+    },
+    { when: 'always' },
+  );
+  keymap.bind(
+    'mod+shift+k',
+    () => {
+      rejectNext = 'scheduler_discovery_tools_confirmation_required';
+    },
+    { when: 'always' },
+  );
+  keymap.bind(
+    'mod+shift+g',
+    () => {
+      rejectNext = 'scheduler_authorization_changed';
     },
     { when: 'always' },
   );

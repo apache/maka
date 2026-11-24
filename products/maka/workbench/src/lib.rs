@@ -348,6 +348,47 @@ mod tests {
     }
 
     #[test]
+    fn discovery_panel_reports_tool_and_authorization_save_rejections() {
+        let mut app = headless_fixture(
+            "tests/fixtures/discovery.tsx",
+            Size::new(px(1100.0), px(900.0)),
+            false,
+        );
+        app.wait_for("role:button[Proactive discovery]").unwrap();
+        app.press("role:button[Proactive discovery]").unwrap();
+        app.wait_for("role:button[Approve and enable]").unwrap();
+
+        app.press_key("mod+shift+t").unwrap();
+        app.press("role:button[Approve and enable]").unwrap();
+        app.wait_for(
+            "text:Available tools changed. Review the updated selection and confirm again.",
+        )
+        .unwrap();
+        app.wait_for("label:File reading: Partially enabled (1/2)")
+            .unwrap();
+
+        app.press_key("mod+shift+k").unwrap();
+        app.press("role:button[Approve and enable]").unwrap();
+        app.wait_for("text:Review the selected tools and confirm again.")
+            .unwrap();
+        assert!(
+            !app.screen()
+                .matches("text:/scheduler_discovery_tools_confirmation_required/")
+                .unwrap()
+        );
+
+        app.press_key("mod+shift+g").unwrap();
+        app.press("role:button[Approve and enable]").unwrap();
+        app.wait_for(
+            "text:The workspace or model changed. Review the displayed settings and confirm again.",
+        )
+        .unwrap();
+
+        app.press("role:button[Approve and enable]").unwrap();
+        app.wait_for("role:button[Pause]").unwrap();
+    }
+
+    #[test]
     fn fullscreen_composer_removes_and_sends_quotes_without_typed_text() {
         let mut app = fixture("stage-quotes.tsx");
         app.wait_for("text:First selected passage").unwrap();

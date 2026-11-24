@@ -584,11 +584,26 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
             }
           : { kind: 'create', input },
       );
+      if (!alive) return;
       if (result.kind === 'conflict') throw new UiError('Discovery plan changed');
       if (result.kind === 'rejected') {
-        if (result.reason === 'scheduler_discovery_tools_changed') {
-          await previewTools(latest, workerTools(), ++formGeneration, 'refresh');
+        if (result.reason === 'scheduler_authorization_changed') {
+          const refreshed = await capture(++formGeneration);
+          if (!alive) return;
+          basis.set(refreshed);
+          await previewTools(refreshed, workerTools(), formGeneration, 'refresh');
           throw new UiError('Discovery settings changed');
+        }
+        if (
+          result.reason === 'scheduler_discovery_tools_changed' ||
+          result.reason === 'scheduler_discovery_tools_confirmation_required'
+        ) {
+          await previewTools(latest, workerTools(), ++formGeneration, 'refresh');
+          throw new UiError(
+            result.reason === 'scheduler_discovery_tools_changed'
+              ? 'Discovery tool catalog changed'
+              : 'Discovery tools require confirmation',
+          );
         }
         throw new Error(result.reason);
       }
