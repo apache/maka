@@ -17,10 +17,15 @@
  * under the License.
  */
 
-use apply_patch::{PatchOperation, apply_update, parse_create, parse_patch, parse_update};
+use apply_patch::{PatchOperation, apply_update, parse_patch};
 
 fn update(source: &str, diff: &str) -> String {
-    apply_update(source, &parse_update(diff).unwrap()).unwrap()
+    let patch = format!("*** Begin Patch\n*** Update File: target\n{diff}\n*** End Patch");
+    let operations = parse_patch(&patch).unwrap();
+    let [PatchOperation::Update { chunks, .. }] = operations.as_slice() else {
+        panic!("expected single update operation");
+    };
+    apply_update(source, chunks).unwrap()
 }
 
 #[test]
@@ -59,13 +64,14 @@ fn eof_targets_final_occurrence_and_rejects_backtracking() {
         update("x\ny\nx\n", "@@\n-x\n+z\n*** End of File"),
         "x\ny\nz\n"
     );
-    assert!(
-        apply_update(
-            "x\ny\n",
-            &parse_update("@@\n-y\n+Y\n@@\n-x\n+X\n*** End of File").unwrap()
-        )
-        .is_err()
-    );
+    let operations = parse_patch(
+        "*** Begin Patch\n*** Update File: target\n@@\n-y\n+Y\n@@\n-x\n+X\n*** End of File\n*** End Patch",
+    )
+    .unwrap();
+    let [PatchOperation::Update { chunks, .. }] = operations.as_slice() else {
+        panic!("expected single update operation");
+    };
+    assert!(apply_update("x\ny\n", chunks).is_err());
     assert_eq!(update("a\nb\n", "@@\n-b\n+z\n "), "a\nz\n");
 }
 
@@ -98,11 +104,10 @@ fn paths_are_data_and_operations_retain_source_order() {
 }
 
 #[test]
-fn malformed_move_empty_and_injected_operations_fail() {
+fn malformed_move_empty_and_invalid_operations_fail() {
     for patch in [
         "",
         "*** Begin Patch\n*** End Patch",
-        "*** Begin Patch\n*** Add File: x\n*** End Patch",
         "*** Begin Patch\n*** Update File: x\n@@\n*** End Patch",
         "*** Begin Patch\n*** Add File: x\ntext\n*** End Patch",
         "*** Begin Patch\n*** Update File: x\n*** Move to: y\n@@\n+x\n*** End Patch",
@@ -112,18 +117,24 @@ fn malformed_move_empty_and_injected_operations_fail() {
     ] {
         assert!(parse_patch(patch).is_err(), "{patch:?}");
     }
-    assert!(parse_update("@@\n+x\n*** Delete File: secret").is_err());
-    assert!(parse_create("+x\n*** Delete File: secret").is_err());
 }
 
 #[test]
 fn creates_and_crlf_envelopes() {
-    assert_eq!(parse_create("+a\n+b").unwrap(), "a\nb");
-    assert_eq!(parse_create("+a\n+b\n").unwrap(), "a\nb");
-    assert_eq!(parse_create("+a\n+").unwrap(), "a\n");
-    assert_eq!(parse_create("+").unwrap(), "");
-    assert!(parse_create("+a\n\n").is_err());
-    assert_eq!(parse_create("+a\r\n+b\r\n").unwrap(), "a\nb");
+    assert_eq!(
+        parse_patch("*** Begin Patch\n*** Add File: x\n*** End Patch").unwrap(),
+        vec![PatchOperation::Add {
+            path: "x".into(),
+            content: String::new()
+        }]
+    );
+    assert_eq!(
+        parse_patch("*** Begin Patch\n*** Add File: x\n+a\n+b\n*** End Patch").unwrap(),
+        vec![PatchOperation::Add {
+            path: "x".into(),
+            content: "a\nb\n".into()
+        }]
+    );
     assert_eq!(
         parse_patch("*** Begin Patch\r\n*** Add File: x\r\n+a\r\n*** End Patch\r\n").unwrap(),
         vec![PatchOperation::Add {
@@ -131,4 +142,5 @@ fn creates_and_crlf_envelopes() {
             content: "a\n".into()
         }]
     );
+    assert!(parse_patch("*** Begin Patch\n*** Add File: x\n+a\n\n*** End Patch").is_err());
 }

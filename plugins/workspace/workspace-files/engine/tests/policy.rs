@@ -135,7 +135,7 @@ async fn read_and_mutations_share_nested_policy_including_missing_targets_and_al
     let denied = write
         .invoke(
             "apply_patch".into(),
-            json!({"callId":"delete", "operation":{"type":"delete_file","path":"metadata/config"}}),
+            json!({"patch": "*** Begin Patch\n*** Delete File: metadata/config\n*** End Patch"}),
             Default::default(),
         )
         .await

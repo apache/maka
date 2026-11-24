@@ -51,7 +51,7 @@ per-operation identity checks, pinned file operations, and durable mutation outc
 The parser preserves upstream batch chunk rules, including optional first `@@`,
 blank context lines, EOF markers, and fuzzy whitespace / Unicode matching.
 Maka rejects Move, environment directives, shell wrappers, empty envelopes,
-empty Add operations and NUL paths. Repeated paths and aliases such as `x` and
+empty Update operations and NUL paths. Repeated paths and aliases such as `x` and
 `./x` retain source order, matching Maka's sequential batch contract. Callers
 must capture/prepare each operation against the state at that point, not assume
 distinct spellings identify independent files or prepare every update from the
@@ -60,8 +60,6 @@ same initial snapshot.
 Update preparation always uses upstream's line-ending preservation mode.
 Context keeps its original bytes and endings, new lines use the first existing
 ending (LF for empty sources), and an unterminated final line gains an ending.
-Structured OpenAI create diffs remove the single newline forced by envelope Add
-parsing, matching the SDK's join-without-forced-newline behavior.
 
 Preparation retains complete source, patch and result strings and parsed lines
 in memory. Multiple fuzzy passes and Unicode normalization retain upstream's
@@ -72,8 +70,8 @@ reconstruction indices.
 
 The integration corpus covers exact and fuzzy matches, context preservation,
 multiple chunks, EOF, mixed CRLF/LF/CR endings, unterminated sources, Add/Delete,
-Move rejection, ordered repeated paths, malformed syntax, structured-diff operation
-injection, large content and ordered operation batches. The extraction is not a full current Codex parser:
+Move rejection, ordered repeated paths, malformed syntax, large content and
+ordered operation batches. The extraction is not a full current Codex parser:
 multi-environment and streaming grammar are explicitly outside the contract.
 
 An external probe also compared eight LF/exact/fuzzy/EOF cases against the

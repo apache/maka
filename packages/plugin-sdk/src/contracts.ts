@@ -63996,74 +63996,15 @@ export const contracts: {
             type: 'object',
             additionalProperties: false,
             properties: {
-              callId: {
+              patch: {
                 type: 'string',
+                description: 'Patch text wrapped in `*** Begin Patch` ... `*** End Patch`.',
                 minLength: 1,
               },
-              operation: {
-                $ref: '#/$defs/NativeOperation',
-              },
             },
-            required: ['callId', 'operation'],
-            title: 'NativeInput',
+            required: ['patch'],
+            title: 'PatchInput',
             $schema: 'https://json-schema.org/draft/2020-12/schema',
-            $defs: {
-              NativeOperation: {
-                oneOf: [
-                  {
-                    type: 'object',
-                    additionalProperties: false,
-                    properties: {
-                      type: {
-                        type: 'string',
-                        const: 'create_file',
-                      },
-                      path: {
-                        type: 'string',
-                        minLength: 1,
-                      },
-                      diff: {
-                        type: 'string',
-                      },
-                    },
-                    required: ['type', 'path', 'diff'],
-                  },
-                  {
-                    type: 'object',
-                    additionalProperties: false,
-                    properties: {
-                      type: {
-                        type: 'string',
-                        const: 'update_file',
-                      },
-                      path: {
-                        type: 'string',
-                        minLength: 1,
-                      },
-                      diff: {
-                        type: 'string',
-                      },
-                    },
-                    required: ['type', 'path', 'diff'],
-                  },
-                  {
-                    type: 'object',
-                    additionalProperties: false,
-                    properties: {
-                      type: {
-                        type: 'string',
-                        const: 'delete_file',
-                      },
-                      path: {
-                        type: 'string',
-                        minLength: 1,
-                      },
-                    },
-                    required: ['type', 'path'],
-                  },
-                ],
-              },
-            },
           },
           output: {
             oneOf: [

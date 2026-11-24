@@ -97,7 +97,7 @@ async fn case_sensitive_sibling_roots_do_not_alias_reads_or_mutations() {
         ),
         (
             "apply_patch",
-            json!({"callId":"case","operation":{"type":"delete_file","path":lower.join("file")}}),
+            json!({"patch": format!("*** Begin Patch\n*** Delete File: {}\n*** End Patch", lower.join("file").display())}),
         ),
     ] {
         assert!(

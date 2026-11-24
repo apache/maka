@@ -58,7 +58,7 @@ impl UpdateChunk {
 }
 
 /// Parse the client-executed Codex envelope. Move, shell wrappers, environment
-/// directives and empty operations are unsupported. Operations retain source
+/// directives, empty patches and empty updates are unsupported. Operations retain source
 /// order; callers must independently authorize and settle each mutation.
 pub fn parse_patch(patch: &str) -> Result<Vec<PatchOperation>, PatchError> {
     let lines: Vec<_> = patch.trim().lines().collect();
@@ -76,13 +76,9 @@ pub fn parse_patch(patch: &str) -> Result<Vec<PatchOperation>, PatchError> {
     while !remaining.is_empty() {
         let (operation, consumed) = parser::parse_one_hunk(remaining, line_number)?;
         let path = match &operation {
-            PatchOperation::Add { path, content } => {
-                if content.is_empty() {
-                    return Err(PatchError::InvalidPatchError("Add has no diff".into()));
-                }
-                path
-            }
-            PatchOperation::Delete { path } | PatchOperation::Update { path, .. } => path,
+            PatchOperation::Add { path, .. }
+            | PatchOperation::Delete { path }
+            | PatchOperation::Update { path, .. } => path,
         };
         if path.as_os_str().is_empty() || path.to_string_lossy().contains('\0') {
             return Err(PatchError::InvalidPatchError(
@@ -99,52 +95,6 @@ pub fn parse_patch(patch: &str) -> Result<Vec<PatchOperation>, PatchError> {
         ));
     }
     Ok(operations)
-}
-
-/// Parse a structured OpenAI update diff using a fixed virtual path. A diff
-/// cannot inject another operation or replace the virtual target.
-pub fn parse_update(diff: &str) -> Result<Vec<UpdateChunk>, PatchError> {
-    let diff = diff
-        .strip_suffix("\r\n")
-        .or_else(|| diff.strip_suffix('\n'))
-        .unwrap_or(diff);
-    let patch =
-        format!("*** Begin Patch\n*** Update File: maka-virtual-update\n{diff}\n*** End Patch");
-    let operations = parse_patch(&patch)?;
-    match operations.as_slice() {
-        [PatchOperation::Update { path, chunks }]
-            if path == &PathBuf::from("maka-virtual-update") =>
-        {
-            Ok(chunks.clone())
-        }
-        _ => Err(PatchError::InvalidPatchError(
-            "expected exactly one update diff".into(),
-        )),
-    }
-}
-
-/// Parse a structured OpenAI create diff. Unlike an envelope Add, this joins
-/// added lines without forcing a final newline (the SDK's native contract).
-pub fn parse_create(diff: &str) -> Result<String, PatchError> {
-    let patch = format!(
-        "*** Begin Patch\n*** Add File: maka-virtual-create\n{}\n*** End Patch",
-        diff.strip_suffix("\r\n")
-            .or_else(|| diff.strip_suffix('\n'))
-            .unwrap_or(diff)
-    );
-    let operations = parse_patch(&patch)?;
-    match operations.as_slice() {
-        [PatchOperation::Add { path, content }]
-            if path == &PathBuf::from("maka-virtual-create") =>
-        {
-            let mut content = content.clone();
-            content.pop(); // Remove only the newline inserted by upstream Add parsing.
-            Ok(content)
-        }
-        _ => Err(PatchError::InvalidPatchError(
-            "expected exactly one create diff".into(),
-        )),
-    }
 }
 
 /// Apply fuzzy chunks to a snapshot, preserving original context and mixed

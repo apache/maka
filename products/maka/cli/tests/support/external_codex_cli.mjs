@@ -292,8 +292,7 @@ async function hostEffect() {
   await codeResult(
     'text(await tools.ApplyPatch(' +
       JSON.stringify({
-        callId: 'external-edit-fixture',
-        operation: { type: 'create_file', path, diff: '+written through Maka\n+' },
+        patch: `*** Begin Patch\n*** Add File: ${path}\n+written through Maka\n*** End Patch`,
       }) +
       '))',
   );
