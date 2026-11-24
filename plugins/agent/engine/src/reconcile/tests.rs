@@ -1722,13 +1722,13 @@ fn an_overflow_whose_interruption_was_not_recorded_still_recovers() {
             upstream: serde_json::json!({}),
         },
     );
-    let failure = ContentBlob::json(&maka_agent_facts::context::ModelFailureProtocol {
+    let protocol = maka_agent_facts::context::ModelFailureProtocol {
         failure: maka_model::ModelError::ContextOverflow {
             observed_output: true,
         },
         transport: None,
-    })
-    .unwrap();
+    };
+    let failure = ContentBlob::json(&protocol).unwrap();
     apply_policy_fact(
         &mut view,
         Fact::ModelSourceFailureCaptured {
@@ -1736,10 +1736,12 @@ fn an_overflow_whose_interruption_was_not_recorded_still_recovers() {
             failure: failure.reference().clone(),
         },
     );
+    let mut model = fallback_model_level(step, request.reference());
+    model.failure = Some(protocol.clone());
     // The stream's failure is recorded, but the interruption the driver published for it
     // lost a revision race, or the Host stopped before writing it.
     for _ in 0..2 {
-        match next(&view, &Live::default(), UnixMillis(1), None, false) {
+        match next(&view, &Live::default(), UnixMillis(1), Some(&model), false) {
             Action::Interrupt(id, diagnostic) if id == attempt => apply_policy_fact(
                 &mut view,
                 Fact::ModelInterrupted {
@@ -1760,5 +1762,87 @@ fn an_overflow_whose_interruption_was_not_recorded_still_recovers() {
             _ => panic!("expected the overflowed attempt to be interrupted or assessed"),
         }
     }
+    assert_eq!(
+        view.attempts[&attempt].interrupted.as_deref(),
+        Some(protocol.failure.to_string().as_str())
+    );
     assert!(view.attempts[&attempt].compactable_overflow());
+}
+
+#[test]
+fn a_tool_call_on_an_uninterrupted_overflow_is_rejected_without_execution() {
+    let (mut view, request) = admitted_retry_view(0);
+    let step = StepId::new();
+    let attempt = ModelAttemptId::new();
+    let call_id = "call-before-uninterrupted-overflow".to_owned();
+    let failure = ContentBlob::json(&maka_agent_facts::context::ModelFailureProtocol {
+        failure: maka_model::ModelError::ContextOverflow {
+            observed_output: true,
+        },
+        transport: None,
+    })
+    .unwrap();
+    for fact in [
+        Fact::StepPrepared {
+            step,
+            request,
+            adjudications: vec![],
+        },
+        Fact::ModelAttemptPrepared { attempt, step },
+        Fact::ModelAttemptAdmitted {
+            attempt,
+            upstream: serde_json::json!({}),
+        },
+        Fact::ModelObserved {
+            attempt,
+            index: 0,
+            part: maka_agent_facts::model::ModelPart::ToolCall {
+                call: maka_agent_facts::model::ModelToolCall {
+                    id: call_id.clone(),
+                    name: "Write".into(),
+                    input: maka_agent_facts::model::ToolInput::Json(serde_json::json!({})),
+                    provider_options: None,
+                    provider_executed: false,
+                },
+            },
+            continuation: None,
+        },
+        Fact::ModelSourceFailureCaptured {
+            attempt,
+            failure: failure.reference().clone(),
+        },
+    ] {
+        apply_policy_fact(&mut view, fact);
+    }
+
+    for _ in 0..2 {
+        match next(&view, &Live::default(), UnixMillis(1), None, false) {
+            Action::Interrupt(id, diagnostic) if id == attempt => apply_policy_fact(
+                &mut view,
+                Fact::ModelInterrupted {
+                    attempt,
+                    diagnostic,
+                },
+            ),
+            Action::Assess(id) if id == attempt => apply_policy_fact(
+                &mut view,
+                Fact::AttemptRecoveryRecorded {
+                    attempt,
+                    recovery: AttemptRecovery::ContextOverflow {
+                        observed_output: true,
+                    },
+                },
+            ),
+            _ => panic!("expected interrupt or assess before deciding tool"),
+        }
+    }
+
+    let key = ToolKey {
+        attempt,
+        call: call_id,
+    };
+    assert!(matches!(
+        next(&view, &Live::default(), UnixMillis(1), None, false),
+        Action::Reject(rejected, ToolRejection::PreparationFailed { .. }) if rejected == key
+    ));
 }
