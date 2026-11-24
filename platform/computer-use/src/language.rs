@@ -20,6 +20,14 @@
 //! Invocation-owned copy for CUA documentation and recovery guidance.
 use maka_agent_facts::language::Language;
 
+#[allow(unused_imports)]
+mod generated_catalog {
+    include!(concat!(env!("OUT_DIR"), "/i18n_catalog.rs"));
+}
+pub use generated_catalog::i18n_catalog;
+#[cfg(feature = "native-desktop")]
+include!(concat!(env!("OUT_DIR"), "/i18n_docs.rs"));
+
 #[cfg(feature = "native-desktop")]
 pub(crate) fn documentation(language: Language) -> &'static str {
     let source = documentation_source(language);
@@ -30,11 +38,7 @@ pub(crate) fn documentation(language: Language) -> &'static str {
 
 #[cfg(feature = "native-desktop")]
 fn documentation_source(language: Language) -> &'static str {
-    match language {
-        Language::En => include_str!("api.md"),
-        Language::ZhCn => include_str!("api.zh-CN.md"),
-        Language::ZhTw => include_str!("api.zh-TW.md"),
-    }
+    i18n_docs::get(language)
 }
 
 /// Read an exact named document from the same localized source as the general API.
@@ -58,87 +62,46 @@ pub(crate) fn named_documentation(language: Language, name: &str) -> Option<&'st
 }
 
 pub fn reset(language: Language) -> &'static str {
-    match language {
-        Language::En => "Computer Use REPL reset. Bind targets again.",
-        Language::ZhCn => "Computer Use REPL 已重置。请重新绑定目标。",
-        Language::ZhTw => "Computer Use REPL 已重設。請重新綁定目標。",
-    }
+    i18n_catalog::repl::reset(language)
 }
+
 pub fn partial_observations(language: Language) -> &'static str {
-    match language {
-        Language::En => {
-            "\nObservations emitted before failure (actions may already have completed):\n"
-        }
-        Language::ZhCn => "\n失败前输出的观察（操作可能已经完成）：\n",
-        Language::ZhTw => "\n失敗前輸出的觀察（操作可能已經完成）：\n",
-    }
+    i18n_catalog::repl::partial_observations(language)
 }
+
 pub fn closed(language: Language) -> &'static str {
-    match language {
-        Language::En => {
-            "\nThis REPL is closed. Call cua_reset and rebind targets. Dispatched input may already have taken effect."
-        }
-        Language::ZhCn => {
-            "\n此 REPL 已关闭。请调用 cua_reset 并重新绑定目标。已派发的输入可能已经生效。"
-        }
-        Language::ZhTw => {
-            "\n此 REPL 已關閉。請呼叫 cua_reset 並重新綁定目標。已派發的輸入可能已經生效。"
-        }
-    }
+    i18n_catalog::repl::closed(language)
 }
+
+pub fn javascript_error(language: Language, message: &str) -> String {
+    i18n_catalog::repl::javascript_error(language, message)
+}
+
 #[cfg(feature = "native-desktop")]
 pub(crate) fn uncertain(language: Language) -> &'static str {
-    match language {
-        Language::En => {
-            "The driver did not verify the requested effect; repeating the action may duplicate it."
-        }
-        Language::ZhCn => "驱动未验证请求的效果；重复操作可能产生重复效果。",
-        Language::ZhTw => "驅動程式未驗證請求的效果；重複操作可能產生重複效果。",
-    }
+    i18n_catalog::driver::uncertain(language)
 }
 
 #[cfg(feature = "native-desktop")]
 pub(crate) fn inactive(language: Language) -> &'static str {
-    match language {
-        Language::En => "Computer Use session is inactive. Call cua_reset and rebind targets.",
-        Language::ZhCn => "Computer Use 会话已失效。请调用 cua_reset 并重新绑定目标。",
-        Language::ZhTw => "Computer Use 工作階段已失效。請呼叫 cua_reset 並重新綁定目標。",
-    }
+    i18n_catalog::repl::inactive(language)
 }
+
 #[cfg(feature = "native-desktop")]
 pub(crate) fn terminal(language: Language) -> &'static str {
-    match language {
-        Language::En => {
-            "\nCall cua_reset and rebind targets. This refused operation did not dispatch input."
-        }
-        Language::ZhCn => "\n请调用 cua_reset 并重新绑定目标。此次被拒绝的操作未派发输入。",
-        Language::ZhTw => "\n請呼叫 cua_reset 並重新綁定目標。此次被拒絕的操作未派發輸入。",
-    }
+    i18n_catalog::driver::terminal(language)
 }
+
 #[cfg(feature = "native-desktop")]
 pub(crate) fn background_unavailable(language: Language) -> &'static str {
-    match language {
-        Language::En => {
-            "Background input is unavailable for this control on the current desktop. Use an indexed accessibility action if one is exposed by app.getAXState(); otherwise this action requires a supported desktop input backend. The public Cua API cannot switch this call to foreground delivery."
-        }
-        Language::ZhCn => {
-            "当前桌面上的此控件不支持后台输入。若 app.getAXState() 提供了索引无障碍操作，请使用该操作；否则需要支持此输入的桌面后端。公开 Cua API 无法将此次调用切换为前台交付。"
-        }
-        Language::ZhTw => {
-            "目前桌面上的此控制項不支援背景輸入。若 app.getAXState() 提供了索引輔助使用操作，請使用該操作；否則需要支援此輸入的桌面後端。公開 Cua API 無法將此次呼叫切換為前景交付。"
-        }
-    }
+    i18n_catalog::driver::background_unavailable(language)
 }
 
 // CDP preserves the original error and uncertainty class; the accepted browser
 // dispatch owns this warning for every unknown outcome.
 #[cfg(feature = "native-desktop")]
 pub(crate) fn browser_unknown(language: Language) -> &'static str {
-    match language {
-        Language::En => "; repeating a mutation may duplicate its effects",
-        Language::ZhCn => "；重复变更操作可能产生重复效果",
-        Language::ZhTw => "；重複變更操作可能產生重複效果",
-    }
+    i18n_catalog::browser::unknown_outcome_suffix(language)
 }
 
 #[cfg(all(test, feature = "native-desktop"))]
@@ -147,9 +110,25 @@ mod named_documentation_tests {
 
     #[test]
     fn named_lookup_is_exact_and_cannot_become_a_filesystem_path() {
-        for language in [Language::En, Language::ZhCn, Language::ZhTw] {
-            assert!(named_documentation(language, "session-naming").is_some());
-            assert!(named_documentation(language, "capabilities/browser/viewport").is_some());
+        let base_names: Vec<&str> = documentation_source(Language::EN)
+            .split_once("<!-- named-browser-documents -->")
+            .unwrap()
+            .1
+            .split("<!-- browser-document: ")
+            .skip(1)
+            .flat_map(|block| block.split_once(" -->").unwrap().0.split_ascii_whitespace())
+            .collect();
+        assert!(base_names.len() >= 16);
+
+        for language in Language::all() {
+            for name in &base_names {
+                let body = named_documentation(language, name)
+                    .unwrap_or_else(|| panic!("missing doc {name:?} in {language:?}"));
+                assert!(
+                    !body.trim().is_empty(),
+                    "empty doc {name:?} in {language:?}"
+                );
+            }
             for missing in [
                 "",
                 " session-naming",
@@ -166,5 +145,39 @@ mod named_documentation_tests {
             assert!(!documentation(language).contains("<!-- named-browser-documents -->"));
             assert!(!documentation(language).contains("<!-- browser-document: "));
         }
+    }
+
+    #[test]
+    fn catalog_preserves_placeholders_apostrophes_and_zh_hk_overlay() {
+        assert_eq!(
+            i18n_catalog::desktop::window_header(Language::EN, r#""Notes""#, r#""Draft""#),
+            r#"Window: "Draft", App: "Notes"."#
+        );
+        assert_eq!(
+            i18n_catalog::browser::tab_header(Language::ZH_CN, "t1", "https://example.com"),
+            "标签页 t1: https://example.com"
+        );
+        // Inherited from zh-TW
+        assert_eq!(
+            i18n_catalog::browser::tab_header(Language::ZH_HK, "t1", "https://example.com"),
+            i18n_catalog::browser::tab_header(Language::ZH_TW, "t1", "https://example.com")
+        );
+        // Genuine zh-HK overlay override differs from zh-TW
+        assert_ne!(
+            i18n_catalog::activity::capture_screenshot(Language::ZH_HK),
+            i18n_catalog::activity::capture_screenshot(Language::ZH_TW)
+        );
+        assert_eq!(
+            javascript_error(Language::EN, "boom"),
+            "Cua JavaScript error: boom"
+        );
+        assert_eq!(
+            javascript_error(Language::ZH_TW, "boom"),
+            "Cua JavaScript 錯誤：boom"
+        );
+        assert!(
+            i18n_catalog::permission::unknown_risk_warning(Language::EN)
+                .starts_with("This app's risk classification")
+        );
     }
 }

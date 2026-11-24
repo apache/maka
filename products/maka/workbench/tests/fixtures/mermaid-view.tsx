@@ -19,29 +19,33 @@
 
 import { mount, signal, Text, View } from 'nsh';
 import { MermaidView } from '../../app/MermaidView';
+import { installWorkbenchLocaleCatalog } from '../../app/localeCatalog';
 
 const valid = 'flowchart LR\n A[User] --> B[Maka]';
 const source = signal(valid);
-mount(() => (
-  <View style={{ width: '100%', gap: 8 }}>
-    <View
-      testID="break"
-      style={{ height: 32 }}
-      onPress={() => source.set('flowchart LR\n A[unfinished')}
-    >
-      <Text>Break diagram</Text>
+mount(() => {
+  installWorkbenchLocaleCatalog();
+  return (
+    <View style={{ width: '100%', gap: 8 }}>
+      <View
+        testID="break"
+        style={{ height: 32 }}
+        onPress={() => source.set('flowchart LR\n A[unfinished')}
+      >
+        <Text>Break diagram</Text>
+      </View>
+      <View testID="repair" style={{ height: 32 }} onPress={() => source.set(valid)}>
+        <Text>Repair diagram</Text>
+      </View>
+      <View
+        testID="update"
+        style={{ height: 32 }}
+        onPress={() => source.set(valid.replace('User', 'LATEST'))}
+      >
+        <Text>Update diagram</Text>
+      </View>
+      <Text>{source().includes('LATEST') ? 'Latest requested' : 'Initial requested'}</Text>
+      <MermaidView source={source} />
     </View>
-    <View testID="repair" style={{ height: 32 }} onPress={() => source.set(valid)}>
-      <Text>Repair diagram</Text>
-    </View>
-    <View
-      testID="update"
-      style={{ height: 32 }}
-      onPress={() => source.set(valid.replace('User', 'LATEST'))}
-    >
-      <Text>Update diagram</Text>
-    </View>
-    <Text>{source().includes('LATEST') ? 'Latest requested' : 'Initial requested'}</Text>
-    <MermaidView source={source} />
-  </View>
-));
+  );
+});

@@ -21,6 +21,7 @@ import { batch, cleanup, signal } from 'nsh';
 import type { Host } from './host';
 import { applyLanguagePreference, currentLocale, tr } from './locale';
 import { errorText, message, UiError } from './text';
+import { SUPPORTED_LOCALES } from '../../../../packages/plugin-sdk/src/index.js';
 import type {
   AgentGlobalInstructionsView,
   LanguagePreference,
@@ -99,9 +100,10 @@ export type GeneralAction =
     };
 export const assistantLanguages = (): { value: LanguagePreference; label: string }[] => [
   { value: 'auto', label: tr('Automatic') },
-  { value: 'en', label: 'English' },
-  { value: 'zh-CN', label: '简体中文' },
-  { value: 'zh-TW', label: '繁體中文' },
+  ...SUPPORTED_LOCALES.map((entry) => ({
+    value: entry.tag as LanguagePreference,
+    label: entry.autonym,
+  })),
 ];
 
 export function createGeneralSettings(
@@ -180,7 +182,7 @@ export function createGeneralSettings(
         {},
       );
       observePredictionPreferences(result);
-      applyLanguagePreference(result.language ?? 'auto', result.revision);
+      applyLanguagePreference(result.language ?? 'auto', result.revision, result.resolvedLanguage);
       languageChanged?.(currentLocale());
       if (owns()) facts.set(result);
     } catch (reason) {
@@ -465,7 +467,7 @@ export function createGeneralSettings(
       const result = await host.query('settings', 'assistantPreferences', {});
       if (!alive) return;
       observePredictionPreferences(result);
-      applyLanguagePreference(result.language ?? 'auto', result.revision);
+      applyLanguagePreference(result.language ?? 'auto', result.revision, result.resolvedLanguage);
       languageChanged?.(currentLocale());
     },
     snapshot: (): GeneralSettingsSnapshot => ({

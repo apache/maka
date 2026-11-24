@@ -775,7 +775,6 @@ fn failed_turn_note(
     language: maka_agent_facts::language::Language,
     diagnostic: Option<&str>,
 ) -> String {
-    use maka_agent_facts::language::Language;
     let normalized = diagnostic
         .map(str::trim)
         .filter(|text| !text.is_empty())
@@ -790,13 +789,11 @@ fn failed_turn_note(
                 format!("{truncated}…")
             }
         });
-    match (language, normalized.as_deref()) {
-        (Language::ZhCn, Some(reason)) => format!("[Host] 这一轮失败，在此结束：{reason}"),
-        (Language::ZhCn, None) => "[Host] 这一轮失败，在此结束。".into(),
-        (Language::ZhTw, Some(reason)) => format!("[Host] 這一輪失敗，在此結束：{reason}"),
-        (Language::ZhTw, None) => "[Host] 這一輪失敗，在此結束。".into(),
-        (Language::En, Some(reason)) => format!("[Host] This turn failed and ended here: {reason}"),
-        (Language::En, None) => "[Host] This turn failed and ended here.".into(),
+    match normalized.as_deref() {
+        Some(reason) => {
+            maka_agent_facts::i18n::driver::failed_turn_note_with_reason(language, reason)
+        }
+        None => maka_agent_facts::i18n::driver::failed_turn_note(language).into(),
     }
 }
 
@@ -808,11 +805,11 @@ mod failed_turn_note_tests {
     #[test]
     fn normalizes_blank_and_truncates_overlong_diagnostics() {
         assert_eq!(
-            failed_turn_note(Language::En, Some("   \n\t  ")),
+            failed_turn_note(Language::EN, Some("   \n\t  ")),
             "[Host] This turn failed and ended here."
         );
         let huge = "错".repeat(MAX_FAILED_TURN_DIAGNOSTIC_CHARS + 50);
-        let note = failed_turn_note(Language::ZhCn, Some(&huge));
+        let note = failed_turn_note(Language::ZH_CN, Some(&huge));
         assert!(note.starts_with("[Host] 这一轮失败，在此结束："), "{note}");
         assert!(note.ends_with('…'), "{note}");
         assert!(note.chars().count() < MAX_FAILED_TURN_DIAGNOSTIC_CHARS + 30);

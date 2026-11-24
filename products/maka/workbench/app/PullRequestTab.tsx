@@ -535,11 +535,7 @@ export function PullRequestTab(props: {
                 />
                 <If when={pendingDrafts().length > 0}>
                   <Text style={{ fontSize: 12, lineHeight: 16, color: C.muted }}>
-                    {pendingDrafts().length === 1
-                      ? tr('1 pending inline comment will be published.')
-                      : tr('{count} pending inline comments will be published.', {
-                          count: pendingDrafts().length,
-                        })}
+                    {tr('pr.pending_inline_comments', { count: pendingDrafts().length })}
                   </Text>
                 </If>
                 <View style={{ gap: 2 }}>

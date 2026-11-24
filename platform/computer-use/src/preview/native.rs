@@ -49,7 +49,7 @@ impl NativeCapture {
                 binding.pid,
                 binding.window_id,
                 &binding.process_generation,
-                maka_agent_facts::language::Language::En,
+                maka_agent_facts::language::Language::EN,
             )
         })?;
         #[cfg(target_os = "linux")]
@@ -64,7 +64,7 @@ impl NativeCapture {
                 let observed = crate::windows_permission_subject::verify_window(
                     target,
                     binding.window_id,
-                    maka_agent_facts::language::Language::En,
+                    maka_agent_facts::language::Language::EN,
                 )?;
                 if observed != *binding {
                     return Err(failed("preview application binding changed"));

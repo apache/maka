@@ -18,16 +18,13 @@
  */
 
 import * as sdk from '../../../packages/plugin-sdk/src/index.js';
-import { native } from '../../shared/package.js';
-export default {
+import { native, localizePackage } from '../../shared/package.js';
+export default localizePackage({
   schemaVersion: 1,
   id: 'maka.agent.protocol-processes',
   displayName: 'Protocol processes',
   description: 'Run processes used by connected agent protocols.',
-  localizations: {
-    'zh-CN': { displayName: '协议进程', description: '运行连接助手协议所需的进程。' },
-  },
   application: {
     host: native(sdk.nativeImplementations.protocolProcesses),
   },
-};
+});

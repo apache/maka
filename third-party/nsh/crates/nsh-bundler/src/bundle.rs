@@ -46,6 +46,8 @@ pub struct BundleOptions {
     /// imports are named from its app. The theme, capabilities and
     /// resolution stay the entry's. `None`: the entry's.
     pub asset_root_from: Option<PathBuf>,
+    /// Explicit BCP 47 locales whose CLDR formatting data (nsh-i18n) is bundled into the runtime.
+    pub locales: Option<Vec<String>>,
 }
 
 /// The app's identity a build gives it in place of `nsh.json`'s (what a
@@ -461,6 +463,7 @@ fn tailwind_setup(
     dir: &std::path::Path,
     development: bool,
     info: &AppInfo,
+    explicit_locales: Option<&[String]>,
 ) -> Result<Arc<plugin::ThemeSetup>, BundleError> {
     let mut setup = plugin::ThemeSetup::default();
     // The theme's tokens are classes (`bg-primary`): the default's unless
@@ -469,7 +472,7 @@ fn tailwind_setup(
     let path = dir.join("nsh.json");
     let Ok(text) = std::fs::read_to_string(&path) else {
         setup.theme.set_tokens(&tokens);
-        setup.i18n = i18n_json(dir, None)?;
+        setup.i18n = i18n_json_with_locales(dir, None, explicit_locales)?;
         setup.app = app_json(&serde_json::Value::Null, development, info);
         return Ok(Arc::new(setup));
     };
@@ -514,7 +517,7 @@ fn tailwind_setup(
         warn_ignored("statusBar", &ignored);
         setup.status_bar = Some(status_bar.to_string());
     }
-    setup.i18n = i18n_json(dir, Some(&config))?;
+    setup.i18n = i18n_json_with_locales(dir, Some(&config), explicit_locales)?;
     Ok(Arc::new(setup))
 }
 
@@ -541,27 +544,39 @@ pub fn i18n_json(
     dir: &std::path::Path,
     config: Option<&serde_json::Value>,
 ) -> Result<Option<String>, BundleError> {
+    i18n_json_with_locales(dir, config, None)
+}
+
+fn i18n_json_with_locales(
+    dir: &std::path::Path,
+    config: Option<&serde_json::Value>,
+    explicit_locales: Option<&[String]>,
+) -> Result<Option<String>, BundleError> {
     let translations = nsh_i18n::read_translations(dir).map_err(BundleError::other)?;
-    let locales = match config.and_then(|c| c.get("locales")) {
-        None => None,
-        Some(serde_json::Value::Array(items)) => Some(
-            items
-                .iter()
-                .filter_map(|item| match item.as_str() {
-                    Some(locale) => Some(locale.to_owned()),
-                    None => {
-                        warn_ignored("locales", &[format!("{item} is not a language tag")]);
-                        None
-                    }
-                })
-                .collect::<Vec<_>>(),
-        ),
-        Some(other) => {
-            warn_ignored(
-                "locales",
-                &[format!("{other} is not a list of language tags")],
-            );
-            None
+    let locales = if let Some(explicit) = explicit_locales {
+        Some(explicit.to_vec())
+    } else {
+        match config.and_then(|c| c.get("locales")) {
+            None => None,
+            Some(serde_json::Value::Array(items)) => Some(
+                items
+                    .iter()
+                    .filter_map(|item| match item.as_str() {
+                        Some(locale) => Some(locale.to_owned()),
+                        None => {
+                            warn_ignored("locales", &[format!("{item} is not a language tag")]);
+                            None
+                        }
+                    })
+                    .collect::<Vec<_>>(),
+            ),
+            Some(other) => {
+                warn_ignored(
+                    "locales",
+                    &[format!("{other} is not a list of language tags")],
+                );
+                None
+            }
         }
     };
     Ok(nsh_i18n::bundle_json(
@@ -646,7 +661,12 @@ pub async fn bundle_async(options: &BundleOptions) -> Result<Bundle, BundleError
     // Canonical: `cwd` is, and so is each directory above it.
     let app = app_dir(&cwd);
     let watch_root = app.clone();
-    let tailwind = tailwind_setup(&app, options.development, &options.app)?;
+    let tailwind = tailwind_setup(
+        &app,
+        options.development,
+        &options.app,
+        options.locales.as_deref(),
+    )?;
     let capabilities = capabilities(&app)?;
     let links = app_links(&app)?;
     // The entry's own `nsh.json` (beside it, or the one above that names
@@ -1104,7 +1124,7 @@ pub async fn bundle_hot_async(
     let plugin_error = Arc::new(Mutex::new(None));
     let assets = Arc::new(Mutex::new(Vec::new()));
     let app = app_dir(&cwd);
-    let tailwind = tailwind_setup(&app, true, &AppInfo::default())?;
+    let tailwind = tailwind_setup(&app, true, &AppInfo::default(), None)?;
     let capabilities = capabilities(&app)?;
     let links = app_links(&app)?;
     let resolve = ResolveSetup::read(&app)?.with_nshm(&app)?;
@@ -1796,8 +1816,13 @@ mod tests {
             assert_eq!(app_dir(&dir.join(sub)), dir, "{sub}");
         }
         // ... and the class check knows its tokens: the same setup.
-        let setup =
-            tailwind_setup(&app_dir(&dir.join("tests")), false, &AppInfo::default()).unwrap();
+        let setup = tailwind_setup(
+            &app_dir(&dir.join("tests")),
+            false,
+            &AppInfo::default(),
+            None,
+        )
+        .unwrap();
         assert_eq!(
             crate::classes::check(code, oxc::span::SourceType::tsx(), &setup.theme),
             []
@@ -2151,7 +2176,7 @@ mod tests {
         )
         .unwrap();
         assert!(ResolveSetup::read(&dir).is_ok());
-        let setup = tailwind_setup(&dir, false, &AppInfo::default()).unwrap();
+        let setup = tailwind_setup(&dir, false, &AppInfo::default(), None).unwrap();
         assert!(setup.theme.color("brand").is_some());
         assert_ne!(
             theme_tokens(&dir).unwrap().color("primary"),

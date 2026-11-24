@@ -828,7 +828,7 @@ async fn archive_parity_and_recovered_cell_bounding() -> TestResult<()> {
             &maka_agent_facts::tool_output::CellFinalEvidence::Completed {
                 result: completed.reference().clone(),
             },
-            maka_agent_facts::language::Language::En,
+            maka_agent_facts::language::Language::EN,
             true,
             &driver.owner.services.model_preparation_resources(),
             &CancellationToken::new(),
@@ -941,7 +941,7 @@ async fn archive_parity_and_recovered_cell_bounding() -> TestResult<()> {
             &maka_agent_facts::tool_output::CellFinalEvidence::Interrupted {
                 report: int_blob.reference().clone(),
             },
-            maka_agent_facts::language::Language::En,
+            maka_agent_facts::language::Language::EN,
             true,
             &driver.owner.services.model_preparation_resources(),
             &CancellationToken::new(),
@@ -1022,7 +1022,7 @@ async fn archive_parity_and_recovered_cell_bounding() -> TestResult<()> {
                 id: bounded_notif_id,
                 content: bounded_notice_blob.reference().clone(),
             },
-            maka_agent_facts::language::Language::En,
+            maka_agent_facts::language::Language::EN,
             true,
             &driver.owner.services.model_preparation_resources(),
             &CancellationToken::new(),

@@ -30,6 +30,7 @@ import {
   type ModelDetails,
 } from '../../app/modelSelection';
 import { message } from '../../app/text';
+import { installWorkbenchLocaleCatalog } from '../../app/localeCatalog';
 
 const CHOICES: ModelChoice[] = [
   {
@@ -78,6 +79,7 @@ const CHOICES: ModelChoice[] = [
 ];
 
 mount(() => {
+  installWorkbenchLocaleCatalog();
   currentLocale.set('en');
   const backend = signal<ModelBackend | null>(null);
   const instance = signal<number | null>(null);

@@ -136,7 +136,7 @@ async fn arm(
         },
         accepted_model: model.source.accepted.clone(),
         thinking_level: None,
-        language: Language::En,
+        language: Language::EN,
         sandbox_ceiling: None,
     };
     let _gate = owner.goals.gate.lock().await;
@@ -151,7 +151,7 @@ async fn arm(
                 grant: crate::owner::scheduler::BackgroundGrant::Model(grant),
                 token_budget: None,
                 start: true,
-                language: Language::En,
+                language: Language::EN,
             },
             Meter::default(),
             Some(Pending::Existing {

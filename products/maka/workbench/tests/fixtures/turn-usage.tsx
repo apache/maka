@@ -20,6 +20,7 @@
 import { mount } from 'nsh';
 import { HostProvider, type Host } from '../../app/host';
 import { TurnUsage } from '../../app/TurnUsage';
+import { installWorkbenchLocaleCatalog } from '../../app/localeCatalog';
 
 const attempts = [
   { usage: { input_tokens: null, output_tokens: 0 }, costUsd: null },
@@ -42,8 +43,11 @@ const host = {
   }),
 } as unknown as Host;
 
-mount(() => (
-  <HostProvider value={host}>
-    <TurnUsage sessionId="session" turnId="turn" current={() => true} close={() => {}} />
-  </HostProvider>
-));
+mount(() => {
+  installWorkbenchLocaleCatalog();
+  return (
+    <HostProvider value={host}>
+      <TurnUsage sessionId="session" turnId="turn" current={() => true} close={() => {}} />
+    </HostProvider>
+  );
+});

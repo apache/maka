@@ -17,23 +17,13 @@
  * under the License.
  */
 
-import { empty } from '../../shared/package.js';
+import { empty, localizePackage } from '../../shared/package.js';
 
-export default {
+export default localizePackage({
   schemaVersion: 1,
   id: 'maka.symbols',
   displayName: 'Symbols',
   description: 'Type "sym" and a name in the quick launcher to copy an emoji or symbol.',
-  localizations: {
-    'zh-CN': {
-      displayName: '符号',
-      description: '在快捷启动器输入“符号”或 sym 加名称，复制表情和符号。',
-    },
-    'zh-TW': {
-      displayName: '符號',
-      description: '在快速啟動器輸入「符号」或 sym 加名稱，複製表情和符號。',
-    },
-  },
   application: {
     ui: {
       module: 'ui.js',
@@ -44,4 +34,4 @@ export default {
       },
     },
   },
-};
+});

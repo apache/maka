@@ -519,9 +519,10 @@ function Change(props: { value: ToolChange; source: ToolSource; userScroll(): vo
       ? [tr('Recorded write'), tr('{count} bytes', { count: formatCount(value.bytes) })]
       : [
           tr('Recorded edit'),
-          value.replacements === 1
-            ? tr('1 replacement')
-            : tr('{count} replacements', { count: formatCount(value.replacements) }),
+          tr('tool.replacements_count', {
+            count: value.replacements,
+            formatted: formatCount(value.replacements),
+          }),
           value.startLine !== null && value.endLine !== null
             ? value.startLine === value.endLine
               ? tr('Recorded line {line}', { line: value.startLine })

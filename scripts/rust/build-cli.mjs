@@ -38,6 +38,13 @@ import { cargoBuild } from './cargo.mjs';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 
+async function readBundleLocalizations(repositoryRoot) {
+  const manifest = JSON.parse(
+    await readFile(join(repositoryRoot, 'locales.manifest.json'), 'utf8'),
+  );
+  return manifest.locales.map((entry) => entry.appleLocalization);
+}
+
 export function rustTarget(platform = process.platform, arch = process.arch) {
   const cpu = { x64: 'x86_64', arm64: 'aarch64' }[arch];
   const os = { darwin: 'apple-darwin', linux: 'unknown-linux-gnu', win32: 'pc-windows-msvc' }[
@@ -214,6 +221,7 @@ export async function stageDesktopBundle(
 ) {
   const version =
     versionOverride ?? workspaceVersion(await readFile(join(repositoryRoot, 'Cargo.toml'), 'utf8'));
+  const localizations = await readBundleLocalizations(repositoryRoot);
   const icon = icns(await readFile(join(repositoryRoot, 'assets/logo.png')));
   const metadata = await lstat(shell);
   if (!metadata.isFile() || metadata.size === 0) {
@@ -225,7 +233,10 @@ export async function stageDesktopBundle(
     const contents = join(stage, 'Contents');
     await mkdir(join(contents, 'Resources'), { recursive: true });
     await writeFile(join(contents, 'Resources', 'Maka.icns'), icon);
-    await writeFile(join(contents, 'Info.plist'), infoPlist({ ...desktopApp, version }));
+    await writeFile(
+      join(contents, 'Info.plist'),
+      infoPlist({ ...desktopApp, version, localizations }),
+    );
     await mkdir(join(contents, 'MacOS'));
     const executable = join(contents, 'MacOS', 'maka-desktop-shell');
     for (const resource of resources) {
@@ -244,7 +255,7 @@ export async function stageDesktopBundle(
           entitlements: basename(extra) === 'maka' ? entitlements : undefined,
         });
       }
-      await stageHostBundle(join(dirname(shell), 'maka-host-shell'), contents);
+      await stageHostBundle(join(dirname(shell), 'maka-host-shell'), contents, localizations);
       await chmod(stage, 0o755);
       signBundle(stage, desktopApp.id, { entitlements });
     } finally {
@@ -263,7 +274,7 @@ export async function stageDesktopBundle(
  * a complete bundle signature: the linker signature does not bind its plist
  * or seal its resources, and carries a build-derived identifier.
  */
-async function stageHostBundle(hostShell, contents) {
+async function stageHostBundle(hostShell, contents, localizations) {
   const metadata = await lstat(hostShell);
   if (!metadata.isFile() || metadata.size === 0) {
     throw new Error(`Host shell is not a regular file: ${hostShell}`);
@@ -274,6 +285,7 @@ async function stageHostBundle(hostShell, contents) {
     join(host, 'Info.plist'),
     infoPlist({
       ...hostApp,
+      localizations,
       executable: 'maka-host-shell',
       icon: undefined,
       extra: [
@@ -353,6 +365,7 @@ function infoPlist({
   version,
   executable = 'maka-desktop-shell',
   icon = 'Maka',
+  localizations = ['en'],
   extra = [],
 }) {
   // `CFBundleVersion` takes up to three integers, so a pre-release or build
@@ -382,6 +395,10 @@ function infoPlist({
       ['CFBundleVersion', build],
       ['LSMinimumSystemVersion', '11.0'],
     ].map(([key, value]) => `  <key>${key}</key>\n  <string>${escape(value)}</string>`),
+    '  <key>CFBundleLocalizations</key>',
+    '  <array>',
+    ...localizations.map((locale) => `    <string>${escape(locale)}</string>`),
+    '  </array>',
     '  <key>NSHighResolutionCapable</key>',
     '  <true/>',
     ...extra.map(([key, value]) =>

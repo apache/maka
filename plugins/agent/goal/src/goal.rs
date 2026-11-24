@@ -254,14 +254,7 @@ impl<A> Goal<A> {
     pub fn pause_for_settings(&mut self) {
         self.status = Status::Paused;
         self.authority_blocked = true;
-        self.note = match self.arm.language {
-            Language::En => {
-                "Review the model connection and conversation settings, then resume the Goal."
-            }
-            Language::ZhCn => "请检查模型连接和对话设置，然后继续目标。",
-            Language::ZhTw => "請檢查模型連線和對話設定，然後繼續目標。",
-        }
-        .into();
+        self.note = maka_agent_facts::i18n::goal::pause_for_settings(self.arm.language).into();
     }
     pub fn settled(
         &mut self,
@@ -300,29 +293,15 @@ impl<A> Goal<A> {
         };
         if failure.needs_user || self.failures >= limit {
             let reason = failure.diagnostic.unwrap_or_else(|| {
-                match self.arm.language {
-                    Language::En => "no reason was recorded",
-                    Language::ZhCn => "没有记录原因",
-                    Language::ZhTw => "沒有記錄原因",
-                }
-                .into()
+                maka_agent_facts::i18n::goal::no_reason_recorded(self.arm.language).into()
             });
             self.status = Status::Paused;
             self.retry_at = None;
-            self.pause_reason = Some(match self.arm.language {
-                Language::En => format!(
-                    "Paused after {} failed iteration(s) in a row. Last failure: {reason}",
-                    self.failures
-                ),
-                Language::ZhCn => format!(
-                    "连续 {} 次迭代失败，已暂停。最近一次失败：{reason}",
-                    self.failures
-                ),
-                Language::ZhTw => format!(
-                    "連續 {} 次迭代失敗，已暫停。最近一次失敗：{reason}",
-                    self.failures
-                ),
-            });
+            self.pause_reason = Some(maka_agent_facts::i18n::goal::paused_after_failures(
+                self.arm.language,
+                i64::from(self.failures),
+                &reason,
+            ));
         } else if failure.retry_at.is_some() {
             self.retry_at = failure.retry_at;
         }
@@ -349,20 +328,13 @@ impl<A> Goal<A> {
         self.retry_at = None;
         self.iterations += 1;
         self.report = None;
-        let content = match self.arm.language {
-            Language::En => format!(
-                "Continue this explicitly authorized goal (iteration {}):\n{}\n\nGoalStatus records iteration progress or changes goal status; an answer alone does not mark achievement. A finite token budget limits further dispatch; missing usage is not treated as zero. Previous checkpoint: {}",
-                self.iterations, self.arm.objective, self.note
-            ),
-            Language::ZhCn => format!(
-                "继续此已明确授权的目标（第 {} 次迭代）：\n{}\n\nGoalStatus 记录迭代进度或改变目标状态；普通回答不会将目标标记为完成。有限 token 预算限制后续派发，缺失用量不能视为零。上次检查点：{}",
-                self.iterations, self.arm.objective, self.note
-            ),
-            Language::ZhTw => format!(
-                "繼續此已明確授權的目標（第 {} 次迭代）：\n{}\n\nGoalStatus 記錄迭代進度或改變目標狀態；一般回答不會將目標標記為完成。有限 token 預算限制後續派發，缺失用量不能視為零。上次檢查點：{}",
-                self.iterations, self.arm.objective, self.note
-            ),
-        };
+        let iteration = self.iterations.to_string();
+        let content = maka_agent_facts::i18n::goal::continuation_prompt(
+            self.arm.language,
+            &iteration,
+            &self.note,
+            &self.arm.objective,
+        );
         self.pending = Some(Pending::Dispatch {
             request: Submit {
                 operation_id: format!("goal-{}-{}", self.id, self.iterations),
@@ -389,14 +361,12 @@ impl<A> Goal<A> {
             && (self.consumed.missing > 0 || self.consumed.known >= limit)
         {
             self.status = Status::BudgetLimited;
-            self.note = match (self.consumed.missing > 0, self.arm.language) {
-                (true, Language::En) => "Token accounting is incomplete; a larger finite budget cannot resolve missing usage.",
-                (true, Language::ZhCn) => "Token 用量尚不完整，提高有限预算不能补足缺失的用量证据。",
-                (true, Language::ZhTw) => "Token 用量尚不完整，提高有限預算不能補足缺失的用量證據。",
-                (false, Language::En) => "Token budget reached",
-                (false, Language::ZhCn) => "已达 Token 预算",
-                (false, Language::ZhTw) => "已達 Token 預算",
-            }.into();
+            self.note = if self.consumed.missing > 0 {
+                maka_agent_facts::i18n::goal::budget_incomplete_usage(self.arm.language)
+            } else {
+                maka_agent_facts::i18n::goal::budget_reached(self.arm.language)
+            }
+            .into();
         }
     }
 }
@@ -673,7 +643,7 @@ mod tests {
 
     fn sample_arm(id: Uuid, start: bool) -> Arm<String> {
         Arm {
-            language: Language::En,
+            language: Language::EN,
             operation_id: id,
             objective: "Ship composer lifecycle".into(),
             grant: "grant".into(),

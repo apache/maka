@@ -36,9 +36,7 @@ pub mod launch;
 
 /// Address of the private native-task namespace. This does not grant access.
 pub fn native_task_namespace() -> std::io::Result<std::path::PathBuf> {
-    Ok(std::env::temp_dir()
-        .canonicalize()?
-        .join("maka-native-tasks"))
+    Ok(dunce::canonicalize(std::env::temp_dir())?.join("maka-native-tasks"))
 }
 #[cfg(target_os = "linux")]
 mod linux;
@@ -57,4 +55,28 @@ pub enum Error {
     Io(#[from] std::io::Error),
     #[error("sandbox preparation cleanup is unconfirmed: {0}")]
     CleanupUnconfirmed(String),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use filesystem::{Access, Policy, Rule};
+
+    #[test]
+    fn native_task_namespace_can_be_denied_by_policy() {
+        let namespace = native_task_namespace().unwrap();
+        let policy = Policy {
+            default: Access::Write,
+            rules: vec![Rule::subtree(&namespace, Access::Deny)],
+            deny_globs: Vec::new(),
+        }
+        .compile()
+        .unwrap();
+        assert_eq!(policy.access(&namespace), Access::Deny);
+        assert_eq!(policy.access(&namespace.join("task")), Access::Deny);
+        assert_eq!(
+            policy.access(&namespace.parent().unwrap().join("other")),
+            Access::Write
+        );
+    }
 }

@@ -1762,7 +1762,7 @@ export function ChangesStudio(props: {
             popupStyle={{ ...floatingStyle(), width: 220 }}
             trigger={
               <Button
-                accessibilityLabel={tr('{count} review notes', { count: sessionNotes().length })}
+                accessibilityLabel={tr('review.notes_count', { count: sessionNotes().length })}
                 style={{
                   height: 28,
                   paddingHorizontal: 8,

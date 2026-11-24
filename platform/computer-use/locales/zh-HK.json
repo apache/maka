@@ -1,0 +1,30 @@
+{
+  "activity": {
+    "capture_screenshot": "截取畫面",
+    "capture_tab_screenshot": "截取分頁畫面",
+    "connect_browser": "連接瀏覽器",
+    "connect_tab": "連接分頁",
+    "drag": "拖移",
+    "inspect_selected_tab": "查看所選分頁",
+    "list_apps": "查看應用程式列表",
+    "list_browsers": "查看瀏覽器列表",
+    "list_tabs": "查看分頁列表",
+    "list_user_tabs": "查看用戶分頁",
+    "list_windows": "查看視窗列表",
+    "read_browser_history": "讀取瀏覽器歷史記錄",
+    "read_user_tab_context": "讀取用戶分頁內容"
+  },
+  "browser": {
+    "config_changed": "瀏覽器配置已變更；請先重設 Cua，再使用新的提供者",
+    "iframe_owner_unavailable": "iframe 所屬元素被遮擋、變換或分離；請重新截取分頁畫面"
+  },
+  "desktop": {
+    "app_selection_requires_window": "應用程式選擇需要指定一個開啟的視窗。可綁定視窗：{windows}",
+    "config_changed": "桌面配置已變更；請先重設 Cua，再切換桌面",
+    "cursor_geometry_unavailable": "無法取得原生游標元素幾何資訊；請使用截圖座標",
+    "launch_unavailable": "此列表項目不支援啟動；請選擇其已開啟的視窗",
+    "stale_capture": "stale_capture: 視窗已變更或截圖已消耗；請重新呼叫 getScreenshot",
+    "stale_target_process_changed": "stale_target: 應用程式處理程序已結束或變更；請重新綁定",
+    "window_geometry_changed": "截取畫面期間視窗幾何資訊已變更；請重新截取畫面"
+  }
+}

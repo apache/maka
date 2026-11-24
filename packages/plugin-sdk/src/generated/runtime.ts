@@ -1028,7 +1028,10 @@ export type AgentExternalModels =
       detail: string;
     };
 export type ExternalTaskId = string;
-export type Language = 'en' | 'zh-CN' | 'zh-TW';
+/**
+ * Resolved canonical BCP 47 language tag (for example en, zh-CN, zh-TW, zh-HK, ja, ko, es, fr, de, pt-BR, ru, it).
+ */
+export type Language = string;
 export type RunId = string;
 export type ExecutorSetupAction =
   | {
@@ -1609,7 +1612,10 @@ export type PricingMutation =
       kind: 'delete';
       modelKey: string;
     };
-export type LanguagePreference = 'auto' | 'en' | 'zh-CN' | 'zh-TW';
+/**
+ * Language preference: "auto" or a canonical BCP 47 locale tag.
+ */
+export type LanguagePreference = string;
 export type ProfileAvatar = 'blue' | 'green' | 'rose' | 'amber';
 /**
  * User-facing isolation preset, independent of whether approval may be requested.

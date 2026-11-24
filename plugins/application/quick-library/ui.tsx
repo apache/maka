@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { effect, Clipboard, computed, openUrl, signal, Storage, type JSX } from 'nsh';
+import { Clipboard, computed, openUrl, signal, Storage, type JSX } from 'nsh';
 import type { UiEmbeddedViewProps, UiModule } from '../../../packages/plugin-sdk/src/workbench.js';
 import {
   quickToolView,
@@ -25,7 +25,7 @@ import {
   type QuickItem,
   type QuickToolInput,
 } from '../../../packages/plugin-sdk/src/workbench-views.js';
-import { currentLocale, tr } from '../../../products/maka/workbench/app/locale';
+import { localizedKeywords, tr } from '../../../products/maka/workbench/app/locale';
 import { afterKeyword, search } from '../../shared/quick-search';
 import {
   expandLink,
@@ -38,9 +38,10 @@ import {
 import { LibrarySettings, type Library } from './settings';
 
 const KEY = 'maka.quick-library.items';
-const SNIPPET_KEYWORDS = ['snippet', 'snippets', '片段'];
-const NOTE_KEYWORDS = ['note', 'notes', '笔记', '筆記'];
-const LINK_KEYWORDS = ['link', 'links', '链接', '連結'];
+const snippetKeywords = () =>
+  localizedKeywords(['snippet', 'snippets'], 'launcher.keywords.snippet');
+const noteKeywords = () => localizedKeywords(['note', 'notes'], 'launcher.keywords.note');
+const linkKeywords = () => localizedKeywords(['link', 'links'], 'launcher.keywords.link');
 
 function createLibrary(): Library {
   const items = signal<readonly LibraryItem[] | null>(null);
@@ -74,16 +75,16 @@ const preview = (value: string) => value.replace(/\s+/g, ' ').slice(0, 120);
 function entry(kind: LibraryKind): QuickEntry {
   switch (kind) {
     case 'link':
-      return { id: 'links', title: tr('Quick Links'), icon: 'link', keywords: LINK_KEYWORDS };
+      return { id: 'links', title: tr('Quick Links'), icon: 'link', keywords: linkKeywords() };
     case 'snippet':
       return {
         id: 'snippets',
         title: tr('Text Snippets'),
         icon: 'snippet',
-        keywords: SNIPPET_KEYWORDS,
+        keywords: snippetKeywords(),
       };
     case 'note':
-      return { id: 'notes', title: tr('Notes'), icon: 'note', keywords: NOTE_KEYWORDS };
+      return { id: 'notes', title: tr('Notes'), icon: 'note', keywords: noteKeywords() };
   }
 }
 
@@ -200,8 +201,7 @@ function LibraryTool(props: { input: QuickToolInput; library: Library; kind: Lib
   return null;
 }
 
-export const activate: UiModule<JSX.Element>['activate'] = (context) => {
-  effect(() => currentLocale.set(context.locale()));
+export const activate: UiModule<JSX.Element>['activate'] = () => {
   const library = createLibrary();
   const tool = (kind: LibraryKind) => ({
     kind: 'view' as const,

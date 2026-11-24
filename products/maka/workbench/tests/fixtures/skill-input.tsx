@@ -23,8 +23,10 @@ import { SkillInput } from '../../app/SkillInput';
 import { SkillMessage, userMessagePresentation } from '../../app/SkillMessage';
 import type { ComposerEditor } from '../../app/ComposerEditor';
 import type { Row } from '../../app/history';
+import { installWorkbenchLocaleCatalog } from '../../app/localeCatalog';
 
 mount(() => {
+  installWorkbenchLocaleCatalog();
   const initial = '前😀 /skill:review 后';
   const draft = signal(initial);
   const selection = signal({ start: 0, end: 0 });

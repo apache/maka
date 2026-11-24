@@ -26,7 +26,7 @@ import { TokenCount } from './TokenCount';
 import type { Row } from './history';
 import { Icon } from './Icon';
 import type { ImagePreview } from './ImageThumbnail';
-import { tr } from './locale';
+import { currentLocale, tr } from './locale';
 import { MessageRow, type MessageViewState } from './MessageRow';
 import { turnOutcome, type TurnPresentation } from './processGroups';
 import type { ToolActivity } from './toolActivity';
@@ -174,12 +174,13 @@ function timelineRangeLabel(range: TrajectoryRange): string {
   const end = timelineTime(range.end, subsecond);
   if (new Date(range.start).toDateString() === new Date(range.end).toDateString())
     return start + ' – ' + end;
+  const locale = currentLocale();
   return (
-    new Date(range.start).toLocaleDateString() +
+    new Date(range.start).toLocaleDateString(locale) +
     ' ' +
     start +
     ' – ' +
-    new Date(range.end).toLocaleDateString() +
+    new Date(range.end).toLocaleDateString(locale) +
     ' ' +
     end
   );

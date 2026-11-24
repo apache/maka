@@ -436,7 +436,7 @@ function RoomSearchPopoverBody(props: {
         <Input
           autoFocus={platform.idiom !== 'terminal'}
           accessibilityLabel={tr('Search messages')}
-          placeholder={tr('Search messages…')}
+          placeholder={tr('rooms.search_messages')}
           value={query()}
           onChange={({ value }) => query.set(value)}
           style={{ ...captionTextStyle, color: C.text, flex: 1 }}

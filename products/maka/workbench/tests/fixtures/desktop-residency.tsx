@@ -24,6 +24,7 @@ import { nativeDesktop } from '../../app/nativeDesktop';
 import { applicationMenu } from '../../app/chrome';
 import { appearance } from '../../app/appearance';
 import { currentLocale } from '../../app/locale';
+import { installWorkbenchLocaleCatalog } from '../../app/localeCatalog';
 
 function Residency() {
   nativeDesktop();
@@ -31,6 +32,7 @@ function Residency() {
 }
 
 mount(() => {
+  installWorkbenchLocaleCatalog();
   const resident = signal(true);
   const page = signal(true);
   const session = signal('conversation-1');

@@ -306,7 +306,8 @@ impl Owner {
         snapshot
             .policy
             .language
-            .unwrap_or(self.configured_locale)
+            .as_ref()
+            .unwrap_or(&self.configured_locale)
             .resolve(self.native_language)
     }
 
@@ -412,7 +413,7 @@ impl Owner {
             })
             .map_err(|_| "agent_executor_unavailable")?;
         let configured_locale = LanguagePreference::from_locale(&settings.locale);
-        let native_language = maka_config::language::native_language();
+        let native_language = maka_agent_facts::language::Language::system();
         let skills = skills::Library::select(&context, &settings, revision.clone())?;
         let instruction_home = assistant::open_home(settings.assistant.as_ref())?;
         let executors = crate::executor::Executors::capture(

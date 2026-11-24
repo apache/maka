@@ -18,16 +18,13 @@
  */
 
 import * as sdk from '../../../packages/plugin-sdk/src/index.js';
-import { native } from '../../shared/package.js';
-export default {
+import { native, localizePackage } from '../../shared/package.js';
+export default localizePackage({
   schemaVersion: 1,
   id: 'maka.agent.questions',
   displayName: 'Assistant questions',
   description: 'Ask the user questions while a task is running.',
-  localizations: {
-    'zh-CN': { displayName: '助手提问', description: '在任务运行过程中向用户提问。' },
-  },
   application: {
     host: native(sdk.nativeImplementations.questions),
   },
-};
+});

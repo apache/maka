@@ -45,20 +45,15 @@ pub fn model_title(
     input: &serde_json::Value,
 ) -> Option<maka_agent_facts::display::Text> {
     use maka_agent_facts::display::Text;
-    let (en, zh, tw, detail) = match method {
-        "search" => (
-            "Search skills",
-            "搜索技能",
-            "搜尋技能",
-            input["query"].as_str(),
-        ),
-        "load" if input["resource"].is_object() => (
-            "Read skill resource",
-            "读取技能资源",
-            "讀取技能資源",
-            input["name"].as_str(),
-        ),
-        "load" => ("Read skill", "读取技能", "讀取技能", input["name"].as_str()),
+    enum Action {
+        Search,
+        ReadResource,
+        Read,
+    }
+    let (action, detail) = match method {
+        "search" => (Action::Search, input["query"].as_str()),
+        "load" if input["resource"].is_object() => (Action::ReadResource, input["name"].as_str()),
+        "load" => (Action::Read, input["name"].as_str()),
         _ => return None,
     };
     let resource = input["resource"]["path"].as_str();
@@ -77,12 +72,16 @@ pub fn model_title(
         detail.truncate(detail.floor_char_boundary(180));
         detail.push('…');
     }
-    let title = |verb: &str| {
+    Some(Text::for_locales(|locale| {
+        let verb = match action {
+            Action::Search => maka_agent_facts::i18n::tool_title::search_skills(locale),
+            Action::ReadResource => maka_agent_facts::i18n::tool_title::read_skill_resource(locale),
+            Action::Read => maka_agent_facts::i18n::tool_title::read_skill(locale),
+        };
         if detail.is_empty() {
             verb.to_owned()
         } else {
-            format!("{verb} · {detail}")
+            maka_agent_facts::i18n::tool_title::with_target(locale, verb, &detail)
         }
-    };
-    Some(Text::localized(&title(en), &title(zh), &title(tw)))
+    }))
 }

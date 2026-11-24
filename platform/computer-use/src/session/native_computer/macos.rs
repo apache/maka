@@ -487,23 +487,10 @@ impl Session {
         };
         let diagnostic = |cancelled| {
             let app = &approved.display.app_path;
-            ToolError::Failed(match (language, cancelled) {
-                (Language::En, false) => {
-                    format!(
-                        "macOS was asked to open {app}, but no window owned by that app appeared."
-                    )
-                }
-                (Language::En, true) => {
-                    format!("Window discovery for {app} was interrupted after launch.")
-                }
-                (Language::ZhCn, false) => {
-                    format!("已请求启动 {app}，但没有找到属于该应用的窗口。")
-                }
-                (Language::ZhCn, true) => format!("已请求启动 {app}，查找窗口时被中断。"),
-                (Language::ZhTw, false) => {
-                    format!("已請求啟動 {app}，但找不到屬於該應用程式的視窗。")
-                }
-                (Language::ZhTw, true) => format!("已請求啟動 {app}，尋找視窗時中斷。"),
+            ToolError::Failed(if cancelled {
+                crate::language::i18n_catalog::desktop::macos_launch_interrupted(language, app)
+            } else {
+                crate::language::i18n_catalog::desktop::macos_launch_no_window(language, app)
             })
         };
         tokio::select! {
@@ -984,7 +971,7 @@ mod tests {
                 &mut previous,
                 first.clone(),
                 true,
-                maka_agent_facts::language::Language::En
+                maka_agent_facts::language::Language::EN
             ),
             first
         );
@@ -992,7 +979,7 @@ mod tests {
             &mut previous,
             second.clone(),
             true,
-            maka_agent_facts::language::Language::En,
+            maka_agent_facts::language::Language::EN,
         );
         assert!(diff.contains("- Window A"));
         assert!(diff.contains("+ Window B"));
@@ -1002,7 +989,7 @@ mod tests {
                 &mut previous,
                 second,
                 true,
-                maka_agent_facts::language::Language::En
+                maka_agent_facts::language::Language::EN
             ),
             "Accessibility state unchanged."
         );
@@ -1129,7 +1116,7 @@ mod tests {
                 "Editor".into(),
                 "org.example.Editor".into(),
                 path.into(),
-                maka_agent_facts::language::Language::En,
+                maka_agent_facts::language::Language::EN,
             )
             .unwrap()
         };

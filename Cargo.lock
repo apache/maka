@@ -8272,6 +8272,8 @@ dependencies = [
  "base64 0.23.1",
  "bytes",
  "hex",
+ "maka-i18n",
+ "maka-i18n-build",
  "maka-plugin-core",
  "maka-provider-protocol",
  "maka-sandbox",
@@ -8635,6 +8637,8 @@ dependencies = [
  "maka-agent-facts",
  "maka-capabilities",
  "maka-code-runtime",
+ "maka-i18n",
+ "maka-i18n-build",
  "maka-js-runtime",
  "maka-plugin-core",
  "markdown",
@@ -8662,6 +8666,7 @@ dependencies = [
  "unicode-segmentation",
  "uuid",
  "windows-sys 0.61.2",
+ "zstd 0.14.3",
 ]
 
 [[package]]
@@ -8678,7 +8683,6 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.1",
- "sys-locale",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
@@ -8969,6 +8973,25 @@ name = "maka-host-shell"
 version = "0.3.0"
 dependencies = [
  "libc",
+]
+
+[[package]]
+name = "maka-i18n"
+version = "0.3.0"
+dependencies = [
+ "schemars 1.2.3",
+ "serde",
+ "serde_json",
+ "sys-locale",
+]
+
+[[package]]
+name = "maka-i18n-build"
+version = "0.3.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "zstd 0.14.3",
 ]
 
 [[package]]
@@ -9362,6 +9385,7 @@ version = "0.3.0"
 dependencies = [
  "cap-fs-ext",
  "cap-std",
+ "dunce",
  "flatbuffers",
  "globset",
  "hex",
@@ -9474,6 +9498,7 @@ dependencies = [
 name = "maka-session-title"
 version = "0.3.0"
 dependencies = [
+ "maka-agent-facts",
  "maka-agent-ports",
  "unicode-normalization",
 ]
@@ -9687,7 +9712,6 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.1",
- "sys-locale",
  "tempfile",
  "thiserror 2.0.21",
 ]
@@ -9769,6 +9793,7 @@ dependencies = [
  "maka-capabilities",
  "maka-event-log",
  "maka-host-runtime",
+ "maka-i18n",
  "maka-packages",
  "maka-plugin-core",
  "maka-process",

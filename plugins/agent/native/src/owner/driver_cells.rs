@@ -1885,11 +1885,7 @@ impl NativeCellPort {
                 "Prepared Cell approval differs from its original established interaction",
             ));
         }
-        let display = prepared.display(match self.run.access.spec().language {
-            maka_agent_facts::language::Language::En => "en",
-            maka_agent_facts::language::Language::ZhCn => "zh-CN",
-            maka_agent_facts::language::Language::ZhTw => "zh-TW",
-        });
+        let display = prepared.display(self.run.access.spec().language.tag());
         let mut admitted = vec![self.change(CellEvent::ChildDisplayRecorded {
             cell,
             operation,

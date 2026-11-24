@@ -350,7 +350,7 @@ mod tests {
             skip: 0,
             config: Arc::new(Config {
                 native_compaction: false,
-                language: maka_agent_facts::language::Language::En,
+                language: maka_agent_facts::language::Language::EN,
                 options: json!({"openai":{"store":false}}),
                 plaintext: None,
             }),

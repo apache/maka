@@ -131,6 +131,10 @@ test('desktop development stages the current macOS shell before starting Maka', 
     new URL('../../assets/logo.png', import.meta.url),
     join(directory, 'assets/logo.png'),
   );
+  await copyFile(
+    new URL('../../locales.manifest.json', import.meta.url),
+    join(directory, 'locales.manifest.json'),
+  );
   await writeFile(join(directory, 'Cargo.toml'), '[workspace.package]\nversion = "0.2.0"\n');
   const output = join(directory, 'custom-target/debug');
   const app = join(output, 'Maka.app/Contents/MacOS');

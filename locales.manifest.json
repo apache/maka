@@ -1,0 +1,78 @@
+{
+  "defaultLocale": "en",
+  "locales": [
+    {
+      "tag": "en",
+      "autonym": "English",
+      "appleLocalization": "en",
+      "fallbacks": []
+    },
+    {
+      "tag": "zh-CN",
+      "autonym": "简体中文",
+      "appleLocalization": "zh-Hans",
+      "fallbacks": ["en"]
+    },
+    {
+      "tag": "zh-TW",
+      "autonym": "繁體中文（中國台灣）",
+      "appleLocalization": "zh-Hant",
+      "fallbacks": ["en"]
+    },
+    {
+      "tag": "zh-HK",
+      "autonym": "繁體中文（中國香港）",
+      "appleLocalization": "zh-HK",
+      "overlay": "zh-TW",
+      "fallbacks": ["zh-TW", "en"]
+    },
+    {
+      "tag": "ja",
+      "autonym": "日本語",
+      "appleLocalization": "ja",
+      "fallbacks": ["en"]
+    },
+    {
+      "tag": "ko",
+      "autonym": "한국어",
+      "appleLocalization": "ko",
+      "fallbacks": ["en"]
+    },
+    {
+      "tag": "es",
+      "autonym": "Español",
+      "appleLocalization": "es",
+      "fallbacks": ["en"]
+    },
+    {
+      "tag": "fr",
+      "autonym": "Français",
+      "appleLocalization": "fr",
+      "fallbacks": ["en"]
+    },
+    {
+      "tag": "de",
+      "autonym": "Deutsch",
+      "appleLocalization": "de",
+      "fallbacks": ["en"]
+    },
+    {
+      "tag": "pt-BR",
+      "autonym": "Português (Brasil)",
+      "appleLocalization": "pt-BR",
+      "fallbacks": ["en"]
+    },
+    {
+      "tag": "ru",
+      "autonym": "Русский",
+      "appleLocalization": "ru",
+      "fallbacks": ["en"]
+    },
+    {
+      "tag": "it",
+      "autonym": "Italiano",
+      "appleLocalization": "it",
+      "fallbacks": ["en"]
+    }
+  ]
+}

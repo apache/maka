@@ -782,31 +782,18 @@ fn pieces_bytes(pieces: &[TextSource]) -> io::Result<u64> {
         total.checked_add(bytes).ok_or_else(overflow)
     })
 }
-fn omission_parts(language: Language) -> (&'static str, &'static str) {
-    match language {
-        Language::En => (
-            "\n[",
-            " media parts omitted; original media remains in locally stored history.]\n",
-        ),
-        Language::ZhCn => ("\n[省略了 ", " 个媒体部分；原件仍保存在本地历史中。]\n"),
-        Language::ZhTw => ("\n[省略了 ", " 個媒體部分；原件仍儲存在本機歷史中。]\n"),
-    }
-}
 fn omission_capacity(language: Language) -> usize {
-    let (start, end) = omission_parts(language);
-    start.len() + end.len() + usize::MAX.ilog10() as usize + 1
+    media_omitted_capacity(language)
 }
 fn omission(omitted: usize, language: Language) -> String {
-    let (start, end) = omission_parts(language);
-    let mut output = String::with_capacity(omission_capacity(language));
-    write!(&mut output, "{start}{omitted}{end}").expect("reserved omission accepts formatting");
-    output
+    maka_agent_facts::i18n::summary::media_omitted(
+        language,
+        i64::try_from(omitted).unwrap_or(i64::MAX),
+    )
 }
 
 pub(super) fn allocation_bytes(language: Language) -> io::Result<usize> {
-    let (start, middle, end) = prefix_parts(language);
-    let digits = usize::MAX.ilog10() as usize + 1;
-    let prefix = start.len() + middle.len() + end.len() + 2 * digits;
+    let prefix = prefix_capacity(language);
     let mut bytes =
         arc::<Owner>() + arc::<View>() + arc::<Contents>() + arc::<Directory>() + arc::<Messages>();
     add(&mut bytes, array::<TextSource>(TEXT_PIECES)?)?;
@@ -908,9 +895,7 @@ pub(super) async fn fit(
         owner: owner.clone(),
     };
     arena.arena.promote_to_file().await.map_err(failure)?;
-    let (start, middle, end) = prefix_parts(language);
-    let prefix_capacity =
-        start.len() + middle.len() + end.len() + 2 * (usize::MAX.ilog10() as usize + 1);
+    let prefix_capacity = prefix_capacity(language);
     let fit = Fit {
         language,
         prefix_capacity,

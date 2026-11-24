@@ -241,11 +241,10 @@ impl Computer {
         match result {
             Ok(CellResult::Failure { error, .. }) => {
                 return Err(partial(
-                    failed(match language {
-                        Language::En => format!("Cua JavaScript error: {}", error.message),
-                        Language::ZhCn => format!("Cua JavaScript 错误：{}", error.message),
-                        Language::ZhTw => format!("Cua JavaScript 錯誤：{}", error.message),
-                    }),
+                    failed(maka_computer_use::language::javascript_error(
+                        language,
+                        &error.message,
+                    )),
                     &context,
                     language,
                 ));

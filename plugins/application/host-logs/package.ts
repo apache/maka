@@ -18,15 +18,11 @@
  */
 
 import * as sdk from '../../../packages/plugin-sdk/src/index.js';
-import { native } from '../../shared/package.js';
-export default {
+import { native, localizePackage } from '../../shared/package.js';
+export default localizePackage({
   schemaVersion: 1,
   id: 'maka.application.host-logs',
   displayName: 'Host logs',
   description: 'Read and follow captured logs from the connected Host.',
-  localizations: {
-    'zh-CN': { displayName: 'Host 日志', description: '查看和跟随所连接 Host 的已捕获日志。' },
-    'zh-TW': { displayName: 'Host 日誌', description: '查看和跟隨所連線 Host 的已擷取日誌。' },
-  },
   application: { host: native(sdk.nativeImplementations.hostLogs) },
-};
+});

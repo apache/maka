@@ -844,9 +844,7 @@ export function ReviewBatchBar(props: {
           >
             <Icon name={expanded() ? 'down' : 'up'} size={14} color={C.secondary} />
             <Text style={{ ...captionTextStyle, color: C.text, fontWeight: '500' }}>
-              {notes().length === 1
-                ? tr('1 review note')
-                : tr('{count} review notes', { count: notes().length })}
+              {tr('review.notes_count', { count: notes().length })}
             </Text>
           </Button>
           <View style={{ flex: 1 }} />

@@ -427,11 +427,9 @@ impl Tab {
             .ok_or_else(|| failed("cursor frame unavailable"))?;
         let identity = format!("{}:{}", id, frame["loaderId"].as_str().unwrap_or_default());
         if matches!(operation, "update" | "control") && self.frame.as_ref() != Some(&identity) {
-            return Err(failed(match language {
-                Language::En => "stale_document: observe before showing its cursor",
-                Language::ZhCn => "stale_document: 请先观察，再显示光标",
-                Language::ZhTw => "stale_document: 請先觀察，再顯示游標",
-            }));
+            return Err(failed(
+                crate::language::i18n_catalog::browser::stale_document_cursor(language),
+            ));
         }
         let context = match &self.cursor_world {
             Some((previous, context)) if *previous == identity => *context,
