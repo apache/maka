@@ -1015,6 +1015,7 @@ export const workspaceMessages = {
   'Unborn HEAD': ['Unborn HEAD', '初始分支', '初始分支'],
   'Select base branch': ['Select base branch', '选择基准分支', '選擇基準分支'],
   'Filter branches…': ['Filter branches…', '筛选分支…', '篩選分支…'],
+  'Search branches…': ['Search branches…', '搜索分支…', '搜尋分支…'],
   'Select commit': ['Select commit', '选择提交', '選擇提交'],
   'Select a commit': ['Select a commit', '选择一条提交', '選擇一筆提交'],
   '(no commit message)': ['(no commit message)', '（无提交说明）', '（無提交說明）'],

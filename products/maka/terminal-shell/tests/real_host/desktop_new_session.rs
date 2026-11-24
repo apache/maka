@@ -1177,15 +1177,12 @@ async fn desktop_creates_and_reopens_a_named_worktree() {
     std::fs::write(project.join("tracked.txt"), "main").unwrap();
     git(&project, &["add", "tracked.txt"]);
     git(&project, &["commit", "-m", "Main"]);
-    git(
-        &project,
-        &["update-ref", "refs/remotes/origin/main", "refs/heads/main"],
-    );
     git(&project, &["switch", "-c", "release-base"]);
     const WORKTREE_FILE: &str = "WORKTREE_ONLY_FILE_CONTENT";
     std::fs::write(project.join("tracked.txt"), WORKTREE_FILE).unwrap();
     git(&project, &["commit", "-am", "Release"]);
     let base = git(&project, &["rev-parse", "HEAD"]);
+    git(&project, &["update-ref", "refs/remotes/origin/main", &base]);
     git(&project, &["switch", "main"]);
     std::fs::write(project.join("main-only.txt"), "local draft").unwrap();
 
@@ -1209,9 +1206,12 @@ async fn desktop_creates_and_reopens_a_named_worktree() {
     desktop.press("Focus message composer").await;
     desktop.type_text("FIRST_WORKTREE_MESSAGE").await;
 
-    desktop.press("Switch branch").await;
+    let branch = desktop.control("Switch branch").await;
+    desktop.press_at(branch.center());
     desktop.control("Create and check out new branch…").await;
     assert!(desktop.controls("origin/main").is_empty());
+    let starting_branch = desktop.control("release-base").await;
+    assert!(starting_branch.origin.y < branch.origin.y);
     desktop.artifact("local-branches");
     desktop.press("release-base").await;
     desktop
@@ -1238,13 +1238,26 @@ async fn desktop_creates_and_reopens_a_named_worktree() {
         })
         .await;
     assert_eq!(git(&project, &["rev-parse", "maka-desktop-branch"]), base);
-    desktop.press("Work location").await;
+    let location = desktop.control("Work location").await;
+    desktop.press_at(location.center());
+    let new_worktree = desktop.control("New local worktree").await;
+    assert!(new_worktree.origin.y < location.origin.y);
+    desktop.artifact("local-work-locations");
     desktop.press("New local worktree").await;
     let composer = desktop.platform.text_input_target();
+    desktop
+        .until("the location menu stayed open", || {
+            desktop
+                .controls("New local worktree")
+                .is_empty()
+                .then_some(())
+        })
+        .await;
     desktop.press("Base branch").await;
     desktop.target_after(composer).await;
-    desktop.type_text("release-base").await;
-    desktop.press("release-base").await;
+    desktop.type_text("origin/main").await;
+    desktop.press("origin/main").await;
+    assert_eq!(git(&project, &["branch", "--show-current"]), "main");
     assert_eq!(desktop.sessions().await.len(), 1);
     assert_eq!(
         git(&project, &["worktree", "list", "--porcelain"])
@@ -1430,6 +1443,7 @@ async fn desktop_creates_and_reopens_a_named_worktree() {
     desktop
         .press_until("Work location", "New local worktree")
         .await;
+    assert!(desktop.controls(name).is_empty());
     desktop.press("New local worktree").await;
     desktop.control("Base branch").await;
 

@@ -22,7 +22,11 @@ import type { JSX, ViewRef } from 'nsh';
 import { Button, Command, Input, Popover, Select } from 'nsh/base';
 import type { ServiceMethods } from '../../../../packages/plugin-sdk/src/generated/methods.js';
 import type { BrowserProject } from '../../../../products/maka/workbench/app/browsing';
-import { dialogTop } from '../../../../products/maka/workbench/app/chrome';
+import {
+  controlsLeft,
+  controlsRight,
+  dialogTop,
+} from '../../../../products/maka/workbench/app/chrome';
 import type { Host } from '../../../../products/maka/workbench/app/host';
 import { Icon } from '../../../../products/maka/workbench/app/Icon';
 import { tr, type MessageKey } from '../../../../products/maka/workbench/app/locale';
@@ -43,6 +47,7 @@ import {
   floatingStyle,
   inputBorderRadius,
   inputTextStyle,
+  menuDetailTextStyle,
   menuLabelStyle,
   menuRowStyle,
   menuRowHoverStyle,
@@ -106,6 +111,8 @@ const chipTextStyle = () => [
   { ...captionTextStyle, color: C.text, minWidth: 0, flexShrink: 1 },
   { numberOfLines: 1 },
 ];
+const menuAnchor = { placement: 'top', align: 'start', offset: 4, margin: 8 } as const;
+const branchMenuHeight = 344;
 
 type Choice = {
   value: string;
@@ -119,16 +126,21 @@ type Choice = {
 
 function ChoiceRow(props: { choice: Choice; selected?: boolean }) {
   return (
-    <View style={{ ...menuRowStyle(), paddingVertical: 6 }}>
+    <View style={{ ...menuRowStyle(), paddingVertical: 4 }}>
       <Icon name={props.choice.icon} size={14} color={C.secondary} />
-      <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
-        <Text style={[{ ...captionTextStyle, color: C.text }, { numberOfLines: 1 }]}>
+      <View style={{ flex: 1, minWidth: 0 }}>
+        <Text
+          style={[
+            { ...captionTextStyle, color: C.text },
+            { numberOfLines: 1, textOverflow: 'ellipsis-middle' },
+          ]}
+        >
           {props.choice.text ?? props.choice.title}
         </Text>
         <If when={props.choice.detail}>
           <Text
             style={[
-              { ...captionTextStyle, color: C.muted },
+              { ...menuDetailTextStyle, color: C.muted },
               { numberOfLines: 1, textOverflow: 'ellipsis-middle' },
             ]}
           >
@@ -166,11 +178,8 @@ function WorkspaceSelect(props: WorkspaceMenuProps) {
   return (
     <Select
       accessibilityLabel={props.label}
-      placement="top"
+      {...menuAnchor}
       cover={false}
-      align="start"
-      offset={8}
-      margin={8}
       style={{ flexShrink: 1, minWidth: 0 }}
       popupStyle={{
         ...floatingStyle(),
@@ -238,15 +247,21 @@ function WorkspaceSelect(props: WorkspaceMenuProps) {
 
 function BranchMenu(props: WorkspaceMenuProps & { footer?: JSX.Element }) {
   const choices = computed(() => new Map(props.choices.map((choice) => [choice.value, choice])));
-  const height = signal(240);
-  const popupHeight = () => Math.min(height(), windowSize().height - 24);
+  const height = signal(branchMenuHeight);
+  const popupHeight = () => Math.min(height(), windowSize().height - menuAnchor.margin * 2);
   let trigger: ViewRef | undefined;
   const openAtTrigger = async () => {
     const position = await trigger?.measure();
-    if (position)
-      height.set(
-        Math.max(112, Math.min(312, Math.floor(position.pagePosition.y) - dialogTop(16) - 20)),
-      );
+    if (position) {
+      const { width } = windowSize();
+      const popupWidth = Math.min(props.width, width - menuAnchor.margin * 2);
+      const left = Math.min(position.pagePosition.x, width - menuAnchor.margin - popupWidth);
+      const overlapsControls =
+        left < controlsLeft(true) || left + popupWidth > width - controlsRight(true);
+      const top = overlapsControls ? dialogTop(menuAnchor.margin) : menuAnchor.margin;
+      const roomAbove = Math.floor(position.pagePosition.y) - top - menuAnchor.offset;
+      height.set(Math.max(112, Math.min(branchMenuHeight, roomAbove)));
+    }
     props.onOpenChange(true);
   };
   return (
@@ -256,14 +271,11 @@ function BranchMenu(props: WorkspaceMenuProps & { footer?: JSX.Element }) {
         if (open) void openAtTrigger();
         else props.onOpenChange(false);
       }}
-      placement="top"
-      align="start"
-      offset={8}
-      margin={8}
+      {...menuAnchor}
       style={{ flexShrink: 1, minWidth: 0 }}
       popupStyle={{
         ...floatingStyle(),
-        width: Math.min(props.width, windowSize().width - 24),
+        width: props.width,
         maxHeight: popupHeight(),
       }}
       trigger={
@@ -307,11 +319,10 @@ function BranchMenu(props: WorkspaceMenuProps & { footer?: JSX.Element }) {
         placeholder={props.search}
         searchPrefix={<Icon name="search" size={14} color={C.muted} />}
         searchBarStyle={{
-          marginHorizontal: 4,
           paddingHorizontal: 8,
           height: 32,
           flexShrink: 0,
-          gap: 6,
+          gap: 8,
           flexDirection: 'row',
           alignItems: 'center',
         }}
@@ -326,7 +337,9 @@ function BranchMenu(props: WorkspaceMenuProps & { footer?: JSX.Element }) {
         empty={<Text style={menuLabelStyle()}>{props.empty ?? tr('No matches.')}</Text>}
         itemStyle={{ padding: 0 }}
         itemClass={`rounded-lg focus:bg-[${C.floatingRaised}]`}
-        renderGroup={(group) => <Text style={menuLabelStyle()}>{group.heading}</Text>}
+        renderGroup={(group) => (
+          <Text style={{ ...menuLabelStyle(), paddingTop: 4 }}>{group.heading}</Text>
+        )}
         renderItem={(entry) => (
           <ChoiceRow
             choice={
@@ -402,18 +415,13 @@ export function SessionWorkspaces(props: {
     const result = info();
     return result?.kind === 'git' ? result : null;
   });
-  const worktrees = computed(() => {
+  const worktree = computed(() => {
     const repository = git();
-    if (!repository) return [];
     const path = props.path();
-    if (path === repository.root || repository.worktrees.some((item) => item.path === path))
-      return repository.worktrees;
-    return [
-      { path, name: basenameLabel(path), branch: repository.headBranch },
-      ...repository.worktrees,
-    ];
+    return repository && path !== repository.root
+      ? { path, name: basenameLabel(path), branch: repository.headBranch }
+      : null;
   });
-  const worktree = computed(() => worktrees().find((item) => item.path === props.path()));
   const projectPath = () => git()?.root ?? props.path();
   const loadRecentProjects = async () => {
     const request = ++projectRead;
@@ -566,10 +574,7 @@ export function SessionWorkspaces(props: {
     if (value === copyPath && path) return void Clipboard.writeText(path).catch(props.report);
     const repository = git();
     if (!repository) return;
-    const target =
-      value === localCheckout
-        ? repository.root
-        : worktrees().find((item) => item.path === value)?.path;
+    const target = value === localCheckout ? repository.root : value === path ? path : undefined;
     if (!target) return;
     if (target === props.path()) {
       props.selectWorktree(null);
@@ -587,7 +592,7 @@ export function SessionWorkspaces(props: {
   const locationChoices = (): Choice[] => {
     const repository = git();
     if (!repository) return [];
-    return [
+    const choices: Choice[] = [
       { value: localCheckout, title: tr('Local'), icon: 'laptop', group: tr('Work location') },
       {
         value: newWorktree,
@@ -600,26 +605,22 @@ export function SessionWorkspaces(props: {
             ? tr('Commit to a branch before creating a worktree.')
             : undefined,
       },
-      ...worktrees().map(
-        (item): Choice => ({
-          value: item.path,
-          title: item.name,
-          detail: item.branch === item.name ? undefined : (item.branch ?? tr('Detached HEAD')),
+    ];
+    const current = worktree();
+    if (current) {
+      choices.push(
+        {
+          value: current.path,
+          title: current.name,
+          detail:
+            current.branch === current.name ? undefined : (current.branch ?? tr('Detached HEAD')),
           icon: 'fork',
           group: actions,
-        }),
-      ),
-      ...(worktree()
-        ? [
-            {
-              value: copyPath,
-              title: tr('Copy worktree path'),
-              icon: 'copy' as const,
-              group: actions,
-            },
-          ]
-        : []),
-    ];
+        },
+        { value: copyPath, title: tr('Copy worktree path'), icon: 'copy', group: actions },
+      );
+    }
+    return choices;
   };
   const branchChoices = computed((): Choice[] => {
     const repository = git();
@@ -760,7 +761,7 @@ export function SessionWorkspaces(props: {
           description={props.worktreeSelection() ? undefined : props.path()}
           icon={props.worktreeSelection() || worktree() ? 'fork' : 'laptop'}
           emphasized={props.worktreeSelection() !== null}
-          width={252}
+          width={worktree() ? 240 : 208}
           value={props.worktreeSelection() ? newWorktree : (worktree()?.path ?? localCheckout)}
           choices={locationChoices()}
           open={openMenu() === 'location'}
@@ -795,8 +796,8 @@ export function SessionWorkspaces(props: {
           }
           description={props.worktreeSelection() ? baseBranch() : branchTooltip()}
           icon="gitBranch"
-          width={324}
-          search={tr('Filter branches…')}
+          width={320}
+          search={tr('Search branches…')}
           empty={tr('No matching branches')}
           value={
             props.worktreeSelection()
