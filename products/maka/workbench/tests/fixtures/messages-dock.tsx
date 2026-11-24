@@ -20,8 +20,10 @@
 import { mount, signal, View, Text } from 'nsh';
 import { Button } from 'nsh/base';
 import { createMessagesDock } from '../../app/MessagesDock';
+import { installWorkbenchLocaleCatalog } from '../../app/localeCatalog';
 
 mount(() => {
+  installWorkbenchLocaleCatalog();
   const messages = signal(['first', 'second']);
   let reject: (() => void) | undefined;
   const unused = () => {

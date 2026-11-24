@@ -48,31 +48,27 @@ impl Projector {
                     if matches!(part, ContentPart::File { media_type, .. } if media_type.starts_with("image/") || media_type.starts_with("audio/"))
                     {
                         let audio = matches!(part, ContentPart::File { media_type, .. } if media_type.starts_with("audio/"));
-                        let kind = match (language, audio) {
-                            (Language::En, true) => "Audio",
-                            (Language::En, false) => "Image",
-                            (Language::ZhCn, true) => "音频",
-                            (Language::ZhCn, false) => "图像",
-                            (Language::ZhTw, true) => "音訊",
-                            (Language::ZhTw, false) => "影像",
+                        let kind = if audio {
+                            maka_agent_facts::i18n::wire::media_kind_audio(language)
+                        } else {
+                            maka_agent_facts::i18n::wire::media_kind_image(language)
                         };
                         if !labelled {
-                            let name = &result.tool_name;
-                            let id = &result.tool_call_id;
-                            self.images.push(ContentPart::text(match language {
-                                Language::En => format!("{kind} from tool {name} ({id}):"),
-                                Language::ZhCn => format!("来自工具 {name}（{id}）的{kind}："),
-                                Language::ZhTw => format!("來自工具 {name}（{id}）的{kind}："),
-                            }));
+                            self.images.push(ContentPart::text(
+                                maka_agent_facts::i18n::wire::media_from_tool(
+                                    language,
+                                    &result.tool_call_id,
+                                    kind,
+                                    &result.tool_name,
+                                ),
+                            ));
                             labelled = true;
                         }
                         self.images.push(std::mem::replace(
                             part,
-                            ContentPart::text(match language {
-                                Language::En => format!("{kind} supplied below."),
-                                Language::ZhCn => format!("{kind}见下方。"),
-                                Language::ZhTw => format!("{kind}見下方。"),
-                            }),
+                            ContentPart::text(maka_agent_facts::i18n::wire::media_supplied_below(
+                                language, kind,
+                            )),
                         ));
                     }
                 }

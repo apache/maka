@@ -47,24 +47,22 @@ impl Text {
             translations: BTreeMap::new(),
         }
     }
-    pub fn localized(en: &str, zh_cn: &str, zh_tw: &str) -> Self {
+    /// Populate a DisplayText for every built-in locale from a catalog function.
+    pub fn for_locales(mut render: impl FnMut(maka_i18n::BuiltinLocale) -> String) -> Self {
+        let fallback = render(maka_i18n::BuiltinLocale::En);
+        let mut translations = BTreeMap::new();
+        for locale in maka_i18n::BuiltinLocale::ALL {
+            if locale != maka_i18n::BuiltinLocale::En {
+                translations.insert(locale.tag().to_owned(), render(locale));
+            }
+        }
         Self {
-            fallback: en.into(),
-            translations: BTreeMap::from([
-                ("zh-CN".into(), zh_cn.into()),
-                ("zh-TW".into(), zh_tw.into()),
-            ]),
+            fallback,
+            translations,
         }
     }
     pub fn resolve(&self, locale: &str) -> &str {
-        self.translations
-            .get(locale)
-            .or_else(|| {
-                locale
-                    .split_once('-')
-                    .and_then(|(language, _)| self.translations.get(language))
-            })
-            .map_or(&self.fallback, String::as_str)
+        maka_i18n::resolve_translation(&self.translations, &self.fallback, locale)
     }
     pub fn validate(&self) -> Result<(), &'static str> {
         let valid_text = |text: &str| {

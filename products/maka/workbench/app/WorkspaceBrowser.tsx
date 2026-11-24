@@ -804,7 +804,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                 focusStyle={{ backgroundColor: C.raised }}
               >
                 <Text style={{ ...captionTextStyle, color: C.muted }}>
-                  {tr('{count} more', { count: moreBotWorkers() })}
+                  {tr('workspace.more_count', { count: moreBotWorkers() })}
                 </Text>
               </Button>
             </View>

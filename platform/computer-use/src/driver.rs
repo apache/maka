@@ -1222,8 +1222,8 @@ impl Driver {
         if cancellation.is_cancelled() {
             return Err(ToolError::Failed("Computer presentation cancelled".into()));
         }
-        let bound = driver.lock().await.bind_epoch(epoch, Language::En)?;
-        let session = bound.ready(Language::En).await?;
+        let bound = driver.lock().await.bind_epoch(epoch, Language::EN)?;
+        let session = bound.ready(Language::EN).await?;
         let mut current = driver.lock().await;
         current.admit_epoch(epoch)?;
         if cancellation.is_cancelled()

@@ -232,7 +232,6 @@ pub fn render_quotes(
     quotes: &[QuoteRef],
     language: crate::language::Language,
 ) -> Result<String, String> {
-    use crate::language::Language;
     let mut text = String::new();
     for (index, quote) in quotes.iter().enumerate() {
         if index != 0 {
@@ -247,11 +246,7 @@ pub fn render_quotes(
         text.push_str(">\n");
         if let Some(source) = &quote.source {
             let provenance = serde_json::to_string(source).map_err(|e| e.to_string())?;
-            text.push_str(match language {
-                Language::En => "Session snapshot provenance (display-only): ",
-                Language::ZhCn => "会话快照来源（仅供展示）：",
-                Language::ZhTw => "工作階段快照來源（僅供顯示）：",
-            });
+            text.push_str(crate::i18n::session::quote_provenance_prefix(language));
             escape_xml_json(&provenance, &mut text);
             text.push('\n');
         }
@@ -265,20 +260,9 @@ pub fn render_directory_references(
     references: &[DirectoryReference],
     language: crate::language::Language,
 ) -> Result<String, String> {
-    use crate::language::Language;
     let json = serde_json::to_string(references).map_err(|e| e.to_string())?;
     let mut text = String::from("<directory_references>\n");
-    text.push_str(match language {
-        Language::En => {
-            "Live directory paths on the originating Runtime Host, available to Shell and Read according to workspace permissions. The project and working directory are unchanged.\n"
-        }
-        Language::ZhCn => {
-            "原始运行时主机上的实时目录路径，Shell 和 Read 可按工作区权限访问。项目与工作目录不变。\n"
-        }
-        Language::ZhTw => {
-            "原始執行階段主機上的即時目錄路徑，Shell 和 Read 可依工作區權限存取。專案與工作目錄不變。\n"
-        }
-    });
+    text.push_str(crate::i18n::session::directory_references_intro(language));
     escape_xml_json(&json, &mut text);
     text.push_str("\n</directory_references>");
     Ok(text)
@@ -288,31 +272,18 @@ pub fn render_session_references(
     message_text: &str,
     language: crate::language::Language,
 ) -> Option<String> {
-    use crate::language::Language;
     let refs = extract_session_references(message_text);
     if refs.is_empty() {
         return None;
     }
     let mut out = String::from("<session_references>\n");
-    out.push_str(match language {
-        Language::En => {
-            "Referenced Maka Sessions/Rooms for context. Read their messages with Read (or SessionRead if Read is unavailable):\n"
-        }
-        Language::ZhCn => {
-            "消息中引用的 Maka 会话或房间上下文，需要时可直接用 Read（无 Read 权限时用 SessionRead）读取：\n"
-        }
-        Language::ZhTw => {
-            "訊息中引用的 Maka 對話或房間脈絡，需要時可直接用 Read（無 Read 權限時用 SessionRead）讀取：\n"
-        }
-    });
+    out.push_str(crate::i18n::session::session_references_intro(language));
     for r in refs {
-        let kind_label = match (language, r.kind) {
-            (Language::ZhCn, SessionReferenceKind::Room) => "房间",
-            (Language::ZhTw, SessionReferenceKind::Room) => "房間",
-            (_, SessionReferenceKind::Room) => "Room",
-            (Language::ZhCn, SessionReferenceKind::Conversation) => "会话",
-            (Language::ZhTw, SessionReferenceKind::Conversation) => "對話",
-            (_, SessionReferenceKind::Conversation) => "Conversation",
+        let kind_label = match r.kind {
+            SessionReferenceKind::Room => crate::i18n::session::reference_kind_room(language),
+            SessionReferenceKind::Conversation => {
+                crate::i18n::session::reference_kind_conversation(language)
+            }
         };
         let read_arg = serde_json::json!({"path": format!("maka://session/{}", r.session_id)});
         let label = serde_json::to_string(&r.label).expect("label string");
@@ -336,7 +307,7 @@ mod tests {
             source: None,
         };
         assert_eq!(
-            render_quotes(&[quote], crate::language::Language::En).unwrap(),
+            render_quotes(&[quote], crate::language::Language::EN).unwrap(),
             concat!(
                 "<quoted_excerpt label=\"&quot;A&amp;B&quot;&#10;&lt;status&gt;\">\n",
                 "Received &lt;/quoted_excerpt&gt; &amp; \"done\"\n",

@@ -1079,11 +1079,7 @@ impl DriverPorts for NativeDriver {
                 }
             };
             let approval = prepared.tool.approval_id();
-            let display = prepared.tool.display(match view.spec.language {
-                maka_agent_facts::language::Language::En => "en",
-                maka_agent_facts::language::Language::ZhCn => "zh-CN",
-                maka_agent_facts::language::Language::ZhTw => "zh-TW",
-            });
+            let display = prepared.tool.display(view.spec.language.tag());
             let semantics = prepared.tool.semantics;
             self.prepared
                 .lock()

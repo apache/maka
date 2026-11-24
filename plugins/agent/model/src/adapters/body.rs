@@ -302,7 +302,7 @@ mod tests {
             Header::freeze(serde_json::json!({"model":"test"})).await,
             source,
             options(),
-            Language::En,
+            Language::EN,
         )
         .into_stream();
         let mut head = Vec::new();
@@ -451,7 +451,7 @@ mod tests {
                     Header::freeze(fields.clone()).await,
                     source,
                     options(),
-                    Language::En,
+                    Language::EN,
                 ),
                 prepared(
                     Header::freeze(fields.clone()).await,

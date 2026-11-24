@@ -17,16 +17,33 @@
  * under the License.
  */
 
-const compact = new Intl.NumberFormat('en-US', {
-  notation: 'compact',
-  maximumFractionDigits: 1,
-});
-const grouped = new Intl.NumberFormat('en-US', { maximumFractionDigits: 20 });
+import { currentLocale } from './locale';
+
+const compactCache = new Map<string, Intl.NumberFormat>();
+const groupedCache = new Map<string, Intl.NumberFormat>();
+
+function getFormatter(
+  cache: Map<string, Intl.NumberFormat>,
+  locale: string,
+  options: Intl.NumberFormatOptions,
+): Intl.NumberFormat {
+  let formatter = cache.get(locale);
+  if (!formatter) {
+    formatter = new Intl.NumberFormat(locale, options);
+    cache.set(locale, formatter);
+  }
+  return formatter;
+}
 
 export function formatCount(value: number): string {
-  return grouped.format(value);
+  return getFormatter(groupedCache, currentLocale(), { maximumFractionDigits: 20 }).format(value);
 }
 
 export function formatCompactCount(value: number): string {
-  return compact.format(value).toLowerCase();
+  return getFormatter(compactCache, currentLocale(), {
+    notation: 'compact',
+    maximumFractionDigits: 1,
+  })
+    .format(value)
+    .replace(/([KMBT])$/, (unit) => unit.toLowerCase());
 }

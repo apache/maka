@@ -20,8 +20,10 @@
 import { mount, signal, Text, View, type JSX } from 'nsh';
 import type { ComposerSession } from '../../../../../packages/plugin-sdk/src/composer-view.js';
 import { StageFloatingComposer } from '../../app/StageFloatingComposer';
+import { installWorkbenchLocaleCatalog } from '../../app/localeCatalog';
 
 mount(() => {
+  installWorkbenchLocaleCatalog();
   const quotes = signal([{ text: 'First selected passage' }, { text: 'Second selected passage' }]);
   const sent = signal('');
   const session = {

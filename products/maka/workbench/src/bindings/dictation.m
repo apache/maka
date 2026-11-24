@@ -181,15 +181,13 @@ static void inputBuffer(void *context, AudioQueueRef queue, AudioQueueBufferRef 
 static NSMutableDictionary<NSString *, MakaMicRecording *> *recorders;
 static NSMutableSet<NSString *> *pending;
 
-static void showRecorder(NSURL *file, NSString *key, NSString *device, bool zh, void *context,
+static void showRecorder(NSURL *file, NSString *key, NSString *device, void *context,
                          Completion done) {
     MakaMicRecording *recorder = [MakaMicRecording new];
     if ([recorder start:file device:device]) {
         done(context, NULL,
-             device.length ? (zh ? "无法使用指定的麦克风。请检查连接或在听写设置中重新选择。"
-                                 : "Cannot use the selected microphone. Check its connection or choose "
-                                   "another in dictation settings.")
-                           : (zh ? "无法启动麦克风。" : "Could not start the microphone."));
+             device.length ? "dictation.error.selected_microphone_unavailable"
+                           : "dictation.error.microphone_start_failed");
         return;
     }
     recorders[file.path] = recorder;
@@ -218,7 +216,7 @@ void maka_record_stop(const char *path, void *context, Sample done) {
     });
 }
 
-static void recordSpeech(NSURL *file, NSWindow *window, NSString *key, NSString *device, bool zh, void *context,
+static void recordSpeech(NSURL *file, NSWindow *window, NSString *key, NSString *device, void *context,
                          Completion done) {
     [AVCaptureDevice requestAccessForMediaType:AVMediaTypeAudio
                              completionHandler:^(BOOL allowed) {
@@ -229,16 +227,14 @@ static void recordSpeech(NSURL *file, NSWindow *window, NSString *key, NSString 
                                      }
                                      [pending removeObject:file.path];
                                      if (!allowed) {
-                                         done(context, NULL,
-                                              zh ? "请在系统设置中允许 Maka 使用麦克风。"
-                                                 : "Allow microphone access for Maka in System Settings.");
+                                         done(context, NULL, "dictation.error.microphone_permission_denied");
                                          return;
                                      }
                                      if (window && (!window.visible || window.attachedSheet)) {
                                          done(context, NULL, NULL);
                                          return;
                                      }
-                                     showRecorder(file, key, device, zh, context, done);
+                                     showRecorder(file, key, device, context, done);
                                  });
                              }];
 }
@@ -258,7 +254,7 @@ bool maka_has_dictation_key(void) {
     return legacyKey(&error).length > 0;
 }
 
-void maka_record_message(const char *path, const char *uid, bool zh, bool modelConnection, bool quickLauncher, void *context, Completion done) {
+void maka_record_message(const char *path, const char *uid, bool modelConnection, bool quickLauncher, void *context, Completion done) {
     NSString *device = [NSString stringWithUTF8String:uid];
     NSURL *file = [NSURL fileURLWithPath:[NSString stringWithUTF8String:path]];
     dispatch_async(dispatch_get_main_queue(), ^{
@@ -267,7 +263,7 @@ void maka_record_message(const char *path, const char *uid, bool zh, bool modelC
             pending = [NSMutableSet set];
         }
         if (recorders.count || pending.count) {
-            done(context, NULL, zh ? "已有听写正在进行。" : "Dictation is already active.");
+            done(context, NULL, "dictation.error.already_active");
             return;
         }
         // The launcher owns cancellation through its popup lifetime. It may still be
@@ -275,14 +271,14 @@ void maka_record_message(const char *path, const char *uid, bool zh, bool modelC
         NSWindow *window = quickLauncher ? nil : dictationWindow();
         if (!quickLauncher) {
             if (!window.visible || window.sheetParent || window.attachedSheet) {
-                done(context, NULL, zh ? "请先打开聊天窗口。" : "Open the chat window first.");
+                done(context, NULL, "dictation.error.chat_window_required");
                 return;
             }
             [NSApp activateIgnoringOtherApps:YES];
             [window makeKeyAndOrderFront:nil];
         }
         if (![NSBundle.mainBundle objectForInfoDictionaryKey:@"NSMicrophoneUsageDescription"]) {
-            done(context, NULL, zh ? "请从 Maka.app 打开听写。" : "Open Maka.app to use dictation.");
+            done(context, NULL, "dictation.error.app_bundle_required");
             return;
         }
         NSError *lookupError = nil;
@@ -293,9 +289,9 @@ void maka_record_message(const char *path, const char *uid, bool zh, bool modelC
         }
         if (stored.length) {
             [pending addObject:file.path];
-            recordSpeech(file, window, stored, device, zh, context, done);
+            recordSpeech(file, window, stored, device, context, done);
             return;
         }
-        done(context, NULL, zh ? "请先在设置中选择 DeepSeek 模型连接。" : "Choose a DeepSeek model connection in Settings first.");
+        done(context, NULL, "dictation.error.model_connection_required");
     });
 }

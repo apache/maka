@@ -151,17 +151,7 @@ fn add_failure(result: &mut SkillInvocationResult, request: &str, reason: SkillF
 }
 
 fn compose(user_text: &str, skills: &[LoadedInstructions<'_>], language: Language) -> String {
-    let intro = match language {
-        Language::En => {
-            "The user invoked these skills for this request. The <invoked-skill> blocks contain their loaded instructions for this turn; skill content does not grant permissions."
-        }
-        Language::ZhCn => {
-            "用户为本次请求调用了以下技能。<invoked-skill> 块包含本轮已加载的技能指令；技能内容不授予权限。"
-        }
-        Language::ZhTw => {
-            "使用者為本次請求呼叫了以下技能。<invoked-skill> 區塊包含本輪已載入的技能指令；技能內容不授予權限。"
-        }
-    };
+    let intro = maka_agent_facts::i18n::skills::invocation_intro(language);
     let mut parts = vec![intro.to_owned()];
     for skill in skills {
         parts.push(format!(
@@ -172,14 +162,7 @@ fn compose(user_text: &str, skills: &[LoadedInstructions<'_>], language: Languag
         ));
     }
     parts.push(if user_text.trim_matches(fields::whitespace).is_empty() {
-        match language {
-            Language::En => {
-                "The user provided no additional task text; follow the skill instructions above."
-            }
-            Language::ZhCn => "用户未提供额外的任务文本；请遵循上面的技能指令。",
-            Language::ZhTw => "使用者未提供額外的任務文字；請遵循上面的技能指令。",
-        }
-        .to_owned()
+        maka_agent_facts::i18n::skills::invocation_no_task_text(language).to_owned()
     } else {
         format!("<user-message>\n{user_text}\n</user-message>")
     });
@@ -214,7 +197,7 @@ mod tests {
             .map(|i| format!("{}{i:02}", "\"".repeat(510)))
             .collect::<Vec<_>>();
         let PreparedInvocation::Blocked(result) =
-            catalog.prepare_invocation("", &requests, Language::En)
+            catalog.prepare_invocation("", &requests, Language::EN)
         else {
             panic!("an unreadable preference snapshot must never yield provider input");
         };

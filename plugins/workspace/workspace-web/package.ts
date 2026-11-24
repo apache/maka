@@ -18,16 +18,13 @@
  */
 
 import * as sdk from '../../../packages/plugin-sdk/src/index.js';
-import { native } from '../../shared/package.js';
-export default {
+import { native, localizePackage } from '../../shared/package.js';
+export default localizePackage({
   schemaVersion: 1,
   id: 'maka.agent.workspace-web',
   displayName: 'Web tools',
   description: 'Search the web and read web pages for the assistant.',
-  localizations: {
-    'zh-CN': { displayName: '网页工具', description: '为助手搜索网络并读取网页。' },
-  },
   application: {
     host: native(sdk.nativeImplementations.workspaceWeb),
   },
-};
+});

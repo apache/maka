@@ -135,11 +135,8 @@ async fn fit_generated_summary(
             excerpts.recent.clear();
         }
         let mut selected = Vec::new();
-        let label = match language {
-            Language::En => format!("request-source message position {position}"),
-            Language::ZhCn => format!("源请求消息位置 {position}"),
-            Language::ZhTw => format!("來源請求訊息位置 {position}"),
-        };
+        let pos = position.to_string();
+        let label = maka_agent_facts::i18n::summary::source_message_position(language, &pos);
         match &mut message {
             Message::User { content, .. } => {
                 extract_media(content, &label, &mut selected, language)
@@ -182,31 +179,19 @@ async fn fit_generated_summary(
     let head = String::from_utf8_lossy(&excerpts.head).into_owned();
     let recent = String::from_utf8_lossy(&excerpts.recent).into_owned();
     let tail = String::from_utf8_lossy(&excerpts.tail.into_iter().collect::<Vec<_>>()).into_owned();
-    let notice = match language {
-        Language::En => {
-            "Conversation excerpts for summarization: text is omitted to fit this model. Complete history remains stored locally."
-        }
-        Language::ZhCn => "用于总结的对话节选：为适应模型，已省略部分文本；完整历史仍保存在本地。",
-        Language::ZhTw => {
-            "用於總結的對話節錄：為符合模型容量，已省略部分文字；完整歷史仍儲存在本機。"
-        }
-    };
+    let notice = maka_agent_facts::i18n::summary::excerpt_notice(language);
     let mut text_bytes = max_bytes.saturating_sub(estimate(&system).saturating_mul(3) as usize);
     loop {
         let omission = if omitted == 0 {
             notice.to_owned()
         } else {
-            match language {
-                Language::En => format!(
-                    "{notice}\n[{omitted} media parts omitted; original media remains in locally stored history.]\n"
-                ),
-                Language::ZhCn => {
-                    format!("{notice}\n[省略了 {omitted} 个媒体部分；原件仍保存在本地历史中。]\n")
-                }
-                Language::ZhTw => {
-                    format!("{notice}\n[省略了 {omitted} 個媒體部分；原件仍儲存在本機歷史中。]\n")
-                }
-            }
+            format!(
+                "{notice}{}",
+                maka_agent_facts::i18n::summary::media_omitted(
+                    language,
+                    i64::try_from(omitted).unwrap_or(i64::MAX),
+                )
+            )
         };
         let omission = if omitted == 0 {
             omission
@@ -220,11 +205,8 @@ async fn fit_generated_summary(
                 )
             )
         };
-        let (earlier_label, recent_label) = match language {
-            Language::En => ("Earlier task or summary:", "Recent conversation:"),
-            Language::ZhCn => ("早期任务或摘要：", "近期对话："),
-            Language::ZhTw => ("早期任務或摘要：", "近期對話："),
-        };
+        let earlier_label = maka_agent_facts::i18n::summary::earlier_heading(language);
+        let recent_label = maka_agent_facts::i18n::summary::recent_heading(language);
         let mut content = vec![ContentPart::text(format!(
             "{omission}\n{earlier_label}\n{}\n{recent_label}\n{}\n{}",
             excerpt(&head, text_bytes / 3, language),
@@ -274,17 +256,9 @@ fn extract_media(
 ) {
     for (index, part) in parts.iter_mut().enumerate() {
         if let ContentPart::File { media_type, .. } = part {
-            let label = match language {
-                Language::En => format!(
-                    "[Media: {source}, content part {index}, {media_type}; original in locally stored history]\n"
-                ),
-                Language::ZhCn => format!(
-                    "[媒体：{source}，内容部分 {index}，{media_type}；原件保存在本地历史中]\n"
-                ),
-                Language::ZhTw => format!(
-                    "[媒體：{source}，內容部分 {index}，{media_type}；原件儲存在本機歷史中]\n"
-                ),
-            };
+            let idx = index.to_string();
+            let label =
+                maka_agent_facts::i18n::summary::media_label(language, &idx, media_type, source);
             let file = std::mem::replace(part, ContentPart::text(&label));
             files.push((label, file));
         }
@@ -295,11 +269,7 @@ fn excerpt(text: &str, bytes: usize, language: Language) -> String {
     if text.len() <= bytes {
         return text.into();
     }
-    let gap = match language {
-        Language::En => "\n[… omitted from summary input …]\n",
-        Language::ZhCn => "\n[… 已从总结输入中省略 …]\n",
-        Language::ZhTw => "\n[… 已從總結輸入中省略 …]\n",
-    };
+    let gap = maka_agent_facts::i18n::summary::omitted_gap(language);
     if bytes < gap.len() {
         return String::new();
     }

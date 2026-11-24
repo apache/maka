@@ -19,4 +19,3 @@
 
 //! Native client resources shared by the NSH workbench and its Host tests.
 pub mod file;
-pub mod locale;

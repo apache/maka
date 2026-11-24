@@ -289,7 +289,7 @@ impl Handler for Settings {
         let store = self.configuration.clone();
         let public_catalog = self.catalog.clone();
         let log = self.log.clone();
-        let configured_locale = self.configured_locale;
+        let configured_locale = self.configured_locale.clone();
         let native_language = self.native_language;
         let source = self.source.clone();
         let workspace_locations = self.workspace_locations.clone();

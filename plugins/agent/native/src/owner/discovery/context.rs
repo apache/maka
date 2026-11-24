@@ -39,11 +39,7 @@ pub(super) fn environment(language: Language, workspace: &str, timezone: &str) -
     let time = local_timestamp(at, timezone)
         .or_else(|| timestamp(at))
         .unwrap_or_default();
-    match language {
-        Language::ZhCn => format!("\n\n当前时间：{time}。工作区：{workspace}"),
-        Language::ZhTw => format!("\n\n目前時間：{time}。工作區：{workspace}"),
-        _ => format!("\n\nCurrent time: {time}. Workspace: {workspace}"),
-    }
+    maka_agent_facts::i18n::discovery::context_environment(language, &time, workspace)
 }
 
 impl Owner {
@@ -104,17 +100,8 @@ impl Owner {
         let recent_conversations: Vec<_> = recent.into_iter().take(6)
             .map(|(at, session_id)| serde_json::json!({"session_id":session_id,"path":format!("maka://session/{session_id}"),"last_message_at":timestamp(at)}))
             .collect();
-        let guidance = match job.approval.language {
-            Language::ZhCn => {
-                "调查开场引用。可用已获准的工具按需读取。近期会话仅提供调查入口，可以继续查找其他相关资料。"
-            }
-            Language::ZhTw => {
-                "調查開場引用。可用已獲准的工具按需讀取。近期對話僅提供調查入口，可以繼續尋找其他相關資料。"
-            }
-            _ => {
-                "Discovery opening references. Read them as needed with the authorized tools. Recent conversations are starting points. Continue exploring other relevant material."
-            }
-        };
+        let guidance =
+            maka_agent_facts::i18n::discovery::context_opening_guidance(job.approval.language);
         Ok(format!(
             "\n\n{guidance}\n{}",
             serde_json::json!({"last_investigation":last_investigation,"recent_conversations":recent_conversations})

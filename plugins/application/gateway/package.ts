@@ -18,15 +18,12 @@
  */
 
 import * as sdk from '../../../packages/plugin-sdk/src/index.js';
-import { one, native } from '../../shared/package.js';
-export default {
+import { one, native, localizePackage } from '../../shared/package.js';
+export default localizePackage({
   schemaVersion: 1,
   id: 'maka.agent.gateway',
   displayName: 'Host connection',
   description: 'Connect the app to the assistant running on the host.',
-  localizations: {
-    'zh-CN': { displayName: '主机连接', description: '将应用连接到主机上运行的助手。' },
-  },
   application: {
     host: {
       ...native(sdk.nativeImplementations.gateway),
@@ -47,4 +44,4 @@ export default {
       },
     },
   },
-};
+});

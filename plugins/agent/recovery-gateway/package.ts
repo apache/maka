@@ -18,15 +18,12 @@
  */
 
 import * as sdk from '../../../packages/plugin-sdk/src/index.js';
-import { one, native } from '../../shared/package.js';
-export default {
+import { one, native, localizePackage } from '../../shared/package.js';
+export default localizePackage({
   schemaVersion: 1,
   id: 'maka.agent.recovery-gateway',
   displayName: 'Recovery access',
   description: 'Connect the recovery view to the host.',
-  localizations: {
-    'zh-CN': { displayName: '修复功能连接', description: '将应用修复页面连接到主机。' },
-  },
   application: {
     host: {
       ...native(sdk.nativeImplementations.gateway),
@@ -35,4 +32,4 @@ export default {
       },
     },
   },
-};
+});

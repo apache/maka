@@ -52,6 +52,7 @@ const SDK_RESOURCES: &[&str] = &[
     "contracts.ts",
     "generated/runtime.ts",
     "generated/methods.ts",
+    "i18n.ts",
     "index.ts",
     "native.ts",
     "workbench.ts",

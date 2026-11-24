@@ -1050,7 +1050,7 @@ mod tests {
                 body_overlay: None,
             };
             let encoding = WireEncoding::new(
-                maka_agent_facts::language::Language::En,
+                maka_agent_facts::language::Language::EN,
                 &provider,
                 &serde_json::Value::Null,
                 &[],

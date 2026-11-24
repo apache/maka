@@ -27,8 +27,10 @@ import { C, captionTextStyle } from '../../app/ui';
 import { currentLocale } from '../../app/locale';
 import type { Host } from '../../app/host';
 import type { ServiceMethods } from '../../../../../packages/plugin-sdk/src/index';
+import { installWorkbenchLocaleCatalog } from '../../app/localeCatalog';
 
 mount(() => {
+  installWorkbenchLocaleCatalog();
   type Preset = NonNullable<ServiceMethods['agent']['preset']['output']>['preset'];
   let saved: Preset | null = null;
   let conflict = false;

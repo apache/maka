@@ -333,6 +333,7 @@ impl Rig {
         let agent_key = Uuid::new_v4();
         let gateway_key = Uuid::new_v4();
         let mut configuration = json!({
+            "locale":"en",
             "permissions":{"access":"read_only","requestPermissions":false},
             "workspaceRoots":[{"label":"test","path":self.directory.path().join("workspace")}],
             "tools":[]
@@ -908,7 +909,7 @@ impl Rig {
                 },
             },
             collaboration: CollaborationMode::Agent,
-            language: Language::En,
+            language: Language::EN,
             tool_discovery: false,
             allowed_tools: None,
             mcp_revision: None,
@@ -3606,6 +3607,7 @@ mod model_recovery {
         configure: impl FnOnce(&mut Value),
     ) -> TestResult<Boot> {
         let mut configuration = json!({
+            "locale": "en",
             "permissions": {"access": "read_only", "requestPermissions": false},
             "workspaceRoots": [{"label": "model test", "path": base.join("workspace")}],
             "tools": [],
@@ -5977,7 +5979,7 @@ mod replay_origin_regressions {
                 .context
                 .as_ref()
                 .and_then(|value| value.codex.as_ref()),
-            language: Language::En,
+            language: Language::EN,
             provider: &model.provider,
             options: &model.options,
             context_window: Some(128_000),
@@ -6212,7 +6214,7 @@ mod replay_origin_regressions {
                 })
                 .await?;
             assert!(with_partial.needs_continuation_cue());
-            crate::owner::driver_model::append_continuation_cue(Language::ZhCn, &mut with_partial)
+            crate::owner::driver_model::append_continuation_cue(Language::ZH_CN, &mut with_partial)
                 .await?;
             assert!(!with_partial.needs_continuation_cue());
             let prompt = finish(&rig, with_partial, &current, ModelOperation::Inference).await?;

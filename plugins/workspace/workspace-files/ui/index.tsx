@@ -41,7 +41,7 @@ import {
 import { currentDiffTargetKey } from '../../../../products/maka/workbench/app/currentDiffState';
 import { createHost, HostProvider, useHost } from '../../../../products/maka/workbench/app/host';
 import { ImageViewer } from '../../../../products/maka/workbench/app/ImageViewer';
-import { currentLocale, tr } from '../../../../products/maka/workbench/app/locale';
+import { tr } from '../../../../products/maka/workbench/app/locale';
 import {
   bodyTextStyle,
   C,
@@ -116,7 +116,6 @@ function DiffPanel(props: UiViewProps) {
 
 export function activate(context: UiContext<UiHost, JSX.Element>): UiActivation<JSX.Element> {
   const host = createHost(context.application);
-  effect(() => currentLocale.set(context.locale()));
   const input = signal<WorkspaceViewInput | null>(null);
   const resources = createResources(host, {
     sessions: () => input()?.sessions() ?? [],

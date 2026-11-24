@@ -18,20 +18,14 @@
  */
 
 import * as sdk from '../../../packages/plugin-sdk/src/index.js';
-import { native } from '../../shared/package.js';
-export default {
+import { native, localizePackage } from '../../shared/package.js';
+export default localizePackage({
   schemaVersion: 1,
   id: 'maka.agent.workspace-computer',
   displayName: 'Computer Use',
   description:
     'Observe and control the selected desktop and available browsers with session approval.',
-  localizations: {
-    'zh-CN': {
-      displayName: '电脑操作',
-      description: '经会话授权后观察和操作桌面及可用的浏览器。',
-    },
-  },
   application: {
     host: native(sdk.nativeImplementations.workspaceComputer),
   },
-};
+});

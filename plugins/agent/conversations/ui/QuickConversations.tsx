@@ -26,7 +26,7 @@ import type {
 import { createBrowsing } from '../../../../products/maka/workbench/app/browsing';
 import { isReplyWithActions } from '../../../../products/maka/workbench/app/history';
 import type { Host, Output } from '../../../../products/maka/workbench/app/host';
-import { messageTime, tr } from '../../../../products/maka/workbench/app/locale';
+import { localizedKeywords, messageTime, tr } from '../../../../products/maka/workbench/app/locale';
 
 export interface ConversationLauncher {
   visible(): boolean;
@@ -244,7 +244,7 @@ export function QuickConversations(props: { input: QuickConversationsInput; host
         id: 'bot',
         title: 'Maka Bot',
         icon: 'maka',
-        keywords: ['bot', 'Maka Bot', '助手'],
+        keywords: localizedKeywords(['bot', 'Maka Bot'], 'launcher.keywords.bot'),
         detail: unread()?.preview,
         unread: unread() !== null,
         trailing: unread() ? messageTime(unread()!.at) : undefined,
@@ -254,22 +254,16 @@ export function QuickConversations(props: { input: QuickConversationsInput; host
         id: 'sessions',
         title: tr('Session chat'),
         icon: 'maka',
-        keywords: ['session', '会话', '會話', 'chat'],
+        keywords: localizedKeywords(['session', 'chat'], 'launcher.keywords.session'),
       },
       {
         id: 'history',
         title: tr('Quick Q&A'),
         icon: 'maka',
-        keywords: [
-          'qa',
-          'history',
-          '快问',
-          '快問',
-          '快问历史',
-          '快問歷史',
-          'library',
-          'quick question history',
-        ],
+        keywords: localizedKeywords(
+          ['qa', 'history', 'library', 'quick question history'],
+          'launcher.keywords.quick_ask',
+        ),
       },
     ],
     emptyMessage: navigation.historyStatus,

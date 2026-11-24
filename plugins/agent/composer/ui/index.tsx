@@ -17,21 +17,17 @@
  * under the License.
  */
 
-import { effect } from 'nsh';
 import type { JSX } from 'nsh';
 import type {
   ComposerViewInput,
   UiActivation,
-  UiContext,
   UiEmbeddedViewProps,
 } from '../../../../packages/plugin-sdk/src/index.js';
 import { Composer } from './Composer';
-import { currentLocale } from '../../../../products/maka/workbench/app/locale';
 import { initializeComposerToolbar } from '../../../../products/maka/workbench/app/composerToolbar';
 
-export function activate(context: UiContext): UiActivation<JSX.Element> {
+export function activate(): UiActivation<JSX.Element> {
   initializeComposerToolbar();
-  effect(() => currentLocale.set(context.locale()));
   return {
     exports: {
       composer: {

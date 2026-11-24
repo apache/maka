@@ -104,11 +104,9 @@ impl Recall {
         }
         let title = Text::single_line(&expected.artifact.name).map(|filename| {
             let filename = filename.fallback;
-            Text::localized(
-                &format!("Read historical attachment · {filename}"),
-                &format!("读取历史附件 · {filename}"),
-                &format!("讀取歷史附件 · {filename}"),
-            )
+            Text::for_locales(|locale| {
+                maka_agent_facts::i18n::tool_title::read_historical_attachment(locale, &filename)
+            })
         });
         let recall = self.clone();
         let effect = PreparedEffect::new(move |cancellation| {
