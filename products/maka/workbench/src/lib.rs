@@ -568,6 +568,52 @@ mod tests {
     }
 
     #[test]
+    fn tool_cards_show_inputs_before_outputs_and_fold_long_scripts() {
+        let mut app = headless_fixture(
+            "tests/fixtures/tool-card-order.tsx",
+            Size::new(px(900.0), px(1200.0)),
+            false,
+        );
+        app.wait_for("text:/const line1 = 1;/").unwrap();
+        app.wait_for(r#"text:{"kind":"changed"}"#).unwrap();
+        app.wait_for("label:Show 4 more lines").unwrap();
+        app.wait_for("label:Copy Script").unwrap();
+        app.wait_for("label:Copy Output").unwrap();
+        app.wait_for("text:Recorded edit · 1 replacement · Recorded line 521")
+            .unwrap();
+
+        let texts = app.screen().texts();
+        let pos = |needle: &str| {
+            texts
+                .iter()
+                .position(|item| item.contains(needle))
+                .unwrap_or_else(|| panic!("expected {needle:?} in {texts:?}"))
+        };
+        assert!(
+            pos("const line1 = 1;") < pos(r#"{"kind":"changed"}"#),
+            "script should appear before output: {texts:?}"
+        );
+        assert!(
+            pos("arguments") < pos("Recorded edit · 1 replacement · Recorded line 521"),
+            "edit diff should appear before recorded receipt: {texts:?}"
+        );
+        assert!(
+            !texts.iter().any(|item| item.contains("const line10 = 10;")),
+            "long script should collapse past 6 lines initially: {texts:?}"
+        );
+        assert!(
+            texts.contains(&"src/ToolCard.tsx")
+                && texts.contains(&"Read lines 1–1 / 10")
+                && !texts.contains(&"File"),
+            "read card should merge path into header instead of rendering a trailing File section: {texts:?}"
+        );
+
+        app.press("label:Show 4 more lines").unwrap();
+        app.wait_for("text:/const line10 = 10;/").unwrap();
+        app.wait_for("label:Show fewer lines").unwrap();
+    }
+
+    #[test]
     fn steering_warning_follows_the_original_queued_message() {
         let mut app = fixture("messages-dock.tsx");
         let steer = "label:Steer queued message 1 now";
