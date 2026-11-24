@@ -26,7 +26,7 @@ import type { ListRef, Signal } from 'nsh';
 import { Button } from 'nsh/base';
 import { keymap } from 'nsh';
 import { windowSize } from 'nsh';
-import { host as shell, platform } from 'nsh';
+import { host as shell } from 'nsh';
 import { useHost } from './host';
 import type {
   AgentDirectory,
@@ -49,7 +49,7 @@ import { Icon } from './Icon';
 import { WorkspaceLocations } from './WorkspaceLocations';
 import { dialogTop, ownTitleBar } from './chrome';
 import { dialogCardStyle, WindowDialog } from './ModalDialog';
-import { createSettingsOperations } from './settingsOperations';
+import { admitWorkspaceLocation } from './projectRegistration';
 
 type Location = {
   id: number;
@@ -59,34 +59,18 @@ type Location = {
   reading: boolean;
 };
 type FolderAction = { location: number; path: string };
-const pathNames = (path: string) =>
-  path.split(platform.os === 'windows' ? /[\\/]/ : /\//).filter(Boolean);
-/** The names from `root` down to `path`, or null when `path` is not in it. */
-const below = (root: string, path: string) => {
-  const [base, names] = [pathNames(root), pathNames(path)];
-  return base.length <= names.length && base.every((name, i) => name === names[i])
-    ? names.slice(base.length)
-    : null;
-};
-/** The innermost Host location containing a path, and the names below it. */
-const locateWorkspaceDirectory = (rows: AgentDirectory[], path: string) =>
-  rows
-    .map((root) => ({ root, names: root.path ? below(root.path, path) : null }))
-    .filter((found) => found.names !== null)
-    .sort((a, b) => a.names!.length - b.names!.length)[0] ?? null;
-const pause = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 export function WorkspacePicker(props: {
   instance: number;
   current(): boolean;
   close(instance: number): boolean;
-  create(workspace: AgentWorkspaceSelection, label?: string): Promise<void>;
+  create(workspace: AgentWorkspaceSelection, label?: string): Promise<void> | void;
   changed(): void;
+  purpose?: 'workspace' | 'project';
 }) {
   const host = useHost();
   const managing = signal(false);
   const picking = signal(false);
-  const operations = createSettingsOperations(host);
   const awaitingRoots = signal<DirectoryRootSpec[] | null>(null);
   let refreshTimer: ReturnType<typeof setTimeout> | undefined;
   let refreshSession = false;
@@ -244,46 +228,6 @@ export function WorkspacePicker(props: {
     if (props.close(props.instance))
       void props.create({ kind: 'directory', path: directory.path }, directory.path);
   };
-  const roots = async () => {
-    await host.refresh();
-    const page: AgentDirectoryPage = await host.query('agent', 'directories', { kind: 'roots' });
-    if (page.kind !== 'roots')
-      throw new UiError('The Host returned a different directory view. Reopen the folder.');
-    return page.roots;
-  };
-  /** Adds `path` as a workspace location and waits until the Host serves it. */
-  const addLocation = async (path: string) => {
-    if (operations.pending().length)
-      throw new UiError('Recover the unfinished settings action in Manage locations first.');
-    const current = await host.query('settings', 'workspaceLocations', {});
-    if (!current) throw new UiError('This Host does not manage workspace locations.');
-    const name =
-      (pathNames(path).at(-1) ?? path).replace(/[\u0000-\u001f\u007f]/g, ' ').trim() ||
-      tr('Workspace');
-    const labels = new Set(current.roots.map((root: DirectoryRootSpec) => root.label));
-    let label = name;
-    let suffix = 2;
-    while (labels.has(label)) label = `${name} (${suffix++})`;
-    const value: any = await operations.mutate('settings', 'updateWorkspaceLocations', {
-      source: current.source,
-      roots: [...current.roots, { label, path }],
-    });
-    if (value?.status === 'conflict')
-      throw new UiError('Workspace locations changed elsewhere. Reload before saving again.');
-    if (value?.status !== 'committed')
-      throw new UiError('The Host rejected these workspace locations.');
-    for (let attempt = 0; attempt < 20; attempt++) {
-      const found = locateWorkspaceDirectory(await roots(), path);
-      if (found) return found;
-      await pause(500);
-    }
-    throw new UiError('Locations saved. Waiting for the Host to apply them…');
-  };
-  /** Makes sure a workspace location holds `path`, adding one when none does. */
-  const resolve = async (path: string) => {
-    if (!locateWorkspaceDirectory(await roots(), path)) await addLocation(path);
-    return path;
-  };
   /** Chooses the workspace with the system's folder dialog (the desktop window's). */
   const chooseFolder = () => {
     if (!alive || !props.current() || picking() || managing()) return;
@@ -294,7 +238,7 @@ export function WorkspacePicker(props: {
         // The dialog stays open as long as the user needs it.
         const path: string | null = await shell.call('workspace.chooseFolder', {}, { timeout: 0 });
         if (!path || !alive || !props.current()) return;
-        const resolved = await resolve(path);
+        const resolved = await admitWorkspaceLocation(host, path);
         if (alive && props.close(props.instance))
           void props.create({ kind: 'directory', path: resolved }, path);
       } catch (reason) {
@@ -450,7 +394,7 @@ export function WorkspacePicker(props: {
                     fontWeight: '600',
                   }}
                 >
-                  {tr('Choose workspace')}
+                  {props.purpose === 'project' ? tr('Add project') : tr('Choose workspace')}
                 </Text>
                 <Button
                   accessibilityLabel={tr('Close workspace picker')}
@@ -604,7 +548,9 @@ export function WorkspacePicker(props: {
                     >
                       {currentDirectory(read)?.path ??
                         read.trail.at(-1)?.path ??
-                        tr('Open a location, then choose a workspace folder.')}
+                        (props.purpose === 'project'
+                          ? tr('Open a location, then choose a project folder.')
+                          : tr('Open a location, then choose a workspace folder.'))}
                     </Text>
                     <If when={matches().length > 0 && Boolean(error())}>
                       <InlineCallout
@@ -672,8 +618,17 @@ export function WorkspacePicker(props: {
               >
                 <Button
                   disabled={!currentDirectory(read) || !!error()}
-                  accessibilityLabel={tr('Use this workspace folder')}
-                  tooltip={textTooltip(() => shortcut(tr('Use this folder'), 'mod+enter'))}
+                  accessibilityLabel={
+                    props.purpose === 'project'
+                      ? tr('Add this project folder')
+                      : tr('Use this workspace folder')
+                  }
+                  tooltip={textTooltip(() =>
+                    shortcut(
+                      props.purpose === 'project' ? tr('Add project') : tr('Use this folder'),
+                      'mod+enter',
+                    ),
+                  )}
                   onPress={
                     currentDirectory(read)
                       ? inputAction(choose, {
@@ -695,7 +650,7 @@ export function WorkspacePicker(props: {
                       fontWeight: '600',
                     }}
                   >
-                    {tr('Use this folder')}
+                    {props.purpose === 'project' ? tr('Add project') : tr('Use this folder')}
                   </Text>
                 </Button>
               </View>

@@ -76,6 +76,7 @@ const CONTROL_METHODS: &[&str] = &[
     "openBot",
     "changeGoal",
     "schedule",
+    "project",
     "githubSubmitReview",
     "githubReplyComment",
     "githubCommentPullRequest",
@@ -881,7 +882,7 @@ impl Client {
         let owner = self.service_owner("agent").await?;
         let correlation = control_correlation(method, &input, &owner)?;
         // Some controls are scoped to the Host, rather than a Session.
-        let session_id = if matches!(method, "create" | "openBot" | "schedule") {
+        let session_id = if matches!(method, "create" | "openBot" | "schedule" | "project") {
             None
         } else {
             Some(
@@ -1992,6 +1993,46 @@ mod fork_position_tests {
         pending.sort();
         reserved.sort();
         assert_eq!(pending, reserved);
+    }
+
+    #[tokio::test]
+    async fn project_control_is_host_scoped_and_recovered_from_the_journal() {
+        let directory = tempfile::tempdir().unwrap();
+        let journal = Journal::open(&directory.path().join("client.sqlite"))
+            .await
+            .unwrap();
+        let host = DeploymentRef {
+            state_domain: "b".repeat(64),
+            deployment: Uuid::new_v4(),
+            revision: 1,
+        };
+        let owner = owner();
+        assert!(CONTROL_METHODS.contains(&"project"));
+        let correlation = control_correlation(
+            "project",
+            &json!({"kind": "register", "path": "/work/repo", "expected": null}),
+            &owner,
+        )
+        .unwrap();
+        let operation = Operation {
+            id: Uuid::new_v4(),
+            host: host.clone(),
+            endpoint: "agent".into(),
+            method: "project".into(),
+            session_id: None,
+            correlation,
+            draft: None,
+            upload: None,
+            abandoned: false,
+            reference: None,
+            receipt: None,
+        };
+        journal.reserve(&operation).await.unwrap();
+        let pending = journal.pending_controls(&host, &owner).await.unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].id, operation.id);
+        assert_eq!(pending[0].method, "project");
+        assert_eq!(pending[0].session_id, None);
     }
 }
 

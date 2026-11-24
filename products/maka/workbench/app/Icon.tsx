@@ -108,6 +108,8 @@ const icons = {
   warning: { custom: 'warning', glyph: '!' },
   info: { custom: 'info', glyph: 'i' },
   ask: { custom: 'ask', glyph: '❝' },
+  folderOpen: { custom: 'folderOpen', glyph: '□' },
+  squarePen: { custom: 'squarePen', glyph: '✎' },
 } satisfies Record<
   string,
   | { lucide: keyof typeof lucide; glyph: string }
@@ -216,6 +218,19 @@ const customIcons = {
     { tag: 'circle', cx: 12, cy: 12, r: 10 },
     { tag: 'path', d: 'M12 16v-4' },
     { tag: 'path', d: 'M12 8h.01' },
+  ],
+  folderOpen: [
+    {
+      tag: 'path',
+      d: 'm6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2',
+    },
+  ],
+  squarePen: [
+    { tag: 'path', d: 'M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7' },
+    {
+      tag: 'path',
+      d: 'M18.375 2.625a1 1 0 0 1 3 3l-9.013 9.014a2 2 0 0 1-.853.505l-2.873.84a.5.5 0 0 1-.62-.62l.84-2.873a2 2 0 0 1 .506-.852z',
+    },
   ],
 } satisfies Record<string, LucideElement[]>;
 

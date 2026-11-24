@@ -110,6 +110,10 @@ export type WorkspaceBrowserProps = {
     label?: string,
   ): Promise<void>;
   newConversation(expectedSessionId: string | null): void;
+  /** Registers a project directory from the sidebar without switching sessions. */
+  addProject?(): void;
+  /** Whether a project registration or native folder dialog is currently in flight. */
+  addingProject?(): boolean;
   /** Open the persistent Bot; absent when the Bot mode is not offered. */
   openBot?(expectedSessionId: string | null): void;
   /** The Bot Session, listed only through its own entry. */
@@ -143,15 +147,24 @@ type WorkspaceGroup = ConversationGroup<BrowserProject> & { name: string };
 // Nested rows' guide line, a little inside the parent's title.
 const guideInset = 10;
 const nestInset = 16;
+// 16pt folderOpen icon + 8pt gap inside a project group row.
+const projectIndent = 24;
+// Unified 14pt rail section heading (semibold secondary vs 14pt medium primary rows).
+const sectionHeaderTextStyle = () => ({
+  fontSize: 14,
+  lineHeight: 20,
+  fontWeight: '600' as const,
+  color: C.secondary,
+});
 // The line runs on past a row, or bends into the last one of its family.
-function GuideLine(props: { last(): boolean; height(): number }) {
+function GuideLine(props: { last(): boolean; height(): number; offset?: () => number }) {
   return (
     <View
       style={[
         props.last()
           ? {
               position: 'absolute',
-              left: guideInset,
+              left: guideInset + (props.offset?.() ?? 0),
               top: 0,
               width: nestInset - guideInset,
               height: props.height() / 2,
@@ -162,7 +175,7 @@ function GuideLine(props: { last(): boolean; height(): number }) {
             }
           : {
               position: 'absolute',
-              left: guideInset,
+              left: guideInset + (props.offset?.() ?? 0),
               top: 0,
               bottom: 0,
               width: 1,
@@ -303,18 +316,22 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
   const choosingWorkspace = signal(false);
   const automationsOpen = signal(false);
   const moreFeaturesOpen = signal(false);
+  const addingProject = () => Boolean(props.addingProject?.());
   let holdingHover = false;
-  const setMoreFeaturesOpen = (open: boolean) => {
-    moreFeaturesOpen.set(open);
-    if (holdingHover !== open) {
-      holdingHover = open;
-      props.holdSidebarHover?.(open);
+  const syncHoverHold = (active: boolean) => {
+    if (holdingHover !== active) {
+      holdingHover = active;
+      props.holdSidebarHover?.(active);
     }
   };
+  const setMoreFeaturesOpen = (open: boolean) => moreFeaturesOpen.set(open);
+  effect(() => syncHoverHold(moreFeaturesOpen() || addingProject()));
   const sortByTime = () =>
     platform.idiom !== 'terminal' &&
     browser.filter() === 'all' &&
     sidebarPreferences.sortMode() === 'time';
+  const showProjectsSection = () =>
+    platform.idiom !== 'terminal' && browser.filter() === 'all' && !sortByTime();
   const actions = signal<{
     session: SessionActionTarget;
     origin: string | null;
@@ -329,10 +346,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
   cleanup(() => {
     alive = false;
     removeEscape();
-    if (holdingHover) {
-      holdingHover = false;
-      props.holdSidebarHover?.(false);
-    }
+    syncHoverHold(false);
   });
   const scopeLabel = () => {
     const scope = browser.scope();
@@ -396,18 +410,16 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
     return raw.map((group): WorkspaceGroup => {
       const name = group.pinned
         ? tr('Pinned')
-        : group.key === 'time:today'
-          ? tr('Today')
-          : group.key === 'time:yesterday'
-            ? tr('Yesterday')
-            : group.key === 'time:earlier'
-              ? tr('Earlier')
-              : (group.project?.name ??
-                (group.path!.split('/').filter(Boolean).at(-1) || group.path!));
+        : group.key === 'time:recent'
+          ? tr('Recent')
+          : (group.project?.name ?? (group.path!.split('/').filter(Boolean).at(-1) || group.path!));
       return { ...group, name };
     });
   });
   const nestedRows = computed(() => new Set(groups().flatMap((group) => [...group.nested])));
+  const pinnedRows = computed(
+    () => new Set(groups().find((group) => group.pinned)?.sessions ?? []),
+  );
   // A nested row's guide line ends at the last of its family.
   const lastNestedRows = computed(() => {
     const nested = nestedRows();
@@ -434,22 +446,45 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
     const root = props.selectedRoot?.() ?? null;
     return root && rendered.has(root) ? root : null;
   });
-  const rowIds = computed(() =>
-    platform.idiom === 'terminal'
-      ? choosingWorkspace()
-        ? scopes().map((scope) => scope.id)
-        : visibleSessions().map((session) => session.id)
-      : groups().flatMap((group) => {
-          const heading = `group:${group.key}`;
-          if (collapsed().has(group.key)) return [heading];
-          const all = group.sessions;
-          const limit = projectSessionLimit(group);
-          const more = topLevelCount(group) > limit;
-          const sessions =
-            !more || expanded().has(group.key) ? all : withinLimit(group, all, limit);
-          return [heading, ...sessions, ...(more ? [`show-more:${group.key}`] : [])];
-        }),
-  );
+  const rowIds = computed(() => {
+    if (platform.idiom === 'terminal') {
+      return choosingWorkspace()
+        ? [...scopes().map((scope) => scope.id), 'action:add-project']
+        : visibleSessions().map((session) => session.id);
+    }
+    const items: string[] = [];
+    const includeProjectsSection = showProjectsSection();
+    let projectsSectionInserted = false;
+    for (const group of groups()) {
+      if (includeProjectsSection && !group.pinned && !projectsSectionInserted) {
+        items.push('section:projects');
+        projectsSectionInserted = true;
+      }
+      const heading = `group:${group.key}`;
+      if (collapsed().has(group.key)) {
+        items.push(heading);
+        continue;
+      }
+      const all = group.sessions;
+      const limit = projectSessionLimit(group);
+      const more = topLevelCount(group) > limit;
+      const sessions = !more || expanded().has(group.key) ? all : withinLimit(group, all, limit);
+      items.push(heading, ...sessions, ...(more ? [`show-more:${group.key}`] : []));
+    }
+    if (includeProjectsSection && !projectsSectionInserted) {
+      items.push('section:projects');
+      if (
+        !browser.loading() &&
+        !browser.hasMore() &&
+        !browser.error() &&
+        !browser.projectError() &&
+        !groups().some((group) => !group.pinned)
+      ) {
+        items.push('empty:projects');
+      }
+    }
+    return items;
+  });
   const toggleGroup = (key: string) => {
     const next = new Set(collapsed());
     if (!next.delete(key)) next.add(key);
@@ -736,7 +771,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
           focusStyle={{ backgroundColor: C.pressed }}
           disabledStyle={controlDisabledStyle}
         >
-          <Icon name="plus" color={navIcon()} />
+          <Icon name="squarePen" color={navIcon()} />
           <Text style={{ color: navText(), fontSize: 14 }}>{tr('New conversation')}</Text>
         </Button>
         <If when={platform.idiom === 'terminal'}>
@@ -1088,9 +1123,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
             role="header"
             style={[
               {
-                ...captionTextStyle,
-                fontWeight: '500',
-                color: C.secondary,
+                ...sectionHeaderTextStyle(),
                 flex: 1,
                 minWidth: 0,
                 paddingLeft: 8,
@@ -1163,6 +1196,15 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
           <Icon name="back" color={C.secondary} />
           <Text style={{ color: C.text, fontWeight: '600' }}>{tr('Archived')}</Text>
         </Button>
+      </If>
+      <If when={platform.idiom !== 'terminal'}>
+        <View
+          style={{
+            height: 1,
+            backgroundColor: C.line,
+            marginHorizontal: -12,
+          }}
+        />
       </If>
       <If
         when={
@@ -1243,6 +1285,39 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
           <Each of={[id()]} key={(key: string) => key}>
             {(key) => {
               if (choosingWorkspace()) {
+                if (key() === 'action:add-project') {
+                  return (
+                    <View
+                      style={{
+                        flexDirection: 'row',
+                        height: 32,
+                        paddingVertical: 0,
+                      }}
+                    >
+                      <Button
+                        accessibilityLabel={tr('Add project')}
+                        disabled={!props.addProject || addingProject() || props.connectionLost()}
+                        onPress={props.addProject ? inputAction(props.addProject, null) : undefined}
+                        style={{
+                          flex: 1,
+                          flexDirection: 'row',
+                          alignItems: 'center',
+                          gap: 8,
+                          paddingHorizontal: 8,
+                          borderRadius: 0,
+                        }}
+                        hoverStyle={controlHoverStyle()}
+                        focusStyle={controlFocusStyle()}
+                        disabledStyle={controlDisabledStyle}
+                      >
+                        <Icon name="plus" color={C.accent} />
+                        <Text style={{ color: C.accent }}>
+                          {addingProject() ? tr('Adding project…') : tr('Add project…')}
+                        </Text>
+                      </Button>
+                    </View>
+                  );
+                }
                 const initial = scopesById().get(key());
                 if (!initial) return <View />;
                 const scope = () => scopesById().get(key()) ?? initial;
@@ -1301,6 +1376,62 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                   </View>
                 );
               }
+              if (key() === 'section:projects') {
+                return (
+                  <View
+                    style={{
+                      flexDirection: 'row',
+                      alignItems: 'center',
+                      height: 28,
+                      marginTop: key() === rowIds()[0] ? 0 : 8,
+                    }}
+                  >
+                    <View style={{ flex: 1, minWidth: 0, paddingLeft: 8 }}>
+                      <Text role="header" style={[sectionHeaderTextStyle(), { numberOfLines: 1 }]}>
+                        {tr('Projects')}
+                      </Text>
+                    </View>
+                    <Button
+                      accessibilityLabel={tr('Add project')}
+                      tooltip={textTooltip(() =>
+                        addingProject() ? tr('Adding project…') : tr('Add project'),
+                      )}
+                      disabled={!props.addProject || addingProject() || props.connectionLost()}
+                      onPress={props.addProject ? inputAction(props.addProject, null) : undefined}
+                      style={{
+                        width: 32,
+                        height: 28,
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        borderRadius: radius(8),
+                      }}
+                      hoverStyle={controlHoverStyle()}
+                      activeStyle={{ backgroundColor: C.line }}
+                      focusStyle={quietFocusStyle()}
+                      disabledStyle={controlDisabledStyle}
+                    >
+                      <If when={addingProject()} else={<Icon name="plus" color={C.muted} />}>
+                        <LoadingIndicator size={12} label={tr('Adding project…')} />
+                      </If>
+                    </Button>
+                  </View>
+                );
+              }
+              if (key() === 'empty:projects') {
+                return (
+                  <View
+                    style={{
+                      height: 28,
+                      justifyContent: 'center',
+                      paddingHorizontal: 8,
+                    }}
+                  >
+                    <Text style={[{ ...captionTextStyle, color: C.muted }, { numberOfLines: 1 }]}>
+                      {tr('No projects yet.')}
+                    </Text>
+                  </View>
+                );
+              }
               if (key().startsWith('show-more:')) {
                 const groupKey = key().slice('show-more:'.length);
                 const open = () => expanded().has(groupKey);
@@ -1328,7 +1459,8 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                         flexDirection: 'row',
                         alignItems: 'center',
                         gap: 6,
-                        paddingHorizontal: 8,
+                        paddingLeft: showProjectsSection() ? 8 + projectIndent : 8,
+                        paddingRight: 8,
                         borderRadius: radius(8),
                       }}
                       hoverStyle={controlHoverStyle()}
@@ -1352,27 +1484,36 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                   return (
                     <View
                       style={{
-                        height: compact() ? 24 : 28,
+                        height: 28,
                         justifyContent: 'center',
                         paddingHorizontal: 8,
                         marginTop: key() === rowIds()[0] ? 0 : 8,
                       }}
                     >
-                      <Text style={[{ ...captionTextStyle, color: C.muted }, { numberOfLines: 1 }]}>
+                      <Text role="header" style={[sectionHeaderTextStyle(), { numberOfLines: 1 }]}>
                         {group().name}
                       </Text>
                     </View>
                   );
                 }
                 const open = () => !collapsed().has(group().key);
-                const workspace = () => groupWorkspace(group());
+                const pinned = initialGroup.pinned;
+                const workspace = () => (pinned ? null : groupWorkspace(group()));
+                const afterProjectsSection = () => {
+                  const rows = rowIds();
+                  const index = rows.indexOf(key());
+                  return !pinned && index > 0 && rows[index - 1] === 'section:projects';
+                };
+                const projectRow = () => !pinned && showProjectsSection();
+                const groupHeight = pinned ? 28 : 32;
                 return (
                   <View
                     style={{
                       flexDirection: 'row',
-                      height: 28,
+                      alignItems: 'center',
+                      height: groupHeight,
                       // Each workspace after the first starts its own block.
-                      marginTop: key() === rowIds()[0] ? 0 : 8,
+                      marginTop: key() === rowIds()[0] || afterProjectsSection() ? 0 : 8,
                     }}
                   >
                     <Button
@@ -1383,24 +1524,41 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                       style={{
                         flex: 1,
                         minWidth: 0,
+                        height: groupHeight,
                         flexDirection: 'row',
                         alignItems: 'center',
-                        gap: 6,
+                        gap: pinned ? 6 : 8,
                         paddingHorizontal: 8,
                         borderRadius: radius(8),
                       }}
                       hoverStyle={controlHoverStyle()}
                       focusStyle={controlFocusStyle()}
                     >
+                      <If when={projectRow()}>
+                        <Icon name="folderOpen" size={16} color={C.muted} />
+                      </If>
                       <Text
+                        role={pinned ? 'header' : undefined}
                         style={[
-                          { ...captionTextStyle, color: C.muted, flexShrink: 1 },
+                          projectRow()
+                            ? {
+                                fontSize: 14,
+                                lineHeight: 20,
+                                fontWeight: '500',
+                                color: C.text,
+                                flex: 1,
+                                minWidth: 0,
+                              }
+                            : {
+                                ...sectionHeaderTextStyle(),
+                                ...(pinned ? { flexShrink: 1 } : { flex: 1, minWidth: 0 }),
+                              },
                           { numberOfLines: 1 },
                         ]}
                       >
                         {group().name}
                       </Text>
-                      <Icon name={open() ? 'down' : 'right'} size={14} color={C.muted} />
+                      <Icon name={open() ? 'up' : 'down'} size={14} color={C.muted} />
                     </Button>
                     <If when={workspace() !== null && browser.filter() === 'all'}>
                       <Button
@@ -1418,6 +1576,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                         })}
                         style={{
                           width: 32,
+                          height: 32,
                           alignItems: 'center',
                           justifyContent: 'center',
                           borderRadius: radius(8),
@@ -1426,7 +1585,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                         focusStyle={controlFocusStyle()}
                         disabledStyle={controlDisabledStyle}
                       >
-                        <Icon name="plus" color={C.muted} />
+                        <Icon name="squarePen" color={C.muted} />
                       </Button>
                     </If>
                   </View>
@@ -1520,6 +1679,9 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                   : session()?.hasUnread
                     ? 'unread'
                     : null;
+              const nested = () => platform.idiom !== 'terminal' && nestedRows().has(key());
+              const inProject = () => showProjectsSection() && !pinnedRows().has(key());
+              const nestedOffset = () => (inProject() ? projectIndent : 0);
               return (
                 <View>
                   <If
@@ -1553,14 +1715,15 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                           height: rowHeight(),
                           paddingVertical: compact() ? 0 : 2,
                           // Under the conversation that created it.
-                          paddingLeft:
-                            platform.idiom !== 'terminal' && nestedRows().has(key())
-                              ? nestInset
-                              : 0,
+                          paddingLeft: nested() ? nestInset + nestedOffset() : 0,
                         }}
                       >
-                        <If when={platform.idiom !== 'terminal' && nestedRows().has(key())}>
-                          <GuideLine last={() => lastNestedRows().has(key())} height={rowHeight} />
+                        <If when={nested()}>
+                          <GuideLine
+                            last={() => lastNestedRows().has(key())}
+                            height={rowHeight}
+                            offset={nestedOffset}
+                          />
                         </If>
                         <View
                           onMouseEnter={() => hovered.set(true)}
@@ -1602,7 +1765,8 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                             style={{
                               flex: 1,
                               minWidth: 0,
-                              paddingHorizontal: 8,
+                              paddingLeft: inProject() && !nested() ? 8 + projectIndent : 8,
+                              paddingRight: 8,
                               justifyContent: 'center',
                               borderRadius: radius(8),
                               backgroundColor:
