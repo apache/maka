@@ -18,7 +18,7 @@
  */
 
 import type { ProviderType } from '@maka/core/llm-connections';
-import { ProviderBrandMark } from './provider-brand-marks';
+import { ProviderBrandMark } from '../features/connection-settings/index.js';
 export { providerDisplay } from './provider-display-copy';
 
 // Kept as a thin wrapper so the many `ProviderLogo` call sites stay put.

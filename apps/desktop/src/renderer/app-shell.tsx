@@ -84,7 +84,7 @@ import {
   type OnboardingShellProjection,
 } from './application/contracts/onboarding/onboarding-authority.js';
 import { ShellLifecycleSubscriptions } from './application/contracts/shell-lifecycle.js';
-import { ProviderBrandMark } from './settings/provider-brand-marks';
+import { ProviderBrandMark } from './features/connection-settings/index.js';
 import { RuntimeHostSshTerminalDialog } from './settings/runtime-host-ssh-terminal-dialog.js';
 import {
   getShellCopy,

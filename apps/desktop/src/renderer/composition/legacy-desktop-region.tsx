@@ -18,7 +18,17 @@
  */
 
 import { AppShell as LegacyAppShell } from '../app-shell';
+import { ProviderBrandMark } from '../features/connection-settings';
 import { WorkHubRoot, WorkHubSurfaceSwitch } from '../features/workhub';
+
+type RenderProviderMark = NonNullable<import('@maka/ui').ComposerProps['renderProviderMark']>;
+
+// The feature owns the marks; the composition root is the one place both the
+// legacy shell and the WorkHub surface can be handed the same renderer.
+const renderProviderMark: RenderProviderMark = (type) => <ProviderBrandMark type={type} />;
+
 export function AppShell() {
-  return <WorkHubSurfaceSwitch main={<LegacyAppShell />} workhub={<WorkHubRoot />} />;
+  return <WorkHubSurfaceSwitch main={<LegacyAppShell />} workhub={
+    <WorkHubRoot renderProviderMark={renderProviderMark} />
+  } />;
 }
