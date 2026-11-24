@@ -44,4 +44,8 @@ test('the tail of a thought stays short when its last paragraph is long', () => 
   const long = `first\n${'word '.repeat(2000)}`;
   assert.ok(thoughtTail(long).length <= 720);
   assert.equal(thoughtTail(`${'a'.repeat(100)}\n${'b'.repeat(500)}`), 'b'.repeat(500));
+  assert.equal(
+    thoughtTail('## Plan\n\n**Checking** the `price` now *'),
+    'Plan\nChecking the price now ',
+  );
 });
