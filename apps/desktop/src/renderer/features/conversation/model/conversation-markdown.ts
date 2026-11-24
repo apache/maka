@@ -19,8 +19,7 @@
 
 import type { StoredMessage } from '@maka/core/session';
 import type { UiLocale } from '@maka/core/ui-locale';
-import { userFacingText } from '@maka/core/session';
-import { redactSecrets } from '@maka/ui';
+import { renderConversationMarkdown as renderConversationMarkdownCore } from '@maka/core/conversation-markdown';
 import { getShellRemainingCopy } from '../../../locales/shell-remaining-copy.js';
 
 /**
@@ -45,67 +44,22 @@ import { getShellRemainingCopy } from '../../../locales/shell-remaining-copy.js'
  */
 export function renderConversationMarkdown(sessionName: string, messages: readonly StoredMessage[], locale: UiLocale): string {
   const copy = getShellRemainingCopy(locale).conversationExport;
-  const lines: string[] = [];
-  lines.push(`# ${sessionName}`);
-  lines.push('');
-  lines.push(`*${copy.exported(new Intl.DateTimeFormat(locale, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date()))}*`);
-  lines.push('');
-
-  // Group by turnId in encounter order so we preserve narrative flow.
-  const turnOrder: string[] = [];
-  const byTurn = new Map<string, StoredMessage[]>();
-  for (const m of messages) {
-    const tid = (m as { turnId?: string }).turnId ?? '__loose';
-    if (!byTurn.has(tid)) {
-      byTurn.set(tid, []);
-      turnOrder.push(tid);
-    }
-    byTurn.get(tid)!.push(m);
-  }
-
-  for (const tid of turnOrder) {
-    const turnMessages = byTurn.get(tid) ?? [];
-    const user = turnMessages.find((m) => m.type === 'user');
-    // A turn holds one assistant message per model step; join their text in step
-    // order so the export carries the whole answer, not just the first step.
-    const assistantText = turnMessages
-      .flatMap((m) => (m.type === 'assistant' && m.text.length > 0 ? [m.text] : []))
-      .join('\n\n');
-    const toolCalls = turnMessages.filter((m) => m.type === 'tool_call');
-
-    if (user && user.type === 'user') {
-      lines.push('---');
-      lines.push('');
-      lines.push(`## ${copy.you}`);
-      lines.push('');
-      // Prefer displayText when the model text is a composed envelope (skill
-      // invocation) so exports match what the user typed, not the injected body.
-      lines.push(userFacingText(user));
-      lines.push('');
-    }
-
-    if (toolCalls.length > 0) {
-      lines.push(`### ${copy.toolCalls}`);
-      lines.push('');
-      for (const call of toolCalls) {
-        const c = call as { toolName: string; intent?: string };
-        const intent = c.intent ? redactSecrets(c.intent) : undefined;
-        const intentSuffix = intent ? `${copy.intentSeparator}${intent}` : '';
-        lines.push(`- \`${c.toolName}\`${intentSuffix}`);
-      }
-      lines.push('');
-    }
-
-    if (assistantText.length > 0) {
-      lines.push('## Maka');
-      lines.push('');
-      // Defensive: backend redacts at write-time, but the export landing
-      // in the user's clipboard is a high-risk surface — paste destinations
-      // are external. Second-layer redaction is cheap insurance.
-      lines.push(redactSecrets(assistantText));
-      lines.push('');
-    }
-  }
-
-  return lines.join('\n').trim() + '\n';
+  return renderConversationMarkdownCore(sessionName, messages, {
+    copy: {
+      you: copy.you,
+      assistant: 'Maka',
+      toolCalls: copy.toolCalls,
+      thinking: 'Thinking',
+      intentSeparator: copy.intentSeparator,
+    },
+    includeToolResults: false,
+    // The clipboard export has always set its exported-at line in italics;
+    // keep that shape on the shared renderer (#6036 review).
+    exportedAtLine: (isoTimestamp) =>
+      `*${copy.exported(
+        new Intl.DateTimeFormat(locale, { dateStyle: 'medium', timeStyle: 'short' }).format(
+          new Date(isoTimestamp),
+        ),
+      )}*`,
+  });
 }
