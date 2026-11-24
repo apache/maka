@@ -58,11 +58,6 @@ export const discoveryMessages = {
     '可用工具已变化，请核对已选工具并重新确认。',
     '可用工具已變更，請檢查已選工具並再次確認。',
   ],
-  'Discovery tools require confirmation': [
-    'Review the selected tools and confirm again.',
-    '请核对已选工具并重新确认。',
-    '請檢查已選工具並再次確認。',
-  ],
   'Discovery selected groups': [
     '{selected} of {total} groups selected',
     '已选 {selected} / {total} 组',

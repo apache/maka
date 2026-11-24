@@ -364,18 +364,7 @@ mod tests {
             "text:Available tools changed. Review the updated selection and confirm again.",
         )
         .unwrap();
-        app.wait_for("label:File reading: Partially enabled (1/2)")
-            .unwrap();
-
-        app.press_key("mod+shift+k").unwrap();
-        app.press("role:button[Approve and enable]").unwrap();
-        app.wait_for("text:Review the selected tools and confirm again.")
-            .unwrap();
-        assert!(
-            !app.screen()
-                .matches("text:/scheduler_discovery_tools_confirmation_required/")
-                .unwrap()
-        );
+        app.wait_for("label:File reading: Off").unwrap();
 
         app.press_key("mod+shift+g").unwrap();
         app.press("role:button[Approve and enable]").unwrap();
@@ -383,9 +372,21 @@ mod tests {
             "text:The workspace or model changed. Review the displayed settings and confirm again.",
         )
         .unwrap();
+        app.wait_for("text:/isolated.updated/").unwrap();
 
         app.press("role:button[Approve and enable]").unwrap();
         app.wait_for("role:button[Pause]").unwrap();
+
+        app.press("role:button[Edit plan]").unwrap();
+        app.wait_for("role:button[Approve and save]").unwrap();
+        app.press_key("mod+shift+p").unwrap();
+        app.press("role:button[Approve and save]").unwrap();
+        app.wait_for("text:/Fixture preview failed/").unwrap();
+        assert!(
+            !app.screen()
+                .matches("text:/The workspace or model changed/")
+                .unwrap()
+        );
     }
 
     #[test]
