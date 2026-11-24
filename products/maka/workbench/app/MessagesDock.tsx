@@ -313,9 +313,7 @@ export function createMessagesDock(
       </If>
       <If when={connected() && error()}>
         <View style={{ padding: 12, flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-          <Text
-            style={[{ ...captionTextStyle, flex: 1, color: C.warning }, { userSelect: 'text' }]}
-          >
+          <Text style={[{ ...captionTextStyle, flex: 1, color: C.danger }, { userSelect: 'text' }]}>
             {error()}
           </Text>
           <If when={editing() === null}>

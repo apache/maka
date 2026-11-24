@@ -24,6 +24,7 @@ import {
   platform,
   signal,
   Text,
+  untracked,
   View,
   windowSize,
   type Signal,
@@ -48,7 +49,10 @@ import type { SettingsOperations } from './settingsOperations';
 import { contributionTitle } from './plugins/context';
 import { Icon } from './Icon';
 import { tr } from './locale';
+import { dialogTop } from './chrome';
+import { InlineCallout, Toaster } from './Feedback';
 import { ModalDialog } from './ModalDialog';
+import { createToastStore } from './toastStore';
 import { SettingsButton, settingsGutter, settingsInset } from './SettingsPage';
 import {
   C,
@@ -135,6 +139,36 @@ export function ModelSettings(props: {
       props.route.set({ instance: target.instance.instance, id: target.id });
     });
   };
+  let seenNavigation = props.input.navigation?.() ?? 0;
+  effect(() => {
+    const next = props.input.navigation?.() ?? 0;
+    if (next === seenNavigation) return;
+    seenNavigation = next;
+    untracked(() => {
+      const requestedPage = props.input.page;
+      if (!requestedPage || !alive || busy()) return;
+      const targetRoute =
+        requestedPage === 'external-agents'
+          ? props.defaultRoute
+          : { instance: props.context.instance, id: requestedPage };
+      const target =
+        pages().find((item) => matches(item, targetRoute)) ??
+        pages().find((item) => item.id === requestedPage);
+      if (!target) return;
+      const from = contributed()?.key ?? null;
+      if (from === target.key) {
+        const current = page();
+        if (current?.nested() && current.returnToRoot) {
+          leave(() => {
+            if (!alive || busy() || (contributed()?.key ?? null) !== target.key) return;
+            current.returnToRoot?.();
+          });
+        }
+        return;
+      }
+      choose({ from, to: target.key });
+    });
+  });
   const closeNow = () => {
     if (alive && !busy()) props.input.close();
   };
@@ -170,6 +204,21 @@ export function ModelSettings(props: {
   const title = () =>
     page()?.title() ?? (contributed() ? contributionTitle(contributed()!) : tr('Settings'));
   const action = () => page()?.action?.() ?? null;
+  const settingsToasts = createToastStore();
+  let lastNotice = '';
+  effect(() => {
+    const message = operations.notice();
+    if (!message) {
+      lastNotice = '';
+      return;
+    }
+    if (message === lastNotice) return;
+    lastNotice = message;
+    settingsToasts.show({ id: 'settings.notice', tone: 'info', message });
+  });
+  cleanup(() => {
+    settingsToasts.dispose();
+  });
   const terminal = platform.idiom === 'terminal';
   const iconButton = {
     ...controlStyle,
@@ -182,6 +231,7 @@ export function ModelSettings(props: {
       size="page"
       height={800}
       onCancel={cancel(backAction())}
+      outside={<Toaster store={settingsToasts} top={dialogTop(12)} right={16} />}
       style={{
         flexDirection: rail() ? 'row' : 'column',
         padding: 0,
@@ -322,38 +372,33 @@ export function ModelSettings(props: {
             <Icon name="close" color={C.secondary} />
           </Button>
         </View>
+        <If
+          when={
+            (!operations.hasInlineError() && Boolean(operations.error())) ||
+            operations.pending().length > 0
+          }
+        >
+          <View
+            style={{
+              paddingLeft: settingsGutter + settingsInset,
+              paddingRight: settingsGutter,
+              paddingBottom: terminal ? 4 : 8,
+            }}
+          >
+            <InlineCallout
+              tone={!operations.hasInlineError() && operations.error() ? 'danger' : 'info'}
+              message={
+                (!operations.hasInlineError() && operations.error()) ||
+                tr('Checking whether settings changes were applied…')
+              }
+            />
+          </View>
+        </If>
         <View style={{ flex: 1, minHeight: 0 }}>
           <Each of={contributed() ? [contributed()!] : []} key={(item) => item.key}>
             {(item) => runtime.render(item(), { sessionId: null, input: input(item()) })}
           </Each>
         </View>
-        <If when={operations.error() || operations.notice() || operations.pending().length > 0}>
-          <View
-            style={{
-              paddingLeft: settingsGutter + settingsInset,
-              paddingRight: settingsGutter,
-              paddingVertical: terminal ? 0 : 8,
-              borderTopWidth: 1,
-              borderTopColor: C.line,
-            }}
-          >
-            <If when={operations.error()}>
-              <Text style={[{ ...captionTextStyle, color: C.danger }, { userSelect: 'text' }]}>
-                {operations.error()}
-              </Text>
-            </If>
-            <If when={!operations.error() && operations.notice()}>
-              <Text style={{ ...captionTextStyle, color: C.muted }}>{operations.notice()}</Text>
-            </If>
-            <If
-              when={!operations.error() && !operations.notice() && operations.pending().length > 0}
-            >
-              <Text style={{ ...captionTextStyle, color: C.muted }}>
-                {tr('Checking whether settings changes were applied…')}
-              </Text>
-            </If>
-          </View>
-        </If>
       </View>
     </ModalDialog>
   );

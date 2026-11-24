@@ -17,8 +17,10 @@
  * under the License.
  */
 
+import { FloatingNoticeCapsule, RegionEmptyError } from './Feedback';
 import { textTooltip } from './ui';
-import { createText, errorText } from './text';
+import { errorText, renderText } from './text';
+import { toast } from './toastStore';
 import {
   Canvas,
   cleanup,
@@ -140,7 +142,6 @@ export function Terminal(props: { model: TerminalModel }) {
   const offset = signal(0);
   const inputValue = signal('');
   const confirmation = signal(false);
-  const copyStatus = createText();
   const copied = signal(false);
   let input: InputRef | null = null;
   let scroll: ScrollRef | null = null;
@@ -148,6 +149,7 @@ export function Terminal(props: { model: TerminalModel }) {
   let fallback: ViewRef | null = null;
   let mounted = true;
   let reset: ReturnType<typeof setTimeout> | null = null;
+  let copyReset: ReturnType<typeof setTimeout> | null = null;
   let unbind = () => {};
   const rows = () => Math.max(1, Math.min(1024, Math.floor(dimensions().height / LINE)));
   const frame = computed(() => {
@@ -177,12 +179,20 @@ export function Terminal(props: { model: TerminalModel }) {
       );
       if (mounted) {
         copied.set(true);
-        copyStatus.set('');
+        if (copyReset) clearTimeout(copyReset);
+        copyReset = setTimeout(() => {
+          copyReset = null;
+          if (mounted) copied.set(false);
+        }, 1500);
       }
     } catch (reason) {
       if (mounted) {
         copied.set(false);
-        copyStatus.set(errorText(reason, 'Could not copy to the clipboard.'));
+        toast.show({
+          id: 'terminal.copy',
+          tone: 'danger',
+          message: renderText(errorText(reason, 'Could not copy to the clipboard.')),
+        });
       }
     }
   };
@@ -347,11 +357,25 @@ export function Terminal(props: { model: TerminalModel }) {
     unbind();
     model.release();
     if (reset) clearTimeout(reset);
+    if (copyReset) clearTimeout(copyReset);
   });
   const pipes = () => {
     const output = model.entry().result.output;
     return output?.mode === 'pipes' ? output.stdout + output.stderr : '';
   };
+  const hasOutput = () =>
+    model.entry().result.mode === 'pipes' ? pipes().length > 0 : model.version() > 0;
+  const needsRetry = () => model.state() === 'failed' || model.control() === 'refused';
+  const unreadable = () =>
+    !hasOutput() &&
+    (model.state() === 'failed' || (Boolean(model.error()) && model.state() !== 'live'));
+  const overlayMessage = () =>
+    model.error() ||
+    (model.state() === 'unavailable'
+      ? tr('Waiting for retained output…')
+      : needsRetry()
+        ? tr('Terminal observation interrupted.')
+        : '');
   return (
     <View style={{ flex: 1, minHeight: 0, gap: 8 }}>
       <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 4, alignItems: 'center' }}>
@@ -406,12 +430,14 @@ export function Terminal(props: { model: TerminalModel }) {
         <Button
           onPress={() => void copy()}
           accessibilityLabel={tr('Copy visible terminal')}
-          tooltip={textTooltip(() => tr('Copy visible terminal · Ctrl+Shift+C'))}
+          tooltip={textTooltip(() =>
+            copied() ? tr('Copied') : tr('Copy visible terminal · Ctrl+Shift+C'),
+          )}
           style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
           hoverStyle={controlHoverStyle()}
           focusStyle={controlFocusStyle()}
         >
-          <Icon name="copy" color={C.secondary} />
+          <Icon name={copied() ? 'check' : 'copy'} color={copied() ? C.accent : C.secondary} />
         </Button>
         <If when={model.local() && model.running()}>
           <Button
@@ -624,41 +650,55 @@ export function Terminal(props: { model: TerminalModel }) {
             />
           </If>
         </View>
+        <If when={unreadable()}>
+          <View
+            style={{
+              position: 'absolute',
+              left: 0,
+              right: 0,
+              top: 0,
+              bottom: 0,
+              backgroundColor: SURFACE.background,
+            }}
+          >
+            <RegionEmptyError
+              tone="danger"
+              icon="terminal"
+              title={model.error() || tr('Could not open terminal.')}
+              retry={needsRetry() ? inputAction(model.retry, null) : undefined}
+              retryLabel={tr('Retry terminal observation')}
+            />
+          </View>
+        </If>
+        <If when={!unreadable() && Boolean(overlayMessage())}>
+          <View
+            style={[
+              {
+                position: 'absolute',
+                left: 12,
+                right: 12,
+                bottom: 12,
+                alignItems: 'flex-end',
+              },
+              { pointerEvents: 'box-none' },
+            ]}
+          >
+            <FloatingNoticeCapsule
+              tone={model.error() ? 'danger' : 'warning'}
+              message={overlayMessage()}
+              action={
+                needsRetry()
+                  ? {
+                      label: tr('Retry'),
+                      primary: true,
+                      onPress: inputAction(model.retry, null),
+                    }
+                  : undefined
+              }
+            />
+          </View>
+        </If>
       </View>
-      <If when={model.error()}>
-        <Text style={[{ ...bodyTextStyle, color: C.danger }, { userSelect: 'text' }]}>
-          {model.error()}
-        </Text>
-      </If>
-      <If when={model.state() === 'failed' || model.control() === 'refused'}>
-        <Button
-          onPress={inputAction(model.retry, null)}
-          style={{
-            ...controlStyle,
-            alignSelf: 'flex-start',
-            flexDirection: 'row',
-            alignItems: 'center',
-            gap: 8,
-          }}
-          hoverStyle={controlHoverStyle()}
-          focusStyle={controlFocusStyle()}
-        >
-          <Icon name="refresh" color={C.secondary} />
-          <Text style={{ ...captionTextStyle, color: C.secondary }}>
-            {tr('Retry terminal observation')}
-          </Text>
-        </Button>
-      </If>
-      <If when={copied() || copyStatus()}>
-        <Text style={{ ...captionTextStyle, color: C.muted }}>
-          {copied() ? tr('Visible terminal copied.') : copyStatus()}
-        </Text>
-      </If>
-      <If when={model.state() === 'unavailable'}>
-        <Text style={{ ...bodyTextStyle, color: C.warning }}>
-          {tr('Waiting for retained output…')}
-        </Text>
-      </If>
       <If when={confirmation()}>
         <ModalDialog size="alert" onCancel={() => confirmation.set(false)}>
           <If

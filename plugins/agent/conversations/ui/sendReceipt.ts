@@ -147,3 +147,19 @@ export function mergeRestoredIntoHeldDraft<File extends { id: string }>(
     quotes,
   };
 }
+
+/**
+ * The sends that still stand in the conversation as rows of their own: the one
+ * being saved, and those in flight, by their operation, until the message the
+ * Host accepted takes their place.
+ */
+export function unsettledSends<Send>(
+  saving: Send | undefined,
+  inFlight: ReadonlyMap<string, Send>,
+  settled: ReadonlySet<string>,
+): Send[] {
+  return [
+    ...(saving === undefined ? [] : [saving]),
+    ...[...inFlight].filter(([operation]) => !settled.has(operation)).map(([, send]) => send),
+  ];
+}

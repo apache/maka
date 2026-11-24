@@ -18,20 +18,14 @@
  */
 
 import { signal, Text, View, type InputRef, type JSX } from 'nsh';
-import { Button } from 'nsh/base';
 import type { ClientDraftAttachment } from '../../../../packages/plugin-sdk/src/generated/runtime.js';
 import type { ComposerSession } from '../../../../packages/plugin-sdk/src/workbench-views.js';
 import { hasComposerContent } from '../../../../packages/plugin-sdk/src/composer-view.js';
 import { DraftQuotes } from '../../composer/ui/DraftQuotes';
+import { InlineCallout } from '../../../../products/maka/workbench/app/Feedback';
 import { tr } from '../../../../products/maka/workbench/app/locale';
 import { CompactInputBar } from '../../../../products/maka/workbench/app/QuickBar';
-import {
-  bodyTextStyle,
-  C,
-  controlFocusStyle,
-  controlHoverStyle,
-  IconButton,
-} from '../../../../products/maka/workbench/app/ui';
+import { C, IconButton } from '../../../../products/maka/workbench/app/ui';
 
 /** The conversation's input in the popup's top bar, where the launcher's input was. */
 export function CompactComposer(props: {
@@ -129,48 +123,37 @@ export function CompactComposer(props: {
           </>
         }
       />
-      <If when={unavailable()}>
-        <View
-          style={{
-            flexDirection: 'row',
-            alignItems: 'center',
-            gap: 12,
-            paddingVertical: 8,
-            paddingLeft: 42,
-            paddingRight: 12,
-            borderTopWidth: 1,
-            borderTopColor: C.line,
-          }}
-        >
-          <Text style={{ ...bodyTextStyle, flex: 1, color: C.warning }}>
-            {tr('No model is available')}
-          </Text>
-          <Button
-            accessibilityLabel={tr('Choose Model')}
-            onPress={props.chooseModel}
-            style={{
-              paddingHorizontal: 10,
-              height: 32,
-              justifyContent: 'center',
-              borderRadius: 6,
-              backgroundColor: C.raised,
-            }}
-            hoverStyle={controlHoverStyle()}
-            focusStyle={controlFocusStyle()}
+      <If when={unavailable() || failure() !== ''}>
+        <View style={{ paddingHorizontal: 12, paddingVertical: 8 }}>
+          <If
+            when={unavailable()}
+            else={
+              <InlineCallout
+                tone="danger"
+                message={failure()}
+                onDismiss={() => {
+                  const session = props.session();
+                  if (session?.error()) {
+                    session.dismissError();
+                    return;
+                  }
+                  const failedSend = session?.sends().find((item) => item.state === 'failed');
+                  if (session && failedSend) {
+                    void session.dismissSend(failedSend.id);
+                    return;
+                  }
+                  refused.set('');
+                }}
+              />
+            }
           >
-            <Text style={{ fontSize: 13, color: C.text }}>{tr('Choose Model')}</Text>
-          </Button>
+            <InlineCallout
+              tone="warning"
+              message={tr('No model is available')}
+              action={{ label: tr('Choose Model'), primary: true, onPress: props.chooseModel }}
+            />
+          </If>
         </View>
-      </If>
-      <If when={failure() !== ''}>
-        <Text
-          style={[
-            { ...bodyTextStyle, paddingVertical: 8, paddingLeft: 42, paddingRight: 12 },
-            { color: C.warning, userSelect: 'text' },
-          ]}
-        >
-          {failure()}
-        </Text>
       </If>
     </View>
   );

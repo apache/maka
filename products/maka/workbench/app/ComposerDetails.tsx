@@ -29,7 +29,11 @@ import {
   windowSize,
 } from 'nsh';
 import { Button } from 'nsh/base';
-import type { ComposerSession } from '../../../../packages/plugin-sdk/src/composer-view.js';
+import type {
+  ComposerSession,
+  ComposerShelfStatus,
+} from '../../../../packages/plugin-sdk/src/composer-view.js';
+import { ComposerShelf, ComposerShelfRow } from './Feedback';
 import { createChecklist } from './Checklist';
 import { createComputerAppControls } from './ComputerAppControls';
 import { createMessagesDock } from './MessagesDock';
@@ -58,6 +62,7 @@ export function ComposerDetails(props: {
     | 'checkSend'
     | 'dismissSend'
   >;
+  status?(): ComposerShelfStatus | null;
 }) {
   const session = props.session;
   const height = () => windowSize().height / 4;
@@ -364,34 +369,30 @@ export function ComposerDetails(props: {
       )}
     </Each>
   );
+  const status = () => props.status?.() ?? null;
+  const statusRow = () => (
+    <If when={status() !== null}>
+      <ComposerShelfRow
+        tone={status()!.tone}
+        message={status()!.message}
+        detail={status()!.detail}
+        action={status()!.action}
+        secondaryAction={status()!.secondaryAction}
+        onDismiss={status()!.onDismiss}
+        divided={available().length > 0}
+      />
+    </If>
+  );
   return (
-    <If when={available().length > 0}>
-      <View
-        accessibilityLabel={tr('Conversation details')}
-        style={{
-          minHeight: 0,
-          flexShrink: 1,
-          backgroundColor: C.card,
-          overflow: 'hidden',
-          ...(platform.idiom === 'terminal'
-            ? { marginBottom: 16, borderWidth: 1, borderColor: C.line, borderRadius: 12 }
-            : {
-                // A tab on the composer card rather than a second card above it.
-                marginHorizontal: composerCorner,
-                borderTopWidth: 1,
-                borderLeftWidth: 1,
-                borderRightWidth: 1,
-                borderBottomWidth: 0,
-                borderColor: C.line,
-                borderTopLeftRadius: 12,
-                borderTopRightRadius: 12,
-              }),
-        }}
-      >
-        {platform.idiom === 'terminal' ? null : detail()}
-        {row()}
-        {platform.idiom === 'terminal' ? detail() : null}
-      </View>
+    <If when={available().length > 0 || status() !== null}>
+      <ComposerShelf inset={composerCorner} accessibilityLabel={tr('Conversation details')}>
+        {statusRow()}
+        <If when={available().length > 0}>
+          {platform.idiom === 'terminal' ? null : detail()}
+          {row()}
+          {platform.idiom === 'terminal' ? detail() : null}
+        </If>
+      </ComposerShelf>
     </If>
   );
 }

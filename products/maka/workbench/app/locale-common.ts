@@ -434,4 +434,12 @@ export const commonMessages = {
   Symbols: ['Symbols', '符号', '符號'],
   'screenshot keyword': ['screenshot', '截图', '截圖'],
   Delete: ['Delete', '删除', '刪除'],
+  Dismiss: ['Dismiss', '关闭', '關閉'],
+  'Diagnostic details': ['Diagnostic details', '诊断详情', '診斷詳情'],
+  'Could not open terminal.': ['Could not open terminal.', '无法打开终端。', '無法開啟終端機。'],
+  'Terminal observation interrupted.': [
+    'Terminal observation interrupted.',
+    '终端连接已中断。',
+    '終端機連線已中斷。',
+  ],
 } as const satisfies Catalog;

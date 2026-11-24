@@ -24,6 +24,7 @@ import { DraftQuotes } from '../../../../plugins/agent/composer/ui/DraftQuotes';
 import type { ComposerSession } from '../../../../packages/plugin-sdk/src/workbench-views.js';
 import { Icon } from './Icon';
 import { tr } from './locale';
+import { toast } from './toastStore';
 import {
   bodyTextStyle,
   C,
@@ -53,7 +54,6 @@ export function StageFloatingComposer(props: {
   const expanded = signal(false);
   const minimized = signal(false);
   const inputHeight = signal(20);
-  const refused = signal('');
 
   const running = () => (props.session()?.run() ?? null) !== null;
   const draft = () => props.session()?.draft() ?? '';
@@ -76,8 +76,11 @@ export function StageFloatingComposer(props: {
       return;
     }
     const reason = session.blockedReason();
-    refused.set(reason);
-    if (!reason) session.submit({ text });
+    if (reason) {
+      toast.show({ id: 'stage-composer.refused', tone: 'warning', message: reason });
+      return;
+    }
+    session.submit({ text });
   };
 
   return (
@@ -267,7 +270,6 @@ export function StageFloatingComposer(props: {
             value={draft()}
             readonly={!(props.session()?.editable() ?? false)}
             onChange={({ value }) => {
-              refused.set('');
               props.session()?.changeDraft(value);
             }}
             onSubmit={send}
@@ -305,19 +307,6 @@ export function StageFloatingComposer(props: {
             />
           </Button>
         </View>
-        <If when={Boolean(refused())}>
-          <Text
-            style={{
-              fontSize: 12,
-              lineHeight: 16,
-              color: C.warning,
-              paddingHorizontal: 16,
-              paddingBottom: 8,
-            }}
-          >
-            {refused()}
-          </Text>
-        </If>
       </If>
     </View>
   );

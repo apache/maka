@@ -20,7 +20,7 @@
 import { tr } from './locale';
 import { Canvas, cleanup, effect, platform, Text, untracked, View, List, type ListRef } from 'nsh';
 import type { ComposerChecklistSource } from '../../../../packages/plugin-sdk/src/composer-view.js';
-import { C, bodyTextStyle } from './ui';
+import { C, bodyTextStyle, captionTextStyle } from './ui';
 import { Icon } from './Icon';
 import { ChoiceIndicator } from './ChoiceIndicator';
 import { createChecklistState } from './checklistState';
@@ -186,7 +186,7 @@ export function createChecklist(
           <If when={error()}>
             <Text
               style={[
-                { ...bodyTextStyle, paddingHorizontal: 16, paddingVertical: 8, color: C.danger },
+                { ...captionTextStyle, paddingHorizontal: 16, paddingVertical: 8, color: C.danger },
                 { userSelect: 'text' },
               ]}
             >

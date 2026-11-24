@@ -66,9 +66,9 @@ import {
 } from './SettingsPage';
 import {
   IconButton,
-  captionTextStyle,
   C,
   bodyTextStyle,
+  captionTextStyle,
   controlFocusStyle,
   controlHoverStyle,
   defaultColors,
@@ -321,7 +321,7 @@ function DictationSettings(props: { addConnection(): void }) {
         </SettingsSection>
       </If>
       <If when={!!dictation.error()}>
-        <Text style={{ color: C.danger }}>{dictation.error()}</Text>
+        <SettingsProblem message={dictation.error()} />
       </If>
     </SettingsBody>
   );
@@ -603,10 +603,21 @@ function UpdatesSection() {
       case 'upToDate':
         return tr('You are on the latest build for this channel.');
       case 'error':
-        return state.error ?? tr('Update check failed.');
+        return undefined;
       default:
         return tr('Check for updates on this channel.');
     }
+  };
+  const errorMessage = () => {
+    const state = appUpdater.snapshot();
+    if (!state || state.channel === 'dev') return undefined;
+    if (state.status === 'error') return state.error ?? tr('Update check failed.');
+    if (state.status === 'ready' && state.error) return state.error;
+    return undefined;
+  };
+  const busy = () => {
+    const status = appUpdater.snapshot()?.status;
+    return status === 'checking' || status === 'downloading' || status === 'installing';
   };
   return (
     <If when={appUpdater.snapshot() !== null}>
@@ -614,8 +625,16 @@ function UpdatesSection() {
         <SettingsRow
           label={`${appUpdater.snapshot()?.currentVersion ?? ''} · ${channelLabel()}`}
           description={description()}
+          detail={
+            <If when={!!errorMessage()}>
+              <Text style={{ ...captionTextStyle, color: C.danger }}>{errorMessage()}</Text>
+            </If>
+          }
           trailing={
             <If when={appUpdater.snapshot()?.channel !== 'dev'}>
+              <If when={busy()}>
+                <LoadingIndicator label={description()} />
+              </If>
               <If when={appUpdater.snapshot()?.status === 'ready'}>
                 <SettingsButton
                   tone="primary"
