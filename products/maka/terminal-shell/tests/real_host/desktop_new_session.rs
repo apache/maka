@@ -1505,7 +1505,7 @@ async fn desktop_creates_and_reopens_a_named_worktree() {
         .await
         .unwrap();
     assert_eq!(registered["location"]["project"]["path"], worktree["path"]);
-    desktop.control("Copy user message").await;
+    desktop.control("Copy message").await;
     desktop.artifact("worktree-conversation-sent");
 
     let desktop = desktop
