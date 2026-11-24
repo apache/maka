@@ -1254,7 +1254,9 @@ fn next_action(
                     },
                 );
             }
-            if attempt.interrupted.is_some() && attempt.recovery.is_none() {
+            if (attempt.interrupted.is_some() || attempt.source_failure.is_some())
+                && attempt.recovery.is_none()
+            {
                 continue;
             }
         }
@@ -1414,6 +1416,16 @@ fn next_action(
     }
     if attempt.admission.is_none() && attempt.closed.is_none() && attempt.interrupted.is_none() {
         return Action::Start(id);
+    }
+    // A captured source failure proves the stream ended, so there is nothing left to observe.
+    // Interrupt before assessing, as the live driver does: overflow recovery needs it.
+    if attempt.source_failure.is_some() && attempt.closed.is_none() && attempt.interrupted.is_none()
+    {
+        let diagnostic = model
+            .and_then(|model| model.failure.as_ref())
+            .map(|protocol| protocol.failure.to_string())
+            .unwrap_or_else(|| "Original model source failed".into());
+        return Action::Interrupt(id, diagnostic);
     }
     if attempt.recovery.is_none()
         && attempt.closed.as_ref().is_none_or(|closed| {
