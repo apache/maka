@@ -23,7 +23,7 @@ export default localizePackage({
   schemaVersion: 1,
   id: 'maka.screenshot',
   displayName: 'Screenshot',
-  description: 'Capture a screen region to the clipboard from the quick launcher on macOS.',
+  description: 'Capture a screen region from the quick launcher on macOS and Windows.',
   application: {
     ui: {
       module: 'ui.js',

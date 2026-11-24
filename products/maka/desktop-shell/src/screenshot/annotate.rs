@@ -183,6 +183,7 @@ impl Marks {
         self.made.extend(self.undone.pop());
     }
 
+    #[cfg(target_os = "macos")]
     pub fn clear(&mut self) {
         self.made.clear();
         self.undone.clear();

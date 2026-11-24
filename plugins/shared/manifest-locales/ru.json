@@ -55,7 +55,7 @@
   "pkg.maka.file-search.displayName": "Поиск файлов",
   "pkg.maka.quick-library.description": "Фрагменты, заметки и ссылки из «Настроек», доступные в один запрос через быстрый запуск.",
   "pkg.maka.quick-library.displayName": "Быстрая библиотека",
-  "pkg.maka.screenshot.description": "Снимок области экрана в буфер обмена через быстрый запуск в macOS.",
+  "pkg.maka.screenshot.description": "Снимок области экрана через быстрый запуск в macOS и Windows.",
   "pkg.maka.screenshot.displayName": "Снимок экрана",
   "pkg.maka.symbols.description": "Введите «sym» и название в быстром запуске, чтобы скопировать эмодзи или символ.",
   "pkg.maka.symbols.displayName": "Символы",

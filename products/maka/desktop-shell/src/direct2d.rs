@@ -274,7 +274,10 @@ pub(crate) fn run_wsl(
 }
 
 fn window_options() -> AppOptions {
+    let components = nsh_platform_windows::Components::default();
+    crate::screenshot_windows::stage::register(&components);
     AppOptions {
+        components,
         app_id: APP_ID.into(),
         title: TITLE.into(),
         size: SIZE,
@@ -483,22 +486,26 @@ fn carry_out(requests: Requests, runtime: &Runtime) {
     });
     runtime.spawn(async move {
         while let Some(call) = folders.recv().await {
-            with_running_view(move |view| {
-                view.choose_directory(move |path| match path {
-                    Ok(Some(path)) => match path.to_str() {
-                        Some(path) => call.resolve(JsonValue::from(path)),
-                        None => call.reject("the folder's path is not valid UTF-8"),
-                    },
-                    Ok(None) => call.resolve(JsonValue::Null),
-                    Err(error) => call.reject(error),
-                });
-            });
+            choose_local_folder(call);
         }
     });
     runtime.spawn(async move {
         while let Some(scale) = text_sizes.recv().await {
             with_running_view(move |view| view.set_font_scale(Some(scale)));
         }
+    });
+}
+
+pub(crate) fn choose_local_folder(call: nsh_engine::HostCall) {
+    with_running_view(move |view| {
+        view.choose_directory(move |path| match path {
+            Ok(Some(path)) => match path.to_str() {
+                Some(path) => call.resolve(JsonValue::from(path)),
+                None => call.reject("the folder's path is not valid UTF-8"),
+            },
+            Ok(None) => call.resolve(JsonValue::Null),
+            Err(error) => call.reject(error),
+        });
     });
 }
 

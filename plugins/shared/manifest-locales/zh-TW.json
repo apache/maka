@@ -55,7 +55,7 @@
   "pkg.maka.file-search.displayName": "檔案搜尋",
   "pkg.maka.quick-library.description": "在設定裡管理片段、筆記和連結，在快速啟動器裡隨時搜尋。",
   "pkg.maka.quick-library.displayName": "快速資料",
-  "pkg.maka.screenshot.description": "在 macOS 的快速啟動器裡擷取螢幕區域並複製到剪貼簿。",
+  "pkg.maka.screenshot.description": "在 macOS 和 Windows 的快速啟動器裡擷取螢幕區域。",
   "pkg.maka.screenshot.displayName": "截圖",
   "pkg.maka.symbols.description": "在快速啟動器輸入「符號」或 sym 加名稱，複製表情和符號。",
   "pkg.maka.symbols.displayName": "符號",

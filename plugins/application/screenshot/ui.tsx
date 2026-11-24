@@ -18,6 +18,7 @@
  */
 
 import {
+  host,
   nativeComponent,
   openUrl,
   type NativeComponentRef,
@@ -28,7 +29,7 @@ import {
   type JSX,
   type Signal,
 } from 'nsh';
-import { Button } from 'nsh/base';
+import { Button, Input } from 'nsh/base';
 import { Icon } from '../../../products/maka/workbench/app/Icon';
 import { C, textTooltip } from '../../../products/maka/workbench/app/ui';
 import { currentWindow, displays, Window, type WindowRef } from 'nsh/desktop';
@@ -63,17 +64,23 @@ const SCREEN_RECORDING_SETTINGS =
 
 /** The desktop shell's frozen display: it selects a region, takes marks on it, and copies, saves or pins it. */
 const Stage = nativeComponent<
-  { folder: string | null; pictureBoxes: boolean },
+  {
+    folder: string | null;
+    pictureBoxes: boolean;
+    viewport?: { id: string; bounds: Rect; scale: number; pictureBoxes: boolean } | null;
+  },
   {
     ready: { elements: boolean };
     selection: Rect | null;
     done: null;
     cancel: null;
+    saveCancelled: null;
     failed: Failure;
+    text: { x: number; y: number };
   }
 >('maka.screenshot', {
-  props: ['folder', 'pictureBoxes'],
-  events: ['ready', 'selection', 'done', 'cancel', 'failed'],
+  props: ['folder', 'pictureBoxes', 'viewport'],
+  events: ['ready', 'selection', 'done', 'cancel', 'saveCancelled', 'failed', 'text'],
 });
 
 const TOOLS = [
@@ -198,18 +205,21 @@ type Ink = {
 };
 
 function Toolbar(props: {
-  stage: () => NativeComponentRef | undefined;
+  command(name: string, args?: Record<string, unknown>): void;
+  focusCanvas(): void;
   selection: Rect;
   screen: Size;
   ink: Ink;
 }) {
   const { tool, color, size } = props.ink;
-  const command = (name: string, args: Record<string, unknown> = {}) =>
-    props.stage()?.command(name, args);
+  const command = props.command;
   const inked = () => tool() !== null && tool() !== 'mosaic';
   const at = () => place(props.selection, props.screen, BAR + (inked() ? GAP + INK_BAR : 0));
   return (
     <View
+      onMouseUp={(event) => {
+        if (event.button === 'left') props.focusCanvas();
+      }}
       style={{
         position: 'absolute',
         top: at().top,
@@ -310,13 +320,71 @@ function Toolbar(props: {
   );
 }
 
-function Overlay(props: { screen: Size; preferences: Preferences; finish(): void }) {
+function Overlay(props: {
+  screen: Size;
+  preferences: Preferences;
+  freeze?: string;
+  initialFailure?: Failure;
+  scale: number;
+  finish(): void;
+  setVisible(visible: boolean): void;
+}) {
   let stage: NativeComponentRef | undefined;
+  let canvas: import('nsh').ViewRef | undefined;
   // The stage takes the keys without activating Maka, which would bring its main window forward.
   currentWindow().focus();
-  const failure = signal<Failure | null>(null);
+  const failure = signal<Failure | null>(props.initialFailure ?? null);
   const selection = signal<Rect | null>(null);
   const elements = signal(true);
+  const textAt = signal<{ x: number; y: number } | null>(null);
+  let draft = '';
+  const settleText = (value?: string) => {
+    if (textAt() === null) return;
+    textAt.set(null);
+    draft = '';
+    if (value?.trim()) stage?.command('text', { value });
+    else if (platform.os === 'windows') stage?.command('discardText');
+  };
+  const window = currentWindow();
+  let saving = false;
+  const resume = () => {
+    if (!saving) return;
+    saving = false;
+    if (!props.preferences.folder) {
+      props.setVisible(true);
+      window.focus();
+      canvas?.focus();
+    }
+  };
+  const command = (name: string, args: Record<string, unknown> = {}) => {
+    if (platform.os === 'windows') {
+      if (saving) return;
+      if (name === 'pin')
+        args = {
+          title: tr('Pin to screen'),
+          copy: tr('Copy'),
+          save: tr('Save'),
+          close: tr('Close'),
+        };
+      settleText(draft);
+      if (name === 'save') {
+        saving = true;
+        if (!props.preferences.folder) props.setVisible(false);
+      }
+    }
+    stage?.command(name, args);
+  };
+  const viewport = () => {
+    const bounds = window.state()?.nativeContentBounds;
+    return props.freeze && bounds
+      ? {
+          id: props.freeze,
+          bounds,
+          scale: props.scale,
+          pictureBoxes: props.preferences.pictureBoxes,
+        }
+      : null;
+  };
   // The stage keeps the tool while the toolbar hides during a drag, so the choice lives here too.
   const ink: Ink = {
     tool: signal<Tool | null>(null),
@@ -324,12 +392,24 @@ function Overlay(props: { screen: Size; preferences: Preferences; finish(): void
     size: signal(props.preferences.size),
   };
   return (
-    <View style={{ flex: 1 }}>
+    <View
+      style={{ flex: 1 }}
+      captureKeys={platform.os === 'windows' ? (failure() ? 'all' : ['escape']) : 'none'}
+      onKeyDown={(event) => {
+        if (platform.os !== 'windows' || (!failure() && event.key !== 'Escape')) return;
+        if (textAt() === null) props.finish();
+        else {
+          settleText();
+          canvas?.focus();
+        }
+      }}
+    >
       <Stage
         ref={(node) => (stage = node)}
         style={{ position: 'absolute', top: 0, right: 0, bottom: 0, left: 0 }}
         folder={props.preferences.folder}
         pictureBoxes={props.preferences.pictureBoxes}
+        viewport={viewport()}
         onReady={(ready) => {
           elements.set(ready.elements);
           stage?.command('ink', { color: ink.color(), size: ink.size() });
@@ -337,10 +417,76 @@ function Overlay(props: { screen: Size; preferences: Preferences; finish(): void
         onSelection={(rect) => selection.set(rect)}
         onDone={props.finish}
         onCancel={props.finish}
-        onFailed={(failed) => failure.set(failed)}
+        onSaveCancelled={resume}
+        onFailed={(failed) => {
+          resume();
+          failure.set(failed);
+        }}
+        onText={(point) => textAt.set(point)}
       />
+      <If when={platform.os === 'windows'}>
+        <View
+          style={{ position: 'absolute', top: 0, right: 0, bottom: 0, left: 0 }}
+          focusable
+          ref={(node) => {
+            canvas = node;
+            node?.focus();
+          }}
+          captureKeys={failure() ? 'all' : ['enter']}
+          onKeyDown={(event) => {
+            if (!failure() && event.key === 'Enter') command('copy');
+          }}
+          onStartShouldSetResponder={() => true}
+          onResponderGrant={(event) => {
+            settleText(draft);
+            stage?.command('begin', { x: event.pageX, y: event.pageY });
+          }}
+          onResponderMove={(event) => stage?.command('move', { x: event.pageX, y: event.pageY })}
+          onResponderRelease={(event) => stage?.command('end', { x: event.pageX, y: event.pageY })}
+          onResponderTerminate={() => stage?.command('interrupt')}
+          onMouseMove={(event) => {
+            if (event.pressedButton === null && !selection())
+              stage?.command('hover', event.pagePosition);
+          }}
+        />
+      </If>
+      <If when={textAt() !== null}>
+        <Input
+          autoFocus
+          multiline
+          submitBehavior="submit"
+          onChange={({ value }) => {
+            draft = value;
+          }}
+          onKeyPress={({ key }) => {
+            if (platform.os === 'windows' && key === 'Escape') {
+              settleText();
+              canvas?.focus();
+            }
+          }}
+          onSubmit={({ text }) => {
+            settleText(text);
+            canvas?.focus();
+          }}
+          style={{
+            position: 'absolute',
+            left: Math.max(0, Math.min(textAt()!.x, props.screen.width - 220)),
+            top: Math.max(0, Math.min(textAt()!.y, props.screen.height - 52)),
+            width: 220,
+            height: 52,
+            backgroundColor: C.floating,
+            color: C.text,
+          }}
+        />
+      </If>
       <If when={selection() !== null && failure() === null}>
-        <Toolbar stage={() => stage} selection={selection()!} screen={props.screen} ink={ink} />
+        <Toolbar
+          command={command}
+          focusCanvas={() => canvas?.focus()}
+          selection={selection()!}
+          screen={props.screen}
+          ink={ink}
+        />
       </If>
       <If when={!elements() && selection() === null && failure() === null}>
         <View
@@ -417,13 +563,37 @@ function Overlay(props: { screen: Size; preferences: Preferences; finish(): void
 }
 
 /** One frozen stage per display; finishing on any of them closes them all. */
-function capture(preferences: Preferences) {
+let capturing = false;
+
+function capture(preferences: Preferences, freeze?: string, initialFailure?: Failure) {
   const windows: WindowRef[] = [];
-  const finish = () => windows.splice(0).forEach((window) => window.close());
-  for (const display of displays()) {
-    windows.push(
-      Window.open(
-        () => <Overlay screen={display.bounds.size} preferences={preferences} finish={finish} />,
+  let finished = false;
+  const finish = () => {
+    if (finished) return;
+    finished = true;
+    windows.splice(0).forEach((window) => window.close());
+    if (freeze) void host.call('screenshot.release', { id: freeze });
+    capturing = false;
+  };
+  try {
+    for (const display of displays()) {
+      const window = Window.open(
+        () => (
+          <Overlay
+            screen={display.bounds.size}
+            preferences={preferences}
+            freeze={freeze}
+            initialFailure={initialFailure}
+            scale={display.scaleFactor}
+            finish={finish}
+            setVisible={(visible) => {
+              for (const window of windows) {
+                if (visible) window.show();
+                else window.hide();
+              }
+            }}
+          />
+        ),
         {
           id: `maka.screenshot.${display.id}`,
           kind: 'popup',
@@ -438,8 +608,14 @@ function capture(preferences: Preferences) {
           closeOnBlur: false,
           closeOnEscape: false,
         },
-      ),
-    );
+      );
+      windows.push(window);
+      window.on('close', finish);
+    }
+    if (!windows.length) finish();
+  } catch (error) {
+    finish();
+    throw error;
   }
 }
 
@@ -453,10 +629,25 @@ function Screenshot(props: { input: QuickToolInput; settings: ScreenshotSettings
         title: tr('Capture a screen region'),
         icon: 'camera',
         keywords: [tr('screenshot keyword'), ...terms()],
-        run: () => {
+        run: async () => {
           // The launcher floats above everything, so it has to be gone before the screen freezes.
           input.close();
-          capture(settings.current());
+          if (capturing) return;
+          capturing = true;
+          const preferences = settings.current();
+          if (platform.os !== 'windows') {
+            capture(preferences);
+            return;
+          }
+          let id: unknown;
+          try {
+            id = await host.call('screenshot.capture', {});
+            if (typeof id !== 'string') throw new Error('Missing screenshot identifier');
+          } catch (error) {
+            capture(preferences, undefined, { message: String(error), permission: false });
+            return;
+          }
+          capture(preferences, id);
         },
       },
     ],
@@ -472,7 +663,9 @@ export const activate: UiModule<JSX.Element>['activate'] = () => {
         kind: 'view',
         contract: quickToolView.id,
         render: ({ input }: UiEmbeddedViewProps<QuickToolInput, JSX.Element>) =>
-          platform.os === 'macos' ? <Screenshot input={input} settings={settings} /> : null,
+          platform.os === 'macos' || platform.os === 'windows' ? (
+            <Screenshot input={input} settings={settings} />
+          ) : null,
       },
       preferences: {
         kind: 'settings',

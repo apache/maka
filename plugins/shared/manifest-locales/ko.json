@@ -55,7 +55,7 @@
   "pkg.maka.file-search.displayName": "파일 검색",
   "pkg.maka.quick-library.description": "설정에서 관리하는 스니펫, 메모, 링크를 빠른 실행기에서 바로 검색합니다.",
   "pkg.maka.quick-library.displayName": "빠른 라이브러리",
-  "pkg.maka.screenshot.description": "macOS의 빠른 실행기에서 화면 영역을 캡처해 클립보드에 복사합니다.",
+  "pkg.maka.screenshot.description": "macOS와 Windows의 빠른 실행기에서 화면 영역을 캡처합니다.",
   "pkg.maka.screenshot.displayName": "스크린샷",
   "pkg.maka.symbols.description": "빠른 실행기에서 \"기호\" 또는 sym과 이름을 입력해 이모지나 기호를 복사합니다.",
   "pkg.maka.symbols.displayName": "기호",

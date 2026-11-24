@@ -55,7 +55,7 @@
   "pkg.maka.file-search.displayName": "File Search",
   "pkg.maka.quick-library.description": "Snippets, notes and links you manage in Settings, one search away in the quick launcher.",
   "pkg.maka.quick-library.displayName": "Quick Library",
-  "pkg.maka.screenshot.description": "Capture a screen region to the clipboard from the quick launcher on macOS.",
+  "pkg.maka.screenshot.description": "Capture a screen region from the quick launcher on macOS and Windows.",
   "pkg.maka.screenshot.displayName": "Screenshot",
   "pkg.maka.symbols.description": "Type \"sym\" and a name in the quick launcher to copy an emoji or symbol.",
   "pkg.maka.symbols.displayName": "Symbols",
