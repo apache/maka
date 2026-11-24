@@ -29,13 +29,6 @@ use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::{borrow::Cow, collections::BTreeMap, fmt, str::FromStr};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum TextDirection {
-    Ltr,
-    Rtl,
-}
-
 include!(concat!(env!("OUT_DIR"), "/manifest.rs"));
 
 /// Maximum accepted length of a canonical BCP 47 tag.

@@ -19,15 +19,11 @@
 
 import type { DisplayText } from './generated/runtime.js';
 
-export type TextDirection = 'ltr' | 'rtl';
 export type PluralCategory = 'zero' | 'one' | 'two' | 'few' | 'many' | 'other';
 
 export interface SupportedLocaleInfo {
   readonly tag: SupportedLocaleTag;
   readonly autonym: string;
-  readonly englishName: string;
-  readonly dir: TextDirection;
-  readonly overlay?: SupportedLocaleTag;
   readonly fallbacks: readonly SupportedLocaleTag[];
 }
 
@@ -47,43 +43,18 @@ export type SupportedLocaleTag =
 
 /** Authoritative manifest of built-in locales (synchronized with locales.manifest.json). */
 export const SUPPORTED_LOCALES: readonly SupportedLocaleInfo[] = [
-  { tag: 'en', autonym: 'English', englishName: 'English', dir: 'ltr', fallbacks: [] },
-  {
-    tag: 'zh-CN',
-    autonym: '简体中文',
-    englishName: 'Chinese (Simplified)',
-    dir: 'ltr',
-    fallbacks: ['en'],
-  },
-  {
-    tag: 'zh-TW',
-    autonym: '繁體中文（中國台灣）',
-    englishName: 'Chinese (Traditional, Taiwan, China)',
-    dir: 'ltr',
-    fallbacks: ['en'],
-  },
-  {
-    tag: 'zh-HK',
-    autonym: '繁體中文（中國香港）',
-    englishName: 'Chinese (Traditional, Hong Kong, China)',
-    dir: 'ltr',
-    overlay: 'zh-TW',
-    fallbacks: ['zh-TW', 'en'],
-  },
-  { tag: 'ja', autonym: '日本語', englishName: 'Japanese', dir: 'ltr', fallbacks: ['en'] },
-  { tag: 'ko', autonym: '한국어', englishName: 'Korean', dir: 'ltr', fallbacks: ['en'] },
-  { tag: 'es', autonym: 'Español', englishName: 'Spanish', dir: 'ltr', fallbacks: ['en'] },
-  { tag: 'fr', autonym: 'Français', englishName: 'French', dir: 'ltr', fallbacks: ['en'] },
-  { tag: 'de', autonym: 'Deutsch', englishName: 'German', dir: 'ltr', fallbacks: ['en'] },
-  {
-    tag: 'pt-BR',
-    autonym: 'Português (Brasil)',
-    englishName: 'Portuguese (Brazil)',
-    dir: 'ltr',
-    fallbacks: ['en'],
-  },
-  { tag: 'ru', autonym: 'Русский', englishName: 'Russian', dir: 'ltr', fallbacks: ['en'] },
-  { tag: 'it', autonym: 'Italiano', englishName: 'Italian', dir: 'ltr', fallbacks: ['en'] },
+  { tag: 'en', autonym: 'English', fallbacks: [] },
+  { tag: 'zh-CN', autonym: '简体中文', fallbacks: ['en'] },
+  { tag: 'zh-TW', autonym: '繁體中文（中國台灣）', fallbacks: ['en'] },
+  { tag: 'zh-HK', autonym: '繁體中文（中國香港）', fallbacks: ['zh-TW', 'en'] },
+  { tag: 'ja', autonym: '日本語', fallbacks: ['en'] },
+  { tag: 'ko', autonym: '한국어', fallbacks: ['en'] },
+  { tag: 'es', autonym: 'Español', fallbacks: ['en'] },
+  { tag: 'fr', autonym: 'Français', fallbacks: ['en'] },
+  { tag: 'de', autonym: 'Deutsch', fallbacks: ['en'] },
+  { tag: 'pt-BR', autonym: 'Português (Brasil)', fallbacks: ['en'] },
+  { tag: 'ru', autonym: 'Русский', fallbacks: ['en'] },
+  { tag: 'it', autonym: 'Italiano', fallbacks: ['en'] },
 ] as const;
 
 const LOCALE_INFO_BY_TAG: Readonly<Record<SupportedLocaleTag, SupportedLocaleInfo>> =
@@ -196,43 +167,18 @@ export function resolveLocale(configured: string | null | undefined, native: unk
   return 'en';
 }
 
-/** CLDR 45+ cardinal plural category for numeric counts, aligned with maka-i18n. */
+const pluralRulesCache = new Map<SupportedLocaleTag, Intl.PluralRules>();
+
+/** CLDR 45+ cardinal plural category via Intl.PluralRules, aligned with maka-i18n. */
 export function pluralCategory(locale: string, count: number): PluralCategory {
   if (!Number.isFinite(count)) return 'other';
   const tag = negotiateLocale(locale);
-  const abs = Math.abs(count);
-  const isInt = Number.isInteger(abs);
-  switch (tag) {
-    case 'zh-CN':
-    case 'zh-TW':
-    case 'zh-HK':
-    case 'ja':
-    case 'ko':
-      return 'other';
-    case 'fr':
-    case 'pt-BR':
-      if (abs < 2) return 'one';
-      if (isInt && abs !== 0 && abs % 1_000_000 === 0) return 'many';
-      return 'other';
-    case 'es':
-      if (abs === 1) return 'one';
-      if (isInt && abs !== 0 && abs % 1_000_000 === 0) return 'many';
-      return 'other';
-    case 'it':
-      if (isInt && abs === 1) return 'one';
-      if (isInt && abs !== 0 && abs % 1_000_000 === 0) return 'many';
-      return 'other';
-    case 'ru': {
-      if (!isInt) return 'other';
-      const m10 = abs % 10;
-      const m100 = abs % 100;
-      if (m10 === 1 && m100 !== 11) return 'one';
-      if (m10 >= 2 && m10 <= 4 && !(m100 >= 12 && m100 <= 14)) return 'few';
-      return 'many';
-    }
-    default:
-      return isInt && abs === 1 ? 'one' : 'other';
+  let rules = pluralRulesCache.get(tag);
+  if (!rules) {
+    rules = new Intl.PluralRules(tag);
+    pluralRulesCache.set(tag, rules);
   }
+  return rules.select(count) as PluralCategory;
 }
 
 type IcuNode =
@@ -245,9 +191,10 @@ type IcuNode =
 const MAX_AST_CACHE = 4096;
 const astCache = new Map<string, IcuNode[]>();
 
-function parseIcu(input: string): IcuNode[] {
-  const cached = astCache.get(input);
-  if (cached) return cached;
+const IDENT_NAME = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
+const PLURAL_SELECTOR = /^(=-?\d+|zero|one|two|few|many|other)$/;
+
+function parseIcuCore(input: string, strict: boolean): IcuNode[] {
   let pos = 0;
 
   const skipWs = () => {
@@ -270,9 +217,15 @@ function parseIcu(input: string): IcuNode[] {
     };
     while (pos < input.length) {
       const ch = input[pos]!;
-      if (ch === '}' && stopOnClose) {
-        flush();
-        return nodes;
+      if (ch === '}') {
+        if (stopOnClose) {
+          flush();
+          return nodes;
+        }
+        if (strict) throw new Error("Unmatched '}' at " + pos);
+        lit += ch;
+        pos += 1;
+        continue;
       }
       if (ch === '#' && inPlural) {
         flush();
@@ -288,21 +241,32 @@ function parseIcu(input: string): IcuNode[] {
           continue;
         }
         if (next === '{' || next === '}' || (inPlural && next === '#')) {
+          const quoteStart = pos;
           pos += 1;
+          let quoted = '';
+          let closed = false;
           while (pos < input.length) {
             if (input[pos] === "'") {
               if (input[pos + 1] === "'") {
-                lit += "'";
+                quoted += "'";
                 pos += 2;
               } else {
                 pos += 1;
+                closed = true;
                 break;
               }
             } else {
-              lit += input[pos]!;
+              quoted += input[pos]!;
               pos += 1;
             }
           }
+          if (!closed) {
+            if (strict) throw new Error('Unclosed quoted literal starting at ' + quoteStart);
+            pos = quoteStart + 1;
+            lit += "'";
+            continue;
+          }
+          lit += quoted;
           continue;
         }
         lit += "'";
@@ -310,18 +274,14 @@ function parseIcu(input: string): IcuNode[] {
         continue;
       }
       if (ch === '{') {
-        if (pos + 1 < input.length && /[a-zA-Z_]/.test(input[pos + 1]!)) {
-          flush();
-          nodes.push(parseBrace(inPlural));
-          continue;
-        }
-        lit += ch;
-        pos += 1;
+        flush();
+        nodes.push(parseBrace(inPlural));
         continue;
       }
       lit += ch;
       pos += 1;
     }
+    if (stopOnClose && strict) throw new Error('Unclosed ICU brace');
     flush();
     return nodes;
   };
@@ -329,7 +289,18 @@ function parseIcu(input: string): IcuNode[] {
   const parseBrace = (inPlural: boolean): IcuNode => {
     const start = pos;
     pos += 1; // '{'
+    skipWs();
+    if (pos >= input.length || !/[a-zA-Z_]/.test(input[pos]!)) {
+      if (strict) throw new Error('Invalid placeholder at ' + start);
+      pos = start + 1;
+      return { kind: 'lit', text: '{' };
+    }
     const name = readIdent();
+    if (!IDENT_NAME.test(name)) {
+      if (strict) throw new Error("Invalid placeholder name '" + name + "' at " + start);
+      pos = start + 1;
+      return { kind: 'lit', text: '{' };
+    }
     skipWs();
     if (input[pos] === '}') {
       pos += 1;
@@ -339,56 +310,155 @@ function parseIcu(input: string): IcuNode[] {
       pos += 1;
       const type = readIdent();
       skipWs();
-      if ((type === 'plural' || type === 'select') && input[pos] === ',') {
-        pos += 1;
-        if (type === 'plural') {
-          const exact = new Map<number, IcuNode[]>();
-          const forms = new Map<string, IcuNode[]>();
-          while (pos < input.length) {
-            skipWs();
-            if (input[pos] === '}') {
-              pos += 1;
-              return { kind: 'plural', name, exact, forms };
-            }
-            const sel = readIdent();
-            skipWs();
-            if (!sel || input[pos] !== '{') break;
-            pos += 1;
-            const body = parseNodes(true, true);
-            if (input[pos] !== '}') break;
-            pos += 1;
-            if (sel.startsWith('=')) exact.set(Number(sel.slice(1)), body);
-            else forms.set(sel, body);
-          }
-        } else {
-          const cases = new Map<string, IcuNode[]>();
-          while (pos < input.length) {
-            skipWs();
-            if (input[pos] === '}') {
-              pos += 1;
-              return { kind: 'select', name, cases };
-            }
-            const key = readIdent();
-            skipWs();
-            if (!key || input[pos] !== '{') break;
-            pos += 1;
-            const body = parseNodes(true, inPlural);
-            if (input[pos] !== '}') break;
-            pos += 1;
-            cases.set(key, body);
-          }
-        }
+      if (input[pos] !== ',') {
+        if (strict) throw new Error("Expected ',' after " + type + ' at ' + pos);
+        pos = start + 1;
+        return { kind: 'lit', text: '{' };
       }
+      pos += 1;
+      if (type === 'plural') {
+        const exact = new Map<number, IcuNode[]>();
+        const forms = new Map<string, IcuNode[]>();
+        const seen = new Set<string>();
+        let hasOther = false;
+        while (pos < input.length) {
+          skipWs();
+          if (input[pos] === '}') {
+            pos += 1;
+            if (strict && !hasOther) {
+              throw new Error('Plural for ' + name + " missing 'other' branch");
+            }
+            return { kind: 'plural', name, exact, forms };
+          }
+          const sel = readIdent();
+          if (!sel) {
+            if (strict) throw new Error('Expected plural selector at ' + pos);
+            break;
+          }
+          if (strict && !PLURAL_SELECTOR.test(sel)) {
+            throw new Error("Invalid plural selector '" + sel + "' on " + name);
+          }
+          if (strict && seen.has(sel)) {
+            throw new Error("Duplicate plural selector '" + sel + "' on " + name);
+          }
+          seen.add(sel);
+          if (sel === 'other') hasOther = true;
+          skipWs();
+          if (input[pos] !== '{') {
+            if (strict) throw new Error("Expected '{' for plural branch " + sel);
+            break;
+          }
+          pos += 1;
+          const body = parseNodes(true, true);
+          if (input[pos] !== '}') {
+            if (strict) throw new Error("Expected '}' for plural branch " + sel);
+            break;
+          }
+          pos += 1;
+          if (sel.startsWith('=')) exact.set(Number(sel.slice(1)), body);
+          else forms.set(sel, body);
+        }
+        if (strict) throw new Error('Unclosed plural block for ' + name);
+      } else if (type === 'select') {
+        const cases = new Map<string, IcuNode[]>();
+        const seen = new Set<string>();
+        let hasOther = false;
+        while (pos < input.length) {
+          skipWs();
+          if (input[pos] === '}') {
+            pos += 1;
+            if (strict && !hasOther) {
+              throw new Error('Select for ' + name + " missing 'other' branch");
+            }
+            return { kind: 'select', name, cases };
+          }
+          const key = readIdent();
+          if (!key) {
+            if (strict) throw new Error('Expected select key at ' + pos);
+            break;
+          }
+          if (strict && seen.has(key)) {
+            throw new Error("Duplicate select branch '" + key + "' on " + name);
+          }
+          seen.add(key);
+          if (key === 'other') hasOther = true;
+          skipWs();
+          if (input[pos] !== '{') {
+            if (strict) throw new Error("Expected '{' for select branch " + key);
+            break;
+          }
+          pos += 1;
+          const body = parseNodes(true, inPlural);
+          if (input[pos] !== '}') {
+            if (strict) throw new Error("Expected '}' for select branch " + key);
+            break;
+          }
+          pos += 1;
+          cases.set(key, body);
+        }
+        if (strict) throw new Error('Unclosed select block for ' + name);
+      } else if (strict) {
+        throw new Error("Unsupported ICU type '" + type + "' for " + name);
+      }
+    } else if (strict) {
+      throw new Error("Malformed placeholder '" + name + "' at " + start);
     }
-    // Malformed or unsupported placeholder: rewind and emit literal '{' so the rest stays intact.
+    // Malformed or unsupported placeholder at runtime: rewind and emit literal '{'.
     pos = start + 1;
     return { kind: 'lit', text: '{' };
   };
 
-  const parsed = parseNodes(false, false);
+  return parseNodes(false, false);
+}
+
+function parseIcu(input: string): IcuNode[] {
+  const cached = astCache.get(input);
+  if (cached) return cached;
+  const parsed = parseIcuCore(input, false);
   if (astCache.size >= MAX_AST_CACHE) astCache.clear();
   astCache.set(input, parsed);
   return parsed;
+}
+
+/**
+ * Strictly validate an ICU MessageFormat catalog string and extract its sorted
+ * [name, type] parameter schema. Internal validator shared by scripts/i18n/check.mjs
+ * (not re-exported from the public package entrypoint).
+ */
+export function extractIcuParams(input: string): Array<[string, 'text' | 'count']> {
+  const ast = parseIcuCore(input, true);
+  const params = new Map<string, 'text' | 'count'>();
+  const selectVars = new Set<string>();
+  const walk = (nodes: readonly IcuNode[]) => {
+    for (const node of nodes) {
+      switch (node.kind) {
+        case 'var':
+          if (!params.has(node.name)) params.set(node.name, 'text');
+          break;
+        case 'plural':
+          if (selectVars.has(node.name)) {
+            throw new Error("Variable '" + node.name + "' used as both select and plural");
+          }
+          params.set(node.name, 'count');
+          for (const body of node.exact.values()) walk(body);
+          for (const body of node.forms.values()) walk(body);
+          break;
+        case 'select':
+          if (params.get(node.name) === 'count') {
+            throw new Error("Variable '" + node.name + "' used as both plural and select");
+          }
+          selectVars.add(node.name);
+          params.set(node.name, 'text');
+          for (const body of node.cases.values()) walk(body);
+          break;
+        case 'lit':
+        case 'hash':
+          break;
+      }
+    }
+  };
+  walk(ast);
+  return [...params.entries()].sort((a, b) => a[0].localeCompare(b[0]));
 }
 
 function evalNodes(
@@ -430,7 +500,7 @@ function evalNodes(
   return out;
 }
 
-/** Format an ICU MessageFormat string for `locale`. Static strings skip parsing completely. */
+/** Format an ICU MessageFormat string for locale. Static strings skip parsing completely. */
 export function formatMessage(
   template: string,
   locale: string,
@@ -540,7 +610,7 @@ function resolveFromMap<V>(
   return undefined;
 }
 
-/** Resolve an authored DisplayText in `locale` with script-aware fallback (zh-HK -> zh-TW -> fallback). */
+/** Resolve an authored DisplayText in locale with script-aware fallback (zh-HK -> zh-TW -> fallback). */
 export function resolveDisplayText(text: DisplayText, locale: string): string {
   return resolveFromMap(text.translations, locale) ?? text.fallback;
 }

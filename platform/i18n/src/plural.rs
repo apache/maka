@@ -30,19 +30,6 @@ pub enum PluralCategory {
     Other,
 }
 
-impl PluralCategory {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Zero => "zero",
-            Self::One => "one",
-            Self::Two => "two",
-            Self::Few => "few",
-            Self::Many => "many",
-            Self::Other => "other",
-        }
-    }
-}
-
 /// CLDR cardinal plural category for integer counts.
 pub const fn plural_category(locale: BuiltinLocale, n: i64) -> PluralCategory {
     let abs = n.unsigned_abs();

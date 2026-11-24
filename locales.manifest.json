@@ -1,114 +1,77 @@
 {
-  "version": 1,
   "defaultLocale": "en",
   "locales": [
     {
       "tag": "en",
       "autonym": "English",
-      "englishName": "English",
-      "dir": "ltr",
       "appleLocalization": "en",
-      "nshLanguage": "en",
       "fallbacks": []
     },
     {
       "tag": "zh-CN",
       "autonym": "简体中文",
-      "englishName": "Chinese (Simplified)",
-      "dir": "ltr",
       "appleLocalization": "zh-Hans",
-      "nshLanguage": "zh",
       "fallbacks": ["en"]
     },
     {
       "tag": "zh-TW",
       "autonym": "繁體中文（中國台灣）",
-      "englishName": "Chinese (Traditional, Taiwan, China)",
-      "dir": "ltr",
       "appleLocalization": "zh-Hant",
-      "nshLanguage": "zh",
       "fallbacks": ["en"]
     },
     {
       "tag": "zh-HK",
       "autonym": "繁體中文（中國香港）",
-      "englishName": "Chinese (Traditional, Hong Kong, China)",
-      "dir": "ltr",
       "appleLocalization": "zh-HK",
-      "nshLanguage": "zh",
       "overlay": "zh-TW",
       "fallbacks": ["zh-TW", "en"]
     },
     {
       "tag": "ja",
       "autonym": "日本語",
-      "englishName": "Japanese",
-      "dir": "ltr",
       "appleLocalization": "ja",
-      "nshLanguage": "ja",
       "fallbacks": ["en"]
     },
     {
       "tag": "ko",
       "autonym": "한국어",
-      "englishName": "Korean",
-      "dir": "ltr",
       "appleLocalization": "ko",
-      "nshLanguage": "ko",
       "fallbacks": ["en"]
     },
     {
       "tag": "es",
       "autonym": "Español",
-      "englishName": "Spanish",
-      "dir": "ltr",
       "appleLocalization": "es",
-      "nshLanguage": "es",
       "fallbacks": ["en"]
     },
     {
       "tag": "fr",
       "autonym": "Français",
-      "englishName": "French",
-      "dir": "ltr",
       "appleLocalization": "fr",
-      "nshLanguage": "fr",
       "fallbacks": ["en"]
     },
     {
       "tag": "de",
       "autonym": "Deutsch",
-      "englishName": "German",
-      "dir": "ltr",
       "appleLocalization": "de",
-      "nshLanguage": "de",
       "fallbacks": ["en"]
     },
     {
       "tag": "pt-BR",
       "autonym": "Português (Brasil)",
-      "englishName": "Portuguese (Brazil)",
-      "dir": "ltr",
       "appleLocalization": "pt-BR",
-      "nshLanguage": "pt",
       "fallbacks": ["en"]
     },
     {
       "tag": "ru",
       "autonym": "Русский",
-      "englishName": "Russian",
-      "dir": "ltr",
       "appleLocalization": "ru",
-      "nshLanguage": "ru",
       "fallbacks": ["en"]
     },
     {
       "tag": "it",
       "autonym": "Italiano",
-      "englishName": "Italian",
-      "dir": "ltr",
       "appleLocalization": "it",
-      "nshLanguage": "it",
       "fallbacks": ["en"]
     }
   ]

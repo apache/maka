@@ -57,10 +57,6 @@ impl Language {
         out
     }
 
-    pub const fn builtin(self) -> BuiltinLocale {
-        self.0
-    }
-
     pub const fn tag(self) -> &'static str {
         self.0.tag()
     }
@@ -69,14 +65,9 @@ impl Language {
         matches!(self.0, BuiltinLocale::En)
     }
 
-    /// Normalize native POSIX/BCP 47 locales to the closest built-in locale.
-    pub fn from_locale(locale: &str) -> Self {
-        Self(maka_i18n::resolve_builtin_tag(locale))
-    }
-
-    /// Negotiate an ordered list of preferred locale tags.
-    pub fn negotiate<S: AsRef<str>>(preferred: &[S]) -> Self {
-        Self(maka_i18n::negotiate_builtin(preferred))
+    /// Detect the current OS language negotiated against built-in locales.
+    pub fn system() -> Self {
+        Self(maka_i18n::negotiate_builtin(&maka_i18n::system_locales()))
     }
 }
 
@@ -228,7 +219,6 @@ mod tests {
             ("it-IT", Language::IT),
             ("en-US", Language::EN),
         ] {
-            assert_eq!(Language::from_locale(raw), expected, "{raw}");
             assert_eq!(
                 LanguagePreference::from_locale(raw).resolve(Language::EN),
                 expected,

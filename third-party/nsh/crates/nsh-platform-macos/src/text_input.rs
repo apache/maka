@@ -654,6 +654,9 @@ impl Ctx {
             // Leaving the input ends its composition.
             input.editing.set(false);
             self.compose(&input, None);
+            // AppKit commits plain text back to an unfocused NSTextField when
+            // allowsEditingTextAttributes is false, stripping NSLanguage; re-apply it.
+            apply_editor_locale(&input.editor.borrow(), &input.config.borrow());
         }
         if input.focused.replace(focused) == focused {
             return;

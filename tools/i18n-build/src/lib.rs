@@ -525,6 +525,7 @@ fn emit_nodes(
 
 /// Compile zstd-compressed localized Markdown documents (one per manifest locale,
 /// with overlay fallback and exact protocol marker validation) into OUT_DIR/<out_file>.
+#[cfg(feature = "docs")]
 pub fn compile_docs(
     docs_dir: impl AsRef<Path>,
     prefix: &str,
@@ -617,6 +618,7 @@ pub fn compile_docs(
     fs::write(out_dir.join(out_file), code).unwrap();
 }
 
+#[cfg(any(feature = "docs", test))]
 fn extract_html_markers(doc: &str, prefixes: &[&str]) -> Vec<String> {
     if prefixes.is_empty() {
         return Vec::new();

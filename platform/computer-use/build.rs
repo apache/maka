@@ -19,7 +19,8 @@
 
 fn main() {
     maka_i18n_build::compile_catalog("locales", "i18n_catalog.rs");
-    if std::env::var_os("CARGO_FEATURE_NATIVE_DESKTOP").is_some() {
+    #[cfg(feature = "native-desktop")]
+    {
         maka_i18n_build::compile_docs(
             "locales/docs",
             "api",

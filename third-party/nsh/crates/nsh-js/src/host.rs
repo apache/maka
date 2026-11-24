@@ -3042,8 +3042,15 @@ const report = (v) => text(String(v));
             report([0, 1, 2, 5, 11, 21, 1.5].map((n) => new Intl.PluralRules("ru").select(n)).join(","));
             report([NaN, Infinity, -Infinity].map((n) => new Intl.PluralRules("ru").select(n)).join(","));
             report(["zh-CN", "zh-HK", "ja", "ko"].map((l) => new Intl.PluralRules(l).select(1)).join(","));
-            const opts = new Intl.PluralRules("ru", {{ minimumFractionDigits: 1 }}).resolvedOptions();
-            report(opts.locale + "|" + opts.type + "|" + opts.minimumFractionDigits + "|" + opts.pluralCategories.join(","));
+            report([0, 1, 1.5, 1000000].map((n) => new Intl.PluralRules("pt-PT").select(n)).join(","));
+            report([0, 1, 1.5, 1000000].map((n) => new Intl.PluralRules("pt-BR").select(n)).join(","));
+            report(new Intl.PluralRules("en", {{ minimumFractionDigits: 1, trailingZeroDisplay: "stripIfInteger" }}).select(1));
+            report(new Intl.PluralRules("en", {{ minimumFractionDigits: 1, maximumFractionDigits: 1, trailingZeroDisplay: "stripIfInteger" }}).select(1.001));
+            report([1.2, 0.2, -1.2].map((n) => new Intl.PluralRules("en", {{ maximumFractionDigits: 0, roundingMode: "ceil" }}).select(n)).join(","));
+            report(new Intl.PluralRules("en", {{ maximumFractionDigits: 0, roundingMode: "floor" }}).select(-1.2));
+            report([0.5, 1.5].map((n) => new Intl.PluralRules("en", {{ maximumFractionDigits: 0, roundingMode: "halfEven" }}).select(n)).join(","));
+            const opts = new Intl.PluralRules("ru", {{ minimumFractionDigits: 1, roundingMode: "ceil", trailingZeroDisplay: "stripIfInteger" }}).resolvedOptions();
+            report(opts.locale + "|" + opts.type + "|" + opts.minimumFractionDigits + "|" + opts.roundingMode + "|" + opts.trailingZeroDisplay + "|" + opts.pluralCategories.join(","));
             const reentrant = new Intl.PluralRules("en");
             report(reentrant.select({{ valueOf() {{ reentrant.select(1); return 2; }} }}));
             try {{ new Intl.PluralRules("en", {{ type: "bogus" }}); }} catch (e) {{ report(e.name); }}
@@ -3072,7 +3079,14 @@ const report = (v) => text(String(v));
                 "many,one,few,many,many,one,other",
                 "other,other,other",
                 "other,other,other,other",
-                "ru|cardinal|1|one,few,many,other",
+                "other,one,other,many",
+                "one,one,one,many",
+                "one",
+                "one",
+                "other,one,one",
+                "other",
+                "other,other",
+                "ru|cardinal|1|ceil|stripIfInteger|one,few,many,other",
                 "other",
                 "RangeError",
                 "RangeError",

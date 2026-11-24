@@ -1276,7 +1276,7 @@ pub(crate) const SPECS: &[Spec] = &[
     },
 ];
 
-use number::Rounding;
+use number::{Rounding, RoundingMode};
 
 #[derive(Clone, Copy)]
 struct PluralRules {
@@ -1284,6 +1284,8 @@ struct PluralRules {
     ordinal: bool,
     min_integer: u8,
     rounding: Rounding,
+    rounding_mode: RoundingMode,
+    strip_if_integer: bool,
 }
 
 trace!(PluralRules {});
@@ -1309,11 +1311,25 @@ fn plural_categories(lang: &str, ordinal: bool) -> &'static [&'static str] {
 
 /// CLDR 45+ plural category selection for cardinal and ordinal rules using
 /// exact ECMA-402 formatted decimal operands.
-fn plural_select(tag: &str, ordinal: bool, rounding: Rounding, value: f64) -> &'static str {
-    let Some(op) = number::PluralOperands::from_f64(value, rounding) else {
+fn plural_select(
+    tag: &str,
+    ordinal: bool,
+    rounding: Rounding,
+    rounding_mode: RoundingMode,
+    strip_if_integer: bool,
+    value: f64,
+) -> &'static str {
+    let Some(op) =
+        number::PluralOperands::from_f64(value, rounding, rounding_mode, strip_if_integer)
+    else {
         return "other";
     };
-    let lang = tag.split('-').next().unwrap_or("en");
+    let mut subtags = tag.split('-');
+    let lang = subtags.next().unwrap_or("en");
+    let is_pt_pt = lang == "pt"
+        && subtags
+            .take_while(|s| s.len() > 1)
+            .any(|s| s.eq_ignore_ascii_case("PT"));
 
     if ordinal {
         if op.f_nonzero {
@@ -1353,6 +1369,16 @@ fn plural_select(tag: &str, ordinal: bool, rounding: Rounding, value: f64) -> &'
                 }
             }
             _ => "other",
+        };
+    }
+
+    if is_pt_pt {
+        return if op.i_is_one && op.v == 0 {
+            "one"
+        } else if op.div_million && op.v == 0 {
+            "many"
+        } else {
+            "other"
         };
     }
 
@@ -1441,6 +1467,30 @@ native!(
             &["auto", "morePrecision", "lessPrecision"],
         )?
         .unwrap_or("auto");
+        let rounding_mode = string_option(
+            cx,
+            &opts,
+            "roundingMode",
+            &[
+                "ceil",
+                "floor",
+                "expand",
+                "trunc",
+                "halfCeil",
+                "halfFloor",
+                "halfExpand",
+                "halfTrunc",
+                "halfEven",
+            ],
+        )?
+        .and_then(RoundingMode::from_str)
+        .unwrap_or_default();
+        let strip_if_integer = string_option(
+            cx,
+            &opts,
+            "trailingZeroDisplay",
+            &["auto", "stripIfInteger"],
+        )? == Some("stripIfInteger");
         let has_sd = mnsd.is_some() || mxsd.is_some();
         let has_fd = mnfd.is_some() || mxfd.is_some();
         let need_sd = priority != "auto" || has_sd;
@@ -1491,6 +1541,8 @@ native!(
                 ordinal: kind == Some("ordinal"),
                 min_integer,
                 rounding,
+                rounding_mode,
+                strip_if_integer,
             },
         )
     }
@@ -1502,7 +1554,14 @@ native!(
         let value = js::to_number(cx, args.get(0))?;
         js::string(
             cx,
-            plural_select(rules.tag.as_str(), rules.ordinal, rules.rounding, value),
+            plural_select(
+                rules.tag.as_str(),
+                rules.ordinal,
+                rules.rounding,
+                rules.rounding_mode,
+                rules.strip_if_integer,
+                value,
+            ),
         )
     }
 );
@@ -1586,6 +1645,27 @@ native!(
         }
         let arr = js::new_array(cx, items)?;
         js::define(cx, o.raw(), "pluralCategories", arr, true)?;
+        js::define(
+            cx,
+            o.raw(),
+            "roundingMode",
+            js::string(cx, rules.rounding_mode.as_str())?,
+            true,
+        )?;
+        js::define(
+            cx,
+            o.raw(),
+            "trailingZeroDisplay",
+            js::string(
+                cx,
+                if rules.strip_if_integer {
+                    "stripIfInteger"
+                } else {
+                    "auto"
+                },
+            )?,
+            true,
+        )?;
         Ok(o)
     }
 );

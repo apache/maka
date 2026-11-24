@@ -33,6 +33,7 @@ const hooks = registerHooks({
 const {
   SUPPORTED_LOCALES,
   createI18n,
+  extractIcuParams,
   formatMessage,
   negotiateLocale,
   normalizeLocaleTag,
@@ -157,9 +158,33 @@ test('BCP 47 extensions, fractional/million plurals, and ICU edge cases', () => 
     '3 files',
   );
 
-  // Malformed or unsupported brace expressions stay intact verbatim
+  // Malformed or unsupported brace expressions stay intact verbatim at runtime
   assert.equal(formatMessage('{action: "click"}', 'en', {}), '{action: "click"}');
   assert.equal(formatMessage('Total: {n, number}', 'en', { n: 42 }), 'Total: {n, number}');
+  assert.equal(formatMessage("Unclosed '{foo}", 'en', {}), "Unclosed '{foo}");
+
+  // Strict catalog validator rejects malformed/conflicting/unclosed ICU patterns
+  for (const invalid of [
+    '{count, plural, other {# items}',
+    '{kind, select, a {A} other {B}',
+    "Use '{foo} {bar}",
+    '{x, select, a {A} other {B}} {x, plural, other {#}}',
+    '{x, plural, other {#}} {x, select, a {A} other {B}}',
+    '{count, plural, one {a} one {b} other {c}}',
+    '{kind, select, a {A} a {B} other {C}}',
+    'Hello } world',
+    'Hello {1} world',
+  ]) {
+    assert.throws(() => extractIcuParams(invalid), 'expected strict error for: ' + invalid);
+  }
+  assert.deepEqual(extractIcuParams("Issue '#12 failed: {reason}"), [['reason', 'text']]);
+  assert.deepEqual(
+    extractIcuParams('{count, plural, other {{kind, select, a {# items} other {# things}}}}'),
+    [
+      ['count', 'count'],
+      ['kind', 'text'],
+    ],
+  );
 });
 
 test('importing workbench locale.ts never mutates nsh/i18n and resolves UI locales cleanly', async () => {

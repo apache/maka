@@ -49,6 +49,7 @@ native-desktop = [
     "dep:markdown",
     "dep:sysinfo",
     "dep:zstd",
+    "maka-i18n-build/docs",
 ]
 
 [dependencies]

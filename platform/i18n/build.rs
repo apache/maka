@@ -30,13 +30,6 @@ struct Manifest {
 #[serde(rename_all = "camelCase")]
 struct LocaleEntry {
     tag: String,
-    autonym: String,
-    english_name: String,
-    dir: String,
-    apple_localization: String,
-    nsh_language: String,
-    #[serde(default)]
-    overlay: Option<String>,
     #[serde(default)]
     fallbacks: Vec<String>,
 }
@@ -110,75 +103,6 @@ fn main() {
     code.push_str("    pub const fn tag(self) -> &'static str {\n        match self {\n");
     for (entry, var) in manifest.locales.iter().zip(&variants) {
         code.push_str(&format!("            Self::{var} => {:?},\n", entry.tag));
-    }
-    code.push_str("        }\n    }\n\n");
-
-    code.push_str("    pub const fn autonym(self) -> &'static str {\n        match self {\n");
-    for (entry, var) in manifest.locales.iter().zip(&variants) {
-        code.push_str(&format!(
-            "            Self::{var} => {:?},\n",
-            entry.autonym
-        ));
-    }
-    code.push_str("        }\n    }\n\n");
-
-    code.push_str("    pub const fn english_name(self) -> &'static str {\n        match self {\n");
-    for (entry, var) in manifest.locales.iter().zip(&variants) {
-        code.push_str(&format!(
-            "            Self::{var} => {:?},\n",
-            entry.english_name
-        ));
-    }
-    code.push_str("        }\n    }\n\n");
-
-    code.push_str("    pub const fn dir(self) -> TextDirection {\n        match self {\n");
-    for (entry, var) in manifest.locales.iter().zip(&variants) {
-        let dir = match entry.dir.as_str() {
-            "ltr" => "TextDirection::Ltr",
-            "rtl" => "TextDirection::Rtl",
-            other => panic!("unsupported dir {other} for {}", entry.tag),
-        };
-        code.push_str(&format!("            Self::{var} => {dir},\n"));
-    }
-    code.push_str("        }\n    }\n\n");
-
-    code.push_str(
-        "    pub const fn apple_localization(self) -> &'static str {\n        match self {\n",
-    );
-    for (entry, var) in manifest.locales.iter().zip(&variants) {
-        code.push_str(&format!(
-            "            Self::{var} => {:?},\n",
-            entry.apple_localization
-        ));
-    }
-    code.push_str("        }\n    }\n\n");
-
-    code.push_str("    pub const fn nsh_language(self) -> &'static str {\n        match self {\n");
-    for (entry, var) in manifest.locales.iter().zip(&variants) {
-        code.push_str(&format!(
-            "            Self::{var} => {:?},\n",
-            entry.nsh_language
-        ));
-    }
-    code.push_str("        }\n    }\n\n");
-
-    code.push_str(
-        "    pub const fn overlay_parent(self) -> Option<Self> {\n        match self {\n",
-    );
-    for (entry, var) in manifest.locales.iter().zip(&variants) {
-        if let Some(parent) = &entry.overlay {
-            let parent_var = variant_name(parent);
-            assert!(
-                manifest.locales.iter().any(|l| l.tag == *parent),
-                "overlay parent {parent} for {} does not exist",
-                entry.tag
-            );
-            code.push_str(&format!(
-                "            Self::{var} => Some(Self::{parent_var}),\n"
-            ));
-        } else {
-            code.push_str(&format!("            Self::{var} => None,\n"));
-        }
     }
     code.push_str("        }\n    }\n\n");
 
