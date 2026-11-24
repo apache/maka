@@ -17,7 +17,8 @@
  * under the License.
  */
 
-import { mount, View, type JSX } from 'nsh';
+import { mount, signal, Text, View, type JSX } from 'nsh';
+import { Button } from 'nsh/base';
 import type {
   AgentHistorySourcePage,
   AgentHistorySourceRead,
@@ -69,17 +70,25 @@ const makeTool = (
 const scriptTool = makeTool('script', 'exec', 'maka.agent.Builtin@1/exec', 1, 2);
 const readTool = makeTool('read', 'Read', 'maka.workspace.Files@1/read', 3, 4);
 const editTool = makeTool('edit', 'Edit', 'maka.workspace.Files@1/edit', 5, 6);
+const failingReadTool = makeTool('read-fail', 'Read', 'maka.workspace.Files@1/read', 7, 8);
 
 const scriptCode = Array.from({ length: 10 }, (_, i) => `const line${i + 1} = ${i + 1};`).join(
   '\n',
 );
+const longTail = `${'a'.repeat(730)}TAIL`;
 const scriptResult =
   JSON.stringify({ state: 'completed', cell_id: 'cell-1', result: { ok: true, value: null } }) +
-  '\n{"kind":"changed"}';
+  `\n{"kind":"changed","long":"${longTail}"}`;
 
 const sources: Record<
   string,
-  { tool: HistoryTool; format: 'json' | 'text'; text: string; role: 'tool_call' | 'tool_result' }
+  {
+    tool: HistoryTool;
+    format: 'json' | 'text';
+    text: string;
+    role: 'tool_call' | 'tool_result';
+    fail?: string;
+  }
 > = {
   '1:arguments': {
     tool: scriptTool,
@@ -127,7 +136,25 @@ const sources: Record<
     }),
     role: 'tool_result',
   },
+  '7:arguments': {
+    tool: failingReadTool,
+    format: 'json',
+    text: '',
+    role: 'tool_call',
+    fail: 'read arguments timed out',
+  },
+  '8:result': {
+    tool: failingReadTool,
+    format: 'json',
+    text: JSON.stringify({
+      kind: 'completed',
+      value: { content: 'fallback body\n', offset: 0, returnedLines: 1, totalLines: 1 },
+    }),
+    role: 'tool_result',
+  },
 };
+
+const readResultFetches = signal(0);
 
 const host = {
   async query(
@@ -138,8 +165,11 @@ const host = {
     if (endpoint !== 'agent' || method !== 'source') throw new Error('Unexpected query');
     const target = input.source.kind === 'row' ? input.source.position : null;
     const seq = target?.kind === 'live' ? target.sequence : -1;
-    const entry = sources[`${seq}:${input.field}`];
-    if (!entry || !target) throw new Error(`Missing fixture source ${seq}:${input.field}`);
+    const key = `${seq}:${input.field}`;
+    if (key === '4:result') readResultFetches.set(readResultFetches() + 1);
+    const entry = sources[key];
+    if (!entry || !target) throw new Error(`Missing fixture source ${key}`);
+    if (entry.fail) throw new Error(entry.fail);
     const bytes = new TextEncoder().encode(entry.text).byteLength;
     return {
       kind: 'ready',
@@ -170,31 +200,41 @@ const row = (tool: HistoryTool): Row => ({
 
 const ViewRuntime = viewRuntimeContext.Provider;
 const runtime = { renderer: () => null } as unknown as UiRuntime<JSX.Element>;
+const readOriginal = signal(false);
 
 mount(() => {
   installWorkbenchLocaleCatalog();
   return (
-  <HostProvider value={host}>
-    <ViewRuntime value={runtime}>
-      <View style={{ width: '100%', height: '100%', padding: 16, gap: 16 }}>
-        {[scriptTool, readTool, editTool].map((tool) => (
-          <ToolCard
-            row={() => row(tool)}
-            sessionId={sessionId}
-            ownerKey={() => tool.toolUseId}
-            through={() => through}
-            expanded={() => true}
-            original={() => false}
-            maxHeight={() => 400}
-            expand={() => {}}
-            showOriginal={() => {}}
-            openLink={async () => {}}
-            previewImage={() => {}}
-            userScroll={() => {}}
-          />
-        ))}
-      </View>
-    </ViewRuntime>
-  </HostProvider>
+    <HostProvider value={host}>
+      <ViewRuntime value={runtime}>
+        <View style={{ width: '100%', height: '100%', padding: 16, gap: 16 }}>
+          <Text>{`read-result-fetches:${readResultFetches()}`}</Text>
+          <Button
+            accessibilityLabel="Toggle read original"
+            onPress={() => readOriginal.set(!readOriginal())}
+          >
+            <Text>Toggle read original</Text>
+          </Button>
+          {[scriptTool, readTool, editTool, failingReadTool].map((tool) => (
+            <ToolCard
+              row={() => row(tool)}
+              sessionId={sessionId}
+              ownerKey={() => tool.toolUseId}
+              through={() => through}
+              expanded={() => true}
+              original={() => (tool.toolUseId === 'read' ? readOriginal() : false)}
+              maxHeight={() => 400}
+              expand={() => {}}
+              showOriginal={() => {
+                if (tool.toolUseId === 'read') readOriginal.set(!readOriginal());
+              }}
+              openLink={async () => {}}
+              previewImage={() => {}}
+              userScroll={() => {}}
+            />
+          ))}
+        </View>
+      </ViewRuntime>
+    </HostProvider>
   );
 });

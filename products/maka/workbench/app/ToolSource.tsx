@@ -30,9 +30,9 @@ import { Icon } from './Icon';
 import {
   C,
   captionTextStyle,
-  cardFocusStyle,
   codeTextStyle,
   controlStyle,
+  quietFocusStyle,
   textTooltip,
 } from './ui';
 
@@ -200,7 +200,8 @@ export function ToolCopyButton(props: { text(): string; label: string; source: T
           onPress={action()}
           style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
           hoverStyle={{ backgroundColor: C.cardRaised }}
-          focusStyle={cardFocusStyle()}
+          activeStyle={{ opacity: 0.72 }}
+          focusStyle={quietFocusStyle()}
         >
           <Icon name={copied() ? 'check' : 'copy'} color={C.secondary} />
         </Button>

@@ -24,7 +24,7 @@ import { Button, DiffView } from 'nsh/base';
 import { ToolCopyButton as Copy, ToolFieldDivider, type ToolSource } from './ToolSource';
 import { TokenCount } from './TokenCount';
 import type { ToolChange, ToolProcess, ToolProjection, ToolRead, ToolSection } from './toolCards';
-import { C, bodyTextStyle, captionTextStyle, cardFocusStyle, codeTextStyle } from './ui';
+import { C, bodyTextStyle, captionTextStyle, codeTextStyle, isDark, quietFocusStyle } from './ui';
 import { Icon } from './Icon';
 import { codePieces, foldCodeLines } from './codePieces';
 
@@ -33,16 +33,31 @@ const desktop = platform.idiom !== 'terminal';
 /** What a tool printed, or what a change added, removed or warns about. */
 type Tone = 'added' | 'removed' | 'warning' | 'output';
 
+function toneColor(tone?: Tone | 'error') {
+  return tone === 'removed' || tone === 'error'
+    ? C.danger
+    : tone === 'added'
+      ? C.success
+      : tone === 'warning'
+        ? C.warning
+        : tone === 'output' && desktop
+          ? C.secondary
+          : C.text;
+}
+
 function ToolText(props: {
   label: string;
   text: string;
+  copyText?: string;
   copyLabel: string;
   source: ToolSource;
   userScroll(): void;
   gutter?: string;
   tone?: Tone;
   wrap?: boolean;
+  emptyText?: string;
 }) {
+  const fullText = () => props.copyText ?? props.text;
   return (
     <View style={{ minWidth: 0 }}>
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
@@ -54,13 +69,16 @@ function ToolText(props: {
         >
           {props.label}
         </Text>
-        <Copy label={props.copyLabel} text={() => props.text} source={props.source} />
+        <If when={fullText() !== ''}>
+          <Copy label={props.copyLabel} text={fullText} source={props.source} />
+        </If>
       </View>
       <CodeText
         text={props.text}
         gutter={props.gutter}
         tone={props.tone}
         wrap={props.wrap}
+        emptyText={props.emptyText}
         userScroll={props.userScroll}
       />
     </View>
@@ -73,24 +91,18 @@ function CodeText(props: {
   gutter?: string;
   tone?: Tone;
   prompt?: boolean;
+  emptyText?: string;
   /** Long lines wrap at the column instead of scrolling sideways. */
   wrap?: boolean;
 }) {
-  // Read when drawn: the theme can change after the text is made.
-  const color = () =>
-    props.tone === 'removed'
-      ? C.danger
-      : props.tone === 'added'
-        ? C.success
-        : props.tone === 'warning'
-          ? C.warning
-          : // What a command printed reads a step under the command, as in a terminal app.
-            props.tone === 'output' && desktop
-            ? C.secondary
-            : C.text;
+  const color = () => toneColor(props.tone);
   const width = signal(0);
+  const items = () =>
+    desktop
+      ? codePieces(props.text, props.gutter, props.wrap ? width() : undefined)
+      : [{ index: 0, text: props.text, gutter: props.gutter }];
   const pieces = () => (
-    <Each of={codePieces(props.text, props.gutter, props.wrap ? width() : undefined)} key="index">
+    <Each of={items()} key="index">
       {(piece) => (
         <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 12 }}>
           <If when={piece().gutter !== undefined}>
@@ -134,7 +146,7 @@ function CodeText(props: {
       when={props.text !== ''}
       else={
         <Text style={[{ ...captionTextStyle, color: C.muted }, { userSelect: 'none' }]}>
-          {tr('Empty recorded text.')}
+          {props.emptyText ?? tr('Empty recorded text.')}
         </Text>
       }
     >
@@ -574,17 +586,7 @@ function Sections(props: {
                       else={
                         <Text
                           style={[
-                            {
-                              ...bodyTextStyle,
-                              color:
-                                section().tone === 'error' || section().tone === 'removed'
-                                  ? C.danger
-                                  : section().tone === 'warning'
-                                    ? C.warning
-                                    : section().tone === 'added'
-                                      ? C.success
-                                      : C.text,
-                            },
+                            { ...bodyTextStyle, color: toneColor(section().tone) },
                             { userSelect: 'text' },
                           ]}
                         >
@@ -603,40 +605,21 @@ function Sections(props: {
                   </>
                 }
               >
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                  <Text
-                    style={[
-                      { ...captionTextStyle, color: C.muted, flex: 1, minWidth: 0 },
-                      { numberOfLines: 1, textOverflow: 'ellipsis', userSelect: 'none' },
-                    ]}
-                  >
-                    {folded() && folded()!.hiddenLines > 0
+                <ToolText
+                  label={
+                    folded() && folded()!.hiddenLines > 0
                       ? `${section().label} · ${tr('tool.code_lines_count', { count: folded()!.totalLines })}`
-                      : section().label}
-                  </Text>
-                  <If when={plainText() !== ''}>
-                    <Copy
-                      label={tr('Copy {label}', { label: section().label })}
-                      text={plainText}
-                      source={props.source}
-                    />
-                  </If>
-                </View>
-                <If
-                  when={plainText() !== ''}
-                  else={
-                    <Text style={[{ ...codeTextStyle, color: C.muted }, { userSelect: 'text' }]}>
-                      {tr('(empty)')}
-                    </Text>
+                      : section().label
                   }
-                >
-                  <CodeText
-                    text={shownCode()}
-                    tone={codeTone()}
-                    wrap={desktop}
-                    userScroll={props.userScroll}
-                  />
-                </If>
+                  text={shownCode()}
+                  copyText={plainText()}
+                  copyLabel={tr('Copy {label}', { label: section().label })}
+                  tone={codeTone()}
+                  wrap={desktop}
+                  emptyText={tr('(empty)')}
+                  source={props.source}
+                  userScroll={props.userScroll}
+                />
                 <If when={folded() && folded()!.hiddenLines > 0}>
                   <Button
                     accessibilityLabel={foldLabel()}
@@ -653,8 +636,9 @@ function Sections(props: {
                       backgroundColor: C.cardRaised,
                       marginTop: 8,
                     }}
-                    hoverStyle={{ backgroundColor: C.line }}
-                    focusStyle={cardFocusStyle()}
+                    hoverStyle={isDark() ? { opacity: 0.82 } : { backgroundColor: C.line }}
+                    activeStyle={{ opacity: 0.68 }}
+                    focusStyle={quietFocusStyle()}
                   >
                     <Text
                       style={[
