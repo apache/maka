@@ -1841,6 +1841,90 @@ mod bounded_risk {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn replay_keeps_a_later_tool_call_with_its_original_reasoning() -> TestResult<()> {
+        let wire = replay_with_an_early_tool_result(None).await?;
+        let messages = wire["messages"]
+            .as_array()
+            .ok_or("missing Chat Completions messages")?;
+        let index = messages
+            .iter()
+            .position(|message| message["tool_calls"].is_array())
+            .ok_or("missing tool calls")?;
+        let assistant = &messages[index];
+        assert_eq!(
+            assistant["tool_calls"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|call| call["id"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["early-call", "later-call"]
+        );
+        let reasoning = assistant
+            .get("reasoning_content")
+            .or_else(|| assistant.get("reasoning"));
+        assert_eq!(
+            reasoning.and_then(Value::as_str),
+            Some("same-attempt reasoning")
+        );
+        assert_eq!(messages[index + 1]["tool_call_id"], "early-call");
+        assert_eq!(messages[index + 2]["tool_call_id"], "later-call");
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn responses_replay_keeps_tool_calls_before_same_attempt_results() -> TestResult<()> {
+        let wire = replay_with_an_early_tool_result(Some(plaintext_responses_observation)).await?;
+        let items = wire["input"].as_array().ok_or("missing Responses input")?;
+        let index = items
+            .iter()
+            .position(|item| item["type"] == "reasoning")
+            .ok_or("missing plaintext reasoning")?;
+        assert_eq!(items[index]["content"][0]["text"], "same-attempt reasoning");
+        let tool_items: Vec<_> = items[index + 1..]
+            .iter()
+            .map(|item| (item["type"].as_str(), item["call_id"].as_str()))
+            .collect();
+        assert_eq!(
+            tool_items,
+            [
+                (Some("function_call"), Some("early-call")),
+                (Some("function_call"), Some("later-call")),
+                (Some("function_call_output"), Some("early-call")),
+                (Some("function_call_output"), Some("later-call")),
+            ]
+        );
+        Ok(())
+    }
+
+    fn plaintext_responses_observation(
+        _: &maka_agent_facts::execution::ModelBinding,
+        model: &mut maka_agent_ports::provider::Model,
+    ) -> maka_agent_facts::context::ModelRequestContext {
+        use maka_agent_facts::{
+            context::{ModelOperation, ModelRequestContext},
+            model::{PlaintextReasoningReplay, PlaintextResponses},
+        };
+        use maka_agent_ports::model::ProviderKind;
+
+        model.adapter = "responses".into();
+        model.protocol = ProviderKind::OpenResponses(PlaintextResponses {
+            reasoning_replay: PlaintextReasoningReplay::PlaintextContent,
+            compatibility: None,
+        });
+        model.info.capabilities.get_or_insert_default().reasoning = Some(true);
+        ModelRequestContext {
+            operation: ModelOperation::Inference,
+            provider_id: "deepseek".into(),
+            codex: None,
+            context_window: Some(128_000),
+            model_context_window: Some(128_000),
+            declared_window: Some(128_000),
+        }
+    }
+
+    async fn replay_with_an_early_tool_result(
+        observation: Option<crate::model::Observation>,
+    ) -> TestResult<Value> {
         use maka_agent_engine::{DriverExit, Engine, ports::Preparation};
         use maka_agent_facts::model::{ModelFinishReason, TextKind};
 
@@ -1849,7 +1933,7 @@ mod bounded_risk {
         let (requests, mut received) = tokio::sync::mpsc::unbounded_channel();
         let server = model_recovery::serve(listener, Default::default(), Some(requests)).await?;
         let outcome = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(30), async {
-            let session = rig.start().await?;
+            let session = rig.start_configured(observation, |_| {}).await?;
             rig.assemble_model(
                 &session,
                 Budget {
@@ -1970,34 +2054,7 @@ mod bounded_risk {
                     }
                 }
             }
-            let wire = received.try_recv()?;
-            let messages = wire["messages"]
-                .as_array()
-                .ok_or("missing Chat Completions messages")?;
-            let index = messages
-                .iter()
-                .position(|message| message["tool_calls"].is_array())
-                .ok_or("missing tool calls")?;
-            let assistant = &messages[index];
-            assert_eq!(
-                assistant["tool_calls"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .map(|call| call["id"].as_str().unwrap())
-                    .collect::<Vec<_>>(),
-                ["early-call", "later-call"]
-            );
-            let reasoning = assistant
-                .get("reasoning_content")
-                .or_else(|| assistant.get("reasoning"));
-            assert_eq!(
-                reasoning.and_then(Value::as_str),
-                Some("same-attempt reasoning")
-            );
-            assert_eq!(messages[index + 1]["tool_call_id"], "early-call");
-            assert_eq!(messages[index + 2]["tool_call_id"], "later-call");
-            Ok::<_, Box<dyn Error + Send + Sync>>(())
+            Ok::<_, Box<dyn Error + Send + Sync>>(received.try_recv()?)
         }))
         .catch_unwind()
         .await;
