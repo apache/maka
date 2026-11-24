@@ -837,10 +837,18 @@ export function createConversationUi(
     } finally {
       if (currentSubmission(attempt)?.kind === 'preparing') submission.set(preparing);
     }
-    recordWorktreeAttempt(input, result.kind === 'failed' && result.reason === 'unknown');
     if (result.kind === 'failed') {
+      const reason = result.reason;
+      const interruptedConfirmation =
+        retry !== undefined &&
+        (reason === 'git_required' ||
+          reason === 'location_not_allowed' ||
+          reason === 'snapshot_unavailable' ||
+          reason === 'unavailable');
+      recordWorktreeAttempt(input, reason === 'unknown' || interruptedConfirmation);
       throw new UiError(worktreeFailureMessages[result.reason]);
     }
+    recordWorktreeAttempt(input, false);
     if (!alive || pendingWorkspace() !== workspace || pendingWorktree() !== selection) return null;
     const continueSending = current();
     const path = result.worktree.path;

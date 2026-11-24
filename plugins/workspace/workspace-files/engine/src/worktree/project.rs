@@ -249,6 +249,7 @@ impl Repository {
         if branch_occupied(&repo, &branch_ref)? {
             return Err(Error::BranchConflict);
         }
+        local_git::command(&repo)?;
         let snapshot = match &base {
             Base::Commit(_) => None,
             Base::LocalFiles {

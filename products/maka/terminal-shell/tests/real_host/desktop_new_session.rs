@@ -1384,6 +1384,21 @@ async fn desktop_creates_and_reopens_a_named_worktree() {
     desktop.press("New local worktree").await;
     desktop.press("Focus message composer").await;
     desktop.expect_text("FIRST_WORKTREE_MESSAGE").await;
+
+    let original_checkout = Path::new(first_creation["worktrees"][0]["path"].as_str().unwrap());
+    let temporarily_moved = original_checkout.with_file_name("temporarily-unavailable");
+    std::fs::rename(original_checkout, &temporarily_moved).unwrap();
+    gate.arm();
+    desktop.submit().await;
+    desktop.held(&gate).await;
+    gate.release();
+    desktop.control("Send message").await;
+    desktop.press("Focus message composer").await;
+    desktop.expect_text("FIRST_WORKTREE_MESSAGE").await;
+    assert_eq!(desktop.sessions().await.len(), 1);
+    desktop.artifact("worktree-temporarily-unavailable");
+    std::fs::rename(&temporarily_moved, original_checkout).unwrap();
+
     gate.arm();
     create_gate.prevent_before_dispatch();
     desktop.submit().await;
