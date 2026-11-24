@@ -119,6 +119,14 @@ const distributionConsumers = [
   'maka-updater',
 ];
 
+// Device packaging has its own macOS workflow. The Rust crates also run in
+// the normal root workspace suite, and the Node test in tooling-tests.
+export const iosValidation = {
+  scriptTest: 'scripts/rust/package-ios.test.mjs',
+  packages: ['maka-remote-client', 'maka-ios-shell'],
+  simulator: 'aarch64-apple-ios-sim',
+};
+
 export const suites = {
   tooling: { always: true },
   root: {
