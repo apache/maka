@@ -539,13 +539,28 @@ impl Painter<'_> {
         );
         // A divider's box (a menu's separator, its fill the app's line
         // color) is its line of `─` alone: a line is no band.
+        // A terminal that did not tell its colors has no hover band
+        // (`Bands::new`), so a hovered control uses its resting fill for both
+        // its bandless fill and the ground its children's ink is measured
+        // against; states with marks of their own (focus, press, selection,
+        // disabled) keep theirs.
+        let states = shown_states(view, self.tree.pointer_focus);
+        let hovering = ground.ramp.is_none()
+            && self.bands.hover.is_none()
+            && states & state::HOVERED != 0
+            && states & (state::FOCUSED | state::PRESSED | state::DISABLED) == 0
+            && !view.props.accessibility.state.disabled
+            && !banded(view);
         let fill = if blank || rule_box || scrim {
             nsh_core::Color::TRANSPARENT
         } else {
-            let color = view
-                .animated
-                .background
-                .unwrap_or(view.style.background_color);
+            let color = if hovering {
+                view.rest_fill
+            } else {
+                view.animated
+                    .background
+                    .unwrap_or(view.style.background_color)
+            };
             // A terminal draws one color per Cell: a gradient over no
             // fill of its own fills with its first stop.
             match view.style.effects.as_deref() {
@@ -1509,6 +1524,7 @@ impl Painter<'_> {
                 popup: popup_item,
                 lined_group: layer.lined_group,
                 pointer_focus: self.tree.pointer_focus,
+                neutral_fill: (bandless_fill == Some(Color::DarkGray)).then_some(Color::DarkGray),
             };
             match ground.ramp {
                 Some(ramp) => mark_surface(
@@ -2731,7 +2747,7 @@ fn focused_field_in(tree: &Mounter, id: NodeId, depth: usize) -> bool {
 /// What state marks draw with besides modifiers.
 #[derive(Clone, Copy)]
 struct Marks {
-    /// The hover and press bands.
+    /// The bandless hover band (the 16 colors' gray; none else).
     bands: Bands,
     /// The color of a control whose fill stands out (a primary button):
     /// its accent, or the default foreground.
@@ -2752,6 +2768,10 @@ struct Marks {
     lined_group: bool,
     /// The pointer moved the focus (`Mounter::pointer_focus`).
     pointer_focus: bool,
+    /// The fallback fill of a bandless box without a tone of its own (the
+    /// standard colors' gray, [`palette::bandless_fill`]): a reverse drawn
+    /// over it reads as a band, so the states that mark a row drop it.
+    neutral_fill: Option<Color>,
 }
 
 /// The states a view's marks show: its own and those projected on it as
@@ -2839,10 +2859,18 @@ fn mark_state(
     }
     // A tab the app underlines keeps its underline alone, as with colors.
     let tab = view.props.accessibility.role == AccessibilityRole::Tab;
-    if selected && !inner.is_empty() && !(tab && underlined(buffer, inner)) {
+    let chosen = selected && !inner.is_empty() && !(tab && underlined(buffer, inner));
+    // A selection is reverse video and the focus the accent's or, without
+    // colors, reversed and underlined: the box's fallback fill under either
+    // would show as a band the label fades into.
+    if (chosen || focused) && !inner.is_empty() {
+        clear_fill(buffer, visible, marks.neutral_fill);
+    }
+    if chosen {
         for y in inner.y..inner.bottom() {
             for x in inner.x..inner.right() {
-                buffer[(x, y)].modifier.insert(Modifier::REVERSED);
+                let cell = &mut buffer[(x, y)];
+                cell.modifier = (cell.modifier | Modifier::REVERSED) - Modifier::DIM;
             }
         }
     }
@@ -2893,10 +2921,12 @@ fn mark_state(
             focus_reverse(buffer, inner, marks.mono, !row);
         }
     } else if pressed && !selected {
-        match marks.bands.press {
-            Some(band) => fill(buffer, visible, band),
-            None => label(buffer, inner, Modifier::REVERSED),
-        }
+        // A press is reverse video, as a selection is: the fill under it
+        // (a neutral `activeStyle`) would be a band the label fades into.
+        clear_fill(buffer, visible, marks.neutral_fill);
+        label(buffer, inner, Modifier::REVERSED);
+        // Dim text on that fill would barely read reversed.
+        drawn(buffer, inner, |_| {});
     } else if hovered
         && !selected
         && let Some(band) = marks.bands.hover
@@ -3632,6 +3662,28 @@ fn fill(buffer: &mut Buffer, rect: Rect, color: Color) {
     for y in rect.y..rect.bottom() {
         for x in rect.x..rect.right() {
             buffer[(x, y)].bg = color;
+        }
+    }
+}
+
+/// Drops a bandless box's fallback fill from `rect`, so a reverse over it
+/// stands on the terminal's own ground instead of on a band. A glyph in
+/// the fill's own color takes the default foreground, as on the fill.
+fn clear_fill(buffer: &mut Buffer, rect: Rect, fill: Option<Color>) {
+    let Some(fill) = fill else {
+        return;
+    };
+    for y in rect.y..rect.bottom() {
+        for x in rect.x..rect.right() {
+            let cell = &mut buffer[(x, y)];
+            if cell.bg != fill {
+                continue;
+            }
+            cell.bg = Color::Reset;
+            if cell.fg == fill {
+                cell.fg = Color::Reset;
+                cell.modifier -= Modifier::DIM;
+            }
         }
     }
 }
