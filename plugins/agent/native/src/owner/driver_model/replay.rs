@@ -43,7 +43,7 @@ use std::collections::{BTreeMap, BTreeSet};
 struct AssistantBatch {
     parts: Vec<AssistantPart>,
     producer: Option<Producer>,
-    recovered_outputs: Vec<Message>,
+    tool_outputs: Vec<Message>,
     last_emitted_attempt: Option<ModelAttemptId>,
 }
 
@@ -75,7 +75,7 @@ impl AssistantBatch {
                                 != Some(&json!(maka_agent_facts::model::ModelFinishReason::Length))
                     })
         });
-        let has_committed_output = !self.recovered_outputs.is_empty()
+        let has_committed_output = !self.tool_outputs.is_empty()
             || self
                 .parts
                 .iter()
@@ -102,7 +102,7 @@ impl AssistantBatch {
             }
             None => flush_assistant(messages, &mut self.parts).await,
         }?;
-        for output in self.recovered_outputs.drain(..) {
+        for output in self.tool_outputs.drain(..) {
             messages.append(output).await?;
         }
         Ok(())
@@ -413,7 +413,7 @@ impl<'a, 'source> TailReplay<'a, 'source> {
                                 )
                                 .await?
                             };
-                            assistant.recovered_outputs.push(tool_message(call, output));
+                            assistant.tool_outputs.push(tool_message(call, output));
                         }
                     }
                     if matches!(
@@ -454,9 +454,12 @@ impl<'a, 'source> TailReplay<'a, 'source> {
                 result,
                 outcome,
             } => Box::pin(async move {
-                assistant
-                    .flush(view, prefix_attempt, current, messages)
-                    .await?;
+                let belongs_to_batch = *current == Some(tool.attempt);
+                if !belongs_to_batch {
+                    assistant
+                        .flush(view, prefix_attempt, current, messages)
+                        .await?;
+                }
                 let call = reader.tool_call(view.run, tool).await?;
                 if call.provider_executed {
                     return Ok(());
@@ -502,7 +505,10 @@ impl<'a, 'source> TailReplay<'a, 'source> {
                         .await?
                 };
                 let message = tool_message(&call, output);
-                if allowed_attempts.contains(&tool.attempt) {
+                if belongs_to_batch {
+                    // More calls may still arrive from this attempt.
+                    assistant.tool_outputs.push(message);
+                } else if allowed_attempts.contains(&tool.attempt) {
                     messages.append(message).await?;
                 } else if let Message::Tool { mut content, .. } = message {
                     let mut parts = vec![maka_model::prompt::ContentPart::text(format!(
@@ -517,7 +523,6 @@ impl<'a, 'source> TailReplay<'a, 'source> {
                         })
                         .await?;
                 }
-                *current = None;
                 Ok(())
             }),
             // Later turns otherwise replay the failed turn as if it had simply stopped.
