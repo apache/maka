@@ -360,20 +360,28 @@ export function Disclosure(props: {
   reserveChevron?: boolean;
   /** On the desktop, what the row is, in place of the chevron. */
   icon?: Parameters<typeof Icon>[0]['name'];
-  /** On the desktop, a row without an icon keeps the icon's place empty instead of a chevron. */
-  blank?: boolean;
-  /** On the desktop, a row with neither icon nor chevron: its label starts at its edge. */
-  plain?: boolean;
-  /** Draws what stands in place of `icon`, for a row whose icon moves. */
+  /**
+   * On the desktop, when there is no mark or icon: `'blank'` keeps the icon's
+   * 16 pt place empty instead of a chevron; `'none'` omits the leading slot.
+   */
+  leading?: 'blank' | 'none';
+  /** On the desktop, draws a moving mark in the leading slot. */
   mark?: () => JSX.Element;
   terminalInset?: number;
   onPress: () => void;
   children: JSX.Element;
   trailing?: JSX.Element;
 }) {
-  const icon = () => (platform.idiom === 'terminal' ? undefined : props.icon);
-  const marked = computed(() => props.mark !== undefined);
-  const plain = () => platform.idiom !== 'terminal' && props.plain === true;
+  const leading = computed(() => {
+    if (platform.idiom === 'terminal') return props.foldable !== false ? 'chevron' : 'none';
+    if (props.mark !== undefined) return 'mark';
+    if (props.icon !== undefined) return 'icon';
+    if (props.leading === 'none') return 'none';
+    if (props.leading === 'blank') return 'blank';
+    if (props.foldable !== false) return 'chevron';
+    // Nested rows can align their labels with foldable siblings.
+    return props.reserveChevron !== false ? 'blank' : 'none';
+  });
   return (
     <View
       style={{
@@ -404,27 +412,15 @@ export function Disclosure(props: {
         activeStyle={quietActiveStyle()}
         focusStyle={quietFocusStyle()}
       >
-        <If when={!plain()}>
-          <If
-            when={icon()}
-            else={
-              <If
-                when={props.foldable !== false && !(props.blank && platform.idiom !== 'terminal')}
-                else={
-                  // Nested rows can align their labels with foldable siblings.
-                  <If when={platform.idiom !== 'terminal' && props.reserveChevron !== false}>
-                    <View style={{ width: 16, height: 16 }} />
-                  </If>
-                }
-              >
-                <DisclosureChevron open={props.open} />
-              </If>
-            }
-          >
-            <If when={marked()} else={<Icon name={icon()!} color={C.muted} />}>
-              {props.mark?.()}
-            </If>
-          </If>
+        <If when={leading() === 'mark'}>{props.mark?.()}</If>
+        <If when={leading() === 'icon'}>
+          <Icon name={props.icon!} color={C.muted} />
+        </If>
+        <If when={leading() === 'chevron'}>
+          <DisclosureChevron open={props.open} />
+        </If>
+        <If when={leading() === 'blank'}>
+          <View style={{ width: 16, height: 16 }} />
         </If>
         {props.children}
       </Button>

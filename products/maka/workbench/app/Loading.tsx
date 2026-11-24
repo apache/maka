@@ -165,12 +165,19 @@ export function ShimmerText(props: { text: string; style: object }) {
  * the new one comes up into its place, so a row whose label follows the work
  * does not blink from one label to the next.
  */
-export function FadingText(props: { text: string; style: object; color: string }) {
+export function FadingText(props: {
+  text: string;
+  style: object;
+  color: string;
+  shimmer?: boolean;
+}) {
   const still = () => platform.idiom === 'terminal' || reduceMotion();
   const shown = signal(props.text);
   const leaving = signal<string | null>(null);
+  const leavingWidth = signal<number | undefined>(undefined);
   const mix = createAnimatedValue(1);
   let change = 0;
+  let width = 0;
   let root: ViewRef | undefined;
   effect(() => {
     const next = props.text;
@@ -178,10 +185,11 @@ export function FadingText(props: { text: string; style: object; color: string }
     if (next === current) return;
     shown.set(next);
     if (still()) return;
+    leavingWidth.set(width > 0 ? width : undefined);
     leaving.set(current);
     // What follows the title glides to where the new one ends. Only that: an
     // animation of the whole turn would also delay the list following its end.
-    if (!reduceMotion()) root?.animateLayout({ type: 'easeInEaseOut', duration: 200 });
+    root?.animateLayout({ type: 'easeInEaseOut', duration: 200 });
     const mine = ++change;
     mix.set(0);
     void mix.timing(1, { duration: 240, easing: 'easeOut' }).then(() => {
@@ -194,6 +202,9 @@ export function FadingText(props: { text: string; style: object; color: string }
       ref={(view) => {
         root = view;
       }}
+      onLayout={({ bounds }) => {
+        width = bounds.size.width;
+      }}
       style={{ flexShrink: 1, minWidth: 0 }}
     >
       <View
@@ -202,14 +213,21 @@ export function FadingText(props: { text: string; style: object; color: string }
           transform: [{ translateY: mix.interpolate({ inputRange: [0, 1], outputRange: [5, 0] }) }],
         }}
       >
-        <Text
-          style={[
-            { ...props.style, color: props.color },
-            { numberOfLines: 1, textOverflow: 'ellipsis' },
-          ]}
+        <If
+          when={props.shimmer}
+          else={
+            <Text
+              style={[
+                { ...props.style, color: props.color },
+                { numberOfLines: 1, textOverflow: 'ellipsis' },
+              ]}
+            >
+              {shown()}
+            </Text>
+          }
         >
-          {shown()}
-        </Text>
+          <ShimmerText text={shown()} style={props.style} />
+        </If>
       </View>
       <If when={leaving() !== null}>
         <View
@@ -219,8 +237,8 @@ export function FadingText(props: { text: string; style: object; color: string }
               position: 'absolute',
               left: 0,
               top: 0,
-              // Its own width, not the width of the title that took its place.
-              width: 480,
+              // Its own measured width, not the width of the title that took its place.
+              width: leavingWidth(),
               opacity: mix.interpolate({ inputRange: [0, 0.6, 1], outputRange: [1, 0, 0] }),
               transform: [
                 { translateY: mix.interpolate({ inputRange: [0, 1], outputRange: [0, -5] }) },
@@ -229,7 +247,12 @@ export function FadingText(props: { text: string; style: object; color: string }
             { pointerEvents: 'none' },
           ]}
         >
-          <Text style={[{ ...props.style, color: props.color }, { numberOfLines: 1 }]}>
+          <Text
+            style={[
+              { ...props.style, color: props.color },
+              { numberOfLines: 1, textOverflow: 'ellipsis' },
+            ]}
+          >
             {leaving() ?? ''}
           </Text>
         </View>
@@ -369,6 +392,10 @@ export function ThinkingPeek(props: { text(): string; inset?: number }) {
             reached.set(reach);
           }
           overflowing.set(over > 0);
+          if (over === 0) {
+            if (before > 0) pushed.set(0);
+            return;
+          }
           // Only what is pushed out at the top moves the text in view.
           const moved = over - before;
           if (moved <= 0 || moved > window || reduceMotion()) return;
@@ -383,10 +410,10 @@ export function ThinkingPeek(props: { text(): string; inset?: number }) {
           ]}
         >
           {words().settled}
-          <Text style={{ color: `${C.muted}c0` }}>{fresh(3)}</Text>
-          <Text style={{ color: `${C.muted}90` }}>{fresh(2)}</Text>
-          <Text style={{ color: `${C.muted}60` }}>{fresh(1)}</Text>
-          <Text style={{ color: `${C.muted}38` }}>{fresh(0)}</Text>
+          <Text style={{ color: `${C.muted}e0` }}>{fresh(3)}</Text>
+          <Text style={{ color: `${C.muted}c0` }}>{fresh(2)}</Text>
+          <Text style={{ color: `${C.muted}9c` }}>{fresh(1)}</Text>
+          <Text style={{ color: `${C.muted}78` }}>{fresh(0)}</Text>
         </Text>
       </View>
       <View
@@ -412,7 +439,7 @@ export function ThinkingPeek(props: { text(): string; inset?: number }) {
             bottom: 0,
             left: 0,
             right: 0,
-            height: 10,
+            height: 6,
             backgroundImage: fade(`${C.panel}00`, C.panel),
           },
           { pointerEvents: 'none' },

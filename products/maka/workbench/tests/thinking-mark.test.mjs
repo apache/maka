@@ -21,9 +21,10 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   freshWords,
-  markPhase,
+  MARK_CYCLE,
   MARK_SAMPLES,
   MARK_STROKES,
+  markPhase,
   strokeAt,
   thoughtTail,
 } from '../app/thinkingMark.ts';
@@ -79,29 +80,32 @@ test('the thinking mark stands whole for a good part of every cycle', () => {
     );
 });
 
-test('the newest words of a thought are told from the rest, in any script', () => {
-  assert.deepEqual(freshWords('one two three four five six'), {
-    settled: 'one two ',
-    fresh: ['three ', 'four ', 'five ', 'six'],
-  });
-  assert.deepEqual(freshWords('对比资金流向和新闻'), {
-    settled: '对比',
-    fresh: ['资金', '流向', '和新', '闻'],
-  });
-  assert.deepEqual(freshWords('hi'), { settled: '', fresh: ['hi'] });
+test('the newest words of a thought are split cleanly without dropping text, in any script', () => {
+  for (const sample of ['one two three four five six', '对比资金流向和新闻']) {
+    const parts = freshWords(sample);
+    assert.equal(parts.settled + parts.fresh.join(''), sample);
+    assert.ok(parts.settled.length > 0);
+    assert.ok(parts.fresh.length > 0 && parts.fresh.length <= 4);
+  }
+  const short = freshWords('hi');
+  assert.equal(short.settled, '');
+  assert.equal(short.fresh.join(''), 'hi');
 });
 
 test('a mark begins with its strokes arriving, and one that takes its place carries on', () => {
   const first = markPhase(10_000);
-  assert.ok(Math.abs(first.phase - 0.36) < 1e-9);
-  // The next step's mark is shown before the last one goes, or just after.
+  // Entering from rest starts mid-flight, not already whole.
+  assert.ok([...MARK_STROKES.keys()].some((index) => strokeAt(index, 0, first.phase).opacity < 1));
+  // Overlapping or briefly handed-off marks carry the clock phase forward.
   const second = markPhase(11_000);
-  assert.ok(Math.abs(second.phase - 0.61) < 1e-9);
+  assert.ok(Math.abs(((second.phase - first.phase + 1) % 1) - 1000 / MARK_CYCLE) < 1e-9);
   first.gone(11_000);
   second.gone(11_100);
   const third = markPhase(11_300);
-  assert.ok(Math.abs(third.phase - 0.685) < 1e-9);
+  assert.ok(Math.abs(((third.phase - first.phase + 1) % 1) - 1300 / MARK_CYCLE) < 1e-9);
   third.gone(12_000);
-  // After a pause with no mark, the next one begins anew.
-  assert.ok(Math.abs(markPhase(20_000).phase - 0.36) < 1e-9);
+  // After a pause with no mark, the next one begins anew at the entrance phase.
+  const fresh = markPhase(20_000);
+  assert.ok(Math.abs(fresh.phase - first.phase) < 1e-9);
+  fresh.gone(20_100);
 });

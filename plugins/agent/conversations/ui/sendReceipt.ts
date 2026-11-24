@@ -185,3 +185,23 @@ export function unsettledSends<Send>(
     ...[...inFlight].filter(([operation]) => !settled.has(operation)).map(([, send]) => send),
   ];
 }
+
+/**
+ * Whether the conversation's working row should stand in place: either a run is
+ * admitted/running/quietly waiting, or a local send that starts a run is still
+ * in flight or accepted while waiting for the run to open.
+ */
+export function workingRowActive(state: {
+  run: string;
+  quietWait: boolean;
+  pendingCount: number;
+  outgoingCount: number;
+}): boolean {
+  return (
+    state.run === 'admitted' ||
+    state.run === 'running' ||
+    (state.run === 'waiting' && state.quietWait) ||
+    state.pendingCount > 0 ||
+    state.outgoingCount > 0
+  );
+}

@@ -664,7 +664,7 @@ export function MessageRow({
                         <Disclosure
                           label={summary()}
                           tooltip={summary()}
-                          plain
+                          leading="none"
                           foldable={detailed()}
                           open={expanded() && detailed()}
                           onPress={inputAction(setExpanded, {
