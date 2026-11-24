@@ -725,6 +725,36 @@ impl Owner {
             Some(maka_sandbox::Sandbox::External { .. }) => return Ok(ChangeSnapshot::default()),
             _ => None,
         };
+        if matches!(query, ChangeQuery::Opening { .. }) {
+            // Prune stale/deleted or newly-excluded cursors so removed temp directories
+            // and excluded trees do not replay ghost deltas across subsequent turns.
+            let prune_scope = self.watch_scopes.delta_roots(
+                self.watch_scopes
+                    .directories
+                    .keys()
+                    .map(|p| discovery_root(p, selected).to_owned())
+                    .collect(),
+                watch_scope::ScopeView::Workspace,
+            );
+            let prune_root = selected.to_owned();
+            let _ = self
+                .discovery
+                .prune_cursors_matching(move |path| {
+                    if !path.starts_with(&prune_root) {
+                        return false;
+                    }
+                    let Ok(path) = host_path(path) else {
+                        return true;
+                    };
+                    if !prune_scope.permits(path, false) && !prune_scope.permits(path, true) {
+                        return true;
+                    }
+                    // If the path and its parent directory are both gone, it's a deleted
+                    // directory tree (e.g. removed worktree) whose orphan deltas should vanish.
+                    !path.exists() && path.parent().is_some_and(|parent| !parent.exists())
+                })
+                .await;
+        }
         self.discovery
             .change_snapshot(at, query, move |path, kind| {
                 let Ok(path) = host_path(path) else {
@@ -796,31 +826,70 @@ impl Owner {
                 && !tags.source_ignored(p, &caps)
         };
         let at = UnixMillis(now() as i64);
+        // Prefer targets from the durable WorkspaceMap (due frontier + due mapped sources)
+        // when available so Wander follows the semantic map rather than blind top-level names.
+        if let Ok((_, map)) = self.scheduler.workspace_map(&root).await
+            && (!map.sources.is_empty() || !map.frontier.is_empty())
+        {
+            let mut permit_map = allowed.clone();
+            let picked = map.select_wander_targets(&root, at.0, 3, move |p| permit_map(p));
+            if !picked.is_empty() {
+                return Ok(picked
+                    .into_iter()
+                    .filter_map(|t| t.path.to_str().map(str::to_owned))
+                    .collect());
+            }
+        }
         if !includes.is_empty() {
             self.discovery
                 .seed_cold_sources(includes, at)
                 .await
                 .map_err(reason)?;
         }
-        let mut cold = self
+        let pick_bucketed = |candidates: Vec<String>, base: &Path, limit: usize| -> Vec<String> {
+            let mut chosen = Vec::with_capacity(limit);
+            let mut buckets = BTreeSet::new();
+            let mut rest = Vec::new();
+            for path in candidates {
+                let bucket = Path::new(&path)
+                    .strip_prefix(base)
+                    .ok()
+                    .and_then(|rel| rel.components().next())
+                    .map(|c| c.as_os_str().to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                if chosen.len() < limit && buckets.insert(bucket) {
+                    chosen.push(path);
+                } else {
+                    rest.push(path);
+                }
+            }
+            for path in rest {
+                if chosen.len() >= limit {
+                    break;
+                }
+                chosen.push(path);
+            }
+            chosen
+        };
+        let cold = self
             .discovery
-            .cold_sources(at, 4, allowed.clone())
+            .cold_sources(at, 24, allowed.clone())
             .await
             .map_err(reason)?;
         if cold.len() > 3 || !can_list_root {
-            cold.truncate(3);
-            return Ok(cold);
+            return Ok(pick_bucketed(cold, &root, 3));
         }
         let mut permit = allowed.clone();
         let (batches, mut pending) = mpsc::channel(1);
+        let scan_root = root.clone();
         let scan = tokio::task::spawn_blocking(move || {
-            if CacheTags::default().ignored(&root, &scan_caps) {
+            if CacheTags::default().ignored(&scan_root, &scan_caps) {
                 return Ok(());
             }
             let mut paths = Vec::with_capacity(BATCH);
             for entry in dir.entries()? {
                 let entry = entry?;
-                let path = root.join(entry.file_name());
+                let path = scan_root.join(entry.file_name());
                 if permit(&path)
                     && let Some(path) = path.to_str()
                 {
@@ -844,10 +913,12 @@ impl Owner {
                 .map_err(reason)?;
         }
         scan.await.map_err(reason)?.map_err(reason)?;
-        self.discovery
-            .cold_sources(at, 3, allowed)
+        let candidates = self
+            .discovery
+            .cold_sources(at, 24, allowed)
             .await
-            .map_err(reason)
+            .map_err(reason)?;
+        Ok(pick_bucketed(candidates, &root, 3))
     }
 
     async fn wake_changed_discovery(&self, at: UnixMillis) -> Result<Option<i64>, String> {

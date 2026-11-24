@@ -85,6 +85,7 @@ enum Call {
     Pending(actions::StagePendingAction),
     Preferences(preferences::Update),
     WatchScope(watch_scope::Update),
+    WorkspaceMap(workspace_map::Update),
     List,
     Read(ReadTopic),
 }
@@ -93,26 +94,28 @@ impl scheduler::Scheduler {
     pub(in crate::owner) fn dossier_tools(self: &Arc<Self>) -> Vec<ToolRegistration> {
         [
             (UPSERT,
-             "Save one topic with expected_revision (zero for creation). Write summary_md as a self-contained update so readers do not need prior revisions to understand it; set change_note to a brief 1-line note when updating or correcting earlier findings. When asking the user to pick between concrete actions, populate choices (2-3 clickable options with key, label, detail, recommended, resolves, and instruction) instead of only prose bullets. schedule_ops can revise the intent_body of linked once tasks or cancel them. Use interrupt when the user needs to act now.",
-             schemars::schema_for!(Upsert), ToolSemantics::ExclusiveStep),
+             "Save one topic with expected_revision (0 for creation). title must concisely name the project/subject and core problem (16-32 chars, e.g. 'ETF 轮动明早开跑：缺 4 只 CSV 与 pandas'); NEVER start title with timestamps, rev numbers, or correction words ('更正'/'撤回'/'补坑'/'上一版'). Omit title on updates (expected_revision>0) to keep the existing stable title unless the core subject changed; put what changed into change_note (1 short line). Write summary_md as a self-contained current-state brief without internal revision archaeology. Existing staged artifacts are preserved and merged by path unless replace_artifacts is true. When asking the user to pick concrete actions, populate choices (2-3 clickable options with key, label, detail, recommended, resolves, instruction). schedule_ops can revise linked once tasks or cancel them. Use interrupt only when the user needs to act now.",
+             schemars::schema_for!(Upsert), ToolSemantics::ExclusiveStep, ToolNesting::DirectOnly),
             (STAGE, "Prepare a ready-to-use UTF-8 draft, diff, checklist or brief in this topic’s isolated staging directory. Workers pass the receipt verbatim in UpsertDossier.artifacts. In a dossier thread the draft attaches to that topic automatically. input_paths are source files in the authorized workspace.",
-             schemars::schema_for!(artifacts::StageArtifact), ToolSemantics::ExclusiveStep),
-            (REGISTER, "Monitor an existing topic without a model. Use an HTTP predicate, a file digest, or a deadline (Unix milliseconds). HTTP intervals are in seconds.",
-             schemars::schema_for!(watches::RegisterWatch), ToolSemantics::ExclusiveStep),
+             schemars::schema_for!(artifacts::StageArtifact), ToolSemantics::ExclusiveStep, ToolNesting::Nestable),
+            (REGISTER, "Monitor an existing topic without a model. Pass predicate as a JSON object matching kind: file_hash -> {expected_hash: null|sha256}; deadline -> {trigger_at_ms: <unix_ms>}; http_check -> {status_code?, contains_text?, not_contains_text?, json_pointer_equals?}. HTTP intervals are in seconds.",
+             schemars::schema_for!(watches::RegisterWatch), ToolSemantics::ExclusiveStep, ToolNesting::Nestable),
             (PENDING, "Stage an exact connector mutation for desktop confirmation and finish this turn. Include every source file, staged input and overwrite destination. Use workspace paths or staging/<topic_id>/<path> for staged files.",
-             schemars::schema_for!(actions::StagePendingAction), ToolSemantics::FinishTurn),
+             schemars::schema_for!(actions::StagePendingAction), ToolSemantics::FinishTurn, ToolNesting::DirectOnly),
             (WATCH_SCOPE, "Inspect or adjust this workspace’s discovery watch scope. Use concrete content directories and a brief reason for each. mark_surveyed can add includes and exclusions together.",
-             schemars::schema_for!(watch_scope::Update), ToolSemantics::ExclusiveStep),
+             schemars::schema_for!(watch_scope::Update), ToolSemantics::ExclusiveStep, ToolNesting::Nestable),
+            (WORKSPACE_MAP, "Inspect or update the durable workspace semantic map (sources, recheck_hints, unfinished frontier, and onboarding readiness). Independent of WatchScope's 16-root limit. Use upsert_sources / record_frontier during onboarding and mark_ready once primary areas are mapped; use mark_verified after checking a mapped source.",
+             schemars::schema_for!(workspace_map::Update), ToolSemantics::ExclusiveStep, ToolNesting::Nestable),
             (PREFERENCES, "Save an explicit user instruction for future discovery. Append a concise natural-language rule, or replace the rules for one scope. The host records the date.",
-             schemars::schema_for!(preferences::Update), ToolSemantics::ExclusiveStep),
+             schemars::schema_for!(preferences::Update), ToolSemantics::ExclusiveStep, ToolNesting::Nestable),
             (FINISH,
              "End the investigation turn cleanly after saving all UpsertDossier updates (or when nothing material changed). Pass checked_topic_ids for topics reviewed without further material changes.",
-             schemars::schema_for!(Finish), ToolSemantics::FinishTurn),
+             schemars::schema_for!(Finish), ToolSemantics::FinishTurn, ToolNesting::DirectOnly),
             (LIST, "List compact discovery topics and user leads in urgency order.",
-             schemars::schema_for!(DossiersRead), ToolSemantics::Parallel),
+             schemars::schema_for!(DossiersRead), ToolSemantics::Parallel, ToolNesting::Nestable),
             (READ, "Read one topic with its summary, artifacts, linked reminders, watches and pending actions.",
-             schemars::schema_for!(ReadTopic), ToolSemantics::Parallel),
-        ].into_iter().map(|(name, description, schema, semantics)| ToolRegistration {
+             schemars::schema_for!(ReadTopic), ToolSemantics::Parallel, ToolNesting::Nestable),
+        ].into_iter().map(|(name, description, schema, semantics, nesting)| ToolRegistration {
             definition: ToolDefinition {
                 provider: None,
                 name: name.into(),
@@ -121,7 +124,7 @@ impl scheduler::Scheduler {
                 output_schema: None,
                 freeform: None,
             },
-            nesting: ToolNesting::DirectOnly,
+            nesting,
             semantics,
             handler: ToolHandler::Prepared(self.clone()),
         }).collect()
@@ -150,6 +153,7 @@ impl scheduler::Scheduler {
                 PENDING => serde_json::from_value(input).map(Call::Pending),
                 STAGE => serde_json::from_value(input).map(Call::Stage),
                 WATCH_SCOPE => serde_json::from_value(input).map(Call::WatchScope),
+                WORKSPACE_MAP => serde_json::from_value(input).map(Call::WorkspaceMap),
                 PREFERENCES => serde_json::from_value(input).map(Call::Preferences),
                 FINISH => serde_json::from_value(input).map(Call::Finish),
                 LIST => serde_json::from_value::<DossiersRead>(input).map(|_| Call::List),
@@ -202,6 +206,7 @@ impl Owner {
             Call::Pending(input) => self.stage_pending_action(&context, input, cancel).await,
             Call::Stage(stage) => self.stage_artifact(&context, stage, cancel).await,
             Call::WatchScope(update) => self.update_watch_scope(&context, update).await,
+            Call::WorkspaceMap(update) => self.update_workspace_map(&context, update).await,
             Call::Preferences(update) => self.update_discovery_preferences(&context, update).await,
             Call::Finish(input) => {
                 if input.note.trim().is_empty() || input.note.len() > records::MAX_TEXT_BYTES {
@@ -221,6 +226,9 @@ impl Owner {
                 Ok(serde_json::json!({"recorded":true}))
             }
             Call::Upsert { input, fingerprint } => {
+                if !input.dossier.title.trim().is_empty() {
+                    validate_stable_title(&input.dossier.title)?;
+                }
                 let mut paths = BTreeSet::new();
                 for artifact in &input.dossier.artifacts {
                     artifacts::validate_path(&input.dossier.topic_id, &artifact.path)
@@ -338,6 +346,66 @@ impl Owner {
         writer.write(WithStorage(dossier, storage)).await
     }
 }
+fn starts_with_clock_or_rev(s: &str) -> bool {
+    let bytes = s.as_bytes();
+    // HH:MM...
+    if bytes.len() >= 5
+        && bytes[0].is_ascii_digit()
+        && bytes[1].is_ascii_digit()
+        && bytes[2] == b':'
+        && bytes[3].is_ascii_digit()
+        && bytes[4].is_ascii_digit()
+    {
+        return true;
+    }
+    // rev1 / rev 1 / v2 / v2:
+    let lower = s.to_ascii_lowercase();
+    for prefix in ["rev", "v"] {
+        if let Some(rest) = lower.strip_prefix(prefix) {
+            let rest = rest.trim_start();
+            if rest.as_bytes().first().is_some_and(u8::is_ascii_digit) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+pub(super) fn validate_stable_title(title: &str) -> Result<(), ToolError> {
+    let trimmed = title.trim();
+    let trimmed_unquoted = trimmed.trim_start_matches(['[', '【', '(', '（']);
+    let lower = trimmed_unquoted.to_ascii_lowercase();
+    const FORBIDDEN_PREFIXES: &[&str] = &[
+        "更正",
+        "撤回",
+        "补一个坑",
+        "补坑",
+        "修正",
+        "纠正",
+        "纠偏",
+        "上一版",
+        "上版",
+        "更新：",
+        "更新:",
+        "correction:",
+        "correction ",
+        "retract:",
+        "retracted:",
+        "update:",
+        "fix:",
+    ];
+    if starts_with_clock_or_rev(trimmed_unquoted)
+        || FORBIDDEN_PREFIXES
+            .iter()
+            .any(|p| trimmed_unquoted.starts_with(p) || lower.starts_with(p))
+    {
+        return Err(ToolError::Failed(
+            "title must concisely name the project/subject and core problem (e.g. 'ETF 轮动明早开跑：缺 4 只 CSV 与 pandas'), not a timestamp, revision number, or correction prefix. Put what changed into change_note, or omit title on updates to preserve the existing stable title.".into(),
+        ));
+    }
+    Ok(())
+}
+
 fn model_summary(row: maka_agent_facts::discovery::DossierSummary) -> Value {
     serde_json::json!({
         "topic_id": row.topic_id, "title": row.title, "signal": row.signal, "window_at": row.window_at,
@@ -595,6 +663,7 @@ impl Owner {
                 change_note: None,
                 choices: vec![],
                 artifacts: vec![],
+                replace_artifacts: false,
                 linked_task_ids: None,
             },
             None,

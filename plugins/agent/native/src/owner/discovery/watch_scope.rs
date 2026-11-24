@@ -43,6 +43,15 @@ pub(in crate::owner) struct WatchScopes {
 pub(super) struct SavedScopes {
     by_key: BTreeMap<String, Arc<WatchScope>>,
     excluded: Arc<BTreeSet<PathBuf>>,
+    mapped_watch_roots: BTreeMap<String, Vec<PathBuf>>,
+}
+
+impl WatchScopes {
+    pub(super) fn set_mapped_watch_roots(&self, key: String, roots: Vec<PathBuf>) {
+        self.changed.send_modify(|scopes| {
+            scopes.mapped_watch_roots.insert(key, roots);
+        });
+    }
 }
 
 impl SavedScopes {
@@ -224,7 +233,15 @@ impl WorkspaceScope {
                 }
                 Ok(canonical)
             }
-            Err(e) if !must_exist && e.kind() == io::ErrorKind::NotFound => Ok(absolute),
+            Err(e)
+                if !must_exist
+                    && matches!(
+                        e.kind(),
+                        io::ErrorKind::NotFound | io::ErrorKind::PermissionDenied
+                    ) =>
+            {
+                Ok(absolute)
+            }
             Err(e) => Err(format!("expected a real directory without symlinks: {e}")),
         }
     }
@@ -337,6 +354,7 @@ impl WatchScopes {
                 break;
             }
         }
+        saved.mapped_watch_roots = scheduler.all_mapped_watch_roots().await.unwrap_or_default();
         saved.index_exclusions();
         self.changed.send_replace(saved);
         Ok(())
@@ -363,13 +381,13 @@ impl WatchScopes {
         }
         Some(match language {
             Language::En => {
-                "This home directory is due for a watch-scope survey. First inspect top-level folders, concrete document or attachment folders in cloud drives or messaging apps, and noisy subdirectories. Call UpdateWatchScope once with action mark_surveyed, include_roots and exclude_roots with brief reasons. Then continue discovery."
+                "This home directory is due for a watch-scope survey. Inspect top-level folders, concrete document/attachment folders inside cloud drives or messaging apps, local AI coding/chat session directories, and noisy cache/build subdirectories (note: system Library and hidden dot-directories are not watched recursively by default unless explicitly included). Call UpdateWatchScope once with action mark_surveyed, include_roots and exclude_roots with brief reasons. Then continue discovery."
             }
             Language::ZhCn => {
-                "此主目录需要调查监测范围。先查看顶层目录、云盘或通信应用中具体的文档或附件目录，以及噪声目录。调用一次 UpdateWatchScope，使用 mark_surveyed 并提交 include_roots、exclude_roots 和简短理由，然后继续调查。"
+                "此主目录需要调查监测范围。先查看顶层目录、云盘或即时通讯应用中具体的文档/接收文件目录、本地 AI 工具会话目录，以及噪声缓存/构建目录（注意：系统 Library 与隐藏点目录默认不会递归监听，需要显式加入 include_roots 才会监听）。调用一次 UpdateWatchScope，使用 mark_surveyed 提交 include_roots、exclude_roots 和简短理由，然后继续调查。"
             }
             Language::ZhTw => {
-                "此家目錄需要調查監測範圍。先查看頂層目錄、雲端硬碟或通訊應用程式中具體的文件或附件目錄，以及雜訊目錄。呼叫一次 UpdateWatchScope，使用 mark_surveyed 並提交 include_roots、exclude_roots 和簡短理由，然後繼續調查。"
+                "此家目錄需要調查監測範圍。先查看頂層目錄、雲端硬碟或即時通訊應用程式中具體的文件/接收檔案目錄、本地 AI 工具會話目錄，以及雜訊快取/建置目錄（注意：系統 Library 與隱藏點目錄預設不會遞迴監聽，需明確加入 include_roots 才會監聽）。呼叫一次 UpdateWatchScope，使用 mark_surveyed 提交 include_roots、exclude_roots 和簡短理由，然後繼續調查。"
             }
         })
     }
@@ -381,8 +399,8 @@ impl WatchScopes {
             excluded: saved.excluded.clone(),
             ..Default::default()
         };
-        let mut includes = |scope: &Arc<WatchScope>| {
-            roots.recursive.extend(
+        let add_includes = |scope: &Arc<WatchScope>, out: &mut BTreeSet<PathBuf>| {
+            out.extend(
                 scope
                     .include_roots
                     .iter()
@@ -392,7 +410,16 @@ impl WatchScopes {
             );
         };
         match view {
-            ScopeView::Watcher => saved.by_key.values().for_each(includes),
+            ScopeView::Watcher => {
+                for scope in saved.by_key.values() {
+                    add_includes(scope, &mut roots.recursive);
+                }
+                for mapped in saved.mapped_watch_roots.values().flatten() {
+                    if mapped.ancestors().any(|a| workspaces.contains(a)) {
+                        roots.recursive.insert(mapped.clone());
+                    }
+                }
+            }
             ScopeView::Workspace => {
                 let policies: BTreeSet<_> = workspaces
                     .iter()
@@ -403,7 +430,16 @@ impl WatchScopes {
                     .collect();
                 for path in policies {
                     if let Some(scope) = saved.by_key.get(&scope_key(path)) {
-                        includes(scope);
+                        add_includes(scope, &mut roots.recursive);
+                    }
+                    if let Some(mapped) =
+                        saved.mapped_watch_roots.get(&workspace_map::map_key(path))
+                    {
+                        for p in mapped {
+                            if p.ancestors().any(|a| workspaces.contains(a)) {
+                                roots.recursive.insert(p.clone());
+                            }
+                        }
                     }
                 }
             }
@@ -514,9 +550,24 @@ impl Owner {
             return Ok(result);
         }
         let state = self.store.owned_root().map_err(dossiers::write_error)?;
+        let prune_exclusions = matches!(
+            update,
+            Update::AddExclude { .. } | Update::MarkSurveyed { .. }
+        );
         self.watch_scopes
             .save(&self.scheduler, state, workspace, update)
             .await?;
+        if prune_exclusions {
+            let scope = self
+                .watch_scopes
+                .delta_roots([root.clone()].into(), ScopeView::Workspace);
+            let _ = self
+                .discovery
+                .prune_cursors_matching(move |p| {
+                    p.starts_with(&root) && !scope.permits(p, false) && !scope.permits(p, true)
+                })
+                .await;
+        }
         Ok(serde_json::json!({"updated":true}))
     }
 }

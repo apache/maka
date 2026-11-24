@@ -42,6 +42,8 @@ pub struct DossierUpsert {
     pub topic_id: TopicId,
     #[schemars(required, with = "u64")]
     pub expected_revision: Option<u64>,
+    /// Required on creation (expected_revision=0). Omit on updates to keep the existing stable topic title unless the core subject itself changed.
+    #[serde(default)]
     pub title: String,
     pub signal: DossierSignal,
     pub priority_weight: f64,
@@ -51,8 +53,11 @@ pub struct DossierUpsert {
     pub change_note: Option<String>,
     #[serde(default)]
     pub choices: Vec<DossierChoice>,
+    /// On updates, existing staged artifacts are preserved and merged by path unless replace_artifacts is true.
     #[serde(default)]
     pub artifacts: Vec<StagedArtifact>,
+    #[serde(default)]
+    pub replace_artifacts: bool,
     /// Omission preserves existing bindings. An empty list explicitly unlinks them.
     pub linked_task_ids: Option<Vec<String>>,
 }
@@ -738,6 +743,25 @@ fn sanitize_choices(choices: Vec<DossierChoice>) -> Vec<DossierChoice> {
         .collect()
 }
 
+fn merge_artifacts(
+    existing: Vec<DossierArtifact>,
+    incoming: Vec<DossierArtifact>,
+    replace: bool,
+) -> Vec<DossierArtifact> {
+    if replace {
+        return incoming;
+    }
+    let mut merged = existing;
+    for artifact in incoming {
+        if let Some(slot) = merged.iter_mut().find(|item| item.path == artifact.path) {
+            *slot = artifact;
+        } else {
+            merged.push(artifact);
+        }
+    }
+    merged
+}
+
 fn upsert(
     c: &Connection,
     owner: &str,
@@ -745,18 +769,34 @@ fn upsert(
     at: UnixMillis,
 ) -> Result<DossierUpsertOutcome, StoreError> {
     if input.topic_id.0.trim().is_empty()
-        || input.title.trim().is_empty()
         || input.title.chars().any(char::is_control)
         || input.summary_md.trim().is_empty()
         || !input.priority_weight.is_finite()
     {
         return Err(crate::store::invalid("invalid discovery dossier"));
     }
-    let artifact_list: Vec<_> = input
+    let existing_record = get(c, owner, &input.topic_id)?;
+    let resolved_title = if input.title.trim().is_empty() {
+        existing_record
+            .as_ref()
+            .map(|record| record.title.clone())
+            .ok_or_else(|| crate::store::invalid("invalid discovery dossier"))?
+    } else {
+        input.title.trim().to_owned()
+    };
+    let incoming_artifacts: Vec<_> = input
         .artifacts
         .into_iter()
         .map(DossierArtifact::from)
         .collect();
+    let artifact_list = match &existing_record {
+        Some(record) => merge_artifacts(
+            record.artifacts.clone(),
+            incoming_artifacts,
+            input.replace_artifacts,
+        ),
+        None => incoming_artifacts,
+    };
     let artifacts = serde_json::to_string(&artifact_list)?;
     let choices = sanitize_choices(input.choices);
     let change_note = input
@@ -775,7 +815,7 @@ fn upsert(
     let args = params![
         owner,
         input.topic_id.0,
-        input.title,
+        resolved_title,
         input.signal.as_str(),
         input.priority_weight,
         window,
@@ -816,7 +856,7 @@ fn upsert(
         changed = true;
     }
     let previous_record = if changed && previous > 0 && existing_revisions.is_empty() {
-        get(c, owner, &input.topic_id)?
+        existing_record
     } else {
         None
     };
@@ -833,7 +873,7 @@ fn upsert(
                  linked_task_ids_json=coalesce(?9,linked_task_ids_json), revision=excluded.revision,
                  last_checked_at=max(last_checked_at,?11), last_material_change_at=max(last_material_change_at,?11),
                  updated_at=max(updated_at,?11)",
-            params![owner, input.topic_id.0, input.title, input.signal.as_str(), input.priority_weight,
+            params![owner, input.topic_id.0, resolved_title, input.signal.as_str(), input.priority_weight,
                     window, input.summary_md, artifacts, links, sql_revision(revision)?, at.0],
         )?;
         if let Some(prev) = previous_record {
@@ -842,7 +882,7 @@ fn upsert(
         existing_revisions.push(DossierRevision {
             revision,
             at,
-            title: input.title,
+            title: resolved_title,
             signal: input.signal,
             summary_md: input.summary_md,
             change_note,

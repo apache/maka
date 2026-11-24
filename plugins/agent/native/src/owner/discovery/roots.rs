@@ -181,7 +181,23 @@ pub(super) struct DeltaRoots {
 
 impl DeltaRoots {
     pub(super) fn permits(&self, path: &Path, directory: bool) -> bool {
-        if ignored(path, &self.private) || path.ancestors().any(|p| self.excluded.contains(p)) {
+        if ignored(path, &self.private) {
+            return false;
+        }
+        // Longest-prefix precedence: a more specific explicit include root overrides
+        // an ancestor exclude root (e.g. excluding Library while including a concrete
+        // document folder under it).
+        let excluded_depth = path
+            .ancestors()
+            .find(|p| self.excluded.contains(*p))
+            .map(|p| p.components().count());
+        let included_depth = path
+            .ancestors()
+            .find(|p| self.recursive.contains(*p))
+            .map(|p| p.components().count());
+        if let Some(ex) = excluded_depth
+            && included_depth.is_none_or(|inc| inc <= ex)
+        {
             return false;
         }
         visible_in_workspace(path, directory, |p| {

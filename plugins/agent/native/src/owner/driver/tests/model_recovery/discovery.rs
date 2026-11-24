@@ -183,7 +183,7 @@ impl Fixture {
                                 | "StagePendingAction"
                                 | "StageArtifact"
                                 | "UpsertDossier"
-                        ) || (name == "UpdateWatchScope"
+                        ) || (matches!(name, "UpdateWatchScope" | "UpdateWorkspaceMap")
                             && chosen.values().any(|group| group == "read_files"))
                             || chosen.contains_key(name)
                     })
@@ -1270,6 +1270,7 @@ async fn discovery_approves_grouped_aliases_and_rechecks_the_parent_ceiling() {
             "StageArtifact",
             "StagePendingAction",
             "UpdateWatchScope",
+            "UpdateWorkspaceMap",
             "UpsertDossier"
         ])
     );
@@ -1286,6 +1287,7 @@ async fn discovery_approves_grouped_aliases_and_rechecks_the_parent_ceiling() {
             "StageArtifact",
             "StagePendingAction",
             "UpdateWatchScope",
+            "UpdateWorkspaceMap",
             "UpsertDossier"
         ]
     );
@@ -1423,6 +1425,7 @@ async fn discovery_standard_tools_pin_the_displayed_list_until_reapproved() {
             "StageArtifact",
             "StagePendingAction",
             "UpdateWatchScope",
+            "UpdateWorkspaceMap",
             "UpsertDossier"
         ])
     );

@@ -100,6 +100,7 @@ pub enum ChangeQuery {
 pub enum OpeningSources {
     FollowUp(Vec<Delta>),
     Wander(Vec<String>),
+    Onboard,
 }
 
 pub struct IndexedDossier {
@@ -280,7 +281,7 @@ impl DiscoveryStore {
         self.read(move |c, owner| {
             let mut stmt = c.prepare_cached(
                 "SELECT source_uri FROM discovery_source_cursors
-                WHERE owner=?1 AND probe_at IS NULL AND cooldown_until<=?2 ORDER BY last_explored_at,source_uri",
+                WHERE owner=?1 AND probe_at IS NULL AND cooldown_until<=?2 ORDER BY last_explored_at,last_mtime_ms DESC,source_uri",
             )?;
             let mut rows = stmt.query(params![owner, at.0])?;
             let mut cold = Vec::new();
@@ -293,6 +294,47 @@ impl DiscoveryStore {
                 }
             }
             Ok(cold)
+        })
+        .await
+    }
+
+    /// Delete stale cursors (and any pending deltas on them) matching `should_remove`,
+    /// e.g. newly excluded roots or deleted directories/worktrees.
+    pub async fn prune_cursors_matching(
+        &self,
+        mut should_remove: impl FnMut(&Path) -> bool + Send + 'static,
+    ) -> Result<usize, StoreError> {
+        self.data
+            .write(self.mutation(false, move |c, owner| {
+                let mut select = c.prepare_cached(
+                    "SELECT source_uri FROM discovery_source_cursors WHERE owner=?1",
+                )?;
+                let candidates: Vec<String> = select
+                    .query_map([owner], |r| r.get(0))?
+                    .collect::<Result<_, _>>()?;
+                let mut delete = c.prepare_cached(
+                    "DELETE FROM discovery_source_cursors WHERE owner=?1 AND source_uri=?2",
+                )?;
+                let mut removed = 0usize;
+                for path in candidates {
+                    if should_remove(Path::new(&path)) {
+                        removed += delete.execute(params![owner, path])?;
+                    }
+                }
+                Ok(removed)
+            }))
+            .await
+    }
+
+    pub async fn oldest_active_dossier_check_at(&self) -> Result<Option<UnixMillis>, StoreError> {
+        self.read(|c, owner| {
+            Ok(c.query_row(
+                "SELECT min(last_checked_at) FROM discovery_dossiers
+                 WHERE owner=?1 AND signal IN ('red','yellow','green')",
+                [owner],
+                |r| r.get::<_, Option<i64>>(0),
+            )?
+            .map(UnixMillis))
         })
         .await
     }
@@ -345,7 +387,7 @@ impl DiscoveryStore {
                         WHERE owner=?1 AND source_uri=?2")?;
                     for path in paths { stmt.execute(params![owner, path, at.0])?; }
                 }
-                OpeningSources::Wander(_) => (),
+                OpeningSources::Wander(_) | OpeningSources::Onboard => (),
             }
             Ok(())
         })

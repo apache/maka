@@ -63,6 +63,7 @@ fn dossier(topic: &str, signal: DossierSignal, weight: f64, expected: u64) -> Do
         priority_weight: weight,
         window_at: None,
         artifacts: vec![],
+        replace_artifacts: false,
         linked_task_ids: None,
     }
 }
@@ -456,4 +457,70 @@ async fn dossier_revisions_choices_and_resolution_persist_in_plugin_data() {
     assert_eq!(updated.dossier.signal, DossierSignal::Red);
     assert_eq!(updated.revisions.len(), 3);
     assert_eq!(updated.revisions[1].chosen_key.as_deref(), Some("A"));
+}
+
+#[tokio::test]
+async fn dossier_update_preserves_stable_title_and_merges_artifacts_by_default() {
+    let (_d, _r, s) = fixture().await;
+    let topic = TopicId("etf-check".into());
+
+    let mut v1 = dossier("etf-check", DossierSignal::Yellow, 10.0, 0);
+    v1.title = "ETF 轮动明早开跑：缺 4 只 CSV 数据".into();
+    v1.artifacts = vec![StagedArtifact {
+        path: "staging/etf-check/etf_signal_check.py".into(),
+        sha256: "a".repeat(64),
+        purpose: "Pure-stdlib signal checker".into(),
+        input_hashes: Default::default(),
+    }];
+    s.upsert_dossier(v1, UnixMillis(100)).await.unwrap();
+
+    // Update omitting title and artifacts must preserve both.
+    let mut v2 = dossier("etf-check", DossierSignal::Yellow, 10.0, 1);
+    v2.title = String::new();
+    v2.summary_md = "Checked again; still missing CSV data".into();
+    v2.artifacts = vec![];
+    s.upsert_dossier(v2, UnixMillis(200)).await.unwrap();
+
+    let after_v2 = s.detail(topic.clone()).await.unwrap().unwrap();
+    assert_eq!(after_v2.dossier.title, "ETF 轮动明早开跑：缺 4 只 CSV 数据");
+    assert_eq!(after_v2.dossier.artifacts.len(), 1);
+    assert_eq!(
+        after_v2.dossier.artifacts[0].path,
+        "staging/etf-check/etf_signal_check.py"
+    );
+
+    // Updating same path replaces sha256 in place; new path appends.
+    let mut v3 = dossier("etf-check", DossierSignal::Yellow, 10.0, 2);
+    v3.title = String::new();
+    v3.summary_md = "Updated script and added checklist".into();
+    v3.artifacts = vec![
+        StagedArtifact {
+            path: "staging/etf-check/etf_signal_check.py".into(),
+            sha256: "b".repeat(64),
+            purpose: "v2 checker".into(),
+            input_hashes: Default::default(),
+        },
+        StagedArtifact {
+            path: "staging/etf-check/checklist.md".into(),
+            sha256: "c".repeat(64),
+            purpose: "Export steps".into(),
+            input_hashes: Default::default(),
+        },
+    ];
+    s.upsert_dossier(v3, UnixMillis(300)).await.unwrap();
+    let after_v3 = s.detail(topic.clone()).await.unwrap().unwrap();
+    assert_eq!(after_v3.dossier.artifacts.len(), 2);
+    assert_eq!(
+        after_v3.dossier.artifacts[0].sha256.as_deref(),
+        Some("b".repeat(64).as_str())
+    );
+
+    // Explicit replace_artifacts clears prior attachments.
+    let mut v4 = dossier("etf-check", DossierSignal::Done, 10.0, 3);
+    v4.title = String::new();
+    v4.summary_md = "Done".into();
+    v4.replace_artifacts = true;
+    s.upsert_dossier(v4, UnixMillis(400)).await.unwrap();
+    let after_v4 = s.detail(topic).await.unwrap().unwrap();
+    assert!(after_v4.dossier.artifacts.is_empty());
 }

@@ -46,6 +46,7 @@ pub(super) const READ: &str = "ReadDossier";
 pub(super) const STAGE: &str = "StageArtifact";
 pub(super) const PREFERENCES: &str = "UpdateDiscoveryPreferences";
 pub(super) const WATCH_SCOPE: &str = "UpdateWatchScope";
+pub(super) const WORKSPACE_MAP: &str = "UpdateWorkspaceMap";
 pub(super) const REGISTER: &str = "RegisterWatch";
 pub(super) const PENDING: &str = "StagePendingAction";
 pub(super) const WORKER_TOOLS: &[&str] = &[
@@ -56,6 +57,7 @@ pub(super) const WORKER_TOOLS: &[&str] = &[
     REGISTER,
     PENDING,
     WATCH_SCOPE,
+    WORKSPACE_MAP,
 ];
 pub(super) const VISIBLE_TOOLS: &[&str] = &[
     COMPLETE,
@@ -69,6 +71,7 @@ pub(super) const VISIBLE_TOOLS: &[&str] = &[
     PENDING,
     PREFERENCES,
     WATCH_SCOPE,
+    WORKSPACE_MAP,
 ];
 mod dossiers;
 pub(super) use dossiers::ScheduleOp;
@@ -86,6 +89,7 @@ mod roots;
 mod watch_inputs;
 pub(in crate::owner) mod watch_scope;
 pub(in crate::owner) mod watches;
+mod workspace_map;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -119,6 +123,7 @@ enum Phase {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum DiscoveryMode {
+    Onboard,
     FollowUp,
     Wander { sources: Vec<String> },
 }
@@ -230,17 +235,57 @@ fn investigation_prompt(
             "Help the user decide in one click. Go beyond warnings. Whenever a low-cost, reversible draft, diff, checklist or brief would help, make it ready to use in the isolated sandbox with StageArtifact and attach its receipt to UpsertDossier.artifacts. Keep original workspace files read-only. FinishNoChange is the expected, healthy outcome when nothing material changed. Never manufacture a report. If relevant source files have not materially changed since the last revision and the user has given no new feedback, call FinishNoChange immediately—do not repeatedly rewrite or polish existing dossiers or staged drafts without new evidence."
         }
     };
-    let draft = format!("{draft} {}", monitoring_prompt(language));
+    let sandbox_and_tools = match language {
+        Language::ZhCn => {
+            "环境边界：原工作区只读；Shell 运行在无网只读沙箱里，绝不要用 Shell 测外网或误报宿主机断网，外部信息请使用已授权的 WebSearch / WebFetch。工具分工：ListDossiers、ReadDossier、StageArtifact、RegisterWatch、UpdateWatchScope、UpdateWorkspaceMap、DiscoveryMemory、Read、Shell、WebFetch、WebSearch 均可在 Code Mode 的 exec 中并发调用；仅 UpsertDossier、FinishNoChange、StagePendingAction 需在顶层直接调用。"
+        }
+        Language::ZhTw => {
+            "環境邊界：原工作區唯讀；Shell 執行於無網唯讀沙箱中，切勿用 Shell 測外網或誤報主機斷網，外部資訊請使用已授權的 WebSearch / WebFetch。工具分工：ListDossiers、ReadDossier、StageArtifact、RegisterWatch、UpdateWatchScope、UpdateWorkspaceMap、DiscoveryMemory、Read、Shell、WebFetch、WebSearch 皆可在 Code Mode 的 exec 內並發呼叫；僅 UpsertDossier、FinishNoChange、StagePendingAction 須於頂層直接呼叫。"
+        }
+        Language::En => {
+            "Environment rules: the workspace is read-only; Shell runs in a network-disabled read-only sandbox—never use Shell to test internet connectivity or claim the host is offline; use authorized WebSearch/WebFetch for external lookups. Tool nesting: ListDossiers, ReadDossier, StageArtifact, RegisterWatch, UpdateWatchScope, UpdateWorkspaceMap, DiscoveryMemory, Read, Shell, WebFetch, and WebSearch are all callable inside Code Mode exec; only UpsertDossier, FinishNoChange, and StagePendingAction must be called directly at top level."
+        }
+    };
+    let draft = format!(
+        "{draft} {} {sandbox_and_tools}",
+        monitoring_prompt(language)
+    );
+    if matches!(mode, DiscoveryMode::Onboard) {
+        let onboard = match language {
+            Language::ZhCn => {
+                "【冷启动专门整理与建图任务（Onboard）】这是该工作区首次全面梳理，目标是建立持久的 WorkspaceMap（通过 UpdateWorkspaceMap）与准确的 WatchScope（通过 UpdateWatchScope），让后续日常巡检既快又准。请按以下步骤高效推进：\n\
+1. 广度普查 + 近期活跃跳点：从上方顶层清单出发（含隐藏点目录和系统应用容器如 Library/Containers、Application Support、AppData），结合只读 Shell 的快速跳点（例如 macOS 用 `mdfind` 查近 14 天活跃文件或按 mtime 排序列目录），直接定位真正高价值的内容根（活跃代码项目、桌面待办脚本、文档/报价/周报目录、即时通讯接收文件目录、本地 AI 工具会话记录等），全程根据现场名称和样本内容自主识别，不要凭空猜测。\n\
+2. 自然防卡死：遇到单链深目录（如多层应用容器下的文档/附件目录）直接钻到具体内容根；遇到超大缓存/归档先让出份额、绝不跑无深度限制的慢速全盘 find；遇到按日期（2026-08/2026-09…）或哈希分桶的重复结构，抽检最新 1–2 份确认用途后，折叠登记为一个稳定父来源并在 recheck_hint 写明复查方法（如“按月分桶，复查只看最新子目录”）。\n\
+3. 边建图边落盘检查点：及时用 UpdateWorkspaceMap 的 upsert_sources 登记每个核验过的高价值来源（写清 kind、summary、recheck_hint、priority、watch_mode），未探完或受限分支用 record_frontier 记明原因，核心监听根和噪声目录同步提交给 UpdateWatchScope（mark_surveyed）。主要板块已探明、余项已记入 frontier 后，调用 UpdateWorkspaceMap(action=\"mark_ready\") 结束冷启动建图。\n\
+4. 首轮即可交付强发现：整理过程中如果核实到明确紧迫的事项（如临近期限、报错脚本、逾期交付物），当轮可直接用 UpsertDossier 产出首批档案（标题须简洁写清「项目/对象 + 核心问题」，切勿用时间戳/更正/撤回开头），最后用 FinishNoChange 收尾。"
+            }
+            Language::ZhTw => {
+                "【冷啟動專門整理與建圖任務（Onboard）】這是該工作區首次全面梳理，目標是建立持久的 WorkspaceMap（透過 UpdateWorkspaceMap）與準確的 WatchScope（透過 UpdateWatchScope），讓後續日常巡檢又快又準。請高效推進：\n\
+1. 廣度普查 + 近期活躍跳點：從上方頂層清單出發（含隱藏點目錄與應用資料容器），搭配唯讀 Shell 的快速跳點（如 macOS 用 `mdfind` 或按 mtime 排序），直接定位高價值內容根（活躍專案、桌面腳本、文件目錄、通訊軟體接收檔案目錄、本地 AI 會話紀錄等）。\n\
+2. 自然防卡死：單鏈深目錄直接鑽到具體內容根；超大快取/歸檔不要跑無限制的慢速全盤 find；按日期或雜湊分桶的重複結構抽檢最新 1–2 份後折疊登記為單一穩定父來源並在 recheck_hint 寫明複查方法。\n\
+3. 邊建圖邊存檢查點：用 UpdateWorkspaceMap 的 upsert_sources 登記已核驗來源、record_frontier 記錄未完分支，並透過 UpdateWatchScope（mark_surveyed）更新監聽與排除範圍；主要板塊探明後呼叫 UpdateWorkspaceMap(action=\"mark_ready\")。\n\
+4. 首輪即可交付強發現：若核實到明確緊迫事項，當輪可直接 UpsertDossier 產出首批檔案（標題須簡潔寫清「專案/對象 + 核心問題」），最後用 FinishNoChange 收尾。"
+            }
+            Language::En => {
+                "[Cold-Start Workspace Onboarding & Mapping (Onboard)] This is a dedicated initial organization run to build a durable WorkspaceMap (via UpdateWorkspaceMap) and accurate WatchScope (via UpdateWatchScope) so all future runs are fast and high-signal:\n\
+1. Broad sweep + recent-activity jump-in: start from the top-level inventory (including dot-dirs and app-data containers like Library/Containers, Application Support, AppData). Use fast read-only Shell jump-ins (e.g. `mdfind` for recently modified files on macOS, or mtime-sorted listings) to jump directly to deep active content roots (active projects, desktop scripts, docs/reports, messaging received files, local AI session histories) and verify them by reading representative samples.\n\
+2. Avoid deep-dir traps naturally: drill all the way through single-child container chains to the real content root; never run unbounded recursive `find` over giant caches; collapse repetitive date/hash buckets (e.g. 2026-08/2026-09/...) into ONE stable parent source with a concise `recheck_hint` (e.g. 'monthly buckets; check newest subdir only').\n\
+3. Checkpoint progress durably: call UpdateWorkspaceMap (`upsert_sources`, `record_frontier`) as you verify areas and sync key includes/exclusions with UpdateWatchScope (`mark_surveyed`). Once primary areas are mapped and remaining blind spots are recorded in `frontier`, call UpdateWorkspaceMap(`action=\"mark_ready\"`).\n\
+4. Deliver strong Day-1 findings: if you verify genuinely urgent issues while mapping, publish initial dossiers right away via UpsertDossier (concise '<Subject>: <Core issue>' title), then end cleanly with FinishNoChange."
+            }
+        };
+        return format!("{onboard}\n\n{draft}");
+    }
     if matches!(mode, DiscoveryMode::Wander { .. }) {
         let wander = match language {
             Language::ZhCn => {
-                "从给出的冷门起点独立探索。结合其他工作区文档或已授权的网页工具，寻找未明说的需求、遗忘的期限或停滞的想法。先形成有证据的发现，再仅在准备调用 UpsertDossier 提交前用 ListDossiers 去重，沿用匹配的 topic_id 和 revision，新主题用 expected_revision 0。默认 quiet。"
+                "从给出的探索起点独立探查（优先遵循地图中的 recheck_hint，避免无深度限制的慢速全盘 find）。核验完每个起点后，调用 UpdateWorkspaceMap(action=\"mark_verified\", paths=[...], material_finding=...) 记录实际核验进度；如发现新来源或子分支，顺手更新地图。结合其他工作区文档、近期对话话题或已授权的 WebSearch/WebFetch，寻找未明说的需求、遗忘的期限或停滞的想法。先形成有证据的发现，再仅在准备调用 UpsertDossier 提交前用 ListDossiers 去重，沿用匹配的 topic_id 和 revision，新主题用 expected_revision 0。默认 quiet。"
             }
             Language::ZhTw => {
-                "從提供的冷門起點獨立探索。結合其他工作區文件或已授權的網頁工具，尋找未說出口的需求、遺忘的期限或停滯的構想。先形成有證據的發現，再僅於準備呼叫 UpsertDossier 提交前用 ListDossiers 去重，沿用符合的 topic_id 和 revision，新主題用 expected_revision 0。預設 quiet。"
+                "從提供的探索起點獨立探查（優先遵循地圖中的 recheck_hint，避免無深度限制的慢速全盤 find）。核驗完每個起點後，呼叫 UpdateWorkspaceMap(action=\"mark_verified\", paths=[...], material_finding=...) 記錄實際核驗進度。結合其他工作區文件、近期對話話題或已授權的 WebSearch/WebFetch，尋找未說出口的需求、遺忘的期限或停滯的構想。先形成有證據的發現，再僅於準備呼叫 UpsertDossier 提交前用 ListDossiers 去重，沿用符合的 topic_id 和 revision，新主題用 expected_revision 0。預設 quiet。"
             }
             Language::En => {
-                "Explore independently from the cold starting points. Cross-check other workspace documents and authorized web tools for unstated needs, forgotten deadlines or stalled ideas. Form a finding from evidence first. Call ListDossiers only just before committing with UpsertDossier to merge duplicates. Reuse a matching topic_id and revision, or use expected_revision 0 for a new topic. Default to quiet."
+                "Explore independently from the starting points (follow any map `recheck_hint` and avoid unbounded recursive `find`). After verifying each target, call UpdateWorkspaceMap(`action=\"mark_verified\"`, `paths=[...]`, `material_finding=...`) so verification timestamps stay accurate; update the map if you discover new sources. Cross-check other workspace documents, recent conversation topics, and authorized WebSearch/WebFetch for unstated needs, forgotten deadlines or stalled ideas. Form a finding from evidence first. Call ListDossiers only just before committing with UpsertDossier to merge duplicates. Reuse a matching topic_id and revision, or use expected_revision 0 for a new topic. Default to quiet."
             }
         };
         return format!("{wander}\n\n{draft}");
@@ -705,7 +750,7 @@ impl Owner {
                 .iter()
                 .filter(|name| {
                     WORKER_TOOLS.contains(&name.as_str())
-                        && (name.as_str() != WATCH_SCOPE || reads_files)
+                        && (!matches!(name.as_str(), WATCH_SCOPE | WORKSPACE_MAP) || reads_files)
                 })
                 .cloned(),
         );
@@ -1102,9 +1147,10 @@ impl Owner {
                 .any(|name| self.discovery_tool_group(name) == DiscoveryToolGroup::History);
         let (mut prompt, sources) = self.discovery_opening(mode, job, allowed_tools).await?;
         let root = std::path::Path::new(&job.approval.target.workspace.path);
-        if let Some(survey) =
-            self.watch_scopes
-                .survey(root, allowed_tools, job.approval.language, now() as i64)
+        if !matches!(mode, DiscoveryMode::Onboard)
+            && let Some(survey) =
+                self.watch_scopes
+                    .survey(root, allowed_tools, job.approval.language, now() as i64)
         {
             prompt.push_str("\n\n");
             prompt.push_str(survey);
@@ -1217,14 +1263,74 @@ impl Owner {
         basis.model = Some(job.approval.accepted_model.clone());
         // Freeze the opening and acknowledge its snapshot in the same Root transaction.
         if !job.input.has_content() || allowed_tools != job.tools.names {
-            let advance = job.mode.is_none()
+            let ws_root = std::path::Path::new(&job.approval.target.workspace.path);
+            let can_read = self.discovery_reads_files(&allowed_tools);
+            let has_map_tool = allowed_tools.iter().any(|t| t == WORKSPACE_MAP);
+            let is_home = self.watch_scopes.home.as_deref() == Some(ws_root);
+            let map_phase = if can_read && has_map_tool {
+                self.scheduler
+                    .workspace_map(ws_root)
+                    .await
+                    .ok()
+                    .map(|(_, map)| map.phase)
+            } else {
+                None
+            };
+            // Trigger dedicated cold-start onboarding on the first scheduled broad run
+            // for a user's $HOME workspace (never hijack a real-time FileChange/Watch wake).
+            let needs_onboard = job.mode.is_none()
+                && fire.source == FireSource::Schedule
+                && fire.intent.body().trim().is_empty()
+                && is_home
+                && map_phase.is_some_and(|p| p != workspace_map::MapPhase::Ready);
+            let advance = !needs_onboard
+                && job.mode.is_none()
                 && fire.source == FireSource::Schedule
                 && fire.intent.body().trim().is_empty()
                 && scheduler::file_change_grant(plan).is_some();
+            let now_ms = UnixMillis(now() as i64);
+            let map_ready = map_phase == Some(workspace_map::MapPhase::Ready);
+            let should_yield_to_wander = if advance {
+                let cycle_due = self.discovery.broad_cycle().await.map_err(reason)? == 3;
+                if cycle_due {
+                    true
+                } else if map_ready {
+                    // Once WorkspaceMap is ready, empty scheduled FollowUp (no pending deltas
+                    // and active dossiers reviewed within 4h) yields its slot to map-driven Wander.
+                    let has_deltas = self
+                        .discovery_changes(
+                            &job.approval,
+                            now_ms,
+                            maka_agent_state::discovery::changes::ChangeQuery::FirstReady,
+                        )
+                        .await
+                        .map(|snap| !snap.deltas.is_empty())
+                        .unwrap_or(false);
+                    if has_deltas {
+                        false
+                    } else {
+                        let floor_review_due = self
+                            .discovery
+                            .oldest_active_dossier_check_at()
+                            .await
+                            .ok()
+                            .flatten()
+                            .is_some_and(|oldest| {
+                                now_ms.0.saturating_sub(oldest.0) >= 4 * 3_600_000
+                            });
+                        !floor_review_due
+                    }
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
             let mode = match job.mode.take() {
                 Some(mode) => mode,
-                None if advance && self.discovery.broad_cycle().await.map_err(reason)? == 3 => {
-                    let sources = if self.discovery_reads_files(&allowed_tools) {
+                None if needs_onboard => DiscoveryMode::Onboard,
+                None if should_yield_to_wander => {
+                    let sources = if can_read {
                         self.wander_sources(&job.approval).await?
                     } else {
                         vec![]
@@ -1242,8 +1348,7 @@ impl Owner {
             let active = mutation(ACTIVE.into(), *revision, job)?;
             let records = self
                 .commit_discovery_writes(
-                    self.discovery
-                        .record_opening(sources, advance, UnixMillis(now() as i64)),
+                    self.discovery.record_opening(sources, advance, now_ms),
                     vec![active],
                 )
                 .await
@@ -1299,6 +1404,7 @@ impl Owner {
             choices: vec![],
             window_at: None,
             artifacts: vec![],
+            replace_artifacts: false,
             linked_task_ids: None,
         };
         self.settle_discovery_with(

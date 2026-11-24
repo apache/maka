@@ -306,20 +306,26 @@ function ChoiceCards(props: {
   busy: boolean;
   onChoose(choice: DossierChoiceItem): void;
 }) {
+  const indexed = computed(() =>
+    props.choices.map((choice, idx) => ({
+      choice,
+      badge: String.fromCharCode(65 + idx),
+    })),
+  );
   const picked = () =>
-    props.chosenKey ? props.choices.find((c) => c.key === props.chosenKey) : undefined;
+    props.chosenKey ? indexed().find((item) => item.choice.key === props.chosenKey) : undefined;
   return (
     <If
       when={Boolean(props.chosenKey)}
       else={
         <If when={props.interactive && props.choices.length > 0}>
           <View style={{ gap: 8, paddingTop: 4 }}>
-            <Each of={props.choices} key={(choice) => choice.key}>
-              {(choice) => (
+            <Each of={indexed()} key={(item) => item.choice.key}>
+              {(item) => (
                 <Button
-                  accessibilityLabel={`${choice().key} ${choice().label}`}
+                  accessibilityLabel={`${item().badge} ${item().choice.label}`}
                   disabled={props.busy}
-                  onPress={inputAction(props.onChoose, choice())}
+                  onPress={inputAction(props.onChoose, item().choice)}
                   style={{
                     ...rowStyle,
                     gap: 12,
@@ -356,15 +362,15 @@ function ChoiceCards(props: {
                         color: C.text,
                       }}
                     >
-                      {choice().key}
+                      {item().badge}
                     </Text>
                   </View>
                   <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
                     <View style={{ ...rowStyle, gap: 6 }}>
                       <Text style={{ ...secondaryTextStyle, fontWeight: '600', color: C.text }}>
-                        {choice().label}
+                        {item().choice.label}
                       </Text>
-                      <If when={choice().recommended}>
+                      <If when={item().choice.recommended}>
                         <View
                           tooltip={textTooltip(() => tr('Dossier choice recommended'))}
                           style={{
@@ -376,8 +382,8 @@ function ChoiceCards(props: {
                         />
                       </If>
                     </View>
-                    <If when={choice().detail}>
-                      <Text style={{ ...mutedText(), lineHeight: 18 }}>{choice().detail}</Text>
+                    <If when={item().choice.detail}>
+                      <Text style={{ ...mutedText(), lineHeight: 18 }}>{item().choice.detail}</Text>
                     </If>
                   </View>
                   <Icon name="nowrap" size={14} color={C.muted} />
@@ -404,8 +410,8 @@ function ChoiceCards(props: {
         <Icon name="statusSuccess" size={13} color={C.success} />
         <Text style={{ ...mutedText(), color: C.text }}>
           {tr('Dossier chosen option', {
-            key: props.chosenKey!,
-            label: picked()?.label ?? props.chosenKey!,
+            key: picked()?.badge ?? props.chosenKey!,
+            label: picked()?.choice.label ?? props.chosenKey!,
           })}
         </Text>
       </View>
@@ -679,18 +685,9 @@ function DossierStickyHeader(props: {
   );
 }
 
-function RevisionDivider(props: { label: string; isLatest: boolean; onLatestY?(y: number): void }) {
+function RevisionDivider(props: { label: string; isLatest: boolean }) {
   return (
-    <View
-      onLayout={
-        props.onLatestY
-          ? ({ bounds }) => {
-              props.onLatestY?.(bounds.origin.y);
-            }
-          : undefined
-      }
-      style={{ ...rowStyle, gap: 10, paddingTop: 2 }}
-    >
+    <View style={{ ...rowStyle, gap: 10, paddingTop: 2 }}>
       <View style={{ flex: 1, height: 0.5, backgroundColor: C.line }} />
       <View
         style={{
@@ -923,11 +920,17 @@ function DossierPane(
                           prefix: true,
                         });
                         return (
-                          <View style={{ gap: 10 }}>
+                          <View
+                            onLayout={
+                              revEntry().isLatest
+                                ? ({ bounds }) => anchorLatest(bounds.origin.y)
+                                : undefined
+                            }
+                            style={{ gap: 10 }}
+                          >
                             <RevisionDivider
                               label={dividerLabel()}
                               isLatest={revEntry().isLatest}
-                              onLatestY={revEntry().isLatest ? anchorLatest : undefined}
                             />
                             <View
                               style={{
@@ -941,11 +944,7 @@ function DossierPane(
                                 gap: 12,
                               }}
                             >
-                              <If
-                                when={
-                                  revEntry().totalRevisions > 1 || rev().title !== detail()!.title
-                                }
-                              >
+                              <If when={rev().title !== detail()!.title}>
                                 <Text
                                   style={{
                                     color: C.text,

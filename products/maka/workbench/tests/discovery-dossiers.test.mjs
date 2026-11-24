@@ -207,7 +207,7 @@ test('fallback choice extraction detects sequential A/B bullets and ignores norm
   assert.equal(choices[0].key, 'A');
   assert.equal(choices[0].label, '有意放弃');
   assert.equal(choices[0].resolves, true);
-  assert.match(formatChoiceDispatch(choices[0]), /UpdatePreferences/);
+  assert.match(formatChoiceDispatch(choices[0]), /UpdateDiscoveryPreferences/);
   assert.equal(choices[1].key, 'B');
   assert.equal(choices[1].resolves, false);
   assert.equal(formatChoiceDispatch(choices[1]), choices[1].instruction);

@@ -126,7 +126,8 @@ export function DossierThread(props: {
   const canSend = () => props.ready && !sending() && draft().trim().length > 0;
   let scroll: ScrollRef | undefined;
   let atEnd = true;
-  let anchored = false;
+  let userInteracted = false;
+  let programmaticUntil = 0;
   let latestAnchorY: number | null = null;
   let alive = true;
   let stopWatch: (() => void) | null = null;
@@ -164,6 +165,12 @@ export function DossierThread(props: {
         const previous = new Set(turns().map((turn) => turn.id));
         turns.set(recent.map((turn) => ({ ...turn, live: live && !previous.has(turn.id) })));
         historyError.set('');
+        if (!live && !userInteracted && recent.length > 0) {
+          programmaticUntil = Date.now() + 250;
+          atEnd = true;
+          awayFromLatest.set(false);
+          scroll?.scrollToEnd({ animated: false });
+        }
       }
     };
     const cancel = observeDiscovery(
@@ -200,6 +207,7 @@ export function DossierThread(props: {
   const scrollToLatest = (animated = true) => {
     atEnd = true;
     awayFromLatest.set(false);
+    programmaticUntil = Date.now() + 300;
     if (latestAnchorY !== null && turns().length === 0) {
       scroll?.scrollTo({
         y: Math.max(0, latestAnchorY - 16),
@@ -212,8 +220,16 @@ export function DossierThread(props: {
 
   const anchorLatest = (y: number) => {
     latestAnchorY = y;
-    if (!anchored && props.hasHistory() && y > 20) {
-      anchored = true;
+    if (userInteracted) return;
+    if (turns().length > 0) {
+      programmaticUntil = Date.now() + 250;
+      atEnd = true;
+      awayFromLatest.set(false);
+      scroll?.scrollToEnd({ animated: false });
+    } else if (props.hasHistory() && y > 20) {
+      programmaticUntil = Date.now() + 250;
+      atEnd = true;
+      awayFromLatest.set(false);
       scroll?.scrollTo({ y: Math.max(0, y - 16), animated: false });
     }
   };
@@ -274,8 +290,13 @@ export function DossierThread(props: {
           style={{ flex: 1, minHeight: 0 }}
           onScroll={({ offset, contentSize, size }) => {
             const distanceFromBottom = contentSize.height - offset.y - size.height;
+            const pastLatest =
+              latestAnchorY !== null && turns().length === 0 && offset.y < latestAnchorY - 120;
             atEnd = distanceFromBottom <= 32;
-            awayFromLatest.set(distanceFromBottom > 140);
+            if (Date.now() > programmaticUntil) {
+              userInteracted = true;
+              awayFromLatest.set(pastLatest || distanceFromBottom > 140);
+            }
           }}
         >
           <View style={{ ...readingColumn, paddingVertical: 18, gap: 14 }}>

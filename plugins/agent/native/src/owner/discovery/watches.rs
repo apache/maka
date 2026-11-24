@@ -35,20 +35,35 @@ pub(super) struct RegisterWatch {
     spec: WatchSpec,
 }
 
+fn deserialize_object_or_json_string<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::de::DeserializeOwned,
+{
+    let value = Value::deserialize(deserializer)?;
+    match value {
+        Value::String(raw) => serde_json::from_str(&raw).map_err(serde::de::Error::custom),
+        other => serde_json::from_value(other).map_err(serde::de::Error::custom),
+    }
+}
+
 #[derive(Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum WatchSpec {
     FileHash {
         target: String,
+        #[serde(deserialize_with = "deserialize_object_or_json_string")]
         predicate: FilePredicate,
     },
     HttpCheck {
         target: String,
+        #[serde(deserialize_with = "deserialize_object_or_json_string")]
         predicate: HttpPredicate,
         interval_secs: Option<u64>,
     },
     Deadline {
         target: Option<String>,
+        #[serde(deserialize_with = "deserialize_object_or_json_string")]
         predicate: DeadlinePredicate,
     },
 }

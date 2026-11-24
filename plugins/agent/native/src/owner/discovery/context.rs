@@ -53,38 +53,169 @@ const HEADER_BYTES: usize = 1600;
 const ROW_LIMIT: usize = 15;
 
 impl Owner {
+    async fn recent_conversation_topics(&self, bot_id: &str) -> Vec<String> {
+        let Ok(page) = crate::service::catalog_page_for_tool(
+            self,
+            &maka_agent_api::contract::List {
+                kind: Some(maka_agent_api::contract::SessionKind::Agent),
+                filter: maka_agent_api::contract::SessionFilter::All,
+                include_archived: false,
+                roots_only: true,
+                position: maka_agent_api::contract::SessionPosition::Start,
+                scope: maka_agent_api::contract::SessionListScope::All,
+                title_query: String::new(),
+            },
+        )
+        .await
+        else {
+            return Vec::new();
+        };
+        page.sessions
+            .into_iter()
+            .filter(|s| s.id != bot_id && !s.title.trim().is_empty())
+            .take(5)
+            .map(|s| clipped(s.title.trim(), 72, false))
+            .collect()
+    }
+
     pub(super) async fn discovery_opening(
         &self,
         mode: &DiscoveryMode,
         job: &Job,
         tools: &[String],
     ) -> Result<(String, OpeningSources), String> {
+        let root = Path::new(&job.approval.target.workspace.path);
+        let workspace_map = self
+            .scheduler
+            .workspace_map(root)
+            .await
+            .map(|(_, m)| m)
+            .unwrap_or_default();
+
+        if matches!(mode, DiscoveryMode::Onboard) {
+            let mut sections = Vec::new();
+            let selected = &job.approval.target.workspace;
+            if let Ok(dir) =
+                workspace::open_workspace(&self.workspace_roots, selected, &self.managed_worktrees)
+                    .await
+            {
+                let reserved = access::reserved_sandbox_floor(&self.store, selected).await;
+                let ceiling = reserved
+                    .ok()
+                    .and_then(|r| match &job.approval.sandbox_ceiling {
+                        Some(c) => r.intersect(c).ok(),
+                        None => Some(r),
+                    });
+                if let Some(maka_sandbox::Sandbox::Managed { filesystem, .. }) = ceiling
+                    && let Ok(policy) = filesystem.compile()
+                {
+                    let root_owned = root.to_path_buf();
+                    if let Ok(Ok(inv)) = tokio::task::spawn_blocking(move || {
+                        workspace_map::onboard_inventory(&root_owned, &dir, &policy)
+                    })
+                    .await
+                    {
+                        sections.push(inv);
+                    }
+                }
+            }
+            let checkpoint = workspace_map.compact_checkpoint(root);
+            if !checkpoint.is_empty() {
+                sections.push(checkpoint);
+            }
+            let excerpt = self.discovery_preferences_excerpt().await?;
+            if !excerpt.is_empty() {
+                sections.push(excerpt);
+            }
+            let topics = self.recent_conversation_topics(&job.bot).await;
+            if !topics.is_empty() {
+                let heading = match job.approval.language {
+                    Language::ZhCn => {
+                        "近期对话主题（可静默留意用户关注方向，切勿因纯闲聊弹窗打扰）"
+                    }
+                    Language::ZhTw => {
+                        "近期對話主題（可靜默留意使用者關注方向，切勿因純閒聊彈窗打擾）"
+                    }
+                    Language::En => {
+                        "Recent conversation topics (quiet interest signal; do not interrupt for chat alone)"
+                    }
+                };
+                sections.push(format!("{heading}\n{}", serde_json::json!(topics)));
+            }
+            return Ok((sections.join("\n\n"), OpeningSources::Onboard));
+        }
+
         if let DiscoveryMode::Wander { sources } = mode {
             let cold = if self.discovery_reads_files(tools) {
                 sources.clone()
             } else {
                 Vec::new()
             };
-            let root = Path::new(&job.approval.target.workspace.path);
             let displayed: Vec<_> = cold
                 .iter()
                 .map(|p| {
-                    let rel = roots::host_path(Path::new(p))
+                    let path = Path::new(p);
+                    let rel = roots::host_path(path)
                         .expect("UTF-8 source")
                         .strip_prefix(root)
                         .expect("authorized source");
-                    clipped(&rel.to_string_lossy(), 360, true)
+                    let rel_str = clipped(&rel.to_string_lossy(), 300, true);
+                    if let Some(branch) = workspace_map.frontier.iter().find(|b| b.path == path) {
+                        format!(
+                            "{rel_str} [frontier: {}]",
+                            clipped(&branch.reason, 80, false)
+                        )
+                    } else if let Some(src) = workspace_map.deepest_source_for(path) {
+                        let hint = if src.recheck_hint.is_empty() {
+                            &src.summary
+                        } else {
+                            &src.recheck_hint
+                        };
+                        format!("{rel_str} [{}]", clipped(hint, 80, false))
+                    } else {
+                        rel_str
+                    }
                 })
                 .collect();
+            let map_driven = workspace_map.phase == workspace_map::MapPhase::Ready
+                || !workspace_map.sources.is_empty()
+                || !workspace_map.frontier.is_empty();
             let label = match job.approval.language {
                 Language::ZhCn => "冷门探索起点",
                 Language::ZhTw => "冷門探索起點",
                 Language::En => "Cold starting points",
             };
-            return Ok((
-                format!("{label}\n{}", serde_json::json!(displayed)),
-                OpeningSources::Wander(cold),
-            ));
+            let mut prompt = format!("{label}\n{}", serde_json::json!(displayed));
+            if map_driven {
+                let excerpt = self.discovery_preferences_excerpt().await?;
+                if !excerpt.is_empty() {
+                    prompt.push_str("\n\n");
+                    prompt.push_str(&excerpt);
+                }
+                let topics = self.recent_conversation_topics(&job.bot).await;
+                if !topics.is_empty() {
+                    let heading = match job.approval.language {
+                        Language::ZhCn => {
+                            "近期对话主题（若与本地或公开线索呼应，可默认静默建档关注，不主动弹窗）"
+                        }
+                        Language::ZhTw => {
+                            "近期對話主題（若與本地或公開線索呼應，可預設靜默建檔關注，不主動彈窗）"
+                        }
+                        Language::En => {
+                            "Recent conversation topics (quietly track recurring interests if relevant; default quiet)"
+                        }
+                    };
+                    prompt.push_str(&format!("\n\n{heading}\n{}", serde_json::json!(topics)));
+                }
+            }
+            let opening_sources = if workspace_map.phase == workspace_map::MapPhase::Ready {
+                // WorkspaceMap tracks real verification via mark_verified instead of
+                // advancing cursors prematurely at turn opening.
+                OpeningSources::Onboard
+            } else {
+                OpeningSources::Wander(cold)
+            };
+            return Ok((prompt, opening_sources));
         }
 
         let changes = if self.discovery_reads_files(tools) {
@@ -105,12 +236,34 @@ impl Owner {
         } else {
             Vec::new()
         };
-        let (mut prompt, displayed_deltas) = header(
-            job.approval.language,
-            Path::new(&job.approval.target.workspace.path),
-            changes,
-            &dossiers,
-        );
+        let (mut prompt, displayed_deltas) =
+            header(job.approval.language, root, changes, &dossiers);
+        // Annotate matched mapped sources for the displayed deltas so FollowUp can follow recheck_hint.
+        if !displayed_deltas.is_empty() && !workspace_map.sources.is_empty() {
+            let mut hints = Vec::new();
+            let mut seen = BTreeSet::new();
+            for delta in &displayed_deltas {
+                if let Some(src) = workspace_map.deepest_source_for(Path::new(&delta.path))
+                    && seen.insert(src.path.clone())
+                {
+                    let rel = src.path.strip_prefix(root).unwrap_or(&src.path);
+                    let note = if src.recheck_hint.is_empty() {
+                        &src.summary
+                    } else {
+                        &src.recheck_hint
+                    };
+                    hints.push(format!(
+                        "- {}: {}",
+                        rel.to_string_lossy(),
+                        clipped(note, 100, false)
+                    ));
+                }
+            }
+            if !hints.is_empty() {
+                prompt.push_str("\n\nMatched map hints:\n");
+                prompt.push_str(&hints.join("\n"));
+            }
+        }
         let excerpt = self.discovery_preferences_excerpt().await?;
         if !excerpt.is_empty() {
             prompt.push_str("\n\n");

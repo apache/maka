@@ -144,8 +144,8 @@ export function formatChoiceDispatch(choice: DossierChoiceItem): string {
   if (!choice.resolves) return base;
   const isCjk = CJK_RE.test(base) || CJK_RE.test(choice.label);
   return isCjk
-    ? `${base}\n\n（说明：该档案已由用户一键关闭并标记为已解决。只需调用 UpdatePreferences 记下这条偏好并一句话确认，不要扫描仓库、运行脚本或查找档案数据库。）`
-    : `${base}\n\n(Note: This dossier has already been closed and marked resolved by the user. Just record the preference with UpdatePreferences and reply with a one-line confirmation—do not scan the workspace, run scripts, or look up dossier storage.)`;
+    ? `${base}\n\n（说明：该档案已由用户一键关闭并标记为已解决。只需调用 UpdateDiscoveryPreferences 记下这条偏好并一句话确认，不要扫描仓库、运行脚本或查找档案数据库。）`
+    : `${base}\n\n(Note: This dossier has already been closed and marked resolved by the user. Just record the preference with UpdateDiscoveryPreferences and reply with a one-line confirmation—do not scan the workspace, run scripts, or look up dossier storage.)`;
 }
 
 export function buildDossierStream(

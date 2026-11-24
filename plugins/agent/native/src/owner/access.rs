@@ -1033,13 +1033,12 @@ impl Access for RunAccess {
                 return Err(ToolError::Failed("Permission boundary changed".into()));
             }
             let owner = self.owner().map_err(ToolError::Failed)?;
-            let grants = owner
+            let mut grants = owner
                 .durable
                 .interactions()
                 .permission_grants(&self.execution, Some(target), basis, source)
                 .await
-                .map_err(|error| ToolError::Persistence(error.to_string()))?;
-            Ok(grants
+                .map_err(|error| ToolError::Persistence(error.to_string()))?
                 .into_iter()
                 .map(|grant| PermissionGrant {
                     approval_id: grant.approval_id,
@@ -1047,7 +1046,37 @@ impl Access for RunAccess {
                     permissions: grant.permissions,
                     scope: grant.scope,
                 })
-                .collect())
+                .collect::<Vec<_>>();
+            // Proactive discovery workers run non-interactively (`approval: Never`).
+            // When the user explicitly approved Web tools in the discovery plan and the
+            // run's network approval ceiling permits egress, grant Web-only access so
+            // read-only WebFetch/WebSearch work while filesystem stays ReadOnly and
+            // Shell remains network-denied.
+            if source == PermissionSource::Web
+                && owner
+                    .scheduler
+                    .investigation_profile(&self.execution.session_id)
+                    .is_some()
+            {
+                let web_allowed = configuration.tools.as_ref().is_some_and(|tools| {
+                    tools
+                        .iter()
+                        .any(|t| matches!(t.as_str(), "WebFetch" | "WebSearch"))
+                });
+                let network = self.spec.network_approval_ceiling().clone();
+                if web_allowed && network != maka_sandbox::Network::Denied {
+                    grants.push(PermissionGrant {
+                        approval_id: None,
+                        request_id: format!("discovery_web_grant_{}", self.execution.run_id),
+                        permissions: maka_sandbox::grant::Permissions {
+                            filesystem: Vec::new(),
+                            network,
+                        },
+                        scope: maka_agent_facts::interaction::PermissionScope::Session,
+                    });
+                }
+            }
+            Ok(grants)
         })
     }
 }
