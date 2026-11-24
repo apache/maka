@@ -708,6 +708,15 @@ fn spent_budget_waits_for_closed_proactive_summary_cleanup_before_completing() {
 
     let now = UnixMillis(1);
     let mut live = Live::default();
+    // Without budget/finish fencing, next() preserves Terminate(Completed) so driver.rs
+    // checks queued steering before waiting on background summary cleanup.
+    let mut normal_turn = view.clone();
+    normal_turn.spec.budget.tokens = None;
+    assert!(matches!(
+        next(&normal_turn, &live, now, None, false),
+        Action::Terminate(Terminal::Completed)
+    ));
+
     live.work.insert(WorkKey::Model(summary));
     assert!(complete_at_budget(&view, &request, now));
     assert!(matches!(

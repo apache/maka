@@ -805,6 +805,7 @@ pub(crate) fn next(
             && attempt.cleanup != maka_plugin_core::operation::OperationCleanup::Confirmed
             && (Some(**id) != view.proactive_summary
                 || (matches!(action, Action::Terminate(Terminal::Completed))
+                    && (view.finish_requested() || complete_at_budget)
                     && (attempt.closed.is_some() || attempt.interrupted.is_some())))
     }) {
         if original.closed.is_none() && original.interrupted.is_none() {

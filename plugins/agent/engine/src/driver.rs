@@ -661,6 +661,11 @@ impl Engine {
                     } else if terminating {
                         action = Action::Idle;
                     }
+                } else if matches!(action, Action::Terminate(Terminal::Completed))
+                    && summary.admission.is_some()
+                    && summary.cleanup != maka_plugin_core::operation::OperationCleanup::Confirmed
+                {
+                    action = reconcile::wait(&view, WaitReason::Model { attempt }, None, now);
                 } else if open
                     && summary.admission.is_none()
                     && !matches!(action, Action::Terminate(_) | Action::Block(_))
