@@ -110,6 +110,10 @@ test('selection captions expose source and preserve unavailable selections', () 
   assert.equal(modelCaption(executor, { kind: 'ready', choice }), 'Shared · Native CLI · Codex');
   assert.equal(modelCaption(executor, { kind: 'loading' }), 'shared');
   assert.equal(
+    modelCaption(executor, { kind: 'loading', label: 'Gemini 4 Neon' }),
+    'Gemini 4 Neon',
+  );
+  assert.equal(
     modelCaption(executor, { kind: 'unavailable', message: '' }),
     'shared · Unavailable',
   );

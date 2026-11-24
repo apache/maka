@@ -66,6 +66,10 @@ pub(super) enum Command {
         owner: String,
         path: String,
     },
+    SetRecentModel {
+        owner: String,
+        model: super::RecentModel,
+    },
     SaveDraft {
         key: DraftKey,
         expected: Option<u64>,
@@ -114,6 +118,7 @@ pub(super) enum Command {
 pub(super) enum Output {
     Unit,
     RecentWorkspaces(Vec<super::RecentWorkspace>),
+    RecentModel(super::RecentModel),
     Draft(Draft),
     Operation(Box<Operation>),
 }
@@ -129,6 +134,9 @@ impl Command {
                     .await
                     .map(Output::RecentWorkspaces)
             }
+            Self::SetRecentModel { owner, model } => super::model::set(connection, owner, model)
+                .await
+                .map(Output::RecentModel),
             Self::SaveDraft {
                 key,
                 expected,

@@ -30,7 +30,7 @@ export type ModelBackend = AgentBackendPreference;
 export type BackendIdentity = ModelBackend | null;
 export type ModelChoice = AgentModelChoice;
 export type ModelDetails =
-  | { kind: 'loading' }
+  | { kind: 'loading'; label?: string | null }
   | { kind: 'unavailable'; message: UiText }
   | { kind: 'ready'; choice: ModelChoice };
 
@@ -132,6 +132,7 @@ export function modelCaption(backend: BackendIdentity, details: ModelDetails): s
   if (backend === null) return tr('Choose a model');
   if (details.kind === 'ready' && selectionForChoice(backend, details.choice))
     return `${details.choice.label} · ${details.choice.sourceName}`;
+  if (details.kind === 'loading' && details.label) return details.label;
   return details.kind === 'unavailable'
     ? tr('{model} · Unavailable', { model: backendName(backend) })
     : backendName(backend);

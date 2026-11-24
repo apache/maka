@@ -50,6 +50,9 @@ import type { WorkspacePullRequestTarget } from '../../../../packages/plugin-sdk
 import {
   backendName,
   nativeModelSelection,
+  sameBackend,
+  sameRoute,
+  selectionForChoice,
 } from '../../../../products/maka/workbench/app/modelSelection';
 import type { UiContext, UiHost } from '../../../../packages/plugin-sdk/src/workbench.js';
 import type { StagedFile } from 'maka/host';
@@ -98,7 +101,12 @@ import {
   tr,
   type MessageKey,
 } from '../../../../products/maka/workbench/app/locale';
-import { loadDraft, searchSessions, type Host } from '../../../../products/maka/workbench/app/host';
+import {
+  loadDraft,
+  searchSessions,
+  type Host,
+  type RecentModel,
+} from '../../../../products/maka/workbench/app/host';
 import { settingsValue } from '../../../../products/maka/workbench/app/settingsOperations';
 import {
   bodyTextStyle,
@@ -234,6 +242,7 @@ type PendingDraft = {
   workspaceLabel: string;
   text: string;
   backend: ModelBackend | null;
+  backendLabel: string | null;
   access: AgentWorkspaceAccess | null;
   requests: boolean | null;
   modelChosen: boolean;
@@ -362,6 +371,24 @@ export function createConversationUi(
     if (platform.idiom === 'terminal' || side || !path || workspace.kind === 'session') return;
     void setRecentWorkspace(path).catch(report);
   };
+  let recentModelWrite = Promise.resolve();
+  const rememberModel = (backend: ModelBackend, label: string | null) => {
+    if (platform.idiom === 'terminal') return;
+    const model: RecentModel = label ? { backend, label } : { backend };
+    const write = recentModelWrite.then(async () => {
+      await host.setRecentModel(model);
+    });
+    recentModelWrite = write.catch(() => {});
+    void write.catch(report);
+  };
+  const readRecentModel = async (): Promise<RecentModel | null> => {
+    await recentModelWrite;
+    try {
+      return await host.recentModel();
+    } catch {
+      return null;
+    }
+  };
   const pendingWorkspace = computed(() => pending()?.workspace ?? null);
   const pendingWorkspaceLabel = computed(() => pending()?.workspaceLabel ?? '');
   const pendingText = computed(() => pending()?.text ?? '');
@@ -424,6 +451,7 @@ export function createConversationUi(
   };
   const pendingRequests = computed(() => pending()?.requests ?? null);
   const pendingBackend = computed(() => pending()?.backend ?? null);
+  const pendingBackendLabel = computed(() => pending()?.backendLabel ?? null);
   const pendingModelChosen = computed(() => pending()?.modelChosen ?? false);
   const pendingModelDetails = signal<ModelDetails>({
     kind: 'unavailable',
@@ -459,41 +487,52 @@ export function createConversationUi(
   const pendingDraftGeneration = signal(0);
   let pendingDefaultEpoch = 0;
   let pendingDefaultRead: Promise<void> | null = null;
+  const refreshPendingModel = async (): Promise<'ready' | 'unavailable' | 'stale'> => {
+    const backend = pendingBackend();
+    const generation = ++pendingModelGeneration;
+    if (!backend) {
+      pendingModelDetails.set({
+        kind: 'unavailable',
+        message: uiMessage('Choose a model.'),
+      });
+      return 'unavailable';
+    }
+    pendingModelDetails.set({ kind: 'loading', label: pendingBackendLabel() });
+    try {
+      const result = await host.query('agent', 'model', { backend });
+      if (!alive || generation !== pendingModelGeneration) return 'stale';
+      if (result.kind === 'ready') {
+        pendingModelDetails.set({ kind: 'ready', choice: result.choice });
+        if (
+          sameBackend(pendingBackend(), backend) &&
+          selectionForChoice(backend, result.choice) &&
+          pendingBackendLabel() !== result.choice.label
+        )
+          updatePending({ backendLabel: result.choice.label });
+        return 'ready';
+      }
+      pendingModelDetails.set({
+        kind: 'unavailable',
+        message: uiMessage('Model unavailable: {model}.', {
+          model: backendName(backend),
+        }),
+      });
+      return 'unavailable';
+    } catch (reason) {
+      if (!alive || generation !== pendingModelGeneration) return 'stale';
+      pendingModelDetails.set({
+        kind: 'unavailable',
+        message: errorText(reason, 'Could not load models.'),
+      });
+      return 'unavailable';
+    }
+  };
   const pendingModel = {
     sessionId: 'pending',
     backend: pendingBackend,
     modelDetails: pendingModelDetails,
     async refreshModel() {
-      const backend = pendingBackend();
-      const generation = ++pendingModelGeneration;
-      if (!backend) {
-        pendingModelDetails.set({
-          kind: 'unavailable',
-          message: uiMessage('Choose a model.'),
-        });
-        return;
-      }
-      pendingModelDetails.set({ kind: 'loading' });
-      try {
-        const result = await host.query('agent', 'model', { backend });
-        if (!alive || generation !== pendingModelGeneration) return;
-        pendingModelDetails.set(
-          result.kind === 'ready'
-            ? { kind: 'ready', choice: result.choice }
-            : {
-                kind: 'unavailable',
-                message: uiMessage('Model unavailable: {model}.', {
-                  model: backendName(backend),
-                }),
-              },
-        );
-      } catch (reason) {
-        if (alive && generation === pendingModelGeneration)
-          pendingModelDetails.set({
-            kind: 'unavailable',
-            message: errorText(reason, 'Could not load models.'),
-          });
-      }
+      await refreshPendingModel();
     },
   };
   let dropFiles: ((event: { uris: string[] }) => void) | null = null;
@@ -948,6 +987,7 @@ export function createConversationUi(
         workspaceLabel: label,
         text: '',
         backend: null,
+        backendLabel: null,
         access: null,
         requests: null,
         modelChosen: false,
@@ -966,24 +1006,46 @@ export function createConversationUi(
       });
       pendingModelInstance.set(null);
       refreshDefaultAccess();
-      pendingDefaultRead = host
-        .query('settings', 'connections', { kind: 'start' })
-        .then((page) => {
-          if (
-            !alive ||
-            pendingDefaultEpoch !== generation ||
-            pendingWorkspace() === null ||
-            pendingBackend() ||
-            page.kind !== 'ready' ||
-            !page.defaultTarget
-          )
-            return;
-          updatePending({
-            backend: { kind: 'model', ...page.defaultTarget, thinkingLevel: null },
+      const canApplyDefault = () =>
+        alive &&
+        pendingDefaultEpoch === generation &&
+        pendingWorkspace() !== null &&
+        !pendingBackend() &&
+        !pendingModelChosen();
+      pendingDefaultRead = (async () => {
+        const saved = await readRecentModel();
+        if (!canApplyDefault()) return;
+        if (saved) {
+          const cachedLabel = saved.label ?? null;
+          updatePending({ backend: saved.backend, backendLabel: cachedLabel });
+          void refreshPendingModel().then((outcome) => {
+            if (
+              outcome !== 'unavailable' ||
+              !alive ||
+              pendingDefaultEpoch !== generation ||
+              pendingWorkspace() === null ||
+              pendingModelChosen() ||
+              pendingSending() ||
+              !sameBackend(pendingBackend(), saved.backend)
+            )
+              return;
+            pendingModelGeneration += 1;
+            updatePending({ backend: null, backendLabel: null });
+            pendingModelDetails.set({
+              kind: 'unavailable',
+              message: uiMessage('Choose a model.'),
+            });
           });
-          return pendingModel.refreshModel();
-        })
-        .catch(report);
+          return;
+        }
+        const page = await host.query('settings', 'connections', { kind: 'start' });
+        if (!canApplyDefault() || page.kind !== 'ready' || !page.defaultTarget) return;
+        updatePending({
+          backend: { kind: 'model', ...page.defaultTarget, thinkingLevel: null },
+          backendLabel: null,
+        });
+        await pendingModel.refreshModel();
+      })().catch(report);
       overlay.set(null);
       focusComposer();
       return;
@@ -2883,8 +2945,24 @@ export function createConversationUi(
                         }}
                         select={async (_instance, backend) => {
                           if (pendingSending()) return;
-                          updatePending({ backend, modelChosen: true });
+                          const preservedLabel = sameRoute(pendingBackend(), backend)
+                            ? pendingBackendLabel()
+                            : null;
+                          updatePending({
+                            backend,
+                            backendLabel: preservedLabel,
+                            modelChosen: true,
+                          });
                           await pendingModel.refreshModel();
+                          if (!alive || !sameBackend(pendingBackend(), backend)) return;
+                          const details = pendingModelDetails();
+                          const label =
+                            details.kind === 'ready' && selectionForChoice(backend, details.choice)
+                              ? details.choice.label
+                              : preservedLabel;
+                          if (label !== pendingBackendLabel())
+                            updatePending({ backendLabel: label });
+                          rememberModel(backend, label);
                         }}
                       />
                     </If>

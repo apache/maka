@@ -20,7 +20,7 @@
 //! View-independent Maka calls. The launcher retains this scope until `close` succeeds.
 mod journal;
 pub use journal::{
-    Draft, DraftAttachment, DraftEdit, DraftKey, DraftReference, Journal, Operation,
+    Draft, DraftAttachment, DraftEdit, DraftKey, DraftReference, Journal, Operation, RecentModel,
     RecentWorkspace, UploadReference,
 };
 use maka_capabilities::call::{Attachments, ReadResource, ResourceEncoding};
@@ -927,6 +927,20 @@ impl Client {
         self.0
             .journal
             .set_recent_workspace(self.workspace_owner().await?, path)
+            .await
+    }
+
+    pub async fn recent_model(&self) -> Result<Option<RecentModel>> {
+        self.0
+            .journal
+            .recent_model(&self.workspace_owner().await?)
+            .await
+    }
+
+    pub async fn set_recent_model(&self, model: RecentModel) -> Result<RecentModel> {
+        self.0
+            .journal
+            .set_recent_model(self.workspace_owner().await?, model)
             .await
     }
 

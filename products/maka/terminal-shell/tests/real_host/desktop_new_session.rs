@@ -2561,10 +2561,127 @@ async fn desktop_workspace_stage_inspector_worktrees_and_fullscreen_review() {
     fixture.finish().await;
 }
 
+async fn desktop_remembers_home_model_across_reopen_and_unavailable_fallback() {
+    let mut fixture = Fixture::open().await;
+    let desktop = Desktop::open(&fixture, &fixture.address).await;
+    desktop.new_draft().await;
+    desktop
+        .press_until(
+            "Choose model and effort",
+            "Use fixture-model-alt · NSH fixture",
+        )
+        .await;
+    desktop.press("Use fixture-model-alt · NSH fixture").await;
+    let saved = desktop
+        .wait("selected home model was not saved", async {
+            loop {
+                if let Some(saved) = desktop.client.recent_model().await.unwrap()
+                    && matches!(
+                        &saved.backend,
+                        maka_agent_facts::executor::BackendPreference::Model { model_id, .. }
+                            if model_id == "fixture-model-alt"
+                    )
+                {
+                    break saved;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
+    assert_eq!(saved.label.as_deref(), Some("fixture-model-alt"));
+    assert_eq!(desktop.sessions().await.len(), 1);
+
+    let desktop = desktop
+        .restart(&fixture, nsh_core::platform::Appearance::Dark)
+        .await;
+    desktop.target_after(None).await;
+    desktop.type_text("HOME_MODEL_REMEMBERED").await;
+    desktop.submit().await;
+    let request = desktop.request(&mut fixture).await;
+    assert_eq!(
+        request.body["model"], "fixture-model-alt",
+        "{}",
+        request.body
+    );
+    desktop
+        .wait("remembered-model message did not finish", request.finish())
+        .await;
+
+    desktop
+        .press_until("Choose model and effort", "Use fixture-model · NSH fixture")
+        .await;
+    desktop.press("Use fixture-model · NSH fixture").await;
+    desktop
+        .wait("existing session did not switch to fixture-model", async {
+            loop {
+                let sessions = desktop.sessions().await;
+                let created = sessions
+                    .iter()
+                    .find(|session| session["id"] != fixture.session)
+                    .unwrap();
+                if created["backend"]["modelId"] == "fixture-model" {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
+    assert_eq!(
+        desktop.client.recent_model().await.unwrap(),
+        Some(saved.clone())
+    );
+
+    let unavailable = maka_app_client::RecentModel {
+        backend: maka_agent_facts::executor::BackendPreference::Executor {
+            selection: maka_agent_facts::executor::Selection {
+                executor: "external".into(),
+                settings: maka_agent_facts::executor::Settings {
+                    runtime: Some("antigravity".into()),
+                    model: Some("gemini-4-neon".into()),
+                    thinking_level: Some(
+                        maka_agent_facts::executor::Effort::try_from("high".to_owned()).unwrap(),
+                    ),
+                },
+            },
+        },
+        label: Some("Gemini 4 Neon".into()),
+    };
+    desktop
+        .client
+        .set_recent_model(unavailable.clone())
+        .await
+        .unwrap();
+    let desktop = desktop
+        .restart(&fixture, nsh_core::platform::Appearance::Dark)
+        .await;
+    desktop.target_after(None).await;
+    desktop.type_text("UNAVAILABLE_HOME_MODEL").await;
+    desktop
+        .retry(
+            "unavailable remembered model did not fall back to Choose a model",
+            || !desktop.controls("Manage models").is_empty(),
+            || {
+                if let [composer] = desktop.controls("Focus message composer").as_slice() {
+                    desktop.press_at(composer.center());
+                }
+                desktop.key("enter", false);
+            },
+        )
+        .await;
+    assert_eq!(
+        desktop.client.recent_model().await.unwrap(),
+        Some(unavailable)
+    );
+
+    desktop.close().await;
+    fixture.finish().await;
+}
+
 /// Native cases run on the process main thread, required by AppKit.
 pub(crate) const CASES: &[&str] = &[
     "desktop_room_reply_wakes_an_agent_without_mixing_drafts",
     "desktop_remembers_folders_without_restoring_unsent_drafts",
+    "desktop_remembers_home_model_across_reopen_and_unavailable_fallback",
     "desktop_composer_click_and_ime_follow_the_text_after_a_mention",
     "desktop_composer_previews_markdown_and_sends_its_source",
     "desktop_creates_only_on_first_submission_and_preserves_the_confirmed_snapshot",
@@ -2592,6 +2709,9 @@ pub(crate) fn run(name: &str) {
         }
         "desktop_remembers_folders_without_restoring_unsent_drafts" => {
             runtime.block_on(desktop_remembers_folders_without_restoring_unsent_drafts())
+        }
+        "desktop_remembers_home_model_across_reopen_and_unavailable_fallback" => {
+            runtime.block_on(desktop_remembers_home_model_across_reopen_and_unavailable_fallback())
         }
         "desktop_composer_click_and_ime_follow_the_text_after_a_mention" => {
             runtime.block_on(desktop_composer_click_and_ime_follow_the_text_after_a_mention())
