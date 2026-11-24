@@ -290,6 +290,96 @@ fn without_the_terminals_colors_the_state_marks_are_not_bands() {
     }
 }
 
+/// Buttons whose fill comes from a state of their own: a hover style with
+/// none at rest, a press style with none at rest, and one filled at rest
+/// whose hover style would step further.
+const STYLED: &str = r##"
+    import { mount, View, Text } from "nsh";
+    import { Button } from "nsh/base";
+    mount(() => <View style={{ gap: 16 }}>
+        <Button accessibilityLabel="Hover" onPress={() => {}}
+            style={{ paddingHorizontal: 8 }}
+            hoverStyle={{ backgroundColor: "#3f3f46" }}>
+            <Text>Hover</Text></Button>
+        <Button accessibilityLabel="Press" onPress={() => {}}
+            style={{ paddingHorizontal: 8 }}
+            activeStyle={{ backgroundColor: "#3f3f46" }}>
+            <Text>Press</Text></Button>
+        <Button accessibilityLabel="Filled" onPress={() => {}}
+            style={{ backgroundColor: "#3f3f46", paddingHorizontal: 8 }}
+            hoverStyle={{ backgroundColor: "#52525b" }}>
+            <Text>Filled</Text></Button>
+        <Text>ready</Text>
+    </View>);
+"##;
+
+#[test]
+fn without_the_terminals_colors_a_state_fill_is_not_a_band() {
+    for depth in [ColorDepth::TrueColor, ColorDepth::Ansi256] {
+        let code = nsh_bundler::compile_module("App.tsx", STYLED, &[]).unwrap();
+        let (mut view, rx) = surface_at(depth);
+        let mut terminal = Terminal::new(TestBackend::new(40, 8)).unwrap();
+        view.load(Bundle::source(code)).unwrap();
+        draw_until(&mut view, &mut terminal, &rx, "ready");
+        let buffer = terminal.backend().buffer();
+        let hover = at(buffer, "Hover");
+        let press = at(buffer, "Press");
+        let filled = at(buffer, "Filled");
+        // Unfilled at rest, unfilled on screen.
+        for at in [hover, press] {
+            assert_eq!(buffer[at].bg, Color::Reset, "{depth:?}: at rest at {at:?}");
+        }
+        assert_eq!(
+            buffer[filled].bg,
+            Color::DarkGray,
+            "{depth:?}: filled at rest"
+        );
+        // A neutral hover style is no band: the button keeps its resting
+        // look, as the terminal gave no colors for a hover mark.
+        assert_eq!(
+            view.handle(mouse(MouseKind::Move, hover.0, hover.1)),
+            Handled::Yes
+        );
+        draw_until_still(&mut view, &mut terminal, &rx);
+        let buffer = terminal.backend().buffer();
+        assert_eq!(
+            buffer[hover].bg,
+            Color::Reset,
+            "{depth:?}: hovered, no band"
+        );
+        assert_eq!(buffer[(hover.0 - 1, hover.1)].bg, Color::Reset, "{depth:?}");
+        assert_eq!(buffer[hover].fg, Color::Reset, "{depth:?}: its own ink");
+        assert!(!buffer[hover].modifier.contains(Modifier::REVERSED));
+        // A button filled at rest keeps that fill on hover.
+        assert_eq!(
+            view.handle(mouse(MouseKind::Move, filled.0, filled.1)),
+            Handled::Yes
+        );
+        draw_until_still(&mut view, &mut terminal, &rx);
+        assert_eq!(
+            terminal.backend().buffer()[filled].bg,
+            Color::DarkGray,
+            "{depth:?}: keeps its fill"
+        );
+        // Pressed, it is reverse video: the fill of its press style drops
+        // and its label keeps no dim.
+        view.handle(mouse(MouseKind::Down(MouseButton::Left), press.0, press.1));
+        draw_while(&mut view, &mut terminal, &rx, |buffer| {
+            buffer[press].modifier.contains(Modifier::REVERSED)
+        });
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[press].bg, Color::Reset, "{depth:?}: no band");
+        assert_eq!(buffer[(press.0 - 1, press.1)].bg, Color::Reset, "{depth:?}");
+        assert_eq!(buffer[press].fg, Color::Reset, "{depth:?}: reversed");
+        assert!(
+            !buffer[press].modifier.contains(Modifier::DIM),
+            "{depth:?}: its label reads"
+        );
+        view.handle(mouse(MouseKind::Up(MouseButton::Left), press.0, press.1));
+        draw_until_still(&mut view, &mut terminal, &rx);
+    }
+}
+
 #[test]
 fn a_disabled_control_is_struck_through_where_dim_is_the_only_gray() {
     for depth in [ColorDepth::Ansi16, ColorDepth::Monochrome] {

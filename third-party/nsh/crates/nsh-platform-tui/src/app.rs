@@ -2529,12 +2529,7 @@ impl AppView {
             let page =
                 crate::palette::Ground::page(self.environment.color_scheme, capabilities.colors)
                     .with_ramp(ramp);
-            let bands = crate::palette::Bands::new(
-                self.environment.color_scheme,
-                capabilities.colors,
-                capabilities.background_color,
-                capabilities.foreground_color,
-            );
+            let bands = crate::palette::Bands::new(capabilities.colors);
             let look = render::Look {
                 cells: self.options.cells,
                 page,

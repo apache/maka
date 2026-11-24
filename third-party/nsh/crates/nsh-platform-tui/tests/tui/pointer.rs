@@ -33,10 +33,11 @@ fn hover_styles_and_events_follow_the_pointer_and_clear_outside_the_surface() {
     assert_ne!(rest, Color::Reset, "the fill at rest");
     view.handle(mouse(MouseKind::Move, 1, 0));
     draw_until(&mut view, &mut terminal, &rx, "inside");
-    // A hovered view keeps the fill the app gave it: with no background
-    // from the terminal there is no band to mix, and a tone's color is
-    // drawn at truecolor, so the app's hover fill shows.
-    let hovered = Color::Rgb(0xef, 0x44, 0x44);
+    // A hovered view keeps the fill it has at rest: with no background
+    // from the terminal there is no band to mix, and the app's own hover
+    // fill would be a step it cannot take without inventing one.
+    let hovered = Color::Rgb(0x12, 0x34, 0x56);
+    assert_eq!(hovered, rest, "its resting fill");
     for (x, y) in [(0, 0), (9, 1)] {
         assert_eq!(terminal.backend().buffer()[(x, y)].bg, hovered, "{x},{y}");
     }

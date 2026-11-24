@@ -827,20 +827,33 @@ impl Painter<'_> {
             && view.input.is_none()
             && !edges.any()
             && !(layer.overlay && !layer.boxed);
+        // A terminal that did not tell its colors has no hover band
+        // (`Bands::new`), so the app's own hover fill (its raised step)
+        // would show as a bandless gray across a control that is unfilled
+        // at rest. A hovered control is drawn with the fill it has at rest;
+        // one filled at rest keeps that fill. A state with a mark of its own
+        // (focus, press, a selection) is not a hover.
+        let states = shown_states(view, self.tree.pointer_focus);
+        let hovering = parent.ramp.is_none()
+            && self.bands.hover.is_none()
+            && states & state::HOVERED != 0
+            && states & (state::FOCUSED | state::PRESSED) == 0
+            && !banded(view);
+        let bandless_source = if hovering { view.rest_fill } else { fill };
         let bandless_fill = bandless
             .then(|| {
                 // A swatch's Cells keep their own colors, as with surfaces.
                 if picture {
-                    palette::bandless_swatch(fill, parent)
+                    palette::bandless_swatch(bandless_source, parent)
                 } else {
-                    palette::bandless_fill(fill, parent)
+                    palette::bandless_fill(bandless_source, parent)
                 }
             })
             .flatten();
         let bandless_reversed = bandless
             && small
             && parent.depth == crate::ColorDepth::Monochrome
-            && palette::surface(fill, parent) != Surface::None;
+            && palette::surface(bandless_source, parent) != Surface::None;
         let mut framed = None;
         // The line a frame drawn around the box puts on its right: the
         // Cell after its last column.
@@ -2732,7 +2745,7 @@ fn focused_field_in(tree: &Mounter, id: NodeId, depth: usize) -> bool {
 /// What state marks draw with besides modifiers.
 #[derive(Clone, Copy)]
 struct Marks {
-    /// The hover and press bands.
+    /// The bandless hover band (the 16 colors' gray; none else).
     bands: Bands,
     /// The color of a control whose fill stands out (a primary button):
     /// its accent, or the default foreground.
@@ -2906,10 +2919,12 @@ fn mark_state(
             focus_reverse(buffer, inner, marks.mono, !row);
         }
     } else if pressed && !selected {
-        match marks.bands.press {
-            Some(band) => fill(buffer, visible, band),
-            None => label(buffer, inner, Modifier::REVERSED),
-        }
+        // A press is reverse video, as a selection is: the fill under it
+        // (a neutral `activeStyle`) would be a band the label fades into.
+        clear_fill(buffer, visible, marks.neutral_fill);
+        label(buffer, inner, Modifier::REVERSED);
+        // Dim text on that fill would barely read reversed.
+        drawn(buffer, inner, |_| {});
     } else if hovered
         && !selected
         && let Some(band) = marks.bands.hover
