@@ -70,13 +70,14 @@ import {
   Canvas,
   cleanup,
   computed,
+  createAnimatedValue,
   effect,
   inputAction,
+  List,
   signal,
   Text,
   untracked,
   View,
-  List,
 } from 'nsh';
 import type { ListRef, ReadonlyListSource, ViewRef } from 'nsh';
 import { Button } from 'nsh/base';
@@ -227,6 +228,7 @@ import {
 import {
   groupWork,
   TurnPanel,
+  liveActivityTitle,
   TurnSummary,
 } from '../../../../products/maka/workbench/app/TurnPanel';
 import { turnImages } from '../../../../products/maka/workbench/app/ToolImage';
@@ -364,6 +366,8 @@ type ConversationProps = {
     text: string,
     send: boolean,
   ): Promise<boolean>;
+  /** The message this conversation was opened to send, before `takePrefill` takes it. */
+  firstMessage?(): { text: string; quotes?: readonly QuoteRef[] } | null;
   /** Text for an empty draft once it loads, taken once (a fork made to edit or regenerate). */
   takePrefill?(available: boolean): {
     text: string;
@@ -583,8 +587,31 @@ export function Conversation(props: ConversationProps) {
   // row took over.
   const settledSends = signal<ReadonlySet<string>>(new Set());
   const startsRun = (frozen: FrozenSend) => frozen.selection.expectedRunId === undefined;
+  // A conversation opened to send a message shows it from its first frame, while
+  // its draft and model are still being read; the send itself takes over from it.
+  const opening = signal(props.firstMessage?.() ?? null);
+  // Opened to send, the conversation comes in over the page it was sent from
+  // instead of replacing it in one frame.
+  const arriving = createAnimatedValue(untracked(opening) !== null && !reduceMotion() ? 0 : 1);
+  void arriving.timing(1, { duration: 200, easing: 'easeOut' });
+  cleanup(() => arriving.stop());
   const outgoing = computed<Row[]>(() => {
     const freezing = freezeState();
+    const first = opening();
+    if (first !== null)
+      return [
+        {
+          key: 'pending/local/opening',
+          quotes: first.quotes ? [...first.quotes] : [],
+          messageId: 'local/opening',
+          field: 'body',
+          role: 'user',
+          text: first.text,
+          // The whole text is here, so the row is laid out as its saved message will be.
+          prefix: true,
+          attachments: [],
+        },
+      ];
     return unsettledSends(
       freezing.kind === 'reserving' ? freezing.frozen : undefined,
       activeSends(),
@@ -598,6 +625,7 @@ export function Conversation(props: ConversationProps) {
         field: 'body',
         role: 'user',
         text: frozen.text,
+        prefix: true,
         attachments: frozen.files.map(
           (file): AgentHistoryAttachment => ({
             name: file.name,
@@ -1080,6 +1108,24 @@ export function Conversation(props: ConversationProps) {
   // A retry or a child run keeps the run at work; an approval has its own card.
   const runAtWork = () =>
     run() === 'running' || (run() === 'waiting' && quietWaits(execution()).length > 0);
+  // A message that starts a run is accepted a moment before the run is reported:
+  // the conversation says it is at work through that moment too.
+  const starting = signal(false);
+  let startingSeen = false;
+  effect(() => {
+    // Over once the run is at work, or has come and gone without being.
+    if (runAtWork() || (startingSeen && runId() === null)) {
+      starting.set(false);
+      startingSeen = false;
+    } else if (runId() !== null) startingSeen = true;
+  });
+  effect(() => {
+    if (!starting()) return;
+    // A run that never comes must not leave the row behind.
+    const timer = setTimeout(() => starting.set(false), 15_000);
+    cleanup(() => clearTimeout(timer));
+  });
+  const atWork = () => runAtWork() || starting() || outgoing().length > 0;
   const chatDisplaySections = computed(() =>
     projectionSections().map((section) => {
       const cache = chatSections.get(section);
@@ -1157,7 +1203,7 @@ export function Conversation(props: ConversationProps) {
   const ordinaryChatSections = computed(() => {
     const sections = chatDisplaySections();
     // A message on its way out is answered by the same row a run at work shows.
-    if (!runAtWork() && outgoing().length === 0) return sections;
+    if (!atWork()) return sections;
     const running = runTurn();
     const headed =
       running !== null &&
@@ -1187,12 +1233,7 @@ export function Conversation(props: ConversationProps) {
     // this row in place instead of arriving above an already shown reply.
     const working = (turnId: string | undefined) => {
       const running = runTurn();
-      if (
-        !(runAtWork() || outgoing().length > 0) ||
-        workingShown ||
-        (turnId !== undefined && turnId !== running)
-      )
-        return;
+      if (!atWork() || workingShown || (turnId !== undefined && turnId !== running)) return;
       const headed = result.some(
         (item) =>
           running !== null &&
@@ -3317,7 +3358,11 @@ export function Conversation(props: ConversationProps) {
       } else {
         sent = await confirmSend(client, id);
       }
-      if (alive) settledSends.set(new Set(settledSends()).add(id));
+      if (alive)
+        batch(() => {
+          if (startsRun(frozen) && !runAtWork()) starting.set(true);
+          settledSends.set(new Set(settledSends()).add(id));
+        });
       if (alive)
         settleReply(
           sent.reply,
@@ -4456,6 +4501,7 @@ export function Conversation(props: ConversationProps) {
     untracked(() => {
       batch(() => {
         autoSend.set(null);
+        opening.set(null);
         if (pending.first || draft() === pending.text)
           void send(pending.text, undefined, pending.first);
       });
@@ -4497,6 +4543,7 @@ export function Conversation(props: ConversationProps) {
         draftReady.set(true);
         const empty = !hasComposerContent(stored.text, stored.attachments, stored.quotes);
         const prefill = props.takePrefill?.(empty) ?? null;
+        if (!empty || !prefill?.send) opening.set(null);
         if (prefill) {
           try {
             if (empty) {
@@ -4719,6 +4766,26 @@ export function Conversation(props: ConversationProps) {
                 row={currentRow}
                 expanded={() => turnExpanded(turn())}
                 canFold={() => workFold(turn()) !== 'unavailable'}
+                doing={() =>
+                  initial.turnKey === runTurn()
+                    ? liveActivityTitle(
+                        activity(),
+                        latestToolActivity(
+                          toolActivity().filter((item) =>
+                            groups().some((group) => group.toolIds.includes(item.toolUseId)),
+                          ),
+                          runId(),
+                          runTurn(),
+                        ),
+                      )
+                    : null
+                }
+                thought={() => {
+                  const live = activity();
+                  return initial.turnKey === runTurn() && live.kind === 'thinking' && live.rowId
+                    ? currentRow(live.rowId)?.text.trim() || null
+                    : null;
+                }}
                 images={{
                   sessionId,
                   through: () => latestKnown,
@@ -5102,10 +5169,13 @@ export function Conversation(props: ConversationProps) {
         flexShrink: 0,
         minHeight: 0,
         backgroundColor: C.panel,
+        opacity: arriving,
       }}
     >
       <Header
-        title={title() || tr('Untitled conversation')}
+        title={
+          title() === sessionId ? tr('New conversation') : title() || tr('Untitled conversation')
+        }
         workspace={workspace()}
         commands={props.commands}
         browser={props.browser()}

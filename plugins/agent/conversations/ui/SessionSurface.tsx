@@ -2283,7 +2283,11 @@ export function createConversationUi(
     ),
   );
   const sessionHandle: ConversationSessionHandle = {
-    title: () => handle()?.title() ?? null,
+    // Until its title is read, a conversation answers with its own id.
+    title: () => {
+      const title = handle()?.title() ?? null;
+      return title === selected() ? null : title;
+    },
     floatingComposer: () =>
       selected() === null ? null : (
         <StageFloatingComposer
@@ -2804,6 +2808,10 @@ export function createConversationUi(
                     await changeBrowsedSession(action, id());
                   }}
                   edit={(action, text, send) => changeBrowsedSession(action, id(), { text, send })}
+                  firstMessage={() => {
+                    const prefill = prefills.get(id());
+                    return prefill?.send ? prefill : null;
+                  }}
                   takePrefill={(available: boolean) => {
                     const prefill = prefills.get(id()) ?? null;
                     prefills.delete(id());

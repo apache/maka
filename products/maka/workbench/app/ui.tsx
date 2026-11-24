@@ -360,6 +360,10 @@ export function Disclosure(props: {
   reserveChevron?: boolean;
   /** On the desktop, what the row is, in place of the chevron. */
   icon?: Parameters<typeof Icon>[0]['name'];
+  /** On the desktop, a row without an icon keeps the icon's place empty instead of a chevron. */
+  blank?: boolean;
+  /** On the desktop, a row with neither icon nor chevron: its label starts at its edge. */
+  plain?: boolean;
   /** Draws what stands in place of `icon`, for a row whose icon moves. */
   mark?: () => JSX.Element;
   terminalInset?: number;
@@ -369,6 +373,7 @@ export function Disclosure(props: {
 }) {
   const icon = () => (platform.idiom === 'terminal' ? undefined : props.icon);
   const marked = computed(() => props.mark !== undefined);
+  const plain = () => platform.idiom !== 'terminal' && props.plain === true;
   return (
     <View
       style={{
@@ -399,24 +404,26 @@ export function Disclosure(props: {
         activeStyle={quietActiveStyle()}
         focusStyle={quietFocusStyle()}
       >
-        <If
-          when={icon()}
-          else={
-            <If
-              when={props.foldable !== false}
-              else={
-                // Nested rows can align their labels with foldable siblings.
-                <If when={platform.idiom !== 'terminal' && props.reserveChevron !== false}>
-                  <View style={{ width: 16, height: 16 }} />
-                </If>
-              }
-            >
-              <DisclosureChevron open={props.open} />
+        <If when={!plain()}>
+          <If
+            when={icon()}
+            else={
+              <If
+                when={props.foldable !== false && !(props.blank && platform.idiom !== 'terminal')}
+                else={
+                  // Nested rows can align their labels with foldable siblings.
+                  <If when={platform.idiom !== 'terminal' && props.reserveChevron !== false}>
+                    <View style={{ width: 16, height: 16 }} />
+                  </If>
+                }
+              >
+                <DisclosureChevron open={props.open} />
+              </If>
+            }
+          >
+            <If when={marked()} else={<Icon name={icon()!} color={C.muted} />}>
+              {props.mark?.()}
             </If>
-          }
-        >
-          <If when={marked()} else={<Icon name={icon()!} color={C.muted} />}>
-            {props.mark?.()}
           </If>
         </If>
         {props.children}

@@ -19,7 +19,14 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { MARK_SAMPLES, MARK_STROKES, strokeAt, thoughtTail } from '../app/thinkingMark.ts';
+import {
+  freshWords,
+  markPhase,
+  MARK_SAMPLES,
+  MARK_STROKES,
+  strokeAt,
+  thoughtTail,
+} from '../app/thinkingMark.ts';
 
 test('no stroke of the thinking mark jumps between samples, at any phase', () => {
   for (const index of MARK_STROKES.keys())
@@ -32,9 +39,10 @@ test('no stroke of the thinking mark jumps between samples, at any phase', () =>
         assert.ok(Math.abs(after.turn - before.turn) < 90, `turn of ${index} at ${at}, ${phase}`);
         assert.ok(Math.hypot(after.x - before.x, after.y - before.y) < 3);
       }
-      // The cycle starts over where it ended: in place, a whole turn on.
+      // The cycle starts over where it ended: in place, half a turn on.
       const [first, last] = [samples[0], samples.at(-1)];
-      assert.ok(Math.abs(Math.abs(last.turn - first.turn) - 360) < 1e-9);
+      assert.ok(Math.abs(Math.abs(last.turn - first.turn) - 180) < 1e-9);
+      assert.ok(Math.abs(last.scale - first.scale) < 1e-9);
       assert.ok(Math.hypot(last.x - first.x, last.y - first.y) < 1e-9);
       assert.ok(Math.abs(last.opacity - first.opacity) < 1e-9);
     }
@@ -56,4 +64,44 @@ test('thoughtTail strips Markdown marks without altering inline code', () => {
   );
   assert.equal(thoughtTail('`*`'), '*');
   assert.equal(thoughtTail('**Checking** the `price` now *'), 'Checking the price now ');
+});
+
+test('the thinking mark stands whole for a good part of every cycle', () => {
+  let whole = 0;
+  for (let at = 0; at < MARK_SAMPLES; at += 1)
+    if ([...MARK_STROKES.keys()].every((index) => strokeAt(index, at / MARK_SAMPLES).opacity === 1))
+      whole += 1;
+  assert.ok(whole / MARK_SAMPLES > 0.2);
+  // Apart, the strokes are never all far off together: the mark does not blink.
+  for (let at = 0; at < MARK_SAMPLES; at += 1)
+    assert.ok(
+      [...MARK_STROKES.keys()].some((index) => strokeAt(index, at / MARK_SAMPLES).opacity > 0.5),
+    );
+});
+
+test('the newest words of a thought are told from the rest, in any script', () => {
+  assert.deepEqual(freshWords('one two three four five six'), {
+    settled: 'one two ',
+    fresh: ['three ', 'four ', 'five ', 'six'],
+  });
+  assert.deepEqual(freshWords('对比资金流向和新闻'), {
+    settled: '对比',
+    fresh: ['资金', '流向', '和新', '闻'],
+  });
+  assert.deepEqual(freshWords('hi'), { settled: '', fresh: ['hi'] });
+});
+
+test('a mark begins with its strokes arriving, and one that takes its place carries on', () => {
+  const first = markPhase(10_000);
+  assert.ok(Math.abs(first.phase - 0.36) < 1e-9);
+  // The next step's mark is shown before the last one goes, or just after.
+  const second = markPhase(11_000);
+  assert.ok(Math.abs(second.phase - 0.61) < 1e-9);
+  first.gone(11_000);
+  second.gone(11_100);
+  const third = markPhase(11_300);
+  assert.ok(Math.abs(third.phase - 0.685) < 1e-9);
+  third.gone(12_000);
+  // After a pause with no mark, the next one begins anew.
+  assert.ok(Math.abs(markPhase(20_000).phase - 0.36) < 1e-9);
 });
