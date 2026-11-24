@@ -28,13 +28,14 @@ import {
   bodyTextStyle,
   captionTextStyle,
   controlDisabledStyle,
-  controlFocusStyle,
   controlStyle,
   inputBorderRadius,
   inputTextStyle,
+  isDark,
   C,
   floatingStyle,
   menuRowHoverStyle,
+  quietFocusStyle,
 } from './ui';
 
 export function RootUiSettings(props: { owner: RootUiSettingsOwner }) {
@@ -78,13 +79,22 @@ export function RootUiSettings(props: { owner: RootUiSettingsOwner }) {
                 paddingLeft: platform.idiom === 'terminal' ? 0 : 10,
                 paddingRight: platform.idiom === 'terminal' ? 0 : 6,
                 borderRadius: 8,
-                backgroundColor: platform.idiom === 'terminal' ? undefined : C.raised,
+                backgroundColor: platform.idiom === 'terminal' ? undefined : C.cardRaised,
                 flexDirection: 'row',
                 gap: 6,
                 alignItems: 'center',
               }}
-              hoverStyle={{ backgroundColor: C.pressed }}
-              focusStyle={controlFocusStyle()}
+              hoverStyle={
+                platform.idiom !== 'terminal' && isDark()
+                  ? { opacity: 0.82 }
+                  : { backgroundColor: C.pressed }
+              }
+              activeStyle={
+                platform.idiom !== 'terminal' && isDark()
+                  ? { opacity: 0.72 }
+                  : { backgroundColor: C.pressed }
+              }
+              focusStyle={quietFocusStyle()}
               disabledStyle={controlDisabledStyle}
             >
               <Text style={{ ...captionTextStyle, lineHeight: 20, color: C.text }}>{title()}</Text>

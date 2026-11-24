@@ -359,7 +359,7 @@ function Pairing({ owner }: Props) {
           trailing={
             <View
               style={{
-                backgroundColor: C.raised,
+                backgroundColor: C.cardRaised,
                 borderRadius: 8,
                 paddingHorizontal: 14,
                 paddingVertical: 8,

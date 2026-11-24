@@ -2389,6 +2389,84 @@ mod tests {
             1
         );
     }
+
+    #[test]
+    fn settings_page_shell_navigation_and_terminal_folding() {
+        let mut app = fixture("models-settings.tsx");
+        app.set_viewport(Size::new(px(1120.0), px(900.0))).unwrap();
+        app.press_key("f7").unwrap();
+        app.wait_for("label:Edit connection OpenAI").unwrap();
+        assert!(!app.screen().matches("label:Close settings").unwrap());
+
+        // Enter nested model page, verify real ModalDialog Escape closes only the dialog.
+        app.press("label:Edit connection OpenAI").unwrap();
+        app.wait_for("label:Edit model gpt-4.1").unwrap();
+        app.press("label:Edit model gpt-4.1").unwrap();
+        app.wait_for("label:Connection default reasoning effort")
+            .unwrap();
+        app.press("label:Associate catalog model").unwrap();
+        app.wait_for("label:Search catalog models").unwrap();
+        app.press_key("escape").unwrap();
+        assert!(app.settle());
+        assert!(!app.screen().matches("label:Search catalog models").unwrap());
+        assert!(
+            app.screen()
+                .matches("label:Connection default reasoning effort")
+                .unwrap()
+        );
+
+        // Dirty draft: Escape prompts Discard unsaved changes; second Escape keeps editing.
+        app.press("label:Use provider reasoning efforts: On")
+            .unwrap();
+        app.wait_for("label:Use provider reasoning efforts: Off")
+            .unwrap();
+        app.press_key("escape").unwrap();
+        app.wait_for("text:Discard unsaved changes?").unwrap();
+        app.press_key("escape").unwrap();
+        app.wait_for("label:Use provider reasoning efforts: Off")
+            .unwrap();
+
+        // Back to app while dirty also protects unsaved edits before leaving Settings.
+        app.press("label:Back to app").unwrap();
+        app.wait_for("text:Discard unsaved changes?").unwrap();
+        app.press("text:Discard changes").unwrap();
+        app.wait_for("text:Back in app").unwrap();
+
+        // Reopen: Escape steps back through nested subpage to root, then returns to the app.
+        app.press_key("f5").unwrap();
+        app.wait_for("label:Back from connection settings").unwrap();
+        app.press_key("escape").unwrap();
+        app.wait_for("label:Edit connection OpenAI").unwrap();
+        app.press_key("escape").unwrap();
+        app.wait_for("text:Back in app").unwrap();
+
+        // Terminal idiom folds navigation above content on narrow viewports and closes on Escape.
+        let mut tui = headless_fixture_in(
+            "tests/fixtures/models-settings.tsx",
+            Size::new(px(640.0), px(384.0)),
+            true,
+            nsh_core::platform::Idiom::Terminal,
+        );
+        tui.press_key("f7").unwrap();
+        tui.wait_for("label:Edit connection OpenAI").unwrap();
+        let bounds_of = |app: &nsh_testing::Headless, selector: &str| {
+            let id = app.screen().id(selector).unwrap();
+            app.screen()
+                .layout_nodes()
+                .into_iter()
+                .find(|node| node.id == id)
+                .unwrap()
+                .bounds
+        };
+        let back = bounds_of(&tui, "label:Back to app");
+        let section = bounds_of(&tui, "label:Settings section Models");
+        let content = bounds_of(&tui, "label:Edit connection OpenAI");
+        assert!(back.origin.x + back.size.width <= section.origin.x);
+        assert!(back.origin.y + back.size.height <= content.origin.y);
+        assert!(section.origin.y + section.size.height <= content.origin.y);
+        tui.press_key("escape").unwrap();
+        tui.wait_for("text:Back in app").unwrap();
+    }
 }
 
 #[cfg(test)]

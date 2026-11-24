@@ -287,7 +287,12 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
           const input = props.input as SettingsViewInput;
           let restoreOpen = restored !== null && input.opened();
           effect(() => {
-            if (!input.opened()) return;
+            if (!input.opened()) {
+              untracked(() => {
+                if (!operations.pending().length) operations.notice.set('');
+              });
+              return;
+            }
             untracked(() => {
               if (input.page) {
                 if (input.page === 'external-agents') {

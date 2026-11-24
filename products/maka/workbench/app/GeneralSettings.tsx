@@ -69,11 +69,10 @@ import {
   C,
   bodyTextStyle,
   captionTextStyle,
-  controlFocusStyle,
-  controlHoverStyle,
   floatingStyle,
   menuRowHoverStyle,
   menuRowStyle,
+  quietFocusStyle,
 } from './ui';
 
 const avatarChoices = [
@@ -401,8 +400,8 @@ function PreferenceEditor(props: { owner: GeneralSettingsOwner; request: General
                   accessibilityLabel={tr('Change avatar')}
                   disabled={owner.disabled()}
                   style={{ padding: 4, borderRadius: 24 }}
-                  hoverStyle={controlHoverStyle()}
-                  focusStyle={controlFocusStyle()}
+                  hoverStyle={{ backgroundColor: C.cardRaised }}
+                  focusStyle={quietFocusStyle()}
                 >
                   <ProfileAvatar name={name()} avatar={avatar()} size={40} />
                   <View
@@ -412,7 +411,7 @@ function PreferenceEditor(props: { owner: GeneralSettingsOwner; request: General
                       bottom: 0,
                       padding: 3,
                       borderRadius: 9,
-                      backgroundColor: C.raised,
+                      backgroundColor: C.cardRaised,
                       pointerEvents: 'none',
                     }}
                   >

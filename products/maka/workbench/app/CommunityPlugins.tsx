@@ -69,7 +69,9 @@ function SearchPlaceholder() {
               <View style={{ ...bar, width: '32%', maxWidth: 140 }} />
               <View style={{ ...bar, width: '72%', maxWidth: 320 }} />
             </View>
-            <View style={{ width: 52, height: 24, borderRadius: 8, backgroundColor: C.raised }} />
+            <View
+              style={{ width: 52, height: 24, borderRadius: 8, backgroundColor: C.cardRaised }}
+            />
           </View>
         }
       >

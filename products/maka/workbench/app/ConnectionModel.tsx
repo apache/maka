@@ -38,13 +38,7 @@ import {
   SettingsSwitch,
   settingsInset,
 } from './SettingsPage';
-import {
-  C,
-  captionTextStyle,
-  controlDisabledStyle,
-  controlFocusStyle,
-  controlHoverStyle,
-} from './ui';
+import { C, captionTextStyle, controlDisabledStyle, quietFocusStyle } from './ui';
 
 const tools = [
   { key: 'codeMode', label: 'Code Mode' },
@@ -209,8 +203,8 @@ export function ConnectionModel(props: { settings: ModelSettingsOwner }) {
                     paddingHorizontal: platform.idiom === 'terminal' ? 0 : 8,
                     borderRadius: 8,
                   }}
-                  hoverStyle={controlHoverStyle()}
-                  focusStyle={controlFocusStyle()}
+                  hoverStyle={{ backgroundColor: C.cardRaised }}
+                  focusStyle={quietFocusStyle()}
                   activeStyle={{ backgroundColor: C.pressed }}
                   disabledStyle={controlDisabledStyle}
                 >
