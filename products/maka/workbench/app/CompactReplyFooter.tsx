@@ -17,10 +17,11 @@
  * under the License.
  */
 
-import { Clipboard, signal, computed, Text, View, type JSX } from 'nsh';
+import { Clipboard, cleanup, signal, computed, Text, View, type JSX } from 'nsh';
 import { formatDuration } from './duration';
 import { tr, messageDateTime, messageTime } from './locale';
-import { createTransientText, errorText, message as uiMessage } from './text';
+import { errorText, renderText } from './text';
+import { toast } from './toastStore';
 import type { replyMetrics } from './replyDetails';
 import { C, IconButton, captionTextStyle, textTooltip } from './ui';
 
@@ -69,29 +70,42 @@ export function CompactReplyFooter(props: {
 }
 
 export function LocalMessageCopy(props: { text(): string; user?: boolean }) {
-  const notice = createTransientText();
-  const failed = signal(false);
+  const copied = signal(false);
+  let alive = true;
+  let resetTimer: ReturnType<typeof setTimeout> | null = null;
+  cleanup(() => {
+    alive = false;
+    if (resetTimer !== null) clearTimeout(resetTimer);
+  });
   const copy = async () => {
     try {
       await Clipboard.writeText(props.text());
-      failed.set(false);
-      notice.set(uiMessage('Message copied'));
+      if (alive) {
+        copied.set(true);
+        if (resetTimer !== null) clearTimeout(resetTimer);
+        resetTimer = setTimeout(() => {
+          resetTimer = null;
+          if (alive) copied.set(false);
+        }, 1500);
+      }
     } catch (reason) {
-      failed.set(true);
-      notice.set(errorText(reason, 'Could not copy to the clipboard.'));
+      if (alive) {
+        copied.set(false);
+        toast.show({
+          id: 'message.copy',
+          tone: 'danger',
+          message: renderText(errorText(reason, 'Could not copy to the clipboard.')),
+        });
+      }
     }
   };
   return (
-    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-      <IconButton
-        compact
-        label={props.user ? tr('Copy user message') : tr('Copy message')}
-        icon={notice() && !failed() ? 'check' : 'copy'}
-        onPress={() => void copy()}
-      />
-      <If when={notice() && failed()}>
-        <Text style={{ ...captionTextStyle, color: C.danger }}>{notice()}</Text>
-      </If>
-    </View>
+    <IconButton
+      compact
+      label={props.user ? tr('Copy user message') : tr('Copy message')}
+      tooltip={copied() ? tr('Copied') : undefined}
+      icon={copied() ? 'check' : 'copy'}
+      onPress={() => void copy()}
+    />
   );
 }

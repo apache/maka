@@ -105,6 +105,8 @@ const icons = {
   rooms: { custom: 'rooms', glyph: '◎' },
   smilePlus: { custom: 'smilePlus', glyph: '☺' },
   reply: { custom: 'reply', glyph: '↩' },
+  warning: { custom: 'warning', glyph: '!' },
+  info: { custom: 'info', glyph: 'i' },
 } satisfies Record<
   string,
   | { lucide: keyof typeof lucide; glyph: string }
@@ -195,6 +197,16 @@ const customIcons = {
   reply: [
     { tag: 'polyline', points: '9 17 4 12 9 7' },
     { tag: 'path', d: 'M20 18v-2a4 4 0 0 0-4-4H4' },
+  ],
+  warning: [
+    { tag: 'path', d: 'm21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3' },
+    { tag: 'path', d: 'M12 9v4' },
+    { tag: 'path', d: 'M12 17h.01' },
+  ],
+  info: [
+    { tag: 'circle', cx: 12, cy: 12, r: 10 },
+    { tag: 'path', d: 'M12 16v-4' },
+    { tag: 'path', d: 'M12 8h.01' },
   ],
 } satisfies Record<string, LucideElement[]>;
 

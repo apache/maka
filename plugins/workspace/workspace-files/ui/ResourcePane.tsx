@@ -38,6 +38,7 @@ import {
 } from '../../../../products/maka/workbench/app/chrome';
 import { CurrentDiff } from '../../../../products/maka/workbench/app/CurrentDiff';
 import { CurrentFile } from '../../../../products/maka/workbench/app/CurrentFile';
+import { RegionEmptyError } from '../../../../products/maka/workbench/app/Feedback';
 import { Icon } from '../../../../products/maka/workbench/app/Icon';
 import type { ImagePreview } from '../../../../products/maka/workbench/app/ImageThumbnail';
 import {
@@ -791,6 +792,7 @@ function OriginalImage(props: {
   openImageViewer: OpenImageViewer;
 }) {
   const error = signal('');
+  const attempt = signal(0);
   const size = signal<{ width: number; height: number } | null>(null);
   let mounted = true;
   cleanup(() => {
@@ -801,34 +803,51 @@ function OriginalImage(props: {
       <Text style={{ ...captionTextStyle, color: C.secondary, fontWeight: '500' }}>
         {tr('Image preview')}
       </Text>
-      <Image
-        src={props.image.uri}
-        onLoad={(event) => {
-          if (mounted) size.set(event.size);
-        }}
-        onError={(reason) => {
-          if (mounted) error.set(reason.message);
-        }}
-        style={[{ flex: 1, minHeight: 0, width: '100%' }, { objectFit: 'contain' }]}
-      />
-      <If when={size()}>
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-          <Text style={{ ...captionTextStyle, flex: 1, color: C.muted }}>
-            {size()!.width} × {size()!.height} · {tr('Original image')}
-          </Text>
-          <ImageViewerButton
-            open={props.openImageViewer}
-            image={{
-              uri: props.image.uri,
-              width: size()!.width,
-              height: size()!.height,
-              title: tr('Original image'),
+      <If
+        when={!error()}
+        else={
+          <RegionEmptyError
+            tone="danger"
+            icon="image"
+            title={error()}
+            retry={() => {
+              error.set('');
+              size.set(null);
+              attempt.set(attempt() + 1);
             }}
           />
-        </View>
-      </If>
-      <If when={error()}>
-        <Text style={{ ...bodyTextStyle, color: C.danger }}>{error()}</Text>
+        }
+      >
+        <Each of={[attempt()]} key={(n) => n}>
+          {() => (
+            <Image
+              src={props.image.uri}
+              onLoad={(event) => {
+                if (mounted) size.set(event.size);
+              }}
+              onError={(reason) => {
+                if (mounted) error.set(reason.message);
+              }}
+              style={[{ flex: 1, minHeight: 0, width: '100%' }, { objectFit: 'contain' }]}
+            />
+          )}
+        </Each>
+        <If when={size()}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+            <Text style={{ ...captionTextStyle, flex: 1, color: C.muted }}>
+              {size()!.width} × {size()!.height} · {tr('Original image')}
+            </Text>
+            <ImageViewerButton
+              open={props.openImageViewer}
+              image={{
+                uri: props.image.uri,
+                width: size()!.width,
+                height: size()!.height,
+                title: tr('Original image'),
+              }}
+            />
+          </View>
+        </If>
       </If>
     </View>
   );

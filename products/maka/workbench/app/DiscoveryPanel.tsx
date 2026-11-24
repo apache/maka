@@ -956,11 +956,10 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
           </Text>
         </If>
       </Scroll>
-      <If when={error()}>
-        <Text style={{ ...captionTextStyle, color: C.danger }}>{renderText(error())}</Text>
-      </If>
-      <If when={watchError()}>
-        <Text style={{ ...captionTextStyle, color: C.danger }}>{renderText(watchError())}</Text>
+      <If when={Boolean(error() || watchError())}>
+        <Text style={{ ...captionTextStyle, color: C.danger }}>
+          {renderText(error() || watchError())}
+        </Text>
       </If>
       <If when={editing() && platform.idiom !== 'terminal'}>
         <View style={{ height: 1, marginHorizontal: -24, backgroundColor: C.line }} />
