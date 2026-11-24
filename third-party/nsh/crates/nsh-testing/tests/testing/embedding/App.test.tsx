@@ -42,6 +42,19 @@ test("the test's handlers answer the app's calls and hear its posts", async () =
   expect(app.host.posts()).toEqual([{ name: "analytics", data: { screen: "home" } }]);
 });
 
+test("a press ends once the answers to the calls it made show", async () => {
+  // Each answer comes from the test's thread, at its own pace: however it
+  // falls against the engine's turns, the press waits for it.
+  let asked = 0;
+  const app = await open("./App.tsx", {
+    host: { handlers: { profile: async () => ({ name: `Ada ${++asked}` }) } },
+  });
+  for (let i = 1; i <= 40; i++) {
+    await app.press("Ask");
+    expect(app.shows(`answer Ada ${i}`)).toBe(true);
+  }
+});
+
 test("the URLs the app opens are recorded, not opened", async () => {
   const app = await open("./App.tsx");
   expect(app.openedUrls()).toEqual([]);

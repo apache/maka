@@ -1,12 +1,14 @@
 //! `nsh test --target android`: the apps tests open run on the development
-//! host on an Android device or emulator (the first `adb devices` lists).
-//! The host is built and installed once; each `open` builds the entry,
-//! serves it in a dev server's test session of its own, forwards its port
-//! to the device and starts the host on it with a data directory of its
-//! own, empty when it starts. The host's test agent takes the test's steps
-//! with `MotionEvent`s and `KeyEvent`s its views get as a finger's and a
-//! keyboard's (`nsh-platform-android`'s `agent.rs`, `TestAgent.java`); the
-//! host is stopped when the test closes the app.
+//! host on an Android device or emulator (the one `--device` or
+//! `ANDROID_SERIAL` names, else the first `adb devices` lists).
+//! The host is built (for the device's ABI, as `nsh run`'s) and installed
+//! once; each `open` builds the entry, serves it in a dev server's test
+//! session of its own, forwards its port to the device and starts the host
+//! on it with a data directory of its own, empty when it starts. The host's
+//! test agent takes the test's steps with `MotionEvent`s and `KeyEvent`s its
+//! views get as a finger's and a keyboard's (`nsh-platform-android`'s
+//! `agent.rs`, `TestAgent.java`); the host is stopped when the test closes
+//! the app.
 
 use std::{
     path::Path,
@@ -28,14 +30,29 @@ use crate::{
 /// How long the host may take to start and connect.
 const CONNECT: Duration = Duration::from_secs(90);
 
-/// Starts the apps tests open on the first device, installing the
-/// development host there.
-pub(crate) fn starter(work: &Path) -> anyhow::Result<StartHost> {
+/// Starts the apps tests open on `device` ([`crate::android::device`]),
+/// installing the development host there.
+pub(crate) fn starter(
+    work: &Path,
+    device: Option<&str>,
+    release: bool,
+) -> anyhow::Result<StartHost> {
     let sdk = Arc::new(Sdk::find()?);
-    let serial = crate::android::device(&sdk)?;
-    crate::run::install_android_host(&sdk, &serial, work, &crate::runtime::test_android()?)?;
+    let serial = crate::android::device(&sdk, device)?;
+    let abis = crate::android::dev_abis(&sdk, &serial)?;
+    // Tests of many apps share the host: it takes their crates' Java
+    // libraries, not one app's `nsh.json` ones: their placeholders are left
+    // empty, with a warning.
+    crate::run::install_android_host(
+        &sdk,
+        &serial,
+        work,
+        &crate::runtime::test_android(&abis)?,
+        &abis,
+        None,
+    )?;
     Ok(Arc::new(move |entry: &Path, options: &HostOptions| {
-        start(&sdk, &serial, entry, options).map(|h| Box::new(h) as Box<dyn Host>)
+        start(&sdk, &serial, entry, options, release).map(|h| Box::new(h) as Box<dyn Host>)
     }))
 }
 
@@ -112,8 +129,9 @@ fn start(
     serial: &str,
     entry: &Path,
     options: &HostOptions,
+    release: bool,
 ) -> Result<DeviceHost, String> {
-    let server = crate::test_host::serve(entry, options)?;
+    let server = crate::test_host::serve(entry, options, release)?;
     let port = format!("tcp:{}", server.local_addr().port());
     let host = DeviceHost {
         server,
@@ -134,20 +152,9 @@ fn start(
     );
     let config = crate::package::read_config(entry).map_err(|e| format!("{e:#}"))?;
     let env = crate::run::android_app_env(&config);
-    let mut start = vec![
-        "shell",
-        "am",
-        "start",
-        "-S",
-        "-n",
-        "com.longbridge.nsh.host/com.longbridge.nsh.DevActivity",
-        "--es",
-        "url",
-        &url,
-        "--es",
-        "dataDir",
-        &data,
-    ];
+    let mut start =
+        crate::android::dev_start("com.longbridge.nsh.host/com.longbridge.nsh.DevActivity");
+    start.extend(["--es", "url", &url, "--es", "dataDir", &data]);
     start.extend(env.iter().map(String::as_str));
     host.adb(&start)?;
     let deadline = Instant::now() + CONNECT;

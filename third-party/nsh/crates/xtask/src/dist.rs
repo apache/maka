@@ -259,7 +259,7 @@ pub(crate) fn dist() -> anyhow::Result<()> {
         let aar = out
             .join("embed/android")
             .join(if dev { "nsh-dev.aar" } else { "nsh.aar" });
-        make_aar(&built, &abis, dev, &aar)?;
+        android::make_aar(&built, &abis, dev, &aar)?;
         term::done(format!(
             "packed {}",
             aar.strip_prefix(&root).unwrap_or(&aar).display()
@@ -470,104 +470,6 @@ fn ios_runtimes(release: &Path, out: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// R8 rules the archive carries (`proguard.txt`), which an app's Gradle
-/// build applies when it shrinks the app: `libnsh.so` finds the runtime's
-/// classes, methods and fields by name over JNI (`TextLayouts` in
-/// `JNI_OnLoad`) and binds `native` methods by their Java names, which R8
-/// would remove or rename, Java code never naming most of them.
-const AAR_KEEP_RULES: &str = "\
-# Native Shell: libnsh.so finds these classes and members by name over JNI
-# and binds native methods by their Java names.
--keep class com.longbridge.nsh.** { *; }
-# The WebSocket client's TLS verifier (rustls-platform-verifier) calls these
-# over JNI.
--keep class org.rustls.platformverifier.** { *; }
-";
-
-/// An Android library archive: the Java runtime and `libnsh.so` per ABI,
-/// with the R8 rules that keep the runtime ([`AAR_KEEP_RULES`]).
-///
-/// The development library allows cleartext HTTP (merged into the app's
-/// manifest): it loads assets from the `nsh dev` server over plain HTTP.
-fn make_aar(built: &Path, abis: &[String], dev: bool, aar: &Path) -> anyhow::Result<()> {
-    let work = aar.with_extension("aar-work");
-    if work.exists() {
-        fs::remove_dir_all(&work)?;
-    }
-    fs::create_dir_all(&work)?;
-    fs::write(
-        work.join("AndroidManifest.xml"),
-        format!(
-            r#"<?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="com.longbridge.nsh">
-    <uses-sdk android:minSdkVersion="{}" />
-    <uses-permission android:name="android.permission.INTERNET" />
-    <!-- Text actions (Translate and the like) the selection menu offers,
-        as TextView's: Android 11+ hides other apps' activities otherwise. -->
-    <queries>
-        <intent>
-            <action android:name="android.intent.action.PROCESS_TEXT" />
-            <data android:mimeType="text/plain" />
-        </intent>
-    </queries>{}
-</manifest>
-"#,
-            android::MIN_SDK,
-            if dev {
-                "\n    <application android:usesCleartextTraffic=\"true\" />"
-            } else {
-                ""
-            }
-        ),
-    )?;
-    fs::write(work.join("R.txt"), "")?;
-    fs::write(work.join("proguard.txt"), AAR_KEEP_RULES)?;
-    copy(&built.join("classes.jar"), &work.join("classes.jar"))?;
-    // With their symbols: the app's Gradle build strips what it packages
-    // and keeps them for its crash reports.
-    for abi in abis {
-        copy(
-            &built.join("symbols").join(abi).join("libnsh.so"),
-            &work.join("jni").join(abi).join("libnsh.so"),
-        )?;
-    }
-    if let Some(dir) = aar.parent() {
-        fs::create_dir_all(dir)?;
-    }
-    let _ = fs::remove_file(aar);
-    zip_dir(&work, aar).with_context(|| format!("create {}", aar.display()))?;
-    fs::remove_dir_all(&work)?;
-    Ok(())
-}
-
-/// Zips the files under `dir` into `archive`, by their paths relative to
-/// `dir` (with `/`, whatever this machine's separator).
-fn zip_dir(dir: &Path, archive: &Path) -> anyhow::Result<()> {
-    use std::io::Write as _;
-
-    use zip::{CompressionMethod, ZipWriter, write::SimpleFileOptions};
-
-    let mut zip = ZipWriter::new(fs::File::create(archive)?);
-    let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
-    let mut pending = vec![(dir.to_path_buf(), String::new())];
-    while let Some((dir, prefix)) = pending.pop() {
-        let mut entries: Vec<_> = fs::read_dir(&dir)?.collect::<Result<_, _>>()?;
-        entries.sort_by_key(|e| e.file_name());
-        for entry in entries {
-            let name = format!("{prefix}{}", entry.file_name().to_string_lossy());
-            if entry.file_type()?.is_dir() {
-                zip.add_directory(format!("{name}/"), options)?;
-                pending.push((entry.path(), format!("{name}/")));
-            } else {
-                zip.start_file(name, options)?;
-                zip.write_all(&fs::read(entry.path())?)?;
-            }
-        }
-    }
-    zip.finish()?;
-    Ok(())
-}
-
 /// `cargo <args>` in the workspace, `--locked`: the step "building <what>".
 pub(crate) fn cargo(args: &[&str], what: &str) -> anyhow::Result<()> {
     let (subcommand, args) = args.split_first().context("no cargo command")?;
@@ -666,37 +568,9 @@ pub(crate) fn copy(from: &Path, to: &Path) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        ffi::{OsStr, OsString},
-        fs,
-        io::Read as _,
-    };
+    use std::ffi::{OsStr, OsString};
 
-    use super::{
-        AAR_KEEP_RULES, WebRuntimes, android_skip, make_aar, wasm_cc, wasm_compiles,
-        web_runtimes_plan,
-    };
-
-    #[test]
-    fn an_aar_carries_the_rules_that_keep_the_runtime() {
-        let dir = std::env::temp_dir().join(format!("nsh-aar-test-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        let built = dir.join("built");
-        fs::create_dir_all(built.join("symbols/arm64-v8a")).unwrap();
-        fs::write(built.join("classes.jar"), b"jar").unwrap();
-        fs::write(built.join("symbols/arm64-v8a/libnsh.so"), b"so").unwrap();
-        let aar = dir.join("nsh.aar");
-        make_aar(&built, &["arm64-v8a".to_string()], false, &aar).unwrap();
-        let mut zip = zip::ZipArchive::new(fs::File::open(&aar).unwrap()).unwrap();
-        let mut rules = String::new();
-        zip.by_name("proguard.txt")
-            .unwrap()
-            .read_to_string(&mut rules)
-            .unwrap();
-        assert_eq!(rules, AAR_KEEP_RULES);
-        assert!(rules.contains("-keep class com.longbridge.nsh.** { *; }"));
-        fs::remove_dir_all(&dir).unwrap();
-    }
+    use super::{WebRuntimes, android_skip, wasm_cc, wasm_compiles, web_runtimes_plan};
 
     #[test]
     fn the_configured_wasm_compiler_is_probed_not_a_bare_clang() {
@@ -765,6 +639,8 @@ mod tests {
     #[test]
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     fn a_stripped_executable_still_runs() {
+        use std::fs;
+
         let dir = std::env::temp_dir().join(format!("nsh-strip-test-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         let exe = std::env::current_exe().unwrap();

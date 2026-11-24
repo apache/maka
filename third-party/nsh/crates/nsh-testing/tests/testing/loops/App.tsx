@@ -1,4 +1,5 @@
 import { createMotion, mount, signal, Text, View } from "nsh";
+import { Window } from "nsh/desktop";
 
 function Press(props: { label: string; onPress: () => void }) {
   return (
@@ -30,4 +31,4 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => <Window id="main">{App}</Window>);

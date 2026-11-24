@@ -1,4 +1,5 @@
 import { Image, mount, signal, Text, View } from "nsh";
+import { Window } from "nsh/desktop";
 
 const icon = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNoaGj4DwAFhAKAjM1mJgAAAABJRU5ErkJggg==";
 
@@ -34,4 +35,4 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => <Window id="main">{App}</Window>);

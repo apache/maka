@@ -233,6 +233,11 @@ host (a link the user taps) is cancelled natively. Each reports
 A page's own `blob:` URL (`URL.createObjectURL`, a `<a download>` link) counts as the origin it embeds: it shows
 and downloads when that origin is granted, while an opaque `blob:null/…` is refused.
 
+A download from a host is saved only when its response comes from a granted host (on iOS, macOS and Linux, after any
+redirects); otherwise `onDownload` reports it `failed` with `code` `"ERR_ACCESS_DENIED"`. On iOS and macOS a redirect
+to a host that is not granted is cancelled before it is requested. A download of the page's own content (`data:` and
+`blob:` URLs) comes from no host and is saved as before.
+
 ```json
 {
   "capabilities": {

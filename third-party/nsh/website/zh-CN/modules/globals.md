@@ -513,7 +513,8 @@ await fetch("https://api.example.com/upload", {
 - **没有禁止设置的请求头。** 应用可以设置 `Cookie`、`User-Agent`、`Origin` 等任意请求头。未指定 `Accept` 时会发送 `Accept: */*`。
 - **`redirect: "manual"` 直接交付 3xx 响应本身**，带有状态码和 `Location` 头，而不是不透明的过滤响应。`"follow"` 会跟随重定向（每一跳都按能力声明检查）；`"error"` 在响应为重定向时 reject。
 - **`FormData` 请求体总是使用 `Content-Type: multipart/form-data; boundary=…`**，即使已经设置了 `Content-Type` 头。HTTP 库常常先设一个默认类型，只在检测到浏览器时才清除；缺少 boundary，服务器就无法解析请求体。
-- **`credentials`、`cache`、`referrer`、`referrerPolicy`、`integrity`、`keepalive` 和 `priority`** 会被校验并保存在 `Request` 对象上，但不会传给网络栈：缓存和 Cookie 的处理遵循平台网络栈自身的行为。
+- **`cache`** 会传给平台的 HTTP 缓存：Web 上是浏览器缓存，macOS / iOS 上是 `NSURLSession` 的缓存（`no-cache` 与 `reload` 一样重新请求）。Android 和桌面 Linux / Windows 没有 HTTP 缓存，请求总是走网络，`only-if-cached` 会失败。
+- **`credentials`、`referrer`、`referrerPolicy`、`integrity`、`keepalive` 和 `priority`** 会被校验并保存在 `Request` 对象上，但不会传给网络栈：Cookie 的处理遵循平台网络栈自身的行为。
 - **能力声明。** 当应用在 `nsh.json` 中声明了 `network` 能力（或嵌入它的宿主应用授予的更少）时，访问未被允许的主机的请求根本不会发到网络，`fetch` 以 `TypeError` reject，其 `code` 为 `"ERR_ACCESS_DENIED"`，`permission` 为 `"network"`，`resource` 为被拒绝的 URL。参见[沙箱与能力](../docs/sandbox-and-capabilities.md)。
 - **错误。** 网络失败以 `TypeError` reject，消息以 `Network request failed:` 开头；中止则以 signal 的 `reason` reject。
 

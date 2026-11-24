@@ -1,4 +1,5 @@
 import { mount, signal, Text, View } from "nsh";
+import { Window } from "nsh/desktop";
 
 /** What fetching `url` came to: its status, or why it was refused. */
 function fetched(url: string) {
@@ -21,4 +22,4 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => <Window id="main">{App}</Window>);

@@ -69,7 +69,7 @@ fn main() {
     // A published crate can live inside someone else's Git repository.
     let checkout = root
         .is_some_and(|root| root.join(".git").exists() && root.join("crates/nsh-cli") == manifest);
-    let revision = if checkout {
+    let full = if checkout {
         // Packed branches acquire a loose ref on the next commit. Watch
         // the refs directory too, so creating that file refreshes the SHA.
         for name in ["HEAD", "refs", "packed-refs"] {
@@ -80,7 +80,7 @@ fn main() {
                 }
             }
         }
-        git(&manifest, &["rev-parse", "HEAD"]).and_then(|s| short_sha(&s))
+        git(&manifest, &["rev-parse", "HEAD"])
     } else {
         let vcs = manifest.join(".cargo_vcs_info.json");
         if vcs.exists() {
@@ -89,10 +89,20 @@ fn main() {
         fs::read(vcs)
             .ok()
             .and_then(|data| serde_json::from_slice::<serde_json::Value>(&data).ok())
-            .and_then(|data| data["git"]["sha1"].as_str().and_then(short_sha))
+            .and_then(|data| data["git"]["sha1"].as_str().map(str::to_owned))
     };
-    let revision = revision.as_deref().unwrap_or("unknown");
+    let full = full.filter(|sha| sha.len() == 40 && sha.bytes().all(|b| b.is_ascii_hexdigit()));
+    let revision = full
+        .as_deref()
+        .and_then(short_sha)
+        .unwrap_or_else(|| "unknown".to_owned());
     println!("cargo:rustc-env=NSH_GIT_SHA={revision}");
+    // What `Nsh::of` compares a Git pin against: a version alone cannot tell
+    // two builds of the same version apart.
+    println!(
+        "cargo:rustc-env=NSH_GIT_SHA_FULL={}",
+        full.as_deref().unwrap_or("unknown")
+    );
 
     // The release channel the build is published on: the nightly workflow
     // sets `nightly`, `nsh update` stays on it. Anything else is `stable`.

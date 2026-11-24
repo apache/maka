@@ -220,4 +220,45 @@ impl Headless {
         self.send(id, EventKind::FileDrop, payload);
         self.done()
     }
+
+    /// Drops `text` (and `html`, the same as HTML, when not empty) at the
+    /// middle of what `selector` names, on the closest view around it that
+    /// takes text drops (a Rust component's such as `RichEditor`'s,
+    /// [`EventKind::TextDrop`]), as iOS delivers a drag of text.
+    pub fn drop_text(&mut self, selector: &str, text: &str, html: &str) -> Result<(), String> {
+        let parsed = Selector::parse(selector)?;
+        self.step(format!("dropText({selector})"));
+        let pick = self.screen.view(&parsed);
+        let target = self.picked(pick, selector, "view")?;
+        let Some(at) = self
+            .screen
+            .match_inside(&parsed, target)
+            .and_then(|inner| self.screen.bounds_in_root(inner))
+            .or_else(|| self.screen.bounds_in_root(target))
+            .map(|b| b.center())
+        else {
+            return Err(format!("`{selector}` has no frame to drop on"));
+        };
+        // As UIKit routes a drag: the view under the point, or the closest
+        // one around it, that takes it.
+        let under = self.screen.hit_pointer(at, self.screen.window_of(target));
+        let Some(id) = self
+            .screen
+            .chain(under)
+            .into_iter()
+            .find(|&id| self.screen.hears(id, EventKind::TextDrop))
+        else {
+            return Err(format!("no view at `{selector}` takes text drops"));
+        };
+        self.send(
+            id,
+            EventKind::TextDrop,
+            EventPayload::TextDrop(Box::new(nsh_core::TextDrop::new(
+                text.into(),
+                html.into(),
+                at,
+            ))),
+        );
+        self.done()
+    }
 }

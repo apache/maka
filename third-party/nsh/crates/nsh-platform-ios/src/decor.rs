@@ -404,7 +404,10 @@ impl Decor {
         });
         let corners = corner_mask(&raw);
         let outside = crate::visual::draws_outside(style);
-        let content = kind == Kind::View && style.overflow_hidden && outside;
+        // A clip path's mask takes the view's own layer, so the children
+        // clip in the content view.
+        let content =
+            kind == Kind::View && style.overflow_hidden && (outside || style.clip_path().is_some());
 
         // Text draws into the layer's own contents, below every sublayer: it
         // cannot have a fill layer, so its odd corners clip it instead.

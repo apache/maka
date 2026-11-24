@@ -44,6 +44,7 @@ serde_json.workspace = true
 serde_ignored.workspace = true
 serde_path_to_error.workspace = true
 plist.workspace = true
+quick-xml.workspace = true
 zip.workspace = true
 brotli.workspace = true
 flate2.workspace = true

@@ -88,7 +88,7 @@ thread_local! {
 define_class!(
     #[unsafe(super(UIResponder, NSObject))]
     #[thread_kind = MainThreadOnly]
-    struct AppDelegate;
+    pub(crate) struct AppDelegate;
 
     unsafe impl NSObjectProtocol for AppDelegate {}
 
@@ -155,8 +155,8 @@ define_class!(
             if let Some(contexts) = contexts {
                 url_schemes(&contexts);
             }
-            // An address continued from another device (Handoff) that
-            // launched the app.
+            // An address continued from another device (Handoff), or a
+            // Universal Link, that launched the app.
             // SAFETY: a documented property, a set of `NSUserActivity`; read
             // as nullable, as `URLContexts` above.
             let activities: Option<Retained<NSSet<NSUserActivity>>> =
@@ -173,7 +173,8 @@ define_class!(
             url_schemes(contexts);
         }
 
-        // An address continued while the app runs (`SurfaceOptions::handoff`).
+        // An address continued while the app runs (`SurfaceOptions::handoff`),
+        // or a Universal Link.
         #[unsafe(method(scene:continueUserActivity:))]
         fn continue_user_activity(&self, _scene: &UIScene, activity: &NSUserActivity) {
             continue_activity(activity);
@@ -225,9 +226,12 @@ impl RootController {
 }
 
 /// Hands the address `activity` carries ([`nsh_platform_apple::handoff`])
-/// to the app as a link.
+/// to the app as a link: one handed off from another device, or a web link
+/// (a Universal Link), which the core checks as every link.
 fn continue_activity(activity: &NSUserActivity) {
-    let Some(url) = nsh_platform_apple::handoff::continued_url(activity) else {
+    let Some(url) = nsh_platform_apple::handoff::continued_url(activity)
+        .or_else(|| nsh_platform_apple::handoff::web_link(activity))
+    else {
         return;
     };
     APP.with(|app| match &*app.borrow() {
@@ -327,12 +331,14 @@ fn hide_title(scene: &UIWindowScene) {
 
 /// Runs a standalone app full-window. Never returns.
 ///
-/// Must be called on the main thread, before any other UIKit use.
+/// Must be called on the main thread, before any other UIKit use. The
+/// application delegate's callbacks reach the observers added before it
+/// ([`crate::on_application_event`]).
 pub fn run_app(source: AppSource, options: AppOptions) -> ! {
     let mtm = MainThreadMarker::new().expect("run_app must be called on the main thread");
     *LAUNCH.lock().expect("launch lock") = Some((source, options));
     let delegate = NSString::from_str(
-        AppDelegate::class()
+        crate::application::delegate_class()
             .name()
             .to_str()
             .expect("class name is UTF-8"),

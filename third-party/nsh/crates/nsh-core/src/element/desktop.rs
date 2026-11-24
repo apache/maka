@@ -6,7 +6,7 @@
 //! a window of the app's own in the tree, controlled as a dialog is: open
 //! while [`Window::open`] holds, its content in the same reactive graph as
 //! the rest of the app. [`current_window`] is the window the calling code
-//! renders in (the main window outside any [`window`]): a [`WindowRef`]
+//! renders in (the app root's ref outside a window): a [`WindowRef`]
 //! whose [`WindowRef::set`] changes its attributes and whose requests
 //! ([`WindowRef::set_mode`], [`WindowRef::minimize`], ...) the
 //! platform carries out, reporting what happened in
@@ -28,14 +28,14 @@
 //! both.
 //!
 //! ```ignore
-//! let main = current_window();
+//! let window = current_window(); // in a window's content
 //! if let Some(saved) = Storage::get_item("window")
 //!     .and_then(|json| serde_json::from_str::<WindowPlacement>(&json).ok())
 //! {
-//!     main.set_placement(saved);
+//!     window.set_placement(saved);
 //! }
 //! effect(move || {
-//!     if let Some(state) = main.state() {
+//!     if let Some(state) = window.state() {
 //!         let json = serde_json::to_string(&state.placement).unwrap();
 //!         let _ = Storage::set_item("window", json);
 //!     }
@@ -71,6 +71,9 @@ use crate::{
 /// including entering and leaving full screen. These are zero with a
 /// system title bar and on platforms without desktop windows.
 pub fn title_bar() -> Edges<Points> {
+    if !super::os().is_desktop() || super::idiom() == crate::platform::Idiom::Terminal {
+        return Edges::default();
+    }
     current_window().title_bar()
 }
 
@@ -86,8 +89,12 @@ pub fn set_menu_bar(mode: MenuBarMode) {
 }
 
 /// The current window's state (TS: `windowState()`):
-/// [`WindowRef::state`] of [`current_window`].
+/// [`WindowRef::state`] of [`current_window`]; `None` off the desktops,
+/// where there is no window.
 pub fn window_state() -> Option<WindowState> {
+    if !super::os().is_desktop() || super::idiom() == crate::platform::Idiom::Terminal {
+        return None;
+    }
     current_window().state()
 }
 
@@ -109,36 +116,48 @@ pub fn display(id: DisplayId) -> Option<Display> {
 /// Where a [`WindowRef`]'s commands go.
 #[derive(Clone, Copy)]
 enum Target {
-    /// The main window: the root.
+    /// The app root (the invisible host's ref), not a user window.
     Main,
     /// A window of the app's own: the dialog root carrying the ref.
     Own(ElementRef),
 }
 
-/// A window (TS: `WindowRef`): the main window ([`main_window`]) or one of
-/// the app's own ([`window`]), as [`current_window`] gives it. Setting its
-/// attributes and its requests are commands that go out with the commit;
-/// the platform may decline or adjust a request, and [`Self::state`]
-/// reports what happened. Commands to a closed window do nothing.
+/// A window (TS: `WindowRef`): the app root's ref ([`main_window`], the
+/// invisible host, not a user window) or a window of the app's own
+/// ([`window`]), as [`current_window`] gives it. Setting its attributes and
+/// its requests are commands that go out with the commit; the platform may
+/// decline or adjust a request, and [`Self::state`] reports what happened.
+/// Commands to a closed window do nothing.
 #[derive(Clone)]
 pub struct WindowRef {
     id: Rc<str>,
     target: Target,
-    /// The state of a window of the app's own (the main window's is the
+    /// The state of a window of the app's own (the app root's is the
     /// environment's).
     state: Option<Signal<Option<WindowState>>>,
-    /// The hidden title bar's area of a window of the app's own (the main
-    /// window's is the environment's).
+    /// The hidden title bar's area of a window of the app's own (the app
+    /// root's is the environment's).
     title_bar: Option<Signal<Edges<Points>>>,
     /// Closes a window of the app's own as its element does
     /// ([`WindowRef::close`]).
     close: Option<Rc<dyn Fn(WindowCloseCause)>>,
     /// The close presses of a window of the app's own: how many, and the
-    /// last one's reason (the main window's are the environment's).
+    /// last one's reason (the app root's are the environment's).
     close_press: Option<Signal<(u64, CloseReason)>>,
-    /// What a window of the app's own was set to before its element was
-    /// mounted (its content's first render): opened with it.
-    early: Option<Signal<WindowAttributes>>,
+    /// What a window of the app's own was set to and asked for before its
+    /// element was mounted (its content's first render): opened with it.
+    early: Option<Signal<Early>>,
+}
+
+/// What a window's ref was given before its element was mounted.
+#[derive(Clone, Default, PartialEq)]
+struct Early {
+    /// Joins the options it opens with.
+    attributes: WindowAttributes,
+    /// Sent after it opens, in order (`focus()`, `set_mode()`, ...).
+    commands: Vec<DesktopCommand>,
+    /// It closed: nothing more is kept.
+    closed: bool,
 }
 
 impl fmt::Debug for WindowRef {
@@ -155,7 +174,15 @@ impl PartialEq for WindowRef {
     }
 }
 
-/// The main window.
+/// The app root's ref, for commands about the application host: it is not a
+/// user window and has no visible window in window model v2. A desktop app
+/// declares its UI with [`window`]; off the desktops [`window`] shows its
+/// content in the app's one surface. Its window requests (`show`, `hide`,
+/// `focus`, `close`, `minimize`, `restore`, modes and bounds) do nothing: the
+/// host never shows and is not a window to close; [`WindowRef::request_attention`]
+/// still reaches the platform: the app's Dock icon bounces or its launcher
+/// entry turns urgent (the hidden host has no taskbar button on Windows). Use
+/// [`quit`] (or `Application.quit`) to end the app.
 pub fn main_window() -> WindowRef {
     WindowRef {
         id: Rc::from("main"),
@@ -169,26 +196,62 @@ pub fn main_window() -> WindowRef {
 }
 
 /// The window the calling code renders in (TS: `currentWindow()`): the
-/// nearest [`window`] around it, else the main window. Never the focused
-/// window. Call it while rendering and keep the handle: listeners and
-/// tasks find no window around them.
+/// nearest [`window`] around it. Never the focused window. Call it while
+/// rendering and keep the handle: listeners and tasks find no window
+/// around them. Outside every window it is [`main_window`]: the app root's
+/// ref, which a released app's plain root renders in (not a user window on
+/// the desktops).
 pub fn current_window() -> WindowRef {
     super::use_context::<WindowRef>().unwrap_or_else(main_window)
 }
 
+/// The ref of a window JS opened (`<Window>` of `nsh/desktop`) at node
+/// `node`, under its own owner, for the Rust components rendered inside it:
+/// [`current_window`] finds it as it finds a [`window`]'s, with the state
+/// and title bar area `reported` gives and [`WindowRef::report`] keeps.
+/// Commands go to the node; JS keeps its own handle of the window.
+pub(crate) fn js_window(
+    id: &str,
+    node: crate::NodeId,
+    executor: &Rc<super::Executor>,
+    reported: (Option<WindowState>, Edges<Points>),
+) -> (Owner, WindowRef) {
+    Owner::detached().run(|| {
+        super::create_root(|| {
+            let element = ElementRef::new(executor);
+            if let Some(target) = element.target() {
+                target.attach(node);
+            }
+            let this = WindowRef {
+                id: Rc::from(id),
+                target: Target::Own(element),
+                state: Some(super::signal(reported.0)),
+                title_bar: Some(super::signal(reported.1)),
+                close: None,
+                close_press: None,
+                early: None,
+            };
+            super::provide_context(this.clone());
+            this
+        })
+    })
+}
+
 impl WindowRef {
-    /// Its id: the app's (`"main"` for the main window).
+    /// Its id: the app's (`"main"` is a conventional first-window id, with
+    /// no special behavior).
     pub fn id(&self) -> &str {
         &self.id
     }
 
-    /// It is the main window.
+    /// Whether its id is `"main"` (a conventional first-window id; there
+    /// is no privileged window).
     pub fn is_main(&self) -> bool {
-        matches!(self.target, Target::Main)
+        self.id.as_ref() == "main"
     }
 
     /// The ref on a window of the app's own's dialog root (its node is the
-    /// window's root node); `None` for the main window.
+    /// window's root node); `None` for the app root's ref.
     pub(crate) fn dialog_root(&self) -> Option<super::ElementRef> {
         match &self.target {
             Target::Main => None,
@@ -198,16 +261,37 @@ impl WindowRef {
 
     fn command(&self, command: DesktopCommand) {
         match self.target {
-            Target::Main => super::ambient::desktop_command(command),
-            // Not mounted yet (set while it first renders): the attributes
-            // join the options it opens with, nothing else reaches it.
-            Target::Own(element) => match (command, self.early) {
-                (DesktopCommand::SetAttributes(attributes), Some(early))
-                    if element.node().is_none() =>
-                {
-                    early.update(|e| e.merge(&attributes));
+            Target::Main => {
+                // The host is not a user window: a request would act on the
+                // hidden host, and minimize/restore/mode can present it on
+                // Linux or Windows. Attributes keep the app-root defaults.
+                // Attention is the app's (its Dock icon or launcher entry),
+                // so it passes like the attributes do.
+                if matches!(
+                    command,
+                    DesktopCommand::SetAttributes(_)
+                        | DesktopCommand::Request(WindowRequest::RequestAttention { .. })
+                ) {
+                    super::ambient::desktop_command(command);
                 }
-                (command, _) => element.send(Command::Desktop(Box::new(command))),
+            }
+            // Not mounted yet (`open_window`, or set while it first
+            // renders): the attributes join the options it opens with, and
+            // the other commands follow its opening, in order.
+            Target::Own(element) => match self.early {
+                Some(early) if element.node().is_none() => {
+                    if !early.is_live() {
+                        return;
+                    }
+                    early.update(|e| match command {
+                        _ if e.closed => {}
+                        DesktopCommand::SetAttributes(attributes) => {
+                            e.attributes.merge(&attributes)
+                        }
+                        command => e.commands.push(command),
+                    });
+                }
+                _ => element.send(Command::Desktop(Box::new(command))),
             },
         }
     }
@@ -233,8 +317,12 @@ impl WindowRef {
         self.command(DesktopCommand::SetAttributes(Box::new(attributes)));
     }
 
-    /// Shows it, restoring it when minimized.
+    /// Shows it, restoring it when minimized. The app root's ref never
+    /// shows: the host is invisible in window model v2.
     pub fn show(&self) {
+        if matches!(self.target, Target::Main) {
+            return;
+        }
         self.command(DesktopCommand::Request(WindowRequest::Show));
     }
 
@@ -243,20 +331,42 @@ impl WindowRef {
         self.command(DesktopCommand::Request(WindowRequest::Hide));
     }
 
-    /// Shows it, brings it to the front of its level and focuses it.
+    /// Shows it, brings it to the front of its level and focuses it. The app
+    /// root's ref never shows or takes focus.
     pub fn focus(&self) {
+        if matches!(self.target, Target::Main) {
+            return;
+        }
         self.command(DesktopCommand::Request(WindowRequest::Focus));
     }
 
     /// Closes it, whatever `close_on_press` says. A [`window`] reports it
     /// to [`Window::on_open_change`] with [`WindowCloseCause::Close`], so
-    /// the app's `open` state follows. The main window closes as when the
-    /// user closes it: the app ends with its last window (an embedding host
+    /// the app's `open` state follows. Only this window closes; the app's
+    /// last-window policy decides whether the app ends (an embedding host
     /// decides).
     pub fn close(&self) {
         match &self.close {
             Some(close) => close(WindowCloseCause::Close),
             None => self.command(DesktopCommand::Request(WindowRequest::Close)),
+        }
+    }
+
+    /// What the platform reported of a window JS opened
+    /// ([`js_window`]): its state and title bar area follow.
+    pub(crate) fn report(&self, event: &WindowEvent) {
+        match event {
+            WindowEvent::State(next) => {
+                if let Some(state) = self.state {
+                    state.try_set(Some(**next));
+                }
+            }
+            WindowEvent::TitleBar(area) => {
+                if let Some(title_bar) = self.title_bar {
+                    title_bar.try_set(*area);
+                }
+            }
+            _ => {}
         }
     }
 
@@ -451,7 +561,7 @@ pub struct Window {
 ///     .content(inspector_panel)
 /// ```
 ///
-/// Off the desktops it shows nothing.
+/// Off the desktops it shows its content in the app's one surface.
 pub fn window() -> Window {
     Window {
         options: WindowOptions::default(),
@@ -479,7 +589,7 @@ impl Window {
         self
     }
 
-    /// The id of the window that owns it (`"main"`: the main window).
+    /// The id of the window that owns it (`"main"` is a conventional id).
     pub fn parent(mut self, id: impl Into<String>) -> Self {
         self.options.parent = Some(id.into());
         self
@@ -578,8 +688,15 @@ impl Window {
 
 impl IntoElement for Window {
     fn into_element(self) -> AnyElement {
-        if !super::os().is_desktop() {
-            return super::when(false, Vec::<AnyElement>::new).into_element();
+        // Off the desktops, and in a terminal, the app has one surface: the
+        // window's content is the app's screen while `open`, as TSX's
+        // `<Window>` does.
+        if !super::os().is_desktop() || super::idiom() == crate::platform::Idiom::Terminal {
+            let open = self.open.unwrap_or(super::Reactive::Static(true));
+            return match self.content {
+                Some(content) => super::when(move || open.get(), move || content()).into_element(),
+                None => super::when(false, Vec::<AnyElement>::new).into_element(),
+            };
         }
         let Window {
             options,
@@ -624,11 +741,17 @@ impl IntoElement for Window {
                     super::signal(None::<WindowState>),
                     super::signal(Edges::<Points>::default()),
                     super::signal((0u64, CloseReason::default())),
-                    super::signal(WindowAttributes::default()),
+                    super::signal(Early::default()),
                 ),
             };
-            // A window opened again starts from its options.
-            super::untracked(|| early.set(WindowAttributes::default()));
+            // Closed, its ref reaches nothing: what it is asked for then is
+            // not kept for a later opening.
+            super::cleanup(move || {
+                early.try_set(Early {
+                    closed: true,
+                    ..Early::default()
+                });
+            });
             let close: Rc<dyn Fn(WindowCloseCause)> = {
                 let on_open_change = on_open_change.clone();
                 Rc::new(move |cause: WindowCloseCause| {
@@ -666,11 +789,16 @@ impl IntoElement for Window {
                     for r in reactive.iter() {
                         o.attributes.merge(&r.get());
                     }
-                    early.with(|e| o.attributes.merge(e));
-                    o
+                    let commands = early.with(|e| {
+                        o.attributes.merge(&e.attributes);
+                        e.commands.clone()
+                    });
+                    (o, commands)
                 };
-                let apply = |attrs: &mut super::Attrs, o: WindowOptions| {
-                    attrs.rare_mut().window = Some(Box::new(o));
+                let apply = |attrs: &mut super::Attrs, (o, commands): (WindowOptions, _)| {
+                    let rare = attrs.rare_mut();
+                    rare.window = Some(Box::new(o));
+                    rare.window_commands = commands;
                 };
                 // Bound even with static options: what its content sets
                 // while it first renders (`early`) joins them.
@@ -702,8 +830,8 @@ impl IntoElement for Window {
                                 }
                             }
                             WindowEvent::Closed { cause } => close(*cause),
-                            // The root's ([`Core`](crate::Core) hears it).
-                            WindowEvent::QuitRequest => {}
+                            // The root's ([`Core`](crate::Core) hears them).
+                            WindowEvent::QuitRequest | WindowEvent::Reopen => {}
                         }
                     }),
                 ));
@@ -724,8 +852,8 @@ impl IntoElement for Window {
     }
 }
 
-/// Every window of the app's own that is open now (the main window aside),
-/// however it opened: a [`window`] in the tree or [`open_window`].
+/// Every window of the app's own that is open now (the app root's ref
+/// aside), however it opened: a [`window`] in the tree or [`open_window`].
 #[derive(Default, Clone)]
 struct LiveWindows(Vec<WindowRef>);
 
@@ -802,7 +930,7 @@ impl PartialEq for Opened {
 /// inspector.set_mode(WindowMode::Normal);
 /// ```
 pub fn open_window(mut window: Window) -> Option<WindowRef> {
-    if !super::os().is_desktop() {
+    if !super::os().is_desktop() || super::idiom() == crate::platform::Idiom::Terminal {
         log::warn!("open_window: windows of the app's own open on the desktops only");
         return None;
     }
@@ -873,7 +1001,7 @@ pub fn open_window(mut window: Window) -> Option<WindowRef> {
                 })
             }),
             close_press: Some(super::signal((0, CloseReason::default()))),
-            early: Some(super::signal(WindowAttributes::default())),
+            early: Some(super::signal(Early::default())),
         })
     });
     window.on_open_change = Some(on_open_change);
@@ -933,10 +1061,11 @@ impl super::Component for OpenedWindowsHost {
 
 /// Quits the app, as the application menu's Quit item
 /// ([`MenuRole::Quit`]) and the platform's quit key do (TS: `Application.quit`):
-/// its windows close and the engine stops as when the last window closes
-/// (an embedding app's close handling runs as it does for the Quit item),
-/// then the app's run ends, also when closing the window alone would leave
-/// it running (a window kept hidden for the Dock, a tray icon). It quits
+/// the engine stops as when the last window closes (an embedding app's close
+/// handling runs as it does for the Quit item), then the app's run ends, also
+/// when closing the window alone would leave it running (a window kept hidden
+/// for the Dock, a tray icon). It is not a per-window close path: windows'
+/// `on_open_change` may not run. It quits
 /// whether or not the app listens to quit requests ([`on_quit_request`]):
 /// that is how an app that asks first quits once it is ready; a GPUI host
 /// that owns the window is asked first and quits when it is ready. For a
@@ -948,6 +1077,20 @@ impl super::Component for OpenedWindowsHost {
 /// On platforms without desktop windows this has no effect.
 pub fn quit() {
     super::desktop_command(DesktopCommand::Quit);
+}
+
+/// Sets when closing the app's last window quits it (TS:
+/// `Application.setQuitMode`; nsh.json's `application.quitMode`):
+/// [`desktop::QuitMode::Platform`] (the default) follows the platform
+/// (macOS stays in the Dock; Windows and Linux quit),
+/// [`desktop::QuitMode::LastWindowClosed`] quits on every platform, and
+/// [`desktop::QuitMode::Explicit`] leaves the app running so it can open
+/// another window, show a tray menu or call [`quit`]. The app root stays
+/// alive while no window is open. A view embedded in another app leaves
+/// the app's lifecycle to that app; on platforms without desktop windows
+/// this has no effect.
+pub fn set_quit_mode(mode: desktop::QuitMode) {
+    super::desktop_command(DesktopCommand::SetQuitMode(mode));
 }
 
 /// Sets which additional requests go to [`on_quit_request`] on standalone
@@ -1039,6 +1182,30 @@ pub fn on_quit_request(f: impl Fn() + 'static) {
     cleanup(move || drop(subscription));
 }
 
+/// Runs `f` each time the OS asks the app to show itself (TS:
+/// `Application.on("reopen", …)`): a macOS Dock or Finder reopen, or a
+/// later launch on Windows and Linux. The app opens or focuses the window
+/// it wants; nothing shows implicitly. Removed with the current owner.
+pub fn on_reopen(f: impl Fn() + 'static) {
+    let owner = Owner::current();
+    let listener: super::quit::ReopenListener = Rc::new(move || owner.run(&f));
+    let subscription = add_reopen_listener(listener);
+    cleanup(move || drop(subscription));
+}
+
+/// Runs `f` when the app's last window closes (TS:
+/// `Application.on("lastWindowClosed", …)`), after the window's own close
+/// path. The quit mode is decided at that close; a JS listener runs in a
+/// later commit, after the decision, so an app that stays alive with no
+/// windows sets `quitMode: "explicit"` before the last close.
+/// Removed with the current owner.
+pub fn on_last_window_closed(f: impl Fn() + 'static) {
+    let owner = Owner::current();
+    let listener: super::quit::LastWindowClosedListener = Rc::new(move || owner.run(&f));
+    let subscription = add_last_window_closed_listener(listener);
+    cleanup(move || drop(subscription));
+}
+
 /// Adds `listener` to what hears the user ask to quit, until the
 /// subscription drops (`Application.on("quitRequest")` keeps one per JS
 /// listener).
@@ -1048,6 +1215,26 @@ pub(crate) fn add_quit_request_listener(
     let requests = &super::ambient::executor().quit_requests;
     let id = requests.borrow_mut().add(listener);
     super::quit::Subscription::new(requests, id)
+}
+
+/// Adds `listener` to what hears the OS ask the app to show itself
+/// (`Application.on("reopen")` keeps one per JS listener).
+pub(crate) fn add_reopen_listener(
+    listener: super::quit::ReopenListener,
+) -> super::quit::Subscription<super::quit::ReopenListener> {
+    let reopens = &super::ambient::executor().reopens;
+    let id = reopens.borrow_mut().add(listener);
+    super::quit::Subscription::new(reopens, id)
+}
+
+/// Adds `listener` to what hears the app's last window close
+/// (`Application.on("lastWindowClosed")` keeps one per JS listener).
+pub(crate) fn add_last_window_closed_listener(
+    listener: super::quit::LastWindowClosedListener,
+) -> super::quit::Subscription<super::quit::LastWindowClosedListener> {
+    let closed = &super::ambient::executor().last_window_closed;
+    let id = closed.borrow_mut().add(listener);
+    super::quit::Subscription::new(closed, id)
 }
 
 /// Adds `listener` to what runs as the app quits, until the subscription
@@ -1691,6 +1878,12 @@ pub fn set_tray(tray: impl Into<Option<Tray>>) {
 /// # Panics
 ///
 /// When `keystroke` is not one.
+///
+/// The panic is not fatal to the app: like any panic in a component, it
+/// ends the component that made the call (its error boundary hears it, or
+/// it is logged) and the engine goes on. To take keystrokes from user
+/// settings, check them first with
+/// [`Shortcut::parse`](crate::desktop::Shortcut::parse).
 pub fn register_global_shortcut(keystroke: &str, on_press: impl Fn() + 'static) -> Answer<bool> {
     let shortcut = match Shortcut::parse(keystroke, super::os() == Os::MacOs) {
         Ok(shortcut) => shortcut,

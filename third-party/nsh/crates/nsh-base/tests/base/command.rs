@@ -169,7 +169,9 @@ fn launch(root: Root) -> Headless {
 }
 
 fn start(props: HarnessProps) -> Headless {
-    let mut app = launch(Root::new::<Harness>(move || props.clone()));
+    let mut app = launch(nsh_testing::windowed_root_with::<Harness>(move || {
+        props.clone()
+    }));
     app.wait_for("role:option").unwrap();
     app
 }
@@ -545,8 +547,11 @@ fn Bordered(props: BorderedProps) -> impl IntoElement {
 #[test]
 fn the_row_a_key_reaches_is_restyled_with_its_focus_border() {
     const RED: Color = Color(0xff0000ff);
-    let mut app = launch(Root::new::<Bordered>(|| BorderedProps {
-        item_class: "border border-transparent focus:border-[#ff0000] focus:bg-[#00ff00]".into(),
+    let mut app = launch(nsh_testing::windowed_root_with::<Bordered>(|| {
+        BorderedProps {
+            item_class: "border border-transparent focus:border-[#ff0000] focus:bg-[#00ff00]"
+                .into(),
+        }
     }));
     app.wait_for("text:highlighted:new").unwrap();
     let styles = Arc::new(Mutex::new(Vec::<(NodeId, Color, Color)>::new()));
@@ -654,7 +659,9 @@ type Measure = Box<dyn Fn(&mut Headless, &dyn Fn(&mut Headless)) -> Cost>;
 /// to it cost.
 fn measured(props: ManyProps) -> (Headless, Measure) {
     let run = props.run;
-    let mut app = launch(Root::new::<Many>(move || props.clone()));
+    let mut app = launch(nsh_testing::windowed_root_with::<Many>(move || {
+        props.clone()
+    }));
     app.wait_for("role:option[File 0]").unwrap();
     let counts = Arc::new([const { AtomicUsize::new(0) }; 3]);
     let into = counts.clone();
@@ -724,7 +731,9 @@ fn a_key_press_changes_the_row_left_and_the_row_reached_only() {
 fn a_large_list_makes_only_the_rows_in_view_and_a_query_filters_it_natively() {
     let props = sized(5000);
     let run = props.run;
-    let mut app = launch(Root::new::<Many>(move || props.clone()));
+    let mut app = launch(nsh_testing::windowed_root_with::<Many>(move || {
+        props.clone()
+    }));
     app.wait_for("role:option[File 0]").unwrap();
     // 5000 items and 100 headers: only those near the 300-point list are
     // made, and drawn.

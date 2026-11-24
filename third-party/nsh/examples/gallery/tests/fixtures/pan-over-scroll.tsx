@@ -1,4 +1,5 @@
 import { mount, platform, Scroll, signal, Text, View } from "nsh";
+import { Window } from "nsh/desktop";
 
 // A chat: a list filling the screen and a composer card over its bottom
 // that a drag down moves (`panActivation` and responder moves); in the list,
@@ -52,4 +53,4 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => <Window id="main">{App}</Window>);

@@ -167,7 +167,7 @@ fn start_probe() -> (Headless, Arc<Probe>) {
     let mut app = Headless::start(EngineConfig {
         viewport: Size::new(px(600.0), px(500.0)),
         context: EngineContext::default().with(probe.clone()),
-        ..EngineConfig::new(Root::of::<SizeProbe>())
+        ..EngineConfig::new(nsh_testing::windowed_root::<SizeProbe>())
     })
     .unwrap();
     app.wait_until(

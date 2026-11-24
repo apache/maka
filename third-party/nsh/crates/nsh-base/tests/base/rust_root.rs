@@ -4,7 +4,7 @@
 //! render and work all the same, and the theme's tokens are there.
 
 use nsh_base::{SelectEntry, SelectItem, parts, registry_of, select, text_view};
-use nsh_core::{element::Root, prelude::*};
+use nsh_core::prelude::*;
 use nsh_engine::EngineConfig;
 use nsh_testing::Headless;
 
@@ -33,7 +33,7 @@ fn App() -> impl IntoElement {
 fn components_of_parts_left_out_render_by_type() {
     let config = EngineConfig {
         ui_sets: vec![registry_of([parts::core as parts::Part])],
-        ..EngineConfig::new(Root::of::<App>())
+        ..EngineConfig::new(nsh_testing::windowed_root::<App>())
     };
     let mut app = Headless::start(config).unwrap();
     app.wait_for("Served by type").unwrap();

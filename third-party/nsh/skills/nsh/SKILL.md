@@ -51,7 +51,7 @@ narrow change, extend the existing system within the requested scope.
 | Choose it when | The app ships in its binary; medium and large apps, demanding logic | A Rust core, plus screens that change often or arrive as signed packages | UI delivered at run time, with no Rust of your own |
 | Runs on | The engine and your crate; no JavaScript VM | QuickJS (the browser's engine on the web) with your crate | QuickJS (the browser's engine on the web) |
 | Start | `nsh init my-app --template rust` | `nsh init my-app --template mixed` | `nsh init my-app --template ts` |
-| How to recognize one | `nsh.json` has `"rust"` and `"root"` | `nsh.json` has `"rust"`, no `"root"`, and a TSX entry | `nsh.json` has no `"rust"` |
+| How to recognize one | `nsh.json` has `"rust"` and `"root"` | A TSX entry with Rust nshm of its own in `ext/` (`"dependencies"` by path), or `"rust"` with no `"root"` | `nsh.json` has no `"rust"` |
 | Edits | Rebuild and restart | TSX hot, Rust restarts | Hot |
 | Read first | [rust.md](references/rust.md) | [mixed.md](references/mixed.md), and rust.md for the crate | [tsx.md](references/tsx.md) |
 | Components | [rust-ui.md](references/rust-ui.md) | Both | tsx.md, `.nsh/types` |

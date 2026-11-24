@@ -1247,6 +1247,19 @@ struct PaginationContext {
     changed: Signal<u64>,
 }
 
+impl PaginationContext {
+    fn indicator_target(&self, shown: Option<Memo<usize>>) -> Option<ElementRef> {
+        self.changed.get();
+        // An item can notify the indicator after the carousel owning the slide is gone.
+        let index = shown?.try_get()?;
+        self.items
+            .borrow()
+            .iter()
+            .find(|item| item.index.get() as usize == index)
+            .map(|item| item.node)
+    }
+}
+
 /// The props of [`CarouselPagination`].
 #[derive(Debug, Clone, PartialEq, Props)]
 pub struct CarouselPaginationProps {
@@ -1281,21 +1294,10 @@ pub fn CarouselPagination(props: CarouselPaginationProps, _cx: Scope<NoEvent>) -
         changed: signal(0),
     };
     provide_context(pagination.clone());
-    let ctl = use_context::<CarouselContext>().map(|CarouselContext(ctl)| ctl);
+    let shown = use_context::<CarouselContext>().map(|CarouselContext(ctl)| ctl.0.shown);
+    let current = computed(move || pagination.indicator_target(shown));
     let (class, style) = (props.indicator_class, props.indicator_style);
     let styled = move || class.with(Option::is_some) || style.with(|s| *s != Style::default());
-    let current = {
-        let PaginationContext { items, changed, .. } = pagination;
-        computed(move || {
-            changed.get();
-            let shown = ctl.as_ref()?.shown();
-            items
-                .borrow()
-                .iter()
-                .find(|item| item.index.get() as usize == shown)
-                .map(|item| item.node)
-        })
-    };
     view()
         .role(AccessibilityRole::Group)
         .optional_label(props.accessibility_label)
@@ -1398,4 +1400,28 @@ pub fn CarouselPaginationItem(
         None => base,
     }
     .child(props.children)
+}
+
+#[cfg(test)]
+mod tests {
+    use nsh_core::element::{create_root, reactive::Runtime};
+
+    use super::*;
+
+    #[test]
+    fn the_indicator_loses_its_target_when_its_carousel_is_gone() {
+        let runtime = Runtime::default();
+        let _entered = runtime.enter();
+        let (carousel, shown) = create_root(|| computed(|| 0));
+        let (owner, pagination) = create_root(|| PaginationContext {
+            items: Rc::default(),
+            next_key: Rc::new(Cell::new(1)),
+            changed: signal(0),
+        });
+        carousel.dispose();
+        // Removing the last item still notifies the indicator while its own scope is live.
+        pagination.changed.update(|n| *n += 1);
+        assert_eq!(pagination.indicator_target(Some(shown)), None);
+        owner.dispose();
+    }
 }

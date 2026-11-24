@@ -85,6 +85,7 @@ fn app() -> impl IntoElement {
 ```tsx tabs
 import { mount, Text, View } from "nsh";
 import { Button, createNavStack, NavPage, NavStack } from "nsh/base";
+import { Window } from "nsh/desktop";
 
 type Route = { name: "home" } | { name: "detail"; id: number };
 
@@ -136,7 +137,11 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 On iOS and Android the page shows the system header with `title` and a back button; on the desktops and the web it
@@ -225,6 +230,7 @@ the props' snake-case names.
 | `headerVisible` | `.header_visible(..)` | `boolean` | `true` | iOS and Android: the system header shows. |
 | `headerTransparent` | `.header_transparent(..)` | `boolean` | `false` | iOS and Android: the content extends under a transparent system header. |
 | `headerShadowVisible` | `.header_shadow_visible(..)` | `boolean` | `true` | iOS: the hairline under the system header. `false` draws a bar without it, as iOS 26's own bars. Android's header has none. |
+| `headerTitleAlign` | `.header_title_align(..)` | `"left" \| "center"` | `"left"` | Android: the title at the start of the system header, or centered between the items on either side. iOS: the system bar always centers the title and ignores this value. |
 | `headerBackgroundOnScroll` | `.header_background_on_scroll(..)` | `boolean` | `false` | iOS: with `headerTransparent`, the system header stays clear while the content rests at its top and shows its background once the content scrolls under it, as UIKit's own bars. It follows the largest visible scroll view that starts at the top of the page. Ignored elsewhere. |
 | `hidesBottomBarWhenPushed` | `.hides_bottom_bar_when_pushed(..)` | `boolean` | `false` | iOS: the system tab bar leaves while this page is on top, moving in the transition — the same animation as the page, and the bar is never rebuilt; it comes back when the page pops. |
 | `headerLargeTitle` | `.header_large_title(..)` | `boolean` | `false` | iOS: a large title that shrinks into the bar as the content scrolls; the content scrolls under the header. |

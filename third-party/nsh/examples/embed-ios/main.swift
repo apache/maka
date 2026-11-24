@@ -9,13 +9,19 @@
 // signed package (`nsh publish`) verified against a root key; a real app
 // downloads the package, here it ships as `nsh/update.nshpkg` with
 // `nsh/root.pub`. "Brand" puts the host's brand over the app's theme
-// (`setThemeOverrides`).
+// (`setThemeOverrides`). The window lives in a scene (`SceneDelegate`), which
+// hands the links that open the app to `NshAppView.openURL`.
 
 import NativeShell
 import UIKit
 
 final class EmbedController: UIViewController, NshScrollWatcher {
     private let app = NshAppView()
+
+    /// Hands `url`, a link the app was opened with, to the NSH app (it waits for the app to load).
+    func open(_ url: URL) {
+        app.openURL(url)
+    }
     private let status = UILabel()
     /// Follows the app's page (`embedded.scroll`) in the frame of its scroll.
     private let offset = UILabel()
@@ -249,18 +255,52 @@ extension UIColor {
     }
 }
 
+/// The app: its window lives in a scene (``SceneDelegate``), as UIKit's scene life cycle wants. The scene is set up in
+/// code, as NSH's own iOS runner does, so the Info.plist needs only `UIApplicationSupportsMultipleScenes` (`false`).
 final class AppDelegate: UIResponder, UIApplicationDelegate {
-    var window: UIWindow?
-
     func application(
         _ application: UIApplication,
-        didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
-    ) -> Bool {
-        let window = UIWindow(frame: UIScreen.main.bounds)
+        configurationForConnecting session: UISceneSession,
+        options: UIScene.ConnectionOptions
+    ) -> UISceneConfiguration {
+        let configuration = UISceneConfiguration(name: nil, sessionRole: session.role)
+        configuration.delegateClass = SceneDelegate.self
+        return configuration
+    }
+}
+
+/// The window, and the links that open the app: a custom scheme's (`openURLContexts`), a Universal Link's (a
+/// `webpageURL`), or an address continued from another device (`NshAppView.handoff`, `userInfo["url"]`). Each goes to
+/// `NshAppView.openURL`, which hands the NSH app the links it claims (`UrlScheme.on("open")`).
+final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
+    var window: UIWindow?
+
+    private var controller: EmbedController? { window?.rootViewController as? EmbedController }
+
+    func scene(
+        _ scene: UIScene, willConnectTo session: UISceneSession, options connectionOptions: UIScene.ConnectionOptions
+    ) {
+        guard let scene = scene as? UIWindowScene else { return }
+        let window = UIWindow(windowScene: scene)
         window.rootViewController = EmbedController()
         window.makeKeyAndVisible()
         self.window = window
-        return true
+        // The links that launched the app.
+        for context in connectionOptions.urlContexts { controller?.open(context.url) }
+        for activity in connectionOptions.userActivities { continueActivity(activity) }
+    }
+
+    func scene(_ scene: UIScene, openURLContexts URLContexts: Set<UIOpenURLContext>) {
+        for context in URLContexts { controller?.open(context.url) }
+    }
+
+    func scene(_ scene: UIScene, continue userActivity: NSUserActivity) {
+        continueActivity(userActivity)
+    }
+
+    private func continueActivity(_ activity: NSUserActivity) {
+        let handedOff = (activity.userInfo?["url"] as? String).flatMap { URL(string: $0) }
+        if let url = activity.webpageURL ?? handedOff { controller?.open(url) }
     }
 }
 

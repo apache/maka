@@ -21,6 +21,7 @@ function App() {
   const report = signal("Not checked");
   const check = () => {
     const cx = kept!;
+    const hello = cx.measureText("Hello");
     report.set(
       [
         `size ${size}`,
@@ -34,7 +35,8 @@ function App() {
         `current ${cx.isPointInPath(150, 30)}`,
         `stroke ${cx.isPointInStroke(triangle, 50, 1)}`,
         `dash ${cx.getLineDash().join(",")}`,
-        `measured ${cx.measureText("Hello").width > 0}`,
+        `measured ${hello.width > 0}`,
+        `extent ${hello.fontBoundingBoxAscent > 0 && hello.fontBoundingBoxDescent >= 0}`,
       ].join(" "),
     );
   };

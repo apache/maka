@@ -31,6 +31,13 @@ use sha2::{Digest as _, Sha256};
 ))]
 pub mod install;
 
+#[cfg(any(
+    all(target_os = "linux", not(target_env = "ohos")),
+    target_os = "macos",
+    windows
+))]
+pub mod delta;
+
 /// The name of the manifest, next to the release's assets.
 pub const MANIFEST: &str = "latest.json";
 /// The name of the manifest's detached signature.
@@ -74,6 +81,10 @@ pub struct Config {
     pub id: String,
     /// The running version.
     pub version: String,
+    /// The app's display name (`nsh.json` `"name"`), which the built-in
+    /// update prompt shows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     /// `owner/repo`: updates from its GitHub Releases.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub github: Option<String>,
@@ -260,6 +271,7 @@ impl Config {
             url,
             sha256: asset.sha256.clone(),
             size: asset.size,
+            delta: self.delta(&asset.deltas)?,
         }))
     }
 
@@ -304,6 +316,17 @@ impl Config {
     }
 
     /// The manifest's notes files, their URLs absolute and HTTPS.
+    /// The patch of `deltas` from the running version, its URL absolute.
+    fn delta(&self, deltas: &[Delta]) -> Result<Option<Delta>, Error> {
+        let Some(delta) = deltas.iter().find(|delta| delta.from == self.version) else {
+            return Ok(None);
+        };
+        let mut delta = delta.clone();
+        delta.url = resolve(&self.manifest_url(), &delta.url);
+        check_url(&delta.url).map_err(Error::Manifest)?;
+        Ok(Some(delta))
+    }
+
     fn localized_notes(
         &self,
         mut notes: BTreeMap<String, NotesFile>,
@@ -471,6 +494,33 @@ pub struct Asset {
     /// The archive's size in bytes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub size: Option<u64>,
+    /// Patches from earlier versions to this one ([`delta`]): an app
+    /// running `from` downloads one instead of the archive.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub deltas: Vec<Delta>,
+}
+
+/// A zstd patch from the app of one version to the app of the
+/// [`Manifest`]'s ([`delta`]). The app rebuilds its installed files as
+/// [`delta::base`] does, checks them against `base`, applies the patch and
+/// checks the result against `result`; on any difference it downloads the
+/// archive instead.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[non_exhaustive]
+pub struct Delta {
+    /// The version it patches.
+    pub from: String,
+    /// The SHA-256 of that version's files, as [`delta::base`] writes them.
+    pub base: String,
+    /// Where the patch is, absolute or relative to the manifest.
+    pub url: String,
+    /// The patch's SHA-256, in hex.
+    pub sha256: String,
+    /// The patch's size in bytes.
+    pub size: u64,
+    /// The SHA-256 of what the patch makes: a `.tar` of the new app.
+    pub result: String,
 }
 
 /// A newer version for this machine.
@@ -490,6 +540,8 @@ pub struct Available {
     pub sha256: Option<String>,
     /// The archive's size.
     pub size: Option<u64>,
+    /// The patch from the running version, if the manifest has one.
+    pub delta: Option<Delta>,
 }
 
 /// This machine's key in [`Manifest::platforms`]: `<os>-<arch>` on the
@@ -856,6 +908,45 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    #[test]
+    fn the_patch_from_the_running_version_is_offered() {
+        let delta = |from: &str| {
+            serde_json::json!({ "from": from, "base": "aa", "url": format!("from-{from}.patch"),
+                                "sha256": "bb", "size": 3, "result": "cc" })
+        };
+        let manifest = |deltas: serde_json::Value| {
+            serde_json::to_vec(&serde_json::json!({
+                "id": "com.example.app", "version": "1.3.0",
+                "platforms": { "linux-x86_64": { "url": "a.tar.gz", "sha256": "ab", "size": 2,
+                                                 "deltas": deltas } },
+            }))
+            .unwrap()
+        };
+        let check = |bytes: Vec<u8>| {
+            config()
+                .check(&bytes, None, "linux-x86_64")
+                .unwrap()
+                .unwrap()
+        };
+        let available = check(manifest(serde_json::json!([
+            delta("1.1.0"),
+            delta("1.2.0")
+        ])));
+        let offered = available.delta.unwrap();
+        assert_eq!(offered.from, "1.2.0");
+        assert_eq!(
+            offered.url,
+            "https://github.com/owner/repo/releases/latest/download/from-1.2.0.patch"
+        );
+        assert!(
+            check(manifest(serde_json::json!([delta("1.1.0")])))
+                .delta
+                .is_none()
+        );
+        // Older manifests have none.
+        assert!(check(manifest(serde_json::json!([]))).delta.is_none());
     }
 
     #[test]

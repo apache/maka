@@ -45,6 +45,8 @@
 //!   follows the embedding app's, which is the application;
 //! - the wake count (`wakeCount()`): one more on every
 //!   `NSWorkspaceDidWakeNotification`, for every surface;
+//! - the network (`network()`): the system's path monitor
+//!   (`nsh_platform_apple::network`), live;
 //! - the pixel ratio: the window's backing scale factor;
 //! - the window's bounds, mode and display ([`crate::window_state`]), and
 //!   the displays, sent again when they change;
@@ -99,10 +101,9 @@ use objc2_app_kit::{
     NSAttributedStringDocumentFormats, NSBitmapImageFileType, NSBitmapImageRep,
     NSDocumentTypeDocumentAttribute, NSEvent, NSEventModifierFlags, NSEventType,
     NSExcludedElementsDocumentAttribute, NSHTMLTextDocumentType, NSModalPanelRunLoopMode,
-    NSModalResponse, NSModalResponseAbort, NSPasteboard, NSPasteboardItem, NSPasteboardTypeHTML,
-    NSPasteboardTypeRTF, NSPasteboardTypeRTFD, NSPasteboardTypeString, NSScreen, NSTextField,
-    NSWorkspace, NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification,
-    NSWorkspaceDidWakeNotification,
+    NSModalResponse, NSModalResponseAbort, NSPasteboard, NSPasteboardTypeHTML, NSPasteboardTypeRTF,
+    NSPasteboardTypeRTFD, NSPasteboardTypeString, NSScreen, NSTextField, NSWorkspace,
+    NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification, NSWorkspaceDidWakeNotification,
 };
 use objc2_foundation::{
     NSArray, NSAttributedString, NSCalendar, NSCurrentLocaleDidChangeNotification, NSData,
@@ -251,6 +252,14 @@ fn install(mtm: MainThreadMarker) {
                 ),
             NSNotificationCenter::defaultCenter().addObserverForName_object_queue_usingBlock(
                 Some(NSCurrentLocaleDidChangeNotification),
+                None,
+                Some(&queue),
+                &block,
+            ),
+            // The route to the network changed (`network()`): posted by
+            // the shared path monitor on the main thread.
+            NSNotificationCenter::defaultCenter().addObserverForName_object_queue_usingBlock(
+                Some(&nsh_platform_apple::network::changed_name()),
                 None,
                 Some(&queue),
                 &block,
@@ -410,7 +419,8 @@ fn update(surface: &Surface) {
     env.reduce_motion = workspace.accessibilityDisplayShouldReduceMotion();
     env.screen_reader = workspace.isVoiceOverEnabled();
     env.rtl = preferred_language_rtl();
-    env.pixel_ratio = pixel_ratio(surface);
+    env.pixel_ratio =
+        crate::window::primary(surface).map_or_else(|| pixel_ratio(surface), |(_, scale)| scale);
     env.os = Os::MacOs;
     env.os_version = os_version();
     env.idiom = Idiom::Desktop;
@@ -420,6 +430,7 @@ fn update(surface: &Surface) {
         env.lifecycle = lifecycle(surface.mtm, surface.testing());
         env.window_state = crate::window_state::read(surface);
     }
+    env.network = nsh_platform_apple::network::network(surface.mtm);
     surface.set_environment(env);
 }
 
@@ -636,6 +647,15 @@ fn os_version() -> (u16, u16) {
     })
 }
 
+/// Reports a clipboard write's result (`clipboard_write_result`).
+fn clipboard_written(surface: &Rc<Surface>, written: bool) {
+    surface.event(
+        ROOT_ID,
+        EventKind::ClipboardWrite,
+        EventPayload::Map(vec![("written", PayloadValue::Bool(written))]),
+    );
+}
+
 /// A command not addressed to a kind of view.
 pub(crate) fn command(surface: &Rc<Surface>, id: NodeId, command: &Command) {
     match command {
@@ -662,20 +682,25 @@ pub(crate) fn command(surface: &Rc<Surface>, id: NodeId, command: &Command) {
             text,
             NSAccessibilityPriorityLevel::Medium,
         ),
-        Command::SetClipboard(text) => write_clipboard(surface, text),
+        Command::SetClipboard(text) => {
+            let written = write_clipboard(surface, text);
+            clipboard_written(surface, written);
+        }
         Command::SetClipboardItem(item) => {
             if surface.terminal.get() {
-                write_clipboard(surface, &item.text);
+                let written = write_clipboard(surface, &item.text);
+                clipboard_written(surface, written);
                 return;
             }
             let pasteboard = NSPasteboard::generalPasteboard();
             pasteboard.clearContents();
             // SAFETY: immutable AppKit constants.
             let (string, kind_html) = unsafe { (NSPasteboardTypeString, NSPasteboardTypeHTML) };
-            pasteboard.setString_forType(&NSString::from_str(&item.text), string);
+            let mut written = pasteboard.setString_forType(&NSString::from_str(&item.text), string);
             if let Some(html) = &item.html {
-                pasteboard.setString_forType(&NSString::from_str(html), kind_html);
+                written &= pasteboard.setString_forType(&NSString::from_str(html), kind_html);
             }
+            clipboard_written(surface, written);
         }
         Command::ReadClipboard { id, has_only } => read_clipboard(surface, *id, *has_only),
         Command::SetClipboardImage(uri) => set_clipboard_image(uri),
@@ -704,7 +729,9 @@ pub(crate) fn command(surface: &Rc<Surface>, id: NodeId, command: &Command) {
             *scale,
             *format,
         ),
-        Command::Speech(command) => surface.control(|c| crate::speech::command(c, command)),
+        Command::Speech(command) => {
+            surface.control(|c| crate::speech::command(&surface.speech, c, command));
+        }
         Command::Audio(command) => surface.control(|c| {
             let base = surface.asset_base.borrow().clone();
             crate::audio::command(&surface.audio, c, command, base.as_ref())
@@ -1363,66 +1390,67 @@ pub(crate) fn pasted(pasteboard: &NSPasteboard) -> nsh_core::PasteEvent {
             .unwrap_or_default(),
     );
     paste.html = pasted_html(pasteboard).unwrap_or_default();
-    let file_url = NSString::from_str("public.file-url");
     for item in pasteboard
         .pasteboardItems()
         .map(|i| i.to_vec())
         .unwrap_or_default()
     {
-        if let Some(uri) = item.stringForType(&file_url) {
-            let Some((path, resolved)) = crate::file_drop::local_file_path_and_uri(&uri) else {
-                continue;
-            };
-            if has_fallback_inline_image(&item)
-                && is_unreadable_file_url(&path)
-                && let Some(bytes) = pasted_inline_image(&item, false)
-            {
-                paste.files.push(nsh_core::PastedFile::image(bytes));
-                continue;
-            }
-            paste.uris.push(resolved);
-            continue;
-        }
-        if let Some(bytes) = pasted_inline_image(&item, true) {
-            paste.files.push(nsh_core::PastedFile::image(bytes));
-        }
+        paste_item(&item, &mut paste);
     }
     paste
 }
 
-fn is_unreadable_file_url(path: &std::path::Path) -> bool {
-    use std::os::unix::fs::OpenOptionsExt;
-    let mut options = std::fs::OpenOptions::new();
-    options.read(true).custom_flags(libc::O_NONBLOCK);
-    matches!(
-        options.open(path),
-        Err(error)
-            if matches!(
-                error.kind(),
-                std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::NotFound
-            )
-    )
-}
-
-fn has_fallback_inline_image(item: &NSPasteboardItem) -> bool {
-    let types = item.types();
-    IMAGE_TYPES.iter().any(|(mime, kind)| {
-        *mime != "image/tiff" && types.containsObject(&NSString::from_str(kind))
-    })
-}
-
-fn pasted_inline_image(item: &NSPasteboardItem, allow_tiff: bool) -> Option<Vec<u8>> {
-    let (mime, bytes) = IMAGE_TYPES.iter().find_map(|(mime, kind)| {
+fn paste_item(item: &objc2_app_kit::NSPasteboardItem, paste: &mut nsh_core::PasteEvent) {
+    let uri = item
+        .stringForType(ns_string!("public.file-url"))
+        .and_then(|uri| crate::file_drop::local_file_uri(&uri));
+    if let Some(uri) = &uri {
+        let types = item.types();
+        // Finder can supply a file icon alongside the URL. Only probe
+        // the file when this item offers a non-TIFF inline image fallback.
+        if types.containsObject(ns_string!("com.apple.finder.node"))
+            || types.containsObject(ns_string!("com.apple.finder.noderef"))
+            || !IMAGE_TYPES.iter().any(|(mime, kind)| {
+                *mime != "image/tiff" && types.containsObject(&NSString::from_str(kind))
+            })
+            || nsh_core::access::file_url_path(uri).is_none_or(|path| prefer_file_url(&path))
+        {
+            paste.uris.push(uri.clone());
+            return;
+        }
+    }
+    let allow_tiff = uri.is_none();
+    let image = IMAGE_TYPES.iter().find_map(|(mime, kind)| {
         if !allow_tiff && *mime == "image/tiff" {
             return None;
         }
         item.dataForType(&NSString::from_str(kind))
+            .filter(|data| data.length() > 0)
             .map(|data| (*mime, data.to_vec()))
-    })?;
-    Some(match mime {
+    });
+    let Some((mime, bytes)) = image else {
+        paste.uris.extend(uri);
+        return;
+    };
+    let bytes = match mime {
         "image/tiff" | "image/bmp" => to_png(&bytes).unwrap_or(bytes),
         _ => bytes,
-    })
+    };
+    paste.files.push(nsh_core::PastedFile::image(bytes));
+}
+
+/// Keep directories and special files as URLs. Opening a regular file
+/// checks the current process's read access without reading its contents.
+fn prefer_file_url(path: &std::path::Path) -> bool {
+    use std::os::unix::fs::OpenOptionsExt;
+    if path.metadata().is_ok_and(|metadata| !metadata.is_file()) {
+        return true;
+    }
+    std::fs::File::options()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK | libc::O_NOCTTY)
+        .open(path)
+        .is_ok()
 }
 
 /// The pasteboard's formatted content as HTML: `public.html` as browsers,
@@ -1602,17 +1630,17 @@ pub(crate) fn open_url(url: &str) -> bool {
     NSWorkspace::sharedWorkspace().openURL(&url)
 }
 
-pub(crate) fn write_clipboard(surface: &Surface, text: &str) {
+pub(crate) fn write_clipboard(surface: &Surface, text: &str) -> bool {
     if surface.terminal.get() {
         let mut clipboard = surface.terminal_clipboard.borrow_mut();
         clipboard.text = Some(text.to_owned());
         clipboard.pending = Some(text.to_owned());
-        return;
+        return true;
     }
     let pasteboard = NSPasteboard::generalPasteboard();
     pasteboard.clearContents();
     // SAFETY: an immutable AppKit constant.
-    pasteboard.setString_forType(&NSString::from_str(text), unsafe { NSPasteboardTypeString });
+    pasteboard.setString_forType(&NSString::from_str(text), unsafe { NSPasteboardTypeString })
 }
 
 fn read_clipboard(surface: &Rc<Surface>, id: u32, has_only: bool) {
@@ -1653,7 +1681,7 @@ mod tests {
         NSURL,
     };
 
-    use super::{Shows, answered_index, next_alone, pasted, pasted_html};
+    use super::{Shows, answered_index, next_alone, paste_item, pasted, pasted_html};
 
     #[test]
     fn alerts_on_their_own_show_one_at_a_time_oldest_first() {
@@ -1700,6 +1728,69 @@ mod tests {
         board.clearContents();
         board.setData_forType(Some(&NSData::with_bytes(bytes)), &NSString::from_str(kind));
         board
+    }
+
+    #[test]
+    fn paste_prefers_files_with_an_inline_image_fallback() {
+        use std::os::unix::fs::OpenOptionsExt;
+
+        use objc2_app_kit::NSPasteboardItem;
+        use objc2_foundation::NSURL;
+
+        let (_, bytes) = nsh_core::image::decode_data_uri("data:;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==").unwrap();
+        let readable = "file:///etc/hosts";
+        let denied = std::env::temp_dir().join(format!("nsh-paste-{}.png", std::process::id()));
+        std::fs::File::options()
+            .write(true)
+            .create_new(true)
+            .mode(0o000)
+            .open(&denied)
+            .unwrap();
+        let denied_url = NSURL::fileURLWithPath(&NSString::from_str(denied.to_str().unwrap()))
+            .absoluteString()
+            .unwrap()
+            .to_string();
+        let can_read = std::fs::File::open(&denied).is_ok();
+        let missing = "file:///dev/null/nsh-inaccessible.png";
+        for (uri, finder, image, expect_image) in [
+            (Some(denied_url.as_str()), false, true, !can_read),
+            (Some(missing), false, true, true),
+            (Some(readable), false, true, false),
+            (Some(missing), true, true, false),
+            (Some(missing), false, false, false),
+            (None, false, true, true),
+        ] {
+            let item = NSPasteboardItem::new();
+            if let Some(uri) = uri {
+                item.setString_forType(
+                    &NSString::from_str(uri),
+                    &NSString::from_str("public.file-url"),
+                );
+            }
+            if finder {
+                item.setData_forType(
+                    &NSData::with_bytes(&[]),
+                    &NSString::from_str("com.apple.finder.node"),
+                );
+            }
+            if image {
+                item.setData_forType(
+                    &NSData::with_bytes(&bytes),
+                    &NSString::from_str(if finder { "public.tiff" } else { "public.png" }),
+                );
+            }
+            let mut event = nsh_core::PasteEvent::new("");
+            paste_item(&item, &mut event);
+            if expect_image {
+                assert!(event.uris.is_empty());
+                assert_eq!(event.files.len(), 1);
+                assert_eq!(event.files[0].data, bytes);
+            } else {
+                assert_eq!(event.uris, [uri.unwrap()]);
+                assert!(event.files.is_empty());
+            }
+        }
+        std::fs::remove_file(denied).unwrap();
     }
 
     #[test]

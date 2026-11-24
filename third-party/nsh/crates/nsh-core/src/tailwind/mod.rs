@@ -31,7 +31,7 @@ use std::sync::Arc;
 use rustc_hash::FxHashMap;
 
 pub use self::theme::{Theme, ThemeError};
-pub(crate) use self::utilities::{Decl, Len, Part};
+pub(crate) use self::utilities::{Decl, Len, Part, PropDecl};
 use self::{
     theme::ClassTokens,
     utilities::{Parts, touched},
@@ -89,6 +89,8 @@ pub mod state {
     /// (`aria-invalid:`): its `accessibilityState.invalid`. Set by the
     /// core, never reported by the platform.
     pub const INVALID: u16 = 4096;
+    /// States that style a pointer or focus interaction.
+    pub(super) const INTERACTION: u16 = PRESSED | HOVERED | FOCUSED | FOCUS_WITHIN | FOCUS_VISIBLE;
     /// The states the core sets from the accessibility state, which the
     /// platforms never report.
     pub(crate) const ACCESSIBILITY: u16 =
@@ -315,16 +317,11 @@ impl Condition {
     /// Applies only while the view (or its group) is pressed, hovered or
     /// focused: press feedback.
     fn interactive(&self) -> bool {
-        const INTERACTION: u16 = state::PRESSED
-            | state::HOVERED
-            | state::FOCUSED
-            | state::FOCUS_WITHIN
-            | state::FOCUS_VISIBLE;
-        self.states & INTERACTION != 0
+        self.states & state::INTERACTION != 0
             || self
                 .group
                 .as_ref()
-                .is_some_and(|(_, states)| states & INTERACTION != 0)
+                .is_some_and(|(_, states)| states & state::INTERACTION != 0)
     }
 
     fn deps(&self) -> u16 {
@@ -574,6 +571,9 @@ pub struct ClassProps {
     /// `whitespace-nowrap`, `text-nowrap`, `truncate`: lines never wrap.
     /// Inherited, as CSS's `white-space`: a view's reaches the texts in it.
     pub no_wrap: Option<bool>,
+    /// `text-pretty`: lines wrap, and a last line of a word or two takes
+    /// words from the lines above. Set with [`Self::no_wrap`].
+    pub pretty: bool,
     /// `pointerEvents` (`pointer-events-none` / `-auto`).
     pub pointer_events: Option<PointerEvents>,
     /// `userSelect` (`select-none` / `select-text`; `auto`: none). A
@@ -886,7 +886,10 @@ impl ClassList {
         list
     }
 
-    fn add(&mut self, rule: Rule) {
+    fn add(&mut self, mut rule: Rule) {
+        if rule.cond.states & state::INTERACTION != 0 {
+            rule.cond.not_states |= state::DISABLED;
+        }
         self.deps |= rule.cond.deps();
         self.tracked |= rule.cond.states & !(state::DISABLED | state::ACCESSIBILITY);
         if rule.cond.states & state::FOCUS_WITHIN != 0 {

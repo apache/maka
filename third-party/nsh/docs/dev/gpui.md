@@ -10,6 +10,17 @@ retained view per node, NSH draws every view itself, and the input, scrolling, t
 the Windows backend's, platform-free. Only drawing, text, the main-thread queue, events and the window are GPUI's.
 User-facing page: `website/docs/gpui.md`.
 
+**Window model v2: not migrated.** GPUI still runs the app in its host window rather than a hidden app host; on Linux
+GPUI shows that window as it opens, so a launch shows an empty host before the app's `<Window>` windows. The windows
+the app declares are native GPUI windows, but the host and its lifecycle follow the old model. A plain app root keeps
+the implicit first window (`window-model.md`), which this host opens as a GPUI window of its own: the host draws no app
+content itself, and the `examples/embed-gpui` AppView example is not migrated and no longer runs as written.
+For the same reason the JS AppView cases in `src/tests.rs` (`tests::windows`, one test running its cases in order)
+are `#[ignore]`d, and the offscreen render checks in `tests/render/main.rs` skip (set `NSH_GPUI_WINDOW_MODEL_V2=1` to
+run them): both mount apps whose content lives in a window the embedding window's screenshot does not show. They run
+again when the embedding model is migrated. This backend is 待平台验证; the rest of this page describes the code as it
+is.
+
 Every area of the other desktop backends is ported; "Not implemented, or different" lists where GPUI's primitives make
 it draw or behave differently.
 
@@ -143,6 +154,18 @@ xvfb-run -a dbus-run-session -- sh -c '
   screen reader does (Python's `gi.repository.Atspi`: the application under `Atspi.get_desktop(0)`, then an
   element's `get_action_iface().do_action(0)`).
 
+The `render` test binary runs pixel checks without writing screenshots by default. Set `NSH_RENDER_OUTPUT_DIR`
+to also save `embedding-light.png` and `embedding-dark.png`: real NSH text with no color of its own, plus
+explicitly muted text, under a host's light/dark theme. For example, from the repository root (add
+`runtime-shaders` on a Mac without the Metal Toolchain):
+
+```sh
+NSH_RENDER_OUTPUT_DIR=/tmp/nsh-embedding cargo test --manifest-path crates/gpui/Cargo.toml -p nsh-platform-gpui --no-default-features --features js,shot,svg --test render
+```
+
+These fixtures disable disk caches and use inert storage. They wait for the app's layout acknowledgement on
+the same GPUI queue as its commit before drawing the screenshots; the deadline only guards against a hang.
+
 ## Architecture
 
 - **One element per surface.** A surface (`surface.rs`) is drawn by one GPUI element, `render::SurfaceElement`, which
@@ -249,6 +272,18 @@ xvfb-run -a dbus-run-session -- sh -c '
   are opened with `inactive_frame_interval: None` (GPUI draws unfocused windows at 30 fps by default); a host must set
   it in its own `WindowOptions` too. Embedding in a GPUI Kit app (one GPUI, focus and Tab, overlays, themes, frame
   rate): `embedding.md` "GPUI and GPUI Kit apps", `examples/embed-gpui`.
+
+`AppView::content_height()` reads the bottom edge of the logical root's in-flow children in surface points
+(`None` without laid-out in-flow content). Detached layout roots such as overlays and modals, as well as fixed
+or absolutely positioned children, do not contribute. Core reads the settled frames used by `on_layout`.
+GPUI opts in through `MountSink::needs_content_height`; the engine sends the height with mount items, or on
+its own with an empty batch when only the height changes, through `MountSink::submit_with_content_height`.
+GPUI applies the batch and caches its height together before its normal flush notifies Rust host observers.
+Read the getter again in the view's GPUI observer. When the host owns the app, its root's `.on_layout(..)`
+can report its frame directly; there is no parallel TSX getter. This is current layout, not an intrinsic-size
+pass: viewport-relative heights and flex growth still use the host's viewport.
+With host tokens, the synthetic root supplies `text-foreground` for text inheritance and keeps its viewport
+layout when tokens are cleared, reinstalled or switched between light and dark.
 
 ## How each area maps to GPUI
 
@@ -416,18 +451,20 @@ and Windows.
 
 ### Windows
 
-The main window is the one the surface fills (`chrome.rs`): the window protocol's attributes and requests on the
-root node act on it when the surface is standalone (`open_app_window`, `run_app`, `AppView::own_window`); an
-embedded view leaves its host's window alone. Runners read the app's `window` options (`bundle.main_window`) before
-they open it, so its first frame has them, and open it where it was kept with `restoreBounds`. With `defaultVisible:
-false` they open it with GPUI's `show` and `focus` off, and `run_app` leaves the app inactive; GPUI applies a mode
-as it opens a window, which would show it, so a hidden window opens in the normal mode and takes the mode it opens in
-(`Chrome::opening_mode`) as the app first shows or focuses it, unless the app set a mode or placement of its own
-before. The main window's state
+GPUI has not been migrated to the hidden host: the host window is still the one the surface fills (`chrome.rs`), and
+this section describes that old model. The window protocol's attributes and requests on the root node act on it when
+the surface is standalone (`open_app_window`, `run_app`, `AppView::own_window`); an embedded view leaves its host's
+window alone. Runners read the app's `window` options (`bundle.main_window`) before they open it, so its first frame
+has them, and open it where it was kept with `restoreBounds`. They open it with GPUI's `show` and `focus` off, as the
+shared launch policy reports the host hidden (`defaultVisible` no longer selects it), and `run_app` leaves the app
+inactive; GPUI applies a mode as it opens a window, which would
+show it, so a hidden window opens in the normal mode and takes the mode it opens in (`Chrome::opening_mode`) as the
+app first shows or focuses it, unless the app set a mode or placement of its own before. The main window's state
 reads its visibility from the native window (`native::visible`) and is reported after each request on it too, as a
 hidden window draws no frame. The development host opens its window hidden until the first app came (`dev.rs`,
-`DevSession::held`), then shows it unless the app's `defaultVisible` says hidden, at the host's size and in the
-normal mode, as every app's window (the other launch options apply where a runner opens the window); an error shows
+`DevSession::held`) and, on macOS and Windows, keeps it hidden with the app, as the shared launch policy reports the
+host hidden (`defaultVisible` no longer shows it), at the host's size and in the normal mode, as every app's window
+(the other launch options apply where a runner opens the window); an error shows
 it while it is hidden (held, or hidden by the app: a tray app whose startup failed), so it is seen. GPUI shows a
 window as it opens on Linux, so there the main window shows. On macOS a window with a parent is AppKit's child window
 of it (`native::set_parent`), which AppKit orders in with it: a panel or dialog of a hidden main window shows the

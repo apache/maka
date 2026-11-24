@@ -12,7 +12,7 @@ use std::{
 use nsh_base::{OtpInputCompleteEvent, input, otp_input};
 use nsh_core::{
     AutoFill, Color, Command, EventKind, EventPayload, MountItem, NodeId, PasteEvent, PayloadValue,
-    Size, element::Root, prelude::*,
+    Size, prelude::*,
 };
 use nsh_engine::EngineConfig;
 use nsh_testing::Headless;
@@ -30,7 +30,7 @@ fn start<C: Component<Props = ()>>() -> Headless {
 fn start_observing<C: Component<Props = ()>>() -> (Headless, Inputs) {
     let mut app = Headless::start(EngineConfig {
         viewport: Size::new(px(390.0), px(844.0)),
-        ..EngineConfig::new(Root::of::<C>())
+        ..EngineConfig::new(nsh_testing::windowed_root::<C>())
     })
     .unwrap();
     let inputs: Inputs = Arc::new(Mutex::new(Vec::new()));
@@ -237,7 +237,7 @@ fn Filled() -> impl IntoElement {
 fn start_filled() -> (Headless, Arc<Mutex<HashMap<NodeId, bool>>>) {
     let mut app = Headless::start(EngineConfig {
         viewport: Size::new(px(390.0), px(844.0)),
-        ..EngineConfig::new(Root::of::<Filled>())
+        ..EngineConfig::new(nsh_testing::windowed_root::<Filled>())
     })
     .unwrap();
     let styles = Arc::new(Mutex::new(HashMap::new()));
@@ -470,7 +470,7 @@ fn the_caret_blinks_without_mount_items() {
     let mut app = Headless::start(EngineConfig {
         viewport: Size::new(px(390.0), px(844.0)),
         clock: nsh_engine::Clock::manual(std::time::SystemTime::now()),
-        ..EngineConfig::new(Root::of::<Uncontrolled>())
+        ..EngineConfig::new(nsh_testing::windowed_root::<Uncontrolled>())
     })
     .unwrap();
     let items = Arc::new(Mutex::new(0usize));

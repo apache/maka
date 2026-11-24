@@ -169,6 +169,14 @@ impl<M: TextEngine> Core<M> {
         if !inside && (clips || pointer == PointerEvents::BoxOnly) {
             return None;
         }
+        // Outside its `clipPath`, neither the view nor anything in it.
+        if node
+            .view_style
+            .clip_path()
+            .is_some_and(|c| !c.contains(size, p))
+        {
+            return None;
+        }
         let inner = match node.scroll.as_deref() {
             Some(scroll) => point(
                 Points((p.x.0 + scroll.offset.0) / scroll.zoom),

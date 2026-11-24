@@ -40,6 +40,7 @@ fn ring(progress: f32) -> impl IntoElement {
 
 ```tsx tabs
 import { Canvas, mount } from "nsh";
+import { Window } from "nsh/desktop";
 
 function Ring(props: { progress: number }) {
   return (
@@ -62,7 +63,11 @@ function Ring(props: { progress: number }) {
   );
 }
 
-mount(() => <Ring progress={0.7} />);
+mount(() => (
+  <Window id="main">
+    <Ring progress={0.7} />
+  </Window>
+));
 ```
 
 In TSX, `Canvas` creates the native canvas view, measures it, and runs your `draw` function with a context and the

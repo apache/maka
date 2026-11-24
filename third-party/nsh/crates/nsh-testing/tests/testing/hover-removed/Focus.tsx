@@ -1,4 +1,5 @@
 import { mount, signal, Text, View } from "nsh";
+import { Window } from "nsh/desktop";
 import { Input } from "nsh/base";
 
 // A field closed while it has the focus: kept alive by the cycle through
@@ -31,4 +32,4 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => <Window id="main">{App}</Window>);

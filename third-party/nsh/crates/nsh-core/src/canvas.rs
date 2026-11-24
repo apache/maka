@@ -602,6 +602,37 @@ pub fn line_metrics(
     font: &CanvasFont,
     text: &str,
 ) -> TextMetrics {
+    let (ascent, descent, height) = laid_line(engine, font, text);
+    let width = if text.is_empty() {
+        Points::ZERO
+    } else {
+        advance(engine, font, text)
+    };
+    TextMetrics {
+        width,
+        ascent,
+        descent,
+        height,
+    }
+}
+
+/// The ascent and descent [`line_metrics`] gives, without measuring the
+/// width.
+pub fn line_extent(
+    engine: &impl crate::text::TextEngine,
+    font: &CanvasFont,
+    text: &str,
+) -> (Points, Points) {
+    let (ascent, descent, _) = laid_line(engine, font, text);
+    (ascent, descent)
+}
+
+/// One line of `text` laid out: its ascent, descent and height.
+fn laid_line(
+    engine: &impl crate::text::TextEngine,
+    font: &CanvasFont,
+    text: &str,
+) -> (Points, Points, Points) {
     let mut attributed = crate::text::AttributedText {
         no_wrap: true,
         max_lines: 1,
@@ -611,25 +642,14 @@ pub fn line_metrics(
     attributed.push(if text.is_empty() { " " } else { text }, font.text_style());
     let prepared = engine.prepare(&attributed);
     let size = engine.measure(&prepared, None);
-    let width = if text.is_empty() {
-        Points::ZERO
-    } else {
-        advance(engine, font, text)
-    };
     let layout = engine.layout(&prepared, size);
     match engine.lines(&layout).first() {
-        Some(line) => TextMetrics {
-            width,
-            ascent: line.ascender,
-            descent: line.descender,
-            height: line.height,
-        },
-        None => TextMetrics {
-            width,
-            ascent: Points(font.size.0 * 0.8),
-            descent: Points(font.size.0 * 0.2),
-            height: size.height,
-        },
+        Some(line) => (line.ascender, line.descender, line.height),
+        None => (
+            Points(font.size.0 * 0.8),
+            Points(font.size.0 * 0.2),
+            size.height,
+        ),
     }
 }
 

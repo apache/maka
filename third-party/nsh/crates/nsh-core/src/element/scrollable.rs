@@ -110,6 +110,24 @@ pub trait Scrollable: Element {
         self
     }
 
+    /// A mouse wheel's notches glide, eased as Chromium's do, instead of the
+    /// platform's own step (default no; the desktops; TS: `smoothWheel`).
+    fn smooth_wheel(mut self, on: impl IntoReactive<bool>) -> Self {
+        host::bind_prop(self.node(), on, |on| {
+            Prop::Scroll(ScrollProp::SmoothWheel(on))
+        });
+        self
+    }
+
+    /// How far a mouse wheel's line scrolls (0, the default: the platform's
+    /// own; the desktops; TS: `wheelLineHeight`).
+    fn wheel_line_height(mut self, height: impl IntoReactive<Points>) -> Self {
+        host::bind_prop(self.node(), height, |height| {
+            Prop::Scroll(ScrollProp::WheelLineHeight(height))
+        });
+        self
+    }
+
     /// Space around the content that scrolls with it.
     fn content_inset(mut self, insets: impl IntoReactive<EdgeInsets>) -> Self {
         host::bind_prop(self.node(), insets, |insets| {

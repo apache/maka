@@ -765,10 +765,13 @@ pub(crate) fn apply(view: &NshView) {
     };
     let kind = Kind::of(&view.state());
     // A view that clips its children and draws outside its box (a shadow,
-    // an outline) clips them in a container instead.
+    // an outline) clips them in a container instead; so does one with a
+    // clip path, whose mask takes the view's own layer.
     let needs_container = {
         let s = view.state();
-        kind == Kind::View && s.clips() && crate::visual::draws_outside(&s.style)
+        kind == Kind::View
+            && s.clips()
+            && (crate::visual::draws_outside(&s.style) || s.style.clip_path().is_some())
     };
     if needs_container && view.container_view().is_none() {
         view.ensure_container();

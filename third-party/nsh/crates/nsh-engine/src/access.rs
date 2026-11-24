@@ -98,6 +98,11 @@ pub(crate) fn next(access: &Access, followed: &mut Followed, mut response: HttpH
         // Fetch: a streamed body cannot be sent again.
         return Next::Fail("cannot follow a redirect with a streamed request body".to_owned());
     }
+    // Fetch: credentials meant for one origin do not travel to another, and
+    // stay removed for the hops after it.
+    if !nsh_core::access::is_same_origin(&request.url, &url) {
+        request.headers.retain(|(k, _)| !is_credential(k));
+    }
     if !access.allows_http(&request.method, &url) {
         return Next::Refused(refused(&request.method, &url));
     }
@@ -116,6 +121,15 @@ pub(crate) fn hop(request: &HttpRequest) -> HttpRequest {
 
 fn is_redirect(status: u16) -> bool {
     matches!(status, 301 | 302 | 303 | 307 | 308)
+}
+
+/// Whether header `name` carries credentials: `Authorization`, which Fetch
+/// removes on a redirect to another origin, and `Cookie` and
+/// `Proxy-Authorization`, which browsers never let pages set.
+fn is_credential(name: &str) -> bool {
+    ["authorization", "cookie", "proxy-authorization"]
+        .iter()
+        .any(|credential| name.eq_ignore_ascii_case(credential))
 }
 
 #[cfg(test)]
@@ -157,6 +171,7 @@ mod tests {
             headers: vec![("Content-Type".into(), "text/plain".into())],
             body: HttpBody::Bytes(b"x".to_vec()),
             follow_redirects: true,
+            cache: crate::HttpCache::Default,
         };
         let mut followed = Followed { request, hops: 0 };
         let redirect = |status, location: &str| HttpHead {
@@ -190,5 +205,90 @@ mod tests {
             matches!(&r, Next::Fail(e) if e.contains("streamed")),
             "{r:?}"
         );
+    }
+
+    /// `followed` with the credential headers (in mixed case) and others,
+    /// granted `a.com` and `b.com`.
+    fn credentialed(url: &str) -> (Access, Followed) {
+        let access = Access {
+            declared: nsh_core::access::Capabilities::from_json(
+                &serde_json::json!({ "network": { "hosts": ["a.com", "b.com"] } }),
+            )
+            .unwrap(),
+            granted: None,
+        };
+        let request = HttpRequest {
+            method: "PUT".into(),
+            url: url.into(),
+            headers: vec![
+                ("Authorization".into(), "Bearer T".into()),
+                ("cookie".into(), "id=1".into()),
+                ("PROXY-AUTHORIZATION".into(), "Basic P".into()),
+                ("X-Trace".into(), "7".into()),
+                ("Content-Type".into(), "text/plain".into()),
+            ],
+            body: HttpBody::Bytes(b"x".to_vec()),
+            follow_redirects: true,
+            cache: crate::HttpCache::Default,
+        };
+        (access, Followed { request, hops: 0 })
+    }
+
+    /// The names of the next hop's headers after a `status` to `location`.
+    fn hop_headers(
+        access: &Access,
+        followed: &mut Followed,
+        status: u16,
+        location: &str,
+    ) -> Vec<String> {
+        let head = HttpHead {
+            status,
+            headers: vec![("Location".into(), location.into())],
+            ..HttpHead::default()
+        };
+        let Next::Hop(hop) = next(access, followed, head) else {
+            panic!("expected a hop to {location}")
+        };
+        hop.headers.into_iter().map(|(k, _)| k).collect()
+    }
+
+    #[test]
+    fn cross_origin_redirects_drop_credentials() {
+        let (access, mut followed) = credentialed("https://a.com/x");
+        let names = hop_headers(&access, &mut followed, 307, "https://b.com/y");
+        assert_eq!(names, ["X-Trace", "Content-Type"]);
+        // A 307 keeps the method and body.
+        assert_eq!(followed.request.method, "PUT");
+        assert!(!followed.request.body.is_empty());
+        // Back on the first origin, they stay removed.
+        let names = hop_headers(&access, &mut followed, 308, "https://a.com/z");
+        assert_eq!(names, ["X-Trace", "Content-Type"]);
+    }
+
+    #[test]
+    fn same_origin_redirects_keep_credentials() {
+        let (access, mut followed) = credentialed("https://a.com/x");
+        let all = [
+            "Authorization",
+            "cookie",
+            "PROXY-AUTHORIZATION",
+            "X-Trace",
+            "Content-Type",
+        ];
+        assert_eq!(hop_headers(&access, &mut followed, 307, "/y"), all);
+        // The scheme's default port written out is the same origin.
+        assert_eq!(
+            hop_headers(&access, &mut followed, 308, "https://A.com:443/z"),
+            all
+        );
+    }
+
+    #[test]
+    fn port_and_scheme_changes_are_other_origins() {
+        for location in ["https://a.com:8443/y", "http://a.com/y"] {
+            let (access, mut followed) = credentialed("https://a.com/x");
+            let names = hop_headers(&access, &mut followed, 307, location);
+            assert_eq!(names, ["X-Trace", "Content-Type"], "{location}");
+        }
     }
 }

@@ -22,7 +22,7 @@ use nsh_base::{
     ContextMenuEvents, MenuButtonItem, MenuEvent, context_menu, dialog, input, menu, menu_item,
 };
 use nsh_core::{
-    Checked, MountItem, NodeId, Size,
+    Checked, Command, MountItem, NodeId, Size,
     element::Root,
     platform::{CONTEXT_MENU_COMPONENT, Idiom, Os},
     prelude::*,
@@ -86,7 +86,7 @@ impl App {
 }
 
 fn start() -> App {
-    start_with(Root::of::<ViewMenu>())
+    start_with(nsh_testing::windowed_root::<ViewMenu>())
 }
 
 fn start_with(root: Root) -> App {
@@ -406,7 +406,7 @@ fn FileMenu() -> impl IntoElement {
 /// Opens the File menu with `key` on its focused trigger, then presses
 /// the item the keyboard focus is on (Space).
 fn open_with_key_and_choose(key: &str) -> App {
-    let mut app = start_with(Root::of::<FileMenu>());
+    let mut app = start_with(nsh_testing::windowed_root::<FileMenu>());
     app.app.press_key("tab").unwrap();
     app.app.press_key(key).unwrap();
     app.app.wait_for("Open").unwrap();
@@ -432,7 +432,7 @@ fn up_on_the_trigger_focuses_the_last_item() {
 
 #[test]
 fn escape_and_a_choice_give_the_focus_back_to_the_trigger() {
-    let mut app = start_with(Root::of::<FileMenu>());
+    let mut app = start_with(nsh_testing::windowed_root::<FileMenu>());
     app.app.press_key("tab").unwrap();
     app.app.press_key("enter").unwrap();
     app.app.wait_for("Open").unwrap();
@@ -456,7 +456,7 @@ fn escape_and_a_choice_give_the_focus_back_to_the_trigger() {
 
 #[test]
 fn a_press_on_the_trigger_focuses_no_item() {
-    let mut app = start_with(Root::of::<FileMenu>());
+    let mut app = start_with(nsh_testing::windowed_root::<FileMenu>());
     app.app.press("id:file").unwrap();
     app.app.wait_for("Open").unwrap();
     app.app.press_key("space").unwrap();
@@ -477,7 +477,7 @@ fn after_a_press_the_arrows_home_and_end_focus_an_end_of_the_enabled_items() {
         (&["up", "up"][..], "Save"),
         (&["end", "home"][..], "Open"),
     ] {
-        let mut app = start_with(Root::of::<FileMenu>());
+        let mut app = start_with(nsh_testing::windowed_root::<FileMenu>());
         app.app.press("id:file").unwrap();
         app.app.wait_for("Open").unwrap();
         for key in keys {
@@ -491,8 +491,42 @@ fn after_a_press_the_arrows_home_and_end_focus_an_end_of_the_enabled_items() {
 }
 
 #[test]
-fn after_a_press_and_an_arrow_escape_gives_the_focus_to_the_trigger() {
-    let mut app = start_with(Root::of::<FileMenu>());
+fn after_a_press_and_an_arrow_escape_leaves_the_focus_where_it_was() {
+    let mut app = start_with(nsh_testing::windowed_root::<FileMenu>());
+    app.app.press("id:file").unwrap();
+    app.app.wait_for("Open").unwrap();
+    app.app.press_key("down").unwrap();
+    app.app.press_key("escape").unwrap();
+    app.app
+        .wait_for_gone("Open", std::time::Duration::from_secs(2))
+        .unwrap();
+    // A press opened it, so the trigger never had the focus and does not
+    // get it now: the arrows are not the trigger's, Up opens nothing.
+    app.app.press_key("up").unwrap();
+    assert!(!app.app.shows("Quit"));
+}
+
+#[test]
+fn on_windows_after_a_press_and_an_arrow_escape_gives_the_focus_to_the_trigger() {
+    // A press focuses a button there, as native buttons do: the trigger
+    // takes the focus back, so its arrows open the menu again.
+    let mut app = start_on(nsh_testing::windowed_root::<FileMenu>(), Os::Windows);
+    app.app.press("id:file").unwrap();
+    app.app.wait_for("Open").unwrap();
+    app.app.press_key("down").unwrap();
+    app.app.press_key("escape").unwrap();
+    app.app
+        .wait_for_gone("Open", std::time::Duration::from_secs(2))
+        .unwrap();
+    app.app.press_key("up").unwrap();
+    app.app.wait_for("Quit").unwrap();
+}
+
+#[test]
+fn after_a_press_on_the_focused_trigger_escape_gives_it_the_focus_back() {
+    let mut app = start_with(nsh_testing::windowed_root::<FileMenu>());
+    // Tab gave the trigger the focus before the press: it gets it back.
+    app.app.press_key("tab").unwrap();
     app.app.press("id:file").unwrap();
     app.app.wait_for("Open").unwrap();
     app.app.press_key("down").unwrap();
@@ -589,7 +623,10 @@ fn a_choice_that_moves_the_focus_out_of_the_menu_keeps_it_there() {
     ] {
         let case = format!("controlled {controlled}, input {input}, {os:?}");
         let mut app = start_on(
-            Root::new::<RenameMenu>(move || RenameMenuProps { controlled, input }),
+            nsh_testing::windowed_root_with::<RenameMenu>(move || RenameMenuProps {
+                controlled,
+                input,
+            }),
             os,
         );
         app.app.press_key("tab").unwrap();
@@ -669,7 +706,7 @@ fn DeleteMenu() -> impl IntoElement {
 
 #[test]
 fn return_confirms_a_dialog_a_keyboard_menu_opened() {
-    let mut app = start_with(Root::of::<DeleteMenu>());
+    let mut app = start_with(nsh_testing::windowed_root::<DeleteMenu>());
     app.app.press_key("tab").unwrap();
     app.app.press_key("enter").unwrap();
     app.app.wait_for("Delete").unwrap();
@@ -698,7 +735,7 @@ fn a_choice_typed_ahead_of_a_key_move_still_gives_the_focus_back_to_the_trigger(
     // trigger, not to an item on its way out.
     for controlled in [false, true] {
         let mut app = start_on(
-            Root::new::<RenameMenu>(move || RenameMenuProps {
+            nsh_testing::windowed_root_with::<RenameMenu>(move || RenameMenuProps {
                 controlled,
                 input: false,
             }),
@@ -730,7 +767,7 @@ fn page_down_and_page_up_go_to_the_last_and_first_enabled_items_and_stop() {
         (&["end", "pageup"][..], "Open"),
         (&["pageup", "pageup"][..], "Open"),
     ] {
-        let mut app = start_with(Root::of::<FileMenu>());
+        let mut app = start_with(nsh_testing::windowed_root::<FileMenu>());
         app.app.press("id:file").unwrap();
         app.app.wait_for("Open").unwrap();
         for key in keys {
@@ -748,7 +785,7 @@ fn the_keys_start_at_the_item_the_pointer_is_on() {
     // The pointer on Save, the third item: Down goes on to Quit, Up back
     // to Open, Space chooses Save itself.
     for (key, chosen) in [("down", "Quit"), ("up", "Open"), ("space", "Save")] {
-        let mut app = start_with(Root::of::<FileMenu>());
+        let mut app = start_with(nsh_testing::windowed_root::<FileMenu>());
         app.app.press("id:file").unwrap();
         app.app.wait_for("Open").unwrap();
         app.app.hover("label:Save").unwrap();
@@ -766,7 +803,7 @@ fn the_keys_start_at_the_item_the_pointer_is_on() {
 fn the_pointer_moves_on_from_the_item_the_keys_reached() {
     // Down three times reaches Quit; the pointer then on Open: Down is
     // Save, the item after Open.
-    let mut app = start_with(Root::of::<FileMenu>());
+    let mut app = start_with(nsh_testing::windowed_root::<FileMenu>());
     app.app.press("id:file").unwrap();
     app.app.wait_for("Open").unwrap();
     app.app.press_key("down").unwrap();
@@ -782,7 +819,7 @@ fn the_pointer_moves_on_from_the_item_the_keys_reached() {
 fn the_pointer_leaving_the_items_leaves_none_for_the_keys() {
     // The pointer on Save, then off the menu: the item it left is no
     // longer the keys' start, so Down goes to the first enabled item.
-    let mut app = start_with(Root::of::<FileMenu>());
+    let mut app = start_with(nsh_testing::windowed_root::<FileMenu>());
     app.app.press("id:file").unwrap();
     app.app.wait_for("Open").unwrap();
     app.app.hover("label:Save").unwrap();
@@ -845,7 +882,7 @@ fn DocumentMenu() -> impl IntoElement {
 #[test]
 fn shift_f10_opens_a_context_menu_at_its_first_enabled_item() {
     for os in [Os::Web, Os::Linux] {
-        let mut app = start_on(Root::of::<DocumentMenu>(), os);
+        let mut app = start_on(nsh_testing::windowed_root::<DocumentMenu>(), os);
         app.app.press_key("tab").unwrap();
         app.app.press_key("shift+f10").unwrap();
         app.app.wait_for("Rename").unwrap();
@@ -866,7 +903,7 @@ fn the_arrow_keys_move_between_enabled_items_and_wrap_around() {
             (&["end", "home"][..], "Rename"),
             (&["end"][..], "Delete"),
         ] {
-            let mut app = start_on(Root::of::<DocumentMenu>(), os);
+            let mut app = start_on(nsh_testing::windowed_root::<DocumentMenu>(), os);
             app.app.press_key("tab").unwrap();
             app.app.press_key("shift+f10").unwrap();
             app.app.wait_for("Rename").unwrap();
@@ -882,7 +919,7 @@ fn the_arrow_keys_move_between_enabled_items_and_wrap_around() {
 #[test]
 fn escape_gives_the_focus_back_to_a_context_menus_trigger() {
     for os in [Os::Web, Os::Linux] {
-        let mut app = start_on(Root::of::<DocumentMenu>(), os);
+        let mut app = start_on(nsh_testing::windowed_root::<DocumentMenu>(), os);
         app.app.press_key("tab").unwrap();
         app.app.press_key("shift+f10").unwrap();
         app.app.wait_for("Rename").unwrap();
@@ -898,7 +935,7 @@ fn escape_gives_the_focus_back_to_a_context_menus_trigger() {
 
 #[test]
 fn a_secondary_click_opens_a_context_menu_with_no_item_focused() {
-    let mut app = start_on(Root::of::<DocumentMenu>(), Os::Web);
+    let mut app = start_on(nsh_testing::windowed_root::<DocumentMenu>(), Os::Web);
     app.app.right_click("id:doc").unwrap();
     app.app.wait_for("Rename").unwrap();
     app.app.press_key("space").unwrap();
@@ -909,7 +946,7 @@ fn a_secondary_click_opens_a_context_menu_with_no_item_focused() {
 #[test]
 fn after_a_secondary_click_down_focuses_the_first_enabled_item() {
     for (key, chosen) in [("down", "Rename"), ("up", "Delete")] {
-        let mut app = start_on(Root::of::<DocumentMenu>(), Os::Web);
+        let mut app = start_on(nsh_testing::windowed_root::<DocumentMenu>(), Os::Web);
         app.app.right_click("id:doc").unwrap();
         app.app.wait_for("Rename").unwrap();
         app.app.press_key(key).unwrap();
@@ -922,7 +959,7 @@ fn after_a_secondary_click_down_focuses_the_first_enabled_item() {
 
 #[test]
 fn the_keyboard_asks_for_a_menu_at_the_bottom_start_corner_with_no_pointer() {
-    let mut app = start_on(Root::of::<DocumentMenu>(), Os::Web);
+    let mut app = start_on(nsh_testing::windowed_root::<DocumentMenu>(), Os::Web);
     app.app.right_click("id:plain").unwrap();
     app.app.wait_for("text:asked:mouse 30 10").unwrap();
     // Tab: the document, then the plain view.
@@ -937,7 +974,7 @@ fn shift_f10_opens_no_context_menu_elsewhere() {
     // macOS has no such key; Windows asks for a view's context menu
     // through UI Automation only.
     for os in [Os::MacOs, Os::Windows] {
-        let mut app = start_on(Root::of::<DocumentMenu>(), os);
+        let mut app = start_on(nsh_testing::windowed_root::<DocumentMenu>(), os);
         app.app.press_key("tab").unwrap();
         app.app.press_key("tab").unwrap();
         app.app.press_key("shift+f10").unwrap();
@@ -976,7 +1013,7 @@ fn PressableRow() -> impl IntoElement {
 
 #[test]
 fn a_held_finger_opens_the_menu_and_presses_nothing() {
-    let mut app = start_on(Root::of::<PressableRow>(), Os::Web);
+    let mut app = start_on(nsh_testing::windowed_root::<PressableRow>(), Os::Web);
     // The menu opens as the finger holds; lifting it reports no press or
     // release, while the app's own long press is still heard.
     app.app.long_press("id:row").unwrap();
@@ -986,7 +1023,7 @@ fn a_held_finger_opens_the_menu_and_presses_nothing() {
 
 #[test]
 fn a_tap_after_a_held_finger_presses_again() {
-    let mut app = start_on(Root::of::<PressableRow>(), Os::Web);
+    let mut app = start_on(nsh_testing::windowed_root::<PressableRow>(), Os::Web);
     app.app.long_press("id:row").unwrap();
     app.app.wait_for("Rename").unwrap();
     app.app.press_key("escape").unwrap();
@@ -999,7 +1036,7 @@ fn a_tap_after_a_held_finger_presses_again() {
 
 #[test]
 fn a_tap_on_a_context_menus_trigger_still_presses() {
-    let mut app = start_on(Root::of::<PressableRow>(), Os::Web);
+    let mut app = start_on(nsh_testing::windowed_root::<PressableRow>(), Os::Web);
     app.app.press("id:row").unwrap();
     app.app.wait_for("text:p1 u1 l0").unwrap();
     assert!(!app.app.shows("Rename"), "a tap opens no menu");
@@ -1047,7 +1084,7 @@ fn hold_row(app: &mut App, pointer_type: nsh_core::PointerType) {
 fn a_held_mouse_button_opens_no_context_menu() {
     // Desktops report the mouse as a touch too: holding its button still
     // is a slow click or the start of a drag, not a request for a menu.
-    let mut app = start_on(Root::of::<PressableRow>(), Os::Windows);
+    let mut app = start_on(nsh_testing::windowed_root::<PressableRow>(), Os::Windows);
     hold_row(&mut app, nsh_core::PointerType::Mouse);
     assert!(
         !app.app.shows("Rename"),
@@ -1058,7 +1095,7 @@ fn a_held_mouse_button_opens_no_context_menu() {
 #[test]
 fn a_held_finger_or_pen_reported_as_a_touch_opens_the_menu() {
     for pointer_type in [nsh_core::PointerType::Touch, nsh_core::PointerType::Pen] {
-        let mut app = start_on(Root::of::<PressableRow>(), Os::Windows);
+        let mut app = start_on(nsh_testing::windowed_root::<PressableRow>(), Os::Windows);
         hold_row(&mut app, pointer_type);
         app.app.wait_for("Rename").unwrap();
     }
@@ -1158,7 +1195,7 @@ fn other() -> Point<Points> {
 fn a_secondary_click_on_the_trigger_of_an_open_context_menu_opens_it_there() {
     for controlled in [false, true] {
         let mut app = start_on(
-            Root::new::<RowMenu>(move || RowMenuProps { controlled }),
+            nsh_testing::windowed_root_with::<RowMenu>(move || RowMenuProps { controlled }),
             Os::MacOs,
         );
         right_click_at(&mut app, "row", row(), point(px(50.0), px(110.0)));
@@ -1190,7 +1227,7 @@ fn a_secondary_click_on_the_trigger_of_an_open_context_menu_opens_it_there() {
 fn a_secondary_click_or_a_press_outside_an_open_context_menu_closes_it() {
     for controlled in [false, true] {
         let mut app = start_on(
-            Root::new::<RowMenu>(move || RowMenuProps { controlled }),
+            nsh_testing::windowed_root_with::<RowMenu>(move || RowMenuProps { controlled }),
             Os::MacOs,
         );
         right_click_at(&mut app, "row", row(), point(px(50.0), px(110.0)));
@@ -1270,7 +1307,7 @@ fn ShownMenu() -> impl IntoElement {
 #[test]
 fn a_context_menu_the_app_opens_is_below_its_trigger_at_its_first_enabled_item() {
     for os in [Os::MacOs, Os::Linux, Os::Windows, Os::Web] {
-        let mut app = start_on(Root::of::<ShownMenu>(), os);
+        let mut app = start_on(nsh_testing::windowed_root::<ShownMenu>(), os);
         app.app.press("id:show").unwrap();
         app.app.wait_for("Rename").unwrap();
         // The row's bottom-left corner, not the window's top-left one.
@@ -1286,7 +1323,7 @@ fn a_context_menu_the_app_opens_is_below_its_trigger_at_its_first_enabled_item()
 
 #[test]
 fn escape_gives_the_focus_to_the_trigger_of_a_context_menu_the_app_opened() {
-    let mut app = start_on(Root::of::<ShownMenu>(), Os::Linux);
+    let mut app = start_on(nsh_testing::windowed_root::<ShownMenu>(), Os::Linux);
     app.app.press("id:show").unwrap();
     app.app.wait_for("Rename").unwrap();
     app.app.press_key("escape").unwrap();
@@ -1299,8 +1336,31 @@ fn escape_gives_the_focus_to_the_trigger_of_a_context_menu_the_app_opened() {
 }
 
 #[test]
+fn escape_leaves_the_focus_where_it_was_after_a_context_menu_opened_by_a_press_on_a_mac() {
+    let mut app = start_on(nsh_testing::windowed_root::<ShownMenu>(), Os::MacOs);
+    app.app.press("id:show").unwrap();
+    app.app.wait_for("Rename").unwrap();
+    let focus = |app: &App| {
+        let screen = app.app.screen();
+        screen
+            .commands()
+            .iter()
+            .filter(|(_, c)| *c == Command::Focus)
+            .count()
+    };
+    let before = focus(&app);
+    app.app.press_key("escape").unwrap();
+    app.app
+        .wait_for_gone("Rename", std::time::Duration::from_secs(5))
+        .unwrap();
+    // Nothing had the focus as the press opened it, as AppKit leaves it:
+    // the row does not get it.
+    assert_eq!(focus(&app), before, "no view takes the focus");
+}
+
+#[test]
 fn a_secondary_click_moves_a_context_menu_the_app_opened_to_the_pointer() {
-    let mut app = start_on(Root::of::<ShownMenu>(), Os::MacOs);
+    let mut app = start_on(nsh_testing::windowed_root::<ShownMenu>(), Os::MacOs);
     app.app.press("id:show").unwrap();
     app.app.wait_for("text:at:40 140").unwrap();
     right_click_at(&mut app, "row", row(), point(px(50.0), px(110.0)));
@@ -1328,7 +1388,7 @@ fn FillingTrigger() -> impl IntoElement {
 
 #[test]
 fn a_flex_1_trigger_fills_its_parent_as_without_the_menu() {
-    let app = start_with(Root::of::<FillingTrigger>());
+    let app = start_with(nsh_testing::windowed_root::<FillingTrigger>());
     let fill = app
         .app
         .screen()
@@ -1401,7 +1461,7 @@ fn system_menu_event(app: &mut App, name: &str, data: serde_json::Value) {
 
 #[test]
 fn with_items_ios_shows_the_systems_context_menu_and_draws_none() {
-    let mut app = start_on(Root::of::<SystemMenuRow>(), Os::Ios);
+    let mut app = start_on(nsh_testing::windowed_root::<SystemMenuRow>(), Os::Ios);
     {
         let seen = app.seen.lock().unwrap();
         let id = seen.components[CONTEXT_MENU_COMPONENT];
@@ -1444,7 +1504,7 @@ fn with_items_ios_shows_the_systems_context_menu_and_draws_none() {
 
 #[test]
 fn a_system_menus_choice_told_after_its_dismissal_still_reaches_the_app() {
-    let mut app = start_on(Root::of::<SystemMenuRow>(), Os::Ios);
+    let mut app = start_on(nsh_testing::windowed_root::<SystemMenuRow>(), Os::Ios);
     system_menu_event(&mut app, "open", serde_json::json!("touch"));
     app.app.wait_for("text:heard: true:LongPress open").unwrap();
     // The platform tells a choice before its dismissal; one it could only
@@ -1467,8 +1527,8 @@ fn a_system_menus_choice_told_after_its_dismissal_still_reaches_the_app() {
         .unwrap();
 }
 
-/// A system menu the app owns the `open` of, and closes itself ("Close
-/// it").
+/// A system menu the app owns the `open` of, and opens ("Open it") and
+/// closes ("Close it") itself.
 #[component]
 fn AppClosedSystemMenu() -> impl IntoElement {
     let open = signal(false);
@@ -1503,6 +1563,11 @@ fn AppClosedSystemMenu() -> impl IntoElement {
         )
         .child(
             view()
+                .on_press(move || open.set(true))
+                .child(text("Open it")),
+        )
+        .child(
+            view()
                 .on_press(move || open.set(false))
                 .child(text("Close it")),
         )
@@ -1511,7 +1576,7 @@ fn AppClosedSystemMenu() -> impl IntoElement {
 
 #[test]
 fn a_system_menu_the_app_closes_reports_only_its_closing() {
-    let mut app = start_on(Root::of::<AppClosedSystemMenu>(), Os::Ios);
+    let mut app = start_on(nsh_testing::windowed_root::<AppClosedSystemMenu>(), Os::Ios);
     system_menu_event(&mut app, "open", serde_json::json!("touch"));
     app.app.wait_for("text:heard: true:LongPress").unwrap();
     // The app closes it: the platform dismisses the menu and tells.
@@ -1525,23 +1590,116 @@ fn a_system_menu_the_app_closes_reports_only_its_closing() {
         .unwrap();
 }
 
+/// A prop of the context menu's native component, as last sent.
+fn system_menu_prop(app: &App, name: &str) -> Option<serde_json::Value> {
+    let seen = app.seen.lock().unwrap();
+    let id = seen.components[CONTEXT_MENU_COMPONENT];
+    seen.component_props[&(id, name.to_owned())].clone()
+}
+
 #[test]
-fn off_ios_a_context_menus_items_are_not_used() {
-    for os in [Os::Web, Os::Android] {
-        let mut app = start_on(Root::of::<SystemMenuRow>(), os);
-        assert!(
-            !app.seen
-                .lock()
-                .unwrap()
-                .components
-                .contains_key(CONTEXT_MENU_COMPONENT),
-            "{os:?}: no system menu"
-        );
-        hold_row(&mut app, PointerType::Touch);
-        app.app
-            .wait_for("Drawn rename")
-            .unwrap_or_else(|e| panic!("{os:?}: {e}"));
-    }
+fn with_items_android_opens_the_systems_popup_menu_where_the_finger_held() {
+    let mut app = start_on(nsh_testing::windowed_root::<SystemMenuRow>(), Os::Android);
+    assert_eq!(
+        system_menu_prop(&app, "items"),
+        Some(serde_json::json!([
+            { "id": "rename", "label": "Rename", "icon": "pencil" },
+            { "id": "", "label": "", "inline": true, "items": [
+                { "id": "delete", "label": "Delete", "destructive": true },
+            ] },
+        ]))
+    );
+    assert_eq!(
+        system_menu_prop(&app, "title"),
+        Some(serde_json::json!("Notes.txt"))
+    );
+    assert_eq!(
+        system_menu_prop(&app, "open"),
+        Some(serde_json::json!(false))
+    );
+    // Android's popup menu has no opener of its own: the held finger opens
+    // it through `open`, at the point it held, and NSH draws none.
+    hold_row(&mut app, PointerType::Touch);
+    app.app.wait_for("text:heard: true:LongPress").unwrap();
+    assert!(!app.app.shows("Drawn rename"), "no drawn menu");
+    assert_eq!(
+        system_menu_prop(&app, "open"),
+        Some(serde_json::json!(true))
+    );
+    assert_eq!(
+        system_menu_prop(&app, "at"),
+        Some(serde_json::json!({ "x": 10.0, "y": 110.0 }))
+    );
+    // The platform tells it shown, then the choice and its dismissal, as
+    // iOS's: the opening is not reported twice.
+    system_menu_event(&mut app, "open", serde_json::json!("touch"));
+    system_menu_event(&mut app, "select", serde_json::json!("delete"));
+    system_menu_event(&mut app, "close", serde_json::Value::Null);
+    app.app
+        .wait_for("text:heard: true:LongPress open false:Select select:delete close")
+        .unwrap();
+    assert_eq!(
+        system_menu_prop(&app, "open"),
+        Some(serde_json::json!(false))
+    );
+}
+
+#[test]
+fn an_android_system_menu_the_app_opens_drops_below_the_trigger() {
+    let mut app = start_on(
+        nsh_testing::windowed_root::<AppClosedSystemMenu>(),
+        Os::Android,
+    );
+    app.app.press("text:Open it").unwrap();
+    app.app.settle();
+    // No finger asked for it: no point, the menu goes below the trigger.
+    assert_eq!(
+        system_menu_prop(&app, "open"),
+        Some(serde_json::json!(true))
+    );
+    assert_eq!(system_menu_prop(&app, "at"), Some(serde_json::Value::Null));
+}
+
+#[test]
+fn an_android_system_menu_that_never_showed_does_not_stay_open() {
+    let mut app = start_on(nsh_testing::windowed_root::<SystemMenuRow>(), Os::Android);
+    hold_row(&mut app, PointerType::Touch);
+    app.app.wait_for("text:heard: true:LongPress").unwrap();
+    // The platform could not show it (the row left the window before the
+    // menu came up): it tells the closing alone, and the menu is asked
+    // closed, with no opening or closing reported.
+    system_menu_event(&mut app, "close", serde_json::Value::Null);
+    app.app
+        .wait_for("text:heard: true:LongPress false:Cancel")
+        .unwrap();
+    assert_eq!(
+        system_menu_prop(&app, "open"),
+        Some(serde_json::json!(false))
+    );
+    // The next hold asks for it again.
+    hold_row(&mut app, PointerType::Touch);
+    app.app
+        .wait_for("text:heard: true:LongPress false:Cancel true:LongPress")
+        .unwrap();
+    assert_eq!(
+        system_menu_prop(&app, "open"),
+        Some(serde_json::json!(true))
+    );
+}
+
+#[test]
+fn on_the_web_a_context_menus_items_are_not_used() {
+    let mut app = start_on(nsh_testing::windowed_root::<SystemMenuRow>(), Os::Web);
+    assert!(
+        !app.seen
+            .lock()
+            .unwrap()
+            .components
+            .contains_key(CONTEXT_MENU_COMPONENT),
+        "no system menu"
+    );
+    hold_row(&mut app, PointerType::Touch);
+    app.app.wait_for("Drawn rename").unwrap();
 }
 
 /// A row whose system menu has a preview (iOS): the text says what the app
@@ -1630,7 +1788,7 @@ fn preview_size(app: &App) -> Option<(f32, f32)> {
 
 #[test]
 fn a_system_menus_preview_is_made_under_a_finger_and_kept_while_the_menu_is_up() {
-    let mut app = start_on(Root::of::<PreviewMenuRow>(), Os::Ios);
+    let mut app = start_on(nsh_testing::windowed_root::<PreviewMenuRow>(), Os::Ios);
     {
         let seen = app.seen.lock().unwrap();
         let id = seen.components[CONTEXT_MENU_COMPONENT];
@@ -1662,7 +1820,7 @@ fn a_system_menus_preview_is_made_under_a_finger_and_kept_while_the_menu_is_up()
 
 #[test]
 fn a_system_menus_preview_goes_after_a_tap_that_opened_no_menu() {
-    let mut app = start_on(Root::of::<PreviewMenuRow>(), Os::Ios);
+    let mut app = start_on(nsh_testing::windowed_root::<PreviewMenuRow>(), Os::Ios);
     touch_row(&mut app, nsh_core::TouchPhase::Start);
     touch_row(&mut app, nsh_core::TouchPhase::End);
     assert!(preview_size(&app).is_some(), "kept a moment");
@@ -1681,7 +1839,7 @@ fn a_system_menus_preview_goes_after_a_tap_that_opened_no_menu() {
 
 #[test]
 fn without_a_preview_a_system_menu_makes_none() {
-    let mut app = start_on(Root::of::<SystemMenuRow>(), Os::Ios);
+    let mut app = start_on(nsh_testing::windowed_root::<SystemMenuRow>(), Os::Ios);
     {
         let seen = app.seen.lock().unwrap();
         let id = seen.components[CONTEXT_MENU_COMPONENT];
@@ -1718,7 +1876,7 @@ fn without_items_ios_mounts_what_the_other_platforms_do() {
     // listeners, the drawn menu), with no system menu, as it renders and
     // as a held finger opens it.
     let mounted = |os| {
-        let mut app = start_on(Root::of::<DrawnOnlyRow>(), os);
+        let mut app = start_on(nsh_testing::windowed_root::<DrawnOnlyRow>(), os);
         hold_row(&mut app, PointerType::Touch);
         app.app.wait_for("Drawn rename").unwrap();
         let seen = app.seen.lock().unwrap();

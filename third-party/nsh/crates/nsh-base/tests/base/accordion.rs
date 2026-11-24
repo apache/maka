@@ -12,9 +12,7 @@ use std::sync::{Arc, Mutex};
 
 use nsh_base::{accordion, accordion_header, accordion_item, accordion_panel, accordion_trigger};
 use nsh_core::{
-    AccessibilityRole, LayoutCurve, MountItem, NodeId, Size,
-    element::{Root, Spring},
-    platform::Os,
+    AccessibilityRole, LayoutCurve, MountItem, NodeId, Size, element::Spring, platform::Os,
     prelude::*,
 };
 use nsh_engine::EngineConfig;
@@ -141,7 +139,9 @@ fn start(props: HarnessProps, reduce_motion: bool) -> App {
     let mut config = EngineConfig {
         viewport: Size::new(px(390.0), px(844.0)),
         clock: nsh_engine::Clock::manual(std::time::SystemTime::now()),
-        ..EngineConfig::new(Root::new::<Harness>(move || props.clone()))
+        ..EngineConfig::new(nsh_testing::windowed_root_with::<Harness>(move || {
+            props.clone()
+        }))
     };
     config.environment.os = Os::MacOs;
     config.environment.reduce_motion = reduce_motion;
@@ -511,5 +511,126 @@ fn a_kept_panel_closed_by_a_reveal_is_out_of_sight() {
             .iter()
             .any(|i| matches!(i, MountItem::Remove { .. } | MountItem::Delete { .. })),
         "kept: {closed:#?}"
+    );
+}
+
+#[test]
+fn closing_reveal_panel_disables_pointer_events_at_once() {
+    #[derive(Clone, PartialEq, Props)]
+    struct PanelProps {
+        block_parent: bool,
+    }
+
+    #[component]
+    fn PanelHarness(props: PanelProps) -> impl IntoElement {
+        let value = signal(vec![SharedString::from("shipping")]);
+        let item = accordion()
+            .value(value)
+            .on_change(move |next: &Vec<SharedString>| value.set(next.clone()))
+            .child(
+                accordion_item()
+                    .value("shipping")
+                    .child(
+                        accordion_header()
+                            .level(2)
+                            .child(accordion_trigger().h(px(20.0)).child(text("Shipping"))),
+                    )
+                    .child(
+                        accordion_panel()
+                            .reveal(true)
+                            .accessibility_label("Shipping")
+                            .child(
+                                view()
+                                    .test_id("shipping-action")
+                                    .h(px(30.0))
+                                    .on_press(|| {})
+                                    .child(text("Action")),
+                            ),
+                    ),
+            );
+        if props.block_parent {
+            view()
+                .relative()
+                .h(px(60.0))
+                .child(view().test_id("behind").absolute().inset_0())
+                .child(
+                    view()
+                        .test_id("blocked-outer")
+                        .pointer_events(PointerEvents::None)
+                        .child(item),
+                )
+                .into_element()
+        } else {
+            view().child(item).into_element()
+        }
+    }
+
+    let config = EngineConfig {
+        viewport: Size::new(px(390.0), px(844.0)),
+        clock: nsh_engine::Clock::manual(std::time::SystemTime::now()),
+        ..EngineConfig::new(nsh_testing::windowed_root_with::<PanelHarness>(|| {
+            PanelProps {
+                block_parent: false,
+            }
+        }))
+    };
+    let mut app = Headless::start(config).expect("engine starts");
+    let seen: Seen = Arc::default();
+    let into = seen.clone();
+    app.observe(move |_, batch| into.lock().unwrap().extend(batch.items.iter().cloned()));
+    app.first_render().unwrap();
+    app.wait_for("Action").unwrap();
+    let first = std::mem::take(&mut *seen.lock().unwrap());
+    let panel = first
+        .iter()
+        .find_map(|i| match i {
+            MountItem::ViewProps { id, props }
+                if props.accessibility.role == AccessibilityRole::Region =>
+            {
+                Some(*id)
+            }
+            _ => None,
+        })
+        .expect("panel region");
+    assert!(
+        app.screen()
+            .press_target("id:shipping-action")
+            .unwrap()
+            .is_some()
+    );
+
+    // Close via trigger press; before the 180ms reveal finishes, the panel
+    // immediately disables pointer targeting and hides from accessibility.
+    app.press("role:button[Shipping]").unwrap();
+    let closing = std::mem::take(&mut *seen.lock().unwrap());
+    let closed_props = closing
+        .iter()
+        .rev()
+        .find_map(|i| match i {
+            MountItem::ViewProps { id, props } if *id == panel => {
+                Some((props.accessibility.hidden, props.pointer_events))
+            }
+            _ => None,
+        })
+        .expect("updated panel props");
+    assert_eq!(closed_props, (true, PointerEvents::None));
+    assert_eq!(
+        app.screen().press_target("id:shipping-action").unwrap(),
+        None
+    );
+
+    // An open panel inside a `PointerEvents::None` ancestor inherits `None`.
+    let blocked_config = EngineConfig {
+        viewport: Size::new(px(390.0), px(844.0)),
+        ..EngineConfig::new(nsh_testing::windowed_root_with::<PanelHarness>(|| {
+            PanelProps { block_parent: true }
+        }))
+    };
+    let mut blocked = Headless::start(blocked_config).expect("engine starts");
+    blocked.first_render().unwrap();
+    blocked.wait_for("Action").unwrap();
+    assert!(
+        blocked.press("id:shipping-action").is_err(),
+        "open panel must not receive pointer hits under a PointerEvents::None ancestor"
     );
 }

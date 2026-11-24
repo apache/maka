@@ -51,6 +51,7 @@ fn formatting() -> impl IntoElement {
 ```tsx tabs
 import { mount, signal, Text } from "nsh";
 import { Toggle, ToggleGroup } from "nsh/base";
+import { Window } from "nsh/desktop";
 
 function App() {
   const marks = signal<string[]>(["bold"]);
@@ -74,7 +75,11 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 `Toggle` and `ToggleGroup` come from [`nsh/base`](../modules/nsh-base.md), the `nsh-base` crate in Rust. The value is

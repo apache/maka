@@ -31,6 +31,112 @@ final class Decor extends Drawable {
     final int[] borderColors = new int[4];
     /** 0 solid, 1 dashed, 2 dotted. */
     int borderStyle;
+    /**
+     * `clipPath` (CSS's `inset()`), or null: each edge's offset (px) top,
+     * right, bottom, left, then each edge's fraction of the width or height
+     * in the same order, then the radii (px) from the top left. As the
+     * core's `ClipInset`.
+     */
+    float[] clipPath;
+
+    private final Path clipShape = new Path();
+    private final RectF clipRect = new RectF();
+    private final float[] clipRadii = new float[8];
+
+    /** The decoration of a view NSH styles, or null. */
+    static Decor of(View v) {
+        if (v instanceof StackBox.ScreenBox) return ((StackBox.ScreenBox) v).root.decor;
+        if (v instanceof StackBox) return ((StackBox) v).decor;
+        if (v instanceof Box) return ((Box) v).decor;
+        if (v instanceof TextBox) return ((TextBox) v).decor;
+        if (v instanceof ImageBox) return ((ImageBox) v).decor;
+        if (v instanceof ScrollBox) return ((ScrollBox) v).decor;
+        if (v instanceof InputBox) return ((InputBox) v).decor;
+        return null;
+    }
+
+    /**
+     * The clip path's rectangle in a box of {@code w} x {@code h} into
+     * {@link #clipRect} and its radii into {@link #clipRadii}, as the core's
+     * `ClipInset::resolve`: opposite edges that would pass each other meet
+     * in proportion, radii that do not fit are scaled down together.
+     */
+    private void resolveClip(float w, float h) {
+        float[] c = clipPath;
+        w = Math.max(0, w);
+        h = Math.max(0, h);
+        float top = c[0] + c[4] * h, right = c[1] + c[5] * w, bottom = c[2] + c[6] * h, left = c[3] + c[7] * w;
+        float v = top + bottom;
+        if (v > h && v > 0) {
+            top *= h / v;
+            bottom *= h / v;
+        }
+        float hz = left + right;
+        if (hz > w && hz > 0) {
+            left *= w / hz;
+            right *= w / hz;
+        }
+        float rw = Math.max(0, w - left - right), rh = Math.max(0, h - top - bottom);
+        clipRect.set(left, top, left + rw, top + rh);
+        float tl = Math.max(0, c[8]), tr = Math.max(0, c[9]), br = Math.max(0, c[10]), bl = Math.max(0, c[11]);
+        float f = 1;
+        if (tl + tr > rw) f = Math.min(f, rw / (tl + tr));
+        if (bl + br > rw) f = Math.min(f, rw / (bl + br));
+        if (tl + bl > rh) f = Math.min(f, rh / (tl + bl));
+        if (tr + br > rh) f = Math.min(f, rh / (tr + br));
+        f = Math.max(0, f);
+        float[] r = {tl * f, tr * f, br * f, bl * f};
+        for (int i = 0; i < 4; i++) {
+            clipRadii[i * 2] = r[i];
+            clipRadii[i * 2 + 1] = r[i];
+        }
+    }
+
+    /** The clip path's outline in a box of {@code w} x {@code h}. */
+    Path clipShape(float w, float h) {
+        resolveClip(w, h);
+        clipShape.reset();
+        clipShape.addRoundRect(clipRect, clipRadii, Path.Direction.CW);
+        return clipShape;
+    }
+
+    /**
+     * Whether ({@code x}, {@code y}) of {@code v} is outside its clip path:
+     * neither it nor its children take a touch there.
+     */
+    boolean clipsOut(View v, float x, float y) {
+        if (clipPath == null) return false;
+        resolveClip(v.getWidth(), v.getHeight());
+        RectF b = clipRect;
+        if (!(x >= b.left && y >= b.top && x < b.right && y < b.bottom)) return true;
+        // In a corner's square, outside its circle.
+        float[] r = clipRadii;
+        return outsideCorner(x, y, b.left + r[0], b.top + r[0], r[0], x < b.left + r[0] && y < b.top + r[0])
+                || outsideCorner(x, y, b.right - r[2], b.top + r[2], r[2], x > b.right - r[2] && y < b.top + r[2])
+                || outsideCorner(x, y, b.right - r[4], b.bottom - r[4], r[4], x > b.right - r[4] && y > b.bottom - r[4])
+                || outsideCorner(x, y, b.left + r[6], b.bottom - r[6], r[6], x < b.left + r[6] && y > b.bottom - r[6]);
+    }
+
+    private static boolean outsideCorner(float x, float y, float cx, float cy, float r, boolean inSquare) {
+        if (r <= 0 || !inSquare) return false;
+        float dx = x - cx, dy = y - cy;
+        return dx * dx + dy * dy > r * r;
+    }
+
+    /**
+     * Runs {@code draw} (a view's whole `draw`: its background, shadows,
+     * content and children) clipped to the view's clip path, if any.
+     */
+    void drawClipped(Canvas canvas, View v, Runnable draw) {
+        if (clipPath == null) {
+            draw.run();
+            return;
+        }
+        int save = canvas.save();
+        canvas.clipPath(clipShape(v.getWidth(), v.getHeight()));
+        draw.run();
+        canvas.restoreToCount(save);
+    }
 
     private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Path path = new Path();
@@ -413,7 +519,19 @@ final class Decor extends Drawable {
         return Build.VERSION.SDK_INT < 28 && canvas.isHardwareAccelerated();
     }
 
-    /** Shadow bitmaps of Android 8, shared by boxes that look the same. */
+    /**
+     * Later versions draw a shape's shadow layer on a hardware canvas, but
+     * blur its mask again whenever the box moves by a fraction of a pixel
+     * (Skia caches it by subpixel position), and clip it by the box's path:
+     * while boxes as large as the screen slid, their shadows, a 1 px inset
+     * rim included, took most of each frame. Each layer is drawn once into
+     * small bitmaps instead ({@link #drawCachedShadow}).
+     */
+    private static boolean cachedShadows(Canvas canvas) {
+        return canvas.isHardwareAccelerated();
+    }
+
+    /** Shadow bitmaps, shared by boxes that look the same. */
     private static final android.util.LruCache<String, Bitmap> SHADOWS =
             new android.util.LruCache<String, Bitmap>(8 << 20) {
                 @Override
@@ -499,26 +617,15 @@ final class Decor extends Drawable {
             drawShadowSlices(canvas, b, false);
             return;
         }
-        canvas.save();
-        if (android.os.Build.VERSION.SDK_INT >= 26) canvas.clipOutPath(shape(b, 0, path));
-        paint.setStyle(Paint.Style.FILL);
         // Bottom layer first.
         for (int n = boxShadowColors.length - 1; n >= 0; n--) {
-            int i = n * 5;
-            if (boxShadows[i + 4] != 0) continue;
-            int color = boxShadowColors[n];
-            if (Color.alpha(color) == 0) continue;
-            float spread = boxShadows[i + 3];
-            // The caster sits far away; only its shadow lands here.
-            paint.setColor(0xff000000);
-            paint.setShadowLayer(shadowRadius(boxShadows[i + 2]), boxShadows[i] + AWAY, boxShadows[i + 1], color);
-            shadowPath.reset();
-            grown(b, spread, shadowPath);
-            shadowPath.offset(-AWAY, 0);
-            canvas.drawPath(shadowPath, paint);
+            if (boxShadows[n * 5 + 4] != 0 || Color.alpha(boxShadowColors[n]) == 0) continue;
+            if (cachedShadows(canvas) && drawCachedShadow(canvas, b, n)) continue;
+            canvas.save();
+            if (android.os.Build.VERSION.SDK_INT >= 26) canvas.clipOutPath(shape(b, 0, path));
+            castShadow(canvas, b, n);
+            canvas.restore();
         }
-        paint.clearShadowLayer();
-        canvas.restore();
     }
 
     /** Inset box shadows: inside the padding box, above the background. */
@@ -530,34 +637,257 @@ final class Decor extends Drawable {
             drawShadowSlices(canvas, b, true);
             return;
         }
-        float t = borderWidths[0], r = borderWidths[1], bo = borderWidths[2], l = borderWidths[3];
-        Rect pad = new Rect(Math.round(b.left + l), Math.round(b.top + t), Math.round(b.right - r), Math.round(b.bottom - bo));
-        canvas.save();
-        canvas.clipPath(shape(pad, 0, path));
-        paint.setStyle(Paint.Style.FILL);
         for (int n = boxShadowColors.length - 1; n >= 0; n--) {
-            int i = n * 5;
-            if (boxShadows[i + 4] == 0) continue;
-            int color = boxShadowColors[n];
-            if (Color.alpha(color) == 0) continue;
-            float dx = boxShadows[i], dy = boxShadows[i + 1], blur = boxShadows[i + 2], spread = boxShadows[i + 3];
+            if (boxShadows[n * 5 + 4] == 0 || Color.alpha(boxShadowColors[n]) == 0) continue;
+            if (cachedShadows(canvas) && drawCachedShadow(canvas, b, n)) continue;
+            canvas.save();
+            canvas.clipPath(shape(padding(b), 0, path));
+            castShadow(canvas, b, n);
+            canvas.restore();
+        }
+    }
+
+    /** The padding box of `b`: inside its borders. */
+    private Rect padding(Rect b) {
+        float t = borderWidths[0], r = borderWidths[1], bo = borderWidths[2], l = borderWidths[3];
+        return new Rect(Math.round(b.left + l), Math.round(b.top + t), Math.round(b.right - r), Math.round(b.bottom - bo));
+    }
+
+    /**
+     * Draws layer `n` of the box shadows of `b` as a shadow layer, unclipped:
+     * the caller clips an outer one to outside the box, an inset one to its
+     * padding box.
+     */
+    private void castShadow(Canvas canvas, Rect b, int n) {
+        int i = n * 5;
+        float dx = boxShadows[i], dy = boxShadows[i + 1], blur = boxShadows[i + 2], spread = boxShadows[i + 3];
+        shadowPath.reset();
+        paint.setStyle(Paint.Style.FILL);
+        paint.setColor(0xff000000);
+        if (boxShadows[i + 4] == 0) {
+            // The caster sits far away; only its shadow lands here.
+            grown(b, spread, shadowPath);
+            paint.setShadowLayer(shadowRadius(blur), dx + AWAY, dy, boxShadowColors[n]);
+        } else {
             // A frame around the shifted, shrunk inner shape casts the shadow
             // inwards.
+            Rect pad = padding(b);
             float reach = Math.abs(dx) + Math.abs(dy) + Math.abs(spread) + blur * 2 + 4;
-            shadowPath.reset();
             shadowPath.setFillType(Path.FillType.EVEN_ODD);
             shadowPath.addRect(pad.left - reach, pad.top - reach, pad.right + reach, pad.bottom + reach, Path.Direction.CW);
             Path hole = new Path();
             grown(pad, -spread, hole);
             hole.offset(dx, dy);
             shadowPath.addPath(hole);
-            shadowPath.offset(-AWAY, 0);
-            paint.setColor(0xff000000);
-            paint.setShadowLayer(shadowRadius(blur), AWAY, 0, color);
-            canvas.drawPath(shadowPath, paint);
+            paint.setShadowLayer(shadowRadius(blur), AWAY, 0, boxShadowColors[n]);
         }
+        shadowPath.offset(-AWAY, 0);
+        canvas.drawPath(shadowPath, paint);
         paint.clearShadowLayer();
-        canvas.restore();
+    }
+
+    /**
+     * Layer `n` of the box shadows of `b`, as {@link #castShadow} draws it
+     * and clipped as its caller would, from bitmaps drawn once and shared by
+     * equal boxes: no shadow is blurred and no path is clipped as the box is
+     * drawn, which is what made a shadow layer on a hardware canvas slow.
+     * False, drawing nothing, when the bitmaps would take more than a quarter
+     * of the cache (a spread far larger than the box): the caller draws the
+     * layer as before.
+     *
+     * The shadow, unclipped, is stretched in nine slices as in
+     * {@link #drawShadowSlices}, so its bitmap does not depend on the box's
+     * size. A blurred layer changes slowly: that bitmap has a pixel for every
+     * `u` px, a quarter of the blur (half the deviation), and is drawn
+     * filtered; a 28 pt shadow at 3x takes about 50 by 50 pixels, cheap to
+     * blur again when the box's corners change. The slices are cut along the
+     * edge the clip follows (the box for an outer shadow, the padding box for
+     * an inset one) and where its corners' curves end: pieces on the shown
+     * side come from the slices, pieces on the hidden side are not drawn,
+     * and the squares of the curves come from a second bitmap, clipped and
+     * at full size. A layer whose bitmap is at full size anyway (`u` = 1, a
+     * blur under 8 px) is drawn into it clipped, and its slices are drawn
+     * whole: fewer pieces, as every backdrop recorded behind a box draws
+     * them again. The middle slice is not drawn: it lies inside the box,
+     * hidden for an outer shadow, and for an inset one more than twice the
+     * blur from where it casts (`reach`), where it holds nothing.
+     */
+    private boolean drawCachedShadow(Canvas canvas, Rect b, int n) {
+        int i = n * 5;
+        boolean inset = boxShadows[i + 4] != 0;
+        float blur = boxShadows[i + 2];
+        float reach = Math.abs(boxShadows[i]) + Math.abs(boxShadows[i + 1]) + Math.abs(boxShadows[i + 3]) + blur * 2 + 4;
+        int u = Math.max(1, (int) (blur / 4));
+        // A layer drawn at full size is drawn clipped: its slices then need no cutting.
+        boolean clipped = u == 1;
+        int m = units(reach, u);
+        float[] r = fit(b).clone();
+        // Continuous corners keep their full smoothing over 1.6 radii.
+        float k = continuous ? 1.6f : 1f;
+        int left = units((Math.max(r[0], r[3]) + m) * k + borderWidths[3], u);
+        int right = units((Math.max(r[1], r[2]) + m) * k + borderWidths[1], u);
+        int top = units((Math.max(r[0], r[1]) + m) * k + borderWidths[0], u);
+        int bottom = units((Math.max(r[3], r[2]) + m) * k + borderWidths[2], u);
+        int w = b.width(), h = b.height();
+        boolean wide = w > left + right + 2 * u, tall = h > top + bottom + 2 * u;
+        // An axis too short to have a band is drawn at its size, the bitmap
+        // rounded up to whole pixels past its far end (hidden, or past the
+        // shadow's reach).
+        int sw = wide ? left + right + 2 * u : w, sh = tall ? top + bottom + 2 * u : h;
+        if (sw <= 0 || sh <= 0) return false;
+        Rect small = new Rect(0, 0, sw, sh);
+        // The edge the clip follows, and how far its corners' curves reach along each side: within
+        // that side's slice, so a corner's square shows that corner alone.
+        Rect e = inset ? padding(b) : b, es = inset ? padding(small) : small;
+        float[] er = fit(e);
+        int cl = curve(Math.max(er[0], er[3]), k), cr = curve(Math.max(er[1], er[2]), k);
+        int ct = curve(Math.max(er[0], er[1]), k), cb = curve(Math.max(er[3], er[2]), k);
+        boolean squares = !clipped && cl + cr > 0 && ct + cb > 0;
+        int bw = units(sw + 2 * m, u) / u, bh = units(sh + 2 * m, u) / u;
+        // A shadow far larger than its box (a spread of the screen's size) is drawn as before.
+        long bytes = 4L * bw * bh + (squares ? 4L * (cl + cr) * (ct + cb) : 0);
+        if (bytes > SHADOWS.maxSize() / 4) return false;
+
+        StringBuilder key = new StringBuilder("l");
+        key.append(sw).append(',').append(sh).append(',').append(continuous);
+        for (float v : radii) key.append(',').append(v);
+        for (float v : borderWidths) key.append(',').append(v);
+        for (int j = i; j < i + 5; j++) key.append(',').append(boxShadows[j]);
+        key.append(',').append(boxShadowColors[n]);
+        String id = key.toString();
+        Bitmap slices = SHADOWS.get(id);
+        if (slices == null) {
+            slices = Bitmap.createBitmap(bw, bh, Bitmap.Config.ARGB_8888);
+            Canvas software = new Canvas(slices);
+            software.scale(1f / u, 1f / u);
+            software.translate(m, m);
+            if (clipped && inset) software.clipPath(shape(es, 0, path));
+            else if (clipped) software.clipOutPath(shape(es, 0, path));
+            castShadow(software, small, n);
+            SHADOWS.put(id, slices);
+        }
+        // The four corners' squares side by side, as the box's caller draws them.
+        Bitmap curves = squares ? SHADOWS.get(id + "c") : null;
+        if (squares && curves == null) {
+            curves = Bitmap.createBitmap(cl + cr, ct + cb, Bitmap.Config.ARGB_8888);
+            Canvas software = new Canvas(curves);
+            for (int q = 0; q < 4; q++) {
+                int x = q % 2 == 0 ? 0 : cl, y = q / 2 == 0 ? 0 : ct;
+                software.save();
+                software.clipRect(x, y, q % 2 == 0 ? cl : cl + cr, q / 2 == 0 ? ct : ct + cb);
+                software.translate(x - (q % 2 == 0 ? es.left : es.right - cr), y - (q / 2 == 0 ? es.top : es.bottom - cb));
+                if (inset) software.clipPath(shape(es, 0, path));
+                else software.clipOutPath(shape(es, 0, path));
+                castShadow(software, small, n);
+                software.restore();
+            }
+            SHADOWS.put(id + "c", curves);
+        }
+
+        // The slices along each axis: where they start on the canvas and in the bitmap.
+        int[] dxs = wide
+                ? new int[] {b.left - m, b.left + left, b.right - right, b.right + m}
+                : new int[] {b.left - m, b.left - m + slices.getWidth() * u};
+        int[] xs = wide
+                ? new int[] {0, (m + left) / u, (m + left) / u + 2, slices.getWidth()}
+                : new int[] {0, slices.getWidth()};
+        int[] dys = tall
+                ? new int[] {b.top - m, b.top + top, b.bottom - bottom, b.bottom + m}
+                : new int[] {b.top - m, b.top - m + slices.getHeight() * u};
+        int[] ys = tall
+                ? new int[] {0, (m + top) / u, (m + top) / u + 2, slices.getHeight()}
+                : new int[] {0, slices.getHeight()};
+        int[] cx = clipped ? dxs : cuts(dxs, e.left, e.right, cl, cr);
+        int[] cy = clipped ? dys : cuts(dys, e.top, e.bottom, ct, cb);
+
+        if (shadowPaint == null) {
+            shadowPaint = new Paint();
+            shadowPaint.setFilterBitmap(true);
+        }
+        android.graphics.BitmapShader sliced = new android.graphics.BitmapShader(slices,
+                android.graphics.Shader.TileMode.CLAMP, android.graphics.Shader.TileMode.CLAMP);
+        android.graphics.BitmapShader curved = curves == null ? null : new android.graphics.BitmapShader(curves,
+                android.graphics.Shader.TileMode.CLAMP, android.graphics.Shader.TileMode.CLAMP);
+        android.graphics.Matrix matrix = new android.graphics.Matrix();
+        for (int y = 0; y + 1 < cy.length; y++) {
+            float my = (cy[y] + cy[y + 1]) / 2f;
+            boolean outY = my < e.top || my > e.bottom, nearY = my < e.top + ct || my > e.bottom - cb;
+            int sy = slice(dys, my), qy = my < e.top + ct ? 0 : 1;
+            // Pieces of a row drawn from the same slice or square are drawn as one.
+            int from = 0, kind = 0, at = -1;
+            for (int x = 0; x < cx.length; x++) {
+                // 0: not drawn, 1: from the slices, 2: from the corners' squares.
+                int nextKind = 0, nextAt = -1;
+                if (x + 1 < cx.length) {
+                    float mx = (cx[x] + cx[x + 1]) / 2f;
+                    boolean out = outY || mx < e.left || mx > e.right;
+                    boolean curve = squares && !out && nearY && (mx < e.left + cl || mx > e.right - cr);
+                    boolean middle = wide && tall && slice(dxs, mx) == 1 && sy == 1;
+                    nextKind = clipped ? (middle ? 0 : 1) : curve ? 2 : out != inset && !middle ? 1 : 0;
+                    nextAt = curve ? (mx < e.left + cl ? 0 : 1) : slice(dxs, mx);
+                }
+                if (nextKind == kind && nextAt == at) continue;
+                if (kind == 1) {
+                    float scaleX = (float) (dxs[at + 1] - dxs[at]) / (xs[at + 1] - xs[at]);
+                    float scaleY = (float) (dys[sy + 1] - dys[sy]) / (ys[sy + 1] - ys[sy]);
+                    matrix.setScale(scaleX, scaleY);
+                    matrix.postTranslate(dxs[at] - xs[at] * scaleX, dys[sy] - ys[sy] * scaleY);
+                    drawPiece(canvas, sliced, matrix, cx[from], cy[y], cx[x], cy[y + 1]);
+                } else if (kind == 2) {
+                    matrix.setTranslate(at == 0 ? e.left : e.right - cr - cl, qy == 0 ? e.top : e.bottom - cb - ct);
+                    drawPiece(canvas, curved, matrix, cx[from], cy[y], cx[x], cy[y + 1]);
+                }
+                from = x;
+                kind = nextKind;
+                at = nextAt;
+            }
+        }
+        shadowPaint.setShader(null);
+        return true;
+    }
+
+    /** How far a corner's curve of radius `r` reaches along its sides (px), with a pixel for its edge. */
+    private static int curve(float r, float k) {
+        return r > 0 ? (int) Math.ceil(r * k) + 1 : 0;
+    }
+
+    /** Draws the pieces of shadows' bitmaps. */
+    private Paint shadowPaint;
+
+    /** Draws a rectangle of `shader`, placed by `matrix`. */
+    private void drawPiece(Canvas canvas, android.graphics.BitmapShader shader, android.graphics.Matrix matrix,
+            int l, int t, int r, int b) {
+        shader.setLocalMatrix(matrix);
+        shadowPaint.setShader(shader);
+        canvas.drawRect(l, t, r, b, shadowPaint);
+    }
+
+    /**
+     * The bounds of `slices`, cut where the clip's edges (`from`, `to`) and
+     * the ends of its corners' curves (`a` and `z` inside them) cross them,
+     * in order.
+     */
+    private static int[] cuts(int[] slices, int from, int to, int a, int z) {
+        int first = slices[0], last = slices[slices.length - 1];
+        java.util.TreeSet<Integer> at = new java.util.TreeSet<>();
+        for (int v : slices) at.add(v);
+        for (int v : new int[] {from, from + a, to - z, to}) at.add(Math.max(first, Math.min(last, v)));
+        int[] out = new int[at.size()];
+        int j = 0;
+        for (int v : at) out[j++] = v;
+        return out;
+    }
+
+    /** The slice of `slices` (their starts and the last end) that `v` is in. */
+    private static int slice(int[] slices, float v) {
+        int s = 0;
+        while (s + 2 < slices.length && v >= slices[s + 1]) s++;
+        return s;
+    }
+
+    /** `v` rounded up to a whole number of `u`. */
+    private static int units(float v, int u) {
+        return (int) Math.ceil(v / u) * u;
     }
 
     /** The box's rounded shape grown by `d` px (corners grow with it). */

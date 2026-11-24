@@ -190,6 +190,8 @@ pub(crate) struct Surface {
     pub(crate) file_drop: crate::file_drop::State,
     engine: RefCell<Option<Engine>>,
     control: RefCell<Option<EngineControl>>,
+    #[cfg(test)]
+    recorded_events: RefCell<Option<Vec<(NodeId, EventKind, EventPayload)>>>,
     /// The URLs the app was launched with, for the next engine to start
     /// ([`Surface::set_launch_links`]).
     launch_links: RefCell<Vec<String>>,
@@ -296,9 +298,6 @@ pub(crate) struct Surface {
     /// A top-level window that has not shown yet: its first show paints it
     /// before DWM composites it ([`crate::app::show_main`]).
     pub(crate) main_unshown: Cell<bool>,
-    /// The mode the top-level window takes when it first shows (nsh.json
-    /// `window`, [`AppView::place_main_window`](crate::AppView)).
-    pub(crate) main_opening_mode: Cell<Option<nsh_core::desktop::WindowMode>>,
     /// Called after the surface is resized (development overlays).
     pub(crate) on_resized: RefCell<Vec<ResizeHandler>>,
     /// The engine missed the deadline of a resize ([`RESIZE_WAIT`]): later
@@ -338,6 +337,8 @@ impl Surface {
             file_drop: Default::default(),
             engine: RefCell::new(None),
             control: RefCell::new(None),
+            #[cfg(test)]
+            recorded_events: RefCell::new(None),
             launch_links: RefCell::new(Vec::new()),
             rx: RefCell::new(None),
             pending: RefCell::new(Arc::new(AtomicBool::new(false))),
@@ -392,7 +393,6 @@ impl Surface {
             input_root: RefCell::default(),
             chrome: Default::default(),
             main_unshown: Cell::new(true),
-            main_opening_mode: Cell::new(None),
         });
         SURFACES.with(|s| s.borrow_mut().insert(key, Rc::downgrade(&surface)));
         let weak = Rc::downgrade(&surface);
@@ -675,10 +675,32 @@ impl Surface {
         ) {
             self.chrome.context_area.take();
         }
+        #[cfg(test)]
+        if let Some(log) = self.recorded_events.borrow_mut().as_mut() {
+            log.push((id, kind, payload));
+            return;
+        }
         self.control(|c| {
             c.set_focus_path(self.focus_path());
             c.dispatch_event(id, kind, payload);
         });
+    }
+
+    /// Records events passed to [`Surface::event`] instead of forwarding them
+    /// to an engine, for unit tests without a running engine.
+    #[cfg(test)]
+    pub(crate) fn record_events(&self) {
+        *self.recorded_events.borrow_mut() = Some(Vec::new());
+    }
+
+    /// Drains events recorded since [`Surface::record_events`] or the last call.
+    #[cfg(test)]
+    pub(crate) fn take_events(&self) -> Vec<(NodeId, EventKind, EventPayload)> {
+        self.recorded_events
+            .borrow_mut()
+            .as_mut()
+            .map(std::mem::take)
+            .unwrap_or_default()
     }
 
     pub(crate) fn events_sent(&self) -> u64 {
@@ -719,9 +741,43 @@ impl Surface {
         }
     }
 
+    /// Tells the engine the window size and scale the app sees
+    /// (`windowSize()`, `pixelRatio()`, the size classes): its primary
+    /// window's, the first of its own windows still open
+    /// ([`crate::app_window::primary`]), as the user resizes it, else this
+    /// surface's (an embedded view, or a host whose app shows no window).
+    /// The host's own window never shows: reporting its size would leave
+    /// the app's layout at the host's size whatever the user does with the
+    /// window they see.
+    pub(crate) fn window_environment(&self) {
+        let (size, scale) = crate::app_window::primary(self).unwrap_or_else(|| {
+            let s = self.root.state();
+            (s.frame.size, self.scale.get())
+        });
+        let mut env = self.environment.get();
+        if env.window == size && env.pixel_ratio == scale {
+            return;
+        }
+        env.window = size;
+        env.pixel_ratio = scale;
+        // Only the size changed: the appearance stays as it was applied
+        // (`set_environment` applies it again), which a live resize would
+        // otherwise do on every step.
+        self.environment.set(env);
+        self.control(|c| c.set_environment(env));
+    }
+
     /// The window's client area is `pixels` big at `scale` pixels per point.
     pub(crate) fn resized(self: &Rc<Self>, pixels: (u32, u32), scale: f32) {
         self.pixels.set(pixels);
+        // No area (a minimized window's client area is empty): nothing is
+        // drawn, and the app keeps its size, as in a minimized window of its
+        // own (`app_window::resized`) and on the other platforms. Laid out
+        // at 0 x 0 it would see `windowSize` collapse and lay itself out
+        // twice, there and back, for a size nobody sees.
+        if pixels.0 == 0 || pixels.1 == 0 {
+            return;
+        }
         let scale_changed = (self.scale.replace(scale) - scale).abs() > f32::EPSILON;
         let width = pixels.0 as f32 / scale;
         let height = pixels.1 as f32 / scale;
@@ -733,14 +789,8 @@ impl Surface {
             s.frame.size.width.0 = width;
             s.frame.size.height.0 = height;
         }
-        let mut env = self.environment.get();
-        env.window = Size::new(Points(width), Points(height));
-        env.pixel_ratio = scale;
-        self.environment.set(env);
-        self.control(|c| {
-            c.resize(Size::new(Points(width), Points(height)));
-            c.set_environment(env);
-        });
+        self.control(|c| c.resize(Size::new(Points(width), Points(height))));
+        self.window_environment();
         crate::navigation::surface_resized(self, width, height);
         crate::system::surface_resized(self, width, height);
         for f in self.on_resized.borrow().iter() {
@@ -1238,7 +1288,7 @@ impl Surface {
             }
             surface.keeper.set(None);
             if surface.now.get() < at {
-                surface.frame();
+                surface.frame(false);
                 // Nothing composes, so no tick of the ticker's would pause
                 // it: this frame does when it leaves nothing to do.
                 if !surface.wants_frames()
@@ -1253,7 +1303,7 @@ impl Surface {
 
     /// One frame of the ticker (`WM_NSH_TICK`).
     pub(crate) fn tick(self: &Rc<Self>) {
-        self.frame();
+        self.frame(true);
         if let Some(t) = &*self.ticker.borrow() {
             if self.wants_frames() {
                 t.ticked();
@@ -1263,9 +1313,10 @@ impl Surface {
         }
     }
 
-    /// One frame at the clock's time: the ticker's, or one a deadline ran
-    /// without a tick ([`Surface::keep_deadline`]).
-    fn frame(self: &Rc<Self>) {
+    /// One frame at the clock's time: the ticker's (`drawn`), or one a
+    /// deadline ran without a tick ([`Surface::keep_deadline`]), which keeps
+    /// the real time ([`nsh_core::animation::Animator::tick_frame`]).
+    fn frame(self: &Rc<Self>, drawn: bool) {
         let started = self
             .fps
             .borrow()
@@ -1277,7 +1328,11 @@ impl Surface {
         let now = self.clock();
         self.now.set(now);
         if self.anim.borrow().animating() {
-            self.anim.borrow_mut().tick(now);
+            if drawn {
+                self.anim.borrow_mut().tick_frame(now);
+            } else {
+                self.anim.borrow_mut().tick(now);
+            }
             self.write_animations();
         }
         if self.js_frame.replace(false) {
@@ -1422,6 +1477,22 @@ mod tests {
     };
 
     use super::*;
+
+    /// A minimized window's client area is empty: the app keeps the size it
+    /// had, and nothing is drawn meanwhile.
+    #[test]
+    fn an_empty_client_area_keeps_the_apps_size() {
+        let surface = Surface::new(Default::default());
+        surface.resized((800, 600), 2.0);
+        let size = Size::new(Points(400.0), Points(300.0));
+        assert_eq!(surface.environment.get().window, size);
+        surface.resized((0, 0), 2.0);
+        assert_eq!(surface.pixel_size(), (0, 0));
+        assert_eq!(surface.environment.get().window, size);
+        assert_eq!(surface.root.state().frame.size, size);
+        surface.resized((1000, 600), 2.0);
+        assert_eq!(surface.environment.get().window.width, Points(500.0));
+    }
 
     // This test uses the desktop's actual cursor; ordinary crate tests open
     // no windows. Restore it even if an assertion fails.

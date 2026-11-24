@@ -4,7 +4,8 @@
 // (`document`), streaming repair (`options`) with a `streamingCaret`, an extension
 // of each kind shown by `renderCustom`, the other render functions
 // (`renderCodeBlock`, `renderCodeBlockAction`, `renderTableActions`,
-// `renderMath`, `renderImage`), parts styled by `classes` and `styles`
+// `renderMath`, `renderImage`), text in the colors HTML or the document
+// gives it (`textStyle`), parts styled by `classes` and `styles`
 // (the root's text styles passing to every part; a table's grid,
 // `tableGrid`, takes its frame), code blocks without
 // their scroll indicator (`codeBlockScrollbar`), tables without
@@ -75,6 +76,8 @@ function App() {
   const cjk = TextView.parse("**涨幅：**5%").blocks[0];
   // A bare URL ending where CJK text starts.
   const url = TextView.parse("https://example.com。下一句").blocks[0];
+  // A span's color read into a text style.
+  const colored = TextView.parseHtml('<p><span style="color: red">x</span></p>').blocks[0];
   return (
     <View style={{ flex: 1, paddingTop: 20, gap: 4 }}>
       <TextView
@@ -98,6 +101,12 @@ function App() {
       />
       <Text>{`Task: ${task()}`}</Text>
       <TextView html="<h2>From HTML</h2><p>An <b>hypertext</b> paragraph.</p>" />
+      <TextView html={'<p>Colors: <span style="color: #e54545">red text</span> and <font color="#00aa00">green text</font></p>'} />
+      <TextView
+        document={{ blocks: [{ type: "paragraph", content: [{ type: "textStyle", color: "#336699",
+          content: [{ type: "text", text: "Document color" }] }] }] }}
+        styles={{ textStyle: { fontWeight: "600" } }}
+      />
       <TextView document={{ blocks: [{ type: "paragraph", content: [{ type: "text", text: "From a document" }] }] }} />
       <TextView
         markdown="Streaming **stream-bold"
@@ -146,6 +155,7 @@ function App() {
       <Text>{`CJK URL: ${url.type === "paragraph" ? url.content.map((i) => (i.type === "link" ? i.url : i.type)).join(",") : url.type}`}</Text>
       <Text>{`Math off: ${TextView.plainText(TextView.parse("Math $x$", { math: false }))}`}</Text>
       <Text>{`From HTML: ${TextView.plainText(TextView.parseHtml("<p>Hi <i>there</i></p>"))}`}</Text>
+      <Text>{`Text style: ${colored.type === "paragraph" ? colored.content.map((i) => (i.type === "textStyle" ? `${i.type} ${i.color}` : i.type)).join(",") : colored.type}`}</Text>
       <Text>{`Unknown tag: ${TextView.plainText(TextView.parse("<US tech> up"))}`}</Text>
       <TextView
         document={{ blocks: [{ type: "codeBlock", id: "annotated", code: "Annotated code", wrap: true,

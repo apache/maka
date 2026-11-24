@@ -49,6 +49,7 @@ fn app() -> impl IntoElement {
 ```tsx tabs
 import { mount, signal, Text, View } from "nsh";
 import { AlertDialog, Button } from "nsh/base";
+import { Window } from "nsh/desktop";
 
 function App() {
   const answer = signal("–");
@@ -73,7 +74,11 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 需要自己设计外观的对话框（卡片、sheet、全屏流程），使用 [Dialog](./dialog.md)。

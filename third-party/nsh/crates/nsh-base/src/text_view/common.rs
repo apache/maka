@@ -86,6 +86,10 @@ fn apply(patterns: &[(&str, Regex)], inlines: Vec<Inline>) -> Vec<Inline> {
                 content: apply(patterns, content),
                 color,
             }),
+            Inline::TextStyle { content, color } => out.push(Inline::TextStyle {
+                content: apply(patterns, content),
+                color,
+            }),
             Inline::Superscript { content } => out.push(Inline::Superscript {
                 content: apply(patterns, content),
             }),

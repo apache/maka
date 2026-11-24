@@ -672,3 +672,62 @@ fn a_text_the_viewport_cuts_below_ends_in_no_ellipsis_inside_a_card() {
     assert!(rows[2].contains("one two"), "{rows:#?}");
     assert!(!rows[2].contains('…'), "{rows:#?}");
 }
+
+/// A list of ten rows, rows 0 and 5 sticky headers, four rows tall.
+#[component]
+fn StickySections() -> impl IntoElement {
+    view().flex_1().child(
+        virtual_list(10usize, |at| {
+            // Cells are reused, so read the index reactively.
+            text(move || match at.index() {
+                0 => "head A".to_owned(),
+                5 => "head B".to_owned(),
+                i => format!("row {i}"),
+            })
+            .h(px(16.0))
+        })
+        .estimated_item_size(px(16.0))
+        .w(px(80.0))
+        .h(px(64.0))
+        .sticky_header_indices([0, 5]),
+    )
+}
+
+#[test]
+fn a_lists_sticky_header_stays_at_the_top_until_the_next_one_pushes_it_out() {
+    let (mut view, rx) = surface();
+    let mut terminal = Terminal::new(TestBackend::new(20, 6)).unwrap();
+    view.load(App::Rust(Root::new::<StickySections>(|| ())))
+        .unwrap();
+    draw_until(&mut view, &mut terminal, &rx, "row 3");
+    let line = |terminal: &Terminal<TestBackend>, y: u16| -> String {
+        (0..6)
+            .map(|x| terminal.backend().buffer()[(x, y)].symbol())
+            .collect()
+    };
+    let wheel = |view: &mut AppView| {
+        let mut input = nsh_platform_tui::MouseInput::default();
+        input.column = 2;
+        input.row = 1;
+        input.kind = nsh_platform_tui::MouseKind::Wheel { x: 0, y: 1 };
+        assert_eq!(view.handle(Input::Mouse(input)), Handled::Yes);
+    };
+    // Three rows down: rows 3 to 6 in view, the first header pinned over
+    // row 3.
+    wheel(&mut view);
+    draw_until(&mut view, &mut terminal, &rx, "row 6");
+    assert_eq!(line(&terminal, 0), "head A");
+    assert_eq!(line(&terminal, 2), "head B");
+    // To the end: the second header pinned, the first pushed out.
+    wheel(&mut view);
+    draw_until(&mut view, &mut terminal, &rx, "row 9");
+    assert_eq!(line(&terminal, 0), "head B");
+    let contents: String = terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(|c| c.symbol())
+        .collect();
+    assert!(!contents.contains("head A"), "{contents}");
+}

@@ -236,13 +236,15 @@ fn open_notes() {
 `open_auth_session` opens a provider's sign-in page (an OAuth authorization URL) and
 answers with the callback URL it redirects to: iOS shows it in an
 `ASWebAuthenticationSession` sheet (`.ephemeral(true)` keeps it apart from the user's
-Safari data), Android in a Custom Tab, other platforms in the system browser. Outside
-iOS the callback comes back as a link of a scheme the app claims (`nsh.json`
-`schemes`); the session takes it, so `next_url_scheme_open` never hears it. The
-answer is `Completed(url)` or `Cancelled` (the user closed the page or came back to
-the app without signing in); a session with nothing to bring its callback back fails
-with `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM`. The page's URL needs the `openUrl`
-capability, as `open_url` does.
+Safari data), Android in a Custom Tab, the macOS, Windows and Linux backends in the
+system browser. Outside iOS the callback comes back as a link of a scheme the app
+claims (`nsh.json` `schemes`); the session takes it, so `next_url_scheme_open` never
+hears it. The answer is `Completed(url)` or `Cancelled` (the user closed the page or
+came back to the app without signing in). A session with nothing to bring its
+callback back fails at once with `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM`: one whose
+scheme the app does not claim, and every one on the web and the GPUI and terminal
+backends, where no link of the app's schemes reaches the app. The page's URL needs
+the `openUrl` capability, as `open_url` does.
 
 When the app learns the user signed in some other way while the page still shows (a
 device code approved on a page that never redirects back), `close_auth_session()`
@@ -271,7 +273,8 @@ fn sign_in(authorize_url: String) {
 In tests, `Headless::on_auth_session` gives the platform an in-app session and ends
 each one with the outcome given, and `keep_auth_sessions_open` leaves each one open
 until the app closes it (`screen().auth_session_showing()`); without either the page
-is in `opened_urls()` and `open_with_url` delivers the callback.
+is in `opened_urls()` and `open_with_url` delivers the callback (not in a test run as
+the web, where the session fails at once).
 
 ## Extending a Rust app with TSX
 
@@ -360,6 +363,7 @@ impl Portfolio {
 
 ```tsx
 import { mount, signal, View, Text } from "nsh";
+import { Window } from "nsh/desktop";
 import { Chart, Ledger, Portfolio } from "app/native";   // Rust
 
 const ledger = new Ledger();   // its state lives in Rust
@@ -377,7 +381,11 @@ function Overview() {
   );
 }
 
-mount(() => <Overview />);
+mount(() => (
+  <Window id="main">
+    <Overview />
+  </Window>
+));
 ```
 
 Each export is documented in TypeScript by the doc comment of the Rust item that names it: a component by its

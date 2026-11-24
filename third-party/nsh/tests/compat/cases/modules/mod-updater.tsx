@@ -2,7 +2,7 @@
 // in a run that is no packaged app (the compat runner): nothing to update
 // from, so the checks resolve `null`, a channel's included, the code ran from no package, and
 // downloading or restarting into a package, or installing an update as the
-// app quits, rejects; the shell has no packaged
+// app quits, rejects; the built-in prompt has nothing to ask and resolves; the shell has no packaged
 // version but says which NSH runs it. Its script checks them.
 import { Text, View, signal } from "nsh";
 import {
@@ -10,6 +10,7 @@ import {
   checkForUpdate,
   downloadPackage,
   installOnQuit,
+  promptForUpdate,
   restartToPackage,
   runningPackage,
   shellInfo,
@@ -21,6 +22,7 @@ function App() {
   const download = signal("pending");
   const restart = signal("pending");
   const onQuit = signal("pending");
+  const prompt = signal("pending");
   const running = runningPackage();
   const shell = shellInfo();
   checkForUpdate({ channel: "beta" }).then(
@@ -43,6 +45,10 @@ function App() {
     () => onQuit.set("resolved"),
     () => onQuit.set("rejected"),
   );
+  promptForUpdate({ quiet: true }).then(
+    () => prompt.set("resolved"),
+    () => prompt.set("rejected"),
+  );
   return (
     <View style={{ flex: 1, paddingTop: 64 }}>
       <Text>{`Running package: ${running === null ? "none" : running.build}`}</Text>
@@ -53,6 +59,7 @@ function App() {
       <Text>{`Download: ${download()}`}</Text>
       <Text>{`Restart: ${restart()}`}</Text>
       <Text>{`Install on quit: ${onQuit()}`}</Text>
+      <Text>{`Prompt: ${prompt()}`}</Text>
     </View>
   );
 }

@@ -16,7 +16,7 @@ use nsh_base::{
 };
 use nsh_core::{
     Size,
-    element::{Registry, Root},
+    element::Registry,
     platform::{Idiom, Os},
     prelude::*,
 };
@@ -159,7 +159,9 @@ fn start_with(props: HarnessProps, ui_sets: Vec<Registry>) -> Headless {
     let mut config = EngineConfig {
         viewport: Size::new(px(800.0), px(600.0)),
         ui_sets,
-        ..EngineConfig::new(Root::new::<Harness>(move || props.clone()))
+        ..EngineConfig::new(nsh_testing::windowed_root_with::<Harness>(move || {
+            props.clone()
+        }))
     };
     config.environment.os = Os::Linux;
     config.environment.idiom = Idiom::Desktop;

@@ -390,6 +390,16 @@ fn gutter_row(
                 .absolute()
                 .inset_0()
                 .bg(move || line_tint(props, tint).unwrap_or(AdaptiveColor::TRANSPARENT));
+            // A name per line for tests (`diff-line:new:2`): a line number's
+            // text is ambiguous when an old and a new line share it.
+            let named = match (column, tint) {
+                (_, Tint::Filler) => None,
+                (Column::Old, _) | (Column::Both, Tint::Deleted) => Some(("old", cell.number)),
+                _ => Some(("new", cell.number)),
+            };
+            if let Some((side, Some(number))) = named {
+                el = el.test_id(&format!("diff-line:{side}:{number}"));
+            }
             // The numbers and signs beside the first wrapped line.
             let lh = lh.clone();
             let mut first = view()

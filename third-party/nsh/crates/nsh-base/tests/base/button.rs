@@ -6,9 +6,7 @@
 use std::sync::{Arc, Mutex};
 
 use nsh_base::button;
-use nsh_core::{
-    EdgeInsets, MountBatch, MountItem, NodeId, Size, element::Root, platform::Os, prelude::*,
-};
+use nsh_core::{EdgeInsets, MountBatch, MountItem, NodeId, Size, platform::Os, prelude::*};
 use nsh_engine::EngineConfig;
 use nsh_testing::Headless;
 
@@ -18,7 +16,7 @@ type Seen = Arc<Mutex<Vec<MountItem>>>;
 fn start<C: Component<Props = ()>>() -> (Headless, Seen) {
     let mut config = EngineConfig {
         viewport: Size::new(px(390.0), px(844.0)),
-        ..EngineConfig::new(Root::of::<C>())
+        ..EngineConfig::new(nsh_testing::windowed_root::<C>())
     };
     // A desktop: the mouse hovers.
     config.environment.os = Os::MacOs;

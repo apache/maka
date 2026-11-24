@@ -51,6 +51,7 @@ fn formatting() -> impl IntoElement {
 ```tsx tabs
 import { mount, signal, Text } from "nsh";
 import { Button, Toggle, Toolbar, ToolbarGroup, ToolbarSeparator } from "nsh/base";
+import { Window } from "nsh/desktop";
 
 function App() {
   const bold = signal(false);
@@ -77,7 +78,11 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 `Toolbar`, `ToolbarGroup` and `ToolbarSeparator` come from [`nsh/base`](../modules/nsh-base.md), the `nsh-base` crate

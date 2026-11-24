@@ -30,6 +30,7 @@ fn results() -> impl IntoElement {
 ```tsx tabs
 import { mount, signal } from "nsh";
 import { Pagination } from "nsh/base";
+import { Window } from "nsh/desktop";
 
 function App() {
   const page = signal(1);
@@ -47,7 +48,11 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 `Pagination` 来自 [`nsh/base`](../modules/nsh-base.md)，在 Rust 中是 `nsh-base` crate。Rust 中 `pagination()` 创建一个分页，每个 prop 有一个 setter（`.page(..)`、`.total_pages(..)`），`.on_change(..)` 接收用户选择的页，行用带类型的样式方法设置，应用的内容用 `.child(..)` 放入。

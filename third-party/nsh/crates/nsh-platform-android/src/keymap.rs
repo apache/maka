@@ -434,12 +434,42 @@ extern "system" fn Java_com_longbridge_nsh_Native_keyShortcut(
 }
 
 /// Every key down passes here before it acts: the focus it moves shows
-/// (`focus-visible:`). A modifier alone (Alt, Shift, Sym, Control, Caps
-/// Lock, Meta, Function: `KeyEvent.KEYCODE_*`) does not count.
+/// (`focus-visible:`) when it is a keyboard's ([`keyboard_key`]).
 fn note_key(host: &crate::host::Host, code: i32) {
-    if !matches!(code, 57..=60 | 63 | 113..=119) {
+    if keyboard_key(code) {
         host.input_with(nsh_core::platform::InputModality::Keyboard);
     }
+}
+
+/// Whether key `code` (`KeyEvent.KEYCODE_*`) says the user works with a
+/// keyboard. A modifier alone (Alt, Shift, Sym, Control, Caps Lock, Meta,
+/// Function) does not, nor does a system key (`KeyEvent.isSystem()`: Back,
+/// Home, volume, media, camera, call, ...): a touch screen's back button or
+/// a volume press leaves the focus as a pointer's, so a view the focus
+/// comes back to after it shows no ring.
+fn keyboard_key(code: i32) -> bool {
+    let modifier = matches!(code, 57..=60 | 63 | 113..=119);
+    // `KeyEvent.isSystemKey`: soft right, home, back, call, end call, volume
+    // up / down, power, camera, headset hook, focus, menu, search, mute,
+    // media play-pause / stop / next / previous / rewind / fast forward /
+    // play / pause / record, volume mute, brightness down / up, audio
+    // track, system navigation up / down / left / right.
+    let system = matches!(
+        code,
+        2..=6
+            | 24..=27
+            | 79
+            | 80
+            | 82
+            | 84..=91
+            | 126
+            | 127
+            | 130
+            | 164
+            | 220..=222
+            | 280..=283
+    );
+    !modifier && !system
 }
 
 /// Whether the table takes key `code` (firing its binding) in `window`,
@@ -779,6 +809,22 @@ fn release_consumed(held: bool, prevented: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_keyboards_keys_show_the_focus() {
+        // Letters, Tab, arrows, Enter, Escape.
+        for code in [29, 61, 19, 20, 21, 22, 66, 111] {
+            assert!(keyboard_key(code), "{code}");
+        }
+        // Modifiers alone.
+        for code in [57, 59, 113, 117, 119] {
+            assert!(!keyboard_key(code), "{code}");
+        }
+        // System keys: back, home, volume, power, camera, media, menu.
+        for code in [4, 3, 24, 25, 164, 26, 27, 85, 126, 82] {
+            assert!(!keyboard_key(code), "{code}");
+        }
+    }
 
     #[test]
     fn names_keys_by_what_they_type() {

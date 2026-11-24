@@ -1,13 +1,15 @@
 // A case of the API's test suite (docs/dev/compatibility.md): a binding of
 // `nsh/keymap` with `passThrough`, run as on macOS (`platform macos`), where
 // Tab moves the keyboard focus between views: the binding hears Tab, and
-// the key goes on, so the focus still moves to the next view.
+// the key goes on, so the focus still moves to the next view. It is bound
+// for the whole app (`scope: "app"`): a binding in a `<Window>` defaults to
+// that window, and this case's hardware keyboard drives the app.
 import { keymap, Text, View, signal } from "nsh";
 
 function App() {
   const passed = signal(0);
   const focused = signal("none");
-  keymap.bind("tab", () => passed.set(passed() + 1), { passThrough: true });
+  keymap.bind("tab", () => passed.set(passed() + 1), { passThrough: true, scope: "app" });
   return (
     <View style={{ flex: 1, paddingTop: 64 }}>
       <Text>{`Passed: ${passed()} Focus: ${focused()}`}</Text>

@@ -1,4 +1,5 @@
 import { fpsEnabled, mount, setFpsEnabled, setFpsMode, signal, Text, View } from "nsh";
+import { Window } from "nsh/desktop";
 
 // The performance monitor turned on by the app and shown as it says: its
 // whole panel, collapsed to the frame rate, or hidden while it measures.
@@ -22,4 +23,4 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => <Window id="main">{App}</Window>);

@@ -19,11 +19,12 @@
 use jni::objects::GlobalRef;
 use nsh_core::{
     AccessibilityCurrent, AccessibilityRole, AudioSession, AutoCapitalize, AutoFill, BorderStyle,
-    Checked, Color, Command, DialogButtonStyle, EditAction, InputConfig, KeyCapture,
-    KeyboardDismissMode, KeyboardTaps, KeyboardType, LayoutCurve, LayoutProperty, LayoutTransition,
-    LiveRegion, ModalAnimation, ModalPresentation, MountBatch, MountItem, NativeProps,
-    PointerEvents, ResizeMode, ReturnKeyType, ScreenAnimation, ScreenConfig, SnapAlignment,
-    StatusBarStyle, SubmitBehavior, ViewKind, ViewProps, ViewStyle, WebSource,
+    Checked, Color, Command, DialogButtonStyle, EditAction, HeaderTitleAlign, InputConfig,
+    KeyCapture, KeyboardDismissMode, KeyboardTaps, KeyboardType, LayoutCurve, LayoutProperty,
+    LayoutTransition, LiveRegion, ModalAnimation, ModalPresentation, MountBatch, MountItem,
+    NativeProps, PanDirection, PanEdge, PointerEvents, ResizeMode, ReturnKeyType, ScreenAnimation,
+    ScreenConfig, SnapAlignment, StatusBarStyle, SubmitBehavior, ViewKind, ViewProps, ViewStyle,
+    WebSource,
     audio::AudioCommand,
     geometry::{DefiniteLength, REM_SIZE},
 };
@@ -234,6 +235,13 @@ pub(crate) fn encode(batch: MountBatch, web_generation: u64) -> Encoded {
                 // The one color all of it is drawn in, if there is one: a
                 // change of it transitions (`transition-colors`, `TextBox`).
                 opt_color(&mut e, text.uniform_color());
+                // What attachments copy as: offset, then the string's
+                // object (`TextBox.copied`).
+                e.int(text.copy_texts.len() as i32);
+                for copy in &text.copy_texts {
+                    e.int(copy.index as i32);
+                    e.string(copy.text.to_string());
+                }
             }
             MountItem::Events { id, events } => {
                 e.int(EVENTS);
@@ -559,6 +567,7 @@ pub(crate) fn encode(batch: MountBatch, web_generation: u64) -> Encoded {
                 match command {
                     Command::Focus => e.int(0),
                     Command::Blur => e.int(1),
+                    Command::ClearSelection => e.int(62),
                     Command::ScrollTo { x, y, animated } => {
                         e.int(2);
                         e.float(x.0);
@@ -618,6 +627,9 @@ pub(crate) fn encode(batch: MountBatch, web_generation: u64) -> Encoded {
                         e.bool(c.animated);
                     }
                     Command::Dialog(d) => {
+                        // Unbox first: moving `buttons` and then `input` out of
+                        // a `Box` is not a disjoint move.
+                        let d = *d;
                         e.int(12);
                         e.int(d.id as i32);
                         e.opt_string(d.title.as_deref());
@@ -662,6 +674,11 @@ pub(crate) fn encode(batch: MountBatch, web_generation: u64) -> Encoded {
                     Command::Announce(text) => {
                         e.int(17);
                         e.string(text);
+                    }
+                    // `Mounter.textLocale`: the language tag.
+                    Command::TextLocale(locale) => {
+                        e.int(64);
+                        e.string(locale.as_str().to_owned());
                     }
                     Command::AccessibilityFocus => e.int(18),
                     // `InputBox.openEditMenu`: the bounds in the root view,
@@ -758,6 +775,11 @@ pub(crate) fn encode(batch: MountBatch, web_generation: u64) -> Encoded {
                         e.int(26);
                         e.int(id as i32);
                         e.string(url);
+                    }
+                    // `SystemUi.java` `openAppSettings`: the request.
+                    Command::OpenAppSettings { id } => {
+                        e.int(63);
+                        e.int(id as i32);
                     }
                     // `Share.java`: the request, the title and the text
                     // (the text and the URL on lines of their own), each
@@ -1133,6 +1155,21 @@ fn view_style(e: &mut Encoded, s: &ViewStyle) {
         }
     }
     e.bool(s.backface_hidden);
+    // `clipPath`: whether there is one, then each edge's offset (points)
+    // and fraction (top, right, bottom, left), then the radii from the top
+    // left (`Mounter.style`).
+    let clip = s.clip_path();
+    e.bool(clip.is_some());
+    let clip = clip.copied().unwrap_or_default();
+    for v in clip.offsets.to_array() {
+        e.float(v.0);
+    }
+    for v in clip.fractions.to_array() {
+        e.float(v.0);
+    }
+    for v in clip.radii.to_array() {
+        e.float(v.0);
+    }
     effects(e, s);
 }
 
@@ -1446,6 +1483,10 @@ fn screen_config(e: &mut Encoded, c: &ScreenConfig) {
     }
     e.float(c.header_height.0);
     e.opt_string(c.back_title.as_deref());
+    e.int(match c.title_align {
+        HeaderTitleAlign::Left => 0,
+        HeaderTitleAlign::Center => 1,
+    });
 }
 
 fn view_props(e: &mut Encoded, p: &ViewProps) {
@@ -1556,6 +1597,22 @@ fn view_props(e: &mut Encoded, p: &ViewProps) {
             ] {
                 e.float(v.map_or(f32::NAN, |v| v.0));
             }
+            // The way it activates in and its edge (Mounter.java
+            // `panActivation`): -1 none.
+            e.int(match a.way() {
+                Some(PanDirection::Left) => 0,
+                Some(PanDirection::Right) => 1,
+                Some(PanDirection::Up) => 2,
+                Some(PanDirection::Down) => 3,
+                _ => -1,
+            });
+            e.int(match a.edge {
+                Some(PanEdge::Left) => 0,
+                Some(PanEdge::Right) => 1,
+                Some(PanEdge::Top) => 2,
+                Some(PanEdge::Bottom) => 3,
+                _ => -1,
+            });
         }
         None => e.int(0),
     }
@@ -1740,6 +1797,7 @@ fn input(e: &mut Encoded, c: &InputConfig) {
     e.int(c.max_length.map_or(-1, |m| m as i32));
     e.bool(c.editable);
     e.bool(c.auto_focus);
+    e.bool(c.select_text_on_focus);
     e.bool(c.selection_color.is_some());
     e.int(c.selection_color.map_or(0, argb));
     e.bool(c.caret_color.is_some());
@@ -1784,10 +1842,10 @@ fn input(e: &mut Encoded, c: &InputConfig) {
     e.bool(c.caret_hidden);
     // `pasteBehavior`: whether a paste inserts its text.
     e.bool(c.paste_behavior == nsh_core::PasteBehavior::Insert);
-    // A multiline input's own scroll bar shows; a built-in bar replaces it
-    // (the input then reports how far its text scrolled).
+    // A multiline input's own scroll bar shows; whether it reports how far
+    // its text scrolled (a bar of the app's follows it).
     e.bool(c.scrollbar_visible);
-    e.bool(c.replaced);
+    e.bool(c.report_scroll);
     e.int(s.font_variant.0 as i32);
 }
 
@@ -2145,8 +2203,10 @@ mod tests {
             canvas(&mut e, &drawing);
             let words: Vec<u32> = e
                 .bytes
-                .chunks_exact(4)
-                .map(|chunk| u32::from_le_bytes(chunk.try_into().unwrap()))
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|chunk| u32::from_le_bytes(*chunk))
                 .collect();
             // The word count, the code, the URI's object, no source.
             assert_eq!(&words[..4], &[12, 42, 0, 0]);
@@ -2170,8 +2230,10 @@ mod tests {
         };
         encode(batch, 0)
             .bytes
-            .chunks_exact(4)
-            .map(|chunk| i32::from_le_bytes(chunk.try_into().unwrap()))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|chunk| i32::from_le_bytes(*chunk))
             .collect()
     }
 
@@ -2234,8 +2296,10 @@ mod tests {
         };
         let ints: Vec<i32> = encode(batch, 0)
             .bytes
-            .chunks_exact(4)
-            .map(|chunk| i32::from_le_bytes(chunk.try_into().unwrap()))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|chunk| i32::from_le_bytes(*chunk))
             .collect();
         // `COMMAND`, the root, op 55 (`Mounter.java`), the request, the
         // pixel size, the scale's bits, PNG, then `CANVAS`'s words: their
@@ -2278,8 +2342,10 @@ mod tests {
         );
         let ints: Vec<_> = encoded
             .bytes
-            .chunks_exact(4)
-            .map(|chunk| i32::from_le_bytes(chunk.try_into().unwrap()))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|chunk| i32::from_le_bytes(*chunk))
             .collect();
         assert_eq!(ints, vec![COMMAND, 3, 51, -1, 0, 1, 2, 3]);
         assert!(matches!(&encoded.objects[0], Obj::Str(generation) if generation == "19"));
@@ -2288,30 +2354,37 @@ mod tests {
     fn view_props_carry_the_key_capture_policy() {
         use nsh_core::keymap::{Key, Keystroke, Modifiers};
 
-        let mut props = ViewProps::default();
-        props.key_capture = KeyCapture::keys([
-            Keystroke {
-                key: Key::Char('a'),
-                modifiers: Modifiers::default(),
-            },
-            Keystroke {
-                key: Key::Left,
-                modifiers: Modifiers {
-                    shift: true,
-                    ..Modifiers::default()
+        let props = ViewProps {
+            key_capture: KeyCapture::keys([
+                Keystroke {
+                    key: Key::Char('a'),
+                    modifiers: Modifiers::default(),
                 },
-            },
-        ]);
+                Keystroke {
+                    key: Key::Left,
+                    modifiers: Modifiers {
+                        shift: true,
+                        ..Modifiers::default()
+                    },
+                },
+            ]),
+            ..ViewProps::default()
+        };
         let encoded = encode(
             MountBatch {
-                items: vec![MountItem::ViewProps { id: 2, props }],
+                items: vec![MountItem::ViewProps {
+                    id: 2,
+                    props: Box::new(props),
+                }],
             },
             0,
         );
         let ints: Vec<_> = encoded
             .bytes
-            .chunks_exact(4)
-            .map(|chunk| i32::from_le_bytes(chunk.try_into().unwrap()))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|chunk| i32::from_le_bytes(*chunk))
             .collect();
         // The tail `Mounter.java` reads: mode, count, (key, modifiers)*,
         // `focusable` (-1 unset), then `key_parent` (-1 none).
@@ -2330,35 +2403,49 @@ mod tests {
         );
 
         for (focusable, expected) in [(None, -1), (Some(false), 0), (Some(true), 1)] {
-            let mut props = ViewProps::default();
-            props.focusable = focusable;
+            let props = ViewProps {
+                focusable,
+                ..ViewProps::default()
+            };
             let encoded = encode(
                 MountBatch {
-                    items: vec![MountItem::ViewProps { id: 2, props }],
+                    items: vec![MountItem::ViewProps {
+                        id: 2,
+                        props: Box::new(props),
+                    }],
                 },
                 0,
             );
             let ints: Vec<_> = encoded
                 .bytes
-                .chunks_exact(4)
-                .map(|chunk| i32::from_le_bytes(chunk.try_into().unwrap()))
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|chunk| i32::from_le_bytes(*chunk))
                 .collect();
             assert_eq!(ints[ints.len() - 2], expected);
             assert_eq!(ints[ints.len() - 1], -1);
         }
 
-        let mut props = ViewProps::default();
-        props.key_parent = Some(7);
+        let props = ViewProps {
+            key_parent: Some(7),
+            ..ViewProps::default()
+        };
         let encoded = encode(
             MountBatch {
-                items: vec![MountItem::ViewProps { id: 2, props }],
+                items: vec![MountItem::ViewProps {
+                    id: 2,
+                    props: Box::new(props),
+                }],
             },
             0,
         );
         let ints: Vec<_> = encoded
             .bytes
-            .chunks_exact(4)
-            .map(|chunk| i32::from_le_bytes(chunk.try_into().unwrap()))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|chunk| i32::from_le_bytes(*chunk))
             .collect();
         assert_eq!(ints[ints.len() - 1], 7);
     }
@@ -2367,23 +2454,30 @@ mod tests {
     fn inputs_carry_text_layout_align_letter_spacing_and_font_variant() {
         use nsh_core::{FontVariant, InputConfig, Points, ResolvedTextStyle, TextAlign};
 
-        let mut config = InputConfig::default();
-        config.style = ResolvedTextStyle {
-            letter_spacing: Points(2.5),
-            font_variant: FontVariant(FontVariant::TABULAR_NUMS | FontVariant::SMALL_CAPS),
-            ..ResolvedTextStyle::default()
+        let config = InputConfig {
+            style: ResolvedTextStyle {
+                letter_spacing: Points(2.5),
+                font_variant: FontVariant(FontVariant::TABULAR_NUMS | FontVariant::SMALL_CAPS),
+                ..ResolvedTextStyle::default()
+            },
+            ..InputConfig::default()
         };
         let ints_for = |cfg: InputConfig| {
             let encoded = encode(
                 MountBatch {
-                    items: vec![MountItem::Input { id: 5, config: cfg }],
+                    items: vec![MountItem::Input {
+                        id: 5,
+                        config: Box::new(cfg),
+                    }],
                 },
                 0,
             );
             encoded
                 .bytes
-                .chunks_exact(4)
-                .map(|chunk| i32::from_le_bytes(chunk.try_into().unwrap()))
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|chunk| i32::from_le_bytes(*chunk))
                 .collect::<Vec<_>>()
         };
 

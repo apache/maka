@@ -21,7 +21,10 @@
 
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex, MutexGuard},
+    sync::{
+        Arc, Mutex, MutexGuard,
+        atomic::{AtomicU64, AtomicUsize, Ordering},
+    },
 };
 
 use crossbeam_channel::{Receiver, Sender};
@@ -29,13 +32,31 @@ use crossbeam_channel::{Receiver, Sender};
 use nsh_core::host_channel::HostBridge;
 use nsh_core::{
     JsonValue,
-    host_channel::{HostInbox, ModuleFake, check_name},
+    host_channel::{HostError, HostInbox, HostRequest, ModuleFake, check_name},
 };
 
 use crate::Message;
 
 /// A handler of the app's calls and posts of one name.
 type Handler = Arc<dyn Fn(HostCall) + Send + Sync>;
+
+/// Runs `handler` with `call`; a handler that panics drops the call, which
+/// fails it in the app.
+fn run_handler(handler: &Handler, call: HostCall) {
+    let name = call.name.clone();
+    let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| handler(call)));
+    if ran.is_err() {
+        log::error!("nsh/host: the embedding app's handler of \"{name}\" panicked");
+    }
+}
+
+/// Why [`HostChannel::start_request`] did not hand a request to a handler.
+pub(crate) enum HostRefusal {
+    /// The channel is not configured: the platform's host takes it.
+    Unconfigured(HostRequest),
+    /// No handler of the call's name: the call (its id) fails so.
+    NoHandler(u64, HostError),
+}
 
 /// The embedding app's handler of the URLs the app opens.
 type UrlHandler = Arc<dyn Fn(OpenUrlRequest) + Send + Sync>;
@@ -66,6 +87,19 @@ type UrlHandler = Arc<dyn Fn(OpenUrlRequest) + Send + Sync>;
 #[derive(Clone, Default)]
 pub struct HostChannel {
     inner: Arc<Mutex<Inner>>,
+    /// The app's calls handed to a handler and not yet answered, and
+    /// those answered.
+    calls: Arc<CallCount>,
+}
+
+/// A channel's count of the calls its handlers took ([`HostReply`]).
+#[derive(Default)]
+struct CallCount {
+    /// Taken and not yet answered.
+    in_flight: AtomicUsize,
+    /// Answered so far: counted before the call leaves `in_flight`, so a
+    /// reader that saw none in flight sees every answer that came.
+    answered: AtomicU64,
 }
 
 #[derive(Default)]
@@ -113,6 +147,24 @@ impl HostChannel {
         self.inner.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    /// How many of the apps' calls a handler has and has not answered yet.
+    /// A headless test driver waits for them before it ends a step: their
+    /// answer comes from another thread, in real time.
+    #[doc(hidden)]
+    pub fn calls_in_flight(&self) -> usize {
+        self.calls.in_flight.load(Ordering::SeqCst)
+    }
+
+    /// How many of the apps' calls a handler has answered so far. An
+    /// answer is on the engine's queue once counted, and may land after
+    /// the engine said it was idle: a headless test driver that read this
+    /// before asking, and finds no call in flight and this count changed,
+    /// asks again ([`HostChannel::calls_in_flight`] first, then this).
+    #[doc(hidden)]
+    pub fn calls_answered(&self) -> u64 {
+        self.calls.answered.load(Ordering::SeqCst)
+    }
+
     /// The launch parameters of the apps started from now on
     /// (`host.params`, read synchronously when they start; a running app
     /// keeps the ones it started with). Later requests are events
@@ -133,8 +185,9 @@ impl HostChannel {
     }
 
     /// Sends event `name` with `data` to the running app (`host.on(name,
-    /// listener)`). The app keeps events of names it does not listen to
-    /// yet until it does; while no app runs, events wait for the next one
+    /// listener)`, Rust's `on_host_event`). The app keeps events of names
+    /// it does not listen to yet until it does; while no app runs, events
+    /// wait for the next one
     /// (up to [`nsh_core::host_channel::MAX_QUEUED_EVENTS`] each, then the
     /// oldest go). Any thread; it never waits for the app. `Err` for a name
     /// that is empty or longer than
@@ -225,6 +278,73 @@ impl HostChannel {
     #[cfg(any(feature = "js-core", all(feature = "browser", target_arch = "wasm32")))]
     fn fake_handler(&self, name: &str) -> Option<Handler> {
         self.lock().fake_handlers.get(name).cloned()
+    }
+
+    /// Hands a call or post of the core (the app's Rust, or JS's without
+    /// a channel of its own) to the handler of its name, answered back to
+    /// the core through `tx` (`Message::CoreHostReply`). Without handlers
+    /// or events the channel is not configured: the request comes back for
+    /// the platform's host. A configured channel without a handler of the
+    /// name fails the call at once and drops the post, as it does JS's.
+    pub(crate) fn start_request(
+        &self,
+        request: HostRequest,
+        tx: &Sender<Message>,
+    ) -> Result<(), HostRefusal> {
+        let (handler, configured) = {
+            let inner = self.lock();
+            let name = match &request {
+                HostRequest::Call { name, .. } | HostRequest::Post { name, .. } => name,
+                _ => return Err(HostRefusal::Unconfigured(request)),
+            };
+            (inner.handlers.get(name).cloned(), inner.configured)
+        };
+        if !configured {
+            return Err(HostRefusal::Unconfigured(request));
+        }
+        match request {
+            HostRequest::Call { id, name, args } => {
+                let Some(handler) = handler else {
+                    return Err(HostRefusal::NoHandler(
+                        id,
+                        HostError::Failed(format!(
+                            "host.call(\"{name}\"): the embedding app handles no \"{name}\""
+                        )),
+                    ));
+                };
+                self.calls.in_flight.fetch_add(1, Ordering::SeqCst);
+                let reply = HostReply {
+                    id,
+                    name: name.clone(),
+                    tx: Some(tx.clone()),
+                    calls: Some(self.calls.clone()),
+                    to_core: true,
+                };
+                run_handler(
+                    &handler,
+                    HostCall {
+                        name,
+                        data: args,
+                        reply: Some(reply),
+                    },
+                );
+            }
+            HostRequest::Post { name, args } => match handler {
+                Some(handler) => run_handler(
+                    &handler,
+                    HostCall {
+                        name,
+                        data: args,
+                        reply: None,
+                    },
+                ),
+                None => log::debug!(
+                    "nsh/host: the embedding app handles no \"{name}\"; the post was dropped"
+                ),
+            },
+            _ => {}
+        }
+        Ok(())
     }
 
     /// Asks the engine to stop without interrupting JS, so its quit
@@ -367,19 +487,11 @@ pub(crate) struct EngineBridge {
 
 #[cfg(any(feature = "js-core", all(feature = "browser", target_arch = "wasm32")))]
 impl EngineBridge {
-    /// Runs `handler` with `call`; a handler that panics drops the call,
-    /// which fails it in the app.
-    fn run(handler: &Handler, call: HostCall) {
-        let name = call.name.clone();
-        let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| handler(call)));
-        if ran.is_err() {
-            log::error!("nsh/host: the embedding app's handler of \"{name}\" panicked");
-        }
-    }
-
     /// Runs `handler` with call `id` of `name`, answered back to this
     /// engine.
     fn start(&self, handler: &Handler, id: u64, name: &str, data: JsonValue) {
+        let calls = self.channel.calls.clone();
+        calls.in_flight.fetch_add(1, Ordering::SeqCst);
         let call = HostCall {
             name: name.to_owned(),
             data,
@@ -387,9 +499,11 @@ impl EngineBridge {
                 id,
                 name: name.to_owned(),
                 tx: Some(self.tx.clone()),
+                calls: Some(calls),
+                to_core: false,
             }),
         };
-        Self::run(handler, call);
+        run_handler(handler, call);
     }
 }
 
@@ -431,7 +545,7 @@ impl HostBridge for EngineBridge {
 
     fn post(&self, name: &str, data: JsonValue) {
         match self.channel.handler(name) {
-            Some(handler) => Self::run(
+            Some(handler) => run_handler(
                 &handler,
                 HostCall {
                     name: name.to_owned(),
@@ -592,6 +706,11 @@ pub struct HostReply {
     name: String,
     /// The queue of the engine that made the call; `None` once answered.
     tx: Option<Sender<Message>>,
+    /// Its channel's count of calls, until answered.
+    calls: Option<Arc<CallCount>>,
+    /// The core made the call (`Message::CoreHostReply`), not JS's channel
+    /// (`Message::HostReply`).
+    to_core: bool,
 }
 
 impl std::fmt::Debug for HostReply {
@@ -615,21 +734,40 @@ impl HostReply {
 
     /// Answers with `result`. An app that stopped meanwhile drops it.
     pub fn reply(mut self, result: Result<JsonValue, String>) {
+        self.send(result);
+        self.answered();
+    }
+
+    /// Puts `result` on the queue of the engine that made the call, once.
+    fn send(&mut self, result: Result<JsonValue, String>) {
         if let Some(tx) = self.tx.take() {
-            let _ = tx.send(Message::HostReply(self.id, result));
+            let _ = tx.send(if self.to_core {
+                Message::CoreHostReply(self.id, result)
+            } else {
+                Message::HostReply(self.id, result)
+            });
+        }
+    }
+
+    /// Counts the call answered, once its answer is on the engine's queue.
+    fn answered(&mut self) {
+        if let Some(calls) = self.calls.take() {
+            calls.answered.fetch_add(1, Ordering::SeqCst);
+            calls.in_flight.fetch_sub(1, Ordering::SeqCst);
         }
     }
 }
 
 impl Drop for HostReply {
     fn drop(&mut self) {
-        if let Some(tx) = self.tx.take() {
+        if self.tx.is_some() {
             let message = format!(
                 "host.call(\"{}\"): the embedding app did not answer",
                 self.name
             );
-            let _ = tx.send(Message::HostReply(self.id, Err(message)));
+            self.send(Err(message));
         }
+        self.answered();
     }
 }
 

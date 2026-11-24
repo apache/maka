@@ -133,6 +133,60 @@ pub(super) enum Placement {
     Nested(NodeId, Anchor),
 }
 
+/// A view's handlers of native events, by node, each node's in the order
+/// its element was given them. A view can have thousands of nodes with
+/// handlers (a rich editor's blocks, each with its layout listener), and
+/// an event, a node made again and a check for a node's listener each
+/// look at that node's handlers only: a list of the whole view would be
+/// scanned for each, so mounting such a view would grow with its square.
+#[derive(Default)]
+pub(super) struct Handlers {
+    by_node: FxHashMap<NodeId, Vec<(EventKind, Listener<EventPayload>)>>,
+}
+
+impl Handlers {
+    /// Node `node`'s handlers, in order.
+    pub(super) fn of(&self, node: NodeId) -> &[(EventKind, Listener<EventPayload>)] {
+        self.by_node.get(&node).map_or(&[], Vec::as_slice)
+    }
+
+    /// Adds `listener` of `kind` to node `node`'s, after the ones it has.
+    pub(super) fn push(&mut self, node: NodeId, kind: EventKind, listener: Listener<EventPayload>) {
+        self.by_node.entry(node).or_default().push((kind, listener));
+    }
+
+    /// Drops node `node`'s handlers.
+    pub(super) fn remove(&mut self, node: NodeId) {
+        self.by_node.remove(&node);
+    }
+
+    /// Keeps the handlers of the nodes `keep` keeps.
+    pub(super) fn retain_nodes(&mut self, mut keep: impl FnMut(&NodeId) -> bool) {
+        self.by_node.retain(|node, _| keep(node));
+    }
+
+    /// Moves node `old`'s handlers to node `new` (a slot's target moving to
+    /// another node), after the ones `new` has.
+    pub(super) fn rename(&mut self, old: NodeId, new: NodeId) {
+        if old == new {
+            return;
+        }
+        if let Some(moved) = self.by_node.remove(&old) {
+            self.by_node.entry(new).or_default().extend(moved);
+        }
+    }
+
+    pub(super) fn clear(&mut self) {
+        self.by_node.clear();
+    }
+
+    /// How many handlers there are, on all nodes.
+    #[cfg(test)]
+    pub(super) fn len(&self) -> usize {
+        self.by_node.values().map(Vec::len).sum()
+    }
+}
+
 /// A component instance on its host node.
 pub(super) struct Instance {
     inner: Inner,
@@ -161,9 +215,10 @@ pub(super) struct Instance {
     children_wanted: bool,
     /// The glue's node of each slot the app passes.
     slots: Vec<(&'static str, NodeId)>,
-    /// The view's handlers: native events by node, and the events of
-    /// nested components by their host (a handful: lists beat maps).
-    pub(super) handlers: Vec<(NodeId, EventKind, Listener<EventPayload>)>,
+    /// The view's handlers of native events, by node.
+    pub(super) handlers: Handlers,
+    /// The events of nested components, by their host (a handful: a list
+    /// beats a map).
     pub(super) event_handlers: Vec<(NodeId, Listener<dyn Any>)>,
     /// The view's parts in the touch responder, by node.
     pub(super) responders: Vec<(NodeId, Rc<ResponderEl>)>,
@@ -321,7 +376,7 @@ impl Instance {
             children_at: Placement::None,
             children_wanted: false,
             slots: Vec::new(),
-            handlers: Vec::new(),
+            handlers: Handlers::default(),
             event_handlers: Vec::new(),
             responders: Vec::new(),
             app_style,
@@ -545,8 +600,8 @@ struct Notifications {
 /// The links that open the app ([`crate::url_scheme`]).
 #[derive(Default)]
 struct UrlScheme {
-    /// The schemes the app claims (lower case).
-    schemes: Vec<String>,
+    /// The links the app claims: its schemes and web links.
+    links: crate::url_scheme::AppLinks,
     /// Links no listener took yet, at most [`crate::url_scheme::MAX_PENDING`].
     pending: std::collections::VecDeque<String>,
     /// The listener waiting for a link.
@@ -641,6 +696,10 @@ pub(super) struct Components {
     pub(super) released_hosts: FxHashSet<NodeId>,
     #[cfg(test)]
     pub(super) cleanup_work: super::views::CleanupWork,
+    /// The handlers dispatches looked at to find a node's (for a probe that
+    /// the count stays with the node's, whatever the view's size).
+    #[cfg(test)]
+    pub(super) handler_visits: std::cell::Cell<usize>,
     /// Siblings and overlays looked at to place views among them
     /// ([`Core::preceding`], `native_before_at`, `first_overlay_in`).
     #[cfg(test)]
@@ -685,6 +744,18 @@ pub(super) struct Components {
     pub(super) environment: Environment,
     /// Runs the components' async tasks and timers.
     pub(super) executor: Rc<Executor>,
+    /// Windows JS opened (`<Window>`) -> the owner and ref the Rust
+    /// components inside them render under ([`Core::js_window_owner`]).
+    js_windows: FxHashMap<NodeId, (crate::element::Owner, crate::element::desktop::WindowRef)>,
+    /// What the platform last reported of the windows of the app's own:
+    /// their state and title bar area, for the refs made after it.
+    window_reports: FxHashMap<
+        NodeId,
+        (
+            Option<crate::desktop::WindowState>,
+            crate::geometry::Edges<Points>,
+        ),
+    >,
     /// The status bar's settings, shared by components, modules and tasks.
     pub(super) status_bars: crate::element::status_bar::StatusBars,
     /// Dialogs components show, by id: their answers.
@@ -719,15 +790,29 @@ pub(super) struct Components {
     open_files: OpenFiles,
     /// Calls of the embedding app's functions (`nsh/host`), by request id:
     /// their answers.
-    host_calls: FxHashMap<u64, AnswerSlot<Result<crate::JsonValue, crate::element::JsError>>>,
+    host_calls:
+        FxHashMap<u64, AnswerSlot<Result<crate::JsonValue, crate::host_channel::HostError>>>,
     next_host_call: u64,
+    /// The calls and posts not handed to the engine yet
+    /// ([`Core::take_host_requests`]).
+    host_requests: Vec<crate::host_channel::HostRequest>,
+    /// The host's events no Rust listener heard, until one of their names
+    /// is added ([`Core::release_host_events`]).
+    host_inbox: crate::host_channel::HostInbox,
     /// URLs being opened (`openUrl`), by request id: their answers.
     url_opens: FxHashMap<u32, AnswerSlot<bool>>,
+    /// The clipboard writes sent to the platform waiting for its result,
+    /// in the order sent ([`crate::EventKind::ClipboardWrite`]).
+    pub(super) clipboard_writes:
+        std::collections::VecDeque<AnswerSlot<crate::element::ClipboardWrite>>,
     /// Those not handed to the engine yet ([`Core::take_url_opens`]).
     url_requests: Vec<(u32, String)>,
     /// The language the app asked to show in (`Some(None)`: the user's
     /// again), for the engine ([`Core::take_locale_request`]).
     pub(super) locale_request: Option<Option<crate::platform::Locale>>,
+    /// The language of the app's text last sent to an iOS or Android
+    /// platform ([`Command::TextLocale`]).
+    text_locale: Option<crate::platform::Locale>,
     /// The app listened to quit requests at the last commit: the platform
     /// was told its quit requests go to the app
     /// ([`crate::desktop::DesktopCommand::SetQuitOnRequest`]).
@@ -736,6 +821,10 @@ pub(super) struct Components {
     /// ([`Core::take_main_thread_tasks`]).
     main_thread: Vec<crate::main_thread::MainThreadTask>,
     next_url_open: u32,
+    /// The app's settings pages being opened (`AppSettings.open`), by
+    /// request id: their answers.
+    app_settings_opens: FxHashMap<u32, AnswerSlot<Result<bool, crate::mobile::AppSettingsError>>>,
+    next_app_settings_open: u32,
     /// Colors being picked on the screen, by request id: their answers.
     screen_colors: FxHashMap<u32, AnswerSlot<Option<crate::Hsla>>>,
     next_screen_color: u32,
@@ -799,6 +888,12 @@ pub(super) struct Components {
     insets: FxHashMap<NodeId, EdgeInsets>,
     /// JS listens to the back button (`BackHandler`) on the root.
     js_back: bool,
+    /// JS listens to the back gesture's steps (`BackHandler.on("progress",
+    /// ..)`) on the root.
+    js_back_progress: bool,
+    /// The app's listeners follow the back gesture under way: decided as it
+    /// starts, so a gesture an overlay takes stays the overlay's to its end.
+    back_gesture: bool,
     /// JS's keyboard shortcuts (`nsh/keymap`: the root's `Prop::Keymap`),
     /// which the root's table joins with the views'.
     js_keymap: Arc<crate::keymap::Keymap>,
@@ -847,6 +942,8 @@ impl Default for Components {
             #[cfg(test)]
             cleanup_work: Default::default(),
             #[cfg(test)]
+            handler_visits: Default::default(),
+            #[cfg(test)]
             placing_work: Default::default(),
             #[cfg(test)]
             retag_work: Default::default(),
@@ -864,6 +961,8 @@ impl Default for Components {
             lists: FxHashMap::default(),
             environment: Environment::default(),
             executor: Rc::new(Executor::default()),
+            js_windows: FxHashMap::default(),
+            window_reports: FxHashMap::default(),
             status_bars: Default::default(),
             dialogs: FxHashMap::default(),
             next_dialog: 1,
@@ -871,11 +970,15 @@ impl Default for Components {
             next_image_info: 1,
             clipboard_reads: FxHashMap::default(),
             url_opens: FxHashMap::default(),
+            clipboard_writes: Default::default(),
             url_requests: Vec::new(),
             locale_request: None,
+            text_locale: None,
             asks_quit: false,
             main_thread: Vec::new(),
             next_url_open: 0,
+            app_settings_opens: FxHashMap::default(),
+            next_app_settings_open: 1,
             screen_colors: FxHashMap::default(),
             next_screen_color: 1,
             shares: FxHashMap::default(),
@@ -893,6 +996,8 @@ impl Default for Components {
             open_files: OpenFiles::default(),
             host_calls: FxHashMap::default(),
             next_host_call: 1,
+            host_requests: Vec::new(),
+            host_inbox: Default::default(),
             web_evaluations: Default::default(),
             canvas_renders: Default::default(),
             fetches: FxHashMap::default(),
@@ -914,6 +1019,8 @@ impl Default for Components {
             list_layouts: FxHashMap::default(),
             insets: FxHashMap::default(),
             js_back: false,
+            js_back_progress: false,
+            back_gesture: false,
             js_keymap: Arc::new(crate::keymap::Keymap::default()),
             js_keys: false,
             touch: super::touch::TouchState::default(),
@@ -1081,24 +1188,64 @@ impl<M: TextEngine> Core<M> {
         if crate::i18n::text_locale(&stored.get(), env.locale, env.locale_settings.languages)
             != before
         {
-            self.localize_menus();
+            self.localize_platform();
         }
     }
 
-    /// The menus NSH owns use the same language selection as the app's text.
-    fn localize_menus(&mut self) {
+    /// Merges `map` into this surface's translations and updates menus if the
+    /// selected language changed.
+    pub(crate) fn add_translations(
+        &mut self,
+        map: std::collections::HashMap<String, std::collections::HashMap<String, String>>,
+    ) {
+        if map.is_empty() {
+            return;
+        }
+        let next = {
+            let _entered = self.components.runtime.enter();
+            crate::element::global::<crate::i18n::Translations>()
+                .get_untracked()
+                .extend(map)
+        };
+        self.set_translations(next);
+    }
+
+    /// Re-localizes menus when translations updated in place changed the
+    /// selected language.
+    fn translations_changed(&mut self, before: &crate::i18n::Translations) {
         let _entered = self.components.runtime.enter();
-        if !matches!(
-            self.components.environment.os,
-            crate::platform::Os::MacOs | crate::platform::Os::Windows
-        ) || self.components.environment.idiom == crate::platform::Idiom::Terminal
+        let current = crate::element::global::<crate::i18n::Translations>().get_untracked();
+        let env = self.components.environment;
+        if crate::i18n::text_locale(&current, env.locale, env.locale_settings.languages)
+            != crate::i18n::text_locale(before, env.locale, env.locale_settings.languages)
         {
+            self.localize_platform();
+        }
+    }
+
+    /// What NSH says itself on the platform uses the same language
+    /// selection as the app's text: the menus it owns (macOS, Windows) and
+    /// the screen reader's state words (iOS, Android).
+    fn localize_platform(&mut self) {
+        use crate::platform::Os;
+        let _entered = self.components.runtime.enter();
+        let env = self.components.environment;
+        let desktop = matches!(env.os, Os::MacOs | Os::Windows)
+            && env.idiom != crate::platform::Idiom::Terminal;
+        if !desktop && !matches!(env.os, Os::Ios | Os::Android) {
             return;
         }
         let translations = crate::element::global::<crate::i18n::Translations>().get();
-        let env = self.components.environment;
         let locale =
             crate::i18n::text_locale(&translations, env.locale, env.locale_settings.languages);
+        if !desktop {
+            if self.components.text_locale != Some(locale) {
+                self.components.text_locale = Some(locale);
+                self.commands
+                    .push((crate::ROOT_ID, Command::TextLocale(locale)));
+            }
+            return;
+        }
         let labels = crate::desktop::MenuLabels::for_locale(
             locale,
             self.components.environment.os == crate::platform::Os::MacOs,
@@ -1129,9 +1276,17 @@ impl<M: TextEngine> Core<M> {
 
     /// The embedding app's design tokens (`None`: the app's again): an app
     /// embedded in a native app looks like it, whatever the app sets.
+    /// Text inherits its `foreground` token unless it sets its own color.
     pub fn set_host_tokens(&mut self, tokens: Option<Tokens>) {
         self.components.host_tokens = tokens.map(Arc::new);
         self.tokens_changed();
+        // Embedded content inherits the host's foreground unless it sets its own.
+        let classes = if self.components.host_tokens.is_some() {
+            vec!["text-foreground".into()]
+        } else {
+            Vec::new()
+        };
+        self.set_classes(self.root, None, Some(classes));
     }
 
     /// What [`Core::tokens`] become when the root's `uiTheme` (the app's
@@ -1199,20 +1354,27 @@ impl<M: TextEngine> Core<M> {
             child: id,
             before: None,
         });
-        // The windows `open_window` opens render beside the root (desktops).
-        let desktop = crate::element::os().is_desktop();
-        if desktop {
-            use crate::element::Component as _;
-            let host = crate::element::desktop::OpenedWindowsHost::element(()).into_element();
-            if let Some(host) = self.make_component(host, |_, _| {}) {
-                let _ = self.apply_op(Op::Insert {
-                    parent: ROOT_ID,
-                    child: host,
-                    before: None,
-                });
-            }
-        }
+        self.mount_opened_windows();
         self.own_direction();
+    }
+
+    /// Mounts what renders the windows `open_window` opens, beside the
+    /// app's root (desktops): a Rust app's ([`Self::mount_root`]) or a TSX
+    /// app's, whose built-in windows (the update prompt) open the same way.
+    pub fn mount_opened_windows(&mut self) {
+        let _entered = self.components.runtime.enter();
+        if !crate::element::os().is_desktop() {
+            return;
+        }
+        use crate::element::Component as _;
+        let host = crate::element::desktop::OpenedWindowsHost::element(()).into_element();
+        if let Some(host) = self.make_component(host, |_, _| {}) {
+            let _ = self.apply_op(Op::Insert {
+                parent: ROOT_ID,
+                child: host,
+                before: None,
+            });
+        }
     }
 
     /// Makes the host of component element `el` (`None`: `el` is not a
@@ -1283,8 +1445,14 @@ impl<M: TextEngine> Core<M> {
             || self.components.environment.locale != environment.locale
             || self.components.environment.locale_settings.languages
                 != environment.locale_settings.languages;
-        self.keyboard_moved |=
+        let keyboard_moved =
             self.components.environment.keyboard_height != environment.keyboard_height;
+        self.keyboard_moved |= keyboard_moved;
+        // The room the root view's anchored overlays keep to leaves the
+        // keyboard out (`Core::overlay_area`): laid out and placed again.
+        if keyboard_moved && self.root_overlay_shown() {
+            self.needs_layout = true;
+        }
         let ratio = self.components.environment.pixel_ratio;
         self.components.environment = environment;
         if ratio != environment.pixel_ratio {
@@ -1299,7 +1467,7 @@ impl<M: TextEngine> Core<M> {
             self.components.runtime.set_environment(environment);
         }
         if language_changed {
-            self.localize_menus();
+            self.localize_platform();
         }
         // A main window that keeps its placement saves it as it changes.
         if let Some(state) = environment.window_state {
@@ -1426,6 +1594,32 @@ impl<M: TextEngine> Core<M> {
         for listener in listeners {
             if let Err(message) = caught(|| listener()) {
                 log::error!(target: "js", "a quit request listener failed: {message}");
+            }
+        }
+        self.apply_actions();
+    }
+
+    /// The OS asked the app to show itself: each reopen listener hears it,
+    /// oldest first. The app opens or focuses the window it wants.
+    #[doc(hidden)]
+    pub fn reopened(&mut self) {
+        let _entered = self.components.runtime.enter();
+        let listeners = self.components.executor.reopens.borrow().all();
+        for listener in listeners {
+            if let Err(message) = caught(|| listener()) {
+                log::error!(target: "js", "a reopen listener failed: {message}");
+            }
+        }
+        self.apply_actions();
+    }
+
+    /// The app's last window went: each listener hears it, oldest first.
+    pub(crate) fn last_window_closed(&mut self) {
+        let _entered = self.components.runtime.enter();
+        let listeners = self.components.executor.last_window_closed.borrow().all();
+        for listener in listeners {
+            if let Err(message) = caught(|| listener()) {
+                log::error!(target: "js", "a last window closed listener failed: {message}");
             }
         }
         self.apply_actions();
@@ -1753,6 +1947,27 @@ impl<M: TextEngine> Core<M> {
                 Ok(Some(Op::Listen {
                     id: crate::ROOT_ID,
                     event: EventKind::BackPress,
+                    enabled: enabled || rust,
+                }))
+            }
+            // The root listens to the back gesture's steps while JS or a
+            // component does.
+            Op::Listen {
+                id: crate::ROOT_ID,
+                event: EventKind::BackProgress,
+                enabled,
+            } => {
+                self.components.js_back_progress = enabled;
+                let rust = !self
+                    .components
+                    .executor
+                    .back_progress
+                    .borrow()
+                    .list
+                    .is_empty();
+                Ok(Some(Op::Listen {
+                    id: crate::ROOT_ID,
+                    event: EventKind::BackProgress,
                     enabled: enabled || rust,
                 }))
             }
@@ -2504,6 +2719,37 @@ impl<M: TextEngine> Core<M> {
         crate::element::Owner::detached()
     }
 
+    /// The owner a component JS made in a window JS opened renders under
+    /// when no component is above it: one per window, providing its ref,
+    /// so [`crate::element::desktop::current_window`] is that window (its
+    /// title bar area, its dialogs). `None` in the main window.
+    fn js_window_owner(&mut self, host: NodeId) -> Option<crate::element::Owner> {
+        let key = self.key(host).ok()?;
+        let window = self.key_window(key);
+        if window == ROOT_ID {
+            return None;
+        }
+        if let Some((owner, _)) = self.components.js_windows.get(&window)
+            && owner.is_live()
+        {
+            return Some(*owner);
+        }
+        let id = self
+            .window_ids
+            .iter()
+            .find_map(|(id, (node, _))| (*node == window).then(|| id.clone()))?;
+        let reported = self
+            .components
+            .window_reports
+            .get(&window)
+            .copied()
+            .unwrap_or_default();
+        let (owner, this) =
+            crate::element::desktop::js_window(&id, window, &self.components.executor, reported);
+        self.components.js_windows.insert(window, (owner, this));
+        Some(owner)
+    }
+
     /// The host of the component that runs once whose owner is `owner`, or
     /// whose view made it (a binding's own owner is under the component's).
     fn host_of_owner(&self, owner: crate::element::Owner) -> Option<NodeId> {
@@ -2565,7 +2811,13 @@ impl<M: TextEngine> Core<M> {
                     self.restyle_view(host, inst);
                     return None;
                 }
-                inner.adopt(self.owner_above(host));
+                let owner = self.owner_above(host);
+                let owner = if owner.is_live() {
+                    owner
+                } else {
+                    self.js_window_owner(host).unwrap_or(owner)
+                };
+                inner.adopt(owner);
                 // A view that fails shows nothing.
                 caught(|| inner.view()).unwrap_or_else(|message| {
                     failure = Some(message);
@@ -3257,10 +3509,21 @@ impl<M: TextEngine> Core<M> {
                         window.attributes.clone(),
                     ))
                 };
+                let opens = or.window.is_none();
                 let _ = self.apply_op(Op::Command {
                     id,
                     command: crate::Command::Desktop(Box::new(command)),
                 });
+                // What its ref was asked for before it existed follows its
+                // opening, in order (`open_window(..)` then `focus()`).
+                if opens {
+                    for command in &nr.window_commands {
+                        let _ = self.apply_op(Op::Command {
+                            id,
+                            command: crate::Command::Desktop(Box::new(command.clone())),
+                        });
+                    }
+                }
             }
         }
     }
@@ -3360,12 +3623,12 @@ impl<M: TextEngine> Core<M> {
         // A node made again (its region ran again) hears what this run
         // gives it, not also what the runs before gave it.
         if old.bits() != 0 {
-            inst.handlers.retain(|(n, _, _)| *n != id);
+            inst.handlers.remove(id);
             inst.responders.retain(|(n, _)| *n != id);
         }
         for (kind, handler) in &el.handlers {
             mask.set(*kind, true);
-            inst.handlers.push((id, *kind, handler.clone()));
+            inst.handlers.push(id, *kind, handler.clone());
         }
         // The responder hears the touches the platform reports.
         if let Some(responder) = &el.responder {
@@ -3408,8 +3671,9 @@ impl<M: TextEngine> Core<M> {
                     if *kind == EventKind::Layout
                         && !inst
                             .handlers
+                            .of(id)
                             .iter()
-                            .any(|(n, k, old)| *n == id && *k == *kind && old.same_owner(listener))
+                            .any(|(k, old)| *k == *kind && old.same_owner(listener))
                     {
                         self.events.push(JsEvent::LayoutListener {
                             host,
@@ -5400,6 +5664,11 @@ impl<M: TextEngine> Core<M> {
     /// own parts' events never reach JS, which does not know them).
     pub fn component_event(&mut self, id: NodeId, kind: EventKind, payload: &EventPayload) -> bool {
         let _entered = self.components.runtime.enter();
+        // A Rust text block's final layout, for its `on_text_layout`.
+        let _geometry = (kind == EventKind::TextLayout)
+            .then(|| self.geometries.remove(&id))
+            .flatten()
+            .map(crate::text::GeometryScope::enter);
         let handled = self.dispatch_event(id, kind, payload);
         self.flush_component_emits();
         handled
@@ -5421,7 +5690,7 @@ impl<M: TextEngine> Core<M> {
     /// backend mounts it elsewhere. No allocation: a walk per transition.
     #[doc(hidden)]
     pub fn key_interest(&self, id: NodeId) -> bool {
-        let Ok(mut key) = self.key(id) else {
+        let Ok(mut key) = self.key(id).map(|key| self.key_start(key)) else {
             return false;
         };
         let window = self.key_window(key);
@@ -5460,7 +5729,7 @@ impl<M: TextEngine> Core<M> {
     #[doc(hidden)]
     pub fn key_path(&self, id: NodeId, out: &mut Vec<NodeId>) {
         out.clear();
-        let Ok(mut key) = self.key(id) else {
+        let Ok(mut key) = self.key(id).map(|key| self.key_start(key)) else {
             return;
         };
         let window = self.key_window(key);
@@ -5490,7 +5759,7 @@ impl<M: TextEngine> Core<M> {
     /// keys that edit it: nothing captures them.
     #[doc(hidden)]
     pub fn key_captured(&self, id: NodeId, keystroke: Option<&crate::keymap::Keystroke>) -> bool {
-        let Ok(mut key) = self.key(id) else {
+        let Ok(mut key) = self.key(id).map(|key| self.key_start(key)) else {
             return false;
         };
         // A native text input owns the keys that edit it: an ancestor's
@@ -5517,6 +5786,37 @@ impl<M: TextEngine> Core<M> {
                 return false;
             }
             key = node.parent;
+        }
+    }
+
+    /// Where a key transition reported at `key` starts. A backend with
+    /// nothing focused in a window reports at the window's root (`ROOT_ID`,
+    /// or a dialog window's root): the app's views are not its ancestors,
+    /// so the transition starts at the view mounted there (the app's mount
+    /// root, or the dialog's content) and bubbles from it, as a browser
+    /// reports it at `document.body` (#2362). Any other node starts at
+    /// itself.
+    pub(super) fn key_start(&self, key: Key) -> Key {
+        let node = &self.nodes[key as usize];
+        if node.id != crate::ROOT_ID
+            && (node.kind != Kind::Modal || self.key_window(key) != node.id)
+        {
+            return key;
+        }
+        node.children
+            .iter()
+            .copied()
+            .find(|&child| !matches!(self.nodes[child as usize].kind, Kind::Overlay | Kind::Modal))
+            .unwrap_or(key)
+    }
+
+    /// A window's staged keyboard target follows its logical children.
+    pub(super) fn key_content_changed(&mut self, parent: Key) {
+        let node = &self.nodes[parent as usize];
+        if node.id == crate::ROOT_ID
+            || (node.kind == Kind::Modal && self.key_window(parent) == node.id)
+        {
+            self.key_ancestry_dirty = true;
         }
     }
 
@@ -5557,9 +5857,10 @@ impl<M: TextEngine> Core<M> {
     ) {
         let _entered = self.components.runtime.enter();
         let installed = self.components.instances.get(&host).is_some_and(|inst| {
-            inst.handlers.iter().any(|(n, kind, current)| {
-                *n == id && *kind == EventKind::Layout && current.ptr_eq(listener)
-            })
+            inst.handlers
+                .of(id)
+                .iter()
+                .any(|(kind, current)| *kind == EventKind::Layout && current.ptr_eq(listener))
         });
         if installed {
             self.run_listener(host, listener, &EventPayload::Layout(frame));
@@ -5696,12 +5997,17 @@ impl<M: TextEngine> Core<M> {
     ) -> Option<(usize, Listener<EventPayload>)> {
         let id = self.base_of(id);
         let inst = self.components.instances.get(&host)?;
-        inst.handlers
+        let handlers = inst.handlers.of(id);
+        #[cfg(test)]
+        self.components
+            .handler_visits
+            .set(self.components.handler_visits.get() + handlers.len().saturating_sub(from));
+        handlers
             .iter()
             .enumerate()
             .skip(from)
-            .find(|(_, (n, k, _))| *n == id && *k == kind)
-            .map(|(at, (_, _, l))| (at, l.clone()))
+            .find(|(_, (k, _))| *k == kind)
+            .map(|(at, (_, l))| (at, l.clone()))
     }
 
     /// The part of `host`'s node `id` in the touch responder.
@@ -5929,7 +6235,8 @@ impl<M: TextEngine> Core<M> {
         // app as a file ([`crate::file_type`]), never as a link.
         if !page && change.is_none() && crate::file_type::is_file_url(&url) {
             if !links
-                .schemes
+                .links
+                .schemes()
                 .iter()
                 .any(|s| s == crate::file_type::FILE_SCHEME)
             {
@@ -5958,7 +6265,7 @@ impl<M: TextEngine> Core<M> {
         let checked = if page {
             crate::url_scheme::check_page_url(&url)
         } else {
-            crate::url_scheme::check_url(&url, &links.schemes)
+            links.links.check(&url)
         };
         if let Err(dropped) = checked {
             log::warn!("link dropped: {dropped}");
@@ -6018,11 +6325,17 @@ impl<M: TextEngine> Core<M> {
     /// The schemes the app claims (`nsh.json` `schemes`,
     /// [`crate::url_scheme`]), from the app's own resources: the links the
     /// platform reports of other schemes are dropped. None by default.
+    /// [`Core::set_app_links`] sets them with the app's web links.
     pub fn set_url_schemes(&mut self, schemes: impl IntoIterator<Item = impl Into<String>>) {
-        self.components.url_schemes.schemes = schemes
-            .into_iter()
-            .map(|s| s.into().to_ascii_lowercase())
-            .collect();
+        self.components.url_schemes.links.set_schemes(schemes);
+    }
+
+    /// The links the app claims (`nsh.json` `schemes` and `links`,
+    /// [`crate::url_scheme::AppLinks`]), from the app's own resources: the
+    /// links the platform reports that are none of them (another scheme, an
+    /// `https` link of another host or path) are dropped. None by default.
+    pub fn set_app_links(&mut self, links: crate::url_scheme::AppLinks) {
+        self.components.url_schemes.links = links;
     }
 
     /// Answers what waits for the platform's [`EventKind::Notification`].
@@ -6262,7 +6575,17 @@ impl<M: TextEngine> Core<M> {
             Action::Command(id, command) => {
                 let _ = self.apply_op(Op::Command { id, command });
             }
+            // Answered as the command leaves for the platform
+            // (`Core::take_commands`) or when the platform reports it.
+            Action::WriteClipboard(command, answer) => {
+                self.components.clipboard_writes.push_back(answer);
+                let _ = self.apply_op(Op::Command {
+                    id: crate::ROOT_ID,
+                    command,
+                });
+            }
             Action::FocusBack { to, from } => self.focus_back = Some((to, from)),
+            Action::FocusOrigin { to } => self.note_focus_origin(to),
             Action::Dialog(mut dialog, answer) => {
                 dialog.id = self.components.next_dialog;
                 self.components.next_dialog += 1;
@@ -6317,6 +6640,8 @@ impl<M: TextEngine> Core<M> {
             Action::Appearance(appearance) => self.set_appearance(appearance),
             Action::Tokens(tokens) => self.set_tokens(tokens),
             Action::Translations(translations) => self.set_translations(translations),
+            Action::AddTranslations(map) => self.add_translations(map),
+            Action::TranslationsChanged(before) => self.translations_changed(&before),
             Action::Locale(locale) => self.components.locale_request = Some(locale),
             Action::MainThread(task) => self.components.main_thread.push(task),
             Action::BuiltInScrollbars(source, theme) => {
@@ -6337,15 +6662,6 @@ impl<M: TextEngine> Core<M> {
             Action::TextContent(id, answer) => self.components.text_contents.push((id, answer)),
             Action::PressAt(id, press, answer) => self.components.presses.push((id, press, answer)),
             Action::HoverAt(id, mouse) => self.components.hovers.push((id, mouse)),
-            // A terminal decodes no images: the answer is at once, and no
-            // request goes to the platform.
-            Action::ImageInfo(_, answer)
-                if self.components.environment.idiom == crate::platform::Idiom::Terminal =>
-            {
-                answer
-                    .borrow_mut()
-                    .deliver(Err(super::NO_IMAGES_IN_A_TERMINAL.into()));
-            }
             Action::ImageInfo(uri, answer) => {
                 let id = self.components.next_image_info;
                 self.components.next_image_info += 1;
@@ -6463,30 +6779,36 @@ impl<M: TextEngine> Core<M> {
                     command,
                 });
             }
+            // Checked here, before the engine routes them: the embedding
+            // app's channel and the platform get only granted names.
             Action::HostCall { name, args, answer } => {
-                if !self.components.environment.host {
-                    answer
-                        .borrow_mut()
-                        .deliver(Err(crate::host_channel::no_host()));
+                use crate::host_channel::{HostError, MAX_PENDING_CALLS};
+                let refused = crate::host_channel::refusal(&self.access, &name).or_else(|| {
+                    (self.components.host_calls.len() >= MAX_PENDING_CALLS)
+                        .then(|| HostError::TooManyCalls { name: name.clone() })
+                });
+                if let Some(error) = refused {
+                    if !matches!(error, HostError::TooManyCalls { .. }) {
+                        self.deny(error.to_string());
+                    }
+                    answer.borrow_mut().deliver(Err(error));
                     return;
                 }
                 let id = self.components.next_host_call;
                 self.components.next_host_call += 1;
                 self.components.host_calls.insert(id, answer);
-                let _ = self.apply_op(Op::Command {
-                    id: crate::ROOT_ID,
-                    command: Command::HostCall { id, name, args },
-                });
+                self.components
+                    .host_requests
+                    .push(crate::host_channel::HostRequest::Call { id, name, args });
             }
-            // Dropped without a host, as an SDK channel drops it without
-            // an embedding app.
             Action::HostPost { name, args } => {
-                if self.components.environment.host {
-                    let _ = self.apply_op(Op::Command {
-                        id: crate::ROOT_ID,
-                        command: Command::HostPost { name, args },
-                    });
+                if let Some(error) = crate::host_channel::refusal(&self.access, &name) {
+                    self.deny(error.to_string());
+                    return;
                 }
+                self.components
+                    .host_requests
+                    .push(crate::host_channel::HostRequest::Post { name, args });
             }
             // A call timed out (`runtime/host.rs`), its answer dropped: its
             // slot waits no more.
@@ -6510,6 +6832,35 @@ impl<M: TextEngine> Core<M> {
                 self.components.next_url_open = id.wrapping_add(1);
                 self.components.url_opens.insert(id, answer);
                 self.components.url_requests.push((id, url));
+            }
+            Action::OpenAppSettings(answer) => {
+                use crate::mobile::AppSettingsError;
+                // The app's settings page acts on the application as a
+                // whole (the embedding app's, embedded): an app declaring
+                // capabilities needs `application`.
+                let refused = if !self.access.allows_application() {
+                    Some(AppSettingsError::Denied)
+                } else if !self.components.environment.app_settings {
+                    Some(AppSettingsError::Unavailable)
+                } else {
+                    None
+                };
+                if let Some(error) = refused {
+                    answer.borrow_mut().deliver(Err(error));
+                    return;
+                }
+                let id = self.components.next_app_settings_open;
+                self.components.next_app_settings_open = id.wrapping_add(1);
+                self.components.app_settings_opens.insert(id, answer);
+                let _ = self.apply_op(Op::Command {
+                    id: crate::ROOT_ID,
+                    command: Command::OpenAppSettings { id },
+                });
+            }
+            Action::AppSettingsAvailable(answer) => {
+                let available =
+                    self.components.environment.app_settings && self.access.allows_application();
+                answer.borrow_mut().deliver(available);
             }
             Action::Speech(action) => self.speech_action(action),
             Action::Audio(action) => self.audio_action(action),
@@ -6735,7 +7086,21 @@ impl<M: TextEngine> Core<M> {
                 code: Some(crate::element::codes::ACCESS_DENIED.into()),
                 message: denied.message().to_owned(),
             })
-        } else if !in_app && !self.components.url_schemes.schemes.contains(&scheme) {
+        } else if !in_app && !self.components.environment.scheme_links {
+            // This platform hands the app no links of its schemes (the web,
+            // the GPUI and terminal backends): the callback could never come
+            // back.
+            Some(AuthSessionError::unavailable(format!(
+                "openAuthSession: no in-app sign-in here, and no link of `{scheme}:` can reach the app on this platform"
+            )))
+        } else if !in_app
+            && !self
+                .components
+                .url_schemes
+                .links
+                .schemes()
+                .contains(&scheme)
+        {
             // Only a link of a scheme the app claims brings the callback
             // back to it here; without one the session could never end.
             Some(AuthSessionError::unavailable(format!(
@@ -6943,7 +7308,23 @@ impl<M: TextEngine> Core<M> {
                 };
                 let automatic =
                     crate::webview::downloads::automatic_destination(&offer.id, &offer.filename);
-                let effects = self.components.downloads.offer(id, offer, mode, automatic);
+                // The offer's URL is the response's, after the platform
+                // followed its redirects: a download from a host takes the
+                // grant a page there would, so a redirect cannot carry it to
+                // a host the web view may not show. One of the page's own
+                // content (`data:`, `blob:`) reaches no host, and stays
+                // allowed as it was.
+                let refused = (!self.access.is_unrestricted()
+                    && !page_content(&offer.url)
+                    && !self.access.allows_webview(&offer.url))
+                .then(|| super::not_granted("the download", &offer.url, "webview.hosts"));
+                if let Some(message) = &refused {
+                    self.deny(message.clone());
+                }
+                let effects = self
+                    .components
+                    .downloads
+                    .offer(id, offer, mode, automatic, refused);
                 self.apply_download_effects(effects);
             }
             EventKind::DownloadProgress => {
@@ -7029,6 +7410,13 @@ impl<M: TextEngine> Core<M> {
     /// it) or [`Core::open_url_on_platform`].
     pub fn take_url_opens(&mut self, out: &mut Vec<(u32, String)>) {
         out.append(&mut self.components.url_requests);
+    }
+
+    /// Answers the oldest clipboard write still waiting.
+    pub(super) fn answer_clipboard_write(&mut self, result: crate::element::ClipboardWrite) {
+        if let Some(answer) = self.components.clipboard_writes.pop_front() {
+            answer.borrow_mut().deliver(result);
+        }
     }
 
     /// Answers URL request `id`: whether the URL opened.
@@ -7168,12 +7556,13 @@ impl<M: TextEngine> Core<M> {
     }
 
     /// The answer to host call `id`: the host's value, or its error. A
-    /// call that timed out (`runtime/host.rs`) takes none: its late answer
-    /// is dropped.
-    pub(super) fn answer_host(
+    /// call that timed out ([`crate::element::host_call_with`]) takes none:
+    /// its late answer is dropped.
+    #[doc(hidden)]
+    pub fn answer_host(
         &mut self,
         id: u64,
-        result: Result<crate::JsonValue, crate::element::JsError>,
+        result: Result<crate::JsonValue, crate::host_channel::HostError>,
     ) {
         match self.components.host_calls.remove(&id) {
             Some(answer) if std::rc::Rc::strong_count(&answer) > 1 => {
@@ -7182,6 +7571,148 @@ impl<M: TextEngine> Core<M> {
             _ => {
                 log::debug!(target: "js", "nsh/host: dropped the answer to call {id}, which no longer waits")
             }
+        }
+    }
+
+    /// Moves the host calls and posts of the app's Rust and JS
+    /// ([`crate::element::host_call`], [`crate::element::host_post`])
+    /// since the last call to `out`, checked and granted. The engine hands
+    /// each to the embedding app's channel where it is configured (its
+    /// answers come with [`Core::answer_host`]), else to
+    /// [`Core::host_request_on_platform`].
+    #[doc(hidden)]
+    pub fn take_host_requests(&mut self, out: &mut Vec<crate::host_channel::HostRequest>) {
+        out.append(&mut self.components.host_requests);
+    }
+
+    /// Hands `request` to the platform's host (the web page's): a call
+    /// goes out as [`Command::HostCall`], answered by the root's
+    /// [`EventKind::Host`] `{ type: "reply" }`, a post as
+    /// [`Command::HostPost`]. Without one ([`Environment::host`]) a call
+    /// fails at once ([`crate::host_channel::HostError::Unavailable`]) and
+    /// a post goes nowhere, as a channel without a handler drops it.
+    ///
+    /// [`Environment::host`]: crate::platform::Environment::host
+    #[doc(hidden)]
+    pub fn host_request_on_platform(&mut self, request: crate::host_channel::HostRequest) {
+        use crate::host_channel::{HostError, HostRequest};
+        let host = self.components.environment.host;
+        let command = match request {
+            HostRequest::Call { id, .. } if !host => {
+                self.answer_host(id, Err(HostError::Unavailable));
+                return;
+            }
+            HostRequest::Post { .. } if !host => return,
+            HostRequest::Call { id, name, args } => Command::HostCall { id, name, args },
+            HostRequest::Post { name, args } => Command::HostPost { name, args },
+        };
+        let _ = self.apply_op(Op::Command {
+            id: crate::ROOT_ID,
+            command,
+        });
+    }
+
+    /// The host's event `event` with `data`: the components' listeners of
+    /// it ([`crate::element::on_host_event`]) run, oldest first. The
+    /// engine calls it for the embedding app's events; the web page's come
+    /// as the root's [`EventKind::Host`] events. Without a listener of its
+    /// name the event is kept until one is added
+    /// ([`Core::release_host_events`]), as JS keeps the embedding app's.
+    #[doc(hidden)]
+    pub fn host_event(&mut self, event: &str, data: &crate::JsonValue) {
+        if !self.components.executor.host_events.borrow().listens(event) {
+            // Quietly: in an app whose listeners are JS's, the events no
+            // Rust code listens to fill this inbox, and JS warns of its own.
+            if let Some((dropped, _)) = self
+                .components
+                .host_inbox
+                .push(event.to_owned(), data.clone())
+            {
+                log::debug!(target: "js", "nsh/host: no Rust listener heard \"{dropped}\"; the oldest kept event was dropped");
+            }
+            return;
+        }
+        // Those kept for a listener added since the last commit go first.
+        self.deliver_kept_host_events(event);
+        self.dispatch_host_event(event, data);
+    }
+
+    /// Hands the host's events kept for want of a listener
+    /// ([`Core::host_event`]) to the listeners of their names added since
+    /// the last call, so listeners added after the app started (once it
+    /// loaded something, say) hear what came before them. The engine calls
+    /// it after each commit. True when some were delivered: what their
+    /// listeners changed shows in another round.
+    #[doc(hidden)]
+    pub fn release_host_events(&mut self) -> bool {
+        let names = {
+            let mut listeners = self.components.executor.host_events.borrow_mut();
+            if !std::mem::take(&mut listeners.added) || self.components.host_inbox.is_empty() {
+                return false;
+            }
+            listeners.names()
+        };
+        let mut delivered = false;
+        for name in names {
+            delivered |= self.deliver_kept_host_events(&name);
+        }
+        delivered
+    }
+
+    /// Hands the kept events of `event` to its listeners, oldest first,
+    /// while one is there: one that stops listening leaves the rest kept
+    /// for the next. True when one was delivered.
+    fn deliver_kept_host_events(&mut self, event: &str) -> bool {
+        let mut delivered = false;
+        while self.components.executor.host_events.borrow().listens(event) {
+            let Some(data) = self.components.host_inbox.pop(event) else {
+                break;
+            };
+            self.dispatch_host_event(event, &data);
+            delivered = true;
+        }
+        delivered
+    }
+
+    /// Runs the listeners of `event` there now with `data`, oldest first;
+    /// one that panics is reported and the others still run.
+    fn dispatch_host_event(&mut self, event: &str, data: &crate::JsonValue) {
+        let listeners = self.components.executor.host_events.borrow().of(event);
+        let _entered = self.components.runtime.enter();
+        for listener in listeners {
+            let result = caught(|| listener(data));
+            self.apply_actions();
+            if let Err(message) = result {
+                log::error!(target: "js", "a listener of the host's \"{event}\" failed: {message}");
+            }
+        }
+    }
+
+    /// What the platform reported of window `id` reaches the ref of the
+    /// Rust components in it ([`Core::js_window_owner`]); a closed window's
+    /// goes.
+    fn report_window(&mut self, id: NodeId, event: &crate::desktop::WindowEvent) {
+        use crate::desktop::WindowEvent;
+        match event {
+            WindowEvent::State(state) => {
+                self.components.window_reports.entry(id).or_default().0 = Some(**state);
+            }
+            WindowEvent::TitleBar(area) => {
+                self.components.window_reports.entry(id).or_default().1 = *area;
+            }
+            WindowEvent::Closed { .. } => {
+                self.components.window_reports.remove(&id);
+                if let Some((owner, _)) = self.components.js_windows.remove(&id) {
+                    let _entered = self.components.runtime.enter();
+                    owner.dispose();
+                }
+                return;
+            }
+            _ => return,
+        }
+        if let Some((_, this)) = self.components.js_windows.get(&id) {
+            let _entered = self.components.runtime.enter();
+            this.report(event);
         }
     }
 
@@ -7206,6 +7737,9 @@ impl<M: TextEngine> Core<M> {
             // event goes on to the app.
             EventKind::Window => {
                 if let EventPayload::Window(event) = payload {
+                    if id != ROOT_ID {
+                        self.report_window(id, event);
+                    }
                     match event.as_ref() {
                         crate::desktop::WindowEvent::State(state) => {
                             self.keep_window_placement(id, state);
@@ -7349,6 +7883,41 @@ impl<M: TextEngine> Core<M> {
                 });
                 true
             }
+            EventKind::BackProgress if id == crate::ROOT_ID => {
+                let Some(event) = crate::BackProgressEvent::from_payload(payload) else {
+                    return true;
+                };
+                // The press of a gesture the top overlay listening to
+                // `onCancel` takes is the overlay's: the app follows only
+                // the gestures that start without one.
+                if event.phase == crate::BackPhase::Start {
+                    self.components.back_gesture = !self.overlay_state.cancel;
+                }
+                if !self.components.back_gesture {
+                    return true;
+                }
+                if matches!(
+                    event.phase,
+                    crate::BackPhase::End | crate::BackPhase::Cancel
+                ) {
+                    self.components.back_gesture = false;
+                }
+                let listeners = self
+                    .components
+                    .executor
+                    .back_progress
+                    .borrow()
+                    .newest_first();
+                for listener in listeners {
+                    let result = caught(|| listener(&event));
+                    self.apply_actions();
+                    if let Err(message) = result {
+                        log::error!(target: "js", "a back progress listener failed: {message}");
+                    }
+                }
+                // JS's listeners hear it next.
+                !self.components.js_back_progress
+            }
             EventKind::WebEvaluation => {
                 self.answer_web_evaluation(id, payload);
                 true
@@ -7480,6 +8049,20 @@ impl<M: TextEngine> Core<M> {
                 self.url_scheme(url.clone(), page, quiet, change);
                 true
             }
+            EventKind::ClipboardWrite if id == crate::ROOT_ID => {
+                let written = match payload {
+                    EventPayload::Map(entries) => entries
+                        .iter()
+                        .any(|(k, v)| *k == "written" && *v == crate::PayloadValue::Bool(true)),
+                    _ => false,
+                };
+                self.answer_clipboard_write(if written {
+                    crate::element::ClipboardWrite::Written
+                } else {
+                    crate::element::ClipboardWrite::Failed
+                });
+                true
+            }
             EventKind::OpenUrl if id == crate::ROOT_ID => {
                 let Some(request) = number("id") else {
                     return false;
@@ -7491,6 +8074,21 @@ impl<M: TextEngine> Core<M> {
                     _ => false,
                 };
                 self.answer_open_url(request as u32, opened);
+                true
+            }
+            EventKind::OpenAppSettings if id == crate::ROOT_ID => {
+                let Some(request) = number("id") else {
+                    return false;
+                };
+                let opened = match payload {
+                    EventPayload::Map(entries) => entries
+                        .iter()
+                        .any(|(k, v)| *k == "opened" && *v == crate::PayloadValue::Bool(true)),
+                    _ => false,
+                };
+                if let Some(answer) = self.components.app_settings_opens.remove(&(request as u32)) {
+                    answer.borrow_mut().deliver(Ok(opened));
+                }
                 true
             }
             EventKind::ScreenColor if id == crate::ROOT_ID => {
@@ -7580,14 +8178,22 @@ impl<M: TextEngine> Core<M> {
                 self.answer_clipboard(request as u32, answer);
                 true
             }
-            // The host's replies; its events go on to `nsh/host`'s
-            // listeners (`nsh-js`).
+            // The host's replies; its events reach the components'
+            // listeners, then go on to `nsh/host`'s (`nsh-js`).
             EventKind::Host if id == crate::ROOT_ID => {
                 let EventPayload::Json(reply) = payload else {
                     return false;
                 };
-                if reply.get("type").and_then(crate::JsonValue::as_str) != Some("reply") {
-                    return false;
+                match reply.get("type").and_then(crate::JsonValue::as_str) {
+                    Some("reply") => {}
+                    Some("event") => {
+                        if let Some(event) = reply.get("event").and_then(crate::JsonValue::as_str) {
+                            let data = reply.get("payload").cloned().unwrap_or_default();
+                            self.host_event(event, &data);
+                        }
+                        return false;
+                    }
+                    _ => return false,
                 }
                 // JSON's numbers may come as floats (`1.0`); `1.5` is no
                 // call. Ids stay within JS' safe integers.
@@ -7607,11 +8213,12 @@ impl<M: TextEngine> Core<M> {
                 let result = if reply.get("ok").and_then(crate::JsonValue::as_bool) == Some(true) {
                     Ok(reply.get("value").cloned().unwrap_or_default())
                 } else {
-                    Err(crate::host_channel::host_error(
+                    Err(crate::host_channel::HostError::Failed(
                         reply
                             .get("error")
                             .and_then(crate::JsonValue::as_str)
-                            .unwrap_or("nsh/host: the call failed"),
+                            .unwrap_or("nsh/host: the call failed")
+                            .to_owned(),
                     ))
                 };
                 self.answer_host(call, result);
@@ -7660,9 +8267,31 @@ impl<M: TextEngine> Core<M> {
         });
     }
 
+    /// The root listens to the back gesture's steps while JS or a component
+    /// does: follows the components' listeners coming and going.
+    pub(super) fn sync_back_progress(&mut self) {
+        let rust = {
+            let mut progress = self.components.executor.back_progress.borrow_mut();
+            if !std::mem::take(&mut progress.changed) {
+                return;
+            }
+            !progress.list.is_empty()
+        };
+        let _ = self.apply_op(Op::Listen {
+            id: crate::ROOT_ID,
+            event: EventKind::BackProgress,
+            enabled: rust || self.components.js_back_progress,
+        });
+    }
+
     /// The root's shortcuts follow the views' bindings coming and going:
     /// the table JS's and theirs make, listened to while either has one.
     pub(super) fn sync_keys(&mut self) {
+        let escape_to_focus = self.focus_takes_escape();
+        if escape_to_focus != self.overlay_state.escape_to_focus {
+            self.overlay_state.escape_to_focus = escape_to_focus;
+            self.components.executor.keys.borrow_mut().changed = true;
+        }
         let rust = {
             // The windows' refs read the graph.
             let _entered = self.components.runtime.enter();
@@ -7713,13 +8342,18 @@ impl<M: TextEngine> Core<M> {
             })
         };
         drop(keys);
-        let bindings = self
-            .components
-            .js_keymap
-            .bindings()
+        // JS's first, then the views', where the newest that may fire wins:
+        // a focused component's keys win over the app's. Bindings
+        // `over_focused` come after both, so they win over the components';
+        // the overlay's Escape (a popup closing) stays last.
+        let js = self.components.js_keymap.bindings();
+        let bindings = js
             .iter()
+            .filter(|b| !b.over_focused)
+            .chain(views.iter().filter(|b| !b.over_focused))
+            .chain(js.iter().filter(|b| b.over_focused))
+            .chain(views.iter().filter(|b| b.over_focused))
             .copied()
-            .chain(views)
             .chain(overlay)
             .collect();
         Arc::new(crate::keymap::Keymap::new(bindings))
@@ -8008,4 +8642,12 @@ fn row_position(
 /// decodes).
 fn pixels(n: f64) -> crate::geometry::DevicePixels {
     crate::geometry::DevicePixels(n.round() as i32)
+}
+
+/// Whether `url` names content of the page itself (`data:`, `blob:`), which
+/// a download takes from the page rather than from a host.
+fn page_content(url: &str) -> bool {
+    let scheme = url.split(':').next().unwrap_or_default();
+    url.contains(':')
+        && (scheme.eq_ignore_ascii_case("data") || scheme.eq_ignore_ascii_case("blob"))
 }

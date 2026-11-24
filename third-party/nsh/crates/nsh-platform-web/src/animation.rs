@@ -194,8 +194,15 @@ impl UiAnimation {
         }
     }
 
-    pub(crate) fn tick(&mut self, now: f64) -> bool {
-        self.graph.tick(now, &mut self.finished)
+    /// Steps the graph to `now`: a display frame (`drawn`) or a deadline's
+    /// tick while frames stop, which keeps the real time
+    /// ([`Graph::tick_frame`]).
+    pub(crate) fn tick(&mut self, now: f64, drawn: bool) -> bool {
+        if drawn {
+            self.graph.tick_frame(now, &mut self.finished)
+        } else {
+            self.graph.tick(now, &mut self.finished)
+        }
     }
 
     pub(crate) fn animating(&self) -> bool {

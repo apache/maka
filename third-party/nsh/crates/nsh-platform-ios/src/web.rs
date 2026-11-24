@@ -449,7 +449,11 @@ impl WebHost {
         let emit: web_download::Emit = Rc::new(move |kind, payload| {
             emit_control.dispatch_event(id, kind, payload);
         });
-        let download = web_download::Transport::new(mtm, emit);
+        // A download's redirects take the grant its navigations do.
+        let grant = access.clone();
+        let allows: web_download::Allows =
+            Rc::new(move |url: &str| url.is_empty() || grant.allows_webview(url));
+        let download = web_download::Transport::new(mtm, emit, allows);
         let handler = WebHandler::new(mtm, id, control, access, download, evaluations.clone());
         Self {
             view,

@@ -17,13 +17,16 @@
 //! surrogate pair.
 //!
 //! A point is hit-tested across the texts as a browser does, in reading
-//! order: a point inside a text's frame is in that text; otherwise, among
-//! the texts whose rows (vertical extent) contain the point, the
-//! horizontally nearest one; above every text, the first text's start;
-//! below every text, the last text's end; between rows, the end of the last
-//! text above (in document order) or the start of the first text below,
-//! whichever is vertically nearer (the text above on a tie). A point is
-//! clamped into the chosen text's frame before
+//! order: a point inside a text's frame is in that text; otherwise, when the
+//! point sits below a text in a closer, horizontally disjoint column than any
+//! text whose row contains the point, it stays in that column (clamping to the
+//! vertically nearer text above or below in the column) so multi-column gaps,
+//! card margins, space beneath a shorter sidebar and unequal-height table
+//! cells do not jump sideways; otherwise, among the texts whose rows (vertical
+//! extent) contain the point, the horizontally nearest one; above every text,
+//! the first text's start; between rows or below a column, the vertically
+//! nearer text above or below in the point's column (with the text above on a
+//! tie). A point is clamped into the chosen text's frame before
 //! [`SelectionTexts::offset_at`].
 //!
 //! Words are runs of letters, digits, `_` and combining marks, runs of
@@ -70,14 +73,15 @@ pub trait SelectionTexts {
         self.len() == 0
     }
 
-    /// Text `i`'s content (attachments are U+FFFC, left out of copies).
+    /// Text `i`'s content (attachments are U+FFFC).
     fn content(&self, i: usize) -> &str;
 
     /// The UTF-16 range `range` of text `i` as a copy gives it. By default
     /// its content's characters without attachments' placeholders; a
     /// backend that has the texts' runs gives
-    /// [`crate::AttributedText::copied_text`], which also leaves hidden
-    /// runs out (`visibility: "hidden"` on a span).
+    /// [`crate::AttributedText::copied_text`], which puts an attachment's
+    /// copy text (`copyText`) in its place and leaves hidden runs out
+    /// (`visibility: "hidden"` on a span).
     fn copied(&self, i: usize, range: Range<u32>) -> String {
         let content = self.content(i);
         content[byte_offset(content, range.start)..byte_offset(content, range.end)]
@@ -420,8 +424,9 @@ impl SelectionModel {
             .collect()
     }
 
-    /// The selected text, as a copy gives it: each text's selected part,
-    /// attachments and hidden runs left out ([`SelectionTexts::copied`]),
+    /// The selected text, as a copy gives it: each text's selected part
+    /// as [`SelectionTexts::copied`] gives it (attachments as their copy
+    /// text, hidden runs left out),
     /// a text that continues the one before it
     /// ([`SelectionTexts::continues`]) joined to it with nothing between,
     /// other texts on one row (their frames overlap vertically) joined by a
@@ -642,35 +647,242 @@ fn hit(texts: &impl SelectionTexts, point: Point<Points>) -> Option<TextPosition
         );
         clamp_position(texts, TextPosition::new(i, texts.offset_at(i, clamped)))
     };
-    if let Some(i) = (0..count).find(|&i| texts.frame(i).contains(&point)) {
+    let end_of = |i: usize| TextPosition::new(i, utf16_len(texts.content(i)));
+    let start_of = |i: usize| TextPosition::new(i, 0);
+    let h_dist = |frame: Bounds<Points>| {
+        if point.x < frame.left() {
+            frame.left() - point.x
+        } else if point.x > frame.right() {
+            point.x - frame.right()
+        } else {
+            Points::ZERO
+        }
+    };
+    let v_dist = |frame: Bounds<Points>| {
+        if point.y < frame.top() {
+            frame.top() - point.y
+        } else if point.y > frame.bottom() {
+            point.y - frame.bottom()
+        } else {
+            Points::ZERO
+        }
+    };
+    let h_overlaps =
+        |a: Bounds<Points>, b: Bounds<Points>| a.left() < b.right() && b.left() < a.right();
+
+    // 1. Inside a text's frame: topmost (last in paint order) wins when frames overlap.
+    if let Some(i) = (0..count).rfind(|&i| texts.frame(i).contains(&point)) {
         return Some(at(i));
     }
-    // The texts on the point's row: the horizontally nearest.
+
+    // 2. Nearest texts above and below `point` in `point.x`'s column.
+    //    First check texts whose horizontal span covers `point.x`; when
+    //    `point` sits in a margin or beside shorter lines, anchor on the
+    //    horizontally nearest non-empty-width text (ties broken vertically).
+    let mut col_above: Option<(usize, Points)> = None;
+    let mut col_below: Option<(usize, Points)> = None;
+    let mut any_covering_x = false;
+    for i in 0..count {
+        let frame = texts.frame(i);
+        if h_dist(frame) != Points::ZERO {
+            continue;
+        }
+        any_covering_x = true;
+        if frame.bottom() <= point.y {
+            let d = point.y - frame.bottom();
+            if col_above.is_none_or(|(_, best)| d <= best) {
+                col_above = Some((i, d));
+            }
+        }
+        if frame.top() > point.y {
+            let d = frame.top() - point.y;
+            if col_below.is_none_or(|(_, best)| d < best) {
+                col_below = Some((i, d));
+            }
+        }
+    }
+    let nearest_in_column = |anchor: Bounds<Points>, above: bool, base: Option<(usize, Points)>| {
+        let mut best = base;
+        for i in 0..count {
+            let frame = texts.frame(i);
+            if !h_overlaps(frame, anchor) {
+                continue;
+            }
+            if above && frame.bottom() <= point.y {
+                let d = point.y - frame.bottom();
+                if best.is_none_or(|(bi, b)| {
+                    d < b || (d == b && h_dist(frame) <= h_dist(texts.frame(bi)))
+                }) {
+                    best = Some((i, d));
+                }
+            } else if !above && frame.top() > point.y {
+                let d = frame.top() - point.y;
+                if best.is_none_or(|(bi, b)| {
+                    d < b || (d == b && h_dist(frame) < h_dist(texts.frame(bi)))
+                }) {
+                    best = Some((i, d));
+                }
+            }
+        }
+        best
+    };
+    let refine_covering = |anchor_idx: usize,
+                           other_idx: Option<usize>,
+                           above: bool,
+                           base: Option<(usize, Points)>| {
+        let anchor = texts.frame(anchor_idx);
+        let restrict = other_idx
+            .map(|o| texts.frame(o))
+            .filter(|o| o.size.width < anchor.size.width && h_overlaps(*o, anchor));
+        // Among texts overlapping `anchor` that sit closer vertically than
+        // `base` (and stay within any narrower opposite-side column), pick the
+        // horizontally nearest one first so a full-width header/footer cannot
+        // pull in a closer text from a disjoint sibling column.
+        let sub_anchor = (0..count)
+            .filter(|&i| {
+                let frame = texts.frame(i);
+                if frame.size.width <= Points::ZERO || !h_overlaps(frame, anchor) {
+                    return false;
+                }
+                if let Some(r) = restrict
+                    && !h_overlaps(frame, r)
+                {
+                    return false;
+                }
+                if above {
+                    frame.bottom() <= point.y
+                        && base.is_none_or(|(_, b)| point.y - frame.bottom() < b)
+                } else {
+                    frame.top() > point.y && base.is_none_or(|(_, b)| frame.top() - point.y < b)
+                }
+            })
+            .min_by(|&a, &b| {
+                let (fa, fb) = (texts.frame(a), texts.frame(b));
+                h_dist(fa)
+                    .partial_cmp(&h_dist(fb))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| {
+                        v_dist(fa)
+                            .partial_cmp(&v_dist(fb))
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    })
+                    .then_with(|| if above { b.cmp(&a) } else { a.cmp(&b) })
+            });
+        match sub_anchor {
+            Some(sub) => nearest_in_column(texts.frame(sub), above, base),
+            None => base,
+        }
+    };
+    if any_covering_x {
+        // A shorter line in the same column may sit closer vertically than a
+        // wider text that covered `point.x` (e.g. a short last paragraph under
+        // a wide one, or a short heading above a wide paragraph).
+        let (orig_above, orig_below) = (col_above, col_below);
+        if let Some((a, _)) = orig_above {
+            col_above = refine_covering(a, orig_below.map(|(b, _)| b), true, orig_above);
+        }
+        if let Some((b, _)) = orig_below {
+            col_below = refine_covering(b, col_above.map(|(a, _)| a), false, orig_below);
+        } else if let Some((a, _)) = col_above {
+            col_below = refine_covering(a, None, false, None);
+        }
+        if orig_above.is_none()
+            && let Some((b, _)) = col_below
+        {
+            col_above = refine_covering(b, None, true, None);
+        }
+    } else if let Some(anchor) = (0..count)
+        .filter(|&i| texts.frame(i).size.width > Points::ZERO)
+        .min_by(|&a, &b| {
+            let (fa, fb) = (texts.frame(a), texts.frame(b));
+            h_dist(fa)
+                .partial_cmp(&h_dist(fb))
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| {
+                    v_dist(fa)
+                        .partial_cmp(&v_dist(fb))
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
+        })
+    {
+        let anchor_frame = texts.frame(anchor);
+        col_above = nearest_in_column(anchor_frame, true, None);
+        col_below = nearest_in_column(anchor_frame, false, None);
+    }
+
+    // 3. The texts on the point's row: the horizontally nearest.
     let mut nearest: Option<(usize, Points)> = None;
     for i in 0..count {
         let frame = texts.frame(i);
         if point.y >= frame.top() && point.y < frame.bottom() {
-            let distance = if point.x < frame.left() {
-                frame.left() - point.x
-            } else {
-                (point.x - frame.right()).max(Points::ZERO)
-            };
+            let distance = h_dist(frame);
             if nearest.is_none_or(|(_, best)| distance < best) {
                 nearest = Some((i, distance));
             }
         }
     }
-    if let Some((i, _)) = nearest {
+    if let Some((i, row_h_dist)) = nearest {
+        let row_frame = texts.frame(i);
+        // When `point` sits below a text in a closer, horizontally disjoint
+        // column, stay in that column instead of jumping sideways across
+        // columns (gaps in a left column, card margins, space below a shorter
+        // right sidebar, or blank space in a 1-line table cell beside a
+        // wrapped sibling cell).
+        if let Some((a, to_above)) = col_above
+            && !h_overlaps(texts.frame(a), row_frame)
+            && h_dist(texts.frame(a)) < row_h_dist
+        {
+            return Some(match col_below {
+                Some((b, to_below))
+                    if to_below < to_above && h_dist(texts.frame(b)) < row_h_dist =>
+                {
+                    start_of(b)
+                }
+                _ => end_of(a),
+            });
+        }
         return Some(at(i));
     }
-    // Between rows: the end of the last text above or the start of the
-    // first text below, whichever is nearer.
+
+    // 4. Between rows, above all, or below all.
+    if (0..count).all(|i| texts.frame(i).bottom() > point.y) {
+        return Some(start_of(0));
+    }
+    let below_all = (0..count).all(|i| texts.frame(i).bottom() <= point.y);
+    let v_overlaps =
+        |a: Bounds<Points>, b: Bounds<Points>| a.top() < b.bottom() && b.top() < a.bottom();
+    match (col_above, col_below) {
+        (Some((a, to_above)), Some((b, to_below))) => {
+            return Some(if to_above <= to_below {
+                end_of(a)
+            } else {
+                start_of(b)
+            });
+        }
+        (Some((a, _)), None) => {
+            // Below every text in the area: if `a` shares the bottom row with
+            // later sibling cells (e.g. a multi-column table), reach the end
+            // of that row instead of truncating at column 1.
+            let target = if below_all {
+                let af = texts.frame(a);
+                (a..count)
+                    .rev()
+                    .find(|&i| v_overlaps(texts.frame(i), af))
+                    .unwrap_or(a)
+            } else {
+                a
+            };
+            return Some(end_of(target));
+        }
+        (None, Some((b, _))) => return Some(start_of(b)),
+        (None, None) => {}
+    }
+
+    // Fallback when only zero-width or zero-height frames exist.
     let above = (0..count)
         .rev()
         .find(|&i| texts.frame(i).bottom() <= point.y);
     let below = (0..count).find(|&i| texts.frame(i).top() > point.y);
-    let end_of = |i: usize| TextPosition::new(i, utf16_len(texts.content(i)));
-    let start_of = |i: usize| TextPosition::new(i, 0);
     Some(match (above, below) {
         (Some(a), Some(b)) => {
             let to_above = point.y - texts.frame(a).bottom();
@@ -683,7 +895,6 @@ fn hit(texts: &impl SelectionTexts, point: Point<Points>) -> Option<TextPosition
         }
         (Some(a), None) => end_of(a),
         (None, Some(b)) => start_of(b),
-        // Only frames of no height, which no row contains.
         (None, None) => end_of(count - 1),
     })
 }
@@ -1761,5 +1972,209 @@ mod tests {
         model.press(&texts, at(60.0, 5.0), 2, false);
         assert_eq!(model.text(&texts), "line");
         assert_eq!(model.bounds(), Some((pos(0, 6), pos(0, 10))));
+    }
+
+    #[test]
+    fn two_column_gaps_and_short_sidebar_stay_in_their_column() {
+        let texts = Fake::new(&[
+            ("Left 1", (12.0, 12.0, 200.0, 40.0)),
+            ("Left 2", (12.0, 66.0, 200.0, 40.0)),
+            ("Left 3", (12.0, 120.0, 200.0, 40.0)),
+            ("Sidebar", (240.0, 20.0, 140.0, 70.0)),
+        ]);
+        let mut model = SelectionModel::new();
+        model.press(&texts, at(20.0, 20.0), 1, false);
+        // Gap between Left 1 and Left 2 (vertically overlapping Sidebar):
+        // stays at Left 1's end instead of jumping to Sidebar.
+        model.drag(&texts, at(80.0, 59.0));
+        assert_eq!(model.bounds(), Some((pos(0, 1), pos(0, 6))));
+        assert_eq!(model.text(&texts), "eft 1");
+        // Entering Left 2 grows monotonically.
+        model.drag(&texts, at(80.0, 80.0));
+        assert_eq!(model.bounds(), Some((pos(0, 1), pos(1, 6))));
+        // Below Left 3 in the left column: stays at Left 3's end.
+        model.drag(&texts, at(80.0, 190.0));
+        assert_eq!(model.bounds(), Some((pos(0, 1), pos(2, 6))));
+        // Dragging right into Sidebar, then straight down into the empty space
+        // beneath Sidebar (beside Left 3) and past the bottom: stays at
+        // Sidebar's end and never jumps back to Left 3 or shrinks.
+        model.drag(&texts, at(280.0, 50.0));
+        assert_eq!(model.bounds(), Some((pos(0, 1), pos(3, 5))));
+        model.drag(&texts, at(280.0, 140.0));
+        assert_eq!(model.bounds(), Some((pos(0, 1), pos(3, 7))));
+        model.drag(&texts, at(280.0, 220.0));
+        assert_eq!(model.bounds(), Some((pos(0, 1), pos(3, 7))));
+    }
+
+    #[test]
+    fn absolute_top_badge_does_not_hijack_body_gaps_or_bottom() {
+        let texts = Fake::new(&[
+            ("Title", (14.0, 14.0, 360.0, 22.0)),
+            ("Body 1", (14.0, 50.0, 360.0, 40.0)),
+            ("Body 2", (14.0, 104.0, 360.0, 40.0)),
+            ("BADGE", (310.0, 15.0, 60.0, 18.0)),
+        ]);
+        let mut model = SelectionModel::new();
+        model.press(&texts, at(20.0, 20.0), 1, false);
+        // Gap between Title and Body 1: stays on Title, never flashes BADGE.
+        model.drag(&texts, at(100.0, 43.0));
+        assert_eq!(model.bounds(), Some((pos(0, 1), pos(0, 5))));
+        assert_eq!(model.text(&texts), "itle");
+        // Below Body 2: stays on Body 2, never jumps up to BADGE.
+        model.drag(&texts, at(100.0, 160.0));
+        assert_eq!(model.bounds(), Some((pos(0, 1), pos(2, 6))));
+        assert!(!model.text(&texts).contains("BADGE"));
+        // Even directly under BADGE's x below Body 2, Body 2 is much nearer.
+        model.drag(&texts, at(330.0, 160.0));
+        assert_eq!(model.bounds(), Some((pos(0, 1), pos(2, 6))));
+    }
+
+    #[test]
+    fn wrapped_table_cell_blank_space_does_not_jump_back_to_tall_sibling() {
+        let texts = Fake::new(&[
+            ("Long wrapped cell", (0.0, 40.0, 200.0, 60.0)),
+            ("UIKit", (220.0, 40.0, 100.0, 20.0)),
+            ("CoreText", (340.0, 40.0, 100.0, 20.0)),
+            ("Next row left", (0.0, 110.0, 200.0, 20.0)),
+            ("Views", (220.0, 110.0, 100.0, 20.0)),
+        ]);
+        let mut model = SelectionModel::new();
+        model.press(&texts, at(228.0, 48.0), 1, false);
+        // Dragging down into the blank lower half of the UIKit cell (y=75,
+        // still vertically inside the tall left cell 40..100): stays at
+        // UIKit's end rather than jumping backward to cell 0.
+        model.drag(&texts, at(260.0, 75.0));
+        assert_eq!(model.bounds(), Some((pos(1, 1), pos(1, 5))));
+        assert_eq!(model.text(&texts), "IKit");
+    }
+
+    #[test]
+    fn single_column_short_lines_still_hit_their_row_and_bottom() {
+        let texts = Fake::new(&[
+            ("Hi", (0.0, 0.0, 40.0, 20.0)),
+            ("A much wider middle paragraph", (0.0, 30.0, 300.0, 20.0)),
+            ("End", (0.0, 60.0, 40.0, 20.0)),
+        ]);
+        let mut model = SelectionModel::new();
+        // Beside the short heading (directly above the wide middle line):
+        // stays on the heading's row.
+        model.press(&texts, at(0.0, 10.0), 1, false);
+        model.drag(&texts, at(150.0, 10.0));
+        assert_eq!(model.bounds(), Some((pos(0, 0), pos(0, 2))));
+        // Below the short last line, under the wide middle line's right half:
+        // still reaches the short last line's end.
+        model.drag(&texts, at(150.0, 120.0));
+        assert_eq!(model.bounds(), Some((pos(0, 0), pos(2, 3))));
+    }
+
+    #[test]
+    fn margins_and_short_column_lines_stay_in_nearest_column() {
+        let texts = Fake::new(&[
+            ("Apple", (20.0, 12.0, 50.0, 20.0)),
+            ("Banana", (20.0, 48.0, 60.0, 20.0)),
+            ("Cherry", (20.0, 84.0, 60.0, 20.0)),
+            ("Sidebar", (300.0, 12.0, 120.0, 50.0)),
+        ]);
+        let mut model = SelectionModel::new();
+        model.press(&texts, at(28.0, 20.0), 1, false);
+        // Left margin across the gap between Apple and Banana: stays on Apple.
+        model.drag(&texts, at(4.0, 38.0));
+        assert_eq!(model.bounds(), Some((pos(0, 1), pos(0, 5))));
+        // Empty space to the right of short left-column lines (still far
+        // closer to Left than Sidebar): stays on Apple instead of Sidebar.
+        model.drag(&texts, at(120.0, 38.0));
+        assert_eq!(model.bounds(), Some((pos(0, 1), pos(0, 5))));
+        // Right margin below Sidebar (beside Cherry): stays on Sidebar.
+        model.drag(&texts, at(340.0, 30.0));
+        assert_eq!(model.bounds(), Some((pos(0, 1), pos(3, 5))));
+        model.drag(&texts, at(440.0, 92.0));
+        assert_eq!(model.bounds(), Some((pos(0, 1), pos(3, 7))));
+    }
+
+    #[test]
+    fn full_width_header_and_footer_around_two_columns_stay_monotonic() {
+        let texts = Fake::new(&[
+            ("Header", (0.0, 0.0, 500.0, 20.0)),
+            ("Left 1", (0.0, 40.0, 200.0, 40.0)),
+            ("Left 2", (0.0, 100.0, 200.0, 80.0)),
+            ("Right", (300.0, 40.0, 200.0, 60.0)),
+            ("Footer", (0.0, 200.0, 500.0, 20.0)),
+        ]);
+        let mut model = SelectionModel::new();
+        model.press(&texts, at(10.0, 10.0), 1, false);
+        // Gutter near Left 2 (20px from Left 2, 80px from Right) stays on Left 2.
+        model.drag(&texts, at(220.0, 140.0));
+        assert_eq!(model.bounds(), Some((pos(0, 1), pos(2, 6))));
+        // Dragging down Right into the space below Right transitions smoothly
+        // from Right to Footer without shrinking back to Left 2.
+        model.drag(&texts, at(350.0, 70.0));
+        assert_eq!(model.bounds(), Some((pos(0, 1), pos(3, 5))));
+        model.drag(&texts, at(350.0, 130.0));
+        assert_eq!(model.bounds(), Some((pos(0, 1), pos(3, 5))));
+        model.drag(&texts, at(350.0, 180.0));
+        assert_eq!(model.bounds(), Some((pos(0, 1), pos(4, 0))));
+    }
+
+    #[test]
+    fn full_width_header_does_not_pull_sibling_column_into_narrow_right_column() {
+        let texts = Fake::new(&[
+            ("Full-width Header", (16.0, 12.0, 420.0, 22.0)),
+            ("Left column item 1", (16.0, 50.0, 190.0, 36.0)),
+            ("Left column item 2", (16.0, 98.0, 190.0, 24.0)),
+            ("Left column item 3", (16.0, 134.0, 190.0, 44.0)),
+            ("Right", (280.0, 50.0, 56.0, 48.0)),
+        ]);
+        let mut model = SelectionModel::new();
+        model.press(&texts, at(288.0, 66.0), 1, false);
+        // Dragging into the empty right-column margin under the full-width
+        // header stays on `Right` instead of pulling in `Left column item 2/3`.
+        for y in [126.0, 129.0, 132.0, 156.0] {
+            model.drag(&texts, at(356.0, y));
+            assert_eq!(model.bounds(), Some((pos(4, 1), pos(4, 5))), "at y={y}");
+            assert_eq!(model.text(&texts), "ight", "at y={y}");
+        }
+    }
+
+    #[test]
+    fn dragging_below_a_multi_column_table_reaches_the_last_cell() {
+        let texts = Fake::new(&[
+            ("Column A", (16.0, 20.0, 160.0, 24.0)),
+            ("Column B", (200.0, 20.0, 160.0, 24.0)),
+            ("Row 1 Left", (16.0, 58.0, 160.0, 24.0)),
+            ("Row 1 Right", (200.0, 58.0, 160.0, 24.0)),
+            ("Row 2 Left", (16.0, 96.0, 160.0, 24.0)),
+            ("Row 2 Right", (200.0, 96.0, 160.0, 24.0)),
+        ]);
+        let mut model = SelectionModel::new();
+        model.press(&texts, at(24.0, 32.0), 1, false);
+        model.drag(&texts, at(80.0, 156.0));
+        assert_eq!(model.bounds(), Some((pos(0, 1), pos(5, 11))));
+        assert_eq!(
+            model.text(&texts),
+            "olumn A\tColumn B\nRow 1 Left\tRow 1 Right\nRow 2 Left\tRow 2 Right"
+        );
+    }
+
+    #[test]
+    fn same_bottom_side_by_side_texts_under_wide_title_keep_right_text() {
+        let texts = Fake::new(&[
+            (
+                "Wide section title above two tags",
+                (16.0, 20.0, 360.0, 24.0),
+            ),
+            ("Status:", (16.0, 60.0, 64.0, 24.0)),
+            ("Ready", (96.0, 60.0, 56.0, 24.0)),
+            ("Next paragraph below", (16.0, 140.0, 240.0, 24.0)),
+        ]);
+        let mut model = SelectionModel::new();
+        model.press(&texts, at(24.0, 32.0), 1, false);
+        // Gap to the right of `Ready` (still under the wide title): reaches
+        // `Ready`'s end instead of dropping back to `Status:`.
+        model.drag(&texts, at(230.0, 96.0));
+        assert_eq!(model.bounds(), Some((pos(0, 1), pos(2, 5))));
+        assert_eq!(
+            model.text(&texts),
+            "ide section title above two tags\nStatus:\tReady"
+        );
     }
 }

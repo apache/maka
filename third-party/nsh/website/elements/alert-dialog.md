@@ -52,6 +52,7 @@ fn app() -> impl IntoElement {
 ```tsx tabs
 import { mount, signal, Text, View } from "nsh";
 import { AlertDialog, Button } from "nsh/base";
+import { Window } from "nsh/desktop";
 
 function App() {
   const answer = signal("–");
@@ -76,7 +77,11 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 For dialogs with a look of your own (a card, a sheet, a full-screen flow), use [Dialog](./dialog.md).

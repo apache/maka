@@ -18,13 +18,12 @@ use nsh_base::{
 use nsh_core::{
     ApproxTextEngine, AttachmentAlignments, AttributedText, MountItem, NodeId, Size, TextEngine,
     TextLayout, TextLine,
-    element::Root,
     geometry::point,
     platform::{Environment, Idiom, Os},
     prelude::*,
 };
 use nsh_engine::EngineConfig;
-use nsh_testing::{Headless, Screen};
+use nsh_testing::{DragOptions, Headless, Screen};
 
 fn start<C: Component<Props = ()>>(idiom: Idiom) -> Headless {
     let viewport = Size::new(px(390.0), px(844.0));
@@ -36,7 +35,7 @@ fn start<C: Component<Props = ()>>(idiom: Idiom) -> Headless {
             idiom,
             ..Environment::default()
         },
-        ..EngineConfig::new(Root::of::<C>())
+        ..EngineConfig::new(nsh_testing::windowed_root::<C>())
     };
     let mut app = if idiom == Idiom::Terminal {
         Headless::start_with_text_engine(config, || TerminalText)
@@ -118,7 +117,7 @@ fn checkboxes_radios_and_switches_show_the_terminals_marks() {
     let mut app = start::<Marks>(Idiom::Terminal);
     // Agree unchecked, All mixed, Free checked, Pro not, Wi-Fi off.
     let shown = joined(&app);
-    for row in ["[ ] Agree", "[–] All", "(●) Free", "( ) Pro", "[ ] Wi-Fi"] {
+    for row in ["[ ] Agree", "[–] All", "[●] Free", "[ ] Pro", "[ ] Wi-Fi"] {
         assert!(shown.contains(row), "{row} not in {shown:?}");
     }
     app.press("text:Agree").unwrap();
@@ -130,7 +129,7 @@ fn checkboxes_radios_and_switches_show_the_terminals_marks() {
     })
     .unwrap();
     let shown = joined(&app);
-    for row in ["[✓] Agree", "[✓] All", "( ) Free", "(●) Pro", "[✓] Wi-Fi"] {
+    for row in ["[✓] Agree", "[✓] All", "[ ] Free", "[●] Pro", "[✓] Wi-Fi"] {
         assert!(shown.contains(row), "{row} not in {shown:?}");
     }
 }
@@ -159,7 +158,7 @@ fn the_marks_take_the_accent_when_on_and_are_muted_when_off() {
 fn outside_a_terminal_the_controls_show_no_marks() {
     let app = start::<Marks>(Idiom::Desktop);
     let shown = joined(&app);
-    for mark in ["[ ]", "[–]", "(●)", "( )", "[ ]"] {
+    for mark in ["[ ]", "[–]", "[●]", "[ ]"] {
         assert!(!shown.contains(mark), "{mark} in {shown:?}");
     }
     assert!(app.screen().shows("Agree"));
@@ -472,7 +471,7 @@ fn text_bounds<C: Component<Props = ()>>() -> std::collections::HashMap<String, 
             cell: Some(Size::new(px(8.0), px(21.0))),
             ..Environment::default()
         },
-        ..EngineConfig::new(Root::of::<C>())
+        ..EngineConfig::new(nsh_testing::windowed_root::<C>())
     };
     let mut app = Headless::start_with_text_engine(config, || TerminalText).unwrap();
     type Seen = (
@@ -1112,7 +1111,12 @@ fn a_color_slider_is_a_row_of_its_colors_with_a_thumb() {
     assert_eq!(app.screen().count("label:Hue").unwrap(), 1);
     // A drag to the start picks the smallest hue, its thumb on the first
     // Cell; End the largest, on the last.
-    app.drag("label:Hue", point(px(-400.0), px(0.0))).unwrap();
+    app.drag(
+        "label:Hue",
+        point(px(-400.0), px(0.0)),
+        DragOptions::default(),
+    )
+    .unwrap();
     let wait = Duration::from_secs(1);
     app.wait_until("the thumb at the start", wait, |s| {
         hue_track(s).starts_with('│')
@@ -1252,7 +1256,7 @@ fn a_color_area_fills_its_width_and_its_rows_with_cells() {
             cell: Some(Size::new(px(8.0), px(21.0))),
             ..Environment::default()
         },
-        ..EngineConfig::new(Root::of::<WideArea>())
+        ..EngineConfig::new(nsh_testing::windowed_root::<WideArea>())
     };
     let mut app = Headless::start(config).unwrap();
     app.first_render().unwrap();
@@ -1289,7 +1293,7 @@ fn a_checkboxs_children_keep_their_column_beside_the_mark() {
             idiom: Idiom::Terminal,
             ..Environment::default()
         },
-        ..EngineConfig::new(Root::of::<Choice>())
+        ..EngineConfig::new(nsh_testing::windowed_root::<Choice>())
     };
     let mut app = Headless::start(config).unwrap();
     // Each text's frame, in its parent, as the batches set it.
@@ -1357,7 +1361,7 @@ fn backgrounds<C: Component<Props = ()>>(idiom: Idiom) -> Vec<nsh_core::Color> {
             idiom,
             ..Environment::default()
         },
-        ..EngineConfig::new(Root::of::<C>())
+        ..EngineConfig::new(nsh_testing::windowed_root::<C>())
     };
     let mut app = Headless::start(config).unwrap();
     let seen = Arc::new(Mutex::new(Vec::new()));
@@ -1521,7 +1525,7 @@ fn a_terminals_diff_cuts_every_line_alike() {
             cell: Some(Size::new(px(8.0), px(16.0))),
             ..Environment::default()
         },
-        ..EngineConfig::new(Root::of::<LongDiff>())
+        ..EngineConfig::new(nsh_testing::windowed_root::<LongDiff>())
     };
     let mut app = Headless::start(config).unwrap();
     let lines = Arc::new(Mutex::new(std::collections::HashMap::new()));

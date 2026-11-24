@@ -2,6 +2,9 @@
 //! declare them to the system (`CFBundleDocumentTypes` on macOS and iOS,
 //! the registry on Windows, `MimeType` in the desktop entry on Linux), so
 //! the app shows in Open With and opens the files the user double-clicks.
+//! On Android the share sheet is the way in (`SEND` / `SEND_MULTIPLE`
+//! intent filters for the types' MIME types); the app activity copies each
+//! shared stream into the cache and reports the copy as a `file://` URL.
 //!
 //! A file the system opens the app with comes to the app as a path, apart
 //! from its links: TS `Application.on("openFiles", ...)`, Rust
@@ -50,8 +53,9 @@ pub struct FileType {
     /// The extensions of its files, without the dot, in lower case
     /// (`["mp4", "mov"]`).
     pub extensions: Vec<String>,
-    /// Its MIME types (`["video/mp4"]`): Linux finds the app by them, and
-    /// Apple platforms read them besides the extensions.
+    /// Its MIME types (`["video/mp4"]`): Linux finds the app by them,
+    /// Android lists the app in the share sheet, and Apple platforms
+    /// read them besides the extensions.
     pub mime_types: Vec<String>,
     /// Its Uniform Type Identifiers on Apple platforms
     /// (`["public.movie"]`), which iOS finds the app by.

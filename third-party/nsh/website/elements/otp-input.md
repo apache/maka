@@ -51,6 +51,7 @@ fn verification(verify: impl Fn(&str) + 'static) -> impl IntoElement {
 ```tsx tabs
 import { mount, signal } from "nsh";
 import { OtpInput } from "nsh/base";
+import { Window } from "nsh/desktop";
 
 function App() {
   const code = signal("");
@@ -71,7 +72,11 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 `OtpInput` comes from [`nsh/base`](../modules/nsh-base.md), the `nsh-base` crate in Rust. In Rust, `otp_input()`

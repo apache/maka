@@ -1,4 +1,5 @@
 import { mount, Scroll, signal, Text, View } from "nsh";
+import { Window } from "nsh/desktop";
 import type { ViewRef } from "nsh";
 
 // Rows of 100 pt in a 200 pt scroll view; row 6 scrolls sideways through
@@ -30,4 +31,4 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => <Window id="main">{App}</Window>);

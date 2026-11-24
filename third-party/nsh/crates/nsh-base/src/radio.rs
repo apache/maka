@@ -69,7 +69,7 @@ pub enum RadioEvent {
 /// the keyboard focus only while it is the radio Tab enters the group at
 /// (see [`RadioGroup`]).
 ///
-/// In a terminal it shows the terminal's radio, `(•)` or `( )` and a
+/// In a terminal it shows the terminal's radio, `[●]` or `[ ]` and a
 /// space, before its children, in a row ([`crate::terminal`]); an app that
 /// draws a dot of its own among its children leaves it out there
 /// (`platform.idiom === "terminal"`).

@@ -1010,3 +1010,37 @@ fn a_focused_one_row_field_is_its_band_brighter_with_no_line_under_it() {
     assert_eq!(caret.y, y, "on the field's row");
     assert!((x..x + 20).contains(&caret.x), "in the field: {caret:?}");
 }
+
+#[test]
+fn a_clip_path_hides_its_cells_and_passes_their_clicks_through() {
+    use nsh_platform_tui::MouseButton::Left;
+    let code = nsh_bundler::compile_module("App.tsx", r#"
+        import { mount, signal, View, Text } from "nsh";
+        const pressed = signal("none");
+        mount(() => <View>
+            <View style={{ width: 160, height: 32 }} onPress={() => pressed.set("under")}>
+                <View style={{ position: "absolute", left: 0, top: 0, width: 160, height: 32, clipPath: "inset(0 0 0 50%)" }}
+                    onPress={() => pressed.set("clipped")}>
+                    <Text>abcdefghij0123456789</Text>
+                </View>
+            </View>
+            <Text>pressed:{pressed()}</Text>
+        </View>);
+    "#, &[]).unwrap();
+    let (mut view, rx) = surface();
+    let mut terminal = Terminal::new(TestBackend::new(40, 8)).unwrap();
+    view.load(Bundle::source(code)).unwrap();
+    draw_until(&mut view, &mut terminal, &rx, "pressed:none");
+    // The right half shows; the left half's Cells are clipped away.
+    let row: String = (0..20)
+        .map(|x| terminal.backend().buffer()[(x, 0)].symbol().to_owned())
+        .collect();
+    assert_eq!(row.trim_start(), "0123456789", "{row:?}");
+    // A click on the clipped half reaches the view under it.
+    view.handle(mouse(MouseKind::Down(Left), 2, 0));
+    view.handle(mouse(MouseKind::Up(Left), 2, 0));
+    draw_until(&mut view, &mut terminal, &rx, "pressed:under");
+    view.handle(mouse(MouseKind::Down(Left), 15, 0));
+    view.handle(mouse(MouseKind::Up(Left), 15, 0));
+    draw_until(&mut view, &mut terminal, &rx, "pressed:clipped");
+}

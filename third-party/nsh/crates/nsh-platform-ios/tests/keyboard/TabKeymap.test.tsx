@@ -5,7 +5,8 @@ import { expect, open, test } from "nsh/test";
 
 test("a Tab binding runs before focus traversal and stays", async () => {
   const app = await open("./TabKeymap.tsx");
-  await app.press("id:pad");
+  // A real touch: the pad takes no presses, which `press` needs.
+  await app.drag("id:pad", { x: 0, y: 0 });
   await app.waitFor("text:focus:pad");
   await app.keyboard.press("tab");
   await app.waitFor("text:tab:1");

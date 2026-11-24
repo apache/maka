@@ -9,7 +9,7 @@
 //! own; a disabled or read-only input takes none of it.
 
 use nsh_base::number_input;
-use nsh_core::{Size, element::Root, platform::Os, prelude::*};
+use nsh_core::{Size, platform::Os, prelude::*};
 use nsh_engine::EngineConfig;
 use nsh_testing::Headless;
 
@@ -123,7 +123,9 @@ fn Harness(props: HarnessProps) -> impl IntoElement {
 fn start(props: HarnessProps) -> Headless {
     let mut config = EngineConfig {
         viewport: Size::new(px(400.0), px(844.0)),
-        ..EngineConfig::new(Root::new::<Harness>(move || props.clone()))
+        ..EngineConfig::new(nsh_testing::windowed_root_with::<Harness>(move || {
+            props.clone()
+        }))
     };
     config.environment.os = Os::MacOs;
     let mut app = Headless::start(config).expect("the engine starts");
@@ -449,4 +451,73 @@ fn a_readonly_input_takes_no_typing_or_step() {
     assert!(app.type_text("label:Quantity", "1").is_err());
     assert_eq!(field(&app), "5");
     assert!(app.shows("Changes"));
+}
+
+/// A number input the app focuses through its ref (a form moving the focus
+/// to the field it found invalid), with a `Focus` button to do it.
+#[component]
+fn RefHarness(props: HarnessProps) -> impl IntoElement {
+    let r = component_ref::<nsh_base::NumberInput>();
+    let events = signal(Vec::<String>::new());
+    let value = signal(None::<f64>);
+    view()
+        .child(
+            number_input()
+                .disabled(props.disabled)
+                .accessibility_label("Quantity")
+                .input_style(|s| s.w(px(100.0)).h(px(30.0)))
+                .value(move || value.get())
+                .on_change(move |v: &Option<f64>| value.set(*v))
+                .on_focus(move || events.update(|e| e.push("focus".into())))
+                .component_ref(&r),
+        )
+        .child(
+            view()
+                .size(px(30.0))
+                .on_press(move || {
+                    if let Some(api) = r.api::<nsh_base::NumberInputApi>() {
+                        api.focus();
+                    }
+                })
+                .child(text("Focus")),
+        )
+        .child(text(move || format!("Value {}", show(value.get()))))
+        .child(text(move || format!("Events {}", events.get().join(", "))))
+}
+
+fn start_ref(props: HarnessProps) -> Headless {
+    let mut config = EngineConfig {
+        viewport: Size::new(px(400.0), px(844.0)),
+        ..EngineConfig::new(nsh_testing::windowed_root_with::<RefHarness>(move || {
+            props.clone()
+        }))
+    };
+    config.environment.os = Os::MacOs;
+    let mut app = Headless::start(config).expect("the engine starts");
+    app.wait_for("text:Events").unwrap();
+    app
+}
+
+#[test]
+fn focusing_the_ref_focuses_the_field_so_its_keys_reach_it() {
+    let mut app = start_ref(controlled(None));
+    app.press("text:Focus").unwrap();
+    app.wait_for("text:Events focus").unwrap();
+    // The keys reach the field: Up steps it.
+    app.press_key("up").unwrap();
+    app.wait_for("text:Value 1").unwrap();
+}
+
+#[test]
+fn focusing_the_ref_of_a_disabled_input_leaves_it_unfocused() {
+    let mut app = start_ref(HarnessProps {
+        disabled: true,
+        ..controlled(None)
+    });
+    app.press("text:Focus").unwrap();
+    app.settle();
+    app.press_key("up").unwrap();
+    app.settle();
+    assert!(app.shows("Value none"));
+    assert!(!app.shows("Events focus"));
 }

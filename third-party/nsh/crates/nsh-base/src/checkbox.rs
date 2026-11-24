@@ -32,6 +32,18 @@ pub struct CheckboxProps {
     /// What screen readers say: what the checkbox selects, when its
     /// children have no text that says it.
     pub accessibility_label: Prop<Option<SharedString>>,
+    /// What activating the checkbox does, for screen readers, as a view's
+    /// `accessibilityHint`.
+    pub accessibility_hint: Prop<Option<SharedString>>,
+    /// The value does not pass the app's checks (a required box left
+    /// unchecked): screen readers say it is invalid each time they reach
+    /// it. No look of its own; the app styles the error.
+    #[prop(default)]
+    pub invalid: Prop<bool>,
+    /// The element whose text describes it for screen readers (its error
+    /// or help line), read after its name each time it is focused, as a
+    /// view's `accessibilityDescribedBy`.
+    pub accessibility_described_by: Prop<Option<nsh_core::element::ElementTarget>>,
     /// What it is for screen readers (default `"checkbox"`; a menu item
     /// that is checked, ...).
     pub role: Prop<Option<AccessibilityRole>>,
@@ -90,6 +102,7 @@ pub fn Checkbox(props: CheckboxProps, cx: Scope<CheckboxEvent>) -> impl IntoElem
         .disabled(props.disabled)
         .role(move || props.role.get().unwrap_or(AccessibilityRole::Checkbox))
         .optional_label(props.accessibility_label)
+        .optional_hint(props.accessibility_hint)
         .accessibility_state(move || AccessibilityState {
             checked: Some(if indeterminate.get() {
                 Checked::Mixed
@@ -98,8 +111,10 @@ pub fn Checkbox(props: CheckboxProps, cx: Scope<CheckboxEvent>) -> impl IntoElem
             } else {
                 Checked::False
             }),
+            invalid: props.invalid.get(),
             ..AccessibilityState::default()
         })
+        .accessibility_described_by_target(props.accessibility_described_by)
         .checked_style(props.checked_style)
         .indeterminate_style(props.indeterminate_style)
         .hit_slop(props.hit_slop)

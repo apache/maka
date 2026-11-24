@@ -13,7 +13,7 @@ repository.workspace = true
 workspace = true
 
 [features]
-default = ["js", "websocket", "updater", "net"]
+default = ["js", "websocket", "updater", "net", "svg"]
 js = ["nsh-engine/js"]
 run-app = []
 dev = ["js", "websocket", "updater", "dep:nsh-dev", "dep:nsh-testing", "dep:serde_json", "dep:ureq", "net"]
@@ -26,7 +26,9 @@ updater = ["nsh-engine/updater"]
 
 # HTTP: `fetch` and remote images (ureq, rustls). Without it `fetch`
 # rejects and an `<Image>` shows only files, assets and inline data.
-net = ["nsh-engine/net"]
+net = ["nsh-engine/net", "nsh-core/loader"]
+# SVG images, drawn by the shared rasterizer (`nsh-core` feature `svg`).
+svg = ["nsh-core/svg"]
 
 [dependencies]
 nsh-dev = { workspace = true, optional = true, features = ["client"] }
@@ -37,10 +39,13 @@ nsh-core = { workspace = true, features = ["loader", "svg"] }
 nsh-base = { workspace = true, features = ["editor", "emoji-picker", "highlight", "plot", "rich-editor", "term"] }
 nsh-engine.workspace = true
 icy_sixel.workspace = true
-image = { workspace = true, features = ["jpeg", "gif", "webp"] }
 ratatui-core.workspace = true
 ratatui-widgets.workspace = true
 unicode-width.workspace = true
+# Image views: decoding (`image.rs`) and the PNG the kitty graphics protocol
+# carries, base64-encoded.
+image = { workspace = true, features = ["gif", "jpeg", "webp"] }
+base64.workspace = true
 unicode-segmentation.workspace = true
 crossbeam-channel.workspace = true
 log.workspace = true

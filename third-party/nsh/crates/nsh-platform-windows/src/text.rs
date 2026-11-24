@@ -39,10 +39,10 @@ use nsh_core::{
     Points, ResolvedTextStyle, Size, TextAlign, TextEngine, TextLayout, TextLine, TextPosition,
     TextSpan, geometry::px,
 };
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use windows::{
     Win32::{
-        Foundation::DWRITE_E_NOCOLOR,
+        Foundation::{DWRITE_E_NOCOLOR, HANDLE},
         Graphics::{
             Direct2D::{
                 CLSID_D2D1Shadow,
@@ -61,9 +61,9 @@ use windows::{
                 DWRITE_FONT_STYLE, DWRITE_FONT_STYLE_ITALIC, DWRITE_FONT_STYLE_NORMAL,
                 DWRITE_FONT_WEIGHT, DWRITE_GLYPH_OFFSET, DWRITE_GLYPH_RUN,
                 DWRITE_GLYPH_RUN_DESCRIPTION, DWRITE_HIT_TEST_METRICS,
-                DWRITE_INLINE_OBJECT_METRICS, DWRITE_LINE_METRICS,
-                DWRITE_LINE_SPACING_METHOD_UNIFORM, DWRITE_MATRIX, DWRITE_MEASURING_MODE,
-                DWRITE_MEASURING_MODE_NATURAL, DWRITE_OVERHANG_METRICS,
+                DWRITE_INFORMATIONAL_STRING_WIN32_FAMILY_NAMES, DWRITE_INLINE_OBJECT_METRICS,
+                DWRITE_LINE_METRICS, DWRITE_LINE_SPACING_METHOD_UNIFORM, DWRITE_MATRIX,
+                DWRITE_MEASURING_MODE, DWRITE_MEASURING_MODE_NATURAL, DWRITE_OVERHANG_METRICS,
                 DWRITE_READING_DIRECTION_LEFT_TO_RIGHT, DWRITE_READING_DIRECTION_RIGHT_TO_LEFT,
                 DWRITE_STRIKETHROUGH, DWRITE_TEXT_ALIGNMENT, DWRITE_TEXT_ALIGNMENT_CENTER,
                 DWRITE_TEXT_ALIGNMENT_JUSTIFIED, DWRITE_TEXT_ALIGNMENT_LEADING,
@@ -71,13 +71,14 @@ use windows::{
                 DWRITE_TRIMMING, DWRITE_TRIMMING_GRANULARITY_CHARACTER,
                 DWRITE_TRIMMING_GRANULARITY_NONE, DWRITE_UNDERLINE, DWRITE_UNICODE_RANGE,
                 DWRITE_WORD_WRAPPING_EMERGENCY_BREAK, DWRITE_WORD_WRAPPING_NO_WRAP,
-                IDWriteFactory2, IDWriteFactory5, IDWriteFontCollection, IDWriteFontCollection1,
-                IDWriteFontFace, IDWriteFontFace2, IDWriteFontFallback, IDWriteFontFile,
-                IDWriteInMemoryFontFileLoader, IDWriteInlineObject, IDWriteInlineObject_Impl,
-                IDWritePixelSnapping_Impl, IDWriteTextFormat, IDWriteTextFormat1,
-                IDWriteTextLayout, IDWriteTextLayout1, IDWriteTextRenderer,
+                IDWriteFactory2, IDWriteFactory5, IDWriteFont, IDWriteFontCollection,
+                IDWriteFontCollection1, IDWriteFontFace, IDWriteFontFace2, IDWriteFontFallback,
+                IDWriteFontFile, IDWriteInMemoryFontFileLoader, IDWriteInlineObject,
+                IDWriteInlineObject_Impl, IDWritePixelSnapping_Impl, IDWriteTextFormat,
+                IDWriteTextFormat1, IDWriteTextLayout, IDWriteTextLayout1, IDWriteTextRenderer,
                 IDWriteTextRenderer_Impl, IDWriteTypography,
             },
+            Gdi::AddFontMemResourceEx,
         },
     },
     core::{BOOL, HSTRING, IUnknown, Interface, PCWSTR, Ref, implement},
@@ -139,16 +140,29 @@ struct Registry {
     files: Vec<(u64, IDWriteFontFile)>,
     /// A collection of all of them.
     collection: Option<IDWriteFontCollection1>,
+    /// Process-private GDI font handles for windowless RichEdit (`<Input>`),
+    /// kept alive for the process lifetime.
+    gdi_handles: Vec<HANDLE>,
+    /// Lowercased family names successfully loaded into GDI via
+    /// `AddFontMemResourceEx`.
+    gdi_families: Option<FxHashSet<String>>,
 }
 
 static REGISTRY: Mutex<Shared<Registry>> = Mutex::new(Shared(Registry {
     loader: None,
     files: Vec::new(),
     collection: None,
+    gdi_handles: Vec::new(),
+    gdi_families: None,
 }));
 
 /// Bumped when a font is registered: engines resolve families again.
 static FONT_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+/// The current generation of registered custom fonts.
+pub(crate) fn font_generation() -> u64 {
+    FONT_GENERATION.load(Ordering::Acquire)
+}
 
 fn hash(data: &[u8]) -> u64 {
     use std::hash::{Hash, Hasher};
@@ -170,7 +184,8 @@ fn add_font(data: &[u8]) -> Result<(), String> {
     }
     // SAFETY: COM calls on live objects; without an owner object
     // DirectWrite copies the font data, which only has to live through the
-    // call.
+    // call. `AddFontMemResourceEx` likewise copies `data` into session memory
+    // and writes the installed count to our local `u32`.
     unsafe {
         if r.loader.is_none() {
             let loader = factory
@@ -205,9 +220,50 @@ fn add_font(data: &[u8]) -> Result<(), String> {
             .map_err(|e| e.to_string())?;
         r.files.push((key, file));
         r.collection = Some(collection);
+        // Also expose the decoded TrueType/OpenType bytes to GDI so windowless
+        // RichEdit (`<Input>`) can resolve process-private memory fonts. A GDI
+        // rejection never fails DirectWrite registration.
+        if let Ok(len) = u32::try_from(data.len()) {
+            let mut installed = 0u32;
+            let handle = AddFontMemResourceEx(
+                data.as_ptr().cast(),
+                len,
+                None,
+                (&raw mut installed).cast_const(),
+            );
+            if !handle.is_invalid() && installed > 0 {
+                r.gdi_handles.push(handle);
+                if let Ok(face) = ttf_parser::Face::parse(data, 0) {
+                    let set = r.gdi_families.get_or_insert_with(FxHashSet::default);
+                    for n in face.names() {
+                        if matches!(
+                            n.name_id,
+                            ttf_parser::name_id::FAMILY | ttf_parser::name_id::TYPOGRAPHIC_FAMILY
+                        ) && let Some(s) = n.to_string()
+                            && !s.is_empty()
+                        {
+                            set.insert(s.to_lowercase());
+                        }
+                    }
+                }
+            } else {
+                log::debug!("GDI AddFontMemResourceEx could not register custom font");
+            }
+        }
     }
     FONT_GENERATION.fetch_add(1, Ordering::Release);
     Ok(())
+}
+
+/// Whether `family` was successfully registered in GDI via
+/// `AddFontMemResourceEx`.
+fn has_gdi_family(family: &str) -> bool {
+    let registry = REGISTRY.lock().unwrap_or_else(|e| e.into_inner());
+    registry
+        .0
+        .gdi_families
+        .as_ref()
+        .is_some_and(|set| set.contains(&family.to_lowercase()))
 }
 
 /// The registered fonts' collection.
@@ -312,14 +368,14 @@ impl Metrics {
     }
 }
 
-/// The metrics of the font of `collection` named `name` nearest to
-/// `weight` and `italic`, if the collection has the family.
-fn find_font(
+/// The font of `collection` named `name` nearest to `weight` and `italic`,
+/// if the collection has the family.
+fn find_matching_font(
     collection: &IDWriteFontCollection,
     name: &str,
     weight: u16,
     italic: bool,
-) -> Option<Metrics> {
+) -> Option<IDWriteFont> {
     let name = HSTRING::from(name);
     let (mut index, mut exists) = (0u32, BOOL(0));
     // SAFETY: COM calls on a live collection with local out values.
@@ -330,7 +386,7 @@ fn find_font(
         if !exists.as_bool() {
             return None;
         }
-        let font = collection
+        collection
             .GetFontFamily(index)
             .ok()?
             .GetFirstMatchingFont(
@@ -338,10 +394,186 @@ fn find_font(
                 DWRITE_FONT_STRETCH_NORMAL,
                 font_style(italic),
             )
-            .ok()?;
-        let mut m = DWRITE_FONT_METRICS::default();
-        font.GetMetrics(&mut m);
-        Some(Metrics::of(&m))
+            .ok()
+    }
+}
+
+/// The metrics of the font of `collection` named `name` nearest to
+/// `weight` and `italic`, if the collection has the family.
+fn find_font(
+    collection: &IDWriteFontCollection,
+    name: &str,
+    weight: u16,
+    italic: bool,
+) -> Option<Metrics> {
+    let font = find_matching_font(collection, name, weight, italic)?;
+    let mut m = DWRITE_FONT_METRICS::default();
+    // SAFETY: COM call on a live font with a local out value.
+    unsafe { font.GetMetrics(&mut m) };
+    Some(Metrics::of(&m))
+}
+
+/// The Win32/GDI family name (Name ID 1) of `font`, if present: GDI
+/// (`AddFontMemResourceEx`) indexes non-RIBBI weights under this name rather
+/// than the DirectWrite typographic family name (Name ID 16).
+fn win32_family_name(font: &IDWriteFont) -> Option<String> {
+    let mut strings = None;
+    let mut exists = BOOL(0);
+    // SAFETY: COM calls on live objects with local out values and sized buffers.
+    unsafe {
+        font.GetInformationalStrings(
+            DWRITE_INFORMATIONAL_STRING_WIN32_FAMILY_NAMES,
+            &mut strings,
+            &mut exists,
+        )
+        .ok()?;
+        if !exists.as_bool() {
+            return None;
+        }
+        let strings = strings?;
+        if strings.GetCount() == 0 {
+            return None;
+        }
+        let mut index = 0u32;
+        let mut found = BOOL(0);
+        if strings
+            .FindLocaleName(&HSTRING::from("en-us"), &mut index, &mut found)
+            .is_err()
+            || !found.as_bool()
+        {
+            index = 0;
+        }
+        let len = strings.GetStringLength(index).ok()? as usize;
+        if len == 0 {
+            return None;
+        }
+        let mut buf = vec![0u16; len + 1];
+        strings.GetString(index, &mut buf).ok()?;
+        Some(String::from_utf16_lossy(&buf[..len]))
+    }
+}
+
+/// A `fontFamily` list resolved for a text input (`<Input>`).
+pub(crate) struct ResolvedFamily {
+    /// The primary family name for DirectWrite `CreateTextFormat`.
+    pub(crate) name: HSTRING,
+    /// The face name for RichEdit `CHARFORMAT2W.szFaceName`.
+    pub(crate) gdi_name: String,
+    /// True when `gdi_name` is an app-registered memory font loaded via GDI
+    /// `AddFontMemResourceEx` (RichEdit must render in GDI mode because
+    /// `TXTBIT_D2DDWRITE` only sees DirectWrite's system font collection).
+    pub(crate) gdi_custom: bool,
+    /// The custom font collection when the primary family is app-registered.
+    pub(crate) collection: Option<IDWriteFontCollection>,
+    /// Any remaining installed/registered families in the stack as DirectWrite
+    /// fallback (`None`: the system's alone).
+    pub(crate) fallback: Option<IDWriteFontFallback>,
+}
+
+/// Builds a DirectWrite fallback chain over `families` followed by the
+/// system's fallback (`None` when `families` is empty).
+fn build_fallback(
+    factory: &IDWriteFactory2,
+    families: &[(HSTRING, bool)],
+    custom: Option<&IDWriteFontCollection>,
+) -> Option<IDWriteFontFallback> {
+    if families.is_empty() {
+        return None;
+    }
+    let everything = [DWRITE_UNICODE_RANGE {
+        first: 0,
+        last: 0x10_FFFF,
+    }];
+    // SAFETY: COM calls on live objects; the names outlive the calls.
+    unsafe {
+        let builder = factory.CreateFontFallbackBuilder().ok()?;
+        for (name, registered) in families {
+            let names = [name.as_ptr()];
+            let collection = if *registered { custom } else { None };
+            builder
+                .AddMapping(
+                    &everything,
+                    &names,
+                    collection,
+                    PCWSTR::null(),
+                    PCWSTR::null(),
+                    1.0,
+                )
+                .ok()?;
+        }
+        if let Ok(system) = factory.GetSystemFontFallback() {
+            let _ = builder.AddMappings(&system);
+        }
+        builder.CreateFontFallback().ok()
+    }
+}
+
+/// Resolves a `fontFamily` stack (with CSS generics, Apple-platform aliases,
+/// app-registered custom fonts, and system fonts) using the same rules as
+/// [`DWriteTextEngine`].
+pub(crate) fn resolve_family(family: Option<&str>, weight: u16, italic: bool) -> ResolvedFamily {
+    thread_local! {
+        static UI: Arc<str> = ui_family();
+    }
+    let ui = UI.with(Arc::clone);
+    let factory = crate::gfx::dwrite();
+    let custom = custom_collection();
+    let mut system = None;
+    // SAFETY: a COM call with a local out value.
+    let _ = unsafe { factory.GetSystemFontCollection(&mut system, false) };
+    let names = match family {
+        Some(name) => family_names(name, &ui),
+        None => vec![ui.to_string()],
+    };
+    let find = |name: &str| -> Option<(String, String, bool)> {
+        if let Some(c) = &custom
+            && let Some(font) = find_matching_font(c, name, weight, italic)
+        {
+            let gdi = win32_family_name(&font).unwrap_or_else(|| name.to_owned());
+            return Some((name.to_owned(), gdi, true));
+        }
+        find_matching_font(system.as_ref()?, name, weight, italic)?;
+        Some((name.to_owned(), name.to_owned(), false))
+    };
+    let (primary, mut gdi_name, is_custom) = names
+        .iter()
+        .find_map(|n| find(n))
+        .or_else(|| names.iter().find_map(|n| alias(n).and_then(find)))
+        .unwrap_or_else(|| (ui.to_string(), ui.to_string(), false));
+    let mut gdi_custom = is_custom && (has_gdi_family(&gdi_name) || has_gdi_family(&primary));
+    // If DirectWrite accepted the custom font but GDI rejected it, keep the
+    // custom font for DirectWrite (`CreateTextFormat`) while giving RichEdit
+    // the next installed system family in the stack (or the UI font).
+    if is_custom && !gdi_custom {
+        let find_system = |name: &str| -> Option<String> {
+            find_matching_font(system.as_ref()?, name, weight, italic)?;
+            Some(name.to_owned())
+        };
+        gdi_name = names
+            .iter()
+            .find_map(|n| find_system(n))
+            .or_else(|| names.iter().find_map(|n| alias(n).and_then(find_system)))
+            .unwrap_or_else(|| ui.to_string());
+        gdi_custom = false;
+    }
+    let primary_h = HSTRING::from(&primary);
+    let mut others: Vec<(HSTRING, bool)> = Vec::new();
+    for (found, _, registered) in names
+        .iter()
+        .filter_map(|n| find(n).or_else(|| alias(n).and_then(find)))
+    {
+        let h = HSTRING::from(&found);
+        if h != primary_h && !others.iter().any(|(n, _)| *n == h) {
+            others.push((h, registered));
+        }
+    }
+    let fallback = build_fallback(&factory, &others, custom.as_ref());
+    ResolvedFamily {
+        name: primary_h,
+        gdi_name,
+        gdi_custom,
+        collection: if is_custom { custom } else { None },
+        fallback,
     }
 }
 
@@ -1039,35 +1271,7 @@ impl DWriteTextEngine {
         families: &[(HSTRING, bool)],
         custom: Option<&IDWriteFontCollection>,
     ) -> Option<IDWriteFontFallback> {
-        if families.is_empty() {
-            return None;
-        }
-        let everything = [DWRITE_UNICODE_RANGE {
-            first: 0,
-            last: 0x10_FFFF,
-        }];
-        // SAFETY: COM calls on live objects; the names outlive the calls.
-        unsafe {
-            let builder = self.factory.CreateFontFallbackBuilder().ok()?;
-            for (name, registered) in families {
-                let names = [name.as_ptr()];
-                let collection = if *registered { custom } else { None };
-                builder
-                    .AddMapping(
-                        &everything,
-                        &names,
-                        collection,
-                        PCWSTR::null(),
-                        PCWSTR::null(),
-                        1.0,
-                    )
-                    .ok()?;
-            }
-            if let Ok(system) = self.factory.GetSystemFontFallback() {
-                let _ = builder.AddMappings(&system);
-            }
-            builder.CreateFontFallback().ok()
-        }
+        build_fallback(&self.factory, families, custom)
     }
 
     fn typography(&self, variant: nsh_core::FontVariant) -> Option<IDWriteTypography> {
@@ -3000,8 +3204,8 @@ pub(crate) fn context_menu(surface: &Rc<crate::surface::Surface>, view: &NshView
     );
 }
 
-/// The selected text of `view`, without attachments' placeholders and
-/// hidden runs.
+/// The selected text of `view` as a copy gives it
+/// ([`nsh_core::AttributedText::copied_text`]).
 fn selected_text(view: &NshView) -> Option<String> {
     let (a, b) = view_selection(view)?.range.get()?;
     let state = view.state();

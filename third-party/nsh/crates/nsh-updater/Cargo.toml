@@ -26,3 +26,4 @@ thiserror.workspace = true
 flate2.workspace = true
 tar.workspace = true
 zip.workspace = true
+zstd.workspace = true

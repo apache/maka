@@ -2,6 +2,7 @@
 // and a `visibility: hidden` one, before a control that shows and tabs
 // that X hides. `Hidden.test.tsx` runs it on the macOS host.
 import { keymap, mount, signal, Text, View } from "nsh";
+import { Window } from "nsh/desktop";
 import { Input, Tab, Tabs } from "nsh/base";
 
 function App() {
@@ -58,4 +59,4 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => <Window id="main">{App}</Window>);

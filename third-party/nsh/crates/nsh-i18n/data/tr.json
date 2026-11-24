@@ -21,12 +21,43 @@
     "hourSuffix": "",
     "numeric": [["day", "."], ["month", "."], ["year", ""]],
     "shortYear2digit": false,
-    "text": null,
+    "text": [["day", " "], ["month", " "], ["year", ""]],
     "textLong": null,
-    "weekdayFirst": true,
-    "weekdaySep": ", ",
+    "weekdayFirst": false,
+    "weekdaySep": " ",
     "dateTimeSep": ", ",
-    "names": null,
+    "names": {
+      "months": [
+        "Ocak",
+        "Şubat",
+        "Mart",
+        "Nisan",
+        "Mayıs",
+        "Haziran",
+        "Temmuz",
+        "Ağustos",
+        "Eylül",
+        "Ekim",
+        "Kasım",
+        "Aralık"
+      ],
+      "monthsShort": [
+        "Oca",
+        "Şub",
+        "Mar",
+        "Nis",
+        "May",
+        "Haz",
+        "Tem",
+        "Ağu",
+        "Eyl",
+        "Eki",
+        "Kas",
+        "Ara"
+      ],
+      "weekdays": ["Pazar", "Pazartesi", "Salı", "Çarşamba", "Perşembe", "Cuma", "Cumartesi"],
+      "weekdaysShort": ["Paz", "Pzt", "Sal", "Çar", "Per", "Cum", "Cmt"]
+    },
     "cjk": false
   }
 }

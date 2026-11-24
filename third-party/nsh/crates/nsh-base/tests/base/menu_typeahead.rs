@@ -90,7 +90,7 @@ fn SortMenu() -> impl IntoElement {
 /// Opens the sort menu from the keyboard (the focus on Newest), presses
 /// `keys` (a pause where one is `""`), then chooses the focused item.
 fn choose(keys: &[&str], chosen: &str) {
-    let mut app = start(Root::of::<SortMenu>(), 844.0);
+    let mut app = start(nsh_testing::windowed_root::<SortMenu>(), 844.0);
     app.press_key("tab").unwrap();
     app.press_key("enter").unwrap();
     app.wait_for("Newest").unwrap();
@@ -149,7 +149,7 @@ fn a_disabled_item_is_passed_over() {
 
 #[test]
 fn a_menu_the_pointer_opened_takes_letters_too() {
-    let mut app = start(Root::of::<SortMenu>(), 844.0);
+    let mut app = start(nsh_testing::windowed_root::<SortMenu>(), 844.0);
     app.press("id:open").unwrap();
     app.wait_for("Newest").unwrap();
     app.press_key("t").unwrap();
@@ -159,7 +159,7 @@ fn a_menu_the_pointer_opened_takes_letters_too() {
 
 #[test]
 fn letters_typed_ahead_go_on_from_where_the_one_before_left_the_focus() {
-    let mut app = start(Root::of::<SortMenu>(), 844.0);
+    let mut app = start(nsh_testing::windowed_root::<SortMenu>(), 844.0);
     app.press_key("tab").unwrap();
     app.press_key("enter").unwrap();
     app.wait_for("Newest").unwrap();
@@ -191,7 +191,7 @@ fn NestedMenu() -> impl IntoElement {
 
 #[test]
 fn in_a_submenu_only_its_items_count() {
-    let mut app = start(Root::of::<NestedMenu>(), 844.0);
+    let mut app = start(nsh_testing::windowed_root::<NestedMenu>(), 844.0);
     app.press_key("tab").unwrap();
     app.press_key("enter").unwrap();
     app.wait_for("Share").unwrap();
@@ -207,7 +207,7 @@ fn in_a_submenu_only_its_items_count() {
 
 #[test]
 fn a_submenu_starts_what_was_typed_again() {
-    let mut app = start(Root::of::<NestedMenu>(), 844.0);
+    let mut app = start(nsh_testing::windowed_root::<NestedMenu>(), 844.0);
     app.press_key("tab").unwrap();
     app.press_key("enter").unwrap();
     app.wait_for("Share").unwrap();
@@ -223,7 +223,7 @@ fn a_submenu_starts_what_was_typed_again() {
 
 #[test]
 fn the_menu_around_an_open_submenu_keeps_its_own_items() {
-    let mut app = start(Root::of::<NestedMenu>(), 844.0);
+    let mut app = start(nsh_testing::windowed_root::<NestedMenu>(), 844.0);
     app.press_key("tab").unwrap();
     app.press_key("enter").unwrap();
     app.wait_for("Share").unwrap();
@@ -270,7 +270,7 @@ fn SearchMenu() -> impl IntoElement {
 
 #[test]
 fn a_text_field_in_the_menu_keeps_its_letters() {
-    let mut app = start(Root::of::<SearchMenu>(), 844.0);
+    let mut app = start(nsh_testing::windowed_root::<SearchMenu>(), 844.0);
     app.press("id:open").unwrap();
     app.wait_for("Newest").unwrap();
     app.type_text("id:search", "").unwrap();
@@ -319,7 +319,7 @@ fn scrolls(screen: &nsh_testing::Screen) -> usize {
 
 #[test]
 fn an_item_out_of_view_is_scrolled_into_it() {
-    let mut app = start(Root::of::<LongMenu>(), 300.0);
+    let mut app = start(nsh_testing::windowed_root::<LongMenu>(), 300.0);
     app.press("id:open").unwrap();
     app.wait_for("Alder").unwrap();
     assert_eq!(scrolls(app.screen()), 0);
@@ -364,7 +364,7 @@ fn ListMenu() -> impl IntoElement {
 
 #[test]
 fn a_lists_row_out_of_view_is_scrolled_into_it() {
-    let mut app = start(Root::of::<ListMenu>(), 844.0);
+    let mut app = start(nsh_testing::windowed_root::<ListMenu>(), 844.0);
     app.press("id:open").unwrap();
     app.wait_for("Alder").unwrap();
     assert_eq!(scrolls(app.screen()), 0);

@@ -26,9 +26,14 @@ nsh run --target android               # Rust 应用
 nsh run App.tsx --target android       # TSX 应用
 ```
 
-先启动模拟器或连接设备（`adb devices` 会列出它们；NSH 使用第一个）。对 Rust 应用，`nsh` 用你的 crate 构建应用的 `libnsh.so`，
+先启动模拟器或连接设备（`adb devices` 会列出它们）。NSH 使用 `--device <serial>` 或 `ANDROID_SERIAL` 指定的那台，否则使用第一台；
+连着多台时会提示用的是哪一台。对 Rust 应用，`nsh` 用你的 crate 构建应用的 `libnsh.so`，
 安装 APK 并启动它；修改 crate 的 Rust 代码会重新构建并安装。对 TSX 应用，`nsh` 会安装一个开发宿主 APK（只在运行时变化时重新构建），并通过
 `adb reverse` 转发开发服务器的端口，因此通过 USB 即可工作，无需共享网络；你保存时应用会更新，日志显示在终端中。
+
+这些开发构建中的 `libnsh.so` 不带调试信息，APK 因此小到能在模拟器上更新；完整的库在它旁边的 `symbols/<abi>/` 中，供 `ndk-stack`
+和调试器使用。设备没有空间更新开发宿主时，NSH 会先卸载它再重新安装：它只保存所运行应用写下的数据。应用自己的 APK 从不会被自动卸载：
+错误信息会说明如何腾出空间。
 
 ## 打包
 
@@ -82,9 +87,17 @@ dist/nsh/embed/android/nsh.aar       release: bundles and signed packages
 dist/nsh/embed/android/nsh-dev.aar   also connects to a `nsh dev` server
 ```
 
+如果你有 NSH 的源码，可以只构建这两个库：
+
+```sh
+cargo xtask android-embed    # writes dist/nsh/embed/android/{nsh,nsh-dev}.aar
+```
+
+`--no-dev` 不构建 `nsh-dev.aar`。默认包含 `arm64-v8a`、`armeabi-v7a` 和 `x86_64`；重复 `--abi` 可以少构建几个。
+
 AAR 包含 Java 运行时以及适用于 `arm64-v8a`、`armeabi-v7a` 和 `x86_64` 的 `libnsh.so`，库中带有符号：应用的 Gradle
-构建在打包时去除符号，并保留它们用于崩溃报告。它声明了 `INTERNET`
-权限，要求 **API 26**（Android 8）或更高版本。它自带 R8 规则（`proguard.txt`），开启混淆的构建会自动应用：原生库按名字
+构建在打包时去除符号，并保留它们用于崩溃报告。它声明了 `INTERNET` 和
+`ACCESS_NETWORK_STATE` 权限，要求 **API 26**（Android 8）或更高版本。它自带 R8 规则（`proguard.txt`），开启混淆的构建会自动应用：原生库按名字
 查找运行时的类，因此 `com.longbridge.nsh` 保持原样。
 
 把它加入应用模块，例如从 `libs` 文件夹引入：
@@ -320,6 +333,84 @@ nsh.setOpenUrlHandler(url -> {
     return false;
 });
 ```
+
+## 在 Rust 中申请运行时权限
+
+Android 用系统提示框申请危险权限（相机、麦克风、位置、附近设备、通讯录等），并且只把结果交给发起申请的 activity：打包的应用里是
+`AppActivity`，嵌入 `NshView` 时是你自己的 activity。使用这类 API 的 Rust 代码（应用自己的 crate、扩展）通过
+`nsh-platform-android` crate（其库名为 `nsh`）的 `permissions` 申请：它通过前台的 activity 申请，一次一个，并能跨越配置变更：
+
+```rust
+use nsh::permissions::{self, Permission};
+
+let answers = permissions::request(&["android.permission.RECORD_AUDIO"]).await?;
+if answers[0] == Permission::Granted {
+    // 录音。
+}
+```
+
+`state(name)` 和 `states(names)` 不申请，只返回当前状态。权限的状态是 `Default`（申请时会显示提示框）、`Granted`、`Denied`
+（用户拒绝过，Android 不再询问：只有系统设置能改变它）或 `Undeclared`。Android 只授予 manifest 声明的权限：未声明的权限返回
+`Undeclared`，不显示提示框。前台没有 activity（应用在后台），或 activity 在用户回答前结束时，申请以 `PermissionError::NoActivity`
+失败。NSH 自己的提示框（通知、网页的相机和麦克风）也这样申请，所以一个申请会等前面正在显示的提示框结束。
+
+## 在 Rust 中获取 JavaVM 和 Context
+
+Android 上的 Rust crate 通过 [`ndk-context`](https://docs.rs/ndk-context)（`ndk_context::android_context()`）获取进程的
+`JavaVM` 和一个 `android.content.Context`：音频和传感器 crate、密钥库、`robius-*`，以及你自己的 JNI 代码。NSH 在创建第一个
+`NshView` 时设置一次，早于应用或扩展的 Rust 代码运行，设置为 VM 和应用的 `Context`（它比任何 activity 都活得久）：
+
+```rust
+let context = ndk_context::android_context();
+// SAFETY: VM 与进程同寿。
+let vm = unsafe { jni::JavaVM::from_raw(context.vm().cast()) }?;
+let mut env = vm.attach_current_thread()?;
+// SAFETY: NSH 在进程的整个生命周期内保留的全局引用。
+let application = unsafe { jni::objects::JObject::from_raw(context.context().cast()) };
+```
+
+`ndk-context` 每个进程只保存一个 context，再次设置会 panic，所以在 NSH 应用中不要自己调用
+`ndk_context::initialize_android_context`。要从前台的 activity 显示系统界面，通过下面的 `activity` 启动并取回结果，或通过上面的
+`permissions` 申请权限。
+
+## 在 Rust 中启动 activity
+
+需要启动另一个应用并取回结果（相机应用、文档选择器）的 Rust 代码，使用同一个 crate 的 `activity`。`start_for_result(env, &intent)`
+从前台的 activity 启动它，并返回它的 `ActivityResult`（结果码和对方返回的 intent），能跨越配置变更；`can_start(env, &intent)`
+判断是否有已安装的应用响应这个 intent。Android 11+ 只让应用看到 manifest 里查询过的应用：crate 在自己的 `Cargo.toml` 里声明这些查询
+（[打包的应用需要什么](./nshm.md#打包的应用需要什么)）。`output_file(env, name)` 在应用缓存里新建一个文件，并给出对方通过应用的
+file provider 写入的 `content://` URI（`MediaStore.EXTRA_OUTPUT`）；`picker::prepare_image(path, name, &request)` 像
+`Picker.pickImages` 一样处理一个图片文件。`with_env(f)` 用当前线程的 JNI 环境运行 `f`（供应用和它的 nshm 的代码使用；其他 crate 通过上面的 `ndk-context` 获取 VM），返回它的结果或 JNI 错误（Java 异常会记录到日志并清除）。应用在后台时发起的请求以
+`ActivityError::NoActivity` 失败。`nsh-extra` 的相机
+（`crates/nsh-extra/src/camera/android.rs`）用到了它们全部。
+
+## 来自其他代码的通知
+
+[`Notifications`](../modules/nsh.md#notifications) 报告应用自己显示的通知的点击。推送 SDK 等其他代码显示的通知，点击时打开应用的启动
+activity（或 SDK 自己的 activity，再由它打开），把内容放在 intent 的 extras 里。这些点击交给 Rust 代码用
+`nsh::notifications::set_foreign_handler` 设置的唯一处理者，不会触发 `press`。请在应用 crate 的 `#[native_module]` 入口里、
+在 UI 线程上设置：启动应用的那次点击会等到它设置后送达。
+
+```rust
+use nsh::notifications::{ForeignNotification, ForeignNotificationHandler, set_foreign_handler};
+
+struct Chats;
+
+impl ForeignNotificationHandler for Chats {
+    // 用户点击了它，应用可能因此启动。
+    fn pressed(&self, notification: &ForeignNotification) {
+        open_chat(&notification.extras["chat"]);
+    }
+}
+
+set_foreign_handler(Chats);
+```
+
+`ForeignNotification` 带有转成 JSON 的 intent `extras`、它的 `action` 和 `data` URI。Android 不告诉 activity 是哪条通知打开了它，
+所以 NSH 把带 extras、又没有别的含义的 intent 当作这样的点击：链接（`ACTION_VIEW`，交给 `onLink`）、分享和系统的其他 action
+都不算，从最近任务重新打开任务也不算。每个 intent 只交一次，用它重建的 activity 不会再报一次。处理者在 UI 线程运行，在其他线程调用
+`set_foreign_handler` 会 panic。处理者只有一个，所以由应用 crate 持有，再转给它使用的模块；之后的调用会替换它。嵌入 `NshView` 的应用
+在 `onCreate` 和 `onNewIntent` 里把 activity 的 intent 传给 `NshView.handleNotificationIntent`，这些点击也由它交出。
 
 ## 限制
 

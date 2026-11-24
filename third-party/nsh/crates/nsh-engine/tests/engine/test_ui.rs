@@ -26,7 +26,8 @@ pub(crate) fn registry() -> Registry {
         .register::<Stepper>()
         .register::<TextField>()
         .register::<Sheet>()
-        .register::<Shortcut>();
+        .register::<Shortcut>()
+        .register::<WindowArea>();
     registry
 }
 
@@ -550,4 +551,23 @@ pub(crate) fn Sheet(props: SheetProps) -> impl IntoElement {
                 .child(children),
         )
     }))
+}
+
+// --- WindowArea: the window a component renders in ---------------------------
+
+/// `<window id> <title bar height> <left> <right>` of the window it renders
+/// in (`current_window()`), following what the platform reports.
+#[component]
+pub(crate) fn WindowArea() -> impl IntoElement {
+    let window = nsh_core::element::desktop::current_window();
+    text(move || {
+        let area = window.title_bar();
+        format!(
+            "{} {} {} {}",
+            window.id(),
+            area.top.0,
+            area.left.0,
+            area.right.0
+        )
+    })
 }

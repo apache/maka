@@ -44,7 +44,7 @@ fn Sized(props: SizedProps) -> impl IntoElement {
 fn start_sized() -> Headless {
     let config = EngineConfig {
         viewport: Size::new(px(800.0), px(900.0)),
-        ..EngineConfig::new(Root::new::<Sized>(|| SizedProps {
+        ..EngineConfig::new(nsh_testing::windowed_root_with::<Sized>(|| SizedProps {
             sessions: (0..4).map(|_| session(paragraphs(&["one"]))).collect(),
         }))
     };

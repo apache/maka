@@ -343,7 +343,8 @@ impl NshContextMenu {
         let opening = Rc::new(Opening::default());
         ivars.opening.replace(Some(opening.clone()));
         let context = ivars.context.clone();
-        let choose: Choose = Rc::new(move |id| opening.choose(Choice::Action(id), &context));
+        // A menu made on each open shows the app's checks without help.
+        let choose: Choose = Rc::new(move |id, _| opening.choose(Choice::Action(id), &context));
         let children = elements(&ivars.entries.borrow(), false, &choose, mtm);
         let menu = UIMenu::menuWithTitle_children(
             &NSString::from_str(&ivars.title.borrow()),

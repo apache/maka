@@ -119,15 +119,22 @@ jobs:
           cargo build -p nsh-cli
           cargo build --manifest-path crates/gpui/Cargo.toml --target-dir target -p nsh-gpui-host
 
-      # Match the GTK job's gallery coverage. No allowed failures: each
+      # Match the GTK job's gallery coverage, but for the tests that ask a
+      # window's native alert: `navigation`, and storage's clearing, read a
+      # dialog the GPUI host does not host in an app window yet (not migrated
+      # to window model v2, docs/dev/gpui.md). No allowed failures: each
       # invocation must pass, and Bash stops at the first failing suite.
       - name: Run the gallery's tests in GPUI windows
         run: |
           run() { env -u WAYLAND_DISPLAY dbus-run-session -- xvfb-run -a -s '-screen 0 1280x1024x24' ./target/debug/nsh test "$@" --target gpui; }
-          for file in context-menu device dock form gestures hover links navigation network photos resizable shortcuts storage timers; do
+          for file in context-menu device dock form gestures hover links network photos resizable shortcuts timers; do
             run "examples/gallery/tests/$file.test.tsx"
           done
+          run examples/gallery/tests/storage.test.tsx --filter "counts the demo's openings"
           run examples/gallery/tests/environment.test.tsx --filter appearance
+          run crates/nsh-testing/tests/testing/input-target/App.test.tsx --filter 'shared prefix'
+          run crates/nsh-testing/tests/testing/input-target/gpui/Editor.test.tsx
+          run crates/nsh-testing/tests/testing/input-target/gpui/Input.test.tsx
 
   check:
     needs: changed
@@ -211,6 +218,9 @@ jobs:
         run: |
           dbus-run-session -- xvfb-run -a cargo test -p nsh-platform-linux --no-default-features --features dev --lib access::tests::activation_ -- --nocapture
           dbus-run-session -- xvfb-run -a cargo test -p nsh-platform-linux --no-default-features --features dev --lib access::tests::atspi_activation_ -- --ignored --nocapture
+          # A press on a text view under a view with `can-focus` off focuses
+          # it (the storage test's note is typed into this way).
+          dbus-run-session -- xvfb-run -a cargo test -p nsh-platform-linux --no-default-features --features dev --lib input::tests::a_press_focuses -- --nocapture
 
       # The examples' tests in GTK windows on a virtual display, with the
       # platform's input (`nsh test --target linux`): those a real platform

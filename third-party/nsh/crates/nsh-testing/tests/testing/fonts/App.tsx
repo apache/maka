@@ -1,4 +1,5 @@
 import { mount, registerFont, signal, Text, View } from "nsh";
+import { Window } from "nsh/desktop";
 
 function App() {
   const family = signal("none");
@@ -22,4 +23,4 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => <Window id="main">{App}</Window>);

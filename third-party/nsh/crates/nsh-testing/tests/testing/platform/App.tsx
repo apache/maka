@@ -2,6 +2,7 @@
 // back, dialogs, the clipboard, native animations, a dialog, images
 // that never load or that a test fails, and the keyboard focus a ref's `focus()` moves.
 import { Image, mount, signal, Text, View, type ViewRef } from "nsh";
+import { Window } from "nsh/desktop";
 import { Animated, createAnimatedValue } from "nsh";
 import { Clipboard } from "nsh";
 import { AlertDialog, createNavStack, Dialog, NavPage, NavStack } from "nsh/base";
@@ -126,4 +127,4 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => <Window id="main">{App}</Window>);

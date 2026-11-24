@@ -14,8 +14,7 @@ use std::{
 
 use nsh_base::{AvatarStatus, avatar, avatar_group};
 use nsh_core::{
-    EventKind, EventPayload, MountBatch, MountItem, NodeId, Size, ViewKind,
-    element::{ImageSrc, Root},
+    EventKind, EventPayload, MountBatch, MountItem, NodeId, Size, ViewKind, element::ImageSrc,
     prelude::*,
 };
 use nsh_engine::EngineConfig;
@@ -32,7 +31,7 @@ struct Seen {
 fn start<C: Component<Props = ()>>() -> (Headless, Arc<Mutex<Seen>>) {
     let config = EngineConfig {
         viewport: Size::new(px(390.0), px(844.0)),
-        ..EngineConfig::new(Root::of::<C>())
+        ..EngineConfig::new(nsh_testing::windowed_root::<C>())
     };
     let mut app = Headless::start(config).unwrap();
     let seen = Arc::new(Mutex::new(Seen::default()));

@@ -24,6 +24,7 @@ fn app() -> impl IntoElement {
 
 ```tsx tabs
 import { mount, Text, View } from "nsh";
+import { Window } from "nsh/desktop";
 
 function App() {
   return (
@@ -42,7 +43,11 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 背景色填满整个区域，包括状态栏背后的区域，内容从它下方开始。这些值跟随边距变化：旋转屏幕、进入另一个页面或对话框时，内边距会在原生侧更新。

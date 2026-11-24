@@ -21,7 +21,8 @@ use std::{
 
 use super::{IntoReactive, Reactive, SharedString};
 use crate::{
-    BlendMode, BoxShadow, Cursor, FontVariant, ObjectPosition, TransformOrigin, TransitionProps,
+    BlendMode, BoxShadow, ClipInset, Cursor, FontVariant, ObjectPosition, TransformOrigin,
+    TransitionProps,
     color::{Hsla, Rgba, transparent_black},
     effects::{
         ColorStop, Filter, Gradient, GradientKind, GradientSize, KeyframeAnimation, Keyframes,
@@ -31,7 +32,7 @@ use crate::{
         percentage, px, relative,
     },
     style::{Color, LineHeight, PositionAxis, PropertyValue, StyleKey},
-    tailwind::{self, ClassList, Decl, Part, Rank, Rule, rank, state},
+    tailwind::{self, ClassList, Decl, Part, PropDecl, Rank, Rule, rank, state},
     transform::TransformKind,
 };
 
@@ -468,6 +469,11 @@ pub(crate) enum Declaration {
     },
     /// [`UNDERLINE`] and [`LINE_THROUGH`] add up; 0 removes both.
     Decoration(u8),
+    /// Lines never wrap (`true`, `whitespace-nowrap`) or wrap
+    /// (`whitespace-normal`): inherited, as the classes'.
+    NoWrap(bool),
+    /// Lines wrap without a lone last word (`text-pretty`).
+    Pretty,
     /// [`TransitionProps`] bits.
     Transition(u8),
     TransitionNone,
@@ -709,6 +715,8 @@ impl Declaration {
                     line_through: bits & LINE_THROUGH != 0,
                 })),
             )),
+            Declaration::NoWrap(no_wrap) => out.push(Decl::Prop(PropDecl::NoWrap(*no_wrap))),
+            Declaration::Pretty => out.push(Decl::Prop(PropDecl::Pretty)),
             Declaration::Transition(props) => part(out, Part::TransitionProps(*props)),
             Declaration::TransitionNone => part(out, Part::TransitionNone),
             Declaration::Duration(ms) => part(out, Part::Duration(ms.0)),
@@ -848,6 +856,7 @@ crate::static_reactive!(Radians: Radians);
 crate::static_reactive!(Percentage: Percentage);
 crate::static_reactive!(u16: u16);
 crate::static_reactive!(i16: i16);
+crate::static_reactive!(ClipInset: ClipInset);
 
 /// A bound part of a style: it adds its declarations to a style, reading
 /// the signals it binds (run again when they change).
@@ -901,6 +910,40 @@ impl Hash for StyleRefinement {
 }
 
 impl StyleRefinement {
+    /// The color of an input's placeholder (`placeholderColor`, Tailwind's
+    /// `placeholder:text-*`), for the style of a component's part that edits
+    /// text ([`super::InputPartStyle`], such as `number_input`'s
+    /// `input_style`). Inherent rather than [`super::Styled`]'s: on an element it
+    /// is the input's own prop (`input().placeholder_color(..)`).
+    pub fn placeholder_color(mut self, color: impl IntoReactive<AdaptiveColor>) -> Self {
+        self.bind_value(color, |s, color: AdaptiveColor| {
+            s.color(&[StyleKey::PlaceholderColor], color);
+        });
+        self
+    }
+
+    /// The color of an input's caret (`caretColor`, Tailwind's `caret-*`),
+    /// for a part that edits text ([`super::InputPartStyle`]); on iOS it
+    /// also tints the selection highlight, as UIKit has one tint for both.
+    pub fn caret_color(mut self, color: impl IntoReactive<AdaptiveColor>) -> Self {
+        self.bind_value(color, |s, color: AdaptiveColor| {
+            s.color(&[StyleKey::CaretColor], color);
+        });
+        self
+    }
+
+    /// The color of the selection highlight (`selectionColor`, Tailwind's
+    /// `selection:bg-*`) of a part's input or texts
+    /// ([`super::InputPartStyle`], [`super::TextPartStyle`]). Inherent
+    /// rather than [`super::Styled`]'s: an element has
+    /// [`Element::selection_color`](super::Element::selection_color).
+    pub fn selection_color(mut self, color: impl IntoReactive<AdaptiveColor>) -> Self {
+        self.bind_value(color, |s, color: AdaptiveColor| {
+            s.color(&[StyleKey::SelectionColor], color);
+        });
+        self
+    }
+
     /// Applies `value` with `apply`: now when it is static, else as a bound
     /// part.
     pub(crate) fn bind_value<T: 'static>(
@@ -2969,6 +3012,27 @@ pub trait Styled: Sized {
         self
     }
 
+    /// Clips everything it draws, the elements in it included, to `clip`
+    /// (CSS's `clip-path: inset(..)`): a rectangle inset from its box with
+    /// rounded corners, outside which presses reach neither it nor what is
+    /// in it. Its changes animate with [`Styled::transition_clip_path`]
+    /// (or [`Styled::transition_all`]), so a panel opens out of a corner:
+    /// `.clip_path(ClipInset::new().bottom(percentage(1.0)).left(percentage(1.0)).rounded(px(12.0)))`
+    /// while closed, `.clip_path(ClipInset::new().rounded(px(12.0)))` open.
+    fn clip_path(mut self, clip: impl IntoReactive<ClipInset>) -> Self {
+        self.style().bind_value(clip, |s, clip| {
+            s.value(StyleKey::ClipPath, PropertyValue::ClipPath(Some(clip)));
+        });
+        self
+    }
+
+    /// Clears the clip path, including in state styles.
+    fn clip_path_none(mut self) -> Self {
+        self.style()
+            .value(StyleKey::ClipPath, PropertyValue::ClipPath(None));
+        self
+    }
+
     /// Blurs it and its content by `radius` (Tailwind's `blur-sm` is 8
     /// points).
     fn blur(self, radius: impl Into<Points>) -> Self {
@@ -3175,6 +3239,12 @@ pub trait Styled: Sized {
     /// Changes of the transform animate.
     fn transition_transform(self) -> Self {
         transition(self, TransitionProps::TRANSFORM)
+    }
+
+    /// Changes of the clip path animate (CSS's `transition-property:
+    /// clip-path`).
+    fn transition_clip_path(self) -> Self {
+        transition(self, TransitionProps::CLIP_PATH)
     }
 
     /// Changes jump.
@@ -4077,6 +4147,29 @@ pub trait Styled: Sized {
             .text_overflow(crate::EllipsizeMode::Tail)
     }
 
+    /// Its texts' lines never wrap (Tailwind's `whitespace-nowrap`). A
+    /// view's reaches the texts in it, as CSS's `white-space` does.
+    fn whitespace_nowrap(mut self) -> Self {
+        self.style().push(Declaration::NoWrap(true));
+        self
+    }
+
+    /// Its texts' lines wrap (Tailwind's `whitespace-normal`): undoes a
+    /// view's `whitespace_nowrap` or `text_pretty` around them.
+    fn whitespace_normal(mut self) -> Self {
+        self.style().push(Declaration::NoWrap(false));
+        self
+    }
+
+    /// Its texts' lines wrap without leaving a word or two alone on the
+    /// last line (Tailwind's `text-pretty`): a last line shorter than a
+    /// quarter of the box takes words from the lines above, without adding
+    /// a line. A view's reaches the texts in it.
+    fn text_pretty(mut self) -> Self {
+        self.style().push(Declaration::Pretty);
+        self
+    }
+
     /// The text's base direction (by default its content's).
     fn writing_direction(mut self, direction: WritingDirection) -> Self {
         self.style().value(
@@ -4737,6 +4830,33 @@ mod tests {
     }
 
     #[test]
+    fn a_parts_input_colors_come_from_the_typed_style() {
+        let list = s()
+            .placeholder_color(RED.shade(500))
+            .caret_color(SKY.shade(500))
+            .selection_color(EMERALD.shade(500))
+            .lower();
+        let mut style = Style::default();
+        list.apply(
+            &Context {
+                env: ClassEnvironment::default(),
+                window: crate::geometry::size_pt(390.0, 844.0),
+                rtl: false,
+                states: 0,
+                position: 0,
+                group: &|_| 0,
+            },
+            &PRESETS,
+            &mut style,
+            &mut ClassProps::default(),
+            |_| {},
+        );
+        assert_eq!(style.text.placeholder_color, Some(RED.shade(500).into()));
+        assert_eq!(style.text.caret_color, Some(SKY.shade(500).into()));
+        assert_eq!(style.text.selection_color, Some(EMERALD.shade(500).into()));
+    }
+
+    #[test]
     fn custom_shadows_are_layers_of_their_own() {
         let list = s()
             .text_shadow([crate::TextShadow {
@@ -5092,6 +5212,18 @@ mod tests {
         same(s().align_text_top(), "align-text-top");
         same(s().align_text_bottom(), "align-text-bottom");
         same(s().align_middle(), "align-middle");
+        same(s().text_pretty(), "text-pretty");
+        same(s().whitespace_nowrap(), "whitespace-nowrap");
+        same(s().whitespace_normal(), "whitespace-normal");
+        // The last of them holds, as the classes'.
+        same(
+            s().text_pretty().whitespace_normal(),
+            "text-pretty whitespace-normal",
+        );
+        same(
+            s().whitespace_nowrap().text_pretty(),
+            "whitespace-nowrap text-pretty",
+        );
         // Unlike classes, the two lines add up.
         let both = s().underline().line_through().lower();
         let mut style = Style::default();

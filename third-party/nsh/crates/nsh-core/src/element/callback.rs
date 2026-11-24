@@ -418,6 +418,21 @@ impl CallbackRet for () {
     }
 }
 
+/// A listener whose promise the caller awaits (`Application.on("quit")`):
+/// `(…) => void | Promise<void>`. What the function returns is not read
+/// here; the callback's caller awaits the promise the call made.
+pub struct Settles;
+
+impl CallbackRet for Settles {
+    fn ts_type(_types: &mut TsTypes) -> String {
+        "void | Promise<void>".into()
+    }
+
+    fn from_js(_value: JsIn<'_>) -> Result<Self, PropError> {
+        Ok(Settles)
+    }
+}
+
 /// The TypeScript type of a callback whose arguments are named `names`
 /// (none: the defaults): `(value: string) => void`.
 fn callback_ts<A: CallbackArgs, R: CallbackRet>(types: &mut TsTypes, names: &[&str]) -> String {

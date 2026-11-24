@@ -3,10 +3,12 @@
 // `id:case-<case>` (a one-point view over the corner, out of the layout);
 // the steps after it are that case's.
 import { type JSX, View, mount, signal } from "nsh";
+import { Window } from "nsh/desktop";
 import ModStandardAccess from "./mod-standard-access";
 import ModAccessibility from "./mod-accessibility";
 import ModAndroid from "./mod-android";
 import ModAppInfo from "./mod-app-info";
+import ModAppSettings from "./mod-app-settings";
 import ModAudio from "./mod-audio";
 import ModClipboard from "./mod-clipboard";
 import ModFps from "./mod-fps";
@@ -35,6 +37,7 @@ const cases: Record<string, () => JSX.Element> = {
   "mod-accessibility": ModAccessibility,
   "mod-android": ModAndroid,
   "mod-app-info": ModAppInfo,
+  "mod-app-settings": ModAppSettings,
   "mod-audio": ModAudio,
   "mod-clipboard": ModClipboard,
   "mod-fps": ModFps,
@@ -60,7 +63,7 @@ const cases: Record<string, () => JSX.Element> = {
 };
 const shown = signal("");
 
-mount(() => (
+mount(() => <Window id="main">{() => (
   <>
     {() => {
       const Case = cases[shown()];
@@ -72,4 +75,4 @@ mount(() => (
       ))}
     </View>
   </>
-));
+)}</Window>);

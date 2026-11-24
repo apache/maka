@@ -9,6 +9,22 @@ test("Editor value is its complete document", async () => {
   expect(app.value("ed")).toBe("external\nupdate");
 });
 
+test("typing a shared prefix after clearing the Editor keeps the whole input", async () => {
+  const app = await open("./App.tsx", { platform: "macos" });
+  await app.type("ed", "x");
+  for (const text of ["ab ", "ab cd", "ab cd🙂"]) {
+    await app.keyboard.press("mod+a");
+    await app.keyboard.press("backspace");
+    expect(app.value("ed")).toBe("");
+    await app.type("ed", text);
+    expect(app.value("ed")).toBe(text);
+  }
+  await app.keyboard.press("end");
+  await app.keyboard.press("shift+left");
+  await app.keyboard.press("backspace");
+  expect(app.value("ed")).toBe("ab cd");
+});
+
 test("covered input steps never edit the input above", async () => {
   const app = await open("./App.tsx");
   // Headless can address the input directly; native targets must reject

@@ -311,7 +311,7 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
     profile: DiscoveryWorkerTools,
     ticket: number,
     mode: 'draft' | 'refresh',
-  ) => {
+  ): Promise<boolean> => {
     toolPreview.set(null);
     try {
       const result = await props.host.query('agent', 'schedules', {
@@ -319,7 +319,7 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
         effect: { kind: 'discovery', ...captured, workerTools: profile },
         taskId: editingPlan()?.task.id ?? null,
       });
-      if (!alive || ticket !== formGeneration) return;
+      if (!alive || ticket !== formGeneration) return false;
       if (result.kind !== 'discovery_tools') throw new UiError('Discovery plan changed');
       if (!openedToolPreview && result.approvedNames != null) {
         initialToolSelection = selectedDiscoveryTools(
@@ -335,9 +335,11 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
       );
       openedToolPreview = true;
       toolPreview.set(result);
+      return true;
     } catch (reason) {
       if (alive && ticket === formGeneration)
         error.set(errorText(reason, 'Could not load the discovery plan.'));
+      return false;
     }
   };
   const changeToolGroup = (group: DiscoveryToolGroup, selection: DiscoveryToolSelection) => {
@@ -570,8 +572,9 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
       if (!alive) return;
       if (!sameValue(latest, captured)) {
         basis.set(latest);
-        await previewTools(latest, workerTools(), ++formGeneration, 'refresh');
-        throw new UiError('Discovery settings changed');
+        if (await previewTools(latest, workerTools(), ++formGeneration, 'refresh'))
+          throw new UiError('Discovery settings changed');
+        return;
       }
       const result = await props.control(
         'schedule',
@@ -584,20 +587,29 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
             }
           : { kind: 'create', input },
       );
+      if (!alive) return;
       if (result.kind === 'conflict') throw new UiError('Discovery plan changed');
       if (result.kind === 'rejected') {
+        if (result.reason === 'scheduler_authorization_changed') {
+          const ticket = ++formGeneration;
+          const refreshed = await capture(ticket);
+          if (!alive) return;
+          basis.set(refreshed);
+          if (await previewTools(refreshed, workerTools(), ticket, 'refresh'))
+            throw new UiError('Discovery settings changed');
+          return;
+        }
         if (result.reason === 'scheduler_discovery_tools_changed') {
-          await previewTools(latest, workerTools(), ++formGeneration, 'refresh');
-          throw new UiError('Discovery settings changed');
+          if (await previewTools(latest, workerTools(), ++formGeneration, 'refresh'))
+            throw new UiError('Discovery tool catalog changed');
+          return;
         }
         throw new Error(result.reason);
       }
-      if (alive) {
-        if (selected() !== result.taskId) detail.set(null);
-        selected.set(result.taskId);
-        editing.set(false);
-        await readDetail(result.taskId);
-      }
+      if (selected() !== result.taskId) detail.set(null);
+      selected.set(result.taskId);
+      editing.set(false);
+      await readDetail(result.taskId);
     } catch (reason) {
       if (alive) error.set(errorText(reason, 'Could not update the discovery plan.'));
     } finally {

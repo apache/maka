@@ -16,7 +16,7 @@ use nsh_core::{
     prelude::*,
     tailwind::state,
 };
-use nsh_engine::{App, Engine, EngineConfig, Environment};
+use nsh_engine::{App, Engine, EngineConfig, Environment, LocalEngine, MountSink};
 
 use crate::ChannelSink;
 
@@ -102,6 +102,58 @@ fn start_root(root: Root) -> (Engine, Receiver<MountBatch>) {
         Engine::start(config, || ApproxTextEngine, ChannelSink(tx)).unwrap(),
         rx,
     )
+}
+
+#[component]
+fn PositionedRoot() -> impl IntoElement {
+    let absolute = signal(false);
+    view()
+        .w(px(200.0))
+        .h(px(100.0))
+        .style_when(absolute, |style| style.absolute().inset_0())
+        .on_press(move |_: &()| absolute.set(true))
+}
+
+#[test]
+fn root_leaving_flow_publishes_height_even_with_the_same_frame() {
+    struct Sink(crossbeam_channel::Sender<(MountBatch, Option<Points>)>);
+
+    impl MountSink for Sink {
+        fn submit(&self, _: MountBatch) {
+            unreachable!("the sink opted in to content height");
+        }
+
+        fn needs_content_height(&self) -> bool {
+            true
+        }
+
+        fn submit_with_content_height(&self, batch: MountBatch, height: Option<Points>) {
+            self.0.send((batch, height)).unwrap();
+        }
+    }
+
+    let (tx, rx) = crossbeam_channel::unbounded();
+    let config = EngineConfig::new(App::Rust(Root::of::<PositionedRoot>()));
+    let mut engine = LocalEngine::start(config, ApproxTextEngine, Sink(tx)).unwrap();
+    let (batch, height) = rx.try_recv().unwrap();
+    assert_eq!(height, Some(px(100.0)));
+    let root = batch
+        .items
+        .iter()
+        .find_map(|item| match item {
+            MountItem::Frame { id, frame } if frame.size == Size::new(px(200.0), px(100.0)) => {
+                Some(*id)
+            }
+            _ => None,
+        })
+        .unwrap();
+    engine
+        .control()
+        .dispatch_event(root, EventKind::Press, EventPayload::None);
+    engine.pump();
+    let (batch, height) = rx.try_recv().unwrap();
+    assert_eq!(height, None);
+    assert!(batch.items.is_empty(), "the mounted frame has not changed");
 }
 
 /// What the batches within a moment send: view styles, text blocks and

@@ -206,6 +206,10 @@ fn spec_of(column: &DataTableColumn) -> Spec {
         min,
         max,
         fixed: column.fixed,
+        grow: column
+            .grow
+            .filter(|g| g.is_finite())
+            .map_or(0.0, |g| g.max(0.0)),
     }
 }
 
@@ -259,6 +263,8 @@ impl Dt {
             hovered_cell: Rc::default(),
         };
         dt.sync_columns();
+        dt.sync_room();
+        dt.sync_auto_fit();
         dt.sync_selection();
         dt.report();
         dt.bind_keys();
@@ -337,8 +343,72 @@ impl Dt {
                 }
                 dt.bump_layout();
                 dt.bump_data();
+                dt.auto_fit();
             });
         });
+    }
+
+    /// The columns that grow fill the width they are shown in: the table's,
+    /// less the row header and the bar a terminal keeps beside the rows.
+    fn sync_room(&self) {
+        let dt = self.clone();
+        effect(move || {
+            let width = dt.viewport.get().width.0.max(0.0);
+            let bar = dt
+                .rows_width
+                .get()
+                .map_or(0.0, |rows| (width - rows.0).max(0.0));
+            let room = (width - dt.lead_width() - bar).max(0.0) as f64;
+            untracked(|| {
+                if dt.st.borrow_mut().columns.set_room(room) {
+                    dt.bump_layout();
+                }
+            });
+        });
+    }
+
+    /// The columns with `autoFit` fit their content once their rows come.
+    fn sync_auto_fit(&self) {
+        let dt = self.clone();
+        effect(move || {
+            dt.props.data.with(|_| ());
+            dt.props.data_start.get();
+            dt.row_count();
+            untracked(|| dt.auto_fit());
+        });
+    }
+
+    /// Fits the columns with `autoFit` not fitted yet, once the rows the
+    /// table holds have a text in them. Rows without one leave the column
+    /// waiting: the app may hand over new columns and the rows for them one
+    /// after the other (in either order), and a fit between the two would
+    /// measure the titles alone. The fit is their base width, which they
+    /// still grow from, and is not reported as a resize.
+    fn auto_fit(&self) {
+        if self.row_count() == 0 || self.props.data.with_untracked(|d| d.is_empty()) {
+            return;
+        }
+        let pending: Vec<usize> = {
+            let st = self.st.borrow();
+            (0..st.defs.len())
+                .filter(|&def| st.defs[def].auto_fit && !st.columns.fitted(def))
+                .collect()
+        };
+        if pending.is_empty() {
+            return;
+        }
+        let mut changed = false;
+        for def in pending {
+            let Some((width, true)) = self.measure(def) else {
+                continue;
+            };
+            let mut st = self.st.borrow_mut();
+            st.columns.mark_fitted(def);
+            changed |= st.columns.set_base(def, width);
+        }
+        if changed {
+            self.bump_layout();
+        }
     }
 
     /// The selection follows the app's `selection`, and stays within the
@@ -798,6 +868,16 @@ impl Dt {
         }
     }
 
+    /// The row Enter / Return activates: the selection's row, when it has
+    /// one (`onRowActivate`). A selected column has no row, so the key does
+    /// nothing.
+    fn activate_row(&self) {
+        let row = self.st.borrow().selection.row();
+        if let Some(row) = row {
+            self.cx.emit(DataTableEvent::RowActivate(row as u32));
+        }
+    }
+
     fn bind_keys(&self) {
         let dt = self.clone();
         // A terminal's Tab moves the focus on, out of the table, as Tab does
@@ -853,6 +933,20 @@ impl Dt {
                     ..Default::default()
                 },
                 move |_| copy.copy_selection(),
+            );
+            // Enter / Return activates the focused row (its selection's
+            // row), as a list's does, unless a text input or a control
+            // inside the table takes the key.
+            let activate = dt.clone();
+            on_key_with(
+                "enter",
+                KeyOptions {
+                    when: When::NotEditing,
+                    repeat: false,
+                    for_focus: true,
+                    ..Default::default()
+                },
+                move |_| activate.activate_row(),
             );
         });
     }
@@ -1533,7 +1627,17 @@ impl Dt {
         self.fit(def).map(Points).ok_or_else(no_column)
     }
 
+    /// Fits column `def` to its content (the user's double press, or the
+    /// app's `fitColumn`): it keeps that width, reported as a resize.
     pub(crate) fn fit(&self, def: usize) -> Option<f32> {
+        let (width, _) = self.measure(def)?;
+        self.set_width(def, width, true)
+    }
+
+    /// The width column `def`'s widest text and title need, among the rows
+    /// in view and up to `FIT_ROWS` around them that are held, and whether
+    /// any of those rows has a text in it.
+    fn measure(&self, def: usize) -> Option<(f32, bool)> {
         let css = self.font_css();
         let rows = self.row_count();
         let visible = untracked(|| self.visible_rows());
@@ -1554,14 +1658,16 @@ impl Dt {
             widest += SORT_WIDTH;
         }
         let mut text = String::new();
+        let mut any = false;
         for row in from..to.max(from) {
             text.clear();
             self.write_cell(row, def, &mut text);
             if !text.is_empty() {
+                any = true;
                 widest = widest.max(measure_text(&css, &text).0);
             }
         }
-        self.set_width(def, (widest + padding).ceil(), true)
+        Some(((widest + padding).ceil(), any))
     }
 
     /// A title was grabbed to move its column.
@@ -1691,7 +1797,7 @@ impl Dt {
 
     pub(crate) fn copy_selection(&self) {
         if let Some(text) = self.selection_text() {
-            set_clipboard(text);
+            drop(set_clipboard(text));
         }
     }
 }

@@ -132,7 +132,9 @@ fn launch(root: Root) -> Headless {
 }
 
 fn start(props: HarnessProps) -> Headless {
-    let mut app = launch(Root::new::<Harness>(move || props.clone()));
+    let mut app = launch(nsh_testing::windowed_root_with::<Harness>(move || {
+        props.clone()
+    }));
     app.wait_for("role:option").unwrap();
     app
 }

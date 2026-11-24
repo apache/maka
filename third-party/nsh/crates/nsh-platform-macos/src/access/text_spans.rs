@@ -1,14 +1,10 @@
 //! Drawn text's inline links as native accessibility elements. Plain stretches
 //! stay between links in document order; a press targets the span's core node.
 
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    ops::Range,
-    rc::Rc,
-    sync::Arc,
-};
+use std::{collections::BTreeMap, ops::Range, rc::Rc, sync::Arc};
 
-use nsh_core::{AttributedText, EventKind, NodeId};
+use nsh_core::{AttributedText, NodeId};
+use nsh_platform_apple::text_access::{has_pressable_links, stretches};
 use objc2::{
     DefinedClass, MainThreadOnly, define_class, msg_send,
     rc::{Retained, Weak},
@@ -178,12 +174,10 @@ pub(crate) fn separate_text(state: &crate::view::ViewState) -> bool {
         && a.hint.is_none()
         && a.description.is_none()
         && !super::is_pressable(state.events)
-        && state.text.as_ref().is_some_and(|text| {
-            text.text
-                .links
-                .iter()
-                .any(|link| link.events.contains(EventKind::Press))
-        })
+        && state
+            .text
+            .as_ref()
+            .is_some_and(|text| has_pressable_links(&text.text))
 }
 
 /// An AX range is in the displayed value, whose hidden runs and attachments
@@ -227,8 +221,11 @@ pub(crate) fn selection(view: &NshView, label: Range<u32>) -> Option<(NSRange, S
     }
     let state = view.try_state()?;
     let text = &state.text.as_ref()?.text;
-    let before = text.copied_text(label.start..start).encode_utf16().count();
-    let selected = text.copied_text(start..end);
+    let before = text
+        .text_without_attachments(label.start..start)
+        .encode_utf16()
+        .count();
+    let selected = text.text_without_attachments(start..end);
     Some((
         NSRange::new(before, selected.encode_utf16().count()),
         selected,
@@ -271,72 +268,13 @@ fn copied_range(text: &AttributedText, range: Range<u32>, selected: NSRange) -> 
     start..finish.max(start)
 }
 
-/// Disjoint stretches, using the same innermost-link priority as pointer input.
-/// Boundaries are UTF-16 offsets, as TextLink and AppKit use.
-fn stretches(text: &AttributedText) -> Vec<(Range<u32>, Option<NodeId>)> {
-    let length = text.text.encode_utf16().count() as u32;
-    let mut edges = BTreeMap::<u32, Vec<(usize, bool)>>::new();
-    edges.entry(0).or_default();
-    edges.entry(length).or_default();
-    for (index, link) in text.links.iter().enumerate() {
-        if link.events.contains(EventKind::Press) && link.start < link.end && link.end <= length {
-            edges.entry(link.start).or_default().push((index, true));
-            edges.entry(link.end).or_default().push((index, false));
-        }
-    }
-    let attachments: BTreeSet<_> = text
-        .attachments
-        .iter()
-        .filter(|attachment| attachment.width.0 > 0.0)
-        .map(|a| a.index)
-        .collect();
-    for &at in &attachments {
-        edges.entry(at).or_default();
-        edges.entry((at + 1).min(length)).or_default();
-    }
-    let mut active = BTreeSet::new();
-    let mut output: Vec<(Range<u32>, Option<NodeId>)> = Vec::new();
-    let mut edges = edges.into_iter().peekable();
-    while let Some((start, changes)) = edges.next() {
-        for (index, added) in changes {
-            let link = &text.links[index];
-            let priority = (link.end - link.start, index);
-            if added {
-                active.insert(priority);
-            } else {
-                active.remove(&priority);
-            }
-        }
-        let Some(&(end, _)) = edges.peek() else {
-            break;
-        };
-        if attachments.contains(&start) && end == start + 1 {
-            continue;
-        }
-        let node = active.first().map(|(_, index)| text.links[*index].node);
-        if let Some((range, last)) = output.last_mut()
-            && *last == node
-            && (range.end == start || node.is_some())
-        {
-            range.end = end;
-        } else {
-            output.push((start..end, node));
-        }
-    }
-    output
-}
-
 fn snapshot(view: &NshView) -> Option<Rc<Snapshot>> {
     let mut state = view.try_state_mut()?;
     if super::is_pressable(state.events) {
         return None;
     }
     let text = state.text.as_ref()?.text.clone();
-    if !text
-        .links
-        .iter()
-        .any(|link| link.events.contains(EventKind::Press))
-    {
+    if !has_pressable_links(&text) {
         return None;
     }
     let separate_text = separate_text(&state);
@@ -355,7 +293,7 @@ fn snapshot(view: &NshView) -> Option<Rc<Snapshot>> {
             if node.is_none() && !separate_text {
                 return None;
             }
-            let shown = text.copied_text(range.clone());
+            let shown = text.text_without_attachments(range.clone());
             if shown.is_empty() {
                 return None;
             }
@@ -435,107 +373,14 @@ pub(crate) fn owner(element: &AnyObject) -> Option<Retained<NSView>> {
 
 #[cfg(test)]
 mod tests {
-    use nsh_core::{EventMask, ResolvedTextStyle, TextLink};
+    use nsh_core::ResolvedTextStyle;
 
     use super::*;
-
-    fn link(start: u32, end: u32, node: NodeId) -> TextLink {
-        let mut events = EventMask::default();
-        events.set(EventKind::Press, true);
-        TextLink {
-            start,
-            end,
-            node,
-            events,
-            focus_stop: true,
-        }
-    }
-
-    #[test]
-    fn nested_links_read_once_in_utf16_document_order() {
-        let mut text = AttributedText::default();
-        text.push("前😀日本語後", ResolvedTextStyle::default());
-        text.links = vec![link(1, 6, 2), link(3, 5, 3), link(6, 99, 4), link(2, 2, 5)];
-        let pieces: Vec<_> = stretches(&text)
-            .into_iter()
-            .map(|(range, node)| (text.copied_text(range), node))
-            .collect();
-        assert_eq!(
-            pieces,
-            [
-                ("前".into(), None),
-                ("😀".into(), Some(2)),
-                ("日本".into(), Some(3)),
-                ("語".into(), Some(2)),
-                ("後".into(), None)
-            ]
-        );
-    }
-
-    #[test]
-    fn hidden_runs_and_attachment_placeholders_are_omitted_from_names() {
-        let mut text = AttributedText::default();
-        text.push("Read ", ResolvedTextStyle::default());
-        text.push(
-            "secret",
-            ResolvedTextStyle {
-                hidden: true,
-                ..Default::default()
-            },
-        );
-        text.push(" guide\u{fffc}", ResolvedTextStyle::default());
-        text.links = vec![link(5, 18, 2)];
-        let labels: Vec<_> = stretches(&text)
-            .into_iter()
-            .map(|(range, _)| text.copied_text(range))
-            .filter(|s| !s.is_empty())
-            .collect();
-        assert_eq!(labels, ["Read ", " guide"]);
-    }
-
-    #[test]
-    fn a_link_stays_one_element_across_an_inline_reveal_anchor() {
-        let mut text = AttributedText::default();
-        text.push("be", ResolvedTextStyle::default());
-        text.push_attachment(
-            nsh_core::Size::new(nsh_core::Points::ZERO, nsh_core::Points(1.0)),
-            ResolvedTextStyle::default(),
-        );
-        text.push("fore", ResolvedTextStyle::default());
-        text.links = vec![link(0, 7, 2)];
-        assert_eq!(stretches(&text), [(0..7, Some(2))]);
-        assert_eq!(text.copied_text(0..7), "before");
-    }
-
-    #[test]
-    fn a_plain_word_stays_whole_across_a_zero_width_anchor() {
-        let mut text = AttributedText::default();
-        text.push("be", ResolvedTextStyle::default());
-        text.push_attachment(
-            nsh_core::Size::new(nsh_core::Points::ZERO, nsh_core::Points(1.0)),
-            ResolvedTextStyle::default(),
-        );
-        text.push("fore Guide", ResolvedTextStyle::default());
-        text.links = vec![link(8, 13, 2)];
-        assert_eq!(stretches(&text), [(0..8, None), (8..13, Some(2))]);
-        assert_eq!(text.copied_text(0..8), "before ");
-    }
 
     #[test]
     fn selecting_a_label_skips_the_attachment_and_snaps_surrogates() {
         let mut text = AttributedText::default();
         text.push("before\u{fffc} 😀hello after", ResolvedTextStyle::default());
         assert_eq!(copied_range(&text, 6..15, NSRange::new(1, 2)), 8..10);
-    }
-
-    #[test]
-    fn hover_only_spans_do_not_hide_an_outer_link() {
-        let mut text = AttributedText::default();
-        text.push("outer inner", ResolvedTextStyle::default());
-        let mut hover = link(6, 11, 3);
-        hover.events.set(EventKind::Press, false);
-        hover.events.set(EventKind::MouseEnter, true);
-        text.links = vec![link(0, 11, 2), hover];
-        assert_eq!(stretches(&text), [(0..11, Some(2))]);
     }
 }

@@ -95,6 +95,8 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
+          # The web runtime builds the core for WebAssembly (step below).
+          targets: wasm32-unknown-unknown
 
       # huacnlee/cargo, and the dependencies' builds: main's runs save
       # them, pull requests restore them.
@@ -108,3 +110,11 @@ jobs:
 
       - name: Test
         run: cargo test $PACKAGES
+
+      # The web runtime compiles the core and `nsh/base` for wasm32, where
+      # nsh-core leaves out its native-only dependencies (the disk cache's
+      # crc32fast, httpdate). A misplaced `cfg` broke every web build once
+      # (#2684) and only the website's main-only workflow could notice; a
+      # check here catches it on the pull request, on Linux only.
+      - name: Check WebAssembly
+        run: cargo check -p nsh-core -p nsh-base --all-features --target wasm32-unknown-unknown

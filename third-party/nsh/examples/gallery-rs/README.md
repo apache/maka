@@ -14,7 +14,7 @@ wide window (700 pt on desktops, 900 pt elsewhere) shows a sidebar of the demos 
 
 ```sh
 cargo build -p nsh-cli
-./target/debug/nsh run examples/gallery-rs --target web   # or ios, android, catalyst, macos, linux, windows, gpui
+./target/debug/nsh run examples/gallery-rs --target web   # or macos, linux, windows, ios, android, gpui
 ./target/debug/nsh package examples/gallery-rs --target web --run   # a static site, served on this machine
 ./target/debug/nsh trace examples/gallery-rs              # headless: the root's mount items and timings
 ```

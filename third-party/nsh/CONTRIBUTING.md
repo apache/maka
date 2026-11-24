@@ -20,13 +20,13 @@ apps that never use it.
 Apps extend NSH in Rust. An app's own crate can export Rust components, modules and classes to its TSX, register
 native components, and call any platform API directly ([Building with Rust](website/docs/rust.md),
 [Native components](website/docs/native-components.md), [Platform extensions](website/docs/platform-extensions.md)).
-What one app or a few apps need belongs there, or in a third-party extension, not in NSH.
+What one app or a few apps need belongs there, or in an nshm, not in NSH.
 
-A third-party extension is an ordinary Rust crate with a `#[native_module]` entry. `nsh add` installs it from
+An nshm (NSH module) is an ordinary Rust crate with a `#[native_module]` entry. `nsh add` installs it from
 crates.io, Git or a local directory, and both Rust and TSX apps use the same implementation
-([CLI: nsh add](website/docs/cli.md#nsh-add)). Because extensions exist, "useful to some apps" is no longer a reason
-to put a feature in NSH: publish it as an extension instead. It ships on its own schedule, and only the apps that
-install it pay its size, build time and dependencies. A feature belongs in NSH itself only when an extension cannot
+([nshm](website/docs/nshm.md)). Because nshm exist, "useful to some apps" is no longer a reason
+to put a feature in NSH: publish it as an nshm instead. It ships on its own schedule, and only the apps that
+install it pay its size, build time and dependencies. A feature belongs in NSH itself only when an nshm cannot
 provide it (it needs changes to the core, layout, rendering or a platform backend), or when nearly every app needs
 it. The tools NSH already ships for
 delivering apps (packaging, signing, updates) exist because every app needs to be delivered; they are not precedent
@@ -57,8 +57,8 @@ These need no prior issue.
 
 A new feature, one NSH does not have in any form, is accepted only when all of these hold:
 
-- **Apps cannot build it themselves**, with NSH's existing APIs, through the Rust extension points above, or as a
-  third-party extension installed with `nsh add`. A
+- **Apps cannot build it themselves**, with NSH's existing APIs, through the Rust extension points above, or as an
+  nshm installed with `nsh add`. A
   WebView's page and the app already talk through `postMessage` / `onMessage` and `evaluate`, for example, so a flow
   that can go through that bridge needs no new API.
 - **Many apps need it**, not one app's scenario.
@@ -67,7 +67,7 @@ A new feature, one NSH does not have in any form, is accepted only when all of t
   "unsupported" errors.
 - **Its cost is measured and justified**: dependencies, binary size, build time and start-up time.
 
-When a proposal fails these points but the feature is still worth sharing, the answer is an extension, not a smaller
+When a proposal fails these points but the feature is still worth sharing, the answer is an nshm, not a smaller
 version in NSH; reviewers point there instead of reviewing the code.
 
 Not accepted, unless a complete design meets every point above: wrappers of individual platform APIs for specific
@@ -301,16 +301,19 @@ under `crates/` changes (components and modules are Rust and live in the host). 
 ```sh
 cargo run                                      # the gallery in an AppKit (macOS), GTK (Linux) or Win32 (Windows) window
 cargo run -- examples/counter                  # another app: its directory (App.tsx is the entry) or entry module
-cargo run -- --target catalyst                 # in the Mac Catalyst window (UIKit, phone-style)
 cargo run -- --target ios                      # in an iOS simulator
 cargo run -- --target android                  # on an Android device or emulator
 ```
+
+`--target catalyst` runs the iOS backend in a Mac Catalyst window. Use it only for work on Catalyst itself (its
+`macabi` code paths, the embedding SDK's Catalyst slice); on macOS the default AppKit host is the Mac app, and the
+iOS simulator shows what a phone shows.
 
 `nsh run` itself works too; in a checkout it builds the host it needs first:
 
 ```sh
 cargo build -p nsh-cli
-./target/debug/nsh run examples/gallery                    # Mac Catalyst window
+./target/debug/nsh run examples/gallery                    # AppKit window (the default on macOS)
 ./target/debug/nsh run examples/gallery --target ios       # iOS simulator
 ./target/debug/nsh run examples/gallery --target android   # emulator or device
 ./target/debug/nsh run examples/gallery --target linux     # GTK window (the default on Linux)
@@ -318,6 +321,9 @@ cargo build -p nsh-cli
 ```
 
 ### Reviewing UI and platform changes
+
+Every pull request that changes the UI must include screenshots or a screen recording in its description.
+Show the affected states or interaction so reviewers can verify the change.
 
 When reviewing a UI or platform change, check whether the tests and the description cover the behavior the pull
 request claims, including its states and edge cases, on both iOS and Android. If coverage is missing, describe the

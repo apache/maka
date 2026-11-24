@@ -958,6 +958,11 @@ fn differs(a: &ViewStyle, b: &ViewStyle, props: TransitionProps) -> bool {
         || (props.has(TransitionProps::SHADOW) && box_shadows(a) != box_shadows(b))
         || (props.has(TransitionProps::FILTER)
             && matches!((blur_radius(a), blur_radius(b)), (Some(a), Some(b)) if a != b))
+        // To or from `none` it changes at once, as in CSS.
+        || (props.has(TransitionProps::CLIP_PATH)
+            && a.clip_path().is_some()
+            && b.clip_path().is_some()
+            && a.clip_path() != b.clip_path())
         || (props.has(TransitionProps::SHAPE)
             && (a.border_radius != b.border_radius
                 || a.corner_radius != b.corner_radius
@@ -1009,6 +1014,13 @@ fn lerp_style(
         let effects = Arc::make_mut(out.effects.get_or_insert_with(Default::default));
         effects.filters = vec![Filter::Blur(lerp_points(a, b, t).max(Points::ZERO))];
     }
+    if props.has(TransitionProps::CLIP_PATH)
+        && let (Some(a), Some(b)) = (from.clip_path(), to.clip_path())
+        && a != b
+    {
+        let effects = Arc::make_mut(out.effects.get_or_insert_with(Default::default));
+        effects.clip_path = Some(a.lerp(b, t));
+    }
     if props.has(TransitionProps::SHAPE) {
         out.border_radius = lerp_points(from.border_radius, to.border_radius, t).max(Points::ZERO);
         let (ca, cb) = (from.corner_radius.to_array(), to.corner_radius.to_array());
@@ -1047,7 +1059,11 @@ fn lerp_rect(a: Bounds<Points>, b: Bounds<Points>, t: f32) -> Bounds<Points> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{LayoutAnimation, TransformKind, element::Spring};
+    use crate::{
+        LayoutAnimation, TransformKind,
+        element::Spring,
+        geometry::{point, size},
+    };
 
     fn close(a: f32, b: f32) -> bool {
         (a - b).abs() < 1e-3
@@ -1401,6 +1417,67 @@ mod tests {
             }
         }
         out
+    }
+
+    #[test]
+    fn a_clip_path_opens_out_of_a_corner() {
+        use crate::{ClipInset, geometry::percentage};
+        let clipped = |clip: Option<ClipInset>, properties: u8| {
+            let mut style = transitioning(properties);
+            style.effects = crate::effects::shared(crate::Effects {
+                clip_path: clip,
+                ..Default::default()
+            });
+            style
+        };
+        let shut = ClipInset::new()
+            .bottom(percentage(1.0))
+            .left(percentage(1.0))
+            .rounded(Points(12.0));
+        let open = ClipInset::new().rounded(Points(12.0));
+        let old = clipped(Some(shut), TransitionProps::CLIP_PATH);
+        let mut style = Box::new(clipped(Some(open), TransitionProps::CLIP_PATH));
+        let mut live = Live::default();
+        live.restyle(restyle(&old, &mut style, false).expect("it transitions"));
+        // The old shape shows until the first frame, then each edge moves
+        // on its own (linear, 150 ms): from the top right corner.
+        assert_eq!(style.clip_path(), Some(&shut));
+        let mut frame = Bounds::default();
+        live.step(1000.0, &mut frame, &mut style);
+        live.step(1075.0, &mut frame, &mut style);
+        let half = style.clip_path().copied().unwrap();
+        assert_eq!(half.fractions.left, percentage(0.5));
+        assert_eq!(half.fractions.bottom, percentage(0.5));
+        assert_eq!(half.fractions.top, percentage(0.0));
+        let (rect, radii) = half.resolve(size(Points(200.0), Points(100.0)));
+        assert_eq!(
+            rect,
+            Bounds::new(
+                point(Points(100.0), Points(0.0)),
+                size(Points(100.0), Points(50.0))
+            )
+        );
+        assert_eq!(radii.top_right, Points(12.0));
+        let step = live.step(1200.0, &mut frame, &mut style);
+        assert!(step.finished);
+        assert_eq!(style.clip_path(), Some(&open));
+
+        // Not named, or to and from `none`, it changes at once, as in CSS.
+        let mut style = Box::new(clipped(Some(open), TransitionProps::SHAPE));
+        assert!(
+            restyle(
+                &clipped(Some(shut), TransitionProps::SHAPE),
+                &mut style,
+                false
+            )
+            .is_none()
+        );
+        let mut style = Box::new(clipped(Some(open), TransitionProps::ALL));
+        let mut old = clipped(None, TransitionProps::ALL);
+        old.opacity = 0.5;
+        let restyled = restyle(&old, &mut style, false).expect("the opacity transitions");
+        assert_eq!(style.clip_path(), Some(&open));
+        drop(restyled);
     }
 
     #[test]

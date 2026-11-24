@@ -1,10 +1,10 @@
 // A case of the API's test suite (docs/dev/compatibility.md):
 // `nsh/i18n` with this app's `locales/app.yml`: `t` in the language shown,
-// its arguments and fallback, `setLocale` and its reset, and the number data
-// of the languages nsh.json `locales` lists (German, not French). Its script
-// checks each.
+// its arguments and fallback, `setLocale` and its reset, `addTranslations`
+// merging locales and keys at run time, and the number data of the languages
+// nsh.json `locales` lists (German, not French). Its script checks each.
 import { Text, View, locale } from "nsh";
-import { availableLocales, setLocale, t } from "nsh/i18n";
+import { addTranslations, availableLocales, setLocale, t } from "nsh/i18n";
 
 function App() {
   return (
@@ -14,6 +14,8 @@ function App() {
       <Text>{`Greet: ${t("greet", { name: "Ada" })}`}</Text>
       <Text>{`Missing: ${t("missing")}`}</Text>
       <Text>{`Asked: ${t("hello", { locale: "zh-CN" })}`}</Text>
+      <Text>{`Extra: ${t("extra")}`}</Text>
+      <Text>{`FrenchHello: ${t("hello", { locale: "fr" })}`}</Text>
       <Text>{`Locales: ${availableLocales().join(" ")}`}</Text>
       <Text>{`German: ${(1234.5).toLocaleString("de")}`}</Text>
       <Text>{`French: ${(1234.5).toLocaleString("fr")}`}</Text>
@@ -22,6 +24,18 @@ function App() {
       </View>
       <View testID="device" onPress={() => setLocale(null)}>
         <Text>Device</Text>
+      </View>
+      <View
+        testID="add-translations"
+        onPress={() =>
+          addTranslations({
+            en: { extra: "Loaded" },
+            "zh-CN": { hello: "您好" },
+            fr: { hello: "Bonjour" },
+          })
+        }
+      >
+        <Text>Add translations</Text>
       </View>
     </View>
   );

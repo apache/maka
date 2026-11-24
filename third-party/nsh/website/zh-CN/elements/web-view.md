@@ -197,6 +197,10 @@ function Bridge() {
 页面自己的 `blob:` URL（`URL.createObjectURL`、`<a download>` 链接）按它内嵌的源计算：该源被授予时可以显示和下载，
 不透明 `blob:null/…` 则会被拒绝。
 
+来自主机的下载只有在响应来自被授予的主机时才会被保存（在 iOS、macOS 和 Linux 上指经过所有重定向之后）；否则
+`onDownload` 报告 `failed`，`code` 为 `"ERR_ACCESS_DENIED"`。在 iOS 和 macOS 上，指向未被授予的主机的重定向在发出请求
+之前就会被取消。页面自身内容（`data:` 和 `blob:` URL）的下载不来自任何主机，照常保存。
+
 ```json
 {
   "capabilities": {

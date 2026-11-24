@@ -101,6 +101,10 @@ pub(crate) struct Dom {
     /// whose they are (not owned: a row taken out of its `each`, or the
     /// object's finalizer, takes its entry out).
     pending_rows: RefCell<FxHashMap<NodeId, JsValue>>,
+    /// How many `<Window>` scenes the app root declared while it mounted,
+    /// open or not (reset by `mount`): one that starts closed is still the
+    /// app's window, not a plain root.
+    declared_windows: Cell<u32>,
 }
 
 #[derive(Clone, Copy)]
@@ -155,6 +159,22 @@ fn dom<'a>(cx: *mut JsContext) -> &'a Dom {
     // SAFETY: a projection of the state's field; the renderer is only ever
     // reached by shared reference.
     unsafe { &(*crate::state::state(cx)).dom }
+}
+
+/// Starts counting the app root's `<Window>` declarations.
+pub(crate) fn reset_declared_windows(cx: *mut JsContext) {
+    dom(cx).declared_windows.set(0);
+}
+
+/// The app root declared a `<Window>` (open or not).
+pub(crate) fn note_declared_window(cx: *mut JsContext) {
+    let d = dom(cx);
+    d.declared_windows.set(d.declared_windows.get() + 1);
+}
+
+/// How many `<Window>` scenes the app root declared while it mounted.
+pub(crate) fn declared_windows(cx: *mut JsContext) -> u32 {
+    dom(cx).declared_windows.get()
 }
 
 /// The node data an object holds, or null for other values.
@@ -227,17 +247,25 @@ pub(crate) fn string_arg(cx: *mut JsContext, v: JsValue) -> Option<String> {
 
 /// A JS value's string (`ToString`), or `None` when that throws.
 fn to_string(cx: *mut JsContext, v: JsValue) -> Option<String> {
-    // SAFETY: a live value; the C string is freed below.
+    with_str(cx, v, str::to_owned)
+}
+
+/// `f` with a JS value's string (`ToString`), borrowed; `None` when that
+/// throws.
+pub(crate) fn with_str<R>(cx: *mut JsContext, v: JsValue, f: impl FnOnce(&str) -> R) -> Option<R> {
+    // SAFETY: a live value; the C string is freed after `f`.
     unsafe {
         let mut len = 0usize;
         let p = qjs::JS_ToCStringLen(cx, &mut len, v);
         if p.is_null() {
             return None;
         }
-        let s =
-            String::from_utf8_lossy(std::slice::from_raw_parts(p.cast::<u8>(), len)).into_owned();
+        let r = f(&String::from_utf8_lossy(std::slice::from_raw_parts(
+            p.cast::<u8>(),
+            len,
+        )));
         qjs::JS_FreeCString(cx, p);
-        Some(s)
+        Some(r)
     }
 }
 
@@ -312,6 +340,7 @@ impl Dom {
             dialogs: Cell::new(0),
             lazy_rows: Cell::new(false),
             pending_rows: RefCell::new(FxHashMap::default()),
+            declared_windows: Cell::new(0),
         }
     }
 
@@ -406,6 +435,14 @@ pub(crate) const NODE_METHODS: &[(&str, c_int, &str, &str)] = &[
         0,
         decl!("(): void"),
         decl!("Unfocuses an `<Input>`, or takes the keyboard focus off a view that takes presses."),
+    ),
+    (
+        "clearSelection",
+        0,
+        decl!("(): void"),
+        decl!(
+            "Clears the selection of a `selectable` view, or of the selectable texts inside the view: the highlight goes and the selectable view hears `onSelectionChange` with `\"\"`."
+        ),
     ),
     (
         "setSelection",
@@ -1463,7 +1500,7 @@ fn set_prop(
         }
         // SAFETY: live node data.
         "component" | "componentSlot" => unsafe { (*p).places = true },
-        "ios" | "android" | "macos" | "desktop" | "web" => {
+        "ios" | "android" | "macos" | "windows" | "desktop" | "web" => {
             return platform_props(cx, node, name, value, prev);
         }
         "contentStyle" | "contentClass" if unsafe { (*p).tag } == Some(Tag::Scroll) => {
@@ -1716,8 +1753,8 @@ pub(crate) fn is_ancestor_of(cx: *mut JsContext, node: NodeId, of: NodeId) -> bo
     is_ancestor(cx, node, of)
 }
 
-/// `ios={{…}}` / `android={{…}}` / `macos={{…}}` / `web={{…}}` /
-/// `desktop={{…}}`: the props of this platform only, each set (or cleared)
+/// `ios={{…}}` / `android={{…}}` / `macos={{…}}` / `windows={{…}}` /
+/// `web={{…}}` / `desktop={{…}}`: the props of this platform only, each set (or cleared)
 /// on its own. Desktop props apply on the desktop OSes and in
 /// desktop-class browsers.
 fn platform_props(
@@ -1772,18 +1809,25 @@ fn platform_props(
             let k = std::ffi::CString::new(key).unwrap_or_default();
             qjs::JS_GetPropertyStr(cx, obj, k.as_ptr())
         };
+        let set = |key: &str, value, old| {
+            if name == "windows" {
+                set_prop(cx, node, &format!("windows.{key}"), value, old)
+            } else {
+                set_prop(cx, node, key, value, old)
+            }
+        };
         let next_keys = keys(value);
         for key in keys(prev) {
             if !next_keys.contains(&key) {
                 let old = get(prev, &key);
-                let r = set_prop(cx, node, &key, UNDEFINED, old);
+                let r = set(&key, UNDEFINED, old);
                 qjs::JS_FreeValue(cx, old);
                 r?;
             }
         }
         for key in next_keys {
             let (v, old) = (get(value, &key), get(prev, &key));
-            let r = set_prop(cx, node, &key, v, old);
+            let r = set(&key, v, old);
             qjs::JS_FreeValue(cx, v);
             qjs::JS_FreeValue(cx, old);
             r?;
@@ -3577,33 +3621,93 @@ pub(crate) unsafe extern "C" fn mount(
         return dispose;
     }
     let root = d.root.get();
+    let windowed = {
+        let env = crate::env::current(cx);
+        !crate::window::is_embedded(cx)
+            && env.os.is_desktop()
+            && env.idiom != nsh_core::platform::Idiom::Terminal
+    };
     // SAFETY: reads of the root's children; dups for the dispose function.
     let before: Vec<JsValue> = unsafe { &(*node_ptr(cx, root)).children }
         .iter()
         .map(|&v| unsafe { qjs::JS_DupValue(cx, v) })
         .collect();
-    let (owner, result) = reactive::with_root(cx, || {
-        let props = if unsafe { qjs::JS_IsObject(props) } {
-            unsafe { qjs::JS_DupValue(cx, props) }
-        } else {
-            unsafe { qjs::JS_NewObject(cx) }
-        };
-        let mut args = [props];
-        let out = reactive::untracked_with(cx, || unsafe {
-            qjs::JS_Call(cx, app, UNDEFINED, 1, args.as_mut_ptr())
-        });
-        unsafe { qjs::JS_FreeValue(cx, props) };
-        if unsafe { qjs::JS_IsException(out) } {
-            return Err(out);
+    let (owner, result) = reactive::with_root(
+        cx,
+        || -> Result<Option<crate::window::Implicit>, JsValue> {
+            // A desktop app root is a host: its content is top-level
+            // `<Window>` scenes, each with a root of its own. A released
+            // app that returns views instead is the content of its first
+            // window, as it was the main window's before: the runtime
+            // opens that window (`main`) around it, unless the root turns
+            // out to declare windows of its own.
+            let mut implicit = if windowed {
+                Some(crate::window::begin_implicit(cx)?)
+            } else {
+                None
+            };
+            reset_declared_windows(cx);
+            // The first window's node joins the app root before the root
+            // renders: what the root inserts, and the effects its dynamics
+            // make, go into it rather than the invisible host. A root that
+            // declares windows keeps the node as their home, unopened.
+            let joined = match implicit.as_ref() {
+                Some(implicit) => insert_value(cx, root, implicit.node, None),
+                None => Ok(()),
+            };
+            if let Err(e) = joined {
+                if let Some(implicit) = implicit.take() {
+                    crate::window::discard_implicit(cx, implicit);
+                }
+                return Err(e);
+            }
+            let props = if unsafe { qjs::JS_IsObject(props) } {
+                unsafe { qjs::JS_DupValue(cx, props) }
+            } else {
+                unsafe { qjs::JS_NewObject(cx) }
+            };
+            let mut args = [props];
+            let out = reactive::untracked_with(cx, || unsafe {
+                qjs::JS_Call(cx, app, UNDEFINED, 1, args.as_mut_ptr())
+            });
+            unsafe { qjs::JS_FreeValue(cx, props) };
+            if unsafe { qjs::JS_IsException(out) } {
+                if let Some(implicit) = implicit.take() {
+                    crate::window::discard_implicit(cx, implicit);
+                }
+                return Err(out);
+            }
+            let parent = implicit.as_ref().map_or(root, |implicit| implicit.node);
+            let r = insert_value(cx, parent, out, None);
+            unsafe { qjs::JS_FreeValue(cx, out) };
+            if let Err(e) = r {
+                if let Some(implicit) = implicit.take() {
+                    crate::window::discard_implicit(cx, implicit);
+                }
+                return Err(e);
+            }
+            Ok(implicit)
+        },
+    );
+    let implicit = match result {
+        Ok(implicit) => implicit,
+        Err(e) => {
+            free_values(cx, before);
+            reactive::dispose_owner(cx, owner);
+            return e;
         }
-        let r = insert_value(cx, root, out, None);
-        unsafe { qjs::JS_FreeValue(cx, out) };
-        r
-    });
-    if let Err(e) = result {
-        free_values(cx, before);
-        reactive::dispose_owner(cx, owner);
-        return e;
+    };
+    if let Some(implicit) = implicit {
+        if declared_windows(cx) > 0 {
+            // The root declares the app's windows: they live in its node,
+            // which stays unopened. The old model's main window was not
+            // one of an app's windows either.
+            crate::window::forget_implicit(cx, implicit);
+        } else {
+            // Views and text, or nothing: the main window a released app
+            // rendered in, opened around its content.
+            crate::window::finish_implicit(cx, implicit, owner);
+        }
     }
     let mut data = [qjs::JS_NewFloat64(owner as f64), new_array(cx, before)];
     // SAFETY: the function keeps dups of `data`.

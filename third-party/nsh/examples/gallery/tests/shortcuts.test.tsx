@@ -3,8 +3,7 @@
 import { open, test } from "nsh/test";
 
 test("the shortcuts count, switch the light and reset", async () => {
-  const app = await open("../App.tsx", { platform: "macos" });
-  await app.press("label:System");
+  const app = await open("../App.tsx", { platform: "macos", storage: { lastDemo: "System" } });
   await app.waitFor("Counted 0");
   await app.keyboard.press("mod+k");
   await app.waitFor("Counted 1");

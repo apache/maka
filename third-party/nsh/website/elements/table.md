@@ -38,6 +38,7 @@ fn invoices() -> impl IntoElement {
 ```tsx tabs
 import { mount, Text } from "nsh";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "nsh/base";
+import { Window } from "nsh/desktop";
 
 function App() {
   return (
@@ -58,7 +59,11 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 `Table` and its parts come from [`nsh/base`](../modules/nsh-base.md), the `nsh-base` crate in Rust, where `table()`,

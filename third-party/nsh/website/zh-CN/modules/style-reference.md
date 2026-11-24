@@ -309,6 +309,7 @@ view().p_4().rounded(px(12.0)).bg(white()).shadow([
 | `opacity` | `number \| AnimatedNode` | `.opacity(o)`、`.bind_opacity(&value)` | 0（不可见）到 1。接受原生动画值。 |
 | `visibility` | `"visible" \| "hidden" \| "collapse"` | | 隐藏的视图仍占据布局空间（与 `display: "none"` 不同）。用在 span 上时，它的字符原地占位，复制和屏幕阅读器都会略过。 |
 | `overflow` | `"visible" \| "hidden"` | `.overflow_hidden()` | `"hidden"` 将子元素裁剪到视图边界（含圆角）。 |
+| `clipPath` | `string` | `.clip_path(ClipInset::new()…)`、`.clip_path_none()` | 即 CSS 的 `clip-path: inset(<top> <right> <bottom> <left> round <radius>)`：视图和它的子元素只在这个圆角矩形内绘制，矩形外的按压会落到后面的视图上。边距写一到四个长度或百分比（左右相对视图宽度，上下相对高度），`round` 后写一到四个圆角长度。`"none"`（默认）绘制整个视图。过渡可以为它播放动画（`transitionProperty: "clip-path"`、`.transition_clip_path()`），在两个 inset 之间变化；变成 `"none"` 或从 `"none"` 变过来时立即生效，与 CSS 一致。终端按矩形裁剪，圆角是直角。 |
 | `backfaceVisibility` | `"visible" \| "hidden"` | `.backface_hidden()`、`.backface_visible()` | `"hidden"`：3D 旋转转到背面时不可见。 |
 | `verticalAlign` | `"baseline" \| "text-top" \| "text-bottom" \| "middle"` | `.align_baseline()`、`.align_text_top()`、`.align_text_bottom()`、`.align_middle()` | `<Text>` 中的视图或图片在所在行中的位置，与 CSS 的 `vertical-align` 一致：底边落在基线上（默认）、顶边或底边对齐文本字体的顶部或底部，或中心位于基线上方半个 x 高度处。所在行会撑高以容纳它。 |
 
@@ -377,7 +378,7 @@ const angle = createAnimatedValue(0);
 
 | 键 | 类型 | Rust | 说明 |
 |---|---|---|---|
-| `transitionProperty` | `string` | `.transition()`、`.transition_all()`、`.transition_colors()`、`.transition_opacity()`、`.transition_shadow()`、`.transition_transform()`、`.transition_none()` | 参与动画的属性，用逗号分隔：`"all"`、`"colors"`（`color`、`backgroundColor`、`borderColor` 等）、`"opacity"`、`"transform"`（所有变换属性）、`"boxShadow"`、`"borderRadius"`、`"borderWidth"`，或 `"none"`。 |
+| `transitionProperty` | `string` | `.transition()`、`.transition_all()`、`.transition_colors()`、`.transition_opacity()`、`.transition_shadow()`、`.transition_transform()`、`.transition_clip_path()`、`.transition_none()` | 参与动画的属性，用逗号分隔：`"all"`、`"colors"`（`color`、`backgroundColor`、`borderColor` 等）、`"opacity"`、`"transform"`（所有变换属性）、`"boxShadow"`、`"borderRadius"`、`"borderWidth"`、`"clip-path"`，或 `"none"`。 |
 | `transitionDuration` | `number \| "${number}ms" \| "${number}s"` | `.duration(ms)` | 数字表示毫秒，也可写 `"150ms"` / `"0.2s"`。 |
 | `transitionDelay` | `number \| "${number}ms" \| "${number}s"` | `.delay(ms)` | 过渡开始前的延迟。 |
 | `transitionTimingFunction` | `"linear" \| "ease" \| "ease-in" \| "ease-out" \| "ease-in-out" \| "cubic-bezier(...)" \| "spring(...)"` | `.ease_linear()`、`.ease_in()`、`.ease_out()`、`.ease_in_out()`、`.ease_bezier(…)`、`.ease_spring(…)` | 缓动曲线（`cubic-bezier()` 的 `y` 超出 0..1 时会越过目标），或 NSH 的 `spring(stiffness, damping[, mass])`：弹簧自己决定时长，持续到稳定为止，不使用 `transitionDuration`。 |

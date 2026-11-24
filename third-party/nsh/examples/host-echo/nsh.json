@@ -2,6 +2,7 @@
   "name": "Host Echo",
   "id": "com.example.hostecho",
   "capabilities": {
+    "windows": true,
     "host": ["echo", "note"]
   },
   "web": {

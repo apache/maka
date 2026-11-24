@@ -12,6 +12,7 @@ NSH renders with native views, so the platforms' assistive technologies (VoiceOv
 ## What you get without doing anything
 
 - **Text is read.** A text element is an accessibility element whose label is its text. A view without a label is read as the texts inside it.
+- **Links and inline views inside text are reached one by one.** With VoiceOver on iOS and macOS, each span of a text that takes presses (a nested `<Text onPress>`, a Markdown link) is a link of its own that activating presses, and the Links rotor moves between them; each inline view inside a text is an element of its own, read in its place in the sentence. On iOS, a text you give a label, a role or a press of its own stays one element.
 - **Pressable views are elements.** A view with a press or long press handler (`.on_press`, `onPress`) is an accessibility element by default, and activating it (double tap with VoiceOver or TalkBack) presses it.
 - **Inputs are text fields**, with their placeholder, value and keyboard.
 - **Text follows the user's size setting.** See [Text size](#text-size).
@@ -55,11 +56,11 @@ view()
 | `.accessibility_active_descendant(..)` | `accessibilityActiveDescendant` | `ViewRef \| null` | The item that is active inside the focused element: a combo box's highlighted option, a list's cursor row. |
 | `.accessibility_controls(..)` | `accessibilityControls` | `ViewRef \| null` | The element whose content this one controls: a combo box's list. |
 | `.accessibility_described_by(..)` | `accessibilityDescribedBy` | `ViewRef \| null` | The element whose text describes this one: a field's error line. |
-| | `accessibilityActions` | `{ name, label? }[]` | Actions offered to assistive technologies. |
+| `.accessibility_actions(..)` | `accessibilityActions` | `{ name, label? }[]` | Actions offered to assistive technologies. |
 | `.on_accessibility_action(..)` | `onAccessibilityAction` | `(e: { actionName }) => void` | An action was performed (Rust: its name). |
 | `.accessibility_elements_hidden(..)` | `accessibilityElementsHidden` | `boolean` | Hides the view and its subtree from assistive technologies. |
 | | `importantForAccessibility` | `"auto" \| "yes" \| "no" \| "no-hide-descendants"` | Whether the view (and its subtree) is exposed. |
-| | `android={{ accessibilityLiveRegion }}` | `"none" \| "polite" \| "assertive"` | Android: how changes of the view are announced to TalkBack. |
+| `.accessibility_live_region(..)` | `accessibilityLiveRegion` | `"none" \| "polite" \| "assertive"` | How changes of the view are announced by themselves: TalkBack on Android, VoiceOver on macOS, the web's `aria-live`, a live region on Windows. |
 | `.test_id(..)` | `testID` | `string` | An identifier for UI tests (the accessibility identifier on iOS, the resource id on Android); not read aloud. |
 
 Give every icon-only control a label: a screen reader cannot read a glyph or an image. Keep labels short and do not include the role ("Play", not "Play button"): the role is announced on its own.
@@ -139,6 +140,8 @@ view()
 ```
 
 The state is `AccessibilityState { disabled, selected, checked: Option<Checked>, busy, expanded, pressed: Option<Checked>, current: Option<AccessibilityCurrent>, has_popup, invalid }` in Rust and `{ disabled?, selected?, checked?: boolean | "mixed", busy?, expanded?, pressed?: boolean | "mixed", current?: boolean | "page" | "step" | "location" | "date" | "time", hasPopup?, invalid? }` in TSX. `pressed` makes a button a toggle button (ARIA's `aria-pressed`); `current` marks the current item of a set (ARIA's `aria-current`): a pagination's page, a wizard's step; `hasPopup` marks the trigger of a popup, a menu or a list (ARIA's `aria-haspopup`), whose `expanded` says whether it is open, where an `expanded` element without it is a disclosure that shows its content in place (`Popover`, `Menu`, `HoverCard`, `Select`, `Combobox` and `DatePicker` set it on their triggers); `invalid` marks content that does not pass the app's checks (ARIA's `aria-invalid`): a field whose text was rejected, a required select left empty. Screen readers read it with the element, and `aria-invalid:` classes style it. `disabled` is also implied by disabling the view (`.disabled(..)`, `disabled`). `accessibilityValue` with `min`, `max` and `now` is read as a percentage; with `text` it is read as given ("3 of 10", "Medium").
+
+On iOS and Android, NSH supplies the words read for the states the system has no words of its own for (checked, mixed, expanded, collapsed, current, invalid). They are in the language the app's text shows in ([I18n](./i18n.md)), including one `setLocale` picks, and change with it: English, Chinese (simplified and traditional), Japanese or Korean. Other platforms read the states in the screen reader's own words.
 
 ### The active item of a focused element
 
@@ -287,6 +290,32 @@ Any other name becomes a custom action, listed in VoiceOver's actions rotor and 
 </View>
 ```
 
+Labels that read signals or [translations](i18n.md) follow them on the mounted element: when the app switches its language, the actions get their new labels while the element, its name in `onAccessibilityAction` and the screen reader's focus stay. In Rust, give `.accessibility_actions(..)` a closure:
+
+```rust tabs
+view()
+    .accessibility_actions(|| {
+        vec![AccessibilityActionDef {
+            name: "delete".into(),
+            label: Some(t!("mail.delete").into()),
+        }]
+    })
+    .on_accessibility_action(move |name: &str| {
+        if name == "delete" {
+            remove(id);
+        }
+    })
+```
+
+```tsx tabs
+<View
+  accessibilityActions={[{ name: "delete", label: t("mail.delete") }]}
+  onAccessibilityAction={() => remove(mail.id)}
+>
+  …
+</View>
+```
+
 ## Grouping and hiding
 
 Making a view accessible (`.accessible(true)`, `accessible`) makes a view one element: a card with a title, a subtitle and a price is read in one go, instead of the user swiping through three texts.
@@ -379,7 +408,7 @@ function Upload() {
 }
 ```
 
-Announce changes the user would otherwise miss: a background save finishing, an error appearing away from the focus, a timer ending. On Android, `android={{ accessibilityLiveRegion: "polite" }}` on a view makes TalkBack announce its changes by itself.
+Announce changes the user would otherwise miss: a background save finishing, an error appearing away from the focus, a timer ending. `accessibilityLiveRegion: "polite"` on a view has the screen reader announce its changes by itself — TalkBack on Android, VoiceOver on macOS, `aria-live` on the web, a live region on Windows (`"assertive"` reads right away instead of when the user is idle).
 
 An alert (`.role(AccessibilityRole::Alert)`, `role="alert"`) is read by itself on macOS and the web: its label, or else the texts inside it, as it appears and again when its content changes, ahead of what the screen reader was saying. An error shown with the role needs no announcement of its own there; on macOS the same text announced in the same update is read once. On the other platforms, announce it as well.
 

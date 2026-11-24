@@ -9,11 +9,7 @@ use std::sync::{
 };
 
 use nsh_base::{TerminalEmulator, TerminalEmulatorFactory, VtEmulator, terminal};
-use nsh_core::{
-    MountItem, Size, ViewKind,
-    element::{Root, measure_text},
-    prelude::*,
-};
+use nsh_core::{MountItem, Size, ViewKind, element::measure_text, prelude::*};
 use nsh_engine::EngineConfig;
 use nsh_testing::Headless;
 
@@ -51,7 +47,7 @@ fn load(at: &AtomicU32) -> f32 {
 fn a_wide_character_and_the_text_after_it_sit_on_their_columns() {
     let config = EngineConfig {
         viewport: Size::new(px(400.0), px(400.0)),
-        ..EngineConfig::new(Root::of::<Harness>())
+        ..EngineConfig::new(nsh_testing::windowed_root::<Harness>())
     };
     let mut app = Headless::start(config).expect("the engine starts");
     let continued = Arc::new(Mutex::new(0usize));

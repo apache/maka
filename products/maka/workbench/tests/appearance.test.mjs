@@ -32,7 +32,7 @@ function deferred() {
   });
   return { promise, resolve, reject };
 }
-async function setup(t, storage) {
+async function setup(t, storage, os = 'macos') {
   const id = ++sequence;
   const fixture = { storage, themes: [], sizes: [] };
   globalThis.__appearanceFixture = fixture;
@@ -47,6 +47,7 @@ async function setup(t, storage) {
         return read;
       };
       export const Storage = fixture.storage;
+      export const platform = {os: '${os}'};
       export const setColorScheme = value => fixture.themes.push(value);
       export const host = {call: async (method, input) => {
         if (method !== 'appearance.textSize') throw Error(method);
@@ -151,4 +152,49 @@ test('latest selections persist after a delayed failed write without blocking th
   await settings.appearance.whenIdle();
   assert.equal(saved.get('appearance-theme'), 'light');
   assert.equal(root.appearance.saving(), false);
+});
+
+test('text sizes step by a point between their limits, from saved ratios too', async (t) => {
+  const saved = new Map([['appearance-text-size', '1.3']]);
+  const { root, fixture } = await setup(t, {
+    getItem: async (key) => saved.get(key) ?? null,
+    async setItem(key, value) {
+      saved.set(key, value);
+    },
+  });
+  root.initializeAppearance();
+  await setImmediate();
+  const { appearance } = root;
+  assert.equal(appearance.fontSize(), 18);
+  appearance.stepTextSize(1);
+  assert.equal(appearance.textSize(), 18 / 14);
+  appearance.stepTextSize(-1);
+  assert.equal(appearance.fontSize(), 17);
+  appearance.chooseTextSize(0.9);
+  appearance.stepTextSize(-1);
+  appearance.stepTextSize(-1);
+  assert.equal(appearance.fontSize(), 12);
+  appearance.stepTextSize(0);
+  assert.equal(appearance.textSize(), 1);
+  const applied = fixture.sizes.length;
+  appearance.stepTextSize(0);
+  assert.equal(fixture.sizes.length, applied);
+});
+
+test('a hidden tray icon is restored only where the platform offers it', async (t) => {
+  const storage = {
+    getItem: async (key) => (key === 'appearance-tray-icon' ? 'none' : null),
+    async setItem() {},
+  };
+  const mac = await setup(t, storage);
+  assert.equal(mac.root.appearance.trayIconKnown(), false);
+  mac.root.initializeAppearance();
+  await setImmediate();
+  assert.equal(mac.root.appearance.trayIconKnown(), true);
+  assert.equal(mac.root.appearance.trayIcon(), 'none');
+  const linux = await setup(t, storage, 'linux');
+  assert.equal(linux.root.appearance.trayIconKnown(), true);
+  linux.root.initializeAppearance();
+  await setImmediate();
+  assert.equal(linux.root.appearance.trayIcon(), 'bold');
 });

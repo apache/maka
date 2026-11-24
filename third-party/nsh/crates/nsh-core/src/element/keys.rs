@@ -26,6 +26,9 @@ pub(crate) struct ViewKey {
     /// it; `None` outside one (the window is then where its owner's
     /// component is: [`ViewKeys::bindings`]).
     pub(crate) window: Option<super::ElementRef>,
+    /// It is the app's (`KeyScope::App`): every window's, wherever it is
+    /// bound; `window` is not resolved.
+    pub(crate) app: bool,
     /// The owner it was bound under.
     pub(crate) owner: super::Owner,
     pub(crate) text: Rc<str>,
@@ -53,6 +56,7 @@ impl ViewKeys {
         text: Rc<str>,
         handler: KeyHandler,
         window: Option<super::ElementRef>,
+        app: bool,
         owner: super::Owner,
     ) -> u32 {
         let id = FIRST_ID + self.next;
@@ -66,6 +70,7 @@ impl ViewKeys {
             text,
             handler,
             window,
+            app,
             owner,
         });
         self.changed = true;
@@ -89,7 +94,8 @@ impl ViewKeys {
     /// [`Self::unplaced`] set). One bound outside a window's own context
     /// is in the window `window_of` gives for its owner: a component JS
     /// placed in a window of its own sees no such context, yet its keys
-    /// are that window's.
+    /// are that window's. One made in the app root (its owner resolves to
+    /// no window) is app-wide, as a binding made there in JS is.
     pub(crate) fn bindings(
         &mut self,
         mut window_of: impl FnMut(super::Owner) -> crate::NodeId,
@@ -99,6 +105,9 @@ impl ViewKeys {
             .list
             .iter()
             .filter_map(|k| {
+                if k.app {
+                    return Some(k.binding);
+                }
                 let window = match k.window {
                     None => window_of(k.owner),
                     Some(element) => match element.node() {
@@ -112,6 +121,9 @@ impl ViewKeys {
                 let mut binding = k.binding;
                 if let Some(target) = &k.within {
                     binding.within = Some(target.node()?);
+                }
+                if window == crate::ROOT_ID {
+                    return Some(binding);
                 }
                 Some(binding.in_window(window))
             })

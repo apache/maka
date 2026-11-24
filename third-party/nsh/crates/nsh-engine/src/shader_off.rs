@@ -35,6 +35,12 @@ pub struct Renderer {
 impl Renderer {
     /// `None`: this build has no renderer.
     pub fn new(_format: PixelFormat) -> Option<Renderer> {
+        static WARNED: std::sync::Once = std::sync::Once::new();
+        WARNED.call_once(|| {
+            log::warn!(
+                "a shader view draws nothing: this runtime was built without the NSH platform crate's feature `shader`"
+            )
+        });
         None
     }
 

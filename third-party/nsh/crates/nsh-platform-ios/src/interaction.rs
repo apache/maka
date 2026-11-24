@@ -50,6 +50,16 @@ thread_local! {
     /// The spring of the transition [`transition`] runs, while it restyles:
     /// what [`animate_geometry`] moves its paths with.
     static SPRING: Cell<Option<Spring>> = const { Cell::new(None) };
+    /// The property groups of the transition [`transition`] runs, while it
+    /// restyles ([`transitions`]).
+    static PROPS: Cell<TransitionProps> = const { Cell::new(TransitionProps(0)) };
+}
+
+/// Whether the transition restyling the view now animates `group`
+/// (`TransitionProps`' bits): for geometry only some groups move (a clip
+/// path transitions only when named).
+pub(crate) fn transitions(group: u8) -> bool {
+    PROPS.get().has(group)
 }
 
 /// A transaction's implicit animations (the view's sublayers) take a curve,
@@ -187,7 +197,9 @@ pub(crate) fn transition(view: &UIView, t: &Transition, apply: impl FnOnce()) {
     CATransaction::setAnimationDuration(duration);
     CATransaction::setAnimationTimingFunction(Some(&curve));
     SPRING.set(spring);
+    PROPS.set(t.properties);
     apply();
+    PROPS.set(TransitionProps(0));
     SPRING.set(None);
     CATransaction::commit();
     // SAFETY: a plain clock read.

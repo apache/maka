@@ -1,4 +1,5 @@
 import { ErrorBoundary, mount, signal, Text, View } from "nsh";
+import { Window } from "nsh/desktop";
 
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
@@ -33,4 +34,4 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => <Window id="main">{App}</Window>);

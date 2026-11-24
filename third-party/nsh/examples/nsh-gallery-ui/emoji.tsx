@@ -9,20 +9,23 @@ import { signal, Text, View } from "nsh";
 import { EmojiPicker, Tab, Tabs, type EmojiEntry, type EmojiGroup, type EmojiGroupId, type EmojiGroupLabels, type EmojiPickerRef, type EmojiSkinTone } from "nsh/base";
 import { desktop } from "./demo";
 import { Icon, type IconName } from "./icons";
-import { colors } from "./theme";
+import { colors, terminal } from "./theme";
 
-/** The groups, their names and their tabs' icons. */
-export const emojiGroups: { id: EmojiGroupId; label: string; icon: IconName }[] = [
-  { id: "recent", label: "Frequently used", icon: "clock" },
-  { id: "smileysEmotion", label: "Smileys & emotion", icon: "smile" },
-  { id: "peopleBody", label: "People & body", icon: "person" },
-  { id: "animalsNature", label: "Animals & nature", icon: "leaf" },
-  { id: "foodDrink", label: "Food & drink", icon: "food" },
-  { id: "travelPlaces", label: "Travel & places", icon: "car" },
-  { id: "activities", label: "Activities", icon: "ball" },
-  { id: "objects", label: "Objects", icon: "bulb" },
-  { id: "symbols", label: "Symbols", icon: "heart" },
-  { id: "flags", label: "Flags", icon: "flag" },
+/**
+ * The groups, their names and their tabs' icons; in the terminal, which draws no icons, an emoji of the group (two
+ * Cells, no variation selector, whose width terminals disagree on).
+ */
+export const emojiGroups: { id: EmojiGroupId; label: string; icon: IconName; emoji: string }[] = [
+  { id: "recent", label: "Frequently used", icon: "clock", emoji: "🕘" },
+  { id: "smileysEmotion", label: "Smileys & emotion", icon: "smile", emoji: "😀" },
+  { id: "peopleBody", label: "People & body", icon: "person", emoji: "👋" },
+  { id: "animalsNature", label: "Animals & nature", icon: "leaf", emoji: "🐻" },
+  { id: "foodDrink", label: "Food & drink", icon: "food", emoji: "🍔" },
+  { id: "travelPlaces", label: "Travel & places", icon: "car", emoji: "🚗" },
+  { id: "activities", label: "Activities", icon: "ball", emoji: "⚽" },
+  { id: "objects", label: "Objects", icon: "bulb", emoji: "💡" },
+  { id: "symbols", label: "Symbols", icon: "heart", emoji: "🔣" },
+  { id: "flags", label: "Flags", icon: "flag", emoji: "🏁" },
 ];
 
 /** The groups' headings. */
@@ -46,8 +49,11 @@ export const emojiPickerClasses = {
   /** Eight points each side: some glyphs (🫡) reach past their cell. */
   row: "px-2",
   group: desktop ? "px-3 pt-2.5 pb-1" : "px-3.5 pt-3 pb-1.5",
-  /** A cell: quiet until the pointer or the keys are on it (one gray for both, as Slack's), sunk while pressed. */
-  item: desktop
+  /** A cell: quiet until the pointer or the keys are on it (one gray for both, as Slack's), sunk while pressed; in the
+   * terminal three Cells, the emoji's two and a column between them. */
+  item: terminal
+    ? "w-6 h-4 items-center justify-center focus:bg-raised"
+    : desktop
     ? "size-9 items-center justify-center rounded-md text-[22px] transition-colors duration-100 motion-reduce:transition-none hover:bg-raised focus:bg-raised active:scale-90"
     : "h-12 flex-1 items-center justify-center rounded-lg text-[28px] active:bg-raised",
 };
@@ -74,7 +80,7 @@ export function EmojiTabs(props: { group: string; groups: typeof emojiGroups; on
           tooltip={desktop ? g.label : undefined}
           class={`items-center justify-center rounded-md hover:bg-raised focus-visible:outline-2 focus-visible:outline-ring ${desktop ? "h-8 w-8" : "h-11 flex-1"}`}
         >
-          <Icon name={g.icon} size={desktop ? 17 : 21} tint={props.group === g.id ? colors.text : colors.faint} />
+          {terminal ? <Text>{g.emoji}</Text> : <Icon name={g.icon} size={desktop ? 17 : 21} tint={props.group === g.id ? colors.text : colors.faint} />}
         </Tab>
       ))}
     </Tabs>
@@ -160,11 +166,12 @@ export function EmojiPanel(props: {
   return (
     <EmojiPicker
       ref={(r) => (picker = r)}
-      class={props.class ?? (props.fill ? "flex-1" : "h-[392px] w-[342px]")}
+      // In the terminal as wide as its grid: twelve cells of three columns and the rows' padding.
+      class={props.class ?? (props.fill ? "flex-1" : terminal ? "h-[392px] w-[304px]" : "h-[392px] w-[342px]")}
       recent={props.recent ?? []}
       skinTone={tone()}
       groupLabels={emojiGroupLabels}
-      columns={desktop ? 9 : 8}
+      columns={terminal ? 12 : desktop ? 9 : 8}
       // Emoji 16 and later are missing from the fonts of many systems in
       // use (iOS before 18.4, Android before 16, Windows 10): no tofu.
       emojiVersion="15.1"

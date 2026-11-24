@@ -84,6 +84,7 @@ import {
   CarouselPaginationItem,
   CarouselPrevious,
 } from "nsh/base";
+import { Window } from "nsh/desktop";
 
 const NAMES = ["Harbor", "Dunes", "Glacier"];
 
@@ -122,7 +123,11 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 

@@ -81,6 +81,7 @@ fn app() -> impl IntoElement {
 ```tsx tabs
 import { mount, Text, View } from "nsh";
 import { Button, createNavStack, NavPage, NavStack } from "nsh/base";
+import { Window } from "nsh/desktop";
 
 type Route = { name: "home" } | { name: "detail"; id: number };
 
@@ -132,7 +133,11 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 在 iOS 和 Android 上，页面显示带 `title` 和返回按钮的系统标题栏；在桌面平台和 Web 上，它显示 `header`。只面向手机的应用可以省略 `header`；只面向桌面的应用可以省略系统标题栏的选项。[导航指南](../docs/navigation.md)讲解一个完整应用的导航：栈的状态、对话框、Android 返回键和标签页。
@@ -212,6 +217,7 @@ TSX 的子函数接收路由值本身，以及一个表示它在栈中位置的 
 | `headerVisible` | `.header_visible(..)` | `boolean` | `true` | iOS 和 Android：显示系统标题栏。 |
 | `headerTransparent` | `.header_transparent(..)` | `boolean` | `false` | iOS 和 Android：内容延伸到透明的系统标题栏之下。 |
 | `headerShadowVisible` | `.header_shadow_visible(..)` | `boolean` | `true` | iOS：系统标题栏下方的细线。设为 `false` 时没有这条线，同 iOS 26 系统自带的标题栏。Android 的标题栏没有这条线。 |
+| `headerTitleAlign` | `.header_title_align(..)` | `"left" \| "center"` | `"left"` | Android：标题在系统标题栏起始边，或在两侧按钮之间居中。iOS：系统导航栏总是居中，忽略此值。 |
 | `headerBackgroundOnScroll` | `.header_background_on_scroll(..)` | `boolean` | `false` | iOS：配合 `headerTransparent`，内容停在顶端时系统标题栏是透明的，内容滚到标题栏下面后显示标题栏的背景，同 UIKit 自带的标题栏。标题栏跟随从页面顶端开始、露出最多的那个可见滚动视图。其他平台忽略。 |
 | `headerLargeTitle` | `.header_large_title(..)` | `boolean` | `false` | iOS：大标题，随内容滚动收进标题栏；内容在标题栏之下滚动。 |
 | `headerBackTitle` | `.header_back_title(..)` | `string` | 无 | iOS 和 Android：返回到这个页面的返回按钮的文字（在 Android 上是它给屏幕阅读器的描述）。 |

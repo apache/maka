@@ -70,6 +70,12 @@ pub(crate) enum Action {
         to: NodeId,
         from: Option<NodeId>,
     },
+    /// A popup that gives the keyboard focus back to node `to` opens: the
+    /// core notes the focus and the input it opens with
+    /// ([`super::ElementRef::focus_back_origin`]).
+    FocusOrigin {
+        to: NodeId,
+    },
     /// A dialog; its answer resolves the slot.
     Dialog(Dialog, Rc<RefCell<Output<DialogReply>>>),
     /// Close the dialog whose answer resolves the slot, answering it as
@@ -110,7 +116,7 @@ pub(crate) enum Action {
     HostCall {
         name: String,
         args: crate::JsonValue,
-        answer: AnswerSlot<Result<crate::JsonValue, super::JsError>>,
+        answer: AnswerSlot<Result<crate::JsonValue, crate::host_channel::HostError>>,
     },
     /// Hands data to function `name` of the embedding app, with no answer
     /// (`nsh/host`'s `post`).
@@ -125,6 +131,18 @@ pub(crate) enum Action {
     /// [`crate::open_url::check_url`]); whether it opened resolves the
     /// slot.
     OpenUrl(String, AnswerSlot<bool>),
+    /// Opens the app's own page in the system's settings
+    /// ([`crate::mobile::open_app_settings`]); whether it opened, or why it
+    /// could not, resolves the slot.
+    OpenAppSettings(AnswerSlot<Result<bool, crate::mobile::AppSettingsError>>),
+    /// Whether the platform opens the app's page in the system's settings
+    /// resolves the slot.
+    AppSettingsAvailable(AnswerSlot<bool>),
+    /// Puts something on the system clipboard
+    /// ([`crate::Command::SetClipboard`] or
+    /// [`crate::Command::SetClipboardItem`]); the platform's result
+    /// resolves the slot.
+    WriteClipboard(crate::Command, AnswerSlot<ClipboardWrite>),
     /// Lets the user pick a color on the screen; the color (none when
     /// cancelled or not supported) resolves the slot.
     PickScreenColor(AnswerSlot<Option<crate::Hsla>>),
@@ -239,6 +257,11 @@ pub(crate) enum Action {
     Tokens(super::Tokens),
     /// Sets the app's translations ([`crate::i18n`]).
     Translations(crate::i18n::Translations),
+    /// Merges translations into the app's dictionary ([`crate::i18n`]).
+    AddTranslations(std::collections::HashMap<String, std::collections::HashMap<String, String>>),
+    /// The surface's translations changed in place from the given previous
+    /// dictionary: re-localize menus if the selected language changed.
+    TranslationsChanged(crate::i18n::Translations),
     /// Shows the app in a language whatever the user's (`None`: the
     /// user's again).
     Locale(Option<crate::platform::Locale>),
@@ -411,6 +434,23 @@ pub struct ClipboardItem {
     pub html: Option<String>,
 }
 
+/// What became of a clipboard write (`set_clipboard`,
+/// `set_clipboard_item`; TS: what `Clipboard.writeText` and
+/// `Clipboard.write` resolve to). The clipboard is never read back to
+/// find out: a platform that cannot tell answers [`Self::Requested`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, crate::element::PropEnum)]
+pub enum ClipboardWrite {
+    /// The system clipboard took it (Windows, macOS, the web).
+    Written,
+    /// The system clipboard refused it (held by another app, no clipboard,
+    /// the browser declined, the clipboard capability not granted).
+    Failed,
+    /// Handed to the system, which does not say whether it took it (iOS,
+    /// Android, Linux, a GPUI host, a terminal).
+    #[default]
+    Requested,
+}
+
 /// An image read from the system clipboard (`Clipboard.readImage`).
 #[derive(Debug, Clone, Default, PartialEq, super::JsObject)]
 pub struct ClipboardImage {
@@ -509,12 +549,23 @@ pub(crate) struct Executor {
     derived: RefCell<super::animated::Derived>,
     /// The components' listeners of the back button.
     pub(crate) back: Rc<RefCell<super::back::BackListeners>>,
+    /// The components' listeners of the back gesture's steps.
+    pub(crate) back_progress: Rc<RefCell<super::back::BackProgressListeners>>,
+    /// The components' listeners of the host's events
+    /// ([`super::on_host_event`]).
+    pub(crate) host_events: Rc<RefCell<super::host_events::HostListeners>>,
     /// What runs as the app quits ([`super::desktop::on_app_quit`]).
     pub(crate) quit: Rc<RefCell<super::quit::QuitListeners>>,
     /// The quit listeners' work still running ([`crate::Core::start_quit`]).
     pub(crate) quitting: Rc<std::cell::Cell<usize>>,
     /// What hears the user ask to quit ([`super::desktop::on_quit_request`]).
     pub(crate) quit_requests: Rc<RefCell<super::quit::QuitRequestListeners>>,
+    /// What hears the OS ask the app to show itself
+    /// ([`super::desktop::on_reopen`]).
+    pub(crate) reopens: Rc<RefCell<super::quit::ReopenListeners>>,
+    /// What hears the app's last window close
+    /// ([`super::desktop::on_last_window_closed`]).
+    pub(crate) last_window_closed: Rc<RefCell<super::quit::LastWindowClosedListeners>>,
     /// The views' keyboard shortcuts.
     pub(crate) keys: Rc<RefCell<super::keys::ViewKeys>>,
     /// The views' menus' handlers.

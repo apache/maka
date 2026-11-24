@@ -1,4 +1,5 @@
 import { mount, signal, Text, View, type ViewRef } from "nsh";
+import { Window } from "nsh/desktop";
 import { Popover } from "nsh/base";
 
 // A popover that takes the keyboard focus when it opens, as a non-modal
@@ -27,4 +28,4 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => <Window id="main">{App}</Window>);

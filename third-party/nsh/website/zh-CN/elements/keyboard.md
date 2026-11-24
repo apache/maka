@@ -42,6 +42,7 @@ fn chat() -> impl IntoElement {
 ```tsx tabs
 import { mount, Scroll, signal, Text, View } from "nsh";
 import { Input } from "nsh/base";
+import { Window } from "nsh/desktop";
 
 function App() {
   const draft = signal("");
@@ -62,7 +63,11 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 完整的键盘高度适用于延伸到屏幕底部的视图，界面的内容通常如此。如果它下方还有东西，例如标签栏，就用一个长度减去它：`calc(env(keyboard-inset-height) + -49px)` 让视图保持在 49 pt 的标签栏之上，`calc(env(keyboard-inset-height) + 12px)` 在键盘上方增加间距。内边距至少为 0。
@@ -224,6 +229,8 @@ TSX 的 `captureKeys`（`{"none"}`、`{"all"}`，或 `{["mod+k", "escape"]}` 这
 按键序列（即 `nsh/keymap` 的语法；`mod` 在 Apple 平台上是 Command，其他平台是 Control），`defaultPrevented` 报告本次转换的决定。
 规则支持响应式值；保留视图再次渲染时省略规则，会恢复 `"none"`。可用的应用快捷键保持优先级，获得焦点的原生输入框保留用于编辑的按键，
 捕获也无法越过操作系统根本不投递的快捷键。被捕获的 Tab 留在当前视图；仅被观察的 Tab 按正常规则切换焦点。
+在最上层、按 Escape 关闭的浮层（`Popover`、`Sheet`）里，如果获得焦点的视图，或它在该浮层内某个启用的祖先，规则捕获了 `escape`，
+Escape 先交给它，而不是关闭浮层：例如弹层里的编辑器先清除选区，规则不再包含该键后，Escape 再次关闭浮层。返回键和读屏的退出手势仍会关闭浮层。
 
 ```tsx
 import { signal, Text, View } from "nsh";

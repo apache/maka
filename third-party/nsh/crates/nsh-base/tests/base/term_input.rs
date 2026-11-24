@@ -12,8 +12,7 @@ use std::{
 
 use nsh_base::{TerminalEmulator, TerminalEmulatorFactory, VtEmulator, terminal};
 use nsh_core::{
-    EventKind, EventPayload, NodeId, PayloadValue, Size, ViewKind,
-    element::{Root, measure_text},
+    EventKind, EventPayload, NodeId, PayloadValue, Size, ViewKind, element::measure_text,
     prelude::*,
 };
 use nsh_engine::EngineConfig;
@@ -61,8 +60,10 @@ fn start(output: &str) -> Headless {
     let output = output.to_owned();
     let config = EngineConfig {
         viewport: Size::new(px(400.0), px(400.0)),
-        ..EngineConfig::new(Root::new::<Harness>(move || HarnessProps {
-            output: output.clone(),
+        ..EngineConfig::new(nsh_testing::windowed_root_with::<Harness>(move || {
+            HarnessProps {
+                output: output.clone(),
+            }
         }))
     };
     let mut app = Headless::start(config).expect("the engine starts");

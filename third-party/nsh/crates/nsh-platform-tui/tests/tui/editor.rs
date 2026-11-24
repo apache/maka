@@ -10,6 +10,7 @@ use nsh_base::{
     dock::{DockAreaLayout, DockLayout, DockPanel, DockPlacement, DockRegion, dock_area},
     editor::editor,
     rich_editor::view::{RichEditorChange, rich_editor},
+    terminal,
 };
 use nsh_core::prelude::*;
 use nsh_platform_tui::{App, AppView, CursorStyle, Handled, Input, Modifiers, Root};
@@ -548,4 +549,39 @@ fn focused_rich_editor_yields_copy_to_page_selection_and_keeps_select_all_copy_b
             .draw(|frame| view.render(frame, frame.area()))
             .unwrap();
     }
+}
+
+/// A terminal between two controls, reporting what it is sent.
+#[component]
+fn TerminalBetween() -> impl IntoElement {
+    let focused = signal("none");
+    let sent = signal(String::new());
+    view()
+        .flex_1()
+        .child(text(move || {
+            format!("focus {} sent {}", focused.get(), sent.get())
+        }))
+        .child(stop("Before", focused))
+        .child(
+            terminal()
+                .on_data(move |data: &SharedString| sent.update(|s| s.push_str(data)))
+                .h(px(64.0)),
+        )
+        .child(stop("After", focused))
+}
+
+#[test]
+fn one_tab_goes_from_the_control_before_a_terminal_into_its_input() {
+    let (mut view, rx) = surface();
+    let mut terminal = Terminal::new(TestBackend::new(48, 12)).unwrap();
+    view.load(App::Rust(Root::new::<TerminalBetween>(|| ())))
+        .unwrap();
+    draw_until(&mut view, &mut terminal, &rx, "focus none");
+    assert_eq!(tab_until(&mut view, &mut terminal, &rx, "focus Before"), 1);
+    // The box takes presses but is no stop: the next Tab is the input's,
+    // and what is typed there goes to the program.
+    assert_eq!(view.handle(key("Tab")), Handled::Yes);
+    assert_eq!(view.handle(key("l")), Handled::Yes);
+    assert_eq!(view.handle(key("s")), Handled::Yes);
+    draw_until(&mut view, &mut terminal, &rx, "sent ls");
 }

@@ -44,6 +44,7 @@ fn notify() -> impl IntoElement {
 ```tsx tabs
 import { mount, signal, Text } from "nsh";
 import { Checkbox } from "nsh/base";
+import { Window } from "nsh/desktop";
 
 function App() {
   const on = signal(false);
@@ -60,7 +61,11 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 `Checkbox` comes from [`nsh/base`](../modules/nsh-base.md), the `nsh-base` crate in Rust. The value is the app's: a
@@ -80,6 +85,9 @@ the checkbox.
 | `checkedStyle` | `.checked_style(\|s\| ..)` | `StyleProp<ViewStyle>` | none | The checkbox's style while checked and not disabled, as `checked:` classes. |
 | `indeterminateStyle` | `.indeterminate_style(\|s\| ..)` | `StyleProp<ViewStyle>` | none | The checkbox's style while indeterminate and not disabled, as `indeterminate:` classes. |
 | `accessibilityLabel` | `.accessibility_label(..)` | `string` | none | What screen readers say: what the checkbox selects, when its children have no text that says it. |
+| `accessibilityHint` | `.accessibility_hint(..)` | `string` | none | Explains what changing the checkbox does, as a view's `accessibilityHint`. |
+| `invalid` | `.invalid(..)` | `boolean` | `false` | The value does not pass the app's checks (a required box left unchecked): screen readers say it is invalid each time they reach it. No look of its own. |
+| `accessibilityDescribedBy` | `.accessibility_described_by(..)` | `ViewRef \| null` | none | The element whose text describes it (its error or help line), read after its name each time it is focused. As a view's `accessibilityDescribedBy`. |
 | `role` | `.role(..)` | `AccessibilityRole` | `"checkbox"` | What it is for screen readers, when it is something more specific (a checked menu item: `"menuitem"`). |
 | `indicatorClass`, `indicatorStyle` | `.indicator_style(\|s\| ..)` | `string`, `StyleProp<ViewStyle>` | none | The indicator, the box that shows the value. |
 | `indicator` | `.indicator(..)` | `JSX.Element` | none | The content of the indicator: the mark (a check, a dash), which the app shows by its value. |
@@ -171,6 +179,8 @@ sides named (`{ top: 8, bottom: 8 }`), as a [view's `hitSlop`](./index.md#presse
 
 ## Accessibility
 
+- Give `accessibilityHint` when the label does not explain the effect of changing the selection. It follows reactive
+  values; setting it to `undefined` removes the hint.
 - A checkbox is one element for screen readers, with the role `"checkbox"` (or its `role`) and its value: checked,
   unchecked, or mixed while indeterminate. The indicator and the mark are parts of it. Its label is the text of its
   children; give `accessibilityLabel` when it has none.

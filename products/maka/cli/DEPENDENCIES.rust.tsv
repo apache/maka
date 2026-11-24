@@ -383,8 +383,10 @@ flume@0.12.0		X										X
 fnv@1.0.7		X										X							
 foldhash@0.1.5																			X
 foldhash@0.2.0																			X
+font-types@0.12.7		X										X							
 fontconfig-parser@0.5.8												X							
 fontdb@0.23.0												X							
+fontdb@0.24.0												X							
 fontdue@0.9.5		X										X							X
 foreign-types-macros@0.2.4		X										X							
 foreign-types-shared@0.1.1		X										X							
@@ -507,6 +509,7 @@ gzip-header@1.1.0		X										X
 h2@0.4.20												X							
 half@2.7.1		X										X							
 halfbrown@0.4.0		X										X							
+harfrust@0.12.0												X							
 hash2curve@0.14.0		X										X							
 hash32@0.2.1		X										X							
 hash32@0.3.1		X										X							
@@ -930,7 +933,6 @@ pkg-config@0.3.34		X										X
 platform-linux@0.54.0												X							
 platform-macos@0.54.0												X							
 platform-windows@0.54.0												X							
-png@0.17.16		X										X							
 png@0.18.1		X										X							
 pnp@0.12.12				X															
 polling@3.11.0		X										X							
@@ -995,6 +997,7 @@ ratex-types@0.1.15												X
 rayon-core@1.13.0		X										X							
 rayon@1.12.0		X										X							
 rc2@0.8.1		X										X							
+read-fonts@0.41.0		X										X							
 ref-cast-impl@1.0.27		X										X							
 ref-cast@1.0.27		X										X							
 referencing@0.46.10												X							
@@ -1009,7 +1012,7 @@ relative-path@2.0.3		X										X
 reqwest@0.13.5		X										X							
 resb@0.1.2																X			
 resolv-conf@0.7.6		X										X							
-resvg@0.46.0		X										X							
+resvg@0.48.1		X										X							
 rfc6979@0.4.0		X										X							
 rfc6979@0.6.0		X										X							
 rgb@0.8.53												X							
@@ -1147,6 +1150,7 @@ simdutf8@0.1.5		X										X
 simplecss@0.2.2		X										X							
 siphasher@0.3.11		X										X							
 siphasher@1.0.4		X										X							
+skrifa@0.44.0		X										X							
 slab@0.4.12												X							
 slotmap@1.1.1																			X
 sm3@0.4.2		X										X							
@@ -1257,7 +1261,9 @@ time@0.3.55		X										X
 timezone_provider@0.2.6		X										X							
 tiny-keccak@2.0.2								X											
 tiny-skia-path@0.11.4					X														
+tiny-skia-path@0.12.0					X														
 tiny-skia@0.11.4					X														
+tiny-skia@0.12.0					X														
 tinystr@0.8.5																X			
 tinyvec@1.13.3		X										X							X
 tokio-eld@0.3.0		X										X							
@@ -1339,11 +1345,12 @@ universal-hash@0.6.1		X										X
 unsafe-libyaml@0.2.11												X							
 untrusted@0.7.1											X								
 untrusted@0.9.0											X								
-ureq-proto@0.6.5		X										X							
-ureq@3.5.0		X										X							
+ureq-proto@0.7.1		X										X							
+ureq@3.5.2		X										X							
 url@2.5.8		X										X							
 urlpattern@0.4.2												X							
 usvg@0.46.0		X										X							
+usvg@0.48.1		X										X							
 utf-8@0.7.6		X										X							
 utf8_iter@1.0.4		X										X							
 utf8-zero@0.8.1		X										X							

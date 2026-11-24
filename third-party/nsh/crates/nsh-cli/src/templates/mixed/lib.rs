@@ -1,11 +1,11 @@
-//! The app's Rust code: what `App.tsx` imports from `__SPECIFIER__`. Their
-//! TypeScript declarations are generated from these types into
-//! `.nsh/types/__SPECIFIER__.d.ts`.
+//! The app's Rust, an nshm of its own (`nsh.json` `"dependencies"`): what
+//! `App.tsx` imports from `__SPECIFIER__`. Their TypeScript declarations are
+//! generated from these types into `.nsh/types/__SPECIFIER__.d.ts`.
 
 use nsh_base::theme;
 use nsh_core::prelude::*;
 
-/// The crate's UI set (`nsh.json` `"rust"`).
+/// What the nshm exports to TSX, imported from `__SPECIFIER__`.
 #[native_module("__SPECIFIER__")]
 fn native(registry: &mut Registry) {
     registry

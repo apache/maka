@@ -6,6 +6,11 @@
 //! Positions: in `paragraphs(&["ab", "cd"])` the first paragraph's text
 //! is 1..3, the second's 5..7, the document's size 8.
 
+use std::sync::Mutex;
+
+use nsh_base::rich_editor::state::Transaction;
+use nsh_testing::DragOptions;
+
 use super::*;
 
 /// Focuses the editor and puts the caret at the document's start.
@@ -255,8 +260,12 @@ fn a_drag_selects_across_blocks() {
     focus_start(&mut app);
     // From the middle of `ab` (between a and b) far right and down: the
     // end of `cd`.
-    app.drag("text:ab", Point::new(px(300.0), px(40.0)))
-        .unwrap();
+    app.drag(
+        "text:ab",
+        Point::new(px(300.0), px(40.0)),
+        DragOptions::default(),
+    )
+    .unwrap();
     see(&mut app, "Sel 2-7");
 }
 
@@ -285,4 +294,49 @@ fn backspace_deletes_a_selection_across_blocks() {
     see(&mut app, &doc("af"));
     see(&mut app, "Tree doc(paragraph(\"af\"))");
     see(&mut app, "Sel 2-2");
+}
+
+/// Notes on `session` for each transaction that sets the selection whether
+/// it carries prosemirror-view's `pointer` meta.
+pub(super) fn note_pointer(session: &EditorSession) -> Arc<Mutex<Vec<bool>>> {
+    let noted = Arc::new(Mutex::new(Vec::new()));
+    let note = noted.clone();
+    session.set_dispatch_transaction(Some(Arc::new(
+        move |session: &EditorSession, tr: Transaction| {
+            if tr.selection_set() {
+                let pointer = tr.get_meta("pointer") == Some(&Value::Bool(true));
+                note.lock().unwrap().push(pointer);
+            }
+            if let Ok((state, applied)) = session.state().apply_transaction(tr) {
+                session.commit(state, &applied);
+            }
+        },
+    )));
+    noted
+}
+
+/// [`start_with`], noting for each transaction that sets the selection
+/// whether it carries prosemirror-view's `pointer` meta.
+pub(super) fn start_noting_pointer(
+    doc: Value,
+    os: Os,
+    idiom: Idiom,
+) -> (Headless, Arc<Mutex<Vec<bool>>>) {
+    let session = session(doc);
+    let noted = note_pointer(&session);
+    let app = start_session(move || session.clone(), os, os == Os::Ios, idiom);
+    (app, noted)
+}
+
+#[test]
+fn a_press_selects_with_the_pointer_meta_and_a_key_without() {
+    let (mut app, noted) =
+        start_noting_pointer(paragraphs(&["ab", "cd"]), Os::Linux, Idiom::Desktop);
+    app.press_at("text:cd", Point::new(px(1.0), px(1.0)))
+        .unwrap();
+    see(&mut app, "Sel 5-5");
+    assert_eq!(noted.lock().unwrap().last(), Some(&true));
+    keys(&mut app, &["right"]);
+    see(&mut app, "Sel 6-6");
+    assert_eq!(noted.lock().unwrap().last(), Some(&false));
 }

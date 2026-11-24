@@ -166,6 +166,7 @@ pub(super) fn payload(host: &Bindings, payload: &EventPayload) -> Result<Value, 
         EventPayload::FileDrop(uris) => object([
             ("uris", strings(uris)?),
             ("mimeTypes", strings(&file_mime_types(uris))?),
+            ("files", Value::array(Vec::new())?),
         ])?,
         EventPayload::FileDropAt {
             uris,
@@ -173,7 +174,47 @@ pub(super) fn payload(host: &Bindings, payload: &EventPayload) -> Result<Value, 
         } => object([
             ("uris", strings(uris)?),
             ("mimeTypes", strings(&file_mime_types(uris))?),
+            ("files", Value::array(Vec::new())?),
             ("pagePosition", point(*page_position)?),
+        ])?,
+        // `PickedFile`s: each read one's `File` shares the dropped bytes.
+        EventPayload::FileContents(drop) => {
+            let mut files = Vec::new();
+            for file in &drop.files {
+                let read = file.status != nsh_core::picker::PickedStatus::TooLarge;
+                let js_file = if read {
+                    Value(
+                        host.new_file(&file.data, &file.mime, &file.name, file.last_modified)?
+                            .0[0] as u32,
+                    )
+                } else {
+                    Value(1)
+                };
+                files.push(object([
+                    ("file", js_file),
+                    ("name", Value::string(&file.name)?),
+                    ("type", Value::string(&file.mime)?),
+                    ("size", number(file.len as f64)),
+                    (
+                        "status",
+                        Value::string(if read { "read" } else { "tooLarge" })?,
+                    ),
+                ])?);
+            }
+            let out = object([
+                ("uris", strings(&[])?),
+                ("mimeTypes", strings(&drop.mime_types)?),
+                ("files", Value::array(files)?),
+            ])?;
+            if let Some(at) = drop.page_position {
+                out.set("pagePosition", &point(at)?)?;
+            }
+            out
+        }
+        EventPayload::TextDrop(drop) => object([
+            ("text", Value::string(&drop.text)?),
+            ("html", Value::string(&drop.html)?),
+            ("pagePosition", point(drop.page_position)?),
         ])?,
         EventPayload::Paste(paste) => {
             let mut files = Vec::new();
@@ -200,7 +241,7 @@ pub(super) fn payload(host: &Bindings, payload: &EventPayload) -> Result<Value, 
             ("data", Value(host.json(data)?.0[0] as u32)),
         ])?,
         EventPayload::Json(value) => Value(host.json(value)?.0[0] as u32),
-        EventPayload::TextLayout { lines, .. } => {
+        EventPayload::TextLayout(lines) => {
             let mut values = Vec::new();
             for l in lines {
                 values.push(object([
@@ -221,6 +262,7 @@ pub(super) fn payload(host: &Bindings, payload: &EventPayload) -> Result<Value, 
             object([("lines", Value::array(values)?)])?
         }
         EventPayload::Pan {
+            origin,
             translation,
             velocity_x,
             velocity_y,
@@ -228,6 +270,7 @@ pub(super) fn payload(host: &Bindings, payload: &EventPayload) -> Result<Value, 
             value_y,
         }
         | EventPayload::PanCancelled {
+            origin,
             translation,
             velocity_x,
             velocity_y,
@@ -239,6 +282,7 @@ pub(super) fn payload(host: &Bindings, payload: &EventPayload) -> Result<Value, 
                     "cancelled",
                     boolean(matches!(payload, EventPayload::PanCancelled { .. })),
                 ),
+                ("origin", point(*origin)?),
                 ("translation", point(*translation)?),
                 (
                     "velocity",

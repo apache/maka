@@ -298,6 +298,26 @@ final class SystemUi {
     }
 
     /**
+     * {@code AppSettings.open}: opens the app's page in the system's settings (App info,
+     * {@code Settings.ACTION_APPLICATION_DETAILS_SETTINGS} for {@code package:<the app's package>}), where the user
+     * turns back on a permission they denied. From the view's activity, as {@link #openUrl} opens a URL (a new task
+     * from any other context, as the system needs). Whether the system opened it.
+     */
+    static boolean openAppSettings(Context context) {
+        android.content.Intent intent = new android.content.Intent(
+                android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                android.net.Uri.fromParts("package", context.getPackageName(), null));
+        Activity activity = activity(context);
+        if (activity == null) intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK);
+        try {
+            (activity != null ? activity : context).startActivity(intent);
+            return true;
+        } catch (android.content.ActivityNotFoundException | SecurityException e) {
+            return false;
+        }
+    }
+
+    /**
      * {@code openPath}: opens the file at {@code path} with the app Android resolves for it, as a
      * {@code content:} URI the app's {@link FilesProvider} serves (a {@code file:} URI would not
      * leave the app). Whether an app took it: false when there is no regular file, the provider

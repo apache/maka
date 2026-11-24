@@ -347,7 +347,7 @@ impl Rv {
                 }
             },
         };
-        self.set_selection(selection, false);
+        self.set_pointer_selection(selection, false);
         self.close_edit_menu();
         let range = {
             let state = self.session.state();
@@ -459,7 +459,7 @@ impl Rv {
             return;
         }
         let range = (selection.from(), selection.to());
-        self.set_selection(selection, true);
+        self.set_pointer_selection(selection, true);
         self.touch.inner.borrow_mut().range = Some(range);
         self.touch.bump();
     }
@@ -570,7 +570,7 @@ impl Rv {
             return;
         }
         // Near the viewport's edge the dragged end scrolls into view.
-        self.set_selection(selection, true);
+        self.set_pointer_selection(selection, true);
         let mut inner = self.touch.inner.borrow_mut();
         inner.range = Some(range);
         inner.drag = Some(drag);

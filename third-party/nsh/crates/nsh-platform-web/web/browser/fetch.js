@@ -120,7 +120,7 @@ export function installFetch(target, call, { active = () => true, wake = () => {
     if (!request.headers.has("accept")) headers.push(["accept", "*/*"]);
     const url = request.url.split("#")[0];
     return new Promise((resolve, reject) => {
-      const id = call(1008, [request.method, url, headers, body, request.redirect === "follow"]);
+      const id = call(1008, [request.method, url, headers, body, request.redirect === "follow", request.cache]);
       const entry = {
         resolve, reject, signal, controller: null,
         nullBody: request.method === "HEAD", redirectError: request.redirect === "error",

@@ -16,15 +16,15 @@ use nsh_core::{
 };
 use nsh_engine::EngineControl;
 use objc2::{
-    AllocAnyThread, ClassType, MainThreadMarker, MainThreadOnly,
+    AllocAnyThread, ClassType, MainThreadMarker, MainThreadOnly, msg_send,
     rc::Retained,
     runtime::{AnyObject, Bool, ProtocolObject},
 };
 use objc2_core_foundation::{CGPoint, CGRect, CGSize};
 use objc2_foundation::{
-    NSAttributedString, NSData, NSDictionary, NSError, NSNotification, NSNotificationCenter,
-    NSObjectProtocol, NSOperationQueue, NSPropertyListReadOptions, NSPropertyListSerialization,
-    NSRange, NSString, NSURL,
+    NSArray, NSAttributedString, NSData, NSDictionary, NSError, NSNotification,
+    NSNotificationCenter, NSObjectProtocol, NSOperationQueue, NSPropertyListReadOptions,
+    NSPropertyListSerialization, NSRange, NSString, NSURL,
 };
 use objc2_ui_kit::{
     NSAttributedStringDocumentFormats, NSDocumentTypeDocumentAttribute,
@@ -670,6 +670,40 @@ pub(crate) fn open_url(id: u32, url: &str, control: &EngineControl) {
     };
 }
 
+/// `AppSettings.open`: opens the app's page in the Settings app
+/// (`UIApplication.openSettingsURLString`; the embedding app's page when
+/// NSH is embedded) and reports whether the system opened it
+/// ([`EventKind::OpenAppSettings`] `id`). Commands are applied on the main
+/// thread, as UIKit needs.
+pub(crate) fn open_app_settings(id: u32, control: &EngineControl) {
+    let control = control.clone();
+    let answer = move |opened: bool| {
+        control.dispatch_event(
+            nsh_core::ROOT_ID,
+            EventKind::OpenAppSettings,
+            EventPayload::Map(vec![
+                ("id", PayloadValue::Number(id as f64)),
+                ("opened", PayloadValue::Bool(opened)),
+            ]),
+        );
+    };
+    // SAFETY: a constant UIKit exports, valid for the process's life.
+    let settings = unsafe { objc2_ui_kit::UIApplicationOpenSettingsURLString };
+    let (Some(mtm), Some(url)) = (MainThreadMarker::new(), NSURL::URLWithString(settings)) else {
+        return answer(false);
+    };
+    let completion = RcBlock::new(move |opened: Bool| answer(opened.as_bool()));
+    // SAFETY: an empty dictionary is valid options; UIKit calls the
+    // completion on the main thread.
+    unsafe {
+        UIApplication::sharedApplication(mtm).openURL_options_completionHandler(
+            &url,
+            &NSDictionary::new(),
+            Some(&completion),
+        )
+    };
+}
+
 /// `Clipboard.writeText`: puts `text` on the general pasteboard.
 pub(crate) fn set_clipboard(text: &str) {
     // SAFETY: a plain setter of the general pasteboard.
@@ -764,8 +798,8 @@ pub(crate) fn read_clipboard_image(id: u32, has_only: bool) -> EventPayload {
 
 /// What `board` holds, read as the user pastes into an input (`onPaste`):
 /// its text, the same content as HTML ([`pasted_html`]), its images (as
-/// they are in [`IMAGE_TYPES`], else PNG) and its local files' `file:` URLs
-/// (Mac Catalyst).
+/// they are in [`IMAGE_TYPES`], else PNG), its local files' `file:` URLs
+/// (Mac Catalyst) and the other files it holds as data ([`pasted_files`]).
 pub(crate) fn pasted(board: &objc2_ui_kit::UIPasteboard) -> nsh_core::PasteEvent {
     // SAFETY: plain getters of the pasteboard, read on the user's paste.
     unsafe {
@@ -803,7 +837,59 @@ pub(crate) fn pasted(board: &objc2_ui_kit::UIPasteboard) -> nsh_core::PasteEvent
                 .map(|s| s.to_string())
                 .collect();
         }
+        paste.files.extend(pasted_files(board));
         paste
+    }
+}
+
+/// The files `board` holds as data: an item that is no text, link or image
+/// (a document copied in Files offers `com.adobe.pdf` or
+/// `org.openxmlformats.spreadsheetml.sheet`, no file URL) gives its first
+/// file type's data, named as its item provider suggests and typed by its
+/// uniform type's MIME type. Text, links and images are read above.
+fn pasted_files(board: &objc2_ui_kit::UIPasteboard) -> Vec<nsh_core::PastedFile> {
+    let other = |kind: &NSString| {
+        crate::file_drop::conforms(kind, "public.text")
+            || crate::file_drop::conforms(kind, "public.url")
+            || crate::file_drop::conforms(kind, "public.image")
+    };
+    // SAFETY: UIPasteboard's documented getters (iOS 3, 11) and
+    // NSItemProvider's `suggestedName` (iOS 11), read on the user's paste.
+    unsafe {
+        let count = board.numberOfItems().max(0) as usize;
+        let providers: Option<Retained<NSArray<AnyObject>>> = msg_send![board, itemProviders];
+        let Some(index_set) = objc2::runtime::AnyClass::get(c"NSIndexSet") else {
+            return Vec::new();
+        };
+        (0..count)
+            .filter_map(|index| {
+                let set: Retained<AnyObject> = msg_send![index_set, indexSetWithIndex: index];
+                let types: Option<Retained<NSArray<NSArray<NSString>>>> =
+                    msg_send![board, pasteboardTypesForItemSet: &*set];
+                let types = types?.firstObject()?;
+                if types.iter().any(|kind| other(&kind)) {
+                    return None;
+                }
+                let kind = types
+                    .iter()
+                    .find(|kind| crate::file_drop::is_file_type(kind))?;
+                let data: Option<Retained<NSArray<NSData>>> =
+                    msg_send![board, dataForPasteboardType: &*kind, inItemSet: &*set];
+                let data = data?.firstObject()?;
+                let suggested: Option<Retained<NSString>> = providers
+                    .as_ref()
+                    .filter(|providers| index < providers.count())
+                    .and_then(|providers| {
+                        msg_send![&providers.objectAtIndex(index), suggestedName]
+                    });
+                let (mime, extension) = crate::file_drop::mime_and_extension(&kind);
+                let name = crate::file_drop::pasted_name(
+                    suggested.map(|s| s.to_string()).as_deref(),
+                    extension.as_deref(),
+                );
+                Some(nsh_core::PastedFile::new(name, mime, data.to_vec()))
+            })
+            .collect()
     }
 }
 

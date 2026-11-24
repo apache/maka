@@ -14,7 +14,9 @@ use jni::{
     signature::{Primitive, ReturnType},
     sys::{jboolean, jint, jlong},
 };
-use nsh_engine::{FetchEvent, FetchEvents, FetchTask, HttpBody, HttpHead, HttpRequest, Network};
+use nsh_engine::{
+    FetchEvent, FetchEvents, FetchTask, HttpBody, HttpCache, HttpHead, HttpRequest, Network,
+};
 use rustc_hash::FxHashMap;
 
 use crate::java::{java, with_env};
@@ -113,6 +115,14 @@ impl Network for JavaNetwork {
             .expect("pending")
             .get_or_insert_with(FxHashMap::default)
             .insert(key, events);
+        // No HTTP cache here: nothing can answer from it.
+        if request.cache == HttpCache::OnlyIfCached {
+            report(
+                key,
+                FetchEvent::Failed("no cached response (`cache: \"only-if-cached\"`)".into()),
+            );
+            return Box::new(Task { key });
+        }
         with_env(|env| {
             let j = java();
             let method = env.new_string(&request.method)?;

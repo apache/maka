@@ -377,6 +377,11 @@ pub struct AttributedText {
     /// Nested `<Text>` spans with a `testID` (they may nest). Platforms
     /// draw nothing from them. Tests name a span by its id.
     pub test_ids: Vec<SpanTestId>,
+    /// What attachments give in place of their placeholder when the text
+    /// is copied (`copyText` of a view inside the text), in text order.
+    /// Platforms draw nothing from them: they are what
+    /// [`AttributedText::copied_text`] puts where the attachment is.
+    pub copy_texts: Vec<AttachmentCopyText>,
     /// `writingDirection`: right to left (`Some(true)`), left to right, or
     /// from the content (`None`).
     pub writing_direction: Option<bool>,
@@ -661,6 +666,29 @@ pub struct SpanTestId {
     pub test_id: Arc<str>,
 }
 
+/// What an attachment of a text gives when the text is copied
+/// ([`AttributedText::copy_texts`]): a formula's source, an emoji image's
+/// character.
+#[derive(Debug, Clone, PartialEq, Default)]
+#[non_exhaustive]
+pub struct AttachmentCopyText {
+    /// The attachment's placeholder character (UTF-16 offset,
+    /// [`TextAttachment::index`]).
+    pub index: u32,
+    /// What a copy gives in its place.
+    pub text: Arc<str>,
+}
+
+impl AttachmentCopyText {
+    /// `text` in place of the attachment at UTF-16 offset `index`.
+    pub fn new(index: u32, text: impl Into<Arc<str>>) -> Self {
+        Self {
+            index,
+            text: text.into(),
+        }
+    }
+}
+
 impl AttributedText {
     /// Whether the text was made selectable (`userSelect: "text"`, `select-text`).
     pub fn is_selectable(&self) -> bool {
@@ -724,7 +752,7 @@ impl AttributedText {
             return std::borrow::Cow::Borrowed(&self.text);
         }
         let mut out = String::with_capacity(self.text.len());
-        self.each_shown(0..self.len_utf16(), |s| out.push_str(s));
+        self.each_shown(0..self.len_utf16(), |s, _| out.push_str(s));
         if spacers {
             // Offsets in `out` shift where hidden runs were dropped: find the
             // empty attachments by counting placeholders instead.
@@ -747,21 +775,49 @@ impl AttributedText {
     }
 
     /// The characters of the UTF-16 range `range` as a copy gives them:
-    /// without attachments' placeholders ([`ATTACHMENT_CHAR`]) and hidden
-    /// runs ([`ResolvedTextStyle::hidden`]). The range is clamped to the
-    /// text; offsets inside a surrogate pair round down.
+    /// an attachment as its copy text ([`Self::copy_texts`]), or nothing
+    /// without one (its placeholder, [`ATTACHMENT_CHAR`], is left out), and
+    /// without hidden runs ([`ResolvedTextStyle::hidden`]). The range is
+    /// clamped to the text; offsets inside a surrogate pair round down.
     pub fn copied_text(&self, range: Range<u32>) -> String {
+        if self.copy_texts.is_empty() {
+            return self.text_without_attachments(range);
+        }
         let mut out = String::new();
-        self.each_shown(range, |s| {
+        let mut copies = self.copy_texts.iter().peekable();
+        self.each_shown(range, |s, mut at| {
+            for c in s.chars() {
+                if c == ATTACHMENT_CHAR {
+                    while copies.next_if(|t| t.index < at).is_some() {}
+                    if let Some(copy) = copies.next_if(|t| t.index == at) {
+                        out.push_str(&copy.text);
+                    }
+                } else {
+                    out.push(c);
+                }
+                at += c.len_utf16() as u32;
+            }
+        });
+        out
+    }
+
+    /// The characters of the UTF-16 range `range` without attachments'
+    /// placeholders ([`ATTACHMENT_CHAR`], whatever they copy as) and
+    /// hidden runs: the text's own characters, as accessibility reads them
+    /// beside the inline views it reads on their own. Clamped as
+    /// [`Self::copied_text`].
+    pub fn text_without_attachments(&self, range: Range<u32>) -> String {
+        let mut out = String::new();
+        self.each_shown(range, |s, _| {
             out.extend(s.chars().filter(|&c| c != ATTACHMENT_CHAR));
         });
         out
     }
 
     /// Calls `f` with each piece of `range` (UTF-16 units) that no hidden
-    /// run covers, in order. Characters past the runs (a text built without
-    /// them) count as shown.
-    fn each_shown(&self, range: Range<u32>, mut f: impl FnMut(&str)) {
+    /// run covers, in order, and the offset it starts at. Characters past
+    /// the runs (a text built without them) count as shown.
+    fn each_shown(&self, range: Range<u32>, mut f: impl FnMut(&str, u32)) {
         let end = range.end.min(self.len_utf16().max(utf16_len(&self.text)));
         let (mut byte, mut at) = seek(&self.text, 0, 0, range.start.min(end));
         // The first span ending after `at`.
@@ -773,7 +829,7 @@ impl AttributedText {
             };
             let (next, reached) = seek(&self.text, byte, at, to);
             if !hidden {
-                f(&self.text[byte..next]);
+                f(&self.text[byte..next], at);
             }
             if reached == at {
                 break;
@@ -909,7 +965,7 @@ impl AttributedText {
 
     /// Whether the two texts differ at most in their spans' colors (text,
     /// decoration and background), which of them are hidden
-    /// ([`ResolvedTextStyle::hidden`]) and test metadata: the same
+    /// ([`ResolvedTextStyle::hidden`]) and metadata (test ids, copy texts): the same
     /// characters in the same styles but for those, wherever the spans
     /// begin and end (neighbors that take the same color merge into one
     /// span).
@@ -930,6 +986,7 @@ impl AttributedText {
             selection_color,
             attachments,
             test_ids: _,
+            copy_texts: _,
         } = self;
         text == &other.text
             && align == &other.align
@@ -983,7 +1040,20 @@ impl AttributedText {
         Some(out)
     }
 
-    /// Equality of the content the platform draws, excluding test metadata.
+    /// Whether the two texts have the same metadata: what
+    /// [`Self::rendering_eq`] leaves out (test ids, copy texts).
+    pub(crate) fn metadata_eq(&self, other: &Self) -> bool {
+        self.test_ids == other.test_ids && self.copy_texts == other.copy_texts
+    }
+
+    /// Takes `other`'s metadata ([`Self::metadata_eq`]), keeping what is
+    /// drawn: a fitted text's scaled spans mounted again with new metadata.
+    pub(crate) fn set_metadata(&mut self, other: &Self) {
+        self.test_ids = other.test_ids.clone();
+        self.copy_texts = other.copy_texts.clone();
+    }
+
+    /// Equality of the content the platform draws, excluding metadata (test ids, copy texts).
     pub(crate) fn rendering_eq(&self, other: &Self) -> bool {
         // Enumerating the fields makes additions revisit this comparison.
         let Self {
@@ -1000,7 +1070,9 @@ impl AttributedText {
             selectable,
             selection_color,
             attachments,
+            // Metadata: `metadata_eq` and `set_metadata` take these.
             test_ids: _,
+            copy_texts: _,
         } = self;
         text == &other.text
             && spans == &other.spans
@@ -1120,6 +1192,12 @@ pub trait TextEngine {
         None
     }
 
+    /// Whether a single-line input's intrinsic height depends only on its
+    /// text style, including when a glyph comes from a fallback font.
+    fn uniform_input_line_height(&self) -> bool {
+        false
+    }
+
     /// Whether each line takes all that fits and [`TextEngine::measure`]'s
     /// width is the widest line's: a maximum width between that width and
     /// the one measured then breaks the lines at the same places, so the
@@ -1230,6 +1308,10 @@ impl<T: TextEngine> TextEngine for std::rc::Rc<T> {
         (**self).draws_colors_from_text()
     }
 
+    fn uniform_input_line_height(&self) -> bool {
+        (**self).uniform_input_line_height()
+    }
+
     fn measure(&self, prepared: &Self::Prepared, max_width: Option<Points>) -> Size<Points> {
         (**self).measure(prepared, max_width)
     }
@@ -1264,32 +1346,6 @@ impl<T: TextEngine> TextEngine for std::rc::Rc<T> {
 
     fn register_font(&self, data: &[u8]) -> Result<(), String> {
         (**self).register_font(data)
-    }
-}
-
-/// Queries on the final layout used to draw text, without preparing or measuring it again.
-pub trait TextLayoutQueries {
-    /// The nearest caret to a point in the layout's content box.
-    fn hit(&self, layout: &TextLayout, point: Point<Points>) -> TextPosition;
-
-    /// The line-high caret box for an offset in the final layout.
-    fn caret(&self, layout: &TextLayout, position: TextPosition) -> Option<Bounds<Points>>;
-
-    /// Appends the line-high boxes covered by the given range of UTF-16 offsets.
-    fn ranges(&self, layout: &TextLayout, range: Range<u32>, out: &mut Vec<Bounds<Points>>);
-}
-
-impl<T: TextEngine> TextLayoutQueries for T {
-    fn hit(&self, layout: &TextLayout, point: Point<Points>) -> TextPosition {
-        self.hit_test(layout, point)
-    }
-
-    fn caret(&self, layout: &TextLayout, position: TextPosition) -> Option<Bounds<Points>> {
-        self.caret_rect(layout, position)
-    }
-
-    fn ranges(&self, layout: &TextLayout, range: Range<u32>, out: &mut Vec<Bounds<Points>>) {
-        self.range_rects(layout, range, out)
     }
 }
 
@@ -1599,6 +1655,7 @@ impl TextEngine for ApproxTextEngine {
         let units = prepared.chars.saturating_add(prepared.astral.len());
         let mut layout = ApproxLayout {
             attachments: Vec::new(),
+            attachment_widths: Vec::new(),
             line: TextLine {
                 end: u32::try_from(units).unwrap_or(u32::MAX),
                 width: size.width,
@@ -1609,14 +1666,15 @@ impl TextEngine for ApproxTextEngine {
                 ..TextLine::default()
             },
             advance,
-            attachment_advances: prepared
-                .attachments
-                .iter()
-                .map(|a| (a.index, a.width - advance))
-                .collect(),
             chars: u32::try_from(prepared.chars).unwrap_or(u32::MAX),
             astral: prepared.astral.clone(),
         };
+        layout.attachment_widths = prepared
+            .attachments
+            .iter()
+            .map(|a| (layout.char_at(a.index), a.width))
+            .collect();
+        layout.attachment_widths.sort_unstable_by_key(|&(k, _)| k);
         // An attachment sits on the line its character wraps to, as
         // `measure` wraps the text in a box this wide.
         layout.attachments = prepared
@@ -1652,27 +1710,7 @@ impl TextEngine for ApproxTextEngine {
         let Some(l) = layout.downcast::<ApproxLayout>() else {
             return TextPosition::default();
         };
-        let k = if l.attachment_advances.is_empty() {
-            if l.advance <= Points::ZERO {
-                return TextPosition::default();
-            }
-            // Clamped to `0..=chars` first: the cast cannot truncate.
-            (p.x / l.advance).round().clamp(0.0, l.chars as f32) as u32
-        } else {
-            let (mut lo, mut hi) = (0, l.chars);
-            while lo < hi {
-                let mid = lo + (hi - lo) / 2;
-                let left = l.x_of(l.unit_of(mid));
-                let right = l.x_of(l.unit_of(mid + 1));
-                if p.x < (left + right) * 0.5 {
-                    hi = mid;
-                } else {
-                    lo = mid + 1;
-                }
-            }
-            lo
-        };
-        TextPosition::new(l.unit_of(k), Affinity::Downstream)
+        TextPosition::new(l.unit_of(l.hit_x(p.x)), Affinity::Downstream)
     }
 
     fn caret_rect(&self, layout: &TextLayout, position: TextPosition) -> Option<Bounds<Points>> {
@@ -1739,10 +1777,11 @@ fn approx_place(k: usize, prepared: &ApproxPrepared, width: Points) -> (f32, Poi
 /// [`ApproxTextEngine`]'s final layout: reported as one line.
 struct ApproxLayout {
     attachments: Vec<Option<Point<Points>>>,
+    /// `(char_index, width)` of each attachment, sorted by `char_index`.
+    attachment_widths: Vec<(u32, Points)>,
     line: TextLine,
     /// The width of every character.
     advance: Points,
-    attachment_advances: Vec<(u32, Points)>,
     chars: u32,
     /// The indices of the characters two UTF-16 units long, in order.
     astral: Vec<u32>,
@@ -1775,11 +1814,68 @@ impl ApproxLayout {
 
     /// The x of the caret at UTF-16 offset `o`.
     fn x_of(&self, o: u32) -> Points {
-        let base = self.advance * self.char_at(o) as f32;
-        self.attachment_advances
-            .iter()
-            .filter(|(index, _)| *index < o)
-            .fold(base, |x, (_, advance)| x + *advance)
+        let k = self.char_at(o);
+        let mut x = self.advance * k as f32;
+        for &(at, width) in &self.attachment_widths {
+            if at >= k {
+                break;
+            }
+            x += width - self.advance;
+        }
+        x
+    }
+
+    /// The character boundary nearest horizontal position `x`.
+    fn hit_x(&self, x: Points) -> u32 {
+        if x <= Points::ZERO {
+            return 0;
+        }
+        if self.attachment_widths.is_empty() {
+            return if self.advance > Points::ZERO {
+                // Clamped to `0..=chars` first: the cast cannot truncate.
+                (x / self.advance).round().clamp(0.0, self.chars as f32) as u32
+            } else {
+                0
+            };
+        }
+        let mut seg_start = 0u32;
+        let mut cur_x = Points::ZERO;
+        for &(at, width) in &self.attachment_widths {
+            let at = at.min(self.chars);
+            if at > seg_start {
+                let n = at - seg_start;
+                let run_end = cur_x + self.advance * n as f32;
+                if x < run_end {
+                    let step = if self.advance > Points::ZERO {
+                        ((x - cur_x) / self.advance).round().clamp(0.0, n as f32) as u32
+                    } else {
+                        0
+                    };
+                    return seg_start + step;
+                }
+                cur_x = run_end;
+            }
+            let att_end = cur_x + width;
+            if x < att_end {
+                return if x < cur_x + width * 0.5 {
+                    at
+                } else {
+                    (at + 1).min(self.chars)
+                };
+            }
+            cur_x = att_end;
+            seg_start = (at + 1).min(self.chars);
+        }
+        if seg_start < self.chars {
+            let n = self.chars - seg_start;
+            let step = if self.advance > Points::ZERO {
+                ((x - cur_x) / self.advance).round().clamp(0.0, n as f32) as u32
+            } else {
+                0
+            };
+            return seg_start + step;
+        }
+        self.chars
     }
 }
 
@@ -2626,5 +2722,326 @@ mod tests {
         assert_eq!(r.font_size, px(14.0));
         // Other ems follow the resolved size.
         assert!((r.letter_spacing.0 - 1.4).abs() < 1e-4);
+    }
+}
+
+/// The engine calls a [`TextGeometry`] needs, object-safe.
+pub(crate) trait GeometryEngine {
+    fn geometry_lines(&self, layout: &TextLayout) -> Vec<TextLine>;
+    fn geometry_hit_test(&self, layout: &TextLayout, point: Point<Points>) -> TextPosition;
+    fn geometry_caret_rect(
+        &self,
+        layout: &TextLayout,
+        position: TextPosition,
+    ) -> Option<Bounds<Points>>;
+    fn geometry_range_rects(
+        &self,
+        layout: &TextLayout,
+        range: Range<u32>,
+        out: &mut Vec<Bounds<Points>>,
+    );
+}
+
+impl<M: TextEngine> GeometryEngine for M {
+    fn geometry_lines(&self, layout: &TextLayout) -> Vec<TextLine> {
+        self.lines(layout)
+    }
+    fn geometry_hit_test(&self, layout: &TextLayout, point: Point<Points>) -> TextPosition {
+        self.hit_test(layout, point)
+    }
+    fn geometry_caret_rect(
+        &self,
+        layout: &TextLayout,
+        position: TextPosition,
+    ) -> Option<Bounds<Points>> {
+        self.caret_rect(layout, position)
+    }
+    fn geometry_range_rects(
+        &self,
+        layout: &TextLayout,
+        range: Range<u32>,
+        out: &mut Vec<Bounds<Points>>,
+    ) {
+        self.range_rects(layout, range, out);
+    }
+}
+
+/// A text block's final layout as the platform engine made it
+/// ([`crate::Text::on_text_layout`]), to ask where its characters are:
+/// the engine's own answers, not an estimate from the lines.
+///
+/// Offsets are UTF-16 units in the block's own text: the empty
+/// placeholders the core adds for a span's padding are not counted, so
+/// they match the text the app gave. Boxes are in the content box (y
+/// down, points). Rust-only: it holds the engine and lives on the engine
+/// thread.
+#[derive(Clone)]
+pub struct TextGeometry {
+    engine: std::rc::Rc<dyn GeometryEngine>,
+    layout: TextLayout,
+    text: Arc<AttributedText>,
+    /// The laid-out text's offsets of the padding placeholders, in order.
+    spacers: Arc<[u32]>,
+}
+
+impl TextGeometry {
+    pub(crate) fn new(
+        engine: std::rc::Rc<dyn GeometryEngine>,
+        layout: TextLayout,
+        text: Arc<AttributedText>,
+        spacers: &[u32],
+    ) -> Self {
+        let mut spacers = spacers.to_vec();
+        spacers.sort_unstable();
+        spacers.dedup();
+        Self {
+            engine,
+            layout,
+            text,
+            spacers: spacers.into(),
+        }
+    }
+
+    /// The offset in the app's text of laid-out offset `t`.
+    fn to_source(&self, t: u32) -> u32 {
+        t - self.spacers.partition_point(|&s| s < t) as u32
+    }
+
+    /// The laid-out offset of offset `s` in the app's text: past the
+    /// placeholders before it, and past those at it unless `upstream`
+    /// (the caret stays with the character before).
+    fn to_laid(&self, s: u32, upstream: bool) -> u32 {
+        let mut t = s;
+        for &at in self.spacers.iter() {
+            if at < t || (at == t && !upstream) {
+                t += 1;
+            } else {
+                break;
+            }
+        }
+        t
+    }
+
+    /// Its lines, in order, with their characters.
+    pub fn lines(&self) -> Vec<TextLine> {
+        let units: Vec<u16> = self.text.text.encode_utf16().collect();
+        let mut lines = self.engine.geometry_lines(&self.layout);
+        for line in &mut lines {
+            let (start, end) = (line.start as usize, (line.end as usize).min(units.len()));
+            if start < end {
+                let mut text = String::from_utf16_lossy(&units[start..end]);
+                if self
+                    .spacers
+                    .iter()
+                    .any(|&s| s >= line.start && s < line.end)
+                {
+                    // Placeholders are one unit each: drop those at spacer
+                    // offsets.
+                    let mut k = line.start;
+                    text = text
+                        .chars()
+                        .filter(|c| {
+                            let at = k;
+                            k += c.len_utf16() as u32;
+                            !(*c == ATTACHMENT_CHAR && self.spacers.binary_search(&at).is_ok())
+                        })
+                        .collect();
+                }
+                line.text = text;
+            }
+            line.start = self.to_source(line.start);
+            line.end = self.to_source(line.end);
+        }
+        lines
+    }
+
+    /// The caret position nearest `point` (content box).
+    pub fn hit_test(&self, point: Point<Points>) -> TextPosition {
+        let p = self.engine.geometry_hit_test(&self.layout, point);
+        TextPosition::new(self.to_source(p.offset), p.affinity)
+    }
+
+    /// The caret at `position`: a box of no width as high as its line.
+    pub fn caret_rect(&self, position: TextPosition) -> Option<Bounds<Points>> {
+        let upstream = position.affinity == Affinity::Upstream;
+        let t = self.to_laid(position.offset, upstream);
+        self.engine
+            .geometry_caret_rect(&self.layout, TextPosition::new(t, position.affinity))
+    }
+
+    /// The boxes that cover the characters of `range`, line high.
+    pub fn range_rects(&self, range: Range<u32>) -> Vec<Bounds<Points>> {
+        let mut out = Vec::new();
+        if range.start < range.end {
+            let r = self.to_laid(range.start, false)..self.to_laid(range.end, true);
+            self.engine.geometry_range_rects(&self.layout, r, &mut out);
+        }
+        out
+    }
+}
+
+thread_local! {
+    static GEOMETRY: std::cell::RefCell<Option<TextGeometry>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// The geometry of the text block whose `TextLayout` event is being
+/// dispatched, for [`crate::Text::on_text_layout`]: the event's payload
+/// crosses threads, the engine does not.
+pub(crate) struct GeometryScope(Option<TextGeometry>);
+
+impl GeometryScope {
+    pub(crate) fn enter(geometry: TextGeometry) -> Self {
+        Self(GEOMETRY.with(|g| g.replace(Some(geometry))))
+    }
+
+    /// The geometry of the event being dispatched, if any.
+    pub(crate) fn current() -> Option<TextGeometry> {
+        GEOMETRY.with(|g| g.borrow().clone())
+    }
+}
+
+impl Drop for GeometryScope {
+    fn drop(&mut self) {
+        let previous = self.0.take();
+        GEOMETRY.with(|g| *g.borrow_mut() = previous);
+    }
+}
+
+impl fmt::Debug for TextGeometry {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TextGeometry")
+            .field("spacers", &self.spacers)
+            .finish_non_exhaustive()
+    }
+}
+
+#[cfg(test)]
+mod geometry_tests {
+    use super::*;
+
+    /// "a[pad]bc[pad]d": a padded span's placeholders, as the core adds them.
+    fn padded() -> Arc<AttributedText> {
+        let mut text = AttributedText {
+            text: format!("a{ATTACHMENT_CHAR}bc{ATTACHMENT_CHAR}d"),
+            ..AttributedText::default()
+        };
+        for index in [1, 4] {
+            text.attachments.push(TextAttachment {
+                index,
+                width: Points(4.0),
+                height: Points::ZERO,
+            });
+        }
+        Arc::new(text)
+    }
+
+    fn geometry() -> TextGeometry {
+        let engine = ApproxTextEngine;
+        let text = padded();
+        let prepared = engine.prepare(&text);
+        let layout = engine.layout(&prepared, size(Points(1000.0), Points(100.0)));
+        TextGeometry::new(std::rc::Rc::new(ApproxTextEngine), layout, text, &[1, 4])
+    }
+
+    #[test]
+    fn padding_placeholders_are_not_offsets() {
+        let g = geometry();
+        let lines = g.lines();
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].text, "abcd");
+        assert_eq!((lines[0].start, lines[0].end), (0, 4));
+        let at = |o| {
+            g.caret_rect(TextPosition::new(o, Affinity::Downstream))
+                .unwrap()
+                .origin
+                .x
+        };
+        let laid = |o: u32| {
+            ApproxTextEngine
+                .caret_rect(&g.layout, TextPosition::new(o, Affinity::Downstream))
+                .unwrap()
+                .origin
+                .x
+        };
+        // "b" is after the first placeholder, "d" after both.
+        assert_eq!(at(1), laid(2));
+        assert_eq!(at(3), laid(5));
+        // And back: a point at "d" is offset 3 of the text.
+        let p = point(laid(5), Points(1.0));
+        assert_eq!(g.hit_test(p).offset, 3);
+        // A range over "bc" covers the laid-out "bc", not the spacers.
+        let r = g.range_rects(1..3);
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].origin.x, laid(2));
+    }
+
+    #[test]
+    fn zero_height_user_attachments_stay_in_source_offsets() {
+        let engine = ApproxTextEngine;
+        let mut text = AttributedText {
+            text: format!("a{ATTACHMENT_CHAR}b"),
+            ..AttributedText::default()
+        };
+        text.attachments.push(TextAttachment {
+            index: 1,
+            width: Points(40.0),
+            height: Points::ZERO,
+        });
+        let text = Arc::new(text);
+        let prepared = engine.prepare(&text);
+        let layout = engine.layout(&prepared, size(Points(1000.0), Points(100.0)));
+        // Not a synthetic span-padding spacer, so its offset remains part of the source text.
+        let g = TextGeometry::new(std::rc::Rc::new(ApproxTextEngine), layout, text, &[]);
+        let lines = g.lines();
+        assert_eq!(lines.len(), 1);
+        assert_eq!((lines[0].start, lines[0].end), (0, 3));
+        assert_eq!(lines[0].text, format!("a{ATTACHMENT_CHAR}b"));
+        let r = g.range_rects(1..2);
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].size.width, Points(40.0));
+    }
+
+    #[test]
+    fn approx_engine_hit_test_and_range_rects_respect_attachment_widths() {
+        let engine = ApproxTextEngine;
+        let style = ResolvedTextStyle {
+            font_size: px(10.0 / 0.55),
+            ..ResolvedTextStyle::default()
+        };
+        let mut t = AttributedText::default();
+        t.push("ab", style);
+        t.push_attachment(size(px(80.0), px(16.0)), style);
+        t.push("cd", style);
+        let prepared = engine.prepare(&t);
+        let layout = engine.layout(&prepared, size(px(300.0), px(20.0)));
+
+        let x = |o| {
+            engine
+                .caret_rect(&layout, TextPosition::new(o, Affinity::Downstream))
+                .map(|b| b.origin.x.0.round())
+        };
+        assert_eq!(x(0), Some(0.0));
+        assert_eq!(x(2), Some(20.0));
+        assert_eq!(x(3), Some(100.0));
+        assert_eq!(x(5), Some(120.0));
+
+        let mut rects = Vec::new();
+        engine.range_rects(&layout, 2..3, &mut rects);
+        assert_eq!(rects.len(), 1);
+        assert_eq!(rects[0].origin.x.0.round(), 20.0);
+        assert_eq!(rects[0].size.width.0.round(), 80.0);
+
+        assert_eq!(engine.hit_test(&layout, point(px(19.0), px(5.0))).offset, 2);
+        assert_eq!(engine.hit_test(&layout, point(px(50.0), px(5.0))).offset, 2);
+        assert_eq!(engine.hit_test(&layout, point(px(70.0), px(5.0))).offset, 3);
+        assert_eq!(
+            engine.hit_test(&layout, point(px(101.0), px(5.0))).offset,
+            3
+        );
+        assert_eq!(
+            engine.hit_test(&layout, point(px(118.0), px(5.0))).offset,
+            5
+        );
     }
 }

@@ -2,6 +2,7 @@
   "name": "API Macos",
   "id": "com.example.api-macos",
   "capabilities": {
+    "windows": true,
     "fs": {
       "read": [
         "${dataDir}"

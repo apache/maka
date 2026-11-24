@@ -193,6 +193,10 @@ impl Mounter {
                 );
                 match view.kind() {
                     ViewKind::Stack => crate::navigation::stack_resized(surface, view),
+                    ViewKind::Scroll => {
+                        crate::shader::resized(view);
+                        crate::scroll::resized(surface, view);
+                    }
                     ViewKind::Canvas => view.changed(),
                     ViewKind::Image => {
                         crate::shader::resized(view);
@@ -428,6 +432,11 @@ impl Mounter {
             Command::SetSelection { start, end } => {
                 if let Some(view) = view {
                     crate::text_input::set_selection(view, *start, *end);
+                }
+            }
+            Command::ClearSelection => {
+                if let Some(view) = view {
+                    crate::selectable_view::clear_in(surface, view);
                 }
             }
             Command::InsertText(text) => {

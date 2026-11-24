@@ -44,6 +44,7 @@ fn storage() -> impl IntoElement {
 ```tsx tabs
 import { mount, signal, Text, View } from "nsh";
 import { Collapsible } from "nsh/base";
+import { Window } from "nsh/desktop";
 
 function App() {
   const open = signal(false);
@@ -67,7 +68,11 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 `Collapsible` 来自 [`nsh/base`](../modules/nsh-base.md)，在 Rust 里是 `nsh-base` crate。值由应用持有：触发控件切换 `open`，

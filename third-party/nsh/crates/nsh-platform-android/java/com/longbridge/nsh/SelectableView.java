@@ -17,8 +17,9 @@ import android.view.ViewGroup;
  * The texts' content goes over when it changes, their frames (area
  * coordinates, dp) with every gesture; the model hit-tests through
  * {@link #offsetAt}. A long press on a text of the area selects the word
- * there and the rest of the gesture extends the selection; the handles
- * ({@link SelectionHandle}) move its ends; the floating toolbar copies,
+ * there (with the long press haptic) and the rest of the gesture extends
+ * the selection; the handles ({@link SelectionHandle}) move its ends, each
+ * change with the text handles' tick; the floating toolbar copies,
  * selects all or shares; a touch elsewhere ends it. One selection per
  * surface: a text's own ({@link TextBox}) or an area's.
  */
@@ -141,7 +142,7 @@ final class SelectableView implements SelectionHandle.Owner {
             case MotionEvent.ACTION_MOVE: {
                 if (extending) {
                     float[] p = toArea(e.getRawX(), e.getRawY());
-                    gesture(DRAG, p[0], p[1]);
+                    if (gesture(DRAG, p[0], p[1])) tick();
                     break;
                 }
                 float slop = android.view.ViewConfiguration.get(view.getContext()).getScaledTouchSlop();
@@ -359,13 +360,12 @@ final class SelectableView implements SelectionHandle.Owner {
 
     /**
      * The UTF-16 range {@code start..end} of text {@code i} as a copy gives
-     * it (called from Rust within a native call): without attachments and
-     * hidden runs.
+     * it (called from Rust within a native call): attachments as their copy
+     * texts, without hidden runs ({@link TextBox#copied}).
      */
     String copiedText(int i, int start, int end) {
         if (i < 0 || i >= texts.size()) return "";
-        Layout layout = texts.get(i).layout();
-        return layout == null ? "" : TextLayouts.shown(layout.getText(), start, end);
+        return texts.get(i).copied(start, end);
     }
 
     /**
@@ -381,6 +381,13 @@ final class SelectableView implements SelectionHandle.Owner {
         // The area's dp to the text's content box in px, where the layout is.
         return TextLayouts.hitOffset(
                 TextLayouts.hitTest(layout, x * d - origins[i * 2], y * d - origins[i * 2 + 1], 1f));
+    }
+
+    /** A drag moved an end: the tick of Android's text handles (none before Android 8.1). */
+    private void tick() {
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O_MR1) {
+            view.performHapticFeedback(android.view.HapticFeedbackConstants.TEXT_HANDLE_MOVE);
+        }
     }
 
     /** Runs a gesture of the model at the area point ({@code x}, {@code y}); redraws when it changed. */
@@ -490,7 +497,7 @@ final class SelectableView implements SelectionHandle.Owner {
         view.getLocationInWindow(at);
         float d = mounter.density;
         // Just above the line's bottom: the line the handle hangs from.
-        gesture(moveStart ? MOVE_START : MOVE_END, (x - at[0]) / d, (y - at[1]) / d - 2);
+        if (gesture(moveStart ? MOVE_START : MOVE_END, (x - at[0]) / d, (y - at[1]) / d - 2)) tick();
         int[] after = bounds();
         if (after == null) return;
         // The end that stayed is now on the other side: the handles passed.

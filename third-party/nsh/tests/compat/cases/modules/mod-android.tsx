@@ -7,17 +7,22 @@ import { BackHandler } from "nsh/mobile";
 
 function App() {
   const calls = signal("not called");
+  const progress = signal("not called");
   return (
     <View style={{ flex: 1, paddingTop: 64 }}>
       <Text>{`Android: ${platform.os === "android"}`}</Text>
       <Text>{`Exit: ${typeof BackHandler.exitApp}`}</Text>
       <Text>{`Calls: ${calls()}`}</Text>
+      <Text>{`Progress: ${progress()}`}</Text>
       <View
         testID="call"
         onPress={() => {
           const remove = BackHandler.on("press", () => true);
           remove();
           calls.set(`done, remove ${typeof remove}`);
+          const stop = BackHandler.on("progress", (e) => progress.set(`${e.phase} ${e.progress}`));
+          stop();
+          progress.set(`done, stop ${typeof stop}`);
         }}
       >
         <Text>Call them</Text>

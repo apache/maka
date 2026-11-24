@@ -895,18 +895,7 @@ impl WebItem {
             if !item.allows(&url) {
                 // SAFETY: as above.
                 let _ = unsafe { args.SetCancel(true) };
-                log::warn!(target: "js", "web view navigation to {url} is not granted");
-                let message = format!("navigation to {url} is not granted");
-                item.emitter.emit(EventKind::Error, || {
-                    EventPayload::Map(vec![
-                        ("message", PayloadValue::Str(message)),
-                        (
-                            "code",
-                            PayloadValue::Str(nsh_core::element::codes::ACCESS_DENIED.into()),
-                        ),
-                        ("url", PayloadValue::Str(url.clone())),
-                    ])
-                });
+                item.navigation_refused(&url);
                 return Ok(());
             }
             let mut state = navigation(&sender, true);
@@ -993,13 +982,25 @@ impl WebItem {
         }));
         let weak = Rc::downgrade(self);
         let popup = NewWindowRequestedEventHandler::create(Box::new(move |_, args| {
-            if weak
+            let Some(args) = args else { return Ok(()) };
+            // A new window (`target="_blank"`, `window.open`) opens nothing,
+            // as on the other platforms: WebView2's own would be a browser
+            // window of its own, whose pages no handler of this view sees
+            // (neither the `webview` capability's hosts nor its media,
+            // nor the downloads the app holds).
+            // SAFETY: a WebView2 call on the live event.
+            unsafe { args.SetHandled(true)? };
+            let Some(item) = weak
                 .upgrade()
-                .is_none_or(|item| item.closed.get() || item.closing.get() || item.retired.get())
-                && let Some(args) = args
-            {
-                // SAFETY: suppress the default popup after its owning page is gone.
-                unsafe { args.SetHandled(true)? };
+                .filter(|item| !item.closed.get() && !item.closing.get() && !item.retired.get())
+            else {
+                return Ok(());
+            };
+            let mut uri = PWSTR::null();
+            // SAFETY: as above; the string is taken over.
+            let url = unsafe { args.Uri(&mut uri).map(|()| take_pwstr(uri)) }.unwrap_or_default();
+            if !item.allows(&url) {
+                item.navigation_refused(&url);
             }
             Ok(())
         }));
@@ -1012,6 +1013,23 @@ impl WebItem {
             let _ = webview.add_NavigationCompleted(&completed, &mut token);
             let _ = webview.add_WebMessageReceived(&message, &mut token);
         }
+    }
+
+    /// A navigation to `url`, which the app's `webview` capability does not
+    /// grant, was refused: the app hears it.
+    fn navigation_refused(&self, url: &str) {
+        log::warn!(target: "js", "web view navigation to {url} is not granted");
+        let message = format!("navigation to {url} is not granted");
+        self.emitter.emit(EventKind::Error, || {
+            EventPayload::Map(vec![
+                ("message", PayloadValue::Str(message)),
+                (
+                    "code",
+                    PayloadValue::Str(nsh_core::element::codes::ACCESS_DENIED.into()),
+                ),
+                ("url", PayloadValue::Str(url.to_owned())),
+            ])
+        });
     }
 
     /// Whether this view was told to hold downloads: the core's
@@ -1594,7 +1612,20 @@ impl WebItem {
         self.background.set(view.state().style.background_color);
         *self.props.borrow_mut() = Some(p.clone());
         // The core keeps `incognito` from changing once it is made.
-        self.start(surface);
+        if self.host.get().is_some() {
+            self.start(surface);
+        } else {
+            // Not bound yet: it binds once the batch is applied. A
+            // `<Window>` made in the same batch has opened by then, so its
+            // content binds to that window rather than the main one (#2514).
+            let weak = Rc::downgrade(self);
+            surface.on_frame(move |surface, _| {
+                if let Some(item) = weak.upgrade() {
+                    item.start(surface);
+                }
+                crate::surface::Next::Done
+            });
+        }
         if self.webview.borrow().is_some() {
             self.paint_background();
             self.apply(p);

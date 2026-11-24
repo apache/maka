@@ -345,7 +345,9 @@ activation, the disabled state and the tab role and selected state for screen re
 screen readers announce and holds no value: the app tells each tab whether it is selected (`selected`), hears
 presses (`onPress`) and shows the selected section's content itself. The app's label is the tab's children, whose
 `group-selected:` classes follow it. The list's indicator (`indicatorClass`, `indicatorStyle`), an underline or a
-pill the app styles, sits on the selected tab and springs to the next one natively. See [Tabs](../elements/tabs.md).
+pill the app styles, sits on the selected tab and springs to the next one natively. Its `orientation` picks the arrow
+keys that move between the tabs (Left and Right when horizontal, Up and Down when vertical; both pairs without it).
+See [Tabs](../elements/tabs.md).
 
 ### Carousel
 

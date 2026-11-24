@@ -11,7 +11,7 @@ use std::cell::{Cell, RefCell};
 use nsh_core::{
     element::PropError,
     js::host::HostInput,
-    platform::{FetchEvent, FetchOp, HttpBody, HttpRequest},
+    platform::{FetchEvent, FetchOp, HttpBody, HttpCache, HttpRequest},
 };
 
 use super::{timers::report, values::Value};
@@ -53,12 +53,14 @@ impl Fetches {
                     _ => HttpBody::Empty,
                 };
                 let follow_redirects = args.index(4)?.truthy();
+                let cache = args.index(5)?.as_string().unwrap_or_default();
                 let id = self.next.get().wrapping_add(1).max(1);
                 self.next.set(id);
                 let mut request = HttpRequest::new(method, url);
                 request.headers = headers;
                 request.body = body;
                 request.follow_redirects = follow_redirects;
+                request.cache = HttpCache::parse(&cache).unwrap_or_default();
                 self.queue.borrow_mut().push((id, FetchOp::Start(request)));
                 Ok(Value::number(id.into()))
             }

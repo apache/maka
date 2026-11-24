@@ -374,6 +374,8 @@ export function SettingsSelect(props: {
   placeholder?: string;
   /** Drawn before the current value, such as a palette swatch. */
   preview?: JSX.Element;
+  /** Drawn before each choice in the menu. */
+  choicePreview?(value: string): JSX.Element;
   trailing?: JSX.Element;
   flush?: boolean;
   onOpen?(): void;
@@ -466,6 +468,7 @@ export function SettingsSelect(props: {
         itemClass={`rounded-lg focus:bg-[${C.floatingRaised}]`}
         renderItem={(item) => (
           <View style={menuRowStyle()}>
+            {props.choicePreview?.(item.value)}
             <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
               <Text style={{ ...captionTextStyle, color: item.disabled ? C.muted : C.text }}>
                 {item.title}

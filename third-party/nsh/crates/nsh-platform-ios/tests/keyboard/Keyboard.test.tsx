@@ -3,7 +3,21 @@
 // key's HID usage, modifiers, no invented repeat), a mounted capture rule
 // taking the key before the default, the root's initial Tab entrypoint and
 // our focus moves. The simulator injects real IOHID key events.
-import { expect, open, test } from "nsh/test";
+//
+// A tap gives a control (a view that takes presses) no keyboard focus, as
+// UIKit's controls take none: the keyboard reaches them with Tab, from the
+// window's initial focus. A view that takes keys and no presses takes the
+// focus from a tap.
+import { type App, expect, open, test } from "nsh/test";
+
+/** Moves the focus with Tab from the window's initial focus to the
+ * `stops`-th stop (`first` is the first). */
+async function tabTo(app: App, stops: number, name: string) {
+  for (let i = 0; i < stops; i++) {
+    await app.keyboard.press("tab");
+  }
+  await app.waitFor(`text:focus:${name}`);
+}
 
 test("tab from the window's initial focus reaches the first stop", async () => {
   // Nothing has the keyboard focus yet: the surface root is first responder
@@ -22,8 +36,7 @@ test("shift+tab from the window's initial focus reaches the last stop", async ()
 
 test("a focused view reports a hardware press and release with the source's data", async () => {
   const app = await open("./App.tsx");
-  await app.press("id:first");
-  await app.waitFor("text:focus:first");
+  await tabTo(app, 1, "first");
   await app.keyboard.press("a");
   await app.waitFor("text:key:a");
   expect(app.shows("text:code:KeyA")).toBe(true);
@@ -36,8 +49,7 @@ test("a focused view reports a hardware press and release with the source's data
 
 test("shift keeps the source key's case and reports the modifier", async () => {
   const app = await open("./App.tsx");
-  await app.press("id:first");
-  await app.waitFor("text:focus:first");
+  await tabTo(app, 1, "first");
   await app.keyboard.press("shift+a");
   await app.waitFor("text:key:A");
   expect(app.shows("text:code:KeyA")).toBe(true);
@@ -47,8 +59,7 @@ test("shift keeps the source key's case and reports the modifier", async () => {
 
 test("a capture rule takes the key before the default", async () => {
   const app = await open("./App.tsx");
-  await app.press("id:second");
-  await app.waitFor("text:focus:second");
+  await tabTo(app, 2, "second");
   await app.keyboard.press("a");
   await app.waitFor("text:key:a");
   expect(app.shows("text:prevented:true")).toBe(true);
@@ -56,8 +67,7 @@ test("a capture rule takes the key before the default", async () => {
 
 test("tab moves between focusable views", async () => {
   const app = await open("./App.tsx");
-  await app.press("id:first");
-  await app.waitFor("text:focus:first");
+  await tabTo(app, 1, "first");
   await app.keyboard.press("tab");
   await app.waitFor("text:focus:second");
   await app.keyboard.press("tab");
@@ -66,8 +76,7 @@ test("tab moves between focusable views", async () => {
 
 test("a captured tab stays in the focused view", async () => {
   const app = await open("./App.tsx");
-  await app.press("id:capturedTab");
-  await app.waitFor("text:focus:capturedTab");
+  await tabTo(app, 4, "capturedTab");
   // The view's mounted rule captures Tab before UIKit's focus traversal
   // and reports it prevented. A real UIPress keeps its Tab identity; a
   // UIKeyCommand carrying the same key has no HID usage, so `code` is not
@@ -81,10 +90,12 @@ test("a captured tab stays in the focused view", async () => {
 
 test("Return presses the focused view that takes presses", async () => {
   const app = await open("./App.tsx");
+  // A tap presses the control and leaves the focus where it was.
   await app.press("id:first");
-  await app.waitFor("text:focus:first");
-  // The tap that focused the view is its first press.
   await app.waitFor("text:pressed:1");
+  await app.wait(300);
+  expect(app.shows("text:focus:none")).toBe(true);
+  await tabTo(app, 1, "first");
   await app.keyboard.press("enter");
   await app.waitFor("text:pressed:2");
 });
@@ -114,7 +125,7 @@ test("a portal notifies and captures its logical ancestor", async () => {
   const app = await open("./App.tsx");
   await app.press("id:openPortalsA");
   await app.waitFor("id:childA");
-  await app.press("id:childA");
+  await app.drag("id:childA", { x: 0, y: 0 });
   await app.waitFor("text:focus:childA");
   await app.keyboard.press("a");
   await app.waitFor("text:hostAKey:a");
@@ -126,7 +137,7 @@ test("a sibling portal does not capture another portal's ancestor", async () => 
   const app = await open("./App.tsx");
   await app.press("id:openPortalsB");
   await app.waitFor("id:childB");
-  await app.press("id:childB");
+  await app.drag("id:childB", { x: 0, y: 0 });
   await app.waitFor("text:focus:childB");
   await app.keyboard.press("a");
   await app.waitFor("text:childBKey:a");
@@ -136,8 +147,7 @@ test("a sibling portal does not capture another portal's ancestor", async () => 
 
 test("shift+tab moves the focus back", async () => {
   const app = await open("./App.tsx");
-  await app.press("id:second");
-  await app.waitFor("text:focus:second");
+  await tabTo(app, 2, "second");
   await app.keyboard.press("shift+tab");
   await app.waitFor("text:focus:first");
 });

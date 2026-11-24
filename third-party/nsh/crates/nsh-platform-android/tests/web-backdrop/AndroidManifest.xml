@@ -1,0 +1,8 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="com.longbridge.nsh.backdropchecks">
+  <uses-sdk android:minSdkVersion="31" android:targetSdkVersion="35" />
+  <uses-permission android:name="android.permission.INTERNET" />
+  <application android:debuggable="true" android:hardwareAccelerated="true" android:extractNativeLibs="true" android:theme="@android:style/Theme.Material.Light.NoActionBar">
+    <activity android:name="com.longbridge.nsh.WebBackdropRegression$HostActivity" android:exported="true" />
+  </application>
+  <instrumentation android:name="com.longbridge.nsh.WebBackdropRegression" android:targetPackage="com.longbridge.nsh.backdropchecks" />
+</manifest>

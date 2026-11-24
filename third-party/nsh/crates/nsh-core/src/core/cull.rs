@@ -13,7 +13,7 @@
 
 use taffy::Position;
 
-use super::{Core, Key, Kind, NO_KEY, rounded, scroll_extent, span};
+use super::{Core, Key, Kind, NO_KEY, Origin, rounded, scroll_extent};
 use crate::{geometry::Bounds, mount::MountItem, ops::EventKind, text::TextEngine};
 
 /// How far around its viewport a scroll view mounts its content, in
@@ -154,7 +154,7 @@ impl<M: TextEngine> Core<M> {
     /// The frame of culled `key` and its subtree's, as
     /// [`Core::emit_frames_in`] gives made views theirs, with no mount
     /// items: what `onLayout`, `measure()` and [`Core::sync_culled`] read.
-    pub(super) fn cull_frames_in(&mut self, key: Key, hidden: bool, origin: taffy::Point<f32>) {
+    pub(super) fn cull_frames_in(&mut self, key: Key, hidden: bool, origin: Origin) {
         let node = &mut self.nodes[key as usize];
         node.culled = true;
         let Some(layout) = node.layout else { return };
@@ -170,18 +170,19 @@ impl<M: TextEngine> Core<M> {
                     .parent(layout)
                     .is_some_and(|p| self.layout.style(p).position.is_positioned()));
         let containing = if escaping {
-            self.layout_origin(layout)
+            self.containing_origin(layout)
         } else {
             origin
         };
+        let ratio = self.frame_ratio();
         let frame = if hidden {
             Bounds::default()
         } else {
-            let ratio = self.frame_ratio();
             let l = rounded(&unrounded, containing, ratio);
+            let offset = origin.to(containing, ratio);
             let mut frame = crate::geometry::rect(
-                l.location.x + span(origin.x, containing.x, ratio.width),
-                l.location.y + span(origin.y, containing.y, ratio.height),
+                l.location.x + offset.x,
+                l.location.y + offset.y,
                 l.size.width,
                 l.size.height,
             );
@@ -222,10 +223,14 @@ impl<M: TextEngine> Core<M> {
         if !node.kind.is_container() || node.kind == Kind::List {
             return;
         }
-        let inner = taffy::Point {
-            x: containing.x + unrounded.location.x,
-            y: containing.y + unrounded.location.y,
-        };
+        let inner = Origin::of(
+            taffy::Point {
+                x: containing.at.x + unrounded.location.x,
+                y: containing.at.y + unrounded.location.y,
+            },
+            unrounded.size,
+            ratio,
+        );
         let children = std::mem::take(&mut self.nodes[key as usize].children);
         for &child in &children {
             let c = &self.nodes[child as usize];

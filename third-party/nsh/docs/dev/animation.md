@@ -17,7 +17,10 @@
   (`nsh_core::js::animation`), which decodes them, declares their types (`animation::declarations`) and gives `nsh`'s `Easing` its curves (`animation::tables`). `Animated.timing` / `spring` / `decay` / `sequence` / `parallel` / `stagger` /
   `delay` / `loop` build a `Composite` tree that runs entirely natively (`AnimationOp::StartComposite`): each step starts at the exact end
   time of the previous one (no frame gaps), `stop()` / `reset()` (back to the values at start) / `start(cb)` report `{ finished }` once
-  for the whole tree; leaf animations get internal ids (`LEAF_IDS`) that never reach JS. Composites are released when JS
+  for the whole tree; leaf animations get internal ids (`LEAF_IDS`) that never reach JS. Stopping, setting, releasing, or
+  starting another animation on a value also cancels any composite waiting to animate it before its leaf starts (queued
+  before the first tick, in a delay, or in a trailing delay hold), while active leaves still end through `leaf_ends` so
+  replacement drivers keep velocity. Leaf ends stay queued while `run_programs` holds the programs locally to advance them. Composites are released when JS
   lets go of them (their finalizers queue `ReleaseComposite`); a run goes on after that. A run does not keep its
   composite (or the values it animates) alive: `nsh-js` remembers live composites by key (`Animations::composites`),
   not in the run's promise, so an endless `Animated.loop` whose values its component released stops with them (a step on
@@ -64,7 +67,12 @@
   second clock beside the display's, and no work for a hidden window whose animations only draw. The one exception is
   a test's app (`nsh test --target macos|windows`): it runs as on screen whatever covers its window (the test windows
   do not come to the front, a test machine's screen may be locked), so while it wants frames and the display gives
-  none, it gets one a frame later, drawing included (JS frame requests, a list binding rows over frames). `scrollValue` writes the scroll offset into an animated value in the same frame; `pan` lets drags drive animated values
+  none, it gets one a frame later, drawing included (JS frame requests, a list binding rows over frames).
+- **First frame**: an animation counts from the first frame anyone sees. The change that starts it often mounts and
+  lays out what it shows, which can hold the UI thread right after its first step; display frames step the graph with
+  `Graph::tick_frame`, which then counts that animation (or composite) from about the next frame instead of skipping
+  its beginning, once. Deadline steps use `Graph::tick` and keep real time. Linux (frame clock and deadlines share one
+  path) and headless tests use the plain tick. `scrollValue` writes the scroll offset into an animated value in the same frame; `pan` lets drags drive animated values
   directly, and JS receives the velocity when the drag ends. Animated values referenced by a view's style (or `pan`, `scrollValue`, ...) are kept by its node
   (`nsh-js` `dom.rs`) and derived nodes hold their inputs, so bindings do not break when JS objects are collected. In
   Rust components `AnimatedValue` / `AnimatedNode` are `Copy` handles their owner keeps; the element's bindings, a

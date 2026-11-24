@@ -17,10 +17,12 @@
 
 #![cfg(target_os = "android")]
 
+pub mod activity;
 #[cfg(feature = "dev")]
 mod agent;
 mod animation;
 mod component;
+mod context;
 #[cfg(feature = "dev")]
 mod dev;
 mod encode;
@@ -29,8 +31,11 @@ mod java;
 mod keymap;
 mod logger;
 mod net;
+pub mod notifications;
 #[cfg(feature = "js")]
 mod package;
+pub mod permissions;
+pub mod picker;
 mod selectable_view;
 mod shader;
 mod svg;
@@ -140,6 +145,17 @@ fn app_root() -> Option<Root> {
 
 /// The JNI bindings [`main`] expands to.
 pub use jni;
+
+/// Runs `f` with the current thread's JNI env (attaching the thread to the
+/// VM for good), inside a local frame, for Rust code that calls into Java
+/// ([`activity`], an nshm's own calls): what `f` returns, or why it failed
+/// (a Java exception is described to the log and cleared, so later calls
+/// work). Any thread, once the library is loaded.
+pub fn with_env<R>(
+    f: impl FnOnce(&mut jni::JNIEnv<'_>) -> jni::errors::Result<R>,
+) -> jni::errors::Result<R> {
+    java::try_with_env(f)
+}
 use jni::{JavaVM, sys::jint};
 
 /// Called by the VM when `System.loadLibrary("nsh")` runs.

@@ -34,7 +34,10 @@
 //!   `Paste` in a field), and gets AppKit's title for the state (`Exit
 //!   Full Screen`). A disabled item's action is one nothing answers. The
 //!   main menu the app replaced is kept and comes back with
-//!   `setApplicationMenu(null)`.
+//!   `setApplicationMenu(null)`, when the app stops (another app loads in
+//!   its view) or when its view goes, if the app's bar is the one shown:
+//!   with several views, the original comes back as the last bar shown
+//!   comes down.
 //! - Context menus track the mouse in a loop of their own, so they are
 //!   shown from the main queue once the batch is applied, never while it
 //!   is.
@@ -66,7 +69,7 @@ use objc2::{
 use objc2_app_kit::{
     NSApplication, NSButton, NSEvent, NSEventModifierFlags, NSImage, NSMenu, NSMenuItem,
     NSRunningApplication, NSScreen, NSView, NSViewFrameDidChangeNotification, NSWindow,
-    NSWindowButton, NSWindowStyleMask, NSWindowTitleVisibility,
+    NSWindowButton, NSWindowDidResizeNotification, NSWindowStyleMask, NSWindowTitleVisibility,
 };
 use objc2_core_graphics::CGImage;
 use objc2_foundation::{
@@ -175,23 +178,40 @@ pub(crate) struct TitleBar {
     /// Set while [`place_controls`] runs: the frames it sets post the
     /// notifications that call it.
     placing: Cell<bool>,
-    /// Coalesces offset placement until AppKit finishes moving all buttons.
+    /// Coalesces notification-driven placement until AppKit finishes moving
+    /// all buttons (and exits `_NSThemeWidget`'s re-entrancy guard).
     placement_pending: Cell<bool>,
     /// Set while a measure of the area from `contentLayoutRect` waits for
     /// AppKit's layout ([`update_area`]).
     remeasure: Cell<bool>,
 }
 
-impl Drop for Chrome {
-    fn drop(&mut self) {
-        // An app view that goes (an embedding app closed it) takes its
-        // menu with it, and the one it replaced comes back.
-        let (Some(bar), Some(mtm)) = (self.menu.take(), MainThreadMarker::new()) else {
+impl Chrome {
+    /// Takes down the application menu the surface's app set
+    /// (`setApplicationMenu`): its items and their icons' loads go, so an
+    /// app loaded next starts with none, and the main menu it replaced
+    /// comes back if the bar is still the one installed (another view's
+    /// may have replaced it since). Its items' ids are its engine's, which
+    /// would be another app's actions. Calling it again does nothing.
+    pub(crate) fn remove_menu(&self, mtm: MainThreadMarker) {
+        self.menu_items.take();
+        self.menu_icons.take();
+        let Some(bar) = self.menu.take() else {
             return;
         };
         let app = NSApplication::sharedApplication(mtm);
         if app.mainMenu().is_some_and(|m| m == bar) {
             restore_menu(&app);
+        }
+    }
+}
+
+impl Drop for Chrome {
+    fn drop(&mut self) {
+        // An app view that goes (an embedding app closed it) takes its
+        // menu with it, and the one it replaced comes back.
+        if let Some(mtm) = MainThreadMarker::new() {
+            self.remove_menu(mtm);
         }
     }
 }
@@ -334,14 +354,21 @@ fn toolbar_height(frame_height: f64, layout: NSRect, natural: f32) -> f32 {
 /// button's superview's superview) as tall as the bar, and the three
 /// buttons moved down to its middle, their `x` kept. AppKit lays them out
 /// again when the window resizes (every frame of a live resize), changes
-/// screen or leaves full screen: the frame-change notifications of the
-/// buttons and the container place them again at once, in the same layout
-/// pass, before anything is drawn. Explicit offsets use the saved AppKit
-/// spacing and defer notification-driven writes until layout finishes.
-/// Nothing is placed in full screen, where
-/// AppKit shows the bar in a window of its own. A host toolbar owns its
-/// container height. Dropping this gives the container and
-/// the buttons back their frames.
+/// its title or style, changes screen or leaves full screen.
+///
+/// Inside `NSViewFrameDidChangeNotification`, `_NSThemeWidget` is inside
+/// `setFrameOrigin:ignoreRentry:`, which silently ignores re-entrant
+/// `setFrameOrigin:` writes on the notifying button, and AppKit can be
+/// between moving two buttons. Frame-change notifications on the
+/// container, title bar view and buttons therefore always coalesce onto
+/// the main queue so placement runs once AppKit's layout pass finishes.
+/// `NSWindowDidResizeNotification` fires after `_updateButtonPositions`
+/// has returned and before AppKit displays the resized frame, so it places
+/// synchronously to keep every live-resize frame aligned without flicker.
+/// Explicit offsets use the saved AppKit spacing through the same path.
+/// Nothing is placed in full screen, where AppKit shows the bar in a
+/// window of its own. A host toolbar owns its container height. Dropping
+/// this gives the container and the buttons back their frames.
 struct TrafficLights {
     window: Weak<NSWindow>,
     container: Retained<NSView>,
@@ -349,7 +376,7 @@ struct TrafficLights {
     container_height: f64,
     /// The buttons and their original AppKit origins, before any placement.
     buttons: Vec<(Retained<NSButton>, NSPoint)>,
-    /// Frame-change observers (tokens of the default center).
+    /// Frame-change and window-resize observers (tokens of the default center).
     observers: Vec<Retained<ProtocolObject<dyn NSObjectProtocol>>>,
 }
 
@@ -372,52 +399,72 @@ impl TrafficLights {
         })
         .collect();
         let key = surface.key();
-        let block = RcBlock::new(move |_: NonNull<NSNotification>| {
+        // Frame-change notifications arrive inside `_NSThemeWidget`'s
+        // `setFrameOrigin:ignoreRentry:` (where writes to the notifying
+        // button are ignored) and mid-way between moving buttons. Coalesce
+        // onto the main queue so placement runs once AppKit finishes.
+        let frame_block = RcBlock::new(move |_: NonNull<NSNotification>| {
+            if let Some(surface) = Surface::with_key(key) {
+                crate::window::with_title_bar(&surface, id, |bar| {
+                    if bar.placing.get() || bar.placement_pending.replace(true) {
+                        return;
+                    }
+                    DispatchQueue::main().exec_async(move || {
+                        if let Some(surface) = Surface::with_key(key) {
+                            crate::window::with_title_bar(&surface, id, |bar| {
+                                bar.placement_pending.set(false);
+                                if let Some(window) = crate::window::window_of(&surface, id) {
+                                    place_controls(&surface, id, bar, &window);
+                                }
+                            });
+                        }
+                    });
+                });
+            }
+        });
+        // `NSWindowDidResizeNotification` runs after `_updateButtonPositions`
+        // returns and before AppKit displays the resized frame, keeping every
+        // live-resize frame aligned without waiting for the next run-loop turn.
+        let resize_block = RcBlock::new(move |_: NonNull<NSNotification>| {
             if let Some(surface) = Surface::with_key(key)
                 && let Some(window) = crate::window::window_of(&surface, id)
             {
                 crate::window::with_title_bar(&surface, id, |bar| {
-                    if bar.placing.get() {
-                        return;
-                    }
-                    if bar.controls_offset.get().is_none() {
+                    if !bar.placing.get() {
                         place_controls(&surface, id, bar, &window);
-                    } else if !bar.placement_pending.replace(true) {
-                        // AppKit can be between moving two buttons here. Wait
-                        // for the whole layout, and use the saved spacing.
-                        DispatchQueue::main().exec_async(move || {
-                            if let Some(surface) = Surface::with_key(key) {
-                                crate::window::with_title_bar(&surface, id, |bar| {
-                                    bar.placement_pending.set(false);
-                                    if let Some(window) = crate::window::window_of(&surface, id) {
-                                        place_controls(&surface, id, bar, &window);
-                                    }
-                                });
-                            }
-                        });
                     }
                 });
             }
         });
         let center = NSNotificationCenter::defaultCenter();
-        let views = std::iter::once(&*container)
+        let views = [container.as_ref(), bar.as_ref()]
+            .into_iter()
             .chain(buttons.iter().map(|(button, _)| -> &NSView { button }));
-        let observers = views
+        let mut observers: Vec<_> = views
             .map(|view| {
                 view.setPostsFrameChangedNotifications(true);
                 // SAFETY: AppKit posts it on the main thread, where the
-                // block runs (no queue: at once, inside the layout that
-                // moved the view); the observer is removed on drop.
+                // block runs; the observer is removed on drop.
                 unsafe {
                     center.addObserverForName_object_queue_usingBlock(
                         Some(NSViewFrameDidChangeNotification),
                         Some(view),
                         None,
-                        &block,
+                        &frame_block,
                     )
                 }
             })
             .collect();
+        // SAFETY: `NSWindowDidResizeNotification` is an immutable AppKit
+        // constant posted on the main thread; the observer is removed on drop.
+        observers.push(unsafe {
+            center.addObserverForName_object_queue_usingBlock(
+                Some(NSWindowDidResizeNotification),
+                Some(window),
+                None,
+                &resize_block,
+            )
+        });
         Some(Self {
             window: Weak::from(window),
             container_height: container.frame().size.height,
@@ -553,6 +600,9 @@ pub(crate) fn command(surface: &Rc<Surface>, command: &DesktopCommand) {
         // with its window kept hidden; an embedding app keeps its own
         // lifecycle.
         DesktopCommand::Quit => crate::app::quit_app(),
+        // Answered by the core (the engine sets the policy before the app
+        // runs); no platform applies it directly.
+        DesktopCommand::SetQuitMode(_) => {}
         DesktopCommand::SetQuitOnRequest(quit) => {
             surface.chrome.asks_quit.set(!quit);
             if *quit {
@@ -1242,20 +1292,24 @@ fn holder(
 /// titles are text: an icon is for the items of a menu.
 fn set_menu(surface: &Surface, items: Option<Arc<[MenuItem]>>) {
     let mtm = surface.mtm;
+    let Some(items) = items else {
+        // Only this surface's own bar is taken down: another view's that
+        // shows stays, and the original is kept for it.
+        surface.chrome.remove_menu(mtm);
+        return;
+    };
     let app = NSApplication::sharedApplication(mtm);
+    // Kept from the first bar until an NSH bar that shows comes down: a bar
+    // replacing another view's must not take that one for the original. A
+    // main menu the embedding app set in between is not seen: the original
+    // kept is still the one from before the first bar.
     ORIGINAL_MENU.with(|o| {
         let mut o = o.borrow_mut();
         if o.is_none() {
             *o = Some((app.mainMenu(), app.windowsMenu()));
         }
     });
-    *surface.chrome.menu_items.borrow_mut() = items.clone();
-    let Some(items) = items else {
-        surface.chrome.menu.borrow_mut().take();
-        surface.chrome.menu_icons.borrow_mut().clear();
-        restore_menu(&app);
-        return;
-    };
+    *surface.chrome.menu_items.borrow_mut() = Some(items.clone());
     let (bar, windows, loads) = menu_bar(surface, &items);
     app.setMainMenu(Some(&bar));
     // AppKit lists the open windows at the end of the Window menu.
@@ -1303,7 +1357,9 @@ fn menu_bar(
     (bar, windows_menu, loads)
 }
 
-/// Brings back the main menu the app replaced.
+/// Brings back the main menu the app replaced. Called only with a
+/// surface's own bar installed ([`Chrome::remove_menu`]): the original is
+/// consumed only when it is put back.
 fn restore_menu(app: &NSApplication) {
     let original = ORIGINAL_MENU
         .try_with(|o| o.borrow_mut().take())

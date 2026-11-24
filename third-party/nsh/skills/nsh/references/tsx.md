@@ -468,7 +468,7 @@ export function Confirm() {
 
 TSX runs on QuickJS (in a browser, its JS engine). There is no DOM, no Node and no npm UI.
 
-- **Imports:** `nsh`, `nsh/base`, `nsh/base/plot`, `nsh/mobile`, `nsh/desktop`, `nsh/updater`, `nsh/test`, relative files, your crates' specifiers, and the standard modules.
+- **Imports:** `nsh`, `nsh/base`, `nsh/base/plot`, `nsh/mobile`, `nsh/desktop`, `nsh/i18n`, `nsh/updater`, `nsh/test`, relative files, your crates' specifiers, and the standard modules.
 - **Standard modules, exactly these:** `buffer`, `console`, `crypto`, `fs/promises`, `net`, `os`, `path`, `process`, `url`, `websocket`, `zlib`. `fs` and `node:fs` fail: `nsh has no module`. Other bare packages fail: `could not load module`.
 - **Globals:** `fetch`, `AbortController`, `URL`, `Blob`, `TextEncoder`, `WebSocket`, `crypto`, `performance`, `Buffer`, `process`, timers, `requestAnimationFrame`, `queueMicrotask`. Not `structuredClone`, `window`, `document` or `localStorage`; use `windowSize()` and `Storage` (async).
 - **Hardened outside `nsh dev` and `nsh run`:** `eval` is removed, the `Function` constructor throws, and shared prototypes are frozen. `nsh test` hardens, so run it before relying on any library that builds code from strings.

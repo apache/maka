@@ -60,6 +60,7 @@
 mod agent;
 mod animation;
 mod app;
+mod application;
 mod auth_session;
 mod blur;
 mod bottom_bar;
@@ -70,6 +71,7 @@ mod decor;
 pub mod dev;
 #[cfg(feature = "embed")]
 pub mod embed;
+mod file_drop;
 mod fps;
 mod haptics;
 mod image;
@@ -82,12 +84,15 @@ mod native_view;
 mod navigation;
 mod net;
 mod picker;
+mod presenting;
 mod press;
+mod scroll_edge;
 mod scroll_watch;
 mod selectable_view;
 mod shader;
 mod share;
 mod split;
+mod state_words;
 // Sound (`Sound`, `AudioPlayer`), the Speech framework's recognizer and the
 // notification center, shared with macOS.
 use nsh_platform_apple::{audio, notifications, speech};
@@ -103,6 +108,7 @@ mod system_switch;
 mod system_tab_bar;
 mod target;
 mod text;
+mod text_access;
 mod text_selection;
 mod text_view;
 mod touch;
@@ -113,6 +119,8 @@ mod web;
 mod zoom;
 
 pub use nsh_engine::{Bundle, ByteSize, CacheLocation, CacheOptions, CachePolicy, Root};
+pub use picker::prepare_image;
+pub use presenting::presenting_controller;
 
 /// The UI sets apps import ([`set_ui_sets`]; by default [`default_ui_sets`]).
 static UI_SETS: std::sync::RwLock<Option<Vec<nsh_core::element::Registry>>> =
@@ -201,6 +209,9 @@ fn default_ui_sets() -> Vec<nsh_core::element::Registry> {
 
 pub use crate::{
     app::{AppOptions, AppSource, in_app_bundle, run_app},
+    application::{
+        ApplicationEvent, FetchCompletion, FetchResult, NativeDictionary, on_application_event,
+    },
     component::{ComponentContext, ComponentFactory, Components, NativeComponent},
     image::AssetBase,
     scroll_watch::{ScrollHandle, ScrollWatcher, ScrollWatchers},

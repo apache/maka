@@ -5,14 +5,14 @@
 //! about (an alert dialog's message), read after the name.
 
 use nsh_base::{button, dialog};
-use nsh_core::{Size, element::Root, prelude::*};
+use nsh_core::{Size, prelude::*};
 use nsh_engine::EngineConfig;
 use nsh_testing::Headless;
 
 fn start<C: Component<Props = ()>>() -> Headless {
     let config = EngineConfig {
         viewport: Size::new(px(390.0), px(844.0)),
-        ..EngineConfig::new(Root::of::<C>())
+        ..EngineConfig::new(nsh_testing::windowed_root::<C>())
     };
     let mut app = Headless::start(config).unwrap();
     app.first_render().unwrap();

@@ -284,7 +284,8 @@ impl VideoHost {
         if !av_foundation() {
             return log::error!("cannot load AVFoundation");
         }
-        if p.source != self.props.source || self.player.is_none() {
+        let reopened = p.source != self.props.source || self.player.is_none();
+        if reopened {
             self.open(p.source.as_deref());
         }
         if p.controls != self.props.controls || self.layer.is_none() && self.controller.is_none() {
@@ -317,9 +318,24 @@ impl VideoHost {
                     msg_send![player, setAudiovisualBackgroundPlaybackPolicy: background_policy];
                 let _: () = msg_send![player, setMuted: Bool::new(p.muted)];
                 let _: () = msg_send![player, setVolume: p.volume];
+                // The system controls' play button and the `repeat` loop
+                // play at the default rate (macOS 13 and iOS 16 on).
+                let default_rate: Bool =
+                    msg_send![player, respondsToSelector: objc2::sel!(setDefaultRate:)];
+                if default_rate.as_bool() {
+                    let _: () = msg_send![player, setDefaultRate: p.rate];
+                }
+                // `paused` is acted on when it changes (or for a new
+                // source): a video the system controls paused would play
+                // on whenever another prop (the volume, say) changed. A
+                // new rate applies to a video that plays.
+                let toggled = reopened || p.paused != self.props.paused;
+                let rate: f32 = msg_send![player, rate];
                 if p.paused {
-                    let _: () = msg_send![player, pause];
-                } else {
+                    if toggled {
+                        let _: () = msg_send![player, pause];
+                    }
+                } else if toggled || p.rate != self.props.rate && rate != 0.0 {
                     let _: () = msg_send![player, setRate: p.rate];
                 }
             }
@@ -338,8 +354,15 @@ impl VideoHost {
                 let _: () = msg_send![controller, setVideoGravity: &*gravity];
             }
         }
-        // The audio session follows what plays, not what is mounted.
-        let playing = self.player.is_some() && !p.paused;
+        // The audio session follows what plays, not what is mounted: not a
+        // video that ended, nor one the system controls paused.
+        let playing = !p.paused
+            && !self.ended.get()
+            && self.player.as_ref().is_some_and(|player| {
+                // SAFETY: AVPlayer's documented API.
+                let rate: f32 = unsafe { msg_send![player, rate] };
+                rate != 0.0
+            });
         audio_playing(self.audio_key, playing.then_some(p.audio_session));
         self.props = p;
     }

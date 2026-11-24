@@ -35,8 +35,9 @@ my-app/
 ├── nsh.json           name, id, version, icon, Tailwind theme, capabilities
 ├── tsconfig.json      TypeScript settings for editors
 ├── .gitignore         .nsh/ and target/
-├── components/        your own modules (any layout you like)
+├── src/               your own modules (any layout you like)
 │   └── Header.tsx
+├── ext/               the app's Rust, when it has any: one nshm crate per directory (nshm)
 ├── assets/
 │   ├── logo@2x.png    imported images
 │   └── Inter.ttf      imported fonts
@@ -44,9 +45,27 @@ my-app/
 └── .nsh/              generated: type declarations, development host builds, test entries, build output (.nsh/out)
 ```
 
-An app with both lists its crates in `"rust"` and has a TSX entry that imports them ([Building with Rust](./rust.md#extending-a-rust-app-with-tsx)).
+A TSX app extends itself with Rust through nshm crates of its own in `ext/`, listed in `"dependencies"` by path ([An app's own Rust: ext/](./nshm.md#an-apps-own-rust-ext)); `src/` holds its TSX, `ext/` its Rust. A Rust app can also list its crates in `"rust"` and add a TSX entry that imports them ([Building with Rust](./rust.md#extending-a-rust-app-with-tsx)).
 
-Every command takes the app's directory or its entry as its argument (`nsh run my-app`, `nsh run my-app/App.tsx`). The directory of `nsh.json` and the entry is the app's root: `nsh.json` is read from there, asset paths are relative to it, and `.nsh/` is written there. In a Rust app (`nsh.json` `"root"`), the directory runs the root component; naming a TSX entry runs that instead.
+Every command takes the app's directory or its entry as its argument (`nsh run my-app`, `nsh run my-app/App.tsx`). The directory of `nsh.json` is the app's root: `nsh.json` is read from there, the paths it names and asset paths are relative to it, and `.nsh/` is written there. The entry is `App.tsx` beside it, unless `nsh.json` names another with `"entry"`. In a Rust app (`nsh.json` `"root"`), the directory runs the root component; naming a TSX entry runs that instead.
+
+### An app in a larger project
+
+A project that also has other code, a server or a website, can keep `nsh.json` at its root, beside `package.json` or `Cargo.toml`, and its app's code in a directory of its own, which `"entry"` names:
+
+```text
+my-project/
+├── nsh.json           { "name": "…", "entry": "app/App.tsx", "theme": "app/theme.json", … }
+├── package.json       the server's
+├── server/
+└── app/
+    ├── App.tsx        the entry
+    ├── App.test.tsx   its tests
+    ├── tsconfig.json  TypeScript settings for the app's modules
+    └── theme.json
+```
+
+`nsh run`, `nsh test` and the other commands then work from the project's root as from an app's directory: the root is the app's root (`.nsh/`, `locales/` and the paths `nsh.json` names, such as `theme`, `icon` and `web.host`, are relative to it), while `nsh test` looks for test files in the entry's directory (`app/`, not the server's tests), and `nsh check` and `.nsh/types` follow the entry's `tsconfig.json`.
 
 ## The root component
 
@@ -56,7 +75,7 @@ A Rust app's root is a component of its crate, which `nsh.json`'s `"root"` names
 // src/lib.rs; nsh.json: { "rust": ".", "root": "App" }
 mod screens;
 
-use nsh_core::prelude::*;
+use nsh_core::{element::desktop::window as app_window, prelude::*};
 
 /// What a TSX entry may import from the crate.
 #[native_module("my-app/native")]
@@ -66,23 +85,25 @@ fn native(registry: &mut Registry) {
 
 #[component]
 pub fn App() -> impl IntoElement {
-    screens::home()
+    // On the desktops this is the app's window; off them it shows its content.
+    app_window().id("main").content(screens::home)
 }
 ```
 
 ```tsx tabs
 // App.tsx
 import { mount } from "nsh";
+import { Window } from "nsh/desktop";
 import { Home } from "./components/Home";
 
 function App() {
   return <Home />;
 }
 
-mount(App);
+mount(() => <Window id="main"><App /></Window>);
 ```
 
-`nsh run` and `nsh package` mount a Rust root on every platform, with no QuickJS. In TSX, `mount(component, props?)` renders the component into the app's surface and returns a function that removes it again; an app calls it once. Code at the top level of the entry runs when the bundle loads, before the first frame.
+`nsh run` and `nsh package` mount a Rust root on every platform, with no QuickJS. In TSX, `mount(component, props?)` renders the component into the app root and returns a function that removes it again; an app calls it once. On the desktops the root holds top-level `<Window>` scenes (an app that declares windows declares the first too; a plain root renders in the implicit first window); off the desktops `<Window>` shows its content in the one surface. Code at the top level of the entry runs when the bundle loads, before the first frame.
 
 ## nsh.json
 
@@ -121,33 +142,37 @@ Every other key is optional; a TSX app may also leave out the four. A TSX app's 
 
 | Key | Type | Used by | Description |
 |---|---|---|---|
-| `name` | string | `package` | The display name under the app icon. Default: the entry directory's name. |
+| `name` | string | `package` | The display name under the app icon. Default: the name of `nsh.json`'s directory. |
+| `entry` | string | every command | The TSX entry module, relative to `nsh.json` and inside its directory, e.g. `"app/App.tsx"` ([An app in a larger project](#an-app-in-a-larger-project)). Default: `App.tsx` beside `nsh.json`. An entry named on the command line (`nsh run app/Other.tsx`) takes precedence. |
 | `id` | string | `package`, `publish`, `Storage` | Bundle identifier / application id in reverse-DNS form, e.g. `com.yourcompany.app`; required by `package` and `publish`. `nsh run` uses `com.example.<name>` without one. |
 | `version` | string | `package`, `publish` | The user-visible version, e.g. `1.2.0` (`CFBundleShortVersionString`, Android `versionName`). |
 | `build` | number | `package`, `publish` | The build number (`CFBundleVersion`, Android `versionCode`). Signed packages require it to grow with every release. |
 | `nsh` | string | every command | The NSH versions the app is written for, as a Cargo-style requirement, e.g. `">=0.5"` or `">=0.5, <0.7"`. Every command that takes the app checks the CLI against it first and stops with one message, `this app requires nsh >=0.5; this is nsh 0.4.0`, instead of type or build errors from the other version. A nightly counts as its release. |
 | `minRuntime` | string | `publish` | The lowest NSH runtime that runs the signed package, e.g. `0.2.0`. Default: the CLI's version ([Signed packages](./signed-packages.md#which-runtimes-run-a-package)). |
 | `schemes` | string[] | `package`, `run` | URL schemes that open the app, e.g. `["myapp"]` for `myapp://…` links, which reach [`UrlScheme`](../modules/nsh.md#urlscheme). Lowercase letters, digits, `+`, `-` and `.`; not one the system or browser owns (`https`, `file`, …). |
-| `fileTypes` | object[] | `package`, `run` | The file types the app opens, `[{ "name": "Video", "extensions": ["mp4"], "mimeTypes": ["video/mp4"] }]`, which packages declare to the system; the files reach [`Application.on("openFiles")`](../modules/nsh-desktop.md#opening-files). |
+| `links` | object[] | `package`, `run` | Web links that open the app (Universal Links, App Links): `[{ "host": "example.com", "paths": ["/orders/*"] }]`, `host` a domain name or `*.` and one for its subdomains, `paths` whole paths or starts ending in `*` (none: every path). Their `https` links reach [`UrlScheme`](../modules/nsh.md#web-links) as a scheme's do. iOS packages claim the hosts in their associated domains entitlement, Android packages in a verified intent filter per link. |
+| `fileTypes` | object[] | `package`, `run` | The file types the app opens, `[{ "name": "Video", "extensions": ["mp4"], "mimeTypes": ["video/mp4"] }]`, which packages declare to the system (on Android, through `mimeTypes`, in the share sheet); the files reach [`Application.on("openFiles")`](../modules/nsh-desktop.md#opening-files). |
 | `handoff` | boolean | `package` | `true`: on iOS and macOS the address the app sets with [`UrlScheme.setUrl`](../modules/nsh.md#handoff) goes to the system, so Handoff continues it on the user's other devices; packages declare its activity type, `<id>.url`, in `NSUserActivityTypes`. |
 | `singleInstance` | boolean | `package` | `true`: the app runs once on Windows and Linux; a second launch hands its arguments and working directory to the running app and exits ([Single instance](../modules/nsh-desktop.md#single-instance)). |
 | `dataDir` | string | `package` | The app's data directory on the desktop (macOS, Windows, Linux): its storage (`nsh/storage`), logs, `process.dataDir` and the files of `${dataDir}` live there. An absolute path or `"${homeDir}/.myapp"` (no `..`, no other `${...}`); NSH warns about and ignores any other value. Unset, it is the app's id in the system's directory for apps' data: `~/Library/Application Support/<id>` on macOS, `%APPDATA%\<id>` on Windows, `$XDG_DATA_HOME/<id>` (`~/.local/share/<id>`) on Linux. A directory set here stays the same when the app's id changes. Caches and downloaded updates keep their own places; iOS, Android, the web and embedded apps use the platform's directory. |
 | `features` | string[] | `package` | Native features the release runner always keeps (built locally when the app has Rust crates, or packages for this machine's OS with `cargo` installed), e.g. `["plot"]`: those only its Rust code or a computed import needs. `package` otherwise leaves out the ones its bundle never reaches (`shader`, `editor`, `plot`, …) and prints why. |
-| `icon` | string \| object | `package`, `run` | A square PNG, ideally 1024×1024, relative to `nsh.json`, or one per platform (`{ "macos": "…", "windows": "…" }`, [Packaging](./packaging.md#icons)). |
+| `icon` | string \| object | `package`, `run` | A square PNG, ideally 1024×1024, relative to `nsh.json`, or one per platform (`{ "macos": "…", "windows": "…" }`, [Packaging](./packaging.md#icons)). Android's may be an adaptive icon (`{ "foreground": "…", "background": "…", "monochrome": "…" }`, [Packaging](./packaging.md#icons)). |
 | `tailwind` | object | every build | Extends the Tailwind theme your `class` strings resolve against ([Tailwind](./tailwind.md#theme)). |
 | `appearance` | string | every build, `package` | `"light"`, `"dark"` or `"system"` (the default): an app that is always light or dark says so here. `colorScheme()`, `dark:` classes, the components' theme and the platform's controls follow it from the start ([Device and environment](./device-and-environment.md#dark-mode)). |
 | `locales` | string[] | every build | The languages the app formats numbers and dates in besides English (`["de", "zh-CN"]`), whose data its bundle carries. Default: the languages of its translations in `locales/` ([I18n](./i18n.md#numbers-and-dates)). |
 | `theme` | string or object | every build | The app's design tokens (shadcn/ui's `cssVars`, over the default `neutral` theme), which token classes, `token()` and Rust components draw with: a theme file's path relative to `nsh.json`, or the theme inline ([Building with Rust](./rust.md#theme), [Theme tokens](./tailwind.md#theme-tokens)). |
 | `statusBar` | object | every build, `package` | The status bar's default under every page and dialog (iOS and Android): `{ "foreground": "auto" \| "light" \| "dark", "hidden": boolean }`, both optional. Packaged iOS apps show it from the launch screen on ([Status bar](../modules/nsh-base.md#status-bar)). |
 | `capabilities` | object | every build | What the app may reach outside its VM: network hosts, web view hosts, the status bar, windows of its own ([Sandbox and capabilities](./sandbox-and-capabilities.md)). |
-| `window` | object | every build, `package` | The main window's launch settings on the desktops, which it has from its first frame: `title`, `defaultSize`, `minSize`, `titleBar`, `backdrop` and the other options and attributes of a window, as `nsh/desktop`'s `WindowOptions` spells them (`{ "defaultSize": { "width": 1100, "height": 720 }, "titleBar": { "style": "hidden" } }`), and `defaultVisible` (`false`: it starts hidden, as a tray app's) ([The main window](../modules/nsh-desktop.md#the-main-window)). |
+| `window` | object | every build, `package` | Launch settings for the first window the app declares on the desktops, which it has from its first frame: `title`, `defaultSize`, `minSize`, `titleBar`, `backdrop` and the other options and attributes of a window, as `nsh/desktop`'s `WindowOptions` spells them (`{ "defaultSize": { "width": 1100, "height": 720 }, "titleBar": { "style": "hidden" } }`) ([The app host and the first window](../modules/nsh-desktop.md#the-app-host-and-the-first-window)). `defaultVisible` no longer applies: the app host never shows; an app that starts without a window opens none. |
+| `application` | object | every build, `package` | The app's lifecycle: `"quitMode": "platform" \| "lastWindowClosed" \| "explicit"`. `"platform"` (the default) keeps a macOS app running with no windows and quits Windows and Linux apps when the last window closes; `"lastWindowClosed"` quits on every platform; `"explicit"` leaves the app running with no windows. The app can change it at run time with `Application.setQuitMode` ([Quitting](../modules/nsh-desktop.md#quitting)). |
 | `resolve` | object | every build | How bare imports resolve: the export conditions of npm packages and aliases ([npm packages](#npm-packages)). |
 | `rust` | string or string[] | every command | The app's Rust crate, or a list of them, relative to `nsh.json`: their components and modules, which TSX imports by each crate's `#[native_module]` specifier ([Building with Rust](./rust.md#several-crates)). |
+| `dependencies` | object | every command | The [nshm](./nshm.md) the app uses, by package name, which `nsh add` lists here and NSH pins in `nsh.lock`: a version requirement from crates.io (`"acme-gauge": "^1.0"`), or an object with `"github"`, `"git"` or `"path"`, optional `"version"`, `"tag"` or `"rev"`, and `"features"`, the Cargo features of a Rust nshm to turn on (`"nsh-extra": { "version": "^0.6", "features": ["camera"] }`) ([CLI: nsh add](./cli.md#nsh-add)). |
 | `web` | object | `package` | What a web package adds to its page. `web.host`: a JS module relative to `nsh.json` exporting `createHost(player)`, which answers the app's [`host`](../modules/nsh.md#host) calls; `web.connect`: the hosts that module's own requests reach, as patterns of `capabilities.network.hosts`, which the page's Content-Security-Policy allows ([Web](./web.md#the-hosts-functions)); `web.base`: the path the site is served under (`"/apps/counter/"`), the page's `<base href>`, so that it loads at the app's own paths ([Web](./web.md#deploy-it)); `web.history`: whether pushed pages and open dialogs are browser history entries (by default when the app is the whole page, not in an iframe). |
 | `updater` | object | `package` | Where the packaged app gets its updates: `{ "github": "owner/repo" }` or `{ "url": "https://…/latest.json", "publicKey": "…" }`, `publicKey` optional with `github`, and `"packages": { "roots": [...] }` for [OTA updates](./ota-updates.md) ([App Updates](./app-updates.md), [nsh/updater](../modules/nsh-updater.md#nshjson)). |
-| `ios` | object | `package` | What iOS packages add: `infoPlist`, keys of the app's `Info.plist`, `entitlements`, which device builds check against the provisioning profile, and `launchScreen`, the color and image the system shows while the app starts ([Launch screen](./packaging.md#launch-screen)). NSH's own keys are refused ([Packaging](./packaging.md#infoplist-keys-and-entitlements)); `infoPlist`'s `MinimumOSVersion` raises the iOS version the app needs ([Minimum system version](./packaging.md#minimum-system-version)). |
-| `android` | object | `package` | What Android packages set: `targetSdk`, the API level the app targets and compiles against (default 35) ([Packaging](./packaging.md#target-api-level)); `usesCleartextTraffic`, plain `http://` requests allowed (default `false`) ([Packaging](./packaging.md#plain-http)). |
-| `macos` | object | `package`, `run`, `test` | What macOS packages add: `infoPlist` and `entitlements`, as `ios`'s ([Packaging](./packaging.md#infoplist-keys-and-entitlements)), `infoPlist`'s `LSMinimumSystemVersion` raising the macOS version the app needs ([Minimum system version](./packaging.md#minimum-system-version)); and `activationPolicy`, how the app takes part in the system's UI whichever way NSH starts it: `"regular"` (the default), with a Dock icon and the menu bar, or `"accessory"`, a menu bar app ([macOS](./macos.md#menu-bar-apps)). |
+| `ios` | object | `package` | What iOS packages add: `infoPlist`, keys of the app's `Info.plist`, `infoPlistStrings`, their text in other languages, by language (`{ "zh-Hans": { "NSCameraUsageDescription": "…" } }`), which `nsh run`'s simulator host also takes ([Info.plist text in other languages](./packaging.md#infoplist-text-in-other-languages)), `entitlements`, which device builds check against the provisioning profile, `launchScreen`, the color and image the system shows while the app starts ([Launch screen](./packaging.md#launch-screen)), `extensions`, the app extensions (`.appex`) the app builds itself, which packages carry and sign ([App extensions](./packaging.md#app-extensions)), and `privacyManifest`, the contents of the app's `PrivacyInfo.xcprivacy` ([Privacy manifest](./packaging.md#privacy-manifest)). NSH's own keys are refused ([Packaging](./packaging.md#infoplist-keys-and-entitlements)); `infoPlist`'s `MinimumOSVersion` raises the iOS version the app needs ([Minimum system version](./packaging.md#minimum-system-version)). |
+| `android` | object | `package` | What Android packages set: `targetSdk`, the API level the app targets and compiles against (default 35) ([Packaging](./packaging.md#target-api-level)); `usesCleartextTraffic`, plain `http://` requests allowed (default `false`) ([Packaging](./packaging.md#plain-http)); `permissions`, the permissions the manifest declares besides NSH's own (default none) ([Packaging](./packaging.md#permissions)); `launchScreen`, the window's color and the splash screen's image while the app starts, the same keys as `ios.launchScreen` ([Launch screen](./packaging.md#launch-screen)); `libraries`, jar, Android library (`.aar`) and dex files of the Java libraries the app ships, relative to `nsh.json`, before the ones its crates list (default none) ([Packaging](./packaging.md#java-code)); `manifestPlaceholders`, the values of the `${name}` placeholders in the libraries' manifests and the app's and crates' manifest entries, which only the app sets (default none) ([Packaging](./packaging.md#java-code)); `queries` and `application`, elements the manifest's `<queries>` and `<application>` declare besides NSH's own (default none) ([Packaging](./packaging.md#components-and-queries)). |
+| `macos` | object | `package`, `run`, `test` | What macOS packages add: `infoPlist`, `infoPlistStrings` and `entitlements`, as `ios`'s ([Packaging](./packaging.md#infoplist-keys-and-entitlements)), `infoPlist`'s `LSMinimumSystemVersion` raising the macOS version the app needs ([Minimum system version](./packaging.md#minimum-system-version)); `extensions`, the app extensions (`.appex`) the app builds itself, which packages carry in `Contents/PlugIns/` and sign ([macOS app extensions](./packaging.md#macos-app-extensions)); and `activationPolicy`, how the app takes part in the system's UI whichever way NSH starts it: `"regular"` (the default), with a Dock icon and the menu bar, or `"accessory"`, a menu bar app ([macOS](./macos.md#menu-bar-apps)). |
 | `root` | string | `run`, `package` | A Rust app's root component, its path in the `rust` crate, the first one of a list (`App`, `shell::Gallery`): `nsh run` and `nsh package` of the app's directory mount it with no QuickJS, on every platform; `nsh run App.tsx` still runs the TSX entry ([Building with Rust](./rust.md)). |
 
 The flags of `nsh package` and `nsh publish` (`--name`, `--id`, `--app-version`, `--build`, `--icon`, `--min-runtime`) override the file's values ([CLI](./cli.md)).
@@ -226,7 +251,18 @@ All of them are bundled into one script. JSON files import as their parsed value
 
 ### Leaving parts out of the binary
 
-If you build your own executable with Cargo (embedding NSH, or your own `main`), you can leave optional parts out: the platform crates turn all of them on by default, so set `default-features = false` on the platform crate (and on `nsh-base`) and name what you keep from `js`, `shader`, `editor` (with `DiffView`), `rich-editor`, `plot`, `highlight`, `math`, `emoji-picker` (`EmojiPicker`), `zlib` and `crypto`. An app that imports a part its build left out fails when it loads. What `nsh package` builds always includes everything.
+The platform crates turn every optional part on by default: `js`, `shader`, `editor` (with `DiffView`), `rich-editor`, `plot`, `term`, `highlight`, `math`, `emoji-picker` (`EmojiPicker`), `zlib`, `crypto`, `websocket` and `updater`, and the platform's own: `net` and `sound` on Linux, `net`, `webview` and `media` on Windows. SVG images are always included. `nsh run` and the development hosts have every part.
+
+`nsh package` builds the release runner with only the parts the app's bundle reaches, when it builds the runner on this machine (the app has Rust crates, or it packages for this machine's OS, or for Android, with `cargo` installed), and prints why it keeps or leaves out each one. A `TextView` keeps `highlight` and `math`, since the text it shows may hold code and formulas. It cannot see what the app's Rust code uses, or what a computed `import()` loads: name those parts in [`nsh.json`'s `features`](#nshjson), e.g. `"features": ["shader"]`. A Rust crate that depends on `nsh-base` with its default features keeps `editor`, `rich-editor`, `plot`, `term` and `highlight` through Cargo; Rust code drawing a `Shader` still needs `"shader"` named, or its views draw nothing. A part `nsh-base` does not turn on by default (`math`, `emoji-picker`) goes in the crate's own dependency: `nsh-base = { version = "0.6", features = ["emoji-picker"] }`.
+
+If you build your own executable with Cargo (embedding NSH, or your own `main`), you choose the parts yourself: set `default-features = false` on the platform crate and on `nsh-base`, since either one left at its defaults turns them back on, and name what you keep:
+
+```toml
+nsh-base = { version = "0.6", default-features = false, features = ["editor"] }
+nsh-platform-macos = { version = "0.6", default-features = false, features = ["js", "editor", "highlight", "shader"] }
+```
+
+Rust that uses a part its build left out does not compile; TSX that imports one fails when it loads (`Could not find export 'Editor' in module 'nsh/base'`). Without `shader`, shader views draw nothing; without `highlight` and `math`, code and formulas show as plain text.
 
 ### Loading code on demand
 
@@ -251,7 +287,7 @@ Imports of `nsh` and `nsh/...` are not bundled: the runtime provides them native
 | `nsh/base` | The unstyled foundation of an app's UI: navigation stacks and their pages (`NavStack`, `NavPage`, `createNavStack`), dialogs (`Dialog`), a press target (`Button`), a text input (`Input`) and the system's alert dialog (`AlertDialog`); pages and dialogs set the status bar (`statusBar`) ([reference](../modules/nsh-base.md)) |
 | `nsh/mobile` | What iOS and Android have: `TabBar`, `InputAccessoryView` (iOS), `BackHandler` (Android) ([reference](../modules/nsh-mobile.md)) |
 | `nsh/desktop` | What macOS, Windows and Linux have: windows (`Window`, `currentWindow`, `windows`), `titleBar`, `displays`, `Menu`, `Tray`, `GlobalShortcut` ([reference](../modules/nsh-desktop.md)) |
-| `nsh/i18n` | The app's translations (its `locales/` files) and the language it shows: `t`, `setLocale`, `availableLocales` ([I18n](./i18n.md), [reference](../modules/nsh-i18n.md)) |
+| `nsh/i18n` | The app's translations (its `locales/` files or loaded at run time) and the language it shows: `t`, `setLocale`, `availableLocales`, `addTranslations` ([I18n](./i18n.md), [reference](../modules/nsh-i18n.md)) |
 | `nsh/updater` | A packaged app updates itself: `checkForUpdate`, `downloadUpdate`, `installAndRestart`, `installOnQuit` ([reference](../modules/nsh-updater.md)) |
 
 The [modules reference](../modules/index.md) documents each one. Importing a module NSH does not have (`nsh/foo`) is a build error. So is a name your code uses that the module does not export (`import { Buton } from "nsh/base"`): the error points at the import and names the closest export (``did you mean `Button`?``). Names used only as types are checked by `nsh check`.

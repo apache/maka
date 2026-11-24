@@ -89,7 +89,7 @@ Platform crates can compile as **empty crates on the wrong target**. Check chang
 platform code on its real target, using [commands](docs/dev/commands.md):
 
 ```sh
-cargo clippy -p nsh-platform-ios -p nsh-ios-host -p nsh-ios-app --target aarch64-apple-ios-macabi --features nsh-platform-ios/embed,nsh-platform-ios/dev
+cargo clippy -p nsh-platform-ios -p nsh-ios-host -p nsh-ios-app -p nsh-extra --target aarch64-apple-ios-macabi --features nsh-platform-ios/embed,nsh-platform-ios/dev,nsh-extra/camera,nsh-extra/photos,nsh-extra/push
 cargo xtask clippy-android
 cargo clippy -p nsh-platform-linux -p nsh-linux-host -p nsh-linux-app --all-targets
 cargo clippy -p nsh-platform-macos -p nsh-macos-host -p nsh-macos-app --all-targets --features nsh-platform-macos/dev

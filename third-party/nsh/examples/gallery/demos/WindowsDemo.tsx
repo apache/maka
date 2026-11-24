@@ -106,7 +106,7 @@ const prefs = {
   translucent: signal(true),
 };
 
-/** The inspector: a `<Window>` this signal controls. */
+/** The inspector window, which this signal opens and closes. */
 const inspectorOpen = signal(false);
 
 function save() {
@@ -133,6 +133,22 @@ const toggleInspector = () => inspectorOpen.set(!inspectorOpen());
 
 // `Window.open` returns the window already open under an id, so each
 // opener also brings its window back to the front.
+function openInspector() {
+  const win = Window.open(Inspector, {
+    id: "inspector",
+    kind: "panel",
+    title: "Inspector",
+    parent: "main",
+    defaultSize: { width: 300, height: 440 },
+    // As tall as its groups; the width stays the reader's.
+    sizeToContent: "height",
+    minSize: { width: 260, height: 200 },
+    level: prefs.inspectorOnTop() ? "floating" : "normal",
+    backdrop: prefs.translucent() ? "sidebar" : "none",
+  });
+  win.on("close", () => inspectorOpen.set(false));
+  win.focus();
+}
 function openDocument() {
   Window.open(DocumentWindow, {
     id: "document",
@@ -213,24 +229,6 @@ function Draft() {
           <Tool icon="search" label="Commands" shortcut="mod+shift+p" onPress={openPalette} />
         </Toolbar>
       </View>
-      {/* Shown while the tool is on; closing the panel turns it off. It
-          closes with this page, too. */}
-      <Window
-        id="inspector"
-        kind="panel"
-        title="Inspector"
-        parent="main"
-        open={inspectorOpen()}
-        onOpenChange={({ open }) => inspectorOpen.set(open)}
-        defaultSize={{ width: 300, height: 440 }}
-        // As tall as its groups; the width stays the reader's.
-        sizeToContent="height"
-        minSize={{ width: 260, height: 200 }}
-        level={prefs.inspectorOnTop() ? "floating" : "normal"}
-        backdrop={prefs.translucent() ? "sidebar" : "none"}
-      >
-        <Inspector />
-      </Window>
     </Card>
   );
 }
@@ -435,6 +433,21 @@ function Elsewhere() {
 
 export function WindowsDemo() {
   if (!supported) return <DemoPage cards={[Elsewhere]} />;
+  // The inspector opens and closes with its signal; its material follows
+  // the preferences while it is open.
+  effect(() => {
+    if (inspectorOpen()) {
+      if (!Window.get("inspector")) openInspector();
+    } else {
+      Window.get("inspector")?.close();
+    }
+  });
+  effect(() => {
+    Window.get("inspector")?.set({
+      level: prefs.inspectorOnTop() ? "floating" : "normal",
+      backdrop: prefs.translucent() ? "sidebar" : "none",
+    });
+  });
   // The app's shortcuts, bound while the demo shows.
   keymap.bind({
     "mod+shift+p": () => openPalette(),

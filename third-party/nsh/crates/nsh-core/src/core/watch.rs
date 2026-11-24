@@ -276,12 +276,16 @@ impl<M: TextEngine> Core<M> {
             })
             .collect();
         if seen.is_empty() {
-            return false;
+            return self.sync_watched_inputs(Vec::new());
         }
         let _entered = self.components.runtime.enter();
         let mut ran = false;
+        let mut inputs = Vec::new();
         for w in seen {
             let node = untracked(|| (w.target)()).unwrap_or(0);
+            if self.is_multiline_input(node) {
+                inputs.push(node);
+            }
             let now = self.scroll_report(node);
             if now == w.last {
                 continue;
@@ -295,7 +299,57 @@ impl<M: TextEngine> Core<M> {
                 ran = true;
             }
         }
-        ran
+        self.sync_watched_inputs(inputs) || ran
+    }
+
+    /// Whether `id` is a multiline input.
+    fn is_multiline_input(&self, id: NodeId) -> bool {
+        self.key(id)
+            .ok()
+            .and_then(|key| self.nodes[key as usize].input.as_ref())
+            .is_some_and(|input| input.config.multiline)
+    }
+
+    /// The multiline inputs scroll watches follow now are `inputs`: their
+    /// platforms report how far their text scrolls, as for a built-in bar
+    /// (`InputConfig::report_scroll`), and those no watch follows any more
+    /// stop. Nothing is reported for an input nothing follows, so its
+    /// scrolling costs no report. Whether a config changed (another round
+    /// sends it).
+    pub(super) fn sync_watched_inputs(&mut self, mut inputs: Vec<NodeId>) -> bool {
+        inputs.sort_unstable();
+        inputs.dedup();
+        if inputs == self.watched_inputs {
+            return false;
+        }
+        let before = std::mem::replace(&mut self.watched_inputs, inputs);
+        let mut changed = false;
+        let (gone, came) = (
+            before
+                .iter()
+                .filter(|id| self.watched_inputs.binary_search(id).is_err()),
+            self.watched_inputs
+                .iter()
+                .filter(|id| before.binary_search(id).is_err()),
+        );
+        let flips: Vec<(NodeId, bool)> = gone
+            .map(|&id| (id, false))
+            .chain(came.map(|&id| (id, true)))
+            .collect();
+        for (id, watched) in flips {
+            let Ok(key) = self.key(id) else { continue };
+            let Some(input) = self.nodes[key as usize].input.as_mut() else {
+                continue;
+            };
+            input.watched = watched;
+            if !watched && input.bar.is_none() {
+                // What it last reported goes stale once it reports nothing.
+                input.scroll = None;
+            }
+            self.mark(key, super::dirty::INPUT);
+            changed = true;
+        }
+        changed
     }
 
     /// Records what watch `id` reported, if it is still there.

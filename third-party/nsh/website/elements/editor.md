@@ -39,6 +39,7 @@ fn code() -> impl IntoElement {
 ```tsx tabs
 import { mount, signal } from "nsh";
 import { Editor } from "nsh/base";
+import { Window } from "nsh/desktop";
 
 const MAIN = `fn main() {
     println!("Hello, world!");
@@ -50,7 +51,11 @@ function App() {
   return <Editor value={source()} onChange={({ value }) => source.set(value)} language="rust" class="flex-1" />;
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 The editor fills the box the app gives it (`flex-1`, a height) and scrolls its text inside: vertically always,
@@ -215,6 +220,10 @@ keymap.bind({
   "mod+alt+j": () => editor.run("unfoldAll"),
 });
 ```
+
+The editor's own bindings come before the app's while it has the focus: Mod+Enter inserts a line below, whatever the
+app bound to it. To take such a key, as a query editor running its text with Mod+Enter does, bind it with
+[`keymap`](../modules/nsh.md#keymap)'s `overFocused: true` while the editor has the focus (`onFocus` / `onBlur`).
 
 ## Find and replace
 

@@ -87,7 +87,7 @@ test("a hover in a window shows its controls, and they take presses", async () =
 });
 
 test("the Windows demo's inspector is a window that shares the page's state", async () => {
-  const app = await open("../App.tsx", { platform: "macos", width: 1200, height: 800 });
+  const app = await open("../App.tsx", { platform: "macos", width: 1200, height: 800, storage: { lastDemo: "Windows" } });
   await app.press("label:Windows");
   await app.waitFor("id:window-main");
   await app.press("label:Inspector");

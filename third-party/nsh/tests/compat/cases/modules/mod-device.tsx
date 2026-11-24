@@ -1,10 +1,10 @@
 // A case of the API's test suite (docs/dev/compatibility.md): `nsh/device`
 // as the headless runtime reports it (iOS, a phone, 1 pixel per point, the
-// script's viewport; mobile, so `platform.desktop` is false; the app in use; no wake from sleep yet; the locale settings of en-US in UTC; `Intl` formats local time in the zone it names), the color scheme an app sets and
+// script's viewport; mobile, so `platform.desktop` is false; the app in use; no wake from sleep yet; a network of a kind the runtime does not know, which counts as online; the locale settings of en-US in UTC; `Intl` formats local time in the zone it names), the color scheme an app sets and
 // `openUrl`: a promise for a URL it opens (the headless runtime answers none), one rejected with a `TypeError` for
 // a URL it never opens (it never throws). Its script checks each.
 import { Text, View, signal } from "nsh";
-import { horizontalSizeClass, verticalSizeClass, colorScheme, fontScale, lifecycle, localeSettings, openUrl, pixelRatio, platform, setColorScheme, wakeCount, windowSize } from "nsh";
+import { horizontalSizeClass, verticalSizeClass, colorScheme, fontScale, lifecycle, localeSettings, network, openUrl, pixelRatio, platform, setColorScheme, wakeCount, windowSize } from "nsh";
 
 // Whether `Intl`'s local time is in the zone it names: formatting in that zone
 // writes what local time does (in 1970, a summer and a winter), on a machine in
@@ -36,6 +36,7 @@ function App() {
       <Text>{`Scheme: ${colorScheme()}`}</Text>
       <Text>{`Lifecycle: ${lifecycle()}`}</Text>
       <Text>{`Wakes: ${wakeCount()}`}</Text>
+      <Text>{`Network: ${network().online} ${network().kind} ${network().expensive} ${network().constrained} ${network().cellularData}`}</Text>
       <Text>{`Time zone: ${localeSettings().timeZone}`}</Text>
       <Text>{`Intl local time: ${intlLocalTime()}`}</Text>
       <Text>{`Languages: ${localeSettings().languages.join(", ")}`}</Text>

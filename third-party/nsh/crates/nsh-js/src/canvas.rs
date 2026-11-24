@@ -38,6 +38,7 @@ use crate::{
     reactive::{self, Native, arg},
 };
 
+mod metrics;
 mod offscreen;
 
 type JsValue = qjs::JSValue;
@@ -182,6 +183,8 @@ pub(crate) struct Canvases {
     protos: Cell<[JsValue; 3]>,
     /// `OffscreenCanvas`'s class and prototype.
     offscreen: offscreen::OffscreenClass,
+    /// The class and prototype of what `measureText` returns.
+    metrics: metrics::MetricsClass,
 }
 
 impl Default for Canvases {
@@ -190,6 +193,7 @@ impl Default for Canvases {
             classes: Cell::new(None),
             protos: Cell::new([UNDEFINED; 3]),
             offscreen: Default::default(),
+            metrics: Default::default(),
         }
     }
 }
@@ -198,6 +202,7 @@ impl Canvases {
     /// Frees the values held (the state is unregistered).
     pub(crate) fn free_all(&mut self, raw: *mut JsContext) {
         self.offscreen.free_all(raw);
+        self.metrics.free_all(raw);
         for p in self.protos.replace([UNDEFINED; 3]) {
             // SAFETY: owned values; no JS runs from here on.
             unsafe { qjs::JS_FreeValue(raw, p) };
@@ -1050,12 +1055,7 @@ native!(
             .borrow()
             .as_ref()
             .map_or(0.0, |m| m(&font, &text).0 as f64);
-        // SAFETY: a new object.
-        unsafe {
-            let o = qjs::JS_NewObject(cx);
-            qjs::JS_SetPropertyStr(cx, o, c"width".as_ptr(), new_number(width));
-            o
-        }
+        metrics::new_text_metrics(cx, width, font, text)
     }
 );
 
@@ -1626,6 +1626,10 @@ export interface CanvasPath extends CanvasPathMethods {
 export interface TextMetrics {
   /** The advance width in points. */
   width: number;
+  /** The font's extent above the baseline on this line, in points (the platform text engine's line ascent). */
+  fontBoundingBoxAscent: number;
+  /** The font's extent below the baseline on this line, in points (the platform text engine's line descent). */
+  fontBoundingBoxDescent: number;
 }
 
 export interface CanvasSize {

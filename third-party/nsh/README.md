@@ -87,10 +87,25 @@ brew install longbridge/tap/nsh
 </details>
 
 <details>
+<summary>MacPorts</summary>
+
+```sh
+sudo port install native-shell
+```
+
+</details>
+
+<details>
 <summary>Windows (PowerShell)</summary>
 
 ```powershell
 irm https://nsh.dev/install.ps1 | iex
+```
+
+The nightly build:
+
+```powershell
+$env:NSH_VERSION = 'nightly'; irm https://nsh.dev/install.ps1 | iex
 ```
 
 </details>
@@ -128,7 +143,6 @@ Run either app on your chosen platform:
 
 ```sh
 nsh run my-app --target ios        # iOS simulator; requires Xcode
-nsh run my-app --target catalyst   # Mac Catalyst window on macOS
 ```
 
 </details>

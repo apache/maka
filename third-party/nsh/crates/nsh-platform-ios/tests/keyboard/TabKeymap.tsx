@@ -1,6 +1,7 @@
 import { keymap, mount, signal, Text, View } from "nsh";
 
-/** A focusable pad and an app shortcut on Tab: the shortcut runs before
+/** A focusable pad that takes keys (a tap focuses it: it takes no presses)
+ * and an app shortcut on Tab: the shortcut runs before
  * UIKit's focus traversal and keeps the key, as the app's other shortcuts
  * do on a press. */
 function App() {
@@ -14,7 +15,6 @@ function App() {
       <View
         testID="pad"
         focusable
-        onPress={() => {}}
         onFocus={() => focus.set("pad")}
         onBlur={() => focus.set("none")}
         style={{ height: 40, backgroundColor: "#eeeeee", margin: 4 }}

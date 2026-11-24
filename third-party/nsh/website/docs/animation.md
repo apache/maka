@@ -45,6 +45,7 @@ pub fn App() -> impl IntoElement {
 ```tsx tabs
 import { mount, View } from "nsh";
 import { createMotion } from "nsh";
+import { Window } from "nsh/desktop";
 
 function App() {
   const card = createMotion({ enter: "fadeInUp" });
@@ -58,7 +59,11 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 A motion has an animated value per channel: `opacity` (0..1), `translateX` and `translateY` (points), `rotate`, `rotateX` and `rotateY` (degrees), `scale`, `scaleX` and `scaleY`. They start at rest (opacity and scales 1, the rest 0) and apply in that order: translations, then rotations, then scales, about the view's transform origin. A motion has no look of its own: it moves what you styled.
@@ -296,6 +301,7 @@ pub fn App() -> impl IntoElement {
 
 ```tsx tabs
 import { mount, signal, View } from "nsh";
+import { Window } from "nsh/desktop";
 
 function App() {
   const on = signal(false);
@@ -319,7 +325,11 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 | Style | Rust | Type | Description |
@@ -424,6 +434,7 @@ pub fn App() -> impl IntoElement {
 ```tsx tabs
 import { mount, Text, View } from "nsh";
 import { createAnimatedValue, Easing } from "nsh";
+import { Window } from "nsh/desktop";
 
 function App() {
   const x = createAnimatedValue(0);
@@ -445,7 +456,11 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 **What can be bound:** `opacity` (`.bind_opacity(..)`); `backgroundColor`, `borderColor` (every side) and a text's `color` (the whole text), through an interpolation to colors (`.bind_background(..)`, `.bind_border_color(..)`, `.bind_color(..)`); `translate` (`[x, y]`, a value per axis), `rotate` (degrees) and `scale` (`[x, y]` per axis, or one value for both); and the steps of a `transform` list: `translateX`, `translateY`, `scale`, `scaleX`, `scaleY`, `rotate`, `rotateX`, `rotateY` and `rotateZ` (`.bind_translate_x(..)`, `.bind_translate_y(..)`, `.bind_scale(..)`, `.bind_rotate(..)` in degrees, `.bind_transform(kind, ..)` in Rust). Shadows change with [transitions](#transitions). A focus ring or a price that flashes green is a color interpolation bound to the border or text color:

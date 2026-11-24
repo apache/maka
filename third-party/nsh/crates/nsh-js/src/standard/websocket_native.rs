@@ -44,6 +44,31 @@ impl std::future::Future for YieldNow {
 /// buffered bytes, and this count only stops a flood of empty messages.
 const QUEUE: usize = 1024;
 
+/// The TLS of `wss://`: the process' crypto provider when the host set one,
+/// otherwise ring for these sockets alone. rustls only picks a provider by
+/// itself when exactly one provider feature is on, which a runner without
+/// the `websocket` feature (the app never imports `websocket`) lacks.
+fn tls() -> tokio_tungstenite::Connector {
+    static CONFIG: std::sync::OnceLock<std::sync::Arc<rustls::ClientConfig>> =
+        std::sync::OnceLock::new();
+    let config = CONFIG.get_or_init(|| {
+        let provider = rustls::crypto::CryptoProvider::get_default()
+            .cloned()
+            .unwrap_or_else(|| std::sync::Arc::new(rustls::crypto::ring::default_provider()));
+        let roots = rustls::RootCertStore {
+            roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
+        };
+        std::sync::Arc::new(
+            rustls::ClientConfig::builder_with_provider(provider)
+                .with_safe_default_protocol_versions()
+                .expect("ring supports the default protocol versions")
+                .with_root_certificates(roots)
+                .with_no_client_auth(),
+        )
+    });
+    tokio_tungstenite::Connector::Rustls(config.clone())
+}
+
 /// Whether the app may open a WebSocket to `url`, checked before any DNS
 /// lookup: the handshake is a GET of the same URL over HTTP.
 fn allowed(cx: &Ctx<'_>, url: &url::Url) -> bool {
@@ -252,7 +277,7 @@ fn open<'js>(
         let _abort_lifetime = abort;
         let operation = async {
             let config = WebSocketConfig::default().max_message_size(Some(MAX_MESSAGE)).max_frame_size(Some(MAX_MESSAGE));
-            let handshake = tokio::time::timeout(std::time::Duration::from_secs(30), tokio_tungstenite::connect_async_with_config(request, Some(config), false));
+            let handshake = tokio::time::timeout(std::time::Duration::from_secs(30), tokio_tungstenite::connect_async_tls_with_config(request, Some(config), false, Some(tls())));
             let (mut socket, response) = tokio::select! {
                 result = handshake => result.map_err(|_| "WebSocket handshake timed out".to_string())?.map_err(|e| e.to_string())?,
                 command = rx.recv() => {

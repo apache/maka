@@ -5,7 +5,7 @@
 use std::sync::{Arc, Mutex};
 
 use nsh_base::checkbox;
-use nsh_core::{EdgeInsets, MountBatch, MountItem, NodeId, Size, element::Root, prelude::*};
+use nsh_core::{EdgeInsets, MountBatch, MountItem, NodeId, Size, prelude::*};
 use nsh_engine::EngineConfig;
 use nsh_testing::Headless;
 
@@ -15,7 +15,7 @@ type Seen = Arc<Mutex<Vec<MountItem>>>;
 fn start<C: Component<Props = ()>>() -> (Headless, Seen) {
     let config = EngineConfig {
         viewport: Size::new(px(390.0), px(844.0)),
-        ..EngineConfig::new(Root::of::<C>())
+        ..EngineConfig::new(nsh_testing::windowed_root::<C>())
     };
     let mut app = Headless::start(config).unwrap();
     let seen = Seen::default();
@@ -108,4 +108,65 @@ fn hit_slop_follows_a_binding_and_is_none_by_default() {
     assert_eq!(hit_slop(&seen, grows), expected);
     // A checkbox without `hitSlop` never gets one.
     assert_eq!(hit_slop(&seen, widen), EdgeInsets::default());
+}
+
+/// A required checkbox with an error line apart from it: the error shows
+/// once the app's check fails.
+#[component]
+fn RequiredCheckbox() -> impl IntoElement {
+    let error = signal(false);
+    let error_line = element_ref();
+    view()
+        .child(
+            checkbox()
+                .accessibility_label("Accept terms")
+                .invalid(Prop::bind(move || error.get()))
+                .accessibility_described_by(error_line)
+                .child(text("Accept")),
+        )
+        .child(
+            text(move || match error.get() {
+                true => "You must accept the terms.",
+                false => "",
+            })
+            .element_ref(&error_line),
+        )
+        .child(
+            view()
+                .on_press(move |_: &()| error.set(true))
+                .child(text("Submit")),
+        )
+}
+
+#[test]
+fn invalid_and_its_error_line_reach_the_checkbox_screen_readers_focus() {
+    let (mut app, _seen) = start::<RequiredCheckbox>();
+    let screen = app.screen();
+    assert!(
+        !screen
+            .accessibility_state("label:Accept terms")
+            .unwrap()
+            .invalid
+    );
+    let described = screen
+        .accessibility_described_by("label:Accept terms")
+        .unwrap();
+    assert!(described.is_some(), "the error line describes the checkbox");
+    app.press("text:Submit").unwrap();
+    app.wait_for("text:You must accept the terms.").unwrap();
+    let screen = app.screen();
+    let state = screen.accessibility_state("label:Accept terms").unwrap();
+    assert!(
+        state.invalid,
+        "screen readers hear it is invalid on the checkbox itself"
+    );
+    assert!(state.checked.is_some(), "and its value stays");
+    assert_eq!(
+        screen
+            .accessibility_description("label:Accept terms")
+            .unwrap()
+            .as_deref(),
+        Some("You must accept the terms."),
+        "each time it is reached, after its name"
+    );
 }

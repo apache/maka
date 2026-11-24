@@ -23,6 +23,32 @@ Windows. Install the backend's development libraries before building.
 The `nsh` commands build the app's runners from the NSH crates `Cargo.toml` depends on: crates.io's at the version of
 the `nsh` you run (keep the `nsh-*` dependencies at that version when you upgrade `nsh`), or an NSH checkout's by path.
 
+## A title bar of your own
+
+The window keeps the system's title bar. To draw your own in its place (the window's background up to its top edge,
+your controls beside the window's), hide the system's and lay out a `title_bar()` row at the top: it moves the window
+and keeps its content clear of the window controls where it meets them, so a bar over each pane of a split view only
+steps aside on the pane at the window's edge.
+
+```rust
+use nsh_base::title_bar;
+use nsh_core::{desktop::{TitleBarOptions, TitleBarStyle, WindowAttributes}, prelude::*};
+
+app_window()
+    .id("main")
+    .attributes(WindowAttributes {
+        title_bar: Some(TitleBarOptions { style: TitleBarStyle::Hidden, ..Default::default() }),
+        ..Default::default()
+    })
+    .content(|| {
+        view().flex_1().child(
+            title_bar().h(px(44.0)).child(view().px_3().child(text("__APP_NAME__"))),
+        )
+    })
+```
+
+Its own padding goes on a view inside it; see [TitleBar](https://nsh.dev/elements/title-bar).
+
 ## Adding a TSX entry
 
 TSX screens can use the Rust components and modules, with hot reloading for the TSX. The crate's set,

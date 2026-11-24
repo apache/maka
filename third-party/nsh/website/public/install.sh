@@ -52,8 +52,15 @@ step() {
     esac
     printf '\r\033[K\033[36m%s\033[0m %s' "$frame" "$label" >&2
     if [ -n "${download_file:-}" ] && [ -f "$download_file" ]; then
-      size=$(wc -c < "$download_file" | awk '{printf "%.1f", $1 / 1048576}')
-      printf '  \033[2m%s MB\033[0m' "$size" >&2
+      wc -c < "$download_file" | awk -v total="${download_total:-0}" '{
+        mb = $1 / 1048576
+        if (total > 0) {
+          pct = int($1 * 100 / total); if (pct > 100) pct = 100
+          printf "  \033[2m%.1f / %.1f MB\033[0m  %d%%", mb, total / 1048576, pct
+        } else {
+          printf "  \033[2m%.1f MB\033[0m", mb
+        }
+      }' >&2
     fi
     sleep 0.1
   done
@@ -155,6 +162,10 @@ trap 'rm -rf "$work"' EXIT INT TERM
 echo "Installing NSH $version for $platform"
 if [ -n "$tty" ]; then
   download_file="$work/$asset"
+  # The total size comes from Content-Length after redirects; without it the
+  # spinner falls back to the downloaded size only.
+  download_total=$(curl -fsSIL "$url" 2> /dev/null | tr -d '\r' |
+    awk 'tolower($1) == "content-length:" { n = $2 } END { print n + 0 }') || download_total=0
   step "Downloading $asset" curl -fsSL "$url" -o "$download_file" || fail "could not download $url"
   download_file=
 else

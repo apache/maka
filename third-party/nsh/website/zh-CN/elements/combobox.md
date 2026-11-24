@@ -70,6 +70,7 @@ fn tag_picker() -> impl IntoElement {
 ```tsx tabs
 import { mount, signal, Text, View } from "nsh";
 import { Combobox } from "nsh/base";
+import { Window } from "nsh/desktop";
 
 const TAGS = [
   { value: "bug", title: "Bug" },
@@ -106,7 +107,11 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 `Combobox` 来自 [`nsh/base`](../modules/nsh-base.md)，在 Rust 中是 `nsh-base` crate。在 Rust 中，`combobox()` 创建一个组合框，每个属性有一个设置方法（`.items(..)`、`.value(..)`、`.multiple(..)`），每个事件有一个监听方法（`.on_change(..)`）。它的条目与 `Select` 的相同：`SelectItem::new(value, title)`，可以用 `.disabled(..)` 和 `.group(..)`，分组方式也和选择框一样（见[条目](./select.md#items)）。

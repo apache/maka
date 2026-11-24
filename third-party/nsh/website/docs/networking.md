@@ -65,6 +65,7 @@ fn App() -> impl IntoElement {
 
 ```tsx tabs
 import { mount, resource, Scroll, Text, View } from "nsh";
+import { Window } from "nsh/desktop";
 
 type Post = { id: number; title: string };
 
@@ -85,7 +86,11 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 [`resource`](./reactivity.md#resource) keeps the value, the error and whether a load runs, loads again from a source that changes (or on `refetch()`), and cancels a load that no longer counts (the component goes away, or a newer load starts): in Rust by dropping the load's task, which cancels its request, in TSX through the `signal` it passes on. Rust's `fetch` takes absolute URLs; JSON is parsed with a crate such as `serde_json`.
@@ -368,7 +373,7 @@ The checks are enforced in NSH's runtime, outside your app's code, before a requ
     else throw error;
   }
   ```
-- **Every redirect is checked again.** NSH follows redirects itself (up to 20) instead of letting the platform do it, so a granted host cannot redirect your app to one that is not.
+- **Every redirect is checked again.** NSH follows redirects itself (up to 20) instead of letting the platform do it, so a granted host cannot redirect your app to one that is not. A hop to another origin (scheme, host or port) leaves out the request's `Authorization`, `Cookie` and `Proxy-Authorization` headers, on that hop and every later one, as the Fetch standard does for `Authorization`, so credentials meant for one server reach only that server.
 - The same `network` grants cover remote images (also in canvases and `Image.getSize` / `prefetch`) and video sources. `asset:` URIs of your own bundle are always allowed.
 - The host is taken after the last `@`, so `https://ok.com@evil.io` counts as `evil.io`.
 
@@ -379,7 +384,7 @@ An app without `"capabilities"` may reach every host: a standalone app is its de
 TSX's `fetch` follows the Fetch standard with the differences that make sense for an app rather than a web page:
 
 - **No CORS.** An app talks to any host its capabilities allow; there are no preflight requests and no opaque responses.
-- **No forbidden headers.** An app may set `Cookie`, `User-Agent`, `Origin` and others.
+- **No forbidden headers.** An app may set `Cookie`, `User-Agent`, `Origin` and others. For an app with `"capabilities"`, NSH follows redirects itself, and the credential headers (`Authorization`, `Cookie`, `Proxy-Authorization`) stay with the origin they were set for; without them, the platform's network stack follows redirects with its own rules.
 - **`redirect: "manual"`** gives the 3xx response itself (with its `Location` header) rather than an opaque redirect. `redirect: "error"` rejects on a redirect.
 - **`data:` and `blob:` URLs** are answered locally. `URL.createObjectURL(blob)` makes a `blob:` URL that `fetch` can read until you revoke it.
 - **`asset:/` URLs** are the files the app ships, read from the app's own files with no capability needed ([Reading a file at run time](./images-and-assets.md#reading-a-file-at-run-time)).

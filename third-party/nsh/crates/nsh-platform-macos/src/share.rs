@@ -3,8 +3,8 @@
 //! items; the title becomes the subject of the service the user chooses (a
 //! mail's subject line). The menu shows on a later turn of the run loop,
 //! never from the batch that asked for it, below the anchor's own view, in
-//! whatever window it is, or at the middle of the surface (a surface in no
-//! window fails the share). A new share replaces the menu of one still
+//! whatever window it is, or at the middle of a visible app window. With
+//! neither available, the share fails. A new share replaces the menu of one still
 //! open. The share is answered once on the root's `Share` event: shared
 //! with the service's title once the service reports it finished, or, for
 //! a service that has reported nothing, once the user is back in the
@@ -339,14 +339,17 @@ fn show(surface: &Rc<Surface>, id: u32, sheet: &ShareSheet) {
     let (view, rect): (Retained<NSView>, NSRect) = match &anchor {
         Some(anchor) => (anchor.ns().retain(), anchor.ns().bounds()),
         None => {
-            let root: &NSView = &surface.root;
-            if root.window().is_none() {
+            let root = crate::window::visible_container(surface)
+                .unwrap_or_else(|| surface.root.ns().retain());
+            if root.window().is_none_or(|w| !w.isVisible()) {
                 // AppKit shows no menu there, and so never answers.
-                return fail(ShareError::failed("share: the surface is in no window"));
+                return fail(ShareError::failed(
+                    "share: the surface is in no visible window",
+                ));
             }
             let bounds = root.bounds();
             (
-                root.retain(),
+                root,
                 NSRect::new(
                     NSPoint::new(bounds.size.width / 2.0, bounds.size.height / 2.0),
                     NSSize::new(0.0, 0.0),

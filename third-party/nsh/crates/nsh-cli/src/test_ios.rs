@@ -28,17 +28,27 @@ const CONNECT: Duration = Duration::from_secs(90);
 /// else a booted one, else the newest iPhone, booted first), installing the
 /// development host there; `fps` has it log its performance monitor's
 /// readings.
-pub(crate) fn starter(work: &Path, fps: bool, device: Option<&str>) -> anyhow::Result<StartHost> {
+pub(crate) fn starter(
+    work: &Path,
+    fps: bool,
+    device: Option<&str>,
+    release: bool,
+) -> anyhow::Result<StartHost> {
     let host = crate::runtime::test_host(crate::runtime::Platform::IphoneSimulator)?;
     // Behind the app the user types in: the touches and keys go to the
     // app in the simulator directly.
     let udid = crate::run::simulator(device, crate::run::SimulatorWindow::Behind)?;
-    let app = crate::run::package_ios(&work.join("ios"), &host)?;
+    // The host runs every app the tests open: no one app's strings.
+    let app = crate::run::package_ios(
+        &work.join("ios"),
+        &host,
+        &crate::package::AppConfig::default(),
+    )?;
     let step = crate::ui::Step::start("installing the development host in the simulator");
     simctl(&["install", &udid, &app.to_string_lossy()])?;
     step.finish();
     Ok(Arc::new(move |entry: &Path, options: &HostOptions| {
-        start(&udid, entry, options, fps).map(|h| Box::new(h) as Box<dyn Host>)
+        start(&udid, entry, options, fps, release).map(|h| Box::new(h) as Box<dyn Host>)
     }))
 }
 
@@ -105,8 +115,9 @@ fn start(
     entry: &Path,
     options: &HostOptions,
     fps: bool,
+    release: bool,
 ) -> Result<SimulatorHost, String> {
-    let server = crate::test_host::serve(entry, options)?;
+    let server = crate::test_host::serve(entry, options, release)?;
     let url = format!("ws://{}{WS_PATH}", server.local_addr());
     let data = crate::test_host::fresh_data_dir()?;
     let data_arg = data.to_string_lossy().into_owned();

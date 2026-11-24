@@ -142,7 +142,7 @@ impl ViewGeometry for GeometryHandle {
         self.with(|local| {
             let tree = local.tree.borrow();
             let geo = local.geo.borrow();
-            super::controller::node_box(&tree, &geo, pos)
+            super::controller::node_box(&tree, &geo, &local.state.borrow(), pos)
         })
     }
 
@@ -162,7 +162,12 @@ impl ViewGeometry for GeometryHandle {
             let selection = state.selection();
             let geo = local.geo.borrow();
             if selection.as_node().is_some() {
-                return super::controller::node_box(&local.tree.borrow(), &geo, selection.from());
+                return super::controller::node_box(
+                    &local.tree.borrow(),
+                    &geo,
+                    &state,
+                    selection.from(),
+                );
             }
             let (from, to) = (selection.from(), selection.to());
             if from == to {

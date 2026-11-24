@@ -88,6 +88,87 @@ fn content_sublayers(view: &NSView) -> Vec<Retained<CALayer>> {
         .collect()
 }
 
+#[component]
+fn ScaledScene() -> impl IntoElement {
+    view()
+        .size_full()
+        .child(text("Sharp text").test_id("scale-text").h(px(24.0)))
+        .child(
+            scroll()
+                .w(px(100.0))
+                .h(px(100.0))
+                .zoom_range(1.0, 2.0)
+                .zoom(2.0)
+                .child(
+                    canvas(|| {
+                        Painter::new()
+                            .fill_color(rgb(0xff0000))
+                            .fill_rect(0.0, 0.0, 32.0, 32.0)
+                    })
+                    .test_id("scale-canvas")
+                    .w(px(32.0))
+                    .h(px(32.0)),
+                ),
+        )
+}
+
+/// Host bounds scaling composes with, rather than duplicates, NSH zoom.
+pub(super) fn run_scale() {
+    let mtm = MainThreadMarker::new().unwrap();
+    NSApplication::sharedApplication(mtm).finishLaunching();
+    for scale in [1.0, 2.0, 0.5] {
+        // SAFETY: main-thread creation; retained until after close.
+        let window = unsafe {
+            NSWindow::initWithContentRect_styleMask_backing_defer(
+                NSWindow::alloc(mtm),
+                NSRect::new(NSPoint::new(120.0, 120.0), NSSize::new(320.0, 320.0)),
+                NSWindowStyleMask::Titled,
+                NSBackingStoreType::Buffered,
+                false,
+            )
+        };
+        // SAFETY: the retained window is closed explicitly below.
+        unsafe { window.setReleasedWhenClosed(false) };
+        let host = NSView::initWithFrame(
+            NSView::alloc(mtm),
+            NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(320.0, 320.0)),
+        );
+        window.setContentView(Some(&host));
+        host.setBoundsSize(NSSize::new(320.0 / scale, 320.0 / scale));
+        let app = platform::AppView::new(
+            mtm,
+            platform::AppOptions {
+                size: (160, 160),
+                ..Default::default()
+            },
+        );
+        let root = app.view();
+        root.setFrame(NSRect::new(
+            NSPoint::new(0.0, 0.0),
+            NSSize::new(160.0, 160.0),
+        ));
+        host.addSubview(&root);
+        window.orderFront(None);
+        app.load(platform::App::Rust(platform::Root::of::<ScaledScene>()));
+        for (id, zoom) in [("scale-text", 1.0), ("scale-canvas", 2.0)] {
+            until("scaled content layer mounted", || {
+                find(&root, id).is_some_and(|v| !content_sublayers(&v).is_empty())
+            });
+            let view = find(&root, id).unwrap();
+            let density = content_sublayers(&view)[0].contentsScale();
+            let expected = window.backingScaleFactor() * scale * zoom;
+            assert!(
+                density >= expected - 1e-6 && density <= expected * 1.25 + 1e-6,
+                "{id}: host scale {scale}, density {density}, expected {expected}..{}",
+                expected * 1.25,
+            );
+        }
+        app.stop();
+        window.close();
+    }
+    println!("view_scale: text and zoomed canvas follow host bounds at 1x, 2x and 0.5x");
+}
+
 fn sample_rgb(layer: &CALayer, x: usize, y: usize, width: usize, height: usize) -> (u8, u8, u8) {
     let space = CGColorSpace::new_device_rgb().unwrap();
     // SAFETY: Core Graphics allocates and owns the pixel buffer while read.

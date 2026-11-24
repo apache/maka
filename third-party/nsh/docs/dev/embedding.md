@@ -11,15 +11,23 @@
   target); device builds check entitlements against the profile,
   which keeps the app's values in place of its own). iOS: `.app`, `.ipa` with `--sign <identity>
   --profile <file.mobileprovision>` (entitlements come from the profile; icons are compiled by `actool` into `Assets.car`).
+  `ios.extensions` and `macos.extensions` list prebuilt `.appex` bundles the app builds itself
+  (`crates/nsh-cli/src/app_extensions.rs`): packages copy them into `PlugIns/` (iOS) or `Contents/PlugIns/` (macOS)
+  with the app's version and sign them inside-out before the app; iOS device packages take one
+  `--profile` per bundle, chosen by bundle identifier (`crates/nsh-cli/src/provisioning.rs`). `nsh run --target ios`
+  copies them into the simulator's development host as well (`run.rs` `dev_host_extensions`), each identifier's app
+  prefix replaced by the host's, since iOS installs an extension only under its containing bundle's. NSH builds no Swift.
   Android: an APK assembled without Gradle (`aapt2 link`, native libraries stored uncompressed and 16 KB ZIP aligned, `apksigner`;
-  the debug key unless `--keystore`). Linux: a directory `<name>/` with the release runner (`crates/nsh-linux-app`) as
+  the debug key unless `--keystore`; `android.launchScreen` becomes a generated launch theme). Linux: a directory `<name>/` with the release runner (`crates/nsh-linux-app`) as
   the executable, `nsh/bundle.nshc`, `nsh/assets/` and `nsh/app.json` (the window title, the GTK application id and
   nsh.json `window`, the main window's options, which the runner reads next to itself), `<id>.desktop` (`StartupWMClass`
   is the id, which GTK makes the window's app id) and `<id>.png`, plus the same as `<name>.tar.gz`; GTK 4, Pango and
   WebKitGTK 6.0 (the runner's default `webview` feature, `linux.md`) must be installed where it runs. macOS:
   `<name>.app` with the release runner (`crates/nsh-macos-app`) as `Contents/MacOS/<executable>`,
   `Contents/Resources/nsh/` holding `bundle.nshc`, `assets/` and `app.json` (the window title, appearance and nsh.json
-  `window`), the icon as `AppIcon.icns` (`sips`), signed ad hoc (`codesign -s -`); `--run` opens it.
+  `window`), the icon as `AppIcon.icns` (`sips`), any `macos.extensions` in `Contents/PlugIns/`, signed ad hoc
+  (`codesign -s -`) by default or with `--sign <identity>` (`--options runtime --timestamp`, Hardened Runtime) and
+  verified with `codesign --verify --deep --strict`; `--run` opens it.
   Windows: a directory `<name>\` with the release runner (`crates/nsh-windows-app`, a windowed program: no console)
   as `<name>.exe` (characters Windows forbids in file names dropped), the icon embedded as its icon group 1 (which the
   window class loads, and Explorer and the taskbar show) with Windows' resource update API (`crates/nsh-cli/src/windows.rs`:
@@ -50,13 +58,17 @@
   takes no web links. The other native platforms ignore the command.
 - Android's `libnsh.so` uses 16 KB ELF LOAD alignment and a 16 KB-aligned RELRO end, set by `nsh-platform-android/build.rs` and
   the generated Android runtimes' build scripts. `cargo xtask android` checks every linked library's LOAD alignment
-  with the NDK's `llvm-objdump` before copying it into the runtime; `cargo xtask dist` uses the same checked libraries
-  for the APK runtimes and AARs. APK ZIP alignment is checked separately by `zipalign -c -P 16 -v 4 <app.apk>`.
+  with the NDK's `llvm-objdump` before copying it into the runtime; `cargo xtask dist` and `cargo xtask android-embed`
+  use the same checked libraries for the APK runtimes and AARs. `android-embed` writes only
+  `dist/nsh/embed/android/{nsh,nsh-dev}.aar` (`--no-dev` leaves out `nsh-dev.aar`; `--abi` repeats to build fewer than
+  `arm64-v8a`, `armeabi-v7a` and `x86_64`). APK ZIP alignment is checked separately by `zipalign -c -P 16 -v 4 <app.apk>`.
 - Release runtimes' `lib/<abi>/libnsh.so` is stripped with the NDK's `llvm-strip --strip-unneeded` (a quarter of each
   library, which APKs store uncompressed; the dynamic symbols JNI needs stay), and checked again; `symbols/<abi>/`
   keeps the linked library for `ndk-stack` and Play Console. The AARs carry the linked libraries: Gradle strips what
-  it packages and extracts the symbols itself.
-- The AARs carry `proguard.txt` (`AAR_KEEP_RULES` in `crates/xtask/src/dist.rs`), which an app's minified build
+  it packages and extracts the symbols itself. Debug runtimes (and the CLI's debug builds of apps' libraries) are
+  stripped with `--strip-debug` instead: their debug info is most of the library and made development APKs too large
+  to update on emulators; the symbol table stays for crash reports, and `symbols/<abi>/` keeps the linked library.
+- The AARs carry `proguard.txt` (`AAR_KEEP_RULES` in `crates/xtask/src/android.rs`), which an app's minified build
   applies: `libnsh.so` finds `TextLayouts`, `NshView`, `Net` and `TestAgent` and their members by name over JNI
   (`JNI_OnLoad` fails without them) and binds the `native` methods of `Native`, `Net` and `SelectableView` by name,
   while Java code names few of them, so R8 removed or renamed them (`ClassNotFoundException: TextLayouts`). The rule
@@ -212,8 +224,13 @@
     `destroy`, then joins the engine with the Java lock released. Data crosses the C ABI and JNI as JSON text
     (Swift `JSONSerialization`, Java
     `org.json` as maps and lists), the VM as JSON values converted natively.
-  - A Rust app (`App::Rust`) has no `host`: events reach no one; its own Rust reaches the embedding app's
-    directly ("Native modules", below). The host grants the native functions the app may call through `capabilities.host`.
+  - *Rust code* (`host_call`, `host_call_with`, `host_post`, `on_host_event` of `nsh_core::prelude`; a Rust app, or
+    Rust components in a TSX app) reaches the same channel through the core: the core checks the name and
+    `capabilities.host` and keeps the call by id, and the engine hands each call or post to the channel's handler
+    when the channel is configured, else to the platform's host (`Command::HostCall` / `HostPost`, the web page's),
+    else fails it as `Unavailable`. Answers come back to the core, and the channel's events reach the components'
+    listeners as well as JS's; each language keeps the events of names it does not listen to yet until it does.
+    JS's calls without a channel of their own take the same path.
   - *The URL handler* (`HostChannel::handle_open_url`; Swift `NshAppView.onOpenURL`, C
     `nsh_app_set_open_url_handler`; Java `NshView.setOpenUrlHandler`, `NshView.OpenUrlHandler`): the URLs the app
     opens (`openUrl` of `nsh`, `nsh_core::element::open_url`, a `TextView` with `links="open"`;
@@ -404,7 +421,10 @@ NSH draws (`src/layers.rs`).
   (a delegate the embedding app already set stays), on Windows the process takes the app's id as its
   AppUserModelID, registers it for toasts and hears their presses; the first such view's app wins. Without it the
   permission is `unavailable`, `show` resolves `false` and the badge is left alone. On Linux the desktop portal knows
-  the app by its id either way.
+  the app by its id either way. On Apple platforms, where NSH is the delegate, notifications NSH did not show (remote
+  ones, other code's) never reach `press`; they go to the native handler of `set_foreign_handler`. On Android,
+  `NshView.handleNotificationIntent` hands an intent without NSH's mark that may be another notification's press to
+  `nsh::notifications::set_foreign_handler`'s handler in the same way.
 - **Caches.** An app's caches (today the images it downloads, `nsh_core::image::DiskCache`) live in
   `<root>/<app id>/<kind>`, which the engine opens from `EngineConfig::cache` (`nsh_engine::CacheOptions`: a
   `CacheLocation` (`System`, `Dir`, `Off`) and a `CachePolicy` per kind (`Default`, `MaxSize(ByteSize)`, `Off`),

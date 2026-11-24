@@ -14,7 +14,6 @@ use nsh_base::{
 };
 use nsh_core::{
     Command, MountItem, NodeId, Size,
-    element::Root,
     platform::{Environment, Idiom, Os},
     prelude::*,
 };
@@ -24,7 +23,7 @@ use nsh_testing::Headless;
 fn start<C: Component<Props = ()>>() -> Headless {
     let config = EngineConfig {
         viewport: Size::new(px(600.0), px(300.0)),
-        ..EngineConfig::new(Root::of::<C>())
+        ..EngineConfig::new(nsh_testing::windowed_root::<C>())
     };
     let mut app = Headless::start(config).unwrap();
     app.first_render().unwrap();
@@ -89,7 +88,7 @@ fn a_terminals_column_handles_are_no_stops_of_tab() {
             idiom: Idiom::Terminal,
             ..Environment::default()
         },
-        ..EngineConfig::new(Root::of::<Handles>())
+        ..EngineConfig::new(nsh_testing::windowed_root::<Handles>())
     };
     let mut app = Headless::start(config).unwrap();
     // Each view's parent, test id and `focusable`.
@@ -175,7 +174,7 @@ fn a_terminals_titles_show_their_sort_in_one_glyph_and_no_lines_between() {
             cell: Some(Size::new(px(8.0), px(16.0))),
             ..Environment::default()
         },
-        ..EngineConfig::new(Root::of::<Sorted>())
+        ..EngineConfig::new(nsh_testing::windowed_root::<Sorted>())
     };
     let mut app = Headless::start(config).unwrap();
     app.first_render().unwrap();
@@ -240,7 +239,7 @@ fn tab_out_on(idiom: Idiom) -> Headless {
             idiom,
             ..Environment::default()
         },
-        ..EngineConfig::new(Root::of::<TabOut>())
+        ..EngineConfig::new(nsh_testing::windowed_root::<TabOut>())
     };
     let mut app = Headless::start(config).unwrap();
     app.first_render().unwrap();
@@ -266,6 +265,52 @@ fn a_desktops_tab_moves_the_chosen_cell_to_the_next_column() {
     let mut app = tab_out_on(Idiom::Desktop);
     app.press_key("tab").unwrap();
     app.wait_for("Chosen Some(0):Some(1) next false").unwrap();
+}
+
+/// [`Quotes`] whose rows activate on Enter / Return: the activated row is
+/// written under the table.
+#[component]
+fn Activate() -> impl IntoElement {
+    let rows = DataTableRows::new(2)
+        .texts("symbol", ["AAPL", "MSFT"])
+        .numbers("last", [231.5, 412.0]);
+    let activated = signal(String::from("none"));
+    view()
+        .child(
+            data_table()
+                .h(px(120.0))
+                .cell_selectable(true)
+                .columns(vec![column("symbol"), column("last")])
+                .data(rows)
+                .on_row_activate(move |row: &u32| activated.set(row.to_string())),
+        )
+        .child(text(move || format!("Activated {}", activated.get())))
+}
+
+#[test]
+fn enter_activates_the_focused_row() {
+    let viewport = Size::new(px(600.0), px(300.0));
+    let config = EngineConfig {
+        viewport,
+        environment: Environment {
+            window: viewport,
+            os: Os::Linux,
+            idiom: Idiom::Desktop,
+            ..Environment::default()
+        },
+        ..EngineConfig::new(nsh_testing::windowed_root::<Activate>())
+    };
+    let mut app = Headless::start(config).unwrap();
+    app.first_render().unwrap();
+    // A press on a cell chooses it and gives the table the keyboard.
+    app.press("text:AAPL").unwrap();
+    // Enter / Return activates the row under the selection.
+    app.press_key("enter").unwrap();
+    app.wait_for("Activated 0").unwrap();
+    // An arrow moves the selection; Enter activates the row it moved to.
+    app.press_key("down").unwrap();
+    app.press_key("enter").unwrap();
+    app.wait_for("Activated 1").unwrap();
 }
 
 /// A huge table whose visible row is reported without loading row data.
@@ -298,7 +343,7 @@ fn web_desktop_wheel_offsets_are_not_amplified_by_the_table_extent() {
             window: viewport,
             ..Default::default()
         },
-        ..EngineConfig::new(Root::of::<HugeWebTable>())
+        ..EngineConfig::new(nsh_testing::windowed_root::<HugeWebTable>())
     };
     let mut app = Headless::start(config).unwrap();
     let vertical = Arc::new(Mutex::new(None));
@@ -384,7 +429,7 @@ fn touch_reverse_scroll_after_settling_near_top_stays_one_to_one() {
             pixel_ratio: 3.0,
             ..Default::default()
         },
-        ..EngineConfig::new(Root::of::<HugeWebTable>())
+        ..EngineConfig::new(nsh_testing::windowed_root::<HugeWebTable>())
     };
     let mut app = Headless::start(config).unwrap();
     #[derive(Default)]
@@ -458,7 +503,7 @@ fn web_scaled_scrollbar_does_not_follow_the_hit_layers_recenter() {
             window: viewport,
             ..Default::default()
         },
-        ..EngineConfig::new(Root::of::<HugeWebTable>())
+        ..EngineConfig::new(nsh_testing::windowed_root::<HugeWebTable>())
     };
     let mut app = Headless::start(config).unwrap();
     let vertical = Arc::new(Mutex::new(Vec::new()));
@@ -565,6 +610,117 @@ fn unstyled_fixed_edge_mounts_no_separator_views_until_styled() {
     assert_eq!(app.screen().layout_nodes().len(), without_edge);
 }
 
+/// A table with wide columns and `rows` rows, in a 600-point window.
+fn wide(rows: u32) -> nsh_base::DataTableElement {
+    let mut columns = Vec::new();
+    for key in ["a", "b", "c", "d"] {
+        let mut c = column(key);
+        c.width = Some(px(300.0));
+        columns.push(c);
+    }
+    data_table()
+        .h(px(200.0))
+        .header_height(px(30.0))
+        .row_height(px(30.0))
+        .row_count(Some(rows))
+        .columns(columns)
+}
+
+#[component]
+fn WideEmpty() -> impl IntoElement {
+    wide(0)
+}
+
+#[component]
+fn WideShort() -> impl IntoElement {
+    wide(2)
+}
+
+/// The height of the body's horizontal scroll view.
+fn horizontal_body_height<C: Component<Props = ()>>() -> f32 {
+    let config = EngineConfig {
+        viewport: Size::new(px(600.0), px(300.0)),
+        ..EngineConfig::new(nsh_testing::windowed_root::<C>())
+    };
+    let mut app = Headless::start(config).unwrap();
+    let horizontal = Arc::new(Mutex::new(Vec::new()));
+    let found = horizontal.clone();
+    app.observe(move |_, batch| {
+        for item in &batch.items {
+            if let MountItem::ScrollConfig {
+                id,
+                horizontal: true,
+                ..
+            } = item
+            {
+                found.lock().unwrap().push(*id);
+            }
+        }
+    });
+    app.first_render().unwrap();
+    let ids = horizontal.lock().unwrap().clone();
+    let nodes = app.screen().layout_nodes();
+    // The body's is the tallest: the desktops' bar is a strip at the foot.
+    nodes
+        .iter()
+        .filter(|n| ids.contains(&n.id))
+        .map(|n| n.bounds.size.height.0)
+        .fold(0.0, f32::max)
+}
+
+/// The columns scroll from anywhere in the body, not only from over its
+/// rows: an empty table's, and the room below a short table's last row.
+#[test]
+fn the_body_scrolls_its_columns_where_it_has_no_rows() {
+    assert_eq!(horizontal_body_height::<WideEmpty>(), 170.0);
+    assert_eq!(horizontal_body_height::<WideShort>(), 170.0);
+}
+
+/// An empty table of wide columns with the app's empty state, which fills
+/// the body, and the first column in view below it.
+#[component]
+fn WideEmptyState() -> impl IntoElement {
+    let first = signal(0);
+    view()
+        .child(
+            wide(0)
+                .empty(
+                    view()
+                        .flex_1()
+                        .items_center()
+                        .justify_center()
+                        .child(text("No rows")),
+                )
+                .on_visible_columns_change(move |range: &nsh_base::DataTableRange| {
+                    first.set(range.start);
+                }),
+        )
+        .child(text(move || format!("First column {}", first.get())))
+}
+
+/// A wheel over the empty state scrolls the columns: the state lies over
+/// the hit layer, and only what the app put in it takes the pointer.
+#[test]
+fn a_wheel_over_the_empty_state_scrolls_the_columns() {
+    let viewport = Size::new(px(600.0), px(300.0));
+    let config = EngineConfig {
+        viewport,
+        environment: Environment {
+            os: Os::MacOs,
+            idiom: Idiom::Desktop,
+            window: viewport,
+            ..Default::default()
+        },
+        ..EngineConfig::new(nsh_testing::windowed_root::<WideEmptyState>())
+    };
+    let mut app = Headless::start(config).unwrap();
+    app.first_render().unwrap();
+    app.wait_for("First column 0").unwrap();
+    app.wheel("text:No rows", point(px(400.0), px(0.0)))
+        .unwrap();
+    app.wait_for("First column 1").unwrap();
+}
+
 /// Wide columns between one fixed at each side.
 #[component]
 fn WideFixed() -> impl IntoElement {
@@ -604,7 +760,7 @@ fn the_horizontal_bar_spans_the_scrolling_columns_only() {
             window: viewport,
             ..Default::default()
         },
-        ..EngineConfig::new(Root::of::<WideFixed>())
+        ..EngineConfig::new(nsh_testing::windowed_root::<WideFixed>())
     };
     let mut app = Headless::start(config).unwrap();
     app.first_render().unwrap();

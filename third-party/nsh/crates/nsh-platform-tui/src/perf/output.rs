@@ -9,8 +9,10 @@ use ratatui_core::{
 use super::SharedOutput;
 
 /// A terminal backend that counts Cells only while its AppView monitor is
-/// enabled, and draws the Cells of the text inside a view with an `href`
-/// (a `Link`'s) as OSC 8 hyperlinks (`crate::link`).
+/// enabled, draws the Cells of the text inside a view with an `href`
+/// (a `Link`'s) as OSC 8 hyperlinks (`crate::link`), and writes the kitty
+/// graphics commands of image views ahead of a frame's Cells
+/// (`crate::image`).
 #[non_exhaustive]
 pub struct MeasuredBackend<B> {
     pub(crate) inner: B,
@@ -44,14 +46,27 @@ impl<B: Backend> Backend for MeasuredBackend<B> {
         I: Iterator<Item = (u16, u16, &'a Cell)>,
     {
         let links = self.output.links.borrow();
-        if !links.is_empty() {
+        let graphics = !self.output.graphics.borrow().is_empty();
+        if !links.is_empty() || graphics {
             // The diff decided which Cells to draw from their plain
             // symbols; only what is written for a linked one changes.
             let content: Vec<_> = content.collect();
-            let wrapped: Vec<_> = content
+            let mut wrapped: Vec<_> = content
                 .iter()
                 .map(|&(x, y, cell)| links.get(&(x, y)).map(|open| crate::link::wrap(cell, open)))
                 .collect();
+            // Images go to the terminal ahead of the Cells that show them
+            // (`crate::image`), with the first Cell drawn: a frame that
+            // draws none keeps them for the next.
+            if graphics && let Some(&(_, _, cell)) = content.first() {
+                let commands = std::mem::take(&mut *self.output.graphics.borrow_mut());
+                let first = wrapped[0].take().unwrap_or_else(|| cell.clone());
+                let mut symbol = String::from_utf8(commands).unwrap_or_default();
+                symbol.push_str(first.symbol());
+                let mut first = first;
+                first.set_symbol(&symbol);
+                wrapped[0] = Some(first);
+            }
             let content = content
                 .iter()
                 .zip(&wrapped)

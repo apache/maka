@@ -1,5 +1,7 @@
 package com.longbridge.nsh;
 
+import java.util.Locale;
+
 /**
  * Coverage for the accessibility event a changed view sends ({@link A11yChanges}): a checked
  * or selected change of the focused view a service just clicked is a click, a new state
@@ -145,26 +147,42 @@ public final class A11yChangesTest {
         check("mixed", A11yChanges.checked(40) == 3);
         check("pressed wins", A11yChanges.checked(256 | 24) == 1);
         check("pressed mixed", A11yChanges.checked(256 | 1024) == 3);
+        // The words follow the language: Simplified and Traditional Chinese by script or region,
+        // Japanese, Korean, anything else English.
+        localized("Simplified Chinese", Locale.SIMPLIFIED_CHINESE, 24 | 64 | INVALID, null, false, "已选中, 已收起, 数据无效");
+        localized("Chinese by script", Locale.forLanguageTag("zh-Hant-CN"), 8 | 192, null, false, "未選取, 已展開");
+        localized("Chinese in Hong Kong", Locale.forLanguageTag("zh-HK"), 768 | (2 << 11), null, true, "開啟, 目前頁面");
+        localized("Japanese mixed", Locale.JAPANESE, 8 | 32, null, false, "一部選択");
+        localized("Korean switch off", Locale.KOREAN, 256 | 64, null, true, "끔, 접힘");
+        localized("German falls back to English", Locale.GERMAN, 64 | 128, null, false, "expanded");
+        localized("no locale is English", null, INVALID, "Medium", false, "Medium, invalid data");
+        localized("the core's tag", Locale.forLanguageTag("zh-Hant-TW"), 64, null, false, "已收合");
+
         System.out.println("A11yChangesTest: " + checks + " passed");
     }
 
     private static void expect(String what, int before, int after, boolean focused, boolean clicked, int sdk,
                                int wanted) {
-        String from = A11yChanges.stateDescription(before, null, false);
-        String to = A11yChanges.stateDescription(after, null, false);
+        String from = A11yChanges.stateDescription(before, null, false, Locale.ENGLISH);
+        String to = A11yChanges.stateDescription(after, null, false, Locale.ENGLISH);
         int got = A11yChanges.event(before, after, from, to, false, false, focused, clicked, sdk);
         check(what + ": expected " + wanted + ", got " + got, got == wanted);
     }
 
     private static void expectValue(String what, String textBefore, String textAfter, boolean rangeChanged,
                                     boolean focused, int sdk, int wanted) {
-        int got = A11yChanges.event(0, 0, A11yChanges.stateDescription(0, textBefore, false),
-                A11yChanges.stateDescription(0, textAfter, false), rangeChanged, false, focused, true, sdk);
+        int got = A11yChanges.event(0, 0, A11yChanges.stateDescription(0, textBefore, false, Locale.ENGLISH),
+                A11yChanges.stateDescription(0, textAfter, false, Locale.ENGLISH), rangeChanged, false, focused, true, sdk);
         check(what + ": expected " + wanted + ", got " + got, got == wanted);
     }
 
     private static void description(String what, int state, String valueText, boolean onOff, String wanted) {
-        String got = A11yChanges.stateDescription(state, valueText, onOff);
+        String got = A11yChanges.stateDescription(state, valueText, onOff, Locale.ENGLISH);
+        check(what + ": expected " + wanted + ", got " + got, java.util.Objects.equals(got, wanted));
+    }
+
+    private static void localized(String what, Locale locale, int state, String valueText, boolean onOff, String wanted) {
+        String got = A11yChanges.stateDescription(state, valueText, onOff, locale);
         check(what + ": expected " + wanted + ", got " + got, java.util.Objects.equals(got, wanted));
     }
 

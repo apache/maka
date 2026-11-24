@@ -72,7 +72,7 @@ log.workspace = true
 # Empty off Windows (like the other platform crates off their targets).
 [target.'cfg(windows)'.dependencies]
 nsh-terminal = { workspace = true, optional = true }
-nsh-core.workspace = true
+nsh-core = { workspace = true, features = ["animation"] }
 nsh-engine.workspace = true
 nsh-base.workspace = true
 windows.workspace = true

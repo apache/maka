@@ -97,7 +97,7 @@ fn Frames() -> impl IntoElement {
 
 #[test]
 fn a_frame_follows_the_focus_onto_a_view_without_focus_classes() {
-    let mut app = start(Root::new::<Frames>(|| ()));
+    let mut app = start(nsh_testing::windowed_root_with::<Frames>(|| ()));
     assert_eq!(app.opacity("view-frame"), 0.5);
     // Tab: onto the focusable view in the first frame.
     app.app.press_key("tab").unwrap();
@@ -115,7 +115,7 @@ fn a_frame_follows_the_focus_onto_a_view_without_focus_classes() {
 
 #[test]
 fn a_frame_follows_the_focus_into_an_input_without_focus_classes() {
-    let mut app = start(Root::new::<Frames>(|| ()));
+    let mut app = start(nsh_testing::windowed_root_with::<Frames>(|| ()));
     assert_eq!(app.opacity("input-frame"), 0.5);
     // Typing focuses the input, as a click in it does.
     app.app.type_text("id:field", "a").unwrap();
@@ -160,7 +160,7 @@ fn PopoverArea() -> impl IntoElement {
 
 #[test]
 fn a_popovers_content_is_within_the_view_holding_the_popover() {
-    let mut app = start(Root::new::<PopoverArea>(|| ()));
+    let mut app = start(nsh_testing::windowed_root_with::<PopoverArea>(|| ()));
     app.app.press_key("tab").unwrap();
     app.app.wait_for("Within: in").unwrap();
     app.app.press("id:trigger").unwrap();
@@ -211,7 +211,7 @@ fn PopoverFocus() -> impl IntoElement {
 
 #[test]
 fn escape_in_a_popover_gives_the_focus_back_to_its_trigger() {
-    let mut app = start(Root::new::<PopoverFocus>(|| ()));
+    let mut app = start(nsh_testing::windowed_root_with::<PopoverFocus>(|| ()));
     app.app.press_key("tab").unwrap();
     app.app.wait_for("focus trigger").unwrap();
     app.app.press("id:trigger").unwrap();
@@ -261,7 +261,7 @@ fn PopoverOpenFocus() -> impl IntoElement {
 
 #[test]
 fn focusing_the_content_in_on_open_moves_the_focus_into_a_popover() {
-    let mut app = start(Root::new::<PopoverOpenFocus>(|| ()));
+    let mut app = start(nsh_testing::windowed_root_with::<PopoverOpenFocus>(|| ()));
     app.app.press_key("tab").unwrap();
     app.app.wait_for("focus trigger").unwrap();
     // Opened from the keyboard: `on_open` comes once the content is
@@ -312,7 +312,7 @@ fn PopoverTabOrder() -> impl IntoElement {
 
 #[test]
 fn a_popovers_content_follows_its_trigger_in_the_tab_order() {
-    let mut app = start(Root::new::<PopoverTabOrder>(|| ()));
+    let mut app = start(nsh_testing::windowed_root_with::<PopoverTabOrder>(|| ()));
     app.app.press_key("tab").unwrap();
     app.app.press_key("tab").unwrap();
     app.app.wait_for("focus before trigger").unwrap();
@@ -359,7 +359,7 @@ fn PressedField() -> impl IntoElement {
 
 #[test]
 fn a_press_on_a_field_that_listens_to_presses_focuses_it_then_reports_the_press() {
-    let mut app = start(Root::new::<PressedField>(|| ()));
+    let mut app = start(nsh_testing::windowed_root_with::<PressedField>(|| ()));
     app.app.press("id:field").unwrap();
     assert!(app.app.shows("log focus press"));
     // Focused already: the press alone.
