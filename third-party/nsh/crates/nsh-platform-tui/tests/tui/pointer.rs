@@ -48,14 +48,13 @@ fn hover_styles_and_events_follow_the_pointer_and_clear_outside_the_surface() {
 }
 
 #[test]
-fn moving_off_a_hovered_view_onto_empty_cells_redraws_without_its_mark() {
+fn moving_off_a_hovered_view_onto_empty_cells_wakes_the_surface() {
     let code = nsh_bundler::compile_module(
         "App.tsx",
         r##"
         import { mount, View, Text } from "nsh";
         mount(() => <View>
-            <View style={{ width: 80, height: 32 }} onPress={() => {}}>
-                <Text>target</Text></View>
+            <View style={{ width: 80, height: 32 }} onPress={() => {}} />
             <Text>ready</Text>
         </View>);
     "##,
@@ -66,15 +65,21 @@ fn moving_off_a_hovered_view_onto_empty_cells_redraws_without_its_mark() {
     let mut terminal = Terminal::new(TestBackend::new(40, 8)).unwrap();
     view.load(Bundle::source(code)).unwrap();
     draw_until(&mut view, &mut terminal, &rx, "ready");
-    let marked = |buffer: &ratatui_core::buffer::Buffer| buffer[(1, 0)].fg;
-    assert_ne!(marked(terminal.backend().buffer()), Color::Blue);
+    let look = |buffer: &ratatui_core::buffer::Buffer| {
+        (
+            buffer[(1, 0)].fg,
+            buffer[(1, 0)].bg,
+            buffer[(1, 0)].modifier,
+        )
+    };
+    let rest = look(terminal.backend().buffer());
     assert_eq!(view.handle(mouse(MouseKind::Move, 1, 0)), Handled::Yes);
     terminal
         .draw(|frame| view.render(frame, frame.area()))
         .unwrap();
-    // No band from the terminal's colors (it gives none): the hover is the
-    // label's ink in the accent.
-    assert_eq!(marked(terminal.backend().buffer()), Color::Blue);
+    // The terminal gives no colors: there is no band to mix and no ink
+    // whose contrast against its page is known, so a hover paints nothing.
+    assert_eq!(look(terminal.backend().buffer()), rest, "hovered");
     // Onto Cells no view claims, in the surface: the hover is gone and the
     // move is used, so the embedder's loop draws the mark away (nothing in
     // the app changes to wake it otherwise).
@@ -84,7 +89,7 @@ fn moving_off_a_hovered_view_onto_empty_cells_redraws_without_its_mark() {
     terminal
         .draw(|frame| view.render(frame, frame.area()))
         .unwrap();
-    assert_ne!(marked(terminal.backend().buffer()), Color::Blue);
+    assert_eq!(look(terminal.backend().buffer()), rest, "off");
     // A move that changes nothing over empty Cells stays the embedder's.
     while rx.try_recv().is_ok() {}
     assert_eq!(view.handle(mouse(MouseKind::Move, 21, 0)), Handled::Ignored);

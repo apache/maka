@@ -4,7 +4,9 @@
 
 use std::sync::Arc;
 
-use nsh_platform_tui::{AppOptions, AppView, Bundle, ColorDepth, Input, MouseButton, MouseKind};
+use nsh_platform_tui::{
+    AppOptions, AppView, Bundle, ColorDepth, Handled, Input, MouseButton, MouseKind,
+};
 use ratatui_core::{
     backend::TestBackend,
     buffer::Buffer,
@@ -12,7 +14,7 @@ use ratatui_core::{
     terminal::Terminal,
 };
 
-use super::app::{draw_until, mouse};
+use super::app::{draw_until, draw_until_still, mouse};
 
 /// A surface on a terminal that shows `depth`.
 fn surface_at(depth: ColorDepth) -> (AppView, crossbeam_channel::Receiver<()>) {
@@ -174,7 +176,7 @@ const FILLED: &str = r##"
 "##;
 
 #[test]
-fn without_the_terminals_colors_a_chosen_or_hovered_row_is_not_a_gray_band() {
+fn without_the_terminals_colors_the_state_marks_are_not_bands() {
     for depth in [ColorDepth::TrueColor, ColorDepth::Ansi256] {
         let code = nsh_bundler::compile_module("App.tsx", FILLED, &[]).unwrap();
         let (mut view, rx) = surface_at(depth);
@@ -237,21 +239,30 @@ fn without_the_terminals_colors_a_chosen_or_hovered_row_is_not_a_gray_band() {
         );
         assert!(!buffer[first].modifier.contains(Modifier::REVERSED));
         assert_eq!(chosen(&view), "Second", "{depth:?}: moved");
-        // Hovered, a button is its ink in the accent on its own ground: no
-        // band is mixed from colors the terminal did not give.
-        view.handle(mouse(MouseKind::Move, third.0, third.1));
-        draw_while(&mut view, &mut terminal, &rx, |buffer| {
-            buffer[third].fg == Color::Blue
-        });
+        // A hover paints nothing: the terminal gave no colors, so there is
+        // neither a band to mix nor an ink whose contrast against its page
+        // is known. The button keeps its look, and the move is still its.
+        let rest = (buffer[third].fg, buffer[third].bg, buffer[third].modifier);
+        let rest_fill = buffer[(third.0 - 1, third.1)].bg;
+        assert_eq!(
+            view.handle(mouse(MouseKind::Move, third.0, third.1)),
+            Handled::Yes
+        );
+        draw_until_still(&mut view, &mut terminal, &rx);
         let buffer = terminal.backend().buffer();
-        assert_eq!(buffer[third].bg, Color::Reset, "{depth:?}: no band");
-        assert_eq!(buffer[(third.0 - 1, third.1)].bg, Color::Reset, "{depth:?}");
-        assert!(!buffer[third].modifier.contains(Modifier::REVERSED));
-        // The keys on a button: reversed in the accent, its fill dropped too.
+        assert_eq!(
+            (buffer[third].fg, buffer[third].bg, buffer[third].modifier),
+            rest,
+            "{depth:?}: a hover leaves the label"
+        );
+        assert_eq!(
+            buffer[(third.0 - 1, third.1)].bg,
+            rest_fill,
+            "{depth:?}: and its fill"
+        );
+        // Off it again, before the keys take the focus.
         view.handle(mouse(MouseKind::Move, 39, 7));
-        draw_while(&mut view, &mut terminal, &rx, |buffer| {
-            buffer[third].fg != Color::Blue
-        });
+        draw_until_still(&mut view, &mut terminal, &rx);
         view.handle(tab());
         view.handle(tab());
         draw_while(&mut view, &mut terminal, &rx, |buffer| {
