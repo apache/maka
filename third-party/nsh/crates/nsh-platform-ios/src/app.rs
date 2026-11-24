@@ -57,6 +57,10 @@ pub struct AppOptions {
     /// Logs the performance monitor's readings once a second
     /// ([`SurfaceOptions::fps`]).
     pub fps: bool,
+    /// Rust handlers and events available to the bundled app.
+    pub host: nsh_engine::HostChannel,
+    /// Runtime for app work. When omitted NSH owns the runtime.
+    pub runtime: Option<tokio::runtime::Handle>,
 }
 
 /// Whether `path` is inside the app's own bundle (which the system verifies
@@ -279,6 +283,8 @@ fn connect(mtm: MainThreadMarker, scene: &UIWindowScene) {
         SurfaceOptions {
             trace: options.trace,
             fps: options.fps,
+            host: options.host,
+            runtime: options.runtime,
             asset_base: options.asset_base,
             support_dir: options
                 .support_dir

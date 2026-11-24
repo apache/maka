@@ -1,0 +1,199 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+name: iOS IPA
+
+on:
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: Rust build profile
+        type: choice
+        options: [release, dev]
+        default: release
+      sign:
+        description: Sign the IPA on protected main (ios-release approval)
+        type: boolean
+        default: false
+  pull_request:
+    paths: &ios-paths
+      - "products/maka/ios-shell/**"
+      - "platform/remote-*/**"
+      - "third-party/nsh/**"
+      - "third-party/reqwest/**"
+      - "third-party/image-webp/**"
+      - "tools/ui-build/**"
+      - "assets/logo.png"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".cargo/config.toml"
+      - "rust-toolchain.toml"
+      - "package.json"
+      - "scripts/ci.mjs"
+      - "scripts/ci/**"
+      - "scripts/rust/cargo.mjs"
+      - "scripts/rust/package-ios.mjs"
+      - "scripts/rust/package-ios.test.mjs"
+      - ".github/workflows/ios-ipa.yml"
+  push:
+    paths: *ios-paths
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-ipa-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ipa:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "26"
+          package-manager-cache: false
+
+      - name: Install Rust and iOS targets
+        run: |
+          rustup update stable --no-self-update
+          rustup target add aarch64-apple-ios aarch64-apple-ios-sim
+
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: ios-ipa-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ios-ipa-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Validate iOS shell and packaging
+        run: node scripts/ci.mjs check ios
+
+      - name: Build and verify IPA
+        shell: bash
+        env:
+          PROFILE: ${{ inputs.profile || 'release' }}
+        run: |
+          node scripts/rust/package-ios.mjs --target ios --profile "$PROFILE" --out dist/ios
+          cd dist/ios
+          shasum -a 256 -c Maka-ios-arm64.ipa.sha256
+          unzip -Z1 Maka-ios-arm64.ipa > "$RUNNER_TEMP/maka-ios-entries"
+          grep -Fx 'Payload/Maka.app/maka-ios-shell' "$RUNNER_TEMP/maka-ios-entries"
+          grep -Fx 'Payload/Maka.app/Info.plist' "$RUNNER_TEMP/maka-ios-entries"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: Maka-ios-arm64
+          if-no-files-found: error
+          path: |
+            dist/ios/Maka-ios-arm64.ipa
+            dist/ios/Maka-ios-arm64.ipa.sha256
+
+  sign:
+    needs: ipa
+    if: github.event_name == 'workflow_dispatch' && inputs.sign && github.ref == 'refs/heads/main' && github.ref_protected
+    environment: ios-release
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "26"
+          package-manager-cache: false
+      - uses: actions/download-artifact@v8
+        with:
+          name: Maka-ios-arm64
+          path: unsigned
+      - name: Verify and extract the unsigned build
+        shell: bash
+        run: |
+          cd unsigned
+          shasum -a 256 -c Maka-ios-arm64.ipa.sha256
+          ditto -x -k Maka-ios-arm64.ipa staged
+      - name: Prepare optional Apple signing
+        shell: bash
+        env:
+          P12_BASE64: ${{ secrets.APPLE_IOS_P12_BASE64 }}
+          P12_PASSWORD: ${{ secrets.APPLE_IOS_P12_PASSWORD }}
+          SIGN_IDENTITY: ${{ secrets.APPLE_IOS_SIGN_IDENTITY }}
+          PROFILE_BASE64: ${{ secrets.APPLE_IOS_PROVISIONING_PROFILE_BASE64 }}
+        run: |
+          if [[ -z "$P12_BASE64" || -z "$P12_PASSWORD" || -z "$SIGN_IDENTITY" || -z "$PROFILE_BASE64" ]]; then
+            echo "::error::iOS signing requires all four Apple iOS secrets."
+            exit 1
+          fi
+          umask 077
+          signing=$(mktemp -d "$RUNNER_TEMP/maka-ios-signing.XXXXXX")
+          echo "MAKA_IOS_SIGNING_DIR=$signing" >> "$GITHUB_ENV"
+          keychain="$signing/signing.keychain-db"
+          password=$(openssl rand -hex 24)
+          echo "::add-mask::$password"
+          printf '%s' "$P12_BASE64" | base64 --decode > "$signing/cert.p12"
+          printf '%s' "$PROFILE_BASE64" | base64 --decode > "$signing/profile.mobileprovision"
+          security list-keychains -d user | sed -E 's/^[[:space:]]*"//; s/"$//' > "$signing/keychains"
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          security import "$signing/cert.p12" -P "$P12_PASSWORD" -t cert -f pkcs12 -k "$keychain" -T /usr/bin/codesign
+          rm "$signing/cert.p12"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$password" "$keychain"
+          previous=()
+          while IFS= read -r path; do previous+=("$path"); done < "$signing/keychains"
+          security list-keychains -d user -s "$keychain" "${previous[@]}"
+          echo "APPLE_IOS_SIGN_IDENTITY=$SIGN_IDENTITY" >> "$GITHUB_ENV"
+          echo "APPLE_IOS_PROVISIONING_PROFILE_PATH=$signing/profile.mobileprovision" >> "$GITHUB_ENV"
+
+      - name: Sign the already-built app
+        run: |
+          node scripts/rust/package-ios.mjs --target ios --sign-app unsigned/staged/Payload/Maka.app --out dist/signed-ios
+          cd dist/signed-ios
+          shasum -a 256 -c Maka-ios-arm64.ipa.sha256
+
+      - name: Remove Apple signing material
+        if: always()
+        shell: bash
+        run: |
+          if [[ -n "${MAKA_IOS_SIGNING_DIR:-}" ]]; then
+            signing="$MAKA_IOS_SIGNING_DIR"
+            result=0
+            if [[ -f "$signing/keychains" ]]; then
+              previous=()
+              while IFS= read -r path; do previous+=("$path"); done < "$signing/keychains"
+              security list-keychains -d user -s "${previous[@]}" || result=1
+            fi
+            if [[ -f "$signing/signing.keychain-db" ]]; then
+              security delete-keychain "$signing/signing.keychain-db" || result=1
+            fi
+            rm -rf "$signing"
+            exit "$result"
+          fi
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: Maka-ios-arm64-signed
+          if-no-files-found: error
+          path: |
+            dist/signed-ios/Maka-ios-arm64.ipa
+            dist/signed-ios/Maka-ios-arm64.ipa.sha256

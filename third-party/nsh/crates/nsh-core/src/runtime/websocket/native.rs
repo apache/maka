@@ -340,12 +340,12 @@ async fn open(
     })
 }
 
-/// Respect the embedding host's provider; otherwise ring is local to this
+/// Respect the embedding host's provider; otherwise AWS-LC is local to this
 /// connection. Selecting a fallback must not configure the host's other TLS clients.
 fn tls_config() -> Result<rustls::ClientConfig, JsError> {
     let provider = rustls::crypto::CryptoProvider::get_default()
         .cloned()
-        .unwrap_or_else(|| Arc::new(rustls::crypto::ring::default_provider()));
+        .unwrap_or_else(|| Arc::new(rustls::crypto::aws_lc_rs::default_provider()));
     let failed = |error: rustls::Error| {
         JsError::Error(format!("WebSocket TLS configuration failed: {error}"))
     };
@@ -565,7 +565,7 @@ mod tests {
                 "{scheme} selected the host's provider"
             );
         }
-        let mut host = rustls::crypto::ring::default_provider();
+        let mut host = rustls::crypto::aws_lc_rs::default_provider();
         host.cipher_suites.truncate(1);
         host.install_default().unwrap();
         let host = CryptoProvider::get_default().unwrap();

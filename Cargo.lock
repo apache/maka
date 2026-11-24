@@ -9649,6 +9649,40 @@ dependencies = [
 ]
 
 [[package]]
+name = "maka-ios-shell"
+version = "0.3.0"
+dependencies = [
+ "core-foundation 0.10.1",
+ "futures-util",
+ "hex",
+ "log",
+ "maka-event-log",
+ "maka-host-runtime",
+ "maka-packages",
+ "maka-remote-client",
+ "maka-remote-pairing",
+ "maka-remote-transport",
+ "maka-ui-build",
+ "nsh-base",
+ "nsh-core",
+ "nsh-engine",
+ "nsh-platform-apple",
+ "nsh-platform-ios",
+ "nsh-testing",
+ "objc2-foundation 0.3.2",
+ "security-framework 3.7.0",
+ "security-framework-sys",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-tungstenite 0.30.0",
+ "tokio-util",
+ "uuid",
+ "zeroize",
+]
+
+[[package]]
 name = "maka-js-runtime"
 version = "0.3.0"
 dependencies = [
@@ -9995,6 +10029,31 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "tokio-util",
+ "uuid",
+]
+
+[[package]]
+name = "maka-remote-client"
+version = "0.3.0"
+dependencies = [
+ "bytes",
+ "futures-util",
+ "hex",
+ "maka-event-log",
+ "maka-host-runtime",
+ "maka-packages",
+ "maka-remote-pairing",
+ "maka-remote-transport",
+ "rcgen",
+ "rustls",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-rustls",
+ "tokio-tungstenite 0.30.0",
  "tokio-util",
  "uuid",
 ]
@@ -11664,6 +11723,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "nsh-platform-ios"
+version = "0.6.0"
+dependencies = [
+ "block2 0.6.2",
+ "dispatch2",
+ "libc",
+ "log",
+ "nsh-base",
+ "nsh-core",
+ "nsh-engine",
+ "nsh-platform-apple",
+ "objc2 0.6.5",
+ "objc2-authentication-services",
+ "objc2-core-foundation",
+ "objc2-core-graphics",
+ "objc2-core-text",
+ "objc2-foundation 0.3.2",
+ "objc2-image-io",
+ "objc2-io-surface",
+ "objc2-quartz-core 0.3.2",
+ "objc2-ui-kit",
+ "rustc-hash 2.1.3",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "nsh-platform-linux"
 version = "0.7.0"
 dependencies = [
@@ -11771,6 +11857,7 @@ dependencies = [
  "nsh-core",
  "nsh-engine",
  "regex",
+ "ureq",
  "url",
 ]
 
@@ -12030,6 +12117,18 @@ dependencies = [
  "objc2-core-video",
  "objc2-foundation 0.3.2",
  "objc2-quartz-core 0.3.2",
+]
+
+[[package]]
+name = "objc2-authentication-services"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ee6d6f7dab884a28adaec1012eb3889257a49cc145724e35f93ece2d209f8b25"
+dependencies = [
+ "block2 0.6.2",
+ "objc2 0.6.5",
+ "objc2-app-kit 0.3.2",
+ "objc2-foundation 0.3.2",
 ]
 
 [[package]]
