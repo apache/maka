@@ -53,6 +53,7 @@ import {
   sameBackend,
   sameRoute,
   selectionForChoice,
+  unsupportedThinkingLevel,
 } from '../../../../products/maka/workbench/app/modelSelection';
 import type { UiContext, UiHost } from '../../../../packages/plugin-sdk/src/workbench.js';
 import type { StagedFile } from 'maka/host';
@@ -382,12 +383,15 @@ export function createConversationUi(
     recentModelWrite = write.catch(() => {});
     void write.catch(report);
   };
-  const readRecentModel = async (): Promise<RecentModel | null> => {
+  const readRecentModel = async (): Promise<
+    { kind: 'ready'; model: RecentModel | null } | { kind: 'error' }
+  > => {
     await recentModelWrite;
     try {
-      return await host.recentModel();
-    } catch {
-      return null;
+      return { kind: 'ready', model: await host.recentModel() };
+    } catch (reason) {
+      report(reason);
+      return { kind: 'error' };
     }
   };
   const pendingWorkspace = computed(() => pending()?.workspace ?? null);
@@ -488,6 +492,14 @@ export function createConversationUi(
   const pendingDraftGeneration = signal(0);
   let pendingDefaultEpoch = 0;
   let pendingDefaultRead: Promise<void> | null = null;
+  effect(() => {
+    if (selected() !== null) {
+      pendingDefaultEpoch += 1;
+      untracked(() => {
+        if (pending()?.rememberedModel) updatePending({ rememberedModel: false });
+      });
+    }
+  });
   const pendingModel = {
     sessionId: 'pending',
     backend: pendingBackend,
@@ -713,10 +725,8 @@ export function createConversationUi(
       if (priorFork && priorFork.id !== id && forkNotice()?.id === priorFork.id) {
         forkNotice.set(null);
       }
-      if (source.sessionId === null && pendingWorkspace()) {
+      if (source.sessionId === null && pendingWorkspace())
         pendingDraftGeneration.set(pendingDraftGeneration() + 1);
-        if (pending()?.rememberedModel) updatePending({ rememberedModel: false });
-      }
       if (overlay() === sourceOverlay) overlay.set(null);
       status.set('');
       if (revealed) await revealed;
@@ -1022,17 +1032,18 @@ export function createConversationUi(
       refreshDefaultAccess();
       const canApplyDefault = () =>
         alive &&
+        selected() === null &&
         pendingDefaultEpoch === generation &&
         pendingWorkspace() !== null &&
         !pendingBackend() &&
         !pendingModelChosen();
       pendingDefaultRead = (async () => {
         const saved = await readRecentModel();
-        if (!canApplyDefault()) return;
-        if (saved) {
+        if (!canApplyDefault() || saved.kind !== 'ready') return;
+        if (saved.model) {
           updatePending({
-            backend: saved.backend,
-            backendLabel: saved.label ?? null,
+            backend: saved.model.backend,
+            backendLabel: saved.model.label ?? null,
             rememberedModel: true,
           });
           void pendingModel.refreshModel();
@@ -1264,9 +1275,17 @@ export function createConversationUi(
               details.kind === 'ready'
                 ? (selectionForChoice(initialBackend, details.choice) ?? initialBackend)
                 : initialBackend;
-            if (!sameBackend(pendingBackend(), backend) || details.kind !== 'ready')
+            const blockedEffort =
+              details.kind === 'ready' ? unsupportedThinkingLevel(backend, details.choice) : null;
+            if (
+              !sameBackend(pendingBackend(), backend) ||
+              details.kind !== 'ready' ||
+              blockedEffort
+            )
               throw new UiError('Model unavailable: {model}. Choose another model.', {
-                model: backendName(initialBackend),
+                model: blockedEffort
+                  ? `${details.kind === 'ready' ? details.choice.label : backendName(initialBackend)} · ${blockedEffort}`
+                  : backendName(initialBackend),
               });
             let id = pendingCreated();
             let sendFirst = true;
@@ -1651,7 +1670,11 @@ export function createConversationUi(
           model.kind === 'ready'
             ? (selectionForChoice(initialBackend, model.choice) ?? initialBackend)
             : initialBackend;
-        if (!sameBackend(pendingBackend(), backend) || model.kind !== 'ready')
+        if (
+          !sameBackend(pendingBackend(), backend) ||
+          model.kind !== 'ready' ||
+          unsupportedThinkingLevel(backend, model.choice)
+        )
           throw new UiError('Choose a model.');
         let id = pendingCreated();
         const reusingSession = id !== null;
@@ -3245,6 +3268,7 @@ export function createConversationUi(
       if (pendingSending() || pendingCreateUncertain() || pendingHandoff())
         throw new UiError('Finish or recover the pending action before reloading.');
       await pendingIntake();
+      await Promise.all([recentWrite, recentModelWrite]);
       const owner = handle();
       if (owner && !(await owner.flushDraft()))
         throw new UiError(

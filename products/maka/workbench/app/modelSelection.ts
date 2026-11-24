@@ -138,6 +138,16 @@ export function modelCaption(backend: BackendIdentity, details: ModelDetails): s
     : backendName(backend);
 }
 
+export function unsupportedThinkingLevel(
+  backend: BackendIdentity,
+  choice: ModelChoice,
+): string | null {
+  const matched = selectionForChoice(backend, choice);
+  if (!matched) return null;
+  const level = thinkingLevel(matched);
+  return level !== null && !choice.thinkingLevels.includes(level) ? level : null;
+}
+
 export function effortCaption(backend: BackendIdentity, details: ModelDetails): string {
   const choice =
     details.kind === 'ready' && selectionForChoice(backend, details.choice) ? details.choice : null;

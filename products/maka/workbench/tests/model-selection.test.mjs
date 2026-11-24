@@ -47,6 +47,7 @@ const {
   modelCaption,
   effortCaption,
   effectiveThinkingLevel,
+  unsupportedThinkingLevel,
 } = await import('../app/modelSelection.ts');
 hooks.deregister();
 
@@ -120,6 +121,8 @@ test('selection captions expose source and preserve unavailable selections', () 
   assert.equal(effortCaption(executor, { kind: 'ready', choice }), 'provider-custom');
   const removedEffort = withThinkingLevel(executor, 'removed');
   assert.equal(effortCaption(removedEffort, { kind: 'ready', choice }), 'removed · Unavailable');
+  assert.equal(unsupportedThinkingLevel(removedEffort, choice), 'removed');
+  assert.equal(unsupportedThinkingLevel(executor, choice), null);
   assert.equal(thinkingLevel(removedEffort), 'removed');
 });
 

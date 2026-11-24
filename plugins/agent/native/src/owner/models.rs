@@ -92,12 +92,12 @@ impl Owner {
         let Some(cwd) = self.external_cwd().await.map_err(ExecutorError::Provider)? else {
             return Ok((Vec::new(), false, false));
         };
-        let (runtimes, refreshing) = self
+        let (runtimes, refreshing, last_failed) = self
             .executors
             .external_catalog(cwd, requested_runtime, read, cancellation.clone())
             .await?;
         let mut choices = Vec::new();
-        let mut discovery_failed = false;
+        let mut discovery_failed = last_failed;
         for runtime in &runtimes {
             let runtime_id = runtime
                 .get("runtime")
@@ -310,34 +310,52 @@ impl Owner {
         if cancellation.is_cancelled() {
             return Err(ExecutorError::Cancelled.to_string());
         }
-        let (choices, discovery_failed) = match &input.backend {
-            BackendPreference::Model { .. } => (self.native_choices().await?, false),
+        let find_match = |choices: Vec<ModelChoice>| {
+            choices.into_iter().find(|choice| {
+                same_model(&choice.selection, &input.backend)
+                    || choice
+                        .aliases
+                        .iter()
+                        .any(|alias| same_model(alias, &input.backend))
+            })
+        };
+        let (matched, discovery_failed) = match &input.backend {
+            BackendPreference::Model { .. } => (find_match(self.native_choices().await?), false),
             BackendPreference::Executor { selection } if selection.executor == "external" => {
                 match selection.settings.runtime.as_deref() {
-                    Some(runtime) => match self
-                        .external_choices(Some(runtime), CatalogRead::Resolve, cancellation)
-                        .await
-                    {
-                        Ok((choices, _, failed)) => (choices, failed),
-                        Err(error) => {
-                            if !matches!(error, ExecutorError::Cancelled | ExecutorError::Retired) {
-                                tracing::warn!(runtime, %error, "External model validation failed");
-                            }
-                            return Err(error.to_string());
+                    Some(runtime) => {
+                        let (choices, refreshing, failed) = self
+                            .external_choices(Some(runtime), CatalogRead::Refresh, cancellation)
+                            .await
+                            .map_err(|error| {
+                                if !matches!(error, ExecutorError::Cancelled | ExecutorError::Retired) {
+                                    tracing::warn!(runtime, %error, "External model validation failed");
+                                }
+                                error.to_string()
+                            })?;
+                        if let Some(choice) = find_match(choices) {
+                            (Some(choice), false)
+                        } else if refreshing {
+                            let (choices, _, failed) = self
+                                .external_choices(Some(runtime), CatalogRead::Resolve, cancellation)
+                                .await
+                                .map_err(|error| {
+                                    if !matches!(error, ExecutorError::Cancelled | ExecutorError::Retired) {
+                                        tracing::warn!(runtime, %error, "External model validation failed");
+                                    }
+                                    error.to_string()
+                                })?;
+                            (find_match(choices), failed)
+                        } else {
+                            (None, failed)
                         }
-                    },
-                    None => (Vec::new(), false),
+                    }
+                    None => (None, false),
                 }
             }
-            BackendPreference::Executor { .. } => (Vec::new(), false),
+            BackendPreference::Executor { .. } => (None, false),
         };
-        match choices.into_iter().find(|choice| {
-            same_model(&choice.selection, &input.backend)
-                || choice
-                    .aliases
-                    .iter()
-                    .any(|alias| same_model(alias, &input.backend))
-        }) {
+        match matched {
             Some(choice) => Ok(ModelResult::Ready {
                 choice: Box::new(choice),
             }),

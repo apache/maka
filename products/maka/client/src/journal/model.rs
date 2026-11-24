@@ -54,7 +54,11 @@ impl RecentModel {
                 }
             }
             BackendPreference::Executor { selection } => {
-                if !valid_selector(&selection.executor) || selection.settings.validate().is_err() {
+                if maka_agent_facts::executor::ExecutorId::try_from(selection.executor.clone())
+                    .is_err()
+                    || selection.settings.validate().is_err()
+                    || (selection.executor == "external" && selection.settings.runtime.is_none())
+                {
                     return Err("Invalid recent model".into());
                 }
             }
@@ -247,10 +251,40 @@ mod tests {
                 .is_err()
         );
 
+        for invalid in [
+            RecentModel {
+                backend: BackendPreference::Executor {
+                    selection: Selection {
+                        executor: "bad id".into(),
+                        settings: Settings::default(),
+                    },
+                },
+                label: None,
+            },
+            RecentModel {
+                backend: BackendPreference::Executor {
+                    selection: Selection {
+                        executor: "external".into(),
+                        settings: Settings::default(),
+                    },
+                },
+                label: None,
+            },
+        ] {
+            assert!(
+                journal
+                    .set_recent_model("host-a".into(), invalid)
+                    .await
+                    .is_err()
+            );
+        }
+
         for broken in [
             "not valid json",
             r#"{"backend":{"kind":"model","connectionId":"conn","modelId":"","thinkingLevel":null}}"#,
             r#"{"backend":{"kind":"executor","selection":{"executor":"external","settings":{"runtime":"","model":"gemini"}}}}"#,
+            r#"{"backend":{"kind":"executor","selection":{"executor":"bad id","settings":{}}}}"#,
+            r#"{"backend":{"kind":"executor","selection":{"executor":"external","settings":{}}}}"#,
         ] {
             sqlx::query("UPDATE recent_model SET value=? WHERE owner='host-a'")
                 .bind(broken)
