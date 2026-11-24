@@ -64,6 +64,7 @@ fn faq() -> impl IntoElement {
 ```tsx tabs
 import { mount, signal, Text, View } from "nsh";
 import { Accordion, AccordionHeader, AccordionItem, AccordionPanel, AccordionTrigger } from "nsh/base";
+import { Window } from "nsh/desktop";
 
 const FAQ = [
   { value: "shipping", question: "When will my order ship?", answer: "Orders placed before 2 pm leave the same day." },
@@ -93,7 +94,11 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 这些部件来自 [`nsh/base`](../modules/nsh-base.md)，Rust 中是 `nsh-base` crate。值由应用持有：按下触发器时通过 `onChange` 报告下一个 `value`，accordion 展开应用传回的值所对应的分区。每个部件自己找到外层的部件，因此应用可以自由安排它们：分区之间的分隔线、标题里的徽标、标题前的图标。Rust 中由 `accordion()`、`accordion_item()`、`accordion_header()`、`accordion_trigger()` 和 `accordion_panel()` 创建，每个属性有对应的 setter，里面的内容用 `.child(..)` 添加。

@@ -97,3 +97,29 @@ fn stale_generated_version_cannot_admit_changed_candidates() {
     changed.insert("notes".into(), Package::new(files).unwrap());
     assert!(super::verified_fingerprint("author", &changed, &version).is_err());
 }
+
+#[test]
+fn embedded_package_files_and_authoring_match_the_fingerprinted_build() {
+    let (packages, source) = load_product().unwrap();
+    assert_eq!(
+        source.as_bytes(),
+        include_bytes!(concat!(
+            env!("OUT_DIR"),
+            "/product/authoring/composition.mjs"
+        ))
+    );
+    assert_eq!(
+        ORIGINAL_FILES.len(),
+        packages
+            .values()
+            .map(|package| package.files().len())
+            .sum::<usize>()
+    );
+    for &(package, file, bytes) in ORIGINAL_FILES {
+        assert_eq!(
+            packages[package].files()[file].as_slice(),
+            bytes,
+            "{package}/{file}"
+        );
+    }
+}

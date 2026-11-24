@@ -39,12 +39,14 @@ ratatui = { workspace = true, features = ["unstable-backend-writer"] }
 serde_json.workspace = true
 termina.workspace = true
 tokio.workspace = true
+tracing-subscriber = { workspace = true, features = ["tracing-log"] }
 uuid.workspace = true
 
 nsh-terminal.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 nsh-platform-macos = { workspace = true, features = ["terminal"] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSApplication"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 maka-sandbox.workspace = true

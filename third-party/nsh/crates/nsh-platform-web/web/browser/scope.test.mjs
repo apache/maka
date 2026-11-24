@@ -18,30 +18,24 @@ test("desktop tray and global shortcuts retain their off-platform behavior", asy
   assert.equal(pressed, false);
 });
 
-test("the window API: the page is the main window, titled with its title, and no window of the app's own opens", () => {
+test("the window API: there are no windows, and <Window> renders its content", () => {
   const desktop = {};
   const modules = { exports: new Map([["nsh/desktop", desktop]]) };
   const titleBar = () => ({ height: 0, left: 0, right: 0 });
-  const titles = [];
-  configureAPIs({}, modules, {}, () => true, { titleBar }, { setWindowTitle: title => titles.push(title) });
-  const main = desktop.currentWindow();
-  assert.equal(main.id, "main");
-  assert.equal(main.main, true);
-  assert.equal(main.state(), null);
-  assert.deepEqual(main.titleBar(), { height: 0, left: 0, right: 0 });
-  assert.deepEqual(desktop.windows(), [main]);
-  assert.equal(desktop.Window.get("main"), main);
+  configureAPIs({}, modules, {}, () => true, { titleBar });
+  assert.equal(desktop.isAvailable, false);
+  assert.deepEqual(desktop.titleBar(), { height: 0, left: 0, right: 0 });
+  assert.deepEqual(desktop.windows(), []);
+  assert.equal(desktop.Window.get("main"), null);
   assert.equal(desktop.Window.get("inspector"), null);
   assert.equal(desktop.focusedWindow(), null);
   assert.equal(desktop.windowState(), null);
   assert.deepEqual(desktop.displays(), []);
-  assert.equal(desktop.Window({ id: "inspector" }), null);
+  assert.throws(() => desktop.currentWindow(), { code: "ERR_FEATURE_UNAVAILABLE_ON_PLATFORM" });
+  // `<Window>` is the app's one surface: its content while open.
+  assert.equal(desktop.Window({ id: "main", children: "inside" })(), "inside");
+  assert.equal(desktop.Window({ id: "main", open: true, children: "inside" })(), "inside");
+  assert.equal(desktop.Window({ id: "main", open: false, children: "inside" })(), null);
+  assert.equal(desktop.Window({ id: "main", defaultOpen: false, children: "inside" })(), null);
   assert.throws(() => desktop.Window.open(() => null, { id: "inspector" }), { code: "ERR_FEATURE_UNAVAILABLE_ON_PLATFORM" });
-  // The main window's title titles the page; a set without one, of what
-  // the browser places and sizes, goes nowhere.
-  main.set({ title: "Report" });
-  main.set({ resizable: false });
-  desktop.Window.get("main").set({ title: "" });
-  assert.deepEqual(titles, ["Report", ""]);
-  main.on("close", () => {})();
 });

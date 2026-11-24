@@ -1271,3 +1271,578 @@ fn a_tool_call_from_an_overflowed_attempt_is_rejected_without_execution() {
         Action::Reject(rejected, ToolRejection::PreparationFailed { .. }) if rejected == key
     ));
 }
+
+fn admitted_retry_view(retries: u32) -> (RunView, ContentRef) {
+    let mut view = policy_view(None);
+    view.spec.budget.retries = retries;
+    let spec = ContentBlob::json(&view.spec).unwrap();
+    apply_policy_fact(
+        &mut view,
+        Fact::RunAdmitted {
+            spec: spec.reference().clone(),
+        },
+    );
+    let request = ContentBlob::json(&serde_json::json!({})).unwrap();
+    (view, request.reference().clone())
+}
+
+fn fail_attempt(
+    view: &mut RunView,
+    step: StepId,
+    request: &ContentRef,
+    prepare_step: bool,
+    recovery: AttemptRecovery,
+) -> ModelAttemptId {
+    use maka_plugin_core::operation::OperationCleanup;
+
+    let attempt = ModelAttemptId::new();
+    if prepare_step {
+        apply_policy_fact(
+            view,
+            Fact::StepPrepared {
+                step,
+                request: request.clone(),
+                adjudications: vec![],
+            },
+        );
+    }
+    for fact in [
+        Fact::ModelAttemptPrepared { attempt, step },
+        Fact::ModelAttemptAdmitted {
+            attempt,
+            upstream: serde_json::Value::Null,
+        },
+        Fact::ModelInterrupted {
+            attempt,
+            diagnostic: "provider failed (TimedOut): stream interrupted".into(),
+        },
+        Fact::AttemptRecoveryRecorded { attempt, recovery },
+        Fact::ModelCleanupObserved {
+            attempt,
+            cleanup: OperationCleanup::Confirmed,
+        },
+    ] {
+        apply_policy_fact(view, fact);
+    }
+    attempt
+}
+
+fn closure_protocol(
+    finish_reason: maka_agent_facts::model::ModelFinishReason,
+) -> serde_json::Value {
+    serde_json::to_value(ModelClosureProtocol {
+        model_time_ms: None,
+        finish_reason,
+        provider_options: None,
+        cache_read_reported: None,
+        response_id: None,
+        model: None,
+        timestamp: None,
+        compaction: None,
+        summary: None,
+    })
+    .unwrap()
+}
+
+fn succeed_attempt(view: &mut RunView, step: StepId) -> ModelAttemptId {
+    use maka_agent_facts::{accounting::Outcome, model::ModelFinishReason};
+    use maka_plugin_core::operation::OperationCleanup;
+
+    let attempt = ModelAttemptId::new();
+    for fact in [
+        Fact::ModelAttemptPrepared { attempt, step },
+        Fact::ModelAttemptAdmitted {
+            attempt,
+            upstream: serde_json::Value::Null,
+        },
+        Fact::ModelClosed {
+            attempt,
+            outcome: Outcome::Success,
+            diagnostic: None,
+            usage: Default::default(),
+            protocol: closure_protocol(ModelFinishReason::Length),
+        },
+        Fact::ModelCleanupObserved {
+            attempt,
+            cleanup: OperationCleanup::Confirmed,
+        },
+    ] {
+        apply_policy_fact(view, fact);
+    }
+    attempt
+}
+
+fn fallback_model_level(step: StepId, request: &ContentRef) -> ModelLevel {
+    use maka_agent_facts::{
+        accounting::ModelEvidence,
+        composition::RequestComposition,
+        context::{ModelFailureProtocol, ModelPurpose},
+        input::RunInput,
+        model::error::{ModelError, ProviderFailure, ProviderFailureReason},
+    };
+
+    ModelLevel {
+        handoff: None,
+        input: RunInput::HistorySource {
+            source: request.clone(),
+        },
+        request: Some(RequestSpec {
+            schema_version: SCHEMA_VERSION,
+            step,
+            composition: RequestComposition {
+                surface: request.clone(),
+                dynamic_context: vec![],
+                tool_catalog_digest: request.digest.clone(),
+                provider_options: None,
+                max_output_tokens: None,
+            },
+            summary_repair_of: None,
+            compaction_recovery: None,
+            source_capture: request.clone(),
+            source_digest: request.digest.clone(),
+            effective_source_digest: request.digest.clone(),
+            provenance: request.clone(),
+            projection: None,
+            adjudications: vec![],
+            steering: vec![],
+            request: request.clone(),
+            protocol: "openai-responses".into(),
+            protocol_version: 1,
+            recovery_contract: request.clone(),
+            request_contents: vec![],
+            accounting: ModelEvidence {
+                binding: ModelBinding {
+                    connection_id: "policy".into(),
+                    connection_slug: "policy".into(),
+                    model: "policy".into(),
+                },
+                model_id: "policy".into(),
+                purpose: ModelPurpose::Main,
+                quote: None,
+            },
+        }),
+        baseline: None,
+        compaction: CompactionLevel::None,
+        failure: Some(ModelFailureProtocol {
+            failure: ModelError::Provider(ProviderFailure::new(
+                ProviderFailureReason::TimedOut,
+                "stream timed out",
+                true,
+                None,
+            )),
+            transport: None,
+        }),
+        fallback_available: true,
+        codex: false,
+    }
+}
+
+#[test]
+fn retry_streak_persists_across_continue_from_history_and_resets_after_foreground_success() {
+    use maka_agent_facts::{
+        accounting::Outcome,
+        model::{ModelFinishReason, retry_transport::RetryTransportPhase},
+    };
+    use maka_agent_state::fold::RetryStreak;
+    use maka_plugin_core::operation::OperationCleanup;
+
+    let (mut view, request) = admitted_retry_view(2);
+    let now = UnixMillis(1);
+
+    // Consecutive ContinueFromHistory failures mint a new StepId on each retry,
+    // so the budget and backoff must stay bound to the streak instead of StepId.
+    for expected_exponent in 0..2 {
+        let failed = fail_attempt(
+            &mut view,
+            StepId::new(),
+            &request,
+            true,
+            AttemptRecovery::ContinueFromHistory { not_before: None },
+        );
+        assert_eq!(view.retry_streak.backoff_exponent(), expected_exponent);
+        assert!(matches!(
+            next(&view, &Live::default(), now, None, false),
+            Action::ChargeRetry(id, RetryTransportPhase::Primary) if id == failed
+        ));
+        apply_policy_fact(
+            &mut view,
+            Fact::RetryCharged {
+                attempt: failed,
+                phase: RetryTransportPhase::Primary,
+                due_at: now,
+                diagnostic: "continue from recorded history".into(),
+            },
+        );
+    }
+
+    // Background proactive summary success must not reset the foreground retry streak.
+    let background = ModelAttemptId::new();
+    for fact in [
+        Fact::ProactiveSummaryPrepared {
+            step: StepId::new(),
+            request: request.clone(),
+            attempt: background,
+        },
+        Fact::ModelAttemptAdmitted {
+            attempt: background,
+            upstream: serde_json::Value::Null,
+        },
+        Fact::ModelClosed {
+            attempt: background,
+            outcome: Outcome::Success,
+            diagnostic: None,
+            usage: Default::default(),
+            protocol: closure_protocol(ModelFinishReason::Stop),
+        },
+        Fact::ModelCleanupObserved {
+            attempt: background,
+            cleanup: OperationCleanup::Confirmed,
+        },
+    ] {
+        apply_policy_fact(&mut view, fact);
+    }
+    assert_eq!(view.retry_streak, RetryStreak::Regular { charged: 2 });
+
+    // Third consecutive ContinueFromHistory failure on a fresh StepId exhausts the budget.
+    let mut exhausted = view.clone();
+    let _third = fail_attempt(
+        &mut exhausted,
+        StepId::new(),
+        &request,
+        true,
+        AttemptRecovery::ContinueFromHistory { not_before: None },
+    );
+    assert!(matches!(
+        next(&exhausted, &Live::default(), now, None, false),
+        Action::Terminate(Terminal::Failed)
+    ));
+
+    // A successful foreground completion resets the streak and backoff for later Steps.
+    let recovered_step = StepId::new();
+    apply_policy_fact(
+        &mut view,
+        Fact::StepPrepared {
+            step: recovered_step,
+            request: request.clone(),
+            adjudications: vec![],
+        },
+    );
+    let _succeeded = succeed_attempt(&mut view, recovered_step);
+    assert_eq!(view.retry_streak, RetryStreak::Regular { charged: 0 });
+    assert_eq!(view.retry_streak.backoff_exponent(), 0);
+
+    let next_failed = fail_attempt(
+        &mut view,
+        StepId::new(),
+        &request,
+        true,
+        AttemptRecovery::FrozenRetrySafe { not_before: None },
+    );
+    assert!(matches!(
+        next(&view, &Live::default(), now, None, false),
+        Action::ChargeRetry(id, RetryTransportPhase::Primary) if id == next_failed
+    ));
+}
+
+#[test]
+fn fallback_transition_retry_is_granted_once_even_with_zero_budget() {
+    use maka_agent_facts::model::retry_transport::RetryTransportPhase;
+    use maka_agent_state::fold::RetryStreak;
+
+    let (mut view, request) = admitted_retry_view(0);
+    let now = UnixMillis(1);
+    let step1 = StepId::new();
+    let a1 = fail_attempt(
+        &mut view,
+        step1,
+        &request,
+        true,
+        AttemptRecovery::FrozenRetrySafe { not_before: None },
+    );
+    let model1 = fallback_model_level(step1, &request);
+
+    // Exhausted Primary (retries = 0) selects Fallback, then gets exactly one transition retry.
+    assert!(matches!(
+        next(&view, &Live::default(), now, Some(&model1), false),
+        Action::SelectTransport(id, RetryTransportPhase::Fallback) if id == a1
+    ));
+    apply_policy_fact(
+        &mut view,
+        Fact::ModelTransportSelected {
+            attempt: a1,
+            phase: RetryTransportPhase::Fallback,
+        },
+    );
+    assert_eq!(
+        view.retry_streak,
+        RetryStreak::FallbackTransitionPending { attempt: a1 }
+    );
+    assert_eq!(view.retry_streak.backoff_exponent(), 0);
+    assert!(matches!(
+        next(&view, &Live::default(), now, Some(&model1), false),
+        Action::ChargeRetry(id, RetryTransportPhase::Fallback) if id == a1
+    ));
+    apply_policy_fact(
+        &mut view,
+        Fact::RetryCharged {
+            attempt: a1,
+            phase: RetryTransportPhase::Fallback,
+            due_at: now,
+            diagnostic: "fallback transition".into(),
+        },
+    );
+    assert_eq!(
+        view.retry_streak,
+        RetryStreak::AfterFallbackTransition { charged: 0 }
+    );
+    assert_eq!(view.retry_streak.backoff_exponent(), 1);
+
+    // If the Fallback attempt itself fails with retries = 0, no second Fallback retry is granted.
+    let mut failed_fallback = view.clone();
+    let _a2_fail = fail_attempt(
+        &mut failed_fallback,
+        step1,
+        &request,
+        false,
+        AttemptRecovery::FrozenRetrySafe { not_before: None },
+    );
+    assert!(matches!(
+        next(
+            &failed_fallback,
+            &Live::default(),
+            now,
+            Some(&model1),
+            false
+        ),
+        Action::Terminate(Terminal::Failed)
+    ));
+
+    // If Fallback succeeds, the one-time transition bonus must not recur on a later Step.
+    let _a2_ok = succeed_attempt(&mut view, step1);
+    assert_eq!(view.retry_streak, RetryStreak::Regular { charged: 0 });
+    let step2 = StepId::new();
+    let _a3 = fail_attempt(
+        &mut view,
+        step2,
+        &request,
+        true,
+        AttemptRecovery::FrozenRetrySafe { not_before: None },
+    );
+    let model2 = fallback_model_level(step2, &request);
+    assert!(matches!(
+        next(&view, &Live::default(), now, Some(&model2), false),
+        Action::Terminate(Terminal::Failed)
+    ));
+}
+
+#[test]
+fn historical_run_wide_fallback_folds_after_earlier_step_succeeded() {
+    use maka_agent_facts::model::retry_transport::RetryTransportPhase;
+    use maka_agent_state::fold::RetryStreak;
+
+    // Historical pre-streak Runs exhausted Primary budget on Step 1, succeeded,
+    // and then immediately selected Fallback on Step 2's first failure.
+    let (mut view, request) = admitted_retry_view(1);
+    let now = UnixMillis(1);
+    let step1 = StepId::new();
+    let a1 = fail_attempt(
+        &mut view,
+        step1,
+        &request,
+        true,
+        AttemptRecovery::FrozenRetrySafe { not_before: None },
+    );
+    apply_policy_fact(
+        &mut view,
+        Fact::RetryCharged {
+            attempt: a1,
+            phase: RetryTransportPhase::Primary,
+            due_at: now,
+            diagnostic: "primary retry".into(),
+        },
+    );
+    let _a2 = succeed_attempt(&mut view, step1);
+
+    let step2 = StepId::new();
+    let a3 = fail_attempt(
+        &mut view,
+        step2,
+        &request,
+        true,
+        AttemptRecovery::FrozenRetrySafe { not_before: None },
+    );
+    apply_policy_fact(
+        &mut view,
+        Fact::ModelTransportSelected {
+            attempt: a3,
+            phase: RetryTransportPhase::Fallback,
+        },
+    );
+    apply_policy_fact(
+        &mut view,
+        Fact::RetryCharged {
+            attempt: a3,
+            phase: RetryTransportPhase::Fallback,
+            due_at: now,
+            diagnostic: "fallback retry".into(),
+        },
+    );
+    assert_eq!(
+        view.retry_streak,
+        RetryStreak::AfterFallbackTransition { charged: 0 }
+    );
+}
+
+#[test]
+fn an_overflow_whose_interruption_was_not_recorded_still_recovers() {
+    let mut view = policy_view(None);
+    let spec = ContentBlob::json(&view.spec).unwrap();
+    apply_policy_fact(
+        &mut view,
+        Fact::RunAdmitted {
+            spec: spec.reference().clone(),
+        },
+    );
+    let step = StepId::new();
+    let attempt = ModelAttemptId::new();
+    let request = ContentBlob::json(&serde_json::json!({})).unwrap();
+    apply_policy_fact(
+        &mut view,
+        Fact::StepPrepared {
+            step,
+            request: request.reference().clone(),
+            adjudications: vec![],
+        },
+    );
+    apply_policy_fact(&mut view, Fact::ModelAttemptPrepared { attempt, step });
+    apply_policy_fact(
+        &mut view,
+        Fact::ModelAttemptAdmitted {
+            attempt,
+            upstream: serde_json::json!({}),
+        },
+    );
+    let protocol = maka_agent_facts::context::ModelFailureProtocol {
+        failure: maka_model::ModelError::ContextOverflow {
+            observed_output: true,
+        },
+        transport: None,
+    };
+    let failure = ContentBlob::json(&protocol).unwrap();
+    apply_policy_fact(
+        &mut view,
+        Fact::ModelSourceFailureCaptured {
+            attempt,
+            failure: failure.reference().clone(),
+        },
+    );
+    let mut model = fallback_model_level(step, request.reference());
+    model.failure = Some(protocol.clone());
+    // The stream's failure is recorded, but the interruption the driver published for it
+    // lost a revision race, or the Host stopped before writing it.
+    for _ in 0..2 {
+        match next(&view, &Live::default(), UnixMillis(1), Some(&model), false) {
+            Action::Interrupt(id, diagnostic) if id == attempt => apply_policy_fact(
+                &mut view,
+                Fact::ModelInterrupted {
+                    attempt,
+                    diagnostic,
+                },
+            ),
+            // The native adapter assesses a captured overflow as overflow recovery.
+            Action::Assess(id) if id == attempt => apply_policy_fact(
+                &mut view,
+                Fact::AttemptRecoveryRecorded {
+                    attempt,
+                    recovery: AttemptRecovery::ContextOverflow {
+                        observed_output: true,
+                    },
+                },
+            ),
+            _ => panic!("expected the overflowed attempt to be interrupted or assessed"),
+        }
+    }
+    assert_eq!(
+        view.attempts[&attempt].interrupted.as_deref(),
+        Some(protocol.failure.to_string().as_str())
+    );
+    assert!(view.attempts[&attempt].compactable_overflow());
+}
+
+#[test]
+fn a_tool_call_on_an_uninterrupted_overflow_is_rejected_without_execution() {
+    let (mut view, request) = admitted_retry_view(0);
+    let step = StepId::new();
+    let attempt = ModelAttemptId::new();
+    let call_id = "call-before-uninterrupted-overflow".to_owned();
+    let failure = ContentBlob::json(&maka_agent_facts::context::ModelFailureProtocol {
+        failure: maka_model::ModelError::ContextOverflow {
+            observed_output: true,
+        },
+        transport: None,
+    })
+    .unwrap();
+    for fact in [
+        Fact::StepPrepared {
+            step,
+            request,
+            adjudications: vec![],
+        },
+        Fact::ModelAttemptPrepared { attempt, step },
+        Fact::ModelAttemptAdmitted {
+            attempt,
+            upstream: serde_json::json!({}),
+        },
+        Fact::ModelObserved {
+            attempt,
+            index: 0,
+            part: maka_agent_facts::model::ModelPart::ToolCall {
+                call: maka_agent_facts::model::ModelToolCall {
+                    id: call_id.clone(),
+                    name: "Write".into(),
+                    input: maka_agent_facts::model::ToolInput::Json(serde_json::json!({})),
+                    provider_options: None,
+                    provider_executed: false,
+                },
+            },
+            continuation: None,
+        },
+        Fact::ModelSourceFailureCaptured {
+            attempt,
+            failure: failure.reference().clone(),
+        },
+    ] {
+        apply_policy_fact(&mut view, fact);
+    }
+
+    for _ in 0..2 {
+        match next(&view, &Live::default(), UnixMillis(1), None, false) {
+            Action::Interrupt(id, diagnostic) if id == attempt => apply_policy_fact(
+                &mut view,
+                Fact::ModelInterrupted {
+                    attempt,
+                    diagnostic,
+                },
+            ),
+            Action::Assess(id) if id == attempt => apply_policy_fact(
+                &mut view,
+                Fact::AttemptRecoveryRecorded {
+                    attempt,
+                    recovery: AttemptRecovery::ContextOverflow {
+                        observed_output: true,
+                    },
+                },
+            ),
+            _ => panic!("expected interrupt or assess before deciding tool"),
+        }
+    }
+
+    let key = ToolKey {
+        attempt,
+        call: call_id,
+    };
+    assert!(matches!(
+        next(&view, &Live::default(), UnixMillis(1), None, false),
+        Action::Reject(rejected, ToolRejection::PreparationFailed { .. }) if rejected == key
+    ));
+}

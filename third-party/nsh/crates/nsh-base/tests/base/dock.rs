@@ -1,8 +1,10 @@
 //! `DockArea`: a layout renders as splits of tab groups and docks; a press
 //! on a tab selects it, a drag of a tab moves it (into a group, beside
-//! it, into a tab bar), a split's handle resizes it, and the ref's methods
+//! it, into a tab bar), a split's handle resizes it and shows what
+//! `render_handle` draws, and the ref's methods
 //! close panels, toggle docks and zoom; a bar's tabs that do not fit
-//! scroll and the displayed one comes into view; a locked area moves nothing, and
+//! scroll and the displayed one comes into view; `render_toolbar`
+//! draws the toolbar of a group's displayed tab; a locked area moves nothing, and
 //! at compact width the center shows one group with every panel's tab.
 //! The app controls the layout: what it shows is what the area reported.
 
@@ -12,13 +14,12 @@ use nsh_base::dock::{
 };
 use nsh_core::{
     Size, ViewKind,
-    element::Root,
     geometry::{Axis, point},
     platform::{Idiom, Os},
     prelude::*,
 };
 use nsh_engine::EngineConfig;
-use nsh_testing::Headless;
+use nsh_testing::{DragOptions, Headless};
 
 /// A layout as text: a split is `h(..)` / `v(..)` of its children, each
 /// with its slot size when it has one (`:300`), a tab group `[a *b]`, the
@@ -289,11 +290,13 @@ fn start_in(
 ) -> Headless {
     let mut config = EngineConfig {
         viewport: Size::new(px(width), px(900.0)),
-        ..EngineConfig::new(Root::new::<Workspace>(move || WorkspaceProps {
-            layout: layout.clone(),
-            width: frame.map(|f| f.0),
-            height: frame.map(|f| f.1),
-            compact,
+        ..EngineConfig::new(nsh_testing::windowed_root_with::<Workspace>(move || {
+            WorkspaceProps {
+                layout: layout.clone(),
+                width: frame.map(|f| f.0),
+                height: frame.map(|f| f.1),
+                compact,
+            }
         }))
     };
     config.environment.os = Os::MacOs;
@@ -309,11 +312,13 @@ fn start_manual(layout: DockAreaLayout, width: f32) -> Headless {
     let mut config = EngineConfig {
         viewport: Size::new(px(width), px(900.0)),
         clock: nsh_engine::Clock::manual(std::time::SystemTime::now()),
-        ..EngineConfig::new(Root::new::<Workspace>(move || WorkspaceProps {
-            layout: layout.clone(),
-            width: None,
-            height: None,
-            compact: None,
+        ..EngineConfig::new(nsh_testing::windowed_root_with::<Workspace>(move || {
+            WorkspaceProps {
+                layout: layout.clone(),
+                width: None,
+                height: None,
+                compact: None,
+            }
         }))
     };
     config.environment.os = Os::MacOs;
@@ -364,7 +369,12 @@ fn closing_a_panel_removes_it_unless_it_is_the_last_of_its_group_alone() {
 fn dragging_a_tab_to_the_edge_of_a_group_splits_it() {
     let mut app = start(two_groups(), 1000.0);
     // From the middle of tab a (40, 12) to the right of c's content.
-    app.drag("id:tab-a", point(px(720.0), px(288.0))).unwrap();
+    app.drag(
+        "id:tab-a",
+        point(px(720.0), px(288.0)),
+        DragOptions::default(),
+    )
+    .unwrap();
     app.wait_for("Layout h([*b]:400 [*c] [*a])").unwrap();
     // Moved, not removed.
     assert!(app.shows("Removed none"));
@@ -374,7 +384,12 @@ fn dragging_a_tab_to_the_edge_of_a_group_splits_it() {
 #[test]
 fn dragging_a_tab_into_the_middle_of_a_group_merges_it() {
     let mut app = start(two_groups(), 1000.0);
-    app.drag("id:tab-a", point(px(560.0), px(288.0))).unwrap();
+    app.drag(
+        "id:tab-a",
+        point(px(560.0), px(288.0)),
+        DragOptions::default(),
+    )
+    .unwrap();
     app.wait_for("Layout h([*b]:400 [c *a])").unwrap();
 }
 
@@ -382,10 +397,20 @@ fn dragging_a_tab_into_the_middle_of_a_group_merges_it() {
 fn dragging_a_tab_onto_a_tab_bar_inserts_it_at_the_slot() {
     let mut app = start(two_groups(), 1000.0);
     // Past the middle of c's tab (440): after it.
-    app.drag("id:tab-a", point(px(450.0), px(0.0))).unwrap();
+    app.drag(
+        "id:tab-a",
+        point(px(450.0), px(0.0)),
+        DragOptions::default(),
+    )
+    .unwrap();
     app.wait_for("Layout h([*b]:400 [c *a])").unwrap();
     // Before it.
-    app.drag("id:tab-b", point(px(380.0), px(0.0))).unwrap();
+    app.drag(
+        "id:tab-b",
+        point(px(380.0), px(0.0)),
+        DragOptions::default(),
+    )
+    .unwrap();
     app.wait_for("Layout h([*b c a])").unwrap();
 }
 
@@ -393,7 +418,12 @@ fn dragging_a_tab_onto_a_tab_bar_inserts_it_at_the_slot() {
 fn a_locked_area_moves_nothing() {
     let mut app = start(two_groups(), 1000.0);
     app.press("id:lock").unwrap();
-    app.drag("id:tab-a", point(px(560.0), px(288.0))).unwrap();
+    app.drag(
+        "id:tab-a",
+        point(px(560.0), px(288.0)),
+        DragOptions::default(),
+    )
+    .unwrap();
     app.wait(std::time::Duration::from_millis(200)).unwrap();
     assert!(app.shows("Layout h([*a b]:400 [*c])"));
     // Its split's boundary is still a handle the user resizes it by (only
@@ -407,8 +437,12 @@ fn a_locked_area_moves_nothing() {
 #[test]
 fn dragging_a_split_s_handle_resizes_it() {
     let mut app = start(two_groups(), 1000.0);
-    app.drag("role:adjustable", point(px(100.0), px(0.0)))
-        .unwrap();
+    app.drag(
+        "role:adjustable",
+        point(px(100.0), px(0.0)),
+        DragOptions::default(),
+    )
+    .unwrap();
     app.wait_for("Layout h([*a b]:500 [*c]:300)").unwrap();
 }
 
@@ -548,7 +582,12 @@ fn a_panel_hears_each_change_of_being_displayed() {
 fn a_tab_dragged_into_a_dock_moves_there() {
     let mut app = start(with_files(), 1000.0);
     // The dock is 200 wide: c's tab is at 600 to 680.
-    app.drag("id:tab-c", point(px(-540.0), px(288.0))).unwrap();
+    app.drag(
+        "id:tab-c",
+        point(px(-540.0), px(288.0)),
+        DragOptions::default(),
+    )
+    .unwrap();
     app.wait_for("Layout h([*a b]:400) left [files *c] open 200")
         .unwrap();
     assert!(app.shows("Removed none"));
@@ -559,18 +598,30 @@ fn a_tab_dragged_into_a_dock_moves_there() {
 fn dragging_a_dock_s_handle_resizes_it_and_past_its_minimum_closes_it() {
     let mut app = start(with_files(), 1000.0);
     // The dock's handle comes first, then the split's.
-    app.drag("role:adjustable >> nth=0", point(px(50.0), px(0.0)))
-        .unwrap();
+    app.drag(
+        "role:adjustable >> nth=0",
+        point(px(50.0), px(0.0)),
+        DragOptions::default(),
+    )
+    .unwrap();
     app.wait_for("Layout h([*a b]:400 [*c]) left [*files] open 250")
         .unwrap();
     // Not below its minimum, 100.
-    app.drag("role:adjustable >> nth=0", point(px(-180.0), px(0.0)))
-        .unwrap();
+    app.drag(
+        "role:adjustable >> nth=0",
+        point(px(-180.0), px(0.0)),
+        DragOptions::default(),
+    )
+    .unwrap();
     app.wait_for("Layout h([*a b]:400 [*c]) left [*files] open 100")
         .unwrap();
     // Nearer closed than its minimum: it closes and keeps its size.
-    app.drag("role:adjustable >> nth=0", point(px(-60.0), px(0.0)))
-        .unwrap();
+    app.drag(
+        "role:adjustable >> nth=0",
+        point(px(-60.0), px(0.0)),
+        DragOptions::default(),
+    )
+    .unwrap();
     app.wait_for("Layout h([*a b]:400 [*c]) left [*files] closed 100")
         .unwrap();
 }
@@ -579,7 +630,12 @@ fn dragging_a_dock_s_handle_resizes_it_and_past_its_minimum_closes_it() {
 fn at_compact_width_a_drag_reorders_the_tabs() {
     let mut app = start(two_groups(), 400.0);
     // The strip lists a, b and c, 80 wide each: c before a.
-    app.drag("id:tab-c", point(px(-170.0), px(0.0))).unwrap();
+    app.drag(
+        "id:tab-c",
+        point(px(-170.0), px(0.0)),
+        DragOptions::default(),
+    )
+    .unwrap();
     app.wait_for("Layout h([*c a b]:400)").unwrap();
     assert!(app.shows("Panel c"));
 }
@@ -660,11 +716,13 @@ fn a_terminals_compact_sheet_gives_its_panel_the_sheets_rows() {
     // fills the rows under its tab bar, not none.
     let mut config = EngineConfig {
         viewport: Size::new(px(400.0), px(900.0)),
-        ..EngineConfig::new(Root::new::<Workspace>(move || WorkspaceProps {
-            layout: with_two_docks(),
-            width: None,
-            height: None,
-            compact: Some(true),
+        ..EngineConfig::new(nsh_testing::windowed_root_with::<Workspace>(move || {
+            WorkspaceProps {
+                layout: with_two_docks(),
+                width: None,
+                height: None,
+                compact: Some(true),
+            }
         }))
     };
     config.environment.os = Os::Linux;
@@ -697,11 +755,13 @@ fn a_terminals_compact_sheet_gives_its_panel_the_sheets_rows() {
 fn start_web_phone(layout: DockAreaLayout) -> Headless {
     let mut config = EngineConfig {
         viewport: Size::new(px(400.0), px(900.0)),
-        ..EngineConfig::new(Root::new::<Workspace>(move || WorkspaceProps {
-            layout: layout.clone(),
-            width: None,
-            height: None,
-            compact: None,
+        ..EngineConfig::new(nsh_testing::windowed_root_with::<Workspace>(move || {
+            WorkspaceProps {
+                layout: layout.clone(),
+                width: None,
+                height: None,
+                compact: None,
+            }
         }))
     };
     config.environment.os = Os::Web;
@@ -715,12 +775,22 @@ fn start_web_phone(layout: DockAreaLayout) -> Headless {
 fn a_finger_s_drag_waits_for_a_long_press_and_a_pointer_s_does_not() {
     let mut app = start_web_phone(two_groups());
     // A finger: no hover before it, so the swipe drags nothing.
-    app.drag("id:tab-c", point(px(-170.0), px(0.0))).unwrap();
+    app.drag(
+        "id:tab-c",
+        point(px(-170.0), px(0.0)),
+        DragOptions::default(),
+    )
+    .unwrap();
     app.wait(std::time::Duration::from_millis(200)).unwrap();
     assert!(app.shows("Layout h([*a b]:400 [*c])"));
     // A mouse hovers the tab before it presses it: it drags at once.
     app.hover("id:tab-c").unwrap();
-    app.drag("id:tab-c", point(px(-170.0), px(0.0))).unwrap();
+    app.drag(
+        "id:tab-c",
+        point(px(-170.0), px(0.0)),
+        DragOptions::default(),
+    )
+    .unwrap();
     app.wait_for("Layout h([*c a b]:400)").unwrap();
 }
 
@@ -735,11 +805,13 @@ fn a_compact_bottom_dock_lifted_by_the_keyboard_stays_below_the_status_bar() {
     let mut config = EngineConfig {
         viewport: Size::new(px(390.0), px(844.0)),
         clock: nsh_engine::Clock::manual(std::time::SystemTime::now()),
-        ..EngineConfig::new(Root::new::<Workspace>(move || WorkspaceProps {
-            layout: layout.clone(),
-            width: None,
-            height: None,
-            compact: Some(true),
+        ..EngineConfig::new(nsh_testing::windowed_root_with::<Workspace>(move || {
+            WorkspaceProps {
+                layout: layout.clone(),
+                width: None,
+                height: None,
+                compact: Some(true),
+            }
         }))
     };
     config.environment.os = Os::Ios;
@@ -832,7 +904,7 @@ fn frame_of(app: &Headless, id: &str) -> nsh_core::Bounds<Points> {
 fn tabs_that_do_not_fit_scroll_in_their_bar_and_the_displayed_one_comes_into_view() {
     let mut config = EngineConfig {
         viewport: Size::new(px(1000.0), px(900.0)),
-        ..EngineConfig::new(Root::of::<Strip>())
+        ..EngineConfig::new(nsh_testing::windowed_root::<Strip>())
     };
     config.environment.os = Os::MacOs;
     config.environment.idiom = Idiom::Desktop;
@@ -867,4 +939,140 @@ fn tabs_that_do_not_fit_scroll_in_their_bar_and_the_displayed_one_comes_into_vie
         },
     )
     .unwrap();
+}
+
+/// An area of `layout` whose split handles show their place, axis and
+/// state.
+#[derive(Clone, PartialEq, Props)]
+struct GripsProps {
+    layout: DockAreaLayout,
+}
+
+#[component]
+fn Grips(props: GripsProps) -> impl IntoElement {
+    view().w(px(800.0)).h(px(600.0)).child(
+        dock_area()
+            .default_layout(props.layout.clone())
+            .compact(false)
+            .render_tab(|tab: &DockTab| text(format!("Tab {}", tab.panel)))
+            .render_handle(|handle: &nsh_base::ResizeHandleContext| {
+                text(format!(
+                    "Grip {} {:?} {:?}",
+                    handle.index, handle.axis, handle.state
+                ))
+            })
+            .size_full(),
+    )
+}
+
+fn start_grips(layout: DockAreaLayout) -> Headless {
+    let mut config = EngineConfig {
+        viewport: Size::new(px(1000.0), px(900.0)),
+        ..EngineConfig::new(nsh_testing::windowed_root_with::<Grips>(move || {
+            GripsProps {
+                layout: layout.clone(),
+            }
+        }))
+    };
+    config.environment.os = Os::MacOs;
+    config.environment.idiom = Idiom::Desktop;
+    let mut app = Headless::start(config).expect("the engine starts");
+    app.wait_for("Tab a").unwrap();
+    app
+}
+
+#[test]
+fn a_split_s_handles_show_what_render_handle_draws() {
+    // One boundary between the two groups: its handle draws the grip.
+    let mut app = start_grips(two_groups());
+    app.wait_for("Grip 0 Horizontal Idle").unwrap();
+    assert_eq!(app.screen().count("text:Grip 0 Horizontal Idle"), Ok(1));
+    // The band still resizes the split.
+    app.drag(
+        "role:adjustable",
+        point(px(100.0), px(0.0)),
+        DragOptions::default(),
+    )
+    .unwrap();
+    app.wait_for("Grip 0 Horizontal Idle").unwrap();
+
+    // The docks' handles keep their own indicator: still one grip, the
+    // split's.
+    let mut app = start_grips(with_two_docks());
+    app.wait_for("Grip 0 Horizontal Idle").unwrap();
+    let grips = app
+        .screen()
+        .texts()
+        .into_iter()
+        .filter(|text| text.starts_with("Grip "))
+        .count();
+    assert_eq!(grips, 1, "the docks' edges draw no grip");
+}
+
+/// An area of `layout` whose tab bars end with the toolbar of their
+/// displayed tab.
+#[derive(Clone, PartialEq, Props)]
+struct ToolbarProps {
+    layout: DockAreaLayout,
+    compact: bool,
+}
+
+#[component]
+fn Toolbar(props: ToolbarProps) -> impl IntoElement {
+    view().w(px(800.0)).h(px(600.0)).child(
+        dock_area()
+            .default_layout(props.layout.clone())
+            .compact(props.compact)
+            .tab_bar_class("flex-row h-6")
+            .render_tab(|tab: &DockTab| {
+                view()
+                    .test_id(&format!("tab-{}", tab.panel))
+                    .w(px(60.0))
+                    .h(px(24.0))
+                    .child(text(format!("Tab {}", tab.panel)))
+            })
+            .render_toolbar(|tab: &DockTab| text(format!("Toolbar {} of {}", tab.panel, tab.index)))
+            .size_full(),
+    )
+}
+
+fn start_toolbar(layout: DockAreaLayout, compact: bool) -> Headless {
+    let mut config = EngineConfig {
+        viewport: Size::new(px(1000.0), px(900.0)),
+        ..EngineConfig::new(nsh_testing::windowed_root_with::<Toolbar>(move || {
+            ToolbarProps {
+                layout: layout.clone(),
+                compact,
+            }
+        }))
+    };
+    config.environment.os = Os::MacOs;
+    config.environment.idiom = Idiom::Desktop;
+    let mut app = Headless::start(config).expect("the engine starts");
+    app.wait_for("Tab a").unwrap();
+    app
+}
+
+#[test]
+fn a_tab_bar_ends_with_the_toolbar_of_its_displayed_tab() {
+    // Each group's bar ends with its displayed tab's toolbar, in the
+    // center and in a dock.
+    let mut app = start_toolbar(with_files(), false);
+    app.wait_for("Toolbar a of 0").unwrap();
+    app.wait_for("Toolbar c of 0").unwrap();
+    app.wait_for("Toolbar files of 0").unwrap();
+    // It follows the group: another tab displayed.
+    app.press("id:tab-b").unwrap();
+    app.wait_for("Toolbar b of 1").unwrap();
+    assert_eq!(app.screen().count("text:Toolbar a of 0"), Ok(0));
+    app.wait_for("Toolbar c of 0").unwrap();
+
+    // Compact: one bar with every center panel's tab, ending with the
+    // shown tab's toolbar.
+    let mut app = start_toolbar(two_groups(), true);
+    app.wait_for("Toolbar a of 0").unwrap();
+    assert_eq!(app.screen().count("text:Toolbar c of 0"), Ok(0));
+    app.press("id:tab-c").unwrap();
+    app.wait_for("Toolbar c of 0").unwrap();
+    assert_eq!(app.screen().count("text:Toolbar a of 0"), Ok(0));
 }

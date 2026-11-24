@@ -177,10 +177,11 @@ pub struct AppOptions {
     /// runs, so the Dock never shows an accessory app.
     /// [`background`](Self::background) takes precedence.
     pub activation_policy: ActivationPolicy,
-    /// Hides the standalone window on close while retaining its engine.
-    /// Reopening from the Dock shows the same window (an accessory app,
-    /// which has no Dock icon, shows it itself: from its tray, say). Quit
-    /// still stops the app. Only used by [`run_app`]; defaults to false.
+    /// Hides the standalone window on close while retaining its engine. In
+    /// window model v2 the host never shows; a Dock reopen reaches the app's
+    /// `reopen` listeners, which open or focus the window they want (an
+    /// accessory app, which has no Dock icon, does it from its tray, say).
+    /// Quit still stops the app. Only used by [`run_app`]; defaults to false.
     pub keep_alive_on_close: bool,
     /// The smallest size [`run_app`]'s window takes, in points. `None` (the
     /// default) leaves it to AppKit.
@@ -466,7 +467,7 @@ impl AppView {
     /// Runs `app`, replacing what ran.
     pub fn load(&self, app: App) {
         let options = self.options.borrow();
-        let config = EngineConfig {
+        let mut config = EngineConfig {
             app,
             viewport: nsh_core::Size::new(px(0.0), px(0.0)),
             trace: options.trace,
@@ -510,6 +511,9 @@ impl AppView {
             .native
             .set_asset_base(options.asset_base.clone());
         self.surface.native.set_app(&config.app);
+        if !self.surface.standalone.get() {
+            config.context = config.context.with(nsh_engine::EmbeddedHost);
+        }
         crate::native::warm_web_later(&self.surface);
         self.surface.start(config);
     }
@@ -519,7 +523,10 @@ impl AppView {
     /// kept. Its asset reader serves both the engine's resources and image
     /// `asset:/` URIs (`None` makes those unavailable), bound to this load
     /// whatever [`Self::set_asset_base`] says.
-    pub fn load_with_config(&self, config: EngineConfig) {
+    pub fn load_with_config(&self, mut config: EngineConfig) {
+        if !self.surface.standalone.get() {
+            config.context = config.context.with(nsh_engine::EmbeddedHost);
+        }
         *self.surface.image_assets.borrow_mut() =
             crate::image::AssetSource::engine(config.assets.clone());
         self.surface.native.set_app(&config.app);
@@ -641,6 +648,8 @@ fn initial_environment() -> Environment {
         os: Os::MacOs,
         idiom: Idiom::Desktop,
         screen_color: true,
+        // `setString:forType:` says whether the pasteboard took the write.
+        clipboard_write_result: true,
         canvas_render: true,
         // `NSSharingServicePicker` (`crate::share`).
         share: true,
@@ -665,6 +674,7 @@ struct Running {
     window: Retained<NSWindow>,
     view: Rc<AppView>,
     keep_alive_on_close: bool,
+    active: Cell<bool>,
     on_active: Box<dyn Fn(bool)>,
     quit_options: QuitRequestOptions,
     quit_requests: QuitRequests,
@@ -747,8 +757,6 @@ pub(crate) fn dev_app_came(surface: &Surface, visible: bool) {
     if visible {
         show_launched(&window, surface, background);
         crate::window::main_shown(surface);
-    } else {
-        log::info!("the main window starts hidden (nsh.json window.defaultVisible: false)");
     }
 }
 
@@ -887,26 +895,30 @@ define_class!(
                     url_scheme(url.to_string());
                 }
             }
-            // A link opened while the app runs brings it forward.
+            // A link opened while the app runs brings it forward. The host
+            // stays hidden: the app's `reopen` listeners open or focus the
+            // window they want.
             app.activate();
-            let shown = RUNNING.with(|running| {
+            let surface = RUNNING.with(|running| {
                 running
                     .borrow()
                     .as_ref()
-                    .map(|running| (running.window.clone(), running.view.clone()))
+                    .map(|running| running.view.surface().clone())
             });
-            if let Some((window, view)) = shown {
-                if window.isMiniaturized() {
-                    window.deminiaturize(None);
-                }
-                window.makeKeyAndOrderFront(None);
-                // Hidden since launch: it opens in its mode.
-                crate::window::main_shown(view.surface());
+            if let Some(surface) = surface {
+                surface.event(
+                    nsh_core::ROOT_ID,
+                    nsh_core::EventKind::Window,
+                    nsh_core::EventPayload::Window(Box::new(
+                        nsh_core::desktop::WindowEvent::Reopen,
+                    )),
+                );
             }
         }
 
         // An address continued from another device (Handoff,
-        // `AppOptions::handoff`): a link like the others.
+        // `AppOptions::handoff`), or a Universal Link: a link like the
+        // others, which the core checks.
         #[unsafe(method(application:continueUserActivity:restorationHandler:))]
         fn continue_user_activity(
             &self,
@@ -914,7 +926,9 @@ define_class!(
             activity: &objc2_foundation::NSUserActivity,
             _restoration: &block2::DynBlock<dyn Fn(std::ptr::NonNull<AnyObject>)>,
         ) -> bool {
-            match nsh_platform_apple::handoff::continued_url(activity) {
+            match nsh_platform_apple::handoff::continued_url(activity)
+                .or_else(|| nsh_platform_apple::handoff::web_link(activity))
+            {
                 Some(url) => {
                     url_scheme(url);
                     true
@@ -952,13 +966,16 @@ define_class!(
                     .as_ref()
                     .map(|running| (running.window.clone(), running.view.surface().clone()))
             });
-            if let Some((window, surface)) = running {
-                if window.isMiniaturized() {
-                    window.deminiaturize(None);
-                }
-                window.makeKeyAndOrderFront(None);
-                // One hidden at launch shows in the mode it opens in.
-                crate::window::main_shown(&surface);
+            if let Some((_window, surface)) = running {
+                // The app opens or focuses the window it wants: there is no
+                // privileged main window to show.
+                surface.event(
+                    nsh_core::ROOT_ID,
+                    nsh_core::EventKind::Window,
+                    nsh_core::EventPayload::Window(Box::new(
+                        nsh_core::desktop::WindowEvent::Reopen,
+                    )),
+                );
             }
             false
         }
@@ -972,12 +989,12 @@ define_class!(
     unsafe impl NSWindowDelegate for Delegate {
         #[unsafe(method(windowDidBecomeKey:))]
         fn window_did_become_key(&self, _notification: &NSNotification) {
-            window_active(true);
+            sync_running_active();
         }
 
         #[unsafe(method(windowDidResignKey:))]
         fn window_did_resign_key(&self, _notification: &NSNotification) {
-            window_active(false);
+            dispatch2::DispatchQueue::main().exec_async(sync_running_active);
         }
 
         // The user's close press: the app's `closeOnPress` says whether it
@@ -1055,16 +1072,34 @@ fn handle_quit_events(delegate: Option<&Delegate>) {
     }
 }
 
-/// Tells [`run_app_with_config`]'s caller whether the window has the keyboard.
-fn window_active(active: bool) {
+/// Tells [`run_app_with_config`]'s caller whether any window of its surface has the keyboard.
+pub(crate) fn sync_window_active(surface_key: u64) {
     RUNNING.with(|running| {
-        if let Some(running) = &*running.borrow() {
-            if !active {
-                crate::text_input::disarm(&running.view.surface);
-            }
-            (running.on_active)(active);
+        if let Some(running) = &*running.borrow()
+            && running.view.surface().key() == surface_key
+        {
+            update_running_active(running);
         }
     });
+}
+
+fn sync_running_active() {
+    RUNNING.with(|running| {
+        if let Some(running) = &*running.borrow() {
+            update_running_active(running);
+        }
+    });
+}
+
+fn update_running_active(running: &Running) {
+    let surface = running.view.surface();
+    let active = crate::window::is_key(&running.window) || crate::window::has_key_window(surface);
+    if !active {
+        crate::text_input::disarm(surface);
+    }
+    if running.active.replace(active) != active {
+        (running.on_active)(active);
+    }
 }
 
 /// Runs `f` with the standalone runner's view on AppKit's main thread. May be
@@ -1315,6 +1350,9 @@ fn stop_event_loop(app: &NSApplication) {
 /// Stops the standalone app's engine (its window closes).
 fn stop_running() {
     if let Some(running) = RUNNING.with(|r| r.borrow_mut().take()) {
+        if running.active.replace(false) {
+            (running.on_active)(false);
+        }
         if running.quit_requests.pending == Some(true) {
             NSApplication::sharedApplication(running.view.surface().mtm)
                 .replyToApplicationShouldTerminate(false);
@@ -1514,19 +1552,20 @@ fn run_window(
         _ => false,
     };
     PENDING.with(|p| *p.borrow_mut() = Some(loaded));
+    // The host never shows: the app opens the windows it declares.
     let shown = !held && launch.visible_at_launch();
     if shown {
         show_launched(&window, view.surface(), options.background);
-    } else if !held {
-        log::info!("the main window starts hidden (nsh.json window.defaultVisible: false)");
     }
-    on_active(window.isKeyWindow());
+    let initial_active = window.isKeyWindow();
+    on_active(initial_active);
     let view_surface = view.surface().clone();
     RUNNING.with(|r| {
         *r.borrow_mut() = Some(Running {
             window,
             view,
             keep_alive_on_close: options.keep_alive_on_close,
+            active: Cell::new(initial_active),
             on_active: Box::new(on_active),
             quit_options: QuitRequestOptions::default(),
             quit_requests: QuitRequests::default(),

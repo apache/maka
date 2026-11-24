@@ -37,6 +37,7 @@ import {
   resolveDiffSource,
   resolveDiffSourceKey,
 } from './currentDiffState';
+import { InlineCallout, RegionEmptyError } from './Feedback';
 import { Icon } from './Icon';
 import { tr } from './locale';
 import {
@@ -949,18 +950,28 @@ export function CurrentDiff(props: { model: CurrentDiffModel; review?: DiffRevie
         </View>
       </If>
 
-      <If when={notice()}>
-        <Text
-          style={[
-            {
-              ...bodyTextStyle,
-              color: model.state().kind === 'error' ? C.danger : C.muted,
-            },
-            { userSelect: 'text' },
-          ]}
+      <If when={Boolean(notice())}>
+        <If
+          when={renderableState() === null && model.state().kind === 'error'}
+          else={
+            <InlineCallout
+              tone={model.state().kind === 'error' ? 'danger' : 'info'}
+              message={notice()}
+              action={
+                model.state().kind === 'error'
+                  ? { label: tr('Retry'), onPress: inputAction(model.refresh, null) }
+                  : undefined
+              }
+            />
+          }
         >
-          {notice()}
-        </Text>
+          <RegionEmptyError
+            tone="danger"
+            icon="diff"
+            title={notice()}
+            retry={inputAction(model.refresh, null)}
+          />
+        </If>
       </If>
 
       <If when={renderableState() !== null}>

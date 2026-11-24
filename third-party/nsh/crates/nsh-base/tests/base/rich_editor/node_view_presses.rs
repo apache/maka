@@ -11,7 +11,7 @@ use nsh_base::rich_editor::{
     state::{EditorState, EditorStateConfig},
     view::{EditorSession, NodeView, NodeViewCx, NodeViews, rich_editor},
 };
-use nsh_core::{element::Root, platform::Os, prelude::*};
+use nsh_core::{platform::Os, prelude::*};
 use nsh_engine::EngineConfig;
 use nsh_testing::Headless;
 use serde_json::json;
@@ -91,8 +91,10 @@ fn start() -> Headless {
     let session = EditorSession::new(state, NodeViews::new().with("tag", Arc::new(Chip)));
     let mut config = EngineConfig {
         viewport: Size::new(px(800.0), px(900.0)),
-        ..EngineConfig::new(Root::new::<Chips>(move || ChipsProps {
-            session: Some(session.clone()),
+        ..EngineConfig::new(nsh_testing::windowed_root_with::<Chips>(move || {
+            ChipsProps {
+                session: Some(session.clone()),
+            }
         }))
     };
     config.environment.os = Os::Linux;

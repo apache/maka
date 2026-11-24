@@ -21,7 +21,6 @@ use nsh_base::{
 };
 use nsh_core::{
     AccessibilityRole, MountItem, NodeId, Size, ViewKind,
-    element::Root,
     platform::{Environment, Idiom, Os},
     prelude::*,
     time::Clock,
@@ -217,7 +216,9 @@ impl App {
 fn start_on(os: Os, props: HarnessProps) -> App {
     let mut config = EngineConfig {
         viewport: Size::new(px(800.0), px(844.0)),
-        ..EngineConfig::new(Root::new::<Harness>(move || props.clone()))
+        ..EngineConfig::new(nsh_testing::windowed_root_with::<Harness>(move || {
+            props.clone()
+        }))
     };
     config.environment.os = os;
     config.clock = Clock::manual(SystemTime::UNIX_EPOCH + Duration::from_secs(1_793_188_800));
@@ -411,7 +412,9 @@ fn the_clear_button_and_delete_clear_the_value() {
         .unwrap();
     assert!(app.log().ends_with("open:false:Select -"), "{}", app.log());
     assert_eq!(app.heard(), None);
-    // Delete on the focused trigger, too.
+    // Delete on the focused trigger, too: Tab gives it the keyboard, which
+    // the calendar a press opened gives back.
+    app.press_key("tab").unwrap();
     app.open();
     app.press("label:2026-10-15").unwrap();
     app.closed();
@@ -598,7 +601,7 @@ fn a_terminals_date_picker_shows_its_clear_and_arrow_at_its_band_s_end() {
             cell: Some(Size::new(px(8.0), px(16.0))),
             ..Environment::default()
         },
-        ..EngineConfig::new(Root::of::<ClearableDate>())
+        ..EngineConfig::new(nsh_testing::windowed_root::<ClearableDate>())
     };
     let mut app = Headless::start(config).unwrap();
     // The texts, frames and parents the batches set.

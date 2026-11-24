@@ -18,10 +18,10 @@
 //! they are laid out with and report. Canvases draw them as their
 //! rasterized bitmap ([`load_bitmap`]).
 //!
-//! Animated GIF and WebP images decode every frame (composited, at most
-//! [`MAX_FRAMES`] and [`MAX_ANIMATION_BYTES`]: larger ones show their first
-//! frame) with its delay, as browsers and iOS time them (under 20ms: 100ms),
-//! and play their loop count. A view advances its frames with a timer at
+//! Animated GIF and WebP images decode every frame with
+//! [`nsh_core::image::animation`] (composited, with its delay, as browsers
+//! and iOS time them: under 20ms, 100ms; ones too large to keep decoded
+//! stream at the size shown) and play their loop count. A view advances its frames with a timer at
 //! each frame's delay, not on the frame clock (a 10 fps GIF need not keep
 //! the clock running at the display's rate), measured on the monotonic
 //! clock so delays do not drift; only while it is mapped (a hidden screen
@@ -52,6 +52,7 @@ use nsh_core::{
     geometry::{DevicePixels, Points, Size, size},
     image::{
         DiskCache, Frames, Images, Lease, Natural, Request, Target, Want,
+        animation::{self, Animation},
         loader::{Context, Location, Priority, Ticket, loader},
     },
 };
@@ -158,20 +159,12 @@ pub(crate) fn load_icon(
     }
 }
 
-/// Frames of an animated image decoded at most (as iOS; longer ones stop
-/// at the last of them).
-const MAX_FRAMES: usize = 600;
-
-/// The most bytes one animation's frames take: larger animations show
-/// their first frame.
-const MAX_ANIMATION_BYTES: usize = 48 << 20;
-
 /// A decoded image.
 #[derive(Clone)]
 struct Picture {
     /// The image, or an animation's first frame.
     texture: gdk::Texture,
-    animation: Option<Arc<Animation>>,
+    animation: Option<Arc<Animation<gdk::Texture>>>,
     /// Its own size (an SVG's in points: what it lays out at and reports,
     /// whatever its file name says), whatever size it was decoded at.
     natural: Natural,
@@ -192,26 +185,9 @@ impl Picture {
     fn cost(&self) -> usize {
         let frame =
             self.texture.width().max(0) as usize * self.texture.height().max(0) as usize * 4;
-        2 * frame * self.animation.as_ref().map_or(1, |a| a.frames.len())
-    }
-}
-
-/// The frames of an animated image.
-struct Animation {
-    frames: Vec<gdk::Texture>,
-    /// Each frame's delay in ms.
-    delays: Vec<u32>,
-    /// Plays before it stops on its last frame; 0: forever.
-    plays: u32,
-}
-
-/// A frame's delay in ms: as browsers and iOS, delays under 20ms (often
-/// written as 0 by tools that meant "fast") show for 100ms.
-fn frame_delay(delay: image::Delay) -> u32 {
-    let (numer, denom) = delay.numer_denom_ms();
-    match numer / denom.max(1) {
-        ms if ms >= 20 => ms,
-        _ => 100,
+        let animation = self.animation.as_ref();
+        2 * frame * animation.map_or(1, |a| a.held_frames())
+            + animation.map_or(0, |a| a.other_bytes())
     }
 }
 
@@ -229,106 +205,22 @@ fn texture(rgba: image::RgbaImage) -> gdk::Texture {
     .upcast()
 }
 
-/// `rgba` with its longest side `longest` pixels long, when that shrinks
-/// it.
-fn shrunk(rgba: image::RgbaImage, longest: u32) -> image::RgbaImage {
-    let (w, h) = rgba.dimensions();
-    if longest == 0 || longest >= w.max(h) {
-        return rgba;
-    }
-    let scale = longest as f64 / w.max(h) as f64;
-    let side = |n: u32| ((n as f64 * scale).round() as u32).max(1);
-    image::imageops::thumbnail(&rgba, side(w), side(h))
-}
-
-/// The container `bytes` start with, if it may hold an animation.
-fn animated_format(bytes: &[u8]) -> Option<image::ImageFormat> {
-    if bytes.starts_with(b"GIF8") {
-        Some(image::ImageFormat::Gif)
-    } else if bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP" {
-        Some(image::ImageFormat::WebP)
-    } else {
-        None
-    }
-}
-
-/// Decodes the frames of a GIF or WebP, its longest side at most `longest`
-/// pixels (0: its own); `None` when it is a still image (or too large to
-/// animate: then it decodes as one).
+/// Decodes the frames of a GIF or WebP at `longest` ([`animation::decode`]:
+/// kept decoded, or streamed when too large to keep); `None` when it is a
+/// still image.
 fn animation(
     bytes: &[u8],
     format: image::ImageFormat,
     longest: u32,
 ) -> Result<Option<Picture>, String> {
-    use image::{AnimationDecoder, metadata::LoopCount};
-    let cursor = std::io::Cursor::new(bytes);
-    let error = |e: image::ImageError| e.to_string();
-    let (frames, loops) = match format {
-        image::ImageFormat::Gif => {
-            let decoder = image::codecs::gif::GifDecoder::new(cursor).map_err(error)?;
-            let loops = decoder.loop_count();
-            (decoder.into_frames(), loops)
-        }
-        _ => {
-            let decoder = image::codecs::webp::WebPDecoder::new(cursor).map_err(error)?;
-            if !decoder.has_animation() {
-                return Ok(None);
-            }
-            let loops = decoder.loop_count();
-            (decoder.into_frames(), loops)
-        }
+    let Some(decoded) = animation::decode(bytes, format, longest, true, texture)? else {
+        return Ok(None);
     };
-    let plays = match loops {
-        LoopCount::Infinite => 0,
-        // GIF counts repetitions after the first play (as browsers read
-        // it), WebP plays.
-        LoopCount::Finite(n) if format == image::ImageFormat::Gif => n.get().saturating_add(1),
-        LoopCount::Finite(n) => n.get(),
-    };
-    let (mut textures, mut delays, mut total) = (Vec::new(), Vec::new(), 0);
-    let mut natural = None;
-    for frame in frames.take(MAX_FRAMES) {
-        let frame = match frame {
-            Ok(frame) => frame,
-            // A damaged frame ends the animation; what decoded plays.
-            Err(e) if !textures.is_empty() => {
-                log::debug!("image: animation cut short: {e}");
-                break;
-            }
-            Err(e) => return Err(error(e)),
-        };
-        let delay = frame_delay(frame.delay());
-        let buffer = frame.into_buffer();
-        let (w, h) = buffer.dimensions();
-        natural.get_or_insert(Natural::Pixels(w, h));
-        let buffer = shrunk(buffer, longest);
-        total += buffer.as_raw().len();
-        if total > MAX_ANIMATION_BYTES {
-            log::debug!("image: animation over {MAX_ANIMATION_BYTES} bytes: its first frame shows");
-            textures.truncate(1);
-            delays.truncate(1);
-            if textures.is_empty() {
-                textures.push(texture(buffer));
-            }
-            break;
-        }
-        textures.push(texture(buffer));
-        delays.push(delay);
-    }
-    let (Some(first), Some(natural)) = (textures.first().cloned(), natural) else {
-        return Err("no frames".into());
-    };
-    let animation = (textures.len() > 1).then(|| {
-        Arc::new(Animation {
-            frames: textures,
-            delays,
-            plays,
-        })
-    });
+    let (w, h) = decoded.natural;
     Ok(Some(Picture {
-        texture: first,
-        animation,
-        natural,
+        texture: decoded.first,
+        animation: decoded.animation.map(Arc::new),
+        natural: Natural::Pixels(w, h),
     }))
 }
 
@@ -371,7 +263,7 @@ fn decode(bytes: &[u8], target: &Target) -> Result<Picture, String> {
     }
     let longest = target.longest;
     if target.frames == Frames::All
-        && let Some(format) = animated_format(bytes)
+        && let Some(format) = animation::format(bytes)
     {
         match animation(bytes, format, longest) {
             Ok(Some(picture)) => return Ok(picture),
@@ -762,7 +654,7 @@ impl Timeline {
 
 /// An animation playing in a view.
 struct Playback {
-    animation: Arc<Animation>,
+    animation: Arc<Animation<gdk::Texture>>,
     timeline: Timeline,
     /// The timer of the next frame, while it plays.
     timer: Option<glib::SourceId>,
@@ -772,8 +664,8 @@ struct Playback {
 
 impl Playback {
     /// The frame to draw.
-    fn texture(&self) -> &gdk::Texture {
-        &self.animation.frames[self.timeline.frame]
+    fn texture(&self) -> gdk::Texture {
+        self.animation.frame(self.timeline.frame)
     }
 
     /// Stops the timer; it resumes on the frame it was.
@@ -1101,7 +993,7 @@ pub(crate) fn resized(surface: &Surface, view: &NshView) {
         // The same image, larger: no new load events; an animation plays
         // on from the frame it was.
         if let (Some(p), Some(animation)) = (image.playback.as_mut(), picture.animation.clone())
-            && animation.frames.len() == p.animation.frames.len()
+            && animation.len() == p.animation.len()
         {
             p.animation = animation;
         }
@@ -1415,7 +1307,7 @@ pub(crate) fn draw(snapshot: &gtk::Snapshot, state: &ViewState, scale: f32) {
         .playback
         .as_ref()
         .map(Playback::texture)
-        .unwrap_or(&picture.texture);
+        .unwrap_or_else(|| picture.texture.clone());
     let alpha = if fading { image.alpha } else { 1.0 };
     if alpha <= 0.0 {
         return;
@@ -1423,7 +1315,7 @@ pub(crate) fn draw(snapshot: &gtk::Snapshot, state: &ViewState, scale: f32) {
     if alpha < 1.0 {
         snapshot.push_opacity(alpha as f64);
     }
-    let shown = (texture, picture.natural);
+    let shown = (&texture, picture.natural);
     draw_one(snapshot, state, image, shown, image.source.as_ref(), scale);
     if alpha < 1.0 {
         snapshot.pop();
@@ -1625,25 +1517,6 @@ mod tests {
         assert_eq!(Timeline::default().advance(&[100], 0, 0), (false, false));
     }
 
-    #[test]
-    fn times_frames() {
-        assert_eq!(frame_delay(image::Delay::from_numer_denom_ms(70, 1)), 70);
-        assert_eq!(frame_delay(image::Delay::from_numer_denom_ms(0, 1)), 100);
-        assert_eq!(frame_delay(image::Delay::from_numer_denom_ms(10, 1)), 100);
-        assert_eq!(frame_delay(image::Delay::from_numer_denom_ms(41, 2)), 20);
-    }
-
-    #[test]
-    fn sniffs_animated_formats() {
-        assert_eq!(animated_format(b"GIF89a..."), Some(image::ImageFormat::Gif));
-        assert_eq!(
-            animated_format(b"RIFF\0\0\0\0WEBPVP8X"),
-            Some(image::ImageFormat::WebP)
-        );
-        assert_eq!(animated_format(b"\x89PNG\r\n"), None);
-        assert_eq!(animated_format(b"RIFF"), None);
-    }
-
     const SVG_LOGO: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" width="48" height="24"><rect width="24" height="24" fill="#f00"/><rect x="24" width="24" height="24" fill="#00f" fill-opacity="0.5"/></svg>"##;
 
     /// The texture's pixels as premultiplied BGRA (Cairo's ARGB32 on a
@@ -1808,11 +1681,10 @@ mod tests {
             ("spinner.webp", image::ImageFormat::WebP),
         ] {
             let bytes = std::fs::read(dir.join(name)).unwrap();
-            assert_eq!(animated_format(&bytes), Some(format));
+            assert_eq!(animation::format(&bytes), Some(format));
             let picture = animation(&bytes, format, 0).unwrap().unwrap();
             let animation = picture.animation.expect(name);
-            assert!(animation.frames.len() > 1, "{name}");
-            assert_eq!(animation.frames.len(), animation.delays.len());
+            assert!(animation.len() > 1, "{name}");
             assert!(animation.delays.iter().all(|&d| d >= 20));
         }
     }

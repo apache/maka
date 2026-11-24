@@ -19,7 +19,9 @@
 
 import { LoadingIndicator } from './Loading';
 import { SidebarTitleRow, textTooltip } from './ui';
-import { message, renderText, type UiText } from './text';
+import { InlineCallout, RegionEmptyError } from './Feedback';
+import { message, renderText } from './text';
+import { toast } from './toastStore';
 import { tr } from './locale';
 import {
   batch,
@@ -76,6 +78,7 @@ import {
 } from './sessionLifecycle';
 import { sessionStatusCaption } from './sessionStatus';
 import { ownTitleBar, TITLE_BAR_HEIGHT, windowDrag } from './chrome';
+import { SidebarUpdateButton } from './SidebarUpdateButton';
 
 export type WorkspaceBrowserProps = {
   openRooms?: (() => void) | undefined;
@@ -221,7 +224,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
     origin: string | null;
     action: SessionMenuAction;
   } | null>(null);
-  const navigationNotice = signal<{ kind: 'draft' | 'action'; message: UiText } | null>(null);
+
   const viewportHeight = signal(160);
   let navigationTarget: ViewRef | undefined;
   let list: ListRef | undefined;
@@ -374,15 +377,20 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
   };
   const select = async ({ id, origin }: { id: string; origin: string | null }) => {
     if (!alive || props.selected() !== origin || props.switching()) return;
-    navigationNotice.set(null);
     await props.selectSession(id, origin);
-    if (alive && id !== origin && props.selected() === origin)
-      navigationNotice.set({
-        kind: 'draft',
-        message: message(
-          'The draft is not ready to save. Return to the conversation to check its status.',
+    // In Desktop docked mode the conversation stays visible and reports draft blocks directly.
+    if (alive && id !== origin && props.selected() === origin && !props.docked()) {
+      toast.show({
+        id: 'workbench.draft-not-ready',
+        tone: 'warning',
+        message: renderText(
+          message(
+            'The draft is not ready to save. Return to the conversation to check its status.',
+          ),
         ),
+        actions: [{ label: tr('Return to draft'), primary: true, onPress: props.close }],
       });
+    }
   };
   const openActions = (target: {
     session: SessionActionTarget;
@@ -395,10 +403,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
       props.selected() === target.origin &&
       sessionsById().get(target.session.id)?.revision === target.session.revision
     ) {
-      batch(() => {
-        navigationNotice.set(null);
-        actions.set(target);
-      });
+      actions.set(target);
     }
   };
   const closeActions = () => {
@@ -1082,6 +1087,20 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
           <Text style={{ color: C.text, fontWeight: '600' }}>{tr('Archived')}</Text>
         </Button>
       </If>
+      <If
+        when={
+          rowIds().length > 0 &&
+          !props.connectionLost() &&
+          Boolean(browser.error() || browser.projectError())
+        }
+      >
+        <InlineCallout
+          surface="chrome"
+          tone="danger"
+          message={String(browser.error() || browser.projectError())}
+          action={{ label: tr('Refresh'), onPress: inputAction(refresh, null) }}
+        />
+      </If>
       <List
         ref={(node) => {
           list = node;
@@ -1092,12 +1111,26 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
           <View
             style={{ height: viewportHeight(), alignItems: 'center', justifyContent: 'center' }}
           >
-            <If when={!browser.loading() && !browser.error() && !browser.projectError()}>
-              <Text style={{ color: C.muted }}>
-                {browser.filter() === 'archived'
-                  ? tr('No archived conversations.')
-                  : tr('No conversations yet.')}
-              </Text>
+            <If
+              when={!props.connectionLost() && Boolean(browser.error() || browser.projectError())}
+              else={
+                <If when={!browser.loading()}>
+                  <Text style={{ color: C.muted }}>
+                    {browser.filter() === 'archived'
+                      ? tr('No archived conversations.')
+                      : tr('No conversations yet.')}
+                  </Text>
+                </If>
+              }
+            >
+              <RegionEmptyError
+                compact
+                surface="chrome"
+                tone="danger"
+                title={String(browser.error() || browser.projectError())}
+                retry={inputAction(refresh, null)}
+                retryLabel={tr('Refresh browser')}
+              />
             </If>
           </View>
         )}
@@ -1725,39 +1758,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
       <If when={browser.loading()}>
         <LoadingIndicator />
       </If>
-      <If when={navigationNotice()}>
-        <Text
-          style={[
-            { color: navigationNotice()?.kind === 'action' ? C.danger : C.warning },
-            { userSelect: 'text' },
-          ]}
-        >
-          {renderText(navigationNotice()?.message ?? '')}
-        </Text>
-        <If when={navigationNotice()?.kind === 'draft'}>
-          <Button
-            onPress={inputAction(props.close, null)}
-            style={controlStyle}
-            hoverStyle={controlHoverStyle()}
-            focusStyle={controlFocusStyle()}
-          >
-            <Text style={{ color: C.accent }}>{tr('Return to draft')}</Text>
-          </Button>
-        </If>
-      </If>
-      <If when={!props.connectionLost() && (browser.error() || browser.projectError())}>
-        <Text style={[{ color: C.danger }, { userSelect: 'text' }]}>
-          {browser.error() || browser.projectError()}
-        </Text>
-        <Button
-          onPress={inputAction(refresh, null)}
-          style={controlStyle}
-          hoverStyle={controlHoverStyle()}
-          focusStyle={controlFocusStyle()}
-        >
-          <Text style={{ color: C.accent }}>{tr('Refresh browser')}</Text>
-        </Button>
-      </If>
+
       <View
         style={{
           flexDirection: 'row',
@@ -1812,6 +1813,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
             <Icon name="archive" color={navIcon()} />
           </Button>
         </If>
+        <SidebarUpdateButton holdSidebarHover={props.holdSidebarHover} />
       </View>
       <If when={automationsOpen()}>
         <Automations
@@ -1832,7 +1834,13 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
               action={target.action}
               current={() => alive && actions() === target && props.selected() === target.origin}
               close={closeActions}
-              notice={(message) => navigationNotice.set({ kind: 'action', message })}
+              notice={(msg) =>
+                toast.show({
+                  id: 'workbench.session-action-error',
+                  tone: 'danger',
+                  message: renderText(msg),
+                })
+              }
               change={(action) => props.changeSession(action, target.origin)}
               openSession={(id) => {
                 void select({ id, origin: target.origin });

@@ -19,7 +19,7 @@
 
 use super::*;
 use base64::Engine as _;
-use tokio::sync::oneshot;
+use maka_mock_ai::TurnHandle;
 
 const COVERED_INPUT: &str = "cobalt-covered-input";
 const SUMMARY_PROMPT: &str = "cobalt-fixture-compaction-prompt";
@@ -49,10 +49,9 @@ impl ReadResource for Image {
     }
 }
 
-#[derive(Debug)]
 struct ModelPost {
     body: Value,
-    reply: oneshot::Sender<String>,
+    handle: TurnHandle,
 }
 
 impl ModelPost {
@@ -94,15 +93,17 @@ impl ModelPost {
     }
 
     fn shell(self, call_id: &str, command: &str, input_tokens: u64) {
-        self.reply
-            .send(sse_with_input_usage(
-                json!({"tool_calls":[{"index":0,"id":call_id,"type":"function","function":{
-                    "name":"Shell","arguments":json!({"command":command,"login":false}).to_string()
-                }}]}),
-                "tool_calls",
-                input_tokens,
-            ))
-            .unwrap();
+        self.handle.send_plan(
+            TurnPlan::new()
+                .with_response_id("mainline")
+                .push_tool_call(
+                    call_id,
+                    "Shell",
+                    json!({"command": command, "login": false}),
+                )
+                .with_usage(Usage::new(input_tokens, 10))
+                .finish(FinishReason::ToolCalls),
+        );
     }
 
     fn finish(self, text: &str) {
@@ -110,68 +111,25 @@ impl ModelPost {
     }
 
     fn finish_with_usage(self, text: &str, input_tokens: u64) {
-        self.reply
-            .send(sse_with_input_usage(
-                json!({"content":text}),
-                "stop",
-                input_tokens,
-            ))
-            .unwrap();
+        self.handle.send_plan(
+            TurnPlan::new()
+                .with_response_id("mainline")
+                .push_text(text)
+                .with_usage(Usage::new(input_tokens, 10))
+                .finish(FinishReason::Stop),
+        );
     }
 }
 
-async fn serve_model(listener: TcpListener, posts: mpsc::UnboundedSender<ModelPost>) {
-    let mut connections = JoinSet::new();
-    loop {
-        tokio::select! {
-            joined = connections.join_next(), if !connections.is_empty() => {
-                joined.unwrap().unwrap();
-            }
-            socket = listener.accept() => {
-                let (socket, _) = socket.unwrap();
-                let posts = posts.clone();
-                connections.spawn(async move {
-                    let model = service_fn(move |request: Request<Incoming>| {
-                        let posts = posts.clone();
-                        async move {
-                            if request.method() == hyper::Method::GET {
-                                assert!(request.uri().path().ends_with("/models"));
-                                return Ok::<_, Infallible>(response(
-                                    json!({"data":[{"id":"gpt-4.1"}]}).to_string(),
-                                    "application/json",
-                                ));
-                            }
-                            assert!(request.uri().path().ends_with("/chat/completions"));
-                            let bytes = request.into_body().collect().await.unwrap().to_bytes();
-                            let body: Value = serde_json::from_slice(&bytes).unwrap();
-                            let messages = body["messages"].to_string();
-                            if ![COVERED_INPUT, SUMMARY_PROMPT, CHECKPOINT, LATER_INPUT]
-                                .iter().any(|marker| messages.contains(marker))
-                            {
-                                return Ok(response(sse(json!({"content":"Ready."}), "stop"), "text/event-stream"));
-                            }
-                            let (reply, received) = oneshot::channel();
-                            posts.send(ModelPost { body, reply }).expect("fixture request reader");
-                            let body = received.await.unwrap_or_default();
-                            Ok(response(body, "text/event-stream"))
-                        }
-                    });
-                    let result = hyper::server::conn::http1::Builder::new().keep_alive(false)
-                        .serve_connection(TokioIo::new(socket), model).await;
-                    if let Err(error) = result {
-                        assert!(error.is_incomplete_message() || error.is_canceled() || error.is_closed(), "{error}");
-                    }
-                });
-            }
-        }
-    }
-}
-
-async fn next_post(posts: &mut mpsc::UnboundedReceiver<ModelPost>, phase: &str) -> ModelPost {
-    tokio::time::timeout(Duration::from_secs(20), posts.recv())
+async fn next_post(posts: &mut mpsc::Receiver<TurnHandle>, phase: &str) -> ModelPost {
+    let handle = tokio::time::timeout(Duration::from_secs(20), posts.recv())
         .await
         .unwrap_or_else(|_| panic!("model request missing during {phase}"))
-        .unwrap()
+        .unwrap();
+    ModelPost {
+        body: handle.request.raw_body.clone(),
+        handle,
+    }
 }
 
 enum Scenario {
@@ -181,10 +139,34 @@ enum Scenario {
 
 async fn exercise(scenario: Scenario) {
     let sandbox = Sandbox::new().await.unwrap();
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let base = format!("http://{}/v1", listener.local_addr().unwrap());
-    let (posts, mut requests) = mpsc::unbounded_channel();
-    let server = tokio::spawn(serve_model(listener, posts));
+    let mut server = MockAiBuilder::new()
+        .control(ControlPlaneConfig {
+            models: vec![ModelEntry::simple("gpt-4.1")],
+            ..Default::default()
+        })
+        .interactive_filtered(16, |req, _| {
+            assert_eq!(req.protocol, Protocol::OpenaiChatCompletions);
+            let messages = req.raw_body["messages"].to_string();
+            if ![COVERED_INPUT, SUMMARY_PROMPT, CHECKPOINT, LATER_INPUT]
+                .iter()
+                .any(|marker| messages.contains(marker))
+            {
+                Some(
+                    TurnPlan::new()
+                        .with_response_id("mainline")
+                        .push_text("Ready.")
+                        .with_usage(Usage::new(100, 10))
+                        .finish(FinishReason::Stop),
+                )
+            } else {
+                None
+            }
+        })
+        .start()
+        .await
+        .unwrap();
+    let base = server.base_url();
+    let mut requests = server.take_interactive_rx().unwrap();
     let mut host = Host::spawn(&sandbox).unwrap();
     let result = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(100), async {
         let (mut client, _) = host.ready().await.unwrap();
@@ -367,8 +349,7 @@ async fn exercise(scenario: Scenario) {
             assert_successful_attempts(&sandbox, session, run, 4).await;
         }
     })).catch_unwind().await;
-    server.abort();
-    assert!(server.await.unwrap_err().is_cancelled());
+    server.shutdown().await;
     host.cleanup().await.unwrap();
     match result {
         Ok(result) => result.expect("bounded background compaction and adoption"),

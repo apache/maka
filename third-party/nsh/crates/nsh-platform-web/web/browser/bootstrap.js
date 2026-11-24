@@ -3379,6 +3379,7 @@
 		"ios",
 		"android",
 		"macos",
+		"windows",
 		"desktop",
 		"web"
 	]);
@@ -3389,6 +3390,7 @@
 		for (const name of [
 			"focus",
 			"blur",
+			"clearSelection",
 			"scrollTo",
 			"zoomTo",
 			"scrollToIndex",
@@ -3439,6 +3441,15 @@
 					name,
 					args
 				}
+			]);
+		};
+		prototype.animateLayout = function(transition) {
+			const id = values.nodeIds.get(this);
+			if (id === void 0) throw new TypeError("nsh: not a node");
+			return call(314, [
+				id,
+				"layoutAnimation",
+				{ update: Object(transition) === transition ? transition : {} }
 			]);
 		};
 		prototype.scrollToOffset = function(options) {
@@ -3541,11 +3552,12 @@
 			const previous = heldProps.get(node)?.get(name);
 			hold(node, name, value);
 			if (!(name === "desktop" ? platform?.desktop : name === platform?.os)) return;
+			const set = (key, value) => prop(node, name === "windows" ? `windows.${key}` : key, value);
 			const next = value !== null && typeof value === "object" ? value : {};
 			if (previous !== null && typeof previous === "object") {
-				for (const key of Object.keys(previous)) if (!Object.hasOwn(next, key)) prop(node, key, void 0);
+				for (const key of Object.keys(previous)) if (!Object.hasOwn(next, key)) set(key, void 0);
 			}
-			for (const key of Object.keys(next)) prop(node, key, next[key]);
+			for (const key of Object.keys(next)) set(key, next[key]);
 		};
 		const dynamic = (value, depth = 0) => typeof value === "function" || depth < 64 && Array.isArray(value) && value.some((item) => dynamic(item, depth + 1));
 		const itemMemo = (fn) => reactive.computed(() => {
@@ -5403,6 +5415,13 @@
 			lifecycle: "active",
 			shaders: true,
 			wakeCount: 0,
+			network: {
+				online: true,
+				kind: "unknown",
+				expensive: false,
+				constrained: false,
+				cellularData: "unknown"
+			},
 			horizontalSizeClass: "compact",
 			verticalSizeClass: "compact",
 			localeSettings: {
@@ -5460,6 +5479,7 @@
 			platform,
 			shadersAvailable: () => fields.shaders(),
 			wakeCount: () => fields.wakeCount(),
+			network: () => fields.network(),
 			fpsEnabled: () => false,
 			perfStats: () => null
 		};
@@ -5544,20 +5564,22 @@
 /** `nsh/i18n` in the browser, as nsh-js's (`src/i18n.rs`): the bundle's
 	* translations (`nsh:rt`'s `i18n`, run before the app's modules), `t`
 	* looking a key up as rust-i18n does in the first of the user's languages
-	* the app has, and `setLocale`. The engine gets
-	* both too (ops 407 and 408), for the core's components and the language
+	* the app has, `setLocale`, and `addTranslations`. The engine gets
+	* them too (ops 407, 408 and 409), for the core's components and the language
 	* it reports. The browser's own `Intl` formats every language, so the
 	* bundle's language data stays unused here. */
 	function createI18n(reactive, invoke, env) {
-		let translations = {};
+		let translations = Object.create(null);
 		const version = reactive.signal(0);
 		/** `key`'s text in `locale`, each shorter tag, then English. */
 		const lookup = (locale, key) => {
 			for (let tag = locale; tag; tag = tag.includes("-") ? tag.slice(0, tag.lastIndexOf("-")) : "") {
-				const text = translations[tag]?.[key];
+				const table = Object.hasOwn(translations, tag) ? translations[tag] : void 0;
+				const text = table && Object.hasOwn(table, key) ? table[key] : void 0;
 				if (typeof text === "string") return text;
 			}
-			return locale === "en" ? void 0 : translations.en?.[key];
+			const en = Object.hasOwn(translations, "en") ? translations.en : void 0;
+			return locale === "en" ? void 0 : en && Object.hasOwn(en, key) ? en[key] : void 0;
 		};
 		/** Whether the translations have `tag` or a shorter tag of it. */
 		const has = (tag) => {
@@ -5594,14 +5616,50 @@
 				availableLocales: () => {
 					version();
 					return Object.keys(translations).sort();
+				},
+				addTranslations(map) {
+					if (!map || typeof map !== "object" || Array.isArray(map)) throw new TypeError("addTranslations: expected an object of { [locale]: { [key]: string } }");
+					const entries = [];
+					for (const [locale, table] of Object.entries(map)) {
+						if (!table || typeof table !== "object" || Array.isArray(table)) throw new TypeError("addTranslations: expected an object of translations for each locale");
+						const texts = Object.create(null);
+						for (const [key, value] of Object.entries(table)) {
+							if (typeof value !== "string") throw new TypeError("addTranslations: expected string translation values");
+							texts[key] = value;
+						}
+						entries.push([locale, texts]);
+					}
+					if (!entries.length) return;
+					const next = Object.create(null);
+					for (const [locale, table] of Object.entries(translations)) next[locale] = table;
+					const added = Object.create(null);
+					for (const [locale, texts] of entries) {
+						const merged = Object.create(null);
+						if (Object.hasOwn(next, locale)) Object.assign(merged, next[locale]);
+						Object.assign(merged, texts);
+						next[locale] = merged;
+						added[locale] = texts;
+					}
+					translations = next;
+					version.update((value) => value + 1);
+					invoke(409, [JSON.stringify(added)]);
 				}
 			},
 			setup(json) {
+				let parsed;
 				try {
-					translations = JSON.parse(json).translations ?? {};
+					parsed = JSON.parse(json).translations ?? {};
 				} catch {
 					return;
 				}
+				const next = Object.create(null);
+				for (const [locale, table] of Object.entries(parsed)) {
+					if (!table || typeof table !== "object") continue;
+					const texts = Object.create(null);
+					for (const [key, value] of Object.entries(table)) if (typeof value === "string") texts[key] = value;
+					next[locale] = texts;
+				}
+				translations = next;
 				version.update((value) => value + 1);
 				invoke(407, [json]);
 			}
@@ -5960,7 +6018,8 @@
 					url,
 					headers,
 					body,
-					request.redirect === "follow"
+					request.redirect === "follow",
+					request.cache
 				]);
 				const entry = {
 					resolve,
@@ -6342,42 +6401,28 @@
 			if (process.default) process.default.nextTick = nsh.nextTick;
 		}
 		const desktop = modules.exports.get("nsh/desktop");
-		const main = Object.freeze({
-			id: "main",
-			main: true,
-			parent: null,
-			state: () => null,
-			titleBar: env.titleBar,
-			set(attributes) {
-				if (typeof attributes?.title === "string") page.setWindowTitle?.(attributes.title);
-			},
-			show() {},
-			hide() {},
-			focus() {},
-			close() {},
-			minimize() {},
-			restore() {},
-			setMode() {},
-			setBounds() {},
-			setPlacement() {},
-			center() {},
-			requestAttention() {},
-			on: () => () => {}
-		});
-		const Window = Object.assign(() => null, {
+		const windowOpen = (props) => {
+			const open = props.open;
+			return open === void 0 || open === null ? props.defaultOpen !== false : Boolean(open);
+		};
+		const Window = Object.assign((props) => () => windowOpen(props) ? props.children : null, {
 			open() {
 				const error = /* @__PURE__ */ new Error("Window.open: windows of the app's own open on the desktops (`isAvailable`)");
 				error.code = "ERR_FEATURE_UNAVAILABLE_ON_PLATFORM";
 				throw error;
 			},
-			get: (id) => id === "main" ? main : null
+			get: () => null
 		});
 		if (desktop) Object.assign(desktop, {
 			isAvailable: false,
 			titleBar: env.titleBar,
 			Window,
-			currentWindow: () => main,
-			windows: () => [main],
+			currentWindow() {
+				const error = /* @__PURE__ */ new Error("currentWindow(): there is no window here: on iOS, Android, the web and the terminal a <Window> renders its content in the app's one surface");
+				error.code = "ERR_FEATURE_UNAVAILABLE_ON_PLATFORM";
+				throw error;
+			},
+			windows: () => [],
 			focusedWindow: () => null,
 			windowState: () => null,
 			displays: () => [],

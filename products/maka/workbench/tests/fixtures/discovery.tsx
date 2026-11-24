@@ -35,7 +35,10 @@ mount(() => {
   let detail: any = null,
     revision = 0;
   let failDetailOnce = false;
+  let failPreviewOnce = false;
   let disabledModel = false;
+  let replacedReader = false;
+  let raceScopeChange = false;
   const opened = signal('none');
   const calls = signal('none');
   let publish = () => {};
@@ -56,7 +59,9 @@ mount(() => {
     nextCursor: null,
   });
   const catalog = (profile: string) => {
-    const groups: Record<string, string> = { Read: 'read_files', DiscoveryMemory: 'history' };
+    const groups: Record<string, string> = replacedReader
+      ? { NewReader: 'read_files', DiscoveryMemory: 'history' }
+      : { Read: 'read_files', DiscoveryMemory: 'history' };
     if (disabledModel) groups.NewReader = 'read_files';
     if (profile === 'session')
       Object.assign(groups, {
@@ -92,7 +97,11 @@ mount(() => {
         );
         return available ? { kind: 'ready', choice: choice(available) } : { kind: 'unavailable' };
       }
-      if (input.kind === 'preview_discovery')
+      if (input.kind === 'preview_discovery') {
+        if (failPreviewOnce) {
+          failPreviewOnce = false;
+          throw new Error('Fixture preview failed');
+        }
         return {
           kind: 'discovery_tools',
           ...catalog(input.effect.workerTools),
@@ -103,6 +112,7 @@ mount(() => {
               ? detail.approvedTools
               : null,
         };
+      }
       if (input.kind === 'get') {
         if (failDetailOnce) {
           failDetailOnce = false;
@@ -142,14 +152,22 @@ mount(() => {
   } as unknown as Host;
   const control = async (_method: string, input: any) => {
     calls.set(input.kind);
-    if (input.kind === 'create' || input.kind === 'approve') {
+    if (input.kind === 'create' || input.kind === 'update' || input.kind === 'approve') {
+      if (raceScopeChange) {
+        raceScopeChange = false;
+        session.boundaryRevision++;
+        session.workspace = { ...session.workspace, path: '/isolated/updated' };
+      }
       const effect = input.input.task.effect;
-      const names = catalog(effect.workerTools).names.filter(
+      const current = catalog(effect.workerTools);
+      const names = current.names.filter(
         (name) =>
           name === 'DiscoveryComplete' ||
           !effect.selectedTools ||
-          Object.hasOwn(effect.selectedTools, name),
+          effect.selectedTools[name] === current.groups[name],
       );
+      if (effect.selectedTools && Object.keys(effect.selectedTools).length + 1 !== names.length)
+        return { kind: 'rejected', reason: 'scheduler_discovery_tools_changed' };
       if (JSON.stringify(input.input.approvedTools) !== JSON.stringify(names))
         return { kind: 'rejected', reason: 'Expected the displayed tool list' };
       if (input.input.task.effect.target.boundaryRevision !== session.boundaryRevision)
@@ -306,6 +324,28 @@ mount(() => {
         task: { ...detail.task, status: 'paused', lastError: 'scheduler_authorization_changed' },
       };
       publish();
+    },
+    { when: 'always' },
+  );
+  keymap.bind(
+    'mod+shift+t',
+    () => {
+      replacedReader = true;
+    },
+    { when: 'always' },
+  );
+  keymap.bind(
+    'mod+shift+g',
+    () => {
+      raceScopeChange = true;
+    },
+    { when: 'always' },
+  );
+  keymap.bind(
+    'mod+shift+p',
+    () => {
+      raceScopeChange = true;
+      failPreviewOnce = true;
     },
     { when: 'always' },
   );

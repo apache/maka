@@ -1477,6 +1477,7 @@ pub(crate) struct DrawnText {
 /// A text view got new text or a new layout, and the picture of it the
 /// engine thread painted, if it did ([`prerender`]).
 pub(crate) fn set(
+    surface: &crate::surface::Surface,
     view: &crate::view::NshView,
     text: &std::sync::Arc<AttributedText>,
     layout: &TextLayout,
@@ -1484,6 +1485,7 @@ pub(crate) fn set(
     raster: Option<raster::Raster>,
 ) {
     let old = view.state_mut().text.take();
+    let was = old.as_ref().is_some_and(|o| o.text.is_selectable());
     let cut = old.as_ref().is_some_and(|o| o.cut.get());
     // The area's selection is set again at the end of the batch; the same
     // content keeps its part until then.
@@ -1515,6 +1517,10 @@ pub(crate) fn set(
         area_range: std::cell::Cell::new(area_range),
         raster: std::cell::Cell::new(raster),
     });
+    if was != text.is_selectable() {
+        // The I-beam.
+        crate::input::cursor_changed(surface);
+    }
     // The mounter draws it, when it shows.
     view.restyle();
 }
@@ -2798,7 +2804,7 @@ pub(crate) fn selected_range(view: &crate::view::NshView) -> Option<std::ops::Ra
     Some(start..end)
 }
 
-/// The selected text, without attachments' placeholders and hidden runs.
+/// The selected text as a copy gives it ([`nsh_core::AttributedText::copied_text`]).
 fn selected_text(view: &crate::view::NshView) -> Option<String> {
     let state = view.state();
     let drawn = state.text.as_ref()?;
@@ -3672,96 +3678,6 @@ mod tests {
             assert!(top + chip <= lines[2].y.0 + 0.5, "{chip}");
         }
     }
-
-    /// A text drawn while its content layer is still at an earlier, smaller
-    /// frame (such as at the start of a `LayoutAnimation` that grows its
-    /// height) records `cut`, and clears it once drawn in a layer that
-    /// covers its whole content box.
-    #[test]
-    fn drawing_in_a_shorter_or_narrower_layer_marks_the_text_cut() {
-        use std::cell::Cell;
-
-        use nsh_core::{Bounds, Point, ViewKind};
-        use objc2_core_foundation::{CGFloat, CGPoint, CGRect, CGSize};
-        use objc2_core_graphics::{
-            CGBitmapContextCreate, CGColorSpace, CGContext, CGImageAlphaInfo, CGImageByteOrderInfo,
-            kCGColorSpaceSRGB,
-        };
-
-        let engine = CoreTextEngine::default();
-        let mut text = AttributedText::default();
-        text.push(
-            "Line one\nLine two\nLine three\nLine four",
-            ResolvedTextStyle {
-                font_size: Points(16.0),
-                line_height: Points(22.0),
-                ..ResolvedTextStyle::default()
-            },
-        );
-        let text = std::sync::Arc::new(text);
-        let prepared = engine.prepare(&text);
-        let size = engine.measure(&prepared, Some(Points(200.0)));
-        let layout = engine.layout(&prepared, size);
-        let mut state = crate::view::ViewState::new(1, ViewKind::Text);
-        state.text = Some(super::DrawnText {
-            text,
-            layout,
-            content: Bounds::new(Point::default(), size),
-            cut: Cell::new(false),
-            selection: None,
-            area_range: Cell::new(None),
-            raster: Cell::new(None),
-        });
-
-        // Draws in a layer of `w` by `h`; `dirty` is the height a partial
-        // redraw (`setNeedsDisplayInRect`) clips to.
-        let draw_at = |w: usize, h: usize, dirty: Option<CGFloat>| {
-            // SAFETY: CoreGraphics allocates and owns the backing buffer.
-            let cx = unsafe {
-                let space = CGColorSpace::with_name(Some(kCGColorSpaceSRGB)).expect("sRGB");
-                CGBitmapContextCreate(
-                    std::ptr::null_mut(),
-                    w,
-                    h,
-                    8,
-                    w * 4,
-                    Some(&space),
-                    CGImageAlphaInfo::PremultipliedLast.0 | CGImageByteOrderInfo::Order32Big.0,
-                )
-            }
-            .expect("a bitmap context");
-            CGContext::translate_ctm(Some(&cx), 0.0, h as CGFloat);
-            CGContext::scale_ctm(Some(&cx), 1.0, -1.0);
-            if let Some(dirty) = dirty {
-                let part = CGRect::new(CGPoint::new(0.0, 0.0), CGSize::new(w as CGFloat, dirty));
-                CGContext::clip_to_rect(Some(&cx), part);
-            }
-            super::draw(&cx, &state, CGSize::new(w as CGFloat, h as CGFloat));
-            state.text.as_ref().unwrap().cut.get()
-        };
-
-        let full_w = size.width.0.ceil() as usize;
-        let full_h = size.height.0.ceil() as usize;
-        assert!(
-            draw_at(full_w, full_h / 2, None),
-            "shorter layer cuts the text"
-        );
-        assert!(
-            draw_at(full_w / 2, full_h, None),
-            "narrower layer cuts the text"
-        );
-        assert!(
-            !draw_at(full_w, full_h, None),
-            "full layer clears the cut mark"
-        );
-        // One recolored line drawn again in a layer that holds all of the
-        // text: the picture still covers it (`damage` stays partial).
-        assert!(
-            !draw_at(full_w, full_h, Some(22.0)),
-            "a partial redraw of a whole picture cuts nothing"
-        );
-    }
-
     /// Non-`middle` attachments taller than a fixed `lineHeight` grow only
     /// the side of the baseline they reach past, mixed attachments or larger
     /// spans on the same line keep room for both, and fitting attachments do
@@ -3881,6 +3797,95 @@ mod tests {
             engine.measure(&prep, Some(Points(100.0))).height.0
         };
         assert!((wrapped_h(true) - wrapped_h(false)).abs() < 0.5);
+    }
+
+    /// A text drawn while its content layer is still at an earlier, smaller
+    /// frame (such as at the start of a `LayoutAnimation` that grows its
+    /// height) records `cut`, and clears it once drawn in a layer that
+    /// covers its whole content box.
+    #[test]
+    fn drawing_in_a_shorter_or_narrower_layer_marks_the_text_cut() {
+        use std::cell::Cell;
+
+        use nsh_core::{Bounds, Point, ViewKind};
+        use objc2_core_foundation::{CGFloat, CGPoint, CGRect, CGSize};
+        use objc2_core_graphics::{
+            CGBitmapContextCreate, CGColorSpace, CGContext, CGImageAlphaInfo, CGImageByteOrderInfo,
+            kCGColorSpaceSRGB,
+        };
+
+        let engine = CoreTextEngine::default();
+        let mut text = AttributedText::default();
+        text.push(
+            "Line one\nLine two\nLine three\nLine four",
+            ResolvedTextStyle {
+                font_size: Points(16.0),
+                line_height: Points(22.0),
+                ..ResolvedTextStyle::default()
+            },
+        );
+        let text = std::sync::Arc::new(text);
+        let prepared = engine.prepare(&text);
+        let size = engine.measure(&prepared, Some(Points(200.0)));
+        let layout = engine.layout(&prepared, size);
+        let mut state = crate::view::ViewState::new(1, ViewKind::Text);
+        state.text = Some(super::DrawnText {
+            text,
+            layout,
+            content: Bounds::new(Point::default(), size),
+            cut: Cell::new(false),
+            selection: None,
+            area_range: Cell::new(None),
+            raster: Cell::new(None),
+        });
+
+        // Draws in a layer of `w` by `h`; `dirty` is the height a partial
+        // redraw (`setNeedsDisplayInRect`) clips to.
+        let draw_at = |w: usize, h: usize, dirty: Option<CGFloat>| {
+            // SAFETY: CoreGraphics allocates and owns the backing buffer.
+            let cx = unsafe {
+                let space = CGColorSpace::with_name(Some(kCGColorSpaceSRGB)).expect("sRGB");
+                CGBitmapContextCreate(
+                    std::ptr::null_mut(),
+                    w,
+                    h,
+                    8,
+                    w * 4,
+                    Some(&space),
+                    CGImageAlphaInfo::PremultipliedLast.0 | CGImageByteOrderInfo::Order32Big.0,
+                )
+            }
+            .expect("a bitmap context");
+            CGContext::translate_ctm(Some(&cx), 0.0, h as CGFloat);
+            CGContext::scale_ctm(Some(&cx), 1.0, -1.0);
+            if let Some(dirty) = dirty {
+                let part = CGRect::new(CGPoint::new(0.0, 0.0), CGSize::new(w as CGFloat, dirty));
+                CGContext::clip_to_rect(Some(&cx), part);
+            }
+            super::draw(&cx, &state, CGSize::new(w as CGFloat, h as CGFloat));
+            state.text.as_ref().unwrap().cut.get()
+        };
+
+        let full_w = size.width.0.ceil() as usize;
+        let full_h = size.height.0.ceil() as usize;
+        assert!(
+            draw_at(full_w, full_h / 2, None),
+            "shorter layer cuts the text"
+        );
+        assert!(
+            draw_at(full_w / 2, full_h, None),
+            "narrower layer cuts the text"
+        );
+        assert!(
+            !draw_at(full_w, full_h, None),
+            "full layer clears the cut mark"
+        );
+        // One recolored line drawn again in a layer that holds all of the
+        // text: the picture still covers it (`damage` stays partial).
+        assert!(
+            !draw_at(full_w, full_h, Some(22.0)),
+            "a partial redraw of a whole picture cuts nothing"
+        );
     }
 }
 

@@ -25,14 +25,15 @@ import {
 } from '../../../../products/maka/workbench/app/answerCitations';
 import { createTrajectoryRequests } from './trajectoryRequests';
 import {
-  appendDraftQuote,
   DRAFT_QUOTE_LIMIT,
+  appendDraftQuote,
   confirmAfterProjectMcp,
   mergeRestoredIntoHeldDraft,
   restoredDraftQuotes,
   sendReceiptFailure,
   shouldHideAcceptedQueuedStatus,
   shouldProjectPendingSend,
+  unsettledSends,
 } from './sendReceipt';
 import { createHistoryPrefetch, HISTORY_LOOKAHEAD_VIEWPORTS } from './historyPrefetch';
 import { quietWaits, retrying, waitActivity } from './runWaits';
@@ -576,6 +577,38 @@ export function Conversation(props: ConversationProps) {
   const checkingModel = signal(false);
   const sending = () => freezeState().kind === 'reserving' || checkingModel();
   const activeSends = signal<Map<string, FrozenSend>>(new Map());
+  // A message that starts a run is shown in the conversation as it is sent,
+  // before the Host has saved or accepted it; one sent into a running run waits
+  // in the composer's list. `settledSends` are the active sends whose accepted
+  // row took over.
+  const settledSends = signal<ReadonlySet<string>>(new Set());
+  const startsRun = (frozen: FrozenSend) => frozen.selection.expectedRunId === undefined;
+  const outgoing = computed<Row[]>(() => {
+    const freezing = freezeState();
+    return unsettledSends(
+      freezing.kind === 'reserving' ? freezing.frozen : undefined,
+      activeSends(),
+      settledSends(),
+    )
+      .filter(startsRun)
+      .map((frozen) => ({
+        key: `pending/local/${frozen.id}`,
+        quotes: frozen.edit.quotes,
+        messageId: `local/${frozen.id}`,
+        field: 'body',
+        role: 'user',
+        text: frozen.text,
+        attachments: frozen.files.map(
+          (file): AgentHistoryAttachment => ({
+            name: file.name,
+            mimeType: file.mimeType,
+            bytes: file.bytes,
+            kind: file.mimeType.startsWith('image/') ? 'image' : 'other',
+          }),
+        ),
+      }));
+  });
+  const shownPending = () => [...pendingMessages(), ...outgoing()];
   const sendErrors = signal<Map<string, UiText>>(new Map());
   const checkingSends = signal<Set<string>>(new Set());
   const restoringSends = signal<Set<string>>(new Set());
@@ -684,7 +717,7 @@ export function Conversation(props: ConversationProps) {
   const currentRow = (id: string) =>
     historyRows().byId.get(id) ??
     liveRows().byId.get(id) ??
-    pendingMessages().find((row) => stableRowId(row) === id);
+    shownPending().find((row) => stableRowId(row) === id);
   const processLive = computed<readonly ProcessRow[]>(() => (atHistoryTail() ? live() : []), {
     equals: sameProcessRows,
   });
@@ -817,7 +850,7 @@ export function Conversation(props: ConversationProps) {
     const sections = [...durableSections().values()];
     const live = processLive();
     const activity = processActivity();
-    const pending = atHistoryTail() ? pendingMessages() : undefined;
+    const pending = atHistoryTail() ? shownPending() : undefined;
     const active = runId() === null ? null : runTurn();
     const answer = answerTurn();
     // A live preview, including a late one, belongs to the same ordered
@@ -1123,7 +1156,8 @@ export function Conversation(props: ConversationProps) {
   const workingEntries: DisplayEntry[] = [{ kind: 'botWorking', key: 'bot/working' }];
   const ordinaryChatSections = computed(() => {
     const sections = chatDisplaySections();
-    if (!runAtWork()) return sections;
+    // A message on its way out is answered by the same row a run at work shows.
+    if (!runAtWork() && outgoing().length === 0) return sections;
     const running = runTurn();
     const headed =
       running !== null &&
@@ -1153,7 +1187,12 @@ export function Conversation(props: ConversationProps) {
     // this row in place instead of arriving above an already shown reply.
     const working = (turnId: string | undefined) => {
       const running = runTurn();
-      if (!runAtWork() || workingShown || (turnId !== undefined && turnId !== running)) return;
+      if (
+        !(runAtWork() || outgoing().length > 0) ||
+        workingShown ||
+        (turnId !== undefined && turnId !== running)
+      )
+        return;
       const headed = result.some(
         (item) =>
           running !== null &&
@@ -2060,6 +2099,7 @@ export function Conversation(props: ConversationProps) {
   const retryAttachmentMetadata = (owner: string) => {
     if (!alive || owner !== sessionId) return;
     attachmentMetadataFailed.set(false);
+    error.set('');
     hydrateAttachmentMetadata();
   };
   const readLandmarks = (through: number) => {
@@ -3277,6 +3317,7 @@ export function Conversation(props: ConversationProps) {
       } else {
         sent = await confirmSend(client, id);
       }
+      if (alive) settledSends.set(new Set(settledSends()).add(id));
       if (alive)
         settleReply(
           sent.reply,
@@ -3302,6 +3343,8 @@ export function Conversation(props: ConversationProps) {
         const next = new Map(activeSends());
         next.delete(id);
         activeSends.set(next);
+        const settled = new Set(settledSends());
+        if (settled.delete(id)) settledSends.set(settled);
       }
     }
   };
@@ -3726,6 +3769,7 @@ export function Conversation(props: ConversationProps) {
       });
     }
     for (const [id, frozen] of activeSends()) {
+      if (startsRun(frozen)) continue;
       statuses.set(id, {
         id,
         text: frozen.text,
@@ -3738,7 +3782,10 @@ export function Conversation(props: ConversationProps) {
       });
     }
     const freezing = freezeState();
-    if (freezing.kind !== 'idle')
+    if (
+      freezing.kind === 'failed' ||
+      (freezing.kind === 'reserving' && !startsRun(freezing.frozen))
+    )
       statuses.set(freezing.frozen.id, {
         id: freezing.frozen.id,
         text: freezing.frozen.text,

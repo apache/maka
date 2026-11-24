@@ -24,53 +24,37 @@ const INSTRUCTION: &str = "Suggest the next request.";
 const SUGGESTION: &str = "Zoom in on the upper left.";
 
 async fn provider(
-    listener: tokio::net::TcpListener,
     requests: tokio::sync::mpsc::UnboundedSender<Value>,
-    stop: CancellationToken,
-) -> TestResult<()> {
-    let app = axum::Router::new().route(
-        "/v1/chat/completions",
-        axum::routing::post(move |body: axum::body::Bytes| {
-            let requests = requests.clone();
-            async move {
-                let request: Value = serde_json::from_slice(&body).unwrap();
-                let last = request["messages"].as_array().unwrap().last().unwrap()["content"]
-                    .to_string();
-                let text = if last.contains(INSTRUCTION) {
-                    json!({"suggestion": SUGGESTION}).to_string()
-                } else if last.contains("<message>") {
-                    "Model generated title".to_owned()
-                } else {
-                    "The image shows a red square.".to_owned()
-                };
-                requests.send(request).unwrap();
-                let body = format!("data: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
-                    json!({"id":"prediction-test","object":"chat.completion.chunk","model":"llama3.2",
-                        "choices":[{"index":0,"delta":{"role":"assistant","content":text},"finish_reason":null}]}),
-                    json!({"id":"prediction-test","object":"chat.completion.chunk","model":"llama3.2",
-                        "choices":[{"index":0,"delta":{},"finish_reason":"stop"}],
-                        "usage":{"prompt_tokens":100,"completion_tokens":10,"total_tokens":110}}));
-                ([("content-type", "text/event-stream")], body)
-            }
-        }),
-    );
-    axum::serve(listener, app)
-        .with_graceful_shutdown(stop.cancelled_owned())
-        .await?;
-    Ok(())
+) -> std::io::Result<MockAiServer> {
+    MockAiBuilder::new()
+        .handler_fn(move |req, _| {
+            let last =
+                req.raw_body["messages"].as_array().unwrap().last().unwrap()["content"].to_string();
+            let text = if last.contains(INSTRUCTION) {
+                json!({"suggestion": SUGGESTION}).to_string()
+            } else if last.contains("<message>") {
+                "Model generated title".to_owned()
+            } else {
+                "The image shows a red square.".to_owned()
+            };
+            let _ = requests.send(req.raw_body.clone());
+            TurnPlan::new()
+                .push_text(text)
+                .with_usage(Usage::new(100, 10))
+                .finish(FinishReason::Stop)
+        })
+        .start()
+        .await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn predictions_extend_the_original_provider_request() {
     let mut rig = Rig::new().unwrap();
-    let stop = CancellationToken::new();
     let (requests, mut upstream) = tokio::sync::mpsc::unbounded_channel();
-    let mut wire = None;
+    let server = provider(requests).await.unwrap();
     let result = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(60), async {
-        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
         let base = rig.directory.path().to_path_buf();
-        let boot = bootstrap(&base, format!("http://{}/v1", listener.local_addr()?), true).await?;
-        wire = Some(tokio::spawn(provider(listener, requests, stop.clone())));
+        let boot = bootstrap(&base, server.base_url(), true).await?;
         attach(&mut rig, &boot).await?;
         let client = rig.client.as_ref().ok_or("test client missing")?;
         let catalog = call(client, "settings", "connections", json!({"kind":"start"})).await?;
@@ -150,31 +134,23 @@ async fn predictions_extend_the_original_provider_request() {
         assert_eq!(after["lastCompletedTurnId"], turn);
         Ok::<_, Box<dyn Error + Send + Sync>>(())
     })).catch_unwind().await;
-    stop.cancel();
-    let provider = match wire {
-        Some(wire) => Some(wire.await),
-        None => None,
-    };
+    server.shutdown().await;
     let cleanup = rig.finish().await;
     assert!(
         matches!(result, Ok(Ok(Ok(())))),
         "prediction fixture failed: {result:?}"
     );
-    assert!(matches!(provider, Some(Ok(Ok(())))), "{provider:?}");
     assert!(cleanup.is_empty(), "{cleanup:?}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn quick_questions_stream_with_explicit_history_outside_the_bot_transcript() {
     let mut rig = Rig::new().unwrap();
-    let stop = CancellationToken::new();
     let (requests, mut upstream) = tokio::sync::mpsc::unbounded_channel();
-    let mut wire = None;
+    let server = provider(requests).await.unwrap();
     let result = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(60), async {
-        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
         let base = rig.directory.path().to_path_buf();
-        let boot = bootstrap_with(&base, format!("http://{}/v1", listener.local_addr()?), |config| config["bot"] = json!(true)).await?;
-        wire = Some(tokio::spawn(provider(listener, requests, stop.clone())));
+        let boot = bootstrap_with(&base, server.base_url(), |config| config["bot"] = json!(true)).await?;
         attach(&mut rig, &boot).await?;
         let client = rig.client.as_ref().ok_or("test client missing")?;
         let catalog = call(client, "settings", "connections", json!({"kind":"start"})).await?;
@@ -241,36 +217,28 @@ async fn quick_questions_stream_with_explicit_history_outside_the_bot_transcript
         assert_eq!(before["lastCompletedTurnId"], after["lastCompletedTurnId"]);
         Ok::<_, Box<dyn Error + Send + Sync>>(())
     })).catch_unwind().await;
-    stop.cancel();
-    let provider = match wire {
-        Some(wire) => Some(wire.await),
-        None => None,
-    };
+    server.shutdown().await;
     let cleanup = rig.finish().await;
     assert!(
         matches!(result, Ok(Ok(Ok(())))),
         "quick question fixture failed: {result:?}"
     );
-    assert!(matches!(provider, Some(Ok(Ok(())))), "{provider:?}");
     assert!(cleanup.is_empty(), "{cleanup:?}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn automatic_title_persists_for_model_sessions() {
     let mut rig = Rig::new().unwrap();
-    let stop = CancellationToken::new();
     let (requests, _upstream) = tokio::sync::mpsc::unbounded_channel();
-    let mut wire = None;
+    let server = provider(requests).await.unwrap();
     let result = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(60), async {
-        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
         let base = rig.directory.path().to_path_buf();
         let boot = bootstrap_with(
             &base,
-            format!("http://{}/v1", listener.local_addr()?),
+            server.base_url(),
             |config| config["automaticTitles"] = json!(true),
         )
         .await?;
-        wire = Some(tokio::spawn(provider(listener, requests, stop.clone())));
         attach(&mut rig, &boot).await?;
         let client = rig.client.as_ref().ok_or("test client missing")?;
         let catalog = call(client, "settings", "connections", json!({"kind":"start"})).await?;
@@ -307,16 +275,11 @@ async fn automatic_title_persists_for_model_sessions() {
     }))
     .catch_unwind()
     .await;
-    stop.cancel();
-    let provider = match wire {
-        Some(wire) => Some(wire.await),
-        None => None,
-    };
+    server.shutdown().await;
     let cleanup = rig.finish().await;
     assert!(
         matches!(result, Ok(Ok(Ok(())))),
         "model automatic title fixture failed: {result:?}"
     );
-    assert!(matches!(provider, Some(Ok(Ok(())))), "{provider:?}");
     assert!(cleanup.is_empty(), "{cleanup:?}");
 }

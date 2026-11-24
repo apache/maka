@@ -33,7 +33,7 @@ async fn universal_read_and_human_symmetric_session_tools_coordinate_rooms_and_w
         )?;
 
         let tools = product_agent_tools(true).await?;
-        let boot = bootstrap_with(&base, provider.url.clone(), |config| {
+        let boot = bootstrap_with(&base, provider.server.base_url(), |config| {
             config["tools"] = tools;
             config["toolDiscovery"] = json!(true);
             config["goals"] = json!(true);
@@ -43,7 +43,7 @@ async fn universal_read_and_human_symmetric_session_tools_coordinate_rooms_and_w
         let client = rig.client.as_ref().unwrap();
         let model = model_options(
             client,
-            &provider.url,
+            &provider.server.base_url(),
             false,
             json!({"contextWindow": 128000, "compactionThreshold": 100000}),
         )
@@ -106,11 +106,10 @@ async fn universal_read_and_human_symmetric_session_tools_coordinate_rooms_and_w
             "{user_prompt}"
         );
         reply1
-            .send(tool_response(
+            .send_plan(tool_response(
                 "Read",
                 json!({"path": format!("maka://session/{room}")}),
-            ))
-            .map_err(|_| "reply1 lost")?;
+            ));
 
         let (req2, reply2) = provider.next().await?;
         let room_digest = text_messages(&req2);
@@ -119,11 +118,7 @@ async fn universal_read_and_human_symmetric_session_tools_coordinate_rooms_and_w
             "{room_digest}"
         );
         reply2
-            .send(completion(
-                json!({"role": "assistant", "content": "Read room guidelines."}),
-                "stop",
-            ))
-            .map_err(|_| "reply2 lost")?;
+            .reply_text("Read room guidelines.");
         quiescent_message(client, parent_id, &sent["messageId"]).await?;
 
         // 2. Discover Session* tools via tool_search
@@ -183,11 +178,10 @@ async fn universal_read_and_human_symmetric_session_tools_coordinate_rooms_and_w
         .await?;
         let (_, parent_send_reply) = provider.next().await?;
         parent_send_reply
-            .send(tool_response(
+            .send_plan(tool_response(
                 "SessionSend",
                 json!({"sessionId": child_id, "message": "Inspect checklist.txt and report"}),
-            ))
-            .map_err(|_| "parent send lost")?;
+            ));
 
         let mut child_tool_step_done = false;
         let mut child_finished = false;
@@ -207,31 +201,22 @@ async fn universal_read_and_human_symmetric_session_tools_coordinate_rooms_and_w
                 );
                 saw_inline_worker_result = true;
                 reply
-                    .send(completion(
-                        json!({"role": "assistant", "content": "Received worker result."}),
-                        "stop",
-                    ))
-                    .map_err(|_| "wakeup reply lost")?;
+                    .reply_text("Received worker result.");
             } else if msgs.contains("Inspect checklist.txt and report")
                 && !msgs.contains("Delegate checklist audit to child")
             {
                 if !child_tool_step_done {
                     child_tool_step_done = true;
                     reply
-                        .send(narrated_tool_response(
+                        .send_plan(narrated_tool_response(
                             "WORKER_EARLY_NARRATION: opening the checklist.",
                             "Read",
                             json!({"path": "checklist.txt"}),
-                        ))
-                        .map_err(|_| "child Read lost")?;
+                        ));
                 } else if !child_finished {
                     child_finished = true;
                     reply
-                        .send(completion(
-                            json!({"role": "assistant", "content": "WORKER_FINAL_SUMMARY: snap-back check passed."}),
-                            "stop",
-                        ))
-                        .map_err(|_| "child final lost")?;
+                        .reply_text("WORKER_FINAL_SUMMARY: snap-back check passed.");
                 }
             } else if !parent_turn_done {
                 assert!(
@@ -240,11 +225,7 @@ async fn universal_read_and_human_symmetric_session_tools_coordinate_rooms_and_w
                 );
                 parent_turn_done = true;
                 reply
-                    .send(completion(
-                        json!({"role": "assistant", "content": "Delegated and waiting for callback."}),
-                        "stop",
-                    ))
-                    .map_err(|_| "parent turn finish lost")?;
+                    .reply_text("Delegated and waiting for callback.");
             }
         }
 
@@ -462,7 +443,7 @@ async fn run_session_tools_edge_cases() -> TestResult<()> {
             String::from_utf8_lossy(&output.stderr)
         );
         let tools: Value = serde_json::from_slice(&output.stdout)?;
-        let boot = bootstrap_with(&base, provider.url.clone(), |config| {
+        let boot = bootstrap_with(&base, provider.server.base_url(), |config| {
             config["tools"] = tools;
             config["toolDiscovery"] = json!(true);
             config["isolatedWorkspaces"] = json!(true);
@@ -474,7 +455,7 @@ async fn run_session_tools_edge_cases() -> TestResult<()> {
         let client = rig.client.as_ref().unwrap();
         let model = model_options(
             client,
-            &provider.url,
+            &provider.server.base_url(),
             false,
             json!({"contextWindow": 128000, "compactionThreshold": 100000}),
         )
@@ -517,14 +498,9 @@ async fn run_session_tools_edge_cases() -> TestResult<()> {
         )
         .await?;
         let (_, r1) = provider.next().await?;
-        r1.send(tool_response("Read", json!({"path": "large_evidence.txt"})))
-            .map_err(|_| "src r1")?;
+        r1.send_plan(tool_response("Read", json!({"path": "large_evidence.txt"})));
         let (_, r2) = provider.next().await?;
-        r2.send(completion(
-            json!({"role": "assistant", "content": "Source worker read large evidence."}),
-            "stop",
-        ))
-        .map_err(|_| "src r2")?;
+        r2.reply_text("Source worker read large evidence.");
         quiescent_message(client, &src_id, &src_sent["messageId"]).await?;
 
         // Reject forkFrom combined with conflicting creation parameters (no silent drop!)
@@ -760,11 +736,10 @@ async fn run_session_tools_edge_cases() -> TestResult<()> {
         .await?;
         let (_, p_reply) = provider.next().await?;
         p_reply
-            .send(tool_response(
+            .send_plan(tool_response(
                 "SessionSend",
                 json!({"sessionId": fail_id, "message": "Trigger fatal error"}),
-            ))
-            .map_err(|_| "p_reply")?;
+            ));
 
         let mut parent_closed = false;
         let mut saw_failed_wakeup = false;
@@ -781,37 +756,25 @@ async fn run_session_tools_edge_cases() -> TestResult<()> {
                 );
                 saw_failed_wakeup = true;
                 reply
-                    .send(completion(
-                        json!({"role": "assistant", "content": "Observed worker failure."}),
-                        "stop",
-                    ))
-                    .map_err(|_| "fail wakeup")?;
+                    .reply_text("Observed worker failure.");
             } else if msgs.contains("Trigger fatal error")
                 && !msgs.contains("Dispatch failing worker")
                 && !worker_reported
             {
                 worker_reported = true;
                 reply
-                    .send(narrated_tool_response(
+                    .send_plan(narrated_tool_response(
                         "WORKER_PARTIAL_FINDINGS: two of three checks passed.",
                         "Read",
                         json!({"path": "checklist.txt"}),
-                    ))
-                    .map_err(|_| "worker report")?;
+                    ));
             } else if msgs.contains("Trigger fatal error") && !msgs.contains("Dispatch failing worker") {
                 reply
-                    .send(ModelReply::Fatal(
-                        "FATAL_UPSTREAM_DIAGNOSTIC_400: invalid schema parameter".into(),
-                    ))
-                    .map_err(|_| "fatal send")?;
+                    .send_plan(fatal("FATAL_UPSTREAM_DIAGNOSTIC_400: invalid schema parameter"));
             } else if !parent_closed {
                 parent_closed = true;
                 reply
-                    .send(completion(
-                        json!({"role": "assistant", "content": "Waiting for failing worker."}),
-                        "stop",
-                    ))
-                    .map_err(|_| "parent close")?;
+                    .reply_text("Waiting for failing worker.");
             }
         }
         for _ in 0..100 {
@@ -924,11 +887,7 @@ async fn run_session_tools_edge_cases() -> TestResult<()> {
             "Long section line for multi-page self-inspection test. ".repeat(220)
         );
         pad_reply
-            .send(completion(
-                json!({"role": "assistant", "content": long_body}),
-                "stop",
-            ))
-            .map_err(|_| "pad_reply")?;
+            .reply_text(long_body);
         quiescent_message(client, parent_id, &pad_msg["messageId"]).await?;
 
         let self_page1_raw = tool_round(
@@ -979,12 +938,9 @@ async fn run_session_tools_edge_cases() -> TestResult<()> {
     Ok(())
 }
 
-fn narrated_tool_response(text: &str, name: &str, input: Value) -> ModelReply {
-    ModelReply::Stream(super::super::bot_tools::completion(
-        json!({"role":"assistant","content":text,"tool_calls":[{
-            "index":0,"id":format!("call-{name}"),"type":"function",
-            "function":{"name":name,"arguments":input.to_string()}
-        }]}),
-        "tool_calls",
-    ))
+fn narrated_tool_response(text: &str, name: &str, input: Value) -> TurnPlan {
+    TurnPlan::new()
+        .push_text(text)
+        .push_tool_call(format!("call-{name}"), name, input)
+        .finish(FinishReason::ToolCalls)
 }

@@ -24,6 +24,7 @@ In Rust the accessors are functions of `nsh_core::prelude`; in TSX they come fro
 | `locale_settings()` | `localeSettings()` (`nsh`) | The user's locale settings: the preferred languages, the time zone, 12- or 24-hour time, the day weeks start on, the units of measurements and of temperatures ([Locale settings](#locale-settings)). |
 | `lifecycle()` | `lifecycle()` (`nsh`) | Whether the app is in use: `active`, `inactive` (visible without the focus) or `background` ([In the background](#in-the-background)). |
 | `wake_count()` | `wakeCount()` (`nsh`) | How many times the system woke from sleep while the app ran ([After a sleep](#after-a-sleep)). |
+| `network()` | `network()` (`nsh`) | How the device reaches the network: online or not, Wi-Fi, cellular or wired, expensive or constrained, and on iOS whether the app may use cellular data ([The network](#the-network)). |
 | `reduce_motion()`, `screen_reader()` | `reduceMotion()`, `screenReaderEnabled()` (`nsh`) | See [Accessibility](./accessibility.md). |
 
 ```rust tabs
@@ -55,6 +56,7 @@ pub fn App() -> impl IntoElement {
 ```tsx tabs
 import { mount, Text, View, safeArea } from "nsh";
 import { colorScheme, fontScale, windowSize } from "nsh";
+import { Window } from "nsh/desktop";
 
 function App() {
   return (
@@ -66,12 +68,16 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 ## Window size and responsive layout
 
-`window()` (TSX: `windowSize()`) is the size of the surface NSH renders into: the screen on a phone, the window on an iPad in split view or on a Mac, the host view when NSH is embedded. Use it to change the layout, not only sizes:
+`window()` (TSX: `windowSize()`) is the size of the surface NSH renders into: the screen on a phone, the window on an iPad in split view, the host view when NSH is embedded. On the desktops the app host is invisible, so this is the host surface's size, not the calling window's; read a window's own `state()?.contentBounds` and `state()?.scaleFactor` for layout inside it. Use it to change the layout, not only sizes:
 
 ```rust tabs
 use nsh_core::prelude::*;
@@ -400,6 +406,28 @@ effect(() => {
 
 Standalone apps and views embedded in AppKit, Win32 and GTK apps count wakes on macOS, Windows and Linux (Linux through systemd's `logind`). On iOS and Android a sleeping device takes the app to the background, which `lifecycle()` reports. In tests, `app.wake()` of `nsh/test` wakes the system ([Testing](./testing-and-trace.md#steps)).
 
+## The network
+
+`network()` (the same in TSX) says how the device reaches the network now: `online` (false only while the system knows there is no route), the `kind` of link the route takes (`"wifi"`, `"cellular"`, `"wired"`, `"other"`, `"none"` offline, `"unknown"` where the platform does not say, which counts as online), whether that link is `expensive` (cellular data, a phone's hotspot, a metered network) or `constrained` (Low Data Mode, Data Saver), and on iOS whether the user lets the app use cellular data (`cellularData`: `"unknown"`, `"restricted"` or `"notRestricted"`). An effect that reads it runs again when the route changes, so a request that failed offline waits for the network and tries again at once, instead of retrying on a timer:
+
+```rust tabs
+effect(move || {
+    if network().online() && sync.failed_offline() {
+        sync.retry();
+    }
+});
+```
+
+```tsx tabs
+effect(() => {
+  if (network().online && sync.failedOffline()) sync.retry();
+});
+```
+
+On iPhones sold in mainland China, the system asks the user whether the app may use wireless data the first time it reaches the network, and the app's requests fail until the user answers. `cellularData` is `"unknown"` until then: a request that failed while it is `"unknown"` waits for it to change and tries again; one that failed while it is `"restricted"` (the user chose Off, or WLAN only on cellular) tells the user, and `AppSettings.open()` of `nsh/mobile` opens the app's page in Settings, where they change it.
+
+iOS and macOS follow the system's path monitor (Network.framework) and, on iOS, CoreTelephony's cellular data state. Android follows the default network (`ConnectivityManager`, with the `ACCESS_NETWORK_STATE` permission that `nsh package` and the Android SDK's AAR declare; without it the kind stays `"unknown"`). The web reads `navigator.onLine` and, where the browser has it, `navigator.connection` (a desktop browser names no link: `"unknown"` while online). Windows, Linux, GPUI and terminals report `"unknown"`. A route is not a promise: a server may still be out of reach on a link that is `online`, so the app keeps handling failed requests. In tests, `app.setNetworkState({ kind: "none" })` of `nsh/test` takes the device offline ([Testing](./testing-and-trace.md#steps)).
+
 ## Safe areas
 
 Notches, the home indicator, the status bar, Android's navigation bar, the Mac Catalyst title bar and the window controls of an iPad app in a window cover parts of the surface. NSH apps draw edge to edge on every platform, and get the covered parts as insets. On iPadOS 26 and later, a windowed app's leading inset is as wide as the window controls in its top-leading corner, over the whole leading edge; in full screen and on iPhone it is the plain safe area.
@@ -530,6 +558,23 @@ if let Some(dir) = data_dir() {
 }
 ```
 
+## The app's version
+
+`app_info()` in Rust, `appInfo()` from `nsh` in TSX ([`appInfo`](../modules/nsh.md#appinfo)), is the app as it was
+built: its id, name, version and build number, and whether it is a development build. A package reports what
+`nsh package` names and versions it as, `--id`, `--name`, `--version` and `--build` included, with version `1.0.0` and
+build `1` where nothing gives them; other builds report `nsh.json`'s, `None` where it leaves them out. `nsh run`,
+`nsh dev` and `nsh test` make development builds of a Rust app; `nsh package` does not.
+`app_info()` is `None` in a TSX app, where JS's `appInfo()` reports it.
+
+```rust
+use nsh_core::prelude::*;
+
+if let Some(info) = app_info() {
+    let about = format!("{} ({})", info.version.unwrap_or_default(), info.build.unwrap_or(0));
+}
+```
+
 ## Pixel density
 
 `pixel_ratio()` and `round_to_nearest_pixel(points)` in Rust, and `pixelRatio()` from `nsh` in TSX, convert between points and device pixels.
@@ -554,7 +599,7 @@ import { pixelRatio } from "nsh";
 <View style={{ height: 1 / pixelRatio(), backgroundColor: "#d0d7de" }} />
 ```
 
-`pixel_ratio()` and `pixelRatio()` are reactive, so a hairline follows a window moved to a screen with another density.
+`pixel_ratio()` and `pixelRatio()` are reactive. On the desktops they report the host display's scale; a window moved to a screen with another density reports its own scale in `state()?.scaleFactor`.
 
 ## Right to left
 

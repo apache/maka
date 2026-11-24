@@ -16,10 +16,12 @@
 //! The rule, per box:
 //!
 //! - **left out** ([`LeftOut`]): what a terminal cannot show at an icon's
-//!   size (icon-sized images, videos, web views, shaders and canvases,
-//!   [`ICON`]) is laid out as `display: none`, taking no Cells and no
-//!   spacing; larger ones keep their box, blank (a canvas drawn in
-//!   braille), so what is around them stays apart; and so are a view with nothing in it smaller than a row
+//!   size (icon-sized videos, web views, shaders and canvases, [`ICON`])
+//!   is laid out as `display: none`, taking no Cells and no spacing;
+//!   larger ones keep their box, blank (a canvas drawn in braille), so
+//!   what is around them stays apart; an image keeps its box at every
+//!   size, as the terminal draws pictures (a star, an avatar's portrait);
+//!   and so are a view with nothing in it smaller than a row
 //!   both ways (a status dot, a swatch: a hued dot pinned on a box or
 //!   leading a text in a row is one Cell, [`pin`]) and a view whose content is all
 //!   left out (an icon's tile), which would be blank Cells, unless it is
@@ -38,7 +40,8 @@
 //!   more) never have one. A filled container ([`Surface`]: a fill above
 //!   3% alpha unlike the nearest opaque fill around it, or the page) is a
 //!   surface instead, at every color depth (the layout is the same whether
-//!   the terminal shows the fill as a band or not): a face is a line or a fill, never both, so it has no
+//!   the terminal shows the fill as a band or not), by the fill it rests
+//!   with (a hover's or a press's fill moves nothing, `resting_fill`): a face is a line or a fill, never both, so it has no
 //!   border; a row of padding above and below from 12pt, two columns each
 //!   side from 12pt and one from 4pt; a popup's panel (an anchored
 //!   overlay's first face, [`popup_panel`]) a column each side from 4pt
@@ -56,8 +59,12 @@
 //!   `Length`, its minimum and maximum `Min` and `Max`; a `flexBasis` is
 //!   a `Length` along the main axis either way. An explicit height
 //!   counts only on boxes without content (charts, spacers), on scroll
-//!   views (as a maximum) and on a clip of no height (a closed reveal);
-//!   a box with content is its content's height.
+//!   views (as a maximum), on a box holding a scroll view that grows into
+//!   what is left (a picker's grid under its search field) and on a clip
+//!   of no height (a closed reveal);
+//!   a box with content is its content's height. A box without content
+//!   or an image with one side and an `aspectRatio` takes the other side
+//!   from it in points (a photo filling its tile's width).
 //!   When the children of a row do not fit, the gaps give first (down to
 //!   a column), then icon controls shown as labels (down to three
 //!   columns, then out), then those with `flexShrink` down to their
@@ -299,16 +306,18 @@ pub(crate) enum LeftOut {
     /// It is shown.
     #[default]
     No,
-    /// An image, a video, a web view, a shader or a canvas: left out when
+    /// An image: shown at every size, as media that keeps its box (the
+    /// terminal draws the picture in it).
+    Picture,
+    /// A video, a web view, a shader or a canvas: left out when
     /// it is icon-sized ([`ICON`]); larger, it keeps its box (a canvas
     /// drawn in braille, the others blank), so the labels around it do not
     /// close up over the place it takes.
     IfIcon,
 }
 
-/// The largest explicit width and height of an image, a video, a web view,
-/// a shader or a canvas a terminal takes for an icon and leaves out, in
-/// points.
+/// The largest explicit width and height of a video, a web view, a shader
+/// or a canvas a terminal takes for an icon and leaves out, in points.
 const ICON: f32 = 48.0;
 
 /// A tolerance for `f32` sums that stand for whole Cells or an exact half.
@@ -317,7 +326,7 @@ const EPSILON: f32 = 1.0e-4;
 /// Whether a box styled `style` is left out ([`LeftOut`]).
 pub(crate) fn left_out(style: &Style, left_out: LeftOut) -> bool {
     match left_out {
-        LeftOut::No => false,
+        LeftOut::No | LeftOut::Picture => false,
         LeftOut::IfIcon => {
             let icon = |d: Dimension| length(d.into_raw()).is_some_and(|v| v <= ICON);
             icon(style.size.width) && icon(style.size.height)
@@ -619,6 +628,23 @@ fn bare(tree: &impl Tree, node: NodeId) -> bool {
     tree.child_count(node) == 0 && !tree.measures(node) && tree.role(node).left_out == LeftOut::No
 }
 
+/// A view whose content is all absolute layers (an avatar holding its
+/// picture): it has no rows of its own, so it fills what it is in.
+fn overlaid(tree: &impl Tree, node: NodeId) -> bool {
+    let mut shown = false;
+    for i in 0..tree.child_count(node) {
+        let child = tree.child(node, i);
+        if hidden(tree, child) {
+            continue;
+        }
+        if !tree.style(child).position.is_out_of_flow() {
+            return false;
+        }
+        shown = true;
+    }
+    shown
+}
+
 /// A view with children, all of them out of the layout (an icon's layer).
 fn hollow(tree: &impl Tree, node: NodeId) -> bool {
     let count = tree.child_count(node);
@@ -759,9 +785,15 @@ fn kind(tree: &impl Tree, node: NodeId) -> Kind {
     let mut visible = false;
     let mut in_flow = false;
     let mut boxes = false;
-    // Every box in flow is one that keeps its box blank or draws itself
-    // and states no height (an image filling a card): it gives no rows.
+    // Every box in flow is one that keeps its box blank or draws itself,
+    // or holds only absolute layers (an avatar's picture once its initials
+    // went), and states no height or aspect ratio (an image filling a
+    // card): it gives no rows.
     let mut fillers = true;
+    // A scroll view in flow that grows into what is left and states no
+    // height (an emoji picker's grid under its search field): it has no
+    // rows of its content, so the box's explicit height is what it fills.
+    let mut growing_scroll = false;
     for i in 0..count {
         let child = tree.child(node, i);
         if hidden(tree, child) {
@@ -770,8 +802,12 @@ fn kind(tree: &impl Tree, node: NodeId) -> Kind {
         visible = true;
         if !tree.style(child).position.is_out_of_flow() {
             in_flow = true;
-            fillers &= tree.role(child).sized
+            growing_scroll |= tree.role(child).scroll
+                && tree.style(child).flex_grow > 0.0
                 && length(tree.style(child).size.height.into_raw()).is_none();
+            fillers &= (tree.role(child).sized || overlaid(tree, child))
+                && length(tree.style(child).size.height.into_raw()).is_none()
+                && tree.style(child).aspect_ratio.is_none();
         }
         // Texts, bare views (spacers, bars) and views whose content is all
         // left out (an icon's circle) make no box of it.
@@ -802,12 +838,14 @@ fn kind(tree: &impl Tree, node: NodeId) -> Kind {
         // cells, a row of them) has no rows of content to size it: its
         // explicit height is what its children are placed in.
         // So does one whose content in flow only fills it (a photo's card
-        // around its image): what it holds is as tall as it is.
+        // around its image): what it holds is as tall as it is; and one
+        // holding a scroll view that grows into what is left.
         honors_height: empty
             || anchor
             || shut
             || (visible && !in_flow)
             || (in_flow && fillers)
+            || growing_scroll
             || role.scroll
             || role.root
             || role.fills
@@ -1101,18 +1139,22 @@ fn reach(
     }
     // What it keeps of the panel's padding: none when what it holds are
     // bands or controls of their own, which reach the line in turn, or rows
-    // of a list, which keep it themselves.
-    let of_bands = rows || {
-        let count = tree.child_count(node);
-        count > 0
-            && (0..count).all(|i| {
-                let c = tree.child(node, i);
-                let r = tree.role(c);
-                r.control
-                    || (kind(tree, c).container
-                        && surface(r, tree.backdrop(c).unwrap_or(grid.page)).is_some())
-            })
-    };
+    // of a list, which keep it themselves. A scroll view keeps it around
+    // its controls (a menu's items): the walk up from them stops at it, so
+    // they reach across its padding instead, as they do under a group's
+    // title.
+    let of_bands = rows
+        || (!role.scroll && {
+            let count = tree.child_count(node);
+            count > 0
+                && (0..count).all(|i| {
+                    let c = tree.child(node, i);
+                    let r = tree.role(c);
+                    r.control
+                        || (kind(tree, c).container
+                            && surface(r, tree.backdrop(c).unwrap_or(grid.page)).is_some())
+                })
+        });
     let keeps = |p: i32| if of_bands { 0 } else { p };
     // Picks one side's pair out of a box's (horizontal, vertical) insets.
     type Pick = fn(((i32, i32), (i32, i32))) -> (i32, i32);
@@ -1645,6 +1687,23 @@ pub(crate) fn compute(
     } else {
         eh.map(|h| clamp(h, min_h, max_h))
     });
+    // An empty box or a picture of one side and an aspect ratio (a photo
+    // filling its tile's width, measured by its natural size once loaded)
+    // has the other side from it, in points: a Cell is twice as tall as it
+    // is wide, so its rows are not its columns.
+    let mut fixed_w = fixed_w;
+    if (k.empty || (k.measures && role.left_out == LeftOut::Picture))
+        && let Some(ratio) = tree
+            .style(node)
+            .aspect_ratio
+            .filter(|r| r.is_finite() && *r > 0.0)
+    {
+        match (fixed_w, fixed_h) {
+            (Some(w), None) => fixed_h = Some(clamp(grid.rows(grid.x(w) / ratio), min_h, max_h)),
+            (None, Some(h)) => fixed_w = Some(clamp(grid.cols(grid.y(h) * ratio), min_w, max_w)),
+            _ => {}
+        }
+    }
     let inner = |v: Option<i32>, i: i32| v.map(|v| (v - i).max(0));
     if inputs.run_mode == RunMode::PerformLayout && (k.measures || k.empty || k.labelled) {
         tree.set_insets(node, Insets { border, padding });

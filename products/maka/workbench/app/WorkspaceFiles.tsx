@@ -19,6 +19,7 @@
 
 import { Text, View } from 'nsh';
 import { Button, Input } from 'nsh/base';
+import { InlineCallout, RegionEmptyError } from './Feedback';
 import { NativeFileTree } from './NativeFileTree';
 import { Icon } from './Icon';
 import { C, captionTextStyle, quietFocusStyle, quietHoverStyle } from './ui';
@@ -78,26 +79,44 @@ export function WorkspaceFiles(props: { model: WorkspaceFilesModel }) {
           <Icon name="refresh" size={13} color={C.muted} />
         </Button>
       </View>
-      <If when={!!status()}>
-        <Text
-          style={{ ...captionTextStyle, padding: 6, color: model.error() ? C.danger : C.muted }}
-        >
-          {status()}
-        </Text>
+      <If
+        when={Boolean(model.error()) && model.items().length === 0}
+        else={
+          <>
+            <If when={Boolean(model.error())}>
+              <InlineCallout
+                tone="danger"
+                message={model.error()}
+                action={{ label: tr('Refresh'), onPress: model.refresh }}
+              />
+            </If>
+            <If when={!model.error() && Boolean(status())}>
+              <Text style={{ ...captionTextStyle, padding: 6, color: C.muted }}>{status()}</Text>
+            </If>
+            <NativeFileTree
+              label={tr('Files')}
+              items={model.items()}
+              expanded={model.expanded()}
+              setExpanded={model.setExpanded}
+              open={model.open}
+              demand={model.demand}
+              detail={(id) => (
+                <If when={!!model.note(id)}>
+                  <Text style={{ ...captionTextStyle, color: C.muted }}>{model.note(id)}</Text>
+                </If>
+              )}
+            />
+          </>
+        }
+      >
+        <RegionEmptyError
+          compact
+          tone="danger"
+          icon="folder"
+          title={model.error()}
+          retry={model.refresh}
+        />
       </If>
-      <NativeFileTree
-        label={tr('Files')}
-        items={model.items()}
-        expanded={model.expanded()}
-        setExpanded={model.setExpanded}
-        open={model.open}
-        demand={model.demand}
-        detail={(id) => (
-          <If when={!!model.note(id)}>
-            <Text style={{ ...captionTextStyle, color: C.muted }}>{model.note(id)}</Text>
-          </If>
-        )}
-      />
     </View>
   );
 }

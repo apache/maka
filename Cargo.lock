@@ -4862,6 +4862,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
 
 [[package]]
+name = "font-types"
+version = "0.12.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "835ae9d781464a79026cde387f9cbc650c9a4909d7cf7e658b127e3c35d2f35d"
+dependencies = [
+ "bytemuck",
+]
+
+[[package]]
 name = "fontconfig-parser"
 version = "0.5.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4878,10 +4887,22 @@ checksum = "457e789b3d1202543297a350643cf459f836cade38934e7a4cf6a39e7cde2905"
 dependencies = [
  "fontconfig-parser",
  "log",
- "memmap2",
  "slotmap",
  "tinyvec",
  "ttf-parser",
+]
+
+[[package]]
+name = "fontdb"
+version = "0.24.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2660c5e9157bf76d2db1294e4a9feba604ef610819a3b591088d0d8392a3290f"
+dependencies = [
+ "fontconfig-parser",
+ "log",
+ "memmap2",
+ "slotmap",
+ "tinyvec",
 ]
 
 [[package]]
@@ -6529,6 +6550,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c7ed2f2edad8a14c8186b847909a41fbb9c3eafa44f88bd891114ed5019da09"
 dependencies = [
  "hashbrown 0.16.1",
+]
+
+[[package]]
+name = "harfrust"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c03d949a14aa089bbb282f7dd76a498a7f684428e4257202efc119ec010376f9"
+dependencies = [
+ "bitflags 2.13.2",
+ "bytemuck",
+ "read-fonts",
+ "smallvec",
 ]
 
 [[package]]
@@ -8292,6 +8325,7 @@ dependencies = [
  "maka-interactions-api",
  "maka-js-runtime",
  "maka-mcp",
+ "maka-mock-ai",
  "maka-model",
  "maka-network",
  "maka-packages",
@@ -8531,6 +8565,7 @@ dependencies = [
  "uuid",
  "windows 0.62.2",
  "windows-sys 0.61.2",
+ "zstd 0.14.3",
 ]
 
 [[package]]
@@ -8649,6 +8684,7 @@ dependencies = [
  "tokio",
  "uuid",
  "windows-sys 0.61.2",
+ "zstd 0.14.3",
 ]
 
 [[package]]
@@ -8696,15 +8732,19 @@ name = "maka-desktop-shell"
 version = "0.3.0"
 dependencies = [
  "block2 0.6.2",
+ "clap",
  "dispatch2",
  "embed-resource",
  "libc",
  "maka-app-client",
  "maka-event-log",
  "maka-host-runtime",
+ "maka-terminal-shell",
+ "maka-ui-build",
  "maka-updater",
  "maka-workbench",
  "maka-wsl-bridge",
+ "nsh-core",
  "nsh-engine",
  "nsh-platform-linux",
  "nsh-platform-macos",
@@ -9085,6 +9125,7 @@ dependencies = [
  "maka-agent-facts",
  "maka-agent-ports",
  "maka-capabilities",
+ "maka-mock-ai",
  "maka-network",
  "maka-plugin-core",
  "maka-provider-protocol",
@@ -9294,6 +9335,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "url",
+ "zstd 0.14.3",
 ]
 
 [[package]]
@@ -9319,6 +9361,7 @@ version = "0.3.0"
 dependencies = [
  "cap-fs-ext",
  "cap-std",
+ "dunce",
  "flatbuffers",
  "globset",
  "hex",
@@ -9472,17 +9515,20 @@ dependencies = [
 name = "maka-skills"
 version = "0.3.0"
 dependencies = [
+ "hex",
  "libc",
  "maka-agent-facts",
  "maka-capabilities",
  "schemars 1.2.3",
  "serde",
  "serde_json",
+ "sha2 0.11.1",
  "tempfile",
  "tokio",
  "tokio-util",
  "uuid",
  "yaml-rust2",
+ "zstd 0.14.3",
 ]
 
 [[package]]
@@ -9553,11 +9599,13 @@ dependencies = [
  "nsh-platform-tui",
  "nsh-platform-windows",
  "nsh-terminal",
+ "objc2-app-kit 0.3.2",
  "ratatui",
  "serde_json",
  "tempfile",
  "termina 0.4.0",
  "tokio",
+ "tracing-subscriber",
  "uuid",
 ]
 
@@ -9748,8 +9796,10 @@ dependencies = [
  "tokio-util",
  "unicode-segmentation",
  "url",
- "usvg",
+ "usvg 0.46.0",
  "uuid",
+ "windows-sys 0.61.2",
+ "zstd 0.14.3",
 ]
 
 [[package]]
@@ -10518,6 +10568,7 @@ dependencies = [
  "futures-util",
  "gif",
  "httpdate",
+ "image",
  "imagesize 0.15.0",
  "libc",
  "log",
@@ -10525,6 +10576,7 @@ dependencies = [
  "nsh-macros",
  "nsh-updater",
  "ordered-float",
+ "percent-encoding",
  "resvg",
  "rust-i18n",
  "rustc-hash 2.1.3",
@@ -10590,12 +10642,14 @@ dependencies = [
  "quickjs-jit",
  "quickjs-jit-stdlib",
  "rustc-hash 2.1.3",
+ "rustls",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
  "tokio",
  "tokio-tungstenite 0.28.0",
  "url",
+ "webpki-roots 0.26.11",
 ]
 
 [[package]]
@@ -10700,6 +10754,7 @@ dependencies = [
 name = "nsh-platform-tui"
 version = "0.6.0"
 dependencies = [
+ "base64 0.22.1",
  "crossbeam-channel",
  "icy_sixel",
  "image",
@@ -10771,6 +10826,7 @@ dependencies = [
  "tar",
  "thiserror 2.0.21",
  "zip",
+ "zstd 0.14.3",
 ]
 
 [[package]]
@@ -13650,6 +13706,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "read-fonts"
+version = "0.41.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "046a7d674daf459825b32f5062056d6882db0d2f5a479fbd76ccfc870ac18709"
+dependencies = [
+ "bytemuck",
+ "font-types",
+ "once_cell",
+]
+
+[[package]]
 name = "redox_syscall"
 version = "0.5.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -13876,18 +13943,19 @@ checksum = "1e061d1b48cb8d38042de4ae0a7a6401009d6143dc80d2e2d6f31f0bdd6470c7"
 
 [[package]]
 name = "resvg"
-version = "0.46.0"
+version = "0.48.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b563218631706d614e23059436526d005b50ab5f2d506b55a17eb65c5eb83419"
+checksum = "67e3803f97b999e80cbf7c6ecdd07a8102204d92e1633cf48783720c521196bd"
 dependencies = [
+ "bytemuck",
  "gif",
  "image-webp",
  "log",
  "pico-args",
  "rgb",
  "svgtypes",
- "tiny-skia 0.11.4",
- "usvg",
+ "tiny-skia 0.12.0",
+ "usvg 0.48.1",
  "zune-jpeg",
 ]
 
@@ -15664,6 +15732,16 @@ name = "siphasher"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "33f4fe9184a62d842c9ef383018f3306d8ba224fd9d836f56d7288308847c256"
+
+[[package]]
+name = "skrifa"
+version = "0.44.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "819ab7d62b1d3e72d9d9dea5650bac30424f9111364bb94928dbf5ecad1baa68"
+dependencies = [
+ "bytemuck",
+ "read-fonts",
+]
 
 [[package]]
 name = "slab"
@@ -18012,9 +18090,9 @@ checksum = "8ecb6da28b8a351d773b68d5825ac39017e680750f980f3a1a85cd8dd28a47c1"
 
 [[package]]
 name = "ureq"
-version = "3.5.0"
+version = "3.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cde93ff05758a36a851a398a772b0b79a82fbe3c186a46f2696baaeaf84c966b"
+checksum = "3ac5cecf619ca81f66a96482db09687c9f7465af65f4300a8c30cca05bd5a59d"
 dependencies = [
  "base64 0.23.1",
  "flate2",
@@ -18030,9 +18108,9 @@ dependencies = [
 
 [[package]]
 name = "ureq-proto"
-version = "0.6.5"
+version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "841583fc36089d7d59419568ae157f43a5a03a2e5a81ba87c77d1596ef46e922"
+checksum = "622dce33c252115466d83f63e9744a18f12b4406aae51a01c15ad8fcf1185eb3"
 dependencies = [
  "base64 0.23.1",
  "http",
@@ -18074,7 +18152,7 @@ dependencies = [
  "base64 0.22.1",
  "data-url",
  "flate2",
- "fontdb",
+ "fontdb 0.23.0",
  "imagesize 0.14.0",
  "kurbo",
  "log",
@@ -18086,6 +18164,33 @@ dependencies = [
  "strict-num",
  "svgtypes",
  "tiny-skia-path 0.11.4",
+ "unicode-bidi",
+ "unicode-script",
+ "unicode-vo",
+ "xmlwriter",
+]
+
+[[package]]
+name = "usvg"
+version = "0.48.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "977d0a4abdef933f424a99fe09f95576e089b90aebc6f016a3bc813762493e91"
+dependencies = [
+ "base64 0.23.1",
+ "data-url",
+ "fontdb 0.24.0",
+ "harfrust",
+ "imagesize 0.15.0",
+ "kurbo",
+ "log",
+ "pico-args",
+ "roxmltree 0.21.2",
+ "simplecss",
+ "siphasher 1.0.4",
+ "skrifa",
+ "strict-num",
+ "svgtypes",
+ "tiny-skia-path 0.12.0",
  "unicode-bidi",
  "unicode-script",
  "unicode-vo",

@@ -54,6 +54,9 @@ pub struct LinkProps {
     pub current: Prop<bool>,
     /// What screen readers say, when its content is not enough (an icon).
     pub accessibility_label: Prop<Option<SharedString>>,
+    /// What activating the link does, for screen readers, as a view's
+    /// `accessibilityHint`.
+    pub accessibility_hint: Prop<Option<SharedString>>,
     /// How far outside its bounds presses still count, as a view's
     /// `hitSlop`: one number for every side, or the sides named (each left
     /// out 0). A small link (an icon, a short word) takes presses a finger
@@ -103,6 +106,7 @@ pub fn Link(props: LinkProps, cx: Scope<LinkEvent>) -> impl IntoElement {
         .style_when(move || !disabled.get(), |s| s.cursor(Cursor::Pointer))
         .role(AccessibilityRole::Link)
         .optional_label(props.accessibility_label)
+        .optional_hint(props.accessibility_hint)
         .accessibility_state(move || AccessibilityState {
             current: props.current.get().then_some(AccessibilityCurrent::Page),
             ..AccessibilityState::default()

@@ -7,7 +7,7 @@ import type { App } from "nsh/test";
 
 let app: App;
 beforeEach(async () => {
-  app = await open("../App.tsx", { platform: "macos", width: 1200, height: 800 });
+  app = await open("../App.tsx", { platform: "macos", width: 1200, height: 800, storage: { lastDemo: "Combobox" } });
   await app.press("role:button[Combobox]");
   await app.waitFor("role:combobox[Reviewer]");
 });

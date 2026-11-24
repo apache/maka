@@ -10,7 +10,7 @@ group: tools
 开发期间，NSH 会在每次保存时构建应用。Rust 应用（`nsh.json` 写明 `"root"`）构建成它自己的 runner，由 `nsh run` 启动；修改它的
 crate 会重新构建并重启应用。TSX 应用则推送给所有已连接的宿主，宿主就地更新。有两条命令可以做到这一点：
 
-- `nsh run` 构建应用 **并且** 启动它：Mac Catalyst 或 AppKit 窗口、Linux 上的 GTK 窗口、Windows 上的 Win32 窗口、iOS 模拟器、
+- `nsh run` 构建应用 **并且** 启动它：macOS 上的 AppKit 窗口、Linux 上的 GTK 窗口、Windows 上的 Win32 窗口、iOS 模拟器、
   Android 真机或模拟器，或者一个浏览器页面。对 TSX，它还会启动开发服务器，由开发宿主连接。
 - `nsh dev --server-only` 为 TSX 启动开发服务器，宿主由你自己启动：集成了开发版 SDK 的自有应用、网络中的某台设备，或同时连接多个宿主。
 
@@ -34,16 +34,16 @@ nsh dev App.tsx --server-only       # server only
 
 | 参数 | 说明 |
 |---|---|
-| `--target <catalyst \| ios \| android \| macos \| linux \| windows \| gpui \| web>` | 在哪里运行。macOS 上默认 `macos`（AppKit 窗口），Linux 上默认 `linux`，Windows 上默认 `windows`。Rust 应用可以在除 `gpui` 之外的所有目标上运行；GPUI 应用嵌入它的根组件（[GPUI](./gpui.md)）。 |
-| `--device <name or UDID>` | 要使用的 iOS 模拟器。默认：已启动的那个，否则使用最新的 iPhone（会自动为你启动）。 |
+| `--target <macos \| linux \| windows \| ios \| android \| gpui \| web \| catalyst>` | 在哪里运行。macOS 上默认 `macos`（AppKit 窗口），Linux 上默认 `linux`，Windows 上默认 `windows`。Rust 应用可以在除 `gpui` 之外的所有目标上运行；GPUI 应用嵌入它的根组件（[GPUI](./gpui.md)）。 |
+| `--device <name, UDID or serial>` | 要使用的 iOS 模拟器，按名称或 UDID 指定。默认：已启动的那个，否则使用最新的 iPhone（会自动为你启动）。配合 `--target android`：要使用的设备或模拟器，按序列号（`adb devices` 列出的那个）指定。默认：`ANDROID_SERIAL` 指定的那台，否则第一台。 |
 | `--port <port>` | 开发服务器端口，并替换该端口上之前的 NSH 会话。默认使用此应用上次的端口并替换它之前的会话，否则使用从 8790 起第一个空闲端口。 |
 | `--release` | 提供 TSX 的 release 构建（压缩、无调试信息、无热更新）。 |
 | `--trace` | 在宿主上记录每次提交（commit）的耗时（TSX 应用）。 |
 
 各个目标的行为：
 
-- **`catalyst`**（macOS）以 Mac 应用的形式运行开发宿主。停止 `nsh run`（Ctrl-C）会关闭它，关闭窗口也会结束 `nsh run`。
-- **`macos`**（macOS）在一个 1200×800 的窗口中以桌面应用的形式运行 AppKit 开发宿主，行为相同；Cmd+R 重新加载最新构建。
+- **`macos`**（macOS）在一个 1200×800 的窗口中以桌面应用的形式运行 AppKit 开发宿主。停止 `nsh run`（Ctrl-C）会关闭它，关闭窗口也会结束
+  `nsh run`；Cmd+R 重新加载最新构建。
   需要 macOS 14 及以上（[macOS](./macos.md)）。
 - **`linux`**（Linux）在一个 390×844 的窗口中运行 GTK 开发宿主，行为相同：Ctrl-C 会关闭它，关闭窗口也会结束 `nsh run`。
   需要 GTK 4.14 及以上（[Linux](./linux.md)）。
@@ -54,6 +54,8 @@ nsh dev App.tsx --server-only       # server only
 - **`android`** 安装开发宿主 APK（同样只在运行时有变化时才安装），执行 `adb reverse tcp:<port> tcp:<port>`，使设备
   自己的 `127.0.0.1` 能访问到服务器，然后启动它。支持模拟器或 USB 连接的设备。需要 Android SDK（`ANDROID_HOME`）。
   `nsh run` 结束时（包括 Ctrl-C）会停止宿主并移除这条端口转发，因此该宿主不会接入下一次会话。
+
+**开发工具：**`catalyst`（macOS）以 Mac Catalyst 应用的形式运行 iOS 开发宿主，仅在确有需要时使用：检查 Catalyst 特有的行为，或在 Mac Catalyst 应用中嵌入 NSH。它和 `macos` 一样随 `nsh run` 启动和停止。
 
 对 Rust 应用，每个目标都运行应用自己的、用它的 crate 构建的 runner：桌面平台直接运行 debug 构建，输出显示在终端；iOS 和 Android
 安装它的一个包。对 TSX，这些宿主是通用的：服务器发来的任何 NSH 应用都能运行，因此不需要为每个应用单独构建宿主（带有自己 crate

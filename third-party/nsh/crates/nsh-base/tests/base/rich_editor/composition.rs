@@ -52,12 +52,12 @@ fn CompositionProbe(props: CompositionProps) -> impl IntoElement {
 fn start_composition(close_on_end: bool) -> (Headless, EditorSession) {
     let editor = session(paragraphs(&["Seed"]));
     let shown = editor.clone();
-    let mut app = Headless::start(EngineConfig::new(Root::new::<CompositionProbe>(
-        move || CompositionProps {
-            session: Some(shown.clone()),
-            close_on_end,
-        },
-    )))
+    let mut app = Headless::start(EngineConfig::new(nsh_testing::windowed_root_with::<
+        CompositionProbe,
+    >(move || CompositionProps {
+        session: Some(shown.clone()),
+        close_on_end,
+    })))
     .unwrap();
     app.wait_for("text:Transitions []").unwrap();
     app.type_text("id:composition-editor", "").unwrap();

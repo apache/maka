@@ -509,10 +509,15 @@ impl Mounter {
                     crate::text_input::set_selection(view, *start, *end);
                 }
             }
-            // Not carried out on this platform yet: the app's paste is lost,
-            // so say so.
-            Command::InsertText(_) => {
-                log::warn!("insertText is not supported on Windows yet; nothing inserted")
+            Command::ClearSelection => {
+                if let Some(view) = view {
+                    crate::selectable_view::clear_in(view);
+                }
+            }
+            Command::InsertText(text) => {
+                if let Some(view) = view {
+                    crate::text_input::insert_text(view, text);
+                }
             }
             Command::ScrollTo { y, .. } if view.is_some_and(|v| v.kind() == ViewKind::Input) => {
                 crate::text_input::scroll_to(view.expect("an input"), *y);
@@ -554,6 +559,16 @@ impl Mounter {
             // `id`.
             Command::Desktop(desktop) if id != ROOT_ID => {
                 crate::app_window::command(surface, id, view, desktop);
+            }
+            // A dialog shows over the window whose content raised it. The
+            // app raises an alert without naming one (`AlertDialog.show`):
+            // it is the focused window's, else the first's.
+            Command::Dialog(dialog) => {
+                let window = match view {
+                    Some(v) if id != ROOT_ID => crate::app_window::window_of(surface, v),
+                    _ => crate::app_window::dialog_window(surface),
+                };
+                crate::system::show_dialog(surface, window, dialog);
             }
             other => crate::system::command(surface, id, other),
         }

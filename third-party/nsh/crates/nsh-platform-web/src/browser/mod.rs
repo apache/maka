@@ -284,6 +284,26 @@ impl Runtime {
                 ));
                 Ok(Value(0))
             }
+            // `addTranslations(json)`, checked by `i18n.js`: merges runtime
+            // translations into the core's dictionary too.
+            409 => {
+                let json = args.index(0)?.as_string().unwrap_or_default();
+                if let Ok(map) = serde_json::from_str::<
+                    std::collections::HashMap<String, std::collections::HashMap<String, String>>,
+                >(&json)
+                {
+                    self.bindings.ops.borrow_mut().push(nsh_core::Op::Rust(
+                        nsh_core::element::RustOp {
+                            call: 0,
+                            run: nsh_core::element::RustCall::Op(Box::new(move |module| {
+                                module.add_translations(map);
+                                Ok(Box::new(()))
+                            })),
+                        },
+                    ));
+                }
+                Ok(Value(0))
+            }
             404 => {
                 let uri = args
                     .index(0)?

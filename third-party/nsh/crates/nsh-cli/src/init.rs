@@ -51,9 +51,9 @@ pub(crate) enum Template {
     /// An app written in Rust: a Cargo project whose root component
     /// `nsh.json` names (`"root"`), with no QuickJS.
     Rust,
-    /// A TSX app with a Rust crate of its own at its root (`Cargo.toml` and
-    /// `src/lib.rs` beside `App.tsx`), which exports a component, a module
-    /// and a class to it.
+    /// A TSX app extended with Rust: an nshm crate of its own in
+    /// `ext/<name>-native/` (`nsh.json` `"dependencies"`, by path), which
+    /// exports a component, a module and a class to `App.tsx`.
     Mixed,
 }
 
@@ -69,7 +69,7 @@ impl Template {
             &[
                 ("ts", "TSX, on QuickJS"),
                 ("rust", "Rust, with no JS runtime"),
-                ("mixed", "TSX, with a Rust crate of its own"),
+                ("mixed", "TSX, extended with Rust in ext/"),
             ],
         )?;
         Ok([Template::Ts, Template::Rust, Template::Mixed][picked])
@@ -85,9 +85,10 @@ impl Template {
 ///   the root component, `src/main.rs` for `cargo run`), `nsh.json`
 ///   naming the root, the root's test `App.test.tsx` with `tsconfig.json`
 ///   and the type declarations, `.gitignore` and a README.
-/// - [`Template::Mixed`]: the TSX app with a crate beside its `App.tsx`
-///   (`Cargo.toml`, `src/lib.rs`; `nsh.json` `"rust": "."`, no `"root"`)
-///   that `App.tsx` imports, its test `App.test.tsx`, and a README.
+/// - [`Template::Mixed`]: the TSX app (`App.tsx`, its test `App.test.tsx`)
+///   with its Rust in `ext/<slug>-native/`, an nshm crate that `nsh.json`
+///   lists in `"dependencies"` by path and `App.tsx` imports by its name,
+///   and a README. `src/` stays the app's TSX, `ext/` its Rust.
 ///
 /// The crates depend on nsh's crates on crates.io at this CLI's version,
 /// or by path on the nsh checkout `nsh_source`: where the app's hosts take
@@ -143,6 +144,8 @@ pub(crate) fn init(
             .replace("__APP_NAME__", &name)
     };
     let mut files = vec![(".gitignore", GITIGNORE.to_owned())];
+    // Files under directories named after the app (`ext/<slug>-native/`).
+    let mut named: Vec<(String, String)> = Vec::new();
     match template {
         Template::Ts => files.extend([
             ("App.tsx", APP.to_owned()),
@@ -169,9 +172,16 @@ pub(crate) fn init(
             ]);
         }
         Template::Mixed => {
-            // The crate is the app's directory, as a Rust app's; with no
-            // `"root"`, `App.tsx` stays the entry.
-            config["rust"] = ".".into();
+            // The Rust is an nshm of the app's own in `ext/`, as an app
+            // takes any other nshm; `App.tsx` stays the entry.
+            let ext = ext_crate(&slug);
+            config["dependencies"] =
+                serde_json::json!({ &ext: { "path": format!("{EXT_DIR}/{ext}") } });
+            let fill = |text: &str| {
+                text.replace("__SPECIFIER__", &ext)
+                    .replace("__EXT__", &format!("{EXT_DIR}/{ext}"))
+                    .replace("__APP_NAME__", &name)
+            };
             files.extend([
                 ("App.tsx", fill(include_str!("templates/mixed/App.tsx"))),
                 (
@@ -179,19 +189,27 @@ pub(crate) fn init(
                     include_str!("templates/mixed/App.test.tsx").to_owned(),
                 ),
                 ("tsconfig.json", nsh_bundler::TSCONFIG.to_owned()),
-                (
-                    "Cargo.toml",
-                    manifest(&rust_package_name(&name), nsh_source.as_deref(), false),
-                ),
-                ("src/lib.rs", fill(include_str!("templates/mixed/lib.rs"))),
                 ("README.md", fill(include_str!("templates/mixed/README.md"))),
             ]);
+            named.push((
+                format!("{EXT_DIR}/{ext}/Cargo.toml"),
+                manifest(&ext, nsh_source.as_deref(), false),
+            ));
+            named.push((
+                format!("{EXT_DIR}/{ext}/src/lib.rs"),
+                fill(include_str!("templates/mixed/lib.rs")),
+            ));
         }
     }
     files.push((
         "nsh.json",
         format!("{}\n", serde_json::to_string_pretty(&config)?),
     ));
+    let files: Vec<(String, String)> = files
+        .into_iter()
+        .map(|(file, contents)| (file.to_owned(), contents))
+        .chain(named)
+        .collect();
     if template != Template::Ts {
         // `.gitignore` aside, a Rust app's files all come together.
         for (file, _) in &files[1..] {
@@ -208,7 +226,7 @@ pub(crate) fn init(
     }
     let (mut created, mut kept) = (Vec::new(), Vec::new());
     for (file, contents) in files {
-        let path = dir.join(file);
+        let path = dir.join(&file);
         if path.exists() {
             kept.push(file);
             continue;
@@ -320,6 +338,16 @@ fn slug(name: &str) -> String {
     }
 }
 
+/// The directory of an app's own nshm crates, beside `src/`: its Rust, as
+/// `src/` holds its TSX.
+pub(crate) const EXT_DIR: &str = "ext";
+
+/// The name of the app's own nshm crate in [`EXT_DIR`], and its import
+/// specifier (`My App` → `my-app-native`).
+fn ext_crate(slug: &str) -> String {
+    format!("{slug}-native")
+}
+
 /// A valid, non-reserved Cargo name, even for display names containing
 /// whitespace, punctuation, Unicode or a leading digit.
 fn rust_package_name(name: &str) -> String {
@@ -347,6 +375,14 @@ const TSCONFIG_BASE: &str = ".nsh/tsconfig.json";
 /// removed. An app's `tsconfig.json` from an earlier `nsh init`, unchanged,
 /// becomes one extending `.nsh/tsconfig.json` ([`migrate_tsconfig`]).
 pub(crate) fn write_types(dir: &Path) {
+    write_types_of(dir, dir);
+}
+
+/// [`write_types`] in `dir`, the directory of the app's TypeScript project
+/// (its entry's, with its `tsconfig.json`), for the app in `app` (its
+/// `nsh.json`'s directory, whose theme and nshm the declarations name):
+/// they differ when `nsh.json` names an entry below it (`"entry"`).
+fn write_types_of(dir: &Path, app: &Path) {
     let types = dir.join(".nsh/types");
     // The app's sets, and `nsh/test` for its test files.
     let mut sets = crate::ui_sets().to_vec();
@@ -358,11 +394,21 @@ pub(crate) fn write_types(dir: &Path) {
     // The theme's errors are the build's to report: its names are the
     // default's meanwhile.
     let tokens =
-        nsh_bundler::theme_tokens(dir).unwrap_or_else(|_| nsh_base::Theme::default().into_tokens());
+        nsh_bundler::theme_tokens(app).unwrap_or_else(|_| nsh_base::Theme::default().into_tokens());
     definitions.push((
         "nsh/tokens.d.ts".to_owned(),
         nsh_bundler::tokens_declaration(&tokens),
     ));
+    // The TSX nshm the app installed (`nsh.lock`): their declarations are
+    // their sources, so the checker reads them as the bundler does.
+    match nsh_bundler::nshm::exports(app) {
+        Ok(exports) => definitions.extend(
+            exports
+                .iter()
+                .map(|(specifier, file)| (format!("{specifier}.d.ts"), nshm_declaration(file))),
+        ),
+        Err(err) => ui::warn(format!("the app's nshm: {err}")),
+    }
     remove_stale(&types, &types, &definitions);
     let files = definitions
         .iter()
@@ -383,6 +429,21 @@ pub(crate) fn write_types(dir: &Path) {
     }
     migrate_tsconfig(dir);
     warn_undocumented(&crate::ui_sets());
+}
+
+/// The declaration of a TSX nshm whose entry is `file`: what it exports.
+fn nshm_declaration(file: &Path) -> String {
+    // Without its extension, as an import names a module.
+    let module = file.with_extension("");
+    let module = module.to_string_lossy().replace('\\', "/");
+    let mut text = format!(
+        "// Generated by nsh: the nshm whose entry is {}.\nexport * from {module:?};\n",
+        file.display()
+    );
+    if fs::read_to_string(file).is_ok_and(|code| code.contains("export default")) {
+        text.push_str(&format!("export {{ default }} from {module:?};\n"));
+    }
+    text
 }
 
 /// Warns of the exports of `sets` (an app's crates') without a doc comment:
@@ -460,11 +521,10 @@ fn remove_stale(types: &Path, dir: &Path, definitions: &[(String, String)]) {
 
 /// [`write_types`] for the app whose entry is `entry`.
 pub(crate) fn write_types_for(entry: &Path) {
-    if let Some(dir) = dunce::canonicalize(entry)
-        .ok()
-        .and_then(|e| e.parent().map(Path::to_path_buf))
+    if let Ok(entry) = dunce::canonicalize(entry)
+        && let Some(dir) = entry.parent()
     {
-        write_types(&dir);
+        write_types_of(dir, &nsh_bundler::app_dir::app_dir_of(&entry));
     }
 }
 
@@ -608,17 +668,20 @@ mod tests {
     }
 
     #[test]
-    fn a_mixed_app_is_a_tsx_entry_with_a_crate() {
+    fn a_mixed_app_is_a_tsx_entry_with_an_nshm_in_ext() {
         let dir = directory("mixed");
         init(&dir, Some("My App".into()), Template::Mixed, None).unwrap();
         let config = config(&dir);
-        // The crate is the app's directory; `App.tsx` stays the entry.
-        assert_eq!(config["rust"], ".");
-        assert!(config.get("root").is_none());
+        // The Rust is the app's own nshm in `ext/`; `App.tsx` stays the entry.
+        assert!(config.get("rust").is_none() && config.get("root").is_none());
+        assert_eq!(
+            config["dependencies"],
+            serde_json::json!({ "my-app-native": { "path": "ext/my-app-native" } })
+        );
         assert_eq!(crate::entry::resolve(&dir).unwrap(), dir.join("App.tsx"));
         let app = read(&dir, "App.tsx");
         assert!(
-            app.contains("import { Badge, Counter, Format } from \"my-app/native\";"),
+            app.contains("import { Badge, Counter, Format } from \"my-app-native\";"),
             "{app}"
         );
         assert!(
@@ -626,21 +689,20 @@ mod tests {
                 && app.contains("new Counter()")
                 && app.contains("Format.times(")
         );
-        let lib = read(&dir, "src/lib.rs");
-        assert!(lib.contains("#[native_module(\"my-app/native\")]"), "{lib}");
+        let lib = read(&dir, "ext/my-app-native/src/lib.rs");
+        assert!(lib.contains("#[native_module(\"my-app-native\")]"), "{lib}");
         for export in ["#[component]", "#[module]", "#[class]"] {
             assert!(lib.contains(export), "{export}");
         }
-        let manifest = read(&dir, "Cargo.toml");
-        assert!(manifest.contains("name = \"nsh-app-my-app\""), "{manifest}");
-        // No `src/main.rs`: the app runs its TSX entry.
+        let manifest = read(&dir, "ext/my-app-native/Cargo.toml");
+        assert!(manifest.contains("name = \"my-app-native\""), "{manifest}");
         assert!(!manifest.contains("nsh-platform"), "{manifest}");
         assert_eq!(read(&dir, "tsconfig.json"), nsh_bundler::TSCONFIG);
         assert!(read(&dir, "App.test.tsx").contains("open(\"./App.tsx\")"));
-        assert!(read(&dir, "README.md").contains("my-app/native"));
+        assert!(read(&dir, "README.md").contains("ext/my-app-native"));
         assert_eq!(read(&dir, ".gitignore"), GITIGNORE);
         assert!(dir.join(".nsh/types/nsh/index.d.ts").is_file());
-        for file in ["native", "src/main.rs"] {
+        for file in ["Cargo.toml", "src/lib.rs", "src/main.rs", "native"] {
             assert!(!dir.join(file).exists(), "{file}");
         }
         fs::remove_dir_all(dir).unwrap();
@@ -651,14 +713,16 @@ mod tests {
         for (template, file) in [
             (Template::Rust, "Cargo.toml"),
             (Template::Rust, "src/lib.rs"),
-            (Template::Mixed, "Cargo.toml"),
-            (Template::Mixed, "src/lib.rs"),
+            (Template::Mixed, "ext/app-native/Cargo.toml"),
+            (Template::Mixed, "ext/app-native/src/lib.rs"),
             (Template::Mixed, "App.tsx"),
         ] {
             let dir = directory("conflict");
             fs::create_dir_all(dir.join(file).parent().unwrap()).unwrap();
             fs::write(dir.join(file), "user code").unwrap();
-            let error = init(&dir, None, template, None).unwrap_err().to_string();
+            let error = init(&dir, Some("App".into()), template, None)
+                .unwrap_err()
+                .to_string();
             assert!(error.contains("already exists"), "{error}");
             assert_eq!(read(&dir, file), "user code");
             assert!(!dir.join("nsh.json").exists());

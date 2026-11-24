@@ -1,4 +1,5 @@
 import { keymap, mount, signal, Text, View } from "nsh";
+import { Window } from "nsh/desktop";
 
 // Two tiles that open on a press (a click, or Return and Space with the
 // focus on them) and bind Space as their own keys while they have the
@@ -35,4 +36,4 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => <Window id="main">{App}</Window>);

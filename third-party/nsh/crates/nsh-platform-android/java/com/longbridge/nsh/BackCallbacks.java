@@ -8,7 +8,8 @@ import android.window.OnBackInvokedCallback;
 
 /**
  * Back callbacks for Android 13+ (only loaded there). On Android 14+ the
- * top screen follows the back gesture (predictive back).
+ * top screen follows the back gesture (predictive back), or the app does
+ * when it listens to the gesture's steps.
  */
 final class BackCallbacks {
     private BackCallbacks() {}
@@ -23,6 +24,10 @@ final class BackCallbacks {
         private final NshView view;
         private final Mounter mounter;
         private StackBox stack;
+        /** The app follows the gesture under way ({@code BackHandler.on("progress")}). */
+        private boolean following;
+        private String edge;
+        private float progress;
 
         Animated(NshView view, Mounter mounter) {
             this.view = view;
@@ -31,6 +36,16 @@ final class BackCallbacks {
 
         @Override
         public void onBackStarted(BackEvent event) {
+            following = mounter.followsBack();
+            if (following) {
+                // The app moves its own views with the finger; a stack
+                // previewing its pop under them would move twice.
+                edge = edge(event);
+                progress = event.getProgress();
+                mounter.backProgress("start", progress, edge);
+                stack = null;
+                return;
+            }
             // Only a pop follows the finger; modals and the app's listeners
             // (they hear the button before the stack) decide on release.
             stack = mounter.wantsBack() ? mounter.backStack() : null;
@@ -43,11 +58,18 @@ final class BackCallbacks {
 
         @Override
         public void onBackProgressed(BackEvent event) {
-            if (stack != null) stack.backProgressed(event.getProgress());
+            if (following) {
+                progress = event.getProgress();
+                mounter.backProgress("move", progress, edge);
+            } else if (stack != null) {
+                stack.backProgressed(event.getProgress());
+            }
         }
 
         @Override
         public void onBackCancelled() {
+            if (following) mounter.backProgress("cancel", progress, edge);
+            following = false;
             if (stack != null) stack.backCancelled();
             stack = null;
             // A cancelled back key: its press is forgotten here, before a
@@ -57,8 +79,24 @@ final class BackCallbacks {
 
         @Override
         public void onBackInvoked() {
+            // The step before the press, so the app sees its gesture end
+            // and then hears the press.
+            if (following) mounter.backProgress("end", progress, edge);
+            following = false;
             stack = null;
             view.handleBack();
+        }
+
+        /** The edge of the screen the swipe started at, or null. */
+        private static String edge(BackEvent event) {
+            switch (event.getSwipeEdge()) {
+                case BackEvent.EDGE_LEFT:
+                    return "left";
+                case BackEvent.EDGE_RIGHT:
+                    return "right";
+                default:
+                    return null;
+            }
         }
     }
 }

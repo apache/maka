@@ -129,28 +129,58 @@ fn times(key: &'static str, n: usize) -> Vec<&'static str> {
 fn down_walks_every_row_to_the_last_one() {
     // Before, then the 28 enabled rows (3 and 27 passed over): the last
     // one, never made when the menu opened.
-    choose(Root::of::<Models>(), &times("down", 29), "enter", "Row 29");
+    choose(
+        nsh_testing::windowed_root::<Models>(),
+        &times("down", 29),
+        "enter",
+        "Row 29",
+    );
 }
 
 #[test]
 fn the_keys_pass_over_disabled_rows() {
     // Before, Row 0, 1, 2, then 4.
-    choose(Root::of::<Models>(), &times("down", 5), "space", "Row 4");
+    choose(
+        nsh_testing::windowed_root::<Models>(),
+        &times("down", 5),
+        "space",
+        "Row 4",
+    );
     // Up from More: Row 29, 28, then 26.
     let mut keys = times("down", 30);
     keys.extend(times("up", 3));
-    choose(Root::of::<Models>(), &keys, "space", "Row 26");
+    choose(
+        nsh_testing::windowed_root::<Models>(),
+        &keys,
+        "space",
+        "Row 26",
+    );
 }
 
 #[test]
 fn past_the_last_row_the_items_after_the_list_follow() {
     // Down from the last row: More, then After, then around to Before.
     let mut keys = times("down", 30);
-    choose(Root::of::<Models>(), &keys, "right", "none");
+    choose(
+        nsh_testing::windowed_root::<Models>(),
+        &keys,
+        "right",
+        "none",
+    );
     keys.push("down");
-    choose(Root::of::<Models>(), &keys, "space", "After");
+    choose(
+        nsh_testing::windowed_root::<Models>(),
+        &keys,
+        "space",
+        "After",
+    );
     keys.push("down");
-    choose(Root::of::<Models>(), &keys, "space", "Before");
+    choose(
+        nsh_testing::windowed_root::<Models>(),
+        &keys,
+        "space",
+        "Before",
+    );
 }
 
 #[test]
@@ -158,7 +188,7 @@ fn up_from_the_items_after_the_list_reaches_its_last_row() {
     // Up from Before goes around to After, then More, then the list's
     // last row.
     choose(
-        Root::of::<Models>(),
+        nsh_testing::windowed_root::<Models>(),
         &["down", "up", "up", "up"],
         "space",
         "Row 29",
@@ -167,7 +197,7 @@ fn up_from_the_items_after_the_list_reaches_its_last_row() {
 
 #[test]
 fn a_submenu_trigger_after_the_list_opens_and_gives_the_focus_back() {
-    let mut app = start(Root::of::<Models>());
+    let mut app = start(nsh_testing::windowed_root::<Models>());
     app.press("id:open").unwrap();
     app.wait_for("Row 0").unwrap();
     for key in times("down", 30) {
@@ -187,10 +217,15 @@ fn a_submenu_trigger_after_the_list_opens_and_gives_the_focus_back() {
 
 #[test]
 fn up_from_the_first_row_goes_around_to_the_true_last_row() {
-    choose(Root::of::<OnlyRows>(), &["down", "up"], "space", "Row 29");
+    choose(
+        nsh_testing::windowed_root::<OnlyRows>(),
+        &["down", "up"],
+        "space",
+        "Row 29",
+    );
     // Then on up the list: 28, past 27, 26.
     choose(
-        Root::of::<OnlyRows>(),
+        nsh_testing::windowed_root::<OnlyRows>(),
         &["down", "up", "up", "up"],
         "space",
         "Row 26",
@@ -199,16 +234,41 @@ fn up_from_the_first_row_goes_around_to_the_true_last_row() {
 
 #[test]
 fn end_and_home_go_to_the_lists_last_and_first_rows() {
-    choose(Root::of::<OnlyRows>(), &["end"], "space", "Row 29");
-    choose(Root::of::<OnlyRows>(), &["end", "home"], "space", "Row 0");
+    choose(
+        nsh_testing::windowed_root::<OnlyRows>(),
+        &["end"],
+        "space",
+        "Row 29",
+    );
+    choose(
+        nsh_testing::windowed_root::<OnlyRows>(),
+        &["end", "home"],
+        "space",
+        "Row 0",
+    );
     // Down past the last row goes around to the first.
-    choose(Root::of::<OnlyRows>(), &["end", "down"], "space", "Row 0");
+    choose(
+        nsh_testing::windowed_root::<OnlyRows>(),
+        &["end", "down"],
+        "space",
+        "Row 0",
+    );
 }
 
 #[test]
 fn home_and_end_reach_the_items_around_the_list() {
-    choose(Root::of::<Models>(), &["end"], "space", "After");
-    choose(Root::of::<Models>(), &["end", "home"], "space", "Before");
+    choose(
+        nsh_testing::windowed_root::<Models>(),
+        &["end"],
+        "space",
+        "After",
+    );
+    choose(
+        nsh_testing::windowed_root::<Models>(),
+        &["end", "home"],
+        "space",
+        "Before",
+    );
 }
 
 #[test]
@@ -216,21 +276,26 @@ fn page_down_goes_a_view_at_a_time_and_stops_at_the_end() {
     // Five rows show: the first Page Down is the last row in view, then
     // each goes five rows on, to rows the list had not made, and stops at
     // the last.
-    choose(Root::of::<OnlyRows>(), &["pagedown"], "space", "Row 4");
     choose(
-        Root::of::<OnlyRows>(),
+        nsh_testing::windowed_root::<OnlyRows>(),
+        &["pagedown"],
+        "space",
+        "Row 4",
+    );
+    choose(
+        nsh_testing::windowed_root::<OnlyRows>(),
         &times("pagedown", 2),
         "space",
         "Row 9",
     );
     choose(
-        Root::of::<OnlyRows>(),
+        nsh_testing::windowed_root::<OnlyRows>(),
         &times("pagedown", 6),
         "space",
         "Row 29",
     );
     choose(
-        Root::of::<OnlyRows>(),
+        nsh_testing::windowed_root::<OnlyRows>(),
         &times("pagedown", 7),
         "space",
         "Row 29",
@@ -243,7 +308,12 @@ fn page_up_goes_a_view_at_a_time_and_stops_at_the_start() {
     for (pages, chosen) in [(1, "Row 25"), (2, "Row 20"), (7, "Row 0")] {
         let mut keys = times("pagedown", 6);
         keys.extend(times("pageup", pages));
-        choose(Root::of::<OnlyRows>(), &keys, "space", chosen);
+        choose(
+            nsh_testing::windowed_root::<OnlyRows>(),
+            &keys,
+            "space",
+            chosen,
+        );
     }
 }
 
@@ -253,12 +323,22 @@ fn a_page_lands_on_the_enabled_row_nearest_its_edge() {
     // Row 26.
     let mut keys = times("down", 22);
     keys.push("pagedown");
-    choose(Root::of::<OnlyRows>(), &keys, "space", "Row 26");
+    choose(
+        nsh_testing::windowed_root::<OnlyRows>(),
+        &keys,
+        "space",
+        "Row 26",
+    );
     // Row 7 at the bottom shows 3 to 7: Page Up's first row in view is 3,
     // disabled, so Row 4.
     let mut keys = times("down", 7);
     keys.push("pageup");
-    choose(Root::of::<OnlyRows>(), &keys, "space", "Row 4");
+    choose(
+        nsh_testing::windowed_root::<OnlyRows>(),
+        &keys,
+        "space",
+        "Row 4",
+    );
 }
 
 #[test]
@@ -266,19 +346,19 @@ fn pages_go_on_to_the_items_after_the_list() {
     // Row 29 at the bottom of the list: More and After are in view, so
     // the next page is After, where it stops.
     choose(
-        Root::of::<Models>(),
+        nsh_testing::windowed_root::<Models>(),
         &times("pagedown", 6),
         "space",
         "Row 29",
     );
     choose(
-        Root::of::<Models>(),
+        nsh_testing::windowed_root::<Models>(),
         &times("pagedown", 7),
         "space",
         "After",
     );
     choose(
-        Root::of::<Models>(),
+        nsh_testing::windowed_root::<Models>(),
         &times("pagedown", 8),
         "space",
         "After",
@@ -293,7 +373,7 @@ fn the_keys_start_at_the_row_the_pointer_is_on() {
         (&["up"][..], "Row 1"),
         (&["pagedown"][..], "Row 4"),
     ] {
-        let mut app = start(Root::of::<OnlyRows>());
+        let mut app = start(nsh_testing::windowed_root::<OnlyRows>());
         app.press("id:open").unwrap();
         app.wait_for("Row 0").unwrap();
         app.hover("text:Row 2").unwrap();
@@ -307,7 +387,7 @@ fn the_keys_start_at_the_row_the_pointer_is_on() {
     // From the last row in view, Down and Page Down reach rows not made
     // yet.
     for (key, chosen) in [("down", "Row 5"), ("pagedown", "Row 9")] {
-        let mut app = start(Root::of::<OnlyRows>());
+        let mut app = start(nsh_testing::windowed_root::<OnlyRows>());
         app.press("id:open").unwrap();
         app.wait_for("Row 0").unwrap();
         app.hover("text:Row 4").unwrap();
@@ -368,7 +448,7 @@ fn a_list_removed_while_the_keys_wait_for_its_row_is_forgotten() {
         }
         previous(info);
     }));
-    let mut app = start(Root::of::<HiddenList>());
+    let mut app = start(nsh_testing::windowed_root::<HiddenList>());
     app.press("id:open").unwrap();
     app.wait_for("Before").unwrap();
     // Up, Up: After, then the list's last row, which it never makes, so

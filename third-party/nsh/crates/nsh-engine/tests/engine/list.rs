@@ -1293,3 +1293,55 @@ mount(App);
     );
     assert_eq!(paced.errors(), Vec::<String>::new());
 }
+
+/// The overscan waiting to bind is bound once a display frame, on the
+/// frame's turn: the turns between two frames (a timer, a message from
+/// the main thread) bind none of it, so a frame gets one paced slice
+/// (#2472). It all comes in the end.
+#[test]
+fn paced_overscan_binds_only_on_display_frames() {
+    // Rows of 12 views each: the overscan takes several slices.
+    let app = r#"
+import { List, mount, Text, View } from "nsh";
+const rows = Array.from({ length: 100 }, (_, i) => i);
+function App() {
+  return (
+    <List each={rows} estimatedItemSize={50} style={{ flex: 1 }}>
+      {(row) => (
+        <View style={{ height: 50, flexDirection: "row" }}>
+          {Array.from({ length: 12 }, (_, c) => <View><Text>{`row ${row()}.${c}`}</Text></View>)}
+        </View>
+      )}
+    </List>
+  );
+}
+mount(App);
+"#;
+    let mut paced = Paced::start(app);
+    // The platform sends display frames from here on.
+    paced.frame().expect("the app asks for a frame");
+    let mut frames = 1;
+    let mut slices = 0;
+    while paced.seen.frame.load(std::sync::atomic::Ordering::SeqCst) {
+        for _ in 0..3 {
+            let between = paced.turn();
+            assert!(
+                between.iter().all(Vec::is_empty),
+                "a turn between frames bound overscan: {between:?}"
+            );
+        }
+        let batches = paced.frame().expect("a frame was asked for");
+        frames += 1;
+        if batches.iter().any(|b| !b.is_empty()) {
+            slices += 1;
+        }
+        assert!(frames < 500, "the overscan never finished binding");
+    }
+    assert!(slices > 1, "the overscan was paced over frames ({slices})");
+    assert!(
+        (0..=20).all(|i| paced.texts.values().any(|t| *t == format!("row {i}.11"))),
+        "{:?}",
+        paced.texts
+    );
+    assert_eq!(paced.errors(), Vec::<String>::new());
+}

@@ -25,6 +25,7 @@ publish.workspace = true
 build = "build.rs"
 
 [dependencies]
+zstd.workspace = true
 base64 = "0.23.1"
 clipboard-rs = { version = "0.3.5", features = ["wayland"] }
 image = { version = "0.25", default-features = false, features = ["bmp", "png"] }
@@ -59,6 +60,7 @@ uuid.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 clipboard-win = "5.4.1"
+image = { version = "0.25", default-features = false, features = ["bmp", "gif", "jpeg", "webp"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 image = { version = "0.25", default-features = false, features = ["tiff"] }
@@ -67,6 +69,7 @@ objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std"
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "objc2-core-foundation", "NSArray", "NSData", "NSDictionary", "NSGeometry", "NSString", "NSURL"] }
 
 [build-dependencies]
+zstd.workspace = true
 cc = "1"
 maka-ui-build.workspace = true
 
@@ -76,3 +79,6 @@ nsh-bundler = { workspace = true, features = ["bundle"] }
 # The ui_types example writes the specs' TypeScript, which only this feature keeps.
 nsh-core = { workspace = true, features = ["declarations"] }
 nsh-js.workspace = true
+
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Security", "Win32_System_StationsAndDesktops", "Win32_Graphics_Gdi"] }

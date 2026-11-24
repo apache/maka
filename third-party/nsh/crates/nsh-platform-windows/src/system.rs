@@ -137,7 +137,7 @@ use crate::{
     input::{Cursor, KeyEvent, PointerKind},
     render::{DrawCx, rect_f},
     surface::Surface,
-    view::{Hosted, ItemPointer},
+    view::{Hosted, ItemPointer, NshView},
 };
 
 /// Fades of overlays, in seconds.
@@ -619,22 +619,33 @@ fn reading_layout_rtl(value: &str) -> bool {
 /// The OS version (major, minor), as `RtlGetVersion` has it: unlike
 /// `GetVersionEx` it does not depend on the executable's manifest.
 fn os_version() -> (u16, u16) {
+    let (major, minor, _) = os_info();
+    (major, minor)
+}
+
+/// The OS build number (Windows 11's from 22000), read with
+/// [`os_version`].
+pub(crate) fn os_build() -> u32 {
+    os_info().2
+}
+
+fn os_info() -> (u16, u16, u32) {
     thread_local! {
-        static VERSION: (u16, u16) = read_os_version();
+        static VERSION: (u16, u16, u32) = read_os_version();
     }
     VERSION.with(|v| *v)
 }
 
-fn read_os_version() -> (u16, u16) {
+fn read_os_version() -> (u16, u16, u32) {
     type RtlGetVersion = unsafe extern "system" fn(*mut OSVERSIONINFOW) -> i32;
     // SAFETY: ntdll is loaded in every process; `RtlGetVersion` has the
     // signature above and fills the structure whose size is set.
     unsafe {
         let Ok(ntdll) = GetModuleHandleW(w!("ntdll.dll")) else {
-            return (0, 0);
+            return (0, 0, 0);
         };
         let Some(proc) = GetProcAddress(ntdll, s!("RtlGetVersion")) else {
-            return (0, 0);
+            return (0, 0, 0);
         };
         let get: RtlGetVersion = std::mem::transmute(proc);
         let mut info = OSVERSIONINFOW {
@@ -642,11 +653,12 @@ fn read_os_version() -> (u16, u16) {
             ..Default::default()
         };
         if get(&mut info) != 0 {
-            return (0, 0);
+            return (0, 0, 0);
         }
         (
             info.dwMajorVersion.min(u16::MAX as u32) as u16,
             info.dwMinorVersion.min(u16::MAX as u32) as u16,
+            info.dwBuildNumber,
         )
     }
 }
@@ -719,15 +731,25 @@ pub(crate) fn open_url(url: &str) -> bool {
     instance.0 as isize > 32
 }
 
+/// Reports a clipboard write's result (`clipboard_write_result`).
+fn clipboard_written(surface: &Rc<Surface>, written: bool) {
+    surface.event(
+        ROOT_ID,
+        EventKind::ClipboardWrite,
+        EventPayload::Map(vec![("written", PayloadValue::Bool(written))]),
+    );
+}
+
 /// A command not addressed to a kind of view.
 pub(crate) fn command(surface: &Rc<Surface>, _id: NodeId, command: &Command) {
     match command {
-        Command::Dialog(dialog) => show_dialog(surface, dialog),
         Command::CloseDialog(dialog) => close_dialog(surface, *dialog),
         Command::SetClipboard(text) => {
-            if !set_clipboard_text(text) {
+            let written = set_clipboard_text(text);
+            if !written {
                 log::debug!("windows: cannot set the clipboard");
             }
+            clipboard_written(surface, written);
         }
         Command::ReadClipboard { id, has_only } => {
             let has = clipboard_has_text();
@@ -760,9 +782,11 @@ pub(crate) fn command(surface: &Rc<Surface>, _id: NodeId, command: &Command) {
                 .iter()
                 .map(|(kind, bytes)| (*kind, bytes.as_slice()))
                 .collect();
-            if !set_clipboard_formats(&formats) {
+            let written = set_clipboard_formats(&formats);
+            if !written {
                 log::debug!("windows: cannot set the clipboard");
             }
+            clipboard_written(surface, written);
         }
         Command::SetClipboardImage(uri) => match clipboard::decode_data_uri(uri) {
             Some(("image/png", bytes)) => {
@@ -986,16 +1010,63 @@ pub(crate) fn clear(surface: &Surface) {
         removed
     });
     for overlay in removed {
-        surface.root.remove_native(&overlay.kind.item());
+        if let Some(root) = overlay_root(surface, &overlay.kind) {
+            root.remove_native(&overlay.kind.item());
+        }
     }
 }
 
-/// Hosts the overlay where it goes in a `width` × `height` surface.
+/// The root view overlay `kind` is hosted in: the window that presented
+/// it, else the main window's (the app root).
+fn overlay_root(surface: &Surface, kind: &OverlayKind) -> Option<NshView> {
+    match kind {
+        OverlayKind::Dialog(d) if d.window != ROOT_ID => {
+            crate::app_window::root_view(surface, d.window)
+        }
+        _ => Some(surface.root.clone()),
+    }
+}
+
+/// Hosts the overlay where it goes in a `width` × `height` surface; one a
+/// window presented fills that window.
 fn place(surface: &Surface, kind: &OverlayKind, width: f32, height: f32) {
+    // Its window is gone: nothing to place it over.
+    let Some(root) = overlay_root(surface, kind) else {
+        return;
+    };
+    let (width, height) = match kind {
+        OverlayKind::Dialog(d) if d.window != ROOT_ID => {
+            let size = root.state().frame.size;
+            (size.width.0, size.height.0)
+        }
+        _ => (width, height),
+    };
     let r = match kind {
         OverlayKind::Dialog(_) => rect(0.0, 0.0, width, height),
     };
-    surface.root.set_native(&kind.item(), r);
+    root.set_native(&kind.item(), r);
+}
+
+/// The window `id` is `width` × `height` points now: the dialogs it
+/// presented follow.
+pub(crate) fn window_resized(surface: &Surface, id: NodeId, width: f32, height: f32) {
+    let ours: Vec<Rc<DialogItem>> = OVERLAYS.with(|o| {
+        o.borrow()
+            .iter()
+            .filter_map(|o| match &o.kind {
+                OverlayKind::Dialog(d) if o.key == surface.key() && d.window == id => {
+                    Some(d.clone())
+                }
+                _ => None,
+            })
+            .collect()
+    });
+    for d in ours {
+        let kind = OverlayKind::Dialog(d);
+        if let Some(root) = overlay_root(surface, &kind) {
+            root.set_native(&kind.item(), rect(0.0, 0.0, width, height));
+        }
+    }
 }
 
 /// Hosts a new overlay over `surface`'s views and fades it in.
@@ -1018,6 +1089,26 @@ fn add_overlay(surface: &Rc<Surface>, serial: u64, kind: OverlayKind) {
     } else {
         kind.opacity().set(0.0);
         fade(surface, serial, 1.0, FADE_IN, false);
+    }
+}
+
+/// Window `id` is closing: the dialogs it showed are dismissed (`-1`), so
+/// nothing is left over another window or takes its keys.
+pub(crate) fn window_closing(surface: &Surface, id: NodeId) {
+    let ours: Vec<Rc<DialogItem>> = OVERLAYS.with(|overlays| {
+        overlays
+            .borrow()
+            .iter()
+            .filter_map(|overlay| match &overlay.kind {
+                OverlayKind::Dialog(d) if overlay.key == surface.key() && d.window == id => {
+                    Some(d.clone())
+                }
+                _ => None,
+            })
+            .collect()
+    });
+    for dialog in ours {
+        dialog.answer(-1);
     }
 }
 
@@ -1059,8 +1150,10 @@ fn drop_overlay(surface: &Surface, serial: u64) {
         let i = o.iter().position(|o| o.serial == serial)?;
         Some(o.remove(i))
     });
-    if let Some(overlay) = removed {
-        surface.root.remove_native(&overlay.kind.item());
+    if let Some(overlay) = removed
+        && let Some(root) = overlay_root(surface, &overlay.kind)
+    {
+        root.remove_native(&overlay.kind.item());
     }
 }
 
@@ -1080,7 +1173,9 @@ fn fade(surface: &Rc<Surface>, serial: u64, to: f32, secs: f64, remove: bool) {
         let t = ((now - t0) / secs).clamp(0.0, 1.0) as f32;
         let eased = 1.0 - (1.0 - t) * (1.0 - t);
         kind.opacity().set(from + (to - from) * eased);
-        surface.root.changed();
+        if let Some(root) = overlay_root(surface, &kind) {
+            root.changed();
+        }
         if t < 1.0 {
             // A newer fade took over (a dialog answered while fading in).
             return !matches!(&kind, OverlayKind::Dialog(d) if d.closing.get() && !remove);
@@ -1610,6 +1705,8 @@ struct DialogLayout {
 /// An alert or action sheet, hosted by the root over the whole surface
 /// (it takes every pointer event: the dialog is modal).
 struct DialogItem {
+    /// The window of the app's own showing it (`ROOT_ID`: the main one).
+    window: NodeId,
     key: u64,
     /// The UI thread of the surface: the answer is posted back to it.
     ui: crate::window::UiThread,
@@ -1983,7 +2080,7 @@ impl Hosted for DialogItem {
 /// the bottom (an action sheet) over a dimmed backdrop. Answers the
 /// button's index; -1 when dismissed (a click outside or Escape, when
 /// cancelable); Escape presses the cancel button when there is one.
-fn show_dialog(surface: &Rc<Surface>, dialog: &Dialog) {
+pub(crate) fn show_dialog(surface: &Rc<Surface>, window: NodeId, dialog: &Dialog) {
     // `AlertDialog` always brings the app's actions (it rejects none): no
     // label of NSH's own.
     let buttons = &dialog.buttons[..];
@@ -2035,6 +2132,7 @@ fn show_dialog(surface: &Rc<Surface>, dialog: &Dialog) {
     let default = default_button(&styles, sheet);
     let serial = next_serial();
     let item = Rc::new(DialogItem {
+        window,
         key: surface.key(),
         ui: surface.ui_thread(),
         serial,
@@ -2102,10 +2200,14 @@ pub(crate) fn dialog_point(
 /// Whether a dialog shows over the app: it owns the keyboard, so a view
 /// under it hears no key releases either.
 pub(crate) fn dialog_shown(surface: &Surface) -> bool {
+    // The dialog is modal over the window that showed it, not the app:
+    // another window's keyboard is its own.
+    let window = surface.input_root().id();
     OVERLAYS.with(|overlays| {
         overlays.borrow().iter().any(|overlay| {
             overlay.key == surface.key()
-                && matches!(&overlay.kind, OverlayKind::Dialog(d) if !d.closing.get())
+                && matches!(&overlay.kind, OverlayKind::Dialog(d)
+                    if d.window == window && !d.closing.get())
         })
     })
 }
@@ -2115,9 +2217,16 @@ pub(crate) fn dialog_shown(surface: &Surface) -> bool {
 /// first), Escape cancels, Tab and the arrows move between the buttons.
 /// True when handled.
 pub(crate) fn key(surface: &Rc<Surface>, event: &KeyEvent) -> bool {
+    // The key belongs to the window that received it: a dialog in another
+    // window does not hear it.
+    let window = surface.input_root().id();
     let top = OVERLAYS.with(|o| {
         o.borrow().iter().rev().find_map(|o| match &o.kind {
-            OverlayKind::Dialog(d) if o.key == surface.key() && !d.closing.get() => Some(d.clone()),
+            OverlayKind::Dialog(d)
+                if o.key == surface.key() && d.window == window && !d.closing.get() =>
+            {
+                Some(d.clone())
+            }
             _ => None,
         })
     });

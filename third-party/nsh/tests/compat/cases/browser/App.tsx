@@ -3,6 +3,8 @@
 // `id:case-<case>` (a one-point view over the corner, out of the layout);
 // the steps after it are that case's.
 import { type JSX, View, mount, signal } from "nsh";
+import { Window } from "nsh/desktop";
+import BaseAccessibilityHints from "./base-accessibility-hints";
 import BaseDropdownLooks from "./base-dropdown-looks";
 import BaseHoverCardDesktop from "./base-hover-card-desktop";
 import BasePopupAnchorsDesktop from "./base-popup-anchors-desktop";
@@ -18,6 +20,7 @@ import PropsMediaWebviewDesktop from "./props-media-webview-desktop";
 import RuntimeIdentities from "./runtime-identities";
 
 const cases: Record<string, () => JSX.Element> = {
+  "base-accessibility-hints": BaseAccessibilityHints,
   "runtime-identities": RuntimeIdentities,
   "props-platform-web": PropsPlatformWeb,
   "props-view-web-element": PropsViewWebElement,
@@ -33,7 +36,7 @@ const cases: Record<string, () => JSX.Element> = {
 };
 const shown = signal("");
 
-mount(() => (
+mount(() => <Window id="main">{() => (
   <>
     {() => {
       const Case = cases[shown()];
@@ -45,4 +48,4 @@ mount(() => (
       ))}
     </View>
   </>
-));
+)}</Window>);

@@ -1,5 +1,6 @@
 {
   "capabilities": {
+    "windows": true,
     "host": ["echo", "fail", "big", "slow", "later", "note"]
   }
 }

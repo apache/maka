@@ -40,6 +40,7 @@ fn glow() -> impl IntoElement {
 
 ```tsx tabs
 import { mount, Shader } from "nsh";
+import { Window } from "nsh/desktop";
 
 const GLOW = /* wgsl */ `
 struct Uniforms { tint: vec4f }
@@ -55,7 +56,11 @@ function Glow() {
   return <Shader source={GLOW} uniforms={{ tint: "#38bdf8" }} style={{ height: 200, borderRadius: 14 }} />;
 }
 
-mount(() => <Glow />);
+mount(() => (
+  <Window id="main">
+    <Glow />
+  </Window>
+));
 ```
 
 ## The shader

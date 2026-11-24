@@ -1,6 +1,7 @@
 import { mount, signal, Text, View } from "nsh";
+import { Window } from "nsh/desktop";
 import { reduceMotion } from "nsh";
-import { colorScheme, lifecycle, locale, localeSettings, platform, wakeCount, windowSize } from "nsh";
+import { colorScheme, lifecycle, locale, localeSettings, network, platform, wakeCount, windowSize } from "nsh";
 
 // Whether `Intl`'s local time is in the zone it names, read again when the
 // device's zone changes (a test's, which moves no local time): formatting in
@@ -11,6 +12,12 @@ const intlAgrees = () => {
   const local = new Intl.DateTimeFormat("en-US", options);
   const named = new Intl.DateTimeFormat("en-US", { ...options, timeZone: local.resolvedOptions().timeZone });
   return [0, 1720000000000, 1736000000000].every((t) => named.format(t) === local.format(t));
+};
+
+// How the device reaches the network, as the test reads it.
+const route = () => {
+  const { online, kind, expensive, constrained, cellularData } = network();
+  return `Network: ${online ? "online" : "offline"} ${kind} ${expensive} ${constrained} ${cellularData}`;
 };
 
 // The regional preferences, as the test reads them.
@@ -43,6 +50,7 @@ function App() {
       <Text>{`Size: ${windowSize().width}x${windowSize().height}`}</Text>
       <Text>{`App: ${lifecycle()}`}</Text>
       <Text>{`Wakes: ${wakeCount()}`}</Text>
+      <Text>{route()}</Text>
       <Text>{`Zone: ${localeSettings().timeZone}`}</Text>
       <Text>{`Intl agrees: ${intlAgrees()}`}</Text>
       <Text>{`Languages: ${localeSettings().languages.join(",")}`}</Text>
@@ -57,4 +65,4 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => <Window id="main">{App}</Window>);

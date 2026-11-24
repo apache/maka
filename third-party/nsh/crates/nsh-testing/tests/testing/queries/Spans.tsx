@@ -1,9 +1,10 @@
 import { mount, signal, Text, View } from "nsh";
+import { Window } from "nsh/desktop";
 
 const id = signal("guide");
 const value = signal("guide");
 
-mount(() => (
+mount(() => <Window id="main">{() => (
   <View>
     <Text testID="paragraph">
       See{" "}
@@ -23,4 +24,4 @@ mount(() => (
     <View onPress={() => id.set("renamed")}><Text>Rename ID</Text></View>
     <View onPress={() => value.set("")}><Text>Empty span</Text></View>
   </View>
-));
+)}</Window>);

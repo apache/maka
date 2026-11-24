@@ -74,11 +74,11 @@ impl Animator {
     }
 
     /// Advances to the display link's target time. Returns true if values
-    /// changed.
+    /// changed. Only display frames tick it ([`Graph::tick_frame`]).
     pub(crate) fn tick(&mut self) -> bool {
         let changed = self
             .graph
-            .tick(self.link.targetTimestamp(), &mut self.finished);
+            .tick_frame(self.link.targetTimestamp(), &mut self.finished);
         self.update_link();
         changed
     }

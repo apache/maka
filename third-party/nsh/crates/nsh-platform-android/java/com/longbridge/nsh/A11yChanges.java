@@ -1,5 +1,6 @@
 package com.longbridge.nsh;
 
+import java.util.Locale;
 import java.util.Objects;
 
 /**
@@ -69,10 +70,54 @@ final class A11yChanges {
     /** The least time between two range selections before API 30 (ms), as a {@code ProgressBar}'s. */
     static final long SELECTED_MS = 200;
 
-    /** Spoken states of `accessibilityState.current`, by its kind in the state's bits 11 to 13. */
-    private static final String[] CURRENT_DESCRIPTIONS = {
-        null, "current", "current page", "current step", "current location", "current date", "current time",
+    /**
+     * The spoken state words in one language, in this order: checked, not checked, mixed, on,
+     * off, expanded, collapsed, invalid data, then `accessibilityState.current` by its kind in
+     * the state's bits 11 to 13 (current, page, step, location, date, time). Keep in step with
+     * `nsh-platform-ios`'s `state_words.rs`.
+     */
+    private static final String[] EN = {
+        "checked", "not checked", "mixed", "on", "off", "expanded", "collapsed", "invalid data",
+        "current", "current page", "current step", "current location", "current date", "current time",
     };
+    private static final String[] ZH_HANS = {
+        "已选中", "未选中", "部分选中", "开", "关", "已展开", "已收起", "数据无效",
+        "当前", "当前页面", "当前步骤", "当前位置", "当前日期", "当前时间",
+    };
+    private static final String[] ZH_HANT = {
+        "已選取", "未選取", "部分選取", "開啟", "關閉", "已展開", "已收合", "資料無效",
+        "目前", "目前頁面", "目前步驟", "目前位置", "目前日期", "目前時間",
+    };
+    private static final String[] JA = {
+        "チェックあり", "チェックなし", "一部選択", "オン", "オフ", "展開", "折りたたみ", "無効なデータ",
+        "現在", "現在のページ", "現在のステップ", "現在の場所", "現在の日付", "現在の時刻",
+    };
+    private static final String[] KO = {
+        "선택됨", "선택 안 됨", "일부 선택됨", "켬", "끔", "펼쳐짐", "접힘", "잘못된 데이터",
+        "현재", "현재 페이지", "현재 단계", "현재 위치", "현재 날짜", "현재 시간",
+    };
+    private static final int CHECKED = 0, NOT_CHECKED = 1, MIXED = 2, ON = 3, OFF = 4,
+            EXPANDED = 5, COLLAPSED = 6, INVALID = 7, CURRENT = 8;
+
+    /**
+     * The state words for {@code locale}: Simplified or Traditional Chinese (by script, else
+     * region TW, HK or MO), Japanese, Korean, else English.
+     */
+    static String[] words(Locale locale) {
+        if (locale == null) return EN;
+        switch (locale.getLanguage()) {
+            case "zh": {
+                String script = locale.getScript();
+                if ("Hant".equals(script)) return ZH_HANT;
+                if ("Hans".equals(script)) return ZH_HANS;
+                String region = locale.getCountry();
+                return "TW".equals(region) || "HK".equals(region) || "MO".equals(region) ? ZH_HANT : ZH_HANS;
+            }
+            case "ja": return JA;
+            case "ko": return KO;
+            default: return EN;
+        }
+    }
 
     private A11yChanges() {}
 
@@ -128,20 +173,21 @@ final class A11yChanges {
      * description, as a {@code CompoundButton}'s does. {@code onOff}: the node is a switch or a
      * toggle button, said on or off, as TalkBack says them.
      */
-    static String stateDescription(int state, String valueText, boolean onOff) {
+    static String stateDescription(int state, String valueText, boolean onOff, Locale locale) {
+        String[] w = words(locale);
         StringBuilder text = null;
-        if ((state & 64) != 0) text = append(text, (state & 128) != 0 ? "expanded" : "collapsed");
+        if ((state & 64) != 0) text = append(text, w[(state & 128) != 0 ? EXPANDED : COLLAPSED]);
         int current = (state >> 11) & 7;
-        if (current != 0 && current < CURRENT_DESCRIPTIONS.length) text = append(text, CURRENT_DESCRIPTIONS[current]);
+        if (current != 0 && current <= 6) text = append(text, w[CURRENT + current - 1]);
         if (valueText != null) text = append(text, valueText);
         // TalkBack reads content invalid only with an error text: the state is read as WebKit
         // reads it.
-        if ((state & (1 << 14)) != 0) text = append(text, "invalid data");
+        if ((state & (1 << 14)) != 0) text = append(text, w[INVALID]);
         int checked = checked(state);
-        String word = checked == 3 ? "mixed"
+        String word = checked == 3 ? w[MIXED]
                 : checked == 0 || text == null ? null
-                : checked == 2 ? (onOff ? "on" : "checked")
-                : onOff ? "off" : "not checked";
+                : checked == 2 ? w[onOff ? ON : CHECKED]
+                : w[onOff ? OFF : NOT_CHECKED];
         if (word != null) text = text == null ? new StringBuilder(word) : text.insert(0, ", ").insert(0, word);
         return text == null ? null : text.toString();
     }

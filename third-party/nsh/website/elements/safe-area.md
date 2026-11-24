@@ -31,6 +31,7 @@ fn app() -> impl IntoElement {
 
 ```tsx tabs
 import { mount, Text, View } from "nsh";
+import { Window } from "nsh/desktop";
 
 function App() {
   return (
@@ -49,7 +50,11 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 The background color fills the whole area, including the area behind the status bar, and the content starts below

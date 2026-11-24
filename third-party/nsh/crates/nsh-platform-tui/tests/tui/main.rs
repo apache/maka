@@ -17,6 +17,7 @@ mod dock;
 mod editor;
 mod focus_navigation;
 mod geometry;
+mod image;
 mod keyboard;
 mod menu_bar;
 mod modal_focus;

@@ -44,6 +44,7 @@ import {
   controlDisabledStyle,
   shortcut,
 } from './ui';
+import { InlineCallout, RegionEmptyError } from './Feedback';
 import { Icon } from './Icon';
 import { WorkspaceLocations } from './WorkspaceLocations';
 import { dialogTop, ownTitleBar } from './chrome';
@@ -369,54 +370,40 @@ export function WorkspacePicker(props: {
         {() => {
           const read = location();
           const status = () => (
-            <View style={{ gap: 8, padding: 12 }}>
-              <If when={awaitingRoots()}>
-                <Text style={{ color: C.muted, fontSize: 13, lineHeight: 16 }}>
-                  {tr('Locations saved. Waiting for the Host to apply them…')}
-                </Text>
-              </If>
-              <If when={loading() && !awaitingRoots()}>
-                <Text style={{ color: C.muted, fontSize: 13, lineHeight: 16 }}>
-                  {tr('Loading folders…')}
-                </Text>
-              </If>
-              <If when={!awaitingRoots() && !loading() && !error() && !matches().length}>
-                <Text style={{ color: C.muted, fontSize: 13, lineHeight: 16 }}>
-                  {query()
-                    ? tr('No matching folders.')
-                    : read.trail.length
-                      ? tr('This folder has no subfolders.')
-                      : tr('No workspace locations are available.')}
-                </Text>
-              </If>
-              <If when={error()}>
-                <Text
-                  style={[
-                    { color: C.danger, fontSize: 13, lineHeight: 16 },
-                    { userSelect: 'text' },
-                  ]}
-                >
-                  {error()}
-                </Text>
-                <Button
-                  accessibilityLabel={tr('Retry folder')}
-                  onPress={inputAction(retry, { location: read.id })}
-                  style={{
-                    ...controlStyle,
-                    alignSelf: 'flex-start',
-                    flexDirection: 'row',
-                    alignItems: 'center',
-                    gap: 8,
-                  }}
-                  hoverStyle={controlHoverStyle()}
-                  focusStyle={controlFocusStyle()}
-                  disabledStyle={controlDisabledStyle}
-                >
-                  <Icon name="refresh" color={C.secondary} />
-                  <Text style={{ color: C.secondary, fontSize: 13 }}>{tr('Retry folder')}</Text>
-                </Button>
-              </If>
-            </View>
+            <If
+              when={Boolean(error()) && !matches().length}
+              else={
+                <View style={{ gap: 8, padding: 12 }}>
+                  <If when={awaitingRoots()}>
+                    <Text style={{ color: C.muted, fontSize: 13, lineHeight: 16 }}>
+                      {tr('Locations saved. Waiting for the Host to apply them…')}
+                    </Text>
+                  </If>
+                  <If when={loading() && !awaitingRoots()}>
+                    <Text style={{ color: C.muted, fontSize: 13, lineHeight: 16 }}>
+                      {tr('Loading folders…')}
+                    </Text>
+                  </If>
+                  <If when={!awaitingRoots() && !loading() && !error() && !matches().length}>
+                    <Text style={{ color: C.muted, fontSize: 13, lineHeight: 16 }}>
+                      {query()
+                        ? tr('No matching folders.')
+                        : read.trail.length
+                          ? tr('This folder has no subfolders.')
+                          : tr('No workspace locations are available.')}
+                    </Text>
+                  </If>
+                </View>
+              }
+            >
+              <RegionEmptyError
+                tone="danger"
+                icon="folder"
+                title={error()}
+                retry={inputAction(retry, { location: read.id })}
+                retryLabel={tr('Retry folder')}
+              />
+            </If>
           );
           return (
             <View
@@ -612,12 +599,21 @@ export function WorkspacePicker(props: {
                         read.trail.at(-1)?.path ??
                         tr('Open a location, then choose a workspace folder.')}
                     </Text>
+                    <If when={matches().length > 0 && Boolean(error())}>
+                      <InlineCallout
+                        tone="danger"
+                        message={error()}
+                        action={{
+                          label: tr('Retry folder'),
+                          onPress: inputAction(retry, { location: read.id }),
+                        }}
+                        style={{ marginTop: 6 }}
+                      />
+                    </If>
                   </View>
                 )}
                 empty={status}
-                footer={() => (
-                  <If when={matches().length > 0 && (loading() || error())}>{status()}</If>
-                )}
+                footer={() => <If when={matches().length > 0 && loading()}>{status()}</If>}
                 onLayout={({ bounds: frame }) => {
                   if (owns(read)) viewportHeight.set(frame.size.height);
                 }}

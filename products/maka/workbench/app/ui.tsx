@@ -20,8 +20,16 @@
 import { tr } from './locale';
 import { Text, View } from 'nsh';
 import type { JSX, ViewRef } from 'nsh';
-import { Button, Tooltip } from 'nsh/base';
-import { colorScheme, keymap, LayoutAnimation, platform, reduceMotion, windowSize } from 'nsh';
+import { Button, TitleBar, Tooltip } from 'nsh/base';
+import {
+  colorScheme,
+  computed,
+  keymap,
+  LayoutAnimation,
+  platform,
+  reduceMotion,
+  windowSize,
+} from 'nsh';
 import { Icon } from './Icon';
 import {
   controlsLeft,
@@ -352,12 +360,15 @@ export function Disclosure(props: {
   reserveChevron?: boolean;
   /** On the desktop, what the row is, in place of the chevron. */
   icon?: Parameters<typeof Icon>[0]['name'];
+  /** Draws what stands in place of `icon`, for a row whose icon moves. */
+  mark?: () => JSX.Element;
   terminalInset?: number;
   onPress: () => void;
   children: JSX.Element;
   trailing?: JSX.Element;
 }) {
   const icon = () => (platform.idiom === 'terminal' ? undefined : props.icon);
+  const marked = computed(() => props.mark !== undefined);
   return (
     <View
       style={{
@@ -404,7 +415,9 @@ export function Disclosure(props: {
             </If>
           }
         >
-          <Icon name={icon()!} color={C.muted} />
+          <If when={marked()} else={<Icon name={icon()!} color={C.muted} />}>
+            {props.mark?.()}
+          </If>
         </If>
         {props.children}
       </Button>
@@ -430,28 +443,22 @@ export function SidebarTitleRow(props: {
 }) {
   let underPointer = false;
   return (
-    <View
-      desktop={windowDrag}
-      style={{
-        height: TITLE_BAR_HEIGHT,
-        flexDirection: 'row',
-        alignItems: 'center',
-        justifyContent: 'flex-start',
-        paddingLeft: Math.max(4, controlsLeft(true) - 12),
-      }}
-    >
-      <SidebarToggle
-        expanded={!props.pin}
-        hover={(inside) => {
-          underPointer = inside;
-        }}
-        toggle={() => {
-          if (props.pin) return props.pin();
-          if (underPointer) props.suppressHover?.();
-          props.toggle();
-        }}
-      />
-    </View>
+    <TitleBar style={{ height: TITLE_BAR_HEIGHT }}>
+      {/* TitleBar sits at x=12 inside the sidebar and clears L; match the collapsed header at max(16, L). */}
+      <View style={{ paddingLeft: Math.max(0, 16 - Math.max(12, controlsLeft(true))) }}>
+        <SidebarToggle
+          expanded={!props.pin}
+          hover={(inside) => {
+            underPointer = inside;
+          }}
+          toggle={() => {
+            if (props.pin) return props.pin();
+            if (underPointer) props.suppressHover?.();
+            props.toggle();
+          }}
+        />
+      </View>
+    </TitleBar>
   );
 }
 

@@ -8,14 +8,15 @@ order: 12.7
 
 `nsh/updater` checks for a newer version of a packaged app, downloads it and replaces the app. Where updates come
 from is set in [`nsh.json`'s `"updater"`](#nshjson), never by the code that calls the module, and every step is checked
-in Rust: the manifest's signature, a newer version, the archive's size and SHA-256. The UI is yours: the
-module returns state and does the work.
+in Rust: the manifest's signature, a newer version, the archive's size and SHA-256. `promptForUpdate()` asks the
+user in a built-in prompt; for a UI of your own, the other functions return state and do the work.
 [App Updates](../docs/app-updates.md) walks through the whole flow, from setting the source to publishing a release.
 
 It also updates the app's code alone: a [signed package](../docs/signed-packages.md) of a newer build, which the app
 runs from its next start on every native platform, iOS and Android included ([OTA updates](#ota-updates)).
 
 ```tsx
+import { promptForUpdate } from "nsh/updater";
 import { checkForUpdate, downloadUpdate, installAndRestart, installOnQuit } from "nsh/updater";
 import { checkForPackage, downloadPackage, restartToPackage, runningPackage, shellInfo } from "nsh/updater";
 ```
@@ -30,6 +31,38 @@ The module can be imported on every platform:
 
 It needs no capability: `capabilities.network` does not apply, since the app's code cannot choose where these requests
 go. Its requests use the platform's own network stack, as `fetch` does.
+
+## promptForUpdate
+
+```ts
+function promptForUpdate(options?: UpdatePromptOptions | null): Promise<void>;
+
+interface UpdatePromptOptions {
+  channel?: string | null;
+  locale?: string | null;
+  quiet?: boolean | null;
+}
+```
+
+Checks for a newer version as [`checkForUpdate`](#checkforupdate) does (`channel` and `locale` are its options) and
+asks the user in NSH's built-in prompt, as macOS apps' Sparkle does: the new version, its release notes, "Skip This
+Version", "Remind Me Later" and "Install Update", then the download's progress and "Install and Relaunch" or "Install on
+Quit". On the desktops it is a small window of its own; on iOS and Android, where `canInstall` is false, it is the
+system's alert, and "Update" opens the update's `url`. Its look is fixed.
+
+The prompt keeps the user's "Skip This Version" and "Automatically download and install updates in the future" in the
+app's data directory. With `quiet: true`, for a check at startup or in the background, nothing shows when the app is up
+to date, the check fails or the user skipped the version, and once the user chose automatic updates the update downloads
+and installs as the app quits without asking. Without it, for a "Check for Updates…" menu item, the user also hears
+that the app is up to date or that the check failed. It resolves once the prompt shows or there is nothing to show, and
+never rejects.
+
+```tsx
+promptForUpdate({ quiet: true }); // at startup
+<Button onPress={() => promptForUpdate()}>Check for Updates…</Button>;
+```
+
+The prompt's text is English. The app's name comes from `nsh.json`'s `"name"`.
 
 ## checkForUpdate
 
@@ -104,7 +137,9 @@ interface UpdateProgress {
 
 Downloads the archive of the update the last `checkForUpdate` found into the app's data directory, calling
 `onProgress` as bytes arrive (`total` is missing when the server does not say), then checks its size and SHA-256
-against the manifest. It rejects with `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM` when no update was found or `canInstall` is
+against the manifest. An interrupted download keeps its partial file keyed to the asset and resumes on the next call
+with an HTTP `Range` request when the server supports it, restarting from the beginning if the server ignores the range
+or the asset changed. It rejects with `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM` when no update was found or `canInstall` is
 false, and when the download fails or does not match.
 
 ```tsx
@@ -184,9 +219,11 @@ function downloadPackage(onProgress?: ((progress: UpdateProgress) => void) | nul
 Downloads the package the last `checkForPackage` found, checks its size and SHA-256 against the manifest, and
 verifies it as the app's next start will: signed by a release key one of the roots certifies, for this app, newer
 than the running build and than every build the app ran before, for this runtime. It then waits in the app's data
-directory for the next start. It rejects with `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM` when the check found none, and
-with an error saying why (`package refused: …`) when the download fails or the package is refused, which leaves
-nothing behind.
+directory for the next start. An interrupted download keeps its partial file keyed to the package and resumes on the
+next call with an HTTP `Range` request when the server supports it, restarting from the beginning if the server ignores
+the range or the package changed. It rejects with `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM` when the check found none, and
+with an error saying why (`package refused: …`) when the download fails or the package is refused (a refused package
+leaves nothing behind).
 
 ### restartToPackage
 
@@ -314,6 +351,14 @@ semver. `nsh update-manifest` writes `latest.json` and its signature for one rel
 
 ## Rust
 
-Rust apps (`nsh.json` `"root"`) use the `nsh-updater` crate directly with an HTTP client of their own:
+Rust apps (`nsh.json` `"root"`) show the same prompt with `nsh_core::runtime::prompt_for_update`, to spawn as a task:
+
+```rust
+use nsh_core::runtime::{UpdatePromptOptions, prompt_for_update};
+
+spawn(prompt_for_update(UpdatePromptOptions::default().quiet(true)));
+```
+
+For a flow of their own they use the `nsh-updater` crate directly with an HTTP client of their own:
 `Config::check` verifies the manifest, `Download` the archive, `Installation::install` replaces the app, and
 `nsh_core::element::desktop::restart()` starts the new version ([App Updates](../docs/app-updates.md#rust-apps)).

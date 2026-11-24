@@ -1,4 +1,5 @@
 import { mount, signal, Text, View } from "nsh";
+import { Window } from "nsh/desktop";
 import { Input } from "nsh/base";
 
 // A one-line multiline input that grows with its text up to 120 points,
@@ -28,4 +29,4 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => <Window id="main">{App}</Window>);

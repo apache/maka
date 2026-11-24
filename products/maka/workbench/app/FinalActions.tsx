@@ -19,8 +19,9 @@
 
 import { CompactReplyFooter } from './CompactReplyFooter';
 import { replyDetails, replyMetrics } from './replyDetails';
-import { createText, UiError, errorText, message as uiMessage } from './text';
+import { UiError, errorText, message as uiMessage, renderText } from './text';
 import { tr } from './locale';
+import { toast } from './toastStore';
 import { cleanup, computed, inputAction, signal, Text, View } from 'nsh';
 import type { JSX } from 'nsh';
 import { useHost } from './host';
@@ -72,7 +73,6 @@ export function FinalActions(props: {
 }) {
   const host = useHost();
   const pending = signal(false);
-  const notice = createText();
   const usage = signal<(Target & { turnId: string }) | null>(null);
   let alive = true;
   cleanup(() => {
@@ -100,7 +100,6 @@ export function FinalActions(props: {
   const fork = async (original: Target | null) => {
     if (!original || !owns(original) || pending()) return;
     pending.set(true);
-    notice.set('');
     try {
       const observed = await host.query('agent', 'observe', {
         sessionId: original.sessionId,
@@ -114,9 +113,21 @@ export function FinalActions(props: {
         title: forkTitle(observed.session.title),
         position: { kind: 'through_source_turn', position: original.position },
       });
-      if (owns(original)) notice.set(uiMessage('Fork created. Open it in Sessions.'));
+      if (owns(original)) {
+        toast.show({
+          id: 'message.fork',
+          tone: 'info',
+          message: renderText(uiMessage('Fork created. Open it in Sessions.')),
+        });
+      }
     } catch (reason) {
-      if (owns(original)) notice.set(errorText(reason, 'Could not fork the conversation.'));
+      if (owns(original)) {
+        toast.show({
+          id: 'message.fork',
+          tone: 'danger',
+          message: renderText(errorText(reason, 'Could not fork the conversation.')),
+        });
+      }
     } finally {
       if (alive) pending.set(false);
     }
@@ -146,9 +157,6 @@ export function FinalActions(props: {
           metrics={() => replyMetrics(props.row())}
         />
         {props.extra}
-        <If when={notice()}>
-          <Text style={{ color: C.warning }}>{notice()}</Text>
-        </If>
       </View>
     );
   const reportedUsage = () => props.row().timing?.executorUsage ?? undefined;
@@ -219,9 +227,7 @@ export function FinalActions(props: {
           />
         </If>
       </View>
-      <If when={notice()}>
-        <Text style={[{ color: C.warning }, { userSelect: 'text' }]}>{notice()}</Text>
-      </If>
+
       <If when={usage()}>
         <TurnUsage
           sessionId={usage()!.sessionId}

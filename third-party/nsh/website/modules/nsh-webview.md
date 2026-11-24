@@ -28,6 +28,7 @@ interface WebViewProps extends Omit<ViewProps, "children" | "ios" | "android" | 
 
 ```tsx
 import { mount, signal, Text, View, WebView, type WebViewNavigation, type WebViewRef } from "nsh";
+import { Window } from "nsh/desktop";
 
 function Browser() {
   const nav = signal<WebViewNavigation | null>(null);
@@ -44,7 +45,11 @@ function Browser() {
   );
 }
 
-mount(Browser);
+mount(() => (
+  <Window id="main">
+    <Browser />
+  </Window>
+));
 ```
 
 ## Props

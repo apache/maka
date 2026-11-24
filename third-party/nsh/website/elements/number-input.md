@@ -42,6 +42,7 @@ fn tickets(count: Signal<Option<f64>>) -> impl IntoElement {
 ```tsx tabs
 import { mount, signal, Text } from "nsh";
 import { NumberInput } from "nsh/base";
+import { Window } from "nsh/desktop";
 
 function App() {
   const tickets = signal<number | null>(2);
@@ -62,7 +63,11 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 `NumberInput` comes from [`nsh/base`](../modules/nsh-base.md), the `nsh-base` crate in Rust. In Rust, `number_input()`

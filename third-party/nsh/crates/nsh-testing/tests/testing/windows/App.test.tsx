@@ -37,6 +37,34 @@ test("a window opens shown and focused, and a press goes to the window its view 
   expect(app.window("notes").state()?.focused).toBe(false);
 });
 
+test("opening an open window focuses it instead of a second one", async () => {
+  const app = await open("./App.tsx", DESKTOP);
+  await app.press("Open notes");
+  await app.waitFor("Focused: notes");
+  await app.press("Main button");
+  await app.waitFor("Focused: main");
+  await app.press("Open notes again");
+  await app.waitFor("Focused: notes");
+  expect(app.windowIds()).toEqual(["main", "notes"]);
+});
+
+test("a shortcut fires in its window, an app shortcut in every window", async () => {
+  const app = await open("./App.tsx", DESKTOP);
+  await app.waitFor("Focused: main");
+  await app.keyboard.press("mod+shift+k");
+  await app.waitFor("Log: key in main");
+  await app.keyboard.press("mod+shift+a");
+  await app.waitFor("Log: app key");
+
+  // Notes has its own Mod+Shift+K; the app's key still reaches it.
+  await app.press("Open notes");
+  await app.waitFor("Focused: notes");
+  await app.keyboard.press("mod+shift+k");
+  await app.waitFor("Log: key in notes");
+  await app.keyboard.press("mod+shift+a");
+  await app.waitFor("Log: app key");
+});
+
 test("a popup closes when the focus leaves it", async () => {
   const app = await open("./App.tsx", DESKTOP);
   await app.press("Open popup");
@@ -88,4 +116,12 @@ test("a window's picture needs a real platform, as the main window's does", asyn
 test("off the desktops an app has no windows of its own", async () => {
   const app = await open("./App.tsx", { platform: "ios" });
   expect(() => app.window("main").state()).toThrow("no windows of its own");
+});
+
+test("the app records that it quit", async () => {
+  const app = await open("./App.tsx", DESKTOP);
+  await app.waitFor("Focused: main");
+  expect(app.quit()).toBe(false);
+  await app.press("Quit");
+  expect(app.quit()).toBe(true);
 });

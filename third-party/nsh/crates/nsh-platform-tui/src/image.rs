@@ -1,9 +1,11 @@
 //! `<Image>` loading, half-block fallback, and background Sixel encoding.
 
 use std::{
+    cell::RefCell,
     collections::HashMap,
     io::Cursor,
     num::NonZeroU16,
+    rc::Rc,
     sync::{
         Arc, LazyLock, Mutex,
         atomic::{AtomicU64, Ordering},
@@ -11,6 +13,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use base64::Engine as _;
 use image::{AnimationDecoder, GenericImageView, imageops::FilterType};
 use nsh_core::{
     Color as CoreColor, EventKind, EventMask, EventPayload, ImageData, ImageOptions, ImageSource,
@@ -26,7 +29,7 @@ use nsh_core::{
 use ratatui_core::{
     buffer::{Buffer, CellDiffOption},
     layout::Rect,
-    style::Color,
+    style::{Color, Modifier},
 };
 
 use crate::{
@@ -191,6 +194,39 @@ enum SixelSlot {
     Ready(SixelKey, String),
 }
 
+#[derive(Clone, PartialEq, Eq)]
+struct KittyKey {
+    load_id: u64,
+    frame_idx: usize,
+    cols: u32,
+    rows: u32,
+    cell_pixels: (u32, u32),
+    fit_w: u32,
+    fit_h: u32,
+    placed_x: u32,
+    placed_y: u32,
+    placed_w: u32,
+    placed_h: u32,
+    tint: Option<[u8; 4]>,
+    alpha_q8: u8,
+    blur_q4: u16,
+}
+
+struct KittyPlacement {
+    key: KittyKey,
+    id: u32,
+    output: Rc<RefCell<Vec<u8>>>,
+}
+
+impl Drop for KittyPlacement {
+    fn drop(&mut self) {
+        let delete = format!("\x1b_Ga=d,d=I,i={},q=2\x1b\\", self.id);
+        self.output
+            .borrow_mut()
+            .extend_from_slice(delete.as_bytes());
+    }
+}
+
 struct ViewEntry {
     source_uri: Option<Arc<str>>,
     key: Option<Key>,
@@ -202,6 +238,7 @@ struct ViewEntry {
     fade_ms: u32,
     anim_origin: Instant,
     sixel: Option<SixelSlot>,
+    kitty: Option<KittyPlacement>,
 }
 
 pub(crate) struct SixelCandidate {
@@ -216,6 +253,13 @@ pub(crate) struct SixelCandidate {
 pub(crate) struct ImageStore {
     surface_id: u64,
     protocol: Option<ImageProtocol>,
+    explicit_protocol: Option<ImageProtocol>,
+    graphics: crate::Graphics,
+    colors: ColorDepth,
+    cell_pixels: (u32, u32),
+    output: Rc<RefCell<Vec<u8>>>,
+    next_kitty_id: u32,
+    kitty_placeholders: Vec<(usize, Color)>,
     asset_base: Option<AssetBase>,
     read_asset: Option<ReadAsset>,
     access: Arc<Access>,
@@ -230,6 +274,13 @@ impl Default for ImageStore {
         Self {
             surface_id: NEXT_SURFACE_ID.fetch_add(1, Ordering::Relaxed),
             protocol: None,
+            explicit_protocol: None,
+            graphics: crate::Graphics::Blocks,
+            colors: ColorDepth::TrueColor,
+            cell_pixels: (10, 20),
+            output: Rc::default(),
+            next_kitty_id: 0,
+            kitty_placeholders: Vec::new(),
             asset_base: None,
             read_asset: None,
             access: Arc::default(),
@@ -449,17 +500,68 @@ fn fade_duration_ms(options: &ImageOptions) -> u32 {
 }
 
 impl ImageStore {
-    pub(crate) fn protocol(&self) -> Option<ImageProtocol> {
-        self.protocol
+    pub(crate) fn configure(
+        &mut self,
+        graphics: crate::Graphics,
+        colors: ColorDepth,
+        cell_pixels: Option<Size<DevicePixels>>,
+        cells: CellSize,
+        output: Rc<RefCell<Vec<u8>>>,
+        explicit_protocol: Option<ImageProtocol>,
+    ) {
+        self.graphics = graphics;
+        self.colors = colors;
+        self.output = output;
+        self.cell_pixels = cell_pixels
+            .filter(|s| s.width.0 > 0 && s.height.0 > 0)
+            .map(|s| (s.width.0 as u32, s.height.0 as u32))
+            .unwrap_or_else(|| {
+                let w = cells.width().0.max(1.0);
+                let h = cells.height().0.max(1.0);
+                (10, ((10.0 * h / w).round() as u32).max(1))
+            });
+        self.explicit_protocol = explicit_protocol;
+        self.protocol = explicit_protocol.or_else(|| {
+            matches!(colors, ColorDepth::TrueColor | ColorDepth::Ansi256)
+                .then(ImageProtocol::halfblocks)
+        });
+    }
+
+    fn uses_kitty(&self, depth: ColorDepth) -> bool {
+        self.explicit_protocol.is_none()
+            && self.graphics == crate::Graphics::KittyPlaceholders
+            && depth == ColorDepth::TrueColor
+    }
+
+    pub(crate) fn shows(&self, id: NodeId) -> bool {
+        self.protocol.is_some()
+            && self
+                .entries
+                .get(&id)
+                .is_some_and(|entry| entry.picture.is_some())
+    }
+
+    pub(crate) fn finish(&mut self, buffer: &mut Buffer) {
+        for (index, color) in self.kitty_placeholders.drain(..) {
+            if let Some(cell) = buffer.content.get_mut(index)
+                && cell.symbol().starts_with(PLACEHOLDER)
+            {
+                cell.fg = color;
+                cell.modifier = Modifier::empty();
+                cell.underline_color = Color::Reset;
+            }
+        }
     }
 
     pub(crate) fn set_protocol(&mut self, protocol: Option<ImageProtocol>) -> bool {
-        if self.protocol == protocol {
+        if self.explicit_protocol == protocol && self.protocol == protocol {
             return false;
         }
+        self.explicit_protocol = protocol;
         self.protocol = protocol;
         for entry in self.entries.values_mut() {
             entry.sixel = None;
+            entry.kitty = None;
         }
         true
     }
@@ -552,6 +654,7 @@ impl ImageStore {
                     fade_ms: fade_duration_ms(&mount.options),
                     anim_origin: Instant::now(),
                     sixel: None,
+                    kitty: None,
                 },
             );
             dispatch_start(control, id, events);
@@ -638,6 +741,7 @@ impl ImageStore {
                     fade_ms: 0,
                     anim_origin: Instant::now(),
                     sixel: None,
+                    kitty: None,
                 },
             );
             if !same_source {
@@ -684,6 +788,7 @@ impl ImageStore {
                         fade_ms: 0,
                         anim_origin: Instant::now(),
                         sixel: None,
+                        kitty: None,
                     }
                 }
                 Err(err) => {
@@ -701,6 +806,7 @@ impl ImageStore {
                         fade_ms: 0,
                         anim_origin: Instant::now(),
                         sixel: None,
+                        kitty: None,
                     }
                 }
             };
@@ -733,6 +839,7 @@ impl ImageStore {
                 },
                 anim_origin: Instant::now(),
                 sixel: None,
+                kitty: None,
             },
         );
     }
@@ -950,6 +1057,8 @@ impl ImageStore {
         buffer: &mut Buffer,
     ) -> Option<SixelCandidate> {
         let protocol = self.protocol?;
+        let uses_kitty = self.uses_kitty(depth);
+        let cell_pixels = self.cell_pixels;
         if visible.is_empty() || depth == ColorDepth::Monochrome {
             return None;
         }
@@ -989,6 +1098,95 @@ impl ImageStore {
         let unclipped = i32::from(visible.width) == bounds.right - bounds.left
             && i32::from(visible.height) == bounds.bottom - bounds.top
             && region_allows_sixel(buffer, visible);
+
+        let cols = (bounds.right - bounds.left).max(0) as u32;
+        let rows = (bounds.bottom - bounds.top).max(0) as u32;
+        if uses_kitty
+            && cols > 0
+            && rows > 0
+            && (cols as usize) <= DIACRITICS.len()
+            && (rows as usize) <= DIACRITICS.len()
+        {
+            let (width_px, height_px) = capped(cols * cell_pixels.0, rows * cell_pixels.1);
+            let fit_box = if frame_points.width.0 > 0.0 && frame_points.height.0 > 0.0 {
+                frame_points
+            } else {
+                Size::new(Points(width_px as f32), Points(height_px as f32))
+            };
+            let placed = mount
+                .resize_mode
+                .fit(natural_points, fit_box, mount.options.position);
+            let kkey = KittyKey {
+                load_id: entry.load_id,
+                frame_idx,
+                cols,
+                rows,
+                cell_pixels,
+                fit_w: fit_box.width.0.to_bits(),
+                fit_h: fit_box.height.0.to_bits(),
+                placed_x: placed.origin.x.0.to_bits(),
+                placed_y: placed.origin.y.0.to_bits(),
+                placed_w: placed.size.width.0.to_bits(),
+                placed_h: placed.size.height.0.to_bits(),
+                tint,
+                alpha_q8: (alpha * 255.0).round() as u8,
+                blur_q4: (blur.min(64.0) * 16.0).round() as u16,
+            };
+            let need_transmit = entry.kitty.as_ref().is_none_or(|p| p.key != kkey);
+            if need_transmit {
+                let mut rgba = vec![0u8; (width_px * height_px * 4) as usize];
+                for py in 0..height_px {
+                    let fy = (py as f32 + 0.5) / height_px as f32 * fit_box.height.0;
+                    for px in 0..width_px {
+                        let fx = (px as f32 + 0.5) / width_px as f32 * fit_box.width.0;
+                        let c = sample_fitted_pixel(raster, placed, fx, fy, tint, alpha)
+                            .unwrap_or([0, 0, 0, 0]);
+                        let off = ((py * width_px + px) * 4) as usize;
+                        rgba[off..off + 4].copy_from_slice(&c);
+                    }
+                }
+                if blur > 0.0 {
+                    let radius =
+                        (blur * (width_px as f32 / fit_box.width.0.max(1.0))).round() as usize;
+                    if radius > 0 {
+                        box_blur_rgba(&mut rgba, width_px as usize, height_px as usize, radius);
+                    }
+                }
+                self.next_kitty_id = self.next_kitty_id % 0x00FF_FFFF + 1;
+                let kid = self.next_kitty_id;
+                if let Ok(bytes) = transmission(kid, &rgba, width_px, height_px, cols, rows) {
+                    self.output.borrow_mut().extend_from_slice(&bytes);
+                    entry.kitty = Some(KittyPlacement {
+                        key: kkey,
+                        id: kid,
+                        output: self.output.clone(),
+                    });
+                }
+            }
+            if let Some(placed) = entry.kitty.as_ref() {
+                let color = Color::Rgb(
+                    (placed.id >> 16) as u8,
+                    (placed.id >> 8) as u8,
+                    placed.id as u8,
+                );
+                for y in visible.top()..visible.bottom() {
+                    for x in visible.left()..visible.right() {
+                        let row = (i32::from(y) - bounds.top) as usize;
+                        let col = (i32::from(x) - bounds.left) as usize;
+                        let cell = &mut buffer[(x, y)];
+                        let mut symbol = String::with_capacity(12);
+                        symbol.push(PLACEHOLDER);
+                        symbol.push(DIACRITICS[row]);
+                        symbol.push(DIACRITICS[col]);
+                        cell.set_symbol(&symbol);
+                        cell.fg = color;
+                        cell.modifier = Modifier::empty();
+                        self.kitty_placeholders.push((buffer.index_of(x, y), color));
+                    }
+                }
+                return None;
+            }
+        }
 
         paint_halfblocks(
             buffer,
@@ -1476,3 +1674,107 @@ fn wrap_tmux_dcs(sixel: &str) -> String {
     out.push_str("\x1b\\");
     out
 }
+
+const MAX_TRANSMIT: u32 = 2048;
+
+fn capped(width: u32, height: u32) -> (u32, u32) {
+    let max = width.max(height);
+    if max <= MAX_TRANSMIT {
+        return (width.max(1), height.max(1));
+    }
+    let scale = MAX_TRANSMIT as f32 / max as f32;
+    (
+        ((width as f32 * scale).round() as u32).max(1),
+        ((height as f32 * scale).round() as u32).max(1),
+    )
+}
+
+/// The kitty graphics commands that transmit `rgba` (`width` × `height`)
+/// as image `id`, PNG-encoded, with a virtual placement of `cols` × `rows`
+/// Cells for Unicode placeholders; answers are suppressed (`q=2`), so none
+/// reaches the app as typed input.
+fn transmission(
+    id: u32,
+    rgba: &[u8],
+    width: u32,
+    height: u32,
+    cols: u32,
+    rows: u32,
+) -> Result<Vec<u8>, String> {
+    use image::ImageEncoder as _;
+    let mut png = Vec::new();
+    image::codecs::png::PngEncoder::new_with_quality(
+        &mut png,
+        image::codecs::png::CompressionType::Fast,
+        image::codecs::png::FilterType::Adaptive,
+    )
+    .write_image(rgba, width, height, image::ExtendedColorType::Rgba8)
+    .map_err(|e| e.to_string())?;
+    let data = base64::engine::general_purpose::STANDARD.encode(&png);
+    let mut out = Vec::with_capacity(data.len() + data.len() / CHUNK * 16 + 64);
+    let chunks: Vec<&[u8]> = data.as_bytes().chunks(CHUNK).collect();
+    for (index, chunk) in chunks.iter().enumerate() {
+        let more = u8::from(index + 1 < chunks.len());
+        if index == 0 {
+            out.extend_from_slice(
+                format!("\x1b_Ga=T,U=1,f=100,t=d,q=2,i={id},c={cols},r={rows},m={more};")
+                    .as_bytes(),
+            );
+        } else {
+            out.extend_from_slice(format!("\x1b_Gm={more};").as_bytes());
+        }
+        out.extend_from_slice(chunk);
+        out.extend_from_slice(b"\x1b\\");
+    }
+    Ok(out)
+}
+
+/// The most base64 bytes one kitty graphics command carries.
+const CHUNK: usize = 4096;
+
+/// The kitty graphics protocol's Unicode placeholder.
+pub(crate) const PLACEHOLDER: char = '\u{10EEEE}';
+
+/// The combining marks that number a placeholder's row and column, from
+/// kitty's `gen/rowcolumn-diacritics.txt`: the n-th is row or column n.
+#[rustfmt::skip]
+const DIACRITICS: [char; 297] = [
+    '\u{0305}', '\u{030D}', '\u{030E}', '\u{0310}', '\u{0312}', '\u{033D}', '\u{033E}', '\u{033F}',
+    '\u{0346}', '\u{034A}', '\u{034B}', '\u{034C}', '\u{0350}', '\u{0351}', '\u{0352}', '\u{0357}',
+    '\u{035B}', '\u{0363}', '\u{0364}', '\u{0365}', '\u{0366}', '\u{0367}', '\u{0368}', '\u{0369}',
+    '\u{036A}', '\u{036B}', '\u{036C}', '\u{036D}', '\u{036E}', '\u{036F}', '\u{0483}', '\u{0484}',
+    '\u{0485}', '\u{0486}', '\u{0487}', '\u{0592}', '\u{0593}', '\u{0594}', '\u{0595}', '\u{0597}',
+    '\u{0598}', '\u{0599}', '\u{059C}', '\u{059D}', '\u{059E}', '\u{059F}', '\u{05A0}', '\u{05A1}',
+    '\u{05A8}', '\u{05A9}', '\u{05AB}', '\u{05AC}', '\u{05AF}', '\u{05C4}', '\u{0610}', '\u{0611}',
+    '\u{0612}', '\u{0613}', '\u{0614}', '\u{0615}', '\u{0616}', '\u{0617}', '\u{0657}', '\u{0658}',
+    '\u{0659}', '\u{065A}', '\u{065B}', '\u{065D}', '\u{065E}', '\u{06D6}', '\u{06D7}', '\u{06D8}',
+    '\u{06D9}', '\u{06DA}', '\u{06DB}', '\u{06DC}', '\u{06DF}', '\u{06E0}', '\u{06E1}', '\u{06E2}',
+    '\u{06E4}', '\u{06E7}', '\u{06E8}', '\u{06EB}', '\u{06EC}', '\u{0730}', '\u{0732}', '\u{0733}',
+    '\u{0735}', '\u{0736}', '\u{073A}', '\u{073D}', '\u{073F}', '\u{0740}', '\u{0741}', '\u{0743}',
+    '\u{0745}', '\u{0747}', '\u{0749}', '\u{074A}', '\u{07EB}', '\u{07EC}', '\u{07ED}', '\u{07EE}',
+    '\u{07EF}', '\u{07F0}', '\u{07F1}', '\u{07F3}', '\u{0816}', '\u{0817}', '\u{0818}', '\u{0819}',
+    '\u{081B}', '\u{081C}', '\u{081D}', '\u{081E}', '\u{081F}', '\u{0820}', '\u{0821}', '\u{0822}',
+    '\u{0823}', '\u{0825}', '\u{0826}', '\u{0827}', '\u{0829}', '\u{082A}', '\u{082B}', '\u{082C}',
+    '\u{082D}', '\u{0951}', '\u{0953}', '\u{0954}', '\u{0F82}', '\u{0F83}', '\u{0F86}', '\u{0F87}',
+    '\u{135D}', '\u{135E}', '\u{135F}', '\u{17DD}', '\u{193A}', '\u{1A17}', '\u{1A75}', '\u{1A76}',
+    '\u{1A77}', '\u{1A78}', '\u{1A79}', '\u{1A7A}', '\u{1A7B}', '\u{1A7C}', '\u{1B6B}', '\u{1B6D}',
+    '\u{1B6E}', '\u{1B6F}', '\u{1B70}', '\u{1B71}', '\u{1B72}', '\u{1B73}', '\u{1CD0}', '\u{1CD1}',
+    '\u{1CD2}', '\u{1CDA}', '\u{1CDB}', '\u{1CE0}', '\u{1DC0}', '\u{1DC1}', '\u{1DC3}', '\u{1DC4}',
+    '\u{1DC5}', '\u{1DC6}', '\u{1DC7}', '\u{1DC8}', '\u{1DC9}', '\u{1DCB}', '\u{1DCC}', '\u{1DD1}',
+    '\u{1DD2}', '\u{1DD3}', '\u{1DD4}', '\u{1DD5}', '\u{1DD6}', '\u{1DD7}', '\u{1DD8}', '\u{1DD9}',
+    '\u{1DDA}', '\u{1DDB}', '\u{1DDC}', '\u{1DDD}', '\u{1DDE}', '\u{1DDF}', '\u{1DE0}', '\u{1DE1}',
+    '\u{1DE2}', '\u{1DE3}', '\u{1DE4}', '\u{1DE5}', '\u{1DE6}', '\u{1DFE}', '\u{20D0}', '\u{20D1}',
+    '\u{20D4}', '\u{20D5}', '\u{20D6}', '\u{20D7}', '\u{20DB}', '\u{20DC}', '\u{20E1}', '\u{20E7}',
+    '\u{20E9}', '\u{20F0}', '\u{2CEF}', '\u{2CF0}', '\u{2CF1}', '\u{2DE0}', '\u{2DE1}', '\u{2DE2}',
+    '\u{2DE3}', '\u{2DE4}', '\u{2DE5}', '\u{2DE6}', '\u{2DE7}', '\u{2DE8}', '\u{2DE9}', '\u{2DEA}',
+    '\u{2DEB}', '\u{2DEC}', '\u{2DED}', '\u{2DEE}', '\u{2DEF}', '\u{2DF0}', '\u{2DF1}', '\u{2DF2}',
+    '\u{2DF3}', '\u{2DF4}', '\u{2DF5}', '\u{2DF6}', '\u{2DF7}', '\u{2DF8}', '\u{2DF9}', '\u{2DFA}',
+    '\u{2DFB}', '\u{2DFC}', '\u{2DFD}', '\u{2DFE}', '\u{2DFF}', '\u{A66F}', '\u{A67C}', '\u{A67D}',
+    '\u{A6F0}', '\u{A6F1}', '\u{A8E0}', '\u{A8E1}', '\u{A8E2}', '\u{A8E3}', '\u{A8E4}', '\u{A8E5}',
+    '\u{A8E6}', '\u{A8E7}', '\u{A8E8}', '\u{A8E9}', '\u{A8EA}', '\u{A8EB}', '\u{A8EC}', '\u{A8ED}',
+    '\u{A8EE}', '\u{A8EF}', '\u{A8F0}', '\u{A8F1}', '\u{AAB0}', '\u{AAB2}', '\u{AAB3}', '\u{AAB7}',
+    '\u{AAB8}', '\u{AABE}', '\u{AABF}', '\u{AAC1}', '\u{FE20}', '\u{FE21}', '\u{FE22}', '\u{FE23}',
+    '\u{FE24}', '\u{FE25}', '\u{FE26}', '\u{10A0F}', '\u{10A38}', '\u{1D185}', '\u{1D186}', '\u{1D187}',
+    '\u{1D188}', '\u{1D189}', '\u{1D1AA}', '\u{1D1AB}', '\u{1D1AC}', '\u{1D1AD}', '\u{1D242}', '\u{1D243}',
+    '\u{1D244}',
+];

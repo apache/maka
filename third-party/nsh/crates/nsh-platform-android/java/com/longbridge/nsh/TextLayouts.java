@@ -951,12 +951,16 @@ final class TextLayouts {
         }
     }
 
+    /** No attachment copies as anything ({@link #copied}). */
+    static final int[] NO_COPIES = new int[0];
+    static final String[] NO_COPY_TEXTS = new String[0];
+
     /**
-     * The characters {@code start..end} of a laid out text as a copy and a
-     * screen reader take them: without hidden runs and attachments'
-     * placeholders.
+     * The characters of {@code start..end} as a copy gives them: as
+     * {@link #shown}, but an attachment whose offset is in {@code copyAt}
+     * (ascending) as the text at the same index of {@code copyTexts}.
      */
-    static String shown(CharSequence text, int start, int end) {
+    static String copied(CharSequence text, int start, int end, int[] copyAt, String[] copyTexts) {
         start = Math.max(0, Math.min(start, text.length()));
         end = Math.max(start, Math.min(end, text.length()));
         StringBuilder out = new StringBuilder(end - start);
@@ -967,12 +971,26 @@ final class TextLayouts {
             if (spanned == null || spanned.getSpans(at, next, Hidden.class).length == 0) {
                 for (int i = at; i < next; i++) {
                     char c = text.charAt(i);
-                    if (c != '\uFFFC') out.append(c);
+                    if (c != '\uFFFC') {
+                        out.append(c);
+                        continue;
+                    }
+                    int copy = java.util.Arrays.binarySearch(copyAt, i);
+                    if (copy >= 0 && copy < copyTexts.length) out.append(copyTexts[copy]);
                 }
             }
             at = next;
         }
         return out.toString();
+    }
+
+    /**
+     * The characters {@code start..end} of a laid out text as a screen
+     * reader takes them: without hidden runs and attachments' placeholders
+     * (the inline views are read on their own).
+     */
+    static String shown(CharSequence text, int start, int end) {
+        return copied(text, start, end, NO_COPIES, NO_COPY_TEXTS);
     }
 
     /**

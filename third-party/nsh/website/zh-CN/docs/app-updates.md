@@ -86,6 +86,17 @@ nsh update-manifest *.tar.gz *.zip \
 
 更新说明有多种语言时，每种语言加一个 `--notes <标签>=<文件>`，标签用 BCP 47，例如 `--notes zh-TW=CHANGES.zh-TW.md`。每种语言写成 `latest.json` 旁边的 `notes.<标签>.md`，清单里记录它的 SHA-256；和清单一起上传。用 `checkForUpdate({ locale })` 检查时，`update.notes` 就是该语言的说明，只下载这一个文件；没有该语言时用不带标签的说明。旧版运行时的应用照旧显示不带标签的说明。
 
+### 更小的下载
+
+用 `--previous` 传入上一版本的压缩包，`nsh update-manifest` 会为每个平台在清单旁写出从该版本到新版本的 zstd 补丁，一起上传即可。运行上一版本的应用会下载补丁而不是整个压缩包，用已安装的文件还原出新应用，再照常安装。已安装的文件与发布时不一致、补丁失败或结果与签名清单中的 SHA-256 不符时，自动改为下载整个压缩包。更早版本或旧版运行时的应用照旧下载压缩包。
+
+```sh
+gh release download v1.2.0 -p 'My-App-1.2.0-*' -D previous
+nsh update-manifest *.tar.gz *.zip --previous previous/* --notes CHANGES.md --key keys/update.secret
+```
+
+在 NSH 自己的发布包上，相邻版本的补丁是压缩包的 24–37%。每个平台生成约需一分钟、最多 0.7 GB 内存，适合放在发布 CI 里；还原不到一秒。
+
 ## OTA 更新
 
 只改了 TSX 的版本不需要新应用：[OTA 更新](/zh-CN/docs/ota-updates)把它作为签名包下发，已安装的应用从下次启动开始运行它，所有原生平台（包括 iOS 和 Android）都适用。优先用 OTA，改动需要更新的 NSH 运行时或原生代码时再发新应用。一份清单可以同时包含两者，应用先检查包，再检查新应用：

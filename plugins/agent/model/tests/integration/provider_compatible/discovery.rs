@@ -21,65 +21,64 @@ use super::*;
 use maka_agent_ports::provider::{
     Connection, Context, Discovery, Resolve, authentication::Credential,
 };
+use maka_mock_ai::{
+    ControlPlaneConfig, FinishReason, MockAiBuilder, ModelEntry, Protocol, TurnPlan,
+};
 use maka_providers::{api::ApiProviders, catalog::Snapshot};
-
-async fn serve_gateway(listener: TcpListener, provider: &str) {
-    let magpie = provider == "magpie";
-    let chat = provider == "openai-compatible";
-    let (mut socket, _) = listener.accept().await.unwrap();
-    let (head, _) = crate::http_request(&mut socket).await;
-    assert!(head.starts_with("GET /v1/models "));
-    assert_eq!(
-        head.to_lowercase().contains("x-magpie-drawers: 1\r\n"),
-        magpie
-    );
-    let mut rows = vec![
-        json!({"id":"codex/model", "service_tiers":[{"id":"priority","name":"Fast","description":"Faster"}], "web_search":"native"}),
-        json!({"id":"relay/model","web_search":"magpie"}),
-        json!({"id":"no-search","service_tiers":null}),
-    ];
-    if magpie {
-        rows.push(json!({"id":"images/draw","kind":"image"}));
-    }
-    let body = json!({"data":rows}).to_string();
-    socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
-    for tier in [None, Some("priority")] {
-        let (mut socket, _) = listener.accept().await.unwrap();
-        let (head, body) = crate::http_request(&mut socket).await;
-        let path = if chat {
-            "/v1/chat/completions"
-        } else {
-            "/v1/responses"
-        };
-        assert!(head.starts_with(&format!("POST {path} ")));
-        assert!(!head.to_lowercase().contains("x-magpie-drawers:"));
-        let body: Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(
-            body.get("service_tier"),
-            tier.map(|tier| json!(tier)).as_ref()
-        );
-        let events = if chat {
-            completion(&[])
-        } else {
-            "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_test\",\"status\":\"completed\",\"output\":[]}}\n\n".into()
-        };
-        response(&mut socket, 200, &events).await;
-    }
-}
 
 #[tokio::test]
 async fn compatible_connections_use_advertised_speeds_and_only_magpie_discovers_native_search() {
     let snapshot = Arc::new(Snapshot::bundled().unwrap());
     for name in ["magpie", "openai-responses-compatible", "openai-compatible"] {
         let magpie = name == "magpie";
+        let chat = name == "openai-compatible";
         let binding = ApiProviders::definition(name, snapshot.clone()).unwrap();
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let url = format!("http://{}/v1", listener.local_addr().unwrap());
-        let server = tokio::spawn(serve_gateway(listener, name));
+
+        let mut models_list = vec![
+            ModelEntry::simple("codex/model")
+                .with_extra(
+                    "service_tiers",
+                    json!([{"id":"priority","name":"Fast","description":"Faster"}]),
+                )
+                .with_extra("web_search", json!("native")),
+            ModelEntry::simple("relay/model").with_extra("web_search", json!("magpie")),
+            ModelEntry::simple("no-search").with_extra("service_tiers", Value::Null),
+        ];
+        if magpie {
+            models_list.push(ModelEntry::simple("images/draw").with_extra("kind", json!("image")));
+        }
+
+        let server = MockAiBuilder::new()
+            .control(ControlPlaneConfig {
+                models: models_list,
+                ..Default::default()
+            })
+            .handler_fn(move |req, ctx| {
+                let (expected_proto, expected_path) = if chat {
+                    (Protocol::OpenaiChatCompletions, "/v1/chat/completions")
+                } else {
+                    (Protocol::OpenaiResponsesHttp, "/v1/responses")
+                };
+                assert_eq!(req.protocol, expected_proto);
+                assert_eq!(req.path, expected_path);
+                assert!(!req.headers.contains_key("x-magpie-drawers"));
+                let expected_tier = match ctx.global_turn {
+                    1 => None,
+                    2 => Some(json!("priority")),
+                    other => panic!("unexpected turn {other}"),
+                };
+                assert_eq!(req.raw_body.get("service_tier"), expected_tier.as_ref());
+                TurnPlan::new().finish(FinishReason::Stop)
+            })
+            .start()
+            .await
+            .unwrap();
+        let url = server.base_url();
+
         let connection = Connection {
             id: "test-gateway".into(),
             revision: 1,
-            configuration: binding.configure(json!({"baseUrl":url})).unwrap(),
+            configuration: binding.configure(json!({"baseUrl": url})).unwrap(),
         };
         let models = binding
             .discover(
@@ -99,6 +98,19 @@ async fn compatible_connections_use_advertised_speeds_and_only_magpie_discovers_
             )
             .await
             .unwrap();
+        let control_reqs = server.control_plane_requests();
+        assert_eq!(control_reqs.len(), 1);
+        assert_eq!(control_reqs[0].method, "GET");
+        assert_eq!(control_reqs[0].path, "/v1/models");
+        assert_eq!(
+            control_reqs[0]
+                .headers
+                .get("x-magpie-drawers")
+                .map(String::as_str)
+                == Some("1"),
+            magpie
+        );
+
         assert_eq!(models.len(), 3);
         assert_eq!(models[0].service_tiers[0].name, "Fast");
         for model in &models {
@@ -114,7 +126,8 @@ async fn compatible_connections_use_advertised_speeds_and_only_magpie_discovers_
             thinking_level: None,
             service_tier: Some("ultrafast".into()),
         };
-        assert!(matches!(binding.prepare(selection.clone()).await,
+        assert!(matches!(
+            binding.prepare(selection.clone()).await,
             Err(maka_agent_ports::provider::Error::Invalid(reason)) if reason.contains("ultrafast")
         ));
         let executor = ModelExecutor::new(Duration::from_secs(10)).unwrap();
@@ -134,6 +147,7 @@ async fn compatible_connections_use_advertised_speeds_and_only_magpie_discovers_
             }
             stream.cancel_and_wait().await.unwrap();
         }
-        server.await.unwrap();
+        assert_eq!(server.request_count(), 2);
+        server.shutdown().await;
     }
 }

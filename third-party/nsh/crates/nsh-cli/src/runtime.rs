@@ -214,11 +214,12 @@ pub(crate) fn android(dev: bool, abis: &[String]) -> anyhow::Result<PathBuf> {
 }
 
 /// The Android runtime `nsh test --target android` runs apps in: the
-/// development one, a Rust app's too ([`crate::rust_app::RustApp::test_android`]).
-pub(crate) fn test_android() -> anyhow::Result<PathBuf> {
+/// development one, a Rust app's too, built for `abis` (empty: every ABI of
+/// the prebuilt runtime) ([`crate::rust_app::RustApp::test_android`]).
+pub(crate) fn test_android(abis: &[String]) -> anyhow::Result<PathBuf> {
     let prebuilt = prebuilt_android(true)?;
     match crate::rust_app::current() {
-        Some(app) => app.test_android(&prebuilt),
+        Some(app) => app.test_android(&prebuilt, abis),
         None => Ok(prebuilt),
     }
 }
@@ -565,6 +566,11 @@ pub(crate) fn file_for(
     let mut host_target = None;
     if let Some(root) = checkout(bin) {
         let mut args = vec!["build", "-p", name];
+        // Web views need WebKitGTK 6.0 to build: without it, the host shows
+        // a placeholder instead (#2377).
+        if matches!(platform, Platform::Linux) && !runner && !linux_web_views() {
+            args.push("--no-default-features");
+        }
         // GPUI has its own workspace. Run there so Cargo reads its config,
         // and ask Cargo where it builds rather than imposing the CLI's target.
         let workspace = if matches!(platform, Platform::Gpui) {
@@ -850,6 +856,28 @@ pub(crate) fn copy_browser_host(source: &Path, target: &Path) -> anyhow::Result<
         }
     }
     Ok(())
+}
+
+/// Whether this machine can build Linux web views: `pkg-config` finds
+/// WebKitGTK 6.0, or there is no `pkg-config` to ask (the build says
+/// then). A development host built without them shows a placeholder for
+/// each web view, which this says once (#2377). Release runners do not
+/// ask: an app that makes a web view must build with them.
+pub(crate) fn linux_web_views() -> bool {
+    static FOUND: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *FOUND.get_or_init(|| {
+        let found = std::process::Command::new("pkg-config")
+            .args(["--exists", "webkitgtk-6.0"])
+            .status()
+            .map_or(true, |s| s.success());
+        if !found {
+            crate::ui::warn(
+                "WebKitGTK 6.0 is not installed (webkitgtk-6.0 / libwebkitgtk-6.0-dev): \
+                 the development host builds without web views, which show a placeholder",
+            );
+        }
+        found
+    })
 }
 
 #[cfg(test)]

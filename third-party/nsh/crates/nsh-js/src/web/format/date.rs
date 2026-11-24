@@ -509,6 +509,53 @@ mod tests {
     }
 
     #[test]
+    fn dates_with_names_in_more_languages() {
+        let long = Format {
+            month: Some(Month::Text(Text::Long)),
+            ..DATE
+        };
+        let short = Format {
+            month: Some(Month::Text(Text::Short)),
+            ..DATE
+        };
+        // As browsers format them, but Russian's year without its " г.".
+        for (tag, long_date, short_date) in [
+            ("tr-TR", "16 Ekim 2026", "16 Eki 2026"),
+            ("ru-RU", "16 октября 2026", "16 окт. 2026"),
+            ("pl-PL", "16 października 2026", "16 paź 2026"),
+            ("sv-SE", "16 oktober 2026", "16 okt. 2026"),
+            ("id-ID", "16 Oktober 2026", "16 Okt 2026"),
+            ("vi-VN", "16 tháng 10 2026", "16 thg 10, 2026"),
+            ("hi-IN", "16 अक्टूबर, 2026", "16 अक्टू॰ 2026"),
+            ("th-TH", "16 ตุลาคม 2026", "16 ต.ค. 2026"),
+        ] {
+            assert_eq!(fmt(tag, long), long_date, "{tag}");
+            assert_eq!(fmt(tag, short), short_date, "{tag}");
+        }
+    }
+
+    #[test]
+    fn turkish_weekdays_follow_the_date() {
+        let long = Format {
+            weekday: Some(Text::Long),
+            month: Some(Month::Text(Text::Long)),
+            ..DATE
+        };
+        assert_eq!(fmt("tr-TR", long), "16 Ekim 2026 Cuma");
+        let short = Format {
+            weekday: Some(Text::Short),
+            month: Some(Month::Text(Text::Short)),
+            ..DATE
+        };
+        assert_eq!(fmt("tr-TR", short), "16 Eki 2026 Cum");
+        let numeric = Format {
+            weekday: Some(Text::Long),
+            ..DATE
+        };
+        assert_eq!(fmt("tr-TR", numeric), "16.10.2026 Cuma");
+    }
+
+    #[test]
     fn times_in_12_and_24_hours() {
         assert_eq!(fmt("en-US", TIME), "3:04:05 PM");
         assert_eq!(fmt("en-GB", TIME), "15:04:05");

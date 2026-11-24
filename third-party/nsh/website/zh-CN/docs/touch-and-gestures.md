@@ -43,6 +43,7 @@ fn App() -> impl IntoElement {
 
 ```tsx tabs
 import { mount, signal, Text, View } from "nsh";
+import { Window } from "nsh/desktop";
 
 function App() {
   const count = signal(0);
@@ -61,7 +62,11 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 | Rust | TSX | 默认值 | 说明 |
@@ -91,7 +96,7 @@ mount(App);
 | `.active(\|s\| ..)` | `activeStyle` | `active:` | 按下时。 |
 | `.hover(\|s\| ..)` | `hoverStyle` | `hover:` | 指针悬停在上面时（桌面、iPad 指针、浏览器）。 |
 | `.focus(\|s\| ..)` | `focusStyle` | `focus:` | 获得焦点时。 |
-| `.focus_visible(\|s\| ..)` | `focusVisibleStyle` | `focus-visible:` | 获得焦点并显示焦点时：键盘把焦点移到了这里（按压或轻点给出的焦点不显示）。 |
+| `.focus_visible(\|s\| ..)` | `focusVisibleStyle` | `focus-visible:` | 获得焦点并显示焦点时：键盘把焦点移到了这里（在 macOS 和 iOS 上按压或轻点不把焦点交给控件；在其他平台上以及对接收按键的视图，按压给出的焦点不显示）。 |
 | `.focus_within(\|s\| ..)` | `focusWithinStyle` | `focus-within:` | 自身或内部的视图获得焦点时：包住正在编辑的输入框的外框。 |
 | `.disabled_style(\|s\| ..)` | `disabledStyle` | `disabled:` | 禁用时。 |
 | `.ripple(Ripple { .. })` | `android={{ ripple }}` | | Android 的 Material 水波纹（`color`、`borderless`、`radius`、`foreground`），叠加在这些样式之上。 |
@@ -267,6 +272,7 @@ fn App() -> impl IntoElement {
 ```tsx tabs
 import { mount, View } from "nsh";
 import { createAnimatedValue } from "nsh";
+import { Window } from "nsh/desktop";
 
 function App() {
   const x = createAnimatedValue(0);
@@ -286,7 +292,11 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 | Rust | TSX | 说明 |
@@ -298,7 +308,7 @@ mount(App);
 | `.on_pinch_start` / `.on_pinch_end` | `onPinchStart` / `onPinchEnd` | 捏合开始 / 结束：缩放倍数和速度（`GestureEvent`）。 |
 | `.on_rotation_start` / `.on_rotation_end` | `onRotationStart` / `onRotationEnd` | 旋转开始 / 结束：角度（Rust 中为 `GestureEvent<Radians>`）和速度。 |
 
-拖动事件包含位移（`translation`，一个 `Point`：自开始以来移动的点数）、速度（`velocity_x` / `velocity_y`；TSX：`velocity`，一个 `Point`：每**秒**的点数）以及此刻所绑定的值（`value_x` / `value_y`；TSX：`value`，`{ x?, y? }`，含 `pan` 绑定的轴）。
+拖动事件包含拖动开始的位置（`origin`，一个 `Point`，以 surface 的点为单位，与触摸的 page 位置相同；开始和结束时一样）、位移（`translation`，一个 `Point`：自开始以来移动的点数）、速度（`velocity_x` / `velocity_y`；TSX：`velocity`，一个 `Point`：每**秒**的点数）以及此刻所绑定的值（`value_x` / `value_y`；TSX：`value`，`{ x?, y? }`，含 `pan` 绑定的轴）。
 
 原生端替你做了这些事：
 
@@ -489,6 +499,7 @@ fn sketch() -> impl IntoElement {
 
 ```tsx tabs
 import { Canvas, type GestureResponderEvent, mount, signal } from "nsh";
+import { Window } from "nsh/desktop";
 
 function Sketch() {
   const strokes = signal<[number, number][][]>([]);
@@ -518,7 +529,11 @@ function Sketch() {
   );
 }
 
-mount(Sketch);
+mount(() => (
+  <Window id="main">
+    <Sketch />
+  </Window>
+));
 ```
 
 运行方式：带有任何触摸或响应者处理函数的视图会在原生端监听触摸；平台把发生在它上面（及其内部）的触摸连同沿途正在监听的视图路径一起上报，协商过程在 NSH 的 Rust 核心中进行，按顺序询问接管声明并调用你的处理函数：先从最外层视图向内处理捕获阶段，再从目标向外处理其他的。由此有两个结果：
@@ -562,6 +577,7 @@ fn ball() -> impl IntoElement {
 ```tsx tabs
 import { mount, signal, View } from "nsh";
 import { PanResponder } from "nsh";
+import { Window } from "nsh/desktop";
 
 function Ball() {
   const pos = signal({ x: 0, y: 0 });
@@ -582,7 +598,11 @@ function Ball() {
   );
 }
 
-mount(Ball);
+mount(() => (
+  <Window id="main">
+    <Ball />
+  </Window>
+));
 ```
 
 手势状态：
@@ -626,8 +646,39 @@ view()
 |---|---|---|
 | `active_offset_x`、`active_offset_y` | `activeOffsetX`、`activeOffsetY` | 手指沿该轴离按下的位置超过这个距离（任一方向，单位点）时，拖动激活。 |
 | `fail_offset_x`、`fail_offset_y` | `failOffsetX`、`failOffsetY` | 手指先超过这个距离时拖动失败：触摸留给滚动视图。 |
+| `direction` | `direction` | 只在这一个方向上激活（`left`、`right`、`up`、`down`）：反方向的拖动，或者主要横穿这个方向的拖动，会失败并留给外层的视图。 |
+| `edge` | `edge` | 只有在这条边（`left`、`right`、`top`、`bottom`）按下的手指才能开始拖动，方向为离开这条边。 |
 
-`PanActivation::horizontal(active, fail)` 和 `PanActivation::vertical(active, fail)` 设置常用的组合。没有激活偏移时，任一方向移动 10 点后激活。激活之前，外层的滚动视图会等待它（iOS），视图的其他接管声明也不会被询问。激活后，滚动视图不能再拿走这些触摸，视图成为响应者（先 grant，再收到移动）；失败时滚动视图照常滚动。在 TSX 中，`PanResponder` 的 `panHandlers` 也可以一起用：和这个属性放在同一个视图上，`onPanResponderGrant` 在激活时运行。
+`PanActivation::horizontal(active, fail)` 和 `PanActivation::vertical(active, fail)` 设置常用的组合。没有激活偏移时，任一方向移动 10 点后激活。激活之前，外层的滚动视图会等待它（iOS），视图的其他接管声明也不会被询问。视图里面不能沿拖动所在方向滚动的滚动视图（横向拖动的视图里的纵向列表）只接手拖动失败的手势，与其他平台相同：斜向拖动归手指先超过的那个偏移。激活后，滚动视图不能再拿走这些触摸，视图成为响应者（先 grant，再收到移动）；失败时滚动视图照常滚动。在 TSX 中，`PanResponder` 的 `panHandlers` 也可以一起用：和这个属性放在同一个视图上，`onPanResponderGrant` 在激活时运行。
+
+### 单向拖动与屏幕边缘拖动
+
+视图自己的拖动（`pan` 值、`onPanStart` / `onPanEnd`）同样遵循它的拖动激活设置：激活时才开始。比如抽屉从屏幕左边缘拖出来打开，打开后的内容只在向左拖时关闭，其他方向的拖动交给下面的分页或列表：
+
+```rust tabs
+// 从屏幕左边缘拖出来打开。
+let opener = view()
+    .pan_activation(PanActivation::default().edge(PanEdge::Left))
+    .pan_values(Some(&offset), None)
+    .on_pan_end(move |e: &PanEvent| settle(e));
+// 打开的抽屉：只有向左拖才关闭。
+let content = view()
+    .pan_activation(PanActivation::default().direction(PanDirection::Left))
+    .pan_values(Some(&offset), None)
+    .on_pan_end(move |e: &PanEvent| settle(e));
+```
+
+```tsx tabs
+{/* 从屏幕左边缘拖出来打开。 */}
+<View panActivation={{ edge: "left" }} pan={{ x: offset }} onPanEnd={settle} />
+{/* 打开的抽屉：只有向左拖才关闭。 */}
+<View panActivation={{ direction: "left" }} pan={{ x: offset }} onPanEnd={settle} />
+```
+
+边缘拖动只在手指按在离这条边 20 点以内时开始：手机和平板上是屏幕的边，桌面上是窗口的边，Web 上是页面的边。拖动事件的 `origin` 给出按下的位置。
+
+- **iOS** 用系统的屏幕边缘拖动手势识别。在导航栈里，返回手势优先：从左边缘拖动时，能返回的页面会返回，栈里的第一个页面则由这个拖动接手。
+- **Android** 在手势导航下把左右两边留给系统的返回手势：系统在那里接手的滑动会执行返回，已经开始的拖动以 `cancelled` 结束。使用三键导航时，从这条边开始的拖动都归这个拖动。
 
 > [!NOTE]
 > 所有速度的单位都是每秒的点数：响应者手势的 `vx` / `vy`、拖动的速度以及弹簧或衰减的速度都是，所以 `vx` 可以直接传给弹簧或衰减。

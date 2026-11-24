@@ -1,4 +1,5 @@
 import { mount, platform, signal, Text, View } from "nsh";
+import { Window } from "nsh/desktop";
 import { TextView, type TextViewRef } from "nsh/base";
 
 // A selectable view and a selectable TextView that report what is selected
@@ -38,4 +39,4 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => <Window id="main">{App}</Window>);

@@ -2,6 +2,7 @@
 // parameters, events, calls the test's handlers answer, posts it records,
 // and the URLs the app opens, recorded instead of opened.
 import { mount, signal, Text, View } from "nsh";
+import { Window } from "nsh/desktop";
 import { host } from "nsh";
 import { openUrl } from "nsh";
 import { TextView } from "nsh/base";
@@ -46,4 +47,4 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => <Window id="main">{App}</Window>);

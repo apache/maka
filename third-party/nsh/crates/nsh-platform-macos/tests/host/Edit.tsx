@@ -3,7 +3,7 @@
 // Undo and Redo around. `Edit.test.tsx` runs it on the macOS host.
 import { mount, signal, Text, View, WebView } from "nsh";
 import { Editor } from "nsh/base";
-import { Menu } from "nsh/desktop";
+import { Menu, Window } from "nsh/desktop";
 
 function App() {
   const text = signal("one");
@@ -24,4 +24,4 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => <Window id="main">{App}</Window>);

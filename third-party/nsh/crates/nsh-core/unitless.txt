@@ -8,6 +8,7 @@ animation::animator::Animator::deadline ->                       # time
 animation::animator::Animator::deadline(now)                     # time
 animation::animator::Animator::frame_rate ->                     # a frame rate (Hz)
 animation::animator::Animator::tick(now)                         # time
+animation::animator::Animator::tick_frame(now)                   # time
 animation::animator::Animator::transform_moved(amount)           # a gesture amount fed to a generic animated value (a pinch scale, a rotation in degrees)
 animation::driver::sample_driver ->                              # generic animated values, sampled
 animation::driver::sample_driver(from)                           # a generic animated value (any prop: opacity, a color channel, a length)
@@ -21,6 +22,7 @@ animation::graph::Graph::set(new)                                # a generic ani
 animation::graph::Graph::deadline ->                             # time
 animation::graph::Graph::deadline(now)                           # time
 animation::graph::Graph::tick(now)                               # time
+animation::graph::Graph::tick_frame(now)                         # time
 animation::graph::Graph::value ->                                # a generic animated value (any prop: opacity, a color channel, a length)
 animation::ops::AnimationOp::Adjust.factor                       # an affine multiplier of a generic animated value
 animation::ops::AnimationOp::Adjust.offset                       # a generic animated value (any prop: opacity, a color channel, a length)
@@ -107,6 +109,7 @@ desktop::menu_icon::want(scale)                                  # device pixels
 desktop::window_state::Display.refresh_rate                     # a refresh rate (Hz)
 desktop::window_state::Display.scale_factor                     # device pixels per point, a ratio
 desktop::window_state::WindowState.scale_factor                 # device pixels per point, a ratio
+effects::ClipInset::lerp(t)                                      # transition progress (easing curve coordinates, unit square)
 effects::Filter::Brightness.0                                    # a filter amount (1 leaves the image as it is)
 effects::Filter::Contrast.0                                      # a filter amount (1 leaves the image as it is)
 effects::Filter::Grayscale.0                                     # a filter amount (1 leaves the image as it is)
@@ -261,6 +264,10 @@ scroll::snap_duration(velocity)                                  # a velocity, p
 scroll::spokes ->                                                # an opacity per spoke, 0..1
 scroll::wheel_end(vx)                                            # a velocity, points per second
 scroll::wheel_end(vy)                                            # a velocity, points per second
+scroll::wheel_glide::Glide::end ->                               # time
+scroll::wheel_glide::Glide::new(now)                             # time
+scroll::wheel_glide::Glide::retargeted(now)                      # time
+scroll::wheel_glide::Glide::value(now)                           # time
 shader::UniformValue::Number.0                                  # a uniform's value, whatever the app's program makes of it
 shader::TransitionKey::number(n)                                 # a transition's value: a key compared for equality, no quantity
 ops::Prop::TransitionDuration.0                                  # time (milliseconds, as JS gives it)

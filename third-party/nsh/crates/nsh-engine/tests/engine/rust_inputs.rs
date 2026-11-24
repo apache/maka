@@ -1,11 +1,12 @@
 //! A Rust component's input on the engine: its bar over the keyboard is an
 //! input accessory holding its content, and the selection, keys and text
-//! the platform reports reach the listeners decoded.
+//! the platform reports reach the listeners decoded. A rich editor's bar is
+//! its typing input's.
 
 use std::{collections::HashMap, time::Duration};
 
 use crossbeam_channel::Receiver;
-use nsh_base::input;
+use nsh_base::{input, rich_editor::view::rich_editor};
 use nsh_core::{
     ApproxTextEngine, EventKind, EventPayload, MountBatch, MountItem, NodeId, PayloadValue,
     ViewKind,
@@ -43,6 +44,24 @@ fn Field() -> impl IntoElement {
         }))
 }
 
+/// A rich editor with a formatting bar over the keyboard, named once the
+/// editor first takes the focus, and one without a bar.
+#[component]
+fn Notes() -> impl IntoElement {
+    let bar = signal(None::<SharedString>);
+    view()
+        .flex_1()
+        .child(
+            rich_editor()
+                .h(px(120.0))
+                .accessibility_label("Notes")
+                .input_accessory(Prop::bind(move || bar.get()))
+                .on_focus(move || bar.set(Some("format".into()))),
+        )
+        .child(rich_editor().h(px(120.0)).accessibility_label("Plain"))
+        .child(input_accessory_view("format").child(text("Bold")))
+}
+
 /// The views made, their parents, the texts and the inputs' accessories.
 #[derive(Default)]
 struct Seen {
@@ -50,6 +69,7 @@ struct Seen {
     parents: HashMap<NodeId, NodeId>,
     texts: Vec<(NodeId, String)>,
     accessories: HashMap<NodeId, Option<NodeId>>,
+    labels: HashMap<NodeId, String>,
 }
 
 impl Seen {
@@ -68,6 +88,17 @@ impl Seen {
                     MountItem::Input { id, config } => {
                         self.accessories.insert(id, config.accessory);
                     }
+                    MountItem::ViewProps { id, props } => {
+                        if let Some(label) = &props.accessibility.label {
+                            self.labels.insert(id, label.to_string());
+                        }
+                    }
+                    MountItem::AccessibilityLabel {
+                        id,
+                        label: Some(label),
+                    } => {
+                        self.labels.insert(id, label.to_string());
+                    }
                     _ => {}
                 }
             }
@@ -79,6 +110,17 @@ impl Seen {
             .iter()
             .find(|c| c.1 == kind)
             .unwrap_or_else(|| panic!("no {kind:?}: {:?}", self.created))
+            .0
+    }
+
+    /// The input screen readers call `label`.
+    fn input(&self, label: &str) -> NodeId {
+        self.created
+            .iter()
+            .find(|(id, kind)| {
+                *kind == ViewKind::Input && self.labels.get(id).is_some_and(|l| l == label)
+            })
+            .unwrap_or_else(|| panic!("no input {label}: {:?}", self.labels))
             .0
     }
 
@@ -111,8 +153,12 @@ fn start() -> (Engine, Receiver<MountBatch>, Seen) {
 }
 
 fn start_on(os: nsh_core::platform::Os) -> (Engine, Receiver<MountBatch>, Seen) {
+    start_root(Root::of::<Field>(), os)
+}
+
+fn start_root(root: Root, os: nsh_core::platform::Os) -> (Engine, Receiver<MountBatch>, Seen) {
     let (tx, rx) = crossbeam_channel::unbounded();
-    let mut config = EngineConfig::new(Root::of::<Field>());
+    let mut config = EngineConfig::new(root);
     config.environment.os = os;
     let engine = Engine::start(config, || ApproxTextEngine, ChannelSink(tx)).unwrap();
     let mut seen = Seen::default();
@@ -171,4 +217,39 @@ fn a_rust_input_hears_its_selection_keys_and_text() {
     for text in ["selected 0–6", "keys: a", "5 characters"] {
         assert!(seen.shows(text), "{text}: {:?}", seen.texts);
     }
+}
+
+#[test]
+fn a_rich_editors_accessory_is_its_typing_inputs() {
+    let (engine, rx, mut seen) = start_root(Root::of::<Notes>(), nsh_core::platform::Os::Ios);
+    let notes = seen.input("Notes");
+    let plain = seen.input("Plain");
+    let accessory = seen.of(ViewKind::InputAccessory);
+    assert!(seen.inside(seen.text("Bold"), accessory));
+    assert_eq!(seen.accessories.get(&notes), Some(&None));
+    // Named later, the bar follows.
+    engine
+        .control()
+        .dispatch_event(notes, EventKind::Focus, EventPayload::None);
+    seen.drain(&rx);
+    assert_eq!(seen.accessories.get(&notes), Some(&Some(accessory)));
+    assert_eq!(seen.accessories.get(&plain), Some(&None));
+}
+
+#[test]
+fn a_rich_editors_accessory_stays_empty_off_ios() {
+    let (engine, rx, mut seen) = start_root(Root::of::<Notes>(), nsh_core::platform::Os::Android);
+    let notes = seen.input("Notes");
+    engine
+        .control()
+        .dispatch_event(notes, EventKind::Focus, EventPayload::None);
+    seen.drain(&rx);
+    assert!(
+        !seen
+            .created
+            .iter()
+            .any(|(_, kind)| *kind == ViewKind::InputAccessory)
+    );
+    assert!(!seen.shows("Bold"));
+    assert_eq!(seen.accessories.get(&notes), Some(&None));
 }

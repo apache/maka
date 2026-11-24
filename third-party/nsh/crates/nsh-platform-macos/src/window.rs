@@ -451,6 +451,45 @@ pub(crate) struct AppWindow {
     /// The app called `focus()` while it waited for its first frame
     /// (`Window.open(..).focus()`): it shows focused.
     focus_requested: Cell<bool>,
+    /// When it opened (a count): the oldest normal window still open is
+    /// the app's primary one ([`primary`]).
+    opened: u64,
+}
+
+thread_local! {
+    /// How many of the app's own windows opened so far.
+    static OPENED: Cell<u64> = const { Cell::new(0) };
+}
+
+/// The size and scale of the app's primary window: the oldest of its own
+/// normal windows still open that was given a size. What the app sees as
+/// `windowSize()` and `pixelRatio()`; `None` while it shows none.
+pub(crate) fn primary(surface: &Surface) -> Option<(Size<Points>, f32)> {
+    let windows = surface.windows.try_borrow().ok()?;
+    windows
+        .values()
+        .filter(|w| w.kind == WindowKind::Normal)
+        .filter_map(|w| w.reported.get().map(|size| (w, size)))
+        .min_by_key(|(w, _)| w.opened)
+        .map(|(w, size)| (size, w.window.backingScaleFactor() as f32))
+}
+
+/// The container for surface-wide UI. Among visible windows, prefer the
+/// key normal window, then the main normal window, then another normal
+/// window. An embedded surface may have no app window of its own.
+pub(crate) fn visible_container(surface: &Surface) -> Option<Retained<NSView>> {
+    let windows = surface.windows.borrow();
+    let normal = || {
+        windows
+            .values()
+            .filter(|w| w.kind == WindowKind::Normal && w.window.isVisible())
+    };
+    normal()
+        .find(|w| is_key(&w.window))
+        .or_else(|| normal().find(|w| w.window.isMainWindow()))
+        .or_else(|| normal().next())
+        .or_else(|| windows.values().find(|w| w.window.isVisible()))
+        .map(|w| w.container.clone())
 }
 
 /// The state of window `id` (the main window's for the root) as it is now;
@@ -1214,6 +1253,7 @@ pub(crate) fn hide(surface: &Surface, id: NodeId, window: &NSWindow) {
     if now {
         window.orderOut(None);
         lost_key(surface, window);
+        crate::app::sync_window_active(surface.key());
     }
 }
 
@@ -1433,6 +1473,11 @@ fn open_window(surface: &Rc<Surface>, view: &NshView, open: &OpenWindow) {
     container.setWantsLayer(true);
     view.ns()
         .setFrame(NSRect::new(NSPoint::new(0.0, 0.0), content));
+    // Mounted views disable autoresizing translation to skip per-view Auto
+    // Layout storage (`mount.rs`), so re-enable it here: once any descendant
+    // (such as a glass or backdrop view) activates Auto Layout in this window,
+    // AppKit otherwise ignores the root's autoresizing mask on resize.
+    view.ns().setTranslatesAutoresizingMaskIntoConstraints(true);
     view.ns().setAutoresizingMask(
         NSAutoresizingMaskOptions::ViewWidthSizable | NSAutoresizingMaskOptions::ViewHeightSizable,
     );
@@ -1480,6 +1525,10 @@ fn open_window(surface: &Rc<Surface>, view: &NshView, open: &OpenWindow) {
             title_bar_area: Cell::new(None),
             showing: Cell::new(Showing::Waiting(0)),
             focus_requested: Cell::new(false),
+            opened: OPENED.with(|n| {
+                n.set(n.get() + 1);
+                n.get()
+            }),
         },
     );
     {
@@ -1519,6 +1568,7 @@ fn open_window(surface: &Rc<Surface>, view: &NshView, open: &OpenWindow) {
         crate::file_drop::register(view.ns());
     }
     resized(surface, view);
+    crate::fps::attach_for_surface(surface);
     // Shown with its first frame, or late.
     let key = surface.key();
     crate::surface::after(FIRST_FRAME_MS, move || {
@@ -1645,6 +1695,19 @@ fn first_frame(surface: &Surface, id: NodeId) {
         crate::window_state::shown(watch, &window)
     });
     report(surface, id);
+}
+
+/// Whether a window of the app's own is still opening, hidden until its
+/// first frame ([`batch_applied`], or [`FIRST_FRAME_MS`] after it opened):
+/// AppKit gives it no mouse events until it shows, so the test agent waits
+/// for it (`nsh_testing::agent::Native::opening`).
+#[cfg(feature = "dev")]
+pub(crate) fn opening(surface: &Surface) -> bool {
+    surface.windows.try_borrow().is_ok_and(|windows| {
+        windows
+            .values()
+            .any(|w| matches!(w.showing.get(), Showing::Waiting(_)))
+    })
 }
 
 /// The standalone app's main window is made: nsh.json `window`'s
@@ -1823,6 +1886,8 @@ pub(crate) fn resized(surface: &Surface, view: &NshView) {
     view.state_mut().frame = Bounds::new(point(Points(0.0), Points(0.0)), size);
     surface.control(|c| c.set_root_size(id, size, EdgeInsets::default()));
     crate::navigation::window_resized(surface, view);
+    // The primary window's size is the app's `windowSize()`.
+    surface.window_environment();
 }
 
 /// The displays changed: the windows of the app's own read their state
@@ -1836,6 +1901,8 @@ pub(crate) fn screens_changed(surface: &Surface) {
     for id in ids {
         state_changed(surface, id);
     }
+    // The primary window may be on a display of another scale now.
+    surface.window_environment();
 }
 
 // --- The key window in the background -----------------------------------------------------
@@ -1869,6 +1936,14 @@ pub(crate) fn app_key_window(mtm: MainThreadMarker) -> Option<Retained<NSWindow>
 
 /// Whether `window` has the keyboard (`WindowState.focused`): it is the
 /// key window, or the one that would be in a background app.
+/// Whether any app window owned by `surface` currently holds the keyboard.
+pub(crate) fn has_key_window(surface: &Surface) -> bool {
+    surface
+        .windows
+        .try_borrow()
+        .is_ok_and(|ws| ws.values().any(|w| is_key(&w.window)))
+}
+
 pub(crate) fn is_key(window: &NSWindow) -> bool {
     window.isKeyWindow()
         || (in_background(MainThreadMarker::from(window))
@@ -1899,6 +1974,7 @@ pub(crate) fn became_key(surface: &Surface, window: &NSWindow) {
     if let Some(id) = id_of(surface, window) {
         report(surface, id);
     }
+    crate::app::sync_window_active(surface.key());
 }
 
 /// `window` hid, minimized or closed: in a background app, when it was the
@@ -1911,7 +1987,7 @@ fn lost_key(surface: &Surface, window: &NSWindow) {
     BACKGROUND_KEY.with(|k| k.borrow_mut().take());
     match surface.root.ns().window() {
         Some(main) if main.isVisible() && !main.isMiniaturized() => became_key(surface, &main),
-        _ => {}
+        _ => crate::app::sync_window_active(surface.key()),
     }
 }
 
@@ -2149,8 +2225,11 @@ pub(crate) fn removed(surface: &Surface, view: &NshView) -> bool {
     let window = w.window.clone();
     close(w);
     lost_key(surface, &window);
+    crate::app::sync_window_active(surface.key());
     // A link made from its root would neither fire nor let the root go.
     surface.follow_windows();
+    // Another window may be the primary one now.
+    surface.window_environment();
     true
 }
 
@@ -2160,11 +2239,15 @@ pub(crate) fn close_all(surface: &Surface) {
     let windows: Vec<(NodeId, AppWindow)> = surface.windows.borrow_mut().drain().collect();
     for (id, w) in windows {
         dock::set(surface.key(), id, None);
+        let window = w.window.clone();
         close(w);
+        lost_key(surface, &window);
     }
     dock::set(surface.key(), ROOT_ID, None);
     surface.main_window.reset();
     surface.follow_windows();
+    surface.window_environment();
+    crate::app::sync_window_active(surface.key());
 }
 
 fn close(w: AppWindow) {
@@ -2401,6 +2484,12 @@ define_class!(
             Bool::YES
         }
 
+        #[unsafe(method(windowDidBecomeKey:))]
+        fn window_did_become_key(&self, _notification: &objc2_foundation::NSNotification) {
+            let (key, _) = *self.ivars();
+            crate::app::sync_window_active(key);
+        }
+
         #[unsafe(method(windowDidResignKey:))]
         fn window_did_resign_key(&self, _notification: &objc2_foundation::NSNotification) {
             let (key, id) = *self.ivars();
@@ -2409,6 +2498,7 @@ define_class!(
                 if let Some(surface) = Surface::with_key(key) {
                     resigned_key(&surface, id);
                 }
+                crate::app::sync_window_active(key);
             });
         }
     }

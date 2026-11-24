@@ -28,22 +28,18 @@ mod portable;
 mod restore_crash;
 use futures_util::FutureExt;
 use host::{Host, Sandbox};
-use http_body_util::{BodyExt, Full, StreamBody, combinators::UnsyncBoxBody};
-use hyper::{
-    Request, Response,
-    body::{Bytes, Frame, Incoming},
-    service::service_fn,
-};
-use hyper_util::rt::TokioIo;
 use maka_capabilities::call::{Attachments, ReadResource, ResourceEncoding};
 use maka_host_runtime::application::{host::Client, transport::Reply};
+use maka_mock_ai::{
+    ControlPlaneConfig, FinishReason, MockAiBuilder, MockAiServer, ModelEntry, NormalizedRequest,
+    Protocol, TurnContext, TurnPlan, Usage,
+};
 use maka_plugin_core::{
     contract::ResourceType,
     operation::{OperationCleanup, OperationOutcome, OperationResult, Receipt},
 };
 use serde_json::{Value, json};
 use std::{
-    convert::Infallible,
     ops::Range,
     panic::AssertUnwindSafe,
     sync::{
@@ -52,7 +48,7 @@ use std::{
     },
     time::Duration,
 };
-use tokio::{net::TcpListener, sync::mpsc, task::JoinSet};
+use tokio::{sync::mpsc, task::JoinSet};
 use tokio_util::sync::CancellationToken;
 
 struct FixtureKey;
@@ -189,192 +185,120 @@ async fn publish_workspace_checkpoint(client: &Client, session: &str, expected: 
     published["state"]["head"].clone()
 }
 
-type Body = UnsyncBoxBody<Bytes, Infallible>;
-fn response(body: String, content_type: &str) -> Response<Body> {
-    Response::builder()
-        .header("content-type", content_type)
-        .header("connection", "close")
-        .body(Full::new(Bytes::from(body)).boxed_unsync())
-        .unwrap()
-}
-fn sse(delta: Value, finish: &str) -> String {
-    sse_with_input_usage(delta, finish, 100)
-}
-
-fn sse_with_input_usage(delta: Value, finish: &str, input_tokens: u64) -> String {
-    let first = json!({"id":"mainline","object":"chat.completion.chunk","choices":[{"index":0,"delta":delta,"finish_reason":null}]});
-    let last = json!({"id":"mainline","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":finish}],
-        "usage":{"prompt_tokens":input_tokens,"completion_tokens":10,"total_tokens":input_tokens + 10}});
-    format!("data: {first}\n\ndata: {last}\n\ndata: [DONE]\n\n")
-}
-
-async fn model(
-    request: Request<Incoming>,
-    nonce: &str,
-    shell_command: &str,
-    proposed: &AtomicBool,
-    stopped: &AtomicBool,
-    held: &AtomicBool,
-    events: &mpsc::UnboundedSender<&'static str>,
-) -> Response<Body> {
-    if request.method() == hyper::Method::GET {
-        assert!(request.uri().path().ends_with("/models"));
-        return response(
-            json!({"object":"list","data":[{"id":"gpt-4.1","object":"model"}]}).to_string(),
-            "application/json",
-        );
-    }
-    assert!(request.uri().path().ends_with("/chat/completions"));
-    let bytes = request.into_body().collect().await.unwrap().to_bytes();
-    let body: Value = serde_json::from_slice(&bytes).unwrap();
-    let messages = body["messages"].as_array().unwrap();
-    eprintln!(
-        "mainline wire: user_nonce={}, tools={}",
-        messages
-            .iter()
-            .any(|message| message["role"] == "user"
-                && message["content"].to_string().contains(nonce)),
-        body["tools"]
-            .as_array()
-            .map(|tools| tools
-                .iter()
-                .filter_map(|tool| tool["function"]["name"].as_str())
-                .collect::<Vec<_>>())
-            .unwrap_or_default()
-            .join(",")
-    );
-    let checkpoint_followup = format!("checkpoint-followup-{nonce}");
-    if messages.iter().any(|message| {
-        message["role"] == "user"
-            && message["content"]
-                .to_string()
-                .contains(&checkpoint_followup)
-    }) {
-        assert!(
-            stopped.load(Ordering::SeqCst),
-            "checkpoint follow-up is explicit work after reopen"
-        );
-        assert!(
-            messages.iter().any(|message| message["role"] == "tool"
-                && message["tool_call_id"] == format!("effect-{nonce}")),
-            "restored Session must retain its original tool result: {body}"
-        );
-        events.send("checkpoint-followup").unwrap();
-        return response(
-            sse(json!({"content":"Checkpoint follow-up completed."}), "stop"),
-            "text/event-stream",
-        );
-    }
-    let call_id = format!("effect-{nonce}");
-    if messages
-        .iter()
-        .any(|message| message["role"] == "tool" && message["tool_call_id"] == call_id)
-    {
-        assert!(
-            !stopped.load(Ordering::SeqCst),
-            "a terminal original Run must not issue another model POST after reopen"
-        );
-        let result = messages
-            .iter()
-            .find(|message| message["tool_call_id"] == call_id)
-            .unwrap();
-        assert!(
-            result["content"].to_string().contains(nonce),
-            "actual process stdout must reach the model"
-        );
-        held.store(true, Ordering::SeqCst);
-        events.send("tool-result").unwrap();
-        return Response::builder()
-            .header("content-type", "text/event-stream")
-            .header("connection", "close")
-            .body(
-                StreamBody::new(futures_util::stream::pending::<
-                    Result<Frame<Bytes>, Infallible>,
-                >())
-                .boxed_unsync(),
-            )
-            .unwrap();
-    }
-    if messages
-        .iter()
-        .any(|message| message["role"] == "user" && message["content"].to_string().contains(nonce))
-    {
-        let shell = body["tools"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|tool| tool["function"]["name"] == "Shell")
-            .expect("the default product must advertise its original Shell binding");
-        assert!(
-            shell["function"]["parameters"]["properties"]
-                .get("command")
-                .is_some()
-        );
-        assert!(!stopped.load(Ordering::SeqCst));
-        assert!(
-            !proposed.swap(true, Ordering::SeqCst),
-            "this original Main must not request the effect twice"
-        );
-        return response(
-            sse(
-                json!({"tool_calls":[{"index":0,"id":call_id,"type":"function",
-            "function":{"name":shell["function"]["name"],"arguments":json!({"command":shell_command,"login":false}).to_string()}}]}),
-                "tool_calls",
-            ),
-            "text/event-stream",
-        );
-    }
-    // Auxiliary product requests are not counted as this Run's model attempts.
-    response(
-        sse(json!({"content":"auxiliary complete"}), "stop"),
-        "text/event-stream",
-    )
-}
-
-async fn wire(
-    listener: TcpListener,
+async fn start_mainline_mock(
     nonce: String,
     shell_command: String,
     stopped: Arc<AtomicBool>,
     events: mpsc::UnboundedSender<&'static str>,
-    stop: CancellationToken,
-) {
+    held_closed: CancellationToken,
+) -> MockAiServer {
     let proposed = Arc::new(AtomicBool::new(false));
-    let nonce = Arc::new(nonce);
-    let shell_command = Arc::new(shell_command);
-    let mut connections = JoinSet::new();
-    loop {
-        tokio::select! {
-            _ = stop.cancelled() => break,
-            joined = connections.join_next(), if !connections.is_empty() => { joined.unwrap().unwrap(); }
-            accepted = listener.accept() => {
-                let (socket, _) = accepted.unwrap();
-                let (nonce, shell_command, proposed, stopped, events) =
-                    (nonce.clone(), shell_command.clone(), proposed.clone(), stopped.clone(), events.clone());
-                connections.spawn(async move {
-                    let held = Arc::new(AtomicBool::new(false));
-                    let observed = held.clone();
-                    let closed = events.clone();
-                    let service = service_fn(move |request| {
-                        let (nonce, shell_command, proposed, stopped, held, events) =
-                            (nonce.clone(), shell_command.clone(), proposed.clone(), stopped.clone(), held.clone(), events.clone());
-                        async move { Ok::<_, Infallible>(model(request, &nonce, &shell_command, &proposed, &stopped, &held, &events).await) }
-                    });
-                    let result = hyper::server::conn::http1::Builder::new().keep_alive(false)
-                        .serve_connection(TokioIo::new(socket), service).await;
-                    if observed.load(Ordering::SeqCst) {
-                        if let Err(error) = result {
-                            assert!(error.is_incomplete_message() || error.is_canceled() || error.is_closed(), "{error}");
-                        }
-                        closed.send("model-eof").unwrap();
-                    } else { result.unwrap(); }
-                });
+    MockAiBuilder::new()
+        .control(ControlPlaneConfig {
+            models: vec![ModelEntry::simple("gpt-4.1")],
+            ..Default::default()
+        })
+        .handler_fn(move |req: &NormalizedRequest, _ctx: &TurnContext| {
+            assert_eq!(req.protocol, Protocol::OpenaiChatCompletions);
+            let body = &req.raw_body;
+            let messages = body["messages"].as_array().unwrap();
+            eprintln!(
+                "mainline wire: user_nonce={}, tools={}",
+                messages.iter().any(|message| message["role"] == "user"
+                    && message["content"].to_string().contains(&nonce)),
+                body["tools"]
+                    .as_array()
+                    .map(|tools| tools
+                        .iter()
+                        .filter_map(|tool| tool["function"]["name"].as_str())
+                        .collect::<Vec<_>>())
+                    .unwrap_or_default()
+                    .join(",")
+            );
+            let checkpoint_followup = format!("checkpoint-followup-{nonce}");
+            if messages.iter().any(|message| {
+                message["role"] == "user"
+                    && message["content"]
+                        .to_string()
+                        .contains(&checkpoint_followup)
+            }) {
+                assert!(
+                    stopped.load(Ordering::SeqCst),
+                    "checkpoint follow-up is explicit work after reopen"
+                );
+                assert!(
+                    messages.iter().any(|message| message["role"] == "tool"
+                        && message["tool_call_id"] == format!("effect-{nonce}")),
+                    "restored Session must retain its original tool result: {body}"
+                );
+                let _ = events.send("checkpoint-followup");
+                return TurnPlan::new()
+                    .with_response_id("mainline")
+                    .push_text("Checkpoint follow-up completed.")
+                    .with_usage(Usage::new(100, 10))
+                    .finish(FinishReason::Stop);
             }
-        }
-    }
-    while let Some(joined) = connections.join_next().await {
-        joined.unwrap();
-    }
+            let call_id = format!("effect-{nonce}");
+            if messages
+                .iter()
+                .any(|message| message["role"] == "tool" && message["tool_call_id"] == call_id)
+            {
+                assert!(
+                    !stopped.load(Ordering::SeqCst),
+                    "a terminal original Run must not issue another model POST after reopen"
+                );
+                let result = messages
+                    .iter()
+                    .find(|message| message["tool_call_id"] == call_id)
+                    .unwrap();
+                assert!(
+                    result["content"].to_string().contains(&nonce),
+                    "actual process stdout must reach the model"
+                );
+                let _ = events.send("tool-result");
+                return TurnPlan::stall()
+                    .with_close_connection(true)
+                    .with_on_close(held_closed.clone());
+            }
+            if messages.iter().any(|message| {
+                message["role"] == "user" && message["content"].to_string().contains(&nonce)
+            }) {
+                let shell = body["tools"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|tool| tool["function"]["name"] == "Shell")
+                    .expect("the default product must advertise its original Shell binding");
+                assert!(
+                    shell["function"]["parameters"]["properties"]
+                        .get("command")
+                        .is_some()
+                );
+                assert!(!stopped.load(Ordering::SeqCst));
+                assert!(
+                    !proposed.swap(true, Ordering::SeqCst),
+                    "this original Main must not request the effect twice"
+                );
+                return TurnPlan::new()
+                    .with_response_id("mainline")
+                    .push_tool_call(
+                        call_id,
+                        shell["function"]["name"].as_str().unwrap(),
+                        json!({"command": shell_command, "login": false}),
+                    )
+                    .with_usage(Usage::new(100, 10))
+                    .finish(FinishReason::ToolCalls);
+            }
+            // Auxiliary product requests are not counted as this Run's model attempts.
+            TurnPlan::new()
+                .with_response_id("mainline")
+                .push_text("auxiliary complete")
+                .with_usage(Usage::new(100, 10))
+                .finish(FinishReason::Stop)
+        })
+        .start()
+        .await
+        .unwrap()
 }
 
 async fn identities(sandbox: &Sandbox, session: &str, run: &Value) -> Vec<Value> {
@@ -446,12 +370,18 @@ async fn exercise_reopen(restart: Restart) {
         let nonce = uuid::Uuid::new_v4().simple().to_string();
         let script = format!("import os; f=open('effects.log','ab',buffering=0); f.write(b'{nonce}\\n'); os.fsync(f.fileno()); f.close(); print('{nonce}')");
         let shell_command = format!("python3 -c \"{script}\"");
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let base = format!("http://{}/v1", listener.local_addr().unwrap());
         let (events, mut observations) = mpsc::unbounded_channel();
         let stopped = Arc::new(AtomicBool::new(false));
-        let stop_wire = CancellationToken::new();
-        let mut server = tokio::spawn(wire(listener, nonce.clone(), shell_command, stopped.clone(), events, stop_wire.clone()));
+        let held_closed = CancellationToken::new();
+        let server = start_mainline_mock(
+            nonce.clone(),
+            shell_command,
+            stopped.clone(),
+            events,
+            held_closed.clone(),
+        )
+        .await;
+        let base = server.base_url();
         hosts.push(Host::spawn(&sandbox).unwrap());
         let (mut client, address) = hosts.last_mut().unwrap().ready().await.unwrap();
         let first_epoch = client.epoch();
@@ -487,12 +417,13 @@ async fn exercise_reopen(restart: Restart) {
         eprintln!("mainline stage: waiting for the actual Shell result");
         tokio::select! {
             event = observations.recv() => assert_eq!(event, Some("tool-result")),
-            result = &mut server => panic!("loopback provider ended before the actual tool result: {result:?}"),
             _ = tokio::time::sleep(Duration::from_secs(45)) => {
+                server.assert_no_panics();
                 let current = call(&client, "agent", "work", json!({"sessionId":session,"target":target}), Attachments::new()).await;
                 panic!("actual Shell result did not reach the next original model request: {current}");
             }
         }
+        server.assert_no_panics();
         assert_eq!(tokio::fs::read_to_string(workspace.join("effects.log")).await.unwrap(), format!("{nonce}\n"));
         let delivered = work(&client, session, target, None).await;
         eprintln!("mainline stage: tool completed; exact Run captured");
@@ -520,10 +451,10 @@ async fn exercise_reopen(restart: Restart) {
         assert_eq!(delivery, json!({"kind":"missing","reason":"cancelled"}));
         let queued_work = call(&client, "agent", "work", json!({"sessionId":session,"target":{"kind":"message","messageId":queued_message}}), Attachments::new()).await;
         assert_eq!(queued_work["kind"], "cancelled");
-        tokio::select! {
-            event = observations.recv() => assert_eq!(event, Some("model-eof")),
-            result = &mut server => panic!("loopback provider failed during original Stop: {result:?}"),
-        }
+        tokio::time::timeout(Duration::from_secs(30), held_closed.cancelled())
+            .await
+            .expect("physical model EOF must be observed after Stop");
+        server.assert_no_panics();
         eprintln!("mainline stage: physical model EOF; await independent Root readiness");
         loop {
             let readiness = call(&client, "agent", "workReadiness", json!({"sessionId":session,"target":target}), Attachments::new()).await;
@@ -638,8 +569,7 @@ async fn exercise_reopen(restart: Restart) {
             portable::check(&recipient, &archive, session, &checkpoint, &nonce).await;
             portable::check_fork(&recipient, &fork_archive, session).await;
         }
-        stop_wire.cancel();
-        server.await.unwrap();
+        server.shutdown().await;
     })).catch_unwind().await;
     let mut cleanup = Vec::new();
     for process in &mut hosts {

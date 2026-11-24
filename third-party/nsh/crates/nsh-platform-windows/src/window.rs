@@ -136,6 +136,10 @@ struct WindowData {
     windowed: Cell<Option<WINDOWPLACEMENT>>,
     /// Its frame's style bits before it went full screen.
     windowed_style: Cell<isize>,
+    /// The mode a hidden window was asked for, which it takes when it shows
+    /// ([`crate::window_state::set_mode`]): Windows changes a window's mode
+    /// by showing it.
+    held_mode: Cell<Option<nsh_core::desktop::WindowMode>>,
     /// What it holds of the app's window API ([`crate::shell`]).
     shell: crate::shell::Shell,
     /// The embedding app's root window an embedded surface's window
@@ -251,6 +255,7 @@ pub(crate) fn create(
         margins: Cell::new(None),
         windowed: Cell::new(None),
         windowed_style: Cell::new(0),
+        held_mode: Cell::new(None),
         shell: crate::shell::Shell::new(nsh_core::desktop::WindowKind::Normal),
         root: Cell::new(None),
         window: None,
@@ -359,6 +364,7 @@ pub(crate) fn create_app_window(
         margins: Cell::new(None),
         windowed: Cell::new(None),
         windowed_style: Cell::new(0),
+        held_mode: Cell::new(None),
         shell,
         root: Cell::new(None),
         window: Some(id),
@@ -450,6 +456,32 @@ pub(crate) fn frame_extents(hwnd: HWND) -> (i32, i32, i32, i32) {
 /// What `hwnd` holds of the app's window API.
 pub(crate) fn shell(hwnd: HWND) -> Option<&'static crate::shell::Shell> {
     data(hwnd).map(|d| &d.shell)
+}
+
+/// The mode hidden window `hwnd` takes when it shows, if another than the
+/// one it is in.
+pub(crate) fn held_mode(hwnd: HWND) -> Option<nsh_core::desktop::WindowMode> {
+    data(hwnd).and_then(|d| d.held_mode.get())
+}
+
+/// Sets (or forgets) the mode `hwnd` takes when it shows.
+pub(crate) fn hold_mode(hwnd: HWND, mode: Option<nsh_core::desktop::WindowMode>) {
+    if let Some(data) = data(hwnd) {
+        data.held_mode.set(mode);
+    }
+}
+
+/// Reports the state of top-level window `hwnd` to its app, after a change
+/// no message of the window tells of.
+pub(crate) fn report_state(hwnd: HWND) {
+    let Some(data) = data(hwnd) else { return };
+    let Some(surface) = data.surface.upgrade() else {
+        return;
+    };
+    match data.window {
+        None => crate::window_state::report_main(&surface),
+        Some(id) => crate::app_window::state_changed(&surface, id),
+    }
 }
 
 /// The dialog root a window of the app's own shows (`None` for a
@@ -603,9 +635,17 @@ fn toggle_full_screen_inner(hwnd: HWND) {
 }
 
 /// Shows a top-level window (without activating it when its attributes
-/// say so), and keeps it out of the taskbar if it is. A background app's
-/// shows without activating, the window that would have the keyboard.
+/// say so), in the mode it was asked for while hidden, and keeps it out of
+/// the taskbar if it is. A background app's shows without activating, the
+/// window that would have the keyboard.
 pub(crate) fn show(hwnd: HWND) {
+    show_as_it_is(hwnd);
+    crate::window_state::enter_held_mode(hwnd);
+}
+
+/// [`show`] without the mode held for it, which the caller enters
+/// ([`crate::window_state::enter_held_mode`]).
+pub(crate) fn show_as_it_is(hwnd: HWND) {
     let activate = shell(hwnd).is_none_or(|s| {
         let a = s.attrs();
         a.activate && a.focusable
@@ -693,6 +733,15 @@ pub(crate) fn set_foreground(hwnd: HWND) {
             Some(id) => crate::app_window::state_changed(&surface, id),
             None => crate::window_state::report_main(&surface),
         }
+    }
+    // The window that lost the keyboard hears its blur as on a deactivation
+    // (`WM_ACTIVATE`, which a background app never gets): `closeOnBlur`.
+    if let Some(old) = old
+        && app_window_root(old).is_some()
+        && shell(old).is_some_and(|s| s.attrs().close_on_blur)
+    {
+        // SAFETY: posting to a live window of this thread.
+        let _ = unsafe { PostMessageW(Some(old), WM_NSH_BLUR, WPARAM(0), LPARAM(0)) };
     }
 }
 
@@ -1185,6 +1234,49 @@ unsafe extern "system" fn window_proc(
     unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
 }
 
+/// Whether `msg` is the user's pointer over what the window shows: the
+/// mouse's moves and leaves, in the client area and over the frame, its
+/// buttons and wheels in the client area, and touches and pens. A press on
+/// the frame is none: the window is still moved, sized and closed by hand.
+///
+/// Under `nsh test --target windows` the views hear none of them
+/// ([`handle`]): the test agent's pointer is the window's only one, as on
+/// macOS and Linux. The agent's input is made at the input module's entry
+/// points ([`crate::synth`]), not as messages, so every message here is the
+/// user's or the system's own. The system sends them with no motion at all:
+/// a `WM_MOUSEMOVE` to the window under the resting pointer when a window
+/// above it closes, a `WM_MOUSELEAVE` once another window opens over it.
+/// With several apps under test on one desktop, each would move a hover the
+/// test made to where the pointer rests, end it, or come between a press's
+/// down and up.
+fn users_pointer(msg: u32) -> bool {
+    matches!(
+        msg,
+        WM_MOUSEMOVE
+            | WM_MOUSELEAVE
+            | WM_NCMOUSEMOVE
+            | WM_NCMOUSELEAVE
+            | WM_LBUTTONDOWN
+            | WM_RBUTTONDOWN
+            | WM_MBUTTONDOWN
+            | WM_XBUTTONDOWN
+            | WM_LBUTTONDBLCLK
+            | WM_RBUTTONDBLCLK
+            | WM_MBUTTONDBLCLK
+            | WM_XBUTTONDBLCLK
+            | WM_LBUTTONUP
+            | WM_RBUTTONUP
+            | WM_MBUTTONUP
+            | WM_XBUTTONUP
+            | WM_MOUSEWHEEL
+            | WM_MOUSEHWHEEL
+            | WM_POINTERDOWN
+            | WM_POINTERUPDATE
+            | WM_POINTERUP
+            | WM_POINTERCAPTURECHANGED
+    )
+}
+
 /// Handles `msg` for `surface`; `None` for default handling.
 fn handle(
     surface: &Rc<Surface>,
@@ -1194,6 +1286,9 @@ fn handle(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> Option<LRESULT> {
+    if surface.testing() && users_pointer(msg) {
+        return None;
+    }
     // A captured key down, as the thread's hook left it: its characters
     // were never made. Report it and run the key logic as for any other
     // key down; with no characters to swallow, nothing of the queue is
@@ -1277,7 +1372,12 @@ fn handle(
     match msg {
         WM_NSH_WAKE => surface.drain(),
         WM_NSH_TICK => surface.tick(),
-        WM_NSH_MENU => crate::chrome::show_popup(surface),
+        // An app-level popup (the host is not a user window) belongs to the
+        // focused window of the app's own, where the app is working.
+        WM_NSH_MENU => crate::chrome::show_popup(
+            surface,
+            crate::app_window::focused_hwnd(surface).unwrap_or(hwnd),
+        ),
         crate::tray::WM_NSH_TRAY => {
             crate::tray::message(surface, hwnd, wparam, lparam);
             return Some(LRESULT(0));
@@ -2809,6 +2909,47 @@ mod tests {
             region_pointer(None, 0b1),
             (PointerKind::Leave, -1.0, -1.0, 0, 0)
         );
+    }
+
+    #[test]
+    fn the_users_pointer_is_its_moves_buttons_wheels_and_touches() {
+        // What the system sends a window under the resting pointer when the
+        // windows above it change, with no motion.
+        for msg in [WM_MOUSEMOVE, WM_MOUSELEAVE, WM_NCMOUSEMOVE, WM_NCMOUSELEAVE] {
+            assert!(users_pointer(msg), "{msg:#x}");
+        }
+        // What the user does over the content.
+        for msg in [
+            WM_LBUTTONDOWN,
+            WM_LBUTTONUP,
+            WM_LBUTTONDBLCLK,
+            WM_RBUTTONDOWN,
+            WM_RBUTTONUP,
+            WM_MBUTTONDOWN,
+            WM_XBUTTONUP,
+            WM_MOUSEWHEEL,
+            WM_MOUSEHWHEEL,
+            WM_POINTERDOWN,
+            WM_POINTERUPDATE,
+            WM_POINTERUP,
+        ] {
+            assert!(users_pointer(msg), "{msg:#x}");
+        }
+        // The frame's presses move, size and close the window; keys, the
+        // cursor's shape and a lost capture are no pointer of the user's.
+        for msg in [
+            WM_NCLBUTTONDOWN,
+            WM_NCLBUTTONUP,
+            WM_NCLBUTTONDBLCLK,
+            WM_NCHITTEST,
+            WM_SETCURSOR,
+            WM_CAPTURECHANGED,
+            WM_KEYDOWN,
+            WM_CHAR,
+            WM_TIMER,
+        ] {
+            assert!(!users_pointer(msg), "{msg:#x}");
+        }
     }
 
     #[test]

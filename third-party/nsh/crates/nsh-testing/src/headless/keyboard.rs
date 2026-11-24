@@ -371,9 +371,14 @@ impl Headless {
     /// platforms keep it there.
     fn tab(&mut self, back: bool) {
         let current = self.screen.focused().or(self.screen.key_focus());
-        let window = current.map_or(ROOT_ID, |id| self.screen.window_of(id));
         let mut stops = self.screen.tab_stops();
-        if let Some(scope) = self.screen.focus_scope(window) {
+        // A modal that took the focus leaves none: Tab goes to its stops,
+        // the ones it keeps the keyboard to, still.
+        let scope = match current {
+            Some(id) => self.screen.focus_scope(self.screen.window_of(id)),
+            None => self.screen.newest_modal(),
+        };
+        if let Some(scope) = scope {
             stops.retain(|&id| self.screen.within(id, scope));
         }
         let at = current.and_then(|id| stops.iter().position(|s| *s == id));
@@ -535,6 +540,7 @@ impl Headless {
         }
         if let Some(new) = to {
             self.send(new, EventKind::Focus, EventPayload::None);
+            self.select_on_focus(new);
         }
     }
 
@@ -566,6 +572,7 @@ impl Headless {
                     self.send(key, EventKind::Blur, EventPayload::None);
                 }
                 self.send(new, EventKind::Focus, EventPayload::None);
+                self.select_on_focus(new);
             }
         }
         if !self.tabs_to_views() {
@@ -615,7 +622,13 @@ impl Headless {
         let Some(input) = self.screen.input_mut(id) else {
             return;
         };
-        if input.text.pop().is_none() {
+        // A whole selected text is deleted.
+        if std::mem::take(&mut input.selected_all) {
+            if input.text.is_empty() {
+                return;
+            }
+            input.text.clear();
+        } else if input.text.pop().is_none() {
             return;
         }
         input.count += 1;

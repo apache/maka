@@ -46,25 +46,21 @@ mod host;
 
 use futures_util::FutureExt;
 use host::Host;
-use http_body_util::{BodyExt, Full};
-use hyper::{
-    Request, Response,
-    body::{Bytes, Incoming},
-    service::service_fn,
-};
-use hyper_util::rt::TokioIo;
 use maka_capabilities::call::{Attachments, ReadResource, ResourceEncoding};
 use maka_host_runtime::application::{host::Client, transport::Reply};
+use maka_mock_ai::{
+    ControlPlaneConfig, FinishReason, MockAiBuilder, MockAiServer, ModelEntry, NormalizedRequest,
+    Protocol, TurnContext, TurnPlan, Usage,
+};
 use maka_plugin_core::{
     contract::ResourceType,
     operation::{OperationCleanup, OperationOutcome, OperationResult, Receipt},
 };
-use rusqlite::Connection;
+use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
-    convert::Infallible,
     fs,
     ops::Range,
     os::unix::fs::PermissionsExt,
@@ -76,8 +72,7 @@ use std::{
     },
     time::Duration,
 };
-use tokio::{net::TcpListener, process::Command, task::JoinSet};
-use tokio_util::sync::CancellationToken;
+use tokio::process::Command;
 
 const PRODUCE_ENV: &str = "MAKA_COMPAT_PRODUCE_CAPSULE";
 const VERIFY_ENV: &str = "MAKA_COMPAT_VERIFY_CAPSULE";
@@ -358,29 +353,6 @@ async fn recall_search(client: &Client, term: &str) -> Value {
     }
 }
 
-fn http_response(body: String, content_type: &str) -> Response<Full<Bytes>> {
-    Response::builder()
-        .header("content-type", content_type)
-        .header("connection", "close")
-        .body(Full::new(Bytes::from(body)))
-        .unwrap()
-}
-
-fn sse(delta: Value, finish: &str) -> String {
-    let first = json!({
-        "id": "compat",
-        "object": "chat.completion.chunk",
-        "choices": [{"index": 0, "delta": delta, "finish_reason": null}]
-    });
-    let last = json!({
-        "id": "compat",
-        "object": "chat.completion.chunk",
-        "choices": [{"index": 0, "delta": {}, "finish_reason": finish}],
-        "usage": {"prompt_tokens": 120, "completion_tokens": 20, "total_tokens": 140}
-    });
-    format!("data: {first}\n\ndata: {last}\n\ndata: [DONE]\n\n")
-}
-
 #[derive(Clone)]
 enum MockMode {
     Produce {
@@ -397,14 +369,18 @@ enum MockMode {
     },
 }
 
-fn handle_model_request(body: &Value, mode: &MockMode) -> String {
+fn handle_model_request(body: &Value, mode: &MockMode) -> TurnPlan {
     let messages = body["messages"].as_array().expect("messages array");
     let has_exec = body["tools"]
         .as_array()
         .is_some_and(|tools| tools.iter().any(|t| t["function"]["name"] == "exec"));
 
     if !has_exec {
-        return sse(json!({"content": "auxiliary ok"}), "stop");
+        return TurnPlan::new()
+            .with_response_id("compat")
+            .push_text("auxiliary ok")
+            .with_usage(Usage::new(120, 20))
+            .finish(FinishReason::Stop);
     }
 
     match mode {
@@ -419,10 +395,11 @@ fn handle_model_request(body: &Value, mode: &MockMode) -> String {
                     content.contains(&format!("pre-cell-ok:{nonce}")),
                     "expected Code Mode output in produce turn, got: {content}"
                 );
-                return sse(
-                    json!({"content": format!("Pre-upgrade turn complete {nonce}.")}),
-                    "stop",
-                );
+                return TurnPlan::new()
+                    .with_response_id("compat")
+                    .push_text(format!("Pre-upgrade turn complete {nonce}."))
+                    .with_usage(Usage::new(120, 20))
+                    .finish(FinishReason::Stop);
             }
             assert!(
                 !tool_called.swap(true, Ordering::SeqCst),
@@ -438,20 +415,15 @@ if (!loaded || loaded.nonce !== "{nonce}") throw new Error("SessionData roundtri
 text("pre-cell-ok:{nonce}");
 "#
             );
-            sse(
-                json!({
-                    "tool_calls": [{
-                        "index": 0,
-                        "id": call_id,
-                        "type": "function",
-                        "function": {
-                            "name": "exec",
-                            "arguments": json!({"code": code, "yield_time_ms": 15000, "max_output_tokens": 4000}).to_string()
-                        }
-                    }]
-                }),
-                "tool_calls",
-            )
+            TurnPlan::new()
+                .with_response_id("compat")
+                .push_tool_call(
+                    call_id,
+                    "exec",
+                    json!({"code": code, "yield_time_ms": 15000, "max_output_tokens": 4000}),
+                )
+                .with_usage(Usage::new(120, 20))
+                .finish(FinishReason::ToolCalls)
         }
         MockMode::Verify {
             pre_nonce,
@@ -486,10 +458,11 @@ text("pre-cell-ok:{nonce}");
                     "Code Mode failed to load pre-upgrade SessionData after upgrade: {content}"
                 );
                 saw_session_data.store(true, Ordering::SeqCst);
-                return sse(
-                    json!({"content": format!("Post-upgrade continuation complete {post_nonce}.")}),
-                    "stop",
-                );
+                return TurnPlan::new()
+                    .with_response_id("compat")
+                    .push_text(format!("Post-upgrade continuation complete {post_nonce}."))
+                    .with_usage(Usage::new(120, 20))
+                    .finish(FinishReason::Stop);
             }
             assert!(
                 !tool_called.swap(true, Ordering::SeqCst),
@@ -505,70 +478,41 @@ await store("compat_post_upgrade", {{ ok: true, prevNonce: prev.nonce, postNonce
 text("post-session-data-ok:" + prev.nonce);
 "#
             );
-            sse(
-                json!({
-                    "tool_calls": [{
-                        "index": 0,
-                        "id": call_id,
-                        "type": "function",
-                        "function": {
-                            "name": "exec",
-                            "arguments": json!({"code": code, "yield_time_ms": 15000, "max_output_tokens": 4000}).to_string()
-                        }
-                    }]
-                }),
-                "tool_calls",
-            )
+            TurnPlan::new()
+                .with_response_id("compat")
+                .push_tool_call(
+                    call_id,
+                    "exec",
+                    json!({"code": code, "yield_time_ms": 15000, "max_output_tokens": 4000}),
+                )
+                .with_usage(Usage::new(120, 20))
+                .finish(FinishReason::ToolCalls)
         }
     }
 }
 
-async fn run_mock_server(listener: TcpListener, mode: MockMode, stop: CancellationToken) {
-    let mut connections = JoinSet::new();
-    loop {
-        tokio::select! {
-            () = stop.cancelled() => break,
-            accepted = listener.accept() => {
-                let (socket, _) = accepted.unwrap();
-                let mode = mode.clone();
-                connections.spawn(async move {
-                    let service = service_fn(move |request: Request<Incoming>| {
-                        let mode = mode.clone();
-                        async move {
-                            if request.method() == hyper::Method::GET {
-                                return Ok::<_, Infallible>(http_response(
-                                    json!({"object": "list", "data": [{"id": "gpt-4.1", "object": "model"}]}).to_string(),
-                                    "application/json",
-                                ));
-                            }
-                            let auth = request
-                                .headers()
-                                .get("authorization")
-                                .and_then(|v| v.to_str().ok())
-                                .unwrap_or("");
-                            assert_eq!(
-                                auth, "Bearer compat-fixture-secret",
-                                "persisted vault credential must be loaded and sent to provider"
-                            );
-                            let bytes = request.into_body().collect().await.unwrap().to_bytes();
-                            let body: Value = serde_json::from_slice(&bytes).unwrap();
-                            Ok::<_, Infallible>(http_response(
-                                handle_model_request(&body, &mode),
-                                "text/event-stream",
-                            ))
-                        }
-                    });
-                    let _ = hyper::server::conn::http1::Builder::new()
-                        .keep_alive(false)
-                        .serve_connection(TokioIo::new(socket), service)
-                        .await;
-                });
-            }
-        }
-    }
-    while let Some(joined) = connections.join_next().await {
-        let _ = joined;
-    }
+async fn start_mock_server(mode: MockMode) -> MockAiServer {
+    MockAiBuilder::new()
+        .control(ControlPlaneConfig {
+            models: vec![ModelEntry::simple("gpt-4.1")],
+            ..Default::default()
+        })
+        .handler_fn(move |req: &NormalizedRequest, _ctx: &TurnContext| {
+            assert_eq!(req.protocol, Protocol::OpenaiChatCompletions);
+            let auth = req
+                .headers
+                .get("authorization")
+                .map(String::as_str)
+                .unwrap_or("");
+            assert_eq!(
+                auth, "Bearer compat-fixture-secret",
+                "persisted vault credential must be loaded and sent to provider"
+            );
+            handle_model_request(&req.raw_body, &mode)
+        })
+        .start()
+        .await
+        .unwrap()
 }
 
 fn collect_sqlite_files(dir: &Path, out: &mut Vec<PathBuf>) {
@@ -628,6 +572,40 @@ fn verify_sqlite_integrity_and_migrations(root: &Path) -> BTreeMap<String, Vec<i
                 .unwrap()
                 .to_string_lossy()
                 .replace('\\', "/");
+            let has_runs: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='agent_runs'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            if has_runs > 0 && versions.contains(&53) {
+                let mut streaks = conn
+                    .prepare("SELECT run, retry_streak FROM agent_runs")
+                    .unwrap();
+                let rows = streaks
+                    .query_map([], |row| {
+                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                    })
+                    .unwrap();
+                for row in rows {
+                    let (run, raw) = row.unwrap();
+                    let parsed: Value = serde_json::from_str(&raw).unwrap_or_else(|e| {
+                        panic!("invalid agent_runs.retry_streak JSON for run {run}: {raw} ({e})")
+                    });
+                    assert!(
+                        matches!(
+                            parsed.get("kind").and_then(Value::as_str),
+                            Some(
+                                "regular"
+                                    | "fallback_transition_pending"
+                                    | "after_fallback_transition"
+                            )
+                        ),
+                        "unexpected agent_runs.retry_streak variant for run {run}: {parsed}"
+                    );
+                }
+            }
             ledgers.insert(rel, versions);
         }
     }
@@ -637,6 +615,87 @@ fn verify_sqlite_integrity_and_migrations(root: &Path) -> BTreeMap<String, Vec<i
         root.display()
     );
     ledgers
+}
+
+struct QueuedBeforeUpgrade {
+    db: PathBuf,
+    session: String,
+    request: String,
+    at: i64,
+}
+
+fn capture_queued_before_upgrade(root: &Path, session: &str) -> QueuedBeforeUpgrade {
+    let mut dbs = Vec::new();
+    collect_sqlite_files(root, &mut dbs);
+    let mut found = Vec::new();
+    for db in dbs {
+        let conn = Connection::open_with_flags(&db, OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+        let has_queue: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='agent_queue_events')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        if !has_queue {
+            continue;
+        }
+        let row: Option<(String, i64)> = conn
+            .query_row(
+                "SELECT q.request, e.at FROM agent_queue_events e
+                 JOIN contents b ON b.id=e.body_content_id
+                 JOIN agent_queue_items q ON q.session=e.session
+                   AND q.request=json_extract(CAST(b.payload AS TEXT), '$.edit.request.id')
+                 WHERE e.session=? AND q.state='delivered'
+                   AND json_extract(CAST(b.payload AS TEXT), '$.kind')='command'
+                   AND json_extract(CAST(b.payload AS TEXT), '$.edit.kind')='enqueue'
+                   AND json_extract(CAST(b.payload AS TEXT), '$.resume_after_interrupt') IS NULL
+                 ORDER BY e.revision LIMIT 1",
+                [session],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()
+            .unwrap();
+        if let Some((request, at)) = row {
+            found.push(QueuedBeforeUpgrade {
+                db,
+                session: session.to_owned(),
+                request,
+                at,
+            });
+        }
+    }
+    assert_eq!(
+        found.len(),
+        1,
+        "capsule must contain a delivered ordinary enqueue for {session}"
+    );
+    let item = found.pop().unwrap();
+    assert_ne!(
+        item.at, 0,
+        "capsule enqueue time must detect a missing v54 backfill"
+    );
+    item
+}
+
+fn verify_queued_after_upgrade(item: &QueuedBeforeUpgrade) {
+    let conn = Connection::open_with_flags(&item.db, OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+    let (state, at, interrupted): (String, i64, Option<String>) = conn
+        .query_row(
+            "SELECT state,enqueued_at,interrupted_run FROM agent_queue_items WHERE session=? AND request=?",
+            params![item.session, item.request],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .expect("pre-upgrade queued request missing after upgrade");
+    assert_eq!(state, "delivered");
+    assert_eq!(
+        at, item.at,
+        "enqueue time differs from the pre-upgrade canonical event"
+    );
+    assert_eq!(
+        interrupted, None,
+        "ordinary enqueue acquired interrupt provenance"
+    );
 }
 
 async fn produce_capsule(bin: &Path, capsule_dir: &Path) -> CapsuleManifest {
@@ -656,17 +715,12 @@ async fn produce_capsule(bin: &Path, capsule_dir: &Path) -> CapsuleManifest {
         .to_owned();
 
     let nonce = uuid::Uuid::new_v4().simple().to_string();
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let base_url = format!("http://{}/v1", listener.local_addr().unwrap());
-    let stop_server = CancellationToken::new();
-    let server = tokio::spawn(run_mock_server(
-        listener,
-        MockMode::Produce {
-            nonce: nonce.clone(),
-            tool_called: Arc::new(AtomicBool::new(false)),
-        },
-        stop_server.clone(),
-    ));
+    let server = start_mock_server(MockMode::Produce {
+        nonce: nonce.clone(),
+        tool_called: Arc::new(AtomicBool::new(false)),
+    })
+    .await;
+    let base_url = server.base_url();
 
     let mut host = Host::spawn_with(bin, &dirs.root, &dirs.home, &dirs.workspace)
         .unwrap_or_else(|e| panic!("spawn Host {}: {e}", bin.display()));
@@ -1005,15 +1059,17 @@ async fn produce_capsule(bin: &Path, capsule_dir: &Path) -> CapsuleManifest {
     .catch_unwind()
     .await;
 
-    stop_server.cancel();
-    let _ = server.await;
     let cleanup = host.cleanup().await;
     let manifest = match outcome {
         Ok(m) => {
+            server.shutdown().await;
             cleanup.expect("Host cleanup");
             m
         }
-        Err(panic) => std::panic::resume_unwind(panic),
+        Err(panic) => {
+            let _ = server.shutdown_taking_panics().await;
+            std::panic::resume_unwind(panic);
+        }
     };
     fs::write(
         capsule_dir.join("capsule-manifest.json"),
@@ -1042,30 +1098,30 @@ async fn verify_capsule(bin: &Path, capsule_dir: &Path) {
     let dirs = EnvDirs::in_base(&canonical_base);
     dirs.prepare();
 
+    // Snapshot the old canonical event before the Host runs migration 54.
+    let queued_before = capture_queued_before_upgrade(&dirs.root, &manifest.primary_session_id);
+
     let post_nonce = uuid::Uuid::new_v4().simple().to_string();
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let new_base_url = format!("http://{}/v1", listener.local_addr().unwrap());
     let saw_pre_context = Arc::new(AtomicBool::new(false));
     let saw_session_data = Arc::new(AtomicBool::new(false));
-    let stop_server = CancellationToken::new();
-    let server = tokio::spawn(run_mock_server(
-        listener,
-        MockMode::Verify {
-            pre_nonce: manifest.nonce.clone(),
-            post_nonce: post_nonce.clone(),
-            session_data_key: manifest.session_data_key.clone(),
-            tool_called: Arc::new(AtomicBool::new(false)),
-            saw_pre_context: saw_pre_context.clone(),
-            saw_session_data: saw_session_data.clone(),
-        },
-        stop_server.clone(),
-    ));
+    let server = start_mock_server(MockMode::Verify {
+        pre_nonce: manifest.nonce.clone(),
+        post_nonce: post_nonce.clone(),
+        session_data_key: manifest.session_data_key.clone(),
+        tool_called: Arc::new(AtomicBool::new(false)),
+        saw_pre_context: saw_pre_context.clone(),
+        saw_session_data: saw_session_data.clone(),
+    })
+    .await;
+    let new_base_url = server.base_url();
 
     // Stage 1: Cold startup & in-place schema/data migrations.
     let mut host = Host::spawn_with(bin, &dirs.root, &dirs.home, &dirs.workspace)
         .unwrap_or_else(|e| panic!("spawn Host {}: {e}", bin.display()));
     let outcome = AssertUnwindSafe(async {
         let (mut client, _) = host.ready().await.expect("Host ready");
+
+        verify_queued_after_upgrade(&queued_before);
 
         // Stage 2: Exhaustive read/deserialization sweep across every persisted domain.
         let catalog = call(
@@ -1393,13 +1449,17 @@ async fn verify_capsule(bin: &Path, capsule_dir: &Path) {
     .catch_unwind()
     .await;
 
-    stop_server.cancel();
-    let _ = server.await;
     let cleanup = host.cleanup().await;
 
     match outcome {
-        Ok(()) => cleanup.expect("Host cleanup"),
-        Err(panic) => std::panic::resume_unwind(panic),
+        Ok(()) => {
+            server.shutdown().await;
+            cleanup.expect("Host cleanup");
+        }
+        Err(panic) => {
+            let _ = server.shutdown_taking_panics().await;
+            std::panic::resume_unwind(panic);
+        }
     }
 }
 

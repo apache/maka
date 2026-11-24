@@ -56,8 +56,10 @@ import { settingsValue } from './settingsOperations';
 import type { AgentFileChange } from '../../../../packages/plugin-sdk/src/index.js';
 import type { FileView, Host, Output } from './host';
 import { MermaidView } from './MermaidView';
+import { InlineCallout, RegionEmptyError } from './Feedback';
 import { Icon } from './Icon';
 import { ImageViewerButton, type OpenImageViewer } from './ImageViewer';
+import { toast } from './toastStore';
 import { tr } from './locale';
 import { formatReviewNote, InlineReviewComposer, InlineReviewNoteCard } from './ReviewComposer';
 import type {
@@ -446,13 +448,14 @@ export function CurrentFile(props: {
             message: '',
           });
       } catch (reason) {
-        if (owns())
-          copyReceipt.set({
-            version: original.version,
-            digest: original.digest,
-            failed: true,
-            message: errorText(reason, 'Could not copy to the clipboard.'),
+        if (owns()) {
+          copyReceipt.set(null);
+          toast.show({
+            id: 'current-file.copy',
+            tone: 'danger',
+            message: renderText(errorText(reason, 'Could not copy to the clipboard.')),
           });
+        }
       } finally {
         if (mounted) copying.set(false);
       }
@@ -519,48 +522,61 @@ export function CurrentFile(props: {
           onLayout={({ bounds: frame }) => emptyHeight.set(frame.size.height)}
           style={{ flex: 1, minHeight: 0 }}
         >
-          <View
-            style={{
-              minHeight: emptyHeight(),
-              padding: 16,
-              gap: 16,
-              justifyContent: 'center',
-              alignItems: 'center',
-            }}
-          >
-            <View
-              accessibilityElementsHidden
-              style={[
-                {
-                  width: 32,
-                  height: 32,
-                  borderRadius: 8,
-                  backgroundColor: C.card,
-                  alignItems: 'center',
+          <If
+            when={failed() && model.state().kind !== 'loading'}
+            else={
+              <View
+                style={{
+                  minHeight: emptyHeight(),
+                  padding: 16,
+                  gap: 16,
                   justifyContent: 'center',
-                },
-                { pointerEvents: 'none' },
-              ]}
-            >
-              <Icon name="file" color={C.muted} />
-            </View>
-            <Text
-              style={[
-                {
-                  ...bodyTextStyle,
-                  width: '100%',
-                  color: failed() ? C.danger : C.secondary,
-                  textAlign: 'center',
-                },
-                { userSelect: failed() ? 'text' : 'none' },
-              ]}
-            >
-              {emptyMessage()}
-            </Text>
-            <If when={(failed() || view()?.kind === 'changed') && model.state().kind !== 'loading'}>
-              <RetryCurrentFile model={model} />
-            </If>
-          </View>
+                  alignItems: 'center',
+                }}
+              >
+                <View
+                  accessibilityElementsHidden
+                  style={[
+                    {
+                      width: 32,
+                      height: 32,
+                      borderRadius: 8,
+                      backgroundColor: C.card,
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                    },
+                    { pointerEvents: 'none' },
+                  ]}
+                >
+                  <Icon name="file" color={C.muted} />
+                </View>
+                <Text
+                  style={[
+                    {
+                      ...bodyTextStyle,
+                      width: '100%',
+                      color: C.secondary,
+                      textAlign: 'center',
+                    },
+                    { userSelect: 'none' },
+                  ]}
+                >
+                  {emptyMessage()}
+                </Text>
+                <If when={view()?.kind === 'changed' && model.state().kind !== 'loading'}>
+                  <RetryCurrentFile model={model} />
+                </If>
+              </View>
+            }
+          >
+            <RegionEmptyError
+              tone="danger"
+              icon="file"
+              title={error()}
+              retry={inputAction(model.refresh, null)}
+              style={{ minHeight: emptyHeight() }}
+            />
+          </If>
         </Scroll>
       </If>
       <Each
@@ -853,6 +869,29 @@ function SourceEditorView(props: {
   const statusNotice = () =>
     props.navigation ? props.navigation.store.statusMessage(model.target.sessionId) : '';
 
+  let lastStatusNotice = '';
+  effect(() => {
+    const notice = statusNotice();
+    if (!notice) {
+      lastStatusNotice = '';
+      return;
+    }
+    if (notice === lastStatusNotice) return;
+    lastStatusNotice = notice;
+    toast.show({ id: 'current-file.notice', tone: 'info', message: notice });
+  });
+
+  const readError = () => {
+    const state = model.state();
+    return state.kind === 'error' ? renderText(state.message) : '';
+  };
+  const calloutTone = () =>
+    model.saveError() || readError() ? ('danger' as const) : ('warning' as const);
+  const calloutMessage = () =>
+    model.saveError() ||
+    readError() ||
+    (model.stale() ? tr('The workspace may have changed. Refresh for current contents.') : '');
+
   return (
     <View ref={bindShortcuts} style={{ flex: 1, minHeight: 0, gap: 6 }}>
       <View
@@ -921,23 +960,30 @@ function SourceEditorView(props: {
         </Popover>
       </View>
 
-      <If when={props.copied()?.failed}>
-        <Text style={{ ...captionTextStyle, color: C.warning }}>
-          {renderText(props.copied()!.message)}
-        </Text>
-      </If>
-      <If when={!!model.saveError()}>
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-          <Text style={{ ...captionTextStyle, color: C.warning }}>{model.saveError()}</Text>
-          <FileAction
-            label={tr('Discard edits')}
-            disabled={model.saving()}
-            onPress={model.discard}
-          />
-        </View>
-      </If>
-      <If when={statusNotice().length > 0}>
-        <Text style={{ ...captionTextStyle, color: C.muted }}>{statusNotice()}</Text>
+      <If when={Boolean(calloutMessage())}>
+        <InlineCallout
+          tone={calloutTone()}
+          message={calloutMessage()}
+          action={
+            model.saveError()
+              ? {
+                  label: tr('Discard edits'),
+                  disabled: model.saving(),
+                  onPress: model.discard,
+                }
+              : readError()
+                ? {
+                    label: tr('Retry'),
+                    disabled: model.state().kind === 'loading',
+                    onPress: inputAction(model.refresh, null),
+                  }
+                : {
+                    label: tr('Refresh'),
+                    disabled: model.state().kind === 'loading',
+                    onPress: inputAction(model.refresh, null),
+                  }
+          }
+        />
       </If>
 
       <If when={finding()}>
@@ -1059,10 +1105,6 @@ function SourceEditorView(props: {
             <Icon name="close" size={13} color={C.muted} />
           </Button>
         </View>
-      </If>
-
-      <If when={model.state().kind === 'error'}>
-        <CapturedFileStatus model={model} />
       </If>
 
       <If when={draftNote() !== null && props.navigation !== undefined}>
@@ -1399,33 +1441,43 @@ function RetryCurrentFile(props: { model: CurrentFileModel }) {
   );
 }
 
-function CapturedFileStatus(props: { model: CurrentFileModel; selectable?: boolean }) {
+function CapturedFileStatus(props: { model: CurrentFileModel }) {
   const model = props.model;
+  const readError = () => {
+    const state = model.state();
+    return state.kind === 'error' ? renderText(state.message) : '';
+  };
   return (
-    <If when={model.stale() || model.state().kind === 'loading' || model.state().kind === 'error'}>
-      <View style={{ padding: 6, gap: 6, alignItems: 'flex-start' }}>
-        <If when={model.stale() && model.state().kind !== 'error'}>
-          <Text style={[{ ...captionTextStyle, color: C.warning }, { userSelect: 'none' }]}>
-            {tr('The workspace may have changed. Refresh for current contents.')}
-          </Text>
-        </If>
-        <If when={model.state().kind === 'loading'}>
-          <Text style={[{ ...captionTextStyle, color: C.muted }, { userSelect: 'none' }]}>
-            {tr('Reading current file…')}
-          </Text>
-        </If>
-        <If when={model.state().kind === 'error'}>
-          <Text
-            style={[
-              { ...bodyTextStyle, color: C.danger },
-              { userSelect: props.selectable !== false ? 'text' : 'none' },
-            ]}
+    <If when={Boolean(readError()) || model.stale() || model.state().kind === 'loading'}>
+      <If
+        when={Boolean(readError())}
+        else={
+          <If
+            when={model.stale()}
+            else={
+              <InlineCallout
+                tone="info"
+                message={tr('Reading current file…')}
+                style={{ marginBottom: 6 }}
+              />
+            }
           >
-            {renderText((model.state() as Extract<FileState, { kind: 'error' }>).message)}
-          </Text>
-          <RetryCurrentFile model={model} />
-        </If>
-      </View>
+            <InlineCallout
+              tone="warning"
+              message={tr('The workspace may have changed. Refresh for current contents.')}
+              action={{ label: tr('Refresh'), onPress: inputAction(model.refresh, null) }}
+              style={{ marginBottom: 6 }}
+            />
+          </If>
+        }
+      >
+        <InlineCallout
+          tone="danger"
+          message={readError()}
+          action={{ label: tr('Retry'), onPress: inputAction(model.refresh, null) }}
+          style={{ marginBottom: 6 }}
+        />
+      </If>
     </If>
   );
 }
@@ -1444,65 +1496,61 @@ function FileImage(props: {
     mounted = false;
   });
   return (
-    <Scroll
-      onLayout={({ bounds: frame }) => viewportHeight.set(frame.size.height)}
-      style={{ flex: 1, minHeight: 0 }}
-    >
-      <CapturedFileStatus model={props.model} />
-      <View style={{ height: Math.max(0, viewportHeight() - footerHeight() - 8), marginBottom: 8 }}>
-        <Image
-          src={props.view.uri}
-          onLoad={({ size: value }) => {
-            if (mounted) dimensions.set(value);
-          }}
-          onError={(reason) => {
-            if (mounted) error.set(reason.message);
-          }}
-          accessibilityLabel={tr('Captured workspace image')}
-          style={[{ flex: 1, minHeight: 0, width: '100%' }, { objectFit: 'contain' }]}
+    <If
+      when={!error()}
+      else={
+        <RegionEmptyError
+          tone="danger"
+          icon="image"
+          title={error()}
+          retry={inputAction(() => {
+            error.set('');
+            props.model.refresh();
+          }, null)}
+          retryLabel={tr('Retry image')}
         />
-      </View>
-      <View
-        onLayout={({ bounds: frame }) => footerHeight.set(frame.size.height)}
-        style={{ gap: 8 }}
+      }
+    >
+      <Scroll
+        onLayout={({ bounds: frame }) => viewportHeight.set(frame.size.height)}
+        style={{ flex: 1, minHeight: 0 }}
       >
-        <If when={dimensions()}>
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-            <Text style={{ ...captionTextStyle, flex: 1, color: C.muted }}>
-              {tr('{width} × {height} · Captured image', {
-                width: dimensions()!.width,
-                height: dimensions()!.height,
-              })}
-            </Text>
-            <ImageViewerButton
-              open={props.openImageViewer}
-              image={{ uri: props.view.uri, ...dimensions()!, title: props.model.target.title }}
-            />
-          </View>
-        </If>
-        <If when={error()}>
-          <Text style={[{ ...bodyTextStyle, color: C.danger }, { userSelect: 'text' }]}>
-            {error()}
-          </Text>
-          <Button
-            disabled={props.model.state().kind === 'loading'}
-            onPress={inputAction(props.model.refresh, null)}
-            style={{
-              ...controlStyle,
-              alignSelf: 'flex-start',
-              flexDirection: 'row',
-              alignItems: 'center',
-              gap: 8,
+        <CapturedFileStatus model={props.model} />
+        <View
+          style={{ height: Math.max(0, viewportHeight() - footerHeight() - 8), marginBottom: 8 }}
+        >
+          <Image
+            src={props.view.uri}
+            onLoad={({ size: value }) => {
+              if (mounted) dimensions.set(value);
             }}
-            hoverStyle={controlHoverStyle()}
-            focusStyle={controlFocusStyle()}
-            disabledStyle={controlDisabledStyle}
-          >
-            <Icon name="refresh" color={C.secondary} />
-            <Text style={{ ...captionTextStyle, color: C.secondary }}>{tr('Retry image')}</Text>
-          </Button>
-        </If>
-      </View>
-    </Scroll>
+            onError={(reason) => {
+              if (mounted) error.set(reason.message);
+            }}
+            accessibilityLabel={tr('Captured workspace image')}
+            style={[{ flex: 1, minHeight: 0, width: '100%' }, { objectFit: 'contain' }]}
+          />
+        </View>
+        <View
+          onLayout={({ bounds: frame }) => footerHeight.set(frame.size.height)}
+          style={{ gap: 8 }}
+        >
+          <If when={dimensions()}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+              <Text style={{ ...captionTextStyle, flex: 1, color: C.muted }}>
+                {tr('{width} × {height} · Captured image', {
+                  width: dimensions()!.width,
+                  height: dimensions()!.height,
+                })}
+              </Text>
+              <ImageViewerButton
+                open={props.openImageViewer}
+                image={{ uri: props.view.uri, ...dimensions()!, title: props.model.target.title }}
+              />
+            </View>
+          </If>
+        </View>
+      </Scroll>
+    </If>
   );
 }

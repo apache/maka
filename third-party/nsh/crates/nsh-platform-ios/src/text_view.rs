@@ -181,6 +181,9 @@ pub(crate) struct TextViewIvars {
     /// The part a selectable view selected (UTF-16 offsets) and its
     /// highlight (`selectable_view.rs`).
     area_highlight: std::cell::Cell<Option<((usize, usize), nsh_core::Color)>>,
+    /// The parts VoiceOver reads one by one, made when it asks
+    /// (`text_access.rs`).
+    pub(crate) access: RefCell<Option<std::rc::Rc<crate::text_access::Snapshot>>>,
 }
 
 define_class!(
@@ -196,7 +199,19 @@ define_class!(
         fn is_accessibility_element(&self) -> bool {
             // SAFETY: calling the superclass implementation.
             let explicit: bool = unsafe { msg_send![super(self), isAccessibilityElement] };
-            explicit || (!self.hidden_from_accessibility() && self.has_visible_text())
+            // Text with links or inline views is their container instead.
+            explicit
+                || (!self.hidden_from_accessibility()
+                    && self.has_visible_text()
+                    && !self.reads_in_parts())
+        }
+
+        #[unsafe(method_id(accessibilityElements))]
+        fn accessibility_elements(&self) -> Option<Retained<NSArray>> {
+            self.access_elements().or_else(|| {
+                // SAFETY: calling the superclass implementation.
+                unsafe { msg_send![super(self), accessibilityElements] }
+            })
         }
 
         #[unsafe(method_id(accessibilityLabel))]
@@ -761,7 +776,7 @@ impl TextView {
             .is_some_and(|t| !t.visible_text().is_empty())
     }
 
-    fn hidden_from_accessibility(&self) -> bool {
+    pub(crate) fn hidden_from_accessibility(&self) -> bool {
         // SAFETY: a plain getter.
         unsafe { msg_send![self, accessibilityElementsHidden] }
     }

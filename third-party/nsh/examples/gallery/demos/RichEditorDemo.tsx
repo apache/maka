@@ -1,4 +1,5 @@
-import { Overlay, signal, Text, View } from "nsh";
+import { Overlay, pixelRatio, signal, Text, View } from "nsh";
+import { InputAccessoryView } from "nsh/mobile";
 import {
   RichEditor,
   RichEditorPlugin,
@@ -11,7 +12,7 @@ import {
   redo,
   undo,
 } from "nsh/base";
-import { colors, mono, richEditorClasses, Segmented } from "../ui";
+import { Button, colors, mono, richEditorClasses, Segmented } from "../ui";
 import { NodeViewDemo } from "./NodeViewDemo";
 import { IconButton, type LucideIconName, TOOL_GAP, ToggleGroup, type ToggleItem, ToolbarSeparator } from "./RichEditorUi";
 import { createLinkMenu, LinkBubble, type LinkMenu } from "./RichEditorLink";
@@ -25,6 +26,9 @@ import { createLinkMenu, LinkBubble, type LinkMenu } from "./RichEditorLink";
 // button gives the document the whole screen. Tables (`TableKit`) are
 // grids of their cells: drag a column's or row's border to resize it, and
 // the grips on the table's edges to select and move rows and columns.
+// On iOS a bar rides on the keyboard while the document has the focus
+// (`inputAccessoryViewID`): the marks and lists a thumb reaches while
+// typing, and Done, which puts the keyboard away.
 
 const DOC = `# Release notes
 
@@ -132,6 +136,15 @@ const INSERT_TABLE = command("insertTable", { rows: 3, cols: 3, withHeaderRow: t
 
 const WRAP_TYPES: Record<Wrap, string> = { bullet: "bulletList", ordered: "orderedList", task: "taskList", quote: "blockquote" };
 
+/** The innermost list's kind (what the list buttons change), and a quote. */
+function activeWraps(editor: RichEditorSession): Wrap[] {
+  const lists = (["bullet", "ordered", "task"] as const)
+    .map((kind) => ({ kind, found: editor.findParentNode(WRAP_TYPES[kind]) as { depth: number } | null }))
+    .filter((l) => l.found)
+    .sort((a, b) => b.found!.depth - a.found!.depth);
+  return [...lists.slice(0, 1).map((l) => l.kind), ...(editor.isActive("blockquote") ? (["quote"] as const) : [])];
+}
+
 /** The toolbar: undo and redo, the block type, the marks and links, lists and quotes, indents, the zoom. */
 function Toolbar(props: { editor: RichEditorSession; revision: number; link: LinkMenu; zoomed: boolean; onZoom: () => void }) {
   const editor = props.editor;
@@ -154,14 +167,9 @@ function Toolbar(props: { editor: RichEditorSession; revision: number; link: Lin
     return on("paragraph") ? ["paragraph"] : [];
   };
   const marks = (): Mark[] => MARKS.map((m) => m.value).filter((m) => on(m));
-  // The innermost list's kind (what the list buttons change), and a quote.
   const wraps = (): Wrap[] => {
     void props.revision;
-    const lists = (["bullet", "ordered", "task"] as const)
-      .map((kind) => ({ kind, found: editor.findParentNode(WRAP_TYPES[kind]) as { depth: number } | null }))
-      .filter((l) => l.found)
-      .sort((a, b) => b.found!.depth - a.found!.depth);
-    return [...lists.slice(0, 1).map((l) => l.kind), ...(on("blockquote") ? (["quote"] as const) : [])];
+    return activeWraps(editor);
   };
   const indent = command("sinkListItem", { name: "listItem" });
   const outdent = command("liftListItem", { name: "listItem" });
@@ -218,6 +226,80 @@ function Toolbar(props: { editor: RichEditorSession; revision: number; link: Lin
   );
 }
 
+/** The `nativeID` of the bar over the keyboard, which the editor names. */
+const KEYBOARD_BAR = "document-keys";
+
+const KEY_MARKS = MARKS.filter((m) => m.value !== "link" && m.value !== "code") as ToggleItem<Exclude<Mark, "link">>[];
+const KEY_LISTS = WRAPS.filter((w) => w.value !== "quote");
+
+/**
+ * The bar over the iOS keyboard (an `InputAccessoryView` the editor names): the marks and lists in reach of a thumb
+ * while typing, and Done, which gives the focus up and so puts the keyboard away. It comes and goes with the
+ * keyboard; the other platforms show none.
+ */
+function KeyboardBar(props: { editor: RichEditorSession; revision: number }) {
+  const editor = props.editor;
+  const marks = () => {
+    void props.revision;
+    return KEY_MARKS.map((m) => m.value).filter((m) => editor.isActive(m));
+  };
+  const lists = () => {
+    void props.revision;
+    return activeWraps(editor).filter((w) => w !== "quote");
+  };
+  const run = (cmd: RichCommand) => {
+    editor.run(cmd);
+    editor.focus();
+  };
+  return (
+    <InputAccessoryView nativeID={KEYBOARD_BAR} style={{ backgroundColor: colors.inset }}>
+      <View
+        testID="keyboard-bar"
+        style={{
+          flexDirection: "row",
+          alignItems: "center",
+          columnGap: TOOL_GAP,
+          paddingHorizontal: 8,
+          paddingVertical: 6,
+          borderTopWidth: 1 / pixelRatio(),
+          borderTopColor: colors.border,
+        }}
+      >
+        <ToggleGroup type="multiple" items={KEY_MARKS} value={marks()} onToggle={(value) => run(command(MARK_COMMANDS[value]))} />
+        <ToolbarSeparator />
+        <ToggleGroup type="multiple" items={KEY_LISTS} value={lists()} onToggle={(value) => run(command(WRAP_COMMANDS[value]))} />
+        <View style={{ flex: 1 }} />
+        <Button label="Done" variant="secondary" onPress={() => editor.blur()} />
+      </View>
+    </InputAccessoryView>
+  );
+}
+
+// A long document (about 5,000 Markdown lines, 1,200 top-level blocks):
+// the editor mounts only the blocks near its viewport, so it opens as fast
+// as a short one.
+function longDocument(sections: number): string {
+  const words = "alpha beta gamma delta epsilon zeta theta kappa lambda sigma omega".split(" ");
+  const pick = (seed: number, n: number) => Array.from({ length: n }, (_, i) => words[(seed * 7 + i * 3) % words.length]).join(" ");
+  const out: string[] = ["# A long document", ""];
+  for (let s = 1; s <= sections; s++) {
+    out.push(`## Section ${s}: ${pick(s, 4)}`, "");
+    for (let p = 0; p < 3; p++) out.push(`${pick(s * 31 + p, 38)}. See **${pick(s + p, 2)}** and \`code_${p}\`.`, "");
+    for (let i = 0; i < 5; i++) out.push(`- ${pick(s * 13 + i, 9)}`);
+    out.push("", "```rust");
+    for (let i = 0; i < 8; i++) out.push(`let v_${i} = f(${i * s});`);
+    out.push("```", "", "| Key | Value | Note |", "| --- | --- | --- |");
+    for (let i = 0; i < 4; i++) out.push(`| ${pick(s * 23 + i, 1)} | ${i * s} | ${pick(s * 29 + i, 4)} |`);
+    out.push("", `> ${pick(s * 37, 16)}.`, "");
+  }
+  return out.join("\n");
+}
+
+function LongDocument() {
+  const editor = createRichEditor({ extensions: [StarterKit, TableKit], content: longDocument(150), format: "markdown" });
+  return <RichEditor testID="long-editor" editor={editor} accessibilityLabel="Long document" style={{ flex: 1 }} classes={richEditorClasses} />;
+}
+
 export function RichEditorDemo() {
   // Mod-K opens the link field, as in most editors.
   const keys = new RichEditorPlugin("linkKey");
@@ -234,7 +316,7 @@ export function RichEditorDemo() {
   keys.captureKeys(["Mod-k"], () => link.edit());
   keys.capturing = true;
 
-  const mode = signal<"edit" | "markdown">("edit");
+  const mode = signal<"edit" | "markdown" | "long">("edit");
   const zoomed = signal(false);
   const words = () => text().split(/\s+/).filter(Boolean).length;
   // The editor and its bars; zoomed, they cover the whole window.
@@ -257,11 +339,16 @@ export function RichEditorDemo() {
       <If
         when={mode() === "edit"}
         else={
-          <View style={{ flex: 1, paddingHorizontal: 24, paddingVertical: 20 }}>
-            <Text testID="markdown-source" style={{ fontFamily: mono, fontSize: 13, lineHeight: 20, color: colors.text }}>
-              {source()}
-            </Text>
-          </View>
+          <If
+            when={mode() === "markdown"}
+            else={<LongDocument />}
+          >
+            <View style={{ flex: 1, paddingHorizontal: 24, paddingVertical: 20 }}>
+              <Text testID="markdown-source" style={{ fontFamily: mono, fontSize: 13, lineHeight: 20, color: colors.text }}>
+                {source()}
+              </Text>
+            </View>
+          </If>
         }
       >
         <RichEditor
@@ -273,8 +360,11 @@ export function RichEditorDemo() {
           classes={richEditorClasses}
           bubbleMenu={link.mode() === "closed" ? undefined : <LinkBubble menu={link} />}
           bubbleMenuPlacement="bottom"
+          inputAccessoryViewID={KEYBOARD_BAR}
         />
       </If>
+      {/* Takes no room here: it shows on the keyboard while the editor has the focus. */}
+      <KeyboardBar editor={editor} revision={revision()} />
       <View
         style={{
           flexDirection: "row",
@@ -297,6 +387,7 @@ export function RichEditorDemo() {
             options={[
               { value: "edit", label: "Edit" },
               { value: "markdown", label: "Markdown" },
+              { value: "long", label: "Long" },
             ]}
             value={mode()}
             onChange={(value) => mode.set(value)}

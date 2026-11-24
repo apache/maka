@@ -71,7 +71,7 @@ async fn code_mode_output_budget_tail_preview_mixed_media_and_in_cell_read() -> 
             .save(base.join("workspace/shot.png"))?;
 
         let tools = product_agent_tools(true).await?;
-        let boot = bootstrap_with(&base, provider.url.clone(), |config| {
+        let boot = bootstrap_with(&base, provider.server.base_url(), |config| {
             config["tools"] = tools;
         })
         .await?;
@@ -89,7 +89,7 @@ async fn code_mode_output_budget_tail_preview_mixed_media_and_in_cell_read() -> 
                     "slug": "budget-acceptance",
                     "name": "Budget fixture",
                     "provider": {"packageId": "maka.providers", "entryId": "maka.providers", "scope": "profile", "name": "ollama"},
-                    "configuration": {"baseUrl": provider.url},
+                    "configuration": {"baseUrl": provider.server.base_url()},
                     "enabled": true,
                     "enabledModelIds": ["direct-model", "code-model"],
                     "modelOverrides": {
@@ -271,14 +271,13 @@ async fn code_mode_output_budget_tail_preview_mixed_media_and_in_cell_read() -> 
         assert_eq!(sent["kind"], "queued", "{sent}");
         let (_, reply1) = provider.next().await?;
         reply1
-            .send(tool_response(
+            .send_plan(tool_response(
                 "exec",
                 json!({
                     "code": r#"text("FIRST_YIELD_MARKER"); await yield_control(); const lines = []; for (let i = 0; i < 1400; i++) { lines.push("delta_" + i + "_payload_0123456789_abcdefghij"); } lines.push("SECOND_WAIT_TAIL_MARKER"); text(lines.join("\n"));"#,
                     "yield_time_ms": 30000
                 }),
-            ))
-            .map_err(|_| "yield step 1 lost")?;
+            ));
         let (req2, reply2) = provider.next().await?;
         let yield_msg = req2["messages"]
             .as_array()
@@ -300,11 +299,10 @@ async fn code_mode_output_budget_tail_preview_mixed_media_and_in_cell_read() -> 
             .to_owned();
 
         reply2
-            .send(tool_response(
+            .send_plan(tool_response(
                 "wait",
                 json!({"cell_id": cell_id, "yield_time_ms": 30000}),
-            ))
-            .map_err(|_| "yield step 2 lost")?;
+            ));
         let (req3, reply3) = provider.next().await?;
         let wait_msg = req3["messages"]
             .as_array()
@@ -331,8 +329,7 @@ async fn code_mode_output_budget_tail_preview_mixed_media_and_in_cell_read() -> 
             "wait delta missing tailPreview marker: {wait_archived}"
         );
         reply3
-            .send(completion(json!({"role":"assistant","content":"Done."}), "stop"))
-            .map_err(|_| "yield final lost")?;
+            .reply_text("Done.");
         tokio::time::timeout(
             Duration::from_secs(20),
             quiescent_message(client, code_id, &sent["messageId"]),
@@ -534,14 +531,13 @@ async fn code_mode_output_budget_tail_preview_mixed_media_and_in_cell_read() -> 
         assert_eq!(sent_err["kind"], "queued", "{sent_err}");
         let (_, err_reply1) = provider.next().await?;
         err_reply1
-            .send(tool_response(
+            .send_plan(tool_response(
                 "exec",
                 json!({
                     "code": r#"text("YIELDED_BEFORE_ERR_A"); await yield_control(); await new Promise(r => setTimeout(r, 80)); text("BEFORE_THROW_LOG_B"); throw new Error("boom failed");"#,
                     "yield_time_ms": 30000
                 }),
-            ))
-            .map_err(|_| "err yield step 1 lost")?;
+            ));
         let (err_req2, err_reply2) = provider.next().await?;
         let err_yield_msg = err_req2["messages"]
             .as_array()
@@ -565,11 +561,10 @@ async fn code_mode_output_budget_tail_preview_mixed_media_and_in_cell_read() -> 
             .to_owned();
 
         err_reply2
-            .send(tool_response(
+            .send_plan(tool_response(
                 "wait",
                 json!({"cell_id": err_cell_id, "yield_time_ms": 30000, "max_tokens": 0}),
-            ))
-            .map_err(|_| "err yield step 2 lost")?;
+            ));
         let (err_req3, err_reply3) = provider.next().await?;
         let err_wait_msg = err_req3["messages"]
             .as_array()
@@ -592,8 +587,7 @@ async fn code_mode_output_budget_tail_preview_mixed_media_and_in_cell_read() -> 
             .ok_or("missing interrupted archive resourceRef")?
             .to_owned();
         err_reply3
-            .send(completion(json!({"role":"assistant","content":"Done."}), "stop"))
-            .map_err(|_| "err yield final lost")?;
+            .reply_text("Done.");
         tokio::time::timeout(
             Duration::from_secs(20),
             quiescent_message(client, code_id, &sent_err["messageId"]),

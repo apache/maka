@@ -563,11 +563,11 @@ fn reactive_editable_updates_sink_input_config() {
     let session = session(paragraphs(&["ab"]));
     let mut config = EngineConfig {
         viewport: Size::new(px(800.0), px(900.0)),
-        ..EngineConfig::new(Root::new::<ReactiveEditable>(move || {
-            ReactiveEditableProps {
+        ..EngineConfig::new(nsh_testing::windowed_root_with::<ReactiveEditable>(
+            move || ReactiveEditableProps {
                 session: Some(session.clone()),
-            }
-        }))
+            },
+        ))
     };
     config.environment.os = Os::Linux;
     config.environment.idiom = Idiom::Desktop;
@@ -684,10 +684,12 @@ fn start_configured(doc: Value, placeholder: Option<&str>, editable: bool) -> He
     let placeholder = placeholder.map(str::to_owned);
     let mut config = EngineConfig {
         viewport: Size::new(px(800.0), px(900.0)),
-        ..EngineConfig::new(Root::new::<Configured>(move || ConfiguredProps {
-            session: Some(session.clone()),
-            placeholder: placeholder.clone(),
-            editable,
+        ..EngineConfig::new(nsh_testing::windowed_root_with::<Configured>(move || {
+            ConfiguredProps {
+                session: Some(session.clone()),
+                placeholder: placeholder.clone(),
+                editable,
+            }
         }))
     };
     config.environment.os = Os::Linux;

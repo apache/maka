@@ -1,6 +1,22 @@
 # What a user does and sees (compat/apps.rs): each case after its tap.
 platform web desktop
 fontscale 2
+# base-accessibility-hints
+tap id:case-base-accessibility-hints
+prop id:button accessibilityHint Removes the draft
+prop id:link accessibilityHint Opens saved drafts
+prop id:switch accessibilityHint Mutes notifications
+prop id:checkbox accessibilityHint Keeps a local copy
+prop id:menu accessibilityHint Shows draft actions
+tap id:button
+prop id:button accessibilityHint Restores the draft
+tap id:clear-null
+noprop id:button accessibilityHint
+tap id:button
+prop id:button accessibilityHint Restores the draft
+tap id:clear-undefined
+noprop id:button accessibilityHint
+covers [props] accessibilityHint
 # props-platform-web
 tap id:case-props-platform-web
 expect Link

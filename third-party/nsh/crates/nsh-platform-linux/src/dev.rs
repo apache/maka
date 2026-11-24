@@ -284,6 +284,7 @@ fn handle(ui: &Rc<RefCell<DevUi>>, event: DevEvent) {
             app_id,
             limits,
             window,
+            application,
         } => {
             hide_status(ui);
             let mut bundle = match format {
@@ -310,6 +311,7 @@ fn handle(ui: &Rc<RefCell<DevUi>>, event: DevEvent) {
             }
             bundle = match bundle
                 .with_main_window(window.as_deref())
+                .with_application(application.as_deref())
                 .with_app_id(app_id.as_deref())
                 .with_capabilities_json(capabilities.as_deref())
             {
@@ -503,7 +505,7 @@ fn app_came(ui: &RefCell<DevUi>, view: &AppView, app: &App) {
     }
     if app
         .main_window()
-        .is_none_or(nsh_core::desktop::MainWindowOptions::visible_at_launch)
+        .is_some_and(nsh_core::desktop::MainWindowOptions::visible_at_launch)
     {
         present(view);
     } else {

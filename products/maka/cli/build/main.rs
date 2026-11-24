@@ -16,9 +16,11 @@
  * specific language governing permissions and limitations
  * under the License.
  */
+mod exports;
 mod product;
 
 fn main() {
+    exports::configure();
     product::bundle();
     println!("cargo:rerun-if-env-changed=MAKA_NATIVE_PACKAGE_VERSION");
     if let Ok(version) = std::env::var("MAKA_NATIVE_PACKAGE_VERSION") {

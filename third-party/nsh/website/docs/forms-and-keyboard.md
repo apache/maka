@@ -96,6 +96,7 @@ pub fn App() -> impl IntoElement {
 ```tsx tabs
 import { mount, signal, Text, View } from "nsh";
 import { Input } from "nsh/base";
+import { Window } from "nsh/desktop";
 
 function App() {
   const name = signal("");
@@ -112,7 +113,11 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 Because you control the value, you can transform what the user types: `.on_change(move |t: &str| tag.set(t.to_uppercase()))` uppercases, `onChange={({ value }) => code.set(value.replace(/[^0-9]/g, ""))}` keeps digits only.
@@ -188,6 +193,7 @@ In Rust, each prop is a method of `input()` named in snake case (`.placeholder(.
 | `maxLength` | `number` | | The most characters the user can enter, counted as Unicode code points on every platform: an emoji such as 😀 or a rare CJK character counts once. A longer paste goes in cut to what fits, as in a browser, never inside a character such as an emoji with its skin tone. |
 | `readonly` | `boolean` | `false` | The user can select and copy the text but not change it. |
 | `autoFocus` | `boolean` | `false` | Focused when it appears. |
+| `selectTextOnFocus` | `boolean` | `false` | Selects the whole text when the input takes the focus; a drag, a Shift-click or a double click keeps the user's selection. |
 | `submitBehavior` | `"submit" \| "blurAndSubmit" \| "newline"` | single line `"blurAndSubmit"`, multiline `"newline"` | What return does: submit and keep the focus, submit and unfocus, or insert a line break (multiline only). |
 | `pasteBehavior` | `"insert" \| "report"` | `"insert"` | What a paste does: insert its text, or nothing ([pasting](#pasting-images-and-files)). |
 | `caret` | `boolean` | `true` | The caret is drawn; `false` hides it. |
@@ -332,6 +338,7 @@ pub fn sign_in() -> impl IntoElement {
 ```tsx tabs
 import { type InputRef, mount, signal, View } from "nsh";
 import { Input } from "nsh/base";
+import { Window } from "nsh/desktop";
 
 function SignIn() {
   const email = signal("");
@@ -354,7 +361,11 @@ function SignIn() {
   );
 }
 
-mount(SignIn);
+mount(() => (
+  <Window id="main">
+    <SignIn />
+  </Window>
+));
 ```
 
 Submitting without blurring (`SubmitBehavior::Submit`, `submitBehavior="submit"`) on the first field keeps the keyboard up while focus moves, so it does not drop and rise again. A chat input that sends on return and stays focused submits the same way (see the composer [below](#content-outside-scroll-views)).
@@ -370,7 +381,7 @@ An input's ref has:
 | `focus()` | `focus()` | Focuses the input and shows the keyboard. |
 | `blur()` | `blur()` | Unfocuses it. |
 | `set_selection(start, end)` | `setSelection(start, end?)` | Selects `start..end` (UTF-16 units); a caret when they are equal (TSX: without `end`). |
-| `insert_text(text)` | `insertText(text)` | Inserts `text` in place of the selection as the user's edit: one step of the input's undo history, reported by `onChange`; Linux, the web and headless tests only ([pasting](#pasting-images-and-files)). |
+| `insert_text(text)` | `insertText(text)` | Inserts `text` in place of the selection as the user's edit: one step of the input's undo history, reported by `onChange`; iOS, macOS, Linux, the web and headless tests ([pasting](#pasting-images-and-files)). |
 
 On macOS, the web and Android, `focus()` and `blur()` on the ref of a view that takes presses move the keyboard focus as Tab does ([keyboard focus](../elements/index.md#keyboard-focus)); on Android the view is focusable in touch mode for that focus session, and a default button is touch-neutral again once it blurs.
 
@@ -532,13 +543,13 @@ The input decides at once, from the prop, because the system asks it on the spot
 
 The event then comes before anything is inserted, so the app can allow the paste, cancel it or rewrite it. The
 ref's `insertText` (Rust `insert_text`) puts the text it allows in place of the selection as the user's edit:
-`maxLength` and the line rules apply, `onChange` reports it, and on Linux and the web it is one step of the input's
+`maxLength` and the line rules apply, `onChange` reports it, and on Linux, Windows and the web it is one step of the input's
 undo history, so Ctrl+Z takes it out again. A new `value` replaces the text instead.
 
-`insertText` inserts text on Linux, the web and in headless tests (`nsh test`); on macOS, Windows, iOS, Android
-and GPUI it does nothing yet and logs a warning, so the example below is for apps on Linux and the web. Use it with
+`insertText` inserts text on iOS, macOS, Linux, Windows, the web and in headless tests (`nsh test`); on Android
+and GPUI it does nothing yet and logs a warning, so use it on supported targets. Use it with
 `pasteBehavior="report"`: with `"insert"`, the default, the input has inserted the paste already and `insertText`
-inserts it a second time. While an input method is composing, `insertText` inserts nothing and logs a warning.
+inserts it a second time. While an input method is composing, `insertText` inserts nothing.
 
 ```rust tabs
 let field = element_ref();
@@ -754,6 +765,9 @@ The full height suits a view that reaches the bottom of the surface, as a screen
 
 Overlays keep clear of the keyboard on their own: a [Sheet](../elements/sheet.md#the-software-keyboard) at the bottom,
 a drawer, and the menus, selects and date pickers a phone shows as sheets end at the keyboard's top and move with it.
+A [Popover](../elements/popover.md), and any overlay placed beside an anchor, stays above the keyboard: when the
+keyboard covers the room on its side it moves to the other side of its trigger or gets only the room left, and it is
+placed again as the keyboard moves.
 
 ### The keyboard accessor
 
@@ -845,6 +859,8 @@ function Note() {
 ```
 
 The bar is as wide as the window and as tall as its content. Input accessories are iOS's: on Android the bar is an empty hidden view, so place those controls elsewhere there, for example above the input (`os() == Os::Android` in Rust, `platform.os === "android"` in TSX).
+
+A [`RichEditor`](../elements/rich-editor.md#a-bar-over-the-keyboard) shows one the same way, named with `.input_accessory(id)` in Rust and `inputAccessoryViewID` in TSX.
 
 ## Related
 

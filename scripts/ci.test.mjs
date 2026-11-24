@@ -272,10 +272,11 @@ test('skill and product inputs still select the native Windows skills consumer',
   }
 });
 
-test('Windows process and account-guard regressions are selected from their actual consumers', () => {
+test('Windows process, sandbox and account-guard regressions are selected from their actual consumers', () => {
   const packages = [
     ['maka-host-runtime', 'platform/host-runtime'],
     ['maka-process', 'platform/process'],
+    ['maka-sandbox', 'platform/sandbox'],
   ].map(([name, path]) => ({
     name,
     id: name,
@@ -292,6 +293,7 @@ test('Windows process and account-guard regressions are selected from their actu
   for (const path of [
     'platform/host-runtime/src/sandbox/windows/guards.rs',
     'platform/process/tests/integration/conpty.rs',
+    'platform/sandbox/src/lib.rs',
   ]) {
     const plan = createPlan({
       root,
@@ -305,9 +307,19 @@ test('Windows process and account-guard regressions are selected from their actu
     assert.ok(worker.suites.includes('windows-shell'));
     assert.match(plan.suites['windows-shell'].filter, /binary_id\(=maka-process::integration\)/);
     assert.match(plan.suites['windows-shell'].filter, /sandbox::windows::guards::tests::/);
+    assert.match(
+      plan.suites['windows-shell'].filter,
+      /native_task_namespace_can_be_denied_by_policy/,
+    );
     assert.ok(!suites['windows-shell'].cargoArgs.includes('--workspace'));
-    for (const pkg of ['maka-process', 'maka-settings-native', 'maka-host-runtime']) {
+    for (const pkg of [
+      'maka-process',
+      'maka-settings-native',
+      'maka-host-runtime',
+      'maka-sandbox',
+    ]) {
       assert.ok(suites['windows-shell'].cargoArgs.includes(pkg));
+      assert.ok(worker.cargoScope.includes(pkg));
     }
   }
 });
@@ -943,6 +955,8 @@ test('scoped native workers compile once with one unified Cargo feature scope', 
         '--lib',
         '--bin',
         'maka',
+        '--test',
+        'integration',
         '--bin',
         'maka-desktop-shell',
         '--test',

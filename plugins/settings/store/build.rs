@@ -19,4 +19,9 @@
 
 fn main() {
     println!("cargo:rerun-if-changed=migrations");
+    let source = "data/pricing-facts.json";
+    println!("cargo:rerun-if-changed={source}");
+    let output = std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
+    let frame = zstd::stream::compress_file(source, 9).expect("compress pricing facts");
+    std::fs::write(output.join("pricing.zst"), frame).expect("write pricing frame");
 }

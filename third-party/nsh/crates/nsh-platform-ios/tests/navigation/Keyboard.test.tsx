@@ -47,7 +47,11 @@ test("cancelling a short swipe restores the same editor", async () => {
   await app.press("text:Hidden header");
   await app.wait(600);
   await app.type("id:editor", "A draft");
-  await app.drag("id:edge", { x: 60, y: 0 });
+  // The finger stops before it lifts: lifting while it moves flicks the
+  // page away, as a real finger's quick swipe from the edge does.
+  await app.dragAndHold("id:edge", { x: 60, y: 0 });
+  await app.wait(300);
+  await app.drop();
   await app.wait(700);
   expect(app.shows("text:depth:2")).toBe(true);
   expect(app.shows("text:focused:true blurDuringDrag:true")).toBe(true);

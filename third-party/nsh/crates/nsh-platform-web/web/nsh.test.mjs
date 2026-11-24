@@ -8,9 +8,28 @@ import test from "node:test";
 
 const source = await readFile(new URL("nsh.js", import.meta.url), "utf8");
 // `Player` is not exported; the page only gets it from `createPlayer`.
-const { Player, keyCode, elementTag, runtimeSheet, charLength, clipChars } = await import(
-  `data:text/javascript,${encodeURIComponent(`${source}\nexport { Player, keyCode, runtimeSheet, charLength, clipChars };`)}`
+const { Player, keyCode, elementTag, runtimeSheet, charLength, clipChars, webNetwork } = await import(
+  `data:text/javascript,${encodeURIComponent(`${source}\nexport { Player, keyCode, runtimeSheet, charLength, clipChars, webNetwork };`)}`
 );
+
+test("the network is the browser's link, none while it is offline", () => {
+  const network = (onLine, connection) => webNetwork({ onLine, connection });
+  // A desktop browser names no link: online, of an unknown kind.
+  assert.deepEqual(network(true, undefined), { kind: "unknown", expensive: false, constrained: false });
+  assert.deepEqual(network(false, undefined), { kind: "none", expensive: false, constrained: false });
+  assert.deepEqual(network(true, { type: "wifi" }), { kind: "wifi", expensive: false, constrained: false });
+  assert.deepEqual(network(true, { type: "ethernet" }), { kind: "wired", expensive: false, constrained: false });
+  assert.deepEqual(network(true, { type: "cellular", saveData: true }), {
+    kind: "cellular",
+    expensive: true,
+    constrained: true,
+  });
+  assert.deepEqual(network(true, { type: "bluetooth" }).kind, "other");
+  assert.deepEqual(network(true, { type: "unknown" }).kind, "unknown");
+  // Offline wins over the link the connection last named.
+  assert.deepEqual(network(false, { type: "wifi" }).kind, "none");
+  assert.deepEqual(webNetwork(undefined).kind, "unknown");
+});
 
 /** A player on a fake engine; `sent` holds `[name, payload]` of the events it got. */
 function fakePlayer(options = {}) {
@@ -187,6 +206,37 @@ test("a field's maxlength lets in what fits by characters, an emoji counting onc
   // No maxLength, no limit.
   player.op_in(["in", 1, { multiline: false }, null]);
   assert.equal(field.maxLength, undefined);
+});
+
+test("a textarea reports its scrolling only while a bar of the app's follows it", () => {
+  const { player } = fakePlayer();
+  const field = {
+    tagName: "TEXTAREA",
+    value: "",
+    scrollTop: 40,
+    clientWidth: 280,
+    scrollHeight: 400,
+    clientHeight: 90,
+    classList: { toggle() {} },
+    getAttribute: () => null,
+    setAttribute() {},
+    removeAttribute() {},
+  };
+  const el = { _id: 6, _field: field, getAttribute: () => null };
+  player.view = () => el;
+  const reports = [];
+  player.call = (f) => f({ nsh_input_scroll: (...args) => reports.push(args) });
+  player.op_in(["in", 6, { multiline: true }, null]);
+  assert.deepEqual(reports, [], "nothing follows it");
+  player.op_in(["in", 6, { multiline: true, noIndicator: true, reportScroll: true }, null]);
+  assert.deepEqual(reports, [[6, 40, 280, 400, 90]]);
+  field.scrollTop = 60;
+  player.inputScrolled(el, field);
+  assert.deepEqual(reports.at(-1), [6, 60, 280, 400, 90]);
+  player.op_in(["in", 6, { multiline: true }, null]);
+  field.scrollTop = 80;
+  player.inputScrolled(el, field);
+  assert.equal(reports.length, 2, "no longer followed");
 });
 
 test("input autofill hints are set, changed and cleared on both field kinds", () => {
@@ -681,8 +731,59 @@ test("a browser-cancelled pan reports cancellation rather than a release", () =>
     player.velocity = () => [0, 400];
     player.call = (f) => f({ nsh_pan: (...args) => sent.push(args) });
     player.pointerUp({ pointerId: 7 }, cancelled);
-    assert.deepEqual(sent, [[12, phase, 0, 100, 0, 400]]);
+    assert.deepEqual(sent, [[12, phase, 0, 100, 0, 400, 10, 20]]);
     assert.equal(player.pointers.size, 0);
+  }
+});
+
+test("a pan activation with a way or an edge decides as PanActivation does", () => {
+  const { player } = fakePlayer();
+  const right = [null, null, null, null, "right", null];
+  assert.equal(player.decideActivation(right, 6, 2), undefined);
+  assert.equal(player.decideActivation(right, 11, 4), true);
+  // The other way, or mostly across, fails.
+  assert.equal(player.decideActivation(right, -11, 0), false);
+  assert.equal(player.decideActivation(right, 3, 12), false);
+  // Its axis's active offset; a fail offset across decides across.
+  const up = [null, 20, 30, null, "up", null];
+  assert.equal(player.decideActivation(up, 0, -15), undefined);
+  assert.equal(player.decideActivation(up, 0, -21), true);
+  assert.equal(player.decideActivation(up, 0, 21), false);
+  assert.equal(player.decideActivation(up, 25, -5), undefined);
+  assert.equal(player.decideActivation(up, 31, -5), false);
+  // An edge pan moves away from its edge, whatever the direction says.
+  const edge = [null, null, null, null, "left", "left"];
+  assert.equal(player.decideActivation(edge, 12, 1), true);
+  assert.equal(player.decideActivation(edge, -12, 1), false);
+  assert.equal(player.startsAt(edge, 20, 400, 390, 844), true);
+  assert.equal(player.startsAt(edge, 21, 400, 390, 844), false);
+  assert.equal(player.startsAt([null, null, null, null, null, "bottom"], 200, 830, 390, 844), true);
+  assert.equal(player.startsAt([null, null, null, null, null, "bottom"], 200, 800, 390, 844), false);
+  assert.equal(player.startsAt(right, 200, 400, 390, 844), true);
+  assert.equal(player.startsAt(undefined, 200, 400, 390, 844), true);
+  // The offsets alone, as before.
+  assert.equal(player.decideActivation([10, null, null, 8], -11, 3), true);
+  assert.equal(player.decideActivation([10, null, null, 8], 4, -9), false);
+});
+
+test("a native pan with a way starts only that way, and its start says where it began", () => {
+  for (const [dx, started] of [[30, true], [-30, false]]) {
+    const { player } = fakePlayer();
+    const sent = [];
+    const pan = { _id: 12, _props: { panActivation: [null, null, null, null, "right", null] } };
+    player.pointers = new Map([[7, {
+      pan, touchPath: [], states: [], mode: null, gate: null, gateState: 0,
+      startX: 10, startY: 20, x: 10, y: 20, t: 0, layer: null,
+    }]]);
+    player.point = (e) => [e.x, e.y];
+    player.track = () => {};
+    player.velocity = () => [0, 0];
+    player.pressOut = () => {};
+    player.call = (f) => f({ nsh_pan: (...args) => sent.push(args) });
+    player.pointerMove({ pointerId: 7, x: 10 + dx, y: 20, preventDefault() {} });
+    assert.equal(sent.length > 0, started);
+    if (started) assert.deepEqual(sent[0], [12, 0, 0, 0, 0, 0, 10, 20]);
+    else assert.equal(player.pointers.get(7).pan, null);
   }
 });
 
@@ -939,6 +1040,55 @@ test("a touch whose press focused a field leaves the focus there", () => {
   delete globalThis.window;
 });
 
+test("an autoFocus input is focused as the batch that shows it is applied, not after it", () => {
+  const { player } = fakePlayer();
+  Object.assign(player, {
+    views: new Map(),
+    changedStacks: new Set(),
+    removals: [],
+    endLayoutAnimation() {},
+  });
+  const focused = [];
+  const input = (id) => {
+    const field = {
+      tagName: "INPUT",
+      classList: { toggle() {} },
+      getAttribute: () => null,
+      setAttribute() {},
+      removeAttribute() {},
+      focus: () => focused.push(id),
+    };
+    const el = { _id: id, _field: field, isConnected: false, getAttribute: () => null };
+    player.views.set(id, el);
+    return el;
+  };
+  // Shown by this batch: focused when it is applied, in the same turn (an
+  // event's handler: iOS Safari raises the keyboard only there), and the
+  // press's, so the mouse events of a touch leave it there.
+  const shown = input(1);
+  player.op_x = () => (shown.isConnected = true);
+  player.apply([["in", 1, { multiline: false, autoFocus: true }, null], ["x"]]);
+  assert.deepEqual(focused, [1]);
+  assert.equal(player.pressFocus, shown._field);
+  // Shown again: focused once only, as it appeared.
+  player.apply([["in", 1, { multiline: false, autoFocus: true }, null]]);
+  assert.deepEqual(focused, [1]);
+  // Not in the page yet: it waits for the batch that puts it there.
+  const later = input(2);
+  player.apply([["in", 2, { multiline: false, autoFocus: true }, null]]);
+  assert.deepEqual(focused, [1]);
+  later.isConnected = true;
+  player.apply([]);
+  assert.deepEqual(focused, [1, 2]);
+  // Removed before it was shown: forgotten.
+  input(3);
+  player.apply([["in", 3, { multiline: false, autoFocus: true }, null]]);
+  player.views.delete(3);
+  player.apply([]);
+  assert.deepEqual(focused, [1, 2]);
+  assert.equal(player.autoFocusing.size, 0);
+});
+
 test("Return presses a focused pressable, not a focused stop that takes no presses", () => {
   const { player } = fakePlayer();
   player.wasm.nsh_key = () => -1;
@@ -1038,7 +1188,7 @@ test("a key a field's own handler took is not the page's shortcut as well", () =
   let mounted = true;
   const body = { closest: () => null };
   const field = { ...focusView(false, {}), classList: { contains: () => true }, closest: (selector) => (selector.includes(".nsh-field") ? field : null) };
-  const root = { contains: (el) => mounted && el === field };
+  const root = { children: [], contains: (el) => mounted && el === field };
   player.root = root;
   globalThis.document = { activeElement: field, body };
   Player.active = player;
@@ -1093,6 +1243,88 @@ test("Return a shortcut takes does not submit the field as well", () => {
   assert.equal(press("Enter"), true);
   assert.equal(submits(), 1);
   assert.deepEqual(sent.find(([name]) => name === "onSubmitEditing")[1], { text: "/rev", count: 4 });
+});
+
+test("selectTextOnFocus selects the text on focus and keeps a press's own selection", () => {
+  const { player } = fakePlayer();
+  player.setState = () => {};
+  player.caretMoved = () => {};
+  const reported = [];
+  player.event = (_, name, value) => name === "onSelectionChange" && reported.push([value.start, value.end]);
+  globalThis.document = { activeElement: null };
+  try {
+    for (const tagName of ["INPUT", "TEXTAREA"]) {
+      reported.length = 0;
+      const listeners = {};
+      const field = {
+        tagName,
+        value: "Hello",
+        selectionStart: 0,
+        selectionEnd: 0,
+        addEventListener: (type, listener) => (listeners[type] = listener),
+        setSelectionRange(start, end) {
+          this.selectionStart = start;
+          this.selectionEnd = end;
+        },
+      };
+      const el = { _id: 4, _events: new Set(["onSelectionChange"]), _config: { selectTextOnFocus: true } };
+      player.wireInput(el, field);
+      const focus = () => {
+        listeners.focus();
+        document.activeElement = field;
+      };
+      const blur = () => {
+        listeners.blur();
+        document.activeElement = null;
+      };
+      // A press: its pointerdown focuses an unfocused field, the browser
+      // places the caret (or the drag's range), then its mouseup.
+      const press = ({ shiftKey = false, caret = [2, 2] } = {}) => {
+        const focused = document.activeElement === field;
+        listeners.pointerdown({ shiftKey });
+        if (!focused) focus();
+        field.setSelectionRange(...caret);
+        listeners.pointerup();
+        let prevented = false;
+        listeners.mouseup({ preventDefault: () => (prevented = true) });
+        return prevented;
+      };
+      const selection = () => [field.selectionStart, field.selectionEnd];
+
+      // Focus without a press (Tab, `ref.focus()`, `autoFocus`) selects all, reported.
+      focus();
+      assert.deepEqual(selection(), [0, 5]);
+      assert.deepEqual(reported.at(-1), [0, 5]);
+      // A click on the focused field places the caret.
+      assert.equal(press(), false);
+      assert.deepEqual(selection(), [2, 2]);
+      blur();
+      // A click that focuses selects all over the caret its mouseup would place.
+      assert.equal(press(), true);
+      assert.deepEqual(selection(), [0, 5]);
+      assert.deepEqual(reported.at(-1), [0, 5]);
+      blur();
+      // A drag's range is kept.
+      assert.equal(press({ caret: [1, 3] }), false);
+      assert.deepEqual(selection(), [1, 3]);
+      blur();
+      // A Shift-click's selection is kept.
+      assert.equal(press({ shiftKey: true, caret: [0, 2] }), false);
+      assert.deepEqual(selection(), [0, 2]);
+      blur();
+      // Without the prop, focus leaves the selection alone.
+      el._config = { selectTextOnFocus: false };
+      field.setSelectionRange(1, 1);
+      focus();
+      assert.deepEqual(selection(), [1, 1]);
+      blur();
+      assert.equal(press(), false);
+      assert.deepEqual(selection(), [2, 2]);
+      blur();
+    }
+  } finally {
+    delete globalThis.document;
+  }
 });
 
 /** A player whose core answers are `interest` — whether the focused view's
@@ -2563,7 +2795,7 @@ test("UrlScheme.setUrl gives its address to the entry of the page pushed with it
     let depth = 0;
     const player = Object.create(Player.prototype);
     Object.assign(player, {
-      history: true, historyDepth: 0, historyIndex: 0, historyDepths: [0], ignoredPops: 0, historySession: "s", pageUrl: null,
+      history: true, historyDepth: 0, historyIndex: 0, historyDepths: [0], historyUrls: ["https://a.test/debugger/"], ignoredPops: 0, historySession: "s", pageUrl: null,
       backDepth: () => depth, syncHistorySoon() {}, showError: (m) => calls.push(["error", m]),
     });
     // A page pushed and its address set in one turn: the entry first.
@@ -2613,7 +2845,7 @@ test("the main window's title titles the page once the turn's entries exist, und
     let depth = 0;
     const player = Object.create(Player.prototype);
     Object.assign(player, {
-      history: true, historyDepth: 0, historyIndex: 0, historyDepths: [0], ignoredPops: 0, historySession: "s", pageUrl: null,
+      history: true, historyDepth: 0, historyIndex: 0, historyDepths: [0], historyUrls: ["https://a.test/inbox"], ignoredPops: 0, historySession: "s", pageUrl: null,
       views: new Map(), backDepth: () => depth, tellAddress() {}, showError: (m) => calls.push(["error", m]),
     });
     // A page pushed and the title set in one turn, the title's command
@@ -2676,7 +2908,7 @@ test("the browser's back gives the core the entry's address with no open, and a 
     let lets = true;
     const player = Object.create(Player.prototype);
     Object.assign(player, {
-      history: true, historyDepth: 1, historyIndex: 1, historyDepths: [0, 1], ignoredPops: 0, historySession: "s", pageUrl: null,
+      history: true, historyDepth: 1, historyIndex: 1, historyDepths: [0, 1], historyUrls: ["https://a.test/inbox", "https://a.test/inbox?message=a"], ignoredPops: 0, historySession: "s", pageUrl: null,
       shownUrl: "https://a.test/inbox?message=a",
       backDepth: () => depth, showError: (m) => calls.push(["error", m]),
       back: () => lets && (depth--, true),
@@ -2776,7 +3008,7 @@ test("an address the app sets while the browser's back pops its page wins over t
     let depth = 1;
     const player = Object.create(Player.prototype);
     Object.assign(player, {
-      history: true, historyDepth: 1, historyIndex: 1, historyDepths: [0, 1], ignoredPops: 0, historySession: "s", pageUrl: null,
+      history: true, historyDepth: 1, historyIndex: 1, historyDepths: [0, 1], historyUrls: ["https://a.test/inbox?message=42", "https://a.test/inbox?message=42"], ignoredPops: 0, historySession: "s", pageUrl: null,
       backDepth: () => depth, showError: (m) => calls.push(["error", m]),
       event: (id, name, payload) => calls.push(["event", name, payload]),
     });
@@ -2842,7 +3074,7 @@ test("a forward the app shows goes on from the entry the browser is at", () => {
     let depth = 0;
     const player = Object.create(Player.prototype);
     Object.assign(player, {
-      history: true, historyDepth: 0, historyIndex: 0, historyDepths: [0], ignoredPops: 0, historySession: "s", pageUrl: null,
+      history: true, historyDepth: 0, historyIndex: 0, historyDepths: [0], historyUrls: ["https://a.test/inbox"], ignoredPops: 0, historySession: "s", pageUrl: null,
       backDepth: () => depth, showError: (m) => calls.push(["error", m]),
       // The app takes the link: its stack shows the page again.
       event: (id, name, payload) => { calls.push(["event", name, payload]); if (!payload.quiet) depth = 1; },
@@ -3096,6 +3328,69 @@ test("in one turn, pushes make one entry with the last address, and a push wins 
   assert.deepEqual(calls.splice(0), [["replace", 0, 1, "https://a.test/inbox?tab=mine&sort=new"]]);
 });
 
+/** The player's own `syncHistorySoon`: the turn's entries a task later. */
+function realSoon(player) {
+  player.syncHistorySoon = Player.prototype.syncHistorySoon;
+}
+
+test("a push with no page open writes its entry in the task it came in, before the browser draws", (t) => {
+  const { player, calls, user } = historyPlayer(t);
+  realSoon(player);
+  player.setPageUrl("?item=1", true);
+  // No task passes: the entry exists before the next frame.
+  assert.deepEqual(calls.splice(0), [["push", 0, 1, "https://a.test/inbox?item=1"]]);
+  // More of the turn in the same task: the last address is that entry's, with no entry of its own.
+  player.setPageUrl("?item=2", true);
+  t.mock.timers.tick(0);
+  assert.deepEqual(calls.splice(0), [["replace", 0, 1, "https://a.test/inbox?item=2"]]);
+  // A later task's push makes an entry of its own, at once again.
+  player.setPageUrl("?item=3", true);
+  assert.deepEqual(calls.splice(0), [["push", 0, 2, "https://a.test/inbox?item=3"]]);
+  t.mock.timers.tick(0);
+  assert.deepEqual(calls.splice(0), []);
+  // Back twice and forward twice go through every entry.
+  user(-1);
+  user(-1);
+  user(1);
+  user(1);
+  assert.deepEqual(calls.splice(0).map((c) => [c[2].url, c[2].change]), [
+    ["https://a.test/inbox?item=2", "back"],
+    ["https://a.test/inbox", "back"],
+    ["https://a.test/inbox?item=2", "forward"],
+    ["https://a.test/inbox?item=3", "forward"],
+  ]);
+});
+
+test("a push from a sheet waits for the turn, so a dismissal a task later takes the sheet's entry over and loses none", (t) => {
+  const { player, calls, app, at, entries, user } = historyPlayer(t);
+  app.depth = 1;
+  player.syncHistory();
+  calls.splice(0);
+  realSoon(player);
+  // The sheet's item pushes a page's address; the sheet goes a task later.
+  player.setPageUrl("?item=1", true);
+  assert.deepEqual(calls.splice(0), []);
+  app.depth = 0;
+  player.syncHistorySoon();
+  t.mock.timers.tick(0);
+  assert.deepEqual(calls.splice(0), [["replace", 0, 1, "https://a.test/inbox?item=1"]]);
+  assert.equal(at(), 1);
+  assert.equal(entries().length, 2);
+  user(-1);
+  assert.deepEqual(calls.splice(0), [["event", "onUrlScheme", { url: "https://a.test/inbox", page: true, change: "back" }]]);
+});
+
+test("a push waits while a traversal of the player's is waited for or a page is going", (t) => {
+  const { player, calls } = historyPlayer(t);
+  realSoon(player);
+  player.dismissing = 1;
+  player.setPageUrl("?item=1", true);
+  assert.deepEqual(calls.splice(0), []);
+  player.dismissing = 0;
+  t.mock.timers.tick(0);
+  assert.deepEqual(calls.splice(0), [["push", 0, 1, "https://a.test/inbox?item=1"]]);
+});
+
 test("a push in the turn that pushes a page gives the page's entry its address, with no entry of its own", (t) => {
   const { player, calls, app } = historyPlayer(t);
   inOneTurn(player, () => {
@@ -3105,8 +3400,8 @@ test("a push in the turn that pushes a page gives the page's entry its address, 
   assert.deepEqual(calls.splice(0), [["push", 1, 1], ["replace", 1, 1, "https://a.test/inbox?message=42"]]);
 });
 
-test("a push in the turn that pops a page waits for the back over its entry, then makes its own", (t) => {
-  const { player, calls, app, at } = historyPlayer(t);
+test("a push in the turn that pops a page takes the page's entry over: nothing goes back, no entry of its own", (t) => {
+  const { player, calls, app, at, entries, user } = historyPlayer(t);
   app.depth = 1;
   player.syncHistory();
   calls.splice(0);
@@ -3114,9 +3409,82 @@ test("a push in the turn that pops a page waits for the back over its entry, the
     app.depth = 0;
     player.setPageUrl("?tab=all", true);
   });
-  assert.deepEqual(calls.splice(0), [["go", -1], ["push", 0, 1, "https://a.test/inbox?tab=all"]]);
+  // The entry under it is not left again, so a browser's picture of it is the one taken as the page came.
+  assert.deepEqual(calls.splice(0), [["replace", 0, 1, "https://a.test/inbox?tab=all"]]);
   assert.equal(at(), 1);
+  assert.equal(entries().length, 2);
   assert.equal(player.historyDepth, 0);
+  assert.deepEqual(player.historyDepths, [0, 0]);
+  // Back from it goes to the entry under, as from an entry of its own.
+  user(-1);
+  assert.deepEqual(calls.splice(0), [["event", "onUrlScheme", { url: "https://a.test/inbox", page: true, change: "back" }]]);
+  user(1);
+  assert.deepEqual(calls.splice(0), [["event", "onUrlScheme", { url: "https://a.test/inbox?tab=all", page: true, change: "forward" }]]);
+});
+
+test("a push in the turn that pops a page with an address of its own takes its entry over, unless the address is the entry under it's", (t) => {
+  const { player, calls, app, at, entries } = historyPlayer(t);
+  inOneTurn(player, () => {
+    app.depth = 1;
+    player.setPageUrl("?sheet=1", true);
+  });
+  calls.splice(0);
+  // Back to its opener's address: the back lands on the opener's entry and the push makes nothing.
+  inOneTurn(player, () => {
+    app.depth = 0;
+    player.setPageUrl("/inbox", true);
+  });
+  assert.deepEqual(calls.splice(0), [["go", -1], ["replace", 0, 0, "https://a.test/inbox"]]);
+  assert.equal(at(), 0);
+  assert.deepEqual(entries().map((e) => e.url), ["https://a.test/inbox", "https://a.test/inbox?sheet=1"]);
+  inOneTurn(player, () => {
+    app.depth = 1;
+    player.setPageUrl("?sheet=1", true);
+  });
+  calls.splice(0);
+  inOneTurn(player, () => {
+    app.depth = 0;
+    player.setPageUrl("?tab=all", true);
+  });
+  assert.deepEqual(calls.splice(0), [["replace", 0, 1, "https://a.test/inbox?tab=all"]]);
+  inOneTurn(player, () => {
+    app.depth = 1;
+    player.setPageUrl("?sheet=2", true);
+  });
+  calls.splice(0);
+  // To the address of the entry under it, not its opener's first one: the same.
+  inOneTurn(player, () => {
+    app.depth = 0;
+    player.setPageUrl("?tab=all", true);
+  });
+  assert.deepEqual(calls.splice(0), [["go", -1], ["replace", 0, 1, "https://a.test/inbox?tab=all"]]);
+  assert.equal(at(), 1);
+  assert.deepEqual(entries().map((e) => e.url), ["https://a.test/inbox", "https://a.test/inbox?tab=all", "https://a.test/inbox?sheet=2"]);
+});
+
+test("a push in the turn that pops two pages, or one the user went back onto, waits for the back over their entries, then makes its own", (t) => {
+  const { player, calls, app, at, user } = historyPlayer(t);
+  app.depth = 2;
+  player.syncHistory();
+  calls.splice(0);
+  inOneTurn(player, () => {
+    app.depth = 0;
+    player.setPageUrl("?tab=all", true);
+  });
+  assert.deepEqual(calls.splice(0), [["go", -2], ["push", 0, 1, "https://a.test/inbox?tab=all"]]);
+  assert.equal(at(), 1);
+  // A page whose entry has one after it (the user went back onto it): the push drops that one.
+  player.setPageUrl("?tab=live", true);
+  app.depth = 1;
+  player.syncHistory();
+  player.setPageUrl("?tab=mine", true);
+  user(-1);
+  calls.splice(0);
+  inOneTurn(player, () => {
+    app.depth = 0;
+    player.setPageUrl("?tab=new", true);
+  });
+  assert.deepEqual(calls.splice(0)[0], ["go", -1]);
 });
 
 test("a push drops the browser's forward entries, and the address shown makes none", (t) => {
@@ -3380,6 +3748,51 @@ function fakeClipboard(t, { failWrite } = {}) {
   };
   return log;
 }
+
+test("a copy gives attachments' copy texts where the layout put them among the runs", (t) => {
+  const saved = ["getComputedStyle", "document"].map((k) => [k, Object.getOwnPropertyDescriptor(globalThis, k)]);
+  t.after(() => {
+    for (const [k, d] of saved) d ? Object.defineProperty(globalThis, k, d) : delete globalThis[k];
+  });
+  globalThis.getComputedStyle = () => ({ visibility: "visible" });
+  // `runOffset`'s range: the boundary's offset in the run's text.
+  globalThis.document = {
+    createRange: () => ({ setStart() {}, setEnd(_, offset) { this.offset = offset; }, toString() { return "x".repeat(this.offset); } }),
+  };
+  const { player } = fakePlayer();
+  // "Area is <formula> here,\n<formula> next" in two lines: run 0
+  // "Area is " (0..8), a formula at 8 after it, run 1 " here," (9..15)
+  // with the line's break, a formula at 16 first on the next line, before
+  // run 2 " next" (17..22).
+  const el = {
+    _copyTexts: [[8, "$x^2$", 0, 0], [16, "$y$", 2, 1]],
+    getBoundingClientRect: () => ({ top: 0, bottom: 40 }),
+  };
+  const runs = [[0, "Area is "], [9, " here,", "\n"], [17, " next"]].map(([start, text, after], i) => {
+    const run = { _run: i, _start: start, _after: after, textContent: text, parentNode: el };
+    run.contains = (node) => node === run;
+    return run;
+  });
+  player.selectableText = () => true;
+  player.areaOf = () => el;
+  const root = { querySelectorAll: () => runs };
+  const reaching = (first, last, end = null) => ({
+    intersectsNode: (run) => runs.indexOf(run) >= first && runs.indexOf(run) <= last,
+    startContainer: null,
+    endContainer: end?.[0] ?? null,
+    endOffset: end?.[1] ?? 0,
+  });
+  assert.equal(player.selectedText(root, reaching(0, 2)), "Area is $x^2$ here,\n$y$ next");
+  // From the second run on: the first formula is before the selection.
+  assert.equal(player.selectedText(root, reaching(1, 2)), " here,\n$y$ next");
+  // Up to the end of the first run: the formula after it is not selected...
+  assert.equal(player.selectedText(root, reaching(0, 0)), "Area is ");
+  // ...up to the start of the next run, it is.
+  assert.equal(player.selectedText(root, reaching(0, 1, [runs[1], 0])), "Area is $x^2$");
+  // A text without copy texts copies its runs.
+  el._copyTexts = null;
+  assert.equal(player.selectedText(root, reaching(0, 2)), "Area is  here,\n next");
+});
 
 test("text with its HTML goes on the clipboard as one item of both types", async (t) => {
   const log = fakeClipboard(t);
@@ -4039,8 +4452,9 @@ test("links and addresses resolve against the site's base where the page names i
 });
 
 /** An element whose DOM state, as a real one's, is not among its own
- * enumerable keys (`retag` copies those); a `style` attribute set as text
- * applies nothing, as under a strict `style-src`. */
+ * enumerable keys (`retag` copies those), listeners included; a `style`
+ * attribute set as text applies nothing, as under a strict `style-src`;
+ * focused, it is focused from the keyboard. */
 function fakeElement(tag, attributes = {}) {
   const attrs = new Map(Object.entries(attributes));
   const set = [];
@@ -4050,14 +4464,26 @@ function fakeElement(tag, attributes = {}) {
     attributes: { get: () => [...attrs].map(([name, value]) => ({ name, value })) },
     setAttribute: { value(name, value) { set.push(name); if (name !== "style") attrs.set(name, String(value)); } },
     getAttribute: { value: (name) => attrs.get(name) ?? null },
+    hasAttribute: { value: (name) => attrs.has(name) },
     removeAttribute: { value: (name) => attrs.delete(name) },
     attributesSet: { value: set },
+    tabIndex: { get: () => Number(attrs.get("tabindex") ?? -1), set: (v) => attrs.set("tabindex", String(v)) },
+    dataset: { value: {} },
+    classList: { value: { toggle() {} } },
+    matches: { value: (selector) => selector === ":focus-visible" },
     style: { value: { cssText: attributes.style ?? "" } },
     childNodes: { value: [] },
     append: { value(...nodes) { this.childNodes.push(...nodes); } },
     replaceWith: { value() {} },
+    listeners: { value: [] },
+    addEventListener: { value(type, listener) { this.listeners.push([type, listener]); } },
   });
   return el;
+}
+
+/** Dispatches `event` of `type` to the listeners `el` (`fakeElement`) has. */
+function fire(el, type, event = {}) {
+  for (const [t, listener] of el.listeners) if (t === type) listener({ type, ...event });
 }
 
 test("a view drawn as another element keeps its frame under a strict style-src", () => {
@@ -4081,6 +4507,118 @@ test("a view drawn as another element keeps its frame under a strict style-src",
   } finally {
     globalThis.document = savedDocument;
   }
+});
+
+test("a link drawn as an a keeps its hover and its keyboard focus", () => {
+  const savedDocument = globalThis.document;
+  globalThis.document = { createElement: (tag) => fakeElement(tag), activeElement: null };
+  try {
+    const { player } = fakePlayer();
+    const reported = [];
+    player.wasm.nsh_states = (id, states) => {
+      reported.push([id, states]);
+      return -1;
+    };
+    const heard = [];
+    player.event = (id, name) => heard.push([id, name]);
+    Object.assign(player, { views: new Map(), mouseTracked: new Set(), wheelTracked: new Set() });
+    player.updateAria = () => {};
+    player.updateTouchAction = () => {};
+    const el = fakeElement("div", { class: "nsh-v" });
+    Object.assign(el, { _id: 6, _kind: "view", _events: new Set(), _frame: null });
+    player.views.set(6, el);
+    // A new `Link` with `hover:` and `focus:` classes, in the core's order:
+    // its tracked states and events come before the props whose `href`
+    // draws it as an `a`.
+    player.op_ts([, 6, 2 | 4]);
+    player.op_e([, 6, ["onPress"]]);
+    player.op_vp([, 6, { role: "link", href: "/notes" }]);
+    const link = player.view(6);
+    assert.equal(link.localName, "a");
+    // Listeners of its own, once each: the div's went with the div.
+    assert.deepEqual(link.listeners.map(([type]) => type), ["pointerenter", "pointerleave", "focus", "blur"]);
+    fire(link, "pointerenter", { pointerType: "mouse" });
+    fire(link, "focus");
+    fire(link, "pointerleave", { pointerType: "mouse" });
+    fire(link, "blur");
+    // Hovered, then focused too, then focused only, then neither.
+    assert.deepEqual(reported, [[6, 2], [6, 6], [6, 4], [6, 0]]);
+    assert.deepEqual(heard, [[6, "onFocus"], [6, "onBlur"]]);
+  } finally {
+    globalThis.document = savedDocument;
+  }
+});
+
+test("a text drawn as a heading after its links keeps their hover", () => {
+  const savedDocument = globalThis.document;
+  globalThis.document = { createElement: (tag) => fakeElement(tag) };
+  try {
+    const { player } = fakePlayer();
+    const heard = [];
+    player.event = (id, name) => heard.push([id, name]);
+    player.mouseEvent = () => null;
+    player.views = new Map();
+    const el = fakeElement("div", { class: "nsh-v" });
+    Object.assign(el, { _id: 8, _kind: "text" });
+    player.views.set(8, el);
+    // Its runs hold a link the mouse is reported for (`runs`); then a
+    // `role="header"` draws it as an `h2`.
+    player.installLinkHover(el);
+    const heading = player.retag(el, "h2");
+    const run = { _link: { node: 10, events: new Set(["onMouseEnter", "onMouseLeave"]) } };
+    fire(heading, "pointerover", { pointerType: "mouse", target: run });
+    fire(heading, "pointerleave", { pointerType: "mouse" });
+    assert.deepEqual(heard, [[10, "onMouseEnter"], [10, "onMouseLeave"]]);
+  } finally {
+    globalThis.document = savedDocument;
+  }
+});
+
+test("a click with a modifier key on a link is the browser's: the link takes no press", () => {
+  inPage(() => {
+    globalThis.document.elementFromPoint = () => null;
+    const { player, sent } = dialogPlayer(false);
+    player.editable = () => false;
+    // A `Link` with an `href` (drawn as an `a`) and a pressable that is no link.
+    const pressable = (id, link) => {
+      const el = {
+        _id: id,
+        _events: new Set(["onPressIn", "onPress"]),
+        _props: {},
+        _tracked: 0,
+        getBoundingClientRect: () => ({ left: 600, top: 300, right: 700, bottom: 340 }),
+        closest: (selector) => (link && selector === "a.nsh-v[href]" ? el : null),
+      };
+      return el;
+    };
+    const link = pressable(9, true);
+    const button = pressable(10, false);
+    /** What a click on `target` sends, holding `keys`. */
+    const click = (target, keys = {}) => {
+      sent.length = 0;
+      player.viewOf = () => target;
+      player.ancestors = () => [target];
+      const e = {
+        pointerId: 1, pointerType: "mouse", button: 0, buttons: 1, clientX: 640, clientY: 320, target,
+        metaKey: false, ctrlKey: false, shiftKey: false, altKey: false, ...keys,
+      };
+      player.pointerDown(e);
+      player.pointerUp({ ...e, buttons: 0 }, false);
+      return sent.map(([name, payload]) => [name, payload?.modifiers?.platform]);
+    };
+    // A plain click presses the link: the app opens it.
+    assert.deepEqual(click(link), [["onPressIn", false], ["onPress", false]]);
+    // With Cmd, Ctrl, Shift or Alt the browser opens it (a new tab or
+    // window, a download), as it does on a middle click: the link hears
+    // nothing, so nothing opens it a second time.
+    for (const key of ["metaKey", "ctrlKey", "shiftKey", "altKey"]) {
+      assert.deepEqual(click(link, { [key]: true }), [], key);
+    }
+    assert.deepEqual(click(link, { button: 1 }), []);
+    // A pressable that is no link still takes a press with a modifier, and
+    // reports the key.
+    assert.deepEqual(click(button, { metaKey: true }), [["onPressIn", true], ["onPress", true]]);
+  });
 });
 
 test("a web view's relative URL is the site's where the page names its base", () => {
@@ -4153,5 +4691,46 @@ test("share reports shared, dismissed and unavailable, never shared when it coul
   } finally {
     if (saved) Object.defineProperty(globalThis, "navigator", saved);
     else delete globalThis.navigator;
+  }
+});
+
+test("window blur resets hoverButtons and cancels all active pointers", () => {
+  const windowListeners = new Map();
+  const savedWindow = globalThis.window;
+  const savedDocument = globalThis.document;
+  const noop = () => {};
+  globalThis.window = {
+    addEventListener: (type, fn) => windowListeners.set(type, fn),
+  };
+  globalThis.document = {
+    addEventListener: noop,
+    createElement: (tag) => fakeElement(tag),
+  };
+  try {
+    const { player } = fakePlayer();
+    player.root = fakeElement("div");
+    player.installFileDrop = noop;
+    player.installInput();
+    const canceled = [];
+    const p1 = { scrolls: { active: true } };
+    const p2 = { scrolls: null };
+    player.hoverButtons = 1;
+    player.pointers = new Map([[11, p1], [12, p2]]);
+    player.pointerUp = (e, cancel) => {
+      canceled.push([e.pointerId, e.buttons, cancel]);
+      player.pointers.delete(e.pointerId);
+    };
+    const onBlur = windowListeners.get("blur");
+    assert.equal(typeof onBlur, "function", "registers window blur listener");
+    onBlur();
+    assert.equal(player.hoverButtons, 0);
+    assert.equal(p1.scrolls, null);
+    assert.deepEqual(canceled, [[11, 0, true], [12, 0, true]]);
+    assert.equal(player.pointers.size, 0);
+  } finally {
+    if (savedWindow === undefined) delete globalThis.window;
+    else globalThis.window = savedWindow;
+    if (savedDocument === undefined) delete globalThis.document;
+    else globalThis.document = savedDocument;
   }
 });

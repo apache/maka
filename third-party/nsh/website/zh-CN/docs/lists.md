@@ -34,6 +34,7 @@ pub fn App() -> impl IntoElement {
 
 ```tsx tabs
 import { List, mount, Text, View } from "nsh";
+import { Window } from "nsh/desktop";
 
 const items = Array.from({ length: 10_000 }, (_, i) => ({ id: i, title: `Item ${i + 1}` }));
 
@@ -49,7 +50,11 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 在 Rust 中，`virtual_list(count, row)` 接收行数（一个值、一个 signal 或一个闭包）和一个根据位置（`at.index()`）构建行的函数；行按这个索引读取你的数据。在 TSX 中，`each` 接收条目，行函数拿到条目。和[滚动视图](./scrolling.md)一样，列表本身是视口，需要父元素给出尺寸（`.flex_1()`、`flex: 1` 或一个高度）。
@@ -406,6 +411,7 @@ pub fn chat() -> impl IntoElement {
 ```tsx tabs
 import { List, mount, signal, Text, View } from "nsh";
 import { Input } from "nsh/base";
+import { Window } from "nsh/desktop";
 
 type Message = { id: number; text: string; mine: boolean };
 
@@ -463,7 +469,11 @@ function Chat() {
   );
 }
 
-mount(Chat);
+mount(() => (
+  <Window id="main">
+    <Chat />
+  </Window>
+));
 ```
 
 在倒置列表上调用 `scroll_to_end(..)` / `scrollToEnd()` 会滚动到它的开头，也就是最新的消息。

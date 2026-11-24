@@ -160,7 +160,6 @@ impl Engine {
                 } else {
                     compaction_timing(provenance)
                 };
-                let mut has_proactive_summary = false;
                 let mut can_prepare = true;
                 let mut proactive_baseline = baseline
                     .as_ref()
@@ -178,8 +177,6 @@ impl Engine {
                         "request-provenance-schema",
                     )
                     .await?;
-                    has_proactive_summary =
-                        provenance.accepts_background_summary(&summary_provenance, &options);
                     can_prepare = (original.closed.is_some() || original.interrupted.is_some())
                         && (original.admission.is_none()
                             || original.cleanup
@@ -188,7 +185,9 @@ impl Engine {
                         baseline.checkpoint.summary_step_id == original.step
                     });
                     proactive_baseline |= already_adopted;
-                    if has_proactive_summary {
+                    // A failed or rejected summary leaves the level unset, so a later
+                    // Step may prepare another one instead of forcing foreground compaction.
+                    if provenance.accepts_background_summary(&summary_provenance, &options) {
                         if original.closed.is_none() && original.interrupted.is_none() {
                             compaction = CompactionLevel::Pending {
                                 attempt: summary,
@@ -212,7 +211,7 @@ impl Engine {
                         }
                     }
                 }
-                if compaction == CompactionLevel::None && !has_proactive_summary {
+                if compaction == CompactionLevel::None {
                     let adopted_origin = baseline
                         .as_ref()
                         .and_then(|baseline| baseline.summary_origin);
@@ -294,7 +293,7 @@ impl Engine {
                             .is_some())
                 {
                     compaction = CompactionLevel::Fresh {
-                        prepare: prepare && can_prepare && !has_proactive_summary,
+                        prepare: prepare && can_prepare,
                         adopt,
                     };
                 }

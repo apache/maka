@@ -1,0 +1,78 @@
+[package]
+name = "nsh-extra"
+description = "NSH's official modules apps install with `nsh add` (an nshm), one Cargo feature each: `camera` takes photos with the system's camera, `photos` reads the user's recent photos, `push` receives remote notifications."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+readme.workspace = true
+repository.workspace = true
+keywords = ["nshm"]
+
+[lints]
+workspace = true
+
+# One feature per module, named as its Rust module (`nsh_extra::camera`); its
+# TS namespace is the name in PascalCase (`Camera`). None is on by default:
+# an app turns on what it uses (`nsh add nsh-extra --features camera`).
+[features]
+default = []
+# `Camera`: photos taken with the system's camera (iOS, Android).
+camera = ["dep:tokio"]
+# `Photos`: the user's photo library, its recent photos, and `PhotosPicker`,
+# the system's photo picker embedded in the layout (iOS).
+photos = ["dep:tokio"]
+# `Push`: remote notifications with any push service (iOS, Android with a
+# push service's binding).
+push = ["dep:tokio"]
+
+[dependencies]
+nsh-core.workspace = true
+log.workspace = true
+tokio = { workspace = true, features = ["sync"], optional = true }
+
+[target.'cfg(target_os = "ios")'.dependencies]
+nsh-platform-ios.workspace = true
+nsh-platform-apple.workspace = true
+block2.workspace = true
+dispatch2.workspace = true
+objc2.workspace = true
+objc2-core-foundation.workspace = true
+objc2-foundation.workspace = true
+objc2-ui-kit.workspace = true
+
+[target.'cfg(target_os = "android")'.dependencies]
+nsh-platform-android.workspace = true
+ndk-context.workspace = true
+
+[dev-dependencies]
+nsh-core = { workspace = true, features = ["declarations"] }
+
+# What the packaged app needs of the system for each module: `nsh` merges the
+# entries of the features an app turns on into its Info.plist and Android
+# manifest (`[package.metadata.nsh]`, see the nshm guide).
+[package.metadata.nsh.features.camera.ios.infoPlist]
+NSCameraUsageDescription = "The app takes photos with the camera."
+
+[package.metadata.nsh.features.camera.android]
+# Starting the camera app needs no permission; Android 11+ only shows apps
+# that answer an intent the manifest queries.
+queries = ['<intent><action android:name="android.media.action.IMAGE_CAPTURE"/></intent>']
+
+# Reading the library needs the user's permission, which the system asks
+# with this text; without it the system would end the app for asking.
+# Android has no entry: the module reads no library there (see its docs).
+[package.metadata.nsh.features.photos.ios.infoPlist]
+NSPhotoLibraryUsageDescription = "The app shows your recent photos so you can add them quickly."
+
+# Background deliveries wake the app. `aps-environment` is not declared:
+# the provisioning profile the app is signed with grants it, with the
+# environment the profile is for, and one value here would clash with the
+# other environment's profiles.
+[package.metadata.nsh.features.push.ios.infoPlist]
+UIBackgroundModes = ["remote-notification"]
+
+# Android needs no entry for the module itself: a push service's SDK
+# brings its own service, receiver and permissions in its manifest, and
+# showing notifications is `Notifications`' permission.

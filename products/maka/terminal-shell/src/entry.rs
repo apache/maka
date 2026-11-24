@@ -28,7 +28,7 @@ use nsh_core::{
 };
 use nsh_engine::EngineConfig;
 use std::{
-    io::{self, IsTerminal},
+    io,
     path::PathBuf,
     sync::{
         Arc,
@@ -36,17 +36,7 @@ use std::{
     },
 };
 
-/// Options for the default `maka` entry and the `maka terminal-shell` command.
-#[derive(clap::Args, Default)]
-#[command(version, about = "Maka terminal application using NSH")]
-pub struct Args {
-    /// Business Host Root (default: ~/.maka/application/host).
-    #[arg(long)]
-    root: Option<PathBuf>,
-    /// Existing Agent session to display initially; otherwise open the session picker.
-    #[arg(long)]
-    session: Option<String>,
-}
+pub use crate::args::Args;
 
 impl Args {
     fn root_path(&self) -> Result<PathBuf, String> {
@@ -67,17 +57,17 @@ impl Args {
     /// On macOS the caller must poll this future on the OS main thread.
     /// Host cleanup completes before an error is returned to the caller.
     pub async fn run(self) -> Result<(), String> {
-        if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
-            return Err("the terminal shell requires a terminal on stdin and stdout".into());
-        }
-        if self.session.as_ref().is_some_and(String::is_empty) {
-            return Err("session must not be empty".into());
-        }
+        let launcher = std::env::current_exe().map_err(|error| error.to_string())?;
+        self.run_with_launcher(launcher).await
+    }
+
+    /// Runs on the calling main thread, starting the Host through `launcher`.
+    pub async fn run_with_launcher(self, launcher: PathBuf) -> Result<(), String> {
+        self.validate()?;
         let stop = Arc::new(AtomicBool::new(false));
         // Install before opening any Host session or entering terminal modes.
         let mut signals = Signals::watch(stop.clone()).map_err(|error| error.to_string())?;
         let path = self.root_path()?;
-        let launcher = std::env::current_exe().map_err(|error| error.to_string())?;
         let mut native = tokio::select! {
             result = startup::connect_root(&launcher, &path) => result?,
             _ = &mut signals.0 => return Ok(()),
@@ -182,4 +172,29 @@ impl Drop for Signals {
     fn drop(&mut self) {
         self.0.abort();
     }
+}
+
+/// Explicit terminal diagnostics stay in a file and include no text or keys.
+pub fn initialize_terminal_interaction() -> Result<(), maka_host_runtime::HostError> {
+    use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+
+    let Some(path) = std::env::var_os("MAKA_TERMINAL_INTERACTION_LOG") else {
+        return Ok(());
+    };
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+    let level = tracing_subscriber::filter::LevelFilter::DEBUG;
+    let targets = tracing_subscriber::filter::Targets::new()
+        .with_target("nsh::interaction", level)
+        .with_target("nsh::scroll", level);
+    tracing_subscriber::fmt()
+        .with_max_level(level)
+        .with_ansi(false)
+        .with_writer(std::sync::Mutex::new(file))
+        .finish()
+        .with(targets)
+        .try_init()?;
+    Ok(())
 }

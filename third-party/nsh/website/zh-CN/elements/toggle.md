@@ -45,6 +45,7 @@ fn formatting() -> impl IntoElement {
 ```tsx tabs
 import { mount, signal, Text } from "nsh";
 import { Toggle, ToggleGroup } from "nsh/base";
+import { Window } from "nsh/desktop";
 
 function App() {
   const marks = signal<string[]>(["bold"]);
@@ -68,7 +69,11 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 `Toggle` 和 `ToggleGroup` 来自 [`nsh/base`](../modules/nsh-base.md)，在 Rust 中是 `nsh-base` crate。值属于应用：每个开关按钮被告知它是否按下，按压时用 `onChange` 报告它想要的值，开关按钮显示应用传回的 `pressed`。这一组也不持有值，所以能按下几个也由应用决定：任意多个（加粗、斜体和下划线），或者恰好一个（对齐方式、视图切换），这时应用按下被请求的那个、松开其他的，并让已按下的那个保持按下。在 Rust 中，`toggle()` 和 `toggle_group()` 创建它们，每个属性一个 setter（`.pressed(..)`），每个事件一个监听器（`.on_change(..)`），加上类型化的样式方法和放内容的 `.child(..)`。

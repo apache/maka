@@ -143,12 +143,15 @@ pub fn package_to_run(
 }
 
 /// A package's bundle with what belongs to the installed app: its id
-/// (checked equal), URL schemes, trusted paths and update configuration,
+/// (checked equal), links, trusted paths and update configuration,
 /// and at most the capabilities it declares.
 fn as_shipped(mut bundle: Bundle, shipped: &Bundle, trial: Option<Arc<dyn Trial>>) -> Bundle {
-    bundle.url_schemes = shipped.url_schemes.clone();
+    bundle.links = shipped.links.clone();
     bundle.system_paths = shipped.system_paths.clone();
     bundle.main_window = shipped.main_window.clone();
+    // The app's lifecycle (its quit mode) is the installed app's: an
+    // update reaches nothing it could not configure before.
+    bundle.application = shipped.application;
     bundle.updater_config = shipped.updater_config.clone();
     // The package's declaration, granted at most what the shipped app
     // declares: an update reaches nothing the installed app could not.
@@ -659,7 +662,12 @@ mod tests {
             crate::parse_capabilities(r#"{"network":{"hosts":["api.example.com"]}}"#).unwrap();
         let shipped = Bundle::source("1".into())
             .with_app_id(Some(ID))
-            .with_url_schemes(["example"])
+            .with_links(nsh_core::url_scheme::AppLinks::from_json(
+                &serde_json::json!({
+                    "schemes": ["example"],
+                    "links": [{ "host": "example.com", "paths": ["/orders/*"] }]
+                }),
+            ))
             .with_main_window(Some(r#"{"defaultSize":{"width":900,"height":640}}"#))
             .with_policy(crate::Policy {
                 declared: Some(declared),
@@ -670,7 +678,8 @@ mod tests {
         let launched = launch(shipped.clone(), &resources, Some(&data));
         assert_eq!(launched.package.as_ref().map(|a| a.build), Some(2));
         let bundle = &launched.bundle;
-        assert_eq!(bundle.url_schemes, ["example"]);
+        assert_eq!(bundle.links, shipped.links);
+        assert_eq!(bundle.links.web().len(), 1);
         assert_eq!(bundle.main_window, shipped.main_window);
         assert!(bundle.updater_config.is_some() && bundle.trial.is_some());
         // The package declares the clipboard; the app did not.

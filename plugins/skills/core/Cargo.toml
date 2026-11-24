@@ -24,6 +24,7 @@ publish.workspace = true
 autotests = false
 
 [dependencies]
+zstd.workspace = true
 maka-agent-facts.workspace = true
 maka-capabilities.workspace = true
 tokio.workspace = true
@@ -32,6 +33,11 @@ serde.workspace = true
 schemars.workspace = true
 serde_json.workspace = true
 yaml-rust2 = { version = "0.13.0", default-features = false }
+
+[build-dependencies]
+hex.workspace = true
+sha2.workspace = true
+zstd.workspace = true
 
 [dev-dependencies]
 uuid.workspace = true

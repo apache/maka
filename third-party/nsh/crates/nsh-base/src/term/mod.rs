@@ -423,6 +423,8 @@ pub fn Terminal(props: TerminalProps, cx: Scope<TerminalEvent>) -> impl IntoElem
         .text_size(move || Length::from(props.font_size.get()))
         .text_color(move || theme().foreground)
         .on_press(move |_: &PressEvent| press_term.sink.focus())
+        // A press focuses the sink: Tab goes to the sink, not to the box.
+        .focusable(false)
         // The cells fill the box inside the app's padding.
         .child(
             // One selectable area: a drag selects across the lines.
@@ -836,7 +838,15 @@ fn sink(
         .border(px(0.0))
         .bg(AdaptiveColor::TRANSPARENT)
         .text_color(AdaptiveColor::TRANSPARENT)
-        .opacity(0.02)
+        // Not 0, which takes the input out of accessibility. A terminal
+        // has no translucency and leaves a nearly transparent view out of
+        // its geometry and focus: there the sink stays visible (its
+        // transparent text draws nothing), as the editor's does.
+        .opacity(if crate::terminal::is_terminal() {
+            1.0
+        } else {
+            0.02
+        })
         .caret(false)
         .auto_correct(false)
         .auto_capitalize(AutoCapitalize::None)

@@ -347,6 +347,12 @@ tint.set(Some(AdaptiveColor::rgb(0x5080ff, 0x5080ff)));
 <View macos={{ backdrop: { material: "hudWindow", blending: "behindWindow" } }} style={{ height: 64 }} />
 ```
 
+在 Windows 11 及更高版本上，`windows={{ backdrop: { material: "blur" } }}` 用系统对窗口背后内容的模糊填充视图的边框盒（在圆角之内），位于视图自身的背景、边框和内容之下；半透明背景会为它着色。与 `"behindWindow"` 一样，它只在透明窗口中显示。在不透明窗口中、较早的 Windows 上，或系统无法创建模糊时，视图下方不绘制任何内容，视图其余部分照常绘制。外观由系统决定；窗口不活动时，它仍跟随窗口背后的内容变化。Rust 使用 `.windows_backdrop(Some(WindowsBackdrop::default()))`；`None`（默认）不绘制。窗口显示这样的视图时，自带窗口的原生组件（见[原生组件](./native-components.md)）位于 NSH 内容之下，而不是之上。显示这样视图的窗口每一帧都完整重绘；模糊按其祖先裁剪区域的外接矩形裁剪（可能露出祖先圆角之外）；位于 `filter`、`mixBlendMode` 或 3D 变换之内的视图不显示模糊。
+
+```tsx
+<View windows={{ backdrop: { material: "blur" } }} style={{ height: 64, borderRadius: 12, backgroundColor: "rgba(255, 255, 255, 0.4)" }} />
+```
+
 ### 渐进式模糊
 
 沿某条边逐渐增强的模糊（如顶栏下方、图片说明文字背后）由多层 `backdropFilter` 组成：每层比上一层更强，并用 `maskImage` 往后渐显。五层、半径逐层翻倍即可看不出分层：
@@ -457,7 +463,7 @@ view()
 
 | 属性 | 取值 | Rust |
 |---|---|---|
-| `transitionProperty` | 要动画的属性：`"all"`，或用逗号分隔的名称：颜色（`"colors"`、`"backgroundColor"`、`"borderColor"` 等）、`"opacity"`、`"transform"`（所有变换属性）、`"boxShadow"`、`"borderRadius"` / `"borderWidth"` | `.transition()`、`.transition_all()`、`.transition_colors()`、`.transition_opacity()`、`.transition_transform()`、`.transition_shadow()` |
+| `transitionProperty` | 要动画的属性：`"all"`，或用逗号分隔的名称：颜色（`"colors"`、`"backgroundColor"`、`"borderColor"` 等）、`"opacity"`、`"transform"`（所有变换属性）、`"boxShadow"`、`"borderRadius"` / `"borderWidth"`、`"clip-path"` | `.transition()`、`.transition_all()`、`.transition_colors()`、`.transition_opacity()`、`.transition_transform()`、`.transition_shadow()`、`.transition_clip_path()` |
 | `transitionDuration` | `300`、`"300ms"`、`"0.3s"` | `.duration(300.0)` |
 | `transitionDelay` | 同时长 | `.delay(100.0)` |
 | `transitionTimingFunction` | `"linear"`、`"ease"`、`"ease-in"`、`"ease-out"`、`"ease-in-out"`、`"cubic-bezier(x1, y1, x2, y2)"`、`"spring(stiffness, damping)"`、`"spring(stiffness, damping, mass)"` | `.ease_linear()`、`.ease_in()`、`.ease_out()`、`.ease_in_out()`、`.ease_bezier(x1, y1, x2, y2)`、`.ease_spring(Spring { .. })` |

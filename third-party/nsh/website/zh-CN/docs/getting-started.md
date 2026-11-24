@@ -18,7 +18,7 @@ Rust 应用，再看同一个应用的 TSX 写法。前提是已经安装 `nsh` 
 
 ## 创建应用
 
-在终端中，`nsh init` 会询问应用用什么编写：`rust`、`ts` 或 `mixed`（带有自己 Rust crate 的 TSX）。用 `--template`
+在终端中，`nsh init` 会询问应用用什么编写：`rust`、`ts` 或 `mixed`（用 `ext/` 里的 Rust 扩展的 TSX）。用 `--template`
 可以直接选择，不再询问。
 
 ### 用 Rust
@@ -61,7 +61,7 @@ TSX 应用是一个或多个带入口的 `.tsx` 文件：它是 `nsh run` 运行
 已存在的文件会被保留，所以你可以在已经有部分文件的目录里运行它；Rust 应用则在一个新目录中创建。
 
 两者的显示名称都默认是目录名；可以用 `--name "My App"` 指定其他名称。id 会是 `com.example.<name>`：发布前请在 `nsh.json`
-中修改。`nsh init my-app --template mixed` 创建一个同时也是 Rust crate 的 TSX 应用（`Cargo.toml` 和 `src/lib.rs` 与 `App.tsx` 并列），`App.tsx` 导入它的组件、模块和类（[用 Rust 开发](./rust.md)）。
+中修改。`nsh init my-app --template mixed` 创建一个用 Rust 扩展的 TSX 应用：`ext/<name>-native/` 里是它自己的 nshm crate，`App.tsx` 导入它的组件、模块和类（[应用自己的 Rust：ext/](./nshm.md#应用自己的-rustext)）。
 
 ### 根组件
 
@@ -70,7 +70,7 @@ TSX 应用是一个或多个带入口的 `.tsx` 文件：它是 `nsh run` 运行
 ```rust tabs
 // src/lib.rs
 use nsh_base::theme;
-use nsh_core::prelude::*;
+use nsh_core::{element::desktop::window as app_window, prelude::*};
 
 /// crate 的 UI 集合：TSX 入口可以从 `my-app/native` 导入的内容。
 #[native_module("my-app/native")]
@@ -82,6 +82,7 @@ fn native(registry: &mut Registry) {
 #[component]
 pub fn App() -> impl IntoElement {
     let count = signal(0_u32);
+    app_window().id("main").content(move || {
     view()
         .flex_1()
         .bg(move || theme().background)
@@ -113,12 +114,14 @@ pub fn App() -> impl IntoElement {
                         ),
                 ),
         )
+    })
 }
 ```
 
 ```tsx tabs
 // App.tsx
 import { mount, signal, Text, View } from "nsh";
+import { Window } from "nsh/desktop";
 
 function App() {
   const count = signal(0);
@@ -136,7 +139,9 @@ function App() {
   );
 }
 
-mount(App);
+// 桌面平台上，应用在它自己声明的窗口里显示；`App` 是第一个窗口的内容。
+// 非桌面平台上，它就是应用的屏幕。
+mount(() => <Window id="main">{App}</Window>);
 ```
 
 Rust 版：
@@ -164,7 +169,7 @@ TSX 版：
 - **`class`** 接受 [Tailwind](./tailwind.md) 类；`style={{ … }}` 接受由 camelCase 样式属性组成的对象，数字的单位是点。
   `bg-background`、`bg-primary`、`text-primary-foreground` 和 `rounded-(--radius)` 引用应用主题的令牌（[主题 token](./tailwind.md#主题-token)）：
   它们自动跟随深色模式，`nsh.json` 中的 `"theme"` 可以改变它们的样式。
-- **`mount(App)`** 把组件渲染到应用的界面上。
+- **`mount(App)`** 渲染应用根；在桌面平台上，根用 `<Window>` 声明自己的窗口。
 
 > [!IMPORTANT]
 > 文字显示在文本元素中：Rust 中是 `text(..)`，TSX 中是 `<Text>`。在 TSX 中，直接写在 `<View>` 里的文字（`<View>Hello</View>`）会在构建时报错并指出位置；由表达式放进去的字符串（`<View>{name}</View>`）会在日志中提示。
@@ -191,7 +196,6 @@ TSX 版：
 | Windows | `nsh run my-app` | Windows（默认） |
 | Linux（GTK 4） | `nsh run my-app` | Linux（默认） |
 | Web | `nsh run my-app --target web` | macOS、Windows、Linux |
-| Mac Catalyst | `nsh run my-app --target catalyst` | macOS |
 
 #### iOS 模拟器
 
@@ -209,7 +213,8 @@ nsh run my-app --target ios --device "iPhone 16 Pro"
 nsh run my-app --target android
 ```
 
-先启动模拟器或连接设备（`adb devices` 会列出它们；NSH 使用第一个）。`nsh` 会把应用安装到上面：Rust 应用自己的
+先启动模拟器或连接设备（`adb devices` 会列出它们）。NSH 使用 `--device <serial>` 或 `ANDROID_SERIAL` 指定的那台，否则使用第一台；
+连着多台时会提示用的是哪一台。`nsh` 会把应用安装到上面：Rust 应用自己的
 `libnsh.so`，或者一个开发宿主 APK（只在运行时变化时重新构建），开发服务器的端口通过 `adb reverse` 转发到设备上，因此通过 USB
 即可工作，无需共享网络。
 
@@ -246,16 +251,6 @@ nsh run my-app --target web
 ```
 
 `nsh` 会打印页面地址，在浏览器中打开即可。Rust 应用以带有你的 crate 的 WebAssembly 运行，变化之后，打开的页面会自行加载新的构建；见 [Web](./web.md)。
-
-#### Mac Catalyst
-
-```sh
-nsh run my-app --target catalyst
-```
-
-应用会在 Mac 上一个 iPhone 尺寸（390×844 点）的窗口中打开。这是查看应用在手机上效果最快的方式：不需要启动模拟器。它和 iOS
-一样使用 UIKit，所以看到的效果就是 iPhone 上的效果，只有 Mac 特有的行为除外，例如用鼠标滚轮滚动。要运行 Mac 应用本身，请用
-`--target macos`。
 
 ### 编辑
 
@@ -312,6 +307,16 @@ NSH 模块，或修改了 `nsh.json` 中的 capabilities），宿主会重新加
 Rust 编译错误会连同 cargo 的输出一起打印在终端中，`nsh run` 在下一次保存时重新构建。TSX
 构建错误会打印在终端中，并在设备上以红色浮层显示文件、行号和列号；应用继续运行上一次成功的构建。下次构建成功后浮层会消失（也可以点击提前关闭）。运行时抛出的异常以同样方式显示，调用栈会映射回你的
 `.tsx` 源码。
+
+### 开发工具
+
+#### Mac Catalyst
+
+```sh
+nsh run my-app --target catalyst
+```
+
+应用会以 iOS（UIKit）后端在 Mac 上一个 iPhone 尺寸（390×844 点）的窗口中打开。仅在确有需要时使用：检查 Catalyst 特有的行为，或在 Mac Catalyst 应用中嵌入 NSH。Mac 应用请用默认的 `macos`；要看应用在手机上的效果，请用 `--target ios`。
 
 ## 承载到你的应用里
 

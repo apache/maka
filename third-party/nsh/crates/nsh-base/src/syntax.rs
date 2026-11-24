@@ -361,3 +361,14 @@ mod syntect_syntaxes {
         Some(token)
     }
 }
+
+/// Logs once that code is shown plain because the feature `highlight` is off.
+#[cfg(not(feature = "highlight"))]
+pub(crate) fn warn_no_highlight() {
+    static WARNED: std::sync::Once = std::sync::Once::new();
+    WARNED.call_once(|| {
+        log::warn!(
+            "code is shown unhighlighted: nsh-base was built without the feature `highlight`"
+        )
+    });
+}

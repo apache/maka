@@ -41,7 +41,7 @@ async fn parent_and_worker(rig: &mut Rig, provider: &mut Provider) -> TestResult
         String::from_utf8_lossy(&output.stderr)
     );
     let tools: Value = serde_json::from_slice(&output.stdout)?;
-    let boot = bootstrap_with(&base, provider.url.clone(), |config| {
+    let boot = bootstrap_with(&base, provider.server.base_url(), |config| {
         config["tools"] = tools;
         config["toolDiscovery"] = json!(true);
     })
@@ -50,7 +50,7 @@ async fn parent_and_worker(rig: &mut Rig, provider: &mut Provider) -> TestResult
     let client = rig.client.as_ref().unwrap();
     let model = model_options(
         client,
-        &provider.url,
+        &provider.server.base_url(),
         false,
         json!({"contextWindow": 128000, "compactionThreshold": 100000}),
     )
@@ -126,7 +126,7 @@ async fn no_new_turn(provider: &mut Provider) -> TestResult<()> {
         Ok(request) => Err(format!(
             "a turn started without the user: {}",
             request
-                .map(|(body, _)| text_messages(&body))
+                .map(|turn| text_messages(turn.body()))
                 .unwrap_or_default()
         )
         .into()),
@@ -178,7 +178,7 @@ async fn delegate(
     parent: &str,
     worker: &str,
     task: &str,
-) -> TestResult<(oneshot::Sender<ModelReply>, oneshot::Sender<ModelReply>)> {
+) -> TestResult<(TurnHandle, TurnHandle)> {
     let order = format!("Delegate {task}");
     call(
         rig.client.as_ref().unwrap(),
@@ -188,12 +188,10 @@ async fn delegate(
     )
     .await?;
     let (_, reply) = provider.next().await?;
-    reply
-        .send(tool_response(
-            "SessionSend",
-            json!({"sessionId": worker, "message": task, "onComplete": "notify_caller"}),
-        ))
-        .map_err(|_| "delegation lost")?;
+    reply.send_plan(tool_response(
+        "SessionSend",
+        json!({"sessionId": worker, "message": task, "onComplete": "notify_caller"}),
+    ));
     let (mut parent_step, mut worker_turn) = (None, None);
     while parent_step.is_none() || worker_turn.is_none() {
         let (request, reply) = provider.next().await?;
@@ -231,12 +229,7 @@ async fn next_turn_reads(
         user.is_some() && notice.is_some() && user < notice,
         "the user's next turn must read {result} after the user's message: {prompt}"
     );
-    reply
-        .send(completion(
-            json!({"role": "assistant", "content": "Noted."}),
-            "stop",
-        ))
-        .map_err(|_| "reply lost")?;
+    reply.reply_text("Noted.");
     quiescent_message(client, session, &sent["messageId"]).await?;
     idle(client, session).await?;
     assert!(queued(client, session).await?.is_empty());
@@ -254,12 +247,7 @@ async fn a_user_stop_keeps_delegated_results_for_the_users_next_message() -> Tes
         // The result arrives while the parent's turn still runs, then the user stops it.
         let (parent_step, worker_turn) =
             delegate(&rig, &mut provider, &parent, &worker, "WORKER_TASK_A").await?;
-        worker_turn
-            .send(completion(
-                json!({"role": "assistant", "content": "RESULT_A"}),
-                "stop",
-            ))
-            .map_err(|_| "worker reply lost")?;
+        worker_turn.reply_text("RESULT_A");
         wait_queued(client, &parent, 1).await?;
         user_stop(client, &parent).await?;
         drop(parent_step);
@@ -281,12 +269,7 @@ async fn a_user_stop_keeps_delegated_results_for_the_users_next_message() -> Tes
         user_stop(client, &parent).await?;
         drop(parent_step);
         idle(client, &parent).await?;
-        worker_turn
-            .send(completion(
-                json!({"role": "assistant", "content": "RESULT_B"}),
-                "stop",
-            ))
-            .map_err(|_| "worker reply lost")?;
+        worker_turn.reply_text("RESULT_B");
         wait_queued(client, &parent, 1).await?;
         no_new_turn(&mut provider).await?;
         next_turn_reads(

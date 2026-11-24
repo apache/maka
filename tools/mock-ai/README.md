@@ -21,6 +21,17 @@
 
 Single-port, multi-protocol simulated AI provider & chaos/load simulator for Maka integration tests, evals, and high-concurrency / ultra-long-session stress testing.
 
+## Cargo Features
+
+Workspace crates depend on `maka-mock-ai` with `default-features = false` for a lean test library (HTTP SSE/JSON, Responses WebSocket, all protocol codecs, interactive/filtered/async handlers, pacing, rate limiting, and watchdog). Optional features add:
+
+- `rules`: declarative JSON/YAML rule engine (`RuleEngine`, `builder_from_config`)
+- `tls`: local rustls TLS termination (`TlsServerConfig`)
+- `proxy`: transparent upstream HTTP/WS proxy recording and NDJSON cassette replay (implies `tls`)
+- `cli`: standalone `maka-mock-ai` binary (implies `rules`, `proxy`, `tls`)
+
+All features are enabled by default when building or testing `maka-mock-ai` directly.
+
 ## Capabilities
 
 - **Protocols & Transports**: OpenAI Chat Completions (HTTP SSE/JSON), OpenAI Responses (HTTP SSE/JSON + WebSocket with connection-local `store: false` baseline tracking), Anthropic Messages (HTTP SSE/JSON), plus control-plane discovery/usage/storage endpoints.

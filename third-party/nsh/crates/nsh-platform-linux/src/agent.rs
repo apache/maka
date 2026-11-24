@@ -237,7 +237,13 @@ impl Native for LinuxNative {
         }
     }
 
-    fn drag(&self, from: Point<Points>, to: Point<Points>) {
+    fn drag(
+        &self,
+        from: Point<Points>,
+        to: Point<Points>,
+        options: nsh_testing::DragOptions,
+    ) -> Result<(), String> {
+        nsh_testing::agent::refuse_custom_drag("drag", options)?;
         let (x, y) = (from.x.0, from.y.0);
         self.sim(true, move |s| {
             crate::input::simulate(s, Simulated::Hover(x, y));
@@ -257,9 +263,16 @@ impl Native for LinuxNative {
         self.sim(false, move |s| {
             crate::input::simulate(s, Simulated::Up(x, y))
         });
+        Ok(())
     }
 
-    fn drag_and_hold(&self, from: Point<Points>, to: Point<Points>) -> Result<(), String> {
+    fn drag_and_hold(
+        &self,
+        from: Point<Points>,
+        to: Point<Points>,
+        options: nsh_testing::DragOptions,
+    ) -> Result<(), String> {
+        nsh_testing::agent::refuse_custom_drag("dragAndHold", options)?;
         let (x, y) = (from.x.0, from.y.0);
         self.sim(true, move |s| {
             crate::input::simulate(s, Simulated::Hover(x, y));
@@ -527,12 +540,25 @@ impl Native for LinuxNative {
 
     fn back(&self) -> Result<(), String> {
         // Escape, as a user goes back: in a focused field it only leaves
-        // it, so then once more.
+        // it, so then once more. In the key window: a window of the app's
+        // own goes back among its own modals and stacks, as its keys do
+        // ([`crate::window::press_key`]).
         self.on_main(|s| {
-            if crate::navigation::focused_field(s).is_some() {
-                crate::navigation::key_pressed(s, gdk::Key::Escape, gdk::ModifierType::empty());
+            let escape = gdk::ModifierType::empty();
+            let main = synth::window(s);
+            let app_window =
+                crate::window::key_window(s).filter(|window| main.as_ref() != Some(window));
+            if let Some(window) = app_window {
+                if crate::navigation::key_window_field_focused(s) {
+                    crate::window::press_key(s, &window, gdk::Key::Escape, escape);
+                }
+                crate::window::press_key(s, &window, gdk::Key::Escape, escape);
+                return;
             }
-            crate::navigation::key_pressed(s, gdk::Key::Escape, gdk::ModifierType::empty());
+            if crate::navigation::key_window_field_focused(s) {
+                crate::navigation::key_pressed(s, gdk::Key::Escape, escape);
+            }
+            crate::navigation::key_pressed(s, gdk::Key::Escape, escape);
         })
         .ok_or_else(|| "the window is gone".to_owned())
     }
@@ -550,8 +576,18 @@ impl Native for LinuxNative {
     fn screenshot(&self) -> Result<Vec<u8>, String> {
         let (tx, rx) = mpsc::channel();
         let key = self.key;
+        let target = self.target.load(Ordering::Relaxed);
         glib::MainContext::default().invoke_with_priority(glib::Priority::DEFAULT, move || {
-            let Some(window) = Surface::by_key(key).and_then(|s| synth::window(&s)) else {
+            // The window the app shows, as `resize`: in window model v2 the
+            // surface's own window is a host that never shows, and the
+            // app's `<Window>` is one of its own.
+            let Some(window) = Surface::by_key(key).and_then(|s| {
+                if target != ROOT_ID {
+                    crate::window::native_window(&s, target)
+                } else {
+                    crate::window::key_window(&s)
+                }
+            }) else {
                 let _ = tx.send(Err("the window is gone".to_owned()));
                 return;
             };
@@ -587,8 +623,20 @@ impl Native for LinuxNative {
     }
 
     fn resize(&self, width: Points, height: Points) -> Result<(), String> {
-        self.with_window(move |_, w| w.set_default_size(width.0 as i32, height.0 as i32))
-            .ok_or_else(|| "the window is gone".to_owned())
+        // `setViewport` resizes the window the app shows, not the hidden
+        // host: the targeted window, else the key one (the frontmost of the
+        // app's own windows, else the main window).
+        let target = self.target.load(Ordering::Relaxed);
+        self.on_main(move |surface| {
+            let window = if target != ROOT_ID {
+                crate::window::native_window(surface, target)
+            } else {
+                crate::window::key_window(surface)
+            };
+            window.map(|w| w.set_default_size(width.0 as i32, height.0 as i32))
+        })
+        .flatten()
+        .ok_or_else(|| "the window is gone".to_owned())
     }
 
     fn set_dark(&self, dark: bool) -> Result<(), String> {

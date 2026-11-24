@@ -170,34 +170,43 @@ coordination.
 
 ## Bootstrap and root ownership
 
-Mount the app once, and give the root the whole surface: a TSX entry calls `mount(App)`, a Rust app names its root
-component in `nsh.json` (`"root": "App"`). The root fills the surface with `flex: 1` and a background from the theme:
+Mount the app once; its root declares the app's top-level windows, and each window fills with a `flex: 1` view and a
+background from the theme. A TSX entry calls `mount(App)`, a Rust app names its root component in `nsh.json`
+(`"root": "App"`):
 
 ```rust tabs
+use nsh_core::{element::desktop::window, prelude::*};
+
 #[component]
 pub fn App() -> impl IntoElement {
     provide_context(Workspace::new());
-    view()
-        .flex_1()
-        .bg(move || theme().background)
-        .child(inbox())
+    window().id("main").content(
+        view()
+            .flex_1()
+            .bg(move || theme().background)
+            .child(inbox()),
+    )
 }
 ```
 
 ```tsx tabs
 import { mount, View } from "nsh";
+import { Window } from "nsh/desktop";
 
 mount(() => (
-  <View class="flex-1 bg-background">
-    <App />
-  </View>
+  <Window id="main">
+    <View class="flex-1 bg-background">
+      <App />
+    </View>
+  </Window>
 ));
 ```
 
-The root coordinates what belongs to the whole surface: the navigation stack, the dialogs, popovers, menus, sheets and
-tooltips shown over everything in it, and the safe area. Do not mount a second root for each page inside one surface.
-One surface is one engine: each `NshAppView`, `NshView` or `AppView` a native app embeds runs its own VM, its own module
-state and its own reactive graph, so several surfaces in one host app never share state by accident.
+The app root coordinates what belongs to the whole app: the shared state, settings and the window registry. Each
+window's content coordinates what belongs to that window: its navigation stack, dialogs, popovers, menus, sheets and
+tooltips, and its safe area. Do not mount a second root for each page. One app is one engine: each `NshAppView`,
+`NshView` or `AppView` a native app embeds runs its own VM, its own module state and its own reactive graph, so several
+surfaces in one host app never share state by accident.
 
 ## Understand what runs once and what runs again
 
@@ -998,7 +1007,7 @@ clipboard, haptics, scroll physics, fonts and timing can differ. One bundle runs
 the fallback behavior:
 
 - what an element means on every platform is a top-level prop; a platform's own system feature goes in
-  `ios={{…}}`, `android={{…}}`, `macos={{…}}`, `desktop={{…}}` or `web={{…}}` (a builder method in Rust), in each of the platforms
+  `ios={{…}}`, `android={{…}}`, `macos={{…}}`, `windows={{…}}`, `desktop={{…}}` or `web={{…}}` (a builder method in Rust), in each of the platforms
   that have it, and only the current platform's object is applied;
 - APIs of mobile platforms come from `nsh/mobile`, those of the desktops from `nsh/desktop`;
 - styles per platform are `ios:`, `android:` and `web:` classes.

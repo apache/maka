@@ -32,6 +32,8 @@
 
 #[cfg(target_os = "macos")]
 mod appkit;
+#[cfg(target_os = "macos")]
+mod cli;
 #[cfg(windows)]
 mod direct2d;
 #[cfg(target_os = "macos")]
@@ -160,6 +162,10 @@ fn answer(arguments: impl IntoIterator<Item = std::ffi::OsString>) -> Option<Str
 }
 
 fn main() -> ExitCode {
+    #[cfg(target_os = "macos")]
+    if let Some(exit) = cli::dispatch() {
+        return exit;
+    }
     if let Some(text) = answer(std::env::args_os().skip(1)) {
         println!("{text}");
         return ExitCode::SUCCESS;

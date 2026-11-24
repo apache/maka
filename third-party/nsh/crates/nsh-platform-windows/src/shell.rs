@@ -657,6 +657,16 @@ fn restyle(hwnd: HWND, shell: &Shell, attrs: &Attrs) {
         if (style, ex) == current {
             return;
         }
+        // A window not shown yet keeps the content size it was made or
+        // sized for: its frame grows or shrinks around it. One the user
+        // sees keeps its frame where it is instead.
+        let mut client = RECT::default();
+        let keep = (!IsWindowVisible(hwnd).as_bool()
+            && !IsZoomed(hwnd).as_bool()
+            && !IsIconic(hwnd).as_bool()
+            && GetClientRect(hwnd, &mut client).is_ok())
+        .then(|| (client.right - client.left, client.bottom - client.top))
+        .filter(|&(w, h)| w > 0 && h > 0);
         SetWindowLongPtrW(hwnd, GWL_STYLE, style as isize);
         SetWindowLongPtrW(hwnd, GWL_EXSTYLE, ex as isize);
         if ex & WS_EX_LAYERED.0 != 0 && current.1 & WS_EX_LAYERED.0 == 0 {
@@ -671,6 +681,9 @@ fn restyle(hwnd: HWND, shell: &Shell, attrs: &Attrs) {
             0,
             SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
         );
+        if let Some(content) = keep {
+            crate::window::fit_content(hwnd, content);
+        }
     }
 }
 

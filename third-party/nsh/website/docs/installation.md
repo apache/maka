@@ -20,7 +20,7 @@ Apps written in Rust also need a Rust toolchain ([below](#for-apps-written-in-ru
 | Linux | Linux | GTK 4.14+ (and its development packages to build the runtime) |
 | [GPUI](./gpui.md) (embedding in GPUI apps) | macOS, Windows or Linux | A GPU (Metal, DirectX or Vulkan); on Linux, Wayland or X11 |
 
-The AppKit host is the default on macOS. Mac Catalyst (`--target catalyst`) needs Xcode like iOS. Details are under [Platform tools](#platform-tools).
+The AppKit host is the default on macOS. Mac Catalyst (`--target catalyst`), a development tool for Catalyst-specific work, needs Xcode like iOS. Details are under [Platform tools](#platform-tools).
 
 ## Installing a release
 
@@ -69,10 +69,12 @@ The archives (`nsh-macos-arm64.tar.gz`, `nsh-macos-x86_64.tar.gz`, `nsh-linux-x8
 
 The runtimes for platforms other than the one you develop on are components of the release, as `rustup component add` installs a toolchain's parts. The first command that needs one, such as `nsh run --target android` or `nsh package --target web`, downloads it from the release of your `nsh`, checks its SHA-256 and installs it next to the CLI. `nsh component` manages them ahead of time:
 
+`nsh component list` shows the components for this machine, installed or not; `nsh component add` installs them ahead of time, e.g. before going offline; `nsh component remove` frees the space again:
+
 ```sh
-nsh component list            # the components for this machine, installed or not
-nsh component add android web # install ahead of time, e.g. before going offline
-nsh component remove gpui     # free the space again
+nsh component list
+nsh component add android web
+nsh component remove gpui
 ```
 
 | Component | Holds | Published for |
@@ -88,18 +90,36 @@ A component always comes from the same build as the CLI. `nsh update` adds the i
 
 ## For apps written in Rust
 
-Install Rust through [rustup](https://rustup.rs). `nsh` builds a Rust app's runner for each target with Cargo, from your crate and NSH's crates on crates.io at the CLI's version, so add the Rust targets of the platforms you run on:
+Install Rust through [rustup](https://rustup.rs). `nsh` builds a Rust app's runner for each target with Cargo, from your crate and NSH's crates on crates.io at the CLI's version, so add the Rust targets of the platforms you run on. For the iOS simulator, iOS devices and Mac Catalyst:
 
 ```sh
-rustup target add aarch64-apple-ios-sim aarch64-apple-ios aarch64-apple-ios-macabi   # iOS simulator, devices, Mac Catalyst
-rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android # Android (with the SDK's NDK)
-rustup target add wasm32-unknown-unknown                                             # the web
+rustup target add aarch64-apple-ios-sim aarch64-apple-ios aarch64-apple-ios-macabi
+```
+
+For Android (with the SDK's NDK):
+
+```sh
+rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android
+```
+
+For the web:
+
+```sh
+rustup target add wasm32-unknown-unknown
 ```
 
 We recommend building with [huacnlee/cargo](https://github.com/huacnlee/cargo), a fork of Cargo optimized by [huacnlee](https://github.com/huacnlee) so Rust build artifacts never fill the disk: every project and Git worktree shares one build directory that stays under a size limit on its own. With 50 worktrees it takes about 90% less disk space than stock Cargo, and a 512 GB disk is plenty. It is a drop-in replacement for `~/.cargo/bin/cargo` with nothing to configure:
 
+On macOS and Linux:
+
 ```sh
-curl -fsSL https://huacnlee.github.io/cargo/install.sh | sh     # Windows: irm https://huacnlee.github.io/cargo/install.ps1 | iex
+curl -fsSL https://huacnlee.github.io/cargo/install.sh | sh
+```
+
+On Windows, in PowerShell:
+
+```powershell
+irm https://huacnlee.github.io/cargo/install.ps1 | iex
 ```
 
 The desktops build for the machine you are on. `cargo run` in a Rust app's directory starts it on the desktop backend directly, which builds with the backend's development libraries ([Platform tools](#platform-tools)). Android builds also use an **NDK** from the SDK, as [building the Android runtime](#building-the-android-runtime) does.
@@ -135,23 +155,30 @@ The distribution is made with `cargo xtask dist` in a checkout (below). The `nsh
 
 ## Installing the nightly build
 
-Every night that `main` changes, it is built and published as the [nightly release](https://github.com/longbridge/nsh/releases/tag/nightly), with the same archives as a release:
+Every night that `main` changes, it is built and published as the [nightly release](https://github.com/longbridge/nsh/releases/tag/nightly), with the same archives as a release.
+
+**macOS and Linux**:
 
 ```sh
 curl -fsSL https://nsh.dev/install.sh | sh -s -- --nightly
-nsh -V # nsh 0.4.0 (abcdef0 nightly)
 ```
+
+**Windows**, in PowerShell (`NSH_VERSION` names the release to install, here `nightly`):
+
+```powershell
+$env:NSH_VERSION = 'nightly'; irm https://nsh.dev/install.ps1 | iex
+```
+
+`nsh -V` then shows the commit and the channel, such as `nsh 0.4.0 (abcdef0 nightly)`.
 
 Apps written in Rust build their runner with NSH's crates on crates.io at the CLI's version, the last release's; for those apps, use a release or the source.
 
 ## Updating
 
-`nsh update` updates an installed `nsh` to the latest build of its channel: the latest release, or the latest nightly for a nightly build. Naming a channel switches to it, as `rustup update nightly` does:
+`nsh update` updates an installed `nsh` to the latest build of its channel: the latest release, or the latest nightly for a nightly build. Naming a channel switches to it, as `rustup update nightly` does: `nsh update nightly` moves to the nightly build of `main`, `nsh update stable` goes back to the latest release.
 
 ```sh
-nsh update                    # the latest of the channel it is on
-nsh update nightly            # to the nightly build of main
-nsh update stable             # back to the latest release
+nsh update
 ```
 
 It downloads the same archive as the install scripts, checks its SHA-256, replaces the whole distribution directory and adds the components that were installed again. Homebrew, Scoop and mise update the `nsh` they installed themselves (`brew upgrade nsh`, `scoop update nsh`, `mise upgrade`).
@@ -166,9 +193,11 @@ curl -fsSL https://nsh.dev/install.sh | sh -s -- --source
 
 It keeps the checkout in `~/.nsh/source`, builds the CLI and links it into `~/.local/bin`; run it again to update. To work on NSH itself, clone the repository and build the CLI there; it builds the desktop and web runtimes it runs on when they are missing:
 
+The CLI is then `./target/debug/nsh`:
+
 ```sh
 git clone https://github.com/longbridge/nsh.git && cd nsh
-cargo build -p nsh-cli          # ./target/debug/nsh
+cargo build -p nsh-cli
 ```
 
 The commands for the iOS and Android runtimes and the release runners are in the repository's [AGENTS.md](https://github.com/longbridge/nsh/blob/main/AGENTS.md#commands).
@@ -217,14 +246,13 @@ See [Windows](./windows.md).
 
 ### Building the Android runtime
 
-Building the Android runtime from a checkout (`cargo xtask android`) additionally needs an **NDK** from the SDK (`ndk;<version>`; set `ANDROID_NDK_HOME` if the newest one installed is incomplete) and `javac`.
+Building the Android runtime from a checkout (`cargo xtask android`) additionally needs an **NDK** from the SDK (`ndk;<version>`; set `ANDROID_NDK_HOME` if the newest one installed is incomplete) and `javac`. The embedding libraries alone: `cargo xtask android-embed` (`dist/nsh/embed/android/{nsh,nsh-dev}.aar`).
 
 ## What works where
 
 | Command | macOS | Linux | Windows |
 |---|---|---|---|
 | `nsh init`, `nsh build`, `nsh test`, `nsh dev`, `nsh check` | Yes | Yes | Yes |
-| `nsh run --target catalyst` (Mac Catalyst) | Yes | No | No |
 | `nsh run --target macos`, `nsh package --target macos` | Yes | No | No |
 | `nsh run --target linux` (the default on Linux), `nsh package --target linux` | No | Yes | No |
 | `nsh run --target windows` (the default on Windows), `nsh package --target windows` | No | No | Yes |
@@ -232,6 +260,7 @@ Building the Android runtime from a checkout (`cargo xtask android`) additionall
 | `nsh run --target ios`, `nsh package --target ios` / `ios-simulator` | Yes, with Xcode | No | No |
 | `nsh run --target android`, `nsh package --target android` | Yes | Yes, from a checkout | Yes, with the Android runtime |
 | `nsh keygen`, `certify`, `publish`, `verify`, `revoke` | Yes | Yes | Yes |
+| `nsh run --target catalyst` (Mac Catalyst) | Yes | No | No |
 
 On Linux, build the CLI and the Android runtime from a checkout (`cargo build -p nsh-cli` and `cargo xtask android --dev`); the NDK's Linux toolchain is used automatically. On Windows the NDK's Windows toolchain is used the same way, and `cargo xtask dist` includes the Android runtime when it finds the Android SDK.
 

@@ -5,6 +5,6 @@ test("an app without a source has no update", async () => {
   const app = await open("../App.tsx", { clock: {} });
   await app.press("role:button[Updater]");
   await app.waitFor("Not checked yet");
-  await app.press("role:button[Check for updates]");
+  await app.press("role:button[Check with a UI of your own]");
   await app.waitFor("No update available");
 });

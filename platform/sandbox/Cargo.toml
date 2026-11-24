@@ -26,6 +26,7 @@ publish.workspace = true
 [dependencies]
 cap-fs-ext.workspace = true
 cap-std.workspace = true
+dunce = "1.0.5"
 hex.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

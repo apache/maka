@@ -168,6 +168,10 @@ mod tests {
         // Each host prop and event in the interface of the elements it is for.
         let elements = super::host::declarations();
         assert!(
+            elements
+                .contains("alignItems?: \"stretch\" | \"flex-start\" | \"center\" | \"flex-end\";")
+        );
+        assert!(
             elements.contains("export interface MacOsBackdrop {\n  material?: MacOsBackdropMaterial;\n  blending?: MacOsBackdropBlending;\n  state?: MacOsBackdropState;\n}")
         );
         assert!(elements.contains("export type MacOsBackdropMaterial = \"titlebar\" | \"selection\" | \"menu\" | \"popover\" | \"sidebar\" | \"headerView\" | \"sheet\" | \"windowBackground\" | \"hudWindow\" | \"fullScreenUI\" | \"toolTip\" | \"contentBackground\" | \"underWindowBackground\" | \"underPageBackground\";"));
@@ -179,6 +183,14 @@ mod tests {
         assert!(elements.contains(
             "export type MacOsBackdropState = \"followsWindowActiveState\" | \"active\" | \"inactive\";"
         ));
+        assert!(elements.contains(
+            "export interface ScrollEdgeElement {\n  scrollView: ViewRef;\n  edge?: ScrollEdge;\n}"
+        ));
+        assert!(elements.contains("export type ScrollEdge = \"top\" | \"bottom\";"));
+        assert!(elements.contains(
+            "export interface WindowsBackdrop {\n  material: WindowsBackdropMaterial;\n}"
+        ));
+        assert!(elements.contains("export type WindowsBackdropMaterial = \"blur\";"));
         for (interface, prop) in [
             ("HostProps", "  onPress?: (e: PressEvent) => void;"),
             ("HostProps", "  onLongPress?: (e: PressEvent) => void;"),
@@ -188,7 +200,9 @@ mod tests {
             ("HostProps", "  onLayout?: (e: { bounds: Bounds }) => void;"),
             ("AndroidHostProps", "  elevation?: number;"),
             ("IOSHostProps", "  backdropMaterial?: BackdropMaterial;"),
+            ("IOSHostProps", "  scrollEdgeElement?: ScrollEdgeElement;"),
             ("MacOSHostProps", "  backdrop?: MacOsBackdrop;"),
+            ("WindowsHostProps", "  backdrop?: WindowsBackdrop;"),
             ("InputHostProps", "  keyboardType?: KeyboardType;"),
             (
                 "InputHostProps",

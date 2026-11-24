@@ -15,7 +15,7 @@ Escape) work, and are decided natively. Rust makes one with `nsh_base::dialog()`
 The dialog owns its behavior and leaves its look to the app: its styles style the popup (the view holding the
 children), and in TSX `backdropClass` / `backdropStyle` add a backdrop behind it.
 
-On macOS, closing a dialog returns keyboard focus to the input or control that had it before opening,
+On macOS and Linux, closing a dialog returns keyboard focus to the input or control that had it before opening,
 including `Editor` and `RichEditor`, while that control remains visible in the current scope. If another
 control has already taken focus, it keeps it.
 

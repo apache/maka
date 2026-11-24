@@ -1,4 +1,5 @@
 import { mount, signal, Text, View } from "nsh";
+import { Window } from "nsh/desktop";
 import { Button, Tooltip } from "nsh/base";
 
 // A component's `tooltip` (a host prop, as `class`) shows as a view's does.
@@ -20,4 +21,4 @@ function App() {
     </View>
   );
 }
-mount(App);
+mount(() => <Window id="main">{App}</Window>);

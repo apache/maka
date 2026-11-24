@@ -1,9 +1,10 @@
 import { Input } from "nsh/base";
 import { mount, signal, Text, View, type ViewRef } from "nsh";
 
-/** A first Tab stop, a view that can be blurred or removed, and a native
- * input: what the root does when no responder is left, and what it must
- * not take from an input. */
+/** A first Tab stop, a view that takes keys and can be blurred or removed
+ * (a tap focuses it: it takes no presses), and a native input: what the
+ * root does when no responder is left, and what it must not take from an
+ * input. */
 function App() {
   let pad!: ViewRef;
   const focus = signal("none");
@@ -30,7 +31,6 @@ function App() {
           }}
           testID="pad"
           focusable
-          onPress={() => {}}
           onFocus={() => focus.set("pad")}
           onBlur={() => focus.set("none")}
           style={row}

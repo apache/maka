@@ -340,7 +340,22 @@ final class A11y extends View.AccessibilityDelegate {
 
     /** What the node says of its state: mixed, expanded, current, the value's text, invalid, and the checked word with them. */
     private String stateDescription() {
-        return A11yChanges.stateDescription(state, shownValueText(), (state & 256) != 0 || role == ROLE_SWITCH);
+        // In the language the app's text shows in, as the rest the service reads.
+        return A11yChanges.stateDescription(state, shownValueText(), (state & 256) != 0 || role == ROLE_SWITCH,
+                mounter.textLocale);
+    }
+
+    /**
+     * The language of the state words changed ({@link Mounter#textLocale}): a service refreshes
+     * its copy of {@code v}'s node when it has a state description, saying nothing (the next read
+     * has the new words).
+     */
+    void wordsChanged(View v) {
+        if (hidden || !v.isShown() || stateDescription() == null) return;
+        ViewParent parent = v.getParent();
+        if (parent != null) {
+            parent.notifySubtreeAccessibilityStateChanged(v, v, AccessibilityEvent.CONTENT_CHANGE_TYPE_UNDEFINED);
+        }
     }
 
     private boolean has(String name) {

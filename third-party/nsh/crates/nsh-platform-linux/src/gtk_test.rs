@@ -34,6 +34,14 @@ pub(crate) fn run<R: Send + 'static>(f: impl FnOnce() -> R + Send + 'static) -> 
         thread::Builder::new()
             .name("gtk".into())
             .spawn(move || {
+                // The tests run on X11, as CI does (`GDK_BACKEND=x11`): their
+                // input goes through XTest, and on a Wayland session GTK
+                // blocks in a popup's configure and has crashed in a removed
+                // field's teardown (#2628). Xwayland gives a desktop session
+                // the same backend.
+                if std::env::var_os("DISPLAY").is_some() {
+                    gtk::gdk::set_allowed_backends("x11");
+                }
                 let initialized = gtk::init().is_ok();
                 let _ = ready.send(initialized);
                 if initialized {

@@ -77,13 +77,7 @@ pub fn not_granted(name: &str) -> JsError {
 /// Checks a call or post of `name` against the host names' rules and the
 /// app's `access`, before it crosses into the embedding app's code.
 pub fn check_call(access: &crate::access::Access, name: &str) -> Result<(), JsError> {
-    if !crate::access::valid_host_name(name) {
-        return Err(invalid_name(name));
-    }
-    if !access.allows_host(name) {
-        return Err(not_granted(name));
-    }
-    Ok(())
+    refusal(access, name).map_or(Ok(()), |error| Err(error.into()))
 }
 
 /// What a call of `name` rejects with when the embedding app did not answer
@@ -103,6 +97,154 @@ pub fn too_many_calls(name: &str) -> JsError {
         "host.call(\"{name}\"): {MAX_PENDING_CALLS} calls already wait for the embedding app's answers"
     ))
     .with_code(codes::QUOTA_EXCEEDED)
+}
+
+/// How long a call waits for the host's answer unless its options say
+/// ([`HostCallOptions`]; TS: `host.call`'s `timeout`).
+pub const DEFAULT_CALL_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Why a call of the host's function failed
+/// ([`crate::element::host_call`]; TS: the `code` of `host.call`'s
+/// rejection, which [`HostError::code`] gives).
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum HostError {
+    /// The host's function failed, or the host has no function of the
+    /// name: the host's message (TS: `ERR_NSH_HOST_ERROR`).
+    Failed(String),
+    /// `capabilities.host` in nsh.json does not grant `name` (TS:
+    /// `ERR_ACCESS_DENIED`, permission `"host"`).
+    Denied {
+        /// The function's name.
+        name: String,
+    },
+    /// `name` is no host function's name
+    /// ([`crate::access::valid_host_name`]; TS: a `TypeError`).
+    InvalidName {
+        /// The name asked for.
+        name: String,
+    },
+    /// The app runs where nothing embeds it: no embedding app's channel and
+    /// no platform host (TS: `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM`).
+    Unavailable,
+    /// The host did not answer within `timeout` (TS: `ETIMEDOUT`); its
+    /// answer, when it comes, is dropped.
+    TimedOut {
+        /// The function's name.
+        name: String,
+        /// How long the call waited.
+        timeout: Duration,
+    },
+    /// [`MAX_PENDING_CALLS`] calls wait for the host's answers already
+    /// (TS: `ERR_NSH_QUOTA_EXCEEDED`).
+    TooManyCalls {
+        /// The function's name.
+        name: String,
+    },
+}
+
+impl HostError {
+    /// The stable code TS's rejection carries (`ERR_NSH_HOST_ERROR`,
+    /// `ERR_ACCESS_DENIED`, ...); `None` for an invalid name, a
+    /// `TypeError` there.
+    pub fn code(&self) -> Option<&'static str> {
+        match self {
+            Self::Failed(_) => Some(codes::HOST_ERROR),
+            Self::Denied { .. } => Some(codes::ACCESS_DENIED),
+            Self::InvalidName { .. } => None,
+            Self::Unavailable => Some(codes::UNAVAILABLE),
+            Self::TimedOut { .. } => Some(codes::TIMED_OUT),
+            Self::TooManyCalls { .. } => Some(codes::QUOTA_EXCEEDED),
+        }
+    }
+}
+
+impl From<HostError> for JsError {
+    fn from(error: HostError) -> Self {
+        match error {
+            HostError::Failed(message) => host_error(&message),
+            HostError::Denied { name } => not_granted(&name),
+            HostError::InvalidName { name } => invalid_name(&name),
+            HostError::Unavailable => no_host(),
+            HostError::TimedOut { name, timeout } => timed_out(&name, timeout),
+            HostError::TooManyCalls { name } => too_many_calls(&name),
+        }
+    }
+}
+
+impl std::fmt::Display for HostError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(JsError::from(self.clone()).message())
+    }
+}
+
+impl std::error::Error for HostError {}
+
+/// Checks a call or post of `name` against the host names' rules (first:
+/// a host may put the name in a path or a URL, where `user.x/../admin`
+/// leaves `user.*`) and the app's `access`, as a [`HostError`].
+pub(crate) fn refusal(access: &crate::access::Access, name: &str) -> Option<HostError> {
+    if !crate::access::valid_host_name(name) {
+        Some(HostError::InvalidName { name: name.into() })
+    } else if !access.allows_host(name) {
+        Some(HostError::Denied { name: name.into() })
+    } else {
+        None
+    }
+}
+
+/// How a call of the host's function goes
+/// ([`crate::element::host_call_with`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct HostCallOptions {
+    /// How long the call waits for the host's answer before it fails with
+    /// [`HostError::TimedOut`]: [`DEFAULT_CALL_TIMEOUT`] unless set.
+    /// [`Duration::ZERO`], or one so long the clock never gets there,
+    /// waits as long as the host takes (TS: `timeout: 0`).
+    pub timeout: Duration,
+}
+
+impl Default for HostCallOptions {
+    fn default() -> Self {
+        Self {
+            timeout: DEFAULT_CALL_TIMEOUT,
+        }
+    }
+}
+
+impl HostCallOptions {
+    /// Waits `timeout` for the host's answer ([`HostCallOptions::timeout`]).
+    pub fn timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = timeout;
+        self
+    }
+}
+
+/// A call or post of the app's Rust or JS, checked and granted, that the
+/// engine hands to the embedding app's channel where it is configured,
+/// else to the platform's host ([`crate::Core::take_host_requests`]). The
+/// engine's, not part of the app's API.
+#[doc(hidden)]
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub enum HostRequest {
+    /// Call `id`, answered with [`crate::Core::answer_host`].
+    Call {
+        /// The call's id.
+        id: u64,
+        /// The function's name.
+        name: String,
+        /// Its argument.
+        args: JsonValue,
+    },
+    /// A post, which has no answer.
+    Post {
+        /// The function's name.
+        name: String,
+        /// Its argument.
+        args: JsonValue,
+    },
 }
 
 /// What an app's `nsh/host` reaches of the embedding app, on the engine

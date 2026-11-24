@@ -34,11 +34,10 @@ desktop-tests = []
 name = "maka"
 path = "src/main.rs"
 
-# Internal Windows service entry; the public console command remains `maka`.
+# Internal windowless Windows service launcher; delegates to the sibling `maka.exe`.
 [[bin]]
 name = "maka-service"
 path = "src/service_main.rs"
-test = false
 
 [[test]]
 name = "integration"
@@ -74,14 +73,21 @@ path = "tests/native_desktop.rs"
 harness = false
 required-features = ["desktop-tests"]
 
-[target.'cfg(target_os = "macos")'.dependencies]
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+maka-terminal-shell.workspace = true
+maka-ui-build.workspace = true
+nsh-terminal.workspace = true
+
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+maka-terminal-shell.workspace = true
+maka-ui-build.workspace = true
+nsh-terminal.workspace = true
 nsh-platform-macos = { workspace = true, features = ["terminal"] }
 
 [dependencies]
+zstd.workspace = true
 jiff.workspace = true
 maka-tools.workspace = true
-nsh-terminal.workspace = true
-maka-ui-build.workspace = true
 maka-code-runtime.workspace = true
 hex.workspace = true
 maka-agent-facts.workspace = true
@@ -99,7 +105,6 @@ maka-transport.workspace = true
 maka-computer-use.workspace = true
 maka-acp.workspace = true
 maka-config.workspace = true
-maka-terminal-shell.workspace = true
 maka-updater.workspace = true
 maka-plugin-core.workspace = true
 aws-lc-rs = { version = "1.18.2", default-features = false, features = ["aws-lc-sys", "prebuilt-nasm"] }
@@ -127,6 +132,7 @@ tempfile.workspace = true
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "tracing-log"] }
 
 [build-dependencies]
+zstd.workspace = true
 hex.workspace = true
 serde.workspace = true
 serde_json.workspace = true

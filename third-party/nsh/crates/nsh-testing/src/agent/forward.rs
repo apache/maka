@@ -93,6 +93,10 @@ impl Forwarder {
                 HttpBody::Empty | HttpBody::Stream => Vec::new(),
             },
             follow_redirects: request.follow_redirects,
+            cache: match request.cache {
+                nsh_engine::HttpCache::Default => String::new(),
+                cache => cache.as_str().to_owned(),
+            },
         };
         self.lock().insert(
             id,

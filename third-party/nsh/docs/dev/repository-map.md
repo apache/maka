@@ -65,6 +65,12 @@ crates/
                        wgpu offscreen, read back asynchronously, never blocking the main thread; docs/dev/shaders.md)
   nsh-package/         Signed packages (`.nshpkg`): Ed25519 keys, release-key certificates, revocation lists, the trust store
   nsh-updater/          App self-update: manifests and their signatures, verified downloads, replacing the installed app on the desktop (docs/dev/updater.md); `nsh-core`'s `runtime/updater.rs` is its JS face, `nsh/updater`
+  nsh-extra/           NSH's official modules, an nshm apps install with `nsh add nsh-extra --features <name>`: one Cargo feature
+                       per module (`camera`: `Camera`, photos from the system's camera on iOS and Android; `photos`:
+                       `Photos`, the recent photos of the user's library on iOS; `push`: `Push`,
+                       remote notifications on iOS and, through a push service's binding, Android), its code in
+                       `src/<name>/` on the platform crates' extension points, what the packaged app needs under
+                       `[package.metadata.nsh.features.<name>]` (merged into packages by `nsh-cli`'s `module_meta.rs`)
   nsh-bundler/         Bundler: rolldown + Oxc (TS stripping) + NSH's JSX compiler (`jsx.rs`, docs/dev/native-pipeline.md) + source maps;
                        imports of the native modules stay imports (`plugin.rs`), so a bundle holds only the app's code;
                        the app's themes (nsh.json `tailwind` / `theme`, checked, handed to the renderer by the entry) and the
@@ -102,7 +108,8 @@ crates/
                        the test agent's platform part (`agent.rs`: `nsh test --target linux`) (docs/dev/linux.md)
   nsh-linux-host/      Development host on Linux (`nsh run --target linux`): connects to a dev server or runs a bundle
   nsh-linux-app/       Release runner on Linux: the executable of apps built by `nsh package --target linux`
-  nsh-platform-apple/  Shared by the macOS and iOS backends: the Speech recognizer, the notification center, and
+  nsh-platform-apple/  Shared by the macOS and iOS backends: the Speech recognizer, the notification center, how
+                       drawn text splits into screen reader elements around its links and inline views, and
                        `unified_log`, the logger of the release runners and the iOS SDK (the unified log; stderr too
                        wherever it goes but /dev/null)
   nsh-platform-macos/  AppKit backend (macOS): one flipped, layer-backed `NSView` per node decorated by Core Animation, CoreText text
@@ -140,7 +147,7 @@ crates/
                        browser host's pages (`web.rs`, `web/`); `nsh test --target web`'s headless browser (`cdp.rs`, `test_web.rs`);
                        what it prints (`ui.rs`:
                        one line per step, tools' output only on failure, `-v` for everything; docs/dev/tooling.md "Output")
-  xtask/               Maintainer tasks: `cargo xtask android` (Android runtime), `ios-embed` (the iOS SDK), `dist` (the distribution),
+  xtask/               Maintainer tasks: `cargo xtask android` (Android runtime), `android-embed` (the Android SDK), `ios-embed` (the iOS SDK), `dist` (the distribution),
                        `web` (the WebAssembly runtime and the website's demos), `emoji-data` (`EmojiPicker`'s emoji from a release of emojibase-data), `compat` (runs `nsh-compat` against this checkout;
                        `compat record <version>`: records a release there)
 tests/compat/         The apps whose scripts check the API apps use (`nsh-compat` builds and runs them): `cases/<domain>/` (one app per
@@ -155,8 +162,8 @@ examples/             Example apps (gallery: a demo index, one module per demo, 
                       inputs, a long list, stubbed requests, dark mode, a manual clock); gallery-rs: the same in Rust, the app's crate in `native/`,
                       TypeScript tests of its root (`*.test.tsx`, about a demo each); rust-exports: a TSX app using one of each export of its crate, the reference
                       for exporting components, modules and classes and registering native components, with Rust and TypeScript tests of the TSX entry; counter,
-                      with a test; tray: a tray app whose main window starts hidden (nsh.json `window.defaultVisible`),
-                      with a test; host-echo: an app calling its web page's host (`nsh`'s `host`, nsh.json `web.host`), the host
+                      with a test; tray: a tray app that starts with its window, hides it on close and shows it from the tray icon, with a test;
+                      host-echo: an app calling its web page's host (`nsh`'s `host`, nsh.json `web.host`), the host
                       module and their tests), embedding samples
                       (embed-ios, embed-android; embed-gpui: a GPUI Kit app, its own workspace; `run/` the root's
                       `cargo run -p example-embed-gpui`) and the app they run (embedded: uses a native component the samples

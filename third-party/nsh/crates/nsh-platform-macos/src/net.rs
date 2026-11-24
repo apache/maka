@@ -15,20 +15,22 @@ use std::{
     },
 };
 
-use nsh_engine::{FetchEvent, FetchEvents, FetchTask, HttpBody, HttpHead, HttpRequest, Network};
+use nsh_engine::{
+    FetchEvent, FetchEvents, FetchTask, HttpBody, HttpCache, HttpHead, HttpRequest, Network,
+};
 use objc2::{
     AnyThread, DefinedClass, define_class, msg_send,
     rc::Retained,
     runtime::{NSObject, ProtocolObject},
 };
 use objc2_foundation::{
-    NSData, NSError, NSHTTPURLResponse, NSInputStream, NSMutableURLRequest, NSObjectProtocol,
-    NSOutputStream, NSStream, NSString, NSURL, NSURLRequest, NSURLResponse, NSURLSession,
-    NSURLSessionConfiguration, NSURLSessionDataDelegate, NSURLSessionDataTask,
-    NSURLSessionDelegate, NSURLSessionResponseDisposition, NSURLSessionTask,
-    NSURLSessionTaskDelegate,
+    NSCachedURLResponse, NSData, NSError, NSHTTPURLResponse, NSInputStream, NSMutableURLRequest,
+    NSObjectProtocol, NSOutputStream, NSStream, NSString, NSURL, NSURLRequest,
+    NSURLRequestCachePolicy, NSURLResponse, NSURLSession, NSURLSessionConfiguration,
+    NSURLSessionDataDelegate, NSURLSessionDataTask, NSURLSessionDelegate,
+    NSURLSessionResponseDisposition, NSURLSessionTask, NSURLSessionTaskDelegate,
 };
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 /// The process-wide network stack.
 pub(crate) fn network() -> Arc<dyn Network> {
@@ -50,6 +52,26 @@ fn tasks() -> &'static Tasks {
     TASKS.get_or_init(Tasks::default)
 }
 
+/// Tasks whose response must not be stored (`cache: "no-store"`), by
+/// session and task identifier.
+fn no_store() -> &'static Mutex<FxHashSet<(bool, usize)>> {
+    static NO_STORE: OnceLock<Mutex<FxHashSet<(bool, usize)>>> = OnceLock::new();
+    NO_STORE.get_or_init(Mutex::default)
+}
+
+/// The `NSURLRequest` policy for a Fetch cache mode. `no-cache` reloads:
+/// `NSURLSession` does not implement revalidating every cached response.
+fn cache_policy(cache: HttpCache) -> NSURLRequestCachePolicy {
+    match cache {
+        HttpCache::Default => NSURLRequestCachePolicy::UseProtocolCachePolicy,
+        HttpCache::NoStore | HttpCache::Reload | HttpCache::NoCache => {
+            NSURLRequestCachePolicy::ReloadIgnoringLocalCacheData
+        }
+        HttpCache::ForceCache => NSURLRequestCachePolicy::ReturnCacheDataElseLoad,
+        HttpCache::OnlyIfCached => NSURLRequestCachePolicy::ReturnCacheDataDontLoad,
+    }
+}
+
 /// Reports `event` for the task (dropped when the task is not known: it
 /// was cancelled or already completed).
 fn report(follow: bool, task: &NSURLSessionTask, event: FetchEvent) {
@@ -61,6 +83,7 @@ fn report(follow: bool, task: &NSURLSessionTask, event: FetchEvent) {
     }
     if done {
         tasks.remove(&key);
+        no_store().lock().expect("no store").remove(&key);
     }
 }
 
@@ -149,6 +172,7 @@ impl Network for UrlSessionNetwork {
         };
         let ns = NSMutableURLRequest::requestWithURL(&url);
         ns.setHTTPMethod(&NSString::from_str(&request.method));
+        ns.setCachePolicy(cache_policy(request.cache));
         for (name, value) in &request.headers {
             ns.addValue_forHTTPHeaderField(&NSString::from_str(value), &NSString::from_str(name));
         }
@@ -175,6 +199,9 @@ impl Network for UrlSessionNetwork {
         let session = if follow { &self.follow } else { &self.manual };
         let task = session.dataTaskWithRequest(&ns);
         let key = (follow, task.taskIdentifier());
+        if request.cache == HttpCache::NoStore {
+            no_store().lock().expect("no store").insert(key);
+        }
         let events = Arc::new(Mutex::new(events));
         let reported = events.clone();
         // Registered before the task starts: the delegate may report at once.
@@ -364,6 +391,24 @@ define_class!(
                     completion.call((NSURLSessionResponseDisposition::Cancel,));
                 }
             }
+        }
+
+        #[unsafe(method(URLSession:dataTask:willCacheResponse:completionHandler:))]
+        fn will_cache_response(
+            &self,
+            _session: &NSURLSession,
+            task: &NSURLSessionDataTask,
+            proposed: &NSCachedURLResponse,
+            completion: &block2::DynBlock<dyn Fn(*mut NSCachedURLResponse)>,
+        ) {
+            let key = (self.ivars().follow, task.taskIdentifier());
+            let store = !no_store().lock().expect("no store").contains(&key);
+            let response = if store {
+                proposed as *const NSCachedURLResponse as *mut NSCachedURLResponse
+            } else {
+                std::ptr::null_mut()
+            };
+            completion.call((response,));
         }
 
         #[unsafe(method(URLSession:dataTask:didReceiveData:))]

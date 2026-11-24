@@ -1,4 +1,5 @@
 import { Clipboard, mount, platform, signal, Text, View } from "nsh";
+import { Window } from "nsh/desktop";
 import { Input } from "nsh/base";
 
 // A chat's shape: selectable messages above a composer (single-line or
@@ -66,4 +67,4 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => <Window id="main">{App}</Window>);

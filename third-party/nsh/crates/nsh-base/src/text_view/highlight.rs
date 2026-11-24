@@ -28,6 +28,7 @@ pub(super) use self::syntect_highlighter::built_in;
 /// No built-in highlighter without the feature: code blocks are plain.
 #[cfg(not(feature = "highlight"))]
 pub(super) fn built_in(_: &super::CodeBlock) -> Option<Vec<nsh_core::element::AnyElement>> {
+    crate::syntax::warn_no_highlight();
     None
 }
 

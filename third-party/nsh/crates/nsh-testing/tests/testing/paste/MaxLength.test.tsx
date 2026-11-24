@@ -31,9 +31,12 @@ for (const input of ["field", "area"]) {
 
 test("800 emoji typed into a maxLength of 1500 all go in", async () => {
   const app = await open("./MaxLength.tsx");
-  const emoji = "😀".repeat(800);
-  await app.type("id:long", emoji);
-  expect(app.value("id:long")).toBe(emoji);
+  // 750 emoji are the 1500 UTF-16 units where counting units stopped the
+  // typing. They are pasted: a simulator types a key at a time, too slowly
+  // for 800 within the test's time. The 50 typed after them must go in.
+  await app.paste("id:long", { text: "😀".repeat(750) });
+  await app.type("id:long", "😀".repeat(50));
+  expect(app.value("id:long")).toBe("😀".repeat(800));
   // 700 more characters fit, then nothing.
   await app.paste("id:long", { text: "😀".repeat(800) });
   expect(app.value("id:long")).toBe("😀".repeat(1500));

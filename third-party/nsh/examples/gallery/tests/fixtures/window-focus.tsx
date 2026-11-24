@@ -29,7 +29,8 @@ function Inspector() {
 
 function App() {
   return (
-    <View style={{ flex: 1, padding: 24, gap: 12, alignItems: "flex-end" }}>
+    <Window id="main">
+      <View style={{ flex: 1, padding: 24, gap: 12, alignItems: "flex-end" }}>
       <View role="button" onPress={() => inspectorOpen.set(true)}>
         <Text>Open inspector</Text>
       </View>
@@ -45,7 +46,8 @@ function App() {
       >
         <Inspector />
       </Window>
-    </View>
+      </View>
+    </Window>
   );
 }
 

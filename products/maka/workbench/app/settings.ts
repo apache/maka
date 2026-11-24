@@ -1518,6 +1518,7 @@ export function createModelSettings(
     modelDirty,
     modelProblem,
     removalAction,
+    claimInlineError: operations.claimInlineError,
     loadConnections,
     loadProviders,
     newConnection,

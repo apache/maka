@@ -20,11 +20,27 @@
 // The desktop window's notifications: a conversation in the list that stops
 // working, or starts waiting for the user, while the window is in the
 // background. Choosing one shows that conversation. Terminals have none.
-import { effect, host as shell, untracked } from 'nsh';
+import { cleanup, effect, type NotificationPermission, Notifications, untracked } from 'nsh';
+import { Window } from 'nsh/desktop';
 import type { BrowserSession } from './browsing';
 import { ownTitleBar } from './chrome';
 import { tr } from './locale';
 import { sessionStatusCaption } from './sessionStatus';
+
+let checking: Promise<NotificationPermission> | undefined;
+let requested = false;
+
+function resolvePermission(): Promise<NotificationPermission> {
+  return (checking ??= Notifications.permission()
+    .then((status) => {
+      if (status !== 'default' || requested) return status;
+      requested = true;
+      return Notifications.requestPermission();
+    })
+    .finally(() => {
+      checking = undefined;
+    }));
+}
 
 export function watchNotifications(props: {
   sessions(): BrowserSession[];
@@ -32,33 +48,61 @@ export function watchNotifications(props: {
   open(sessionId: string): void;
 }) {
   if (!ownTitleBar) return;
-  // Activity as last seen: a conversation's first appearance (a page loaded,
-  // a scope chosen) is not a change.
-  const seen = new Map<string, BrowserSession['activity']>();
-  effect(() => {
-    const sessions = props.sessions();
-    const background = !untracked(props.foreground);
-    for (const session of sessions) {
-      const before = seen.get(session.id);
-      seen.set(session.id, session.activity);
-      if (!background || before === undefined || before === session.activity) continue;
-      const body =
-        session.activity === 'waiting'
-          ? sessionStatusCaption.waiting
-          : before === 'working' && session.activity === 'idle'
-            ? tr('Turn finished')
-            : null;
-      if (body === null) continue;
-      void shell
-        .call('notification.show', {
-          tag: session.id,
-          title: session.title || tr('Untitled conversation'),
-          body,
-        })
-        .catch(() => undefined);
-    }
+  let seen = new Map<string, BrowserSession['activity']>();
+  let pending = new Map<string, BrowserSession>();
+  let delivering = false;
+  let disposed = false;
+  cleanup(() => {
+    disposed = true;
+    pending.clear();
   });
-  shell.on('notification.open', (data: { tag?: unknown }) => {
-    if (typeof data?.tag === 'string') props.open(data.tag);
+  cleanup(
+    Notifications.on('press', ({ id }) => {
+      Window.get('main')?.focus();
+      props.open(id);
+    }),
+  );
+
+  async function deliver() {
+    delivering = true;
+    try {
+      if ((await resolvePermission()) !== 'granted' || disposed || untracked(props.foreground))
+        return;
+      for (const { id, title, activity } of pending.values()) {
+        void Notifications.show({
+          id,
+          title: title || tr('Untitled conversation'),
+          body: activity === 'waiting' ? sessionStatusCaption.waiting : tr('Turn finished'),
+        }).catch((reason) => console.warn('Could not show notification:', reason));
+      }
+    } catch (reason) {
+      console.warn('Could not check notification permission:', reason);
+    } finally {
+      pending.clear();
+      delivering = false;
+    }
+  }
+
+  effect(() => {
+    if (props.foreground()) pending.clear();
+  });
+  effect(() => {
+    const background = !untracked(props.foreground);
+    const previous = seen;
+    const previousPending = pending;
+    seen = new Map();
+    pending = new Map();
+    for (const session of props.sessions()) {
+      const { id, activity } = session;
+      const before = previous.get(id);
+      seen.set(id, activity);
+      if (!background || before === undefined) continue;
+      const notify =
+        before === activity
+          ? previousPending.has(id)
+          : activity === 'waiting' || (before === 'working' && activity === 'idle');
+      if (notify) pending.set(id, session);
+    }
+    if (pending.size && !delivering) void deliver();
   });
 }

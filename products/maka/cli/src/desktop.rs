@@ -198,6 +198,36 @@ fn desktop_shell_path(launcher: &std::path::Path) -> PathBuf {
     launcher.with_file_name(SHELL)
 }
 
+/// The staged app owns the UI. Plain Cargo builds produce a sibling executable.
+#[cfg(target_os = "macos")]
+pub(super) fn exec_shell(
+    mode: &str,
+    options: &[(&str, Option<&std::ffi::OsStr>)],
+) -> Result<(), HostError> {
+    use std::os::unix::process::CommandExt;
+
+    let launcher = std::env::current_exe()?.canonicalize()?;
+    let bundled = desktop_shell_path(&launcher);
+    let shell = if bundled.try_exists()? {
+        bundled
+    } else {
+        launcher.with_file_name("maka-desktop-shell")
+    };
+    let mut command = std::process::Command::new(&shell);
+    command.arg(mode).env("MAKA_LAUNCHER", launcher);
+    for &(name, value) in options {
+        if let Some(value) = value {
+            // Keep leading dashes and non-UTF-8 path bytes in the option's value.
+            let mut argument = std::ffi::OsString::from(name);
+            argument.push("=");
+            argument.push(value);
+            command.arg(argument);
+        }
+    }
+    let error = command.exec();
+    Err(format!("{}: {error}", shell.display()).into())
+}
+
 /// Whether the Host with `epoch` still serves `root` and is not closing. A
 /// Host that does not answer within two seconds counts as running.
 async fn runs(root: &std::path::Path, epoch: uuid::Uuid) -> bool {

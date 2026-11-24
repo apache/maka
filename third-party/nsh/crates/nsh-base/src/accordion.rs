@@ -306,8 +306,8 @@ pub fn AccordionPanel(props: AccordionPanelProps, _cx: Scope<NoEvent>) -> impl I
             let s = s.overflow_hidden();
             match (open.get(), mounted.get()) {
                 (true, _) => s,
-                (false, true) => s.h(px(0.0)),
-                (false, false) => s.h(px(0.0)).invisible(),
+                (false, true) => s.h(px(0.0)).pointer_events(PointerEvents::None),
+                (false, false) => s.h(px(0.0)).invisible().pointer_events(PointerEvents::None),
             }
         })
         .child(match terminal {

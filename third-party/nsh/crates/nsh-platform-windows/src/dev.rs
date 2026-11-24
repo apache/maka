@@ -387,6 +387,7 @@ fn handle(ui: &Rc<RefCell<DevUi>>, event: DevEvent) {
             app_id,
             limits,
             window,
+            application,
         } => {
             hide_status(ui);
             let mut bundle = match format {
@@ -414,7 +415,9 @@ fn handle(ui: &Rc<RefCell<DevUi>>, event: DevEvent) {
             // nsh.json `window`: the engine sends its attributes to the
             // window with the first frame; its size, position and mode are
             // taken the first time a session loads.
-            bundle = bundle.with_main_window(window.as_deref());
+            bundle = bundle
+                .with_main_window(window.as_deref())
+                .with_application(application.as_deref());
             bundle = match bundle
                 .with_app_id(app_id.as_deref())
                 .with_capabilities_json(capabilities.as_deref())
@@ -555,7 +558,7 @@ fn app_came(ui: &RefCell<DevUi>, view: &AppView, app: &App) {
     }
     if app
         .main_window()
-        .is_none_or(nsh_core::desktop::MainWindowOptions::visible_at_launch)
+        .is_some_and(nsh_core::desktop::MainWindowOptions::visible_at_launch)
     {
         view.show();
     } else {

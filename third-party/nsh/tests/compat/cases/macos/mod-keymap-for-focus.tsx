@@ -2,7 +2,9 @@
 // `forFocus`, run as on macOS (`platform macos`). A tile that takes presses
 // (Return opens it) binds Space as its own keys while it has the focus: with
 // the focus on it, Space reaches that binding before the tile's press and
-// Return still presses it; with the focus gone, Space flips nothing.
+// Return still presses it; with the focus gone, Space flips nothing. The
+// binding is the app's (`scope: "app"`) so this case's hardware keyboard
+// drives it; a binding in a `<Window>` defaults to that window.
 import { keymap, Text, View, signal } from "nsh";
 
 function App() {
@@ -15,7 +17,7 @@ function App() {
       <View
         testID="tile"
         onPress={() => opens.set(opens() + 1)}
-        onFocus={() => (unbind = keymap.bind("space", () => flips.set(flips() + 1), { forFocus: true }))}
+        onFocus={() => (unbind = keymap.bind("space", () => flips.set(flips() + 1), { forFocus: true, scope: "app" }))}
         onBlur={() => unbind?.()}
         style={{ height: 40 }}
       >

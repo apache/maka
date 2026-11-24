@@ -323,7 +323,7 @@ const shell = shellInfo(); // { version, build, nshVersion, packages }：已安�
 | `it is com.example.other, the app is com.example.notes` | 这是其他应用的包 |
 | `the package needs runtime 0.5.0 or newer; this runtime is 0.4.0` | 为旧运行时发布，或发布新应用 |
 
-不会留下任何文件，应用继续运行原来的代码。
+被拒绝的包不会留下任何文件，应用继续运行原来的代码。下载中途中断则会按包保留分片文件，下次调用 `downloadPackage()` 时从断点继续。
 
 ### 下次启动时包没有运行
 

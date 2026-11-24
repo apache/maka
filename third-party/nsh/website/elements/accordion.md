@@ -66,6 +66,7 @@ fn faq() -> impl IntoElement {
 ```tsx tabs
 import { mount, signal, Text, View } from "nsh";
 import { Accordion, AccordionHeader, AccordionItem, AccordionPanel, AccordionTrigger } from "nsh/base";
+import { Window } from "nsh/desktop";
 
 const FAQ = [
   { value: "shipping", question: "When will my order ship?", answer: "Orders placed before 2 pm leave the same day." },
@@ -95,7 +96,11 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 The parts come from [`nsh/base`](../modules/nsh-base.md), the `nsh-base` crate in Rust. The value is the app's: a

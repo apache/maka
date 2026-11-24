@@ -141,6 +141,8 @@ pub(crate) enum ColorSlot {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum PropDecl {
     NoWrap(bool),
+    /// `text-pretty`: wraps, without a lone last word.
+    Pretty,
     Caret(Color),
     /// `space-x-*` (`false`) / `space-y-*` (`true`).
     Space(bool, PropertyValue),
@@ -224,7 +226,14 @@ impl Decl {
             }
             Decl::Part(part) => parts.push(part.clone()),
             Decl::Prop(p) => match p {
-                PropDecl::NoWrap(b) => props.no_wrap = Some(*b),
+                PropDecl::NoWrap(b) => {
+                    props.no_wrap = Some(*b);
+                    props.pretty = false;
+                }
+                PropDecl::Pretty => {
+                    props.no_wrap = Some(false);
+                    props.pretty = true;
+                }
                 PropDecl::Caret(c) => props.caret_color = Some(*c),
                 PropDecl::Space(y, v) => {
                     let space = props.space.get_or_insert_default();
@@ -1696,9 +1705,8 @@ fn keyword(u: &str) -> Option<Vec<Decl>> {
             ]);
         }
         "whitespace-nowrap" | "text-nowrap" => Decl::Prop(PropDecl::NoWrap(true)),
-        "whitespace-normal" | "text-wrap" | "text-balance" | "text-pretty" => {
-            Decl::Prop(PropDecl::NoWrap(false))
-        }
+        "text-pretty" => Decl::Prop(PropDecl::Pretty),
+        "whitespace-normal" | "text-wrap" | "text-balance" => Decl::Prop(PropDecl::NoWrap(false)),
         "line-clamp-none" => clamp(0),
         // `font-variant-numeric: normal`: the number forms only.
         "normal-nums" => Decl::Part(Part::FontVariant {

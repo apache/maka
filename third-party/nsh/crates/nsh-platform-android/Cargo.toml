@@ -62,8 +62,11 @@ svg = ["nsh-core/svg"]
 log.workspace = true
 
 [target.'cfg(target_os = "android")'.dependencies]
-tokio.workspace = true
+# `sync`: the answers of `permissions::request`.
+tokio = { workspace = true, features = ["sync"] }
 jni.workspace = true
+# The VM and application for Rust crates (`context.rs`).
+ndk-context.workspace = true
 # The WebSocket client's system trust store (feature `websocket`), which
 # needs the app's Context over JNI; the verifier speaks jni 0.22.
 rustls-platform-verifier = { workspace = true, optional = true }

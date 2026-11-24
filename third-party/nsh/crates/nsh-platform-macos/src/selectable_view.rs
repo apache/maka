@@ -360,6 +360,26 @@ fn send(surface: &Surface, (id, selected): (NodeId, Selected)) {
 }
 
 impl AreaSelection {
+    /// `ref.clearSelection()` on `view` (`Command::ClearSelection`): clears
+    /// the selection when its selectable view is `view`, inside it or
+    /// around it.
+    pub(crate) fn clear_in(&self, surface: &Surface, view: &NshView) {
+        let within = |inner: &NshView, outer: &NshView| {
+            let mut current = Some(inner.clone());
+            while let Some(v) = current {
+                if &v == outer {
+                    return true;
+                }
+                current = v.parent_view();
+            }
+            false
+        };
+        let area = self.active.borrow().as_ref().and_then(Active::area);
+        if area.is_some_and(|a| within(&a, view) || within(view, &a)) {
+            self.clear(surface);
+        }
+    }
+
     /// Whether `area` has the selection.
     pub(crate) fn is(&self, area: &NshView) -> bool {
         self.active

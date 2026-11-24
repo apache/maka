@@ -35,6 +35,9 @@
 //! the spinner, the sticky cells' views, picking which view a key or a
 //! focused field scrolls, and the frame clock.
 
+#[doc(hidden)]
+pub mod wheel_glide;
+
 use std::f32::consts::PI;
 
 use crate::{
@@ -121,6 +124,18 @@ impl std::ops::Add for Offset {
     }
 }
 
+impl From<Offset> for Point<Points> {
+    fn from(o: Offset) -> Self {
+        point(Points(o.x), Points(o.y))
+    }
+}
+
+impl From<Point<Points>> for Offset {
+    fn from(p: Point<Points>) -> Self {
+        Offset::new(p.x.0, p.y.0)
+    }
+}
+
 /// What a scroll view is doing.
 #[derive(Debug, Default, Clone, Copy, PartialEq)]
 enum Phase {
@@ -135,10 +150,14 @@ enum Phase {
     Thumb { start: f32 },
     /// Wheel or touchpad input: the last at `last` (ms), `total` points
     /// so far; `gesture` for touchpads (begin / end), not mouse wheels.
+    /// A `smoothWheel` view's notches glide (`glide`, [`wheel_glide`]) to
+    /// `raw`, where they point; otherwise `raw` is where the view is.
     Wheel {
         last: f64,
         total: f32,
         gesture: bool,
+        raw: Offset,
+        glide: wheel_glide::Glide,
     },
     /// Momentum after a fling: `velocity` points per ms at `last` (ms).
     Glide { velocity: Offset, last: f64 },
@@ -487,6 +506,19 @@ fn shifted(phase: Phase, d: Offset, horizontal: bool) -> Phase {
             duration,
             momentum,
             end,
+        },
+        Phase::Wheel {
+            last,
+            total,
+            gesture,
+            raw,
+            glide,
+        } => Phase::Wheel {
+            last,
+            total,
+            gesture,
+            raw: raw + d,
+            glide: glide.shifted(d.into()),
         },
         other => other,
     }
@@ -1256,8 +1288,9 @@ pub fn deadline(host: &impl ScrollHost, now: f64) -> Option<f64> {
         Phase::Wheel {
             last,
             gesture: false,
+            glide,
             ..
-        } => last + WHEEL_IDLE,
+        } => (last + WHEEL_IDLE).max(glide.end()),
         _ => return None,
     };
     // A millisecond past it: a frame there finds it ended whatever the
@@ -1363,12 +1396,29 @@ fn tick(host: &impl ScrollHost, now: f64) -> Left {
             }
         }
         Phase::Wheel {
+            gesture: false,
+            raw,
+            glide,
+            ..
+        } if now < glide.end() => {
+            moved_to(host, glide.value(raw.into(), now).into());
+        }
+        Phase::Wheel {
             last,
             total,
             gesture: false,
+            raw,
+            glide,
         } if now - last > WHEEL_IDLE => {
-            // A mouse wheel came to rest: snapping views move on to the
-            // next snap point in the wheel's direction.
+            // A mouse wheel came to rest (a glide where it was going):
+            // snapping views move on to the next snap point in the wheel's
+            // direction.
+            let settled = if glide != wheel_glide::Glide::default() {
+                moved_to(host, raw);
+                raw
+            } else {
+                pos
+            };
             set_phase(host, Phase::Idle);
             let snaps = host
                 .scroll(|s, _| s.behavior.snaps() || s.behavior.paging)
@@ -1381,7 +1431,7 @@ fn tick(host: &impl ScrollHost, now: f64) -> Left {
                 };
                 release(host, Offset::default(), v);
             } else {
-                moved_to(host, pos.clamp((min, max)));
+                moved_to(host, settled.clamp((min, max)));
                 emit(host, EventKind::ScrollEnd);
             }
         }
@@ -2010,6 +2060,8 @@ pub fn wheel_begin(host: &impl ScrollHost) {
             last: host.now(),
             total: 0.0,
             gesture: true,
+            raw: Offset::default(),
+            glide: wheel_glide::Glide::default(),
         },
     );
     emit(host, EventKind::ScrollDragStart);
@@ -2018,18 +2070,73 @@ pub fn wheel_begin(host: &impl ScrollHost) {
 /// Scrolls the view by `delta` (positive toward the end). Without
 /// [`wheel_begin`] it is a mouse wheel, which settles when idle.
 pub fn wheel(host: &impl ScrollHost, delta: Point<Points>) {
+    wheel_by(host, delta, false);
+}
+
+/// A mouse wheel's notch of `delta` on a view that [`smooth_wheel`]s: it
+/// glides there as Chromium's does ([`wheel_glide`]), and a notch during
+/// the glide moves where it goes on from where the last one pointed, at the
+/// speed it has, so a run of notches is one motion. It settles as
+/// [`wheel`] does.
+#[doc(hidden)]
+pub fn wheel_smooth(host: &impl ScrollHost, delta: Point<Points>) {
+    wheel_by(host, delta, true);
+}
+
+/// Whether a mouse wheel's notches glide on the view (`smoothWheel`): not
+/// where they step through snap points or pages, or zoom.
+#[doc(hidden)]
+pub fn smooth_wheel(host: &impl ScrollHost) -> bool {
+    host.scroll(|s, _| {
+        s.behavior.smooth_wheel && !s.zooms() && !s.behavior.snaps() && !s.behavior.paging
+    })
+    .unwrap_or(false)
+}
+
+/// A notch's `delta` (points the platform gave it, `line` points a line
+/// along each axis) in the view's own lines (`wheelLineHeight`), when it
+/// sets them.
+#[doc(hidden)]
+pub fn wheel_line(
+    host: &impl ScrollHost,
+    delta: Point<Points>,
+    line: Point<Points>,
+) -> Point<Points> {
+    let height = host
+        .scroll(|s, _| s.behavior.wheel_line_height)
+        .unwrap_or(Points::ZERO)
+        .0;
+    let axis = |d: Points, line: Points| {
+        if height > 0.0 && line.0 > 0.0 {
+            Points(d.0 * height / line.0)
+        } else {
+            d
+        }
+    };
+    point(axis(delta.x, line.x), axis(delta.y, line.y))
+}
+
+fn wheel_by(host: &impl ScrollHost, delta: Point<Points>, smooth: bool) {
     let (dx, dy) = (delta.x.0, delta.y.0);
     if !enabled(host) {
         return;
     }
-    let (gesture, total) = match phase(host) {
-        Phase::Wheel { gesture, total, .. } => (gesture, total),
+    let (gesture, total, last) = match phase(host) {
+        Phase::Wheel {
+            gesture,
+            total,
+            raw,
+            glide,
+            ..
+        } => (gesture, total, (!gesture).then_some((raw, glide))),
         _ => {
             interrupt(host);
-            (false, 0.0)
+            (false, 0.0, None)
         }
     };
-    let Some((pos, total)) = host.scroll(|s, size| {
+    let smooth = smooth && !gesture;
+    let now = host.now();
+    let Some((pos, to, total)) = host.scroll(|s, size| {
         let (min, max) = s.range(size);
         let d = if s.zooms() {
             Offset::new(dx, dy)
@@ -2042,31 +2149,63 @@ pub fn wheel(host: &impl ScrollHost, delta: Point<Points>) {
             Offset::new(dy, 0.0)
         };
         let pos = s.pos();
+        // A smooth wheel's notches add up from where the last one pointed,
+        // not from where its glide has got to.
+        let from = match last {
+            Some((raw, _)) if smooth => raw,
+            _ => pos,
+        };
         // Past an edge (the refresh space) wheels only move back.
         let one =
             |p: f32, d: f32, min: f32, max: f32| (p + d).clamp(min.min(p), max.max(min).max(p));
         (
-            Offset::new(one(pos.x, d.x, min.x, max.x), one(pos.y, d.y, min.y, max.y)),
+            pos,
+            Offset::new(
+                one(from.x, d.x, min.x, max.x),
+                one(from.y, d.y, min.y, max.y),
+            ),
             total + d.along(s.horizontal),
         )
     }) else {
         return;
     };
+    let glide = match last {
+        _ if !smooth => wheel_glide::Glide::default(),
+        Some((raw, g)) if now < g.end() => g.retargeted(raw.into(), to.into(), now),
+        _ => wheel_glide::Glide::new(pos.into(), to.into(), now),
+    };
     set_phase(
         host,
         Phase::Wheel {
-            last: host.now(),
+            last: now,
             total,
             gesture,
+            raw: to,
+            glide,
         },
     );
-    moved_to(host, pos);
+    if !smooth {
+        moved_to(host, to);
+    }
     ensure_ticking(host);
 }
 
 /// The wheel scroll ended at a velocity of `(vx, vy)` points per second
 /// (0 for wheels without momentum).
 pub fn wheel_end(host: &impl ScrollHost, vx: f32, vy: f32) {
+    end_wheel(host, vx, vy, true);
+}
+
+/// The wheel scroll came to rest where it is, its momentum spent (Windows'
+/// precision touchpads, whose system glide comes as more deltas before
+/// the scroll ends): a snapping view settles on its nearest snap point,
+/// as browsers' scroll snapping does, rather than moving on in the
+/// scroll's direction as a mouse wheel's notches do.
+pub fn wheel_settle(host: &impl ScrollHost) {
+    end_wheel(host, 0.0, 0.0, false);
+}
+
+fn end_wheel(host: &impl ScrollHost, vx: f32, vy: f32, onward: bool) {
     let Phase::Wheel { gesture, total, .. } = phase(host) else {
         return;
     };
@@ -2088,12 +2227,65 @@ pub fn wheel_end(host: &impl ScrollHost, vx: f32, vy: f32) {
     if gesture {
         emit(host, EventKind::ScrollDragEnd);
     }
-    let snap = if v == Offset::default() && total.abs() >= 1.0 {
+    let snap = if onward && v == Offset::default() && total.abs() >= 1.0 {
         total.signum() * WHEEL_SNAP
     } else {
         0.0
     };
     release(host, v, snap);
+}
+
+/// Duration of a mouse wheel notch's animated scroll (ms), as browsers and
+/// Windows' own lists glide a notch; notches that follow retarget it.
+const WHEEL_STEP_ANIMATION: f64 = 150.0;
+
+/// Scrolls the view by one notch of a mouse wheel, `delta` (positive
+/// toward the end), animated: a notch while one runs adds to where it is
+/// headed, so a spun wheel scrolls on smoothly. Views that snap, page or
+/// zoom take it as [`wheel`] does (they settle on a snap point when the
+/// notches stop), as does a view pulled past an edge.
+pub fn wheel_step(host: &impl ScrollHost, delta: Point<Points>) {
+    if !enabled(host) {
+        return;
+    }
+    let Some(target) = host.scroll(|s, size| {
+        if s.zooms() || s.behavior.snaps() || s.behavior.paging {
+            return None;
+        }
+        let (min, max) = s.limits(size);
+        let max = max.max(min);
+        let (dx, dy) = (delta.x.0, delta.y.0);
+        let d = if !s.horizontal {
+            dy
+        } else if dx != 0.0 {
+            if s.mirrored { -dx } else { dx }
+        } else {
+            // Vertical wheels scroll horizontal views too.
+            dy
+        };
+        let pos = s.offset();
+        if pos < min - 0.5 || pos > max + 0.5 {
+            return None;
+        }
+        Some((s.goal() + d).clamp(min, max))
+    }) else {
+        return;
+    };
+    let Some(to) = target else {
+        wheel(host, delta);
+        return;
+    };
+    if matches!(phase(host), Phase::Wheel { gesture: true, .. }) {
+        // A touchpad's scroll is going on: it keeps the view.
+        return;
+    }
+    let goal = host.scroll(|s, _| s.goal()).unwrap_or(to);
+    if (to - goal).abs() < 0.5 {
+        // Headed there already (at an edge): nothing changes.
+        return;
+    }
+    interrupt(host);
+    animate_along(host, to, WHEEL_STEP_ANIMATION, false, true);
 }
 
 // The keyboard.
@@ -3206,6 +3398,131 @@ mod tests {
         key_scroll(&host, KeyMove::Points(KEY_LINE), true);
         assert_eq!(host.state.borrow().goal(), 1000.0 - KEY_LINE.0);
         assert_eq!(*host.key_moves.borrow(), [KeyMove::Points(KEY_LINE)]);
+    }
+
+    #[test]
+    fn wheel_notches_glide_and_add_up_where_the_scroll_is_headed() {
+        let host = TestHost::new(scroll_state((300.0, 10_000.0), false));
+        let notch = |dy: f32| wheel_step(&host, pt(0.0, dy));
+        notch(48.0);
+        // It eases there instead of jumping.
+        assert_eq!(host.state.borrow().y.0, 0.0);
+        assert_eq!(host.state.borrow().goal(), 48.0);
+        // A notch during the glide adds to its goal.
+        notch(48.0);
+        assert_eq!(host.state.borrow().goal(), 96.0);
+        frame(&host, WHEEL_STEP_ANIMATION);
+        assert_eq!(host.state.borrow().y.0, 96.0);
+        assert!(matches!(host.state.borrow().live.phase, Phase::Idle));
+        // The goal stays within the content.
+        notch(-1000.0);
+        assert_eq!(host.state.borrow().goal(), 0.0);
+        frame(&host, WHEEL_STEP_ANIMATION);
+        notch(-48.0);
+        assert!(matches!(host.state.borrow().live.phase, Phase::Idle));
+
+        // A snapping view settles on its snap points as with an unanimated
+        // wheel: the notch moves it at once.
+        let mut paging = scroll_state((300.0, 10_000.0), false);
+        paging.behavior.paging = true;
+        let host = TestHost::new(paging);
+        wheel_step(&host, pt(0.0, 48.0));
+        assert_eq!(host.state.borrow().y.0, 48.0);
+        assert!(matches!(
+            host.state.borrow().live.phase,
+            Phase::Wheel { gesture: false, .. }
+        ));
+    }
+
+    #[test]
+    fn smooth_wheel_notches_glide_on_chromiums_curve() {
+        let mut smooth = scroll_state((300.0, 10_000.0), false);
+        smooth.behavior.smooth_wheel = true;
+        let host = TestHost::new(smooth);
+        assert!(smooth_wheel(&host));
+        wheel_smooth(&host, pt(0.0, 40.0));
+        // It eases there instead of jumping.
+        assert_eq!(host.state.borrow().y.0, 0.0);
+        frame(&host, 60.0);
+        let y = host.state.borrow().y.0;
+        assert!(y > 0.0 && y < 40.0, "{y}");
+        // A notch during the glide goes on from where the last pointed.
+        wheel_smooth(&host, pt(0.0, 40.0));
+        assert!(matches!(
+            host.state.borrow().live.phase,
+            Phase::Wheel { gesture: false, raw, .. } if raw.y == 80.0
+        ));
+        // It arrives, then rests there once the notches stop.
+        let mut now = 60.0;
+        while let Some(next) = deadline(&host, now) {
+            now = next;
+            frame(&host, now);
+        }
+        assert_eq!(host.state.borrow().y.0, 80.0);
+        assert!(matches!(host.state.borrow().live.phase, Phase::Idle));
+
+        // Without it, or where notches step through snap points, they do
+        // not glide.
+        let host = TestHost::new(scroll_state((300.0, 10_000.0), false));
+        assert!(!smooth_wheel(&host));
+        let mut paging = scroll_state((300.0, 10_000.0), false);
+        paging.behavior.smooth_wheel = true;
+        paging.behavior.paging = true;
+        assert!(!smooth_wheel(&TestHost::new(paging)));
+    }
+
+    #[test]
+    fn wheel_line_height_rescales_a_notch() {
+        let mut lines = scroll_state((300.0, 10_000.0), false);
+        let host = TestHost::new(lines.clone());
+        // The platform's own line by default.
+        assert_eq!(
+            wheel_line(&host, pt(0.0, 30.0), pt(10.0, 10.0)),
+            pt(0.0, 30.0)
+        );
+        lines.behavior.wheel_line_height = Points(40.0);
+        let host = TestHost::new(lines);
+        // Three lines of 10 points become three of 40.
+        assert_eq!(
+            wheel_line(&host, pt(0.0, 30.0), pt(10.0, 10.0)),
+            pt(0.0, 120.0)
+        );
+        // Each axis by its own line (Linux's grow with the view).
+        assert_eq!(
+            wheel_line(&host, pt(25.0, 30.0), pt(25.0, 15.0)),
+            pt(40.0, 80.0)
+        );
+    }
+
+    #[test]
+    fn a_settled_touchpad_scroll_snaps_to_the_nearest_page() {
+        // Pages of 500 pt; the view rests on the second.
+        let paged = || {
+            let mut s = scroll_state((300.0, 5000.0), false);
+            s.behavior.paging = true;
+            s.y = Points(500.0);
+            let host = TestHost::new(s);
+            wheel_begin(&host);
+            // A little back toward the first.
+            wheel(&host, pt(0.0, -60.0));
+            host
+        };
+        let settle = |host: &TestHost| {
+            let mut now = 0.0;
+            while let Some(next) = deadline(host, now) {
+                now = next;
+                frame(host, now);
+            }
+            host.state.borrow().y.0
+        };
+        // At rest, its momentum spent: back to the page it is mostly on.
+        let host = paged();
+        wheel_settle(&host);
+        assert_eq!(settle(&host), 500.0);
+        // A gesture ended without a velocity moves on in its direction.
+        let host = paged();
+        wheel_end(&host, 0.0, 0.0);
+        assert_eq!(settle(&host), 0.0);
     }
 
     #[test]

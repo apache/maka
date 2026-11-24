@@ -69,14 +69,14 @@ impl Service {
         };
         let name = label(deployment, role);
         let args = arguments(deployment, role)?;
-        let executable = if role == Role::Updater {
-            let windowless = super::super::package::windowless(&deployment.executable)?;
-            xml(windowless
-                .to_str()
-                .ok_or("service executable must be UTF-8")?)
-        } else {
-            xml(args[0])
-        };
+        let windowless = super::super::package::windowless(&deployment.executable)?;
+        let windowless = windowless
+            .to_str()
+            .ok_or("service executable must be UTF-8")?;
+        if windowless.chars().any(char::is_control) {
+            return Err("service paths cannot contain control characters".into());
+        }
+        let executable = xml(windowless);
         let args = xml(&args[1..]
             .iter()
             .map(|arg| quote(arg))

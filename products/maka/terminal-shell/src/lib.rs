@@ -20,5 +20,6 @@
 //! Maka's terminal shell: runs the workbench (`maka-workbench`) in the
 //! terminal through NSH, against one launcher-selected public Host.
 
+pub mod args;
 pub mod entry;
 pub mod terminal;

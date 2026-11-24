@@ -38,7 +38,7 @@ import {
 } from 'nsh';
 import { Button, Dialog, TextView } from 'nsh/base';
 import { CompactComposer } from './CompactComposer';
-import { Window, isAvailable as desktopAvailable } from 'nsh/desktop';
+import { currentWindow, isAvailable as desktopAvailable } from 'nsh/desktop';
 import { ComputerStageView } from './ComputerStageView';
 import { createComputerStage, type ComputerSnapshot } from './computerStageController';
 import type { ComputerFrameSource } from './computerFrames';
@@ -78,9 +78,11 @@ import {
   type ComposerSession,
   type ComposerCompletionSource,
   type ComposerFocusHandle,
+  type ComposerShelfStatus,
   type ComposerViewInput,
 } from '../../../../packages/plugin-sdk/src/workbench-views.js';
-import { delayed } from '../../../../products/maka/workbench/app/delayed';
+import { InlineCallout } from '../../../../products/maka/workbench/app/Feedback';
+import { toast } from '../../../../products/maka/workbench/app/toastStore';
 import {
   createText,
   createTransientText,
@@ -158,6 +160,7 @@ import {
   type WorkspaceBrowserProps,
 } from '../../../../products/maka/workbench/app/WorkspaceBrowser';
 import { createBotWorkers } from '../../../../products/maka/workbench/app/botWorkers';
+import { appUpdater } from '../../../../products/maka/workbench/app/appUpdater';
 import {
   applicationMenu,
   ownTitleBar,
@@ -259,6 +262,8 @@ export type ConversationWindow = {
 
 // A pane opened beside the main one shares its catalog read and leaves the
 // window title, notifications, menu and app-wide shortcuts to the main pane.
+let nextConversationToastOwner = 1;
+
 export function createConversationUi(
   context: UiContext<UiHost, JSX.Element>,
   host: Host,
@@ -314,7 +319,6 @@ export function createConversationUi(
   const switching = signal(false);
   const busy = signal(false);
   const creatingFork = signal(false);
-  const working = delayed(() => switching() || creatingFork());
   const controls = signal<any[]>([]);
   const controlsKnown = signal(false);
   const recovering = signal(false);
@@ -645,11 +649,14 @@ export function createConversationUi(
     const current = () =>
       alive && selected() === source.sessionId && (overlay()?.instance ?? null) === source.instance;
     if (!current() || switching() || reloading()) return false;
-    if (forkNotice() && forkNotice()!.id !== id) forkNotice.set(null);
+    const priorFork = forkNotice();
     const owner = handle();
     const sourceOverlay = overlay();
     if (selected() === id) {
       if (owner?.sessionId !== id) return false;
+      if (priorFork && priorFork.id !== id && forkNotice()?.id === priorFork.id) {
+        forkNotice.set(null);
+      }
       if (anchor) await owner.reveal(anchor, current);
       return true;
     }
@@ -669,6 +676,9 @@ export function createConversationUi(
         : null;
       const committed = await shell()!.openSession(id);
       if (!committed) return false;
+      if (priorFork && priorFork.id !== id && forkNotice()?.id === priorFork.id) {
+        forkNotice.set(null);
+      }
       if (source.sessionId === null && pendingWorkspace())
         pendingDraftGeneration.set(pendingDraftGeneration() + 1);
       if (overlay() === sourceOverlay) overlay.set(null);
@@ -2037,6 +2047,15 @@ export function createConversationUi(
       nextSession: () => stepSession(1),
       previousSession: () => stepSession(-1),
       settings: () => invokeOwn('settings'),
+      openUpdates: () => {
+        overlay.set(null);
+        shell()?.openSettings(undefined, 'general');
+      },
+      checkForUpdates: () => {
+        overlay.set(null);
+        shell()?.openSettings(undefined, 'general');
+        void appUpdater.check();
+      },
       sidebarShown,
       toggleSidebar: () => toggleSidebar({ sessionId: selected(), expanded: sidebarShown() }),
       textSize: changeTextSize,
@@ -2079,14 +2098,15 @@ export function createConversationUi(
   const selectBrowsed = async (id: string, origin: string | null) => {
     const current = overlay();
     const instance = current?.kind === 'sessions' ? current.instance : null;
-    await switchSession(id, {
+    const opened = await switchSession(id, {
       sessionId: origin,
       instance: current?.instance ?? null,
     });
-    if (!alive || selected() !== id) return;
+    if (!opened || !alive || selected() !== id) return false;
     if (instance !== null) closeOverlay(instance);
     browserFocus.set(false);
     handle()?.focus();
+    return true;
   };
   const openRecalled = async (instance: number, origin: string | null, target: RecallTarget) => {
     if (!alive || overlay()?.instance !== instance || selected() !== origin) return false;
@@ -2116,7 +2136,9 @@ export function createConversationUi(
     },
     close: closeSidebar,
     collapse: (sessionId) => toggleSidebar({ sessionId, expanded: true }),
-    selectSession: selectBrowsed,
+    selectSession: async (id, origin) => {
+      await selectBrowsed(id, origin);
+    },
     changeSession: async (action, origin) => {
       await changeBrowsedSession(action, origin);
     },
@@ -2363,8 +2385,9 @@ export function createConversationUi(
         service.subscribe('watchStage', { sessionId }) as Promise<UiSubscription<ComputerSnapshot>>,
     };
   });
+  const mainWindow = platform.desktop && platform.idiom !== 'terminal' ? currentWindow() : null;
   const computerVisible = computed(() => {
-    const state = Window.get('main')?.state();
+    const state = mainWindow?.state();
     const surface = shell();
     return (
       platform.desktop &&
@@ -2461,77 +2484,185 @@ export function createConversationUi(
         prefills.set(input.shell.sessionId()!, { text: input.firstMessage, send: true });
       bind(input.shell);
       input.attach(sessionHandle);
+      // Route transient action feedback, fork banner, and recovered-fork CTA to Mode A Toasts.
+      // Scope IDs per mounted pane so closing a split pane never dismisses the main pane's toast.
+      const toastOwner = nextConversationToastOwner++;
+      const statusToastId = `conversation.${toastOwner}.status`;
+      const forkToastId = `conversation.${toastOwner}.fork-notice`;
+      const recoveredToastId = `conversation.${toastOwner}.recovered-fork`;
+
+      let lastStatus = '';
+      effect(() => {
+        const message = !connectionLost() ? status() : '';
+        if (!message) {
+          lastStatus = '';
+          return;
+        }
+        if (message === lastStatus) return;
+        lastStatus = message;
+        toast.show({ id: statusToastId, tone: 'info', message });
+      });
+
+      let shownForkId: string | null = null;
+      effect(() => {
+        const currentFork = forkNotice();
+        const currentId = selected();
+        if (!currentFork || currentFork.id !== currentId || connectionLost()) {
+          if (shownForkId !== null) {
+            shownForkId = null;
+            toast.dismiss(forkToastId);
+          }
+          return;
+        }
+        if (shownForkId === currentFork.id) return;
+        shownForkId = currentFork.id;
+        toast.show({
+          id: forkToastId,
+          tone: 'info',
+          message: tr('This is a fork of {title}. The original conversation is unchanged.', {
+            title: currentFork.title,
+          }),
+          actions: [
+            {
+              label: tr('Back to original'),
+              primary: true,
+              dismissOnPress: false,
+              onPress: () => {
+                void openBrowsed({ id: currentFork.source, origin: selected() }).then((opened) => {
+                  if (opened && alive && forkNotice()?.id === currentFork.id) {
+                    forkNotice.set(null);
+                  }
+                });
+              },
+            },
+          ],
+        });
+      });
+
+      let shownRecoveredId: string | null = null;
+      effect(() => {
+        const recovered = recoveredFork();
+        if (!recovered) {
+          if (shownRecoveredId !== null) {
+            shownRecoveredId = null;
+            toast.dismiss(recoveredToastId);
+          }
+          return;
+        }
+        if (shownRecoveredId === recovered.id) return;
+        shownRecoveredId = recovered.id;
+        toast.show({
+          id: recoveredToastId,
+          tone: 'info',
+          persistent: true,
+          dismissible: true,
+          message: `${tr('Open recovered fork')} · ${recovered.title}`,
+          actions: [
+            {
+              label: tr('Open'),
+              primary: true,
+              dismissOnPress: false,
+              onPress: () => {
+                void openBrowsed({ id: recovered.id, origin: selected() }).then((opened) => {
+                  if (opened && alive && recoveredFork()?.id === recovered.id) {
+                    recoveredFork.set(null);
+                  }
+                });
+              },
+            },
+          ],
+        });
+      });
+
+      cleanup(() => {
+        if (lastStatus) toast.dismiss(statusToastId);
+        if (shownForkId !== null) toast.dismiss(forkToastId);
+        if (shownRecoveredId !== null) toast.dismiss(recoveredToastId);
+      });
+
+      const shelfStatus = (): ComposerShelfStatus | null => {
+        if (connectionLost()) return null;
+        const current = handle();
+        const retryMeta = current?.attachmentMetadataFailed()
+          ? {
+              label: tr('Retry attachment metadata'),
+              onPress: () => current.retryAttachmentMetadata(),
+            }
+          : undefined;
+        if ((current?.connected() ?? true) && error()) {
+          return {
+            tone: 'danger',
+            message: error(),
+            action: retryMeta,
+            onDismiss: () => error.set(''),
+          };
+        }
+        if (!current) return null;
+        if (current.reconnecting()) {
+          return {
+            tone: 'warning',
+            message: tr('Reconnecting updates… Your draft is kept.'),
+            action: {
+              label: tr('Retry'),
+              primary: true,
+              onPress: () => current.reconnect(),
+            },
+            secondaryAction: retryMeta,
+          };
+        }
+        const waitMessage = current.executionWaitMessage();
+        if (waitMessage) {
+          return {
+            tone: 'info',
+            message: waitMessage,
+            action: retryMeta,
+          };
+        }
+        if (retryMeta) {
+          return {
+            tone: 'warning',
+            message: tr('Could not load attachments.'),
+            action: { ...retryMeta, primary: true },
+          };
+        }
+        return null;
+      };
+
       const request = (
         <View style={{ minHeight: 0, flexShrink: 1 }}>
           <If when={handle()?.workspaceUnavailable()}>
-            <View
-              style={{
-                flexDirection: 'row',
-                flexWrap: 'wrap',
-                alignItems: 'center',
-                gap: 8,
-                paddingHorizontal: 16,
-                paddingVertical: 8,
-              }}
-            >
-              <Text style={{ ...bodyTextStyle, color: C.secondary }}>
-                {tr('The workspace for this task is unavailable.')}
-              </Text>
-              <Button
-                accessibilityLabel={tr('Choose workspace')}
-                onPress={() => {
+            <InlineCallout
+              tone="warning"
+              message={tr('The workspace for this task is unavailable.')}
+              action={{
+                label: tr('Choose workspace'),
+                primary: true,
+                onPress: () => {
                   const owner = handle();
                   if (owner) void chooseSessionWorkspace(owner);
-                }}
-                style={controlStyle}
-                hoverStyle={controlHoverStyle()}
-                focusStyle={controlFocusStyle()}
-              >
-                <Text style={{ color: C.accent }}>{tr('Choose workspace')}</Text>
-              </Button>
-            </View>
-          </If>
-          <If when={selected() === null && workspaceError()}>
-            <View
-              style={{
-                marginBottom: 8,
-                flexDirection: 'row',
-                flexWrap: 'wrap',
-                alignItems: 'center',
-                justifyContent: 'center',
-                columnGap: 12,
-                rowGap: 4,
+                },
               }}
-            >
-              <Text
-                tooltip={textTooltip(workspaceError)}
-                style={{ ...bodyTextStyle, color: C.secondary }}
-              >
-                {tr('Folder unavailable')}
-              </Text>
-              <View style={{ flexDirection: 'row', gap: 8 }}>
-                <Button
-                  accessibilityLabel={tr('Choose another folder…')}
-                  onPress={inputAction(() => recentOpen.set(true), null)}
-                  style={controlStyle}
-                  hoverStyle={controlHoverStyle()}
-                  focusStyle={controlFocusStyle()}
-                >
-                  <Text style={{ color: C.accent }}>{tr('Choose another folder…')}</Text>
-                </Button>
-                <Button
-                  accessibilityLabel={tr('Retry folder')}
-                  onPress={inputAction(() => {
-                    void checkWorkspace();
-                  }, null)}
-                  style={controlStyle}
-                  hoverStyle={controlHoverStyle()}
-                  focusStyle={controlFocusStyle()}
-                >
-                  <Text style={{ color: C.secondary }}>{tr('Retry folder')}</Text>
-                </Button>
-              </View>
-            </View>
+              style={{ marginBottom: 8 }}
+            />
+          </If>
+          <If when={selected() === null && Boolean(workspaceError())}>
+            <InlineCallout
+              tone="warning"
+              message={tr('Folder unavailable')}
+              detail={workspaceError()}
+              action={{
+                label: tr('Choose another folder…'),
+                primary: true,
+                onPress: inputAction(() => recentOpen.set(true), null),
+              }}
+              secondaryAction={{
+                label: tr('Retry folder'),
+                onPress: inputAction(() => {
+                  void checkWorkspace();
+                }, null),
+              }}
+              style={{ marginBottom: 8 }}
+            />
           </If>
           <Each<ConversationHandle>
             of={handle() ? [handle()!] : []}
@@ -2562,157 +2693,16 @@ export function createConversationUi(
               );
             }}
           </Each>
-          <If
-            when={
-              handle()?.reconnecting() ||
-              handle()?.executionWaitMessage() ||
-              handle()?.attachmentMetadataFailed()
-            }
-          >
-            <View
-              style={{
-                flexDirection: 'row',
-                flexWrap: 'wrap',
-                alignItems: 'center',
-                gap: 8,
-                paddingHorizontal: 12,
-                paddingVertical: 4,
-              }}
-            >
-              <If when={handle()?.reconnecting() || handle()?.executionWaitMessage()}>
-                <Text style={{ ...bodyTextStyle, flex: 1, color: C.muted }}>
-                  {handle()?.reconnecting()
-                    ? tr('Reconnecting updates… Your draft is kept.')
-                    : handle()?.executionWaitMessage()}
-                </Text>
-              </If>
-              <If when={handle()?.reconnecting()}>
-                <Button
-                  accessibilityLabel={tr('Reconnect updates')}
-                  onPress={() => handle()?.reconnect()}
-                  style={controlStyle}
-                >
-                  <Text style={{ color: C.accent }}>{tr('Retry')}</Text>
-                </Button>
-              </If>
-              <If when={handle()?.attachmentMetadataFailed()}>
-                <Button onPress={() => handle()?.retryAttachmentMetadata()} style={controlStyle}>
-                  <Text style={{ color: C.accent }}>{tr('Retry attachment metadata')}</Text>
-                </Button>
-              </If>
-            </View>
-          </If>
-          <If when={!connectionLost() && status()}>
-            <View
-              style={{
-                flexDirection: 'row',
-                alignItems: 'center',
-                gap: 8,
-                paddingHorizontal: 12,
-                paddingVertical: 4,
-                flexShrink: 0,
-              }}
-            >
-              <Text
-                style={[
-                  {
-                    ...bodyTextStyle,
-                    flex: 1,
-                    minWidth: 0,
-                    color: C.muted,
-                  },
-                  { userSelect: 'text' },
-                ]}
-              >
-                {status()}
-              </Text>
-              <Button
-                accessibilityLabel={tr('Dismiss action feedback')}
-                onPress={inputAction(() => status.set(''), null)}
-                style={{
-                  ...controlStyle,
-                  width: 32,
-                  height: 32,
-                  paddingHorizontal: 0,
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                }}
-                hoverStyle={controlHoverStyle()}
-                focusStyle={controlFocusStyle()}
-              >
-                <Icon name="close" color={C.muted} />
-              </Button>
-            </View>
-          </If>
-          <If
-            when={
-              !connectionLost() &&
-              (handle()?.connected() ?? true) &&
-              (error() || working() || forkNotice()?.id === selected())
-            }
-          >
-            <Scroll
-              accessibilityLabel={tr('Action feedback')}
-              style={{
-                minHeight: bodyTextStyle.lineHeight + 16,
-                flexShrink: 1,
-                backgroundColor: C.card,
-                // A card of its own on the desktop: square corners
-                // flush on the composer's rounded top read as notches.
-                ...(platform.idiom === 'terminal' ? {} : { borderRadius: 8, marginBottom: 8 }),
-              }}
-              contentStyle={{
-                paddingHorizontal: 16,
-                paddingVertical: 8,
-                gap: 8,
-              }}
-            >
-              <If when={error()}>
-                <Text style={[{ ...bodyTextStyle, color: C.danger }, { userSelect: 'text' }]}>
-                  {error()}
-                </Text>
-              </If>
-              <If when={working() && !error()}>
-                <Text style={{ ...bodyTextStyle, color: C.muted }}>
-                  {switching() ? tr('Saving draft before switching…') : tr('Creating fork…')}
-                </Text>
-              </If>
-              <If when={forkNotice()?.id === selected()}>
-                <View
-                  style={{
-                    flexDirection: 'row',
-                    alignItems: 'center',
-                    gap: 8,
-                  }}
-                >
-                  <Icon name="fork" color={C.secondary} />
-                  <Text
-                    style={{
-                      ...bodyTextStyle,
-                      flex: 1,
-                      color: C.muted,
-                    }}
-                  >
-                    {tr('This is a fork of {title}. The original conversation is unchanged.', {
-                      title: forkNotice()!.title,
-                    })}
-                  </Text>
-                  <Button
-                    onPress={inputAction(openBrowsed, {
-                      id: forkNotice()!.source,
-                      origin: selected(),
-                    })}
-                    style={controlStyle}
-                    hoverStyle={{ backgroundColor: C.cardRaised }}
-                    focusStyle={controlFocusStyle()}
-                  >
-                    <Text style={{ ...bodyTextStyle, color: C.accent }}>
-                      {tr('Back to original')}
-                    </Text>
-                  </Button>
-                </View>
-              </If>
-            </Scroll>
+          <If when={input.compact !== undefined && shelfStatus() !== null}>
+            <InlineCallout
+              tone={shelfStatus()!.tone}
+              message={shelfStatus()!.message}
+              detail={shelfStatus()!.detail}
+              action={shelfStatus()!.action}
+              secondaryAction={shelfStatus()!.secondaryAction}
+              onDismiss={shelfStatus()!.onDismiss}
+              style={{ marginTop: 6 }}
+            />
           </If>
         </View>
       );
@@ -2956,6 +2946,7 @@ export function createConversationUi(
                 stopAction={stopAction}
                 needsConnection={noConnections}
                 request={request}
+                shelfStatus={shelfStatus}
                 attach={(node) => {
                   for (const unbind of unbindEditorKeys.splice(0)) unbind();
                   editor = node;
@@ -3063,21 +3054,7 @@ export function createConversationUi(
                 })}
               />
             </If>
-            <If when={recoveredFork()}>
-              <Button
-                onPress={inputAction(openBrowsed, {
-                  id: recoveredFork()!.id,
-                  origin: selected(),
-                })}
-                style={{ ...controlStyle, alignSelf: 'flex-start' }}
-                hoverStyle={controlHoverStyle()}
-                focusStyle={controlFocusStyle()}
-              >
-                <Text style={{ color: C.accent }}>
-                  {tr('Open recovered fork')} · {recoveredFork()!.title}
-                </Text>
-              </Button>
-            </If>
+
             <Each
               of={overlay() && overlay()!.kind !== 'models' ? [overlay()!] : []}
               key={(value: Overlay) => value.instance}

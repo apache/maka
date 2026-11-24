@@ -9,11 +9,7 @@
 use std::sync::{Arc, Mutex};
 
 use nsh_base::collapsible;
-use nsh_core::{
-    LayoutCurve, MountItem, NodeId, Size,
-    element::{Root, Spring},
-    prelude::*,
-};
+use nsh_core::{LayoutCurve, MountItem, NodeId, Size, element::Spring, prelude::*};
 use nsh_engine::EngineConfig;
 use nsh_testing::Headless;
 
@@ -90,7 +86,9 @@ fn start_with(props: HarnessProps, reduce_motion: bool) -> App {
     let mut config = EngineConfig {
         viewport: Size::new(px(390.0), px(844.0)),
         clock: nsh_engine::Clock::manual(std::time::SystemTime::now()),
-        ..EngineConfig::new(Root::new::<Harness>(move || props.clone()))
+        ..EngineConfig::new(nsh_testing::windowed_root_with::<Harness>(move || {
+            props.clone()
+        }))
     };
     config.environment.reduce_motion = reduce_motion;
     let mut app = Headless::start(config).expect("the engine starts");
@@ -433,4 +431,219 @@ fn without_reveal_the_content_comes_and_goes_at_once() {
     let closed = app.toggle();
     assert!(!app.app.shows("Details"), "out at once");
     assert!(!any_layout_animation(&closed));
+}
+
+#[derive(Clone, PartialEq, Props)]
+struct InteractiveProps {
+    block_parent: bool,
+}
+
+#[component]
+fn InteractiveHarness(props: InteractiveProps) -> impl IntoElement {
+    let open = signal(false);
+    let hits = signal(0u32);
+    view()
+        .when(props.block_parent, |v| {
+            v.pointer_events(PointerEvents::None)
+        })
+        .child(
+            view().test_id("region").child(
+                collapsible()
+                    .open(open)
+                    .reveal(true)
+                    .content(
+                        view()
+                            .test_id("inside-action")
+                            .h(px(30.0))
+                            .on_press(move || hits.update(|n| *n += 1))
+                            .child(text("InsideAction")),
+                    )
+                    .child(
+                        view()
+                            .test_id("trigger")
+                            .h(px(20.0))
+                            .on_press(move || open.update(|o| *o = !*o))
+                            .child(text("Summary")),
+                    ),
+            ),
+        )
+        .child(text(move || format!("hits:{}", hits.get())))
+}
+
+fn start_interactive(block_parent: bool) -> App {
+    let config = EngineConfig {
+        viewport: Size::new(px(390.0), px(844.0)),
+        clock: nsh_engine::Clock::manual(std::time::SystemTime::now()),
+        ..EngineConfig::new(nsh_testing::windowed_root_with::<InteractiveHarness>(
+            move || InteractiveProps { block_parent },
+        ))
+    };
+    let mut app = Headless::start(config).expect("the engine starts");
+    let seen: Seen = Arc::default();
+    let into = seen.clone();
+    app.observe(move |step, batch| {
+        into.lock()
+            .unwrap()
+            .push((step.to_owned(), batch.items.clone()));
+    });
+    app.first_render().unwrap();
+    app.wait_for("Summary").unwrap();
+    App { app, seen }
+}
+
+fn reveal_wrapper(items: &[MountItem], region: NodeId) -> Option<NodeId> {
+    items.iter().rev().find_map(|i| match i {
+        MountItem::Insert { parent, child, .. } if *parent == region => Some(*child),
+        _ => None,
+    })
+}
+
+fn view_props_for(items: &[MountItem], id: NodeId) -> Option<(bool, PointerEvents)> {
+    items.iter().rev().find_map(|i| match i {
+        MountItem::ViewProps { id: at, props } if *at == id => {
+            Some((props.accessibility.hidden, props.pointer_events))
+        }
+        _ => None,
+    })
+}
+
+#[test]
+fn closing_reveal_hides_accessibility_and_pointer_events_at_once() {
+    let mut app = start_interactive(false);
+    let first = app.items();
+    let region = app.id(&first, "region");
+    // The second child of `region`'s collapsible root is the reveal wrapper
+    // (after `props.children`), so take the last inserted child under `region`.
+    let collapsible_root = first
+        .iter()
+        .find_map(|i| match i {
+            MountItem::Insert { parent, child, .. } if *parent == region => Some(*child),
+            _ => None,
+        })
+        .expect("collapsible root");
+    let wrapper = reveal_wrapper(&first, collapsible_root).expect("reveal wrapper");
+    assert_eq!(
+        view_props_for(&first, wrapper),
+        Some((true, PointerEvents::None)),
+        "closed at first"
+    );
+
+    let opened = app.toggle();
+    assert_eq!(
+        view_props_for(&opened, wrapper),
+        Some((false, PointerEvents::Auto)),
+        "interactive while open"
+    );
+    assert!(
+        app.app
+            .screen()
+            .press_target("id:inside-action")
+            .unwrap()
+            .is_some()
+    );
+
+    // Closing: before advancing the clock, the content is still mounted for
+    // the spring reveal, but immediately hidden from a11y and pointer hits.
+    let closed = app.toggle();
+    assert_eq!(
+        view_props_for(&closed, wrapper),
+        Some((true, PointerEvents::None)),
+        "immediately non-interactive while closing"
+    );
+    assert_eq!(
+        app.app.screen().press_target("id:inside-action").unwrap(),
+        None,
+        "no ghost press while closing"
+    );
+
+    // Re-opening mid-close restores both.
+    let reopened = app.toggle();
+    assert_eq!(
+        view_props_for(&reopened, wrapper),
+        Some((false, PointerEvents::Auto)),
+        "restored when reopened"
+    );
+    assert!(
+        app.app
+            .screen()
+            .press_target("id:inside-action")
+            .unwrap()
+            .is_some()
+    );
+}
+
+#[test]
+fn opening_reveal_does_not_override_blocked_ancestor_pointer_events() {
+    #[derive(Clone, PartialEq, Props)]
+    struct OpenBlockedProps {}
+
+    #[component]
+    fn OpenBlocked(_: OpenBlockedProps) -> impl IntoElement {
+        let hits = signal(0u32);
+        view()
+            .child(
+                view()
+                    .relative()
+                    .h(px(60.0))
+                    .child(view().test_id("behind").absolute().inset_0())
+                    .child(
+                        view()
+                            .test_id("blocked-outer")
+                            .pointer_events(PointerEvents::None)
+                            .child(
+                                collapsible()
+                                    .open(true)
+                                    .reveal(true)
+                                    .content(
+                                        view()
+                                            .test_id("blocked-action")
+                                            .h(px(30.0))
+                                            .on_press(move || hits.update(|n| *n += 1))
+                                            .child(text("BlockedAction")),
+                                    )
+                                    .child(view().h(px(20.0)).child(text("Header"))),
+                            ),
+                    ),
+            )
+            .child(text(move || format!("hits:{}", hits.get())))
+    }
+
+    let config = EngineConfig {
+        viewport: Size::new(px(390.0), px(844.0)),
+        ..EngineConfig::new(nsh_testing::windowed_root_with::<OpenBlocked>(|| {
+            OpenBlockedProps {}
+        }))
+    };
+    let mut blocked_app = Headless::start(config).expect("engine starts");
+    let seen: Seen = Arc::default();
+    let into = seen.clone();
+    blocked_app.observe(move |step, batch| {
+        into.lock()
+            .unwrap()
+            .push((step.to_owned(), batch.items.clone()));
+    });
+    blocked_app.first_render().unwrap();
+    blocked_app.wait_for("BlockedAction").unwrap();
+    let items: Vec<MountItem> = seen
+        .lock()
+        .unwrap()
+        .iter()
+        .flat_map(|(_, items)| items.iter().cloned())
+        .collect();
+    let outer_pointer = items.iter().rev().find_map(|i| match i {
+        MountItem::ViewProps { props, .. } if props.test_id.as_deref() == Some("blocked-outer") => {
+            Some(props.pointer_events)
+        }
+        _ => None,
+    });
+    assert_eq!(
+        outer_pointer,
+        Some(PointerEvents::None),
+        "ancestor must stay PointerEvents::None rather than BoxNone"
+    );
+    assert!(
+        blocked_app.press("id:blocked-action").is_err(),
+        "open reveal must not receive pointer hits under a PointerEvents::None ancestor"
+    );
+    blocked_app.wait_for("text:hits:0").unwrap();
 }

@@ -148,8 +148,10 @@ pub fn Popover(props: PopoverProps, cx: Scope<PopoverEvent>) -> impl IntoElement
     // The keyboard focus in the popup as it closes (Escape, a choice in
     // it, the app closing it) goes back to the trigger as it starts to go,
     // as a select's and a date picker's do; not after a press outside,
-    // which put the focus where it pressed.
+    // which put the focus where it pressed. Opened by a pointer, it goes
+    // back where it was instead (`note_focus_origin`).
     if desktop {
+        crate::popup::note_focus_origin(move || open.get(), anchor);
         presence.focus_back_on_close(
             move || open.get(),
             move || {

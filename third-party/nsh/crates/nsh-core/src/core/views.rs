@@ -828,7 +828,7 @@ impl<M: TextEngine> Core<M> {
         // view gave them while they are its slots (and so do the app's
         // elements in them that take the slots' props).
         let live = |id: &NodeId| self.keeps_view_node(host, *id);
-        inst.handlers.retain(|(id, _, _)| live(id));
+        inst.handlers.retain_nodes(live);
         inst.event_handlers.retain(|(id, _)| live(id));
         inst.responders.retain(|(id, _)| live(id));
         inst.bound.retain(|id, _| live(id));

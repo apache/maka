@@ -20,13 +20,7 @@ use nsh_core::{
         CloseReason, Display, DisplayId, OpenWindow, WindowAttributes, WindowCloseCause,
         WindowEvent, WindowMode, WindowPlacement, WindowPosition, WindowRequest, WindowState,
     },
-    geometry::{Bounds, Point, Points, Size, point, size},
-};
-
-/// The size of a window opened without one.
-const DEFAULT_SIZE: Size<Points> = Size {
-    width: Points(400.0),
-    height: Points(300.0),
+    geometry::{Bounds, Edges, Point, Points, Size, point, size},
 };
 
 /// The size of the display headless desktops have (larger when the main
@@ -82,6 +76,11 @@ pub(crate) struct Windows {
     /// The main window's content size a `SetContentSize` asked for, until
     /// the driver resizes its viewport.
     main_resize: Option<Size<Points>>,
+    /// The title bar area reported to open windows (`Environment::title_bar`).
+    title_bar: Edges<Points>,
+    /// The app quit (`DesktopCommand::Quit`): the test process goes on, and
+    /// [`super::Headless::quit`] reports it.
+    quit: bool,
 }
 
 impl Windows {
@@ -107,6 +106,23 @@ impl Windows {
             focused: Some(ROOT_ID),
             reports: Vec::new(),
             main_resize: None,
+            title_bar: Edges::default(),
+            quit: false,
+        }
+    }
+
+    /// Sets the title bar area reported to open windows and notifies any open
+    /// windows immediately.
+    pub(crate) fn set_title_bar(&mut self, title_bar: Edges<Points>) {
+        if self.title_bar == title_bar {
+            return;
+        }
+        self.title_bar = title_bar;
+        for w in &self.own {
+            if !w.closed {
+                self.reports
+                    .push(Report::Window(w.root, WindowEvent::TitleBar(title_bar)));
+            }
         }
     }
 
@@ -138,6 +154,37 @@ impl Windows {
             self.main.placement.bounds = bounds;
         }
         self.reports.push(Report::Main(self.main));
+    }
+
+    /// The focused window of the app's own (else its first open one)
+    /// became `viewport` (`setViewport`, which on a desktop resizes the
+    /// window the app shows, not the hidden host). Whether one did.
+    pub(crate) fn resize_focused_own(&mut self, viewport: Size<Points>) -> bool {
+        let root = self
+            .focused
+            .filter(|&root| root != ROOT_ID)
+            .or_else(|| self.own.iter().find(|w| !w.closed).map(|w| w.root));
+        let Some(root) = root else {
+            return false;
+        };
+        let origin = match self.state(root) {
+            Some(state) => state.bounds.origin,
+            None => return false,
+        };
+        let bounds = Bounds::new(origin, viewport);
+        self.change(root, |state| {
+            state.bounds = bounds;
+            state.content_bounds = bounds;
+            if state.mode == WindowMode::Normal {
+                state.placement.bounds = bounds;
+            }
+        });
+        true
+    }
+
+    /// The app's windows' ids, in the order they opened.
+    pub(crate) fn ids(&self) -> Vec<String> {
+        self.own.iter().map(|w| w.id.clone()).collect()
     }
 
     /// The state of the window whose root is `root` (`ROOT_ID`: the main
@@ -173,8 +220,17 @@ impl Windows {
             DesktopCommand::OpenWindow(open) if root != ROOT_ID => self.open(root, open),
             DesktopCommand::SetAttributes(attributes) => self.set_attributes(root, attributes),
             DesktopCommand::Request(request) => self.request(root, request),
+            // The app quit: the test process goes on, so the model keeps it
+            // for the test to see (the windows stay for it to inspect).
+            DesktopCommand::Quit => self.quit = true,
             _ => {}
         }
+    }
+
+    /// Whether the app quit (`Application.quit()`, or the core quitting on
+    /// the last window's close).
+    pub(crate) fn quit(&self) -> bool {
+        self.quit
     }
 
     /// The node `id` left the tree: when it is a window's root, the window
@@ -209,7 +265,12 @@ impl Windows {
         let (mode, bounds) = match open.placement {
             Some(placement) => (placement.mode, placement.bounds),
             None => {
-                let size = options.default_size.unwrap_or(DEFAULT_SIZE);
+                // A window without a size of its own is as large as the
+                // test's surface: `setViewport` before it opens is what a
+                // phone rotation or a resized window gives it.
+                let size = options
+                    .default_size
+                    .unwrap_or(self.main.content_bounds.size);
                 let parent_bounds = parent.and_then(|p| self.state(p)).map(|s| s.bounds);
                 let area = self.display.visible_bounds;
                 let origin = match options.default_position {
@@ -237,6 +298,10 @@ impl Windows {
             closed: false,
         });
         self.report(root);
+        if self.title_bar != Edges::default() {
+            self.reports
+                .push(Report::Window(root, WindowEvent::TitleBar(self.title_bar)));
+        }
         if self.takes_focus(root) {
             self.focus(Some(root));
         }

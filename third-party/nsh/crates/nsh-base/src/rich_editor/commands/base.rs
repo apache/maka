@@ -232,10 +232,18 @@ fn join_textblocks_around(
     let Some(step) = replace_step(state.doc(), before_pos, after_pos, &Slice::empty()) else {
         return false;
     };
-    match step.as_any().downcast_ref::<ReplaceStep>() {
-        Some(replace)
-            if replace.from == before_pos && replace.slice.size() < after_pos - before_pos => {}
-        _ => return false,
+    // As ProseMirror's, only a plain replace must remove more than it
+    // inserts: a step around the content (a paragraph after a blockquote
+    // moved into the quote's last paragraph) joins too.
+    let fits = if let Some(replace) = step.as_any().downcast_ref::<ReplaceStep>() {
+        replace.from == before_pos && replace.slice.size() < after_pos - before_pos
+    } else {
+        step.as_any()
+            .downcast_ref::<ReplaceAroundStep>()
+            .is_some_and(|around| around.from == before_pos)
+    };
+    if !fits {
+        return false;
     }
     if dispatch.is_some() {
         let mut tr = state.tr();
@@ -1538,6 +1546,23 @@ mod tests {
         let quote = n(&s, "doc", vec![n(&s, "blockquote", vec![p(&s, "q")])]);
         let lifted = apply(&state(quote, 2, 2), &join_backward).unwrap();
         assert_eq!(lifted.doc().child(0).ty().name(), "paragraph");
+    }
+
+    #[test]
+    fn join_text_backward_joins_a_textblock_deeper_than_the_cut() {
+        let s = schema();
+        // The paragraph after a quote joins the quote's last paragraph:
+        // `replace_step` moves its text in with a step around it.
+        let doc = n(
+            &s,
+            "doc",
+            vec![n(&s, "blockquote", vec![p(&s, "ab")]), p(&s, "cd")],
+        );
+        let joined = apply(&state(doc, 7, 7), &join_text_backward).unwrap();
+        assert_eq!(joined.doc().child_count(), 1);
+        assert_eq!(joined.doc().child(0).ty().name(), "blockquote");
+        assert_eq!(joined.doc().child(0).text_content(), "abcd");
+        assert_eq!(joined.selection().from(), 4);
     }
 
     #[test]

@@ -1,13 +1,13 @@
 ---
 title: SplitView
-description: SplitView：并排显示两到三栏导航栈（侧边栏、可选的内容栏和详情栏），空间紧凑时一次显示一栏。在 iOS 和 Mac Catalyst 上是 UISplitViewController，其他平台上是固定宽度的栏；显示哪些栏是应用持有的值。
+description: SplitView：并排显示两到三栏导航栈（侧边栏、可选的内容栏和详情栏），空间紧凑时一次显示一栏。在 iOS 和 Mac Catalyst 上是 UISplitViewController，其他平台上是用户可拖动调整宽度的栏；显示哪些栏是应用持有的值。
 group: base
 demo: el-split-view
 ---
 
 # SplitView
 
-分栏视图把应用的导航分成几栏显示：侧边栏（分区或列表）、可选的内容栏（侧边栏所选内容中的条目）和详情栏。每一栏都是一个独立的 [`NavStack`](./nav-stack.md)，因此每一栏保留自己的页面，各自推入和弹出。在 iOS、iPadOS 和 Mac Catalyst 上，这些栏属于 `UISplitViewController`：在 iPadOS 26 上侧边栏浮在内容之上，从边缘轻扫或按系统的侧边栏按钮即可呼出，窗口旋转和改变大小时由系统安排各栏。其他平台上各栏以固定宽度并排显示。空间紧凑时（手机、窄窗口）一次只显示一栏。显示哪些栏由 `columnVisibility` 决定，这个值由应用持有。
+分栏视图把应用的导航分成几栏显示：侧边栏（分区或列表）、可选的内容栏（侧边栏所选内容中的条目）和详情栏。每一栏都是一个独立的 [`NavStack`](./nav-stack.md)，因此每一栏保留自己的页面，各自推入和弹出。在 iOS、iPadOS 和 Mac Catalyst 上，这些栏属于 `UISplitViewController`：在 iPadOS 26 上侧边栏浮在内容之上，从边缘轻扫或按系统的侧边栏按钮即可呼出，窗口旋转和改变大小时由系统安排各栏。其他平台上各栏并排显示，拖动边缘即可调整宽度。空间紧凑时（手机、窄窗口）一次只显示一栏。显示哪些栏由 `columnVisibility` 决定，这个值由应用持有。
 
 ```rust tabs
 use nsh_base::{ColumnVisibility, button, nav_page, nav_stack, split_view, theme};
@@ -57,6 +57,7 @@ fn mail() -> impl IntoElement {
 ```tsx tabs
 import { horizontalSizeClass, mount, signal, Text, View } from "nsh";
 import { Button, type ColumnVisibility, createNavStack, NavPage, NavStack, SplitView } from "nsh/base";
+import { Window } from "nsh/desktop";
 
 const messages = ["Welcome", "Release notes"];
 const inbox = createNavStack(["inbox"]);
@@ -103,7 +104,11 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 `SplitView` 来自 [`nsh/base`](../modules/nsh-base.md)，在 Rust 中是 `nsh_base::split_view()`，以及 `ColumnVisibility`。在 Rust 中每一栏是一个接收它的栈的设置方法（`.sidebar(..)`、`.content(..)`、`.detail(..)`）；在 TSX 中每一栏是一个接收 `<NavStack>` 的属性。
@@ -114,7 +119,7 @@ mount(App);
 - **`content`**：三栏中间的一栏，侧边栏所选内容中的条目（例如一个邮箱里的邮件）。没有它时视图只有两栏。
 - **`detail`**：最后一栏，显示其他栏选中的内容。
 
-每一栏都是一个 `NavStack`：它的页面、标题栏、返回按钮和状态都属于这个栈，在一栏中推入或弹出页面不会影响其他栏。各栏的宽度由平台决定：在 iOS 上由 UIKit 决定，并随窗口变化；其他平台上采用 iPadOS 的默认值，侧边栏和内容栏宽 320 点，详情栏占据其余空间。外观属于应用：各栏的内容和背景（包括栏之间的分隔线）都由页面绘制。
+每一栏都是一个 `NavStack`：它的页面、标题栏、返回按钮和状态都属于这个栈，在一栏中推入或弹出页面不会影响其他栏。各栏的宽度由平台决定：在 iOS 上由 UIKit 决定，并随窗口变化；其他平台上初始采用 iPadOS 的默认值，侧边栏和内容栏宽 320 点，详情栏占据其余空间，用户可拖动栏边调整。外观属于应用：各栏的内容和背景（包括栏之间的分隔线）都由页面绘制。
 
 ## 显示哪些栏
 
@@ -162,4 +167,4 @@ mount(App);
 ## 平台说明
 
 - **iOS、iPadOS 和 Mac Catalyst**：两栏或三栏的 `UISplitViewController`，每一栏是对应 `NavStack` 的 `UINavigationController`。iPadOS 26 以 Liquid Glass 让侧边栏浮在内容之上。从边缘轻扫和侧边栏按钮都由系统提供。
-- **Android、桌面平台和 Web**：各栏以固定宽度并排显示。由用户调整大小和重新排列的工作区是 [`DockArea`](./dock.md)。
+- **Android、桌面平台和 Web**：各栏并排显示，用户拖动侧边栏边缘和栏之间的分界即可调整宽度。还能重新排列各栏的工作区是 [`DockArea`](./dock.md)。

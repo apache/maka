@@ -79,6 +79,7 @@ fn primary(color: Signal<Hsla>) -> impl IntoElement {
 ```tsx tabs
 import { mount, signal, Text, View } from "nsh";
 import { type ColorChannel, ColorArea, ColorField, ColorPicker, ColorSlider, ColorSwatch } from "nsh/base";
+import { Window } from "nsh/desktop";
 
 const thumb = "rounded-full border-2 border-white";
 
@@ -121,7 +122,11 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 `ColorPicker`、`ColorArea`、`ColorSlider`、`ColorField`、`ColorSwatch` 和 `ColorEyeDropper` 来自 [`nsh/base`](../modules/nsh-base.md)，在 Rust 中即

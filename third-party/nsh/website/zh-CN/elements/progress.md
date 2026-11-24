@@ -31,6 +31,7 @@ fn upload(sent: Signal<f32>) -> impl IntoElement {
 ```tsx tabs
 import { mount, signal, Text } from "nsh";
 import { Progress } from "nsh/base";
+import { Window } from "nsh/desktop";
 
 function App() {
   const sent = signal(40);
@@ -47,7 +48,11 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 `Progress` 来自 [`nsh/base`](../modules/nsh-base.md)，在 Rust 中是 `nsh-base` crate。数值由应用持有：进度条显示应用传入的 `value`，限定在 0 到 100 之间。在 Rust 中，`progress()` 创建一个进度条，每个属性有对应的设置方法（`.value(..)`、`.indicator_style(..)`），进度条本身用类型化的样式方法，标签用 `.child(..)`。

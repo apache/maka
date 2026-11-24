@@ -282,3 +282,28 @@ fn a_flooding_peer_cannot_hold_one_turn() {
     drop(host);
     server.join().unwrap();
 }
+#[test]
+fn a_secure_socket_starts_tls_and_reports_a_closed_peer() {
+    // The runner of an app that never imports `websocket` has no rustls
+    // crypto provider feature: `wss://` must still start a handshake, and
+    // a peer that hangs up must reach JS as `error` and `close`.
+    use std::io::Read;
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = std::thread::spawn(move || {
+        let (mut tcp, _) = listener.accept().unwrap();
+        tcp.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let mut record = [0u8; 1];
+        tcp.read_exact(&mut record).unwrap();
+        record[0]
+    });
+    let host = host(true);
+    host.eval_source(&format!(
+        "globalThis.events = []; const ws = new WebSocket('wss://127.0.0.1:{port}/'); ws.onerror = (e) => events.push(e.type); ws.onclose = (e) => {{ events.push(e.code, e.wasClean); globalThis.wsDone = true; }};"
+    ))
+    .unwrap();
+    finish(&host);
+    // A TLS handshake record (ClientHello).
+    assert_eq!(server.join().unwrap(), 0x16);
+    host.eval_source("if (JSON.stringify(events) !== '[\"error\",1006,false]') throw Error(JSON.stringify(events));").unwrap();
+}

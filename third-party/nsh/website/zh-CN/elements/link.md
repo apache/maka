@@ -27,6 +27,7 @@ fn docs() -> impl IntoElement {
 ```tsx tabs
 import { mount, Text } from "nsh";
 import { Link } from "nsh/base";
+import { Window } from "nsh/desktop";
 
 function App() {
   return (
@@ -39,7 +40,11 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 `Link` 来自 [`nsh/base`](../modules/nsh-base.md)，在 Rust 中是 `nsh-base` crate。在 Rust 中，`link()` 创建一个链接，每个 prop 有一个 setter（`.href(..)`、`.open_with(..)`），每个事件有一个监听方法（`.on_open(..)`、`.on_press(..)`），链接本身用类型化的样式方法，内容用 `.child(..)`。
@@ -87,6 +92,7 @@ import { Link } from "nsh/base";
 | `disabled` | `.disabled(..)` | `boolean` | `false` | 不响应按压、没有按压反馈、不获得键盘焦点；应用 `disabled:` 样式，屏幕阅读器读出它不可用。 |
 | `current` | `.current(..)` | `boolean` | `false` | 导航或面包屑中指向用户所在页面的链接：屏幕阅读器读出它是当前页。 |
 | `accessibilityLabel` | `.accessibility_label(..)` | `string` | 无 | 内容说明不够时（一个图标）屏幕阅读器读出的文字。 |
+| `accessibilityHint` | `.accessibility_hint(..)` | `string` | 无 | 向屏幕阅读器说明激活链接会做什么，与视图的 `accessibilityHint` 相同。 |
 | `hitSlop` | `.hit_slop(..)` | `number \| Partial<Edges>` | 无 | 按压在边界之外多远仍然算数，单位为点：一个数字表示每一边，或分别指定各边。与视图的 `hitSlop` 相同。 |
 | `children` | `.child(..)` | `JSX.Element` | 无 | 内容：一段文字、一个图标，应用要显示的任何东西。 |
 | `class`、`style` | 样式方法 | `string`、`StyleProp<ViewStyle>` | 无 | 链接的外观：颜色、下划线、内边距；文本属性会传给其中的文字。 |
@@ -156,6 +162,7 @@ const visited = signal(new Set<string>());
 
 ## 无障碍
 
+- 标签不能说明打开链接的结果时，设置 `accessibilityHint`。它跟随响应式值变化；设为 `undefined` 会移除提示。
 - 链接对屏幕阅读器是一个元素，角色为 `"link"`；它的标签是子元素的文字，或 `accessibilityLabel`。`href` 只是数据：屏幕阅读器读出的是标签。
 - `current` 读作当前页（ARIA 的 `aria-current="page"`），`disabled` 按平台读出不可用元素的方式读出。
 - 在 macOS 和 Web 上，链接是键盘焦点的一站：Tab 到达它，Return 和 Space 打开它，`focus-visible:` 样式显示焦点所在。
@@ -166,6 +173,6 @@ const visited = signal(new Set<string>());
 
 - iOS、Android 和 Mac Catalyst：按压是在链接上结束的一次轻点。
 - 桌面（macOS、Windows、Linux、GPUI）和 Web：按压是一次点击。在 macOS 和 Web 上，获得键盘焦点的链接也可以用 Return 和 Space 打开。指针停在链接上会显示它的 URL（见[去往哪里](#去往哪里)）。
-- Web 把带 `href` 的链接渲染为 `<a href>`（爬虫会跟随它；按住修饰键点击或用鼠标中键点击时在新标签页中打开，右键点击显示浏览器的链接菜单），没有 `href` 的渲染为带 `role="link"` 的元素。
+- Web 把带 `href` 的链接渲染为 `<a href>`（爬虫会跟随它；按住修饰键点击或用鼠标中键点击时由浏览器在新标签页或新窗口中打开，不触发 `onOpen` 和 `onPress`；右键点击显示浏览器的链接菜单），没有 `href` 的渲染为带 `role="link"` 的元素。
 - 终端：启用的链接如果 `href` 是 URL（不是应用自己的路径），其中的文字会成为指向它的 OSC 8 超链接，由终端模拟器在带修饰键的点击时自己打开，不经过 `openWith`。Linux 控制台（`TERM=linux`）显示纯文本。
 - 每个平台绘制的都是应用设置的样式。

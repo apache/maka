@@ -362,6 +362,8 @@ pub(crate) struct Surface {
     pub(crate) image_assets: RefCell<crate::image::AssetSource>,
     /// The engine's sounds and players ([`crate::audio`]).
     pub(crate) audio: crate::audio::Speaker,
+    /// The engine's speech recognition session ([`crate::speech`]).
+    pub(crate) speech: crate::speech::Listener,
     /// The disk cache of downloaded images ([`crate::image::set_disk_cache`]).
     pub(crate) image_cache: RefCell<Option<nsh_core::image::DiskCache>>,
     /// The roots the app's `<Image>` files are read under
@@ -483,6 +485,7 @@ impl Surface {
             asset_base: RefCell::new(None),
             image_assets: RefCell::default(),
             audio: Default::default(),
+            speech: Default::default(),
             image_cache: RefCell::new(None),
             media_files: RefCell::default(),
             native: Default::default(),
@@ -503,6 +506,7 @@ impl Surface {
         });
         root.set_surface(Rc::downgrade(&surface));
         crate::keyboard::install(&surface);
+        crate::input::install(&surface);
         surface
     }
 
@@ -598,6 +602,9 @@ impl Surface {
         // Dropping the engine joins its thread.
         self.control.borrow_mut().take();
         self.engine.borrow_mut().take();
+        // The core's abort dies with the engine: the microphone goes off
+        // here.
+        self.speech.end();
         self.rx.borrow_mut().take();
         self.events_handled.set(0);
         crate::text_input::stopped(self);
@@ -612,6 +619,8 @@ impl Surface {
         crate::keyboard::reset(self);
         crate::tray::release(self.key);
         crate::global_shortcut::release(self.key);
+        // The menu bar's ids are the stopped engine's.
+        self.chrome.remove_menu(self.mtm);
         self.js_frame.set(false);
         self.queued.borrow_mut().clear();
         self.resize_late.set(false);
@@ -692,6 +701,37 @@ impl Surface {
         }
     }
 
+    /// Tells the engine the window size and scale the app sees
+    /// (`windowSize()`, `pixelRatio()`, the size classes): its primary
+    /// window's ([`crate::window::primary`]), as the user resizes or moves
+    /// it, else this surface's (an embedded view, or a host whose app shows
+    /// no window). The desktop host's own window never shows: reporting it
+    /// would lay the app out for a window nobody sees.
+    pub(crate) fn window_environment(&self) {
+        let (size, scale) = crate::window::primary(self).unwrap_or_else(|| {
+            let root = self.root.ns();
+            let scale = root
+                .window()
+                .map_or(self.environment.get().pixel_ratio, |w| {
+                    w.backingScaleFactor() as f32
+                });
+            (self.root.state().frame.size, scale)
+        });
+        let mut env = self.environment.get();
+        if env.window == size && env.pixel_ratio == scale {
+            return;
+        }
+        if env.pixel_ratio != scale {
+            self.set_raster_scale(f64::from(scale));
+        }
+        env.window = size;
+        env.pixel_ratio = scale;
+        // Only the size and scale: the appearance stays as it was applied,
+        // which a live resize would otherwise apply again on every step.
+        self.environment.set(env);
+        self.control(|c| c.set_environment(env));
+    }
+
     /// The root view got a new size (the window's content area): the
     /// layout at that size is applied before this returns, unless the
     /// engine takes longer than [`RESIZE_WAIT`] (see the module doc).
@@ -704,13 +744,8 @@ impl Surface {
             s.frame.size.width.0 = width;
             s.frame.size.height.0 = height;
         }
-        let mut env = self.environment.get();
-        env.window = nsh_core::Size::new(nsh_core::Points(width), nsh_core::Points(height));
-        self.environment.set(env);
-        self.control(|c| {
-            c.resize(Size::new(Points(width), Points(height)));
-            c.set_environment(env);
-        });
+        self.control(|c| c.resize(Size::new(Points(width), Points(height))));
+        self.window_environment();
         crate::navigation::surface_resized(self, width, height);
         // Full screen and the window's size change the title bar's area.
         crate::chrome::update_area(self);
@@ -1318,7 +1353,7 @@ impl Surface {
             if surface.last_tick.get() < at {
                 let now = objc2_quartz_core::CACurrentMediaTime();
                 let period = now - surface.last_tick.get();
-                surface.frame(now, period);
+                surface.frame(now, period, false);
             }
             surface.keep_deadline();
         });
@@ -1345,7 +1380,7 @@ impl Surface {
             return;
         }
         let now = link.timestamp();
-        self.frame(now, link.targetTimestamp() - link.timestamp());
+        self.frame(now, link.targetTimestamp() - link.timestamp(), true);
         // The frame may have made the link again, from another window.
         let current = self.link.borrow();
         let Some(current) = current.as_ref() else {
@@ -1360,17 +1395,17 @@ impl Surface {
     }
 
     /// One display frame at `now`, `period` seconds after the previous one
-    /// (the display link's, or one a deadline ran without a frame).
-    pub(crate) fn frame(self: &Rc<Self>, now: f64, period: f64) {
+    /// (the display link's, `drawn`, or one a deadline ran without a frame).
+    pub(crate) fn frame(self: &Rc<Self>, now: f64, period: f64, drawn: bool) {
         self.capture_revision
             .set(self.capture_revision.get().wrapping_add(1));
         self.last_tick.set(objc2_quartz_core::CACurrentMediaTime());
         let Some(monitor) = self.perf.borrow().clone() else {
-            return quiet(|| self.tick(now));
+            return quiet(|| self.tick(now, drawn));
         };
         let start = Instant::now();
         let dirty = self.wants_frames();
-        quiet(|| self.tick(now));
+        quiet(|| self.tick(now, drawn));
         let cost = start.elapsed();
         monitor.record_work(cost, dirty);
         crate::fps::ticked(cost);
@@ -1380,10 +1415,16 @@ impl Surface {
         );
     }
 
-    fn tick(self: &Rc<Self>, now: f64) {
+    /// `drawn`: a display link frame; a deadline's keeps the real time
+    /// ([`nsh_core::animation::Animator::tick_frame`]).
+    fn tick(self: &Rc<Self>, now: f64, drawn: bool) {
         let applied = self.apply_queued(FRAME_BATCHES);
         if self.anim.borrow().animating() {
-            self.anim.borrow_mut().tick(now);
+            if drawn {
+                self.anim.borrow_mut().tick_frame(now);
+            } else {
+                self.anim.borrow_mut().tick(now);
+            }
             self.write_animations();
         }
         let callbacks = std::mem::take(&mut *self.frame_callbacks.borrow_mut());

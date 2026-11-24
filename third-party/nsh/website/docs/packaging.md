@@ -8,7 +8,8 @@ group: platforms
 # Packaging
 
 `nsh package` turns an app into something you can install: a `.app` for the iOS simulator, a signed `.ipa` for iOS
-devices, a signed `.apk` or `.aab` (Android App Bundle, for Google Play) for Android, an ad hoc signed `.app` for macOS, a directory and `.tar.gz` for Linux, a directory, `.zip` and installer (`<Name>-setup.exe`, with Inno Setup) for Windows, or a static site for the web. It needs no Xcode project and no Gradle.
+devices, a signed `.apk` or `.aab` (Android App Bundle, for Google Play) for Android, a signed `.app` (ad hoc without
+`--sign`) for macOS, a directory and `.tar.gz` for Linux, a directory, `.zip` and installer (`<Name>-setup.exe`, with Inno Setup) for Windows, or a static site for the web. It needs no Xcode project and no Gradle.
 
 - **A Rust app** (`nsh.json` names its `"root"`) is packaged from its directory. `nsh` builds the target's runner in
   release mode with your crate compiled in and the root mounted, with no QuickJS: Cargo, the Rust target of the
@@ -63,8 +64,8 @@ TSX app adds its entry (`nsh package App.tsx --target …`).
 
 `nsh.json` also holds `rust` and `root` (the app's crates and its root component, [Building with Rust](./rust.md)),
 `theme` and `appearance`, `tailwind` (see [Tailwind](./tailwind.md)), `capabilities` (see
-[Sandbox and capabilities](./sandbox-and-capabilities.md)), `android` (`targetSdk` and `usesCleartextTraffic`, [below](#target-api-level)), `ios` and `macos` (the `Info.plist` keys and entitlements
-of their packages, [below](#infoplist-keys-and-entitlements); `macos.activationPolicy`, a [menu bar app](./macos.md#menu-bar-apps)) and `updater`, which makes desktop packages update themselves
+[Sandbox and capabilities](./sandbox-and-capabilities.md)), `android` (`targetSdk`, `usesCleartextTraffic`, `permissions`, `libraries`, `manifestPlaceholders`, `queries` and `application`, [below](#target-api-level)), `ios` and `macos` (the `Info.plist` keys and entitlements
+of their packages, [below](#infoplist-keys-and-entitlements); `ios.extensions` and `macos.extensions`, [iOS app extensions](#app-extensions) and [macOS app extensions](#macos-app-extensions); `macos.activationPolicy`, a [menu bar app](./macos.md#menu-bar-apps)) and `updater`, which makes desktop packages update themselves
 (see [App Updates](./app-updates.md)) and every native package take [OTA updates](./ota-updates.md); [Project structure](./project-structure.md#nshjson) lists
 every key. A key or value NSH cannot read is reported as a warning and left out, so an app written for a newer NSH
 still builds with an older one, and the warning catches a typo.
@@ -86,8 +87,8 @@ nsh package --target android --app-version 1.4.0 --build 42
 | `--app-version <version>` | Version, such as `1.2.0`. |
 | `--build <n>` | Build number. |
 | `--icon <png>` | App icon: a square PNG, ideally 1024×1024. |
-| `--sign <identity>` | iOS: the code signing identity for devices. |
-| `--profile <file>` | iOS: the provisioning profile for devices (`.mobileprovision`). |
+| `--sign <identity>` | iOS and macOS: the code signing identity (for iOS devices, or macOS packages with Hardened Runtime and a secure timestamp). |
+| `--profile <file>` | iOS: the provisioning profile for devices (`.mobileprovision`). Repeat it to give each [app extension](#app-extensions) its own. |
 | `--keystore <file>` | Android: a release keystore (default: the debug key). |
 | `--key-alias <alias>` | Android: the key alias in the keystore. |
 | `--keystore-password <password>` | Android: the keystore password; also read from `NSH_KEYSTORE_PASSWORD`. |
@@ -124,6 +125,7 @@ profile). What happens:
 - The entitlements come from the profile, with the app's own from `nsh.json` `ios.entitlements` checked against it
   ([below](#infoplist-keys-and-entitlements)). NSH checks that the profile's application identifier covers the app's `id`
   (wildcard profiles such as `TEAMID.*` or `TEAMID.com.example.*` work) and stops with an error otherwise.
+- The app's extensions, if any, are signed first, each with its own profile ([App extensions](#app-extensions)).
 - The app is signed with `codesign` using the identity, then zipped into an `.ipa` (`Payload/<Name>.app`).
 
 Find your identities with:
@@ -138,6 +140,57 @@ device as it is.
 The app supports iPhone and iPad, portrait and landscape (portrait upside down on iPad only), and needs iOS 15.0 or
 newer, or the later version it names ([Minimum system version](#minimum-system-version)).
 
+### App extensions
+
+Widgets, Live Activities, notification service extensions and other app extensions are bundles of their own
+(`.appex`) that iOS finds in the app's `PlugIns/` folder. Build them with Xcode or `swiftc`, then list them under
+`ios.extensions` in the app's `nsh.json`, relative to `nsh.json`, as `android.libraries` lists Java libraries:
+
+```json
+{
+  "ios": {
+    "extensions": [
+      {
+        "path": "ios/build/iphoneos/Widget.appex",
+        "simulatorPath": "ios/build/iphonesimulator/Widget.appex",
+        "entitlements": { "com.apple.security.application-groups": ["group.com.example.app"] }
+      }
+    ]
+  }
+}
+```
+
+| Key | Meaning |
+|---|---|
+| `path` | The extension built for devices. |
+| `simulatorPath` | The extension built for the simulator. Without it, simulator packages carry `path` when it is built for the simulator and leave the extension out (with a warning) when it is not. |
+| `entitlements` | The extension's entitlements, as `ios.entitlements` are the app's ([below](#infoplist-keys-and-entitlements)). |
+
+Each package copies the extensions into `PlugIns/` and gives them the app's `version` and `build`: an extension's
+version should match its app's (App Store Connect flags a mismatch). An extension's identifier must start with the app's (`com.example.app.Widget` for
+`com.example.app`). The simulator package signs them ad hoc; the device package signs each one with the profile for its
+identifier, which it carries as `embedded.mobileprovision`, before it signs the app. `nsh run --target ios` carries them
+too: the simulator's development host runs every TSX app, so each extension takes the host's identifier in place of
+the app's (`com.longbridge.nsh.host.Widget`).  Pass one `--profile` for the app
+and one for each extension; a profile that names a bundle's identifier is taken before a wildcard that covers it:
+
+```sh
+nsh package --target ios \
+  --sign "Apple Distribution: Example Inc (ABCDE12345)" \
+  --profile AppStore.mobileprovision \
+  --profile AppStoreWidget.mobileprovision
+```
+
+Code the app and an extension share, such as a Live Activity's attributes, is built into each of them. They share
+data through an app group, which both list in their entitlements. An app that starts Live Activities also declares
+`NSSupportsLiveActivities` in its own `Info.plist`, through `ios.infoPlist`:
+
+```json
+{
+  "ios": { "infoPlist": { "NSSupportsLiveActivities": true } }
+}
+```
+
 ## Android
 
 ```sh
@@ -149,7 +202,7 @@ without Gradle. Requirements:
 
 - The Android SDK, found through `ANDROID_HOME` (or `ANDROID_SDK_ROOT`, or `~/Library/Android/sdk`), with build tools
   and the `platforms;android-35` package. NSH tells you the `sdkmanager` command when one is missing.
-- A JDK, to create the debug keystore the first time.
+- A JDK, to create the debug keystore the first time and to build the [Java libraries](#java-code) an app lists.
 - For a Rust app, the Android NDK (`sdkmanager "ndk;<version>"`, or `ANDROID_NDK_HOME`), which builds its
   `libnsh.so`.
 
@@ -201,6 +254,141 @@ Packaged apps make requests over HTTPS. For servers without TLS, such as one on 
 
 Development builds (`nsh run --target android`) always allow plain HTTP: they load the app from the dev server over it.
 
+### Permissions
+
+The manifest declares the permissions NSH's own features need: `INTERNET`, `ACCESS_NETWORK_STATE` for
+[`network()`](./device-and-environment.md#the-network), `POST_NOTIFICATIONS` for
+[notifications](./sandbox-and-capabilities.md#notifications), `RECORD_AUDIO` and `CAMERA` for a web view's `media`. `android.permissions` adds
+others, for code of the app or an extension that calls Android itself: a bare name is one of Android's
+(`android.permission.<NAME>`), a dotted one is written as it is.
+
+```json
+{
+  "android": { "permissions": ["ACCESS_WIFI_STATE", "com.example.permission.READ_ORDERS"] }
+}
+```
+
+A normal permission such as `ACCESS_WIFI_STATE` is granted when the app is installed. A runtime permission
+(`ACCESS_FINE_LOCATION`, say) is only declared: the app's own code still asks the user for it. The TSX development
+host (`nsh run --target android` of a TSX app) declares none of these; a Rust app's `nsh run` builds its package and
+declares them.
+
+### Java code
+
+Rust reaches most Android APIs through JNI, but some take a class the app defines (a listener, a callback, a
+`PrintDocumentAdapter`), and some SDKs come as Java libraries. `android.libraries` in the app's `nsh.json` lists jar,
+Android library (`.aar`) and dex files, relative to `nsh.json`. An nshm lists its own in its `Cargo.toml`
+([What the packaged app needs](./nshm.md#what-the-packaged-app-needs)), so the apps that use it list nothing:
+
+```json
+{
+  "android": { "libraries": ["android/libs/vendor-sdk.jar", "java/out/glue.jar"] }
+}
+```
+
+The package turns the jars into dex with the SDK's `d8` and carries their classes after NSH's runtime, where the
+app's class loader finds them. The files a jar carries besides its classes (`META-INF/services/...` for
+`ServiceLoader`, for one) go to the root of the package; those under `assets/` are the package's assets, as Android's
+Gradle plugin makes them. A dex file goes in as it is, without `d8`, so a class it defines again besides a jar is not found
+when packaging. A file listed twice, or by two
+crates, goes in once; a class that two different files define stops the build, naming both files. An app that lists
+no libraries is packaged as before, without `d8`.
+
+The libraries are local files: NSH does not download them or resolve Maven dependencies, so list the libraries an SDK
+depends on as well. The third-party tool [nsh-maven](https://github.com/SuperNSH/maven) resolves a library from Maven
+repositories with what it depends on (`nsh-maven add com.google.firebase:firebase-messaging:26.0.1`), downloads the
+files into the app and lists them here; with `--crate` it lists them in an nshm crate's `Cargo.toml`.
+
+An Android library (`.aar`) brings more than its classes, which go the jars' way: its native libraries
+(`jni/<abi>/*.so`) go in for the ABIs the package has, stored uncompressed like NSH's own; its assets join the app's
+own; its resources (`res/`) join the package's, and its code reads them through its `R` class as it was built to; and
+its manifest's permissions, features, `<queries>` and components join the app's manifest, its relative class
+names (`.PushService`) completed with its package and `${applicationId}` filled in with the app's. Components that
+several libraries declare under one name (a startup provider each adds an initializer to) become one. Other
+placeholders in its manifest, or in a crate's `android.application`, take their values from
+`android.manifestPlaceholders`, which only the app's `nsh.json` sets: they are the app's, such as a service's key. The shared development host that
+`nsh test --target android` installs reads no app's `nsh.json`, so it leaves them empty, with a warning.
+
+```json
+{
+  "android": {
+    "libraries": ["android/libs/push-sdk-5.2.0.aar"],
+    "manifestPlaceholders": { "PUSH_APP_KEY": "…" }
+  }
+}
+```
+
+Each library goes in once, as its manifest's package names it: the same file from two crates goes in once, two
+versions of one library stop the build naming both, and the version the app lists in its own `nsh.json` is the one the
+package takes. The package also stops, naming the library, when it needs what an NSH app does not have: a minimum API
+level above 26, a newer platform than `android.targetSdk`, an `Application` class of its own, a manifest merge rule
+(`tools:node="remove"`, `tools:replace`), native libraries that leave out an ABI the package has, or resources
+without the `R.txt` Android's build writes next to them.
+
+Resources share one namespace, as in any Android app. When several define a resource of one name for one configuration
+(density, night mode, language...), the package's own win (`android/res/`), then the libraries the app's `nsh.json`
+lists, an earlier one over a later one, then its crates' libraries, the crate whose name sorts first over the others.
+A style is taken whole from the one that wins, not item by item. What NSH makes for the package (its icon, launch
+screen and notification sounds) is the package's in every configuration: a library's resources of those names are left
+out, with a warning. A library's `R.txt` also lists the resources of the libraries it was built with; those no library
+listed defines are left out of its `R` class, with one note. A library's code that reads such a resource stops the
+build, naming the library, the class and the resource: list the library that has it.
+
+Compile your own Java sources against the platform's `android.jar` into a jar:
+
+```sh
+javac --release 11 -classpath "$ANDROID_HOME/platforms/android-35/android.jar" -d java/classes java/src/*.java
+jar cf java/out/glue.jar -C java/classes .
+```
+
+A thread Rust started finds only the system's classes through JNI's `FindClass`; load the app's classes from the
+activity's class loader (`Context.getClassLoader()`) there.
+
+An NSH app has no `Application` class of its own, so an SDK that must be initialized from one, or must be its
+subclass, cannot be used. An SDK that starts with the app is initialized by a content provider, which its AAR declares
+itself, or which an nshm declares in its `android.application`:
+
+```toml
+[package.metadata.nsh.features.push.android]
+libraries = ["android/libs/push-sdk.jar", "android/libs/push-glue.jar"]
+application = ['<provider android:name="com.example.push.Init" android:authorities="${applicationId}.push-init" android:exported="false"/>']
+```
+
+`nsh run --target android` carries the libraries too: a TSX app's in its development host, a Rust app's in the package
+it builds. The development host has the same package name for every app, so an SDK that checks the app's package name
+(a push service's SDK, a maps SDK) works only in the app's own package: try it with `nsh package --target android --run`.
+
+### Components and queries
+
+A class the system starts (a `<service>`, a `<receiver>`, a `<provider>`) works only once the manifest declares it, and
+an SDK may need `<meta-data>`, or `<queries>` entries to see other apps. `android.application` adds elements of the
+manifest's `<application>`: `<service>`, `<receiver>`, `<provider>`, `<activity>` and `<meta-data>`. `android.queries`
+adds `<intent>`, `<package>` and `<provider>` elements of its `<queries>`. Each entry is one element, written out whole;
+`${applicationId}` in it becomes the app's package, another `${name}` the value `android.manifestPlaceholders` gives it.
+An entry that is not one such element, carries `tools:` attributes (those are for libraries' manifests) or takes a name
+NSH declares itself (its `com.longbridge.nsh.*` classes and meta-data, the `${applicationId}.files` authority of its
+file provider) is left out with a warning:
+
+```json
+{
+  "android": {
+    "libraries": ["java/out/classes.dex"],
+    "application": [
+      "<receiver android:name=\"com.example.orders.SyncReceiver\" android:exported=\"false\"/>",
+      "<provider android:name=\"com.example.orders.Files\" android:authorities=\"${applicationId}.orders\" android:exported=\"false\"/>"
+    ],
+    "queries": ["<package android:name=\"com.example.wallet\"/>"]
+  }
+}
+```
+
+The crates the app links add theirs the same way ([What the packaged app needs](./nshm.md#what-the-packaged-app-needs)),
+after the app's. When the app has Android libraries (`.aar`), these entries are merged with what the libraries declare:
+one of the same name as a library's (`<meta-data>` for a provider a library declares) joins it. `<application>`'s own
+attributes stay NSH's. The development host (`nsh run` of a TSX app, and
+`nsh test --target android`) declares the crates' entries but not the app's own; a Rust app's `nsh run` builds its
+package and declares them.
+
 ### Google Play: App Bundles
 
 Google Play takes Android App Bundles, not APKs. `--format aab` writes `.nsh/out/<Name>.aab` instead of the APK, from
@@ -224,9 +412,19 @@ nsh package --target macos --run
 
 Writes `.nsh/out/<Name>.app`: the executable in `Contents/MacOS/`, and `nsh/assets/…`, `nsh/app.json` (the window
 title, the app's appearance, its activation policy and nsh.json's window options) and a TSX app's `nsh/bundle.nshc` in
-`Contents/Resources/`. The app is signed ad hoc and needs macOS 14 or
-later, or the later version it names ([Minimum system version](#minimum-system-version)); to distribute it, sign it
-with a Developer ID and notarize it. See [macOS](./macos.md#packaging).
+`Contents/Resources/`. Without `--sign`, the app is signed ad hoc; it needs macOS 14 or later, or the later version it
+names ([Minimum system version](#minimum-system-version)). See [macOS](./macos.md#packaging).
+
+To sign the app for distribution, pass `--sign <identity>` (such as `"Developer ID Application: …"` or
+`"Apple Development: …"`):
+
+```sh
+nsh package --target macos --sign "Developer ID Application: Example Inc (ABCDE12345)"
+```
+
+When signed with a certificate, NSH enables Hardened Runtime (`--options runtime`) and a secure timestamp
+(`--timestamp`) as notarization requires, signs any embedded extensions and their nested frameworks/libraries inside-out
+first, signs the `.app`, and verifies the result with `codesign --verify --deep --strict`.
 
 The app runs on this Mac's processor. `--arch` picks another: `x86_64` for Intel Macs, `arm64` for Apple silicon, or
 `universal` for both in one executable. A runner for another processor needs its Rust target:
@@ -235,6 +433,38 @@ The app runs on this Mac's processor. `--arch` picks another: `x86_64` for Intel
 rustup target add x86_64-apple-darwin
 nsh package --target macos --arch universal
 ```
+
+### macOS app extensions
+
+Prebuilt macOS app extensions (`.appex` bundles built with Xcode or `swiftc`) can be listed under `macos.extensions` in
+the app's `nsh.json`, relative to `nsh.json`:
+
+```json
+{
+  "macos": {
+    "extensions": [
+      {
+        "path": "macos/build/Share.appex",
+        "entitlements": {
+          "com.apple.security.app-sandbox": true,
+          "com.apple.security.application-groups": ["TEAM123456.com.example.app"]
+        }
+      }
+    ]
+  }
+}
+```
+
+| Key | Meaning |
+|---|---|
+| `path` | The macOS `.appex` bundle directory, containing `Contents/Info.plist` and `Contents/MacOS/<executable>`. |
+| `entitlements` | The extension's entitlements, as `macos.entitlements` are the app's ([below](#infoplist-keys-and-entitlements)). |
+
+Each package copies the extensions into `Contents/PlugIns/` and syncs their `CFBundleShortVersionString` and
+`CFBundleVersion` to match the app's `version` and `build`. Each extension's bundle identifier must start with the app's
+(`<app_id>.`), and when `CFBundleSupportedPlatforms` is present it must include `MacOSX`. Before signing the `.app`,
+NSH signs each extension inside-out — nested `.framework` and `.dylib` items in `Contents/Frameworks/` first (with no
+entitlements), then the `.appex` with its own entitlements — using the package's signing identity (ad hoc or `--sign`).
 
 ## Linux
 
@@ -279,7 +509,8 @@ so hosts can cache them for good. Deploy the directory to any web server or CDN;
 
 NSH writes the `Info.plist` of iOS and macOS packages, and signs them. An app adds keys of its own, such as export
 compliance, an App Store category or App Transport Security exceptions, and entitlements, such as associated domains,
-under `ios` and `macos` in `nsh.json`:
+under `ios` and `macos` in `nsh.json`. (The web links that open the app go in `links`, which adds their `applinks:`
+entries to iOS packages: [Web links](../modules/nsh.md#web-links).)
 
 ```json
 {
@@ -292,7 +523,7 @@ under `ios` and `macos` in `nsh.json`:
       }
     },
     "entitlements": {
-      "com.apple.developer.associated-domains": ["applinks:example.com"]
+      "com.apple.developer.associated-domains": ["webcredentials:example.com"]
     }
   },
   "macos": {
@@ -332,9 +563,96 @@ Entitlements:
   grants associated domains as `*` and keychain groups as `TEAMID.*`); otherwise `nsh package` stops and names the
   entitlement, so enable its capability for the app's identifier and download the profile again.
 - **The iOS simulator** is signed with the app's entitlements as they are.
-- **macOS** packages are signed ad hoc with the app's entitlements. macOS launches an app with
-  `com.apple.developer.*` entitlements or keychain access groups only under a provisioning profile that grants them:
-  `nsh package` warns about them, and the app is signed again with a Developer ID and such a profile before it runs.
+- **macOS** packages are signed with the app's entitlements, ad hoc by default or with `--sign <identity>` (Hardened
+  Runtime). macOS launches an app with `com.apple.developer.*` entitlements or keychain access groups only under a
+  provisioning profile that grants them: `nsh package` warns about them, and a matching profile must be embedded as
+  `Contents/embedded.provisionprofile` and signed before the app runs.
+
+### Info.plist text in other languages
+
+The system shows the strings of `Info.plist`, such as the usage descriptions in a permission prompt or the app's name
+under its icon, in the user's language when the app has a translation of them. `ios.infoPlistStrings` and
+`macos.infoPlistStrings` give them, by language:
+
+```json
+{
+  "ios": {
+    "infoPlist": {
+      "NSLocationWhenInUseUsageDescription": "Shows the stores near you."
+    },
+    "infoPlistStrings": {
+      "zh-Hans": {
+        "CFBundleDisplayName": "示例",
+        "NSLocationWhenInUseUsageDescription": "显示你附近的门店。"
+      },
+      "ja": { "NSLocationWhenInUseUsageDescription": "近くの店舗を表示します。" }
+    }
+  }
+}
+```
+
+Packages write each language's `<language>.lproj/InfoPlist.strings`, and `nsh run` gives the iOS simulator's and Mac
+Catalyst's development host the same, so a prompt can be checked in each language before packaging. The system asks
+once per app: reset the answer before checking a prompt again, `xcrun simctl privacy booted reset camera <id>` in the
+iOS simulator, `tccutil reset Camera <id>` on macOS and Mac Catalyst, with the app's `id`, or under `nsh run` the
+development host's.
+
+- **Languages** are named as Xcode names them: a language, then a script or a region if needed, joined with `-` (`en`,
+  `ja`, `zh-Hans`, `zh-Hant`, `pt-BR`). Other spellings (`zh-hans`, `zh_TW`, `Chinese`) are an error naming the key.
+- **The `Info.plist` value** stays the text of every language without a translation, so each translated key needs one:
+  set it in `infoPlist`, or have it from NSH (the app's name, the usage descriptions NSH adds) or from a
+  [crate](./nshm.md#what-the-packaged-app-needs). A translation of a key the package's `Info.plist` does not have as a
+  string stops `nsh package` with an error naming it: the system would never show it.
+- **Translated keys** are the app's own and, of NSH's, only `CFBundleDisplayName` and `CFBundleName`; values are
+  strings. A macOS package whose name is translated also says so to Finder (`LSHasLocalizedDisplayName`).
+- **The languages are declared** to the system with the app's [`locales`](./i18n.md) (`CFBundleLocalizations`),
+  English first: users of a language the app has no translation for see the `Info.plist` text, and the system's own UI
+  in the app shows in the translated languages too. A language given as an empty `{}` has no file and is not declared;
+  it takes the [crates'](./nshm.md#what-the-packaged-app-needs) translations, which apps take for their own languages
+  only.
+
+### Privacy manifest
+
+App Store Connect checks an iOS app's privacy manifest, `PrivacyInfo.xcprivacy`, when it is uploaded: why the app
+calls the APIs Apple requires a reason for, whether it tracks and with which domains, and the data it collects
+([Privacy manifest files](https://developer.apple.com/documentation/bundleresources/privacy-manifest-files)).
+`ios.privacyManifest` in `nsh.json` is that file's contents, which iOS packages write at the root of the app before
+signing it (an app extension carries its own, in its `.appex`):
+
+```json
+{
+  "ios": {
+    "privacyManifest": {
+      "NSPrivacyTracking": false,
+      "NSPrivacyAccessedAPITypes": [
+        {
+          "NSPrivacyAccessedAPIType": "NSPrivacyAccessedAPICategoryFileTimestamp",
+          "NSPrivacyAccessedAPITypeReasons": ["C617.1"]
+        },
+        {
+          "NSPrivacyAccessedAPIType": "NSPrivacyAccessedAPICategorySystemBootTime",
+          "NSPrivacyAccessedAPITypeReasons": ["35F9.1"]
+        }
+      ]
+    }
+  }
+}
+```
+
+It takes the four keys of Apple's format (`NSPrivacyTracking`, `NSPrivacyTrackingDomains`,
+`NSPrivacyCollectedDataTypes`, `NSPrivacyAccessedAPITypes`) and their entries' keys. An unknown key, a value of the
+wrong type or an entry without all its keys is left out with a warning. What App Store Connect would refuse as written
+(an entry with no reason, tracking without its domains) is warned about too; App Store Connect still checks the
+category and reason codes themselves.
+
+NSH's runtime is part of the app's executable, so the APIs it calls count as the app's: declare these with the app's
+own.
+
+| Category | What in NSH calls it | Reason |
+|---|---|---|
+| `NSPrivacyAccessedAPICategoryFileTimestamp` | Rust's standard library reading file metadata; the image cache, which ages its files | `C617.1`; also `3B52.1` when the app reads files people pick |
+| `NSPrivacyAccessedAPICategorySystemBootTime` | the renderer's timer | `35F9.1` |
+| `NSPrivacyAccessedAPICategoryUserDefaults` | reading the temperature unit people choose in Settings, which no reason of Apple's covers ([#2830](https://github.com/longbridge/nsh/issues/2830)) | |
 
 ### Minimum system version
 
@@ -361,7 +679,7 @@ Give one square PNG, ideally 1024×1024, in `nsh.json` (`"icon": "icon.png"`) or
 
 - **iOS:** compiled by Xcode's `actool` into the app's asset catalog (`Assets.car`), which derives every size iOS
   needs.
-- **Android:** resized to 192×192 and used as the launcher icon (`mipmap-xxxhdpi`).
+- **Android:** resized to 192×192 and used as the launcher icon (`mipmap-xxxhdpi`); see adaptive icons below.
 - **macOS:** converted by `sips` to `AppIcon.icns`. `nsh run --target macos` and `nsh test --target macos` show the
   PNG in the Dock and the app switcher.
 - **Linux:** copied as `<id>.png`, which the `.desktop` file names as its `Icon`.
@@ -384,6 +702,29 @@ Windows, Linux and Android fill it. Give `icon` an object to use a PNG per platf
   }
 }
 ```
+
+`icon.android` also takes an adaptive icon, whose layers the launcher masks to its own shape (circle, squircle, ...).
+Each layer is 108×108dp; the inner 72×72dp appears within the mask, and the outer 18dp on each side is left for the
+launcher's visual effects. Keep the artwork within the central circle of 66dp: about 61% of the width, 264 pixels of a
+432-pixel layer.
+
+```json
+{
+  "icon": {
+    "android": {
+      "foreground": "icon-foreground.png",
+      "background": "#ffffff",
+      "monochrome": "icon-monochrome.png"
+    }
+  }
+}
+```
+
+- `foreground`: a square PNG with a transparent background, ideally 432×432 or larger.
+- `background`: a color (`"#rrggbb"`, `"#rrggbbaa"`) or a square PNG.
+- `monochrome` (optional): the artwork in one color on transparent, which Android 13 and later tint for themed icons.
+
+Only `icon.android` takes this form.
 
 `--icon` replaces it for the target being packaged.
 
@@ -414,6 +755,24 @@ Both are compiled into the app's asset catalog with its icon and named in `UILau
 sets in `ios.infoPlist`. A launch screen that matches the app's first frame (its background, the same image in the
 same place) makes the start look seamless. `appearance` picks which of the two the system shows.
 
+On Android, `android.launchScreen` takes the same keys. The package gives the app a theme whose window background is
+`background`, so the window matches the app's first frame from the tap on the icon on, and stays behind it. On Android
+12 and later the system splash screen also uses `background` (behind the icon too), with `image` in the middle at the
+same size as on iOS (a 288×288 PNG is 96×96 dp). Without `image` the splash screen shows the launcher icon. An app
+that targets an API level below 31 has no splash screen to show `image` in, though the file is still checked. The dark
+values apply in the system's dark mode, and `appearance` set to `light` or `dark` keeps that one.
+
+```json
+{
+  "android": {
+    "launchScreen": {
+      "background": { "light": "#ffffff", "dark": "#131312" },
+      "image": { "light": "launch.png", "dark": "launch-dark.png" }
+    }
+  }
+}
+```
+
 ## Camera, Bluetooth and other hardware
 
 A packaged app declares the hardware NSH's own features use, from its `nsh.json`:
@@ -424,7 +783,7 @@ A packaged app declares the hardware NSH's own features use, from its `nsh.json`
 | Web pages that capture media ([`capabilities.webview.media`](./sandbox-and-capabilities.md#webview)) | `NSMicrophoneUsageDescription`, `NSCameraUsageDescription`; on macOS the entitlements `com.apple.security.device.audio-input` and `com.apple.security.device.camera` | `RECORD_AUDIO`, `CAMERA` |
 | [`Notifications`](../modules/nsh.md#notifications), when the app grants `notifications` or declares no capabilities | | `POST_NOTIFICATIONS` |
 
-Every Android package also declares `INTERNET`. A usage description is what the system shows when the app first asks;
+Every Android package also declares `INTERNET` and `ACCESS_NETWORK_STATE`. A usage description is what the system shows when the app first asks;
 the app's `infoPlist` words it its own way ([above](#infoplist-keys-and-entitlements)).
 
 On iOS and macOS, an app's own [Rust crate](./rust.md) reaches other hardware through the system's frameworks, with the

@@ -201,11 +201,15 @@ public class NshView extends FrameLayout {
         super(context);
         density = getResources().getDisplayMetrics().density;
         TextLayouts.cacheDir = context.getCacheDir();
+        // Rust code's permission requests ask through the activity in front.
+        Permissions.track(context);
         mounter = new Mounter(this, new Images(this::readAsset));
         root = mounter.root;
         addView(root, new LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT));
         touches = new TouchTracker(mounter, this);
         mounter.touchTrackers.add(touches);
+        // Files dragged in from other apps (`onFileDrop`).
+        setOnDragListener(new FileDrops(mounter, this));
         keys = new KeyDispatch(mounter, root, 1);
         setClipChildren(false);
         // Holds focus when no input does (see InputBox.blur).
@@ -294,6 +298,14 @@ public class NshView extends FrameLayout {
     /** Runs the apps loaded from now on as apps on their own, without limits (nsh's own activities). */
     void useStandaloneLimits() {
         Native.setStandaloneLimits(handle);
+    }
+
+    /**
+     * The activity's system bars are this app's (an app on its own): their default icons follow the app's
+     * appearance, not only the system's. An embedding host keeps its bars unless the app asks for the status bar.
+     */
+    void ownSystemBars() {
+        mounter.ownsSystemBars = true;
     }
 
     /**
@@ -638,7 +650,9 @@ public class NshView extends FrameLayout {
     /**
      * Reports the notification press {@code intent} carries to the app, if it does. The activity showing this view
      * calls it from {@code onCreate} and {@code onNewIntent}, with {@code Notifications} of {@code nsh}: a press opens
-     * the app's launcher activity.
+     * the app's launcher activity. An intent with extras that a notification NSH did not show (a push service's SDK's)
+     * may have opened goes to the handler Rust code sets with {@code nsh::notifications::set_foreign_handler} instead,
+     * once per intent. UI thread.
      *
      * @param intent the activity's intent
      */
@@ -914,6 +928,8 @@ public class NshView extends FrameLayout {
             lifecycle,
             // 24-hour time: the user's setting, else the locale's.
             android.text.format.DateFormat.is24HourFormat(getContext()) ? 1 : 0,
+            // `network()`: the process's default network.
+            network.kind, network.expensive ? 1 : 0, network.constrained ? 1 : 0,
         }, dark, locale.toLanguageTag(), timeZone,
                 // The user's list (an app's own language first, Android 13's
                 // per-app language included), after the embedding app's own.
@@ -946,6 +962,14 @@ public class NshView extends FrameLayout {
             publishEnvironment(getRootWindowInsets());
         }
     };
+
+    /** The device's default network (`network()`), the process's. */
+    private final NetworkState network = NetworkState.of(getContext());
+
+    /** The default network changed (`network()`). */
+    void networkChanged() {
+        publishEnvironment(getRootWindowInsets());
+    }
 
     /** The view's activity reported `state` (`lifecycle()`'s values). */
     private void activityState(Activity activity, int state) {
@@ -1133,6 +1157,9 @@ public class NshView extends FrameLayout {
             Integer state = lifecycles.state(activity);
             if (state != null) activityState(activity, state);
         }
+        // The route's changes, while attached (`network()`); the insets
+        // applied next report the route as it is now.
+        network.views.add(this);
         // The zone may have changed while the view was detached. The
         // broadcasts are the system's alone: no export flag is needed.
         timeZone = java.util.TimeZone.getDefault().getID();
@@ -1155,6 +1182,7 @@ public class NshView extends FrameLayout {
         if (handle != 0) Native.keyReset(handle);
         accessibility().removeTouchExplorationStateChangeListener(screenReader);
         if (Lifecycles.registered != null) Lifecycles.registered.views.remove(this);
+        network.views.remove(this);
         getContext().unregisterReceiver(timeChanged);
     }
 

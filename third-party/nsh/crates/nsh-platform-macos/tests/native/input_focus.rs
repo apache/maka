@@ -16,7 +16,7 @@ use nsh_base::input;
 use nsh_core::prelude::*;
 use nsh_platform_macos::{
     self as platform,
-    objc2::{MainThreadMarker, MainThreadOnly, Message, rc::Retained},
+    objc2::{MainThreadMarker, MainThreadOnly, Message, msg_send, rc::Retained, sel},
     objc2_app_kit::{
         NSAccessibility, NSApplication, NSBackingStoreType, NSTextField, NSTextInputClient,
         NSTextView, NSView, NSWindow, NSWindowStyleMask,
@@ -28,6 +28,7 @@ const LONG: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZ abcdefghijklmnopqrstuvwxyz 012345
 
 static CARET: Mutex<Option<Bounds<Points>>> = Mutex::new(None);
 static SELECTION: Mutex<Option<Selection>> = Mutex::new(None);
+static KEYS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
 #[component]
 fn Page() -> impl IntoElement {
@@ -48,7 +49,9 @@ fn Page() -> impl IntoElement {
                 .on_selection_change(|range: &Selection| *SELECTION.lock().unwrap() = Some(*range)),
         )
         .child(field("reference", LONG))
-        .child(field("short", "ABC"))
+        .child(field("short", "ABC").on_key_press(|key: &str| {
+            KEYS.lock().unwrap().push(key.to_owned());
+        }))
         .child(field("center", "Centered").text_center())
         .child(field("right", "Right aligned").text_right())
         .child(
@@ -183,6 +186,23 @@ pub(super) fn run() {
     }
     let long = field(&root, "long").unwrap();
     let short = field(&root, "short").unwrap();
+    if native_fixture {
+        focus(&window, &short);
+        settle();
+        KEYS.lock().unwrap().clear();
+        let editor = editor(&short);
+        let delegate = short.delegate().unwrap();
+        for command in [sel!(moveUp:), sel!(moveDown:)] {
+            // SAFETY: the mounted input's delegate implements this
+            // NSTextFieldDelegate method; the field and editor are live.
+            let handled: bool = unsafe {
+                msg_send![&*delegate, control: &*short, textView: &*editor, doCommandBySelector: command]
+            };
+            assert!(!handled, "arrow commands must keep AppKit's caret movement");
+        }
+        settle();
+        assert_eq!(*KEYS.lock().unwrap(), ["ArrowUp", "ArrowDown"]);
+    }
     settle();
     shot(&root, "idle");
     let mut positions = Vec::new();

@@ -1,4 +1,11 @@
 {
   "name": "DataTable bench",
-  "id": "com.example.datatable-bench"
+  "id": "com.example.datatable-bench",
+  "capabilities": {
+    "windows": true,
+    "application": true,
+    "process": {
+      "env": ["EXTERNAL_DRIVER"]
+    }
+  }
 }

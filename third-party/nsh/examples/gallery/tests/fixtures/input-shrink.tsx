@@ -1,4 +1,5 @@
 import { keyboardFrame, mount, signal, View } from "nsh";
+import { Window } from "nsh/desktop";
 import { Input } from "nsh/base";
 
 const LINE = 22;
@@ -30,4 +31,4 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => <Window id="main">{App}</Window>);

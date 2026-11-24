@@ -24,7 +24,10 @@ function App() {
             <View style={{ height: 40 }} />
             <Text>Alpha beta gamma</Text>
             <Text>Delta epsilon</Text>
-            <View style={{ height: 400 }} />
+            {/* Where a finger scrolls the inner view: at the bottom of its viewport, clear of the edit menu above or below the selection. */}
+            <View style={{ height: 36 }} />
+            <View testID="inner-grip" style={{ height: 50 }} />
+            <View style={{ height: 314 }} />
           </Scroll>
         </View>
         <View style={{ height: 600 }} />

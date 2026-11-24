@@ -85,6 +85,7 @@ pub fn App() -> impl IntoElement {
 ```tsx tabs
 import { mount, Scroll, Text, View } from "nsh";
 import { createNavStack, NavPage, NavStack } from "nsh/base";
+import { Window } from "nsh/desktop";
 
 type Route = { name: "inbox" } | { name: "message"; id: number };
 
@@ -145,7 +146,11 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 <a id="the-stacks-state"></a>
@@ -243,6 +248,7 @@ export const nav = createNavStack<Route>([{ name: "home" }]);
 | `headerVisible` | `boolean` | `true` | iOS 和 Android：显示系统标题栏。 |
 | `headerTransparent` | `boolean` | `false` | iOS 和 Android：内容延伸到标题栏下方。 |
 | `headerShadowVisible` | `boolean` | `true` | iOS：标题栏下方的细线。设为 `false` 时标题栏没有这条线，同 iOS 26 系统自带的标题栏。Android 的标题栏没有这条线。 |
+| `headerTitleAlign` | `"left" \| "center"` | `"left"` | Android：标题在标题栏里的位置，靠起始边或在两侧按钮之间居中。iOS：系统导航栏总是居中，忽略此值。 |
 | `headerBackgroundOnScroll` | `boolean` | `false` | iOS：配合 `headerTransparent`，内容停在顶端时标题栏是透明的，内容滚到标题栏下面后显示标题栏的背景，同 UIKit 自带的标题栏。标题栏跟随从页面顶端开始、露出最多的那个可见滚动视图。其他平台忽略。 |
 | `headerStyle` | `{ backgroundColor?, color?, tintColor? }` | | iOS 和 Android：标题栏背景色、标题颜色（`color`）和按钮颜色（`tintColor`）。 |
 | `headerClass` | `string` | | 用类名设置同样的颜色：`bg-*`、标题用 `text-*`、按钮用 `tint-*`；`headerStyle` 优先。 |
@@ -592,7 +598,7 @@ function Files() {
 }
 ```
 
-Escape、Android 返回键、点击背景（TSX 的背景，Rust 中是原生表单的背景）和在表单上下滑都会以原生方式关闭它（`close_on_escape`、`close_on_backdrop_press` 和 `close_on_swipe`，TSX 的 `closeOnEscape`、`closeOnBackdropPress` 和 `closeOnSwipe`，默认都是 true）。在 Rust 中，`on_cancel` 报告每一次尝试，`on_close` 报告关闭，所以在那里把对话框移出视图；应用自己画的背景用它自己的按压处理关闭对话框，如上所示。在 TSX 中，`onOpenChange({ open: false, reason })` 通知你，所以在那里把 `open` 设为 `false`。要先确认，就把对应开关设为 false 并处理取消事件（`on_cancel`、`onCancel`，它报告每一次尝试），然后自己关闭对话框。在 iOS 上，`.presentation(ModalPresentation::PageSheet)` 或 `FormSheet`（`presentation="pageSheet"` 或 `"formSheet"`）呈现一个保留后面内容可见的表单。
+Escape、Android 返回键、点击背景（TSX 的背景，Rust 中是原生表单的背景）和在表单上下滑都会以原生方式关闭它（`close_on_escape`、`close_on_backdrop_press` 和 `close_on_swipe`，TSX 的 `closeOnEscape`、`closeOnBackdropPress` 和 `closeOnSwipe`，默认都是 true）。在 Rust 中，`on_cancel` 报告每一次尝试，`on_close` 报告关闭，所以在那里把对话框移出视图；应用自己画的背景用它自己的按压处理关闭对话框，如上所示。在 TSX 中，`onOpenChange({ open: false, reason })` 通知你，所以在那里把 `open` 设为 `false`。在 iOS 上，对话框显示的内容也可以关闭它，比如视频系统控件的关闭按钮：这会像 Escape 一样报告（`"cancel"`），于是对话框和其中的视频一起移除。要先确认，就把对应开关设为 false 并处理取消事件（`on_cancel`、`onCancel`，它报告每一次尝试），然后自己关闭对话框。在 iOS 上，`.presentation(ModalPresentation::PageSheet)` 或 `FormSheet`（`presentation="pageSheet"` 或 `"formSheet"`）呈现一个保留后面内容可见的表单。
 
 全部属性见 [Dialog](../elements/dialog.md)。在对话框内部，`env(safe-area-inset-*)` 变量和 inset 都是对话框自己的。系统对话框（带操作的提示框、操作表）请用 `nsh_base`（TSX：`nsh/base`）的 [`AlertDialog`](../modules/nsh-base.md#alertdialog)。
 
@@ -660,6 +666,64 @@ function Editor() {
 ```
 
 在 effect 中创建的监听器一直有效，直到 effect 再次运行或它的组件消失；在 TSX 中，调用 `BackHandler.on` 返回的函数也会停止它。在 TSX 中，`BackHandler.exitApp()` 退出应用；在 iOS 上也可以导入 `nsh/mobile`，`BackHandler` 的调用会立即返回，所以同一份代码可以在两个平台上运行。见[平台特定代码](./platform-specific.md)。
+
+### 跟随返回手势
+
+在 Android 14 及更高版本上，返回手势会在手指移动时报告进度（预测性返回）。应用自己移动的视图，例如抽屉或底部面板，可以跟随它：Rust
+中用 `on_back_progress`，TSX 中用 `BackHandler.on("progress", listener)`。每一步带有 `phase`（`start`、`move`、`end`、
+`cancel`）、从 0 到 1 的 `progress`，以及滑动开始的屏幕边缘 `edge`（`left` 或 `right`）。`end` 之后紧接着是返回操作，你的返回监听器像上面那样收到它；
+`cancel` 之后把视图放回原处。注册了进度监听器时，导航栈把手势交给应用，不再预览弹出；对话框接管的手势不会报告。和返回监听器一样，只在视图打开时监听：
+
+```rust tabs
+use nsh_core::prelude::*;
+
+const WIDTH: f32 = 280.0;
+
+pub fn drawer(open: Signal<bool>) -> impl IntoElement {
+    let x = animated_value(0.0);
+    // 只在打开时监听：按下关闭它，手势的各步移动它。
+    effect(move || {
+        if open.get() {
+            on_back_press(move || {
+                open.set(false);
+                true
+            });
+            on_back_progress(move |e: &BackProgressEvent| match e.phase {
+                BackPhase::Start | BackPhase::Move => x.set(-WIDTH * e.progress.0),
+                BackPhase::Cancel => drop(x.spring(0.0, Spring::default())),
+                _ => {}
+            });
+        }
+    });
+    // …
+    view().w(px(WIDTH)).bind_translate_x(&x)
+}
+```
+
+```tsx tabs
+import { createAnimatedValue, effect, type Signal } from "nsh";
+import { BackHandler } from "nsh/mobile";
+
+const WIDTH = 280;
+
+function Drawer({ open }: { open: Signal<boolean> }) {
+  const x = createAnimatedValue(0);
+  // 只在打开时监听：按下关闭它，手势的各步移动它。
+  effect(() => {
+    if (open()) {
+      BackHandler.on("press", () => {
+        open.set(false);
+        return true;
+      });
+      BackHandler.on("progress", (e) => {
+        if (e.phase === "start" || e.phase === "move") x.set(-WIDTH * e.progress);
+        else if (e.phase === "cancel") x.spring(0);
+      });
+    }
+  });
+  // …
+}
+```
 
 ## 标签页与其他布局
 

@@ -1,6 +1,7 @@
 // Views to find and act on: rows with the same buttons, a disabled
 // button, a long press, an input to clear, a note that goes away.
 import { mount, signal, Text, View } from "nsh";
+import { Window } from "nsh/desktop";
 import { Button, Input } from "nsh/base";
 
 function App() {
@@ -37,4 +38,4 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => <Window id="main">{App}</Window>);

@@ -55,6 +55,7 @@ fn files() -> impl IntoElement {
 ```tsx tabs
 import { mount, signal, Text, View } from "nsh";
 import { Tree, type TreeItem } from "nsh/base";
+import { Window } from "nsh/desktop";
 
 const files: TreeItem[] = [
   {
@@ -94,7 +95,11 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 `Tree` comes from [`nsh/base`](../modules/nsh-base.md), the `nsh-base` crate in Rust. The expanded items and the
@@ -135,6 +140,8 @@ chevron turns with a transition.
 | `reveal` | `.reveal(..)` | `boolean` | `false` | Expanding and collapsing move the rows after the item to their new places with a spring, run natively. Off with reduced motion. |
 | `accessibilityLabel` | `.accessibility_label(..)` | `string` | none | What screen readers call the tree ("Files"). |
 | `renderItem` | `.render_item(..)` | `(entry: TreeEntry) => JSX.Element` | none | A row's content, for the rows in view; without it a row shows the item's label. |
+| `header` | `.header(..)` | `JSX.Element` | none | What shows above the rows, inside the tree's scroll view: it scrolls with them (pinned items, a heading). |
+| `empty` | `.empty(..)` | `JSX.Element` | none | What shows instead of the rows while no item does: no items, a filter that left none. |
 | `itemClass`, `itemStyle` | `.item_class(..)`, `.item_style(..)` | `string`, `StyleProp<TextStyle>` | none | Each row: its height, padding, surface and states (below); its text styles reach the label. |
 | `listClass`, `listStyle` | `.list_class(..)`, `.list_style(..)` | `string`, `StyleProp<ViewStyle>` | none | The scroll view of the rows inside the tree: its padding and gaps. |
 | `class`, `style` | style methods | `string`, `StyleProp<ViewStyle>` | none | The tree itself. Give it a height (or `flex-1` in a parent that has one): the rows scroll inside it, and only those in view are made. |
@@ -166,8 +173,10 @@ moving through the files previews them one by one, Return or a double click open
 |---|---|---|---|
 | The tree | | `class`, `style` | |
 | The list | the tree | `listClass`, `listStyle` | |
+| `header` | the list | the app's element | |
 | A row | the list | `itemClass`, `itemStyle` | `selected:`, `aria-expanded:` (a folder that is open), `focus:` (while the tree has the keyboard focus, the row the keys act on: the selected row, the collapsed item a hidden selection is under, or the first row while nothing is selected), `focus-visible:` (that row while the tree's focus shows: the keys moved it, not a click), `disabled:`, `hover:`, `active:` |
 | A row's content | a row | `renderItem` | `group-selected:`, `group-aria-expanded:`, `group-focus:`, `group-focus-visible:`, `group-disabled:` under `group` in `itemClass` |
+| `empty` | the list | the app's element | |
 
 Show the selected row with `selected:` and the keyboard's place with `focus-visible:`, which shows
 once the keys move and not after a click (see

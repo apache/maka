@@ -1,30 +1,47 @@
-//! The HTTP stack behind `fetch`, on ureq (rustls with the webpki roots):
+//! The HTTP stack behind `fetch`, on ureq (rustls with the platform's verifier):
 //! one thread per request, streaming both ways.
 //!
 //! Feature `net`; the Windows, Linux and GPUI backends hand it to their
 //! engines. Adapted from the stack of headless runs (`nsh-testing`'s
-//! `headless/net.rs`), which platforms do not build. The
+//! `headless/live.rs`), which platforms do not build. The
 //! differences: no events at all after `cancel` (the engine would ignore
 //! them anyway), `redirected` compares normalized URLs, and only connecting
 //! and the response head have deadlines, so long-lived bodies (event
 //! streams, large downloads) are not cut off.
 //!
-//! HTTP error statuses are responses, not failures. A request thread
-//! blocked in a read or write is not interrupted by `cancel` or `pause`: it
-//! stops before its next chunk.
+//! HTTP error statuses are responses, not failures. `cancel` shuts the
+//! request's socket down, so a read or write blocked on it (the response
+//! head, a body chunk, the TLS handshake, a proxy's `CONNECT`) returns at
+//! once and the server sees the connection close. A cancel during DNS or
+//! the TCP connect takes effect when the socket exists. A connection that
+//! went back to the pool is no longer the request's, so a late cancel
+//! leaves it to the next request. `pause` interrupts nothing: a paused
+//! request stops before its next chunk.
 
 use std::{
+    cell::RefCell,
     io::Read,
     sync::{
-        Arc, Condvar, Mutex, OnceLock,
+        Arc, Condvar, Mutex, OnceLock, Weak,
         mpsc::{Receiver, Sender, channel},
     },
     time::Duration,
 };
 
-use ureq::{Agent, ResponseExt, SendBody, http};
+use ureq::{
+    Agent, ResponseExt, SendBody, http,
+    unversioned::{
+        resolver::DefaultResolver,
+        transport::{
+            Buffers, ConnectionDetails, Connector, DefaultConnector, NextTimeout, ShutdownHandle,
+            Transport,
+        },
+    },
+};
 
-use crate::{FetchEvent, FetchEvents, FetchTask, HttpBody, HttpHead, HttpRequest, Network};
+use crate::{
+    FetchEvent, FetchEvents, FetchTask, HttpBody, HttpCache, HttpHead, HttpRequest, Network,
+};
 
 /// Bytes read from the response per chunk.
 const CHUNK: usize = 64 << 10;
@@ -49,7 +66,7 @@ struct UreqNetwork {
 impl UreqNetwork {
     fn new() -> Self {
         let agent = |redirects| {
-            Agent::config_builder()
+            let config = Agent::config_builder()
                 .http_status_as_error(false)
                 .tls_config(
                     ureq::tls::TlsConfig::builder()
@@ -60,8 +77,8 @@ impl UreqNetwork {
                 .max_redirects_will_error(false)
                 .timeout_connect(Some(Duration::from_secs(30)))
                 .timeout_recv_response(Some(Duration::from_secs(60)))
-                .build()
-                .into()
+                .build();
+            Agent::with_parts(config, Cancellable::default(), DefaultResolver::default())
         };
         Self {
             follow: agent(MAX_REDIRECTS),
@@ -92,7 +109,10 @@ impl Network for UreqNetwork {
         let spawned = std::thread::Builder::new().name("nsh-fetch".into()).spawn({
             let events = events.clone();
             move || {
-                if let Err(e) = run(&agent, request, body_rx, &events) {
+                REQUEST.with(|r| *r.borrow_mut() = Some(events.control.clone()));
+                let result = run(&agent, request, body_rx, &events);
+                events.control.detach(None);
+                if let Err(e) = result {
                     events.send(FetchEvent::Failed(e.to_string()));
                 }
             }
@@ -118,6 +138,8 @@ struct Control {
 struct ControlState {
     paused: bool,
     cancelled: bool,
+    /// The socket the request is using now, shut down by `cancel`.
+    socket: Option<Weak<dyn ShutdownHandle>>,
 }
 
 impl Control {
@@ -132,6 +154,140 @@ impl Control {
 
     fn cancelled(&self) -> bool {
         self.state.lock().expect("control").cancelled
+    }
+
+    /// The request is using `socket` now: a cancel shuts it down (at once
+    /// when it came first).
+    fn attach(&self, socket: &Weak<dyn ShutdownHandle>) {
+        let mut s = self.state.lock().expect("control");
+        if s.cancelled {
+            if let Some(socket) = socket.upgrade() {
+                socket.shutdown();
+            }
+        } else {
+            s.socket = Some(socket.clone());
+        }
+    }
+
+    /// The request no longer uses `socket` (`None`: any).
+    fn detach(&self, socket: Option<&Weak<dyn ShutdownHandle>>) {
+        let mut s = self.state.lock().expect("control");
+        if socket.is_none_or(|socket| s.socket.as_ref().is_some_and(|s| Weak::ptr_eq(s, socket))) {
+            s.socket = None;
+        }
+    }
+}
+
+impl std::fmt::Debug for Control {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Control")
+    }
+}
+
+thread_local! {
+    /// The request of this thread (one thread per request).
+    static REQUEST: RefCell<Option<Arc<Control>>> = const { RefCell::new(None) };
+}
+
+/// ureq's default connector, keeping each connection's socket so that the
+/// request using it can shut it down when cancelled.
+#[derive(Debug, Default)]
+struct Cancellable(DefaultConnector);
+
+impl Connector for Cancellable {
+    type Out = Tracked;
+
+    fn connect(
+        &self,
+        details: &ConnectionDetails,
+        chained: Option<()>,
+    ) -> Result<Option<Tracked>, ureq::Error> {
+        let socket: Arc<Mutex<Option<Weak<dyn ShutdownHandle>>>> = Arc::default();
+        let register = details.register_shutdown.clone();
+        let kept = socket.clone();
+        let details = ConnectionDetails {
+            uri: details.uri,
+            addrs: details.addrs.clone(),
+            config: details.config,
+            request_level: details.request_level,
+            resolver: details.resolver,
+            now: details.now,
+            timeout: details.timeout,
+            current_time: details.current_time.clone(),
+            run_connector: details.run_connector.clone(),
+            // Called on the request's thread as soon as the socket exists, so
+            // a cancel interrupts the TLS handshake or a proxy's CONNECT too.
+            register_shutdown: Arc::new(move |handle: Weak<dyn ShutdownHandle>| {
+                REQUEST.with(|r| {
+                    if let Some(control) = &*r.borrow() {
+                        control.attach(&handle);
+                    }
+                });
+                *kept.lock().expect("socket") = Some(handle.clone());
+                register(handle)
+            }),
+        };
+        let inner = self.0.connect(&details, chained)?;
+        let socket = socket.lock().expect("socket").take();
+        Ok(inner.map(|inner| Tracked {
+            inner,
+            socket,
+            owner: None,
+        }))
+    }
+}
+
+/// A connection that tells the request using it which socket it is on.
+#[derive(Debug)]
+struct Tracked {
+    inner: Box<dyn Transport>,
+    socket: Option<Weak<dyn ShutdownHandle>>,
+    owner: Option<Arc<Control>>,
+}
+
+impl Tracked {
+    fn attach(&mut self) {
+        if let Some(socket) = &self.socket {
+            let control = REQUEST.with(|r| r.borrow().clone());
+            if let Some(control) = control {
+                control.attach(socket);
+                self.owner = Some(control);
+            }
+        }
+    }
+}
+
+impl Transport for Tracked {
+    fn buffers(&mut self) -> &mut dyn Buffers {
+        self.inner.buffers()
+    }
+
+    fn transmit_output(&mut self, amount: usize, timeout: NextTimeout) -> Result<(), ureq::Error> {
+        self.attach();
+        self.inner.transmit_output(amount, timeout)
+    }
+
+    fn maybe_await_input(&mut self, timeout: NextTimeout) -> Result<bool, ureq::Error> {
+        self.attach();
+        self.inner.maybe_await_input(timeout)
+    }
+
+    fn await_input(&mut self, timeout: NextTimeout) -> Result<bool, ureq::Error> {
+        self.attach();
+        self.inner.await_input(timeout)
+    }
+
+    fn is_open(&mut self) -> bool {
+        // ureq asks before pooling the connection and before reusing it:
+        // from here on it is no longer the last request's.
+        if let Some(owner) = self.owner.take() {
+            owner.detach(self.socket.as_ref());
+        }
+        self.inner.is_open()
+    }
+
+    fn is_tls(&self) -> bool {
+        self.inner.is_tls()
     }
 }
 
@@ -161,7 +317,15 @@ impl FetchTask for Task {
     }
 
     fn cancel(self: Box<Self>) {
-        self.control.state.lock().expect("control").cancelled = true;
+        {
+            let mut s = self.control.state.lock().expect("control");
+            s.cancelled = true;
+            // Under the lock, so that the connection cannot go back to the
+            // pool in between (`Tracked::is_open` detaches under it).
+            if let Some(socket) = s.socket.take().and_then(|s| s.upgrade()) {
+                socket.shutdown();
+            }
+        }
         self.control.changed.notify_all();
         // Wakes a body reader waiting for its next chunk.
         if let Some(body) = &self.body {
@@ -233,6 +397,10 @@ fn run(
     body: Option<Receiver<Option<Vec<u8>>>>,
     events: &Events,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // No HTTP cache here: nothing can answer from it.
+    if request.cache == HttpCache::OnlyIfCached {
+        return Err("no cached response (`cache: \"only-if-cached\"`)".into());
+    }
     let requested: http::Uri = request.url.parse()?;
     let mut builder = http::Request::builder()
         .method(request.method.as_str())
@@ -352,6 +520,7 @@ mod tests {
             headers: Vec::new(),
             body: HttpBody::Empty,
             follow_redirects: true,
+            cache: HttpCache::Default,
         }
     }
 
@@ -576,5 +745,190 @@ mod tests {
     fn invalid_url_fails() {
         let (_task, rx) = start(request("GET", "not a url"));
         assert!(matches!(next(&rx), FetchEvent::Failed(_)));
+    }
+
+    /// Whether the peer closes `stream` within 5 s (it sends nothing).
+    fn closes(stream: &mut TcpStream) -> bool {
+        use std::io::Read as _;
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("timeout");
+        match stream.read(&mut [0u8; 1]) {
+            Ok(n) => n == 0,
+            Err(e) => !matches!(
+                e.kind(),
+                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+            ),
+        }
+    }
+
+    /// Reads the rest of a request's head on a kept-alive connection;
+    /// false when the client closed it instead.
+    fn next_request(s: &mut BufReader<TcpStream>) -> bool {
+        let mut line = String::new();
+        if s.read_line(&mut line).unwrap_or(0) == 0 {
+            return false;
+        }
+        loop {
+            let mut h = String::new();
+            if s.read_line(&mut h).unwrap_or(0) == 0 || h.trim_end().is_empty() {
+                return true;
+            }
+        }
+    }
+
+    /// Waits for the request's thread to end: it drops the events' sink,
+    /// which ends `rx` (events that came before the cancel are skipped).
+    fn ends(rx: &Receiver<FetchEvent>) {
+        loop {
+            match rx.recv_timeout(WAIT) {
+                Ok(_) => {}
+                Err(RecvTimeoutError::Disconnected) => return,
+                Err(RecvTimeoutError::Timeout) => panic!("the request's thread still runs"),
+            }
+        }
+    }
+
+    // The servers of the three close tests below keep their end open after
+    // the client closes, so the request's thread ends only because the
+    // cancel woke it.
+
+    #[test]
+    fn a_cancel_while_waiting_for_the_head_closes_the_connection() {
+        let (asked_tx, asked_rx) = channel();
+        let (closed_tx, closed_rx) = channel();
+        let base = serve(move |s, _, _| {
+            let _ = asked_tx.send(());
+            let _ = closed_tx.send(closes(s.get_mut()));
+            std::thread::sleep(WAIT);
+        });
+        let (task, rx) = start(request("GET", &format!("{base}/slow")));
+        asked_rx.recv_timeout(WAIT).expect("no request");
+        task.cancel();
+        assert!(
+            closed_rx.recv_timeout(WAIT).expect("no request"),
+            "the connection stayed open"
+        );
+        ends(&rx);
+    }
+
+    #[test]
+    fn a_cancel_while_the_body_comes_closes_the_connection() {
+        let (closed_tx, closed_rx) = channel();
+        let base = serve(move |s, _, _| {
+            let stream = s.get_mut();
+            let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100000\r\n\r\nfirst");
+            let _ = closed_tx.send(closes(stream));
+            std::thread::sleep(WAIT);
+        });
+        let (task, rx) = start(request("GET", &format!("{base}/stream")));
+        assert!(matches!(next(&rx), FetchEvent::Head(_)));
+        assert!(matches!(next(&rx), FetchEvent::Data(d) if d == b"first"));
+        // The thread then blocks reading the rest. Cancelling sooner would
+        // stop it before that read, and dropping the unread response would
+        // close the connection even without the shutdown.
+        std::thread::sleep(Duration::from_millis(200));
+        task.cancel();
+        assert!(
+            closed_rx.recv_timeout(WAIT).expect("no request"),
+            "the connection stayed open"
+        );
+        ends(&rx);
+    }
+
+    #[test]
+    fn a_cancel_during_the_tls_handshake_closes_the_connection() {
+        use std::io::Read as _;
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        let (hello_tx, hello_rx) = channel();
+        let (closed_tx, closed_rx) = channel();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            // Takes the ClientHello and never answers it.
+            let mut hello = [0u8; 4096];
+            let n = stream.read(&mut hello).unwrap_or(0);
+            let _ = hello_tx.send(n > 0 && hello[0] == 0x16);
+            let _ = closed_tx.send(closes(&mut stream));
+            std::thread::sleep(WAIT);
+        });
+        let (task, rx) = start(request("GET", &format!("https://127.0.0.1:{port}/")));
+        assert!(
+            hello_rx.recv_timeout(WAIT).expect("no connection"),
+            "no TLS handshake came"
+        );
+        task.cancel();
+        assert!(
+            closed_rx.recv_timeout(WAIT).expect("no connection"),
+            "the connection stayed open"
+        );
+        ends(&rx);
+    }
+
+    /// The updater cancels a request after its `End`, when its connection
+    /// is back in the pool: the next request still gets that connection.
+    #[test]
+    fn a_cancel_after_the_end_leaves_the_connection_to_the_next_request() {
+        let (connected_tx, connected_rx) = channel();
+        let base = serve(move |s, _, _| {
+            let _ = connected_tx.send(());
+            let _ = s
+                .get_mut()
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
+            if next_request(s) {
+                let _ = s
+                    .get_mut()
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\ntwo");
+            }
+        });
+        let (first, rx) = start(request("GET", &format!("{base}/a")));
+        assert_eq!(response(&rx).1, b"ok");
+        std::thread::sleep(Duration::from_millis(100));
+        let (_second, rx) = start(request("GET", &format!("{base}/b")));
+        first.cancel();
+        assert_eq!(response(&rx).1, b"two");
+        connected_rx.recv_timeout(WAIT).expect("no connection");
+        assert!(
+            connected_rx.try_recv().is_err(),
+            "the second request made a new connection"
+        );
+    }
+
+    /// A response without a body goes back to the pool before its request's
+    /// thread ends: a cancel then must not shut down the connection another
+    /// request has taken.
+    #[test]
+    fn a_late_cancel_spares_the_request_now_on_its_connection() {
+        let (go_tx, go_rx) = channel::<()>();
+        let go_rx = Mutex::new(go_rx);
+        let (reused_tx, reused_rx) = channel::<()>();
+        let base = serve(move |s, line, _| {
+            if !line.starts_with("GET /a ") {
+                let _ = s
+                    .get_mut()
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nnew");
+                return;
+            }
+            let _ = go_rx.lock().expect("go").recv_timeout(WAIT);
+            let _ = s.get_mut().write_all(b"HTTP/1.1 204 No Content\r\n\r\n");
+            if next_request(s) {
+                let _ = reused_tx.send(());
+                std::thread::sleep(Duration::from_millis(500));
+                let _ = s
+                    .get_mut()
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\ntwo");
+            }
+        });
+        let (mut a, rx_a) = start(request("GET", &format!("{base}/a")));
+        // Paused, /a's thread waits after its head; its connection is pooled.
+        a.pause(true);
+        go_tx.send(()).expect("go");
+        assert!(matches!(next(&rx_a), FetchEvent::Head(_)));
+        let (_b, rx_b) = start(request("GET", &format!("{base}/b")));
+        reused_rx
+            .recv_timeout(WAIT)
+            .expect("/b did not reuse /a's connection");
+        a.cancel();
+        assert_eq!(response(&rx_b).1, b"two");
     }
 }

@@ -719,6 +719,19 @@ pub(crate) fn bandless_fill(fill: nsh_core::Color, ground: Ground) -> Option<Col
     }
 }
 
+/// A swatch's fill on a terminal without surfaces: its own color blended
+/// over `ground`, the terminal color closest to it at the ground's depth,
+/// as with surfaces ([`swatch`]). `None` when it is transparent or without
+/// colors.
+pub(crate) fn bandless_swatch(color: nsh_core::Color, ground: Ground) -> Option<Color> {
+    if color.is_transparent() || ground.depth == ColorDepth::Monochrome {
+        return None;
+    }
+    let [red, green, blue, alpha] = color.0.to_be_bytes();
+    let rgb = over_f32([red, green, blue], alpha, ground.rgb).map(|c| c.round() as u8);
+    Some(convert(rgb, ground.depth))
+}
+
 /// Whether `color` is one of the 16 standard colors' hues (not a gray or
 /// the default).
 pub(crate) fn standard_hue(color: Color) -> bool {

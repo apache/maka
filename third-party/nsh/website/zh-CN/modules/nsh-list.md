@@ -22,6 +22,7 @@ function List<T>(props: ListProps<T>): JSX.Element;
 
 ```tsx
 import { List, mount, Text, View } from "nsh";
+import { Window } from "nsh/desktop";
 
 const contacts = Array.from({ length: 1000 }, (_, i) => ({ id: String(i), name: `Contact ${i}` }));
 
@@ -37,7 +38,11 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 ### 行会被复用
@@ -69,7 +74,7 @@ mount(App);
 | `keyExtractor` | `(item: T, index: number) => string` | `item.key`、`item.id` 或索引 | 条目在可见性 token 中的 key。 |
 | `initialScrollIndex` | `number` | | 在第一帧之前滚动到该条目。 |
 | `initialScrollAtEnd` | `boolean` | `false` | 首帧前滚动到末尾，测量行高时保持末尾位置；短内容从顶部排列。优先于 `initialScrollIndex`。 |
-| `contentStyle` | `ListContentStyle` | | 内容的内边距和间距：`padding`、`paddingHorizontal`、`paddingVertical`、`paddingTop`、`paddingRight`、`paddingBottom`、`paddingLeft`、`gap`、`rowGap`、`columnGap`（数字）。 |
+| `contentStyle` | `ListContentStyle` | | 内容的内边距和间距：`padding`、`paddingHorizontal`、`paddingVertical`、`paddingTop`、`paddingRight`、`paddingBottom`、`paddingLeft`、`gap`、`rowGap`、`columnGap`（数字）。`alignItems` 在交叉轴上对齐单元格：`stretch`（默认）、`flex-start`、`center` 或 `flex-end`。 |
 | `contentClass` | `string` | | 以类名（`p-*`、`gap-*`）给出的内容内边距和间距；`contentStyle` 优先。 |
 | `style` | `StyleProp<ViewStyle>` | | 列表自身的样式（需要给它尺寸：`flex: 1` 或高度）。 |
 | `testID` | `string` | | UI 测试查找列表滚动视图所用的 id（`nsh test` 的 `id:`、XCUITest、UI Automator）。 |
@@ -117,6 +122,8 @@ interface ViewabilityConfig {
 | `scrollbar` | `boolean \| ScrollbarTheme` | `true` | 显示滚动条：平台的滚动指示器，或应用的[内置滚动条](../elements/scrollbar.md#内置滚动条)；对象是该视图自己的主题。 |
 | `scrollable` | `boolean` | `true` | 用户可以滚动。 |
 | `bounces` | `boolean` | `true` | 允许越过边缘回弹。 |
+| `smoothWheel` | `boolean` | `false` | 鼠标滚轮每一格平滑滑动，缓动方式同 Chrome（桌面平台）。 |
+| `wheelLineHeight` | `number` | `0` | 鼠标滚轮每行滚动多少点；0 为平台默认（桌面平台）。 |
 | `pagingEnabled` | `boolean` | `false` | 按视口长度的整数倍停靠。 |
 | `snapToInterval` | `number` | `0` | 按该长度的整数倍停靠（0：关闭）。 |
 | `snapToOffsets` | `number[]` | | 停靠在这些偏移位置。 |

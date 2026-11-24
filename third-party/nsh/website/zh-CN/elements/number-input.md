@@ -39,6 +39,7 @@ fn tickets(count: Signal<Option<f64>>) -> impl IntoElement {
 ```tsx tabs
 import { mount, signal, Text } from "nsh";
 import { NumberInput } from "nsh/base";
+import { Window } from "nsh/desktop";
 
 function App() {
   const tickets = signal<number | null>(2);
@@ -59,7 +60,11 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 `NumberInput` 来自 [`nsh/base`](../modules/nsh-base.md)，在 Rust 中是 `nsh-base` crate。在 Rust 中，`number_input()` 创建一个数字输入框，每个属性一个

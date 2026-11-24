@@ -84,7 +84,8 @@
   `focus`, `active` (gpui-base's order of value states); the `aria-*` variants are above them (`aria-busy`,
   `aria-checked`, `aria-expanded`, `aria-invalid`, `aria-pressed`, `aria-selected`, by name), as Tailwind's `aria-*` variants come
   after its pseudo-classes, so an open popup's trigger keeps its look while hovered or pressed. `disabled` (any element) applies `disabled:` and drops
-  the node's press listeners from what is mounted, so it shows no press feedback either. A part of a Rust component
+  the node's press listeners from what is mounted. Its own hover, active and focus variants do not match while disabled;
+  value variants such as `checked:` still match. A part of a Rust component
   shows its control's `checked`, `indeterminate` and `disabled` to its own classes and state styles
   (`Interactive::project_checked`, `project_indeterminate`, `project_disabled`, and `project_focused` for the part the keys act on; `Prop::ProjectedStates`; `project_data` its `data-*` attributes, `Prop::ProjectedData`): a switch's thumb styled `checked:translate-x-4`, with no accessibility
   state or press change on the part, so screen readers hear the control alone. A part shows its control's press
@@ -157,7 +158,7 @@
   context isolates it); `block` boxes never collapse margins with their children (an unset `align-content` resolves to
   `flex-start`, which makes taffy's block a formatting context); strings keep their whitespace (`whitespace-*` sets
   wrapping only; the JSX compiler collapses literal JSX text); `transition` / `transition-all` animate their groups
-  (`TransitionProps`: colors, opacity, transform, shadows, shape), and filters, backdrop filters, gradients and layout
+  (`TransitionProps`: colors, opacity, transform, shadows, shape; `transition-all` adds the clip path), and filters, backdrop filters, gradients and layout
   take their new values at once; `focus-visible:` (`state::FOCUS_VISIBLE`) is the focus that shows, after the
   browsers' `:focus-visible`: the platforms report only how the user last gave input (`InputModality`: a key, or a
   pointer, pen or finger going down; `EngineControl::set_input_modality`), and the core decides (`classes.rs`
@@ -233,8 +234,9 @@
   the control prefers it over the theme color it is otherwise given. Set on the control, not inherited. `nsh/mobile`'s
   `Switch` reads it (its track when on); the system's segmented control and tab bar could later.
 - **Text style inheritance** (CSS-like): a view's text properties (color, font, size, alignment, ...) pass to the texts and inputs
-  inside it, so `class="text-white"` on a button styles its label. So do its `whitespace-*` / `text-wrap` / `text-nowrap`
-  (and `truncate`'s no wrapping) and `select-*` classes, as CSS's `white-space` and `user-select: auto` (`Core::inherited_text_props`:
+  inside it, so `class="text-white"` on a button styles its label. So do its `whitespace-*` / `text-wrap` / `text-nowrap` / `text-pretty`
+  (and `truncate`'s no wrapping; typed `.whitespace_nowrap()` / `.whitespace_normal()` / `.text_pretty()`, which have no
+  style key) and `select-*` classes, as CSS's `white-space` and `user-select: auto` (`Core::inherited_text_props`:
   the text's own, else the nearest view's that says; `select-auto` says none, so it takes the view's). Inset padding / margin (set by Rust
   components with `.inset_padding(..)` / `.inset_margin(..)`) and `env()` terms ("Environment variables") are added to the resolved padding / margin, so classes and
   styles keep their own.
@@ -265,7 +267,10 @@
   (Apple's Liquid Glass, drawn in the `backdropFilter`'s place on iOS 26 and macOS 26 and later (`UIGlassEffect`, `NSGlassEffectView`, both looked up at run time) and nowhere else, so give a glass
   view a blur to fall back to), `glassTintColor` (the tint of the native glass on iOS 26 and macOS 26;
   `null` restores its native default, an explicit transparent color remains a tint, and the earlier-system blur fallback is unchanged), `maskImage` (a gradient whose alpha decides how much of the view is drawn, its backdrop
-  filter included; iOS, macOS, Android, Linux and web, the topmost layer of several. A masked `backdropFilter` blurs by its exact radius on iOS and macOS, without the material's tint (`PlainBlur` in their `visual.rs`), so layers of them stack into a progressive blur), `mixBlendMode`, `outline*`, `visibility`, `cursor`, `transition*` (CSS: property groups,
+  filter included; iOS, macOS, Android, Linux and web, the topmost layer of several. A masked `backdropFilter` blurs by its exact radius on iOS and macOS, without the material's tint (`PlainBlur` in their `visual.rs`), so layers of them stack into a progressive blur), `clipPath` (CSS's `inset()` shape only, a rounded rectangle and no arbitrary
+  path: `ClipInset` in `effects.rs` resolves it against the view's size and is what every backend clips drawing and hit
+  testing to, `HitArea::clipped` for the desktops; it transitions between two insets and changes at once to or from
+  `none`), `mixBlendMode`, `outline*`, `visibility`, `cursor`, `transition*` (CSS: property groups,
   duration, delay, easing) and `animation*` (Tailwind's `spin` / `ping` / `pulse` / `bounce`), `display: grid` with
   `gridTemplateColumns/Rows` (line names: `grid.rs` turns them into taffy's `grid_template_*_names`, one set per
   line between components, a `repeat()` counting as one), `gridAutoFlow/Columns/Rows`, `gridColumn/Row(Start/End)` (by
@@ -290,8 +295,11 @@
   drawn by `TextView`. Android: `Decor` draws shadows, gradients and outlines; filters are `RenderEffect`s (API 31+; below, only
   color filters through a layer paint), blend modes a layer paint (API 29+), transitions / keyframes `ValueAnimator`s,
   backdrop blur (API 31+) a `RenderNode` recorded before each frame with what lies behind the view (`Backdrop.java`: each
-  ancestor's background and the siblings drawn before the next ancestor, never the view itself) and blurred by a
-  `RenderEffect`, drawn clipped under the view's background.
+  ancestor's background and the siblings drawn before the next ancestor, never the view itself; at the size where the
+  blur's deviation is 4 px, nothing off screen) and blurred by a `RenderEffect`, drawn stretched and clipped under the
+  view's background; box shadows are drawn once into small bitmaps and stretched in slices (`Decor.drawCachedShadow`).
+  WebViews sampled by a backdrop share a hardware layer so their functor renders at the page's size, not the smaller
+  filter layer's viewport. The layer is released when no backdrop samples the page; ordinary WebViews keep no extra layer.
   Known limits: iOS has no CSS filters on views (only `opacity`, `brightness` ≤ 1 and `drop-shadow`; images take every color filter
   and `blur`, applied while decoding); iOS texts draw no gradients or inset shadows; Android has no backdrop blur, `blur` or
   `drop-shadow` before API 31; Linux and GPUI draw no backdrop filter, GPUI no `blur()` or `mixBlendMode`; iOS, macOS and Android draw one `drop-shadow()`,
@@ -313,7 +321,7 @@
   the `transform`): a style's `scale` replaces a class's scale and leaves its rotation. The list keeps how many steps
   each property holds (`Pending::transform_counts`), so setting one moves the animated bindings of those after it.
   Applied right to left like CSS; Android has no skew, `zIndex` (stable order of the native views), `boxShadow`
-  (CSS's, the one shadow of styles, classes and typed styles alike; `effects.rs`), `tintColor` (images), `glassTintColor` (Liquid Glass), `objectPosition` (images: where the fitted image sits, CSS's `object-position`; `images.md`), `android={{ elevation }}` (a prop, not a style: Android's material shadow), `macos={{ backdrop }}` (a prop, not a style: macOS's `NSVisualEffectView` material, `MacOsBackdrop` in `effects.rs`: an explicit one selects the native view with no blur needed, and wins over `glassEffect` and `backdropFilter`; `None` keeps the fallback), `transformOrigin` (keywords / percentages / lengths; iOS conjugates the matrix around it,
+  (CSS's, the one shadow of styles, classes and typed styles alike; `effects.rs`), `tintColor` (images), `glassTintColor` (Liquid Glass), `objectPosition` (images: where the fitted image sits, CSS's `object-position`; `images.md`), `android={{ elevation }}` (a prop, not a style: Android's material shadow), `macos={{ backdrop }}` (a prop, not a style: macOS's `NSVisualEffectView` material, `MacOsBackdrop` in `effects.rs`: an explicit one selects the native view with no blur needed, and wins over `glassEffect` and `backdropFilter`; `None` keeps the fallback), `windows={{ backdrop }}` (a prop, not a style: the system's blur of what is behind a transparent window on Windows 11, `WindowsBackdrop` in `effects.rs`; `docs/dev/windows.md`), `transformOrigin` (keywords / percentages / lengths; iOS conjugates the matrix around it,
   Android sets the pivot), `backfaceVisibility` (iOS `doubleSided`; Android hides the view while its rotations turn it away). `style` may be an array of styles merged left to right
   (falsy entries skipped), decoded in Rust. In one style object (an array is flattened into one, as React Native does) a
   longhand wins over its shorthand whatever the key order (`StylePatch::set`, `StyleKey::longhands`: border widths and
@@ -458,10 +466,13 @@ scroll view too; **grids** take their columns from the template
   text's explicit width rounds up: it was set to hold its line in a GUI's font, and the Cell it would round off
   keeps the line's last column (curve names 84pt wide hold "cubic inOut").
 - What a terminal cannot show well is never emulated. At an icon's size (an explicit width and height both at most
-  48pt) images, videos, web views, shaders and canvases are `display: none`, so they take no Cells, no frame and no
-  hits, and their margins and the gaps beside them go with them (`Core::grid_role`). Larger, they keep their box: a
-  canvas is drawn in braille, the others stay blank (their fill too), and the labels around them stay where the box
-  puts them instead of closing up over it. An empty box in flow (no control) with an explicit size of two Cells or
+  48pt) videos, web views, shaders and canvases are `display: none`, so they take no Cells, no frame and no hits, and
+  their margins and the gaps beside them go with them (`Core::grid_role`). Larger, they keep their box: a canvas is
+  drawn in braille, the others stay blank (their fill too), and the labels around them stay where the box
+  puts them instead of closing up over it. An image keeps its box at every size, as the terminal draws pictures
+  (`LeftOut::Picture`); a box holding only absolute layers in flow (an avatar holding its picture once its initials
+  went) fills its parent's explicit height, as an image filling it does. A box holding a scroll view in flow that grows into what is left and
+  states no height (a picker's grid under its search field) keeps its explicit height, which the scroll view fills. An empty box in flow (no control) with an explicit size of two Cells or
   more each way and a border draws its outline, as its size is its own: a code cell waiting for its digit (an absolute
   one, a selection's box over its items, draws none). So is
   a view with nothing in it smaller than a row both ways and not growing (a status dot in a row, a swatch), except a

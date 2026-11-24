@@ -19,6 +19,14 @@ import android.view.ViewTreeObserver;
  * whole window would make the node contain the view, which draws the
  * node). The node blurs, and the view's background draws it clipped to its
  * shape, under its own background and children, as CSS does.
+ *
+ * The node is recorded small and drawn stretched, filtered. Skia's GPU blur
+ * scales its input down until the deviation is at most {@link #SIGMA} px
+ * before it blurs, so a backdrop recorded at that size looks the same, and
+ * its layer, which the whole backdrop is drawn into on every frame, has a
+ * fraction of the pixels: a view of the screen's size blurred by 24 pt is
+ * recorded at about a tenth of its width and height. A view nothing of which
+ * is on screen records nothing.
  */
 @TargetApi(31)
 final class Backdrop implements ViewTreeObserver.OnPreDrawListener, View.OnAttachStateChangeListener {
@@ -28,10 +36,19 @@ final class Backdrop implements ViewTreeObserver.OnPreDrawListener, View.OnAttac
     private final View view;
     final RenderNode node = new RenderNode("nsh-backdrop");
     private float blurPx;
+    /** The node's size, of the view's: its blur's deviation is at most {@link #SIGMA}. */
+    private float scale = 1;
+    /** The largest deviation Skia's GPU blur blurs by without scaling its input down (px). */
+    private static final float SIGMA = 4;
     private final int[] at = new int[2], rootAt = new int[2];
+    private final android.graphics.Rect visible = new android.graphics.Rect();
+    private java.util.Set<WebBox> webViews = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+    private java.util.Set<WebBox> sampledWebViews = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
 
     Backdrop(View view) {
         this.view = view;
+        node.setPivotX(0);
+        node.setPivotY(0);
         view.addOnAttachStateChangeListener(this);
         if (view.isAttachedToWindow()) onViewAttachedToWindow(view);
     }
@@ -39,7 +56,11 @@ final class Backdrop implements ViewTreeObserver.OnPreDrawListener, View.OnAttac
     void setBlur(float px) {
         if (px == blurPx) return;
         blurPx = px;
-        node.setRenderEffect(px > 0 ? RenderEffect.createBlurEffect(px, px, Shader.TileMode.CLAMP) : null);
+        // The deviation of a blur radius, as hwui converts it (`Blur::convertRadiusToSigma`).
+        float sigma = 0.57735f * px + 0.5f;
+        scale = px > 0 && sigma > SIGMA ? SIGMA / sigma : 1;
+        float radius = scale < 1 ? (SIGMA - 0.5f) / 0.57735f : px;
+        node.setRenderEffect(px > 0 ? RenderEffect.createBlurEffect(radius, radius, Shader.TileMode.CLAMP) : null);
         view.invalidate();
     }
 
@@ -48,6 +69,7 @@ final class Backdrop implements ViewTreeObserver.OnPreDrawListener, View.OnAttac
         view.removeOnAttachStateChangeListener(this);
         view.getViewTreeObserver().removeOnPreDrawListener(this);
         node.discardDisplayList();
+        releaseWebViews();
     }
 
     @Override
@@ -59,41 +81,90 @@ final class Backdrop implements ViewTreeObserver.OnPreDrawListener, View.OnAttac
     public void onViewDetachedFromWindow(View v) {
         v.getViewTreeObserver().removeOnPreDrawListener(this);
         node.discardDisplayList();
+        releaseWebViews();
     }
 
     @Override
     public boolean onPreDraw() {
         View root = view.getRootView();
         int w = view.getWidth(), h = view.getHeight();
-        if (!(root instanceof ViewGroup) || root == view || w == 0 || h == 0 || recording) return true;
+        if (recording) return true;
+        if (!(root instanceof ViewGroup) || root == view || w == 0 || h == 0) {
+            releaseWebViews();
+            return true;
+        }
         // The chain from the root down to the view.
         java.util.ArrayList<View> chain = new java.util.ArrayList<>();
         for (View v = view; v != null; v = v.getParent() instanceof View ? (View) v.getParent() : null) {
             chain.add(0, v);
         }
-        if (chain.get(0) != root) return true;
+        if (chain.get(0) != root) {
+            releaseWebViews();
+            return true;
+        }
+        // Off screen (a pager's other pages, a drawer slid out), the node would still be drawn into
+        // its layer and blurred on every frame.
+        if (!view.isShown() || !view.getGlobalVisibleRect(visible)) {
+            node.discardDisplayList();
+            releaseWebViews();
+            return true;
+        }
         view.getLocationInWindow(at);
         root.getLocationInWindow(rootAt);
-        node.setPosition(0, 0, w, h);
+        int sw = Math.max(1, (int) Math.ceil(w * scale)), sh = Math.max(1, (int) Math.ceil(h * scale));
+        node.setPosition(0, 0, sw, sh);
+        // Stretched by the node, not by the view's display list: an older backdrop's pre-draw can
+        // record the view before this one records the node at another size (#2101).
+        node.setScaleX((float) w / sw);
+        node.setScaleY((float) h / sh);
         // An older backdrop's pre-draw can build this view's display list before this node has one
         // (#2101): the view drew nothing and stays clean, so redraw it once the node has content.
         boolean had = node.hasDisplayList();
-        RecordingCanvas canvas = node.beginRecording(w, h);
+        RecordingCanvas canvas = node.beginRecording(sw, sh);
+        canvas.scale((float) sw / w, (float) sh / h);
         // The window, moved so the view's place is at the origin.
         canvas.translate(rootAt[0] - at[0], rootAt[1] - at[1]);
         recording = true;
         try {
-            behind(canvas, chain, 0);
+            behind(canvas, chain, 0, this);
         } finally {
             recording = false;
             node.endRecording();
         }
+        for (WebBox web : webViews) {
+            if (!sampledWebViews.contains(web)) web.releaseCaptureLayer();
+        }
+        java.util.Set<WebBox> previous = webViews;
+        webViews = sampledWebViews;
+        sampledWebViews = previous;
+        sampledWebViews.clear();
         if (!had) view.invalidate();
         return true;
     }
 
+    /** A WebView's functor must draw once, at its own size, before a filtered layer samples it. */
+    private void sampleWebViews(View source) {
+        if (source.getVisibility() != View.VISIBLE) return;
+        if (source instanceof WebBox) {
+            WebBox web = (WebBox) source;
+            if (sampledWebViews.add(web) && !webViews.contains(web)) web.retainCaptureLayer();
+        } else if (source instanceof ViewGroup) {
+            ViewGroup group = (ViewGroup) source;
+            for (int i = 0; i < group.getChildCount(); i++) sampleWebViews(group.getChildAt(i));
+        }
+    }
+
+    private void releaseWebViews() {
+        for (WebBox web : webViews) web.releaseCaptureLayer();
+        webViews.clear();
+    }
+
     /** Draws what `chain[depth]` (a group, in its own space) shows behind `chain[depth + 1]`. */
     static void behind(Canvas canvas, java.util.List<View> chain, int depth) {
+        behind(canvas, chain, depth, null);
+    }
+
+    private static void behind(Canvas canvas, java.util.List<View> chain, int depth, Backdrop capture) {
         ViewGroup group = (ViewGroup) chain.get(depth);
         View next = chain.get(depth + 1);
         android.graphics.drawable.Drawable background = group.getBackground();
@@ -106,10 +177,11 @@ final class Backdrop implements ViewTreeObserver.OnPreDrawListener, View.OnAttac
             if (!child.getMatrix().isIdentity()) canvas.concat(child.getMatrix());
             if (child.getAlpha() < 1) canvas.saveLayerAlpha(null, Math.round(child.getAlpha() * 255));
             if (child == next) {
-                if (depth + 2 < chain.size()) behind(canvas, chain, depth + 1);
+                if (depth + 2 < chain.size()) behind(canvas, chain, depth + 1, capture);
                 canvas.restoreToCount(save);
                 return;
             }
+            if (capture != null) capture.sampleWebViews(child);
             child.draw(canvas);
             canvas.restoreToCount(save);
         }

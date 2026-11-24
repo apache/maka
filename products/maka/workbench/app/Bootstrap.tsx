@@ -19,6 +19,8 @@
 
 import { mount, Text, View } from 'nsh';
 import { Button } from 'nsh/base';
+import { Window } from 'nsh/desktop';
+import { TITLE_BAR_HEIGHT, WINDOW_MIN_SIZE } from './chrome';
 import { createPlugins } from './plugins/registry';
 import { PluginInstances, renderContribution } from './plugins/RuntimeView';
 import { errorText, renderText } from './text';
@@ -26,7 +28,7 @@ import { tr } from './locale';
 import { initializeAppearance } from './appearance';
 import { initializeComposerToolbar } from './composerToolbar';
 import { initializeSidebarPreferences } from './sidebarPreferences';
-import { C } from './ui';
+import { C, controlFocusStyle, controlHoverStyle, controlStyle } from './ui';
 import { LoadingState } from './Loading';
 import { nativeDesktop } from './nativeDesktop';
 
@@ -75,7 +77,9 @@ function Bootstrap() {
             <Button
               accessibilityLabel={tr('Retry')}
               onPress={plugins.runtime.retryUpdates}
-              style={{ padding: 8 }}
+              style={{ ...controlStyle, borderWidth: 1, borderColor: C.line }}
+              hoverStyle={controlHoverStyle()}
+              focusStyle={controlFocusStyle()}
             >
               <Text style={{ color: C.accent }}>{tr('Retry')}</Text>
             </Button>
@@ -85,4 +89,15 @@ function Bootstrap() {
     </View>
   );
 }
-mount(Bootstrap);
+mount(() => (
+  <Window
+    id="main"
+    title="Maka"
+    titleBar={{ style: 'hidden', height: TITLE_BAR_HEIGHT }}
+    minSize={WINDOW_MIN_SIZE}
+    restoreBounds
+    closeOnPress={false}
+  >
+    <Bootstrap />
+  </Window>
+));

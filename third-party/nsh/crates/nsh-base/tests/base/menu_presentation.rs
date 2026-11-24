@@ -12,7 +12,6 @@ use std::time::Duration;
 use nsh_base::{ContextMenuEvents, MenuEvent, context_menu, menu, menu_item};
 use nsh_core::{
     NodeId, ROOT_ID, Size, TouchEvent, TouchPhase, TouchPoint,
-    element::Root,
     platform::{Idiom, Os},
     prelude::*,
 };
@@ -27,7 +26,7 @@ const GONE: Duration = Duration::from_secs(5);
 fn start(os: Os, idiom: Idiom, width: Option<SizeClass>) -> Headless {
     let mut config = EngineConfig {
         viewport: Size::new(px(834.0), px(1194.0)),
-        ..EngineConfig::new(Root::of::<Menus>())
+        ..EngineConfig::new(nsh_testing::windowed_root::<Menus>())
     };
     config.environment.os = os;
     config.environment.idiom = idiom;

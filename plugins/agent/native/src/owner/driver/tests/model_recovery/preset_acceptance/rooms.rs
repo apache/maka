@@ -53,10 +53,10 @@ async fn room_interrupted_send_delivers_each_recipient_once_after_reopen() -> Te
     let mut provider = Provider::start().await?;
     let outcome = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(60), async {
         let base = rig.directory.path().to_path_buf();
-        let boot = bootstrap(&base, provider.url.clone(), false).await?;
+        let boot = bootstrap(&base, provider.server.base_url(), false).await?;
         attach(&mut rig, &boot).await?;
         let client = rig.client.as_ref().unwrap();
-        let model = model_options(client, &provider.url, false, json!({"vision":true})).await?;
+        let model = model_options(client, &provider.server.base_url(), false, json!({"vision":true})).await?;
         let room = create_room(client, &base).await?;
         let first = create(client, &base, &model, None).await?;
         let second = create(client, &base, &model, None).await?;
@@ -98,8 +98,7 @@ async fn room_interrupted_send_delivers_each_recipient_once_after_reopen() -> Te
             assert!(input.contains("Review the red marker."), "{input}");
             assert!(input.contains(&image_url), "image changed or missing: {input}");
             assert!(input.contains(&room) && input.contains(receipt["messageId"].as_str().unwrap()), "return address missing: {input}");
-            respond.send(completion(json!({"role":"assistant","content":"Reviewed."}), "stop"))
-                .map_err(|_| "model response lost")?;
+            respond.reply_text("Reviewed.");
         }
         for delivery in &deliveries[..2] {
             quiescent_message(client, delivery["sessionId"].as_str().unwrap(), &delivery["messageId"]).await?;
@@ -140,7 +139,7 @@ async fn room_history_pages_and_read_position_survive_new_posts_and_reopen() -> 
     let provider = Provider::start().await?;
     let outcome = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(60), async {
         let base = rig.directory.path().to_path_buf();
-        let boot = bootstrap(&base, provider.url.clone(), false).await?;
+        let boot = bootstrap(&base, provider.server.base_url(), false).await?;
         attach(&mut rig, &boot).await?;
         let client = rig.client.as_ref().unwrap();
         let room = create_room(client, &base).await?;
@@ -283,14 +282,14 @@ async fn room_overhaul_roster_context_attachments_reactions_pins_edits_search_an
         let base = rig.directory.path().to_path_buf();
         std::fs::create_dir_all(base.join("workspace"))?;
         let tools = product_agent_tools(true).await?;
-        let boot = bootstrap_with(&base, provider.url.clone(), |config| {
+        let boot = bootstrap_with(&base, provider.server.base_url(), |config| {
             config["tools"] = tools;
             config["toolDiscovery"] = json!(false);
         })
         .await?;
         attach(&mut rig, &boot).await?;
         let client = rig.client.as_ref().unwrap();
-        let model = model_options(client, &provider.url, false, json!({"vision":true})).await?;
+        let model = model_options(client, &provider.server.base_url(), false, json!({"vision":true})).await?;
 
         let room = create_room(client, &base).await?;
         let alice = create(client, &base, &model, None).await?;
@@ -446,31 +445,14 @@ async fn room_overhaul_roster_context_attachments_reactions_pins_edits_search_an
         // Bob acknowledges via SessionManage(room_react) without posting a prose reply ->
         // commits atomically and resolves deliveryState to "reacted" (NOT "silent")!
         bob_resp
-            .send(completion(
-                json!({
-                    "role": "assistant",
-                    "content": "",
-                    "tool_calls": [{
-                        "index": 0,
-                        "id": "call_bob_react",
-                        "type": "function",
-                        "function": {
-                            "name": "SessionManage",
-                            "arguments": json!({
+            .reply_tool_call("call_bob_react","SessionManage",json!({
                                 "sessionId": room,
                                 "action": {
                                     "kind": "room_react",
                                     "messageId": dispatch_id,
                                     "emoji": "👀"
                                 }
-                            })
-                            .to_string()
-                        }
-                    }]
-                }),
-                "tool_calls",
-            ))
-            .map_err(|_| "bob react tool call lost")?;
+                            }));
         let (bob_step2, bob_resp2) = provider.next().await?;
         let bob_tool_res: Value = serde_json::from_str(
             bob_step2["messages"]
@@ -485,32 +467,12 @@ async fn room_overhaul_roster_context_attachments_reactions_pins_edits_search_an
         assert_eq!(bob_tool_res["result"]["kind"], "reaction_updated", "{bob_tool_res}");
         assert_eq!(bob_tool_res["result"]["present"], true, "{bob_tool_res}");
         bob_resp2
-            .send(completion(
-                json!({"role": "assistant", "content": "Reacted."}),
-                "stop",
-            ))
-            .map_err(|_| "bob final lost")?;
+            .reply_text("Reacted.");
         quiescent_message(client, &bob_id, &deliveries[1]["messageId"]).await?;
 
         // Alice first reads the Room attachment via Read({ path: "maka://session/<room>/attachments/<id>" })!
         alice_resp
-            .send(completion(
-                json!({
-                    "role": "assistant",
-                    "content": "",
-                    "tool_calls": [{
-                        "index": 0,
-                        "id": "call_read_att",
-                        "type": "function",
-                        "function": {
-                            "name": "Read",
-                            "arguments": json!({"path": att_uri}).to_string()
-                        }
-                    }]
-                }),
-                "tool_calls",
-            ))
-            .map_err(|_| "alice read att lost")?;
+            .reply_tool_call("call_read_att","Read",json!({"path": att_uri}));
         let (alice_step2, alice_resp2) = provider.next().await?;
         let read_tool_reply = alice_step2["messages"]
             .as_array()
@@ -525,29 +487,12 @@ async fn room_overhaul_roster_context_attachments_reactions_pins_edits_search_an
 
         // Alice replies in the Room (also testing self-mention rejection!).
         alice_resp2
-            .send(completion(
-                json!({
-                    "role": "assistant",
-                    "content": "",
-                    "tool_calls": [{
-                        "index": 0,
-                        "id": "call_reply",
-                        "type": "function",
-                        "function": {
-                            "name": "SessionSend",
-                            "arguments": json!({
+            .reply_tool_call("call_reply","SessionSend",json!({
                                 "sessionId": room,
                                 "replyTo": dispatch_id,
                                 "message": "前端部分已确认",
                                 "mentions": [alice_id]
-                            })
-                            .to_string()
-                        }
-                    }]
-                }),
-                "tool_calls",
-            ))
-            .map_err(|_| "alice send lost")?;
+                            }));
         let (alice_after, alice_after_resp) = provider.next().await?;
         let tool_res_str = alice_after["messages"]
             .as_array()
@@ -564,11 +509,7 @@ async fn room_overhaul_roster_context_attachments_reactions_pins_edits_search_an
             "agent_room_self_mention"
         );
         alice_after_resp
-            .send(completion(
-                json!({"role": "assistant", "content": "Done."}),
-                "stop",
-            ))
-            .map_err(|_| "alice final lost")?;
+            .reply_text("Done.");
         quiescent_message(client, &alice_id, &deliveries[0]["messageId"]).await?;
 
         // 5. Inspect Room history: verify derived deliveryStates (alice=replied, bob=reacted, readonly=rejected),
@@ -738,14 +679,20 @@ async fn room_hop_limit_circuit_breaker_and_cross_session_attachment_forwarding(
         let base = rig.directory.path().to_path_buf();
         std::fs::create_dir_all(base.join("workspace"))?;
         let tools = product_agent_tools(true).await?;
-        let boot = bootstrap_with(&base, provider.url.clone(), |config| {
+        let boot = bootstrap_with(&base, provider.server.base_url(), |config| {
             config["tools"] = tools;
             config["toolDiscovery"] = json!(false);
         })
         .await?;
         attach(&mut rig, &boot).await?;
         let client = rig.client.as_ref().unwrap();
-        let model = model_options(client, &provider.url, false, json!({"vision":true})).await?;
+        let model = model_options(
+            client,
+            &provider.server.base_url(),
+            false,
+            json!({"vision":true}),
+        )
+        .await?;
 
         let room = create_room(client, &base).await?;
         let alice = create(client, &base, &model, None).await?;
@@ -788,30 +735,20 @@ async fn room_hop_limit_circuit_breaker_and_cross_session_attachment_forwarding(
         assert_eq!(seed["kind"], "queued", "{seed}");
 
         let (_, alice_req) = provider.next().await?;
-        alice_req
-            .send(completion(
-                json!({
-                    "role": "assistant",
-                    "content": "",
-                    "tool_calls": [{
-                        "index": 0,
-                        "id": "call_forward_att",
-                        "type": "function",
-                        "function": {
-                            "name": "SessionSend",
-                            "arguments": json!({
-                                "sessionId": room,
-                                "message": "Sharing screenshot from my private session",
-                                "attachments": [alice_att_id],
-                                "mentions": [bob_id]
-                            })
-                            .to_string()
-                        }
-                    }]
-                }),
-                "tool_calls",
-            ))
-            .map_err(|_| "alice forward lost")?;
+        alice_req.send_plan(
+            TurnPlan::new()
+                .push_tool_call(
+                    "call_forward_att",
+                    "SessionSend",
+                    json!({
+                        "sessionId": room,
+                        "message": "Sharing screenshot from my private session",
+                        "attachments": [alice_att_id],
+                        "mentions": [bob_id]
+                    }),
+                )
+                .finish(FinishReason::ToolCalls),
+        );
 
         let mut alice_done = false;
         let mut bob_done = false;
@@ -834,11 +771,7 @@ async fn room_hop_limit_circuit_breaker_and_cross_session_attachment_forwarding(
                     "{tool_json}"
                 );
                 bob_msg_id = Some(tool_json["deliveries"][0]["messageId"].clone());
-                resp.send(completion(
-                    json!({"role": "assistant", "content": "Forwarded."}),
-                    "stop",
-                ))
-                .map_err(|_| "alice done lost")?;
+                resp.reply_text("Forwarded.");
                 alice_done = true;
             } else if is_bob_read_tool && !bob_done {
                 let content_str = last["content"].to_string();
@@ -846,11 +779,7 @@ async fn room_hop_limit_circuit_breaker_and_cross_session_attachment_forwarding(
                     content_str.contains("data:image/png;base64,"),
                     "Bob Read tool result should return copied PNG bytes: {content_str}"
                 );
-                resp.send(completion(
-                    json!({"role": "assistant", "content": "Seen."}),
-                    "stop",
-                ))
-                .map_err(|_| "bob done lost")?;
+                resp.reply_text("Seen.");
                 bob_done = true;
             } else if last["role"] == "user" && !bob_done {
                 let body = last["content"].to_string();
@@ -874,23 +803,11 @@ async fn room_hop_limit_circuit_breaker_and_cross_session_attachment_forwarding(
                     "{uri}"
                 );
                 room_att_uri = Some(uri.clone());
-                resp.send(completion(
-                    json!({
-                        "role": "assistant",
-                        "content": "",
-                        "tool_calls": [{
-                            "index": 0,
-                            "id": "call_bob_read_att",
-                            "type": "function",
-                            "function": {
-                                "name": "Read",
-                                "arguments": json!({ "path": uri }).to_string()
-                            }
-                        }]
-                    }),
-                    "tool_calls",
-                ))
-                .map_err(|_| "bob read lost")?;
+                resp.send_plan(
+                    TurnPlan::new()
+                        .push_tool_call("call_bob_read_att", "Read", json!({ "path": uri }))
+                        .finish(FinishReason::ToolCalls),
+                );
             } else {
                 return Err(format!("unexpected provider request: {req}").into());
             }
@@ -923,29 +840,19 @@ async fn room_hop_limit_circuit_breaker_and_cross_session_attachment_forwarding(
                 None => provider.next().await?,
             };
             let call_id = format!("call_hop_{hop}");
-            req_resp
-                .send(completion(
-                    json!({
-                        "role": "assistant",
-                        "content": "",
-                        "tool_calls": [{
-                            "index": 0,
-                            "id": call_id,
-                            "type": "function",
-                            "function": {
-                                "name": "SessionSend",
-                                "arguments": json!({
-                                    "sessionId": room,
-                                    "message": format!("hop {hop}"),
-                                    "mentions": [active_target]
-                                })
-                                .to_string()
-                            }
-                        }]
-                    }),
-                    "tool_calls",
-                ))
-                .map_err(|_| "hop tool call lost")?;
+            req_resp.send_plan(
+                TurnPlan::new()
+                    .push_tool_call(
+                        &call_id,
+                        "SessionSend",
+                        json!({
+                            "sessionId": room,
+                            "message": format!("hop {hop}"),
+                            "mentions": [active_target]
+                        }),
+                    )
+                    .finish(FinishReason::ToolCalls),
+            );
 
             loop {
                 let (req, resp) = provider.next().await?;
@@ -968,11 +875,7 @@ async fn room_hop_limit_circuit_breaker_and_cross_session_attachment_forwarding(
                             "hop 7 reason: {res}"
                         );
                     }
-                    resp.send(completion(
-                        json!({"role": "assistant", "content": format!("sent hop {hop}")}),
-                        "stop",
-                    ))
-                    .map_err(|_| "hop finish lost")?;
+                    resp.reply_text(format!("sent hop {hop}"));
                     break;
                 } else {
                     assert!(
@@ -999,29 +902,19 @@ async fn room_hop_limit_circuit_breaker_and_cross_session_attachment_forwarding(
         .await?;
         assert_eq!(human_reset["deliveries"][0]["kind"], "accepted");
         let (_, reset_resp) = provider.next().await?;
-        reset_resp
-            .send(completion(
-                json!({
-                    "role": "assistant",
-                    "content": "",
-                    "tool_calls": [{
-                        "index": 0,
-                        "id": "call_after_reset",
-                        "type": "function",
-                        "function": {
-                            "name": "SessionSend",
-                            "arguments": json!({
-                                "sessionId": room,
-                                "message": "fresh hop 1 after human reset",
-                                "mentions": [bob_id]
-                            })
-                            .to_string()
-                        }
-                    }]
-                }),
-                "tool_calls",
-            ))
-            .map_err(|_| "reset call lost")?;
+        reset_resp.send_plan(
+            TurnPlan::new()
+                .push_tool_call(
+                    "call_after_reset",
+                    "SessionSend",
+                    json!({
+                        "sessionId": room,
+                        "message": "fresh hop 1 after human reset",
+                        "mentions": [bob_id]
+                    }),
+                )
+                .finish(FinishReason::ToolCalls),
+        );
 
         let mut reset_alice_done = false;
         let mut reset_bob_done = false;
@@ -1033,18 +926,10 @@ async fn room_hop_limit_circuit_breaker_and_cross_session_attachment_forwarding(
                 let res: Value = serde_json::from_str(last["content"].as_str().unwrap())?;
                 assert_eq!(res["deliveries"][0]["kind"], "accepted", "{res}");
                 reset_bob_msg = Some(res["deliveries"][0]["messageId"].clone());
-                resp.send(completion(
-                    json!({"role": "assistant", "content": "Reset ok."}),
-                    "stop",
-                ))
-                .map_err(|_| "reset alice finish lost")?;
+                resp.reply_text("Reset ok.");
                 reset_alice_done = true;
             } else if last["role"] == "user" && !reset_bob_done {
-                resp.send(completion(
-                    json!({"role": "assistant", "content": "Bob awake after reset."}),
-                    "stop",
-                ))
-                .map_err(|_| "reset bob finish lost")?;
+                resp.reply_text("Bob awake after reset.");
                 reset_bob_done = true;
             }
         }

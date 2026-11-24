@@ -6,9 +6,10 @@ use crate::{
     animation::{AnimationOp, AnimationProp},
     geometry::{Bounds, Points, Size},
     ops::{
-        AutoCapitalize, Command, EventMask, ImageSource, KeyboardAppearance, KeyboardDismissMode,
-        KeyboardTaps, KeyboardType, ModalAnimation, ModalPresentation, NodeId, PasteBehavior,
-        ResizeMode, ReturnKeyType, ScreenAnimation, SnapAlignment, SubmitBehavior, WebSource,
+        AutoCapitalize, Command, EventMask, HeaderTitleAlign, ImageSource, KeyboardAppearance,
+        KeyboardDismissMode, KeyboardTaps, KeyboardType, ModalAnimation, ModalPresentation, NodeId,
+        PasteBehavior, ResizeMode, ReturnKeyType, ScreenAnimation, SnapAlignment, SubmitBehavior,
+        WebSource,
     },
     props::{EdgeInsets, GestureValues, LayoutAnimation, ViewProps},
     style::{Color, TextAlign, ViewStyle},
@@ -205,6 +206,11 @@ pub struct ScrollBehavior {
     /// A tap at the top of the window scrolls it to its top (iOS:
     /// `UIScrollView.scrollsToTop`).
     pub scrolls_to_top: bool,
+    /// A mouse wheel's notches glide (`smoothWheel`).
+    pub smooth_wheel: bool,
+    /// Points a mouse wheel's line scrolls; 0 for the platform's own
+    /// (`wheelLineHeight`).
+    pub wheel_line_height: Points,
     /// Room around the content.
     pub content_inset: EdgeInsets,
     /// How far the scroll indicator keeps from each edge of the view: its
@@ -252,6 +258,8 @@ impl Default for ScrollBehavior {
             enabled: true,
             bounces: true,
             scrolls_to_top: true,
+            smooth_wheel: false,
+            wheel_line_height: Points::ZERO,
             content_inset: EdgeInsets::default(),
             scrollbar_inset: EdgeInsets::default(),
             keyboard_taps: KeyboardTaps::Never,
@@ -419,6 +427,9 @@ pub struct ScreenConfig {
     pub header_transparent: bool,
     /// The hairline under the header (iOS).
     pub header_shadow_visible: bool,
+    /// Where the title sits (Android; iOS's system bar always centers it and
+    /// ignores this).
+    pub title_align: HeaderTitleAlign,
     /// A transparent header shows its background once the content scrolls
     /// under it (iOS).
     pub header_background_on_scroll: bool,
@@ -484,6 +495,7 @@ impl Default for ScreenConfig {
             large_title: false,
             header_transparent: false,
             header_shadow_visible: true,
+            title_align: HeaderTitleAlign::Left,
             header_background_on_scroll: false,
             hides_bottom_bar_when_pushed: false,
             tint_color: None,
@@ -630,6 +642,9 @@ pub struct InputConfig {
     pub paste_behavior: PasteBehavior,
     /// Focus once on screen.
     pub auto_focus: bool,
+    /// Select the whole text when the input takes the focus
+    /// (`selectTextOnFocus`).
+    pub select_text_on_focus: bool,
     /// Selection highlight color (on iOS also the caret's, unless
     /// [`InputConfig::caret_color`] is set: UIKit tints both with one).
     pub selection_color: Option<Color>,
@@ -648,10 +663,11 @@ pub struct InputConfig {
     /// A multiline input shows its scroll indicator (`scrollbar`; false
     /// while a built-in bar takes its place).
     pub scrollbar_visible: bool,
-    /// A built-in bar of the app's takes the indicator's place: the
+    /// A bar of the app's follows a multiline input's text (its built-in
+    /// bar, or one the app placed that watches it, `watch_scroll`): the
     /// platform reports how far the text scrolled
-    /// (`EngineControl::input_scroll`) and takes `Command::ScrollTo`.
-    pub replaced: bool,
+    /// (`EngineControl::input_scroll`). Off, it reports nothing.
+    pub report_scroll: bool,
 }
 
 impl InputConfig {
@@ -703,6 +719,7 @@ impl Default for InputConfig {
             submit_behavior: None,
             paste_behavior: PasteBehavior::Insert,
             auto_focus: false,
+            select_text_on_focus: false,
             selection_color: None,
             caret_color: None,
             auto_fill: crate::ops::AutoFill::Default,
@@ -711,7 +728,7 @@ impl Default for InputConfig {
             accessory_id: None,
             accessory: None,
             scrollbar_visible: true,
-            replaced: false,
+            report_scroll: false,
         }
     }
 }

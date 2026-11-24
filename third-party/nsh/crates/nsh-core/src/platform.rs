@@ -28,12 +28,15 @@ pub const DATE_TIME_PICKER_COMPONENT: &str = "nsh/date-time-picker";
 
 /// The native component of `nsh/base`'s `MenuButton`, which the iOS backend
 /// registers itself (a `UIButton` showing its `UIMenu` as its primary
-/// action).
+/// action), and the Android backend (a button showing the system's popup
+/// menu; `MenuButtonComponent.java`'s `NAME` keeps the same name).
 pub const MENU_BUTTON_COMPONENT: &str = "nsh/menu-button";
 
 /// The native component of `nsh/base`'s `ContextMenu` given `items`, which
 /// the iOS backend registers itself (a `UIContextMenuInteraction` on the
-/// view around the trigger, the trigger lifted as its preview).
+/// view around the trigger, the trigger lifted as its preview), and the
+/// Android backend (the system's popup menu by the trigger, shown when
+/// `open`; `ContextMenuComponent.java`'s `NAME` keeps the same name).
 pub const CONTEXT_MENU_COMPONENT: &str = "nsh/context-menu";
 
 /// The native component of `nsh/base`'s `SplitView`, which the iOS backend
@@ -233,6 +236,155 @@ impl Lifecycle {
     }
 }
 
+/// How the device reaches the network now (`network()`), as the system's
+/// path monitor reports it: the kind of link its default route takes,
+/// whether that link costs the user (`expensive`) or the user asked to save
+/// data on it (`constrained`), and on iOS whether the user lets the app use
+/// cellular data. Platforms that cannot tell report
+/// [`NetworkKind::Unknown`], which counts as online: the app tries and
+/// learns from its requests.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub struct Network {
+    /// The kind of link the default route takes, [`NetworkKind::None`]
+    /// without one.
+    pub kind: NetworkKind,
+    /// The link costs the user: cellular data, a phone's hotspot, a
+    /// metered connection (Apple's `isExpensive`, Android's metered
+    /// networks, the browser's `cellular` connection).
+    pub expensive: bool,
+    /// The user asked to use less data on this link: Low Data Mode (iOS,
+    /// macOS), Data Saver (Android), the browser's `saveData`.
+    pub constrained: bool,
+    /// Whether the user lets the app use cellular data (iOS:
+    /// `CTCellularData`; on devices sold in mainland China, the system's
+    /// prompt for wireless data). [`CellularData::Unknown`] elsewhere.
+    pub cellular_data: CellularData,
+}
+
+impl Network {
+    /// A network of `kind`, neither expensive nor constrained, with the
+    /// cellular data permission unknown.
+    pub fn new(kind: NetworkKind) -> Self {
+        Self {
+            kind,
+            ..Self::default()
+        }
+    }
+
+    /// The link costs the user.
+    pub fn expensive(mut self, expensive: bool) -> Self {
+        self.expensive = expensive;
+        self
+    }
+
+    /// The user asked to use less data on this link.
+    pub fn constrained(mut self, constrained: bool) -> Self {
+        self.constrained = constrained;
+        self
+    }
+
+    /// Whether the user lets the app use cellular data.
+    pub fn cellular_data(mut self, cellular_data: CellularData) -> Self {
+        self.cellular_data = cellular_data;
+        self
+    }
+
+    /// Whether a route to the network exists (TS: `network().online`):
+    /// false only when the platform knows there is none, true while it
+    /// does not know ([`NetworkKind::Unknown`]).
+    pub fn online(&self) -> bool {
+        self.kind != NetworkKind::None
+    }
+}
+
+/// The kind of link the device's default route takes (`network().kind`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, crate::element::PropEnum)]
+#[non_exhaustive]
+pub enum NetworkKind {
+    /// The platform does not say (it has no monitor, or has not answered
+    /// yet).
+    #[default]
+    Unknown,
+    /// No route to the network: offline.
+    None,
+    /// Wi-Fi.
+    Wifi,
+    /// Cellular data.
+    Cellular,
+    /// A wired link: Ethernet.
+    Wired,
+    /// Another link: a VPN without a known link beneath, Bluetooth, a
+    /// USB tether, loopback only.
+    Other,
+}
+
+impl NetworkKind {
+    /// Its `network().kind` name.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::None => "none",
+            Self::Wifi => "wifi",
+            Self::Cellular => "cellular",
+            Self::Wired => "wired",
+            Self::Other => "other",
+        }
+    }
+
+    /// The kind named `name` ([`Self::name`]).
+    pub fn parse(name: &str) -> Option<Self> {
+        Some(match name {
+            "unknown" => Self::Unknown,
+            "none" => Self::None,
+            "wifi" => Self::Wifi,
+            "cellular" => Self::Cellular,
+            "wired" => Self::Wired,
+            "other" => Self::Other,
+            _ => return None,
+        })
+    }
+}
+
+/// Whether the user lets the app use cellular data
+/// (`network().cellularData`): iOS's `CTCellularData.restrictedState`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, crate::element::PropEnum)]
+#[non_exhaustive]
+pub enum CellularData {
+    /// Not known: the user has not decided yet (the first launch on a
+    /// device that asks), or the platform does not report it (every
+    /// platform but iOS).
+    #[default]
+    Unknown,
+    /// The user turned cellular data off for the app (on devices that ask
+    /// for wireless data, also "Off" or "WLAN" only): its requests over
+    /// cellular fail, and only the system's settings change it.
+    Restricted,
+    /// The app may use cellular data.
+    NotRestricted,
+}
+
+impl CellularData {
+    /// Its `network().cellularData` name.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::Restricted => "restricted",
+            Self::NotRestricted => "notRestricted",
+        }
+    }
+
+    /// The state named `name` ([`Self::name`]).
+    pub fn parse(name: &str) -> Option<Self> {
+        Some(match name {
+            "unknown" => Self::Unknown,
+            "restricted" => Self::Restricted,
+            "notRestricted" => Self::NotRestricted,
+            _ => return None,
+        })
+    }
+}
+
 /// The space available along one axis of a surface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SizeClass {
@@ -354,10 +506,21 @@ pub struct Environment {
     /// app in front), while its network connections and timers did not
     /// live through it.
     pub wake_count: u32,
+    /// How the device reaches the network (TS: `network()`): the platform
+    /// reports each change of the system's default route and, on iOS, of
+    /// the cellular data permission. [`NetworkKind::Unknown`] where it has
+    /// no monitor.
+    pub network: Network,
     /// The platform picks a color from the screen
     /// ([`crate::Command::PickScreenColor`]); without it, a pick answers
     /// no color at once.
     pub screen_color: bool,
+    /// The platform reports whether each clipboard write
+    /// ([`crate::Command::SetClipboard`], [`crate::Command::SetClipboardItem`])
+    /// reached the system clipboard, as [`crate::EventKind::ClipboardWrite`]
+    /// in the order of the writes; without it, a write answers
+    /// [`crate::element::ClipboardWrite::Requested`] at once.
+    pub clipboard_write_result: bool,
     /// The platform renders canvas drawings offscreen into images
     /// ([`crate::Command::RenderCanvas`], `OffscreenCanvas`); without it,
     /// a render fails at once with `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM`.
@@ -366,12 +529,30 @@ pub struct Environment {
     /// ([`crate::Command::Share`], `Share.show`); without it, a share fails
     /// at once with `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM`.
     pub share: bool,
+    /// The platform opens the app's own page in the system's settings
+    /// ([`crate::Command::OpenAppSettings`], `nsh/mobile`'s
+    /// `AppSettings.open`: iOS and Android); without it, opening it fails at
+    /// once with `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM`
+    /// ([`crate::mobile::open_app_settings`]).
+    pub app_settings: bool,
     /// The platform shows web sign-in sessions
     /// ([`crate::Command::AuthSession`]: iOS's
     /// `ASWebAuthenticationSession`, Android's Custom Tabs); without it,
     /// a session opens the system browser and waits for a link of a scheme
-    /// the app claims ([`crate::auth_session`]).
+    /// the app claims where the platform hands it such links
+    /// ([`Self::scheme_links()`]), and fails at once elsewhere
+    /// ([`crate::auth_session`]).
     pub auth_session: bool,
+    /// Whether the platform hands the app links of the schemes it claims
+    /// (`nsh.json` `schemes`, [`crate::element::next_url_scheme_open`]).
+    /// `None` (the default): as NSH's native backends on [`Self::os`],
+    /// every OS but the web, where a page hears only its own address. The
+    /// GPUI and terminal backends, which hear no links, say `Some(false)`,
+    /// as does a platform built outside NSH that hears none. Without it, a
+    /// sign-in session the platform does not show itself
+    /// ([`Self::auth_session`]) fails at once, since nothing could bring
+    /// its callback back ([`Self::scheme_links()`]).
+    pub scheme_links: Option<bool>,
     /// The platform handles file requests ([`crate::Command::FileRequest`]).
     /// Desktops implement the full set; mobile platforms answer the open
     /// dialog and reject operations they do not support. Without it, all
@@ -474,6 +655,13 @@ impl Environment {
     pub fn reported_idiom(&self) -> Idiom {
         self.idiom.reported_on(self.os)
     }
+
+    /// Whether links of the schemes the app claims reach it
+    /// ([`field@Environment::scheme_links`], or by the OS: all but the
+    /// web).
+    pub fn scheme_links(&self) -> bool {
+        self.scheme_links.unwrap_or(self.os != Os::Web)
+    }
 }
 
 impl Default for Environment {
@@ -507,10 +695,14 @@ impl Default for Environment {
             host: false,
             lifecycle: Lifecycle::Active,
             wake_count: 0,
+            network: Network::default(),
             screen_color: false,
+            clipboard_write_result: false,
             canvas_render: false,
             share: false,
+            app_settings: false,
             auth_session: false,
+            scheme_links: None,
             file_requests: false,
             speech: false,
             notifications: false,
@@ -916,6 +1108,61 @@ impl PerfStats {
             fps,
             ..PerfStats::default()
         }
+    }
+}
+
+/// The app as it was built (TS: `appInfo()`; Rust:
+/// [`crate::element::app_info`]): its id, name, version and build number,
+/// and whether it is a development build. A Rust app's root carries it
+/// ([`crate::element::Root::app_info`], which nsh's generated code sets
+/// from `nsh.json`, or from the package: `nsh package --id`, `--name`,
+/// `--version` and `--build` included); a TSX app's is JS's `appInfo()`.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub struct AppInfo {
+    /// The app's id (`nsh.json` `"id"`; a package's as it names it).
+    pub id: Option<String>,
+    /// The app's name (`nsh.json` `"name"`; a package's as it names it).
+    pub name: Option<String>,
+    /// The app's version (`nsh.json` `"version"`; a package's, `1.0.0`
+    /// where nothing gives one).
+    pub version: Option<String>,
+    /// The build number (`nsh.json` `"build"`; a package's, `1` where
+    /// nothing gives one).
+    pub build: Option<u64>,
+    /// A development build (`nsh run`, `nsh dev`, `nsh test`, a build
+    /// without `--release`), not a package's.
+    pub development: bool,
+}
+
+impl AppInfo {
+    /// From the JSON `appInfo()` reports (`{"id", "name", "version",
+    /// "build", "development"}`): a key that is missing, `null` or of
+    /// another type is left unknown, and other keys are ignored.
+    #[doc(hidden)]
+    pub fn from_json(value: &crate::JsonValue) -> AppInfo {
+        let text = |key: &str| value.get(key).and_then(|v| v.as_str()).map(str::to_owned);
+        AppInfo {
+            id: text("id"),
+            name: text("name"),
+            version: text("version"),
+            build: value.get("build").and_then(|v| v.as_u64()),
+            development: value
+                .get("development")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+        }
+    }
+
+    /// As `appInfo()` reports it: unknown fields are `null`.
+    pub fn to_json(&self) -> crate::JsonValue {
+        serde_json::json!({
+            "id": self.id,
+            "name": self.name,
+            "version": self.version,
+            "build": self.build,
+            "development": self.development,
+        })
     }
 }
 
@@ -1339,6 +1586,62 @@ pub struct HttpRequest {
     pub body: HttpBody,
     /// Follow redirects (`redirect: "follow"`, the default).
     pub follow_redirects: bool,
+    /// How the request uses the platform's HTTP cache (`cache` of
+    /// `fetch`).
+    pub cache: HttpCache,
+}
+
+/// How a request uses the HTTP cache: the Fetch standard's
+/// [cache modes](https://fetch.spec.whatwg.org/#concept-request-cache-mode).
+///
+/// Honoured where the platform's network stack has a cache (Web: the
+/// browser's; macOS / iOS: `NSURLSession`'s). Elsewhere requests always go
+/// to the network, which every mode but [`HttpCache::OnlyIfCached`]
+/// allows; that one fails there, as nothing is cached.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum HttpCache {
+    /// Use a fresh cached response, revalidate a stale one, store the
+    /// response (`"default"`).
+    #[default]
+    Default,
+    /// Neither read nor update the cache (`"no-store"`).
+    NoStore,
+    /// Skip the cache, then store the response (`"reload"`).
+    Reload,
+    /// Revalidate any cached response with the server (`"no-cache"`).
+    NoCache,
+    /// Use any cached response, stale or not; else the network
+    /// (`"force-cache"`).
+    ForceCache,
+    /// Use only a cached response; fail without one (`"only-if-cached"`).
+    OnlyIfCached,
+}
+
+impl HttpCache {
+    /// The mode's Fetch name (`"no-store"`, ...).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::NoStore => "no-store",
+            Self::Reload => "reload",
+            Self::NoCache => "no-cache",
+            Self::ForceCache => "force-cache",
+            Self::OnlyIfCached => "only-if-cached",
+        }
+    }
+
+    /// The mode named `name` (Fetch's names; `None` for others).
+    pub fn parse(name: &str) -> Option<Self> {
+        Some(match name {
+            "default" => Self::Default,
+            "no-store" => Self::NoStore,
+            "reload" => Self::Reload,
+            "no-cache" => Self::NoCache,
+            "force-cache" => Self::ForceCache,
+            "only-if-cached" => Self::OnlyIfCached,
+            _ => return None,
+        })
+    }
 }
 
 impl HttpRequest {
@@ -1351,6 +1654,7 @@ impl HttpRequest {
             headers: Vec::new(),
             body: HttpBody::Empty,
             follow_redirects: true,
+            cache: HttpCache::Default,
         }
     }
 
@@ -1375,6 +1679,13 @@ impl HttpRequest {
     #[must_use]
     pub fn body(mut self, body: impl Into<Vec<u8>>) -> Self {
         self.body = HttpBody::Bytes(body.into());
+        self
+    }
+
+    /// Uses the HTTP cache as `cache` says.
+    #[must_use]
+    pub fn cache(mut self, cache: HttpCache) -> Self {
+        self.cache = cache;
         self
     }
 }
@@ -1590,6 +1901,60 @@ pub enum FetchOp {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn app_info_reads_and_writes_app_infos_json() {
+        use super::AppInfo;
+        let json = serde_json::json!({
+            "id": "com.example.orders",
+            "name": "Orders",
+            "version": "2.1.0",
+            "build": 7,
+            "development": true,
+            "store": "play",
+        });
+        let info = AppInfo::from_json(&json);
+        assert_eq!(info.id.as_deref(), Some("com.example.orders"));
+        assert_eq!(info.name.as_deref(), Some("Orders"));
+        assert_eq!(info.version.as_deref(), Some("2.1.0"));
+        assert_eq!(info.build, Some(7));
+        assert!(info.development);
+        assert_eq!(AppInfo::from_json(&info.to_json()), info);
+        // Missing, null or mistyped: unknown.
+        let partial = AppInfo::from_json(&serde_json::json!({
+            "id": null,
+            "version": 2,
+            "build": "7",
+        }));
+        assert_eq!(partial, AppInfo::default());
+        assert_eq!(
+            AppInfo::default().to_json(),
+            serde_json::json!({
+                "id": null, "name": null, "version": null, "build": null, "development": false,
+            })
+        );
+    }
+
+    #[test]
+    fn scheme_links_follow_the_os_unless_the_platform_says() {
+        use super::{Environment, Os};
+        let on = |os: Os, scheme_links: Option<bool>| {
+            Environment {
+                os,
+                scheme_links,
+                ..Environment::default()
+            }
+            .scheme_links()
+        };
+        for os in [Os::Ios, Os::Android, Os::MacOs, Os::Windows, Os::Linux] {
+            assert!(on(os, None), "{os:?}");
+            assert!(on(os, Some(true)), "{os:?}");
+            assert!(!on(os, Some(false)), "{os:?}");
+        }
+        assert!(!on(Os::Web, None));
+        assert!(on(Os::Web, Some(true)));
+        assert!(!on(Os::Web, Some(false)));
+    }
+
     #[test]
     fn size_class_fallback_uses_points_and_native_traits_win() {
         use super::{Environment, SizeClass};

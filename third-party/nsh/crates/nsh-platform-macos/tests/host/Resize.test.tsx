@@ -36,4 +36,14 @@ test("setViewport gives a window with a hidden title bar that content size", asy
   await app.waitFor("Presses: 0");
   const state = await resized(app, 600, 500);
   expect(near(state.contentBounds.size.height, 500)).toBe(true);
+  await app.waitFor("Layout: 600x500");
+});
+
+test("resizing a window re-lays out its content to match the new content size", async () => {
+  const app = await open("./Resize.tsx");
+  await app.waitFor("text:/^Layout: /");
+  await resized(app, 640, 440);
+  await app.waitFor("Layout: 640x440");
+  await resized(app, 420, 300);
+  await app.waitFor("Layout: 420x300");
 });

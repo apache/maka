@@ -36,6 +36,7 @@ fn app() -> impl IntoElement {
 
 ```tsx tabs
 import { List, mount, Text, View } from "nsh";
+import { Window } from "nsh/desktop";
 
 const contacts = Array.from({ length: 1000 }, (_, i) => ({ id: i, name: `联系人 ${i + 1}` }));
 
@@ -53,7 +54,11 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 在 TSX 中，`List` 是泛型组件：`List<T>` 会检查 `each` 与行函数的条目类型是否一致，TypeScript 会从 `each` 推断出条目类型（参见 [List API](../modules/nsh-list.md)）。在 Rust 中，`virtual_list` 接收行数（一个值、signal 或闭包：列表就地增减）和在某个 `Position` 构建行的函数；行通过 `at.index()` 读取组件的数据。
@@ -93,8 +98,8 @@ virtual_list(move || messages.with(|m| m.len()), move |at| {
 | `inverted` | `.inverted()` | `boolean` | `false` | 从末端开始布局，第 0 项在最后（聊天样式）：初始滚动到末端，内容变化时保持与末端的距离。 |
 | `maintainVisibleContentPosition` | `.follow_end(px(threshold))` | `{ autoscrollToBottomThreshold?: number }` | | 用于非倒序列表：位于内容末端或距末端不超过该点数时，内容增长或视口缩小时列表保持在末端；向上滚得更远时，可见内容保持不动。 |
 | `stickyHeaderIndices` | `.sticky_header_indices([..])` | `number[]` | | 滚动经过时吸附在起始端的条目（单列、非倒序）。 |
-| `contentStyle` | `.content_padding(..)`、`.content_padding_x(..)`、`.row_gap(..)`、`.column_gap(..)` 等 | `ListContentStyle` | | 内容的内边距和间距（点）：`padding`、`paddingHorizontal`、`paddingVertical`、`paddingTop`、`paddingRight`、`paddingBottom`、`paddingLeft`、`gap`、`rowGap`、`columnGap`。 |
-| `contentClass` | | `string` | | 以类名（`p-*`、`gap-*`）给出的内容内边距和间距；`contentStyle` 优先。 |
+| `contentStyle` | `.content_padding(..)`、`.content_padding_x(..)`、`.row_gap(..)`、`.column_gap(..)` 等 | `ListContentStyle` | | 内容的内边距和间距（点）：`padding`、`paddingHorizontal`、`paddingVertical`、`paddingTop`、`paddingRight`、`paddingBottom`、`paddingLeft`、`gap`、`rowGap`、`columnGap`。`alignItems` 在交叉轴上对齐单元格：`stretch`（默认）、`flex-start`、`center` 或 `flex-end`。 |
+| `contentClass` | | `string` | | 以类名给出的内容内边距、间距和交叉轴对齐（`p-*`、`gap-*`、`items-start`、`items-center`、`items-end`、`items-stretch`）；`contentStyle` 优先。 |
 | `header` | `.header(el)` | `ListSlot` | | 条目之前的内容：一个组件（`Header`）或一个元素（`<Header />`）。 |
 | `footer` | `.footer(el)` | `ListSlot` | | 条目之后的内容。 |
 | `empty` | `.empty(el)` | `ListSlot` | | `each` 为空时代替条目显示。 |
@@ -119,7 +124,7 @@ virtual_list(move || messages.with(|m| m.len()), move |at| {
 | `testID` | `.test_id(id)` | `string` | | UI 测试查找列表滚动视图所用的 id（`nsh test` 的 `id:`、XCUITest、UI Automator）。 |
 | `ref` | `.element_ref(&handle)` | `ListRef \| (node: ListRef) => void` | | 列表的 ref（见 [ref 方法](#ref-方法)）。 |
 
-列表同样支持 [`Scroll`](./scroll.md#滚动) 的滚动属性（Rust 中为 `Scrollable` 方法）：`pagingEnabled`、`snapToInterval`、`snapToOffsets`、`snapToAlignment`、`disableIntervalMomentum`、`decelerationRate`、`bounces`、`contentInset`、`scrollbarInset`、`contentOffset`、`keyboardShouldPersistTaps`、`scrollEventThrottle` 和 `scrollable`。列表保持原有比例。
+列表同样支持 [`Scroll`](./scroll.md#滚动) 的滚动属性（Rust 中为 `Scrollable` 方法）：`pagingEnabled`、`snapToInterval`、`snapToOffsets`、`snapToAlignment`、`disableIntervalMomentum`、`decelerationRate`、`bounces`、`contentInset`、`scrollbarInset`、`contentOffset`、`keyboardShouldPersistTaps`、`scrollEventThrottle`、`scrollable`、`smoothWheel` 和 `wheelLineHeight`。列表保持原有比例。
 
 所有元素通用的属性（[通用属性](./index.md#通用属性)）原样传给列表的滚动视图：`testID`、`accessibilityLabel` 等无障碍属性、样式、`onLayout`、触摸和响应者属性。UI 测试按 `testID` 找到列表，和找其他视图一样。
 

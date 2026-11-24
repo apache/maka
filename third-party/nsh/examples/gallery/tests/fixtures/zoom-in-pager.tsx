@@ -1,4 +1,5 @@
 import { mount, platform, Scroll, signal, Text, View } from "nsh";
+import { Window } from "nsh/desktop";
 
 // An image viewer: a horizontal pager with a zoomable scroll view per page,
 // the first one zoomed in twice.
@@ -49,4 +50,4 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => <Window id="main">{App}</Window>);

@@ -37,10 +37,8 @@ test("on a manual clock, a timer fires when the clock reaches it", async () => {
   expect(app.shows("Timer: fired")).toBe(true);
 });
 
-test("on the system's clock, a step waits for the app to be quiet", async () => {
+test("on the system's clock, a step returns once the app is idle", async () => {
   const app = await open("./App.tsx");
-  const started = Date.now();
   await app.press("Add");
   expect(app.shows("Count: 1")).toBe(true);
-  expect(Date.now() - started).toBeGreaterThanOrEqual(100);
 });

@@ -16,11 +16,11 @@ use super::{
     },
 };
 use crate::{
-    AudioSession, AutoCapitalize, AutoFill, Color, EventKind, HeaderSlot, Hsla, JsonValue,
-    KeyboardAppearance, KeyboardType, ModalAnimation, ModalPresentation, ModalProp, NativeProp,
-    OverlayProp, PasteBehavior, PasteEvent, Points, Prop, ResizeMode, ReturnKeyType, Rgba,
-    ScreenAnimation, ScreenProp, ScrollProp, SheetDetent, Size, StatusBarSetting, SubmitBehavior,
-    Tag, WebSource,
+    AudioSession, AutoCapitalize, AutoFill, Color, EventKind, HeaderSlot, HeaderTitleAlign, Hsla,
+    JsonValue, KeyboardAppearance, KeyboardType, ModalAnimation, ModalPresentation, ModalProp,
+    NativeProp, OverlayProp, PasteBehavior, PasteEvent, Points, Prop, ResizeMode, ReturnKeyType,
+    Rgba, ScreenAnimation, ScreenProp, ScrollProp, SheetDetent, Size, StatusBarSetting,
+    SubmitBehavior, Tag, WebSource,
     canvas::{
         CanvasFont, CanvasGradient, CanvasImage, CanvasOp, CanvasTextAlign, CanvasTextBaseline,
         Composite, Drawing, FillRule, LineCap, LineJoin, Num, Paint, Path, PathOp, ViewPaint,
@@ -773,9 +773,13 @@ impl Input {
     }
 
     /// Whether a multiline input's scroll bar shows (default yes): the
-    /// platform's indicator, or the app's built-in bar once it set one.
-    pub fn scrollbar(self, shows: impl IntoReactive<bool>) -> Self {
-        self.bind_prop(shows, |shows: bool| Prop::Scrollbar(shows.into()))
+    /// platform's indicator, or the app's built-in bar once it set one; or
+    /// a built-in bar of this input's own theme (TS `scrollbar={theme}`:
+    /// `nsh_base::ScrollbarTheme` converts into a setting). The built-in
+    /// bar lies over the input's frame, padding included, while the text
+    /// stays in the content box.
+    pub fn scrollbar(self, setting: impl IntoReactive<crate::ScrollbarSetting>) -> Self {
+        self.bind_prop(setting, Prop::Scrollbar)
     }
 
     /// At most `length` characters, counted as Unicode scalar values
@@ -815,6 +819,13 @@ impl Input {
     /// Focused when it appears.
     pub fn auto_focus(self, focus: impl IntoReactive<bool>) -> Self {
         self.bind_prop(focus, |focus: bool| Prop::AutoFocus(focus))
+    }
+
+    /// Selects the whole text when the input takes the focus (TS:
+    /// `selectTextOnFocus`); a click that drags or extends a selection keeps
+    /// the user's.
+    pub fn select_text_on_focus(self, select: impl IntoReactive<bool>) -> Self {
+        self.bind_prop(select, |select: bool| Prop::SelectTextOnFocus(select))
     }
 
     /// The caret is drawn (default yes; TS: `caret`).
@@ -878,7 +889,8 @@ impl Input {
         )
     }
 
-    /// A key was pressed: the character, `Backspace` or `Enter`.
+    /// A key was pressed: the character, `Backspace`, `Enter`, `Escape`,
+    /// `ArrowUp` or `ArrowDown`.
     pub fn on_key_press<M>(self, listener: impl IntoListener<str, M>) -> Self {
         self.listen(EventKind::KeyPress, listener.into_listener(), events::key)
     }
@@ -910,9 +922,11 @@ impl Scroll {
         self.set(Prop::Horizontal(true))
     }
 
-    /// Whether the scroll indicator shows (default yes).
-    pub fn scrollbar(self, shows: impl IntoReactive<bool>) -> Self {
-        self.bind_prop(shows, |shows: bool| Prop::Scrollbar(shows.into()))
+    /// Whether the scroll indicator shows (default yes); or a built-in bar
+    /// of this view's own theme (TS `scrollbar={theme}`:
+    /// `nsh_base::ScrollbarTheme` converts into a setting).
+    pub fn scrollbar(self, setting: impl IntoReactive<crate::ScrollbarSetting>) -> Self {
+        self.bind_prop(setting, Prop::Scrollbar)
     }
 
     /// Pinch zoom between `min` and `max`.
@@ -1011,6 +1025,13 @@ impl Screen {
         self.bind_prop(visible, |v| {
             Prop::Screen(ScreenProp::HeaderShadowVisible(v))
         })
+    }
+
+    /// Where the title sits in the header (TS: `headerTitleAlign`): at the
+    /// start (the default) or centered. Android's header follows it; iOS's
+    /// system bar always centers the title and ignores the value.
+    pub fn header_title_align(self, align: impl IntoReactive<HeaderTitleAlign>) -> Self {
+        self.bind_prop(align, |a| Prop::Screen(ScreenProp::HeaderTitleAlign(a)))
     }
 
     /// With [`Self::header_transparent`], the header stays clear while the
@@ -2667,6 +2688,7 @@ impl From<Drawing> for Painter {
 }
 
 crate::static_reactive!(ScreenAnimation: ScreenAnimation);
+crate::static_reactive!(HeaderTitleAlign: HeaderTitleAlign);
 
 /// A program where an optional one goes (`.transition_shader(wipe)`).
 impl IntoReactive<Option<crate::shader::TransitionShader>> for crate::shader::TransitionShader {
@@ -2678,6 +2700,13 @@ impl IntoReactive<Option<crate::shader::TransitionShader>> for crate::shader::Tr
 /// A backdrop where an optional one goes (`.macos_backdrop(backdrop)`).
 impl IntoReactive<Option<crate::MacOsBackdrop>> for crate::MacOsBackdrop {
     fn into_reactive(self) -> super::Reactive<Option<crate::MacOsBackdrop>> {
+        super::Reactive::Static(Some(self))
+    }
+}
+
+/// A backdrop where an optional one goes (`.windows_backdrop(backdrop)`).
+impl IntoReactive<Option<crate::WindowsBackdrop>> for crate::WindowsBackdrop {
+    fn into_reactive(self) -> super::Reactive<Option<crate::WindowsBackdrop>> {
         super::Reactive::Static(Some(self))
     }
 }

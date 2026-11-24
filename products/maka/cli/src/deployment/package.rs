@@ -35,12 +35,12 @@ pub(super) fn path(directory: &Path, digest: &str) -> PathBuf {
 pub(super) fn source(mode: super::Mode) -> Result<PathBuf, HostError> {
     let current = std::env::current_exe()?.canonicalize()?;
     #[cfg(windows)]
-    if mode == super::Mode::Supervised && env!("CARGO_BIN_NAME") != "maka-service" {
+    if mode == super::Mode::Supervised {
         let service = service_companion(&current)?;
         if !service.is_file() {
             return Err("Windows services require the sibling maka-service.exe artifact".into());
         }
-        return Ok(service);
+        crate::distribution::validate_windows_service(&service)?;
     }
     #[cfg(not(windows))]
     let _ = mode;

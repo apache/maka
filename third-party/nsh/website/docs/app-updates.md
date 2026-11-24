@@ -103,6 +103,22 @@ For notes in more than one language, add `--notes <tag>=<file>` for each, a BCP 
 upload them with it. Check with `checkForUpdate({ locale })` and `update.notes` is the one in that language, downloaded
 alone, or the untagged notes when there is none. Apps on older runtimes keep showing the untagged notes.
 
+### Smaller downloads
+
+Pass the previous release's archives with `--previous` and `nsh update-manifest` writes a zstd patch per platform,
+from that version to this one, beside the manifest; upload them too. An app running the previous version downloads the
+patch instead of the archive, rebuilds the new app from its installed files and installs it as usual. It falls back
+to the whole archive when its files are not the released ones, the patch fails, or its result does not match the
+SHA-256 in the signed manifest. Apps on older versions, or older runtimes, download the archive as before.
+
+```sh
+gh release download v1.2.0 -p 'My-App-1.2.0-*' -D previous
+nsh update-manifest *.tar.gz *.zip --previous previous/* --notes CHANGES.md --key keys/update.secret
+```
+
+On NSH's own release packages a patch between adjacent versions is 24–37% of the archive. Making one takes about a
+minute and up to 0.7 GB of memory per platform, so do it in the release CI; applying one takes well under a second.
+
 ## OTA updates
 
 A release that changes only the app's TSX needs no new app: [OTA updates](/docs/ota-updates) deliver it as a signed

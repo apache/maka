@@ -1,6 +1,7 @@
-//! Finds an app's entry module by convention: commands take the entry
-//! itself or the app's directory (the current one by default), whose
-//! `App.tsx` is the entry. The name matches in any case (`app.tsx` too,
+//! Finds an app's entry module: commands take the entry itself or the
+//! app's directory (the current one by default), whose `nsh.json` names
+//! the entry (`"entry": "app/App.tsx"`, relative to it), else whose
+//! `App.tsx` is the entry. That name matches in any case (`app.tsx` too,
 //! also on case-sensitive file systems). A directory whose `nsh.json` names
 //! a Rust root component (`"root"`) is a Rust app: its entry is that
 //! `nsh.json` (`rust_app::is_root`), and its `App.tsx`, if any, is used
@@ -9,12 +10,10 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::bail;
+pub(crate) use nsh_bundler::app_dir::ENTRY;
 
-/// The entry module of an app directory.
-pub(crate) const ENTRY: &str = "App.tsx";
-
-/// The entry module `path` names: the file itself, or the directory's
-/// [`ENTRY`].
+/// The entry module `path` names: the file itself, or the directory's: the
+/// one its `nsh.json` names (`"entry"`), else its [`ENTRY`].
 pub(crate) fn resolve(path: &Path) -> anyhow::Result<PathBuf> {
     if !path.is_dir() {
         if path.exists() {
@@ -29,6 +28,16 @@ pub(crate) fn resolve(path: &Path) -> anyhow::Result<PathBuf> {
         .is_some_and(|json| json.get("root").is_some())
     {
         return Ok(config);
+    }
+    match nsh_bundler::app_dir::config_entry(path) {
+        Ok(Some(entry)) if entry.is_file() => return Ok(entry),
+        Ok(Some(entry)) => bail!(
+            "{}: \"entry\" names {}, which does not exist",
+            config.display(),
+            entry.display()
+        ),
+        Ok(None) => {}
+        Err(e) => bail!("{}: {e}", config.display()),
     }
     let entry = std::fs::read_dir(path)?
         .filter_map(|e| e.ok().map(|e| e.path()))
@@ -74,6 +83,14 @@ mod tests {
         std::fs::write(dir.join("nsh.json"), r#"{ "rust": ".", "root": "App" }"#).unwrap();
         assert_eq!(resolve(&dir).unwrap(), dir.join("nsh.json"));
         assert_eq!(resolve(&dir.join("app.tsx")).unwrap(), dir.join("app.tsx"));
+        // The entry `nsh.json` names, relative to it.
+        std::fs::create_dir_all(dir.join("app")).unwrap();
+        std::fs::write(dir.join("nsh.json"), r#"{ "entry": "app/Main.tsx" }"#).unwrap();
+        assert!(resolve(&dir).is_err());
+        std::fs::write(dir.join("app/Main.tsx"), "").unwrap();
+        assert_eq!(resolve(&dir).unwrap(), dir.join("app/Main.tsx"));
+        std::fs::write(dir.join("nsh.json"), r#"{ "entry": "../Main.tsx" }"#).unwrap();
+        assert!(resolve(&dir).is_err());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

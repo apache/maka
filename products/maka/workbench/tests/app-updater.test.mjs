@@ -58,27 +58,31 @@ async function loadUpdaterModule(t) {
   return import(new URL(`appUpdater.ts?test=${sequence}`, appRoot));
 }
 
-test('appUpdater transitions across check, progress events, dismiss, download, and installAndRestart', async (t) => {
+test('appUpdater stays silent in sidebar through background download until ready or installing', async (t) => {
   const { createAppUpdater } = await loadUpdaterModule(t);
   const calls = [];
   const listeners = new Map();
   const opened = [];
 
-  const availableSnapshot = {
+  const baseSnapshot = {
     channel: 'nightly',
     currentVersion: '0.2.0-nightly.20261121.1',
     canInstall: true,
-    status: 'available',
     available: {
       version: '0.2.0-nightly.20261121.2',
       url: 'https://github.com/apache/maka/releases/download/nightly/Maka-nightly-macos-arm64.tar.gz',
       size: 1000,
     },
   };
+  const downloadingSnapshot = {
+    ...baseSnapshot,
+    status: 'downloading',
+    progress: { received: 0, total: 1000 },
+  };
   const readySnapshot = {
-    ...availableSnapshot,
+    ...baseSnapshot,
     status: 'ready',
-    progress: { received: 1000, total: 1000 },
+    progress: null,
   };
 
   const updater = createAppUpdater(
@@ -86,10 +90,9 @@ test('appUpdater transitions across check, progress events, dismiss, download, a
       async call(method) {
         calls.push(method);
         if (method === 'updater.state') {
-          return { ...availableSnapshot, status: 'idle', available: null };
+          return { ...baseSnapshot, status: 'idle', available: null };
         }
-        if (method === 'updater.check') return availableSnapshot;
-        if (method === 'updater.download') return readySnapshot;
+        if (method === 'updater.check') return downloadingSnapshot;
         if (method === 'updater.installAndRestart') return null;
         throw new Error('unexpected ' + method);
       },
@@ -106,37 +109,168 @@ test('appUpdater transitions across check, progress events, dismiss, download, a
 
   updater.init();
   await Promise.resolve();
-  assert.equal(updater.bannerVisible(), false);
+  assert.equal(updater.sidebarVisible(), false);
 
   await updater.check();
-  assert.equal(updater.bannerVisible(), true);
+  assert.equal(updater.snapshot().status, 'downloading');
+  assert.equal(updater.sidebarVisible(), false);
 
-  updater.dismiss();
-  assert.equal(updater.bannerVisible(), false);
+  // Silent discovery/download/read-only available/error never clutter the sidebar.
+  for (const status of ['checking', 'available', 'downloading', 'upToDate', 'error']) {
+    listeners.get('updater.state')({
+      ...baseSnapshot,
+      status,
+      progress: status === 'downloading' ? { received: 450, total: 1000 } : null,
+    });
+    assert.equal(updater.sidebarVisible(), false, `sidebar should stay hidden for ${status}`);
+  }
 
-  // Pushing a progress update re-shows the banner with accurate percentage.
+  // Background progress updates stay silent in the sidebar while reporting percent for Settings.
   listeners.get('updater.state')({
-    ...availableSnapshot,
+    ...baseSnapshot,
     status: 'downloading',
     progress: { received: 450, total: 1000 },
   });
-  assert.equal(updater.bannerVisible(), true);
   assert.equal(updater.progressPercent(), 45);
+  assert.equal(updater.sidebarVisible(), false);
 
-  await updater.download();
+  // Background staging completes and pushes ready; sidebar action surfaces without manual download.
+  listeners.get('updater.state')(readySnapshot);
   assert.equal(updater.snapshot().status, 'ready');
-  assert.equal(updater.bannerVisible(), true);
+  assert.equal(updater.sidebarVisible(), true);
+
+  listeners.get('updater.state')({
+    ...baseSnapshot,
+    status: 'installing',
+  });
+  assert.equal(updater.sidebarVisible(), true);
+
+  // Dev builds never surface sidebar actions even if a ready payload arrives.
+  listeners.get('updater.state')({
+    ...readySnapshot,
+    channel: 'dev',
+  });
+  assert.equal(updater.sidebarVisible(), false);
+
+  listeners.get('updater.state')(readySnapshot);
+  await updater.installAndRestart();
+  assert.deepEqual(calls, ['updater.state', 'updater.check', 'updater.installAndRestart']);
+
+  // Read-only installations expose manual download URL without surfacing a sidebar button.
+  listeners.get('updater.state')({
+    ...baseSnapshot,
+    canInstall: false,
+    status: 'available',
+    progress: null,
+  });
+  assert.equal(updater.sidebarVisible(), false);
+  await updater.openDownload();
+  assert.deepEqual(opened, [baseSnapshot.available.url]);
+});
+
+test('appUpdater preserves ready status when installAndRestart rejects after host stop failure', async (t) => {
+  const { createAppUpdater } = await loadUpdaterModule(t);
+  const listeners = new Map();
+  const readySnapshot = {
+    channel: 'nightly',
+    currentVersion: '0.2.0-nightly.1',
+    canInstall: true,
+    status: 'ready',
+    available: {
+      version: '0.2.0-nightly.2',
+      url: 'https://example.invalid/maka.tar.gz',
+      size: 1000,
+    },
+  };
+
+  const updater = createAppUpdater(
+    {
+      async call(method) {
+        if (method === 'updater.state') return readySnapshot;
+        if (method === 'updater.installAndRestart') {
+          listeners.get('updater.state')({
+            ...readySnapshot,
+            error: 'Host stop timed out',
+          });
+          throw new Error('Host stop timed out');
+        }
+        throw new Error('unexpected ' + method);
+      },
+      on(event, listener) {
+        listeners.set(event, listener);
+        return () => listeners.delete(event);
+      },
+      async openUrl() {},
+    },
+    true,
+  );
+
+  updater.init();
+  await Promise.resolve();
+  assert.equal(updater.sidebarVisible(), true);
 
   await updater.installAndRestart();
-  assert.deepEqual(calls, [
-    'updater.state',
-    'updater.check',
-    'updater.download',
-    'updater.installAndRestart',
-  ]);
+  assert.equal(updater.snapshot().status, 'ready');
+  assert.equal(updater.snapshot().error, 'Host stop timed out');
+  assert.equal(updater.sidebarVisible(), true);
+});
 
-  await updater.openDownload();
-  assert.equal(opened.length, 1);
+test('appUpdater keeps receiving updates after an earlier owner unsubscribes and a new owner mounts', async (t) => {
+  const { createAppUpdater } = await loadUpdaterModule(t);
+  const listeners = new Set();
+  let current = {
+    channel: 'nightly',
+    currentVersion: '0.2.0-nightly.1',
+    canInstall: true,
+    status: 'upToDate',
+    available: null,
+    progress: null,
+    error: null,
+  };
+
+  const updater = createAppUpdater(
+    {
+      async call(method) {
+        if (method === 'updater.state') return current;
+        throw new Error('unexpected ' + method);
+      },
+      on(_event, listener) {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+      async openUrl() {},
+    },
+    true,
+  );
+
+  // First owner mounts and then disposes (e.g., Settings remounting after loading preferences).
+  const offFirst = updater.init();
+  await Promise.resolve();
+  assert.equal(updater.snapshot().status, 'upToDate');
+  offFirst();
+  assert.equal(listeners.size, 0);
+
+  // Second owner mounts, syncs fresh state, and continues receiving live events.
+  current = {
+    ...current,
+    status: 'downloading',
+    available: {
+      version: '0.2.0-nightly.2',
+      url: 'https://example.invalid/maka.tar.gz',
+      size: 1000,
+    },
+    progress: { received: 250, total: 1000 },
+  };
+  const offSecond = updater.init();
+  await Promise.resolve();
+  assert.equal(updater.snapshot().status, 'downloading');
+  assert.equal(updater.progressPercent(), 25);
+
+  const ready = { ...current, status: 'ready', progress: null };
+  for (const listener of listeners) listener(ready);
+  assert.equal(updater.snapshot().status, 'ready');
+  assert.equal(updater.sidebarVisible(), true);
+  offSecond();
 });
 
 test('appUpdater stays inert on terminal idiom', async (t) => {
@@ -160,5 +294,5 @@ test('appUpdater stays inert on terminal idiom', async (t) => {
   await updater.check();
   assert.equal(called, false);
   assert.equal(updater.snapshot(), null);
-  assert.equal(updater.bannerVisible(), false);
+  assert.equal(updater.sidebarVisible(), false);
 });

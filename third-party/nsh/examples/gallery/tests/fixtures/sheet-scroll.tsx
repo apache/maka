@@ -1,4 +1,5 @@
-import { mount, platform, Scroll, signal, Text, View } from "nsh";
+import { cleanup, host, mount, platform, Scroll, signal, Text, View } from "nsh";
+import { Window } from "nsh/desktop";
 import { Sheet } from "nsh/base";
 
 // A swipe-to-close sheet holding a list taller than the sheet, and a button
@@ -6,30 +7,37 @@ import { Sheet } from "nsh/base";
 function App() {
   const open = signal(true);
   const offset = signal(0);
+  const pressed = signal<string[]>([]);
+  const overlay = signal(true);
+  cleanup(host.on("test:hide-overlay", () => overlay.set(false)));
   return (
     <View style={{ flex: 1, paddingTop: 80, paddingHorizontal: 24 }}>
       <Text>{open() ? "sheet: open" : "sheet: closed"}</Text>
       <Text>{offset() > 0 ? "list: scrolled" : "list: at top"}</Text>
+      <Text>{`pressed: ${pressed().at(-1) ?? "none"}`}</Text>
+      <Text>{`presses: ${pressed().join(", ")}`}</Text>
       <Text>{`Platform: ${platform.os}`}</Text>
       <Sheet open={open()} onOpenChange={({ open: o }) => open.set(o)} closeOnSwipe>
         <View style={{ maxHeight: 400 }}>
           <Scroll testID="rows" onScroll={(e) => offset.set(e.offset.y)} style={{ flexShrink: 1 }}>
             {Array.from({ length: 40 }, (_, i) => (
-              <View style={{ height: 44, justifyContent: "center", paddingHorizontal: 16 }}>
+              <View onPress={() => pressed.update(rows => [...rows, `Row ${i + 1}`])} style={{ height: 44, justifyContent: "center", paddingHorizontal: 16 }}>
                 <Text>{`Row ${i + 1}`}</Text>
               </View>
             ))}
           </Scroll>
-          <View
-            onPress={() => {}}
-            style={{ position: "absolute", left: 16, right: 16, bottom: 16, height: 48, justifyContent: "center", alignItems: "center", backgroundColor: "#dddddd" }}
-          >
-            <Text>Button over the list</Text>
-          </View>
+          <If when={overlay()}>
+            <View
+              onPress={() => {}}
+              style={{ position: "absolute", left: 16, right: 16, bottom: 16, height: 48, justifyContent: "center", alignItems: "center", backgroundColor: "#dddddd" }}
+            >
+              <Text>Button over the list</Text>
+            </View>
+          </If>
         </View>
       </Sheet>
     </View>
   );
 }
 
-mount(App);
+mount(() => <Window id="main">{App}</Window>);

@@ -111,6 +111,13 @@ pub struct RichEditorProps {
     pub styles: Prop<RichEditorStyles>,
     /// What screen readers call the editor.
     pub accessibility_label: Prop<Option<SharedString>>,
+    /// Shows the input accessory with this `nativeID` over the keyboard
+    /// while the editor has the focus (`input_accessory_view`, TS
+    /// `InputAccessoryView` of `nsh/mobile`; iOS), as `Input`'s
+    /// `input_accessory` (TS `ios={{ inputAccessoryViewID }}`) does. The
+    /// platforms without one show nothing.
+    #[prop(rename = "inputAccessoryViewID")]
+    pub input_accessory: Prop<Option<SharedString>>,
     /// Tiptap's bubble menu: shown next to the selection while the app
     /// fills it (the app decides when, from the session's state: a link
     /// under the caret, a selection of text), above it, below it where

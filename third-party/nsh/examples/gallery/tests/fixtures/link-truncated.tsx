@@ -1,4 +1,5 @@
 import { mount, platform, signal, Text, View } from "nsh";
+import { Window } from "nsh/desktop";
 
 // Two one-line texts whose links do not fit. The clamped line holds the rest
 // of its paragraph, cut at the box for the ellipsis: in the first the link
@@ -33,4 +34,4 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => <Window id="main">{App}</Window>);

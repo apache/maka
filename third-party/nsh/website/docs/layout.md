@@ -106,6 +106,8 @@ Because minimum sizes default to 0, a `flex: 1` text in a row shrinks and wraps 
 
 In Rust a length is typed: `px(16.0)` is 16 points, `relative(0.5)` is 50% of the parent, `auto()` is `auto`. The step methods follow Tailwind's spacing scale of 4 points per step (`.p_4()` is 16 points, `.gap_0p5()` 2 points).
 
+Layouts land on the screen's device pixels, so neighbouring views meet with no gap and no blur. Half a point (`px(0.5)`, `0.5`) is a one-pixel hairline on a 2x screen; on a 1x screen a view thinner than a pixel still gets one, so a divider never disappears.
+
 Without a size, a view is as big as its content (plus padding), stretched across its parent's cross axis by the default `alignItems: "stretch"`. Percentages are relative to the parent's size (for padding and margin, as in CSS, to its width).
 
 `aspectRatio` sizes the other dimension from the one that is known:
@@ -227,7 +229,7 @@ const width = signal(0);
 </View>
 ```
 
-The frame is in points: `Bounds<Points>` in Rust, `{ bounds }` in TSX, a `Bounds` (`{ origin: { x, y }, size: { width, height } }`). For the whole window, read `window()` in Rust or `windowSize()` from [`nsh`](../modules/nsh.md#device) in TSX; both follow rotation and window resizing, and a style that reads them changes with the window:
+The frame is in points: `Bounds<Points>` in Rust, `{ bounds }` in TSX, a `Bounds` (`{ origin: { x, y }, size: { width, height } }`). For the whole surface, read `window()` in Rust or `windowSize()` from [`nsh`](../modules/nsh.md#device) in TSX; both follow rotation and resizing, and a style that reads them changes with the surface. On the desktops the host is invisible: a window's own size is its `WindowRef.state()?.contentBounds` (Rust `WindowRef::state()`), which follows that window's resizes:
 
 ```rust tabs
 view().style_when(|| window().width > px(600.0), |s| s.flex_row())

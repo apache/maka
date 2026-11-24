@@ -27,6 +27,9 @@ pub struct ButtonProps {
     pub busy: Prop<bool>,
     /// What screen readers say, when its content is not enough (an icon).
     pub accessibility_label: Prop<Option<SharedString>>,
+    /// What activating the button does, for screen readers, as a view's
+    /// `accessibilityHint`.
+    pub accessibility_hint: Prop<Option<SharedString>>,
     /// What it is for screen readers (default `"button"`: a link, a tab, a
     /// menu item, ...).
     pub role: Prop<Option<AccessibilityRole>>,
@@ -68,6 +71,7 @@ pub fn Button(props: ButtonProps, cx: Scope<ButtonEvent>) -> impl IntoElement {
     view.disabled(disabled)
         .role(move || props.role.get().unwrap_or(AccessibilityRole::Button))
         .optional_label(props.accessibility_label)
+        .optional_hint(props.accessibility_hint)
         .accessibility_state(move || AccessibilityState {
             selected: props.selected.get(),
             busy: props.busy.get(),

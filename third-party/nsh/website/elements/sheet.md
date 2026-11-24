@@ -145,6 +145,8 @@ detent meanwhile.
 
 ## The software keyboard
 
+On native Android, the Sheet's modal window already excludes the whole IME. The sheet or drawer restores only the part shared with the bottom safe area, so its existing safe-area padding sits behind the keyboard; it does not apply a second keyboard lift. Its title and close button stay on screen and its content ends above the keyboard as on the other platforms, which move the panel within the full-height presentation. This offset belongs to the Sheet's modal root; other popups keep their own presentation and keyboard handling.
+
 While the software keyboard is up, a panel that reaches the bottom of the screen (a bottom sheet, a drawer at the left
 or right) ends at the keyboard's top instead of the screen's bottom, and moves with the keyboard as it comes and goes,
 on the keyboard's own curve. Pad the panel's bottom by the safe area (`pb-[env(safe-area-inset-bottom)]`, Rust

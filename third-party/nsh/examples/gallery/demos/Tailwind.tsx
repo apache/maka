@@ -294,7 +294,7 @@ function Gradients() {
 
 function Typography() {
   return (
-    <Card icon="text" title="Typography" subtitle="font-* tracking-* decoration-* line-clamp-*">
+    <Card icon="text" title="Typography" subtitle="font-* tracking-* decoration-* line-clamp-* text-pretty">
       <Text class="text-3xl font-black tracking-tight text-zinc-900 dark:text-zinc-100">Display</Text>
       <Text class="text-lg font-light text-zinc-700 dark:text-zinc-300">Light, large and relaxed</Text>
       <Text class="font-serif text-lg italic text-zinc-700 dark:text-zinc-300">Serif italic</Text>
@@ -310,6 +310,9 @@ function Typography() {
       <Text class="line-clamp-2 text-[13px] leading-relaxed text-zinc-500">
         line-clamp-2: Text is laid out once on the engine thread and drawn on the main thread; classes reach it through the same style path as everything
         else, so the third line of this paragraph never shows.
+      </Text>
+      <Text class="text-pretty text-[13px] leading-relaxed text-zinc-500">
+        text-pretty：说明文字的最后一行不会只剩一两个字，换行时从上面几行挪几个字下来，行数保持不变。
       </Text>
       <Text class="self-start rounded-md bg-sky-500 px-2 text-xl font-bold text-white text-shadow-md">text-shadow-md</Text>
     </Card>

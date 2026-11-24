@@ -68,3 +68,59 @@ fn default_and_explicit_terminal_entries_reject_redirected_stdio_before_host_sta
         assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
     }
 }
+
+#[cfg(target_os = "macos")]
+#[test]
+fn build_ui_execs_the_matching_shell_in_each_macos_layout() {
+    use std::{fs, os::unix::fs::PermissionsExt, process::Stdio};
+
+    let directory = crate::executable_tempdir();
+    let bin = directory.path().canonicalize().unwrap();
+    let bundled = bin.join("Maka.app/Contents/MacOS");
+    fs::create_dir_all(&bundled).unwrap();
+    for folder in [&bin, &bundled] {
+        fs::hard_link(crate::maka_executable(), folder.join("maka")).unwrap();
+    }
+    let sibling = bin.join("maka-desktop-shell");
+    let staged = bundled.join("maka-desktop-shell");
+    for shell in [&sibling, &staged] {
+        fs::write(
+            shell,
+            "#!/bin/sh\nprintf '%s\\n' \"$$\" \"$0\" \"$MAKA_LAUNCHER\" \"$@\"\nexit 23\n",
+        )
+        .unwrap();
+        fs::set_permissions(shell, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    let check = |launcher: &std::path::Path, expected: &std::path::Path| {
+        let child = Command::new(launcher)
+            .args([
+                "application",
+                "build-ui",
+                "--entry=-app.tsx",
+                "--output",
+                "build dir",
+                "--asset-root",
+                ".",
+            ])
+            .env("MAKA_LAUNCHER", "stale-launcher")
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        let output = child.wait_with_output().unwrap();
+        assert_eq!(output.status.code(), Some(23));
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap(),
+            format!(
+                "{pid}\n{}\n{}\n__maka-build-ui\n--entry=-app.tsx\n--output=build dir\n--asset-root=.\n",
+                expected.display(),
+                launcher.display()
+            )
+        );
+    };
+    check(&bin.join("maka"), &staged);
+    check(&bundled.join("maka"), &staged);
+    fs::remove_file(&staged).unwrap();
+    check(&bin.join("maka"), &sibling);
+}

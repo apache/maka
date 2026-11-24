@@ -515,7 +515,7 @@ export function Menus() {
             title="Arrange"
             disabled={menuOff}
             items={[
-              { id: "", label: "Sort by", inline: true, items: (["Name", "Date", "Size"] as const).map((by) => ({ id: `sort:${by}`, label: by, checked: sort() === by })) },
+              { id: "", label: "Sort by", inline: true, singleSelection: true, items: (["Name", "Date", "Size"] as const).map((by) => ({ id: `sort:${by}`, label: by, checked: sort() === by })) },
               { id: "share", label: "Share", icon: "square.and.arrow.up" },
               { id: "duplicate", label: "Duplicate", icon: "plus.square.on.square" },
               { id: "", label: "", inline: true, items: [{ id: "delete", label: "Delete", icon: "trash", destructive: true }] },
@@ -535,7 +535,7 @@ export function Menus() {
           items={[
             { id: "star", label: starred() ? "Unstar" : "Star", icon: starred() ? "star.slash" : "star" },
             { id: "share", label: "Share", icon: "square.and.arrow.up" },
-            { id: "", label: "Move to", icon: "folder", items: (["Documents", "Archive"] as const).map((to) => ({ id: `move:${to}`, label: to, checked: folder() === to })) },
+            { id: "", label: "Move to", icon: "folder", singleSelection: true, items: (["Documents", "Archive"] as const).map((to) => ({ id: `move:${to}`, label: to, checked: folder() === to })) },
             { id: "", label: "", inline: true, items: [{ id: "delete", label: "Delete", icon: "trash", destructive: true }] },
           ]}
           onSelect={({ id }) => choose(id)}

@@ -1,8 +1,9 @@
 // A case of the API's test suite (docs/dev/compatibility.md): `nsh/host`
 // on the headless runtime, which runs the app without an embedding app: the
 // launch parameters are empty, a listener is added and removed, a post goes
-// nowhere and a call rejects at once, with the `code`
-// `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM`. Its script checks each.
+// nowhere and a call of a name nsh.json does not grant rejects at once,
+// with the `code` `ERR_ACCESS_DENIED` (the grant is checked before whether
+// there is a host). Its script checks each.
 import { Text, View, signal } from "nsh";
 import { host } from "nsh";
 

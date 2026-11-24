@@ -45,6 +45,16 @@ function App() {
           </View>
         )}
       </List>
+      <List
+        each={[0]}
+        style={{ width: 120, height: 50 }}
+        contentStyle={{ alignItems: "center" }}
+      >
+        {() => <View testID="align-center" style={{ width: 40, height: 20 }} />}
+      </List>
+      <List horizontal each={[0]} style={{ height: 60 }} contentClass="items-end">
+        {() => <View testID="align-end" style={{ width: 30, height: 20 }} />}
+      </List>
       <Text>Content: {content()}</Text>
     </View>
   );

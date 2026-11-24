@@ -254,6 +254,22 @@ impl StateLooks {
     }
 }
 
+/// The core notes the keyboard focus and the input each time `open` turns
+/// true, the popup that gives the focus back to `trigger` opening
+/// ([`ElementRef::focus_back_origin`]): on macOS and iOS, a popup a
+/// pointer opened gives it back where it was, as AppKit and UIKit do (a pointer's press leaves the
+/// focus where it is), one the keyboard opened to its trigger. `open` is
+/// tracked.
+pub(crate) fn note_focus_origin(open: impl Fn() -> bool + 'static, trigger: ElementRef) {
+    let was = stored(false);
+    effect(move || {
+        let now = open();
+        if !was.replace(now) && now {
+            untracked(|| trigger.focus_back_origin());
+        }
+    });
+}
+
 /// A popup's presence (`Popover`'s, `HoverCard`'s, a desktop menu's and
 /// its submenus', `Tooltip`'s, a desktop dropdown's), as a toast's `transitionStatus` and Base UI's
 /// `data-starting-style` / `data-ending-style`: opened, it is mounted with

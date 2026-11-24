@@ -33,3 +33,17 @@ test("a link a truncated line hides takes no press, one it cuts takes them on wh
   await app.waitFor("Cut link pressed: 1");
   expect(app.shows("Hidden link pressed: 0")).toBe(true);
 });
+
+test("a sentence's links and inline views take presses of their own", async () => {
+  const app = await open("../App.tsx");
+  await app.press("label:Text");
+  await app.waitFor("Read aloud");
+  await app.press("landing timeline");
+  await app.waitFor("Landing timeline");
+  // The source badges and the photo chip are inline views named for
+  // screen readers.
+  await app.press("label:Source 2, nasa.gov");
+  await app.waitFor("Source 2, nasa.gov");
+  await app.press("label:Open image: the booster on the pad");
+  await app.waitFor("Image: the booster on the pad");
+});

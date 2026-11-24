@@ -18,6 +18,8 @@ pub use crate::element::{
     Appearance,
     // Host elements and their settings.
     AutoCapitalize,
+    BackPhase,
+    BackProgressEvent,
     BackdropMaterial,
     BlendMode,
     BorderCurve,
@@ -31,6 +33,7 @@ pub use crate::element::{
     Children,
     ClaimRequest,
     ClipboardItem,
+    ClipboardWrite,
     ColorStop,
     Component,
     ComponentBuilder,
@@ -135,6 +138,8 @@ pub use crate::element::{
     OverlayPosition,
     Painter,
     PanActivation,
+    PanDirection,
+    PanEdge,
     PanEvent,
     PanGesture,
     ParentElement,
@@ -168,6 +173,7 @@ pub use crate::element::{
     ScreenAnimation,
     Scroll,
     ScrollAlignment,
+    ScrollEdge,
     ScrollEvent,
     Scrollable,
     Selection,
@@ -258,35 +264,44 @@ pub use crate::element::{
     AudioFailure, AudioPlayer, PlayerState, Sound, SoundSource, audio_available, audio_player,
     load_sound,
 };
-pub use crate::element::{
-    Delay, Each, If, IntoElements, IntoReactive, KeyOptions, Memo, Owner, Prop, Reactive,
-    ReadSignal, Resource, ResourceInfo, ResourceState, Scope, Signal, SignalEquals, Spawned,
-    Stored, after_answer, animate_layout, animated_value, announce_for_accessibility, app_url,
-    apple_keys, batch, can_pick_screen_color, catch_error, cleanup, clipboard_files,
-    clipboard_has_image, clipboard_has_string, clipboard_image, clipboard_string,
-    close_all_notifications, close_auth_session, close_notification, color, component,
-    component_ref, computed, dark, data_dir, dismiss_keyboard, dynamic, each, effect, element_ref,
-    engine_context, fetch, font_scale, fps_enabled, global, haptic, horizontal_size_class, idiom,
-    image_size, is_catalyst, is_desktop, key_label, keyboard_duration, keyboard_height,
-    keystroke_label, lifecycle, locale, locale_settings, log_file, measure_text, motion,
-    move_to_trash, next_app_url_change, next_frame, next_notification_press, next_open_files,
-    next_second_instance, next_url_scheme_open, notification_permission, on_back_press, on_key,
-    on_key_with, open_auth_session, open_path, open_url, os, os_version, perf_stats, pick_files,
-    pick_images, pick_paths, pick_save_path, pick_screen_color, pixel_ratio, platform_name,
-    prefetch_image, provide_context, reads_active_descendants, recognize_speech, reduce_motion,
-    register_font, request_animation_frame, request_notification_permission, resource,
-    resource_with_value, reveal_path, round_to_nearest_pixel, run_on_main_thread, safe_area,
-    screen_reader, set_app_url, set_app_url_with, set_badge, set_clipboard, set_clipboard_image,
-    set_clipboard_item, set_color_scheme, set_fps_enabled, set_fps_mode, set_interval, set_timeout,
-    set_tokens, shaders_available, share, share_available, show_notification, signal, signal_with,
-    spawn, speech_available, stored, text_metrics, timer, timer_until, tokens, try_apple_keys,
-    try_global, try_os, untracked, use_context, vertical_size_class, wake_count, watch_scroll,
-    web_evaluate_available, web_input_available, web_view_available, when, window,
-};
 #[cfg(not(target_arch = "wasm32"))]
 pub use crate::element::{background, blocking};
+/// The app's host ([`crate::host_channel`]; TS: `nsh`'s `host`).
+pub use crate::element::{host_call, host_call_with, host_post, on_host_event};
+/// The app's page in the system's settings ([`crate::mobile`]).
+pub use crate::mobile::{app_settings_available, open_app_settings};
+pub use crate::{
+    element::{
+        Delay, Each, If, IntoElements, IntoReactive, KeyOptions, KeyScope, Memo, Owner, Prop,
+        Reactive, ReadSignal, Resource, ResourceInfo, ResourceState, Scope, Signal, SignalEquals,
+        Spawned, Stored, after_answer, animate_layout, animated_value, announce_for_accessibility,
+        app_info, app_url, apple_keys, batch, can_pick_screen_color, catch_error, cleanup,
+        clipboard_files, clipboard_has_image, clipboard_has_string, clipboard_image,
+        clipboard_string, close_all_notifications, close_auth_session, close_notification, color,
+        component, component_ref, computed, dark, data_dir, dismiss_keyboard, dynamic, each,
+        effect, element_ref, engine_context, fetch, font_scale, fps_enabled, global, haptic,
+        horizontal_size_class, idiom, image_size, is_catalyst, is_desktop, key_label,
+        keyboard_duration, keyboard_height, keystroke_label, lifecycle, locale, locale_settings,
+        log_file, measure_text, motion, move_to_trash, network, next_app_url_change, next_frame,
+        next_notification_press, next_open_files, next_second_instance, next_url_scheme_open,
+        notification_permission, on_back_press, on_back_progress, on_key, on_key_with,
+        open_auth_session, open_path, open_url, os, os_version, perf_stats, pick_files,
+        pick_images, pick_paths, pick_save_path, pick_screen_color, pixel_ratio, platform_name,
+        prefetch_image, provide_context, reads_active_descendants, recognize_speech, reduce_motion,
+        register_font, request_animation_frame, request_notification_permission, resource,
+        resource_with_value, reveal_path, round_to_nearest_pixel, run_on_main_thread, safe_area,
+        screen_reader, set_app_url, set_app_url_with, set_badge, set_clipboard,
+        set_clipboard_image, set_clipboard_item, set_color_scheme, set_fps_enabled, set_fps_mode,
+        set_interval, set_timeout, set_tokens, shaders_available, share, share_available,
+        show_notification, signal, signal_with, spawn, speech_available, stored, text_metrics,
+        timer, timer_until, tokens, try_apple_keys, try_global, try_os, untracked, use_context,
+        vertical_size_class, wake_count, watch_scroll, web_evaluate_available, web_input_available,
+        web_view_available, when, window,
+    },
+    host_channel::{HostCallOptions, HostError},
+};
 /// Translations ([`crate::i18n`]).
 pub use crate::{
-    i18n::{available_locales, set_locale},
+    i18n::{add_translations, available_locales, set_locale},
     t,
 };

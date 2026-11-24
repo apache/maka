@@ -12,8 +12,18 @@
 //! default, which an app raises for the APIs of a later system but never
 //! lowers below the runtime's own ([`IOS_MINIMUM`], [`MACOS_MINIMUM`]);
 //! builds of the app's Rust code compile for it too ([`AppleMinimums`]).
+//!
+//! `<platform>.infoPlistStrings` gives the text of `Info.plist` strings in
+//! other languages, by language: packages write each language's
+//! `<lang>.lproj/InfoPlist.strings`, which the system reads in place of
+//! the `Info.plist` value for users of that language. The `Info.plist`
+//! value is the text of every other language, so a translated key needs
+//! one there ([`localized_info`]).
 
-use std::path::{Path, PathBuf};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+};
 
 use anyhow::bail;
 use serde::Deserialize;
@@ -101,6 +111,10 @@ pub(crate) struct AppleConfig {
     /// Keys added to the app's `Info.plist`.
     #[serde(default)]
     pub(crate) info_plist: serde_json::Map<String, serde_json::Value>,
+    /// The text of `Info.plist` strings in other languages, by language
+    /// (`{ "zh-Hans": { "NSCameraUsageDescription": ".." } }`).
+    #[serde(default)]
+    pub(crate) info_plist_strings: serde_json::Map<String, serde_json::Value>,
     /// Entitlements the app is signed with. iOS device builds check them
     /// against the provisioning profile.
     #[serde(default)]
@@ -108,6 +122,15 @@ pub(crate) struct AppleConfig {
     /// What iOS shows from the tap on the app's icon until the app's first
     /// frame: the system's background without it.
     pub(crate) launch_screen: Option<LaunchScreen>,
+    /// App extensions the app builds itself, which iOS packages carry in
+    /// `PlugIns/` ([`crate::app_extensions`]).
+    #[serde(default)]
+    pub(crate) extensions: Vec<crate::app_extensions::AppExtension>,
+    /// The app's privacy manifest, which iOS packages carry as
+    /// `PrivacyInfo.xcprivacy` ([`keep_privacy_manifest`] leaves out what
+    /// is not one of its keys in its form).
+    #[serde(default)]
+    pub(crate) privacy_manifest: serde_json::Map<String, serde_json::Value>,
 }
 
 /// `nsh.json` `ios.launchScreen`: a background color and an image in the
@@ -204,6 +227,9 @@ pub(crate) struct MacosConfig {
     /// Keys added to the app's `Info.plist`.
     #[serde(default)]
     pub(crate) info_plist: serde_json::Map<String, serde_json::Value>,
+    /// The text of `Info.plist` strings in other languages, as `ios`'s.
+    #[serde(default)]
+    pub(crate) info_plist_strings: serde_json::Map<String, serde_json::Value>,
     /// Entitlements the app is signed with.
     #[serde(default)]
     pub(crate) entitlements: serde_json::Map<String, serde_json::Value>,
@@ -214,6 +240,10 @@ pub(crate) struct MacosConfig {
     /// development host (`--activation-policy`).
     #[serde(default)]
     pub(crate) activation_policy: ActivationPolicy,
+    /// App extensions the app builds itself, which macOS packages carry in
+    /// `Contents/PlugIns/` ([`crate::app_extensions`]).
+    #[serde(default)]
+    pub(crate) extensions: Vec<crate::app_extensions::AppExtension>,
 }
 
 /// `nsh.json` `macos.activationPolicy`, as GPUI's `ActivationPolicy`. Read
@@ -285,6 +315,17 @@ const RESERVED_INFO: [(&str, Owner); 9] = [
     ("CFBundlePackageType", Owner::Package),
 ];
 
+/// Whether `key` of an Apple app's `Info.plist` is one NSH sets itself.
+pub(crate) fn is_reserved_info(platform: ApplePlatform, key: &str) -> bool {
+    platform.reserved().any(|(k, _)| *k == key)
+}
+
+/// Whether `key` of an Apple app's entitlements is one NSH sets itself
+/// ([`RESERVED_ENTITLEMENTS`]).
+pub(crate) fn is_reserved_entitlement(key: &str) -> bool {
+    RESERVED_ENTITLEMENTS.iter().any(|(k, _)| *k == key)
+}
+
 /// The `Info.plist` keys of iOS packages that are NSH's, besides
 /// [`RESERVED_INFO`].
 const RESERVED_IOS_INFO: [(&str, Owner); 10] = [
@@ -319,7 +360,7 @@ const RESERVED_ENTITLEMENTS: [(&str, Owner); 3] = [
 
 impl ApplePlatform {
     /// Its key in `nsh.json`.
-    fn key(self) -> &'static str {
+    pub(crate) fn key(self) -> &'static str {
         match self {
             ApplePlatform::Ios => "ios",
             ApplePlatform::Macos => "macos",
@@ -333,6 +374,12 @@ impl ApplePlatform {
             ApplePlatform::Macos => &RESERVED_MACOS_INFO,
         };
         RESERVED_INFO.iter().chain(own)
+    }
+
+    /// Whether apps translate `key` (`infoPlistStrings`): any key but
+    /// those NSH sets ([`Self::reserved`]), of which only the app's name.
+    fn translatable(self, key: &str) -> bool {
+        TRANSLATED_RESERVED_INFO.contains(&key) || !self.reserved().any(|(k, _)| *k == key)
     }
 
     /// The system's name, for errors.
@@ -368,6 +415,24 @@ impl AppleConfig {
         info_plist(&self.info_plist, platform)
     }
 
+    /// The app's `Info.plist` strings in other languages.
+    pub(crate) fn info_plist_strings(
+        &self,
+        platform: ApplePlatform,
+    ) -> anyhow::Result<InfoPlistStrings> {
+        info_plist_strings(&self.info_plist_strings, platform)
+    }
+
+    /// The `InfoPlist.strings` files of a package whose `Info.plist` is
+    /// `info` ([`localized_info`]).
+    pub(crate) fn localized_info(
+        &self,
+        platform: ApplePlatform,
+        info: &plist::Dictionary,
+    ) -> anyhow::Result<BTreeMap<String, String>> {
+        localized_info(&self.info_plist_strings(platform)?, info, platform)
+    }
+
     /// The app's entitlements as property list values.
     pub(crate) fn entitlements(
         &self,
@@ -380,7 +445,11 @@ impl AppleConfig {
     /// build.
     pub(crate) fn check(&self, platform: ApplePlatform) -> anyhow::Result<()> {
         self.info_plist(platform)?;
+        self.info_plist_strings(platform)?;
         self.entitlements(platform)?;
+        for extension in &self.extensions {
+            extension_entitlements(extension, platform)?;
+        }
         if self.launch_screen.is_some() && self.info_plist.contains_key("UILaunchScreen") {
             bail!(
                 "nsh.json {0}.infoPlist: `UILaunchScreen` is set by NSH from `{0}.launchScreen`; \
@@ -398,6 +467,20 @@ impl MacosConfig {
         info_plist(&self.info_plist, ApplePlatform::Macos)
     }
 
+    /// The app's `Info.plist` strings in other languages.
+    pub(crate) fn info_plist_strings(&self) -> anyhow::Result<InfoPlistStrings> {
+        info_plist_strings(&self.info_plist_strings, ApplePlatform::Macos)
+    }
+
+    /// The `InfoPlist.strings` files of a package whose `Info.plist` is
+    /// `info` ([`localized_info`]).
+    pub(crate) fn localized_info(
+        &self,
+        info: &plist::Dictionary,
+    ) -> anyhow::Result<BTreeMap<String, String>> {
+        localized_info(&self.info_plist_strings()?, info, ApplePlatform::Macos)
+    }
+
     /// The app's entitlements as property list values.
     pub(crate) fn entitlements(&self) -> anyhow::Result<plist::Dictionary> {
         entitlements(&self.entitlements, ApplePlatform::Macos)
@@ -407,7 +490,11 @@ impl MacosConfig {
     /// build.
     pub(crate) fn check(&self) -> anyhow::Result<()> {
         self.info_plist()?;
+        self.info_plist_strings()?;
         self.entitlements()?;
+        for extension in &self.extensions {
+            extension_entitlements(extension, ApplePlatform::Macos)?;
+        }
         Ok(())
     }
 
@@ -429,6 +516,169 @@ impl MacosConfig {
     }
 }
 
+/// The keys of a privacy manifest (`PrivacyInfo.xcprivacy`) and, for the
+/// arrays of dictionaries, the keys their entries have, each of which an
+/// entry must have: Apple's "Privacy manifest files", which App Store
+/// Connect checks for exactly these.
+const PRIVACY_KEYS: [(&str, PrivacyForm); 4] = [
+    ("NSPrivacyTracking", PrivacyForm::Boolean),
+    ("NSPrivacyTrackingDomains", PrivacyForm::Strings),
+    (
+        "NSPrivacyCollectedDataTypes",
+        PrivacyForm::Entries(&[
+            ("NSPrivacyCollectedDataType", PrivacyForm::String),
+            ("NSPrivacyCollectedDataTypeLinked", PrivacyForm::Boolean),
+            ("NSPrivacyCollectedDataTypeTracking", PrivacyForm::Boolean),
+            ("NSPrivacyCollectedDataTypePurposes", PrivacyForm::Strings),
+        ]),
+    ),
+    (
+        "NSPrivacyAccessedAPITypes",
+        PrivacyForm::Entries(&[
+            ("NSPrivacyAccessedAPIType", PrivacyForm::String),
+            ("NSPrivacyAccessedAPITypeReasons", PrivacyForm::Strings),
+        ]),
+    ),
+];
+
+/// The form of a privacy manifest value.
+#[derive(Clone, Copy)]
+enum PrivacyForm {
+    Boolean,
+    String,
+    Strings,
+    /// An array of dictionaries with exactly these keys, each its form.
+    Entries(&'static [(&'static str, PrivacyForm)]),
+}
+
+impl PrivacyForm {
+    /// Whether `value` has this form (an array of entries: is an array).
+    fn fits(self, value: &serde_json::Value) -> bool {
+        use serde_json::Value as Json;
+        match (self, value) {
+            (PrivacyForm::Boolean, Json::Bool(_)) | (PrivacyForm::String, Json::String(_)) => true,
+            (PrivacyForm::Strings, Json::Array(items)) => items.iter().all(Json::is_string),
+            (PrivacyForm::Entries(_), Json::Array(_)) => true,
+            _ => false,
+        }
+    }
+
+    /// What is wrong with `entry` of an array of entries with `keys`, if
+    /// anything: a key of another kind or form, or one it lacks.
+    fn entry_problem(
+        keys: &[(&'static str, PrivacyForm)],
+        entry: &serde_json::Value,
+    ) -> Option<String> {
+        let Some(entry) = entry.as_object() else {
+            return Some("is no dictionary".into());
+        };
+        for (key, value) in entry {
+            match keys.iter().find(|(name, _)| name == key) {
+                None => return Some(format!("has `{key}`, which is no key of it")),
+                Some((_, form)) if !form.fits(value) => {
+                    return Some(format!("`{key}` is not in its form"));
+                }
+                Some(_) => {}
+            }
+        }
+        keys.iter()
+            .find(|(name, _)| !entry.contains_key(*name))
+            .map(|(name, _)| format!("lacks `{name}`"))
+    }
+}
+
+/// Keeps the keys of `nsh.json` `ios.privacyManifest` (`manifest`) that are
+/// a privacy manifest's, in their form, and of its arrays of entries the
+/// entries that are whole: each other key or entry is reported in
+/// `ignored` and left out, as any `nsh.json` value an `nsh` cannot read
+/// is. What App Store Connect would refuse in the values it keeps (an
+/// entry without reasons, tracking without its domains) is reported too.
+pub(crate) fn keep_privacy_manifest(
+    manifest: &mut serde_json::Map<String, serde_json::Value>,
+    ignored: &mut Vec<String>,
+) {
+    let at = "ios.privacyManifest";
+    manifest.retain(|key, value| {
+        let Some((_, form)) = PRIVACY_KEYS.iter().find(|(name, _)| name == key) else {
+            ignored.push(format!(
+                "unknown key `{at}.{key}`: a privacy manifest has {}",
+                PRIVACY_KEYS
+                    .iter()
+                    .map(|(name, _)| format!("`{name}`"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+            return false;
+        };
+        if !form.fits(value) {
+            ignored.push(format!(
+                "{at}.{key}: not in the form a privacy manifest has"
+            ));
+            return false;
+        }
+        if let (PrivacyForm::Entries(keys), serde_json::Value::Array(entries)) = (form, value) {
+            let mut i = 0;
+            entries.retain(|entry| {
+                let problem = PrivacyForm::entry_problem(keys, entry);
+                if let Some(problem) = &problem {
+                    ignored.push(format!("{at}.{key}[{i}] {problem}: left out"));
+                }
+                i += 1;
+                problem.is_none()
+            });
+        }
+        true
+    });
+    // Kept, but what App Store Connect refuses as it is.
+    let mut refused = |problem: String| {
+        ignored.push(format!("{at}: {problem}, which App Store Connect refuses"));
+    };
+    let accessed = manifest
+        .get("NSPrivacyAccessedAPITypes")
+        .and_then(serde_json::Value::as_array);
+    if accessed.is_some_and(Vec::is_empty) {
+        refused("`NSPrivacyAccessedAPITypes` is empty".into());
+    }
+    for (i, entry) in accessed.into_iter().flatten().enumerate() {
+        if entry["NSPrivacyAccessedAPITypeReasons"]
+            .as_array()
+            .is_some_and(Vec::is_empty)
+        {
+            refused(format!("`NSPrivacyAccessedAPITypes[{i}]` gives no reason"));
+        }
+    }
+    let tracking = manifest
+        .get("NSPrivacyTracking")
+        .and_then(serde_json::Value::as_bool);
+    let domains = manifest
+        .get("NSPrivacyTrackingDomains")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|d| !d.is_empty());
+    match (tracking, domains) {
+        (Some(true), false) => refused("`NSPrivacyTracking` is on with no tracking domains".into()),
+        (Some(false) | None, true) => {
+            refused("tracking domains are listed with `NSPrivacyTracking` off".into());
+        }
+        _ => {}
+    }
+}
+
+/// Writes the app's privacy manifest (`nsh.json` `ios.privacyManifest`)
+/// into the iOS app bundle `app`, where the system and App Store Connect
+/// read it, before the bundle is signed; nothing when the app has none.
+pub(crate) fn write_privacy_manifest(
+    manifest: &serde_json::Map<String, serde_json::Value>,
+    app: &std::path::Path,
+) -> anyhow::Result<()> {
+    if manifest.is_empty() {
+        return Ok(());
+    }
+    let dictionary = convert(manifest, "ios.privacyManifest", std::iter::empty())?;
+    plist::Value::Dictionary(dictionary)
+        .to_file_xml(app.join("PrivacyInfo.xcprivacy"))
+        .map_err(|e| anyhow::anyhow!("write PrivacyInfo.xcprivacy: {e}"))
+}
+
 /// `nsh.json` `<platform>.infoPlist` as property list values.
 fn info_plist(
     entries: &serde_json::Map<String, serde_json::Value>,
@@ -439,6 +689,211 @@ fn info_plist(
         check_minimum(value, platform, &section)?;
     }
     convert(entries, &section, platform.reserved())
+}
+
+/// `Info.plist` strings in other languages: by language (`"zh-Hans"`),
+/// the text of each key.
+pub(crate) type InfoPlistStrings = BTreeMap<String, BTreeMap<String, String>>;
+
+/// The keys of NSH's that apps translate: the app's name, which NSH sets
+/// from `name` in the language of `Info.plist`.
+const TRANSLATED_RESERVED_INFO: [&str; 2] = ["CFBundleDisplayName", "CFBundleName"];
+
+/// Whether an app or a crate may translate `key` of `platform`'s
+/// `Info.plist` ([`ApplePlatform::translatable`]).
+pub(crate) fn is_translatable_info(platform: ApplePlatform, key: &str) -> bool {
+    platform.translatable(key)
+}
+
+/// `nsh.json` `<platform>.infoPlistStrings`, checked: each language's code
+/// ([`check_language`]), an object of strings, of keys apps translate.
+fn info_plist_strings(
+    entries: &serde_json::Map<String, serde_json::Value>,
+    platform: ApplePlatform,
+) -> anyhow::Result<InfoPlistStrings> {
+    let section = format!("{}.infoPlistStrings", platform.key());
+    let mut languages = InfoPlistStrings::new();
+    for (language, texts) in entries {
+        if let Err(why) = check_language(language) {
+            bail!("nsh.json {section}: {why}");
+        }
+        let Some(texts) = texts.as_object() else {
+            bail!(
+                "nsh.json {section}.{language}: {texts} is no object; write the language's text of \
+                 each `Info.plist` key, as `{{ \"NSCameraUsageDescription\": \"..\" }}`"
+            );
+        };
+        let mut strings = BTreeMap::new();
+        for (key, text) in texts {
+            if !platform.translatable(key) {
+                bail!(
+                    "nsh.json {section}.{language}: `{key}` is set by NSH and not translated; of \
+                     NSH's keys, apps translate the app's name (`CFBundleDisplayName`, `CFBundleName`)"
+                );
+            }
+            let Some(text) = text.as_str() else {
+                bail!(
+                    "nsh.json {section}.{language}.{key}: {text} is no string; `InfoPlist.strings` \
+                     translates strings only"
+                );
+            };
+            strings.insert(key.clone(), text.to_owned());
+        }
+        languages.insert(language.clone(), strings);
+    }
+    Ok(languages)
+}
+
+/// Checks `code` names a language as `.lproj` directories do: a language
+/// (`en`, `fil`), then a script (`Hans`) or a region (`BR`, `419`) or
+/// both, joined with `-` as Xcode names them (`zh-Hans`, `pt-BR`,
+/// `zh-Hant-HK`), cased as the system names them: the system finds the
+/// directory by this name. The older `_` (`zh_TW`) is refused, so one
+/// language never has two directories.
+pub(crate) fn check_language(code: &str) -> Result<(), String> {
+    let mut parts = code.split('-');
+    let language = parts.next().unwrap_or_default();
+    let mut ok =
+        (2..=3).contains(&language.len()) && language.bytes().all(|b| b.is_ascii_lowercase());
+    let mut script = false;
+    let mut region = false;
+    for part in parts {
+        let bytes = part.as_bytes();
+        if !script
+            && !region
+            && bytes.len() == 4
+            && bytes[0].is_ascii_uppercase()
+            && bytes[1..].iter().all(u8::is_ascii_lowercase)
+        {
+            script = true;
+        } else if !region
+            && ((bytes.len() == 2 && bytes.iter().all(u8::is_ascii_uppercase))
+                || (bytes.len() == 3 && bytes.iter().all(u8::is_ascii_digit)))
+        {
+            region = true;
+        } else {
+            ok = false;
+        }
+    }
+    if ok {
+        Ok(())
+    } else {
+        Err(format!(
+            "{code:?} is no language code; write a language, then a script or a region if needed, \
+             joined with `-` and cased as the system names them: \"en\", \"ja\", \"zh-Hans\", \
+             \"zh-Hant\", \"pt-BR\""
+        ))
+    }
+}
+
+/// The `<lang>.lproj/InfoPlist.strings` files of a package whose
+/// `Info.plist` is `info`, by language: `strings`, each key checked against
+/// `info`. A key without a string there is an error: the system shows the
+/// translated text only in place of the `Info.plist` value, and the users
+/// of every language without one see that value, so a translation of a
+/// missing key never shows (a misspelled key, a usage description left out).
+pub(crate) fn localized_info(
+    strings: &InfoPlistStrings,
+    info: &plist::Dictionary,
+    platform: ApplePlatform,
+) -> anyhow::Result<BTreeMap<String, String>> {
+    let section = format!("{}.infoPlistStrings", platform.key());
+    let mut files = BTreeMap::new();
+    for (language, texts) in strings {
+        for key in texts.keys() {
+            match info.get(key) {
+                Some(plist::Value::String(_)) => {}
+                Some(_) => bail!(
+                    "nsh.json {section}.{language}.{key}: the app's Info.plist value of `{key}` is \
+                     no string; `InfoPlist.strings` translates strings only"
+                ),
+                None => bail!(
+                    "nsh.json {section}.{language}.{key}: the app's Info.plist has no `{key}`; set \
+                     its text in `{}.infoPlist`, which users of the other languages see",
+                    platform.key()
+                ),
+            }
+        }
+        if !texts.is_empty() {
+            files.insert(language.clone(), strings_file(texts));
+        }
+    }
+    Ok(files)
+}
+
+/// `texts` as a strings file: `"key" = "text";` lines, quoted and escaped
+/// as the system's old-style property lists read them, in UTF-8.
+pub(crate) fn strings_file(texts: &BTreeMap<String, String>) -> String {
+    let mut out = String::new();
+    for (key, text) in texts {
+        quote(&mut out, key);
+        out.push_str(" = ");
+        quote(&mut out, text);
+        out.push_str(";\n");
+    }
+    out
+}
+
+/// Appends `text` to `out` in quotes, escaping the quote, the backslash and
+/// control characters.
+fn quote(out: &mut String, text: &str) {
+    use std::fmt::Write as _;
+    out.push('"');
+    for c in text.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if c.is_control() => {
+                let _ = write!(out, "\\U{:04x}", u32::from(c));
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+}
+
+/// Writes `files` (by language, [`localized_info`]) to `dir` as
+/// `<lang>.lproj/InfoPlist.strings`, and removes the `InfoPlist.strings`
+/// of the other languages a previous write left there (a refreshed
+/// development host), with their directory when nothing else is in it.
+/// Whether anything changed.
+pub(crate) fn write_localized_info(
+    dir: &Path,
+    files: &BTreeMap<String, String>,
+) -> anyhow::Result<bool> {
+    let mut changed = false;
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries {
+            let path = entry?.path();
+            let stale = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .and_then(|name| name.strip_suffix(".lproj"))
+                .is_some_and(|language| !files.contains_key(language));
+            let file = path.join("InfoPlist.strings");
+            if stale && file.exists() {
+                std::fs::remove_file(&file)?;
+                // Only when empty: another file of the language stays.
+                let _ = std::fs::remove_dir(&path);
+                changed = true;
+            }
+        }
+    }
+    for (language, text) in files {
+        let file = dir
+            .join(format!("{language}.lproj"))
+            .join("InfoPlist.strings");
+        if std::fs::read_to_string(&file).ok().as_deref() == Some(text.as_str()) {
+            continue;
+        }
+        std::fs::create_dir_all(file.parent().expect("a file in a directory"))?;
+        std::fs::write(&file, text)?;
+        changed = true;
+    }
+    Ok(changed)
 }
 
 /// Checks the app's own minimum system version (`value`, its
@@ -491,6 +946,26 @@ fn entitlements(
 ) -> anyhow::Result<plist::Dictionary> {
     let section = format!("{}.entitlements", platform.key());
     convert(entries, &section, RESERVED_ENTITLEMENTS.iter())
+}
+
+/// The entitlements of one of `ios.extensions` or `macos.extensions` as
+/// property list values, refusing the keys `<platform>.entitlements` refuses,
+/// with the `nsh.json` key they come from, for errors.
+pub(crate) fn extension_entitlements(
+    extension: &crate::app_extensions::AppExtension,
+    platform: ApplePlatform,
+) -> anyhow::Result<(plist::Dictionary, String)> {
+    let section = format!(
+        "{}.extensions[{}].entitlements",
+        platform.key(),
+        extension.index
+    );
+    let dictionary = convert(
+        &extension.entitlements,
+        &section,
+        RESERVED_ENTITLEMENTS.iter(),
+    )?;
+    Ok((dictionary, section))
 }
 
 /// `entries` as a property list dictionary, refusing the `reserved` keys.
@@ -549,25 +1024,27 @@ fn to_plist(value: &serde_json::Value, path: &str) -> anyhow::Result<plist::Valu
     })
 }
 
-/// Adds the app's entitlements (`requested`, from `nsh.json`
-/// `ios.entitlements`) to those a provisioning profile grants (`granted`),
-/// checking that the profile covers each one. The app's value replaces the
-/// profile's: a profile grants `com.apple.developer.associated-domains` as
-/// `*`, the app names its domains.
+/// Adds the app's entitlements (`requested`, from `nsh.json` `section`:
+/// `ios.entitlements`, or an app extension's) to those a provisioning
+/// profile grants (`granted`), checking that the profile covers each one.
+/// The app's value replaces the profile's: a profile grants
+/// `com.apple.developer.associated-domains` as `*`, the app names its
+/// domains.
 pub(crate) fn grant(
     granted: &mut plist::Dictionary,
     requested: plist::Dictionary,
+    section: &str,
 ) -> anyhow::Result<()> {
     for (key, value) in requested {
         let Some(allowed) = granted.get(&key) else {
             bail!(
-                "the provisioning profile does not grant the entitlement `{key}` (nsh.json ios.entitlements): \
+                "the provisioning profile does not grant the entitlement `{key}` (nsh.json {section}): \
                  enable its capability for the app's identifier and download the profile again"
             );
         };
         if !covers(allowed, &value) {
             bail!(
-                "the provisioning profile grants `{key}` as {}, which does not cover {} (nsh.json ios.entitlements)",
+                "the provisioning profile grants `{key}` as {}, which does not cover {} (nsh.json {section})",
                 describe(allowed),
                 describe(&value)
             );
@@ -650,6 +1127,138 @@ mod tests {
 
     fn config(json: serde_json::Value) -> AppleConfig {
         serde_json::from_value(json).unwrap()
+    }
+
+    /// A privacy manifest as Apple's documentation writes one.
+    fn privacy() -> serde_json::Map<String, serde_json::Value> {
+        serde_json::json!({
+            "NSPrivacyTracking": false,
+            "NSPrivacyTrackingDomains": [],
+            "NSPrivacyCollectedDataTypes": [{
+                "NSPrivacyCollectedDataType": "NSPrivacyCollectedDataTypeCrashData",
+                "NSPrivacyCollectedDataTypeLinked": false,
+                "NSPrivacyCollectedDataTypeTracking": false,
+                "NSPrivacyCollectedDataTypePurposes": ["NSPrivacyCollectedDataTypePurposeAppFunctionality"],
+            }],
+            "NSPrivacyAccessedAPITypes": [{
+                "NSPrivacyAccessedAPIType": "NSPrivacyAccessedAPICategoryUserDefaults",
+                "NSPrivacyAccessedAPITypeReasons": ["CA92.1"],
+            }],
+        })
+        .as_object()
+        .unwrap()
+        .clone()
+    }
+
+    #[test]
+    fn a_privacy_manifest_keeps_its_own_keys_in_their_form() {
+        let mut manifest = privacy();
+        let mut ignored = Vec::new();
+        keep_privacy_manifest(&mut manifest, &mut ignored);
+        assert!(ignored.is_empty(), "{ignored:?}");
+        assert_eq!(manifest, privacy());
+        // An unknown key and a value of another form are left out; of an
+        // array of entries, only the entries that are not whole.
+        let mut manifest = privacy();
+        manifest.insert("NSPrivacyAccessedAPI".into(), serde_json::json!([]));
+        manifest.insert("NSPrivacyTrackingDomains".into(), serde_json::json!(true));
+        manifest.insert(
+            "NSPrivacyAccessedAPITypes".into(),
+            serde_json::json!([
+                { "NSPrivacyAccessedAPIType": "NSPrivacyAccessedAPICategoryUserDefaults",
+                  "NSPrivacyAccessedAPITypeReasons": ["CA92.1"] },
+                { "NSPrivacyAccessedAPIType": "x", "Reasons": ["CA92.1"] },
+                { "NSPrivacyAccessedAPIType": "NSPrivacyAccessedAPICategorySystemBootTime" },
+            ]),
+        );
+        let mut ignored = Vec::new();
+        keep_privacy_manifest(&mut manifest, &mut ignored);
+        let mut kept: Vec<&String> = manifest.keys().collect();
+        kept.sort();
+        assert_eq!(
+            kept,
+            [
+                "NSPrivacyAccessedAPITypes",
+                "NSPrivacyCollectedDataTypes",
+                "NSPrivacyTracking"
+            ]
+        );
+        assert_eq!(
+            manifest["NSPrivacyAccessedAPITypes"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        for says in [
+            "unknown key `ios.privacyManifest.NSPrivacyAccessedAPI`",
+            "ios.privacyManifest.NSPrivacyTrackingDomains: not in the form",
+            "ios.privacyManifest.NSPrivacyAccessedAPITypes[1] has `Reasons`",
+            "ios.privacyManifest.NSPrivacyAccessedAPITypes[2] lacks `NSPrivacyAccessedAPITypeReasons`",
+        ] {
+            assert!(
+                ignored.iter().any(|i| i.starts_with(says)),
+                "{says}: {ignored:?}"
+            );
+        }
+        assert_eq!(ignored.len(), 4, "{ignored:?}");
+    }
+
+    #[test]
+    fn what_app_store_connect_refuses_is_reported() {
+        let refused = |json: serde_json::Value| {
+            let mut manifest = json.as_object().unwrap().clone();
+            let mut ignored = Vec::new();
+            keep_privacy_manifest(&mut manifest, &mut ignored);
+            ignored
+        };
+        for (json, says) in [
+            (
+                serde_json::json!({ "NSPrivacyTracking": true }),
+                "no tracking domains",
+            ),
+            (
+                serde_json::json!({ "NSPrivacyTracking": false, "NSPrivacyTrackingDomains": ["ads.example"] }),
+                "with `NSPrivacyTracking` off",
+            ),
+            (
+                serde_json::json!({ "NSPrivacyAccessedAPITypes": [] }),
+                "is empty",
+            ),
+            (
+                serde_json::json!({ "NSPrivacyAccessedAPITypes": [{
+                    "NSPrivacyAccessedAPIType": "NSPrivacyAccessedAPICategoryUserDefaults",
+                    "NSPrivacyAccessedAPITypeReasons": [],
+                }] }),
+                "gives no reason",
+            ),
+        ] {
+            let ignored = refused(json);
+            assert!(
+                ignored.len() == 1 && ignored[0].contains(says) && ignored[0].contains("refuses"),
+                "{says}: {ignored:?}"
+            );
+        }
+        assert!(refused(serde_json::Value::Object(privacy())).is_empty());
+    }
+
+    #[test]
+    fn the_privacy_manifest_is_written_into_the_app() {
+        let app = std::env::temp_dir().join(format!("nsh-cli-privacy-{}.app", std::process::id()));
+        let _ = std::fs::remove_dir_all(&app);
+        std::fs::create_dir_all(&app).unwrap();
+        write_privacy_manifest(&serde_json::Map::new(), &app).unwrap();
+        assert!(!app.join("PrivacyInfo.xcprivacy").exists());
+        write_privacy_manifest(&privacy(), &app).unwrap();
+        let written = plist::Value::from_file(app.join("PrivacyInfo.xcprivacy")).unwrap();
+        let written = written.as_dictionary().unwrap();
+        assert_eq!(written["NSPrivacyTracking"], plist::Value::Boolean(false));
+        let accessed = written["NSPrivacyAccessedAPITypes"].as_array().unwrap();
+        assert_eq!(
+            accessed[0].as_dictionary().unwrap()["NSPrivacyAccessedAPITypeReasons"],
+            plist::Value::Array(vec![plist::Value::String("CA92.1".into())])
+        );
+        std::fs::remove_dir_all(&app).unwrap();
     }
 
     /// `ios.launchScreen` takes a color and an image for both appearances
@@ -1021,6 +1630,195 @@ mod tests {
         assert_eq!(version("4294967296"), None);
     }
 
+    /// Languages are named as `.lproj` directories are: a language, then a
+    /// script or a region or both, cased as the system names them.
+    #[test]
+    fn languages_are_lproj_names() {
+        for code in [
+            "en",
+            "ja",
+            "fil",
+            "zh-Hans",
+            "zh-Hant",
+            "pt-BR",
+            "zh-TW",
+            "es-419",
+            "zh-Hant-HK",
+            "sr-Latn-RS",
+        ] {
+            assert_eq!(check_language(code), Ok(()), "{code}");
+        }
+        for code in [
+            "",
+            "e",
+            "english",
+            "English",
+            "EN",
+            "zh-hans",
+            "zh-CN-Hans",
+            "pt-br",
+            "en-",
+            "-en",
+            "en US",
+            "Base",
+            "zh-Hans-Hant",
+            "en-US-US",
+            "zh.Hans",
+            "../en",
+            "en-1234",
+            "zh_TW",
+            "zh_Hant",
+            "sr_Latn_RS",
+        ] {
+            let error = check_language(code).unwrap_err();
+            assert!(error.contains("is no language code"), "{code}: {error}");
+        }
+    }
+
+    /// `ios.infoPlistStrings` takes, by language, the text of keys apps
+    /// translate: errors name the `nsh.json` key.
+    #[test]
+    fn info_plist_strings_are_checked_when_read() {
+        let strings = config(serde_json::json!({
+            "infoPlistStrings": {
+                "zh-Hans": { "NSCameraUsageDescription": "拍照", "CFBundleDisplayName": "应用" },
+                "ja": {}
+            }
+        }))
+        .info_plist_strings(ApplePlatform::Ios)
+        .unwrap();
+        assert_eq!(strings["zh-Hans"]["NSCameraUsageDescription"], "拍照");
+        assert!(strings["ja"].is_empty());
+        let error = |json: serde_json::Value| {
+            config(serde_json::json!({ "infoPlistStrings": json }))
+                .check(ApplePlatform::Ios)
+                .unwrap_err()
+                .to_string()
+        };
+        let wrong = error(serde_json::json!({ "zh-hans": {} }));
+        assert!(
+            wrong.contains("nsh.json ios.infoPlistStrings: \"zh-hans\" is no language code"),
+            "{wrong}"
+        );
+        let wrong = error(serde_json::json!({ "ja": "カメラ" }));
+        assert!(
+            wrong.contains("nsh.json ios.infoPlistStrings.ja: \"カメラ\" is no object"),
+            "{wrong}"
+        );
+        let wrong = error(serde_json::json!({ "ja": { "UIBackgroundModes": ["audio"] } }));
+        assert!(
+            wrong.contains(
+                "nsh.json ios.infoPlistStrings.ja.UIBackgroundModes: [\"audio\"] is no string"
+            ),
+            "{wrong}"
+        );
+        let wrong = error(serde_json::json!({ "ja": { "CFBundleIdentifier": "x" } }));
+        assert!(
+            wrong.contains("nsh.json ios.infoPlistStrings.ja: `CFBundleIdentifier` is set by NSH"),
+            "{wrong}"
+        );
+        let macos: MacosConfig = serde_json::from_value(serde_json::json!({
+            "infoPlistStrings": { "de": { "NSPrincipalClass": "x" } }
+        }))
+        .unwrap();
+        let wrong = macos.check().unwrap_err().to_string();
+        assert!(
+            wrong.contains("nsh.json macos.infoPlistStrings.de: `NSPrincipalClass` is set by NSH"),
+            "{wrong}"
+        );
+    }
+
+    /// A strings file quotes keys and texts, escaping quotes, backslashes
+    /// and control characters, and keeps every other character as it is.
+    #[test]
+    fn strings_files_escape_what_old_style_property_lists_do() {
+        let texts = BTreeMap::from([
+            (
+                "NSCameraUsageDescription".to_owned(),
+                "扫描 \"二维码\"\n路径 C:\\photos\tend\r\u{1}".to_owned(),
+            ),
+            ("CFBundleDisplayName".to_owned(), "アプリ".to_owned()),
+        ]);
+        assert_eq!(
+            strings_file(&texts),
+            "\"CFBundleDisplayName\" = \"アプリ\";\n\
+             \"NSCameraUsageDescription\" = \"扫描 \\\"二维码\\\"\\n路径 C:\\\\photos\\tend\\r\\U0001\";\n"
+        );
+        assert_eq!(strings_file(&BTreeMap::new()), "");
+    }
+
+    /// A package translates only what its `Info.plist` has as a string:
+    /// the users of the other languages see that value.
+    #[test]
+    fn translated_keys_need_an_info_plist_string() {
+        let config = config(serde_json::json!({
+            "infoPlistStrings": {
+                "zh-Hans": { "NSCameraUsageDescription": "用相机拍照。" },
+                "fr": {}
+            }
+        }));
+        let mut info = plist::Dictionary::new();
+        info.insert(
+            "NSCameraUsageDescription".into(),
+            "The app takes photos.".into(),
+        );
+        let files = config.localized_info(ApplePlatform::Ios, &info).unwrap();
+        assert_eq!(
+            files,
+            BTreeMap::from([(
+                "zh-Hans".to_owned(),
+                "\"NSCameraUsageDescription\" = \"用相机拍照。\";\n".to_owned()
+            )])
+        );
+        let missing = config
+            .localized_info(ApplePlatform::Ios, &plist::Dictionary::new())
+            .unwrap_err()
+            .to_string();
+        assert!(
+            missing.contains(
+                "nsh.json ios.infoPlistStrings.zh-Hans.NSCameraUsageDescription: the app's \
+                 Info.plist has no `NSCameraUsageDescription`; set its text in `ios.infoPlist`"
+            ),
+            "{missing}"
+        );
+        info.insert("NSCameraUsageDescription".into(), true.into());
+        let other = config
+            .localized_info(ApplePlatform::Ios, &info)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            other.contains("value of `NSCameraUsageDescription` is no string"),
+            "{other}"
+        );
+    }
+
+    /// Writing the strings again changes nothing; a language no longer
+    /// given loses its file, and its directory unless something else is in it.
+    #[test]
+    fn localized_info_is_written_per_language() {
+        let dir = std::env::temp_dir().join(format!("nsh-lproj-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let files = BTreeMap::from([
+            ("ja".to_owned(), "\"A\" = \"あ\";\n".to_owned()),
+            ("zh-Hans".to_owned(), "\"A\" = \"甲\";\n".to_owned()),
+        ]);
+        assert!(write_localized_info(&dir, &files).unwrap());
+        assert_eq!(
+            std::fs::read_to_string(dir.join("zh-Hans.lproj/InfoPlist.strings")).unwrap(),
+            "\"A\" = \"甲\";\n"
+        );
+        assert!(!write_localized_info(&dir, &files).unwrap());
+        std::fs::write(dir.join("ja.lproj/Other.strings"), "").unwrap();
+        let fewer = BTreeMap::from([("zh-Hans".to_owned(), files["zh-Hans"].clone())]);
+        assert!(write_localized_info(&dir, &fewer).unwrap());
+        assert!(!dir.join("ja.lproj/InfoPlist.strings").exists());
+        assert!(dir.join("ja.lproj/Other.strings").exists());
+        assert!(write_localized_info(&dir, &BTreeMap::new()).unwrap());
+        assert!(!dir.join("zh-Hans.lproj").exists());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     /// `macos.activationPolicy`: `regular` unless the app says
     /// `accessory`, which the development host and `app.json` are told.
     #[test]
@@ -1091,6 +1889,7 @@ mod tests {
                 "com.apple.security.application-groups": ["group.com.acme.b"],
                 "aps-environment": "production"
             })),
+            "ios.entitlements",
         )
         .unwrap();
         // The app's values replace the profile's; the rest stays.
@@ -1111,7 +1910,7 @@ mod tests {
         );
 
         let refused = |json| {
-            grant(&mut profile(), dictionary(json))
+            grant(&mut profile(), dictionary(json), "ios.entitlements")
                 .unwrap_err()
                 .to_string()
         };

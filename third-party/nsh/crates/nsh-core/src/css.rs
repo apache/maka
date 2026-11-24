@@ -1139,6 +1139,58 @@ pub(crate) fn position(w: &[&str]) -> Option<(f32, f32)> {
     Some((x, y))
 }
 
+/// A `clip-path` `inset()` shape (CSS Shapes'): one to four lengths or
+/// percentages for the edges, as `margin` takes them, then optionally
+/// `round` and one to four radii, as `border-radius` takes them (in
+/// points: no percentages, no `/` for elliptical corners).
+pub(crate) fn clip_inset(s: &str) -> Option<crate::effects::ClipInset> {
+    let args = s.trim().strip_prefix("inset(")?.strip_suffix(')')?.trim();
+    let words = words(args);
+    let round = words.iter().position(|w| *w == "round");
+    let (edges, radii) = match round {
+        Some(i) => (&words[..i], Some(&words[i + 1..])),
+        None => (&words[..], None),
+    };
+    let edges = edges
+        .iter()
+        .map(|w| length_or_percent(w))
+        .collect::<Option<Vec<_>>>()?;
+    let [top, right, bottom, left] = sides(&edges)?;
+    let mut clip = crate::effects::ClipInset::new()
+        .top(top)
+        .right(right)
+        .bottom(bottom)
+        .left(left);
+    if let Some(radii) = radii {
+        let radii = radii
+            .iter()
+            .map(|w| length(w).filter(|r| *r >= 0.0).map(px))
+            .collect::<Option<Vec<_>>>()?;
+        // `border-radius` spreads its values over the corners from the top
+        // left as the box shorthands do over the edges from the top.
+        let [top_left, top_right, bottom_right, bottom_left] = sides(&radii)?;
+        clip = clip.corner_radii(crate::geometry::Corners {
+            top_left,
+            top_right,
+            bottom_right,
+            bottom_left,
+        });
+    }
+    Some(clip)
+}
+
+/// One to four values as CSS's box shorthands spread them: top, right,
+/// bottom, left.
+fn sides<T: Copy>(v: &[T]) -> Option<[T; 4]> {
+    Some(match *v {
+        [a] => [a, a, a, a],
+        [a, b] => [a, b, a, b],
+        [a, b, c] => [a, b, c, b],
+        [a, b, c, d] => [a, b, c, d],
+        _ => return None,
+    })
+}
+
 /// An `object-position` (CSS's `<position>`): one value (`top`, `25%`,
 /// the other axis centered), two (`left bottom`, `bottom left`, `25% 10px`,
 /// `right 30%`: horizontal first unless both are keywords) or four, edges

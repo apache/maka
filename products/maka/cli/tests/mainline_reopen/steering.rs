@@ -39,12 +39,14 @@ async fn steering(prefix: bool) {
     let sandbox = Sandbox::new().await.unwrap();
     let (requests, mut received) = mpsc::unbounded_channel();
     let count = Arc::new(AtomicUsize::new(0));
-    let retired = Arc::new(tokio::sync::Notify::new());
+    let retired_first = CancellationToken::new();
+    let retired_second = CancellationToken::new();
 
     let server = {
         let requests = requests.clone();
         let count = count.clone();
-        let retired = retired.clone();
+        let retired_first = retired_first.clone();
+        let retired_second = retired_second.clone();
         MockAiBuilder::new()
             .control(ControlPlaneConfig {
                 models: vec![ModelEntry::simple(model)],
@@ -75,7 +77,7 @@ async fn steering(prefix: bool) {
                             let command = "printf 'once\n' >> steering-effects.log && while [ ! -f release-steering-tool ]; do sleep 0.05; done && printf 'effect-result'";
                             TurnPlan::new()
                                 .with_response_id("held-response")
-                                .with_on_close(retired.clone())
+                                .with_on_close(retired_first.clone())
                                 .push_text("accepted-prefix")
                                 .push_tool_call(
                                     "steering-effect",
@@ -88,13 +90,8 @@ async fn steering(prefix: bool) {
                             assert!(prompt.contains("steering-correction"), "{body}");
                             TurnPlan::new()
                                 .with_response_id("held-continuation")
-                                .with_on_close(retired.clone())
-                                .push(TurnEvent::RawJson {
-                                    value: json!({
-                                        "type": "response.created",
-                                        "response": { "id": "held-continuation", "model": model }
-                                    }),
-                                })
+                                .with_on_close(retired_second.clone())
+                                .push_stream_start()
                                 .push(TurnEvent::Stall)
                         }
                         2 => {
@@ -274,7 +271,7 @@ async fn steering(prefix: bool) {
         .await;
         assert_eq!(correction["kind"], "queued", "{correction}");
         if prefix {
-            retired.notified().await;
+            retired_first.cancelled().await;
             assert!(
                 received.try_recv().is_err(),
                 "continuation must wait for the admitted tool"
@@ -330,7 +327,7 @@ async fn steering(prefix: bool) {
             )
             .await;
             assert_eq!(correction["kind"], "queued", "{correction}");
-            retired.notified().await;
+            retired_second.cancelled().await;
             let final_request = received.recv().await.unwrap().to_string();
             assert_eq!(final_request.matches("steering-original").count(), 1);
             assert_eq!(final_request.matches("steering-correction").count(), 1);

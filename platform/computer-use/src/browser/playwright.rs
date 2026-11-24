@@ -28,9 +28,14 @@ pub(super) use mutation::validate_mutation;
 use std::{collections::HashSet, future::Future, pin::Pin, sync::Mutex};
 use tokio_util::sync::CancellationToken;
 
-const INJECTED: &str = include_str!("../../../../third-party/playwright/injected.js");
+static ENGINE_EXPRESSION: &str = concat!(
+    "(() => {const module={};",
+    include_str!("../../../../third-party/playwright/injected.js"),
+    "\n",
+    include_str!("playwright-setup.js"),
+    "\nreturn engine;})()"
+);
 const READ: &str = include_str!("playwright-read.js");
-const SETUP: &str = include_str!("playwright-setup.js");
 const WORLD: &str = "maka-playwright-1.58.2";
 
 #[derive(Deserialize)]
@@ -159,9 +164,7 @@ impl Tab {
         if let Some(object) = existing["objectId"].as_str() {
             return Ok(object.into());
         }
-        let expression =
-            format!("(() => {{const module={{}};{INJECTED}\n{SETUP}\nreturn engine;}})()");
-        let engine=cdp_value(self.frame_observation(frame.session.as_deref(),"Runtime.evaluate",json!({"contextId":context,"expression":expression,"objectGroup":resources.group,"returnByValue":false})).await?)?;
+        let engine=cdp_value(self.frame_observation(frame.session.as_deref(),"Runtime.evaluate",json!({"contextId":context,"expression":ENGINE_EXPRESSION,"objectGroup":resources.group,"returnByValue":false})).await?)?;
         engine["objectId"]
             .as_str()
             .map(str::to_owned)

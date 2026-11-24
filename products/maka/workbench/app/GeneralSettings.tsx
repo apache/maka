@@ -41,7 +41,8 @@ import {
   appearance,
   colorThemes,
   paletteIds,
-  textSizes,
+  maxTextSize,
+  minTextSize,
   trayIcons,
   type TrayIcon,
 } from './appearance';
@@ -64,8 +65,10 @@ import {
   SettingsTextArea,
 } from './SettingsPage';
 import {
+  IconButton,
   C,
   bodyTextStyle,
+  captionTextStyle,
   controlFocusStyle,
   controlHoverStyle,
   defaultColors,
@@ -318,7 +321,7 @@ function DictationSettings(props: { addConnection(): void }) {
         </SettingsSection>
       </If>
       <If when={!!dictation.error()}>
-        <Text style={{ color: C.danger }}>{dictation.error()}</Text>
+        <SettingsProblem message={dictation.error()} />
       </If>
     </SettingsBody>
   );
@@ -538,8 +541,6 @@ function GlobalInstructionsEditor(props: { owner: GeneralSettingsOwner; request:
 
 const themeLabel = (theme: (typeof colorThemes)[number]) =>
   ({ system: tr('Match system'), light: tr('Light'), dark: tr('Dark') })[theme];
-const textSizeLabel = (scale: number) =>
-  scale < 1 ? tr('Small') : scale === 1 ? tr('Default') : scale < 1.2 ? tr('Large') : tr('Larger');
 const paletteLabel = (id: PaletteId) =>
   ({
     default: tr('Default'),
@@ -602,10 +603,21 @@ function UpdatesSection() {
       case 'upToDate':
         return tr('You are on the latest build for this channel.');
       case 'error':
-        return state.error ?? tr('Update check failed.');
+        return undefined;
       default:
         return tr('Check for updates on this channel.');
     }
+  };
+  const errorMessage = () => {
+    const state = appUpdater.snapshot();
+    if (!state || state.channel === 'dev') return undefined;
+    if (state.status === 'error') return state.error ?? tr('Update check failed.');
+    if (state.status === 'ready' && state.error) return state.error;
+    return undefined;
+  };
+  const busy = () => {
+    const status = appUpdater.snapshot()?.status;
+    return status === 'checking' || status === 'downloading' || status === 'installing';
   };
   return (
     <If when={appUpdater.snapshot() !== null}>
@@ -613,8 +625,16 @@ function UpdatesSection() {
         <SettingsRow
           label={`${appUpdater.snapshot()?.currentVersion ?? ''} · ${channelLabel()}`}
           description={description()}
+          detail={
+            <If when={!!errorMessage()}>
+              <Text style={{ ...captionTextStyle, color: C.danger }}>{errorMessage()}</Text>
+            </If>
+          }
           trailing={
             <If when={appUpdater.snapshot()?.channel !== 'dev'}>
+              <If when={busy()}>
+                <LoadingIndicator label={description()} />
+              </If>
               <If when={appUpdater.snapshot()?.status === 'ready'}>
                 <SettingsButton
                   tone="primary"
@@ -691,31 +711,72 @@ function AppearanceRows() {
         label={tr('Palette')}
         value={appearance.palette()}
         preview={<Swatch id={appearance.palette()} />}
+        choicePreview={(value) => <Swatch id={value as PaletteId} />}
         choices={paletteIds.map((id) => ({ value: id, title: paletteLabel(id) }))}
         change={(value) => appearance.choosePalette(value as PaletteId)}
       />
       <If when={appearance.palette() === 'custom'}>
         <CustomPalette />
       </If>
-      <SettingsSelect
+      <SettingsRow
         label={tr('Text size')}
-        value={String(appearance.textSize())}
-        choices={textSizes.map((scale) => ({ value: String(scale), title: textSizeLabel(scale) }))}
-        change={(value) => appearance.chooseTextSize(Number(value))}
+        trailing={
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+            <IconButton
+              label={tr('Smaller text')}
+              icon="minus"
+              disabled={appearance.fontSize() <= minTextSize}
+              onPress={() => appearance.stepTextSize(-1)}
+            />
+            <Text
+              style={{
+                ...captionTextStyle,
+                minWidth: 24,
+                textAlign: 'center',
+                color: C.text,
+                fontVariant: ['tabular-nums'],
+              }}
+            >
+              {String(appearance.fontSize())}
+            </Text>
+            <IconButton
+              label={tr('Larger text')}
+              icon="plus"
+              disabled={appearance.fontSize() >= maxTextSize}
+              onPress={() => appearance.stepTextSize(1)}
+            />
+          </View>
+        }
       />
       <SettingsSelect
         label={trayIconRowLabel()}
         value={appearance.trayIcon()}
-        preview={
-          <Image
-            src={trayIconArtwork[appearance.trayIcon()]}
-            style={[{ width: 18, height: 18, tintColor: C.text }, { pointerEvents: 'none' }]}
-          />
+        preview={<If when={trayIconShown()}>{(icon) => <TrayArtwork icon={icon()} />}</If>}
+        choicePreview={(value) =>
+          value === 'none' ? (
+            <View style={{ width: 18, height: 18 }} />
+          ) : (
+            <TrayArtwork icon={value as ShownTrayIcon} />
+          )
         }
         choices={trayIcons.map((icon) => ({ value: icon, title: trayIconLabel(icon) }))}
         change={(value) => appearance.chooseTrayIcon(value as TrayIcon)}
       />
     </>
+  );
+}
+
+type ShownTrayIcon = Exclude<TrayIcon, 'none'>;
+const trayIconShown = (): ShownTrayIcon | null => {
+  const icon = appearance.trayIcon();
+  return icon === 'none' ? null : icon;
+};
+function TrayArtwork(props: { icon: ShownTrayIcon }) {
+  return (
+    <Image
+      src={trayIconArtwork[props.icon]}
+      style={[{ width: 18, height: 18, tintColor: C.text }, { pointerEvents: 'none' }]}
+    />
   );
 }
 
@@ -726,6 +787,7 @@ function trayIconRowLabel() {
 function trayIconLabel(icon: TrayIcon) {
   if (icon === 'line') return tr('Thin line');
   if (icon === 'bold') return tr('Bold line');
+  if (icon === 'none') return tr('Hidden');
   return tr('Solid tile');
 }
 

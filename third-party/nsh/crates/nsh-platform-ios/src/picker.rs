@@ -166,7 +166,7 @@ pub(crate) fn pick_images(id: u32, request: PickRequest, view: &UIView, control:
     }
 }
 
-fn uniform_types() -> bool {
+pub(crate) fn uniform_types() -> bool {
     static LOADED: OnceLock<bool> = OnceLock::new();
     *LOADED.get_or_init(|| {
         let path =
@@ -444,7 +444,7 @@ fn read_results(
                     let ext = path.rsplit_once('.').map(|(_, e)| e).unwrap_or_default();
                     format!("{name}.{ext}")
                 };
-                prepare(bytes, &file_name, &request)
+                prepare_image(bytes, &file_name, &request)
             });
             if let Some(done) = done.lock().unwrap_or_else(|e| e.into_inner()).take() {
                 done(file);
@@ -459,9 +459,11 @@ fn read_results(
 }
 
 /// `bytes`, an image file named `name`, prepared as `request` says: kept,
-/// or decoded with its orientation applied, scaled down and encoded again.
-/// `None` when it is no image ImageIO reads.
-pub(crate) fn prepare(bytes: Vec<u8>, name: &str, request: &PickRequest) -> Option<PickedFile> {
+/// or decoded with its orientation applied, scaled down and encoded again,
+/// as `Picker.pickImages` prepares the photos picked (modules preparing
+/// images of their own, a photo taken, call it too). `None` when it is no
+/// image ImageIO reads. Runs on any thread.
+pub fn prepare_image(bytes: Vec<u8>, name: &str, request: &PickRequest) -> Option<PickedFile> {
     use objc2_image_io::{
         CGImageDestination, CGImageSource, kCGImageDestinationLossyCompressionQuality,
         kCGImageSourceCreateThumbnailFromImageAlways, kCGImageSourceCreateThumbnailWithTransform,

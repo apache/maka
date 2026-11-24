@@ -292,6 +292,21 @@ mod tests {
     }
 
     #[test]
+    fn every_language_names_its_months_and_weekdays() {
+        for lang in nsh_i18n::LANGUAGES {
+            let dates = resolve(&[(*lang).to_owned()], "en-US").dates;
+            assert!(
+                dates.names.is_some(),
+                "{lang} has no month or weekday names"
+            );
+            assert!(
+                dates.text.is_some(),
+                "{lang} has no pattern for dates with names"
+            );
+        }
+    }
+
+    #[test]
     fn languages_without_data_resolve_to_english() {
         let mut languages = Languages::default();
         let locale = languages.resolve(&["de-DE".to_owned()], "fr-FR");

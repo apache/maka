@@ -1,4 +1,5 @@
 import { mount, signal, Text, View } from "nsh";
+import { Window } from "nsh/desktop";
 import { Button, RichEditor, StarterKit, createRichEditor, toggleMark, undo } from "nsh/base";
 
 // A rich editor with a toolbar that follows the selection, as a chat's
@@ -46,4 +47,4 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => <Window id="main">{App}</Window>);

@@ -102,6 +102,89 @@ function Inline() {
   );
 }
 
+/** A sentence's links and inline views, each reached on its own by a screen
+ * reader: VoiceOver swipes from the words to each link (the Links rotor jumps
+ * between them), to each source badge and to the photo chip, in their place
+ * in the sentence, and a double tap presses the one it is on. */
+function ReadAloud() {
+  const opened = signal("nothing yet");
+  const source = (n: number, site: string) => (
+    <Press
+      onPress={() => opened.set(`Source ${n}, ${site}`)}
+      role="link"
+      accessibilityLabel={`Source ${n}, ${site}`}
+      style={{ verticalAlign: "middle" }}
+      scale={0.9}
+      hitSlop={8}
+    >
+      <View
+        style={{
+          height: terminal ? TERMINAL_ROW : 18,
+          minWidth: terminal ? undefined : 18,
+          paddingHorizontal: terminal ? TERMINAL_COLUMN : 5,
+          borderRadius: 9,
+          backgroundColor: colors.raised,
+          borderWidth: 1,
+          borderColor: colors.border,
+          alignItems: "center",
+          justifyContent: "center",
+        }}
+      >
+        <Text style={{ fontSize: 11, fontWeight: "600", color: colors.muted, fontVariant: ["tabular-nums"] }}>{n}</Text>
+      </View>
+    </Press>
+  );
+  return (
+    <Card icon="eye" title="Read aloud" subtitle="Screen readers reach each link and inline view">
+      <Text style={{ ...body(), fontSize: 16, lineHeight: 26 }}>
+        {"The booster settled back on the pad "}
+        {source(1, "spacex.com")}
+        {" eight minutes after liftoff. Read the "}
+        <Text style={link()} onPress={() => opened.set("Flight report")}>
+          flight report
+        </Text>
+        {" or the "}
+        <Text style={link()} onPress={() => opened.set("Landing timeline")}>
+          landing timeline
+        </Text>{" "}
+        {source(2, "nasa.gov")}
+        {", or open the "}
+        <Press
+          onPress={() => opened.set("Image: the booster on the pad")}
+          role="link"
+          accessibilityLabel="Open image: the booster on the pad"
+          style={{ verticalAlign: "middle" }}
+          scale={0.95}
+          hitSlop={6}
+        >
+          <View
+            style={{
+              flexDirection: "row",
+              alignItems: "center",
+              gap: 6,
+              height: terminal ? TERMINAL_ROW : 24,
+              paddingLeft: terminal ? TERMINAL_COLUMN : 3,
+              paddingRight: terminal ? TERMINAL_COLUMN : 9,
+              borderRadius: 12,
+              backgroundColor: colors.raised,
+              borderWidth: 1,
+              borderColor: colors.border,
+              ...finish.raised,
+            }}
+          >
+            <If when={!terminal}>
+              <Image src={photoUrl("booster", "small")} style={{ width: 18, height: 18, borderRadius: 9, objectFit: "cover" }} />
+            </If>
+            <Text style={{ fontSize: 13, color: colors.accent }}>photo</Text>
+          </View>
+        </Press>
+        .
+      </Text>
+      <Caption label="Opened" note={opened()} />
+    </Card>
+  );
+}
+
 function Fonts() {
   return (
     <Card icon="styles" title="Type" subtitle="Custom fonts, weights, styles, spacing">
@@ -283,6 +366,6 @@ function Alignment() {
 }
 
 export function TextDemo() {
-  const cards = [Links, Inline, Fonts, Scaling, Truncation, Cjk, RightToLeft, Alignment];
+  const cards = [Links, Inline, ReadAloud, Fonts, Scaling, Truncation, Cjk, RightToLeft, Alignment];
   return <DemoPage cards={cards} />;
 }

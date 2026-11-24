@@ -64,10 +64,20 @@ final class Share {
             return;
         }
         android.app.FragmentManager manager = activity.getFragmentManager();
+        // After the activity saved its state, adding a fragment throws.
+        if (manager.isStateSaved()) {
+            fail(request, "the app is in the background");
+            return;
+        }
         Results results = (Results) manager.findFragmentByTag(FRAGMENT);
         if (results == null) {
             results = new Results();
-            manager.beginTransaction().add(results, FRAGMENT).commitNow();
+            try {
+                manager.beginTransaction().add(results, FRAGMENT).commitNow();
+            } catch (IllegalStateException e) {
+                fail(request, "the app is in the background");
+                return;
+            }
         }
         results.start(activity, send, request);
     }

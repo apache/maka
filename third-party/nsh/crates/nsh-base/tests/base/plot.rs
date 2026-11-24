@@ -10,7 +10,7 @@ use nsh_base::plot::{
 use nsh_core::{
     MountItem, Size,
     animation::{AnimationOp, Driver},
-    element::{Root, RowAccessor, RowText, Rows, Spring, Timing},
+    element::{RowAccessor, RowText, Rows, Spring, Timing},
     platform::{Idiom, Os},
     prelude::*,
 };
@@ -56,7 +56,7 @@ fn Week() -> impl IntoElement {
 fn a_rust_plot_reports_the_row_under_the_pointer() {
     let mut config = EngineConfig {
         viewport: Size::new(px(390.0), px(844.0)),
-        ..EngineConfig::new(Root::of::<Week>())
+        ..EngineConfig::new(nsh_testing::windowed_root::<Week>())
     };
     // A mouse to hover with: the desktop.
     config.environment.os = Os::MacOs;
@@ -104,7 +104,7 @@ fn Shares() -> impl IntoElement {
 fn a_rust_pie_reports_the_slice_under_the_pointer() {
     let mut config = EngineConfig {
         viewport: Size::new(px(390.0), px(844.0)),
-        ..EngineConfig::new(Root::of::<Shares>())
+        ..EngineConfig::new(nsh_testing::windowed_root::<Shares>())
     };
     config.environment.os = Os::MacOs;
     config.environment.idiom = Idiom::Desktop;
@@ -177,7 +177,7 @@ fn Gliding() -> impl IntoElement {
 fn the_hover_follows_the_pointer_in_the_same_frame_and_glides_on_keys() {
     let mut config = EngineConfig {
         viewport: Size::new(px(390.0), px(844.0)),
-        ..EngineConfig::new(Root::of::<Gliding>())
+        ..EngineConfig::new(nsh_testing::windowed_root::<Gliding>())
     };
     config.environment.os = Os::MacOs;
     config.environment.idiom = Idiom::Desktop;
@@ -278,7 +278,7 @@ fn Market() -> impl IntoElement {
 fn a_rust_treemap_lays_out_its_rows_and_reports_the_node_under_the_pointer() {
     let mut config = EngineConfig {
         viewport: Size::new(px(390.0), px(844.0)),
-        ..EngineConfig::new(Root::of::<Market>())
+        ..EngineConfig::new(nsh_testing::windowed_root::<Market>())
     };
     config.environment.os = Os::MacOs;
     config.environment.idiom = Idiom::Desktop;

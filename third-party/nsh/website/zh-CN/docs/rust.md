@@ -214,9 +214,10 @@ fn open_notes() {
 
 `open_auth_session` 打开服务方的登录页（OAuth 授权地址），结果是登录页跳回的回调地址：iOS 用
 `ASWebAuthenticationSession` 弹层显示（`.ephemeral(true)` 不与用户的 Safari 共用数据），Android 用 Custom Tab，
-其他平台用系统浏览器。iOS 以外，回调以应用声明的 scheme（`nsh.json` 的 `schemes`）的链接回到应用，由会话收下，
-`next_url_scheme_open` 收不到它。结果是 `Completed(url)` 或 `Cancelled`（用户关掉了页面，或没登录就回到应用）；
-回调回不到应用时以 `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM` 失败。登录页的地址同 `open_url` 一样要 `openUrl` 能力。
+macOS、Windows 和 Linux 后端用系统浏览器。iOS 以外，回调以应用声明的 scheme（`nsh.json` 的 `schemes`）的链接回到应用，
+由会话收下，`next_url_scheme_open` 收不到它。结果是 `Completed(url)` 或 `Cancelled`（用户关掉了页面，或没登录就回到应用）；
+回调回不到应用时立即以 `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM` 失败：scheme 不是应用声明的会话如此；网页、GPUI
+和终端后端收不到应用 scheme 的链接，那里的每个会话都如此。登录页的地址同 `open_url` 一样要 `openUrl` 能力。
 
 登录页还开着、应用已从别处得知用户登录了（在不会跳回的页面上批准了设备码）时，`close_auth_session()` 关掉它：会话以
 `Cancelled` 结束，iOS 和 Android 收起页面、回到应用；桌面浏览器里的页面不动。没有会话在等时什么也不做。
@@ -241,7 +242,7 @@ fn sign_in(authorize_url: String) {
 
 测试里 `Headless::on_auth_session` 让平台有应用内会话、每个会话按给定的结果结束，`keep_auth_sessions_open` 则让
 每个会话一直开着、直到应用关掉它（`screen().auth_session_showing()`）；都不设时登录页记在 `opened_urls()` 里，用
-`open_with_url` 送回调。
+`open_with_url` 送回调（以网页身份运行的测试除外：会话立即失败）。
 
 ## 用 TSX 扩展 Rust 应用
 
@@ -327,6 +328,7 @@ impl Portfolio {
 
 ```tsx
 import { mount, signal, View, Text } from "nsh";
+import { Window } from "nsh/desktop";
 import { Chart, Ledger, Portfolio } from "app/native";   // Rust
 
 const ledger = new Ledger();   // 状态保存在 Rust 中
@@ -344,7 +346,11 @@ function Overview() {
   );
 }
 
-mount(() => <Overview />);
+mount(() => (
+  <Window id="main">
+    <Overview />
+  </Window>
+));
 ```
 
 每个导出在 TypeScript 中的文档来自给它命名的那个 Rust 项的文档注释：组件来自 `#[component] fn`（`Chart`），模块和类来自它们的

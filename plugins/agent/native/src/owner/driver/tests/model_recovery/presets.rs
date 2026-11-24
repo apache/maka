@@ -323,16 +323,32 @@ async fn exercise(rig: &mut Rig) -> TestResult<()> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn preset_execution_uses_durable_role_and_explicit_model_selection() {
     let mut rig = Rig::new().unwrap();
-    let stop = CancellationToken::new();
     let (requests, mut upstream) = tokio::sync::mpsc::unbounded_channel();
     let fail_model = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let mut wire = None;
+    let fail = fail_model.clone();
+    let server = MockAiBuilder::new()
+        .handler_fn(move |req, _| {
+            let _ = requests.send(req.raw_body.clone());
+            if fail.load(Ordering::SeqCst) {
+                TurnPlan::http_error(HttpErrorSpec::new(
+                    400,
+                    "invalid_request_error",
+                    "Injected model failure",
+                ))
+            } else {
+                TurnPlan::new()
+                    .push_text("Review complete.")
+                    .with_usage(Usage::new(100, 10))
+                    .finish(FinishReason::Stop)
+            }
+        })
+        .start()
+        .await
+        .unwrap();
     let result = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(120), async {
-        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
         let base = rig.directory.path().to_path_buf();
         // No optional assistant configuration: the role must still reach the model.
-        let boot = bootstrap(&base, format!("http://{}/v1", listener.local_addr()?), true).await?;
-        wire = Some(tokio::spawn(execution_provider(listener, requests, fail_model.clone(), stop.clone())));
+        let boot = bootstrap(&base, server.base_url(), true).await?;
         attach(&mut rig, &boot).await?;
         let client = rig.client.as_ref().unwrap();
         let catalog = call(client, "settings", "connections", json!({"kind":"start"})).await?;
@@ -386,7 +402,7 @@ async fn preset_execution_uses_durable_role_and_explicit_model_selection() {
                     if observed["compacting"].is_null() { break; }
                     tokio::task::yield_now().await;
                 }
-                let summary: Value = serde_json::from_slice(&upstream.recv().await.ok_or("missing compaction request")?)?;
+                let summary = upstream.recv().await.ok_or("missing compaction request")?;
                 assert!(summary["messages"].to_string().contains("Reviewer"));
             }
             let input = json!({"sessionId":session,"message":format!("Review task {round}"),"attachments":[],"delivery":"queue"});
@@ -404,7 +420,7 @@ async fn preset_execution_uses_durable_role_and_explicit_model_selection() {
                     _ => tokio::task::yield_now().await,
                 }
             };
-            let request: Value = serde_json::from_slice(&upstream.recv().await.ok_or("missing model request")?)?;
+            let request = upstream.recv().await.ok_or("missing model request")?;
             assert_eq!(request["model"], if round < 2 { "llama3.2" } else { "alternate" });
             let messages = request["messages"].as_array().unwrap();
             let text = messages.iter().map(|m|m["content"].as_str().unwrap_or("")).collect::<Vec<_>>().join("\n");
@@ -436,7 +452,7 @@ async fn preset_execution_uses_durable_role_and_explicit_model_selection() {
                         _ => tokio::task::yield_now().await,
                     }
                 }
-                let request: Value = serde_json::from_slice(&upstream.recv().await.ok_or("missing continuation request")?)?;
+                let request = upstream.recv().await.ok_or("missing continuation request")?;
                 let text = request["messages"].as_array().unwrap().iter().map(|m|m["content"].as_str().unwrap_or("")).collect::<Vec<_>>().join("\n");
                 assert_eq!(text.matches(role).count(),1,"{request}");
             }
@@ -444,38 +460,8 @@ async fn preset_execution_uses_durable_role_and_explicit_model_selection() {
         }
         Ok::<_,Box<dyn Error + Send + Sync>>(())
     })).catch_unwind().await;
-    stop.cancel();
-    if let Some(wire) = wire {
-        wire.await.unwrap().unwrap();
-    }
+    server.shutdown().await;
     let cleanup = rig.finish().await;
     assert!(matches!(result, Ok(Ok(Ok(())))), "{result:?}");
     assert!(cleanup.is_empty(), "{cleanup:?}");
-}
-
-async fn execution_provider(
-    listener: tokio::net::TcpListener,
-    requests: tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
-    fail: Arc<std::sync::atomic::AtomicBool>,
-    stop: CancellationToken,
-) -> TestResult<()> {
-    let app = axum::Router::new().route("/v1/chat/completions", axum::routing::post(move |body: axum::body::Bytes| {
-        let requests = requests.clone();
-        let fail = fail.clone();
-        async move {
-            requests.send(body.to_vec()).unwrap();
-            if fail.load(Ordering::SeqCst) {
-                return (axum::http::StatusCode::BAD_REQUEST, [("content-type","application/json")],
-                    json!({"error":{"message":"Injected model failure","type":"invalid_request_error"}}).to_string());
-            }
-            let body = format!("data: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
-                json!({"id":"preset","object":"chat.completion.chunk","model":"llama3.2","choices":[{"index":0,"delta":{"role":"assistant","content":"Review complete."},"finish_reason":null}]}),
-                json!({"id":"preset","object":"chat.completion.chunk","model":"llama3.2","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":100,"completion_tokens":10,"total_tokens":110}}));
-            (axum::http::StatusCode::OK, [("content-type","text/event-stream")], body)
-        }
-    }));
-    axum::serve(listener, app)
-        .with_graceful_shutdown(stop.cancelled_owned())
-        .await?;
-    Ok(())
 }

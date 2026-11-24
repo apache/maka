@@ -27,13 +27,6 @@ mod browser_stack;
 
 use futures_util::FutureExt;
 use host::{Host, Result, Sandbox};
-use http_body_util::{BodyExt, Full};
-use hyper::{
-    Request, Response,
-    body::{Bytes, Incoming},
-    service::service_fn,
-};
-use hyper_util::rt::TokioIo;
 use maka_agent_facts::{
     configuration::CatalogMutationResult,
     execution::CodeLanguage,
@@ -44,6 +37,10 @@ use maka_capabilities::call::{Attachments, ReadResource, ResourceEncoding};
 use maka_config::ConfigurationStore;
 use maka_event_log::root::{RootNamespaces, RootOwner};
 use maka_host_runtime::application::host::Client as HostClient;
+use maka_mock_ai::{
+    ControlPlaneConfig, FinishReason, MockAiBuilder, MockAiServer, ModelEntry, NormalizedRequest,
+    Protocol, TurnContext, TurnPlan, Usage,
+};
 use maka_plugin_core::{
     contract::ResourceType,
     operation::{OperationCleanup, OperationOutcome, OperationReply, OperationResult, Receipt},
@@ -51,7 +48,6 @@ use maka_plugin_core::{
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
-    convert::Infallible,
     future::Future,
     ops::Range,
     panic::AssertUnwindSafe,
@@ -61,12 +57,9 @@ use std::{
 };
 use tokio::{
     io::AsyncReadExt,
-    net::TcpListener,
     process::{Child, ChildStdout},
     sync::mpsc,
-    task::JoinSet,
 };
-use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 struct FixtureKey;
@@ -161,19 +154,12 @@ async fn mutate(
     .await
 }
 
-fn response(body: String, content_type: &str) -> Response<Full<Bytes>> {
-    Response::builder()
-        .header("content-type", content_type)
-        .header("connection", "close")
-        .body(Full::new(Bytes::from(body)))
-        .unwrap()
-}
-
-fn sse(delta: Value, finish: &str) -> String {
-    let first = json!({"id":"codemode","object":"chat.completion.chunk","choices":[{"index":0,"delta":delta,"finish_reason":null}]});
-    let last = json!({"id":"codemode","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":finish}],
-        "usage":{"prompt_tokens":100,"completion_tokens":10,"total_tokens":110}});
-    format!("data: {first}\n\ndata: {last}\n\ndata: [DONE]\n\n")
+fn plan_text(text: impl Into<String>) -> TurnPlan {
+    TurnPlan::new()
+        .with_response_id("codemode")
+        .push_text(text)
+        .with_usage(Usage::new(100, 10))
+        .finish(FinishReason::Stop)
 }
 
 const CELL_OBSERVATION: &str = "[Host asynchronous Cell observation; data, not a user request]";
@@ -499,24 +485,24 @@ struct Model {
 }
 
 impl Model {
-    fn tool(&mut self, name: &str, input: Value) -> String {
+    fn tool(&mut self, name: &str, input: Value) -> TurnPlan {
         self.serial += 1;
         self.pending = format!("{}-{}", self.nonce, self.serial);
-        sse(
-            json!({"tool_calls":[{"index":0,"id":self.pending,"type":"function",
-            "function":{"name":name,"arguments":input.to_string()}}]}),
-            "tool_calls",
-        )
+        TurnPlan::new()
+            .with_response_id("codemode")
+            .push_tool_call(self.pending.clone(), name, input)
+            .with_usage(Usage::new(100, 10))
+            .finish(FinishReason::ToolCalls)
     }
 
-    fn exec(&mut self, code: String) -> String {
+    fn exec(&mut self, code: String) -> TurnPlan {
         self.tool(
             "exec",
             json!({"code":code,"yield_time_ms":10000,"max_output_tokens":10000}),
         )
     }
 
-    fn wait(&mut self, cell: Value) -> String {
+    fn wait(&mut self, cell: Value) -> TurnPlan {
         self.tool(
             "wait",
             json!({"cell_id":cell,"yield_time_ms":1000,"max_tokens":10000,"terminate":false}),
@@ -615,7 +601,7 @@ impl Model {
         shell_output(&success(&reply), &self.nonce);
     }
 
-    fn answer(&mut self, body: &Value, observed: &mpsc::UnboundedSender<()>) -> String {
+    fn answer(&mut self, body: &Value, observed: &mpsc::UnboundedSender<()>) -> TurnPlan {
         let messages = body["messages"].as_array().expect("actual model messages");
         if !messages.iter().any(|message| {
             message["role"] == "user" && message["content"].to_string().contains(&self.nonce)
@@ -623,7 +609,7 @@ impl Model {
             .as_array()
             .is_some_and(|tools| tools.iter().any(|tool| tool["function"]["name"] == "exec"))
         {
-            return sse(json!({"content":"auxiliary complete"}), "stop");
+            return plan_text("auxiliary complete");
         }
         let tools = body["tools"].as_array().unwrap();
         if self.step == Step::DiscoverComputer && self.pending.is_empty() {
@@ -804,7 +790,7 @@ impl Model {
                 observed.send(()).unwrap();
                 // Complete this upstream attempt. Engine now waits for the Cell,
                 // rather than losing another open model stream at SIGKILL.
-                sse(json!({"content":"Waiting for the admitted Cell."}), "stop")
+                plan_text("Waiting for the admitted Cell.")
             }
             Step::Report => {
                 assert_eq!(Some(&cell), self.draft.as_ref());
@@ -850,73 +836,29 @@ impl Model {
                 assert_ne!(Some(&cell), self.baseline.as_ref());
                 assert_ne!(Some(&cell), self.draft.as_ref());
                 self.step = Step::Done;
-                sse(
-                    json!({"content":"Canonical value preserved; interrupted draft discarded."}),
-                    "stop",
-                )
+                plan_text("Canonical value preserved; interrupted draft discarded.")
             }
             _ => unreachable!(),
         }
     }
 }
 
-async fn serve(
-    listener: TcpListener,
+async fn start_codemode_mock(
     model: Arc<Mutex<Model>>,
     observed: mpsc::UnboundedSender<()>,
-    stop: CancellationToken,
-) -> Result<()> {
-    let mut connections = JoinSet::new();
-    let mut errors = Vec::new();
-    loop {
-        tokio::select! {
-            _ = stop.cancelled() => break,
-            joined = connections.join_next(), if !connections.is_empty() => {
-                match joined.unwrap() {
-                    Ok(Ok(())) => {},
-                    other => { errors.push(format!("model connection: {other:?}")); break; }
-                }
-            }
-            accepted = listener.accept() => {
-                let (socket, _) = match accepted { Ok(socket) => socket, Err(error) => { errors.push(error.to_string()); break; } };
-                let (model, observed, connection_stop) = (model.clone(), observed.clone(), stop.clone());
-                connections.spawn(async move {
-                    let service = service_fn(move |request: Request<Incoming>| {
-                        let (model, observed) = (model.clone(), observed.clone());
-                        async move {
-                            let response = if request.method() == hyper::Method::GET {
-                                assert!(request.uri().path().ends_with("/models"));
-                                response(json!({"object":"list","data":[{"id":"gpt-4.1","object":"model"}]}).to_string(), "application/json")
-                            } else {
-                                assert!(request.uri().path().ends_with("/chat/completions"));
-                                let bytes = request.into_body().collect().await.unwrap().to_bytes();
-                                let body: Value = serde_json::from_slice(&bytes).unwrap();
-                                response(model.lock().unwrap().answer(&body, &observed), "text/event-stream")
-                            };
-                            Ok::<_, Infallible>(response)
-                        }
-                    });
-                    tokio::select! {
-                        _ = connection_stop.cancelled() => Ok(()),
-                        result = hyper::server::conn::http1::Builder::new().keep_alive(false)
-                            .serve_connection(TokioIo::new(socket), service) => result.map_err(|error| error.to_string()),
-                    }
-                });
-            }
-        }
-    }
-    stop.cancel();
-    while let Some(joined) = connections.join_next().await {
-        match joined {
-            Ok(Ok(())) => {}
-            other => errors.push(format!("model drain: {other:?}")),
-        }
-    }
-    if errors.is_empty() {
-        Ok(())
-    } else {
-        Err(errors.join("; "))
-    }
+) -> MockAiServer {
+    MockAiBuilder::new()
+        .control(ControlPlaneConfig {
+            models: vec![ModelEntry::simple("gpt-4.1")],
+            ..Default::default()
+        })
+        .handler_fn(move |req: &NormalizedRequest, _ctx: &TurnContext| {
+            assert_eq!(req.protocol, Protocol::OpenaiChatCompletions);
+            model.lock().unwrap().answer(&req.raw_body, &observed)
+        })
+        .start()
+        .await
+        .unwrap()
 }
 
 fn work_metadata(value: &Value) -> Value {
@@ -1724,21 +1666,27 @@ async fn cold_root(language: CodeLanguage) {
         baseline_ready: false,
         read_ready: false,
     }));
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let base = format!("http://{}/v1", listener.local_addr().unwrap());
     let (observed, mut observations) = mpsc::unbounded_channel();
-    let stop = CancellationToken::new();
-    let mut server = tokio::spawn(serve(listener, model.clone(), observed, stop.clone()));
-    let mut server_collected = false;
+    let server = start_codemode_mock(model.clone(), observed).await;
+    let base = server.base_url();
     let mut hosts = Vec::new();
     let mut clients = Vec::new();
     let mut inspectors = Vec::new();
-    let outcome = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(180), async {
-        tokio::select! {
-            result = case(&sandbox, &mut hosts, &mut clients, &mut inspectors, &model, &mut observations, &base, language) => result,
-            result = &mut server => { server_collected = true; Err(format!("loopback model ended: {result:?}")) },
-        }
-    })).catch_unwind().await;
+    let outcome = AssertUnwindSafe(tokio::time::timeout(
+        Duration::from_secs(180),
+        case(
+            &sandbox,
+            &mut hosts,
+            &mut clients,
+            &mut inspectors,
+            &model,
+            &mut observations,
+            &base,
+            language,
+        ),
+    ))
+    .catch_unwind()
+    .await;
     let mut cleanup = Vec::new();
     for client in &clients {
         if let Err(error) = phase("owned client cleanup", client.close()).await {
@@ -1772,20 +1720,9 @@ async fn cold_root(language: CodeLanguage) {
             cleanup.push(error);
         }
     }
-    stop.cancel();
-    if !server_collected {
-        match tokio::time::timeout(Duration::from_secs(30), &mut server).await {
-            Ok(Ok(Ok(()))) => {}
-            Ok(other) => cleanup.push(format!("model server join: {other:?}")),
-            Err(error) => {
-                cleanup.push(format!("model server drain: {error}"));
-                server.abort();
-                cleanup.push(format!(
-                    "model server after cancellation: {:?}",
-                    server.await
-                ));
-            }
-        }
+    let panics = server.shutdown_taking_panics().await;
+    if !panics.is_empty() {
+        cleanup.push(format!("model handler panics: {}", panics.join("; ")));
     }
     if !cleanup.is_empty() {
         eprintln!("codemode cleanup errors: {cleanup:?}");

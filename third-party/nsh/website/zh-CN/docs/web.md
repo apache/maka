@@ -56,7 +56,7 @@ frame.src = "https://apps.example.com/player.html"; // 播放器设置 dialogs: 
 
 发布出去的应用，在桌面浏览器里表现得像桌面应用，在手机浏览器里表现得像手机应用：
 
-- **滚轮和触控板**滚动沿其方向、还能继续滚动的最内层滚动视图（没有可滚动的纵向视图时，纵向滚轮也会滚动横向列表），并且直到这次滚动结束都停留在这个视图上；滚轮的每一格平滑滑动，分页和吸附的视图每次滚动移动一页。Ctrl + 滚轮和触控板捏合会捏合带原生捏合值的视图，而不是缩放页面。和桌面平台一样，用鼠标拖动不会滚动：鼠标拖动交给拖拽手势、响应者系统和文字选择。滚动视图像桌面平台一样上报 `onScrollDragStart` / `onScrollDragEnd`、`onMomentumStart` / `End` 和 `onScrollEnd`。
+- **滚轮和触控板**滚动沿其方向、还能继续滚动的最内层滚动视图（没有可滚动的纵向视图时，纵向滚轮也会滚动横向列表），并且直到这次滚动结束都停留在这个视图上；浏览器本来就会滚动同一个视图时交给浏览器去滚，用它自己的平滑滚轮和触控板惯性，鼠标手感和普通网页一样；分页和吸附的视图每次滚动移动一页。Ctrl + 滚轮和触控板捏合会捏合带原生捏合值的视图，而不是缩放页面。和桌面平台一样，用鼠标拖动不会滚动：鼠标拖动交给拖拽手势、响应者系统和文字选择。滚动视图像桌面平台一样上报 `onScrollDragStart` / `onScrollDragEnd`、`onMomentumStart` / `End` 和 `onScrollEnd`。
 - **键盘**：Tab 和 Shift+Tab 在可按压的视图和输入框之间移动（应用的 `focus-visible:` 样式标出键盘焦点）；回车按下获得焦点的视图，空格在松开时按下；方向键、Page Up / Page Down、空格、Home 和 End 滚动焦点所在或鼠标下方的滚动视图；Escape 先离开输入框、关闭对话框，再返回。`keymap` 的快捷键在浏览器里同样有效，当场匹配（Mac 上的 Safari 和 Chrome 里 `mod` 是 Command，其他地方是 Control）。
 - **返回**：Escape、Alt+左方向键（Mac 上是 Cmd+[）和鼠标的后退键会关闭最上层的对话框或弹出当前显示的最内层的栈（未选中的 tab 里的栈保留它的页面），和 Android 返回键一样；`popOnBack` 和 `onBackPress` 也照常生效。应用占据整个页面时，正在显示的栈里压入的每个页面和打开的每个对话框都是一条浏览器历史记录，浏览器的后退按钮会在应用内返回。`nsh.json` 的 `web.history` 为打包的页面和开发服务器的页面决定这一点：`false` 让浏览器历史只保留页面自己的记录，`true` 在 iframe 里也加入应用的记录。
 - **地址**：应用占据整个页面时，[`UrlScheme.setUrl(url)`](../modules/nsh.md#urlscheme) 设置当前历史记录的地址，相对于页面地址（或站点的 `web.base`）解析，`UrlScheme.url()` 读取它。浏览器的后退按钮在应用内后退：栈的页面返回，地址变为那条记录的地址。用户输入的地址（`#fragment`）是应用在当前页面上的一条记录，后退或前进到页面相同的记录时，[`UrlScheme.on("change")`](../modules/nsh.md#urlschemeonchange) 把那条记录的地址告诉应用。`setUrl(url, { history: "push" })` 为应用自己的地址（标签页、筛选）新建这样一条记录。
@@ -492,7 +492,7 @@ import { Head } from "nsh/web";
 </NavPage>
 ```
 
-主窗口的标题也是页面的标题，用 Rust 编写的应用就这样设置标签页的标题：按桌面上的方式设置（TSX 中是 `currentWindow().set({ title })`）；已挂载的 `Head` 设置的标题优先。空标题让页面恢复它自己的 `<title>`。Rust 应用的 nsh.json `window.title` 从启动起就是标签页的标题，和它在桌面上作为窗口标题一样。浏览器历史的每一条记录都保留它的页面当时的标题，所以标题要和它所属的页面或地址在同一轮里设置。
+页面标题来自已挂载的 `Head`；没有 head 设置标题时，Rust 应用根窗口的标题（nsh.json `window.title` 或根组件的 `WindowAttributes` 标题）作为标签页标题。空标题让页面恢复它自己的 `<title>`。Web 只有应用的唯一表面，没有应用自己的窗口：`currentWindow()` 就是这个表面，它的标题就是页面标题；TSX 仍用 `<Head title>`（或 nsh.json 的 `window.title`）设置页面标题，而不是 `currentWindow().set({ title })`。浏览器历史的每一条记录都保留它的页面当时的标题，所以标题要和它所属的页面或地址在同一轮里设置。
 
 ```rust
 use nsh_core::{desktop::WindowAttributes, element::desktop::main_window};

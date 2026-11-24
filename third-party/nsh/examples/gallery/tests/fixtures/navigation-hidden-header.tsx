@@ -1,6 +1,7 @@
 // Native iOS regression fixture: use real XCTest edge swipes, not the test
 // agent's in-process touches (docs/dev/pitfalls.md, "iOS, the test agent's input").
 import { mount, signal, Text, View } from "nsh";
+import { Window } from "nsh/desktop";
 import { Button, createNavStack, NavPage, NavStack } from "nsh/base";
 
 type Route = "root" | "swipe" | "locked" | "prevented";
@@ -42,4 +43,4 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => <Window id="main">{App}</Window>);

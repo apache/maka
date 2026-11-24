@@ -27,7 +27,7 @@ use crate::{candidate, code, serve};
 #[command(name = "maka", version, about = "Maka")]
 pub(super) struct Cli {
     #[command(flatten)]
-    terminal: Option<maka_terminal_shell::entry::Args>,
+    terminal: Option<crate::terminal_args::Args>,
     /// Total observation budget for a finite Host operation, including cleanup.
     #[arg(long, global = true, value_parser = clap::value_parser!(u64).range(1..=600_000))]
     timeout_ms: Option<u64>,
@@ -42,7 +42,7 @@ enum Command {
     /// Open the desktop shell connected to a business Host Root.
     Desktop(crate::desktop::Args),
     /// Open the NSH terminal shell (connects to or starts the selected Host).
-    TerminalShell(maka_terminal_shell::entry::Args),
+    TerminalShell(crate::terminal_args::Args),
     /// Execute a single headless Agent prompt to completion.
     Run(crate::run::Args),
     /// Author, inspect and serve plugin applications.
@@ -319,4 +319,22 @@ fn command_exit(work: impl Future<Output = Result<(), HostError>> + 'static) -> 
         work.await?;
         Ok(ExitCode::SUCCESS)
     })
+}
+
+#[cfg(target_os = "macos")]
+impl crate::terminal_args::Args {
+    async fn run(self) -> Result<(), String> {
+        self.validate()?;
+        crate::desktop::exec_shell(
+            "__maka-terminal-shell",
+            &[
+                ("--root", self.root.as_ref().map(|root| root.as_os_str())),
+                (
+                    "--session",
+                    self.session.as_deref().map(std::ffi::OsStr::new),
+                ),
+            ],
+        )
+        .map_err(|error| error.to_string())
+    }
 }

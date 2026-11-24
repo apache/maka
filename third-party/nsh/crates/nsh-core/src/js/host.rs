@@ -276,7 +276,8 @@ pub mod on {
 }
 
 /// The platform a prop is for: everywhere, or inside `ios={{…}}` /
-/// `android={{…}}` / `macos={{…}}` / `desktop={{…}}` / `web={{…}}`.
+/// `android={{…}}` / `macos={{…}}` / `windows={{…}}` / `desktop={{…}}` /
+/// `web={{…}}`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Platform {
     /// Every platform.
@@ -287,6 +288,8 @@ pub enum Platform {
     Android,
     /// `macos={{…}}`.
     Macos,
+    /// `windows={{…}}`.
+    Windows,
     /// `desktop={{…}}` (macOS, Windows, Linux, desktop browsers).
     Desktop,
     /// `web={{…}}`.
@@ -560,10 +563,12 @@ export interface OverlayPosition {
   available: Size;
 }
 
-/** A drag: translation since the start and velocity (points / second). */
+/** A drag: where it started, translation since then and velocity (points / second). */
 export interface PanEvent {
   /** The system cancelled the drag rather than releasing it. */
   cancelled: boolean;
+  /** Where the finger (or the pointer) went down, in the surface (as a touch's `pageX` / `pageY`). */
+  origin: Point;
   /** How far the finger moved since the drag started. */
   translation: Point;
   /** How fast it moves, in points per second. */
@@ -579,7 +584,7 @@ export interface PressEvent {
   /** Position in the root view the view is in (the surface or its modal), as touches' `pageX` / `pageY`. */
   pagePosition: Point;
   modifiers: Modifiers;
-  /** Consecutive clicks at the same place: 1 for a click, 2 for a double click. */
+  /** Consecutive clicks at the same place: 1 for a click, 2 for a double click; 0 when not from a pointer (keyboard Enter / Space or an assistive technology's default action), as the DOM's `detail`. */
   clickCount: number;
 }
 
@@ -792,19 +797,19 @@ pub const EVENTS: &[(EventKind, u32, &str, &str)] = &[
         EventKind::FileDragEnter,
         on::ALL,
         "(e: { uris: string[]; mimeTypes: string[] }) => void",
-        "A local file drag entered this desktop destination with its offered file URLs and each one's MIME type by its name (`\"\"` when the name says none); no file is read. GTK waits for its file-list preload.",
+        "A local file drag entered this destination (desktops, iOS and Android) with its offered file URLs and each one's MIME type by its name (`\"\"` when the name says none); no file is read. GTK waits for its file-list preload; iOS and Android read files only on drop, so they offer no URLs; the Web offers no URLs, only the types the browser shows.",
     ),
     (
         EventKind::FileDragLeave,
         on::ALL,
         "() => void",
-        "A local file drag left this desktop destination.",
+        "A local file drag left this destination (desktops, iOS, Android and the Web).",
     ),
     (
         EventKind::FileDrop,
         on::ALL,
-        "(e: { uris: string[]; mimeTypes: string[]; pagePosition?: { x: number; y: number } }) => void",
-        "Local file URLs dropped on this desktop destination, with each one's MIME type by its name (`\"\"` when the name says none); `pagePosition`: where, in the window's coordinates, on backends that know it (Linux).",
+        "(e: { uris: string[]; mimeTypes: string[]; pagePosition?: { x: number; y: number }; files: { file: File | null; name: string; type: string; size: number; status: \"read\" | \"tooLarge\" }[] }) => void",
+        "Local file URLs dropped on this destination (desktops, iOS, Android and the Web), with each one's MIME type by its name (`\"\"` when the name says none); `pagePosition`: where, in the window's coordinates, on backends that know it (Linux, iOS, Android, Web). On the Web `uris` is empty and `files` holds the dropped regular files with their contents (`status` `\"tooLarge\"` past 512 MiB a drop; at most 100); elsewhere `files` is empty.",
     ),
     (
         EventKind::Layout,
@@ -984,6 +989,18 @@ pub const EVENTS: &[(EventKind, u32, &str, &str)] = &[
         "It lost the keyboard focus.",
     ),
     (
+        EventKind::FocusIn,
+        on::ALL,
+        "() => void",
+        "The keyboard focus came into it: onto it or a view inside it, from outside (it entered `focus-within`). Moving between the views inside it is no new coming in; the content of an overlay is inside the view the overlay is in. A panel notes where its focus is with it, to put it back later with `ref.focus()`.",
+    ),
+    (
+        EventKind::FocusOut,
+        on::ALL,
+        "() => void",
+        "The keyboard focus left it: from it or a view inside it to one outside, or to none (it left `focus-within`). A view removed with the focus inside it hears nothing.",
+    ),
+    (
         EventKind::SelectionChange,
         on::INPUT,
         "(e: { start: number; end: number }) => void",
@@ -1088,7 +1105,7 @@ pub const EVENTS: &[(EventKind, u32, &str, &str)] = &[
     ),
 ];
 
-/// The events no element's props declare: the root's (`BackHandler`,
+/// The events no element's props declare: the root's (`BackHandler`'s,
 /// `nsh/keymap`, dialogs, `Image.getSize`, clipboard reads, menus, `nsh/host`'s replies and events, links), the runtime's own (touches, insets, native
 /// components' events) and those whose payload a module makes
 /// (`List`'s viewable items, with the app's items).
@@ -1098,6 +1115,7 @@ pub const INTERNAL_EVENTS: &[EventKind] = &[
     EventKind::NativeEvent,
     EventKind::Dialog,
     EventKind::BackPress,
+    EventKind::BackProgress,
     EventKind::ImageInfo,
     EventKind::WebEvaluation,
     EventKind::WebViewReply,
@@ -1109,6 +1127,8 @@ pub const INTERNAL_EVENTS: &[EventKind] = &[
     EventKind::Host,
     EventKind::Pick,
     EventKind::OpenUrl,
+    EventKind::OpenAppSettings,
+    EventKind::ClipboardWrite,
     EventKind::ScreenColor,
     EventKind::Share,
     EventKind::AuthSession,
@@ -1124,6 +1144,8 @@ pub const INTERNAL_EVENTS: &[EventKind] = &[
     EventKind::KeyCommand,
     EventKind::Menu,
     EventKind::ViewableItemsChange,
+    // Text dropped on a Rust component (`RichEditor` inserts it).
+    EventKind::TextDrop,
     // `NavPage`'s `onDismiss` / `onBackPress` and `Dialog`'s `onClose` /
     // `onCancel` / `onOpenChange` / `onOpen`: the navigation's handlers
     // (`nsh-js` `navigation.rs`), declared with its components.
@@ -1180,6 +1202,7 @@ pub fn declarations() -> String {
             (Platform::Ios, "IOS", " inside `ios={{…}}`"),
             (Platform::Android, "Android", " inside `android={{…}}`"),
             (Platform::Macos, "MacOS", " inside `macos={{…}}`"),
+            (Platform::Windows, "Windows", " inside `windows={{…}}`"),
             (Platform::Desktop, "Desktop", " inside `desktop={{…}}`"),
             (Platform::Web, "Web", " inside `web={{…}}`"),
         ] {

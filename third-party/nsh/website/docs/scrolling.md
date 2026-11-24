@@ -29,6 +29,7 @@ pub fn App() -> impl IntoElement {
 
 ```tsx tabs
 import { mount, Scroll, Text, View } from "nsh";
+import { Window } from "nsh/desktop";
 
 function App() {
   return (
@@ -46,7 +47,11 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 The child view above is the scroll view's content container; in TSX, `contentStyle` (or `contentClass`) makes one for you, wrapping the children in a view with that style, which scrolls with them. `flexGrow: 1` (`.flex_grow(1.0)`) makes the content at least as tall as the viewport, so a short content can be centered and a long one still scrolls:
@@ -101,6 +106,8 @@ Fingers drag scroll views. On the desktop (macOS, Windows, Linux) and in the bro
 | `horizontal` | `.horizontal()` | `boolean` | `false` | Scrolls sideways. |
 | `scrollable` | `.scrollable(..)` | `boolean` | `true` | The user can scroll it. Scrolling from code still works. |
 | `bounces` | `.bounces(..)` | `boolean` | `true` | Overscroll past the edges. |
+| `smoothWheel` | `.smooth_wheel(..)` | `boolean` | `false` | A mouse wheel's notches glide to where they point, eased in and out over 100–200 ms as in Chrome, a run of notches one motion. macOS, Windows, Linux and GPUI (not while the system reduces motion); iOS, Android and the web keep the system's and the browser's scrolling. Trackpads are unchanged. |
+| `wheelLineHeight` | `.wheel_line_height(px(..))` | `number` | `0` | How far a mouse wheel's line scrolls, in points; 0 keeps the platform's (10 on macOS, 16 on Windows, a length after the view's on Linux). 40 is what Chrome and Safari scroll a line on macOS. The desktops. |
 | `scrollbar` | `.scrollbar(..)` | `boolean` | `true` | The scroll indicator shows. |
 | `contentInset` | `.content_inset(EdgeInsets { .. })` | `Partial<Edges>` | | Room around the content, scrollable into. |
 | `scrollbarInset` | `.scrollbar_inset(EdgeInsets { .. })` | `Partial<Edges>` | | Keeps the scroll indicator this far from the view's edges. |
@@ -168,6 +175,7 @@ pub fn pager() -> impl IntoElement {
 
 ```tsx tabs
 import { mount, type Point, Scroll, signal, Text, View } from "nsh";
+import { Window } from "nsh/desktop";
 
 const colors = ["#0969da", "#8250df", "#bf3989", "#1a7f37"];
 
@@ -204,7 +212,11 @@ function Pager() {
   );
 }
 
-mount(Pager);
+mount(() => (
+  <Window id="main">
+    <Pager />
+  </Window>
+));
 ```
 
 A carousel of cards that snap to the center, one card per fling:
@@ -308,6 +320,7 @@ pub fn App() -> impl IntoElement {
 ```tsx tabs
 import { mount, Scroll, Text, View } from "nsh";
 import { createAnimatedValue } from "nsh";
+import { Window } from "nsh/desktop";
 
 function App() {
   const offset = createAnimatedValue(0);
@@ -340,7 +353,11 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 A header that slides away while the content scrolls up and comes back as soon as it scrolls down is `diffClamp` of the offset:
@@ -509,6 +526,7 @@ pub fn photo() -> impl IntoElement {
 
 ```tsx tabs
 import { Image, mount, Scroll, type ScrollRef, signal } from "nsh";
+import { Window } from "nsh/desktop";
 
 function Photo() {
   let scroll!: ScrollRef;
@@ -531,7 +549,11 @@ function Photo() {
   );
 }
 
-mount(Photo);
+mount(() => (
+  <Window id="main">
+    <Photo />
+  </Window>
+));
 ```
 
 Text and canvases inside a zoomed scroll view are drawn again at the new resolution when the zoom ends, so they stay sharp on iOS. On Android, NSH zooms with a scroll view of its own, which scales around the pinch's focal point, pans with any number of fingers, flings and rubber-bands at the edges and zoom limits. Android starts a pinch once the fingers are about 27 mm apart, as the system's gesture detector does.
@@ -609,6 +631,26 @@ Two props decide how scrolling and taps interact with the keyboard:
 - `"always"`: the keyboard stays up through every tap.
 
 Both are decided natively when the tap or drag happens, without waiting for your code. To hide the keyboard from code, call `dismiss_keyboard()` in Rust or `Keyboard.dismiss()` from [`nsh`](../modules/nsh.md#keyboard-and-keyboardframe) in TSX.
+
+## Views floating over a scroll view
+
+A toolbar or a floating button placed over the top or bottom of a scroll view can name that scroll view, so the platform treats it as it treats a bar there. From iOS 26 the scroll view's edge effect then takes its shape from what the view shows: the content scrolled under it fades out around its buttons. The edge effect is iOS 26's; where a screen needs the same separation on other versions and platforms, a fade the app draws under the view gives it. `contentInset` keeps room for the view at that end of the content.
+
+```tsx
+const list = signal<ViewRef>();
+
+<View style={{ flex: 1 }}>
+  <Scroll ref={list} contentInset={{ bottom: 80 }}>{/* rows */}</Scroll>
+  <View
+    style={{ position: "absolute", left: 0, right: 0, bottom: 0, padding: 16 }}
+    ios={{ scrollEdgeElement: list() ? { scrollView: list()!, edge: "bottom" } : null }}
+  >
+    <Button>New chat</Button>
+  </View>
+</View>
+```
+
+In Rust, `.scroll_edge_element(Some(list), ScrollEdge::Bottom)` on the floating view, `list` being the scroll view's `ElementRef`. `edge` is `"top"` or `"bottom"` (the default).
 
 ## Nested scroll views
 

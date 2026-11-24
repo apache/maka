@@ -65,6 +65,10 @@ pub(super) fn formula(tex: &str, display: bool, size: f32) -> Option<AnyElement>
     #[cfg(not(feature = "math"))]
     {
         let _ = (tex, display, size);
+        static WARNED: std::sync::Once = std::sync::Once::new();
+        WARNED.call_once(|| {
+            log::warn!("formulas show as TeX: nsh-base was built without the feature `math`")
+        });
         None
     }
 }

@@ -1,8 +1,9 @@
 // A case of the API's test suite (docs/dev/compatibility.md): `nsh/host`
-// on a platform without a host (the headless runtime's): `available()` is
-// false, a call rejects at once with `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM`
-// (messages are for people: an app branches on `code`), and the root's
-// host events reach
+// on a platform without a host (the headless runtime's), in an app whose
+// nsh.json grants no host function: `available()` is false, a call rejects
+// at once with `ERR_ACCESS_DENIED` (the grant is checked before whether
+// there is a host; messages are for people: an app branches on `code`),
+// and the root's host events reach
 // `host.on`'s listeners until they are removed. Its script checks each.
 import { Text, View, signal } from "nsh";
 import { host } from "nsh";

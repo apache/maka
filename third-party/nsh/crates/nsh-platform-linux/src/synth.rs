@@ -58,12 +58,24 @@ pub(crate) fn after_paint(window: &gtk::Window, f: impl FnOnce(&gtk::Window) + '
 /// whatever covers the window on screen.
 pub(crate) fn shot(window: &gtk::Window) -> Result<Vec<u8>, String> {
     let child = window.child().ok_or("the window shows nothing")?;
+    // A resize queued since that frame leaves the widgets without a current
+    // allocation, which GTK does not snapshot: lay the window out again at
+    // its size first (what its next frame would do).
+    window.allocate(window.width(), window.height(), -1, None);
     let (w, h) = (child.width(), child.height());
     let scale = f64::from(window.scale_factor().max(1));
-    let paintable = gtk::WidgetPaintable::new(Some(&child));
     let snapshot = gtk::Snapshot::new();
     snapshot.scale(scale as f32, scale as f32);
-    paintable.snapshot(&snapshot, f64::from(w), f64::from(h));
+    // Through the window, not a `GtkWidgetPaintable`: that only draws the
+    // nodes widgets kept from their last frame, and a window in the
+    // background may get no frame from the compositor (none came since
+    // `after_paint` queued a draw, which dropped them): the shot came out
+    // empty. Snapshotting the child draws again what has no node.
+    let origin = child
+        .compute_point(window, &gtk::graphene::Point::zero())
+        .unwrap_or_else(gtk::graphene::Point::zero);
+    snapshot.translate(&gtk::graphene::Point::new(-origin.x(), -origin.y()));
+    window.snapshot_child(&child, &snapshot);
     let (pw, ph) = ((f64::from(w) * scale) as f32, (f64::from(h) * scale) as f32);
     // An empty surface renders no node: a blank picture all the same.
     let node = snapshot.to_node().unwrap_or_else(|| {

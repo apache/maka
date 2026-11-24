@@ -29,6 +29,7 @@ pub fn App() -> impl IntoElement {
 
 ```tsx tabs
 import { mount, Scroll, Text, View } from "nsh";
+import { Window } from "nsh/desktop";
 
 function App() {
   return (
@@ -46,7 +47,11 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 上面的子视图就是滚动视图的内容容器；在 TSX 中，`contentStyle`（或 `contentClass`）会替你创建一个，把子元素包进一个带该样式、随内容一起滚动的视图。`flexGrow: 1`（`.flex_grow(1.0)`）让内容至少和视口一样高，内容较短时可以居中，较长时照常滚动：
@@ -101,6 +106,8 @@ scroll().horizontal().scrollbar(false).child(
 | `horizontal` | `.horizontal()` | `boolean` | `false` | 横向滚动。 |
 | `scrollable` | `.scrollable(..)` | `boolean` | `true` | 用户可以滚动。从代码滚动不受影响。 |
 | `bounces` | `.bounces(..)` | `boolean` | `true` | 允许越过边缘回弹。 |
+| `smoothWheel` | `.smooth_wheel(..)` | `boolean` | `false` | 鼠标滚轮每一格平滑滑到目标位置，像 Chrome 那样在 100–200 ms 内先加速后减速，连续拨动是一整段滑动。macOS、Windows、Linux 和 GPUI 生效（系统开启减弱动态效果时不滑）；iOS、Android 和 Web 沿用系统和浏览器自己的滚动。触控板不受影响。 |
+| `wheelLineHeight` | `.wheel_line_height(px(..))` | `number` | `0` | 鼠标滚轮每行滚动多少点；0 保持平台默认（macOS 10，Windows 16，Linux 随视图大小）。Chrome 和 Safari 在 macOS 上每行 40 点。桌面平台生效。 |
 | `scrollbar` | `.scrollbar(..)` | `boolean` | `true` | 显示滚动条。 |
 | `contentInset` | `.content_inset(EdgeInsets { .. })` | `Partial<Edges>` | | 内容四周可以滚动进入的留白。 |
 | `scrollbarInset` | `.scrollbar_inset(EdgeInsets { .. })` | `Partial<Edges>` | | 滚动指示条与视图各边保持的距离。 |
@@ -168,6 +175,7 @@ pub fn pager() -> impl IntoElement {
 
 ```tsx tabs
 import { mount, type Point, Scroll, signal, Text, View } from "nsh";
+import { Window } from "nsh/desktop";
 
 const colors = ["#0969da", "#8250df", "#bf3989", "#1a7f37"];
 
@@ -204,7 +212,11 @@ function Pager() {
   );
 }
 
-mount(Pager);
+mount(() => (
+  <Window id="main">
+    <Pager />
+  </Window>
+));
 ```
 
 吸附到中间、每次滑动只移动一张的卡片轮播：
@@ -308,6 +320,7 @@ pub fn App() -> impl IntoElement {
 ```tsx tabs
 import { mount, Scroll, Text, View } from "nsh";
 import { createAnimatedValue } from "nsh";
+import { Window } from "nsh/desktop";
 
 function App() {
   const offset = createAnimatedValue(0);
@@ -340,7 +353,11 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 内容上滑时隐藏、一往下滑就重新出现的标题栏，就是对偏移做 `diffClamp`：
@@ -509,6 +526,7 @@ pub fn photo() -> impl IntoElement {
 
 ```tsx tabs
 import { Image, mount, Scroll, type ScrollRef, signal } from "nsh";
+import { Window } from "nsh/desktop";
 
 function Photo() {
   let scroll!: ScrollRef;
@@ -531,7 +549,11 @@ function Photo() {
   );
 }
 
-mount(Photo);
+mount(() => (
+  <Window id="main">
+    <Photo />
+  </Window>
+));
 ```
 
 在 iOS 上，缩放结束后，缩放视图里的文字和画布会按新的分辨率重新绘制，保持清晰。在 Android 上，NSH 使用自己的滚动视图实现缩放：围绕捏合焦点缩放，支持任意手指数平移、惯性滑动，并在边缘和缩放极限处产生橡皮筋效果。与系统的手势检测一致，Android 在两指间距达到约 27 mm 时开始捏合。
@@ -599,6 +621,26 @@ NSH 会自动让获得焦点的输入框保持可见：键盘出现时，输入�
 - `"always"`：键盘在每次点击后都保持显示。
 
 两者都在点击或拖动发生时由原生决定，无需等待你的代码。要从代码收起键盘，在 Rust 中调用 `dismiss_keyboard()`，在 TSX 中调用 [`nsh`](../modules/nsh.md#keyboard-and-keyboardframe) 的 `Keyboard.dismiss()`。
+
+## 浮在滚动视图上的视图
+
+放在滚动视图顶部或底部之上的工具栏、悬浮按钮可以指明它下面的滚动视图，平台就像对待那里的栏一样对待它。iOS 26 起，滚动视图的边缘效果会按这个视图显示的内容成形：滚到它下面的内容在它的按钮周围渐隐。这个边缘效果来自 iOS 26；其他版本和平台的界面需要同样的分隔时，由应用在视图下面画一层渐隐。用 `contentInset` 在内容那一端给这个视图留出位置。
+
+```tsx
+const list = signal<ViewRef>();
+
+<View style={{ flex: 1 }}>
+  <Scroll ref={list} contentInset={{ bottom: 80 }}>{/* 行 */}</Scroll>
+  <View
+    style={{ position: "absolute", left: 0, right: 0, bottom: 0, padding: 16 }}
+    ios={{ scrollEdgeElement: list() ? { scrollView: list()!, edge: "bottom" } : null }}
+  >
+    <Button>New chat</Button>
+  </View>
+</View>
+```
+
+Rust 中在浮着的视图上调用 `.scroll_edge_element(Some(list), ScrollEdge::Bottom)`，`list` 是滚动视图的 `ElementRef`。`edge` 取 `"top"` 或 `"bottom"`（默认）。
 
 ## 嵌套滚动视图
 

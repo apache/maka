@@ -14,7 +14,7 @@ Native Shell (NSH for short) is a native UI framework for every platform. You bu
 
 ## What native means
 
-Native in NSH has two layers: the platform's foundations, and the platform's interaction.
+Native in NSH has two layers: the platform's foundations, and the platform's interaction. Apps define their own visual style and can opt into system materials such as Liquid Glass on supported platforms.
 
 **The platform's foundations.** Each platform has a backend of its own, built on the UI that platform already has:
 
@@ -91,6 +91,7 @@ pub fn Counter() -> impl IntoElement {
 
 ```tsx tabs
 import { mount, signal, Text, View } from "nsh";
+import { Window } from "nsh/desktop";
 
 function Counter() {
   const count = signal(0);
@@ -108,7 +109,7 @@ function Counter() {
   );
 }
 
-mount(Counter);
+mount(() => <Window id="main"><Counter /></Window>);
 ```
 
 A view (`view()`, `<View>`) becomes a `UIView` on iOS, a `ViewGroup` on Android, an `NSView` on macOS, a GTK widget on Linux, a retained view drawn with Direct2D on Windows and an HTML element on the web; a text becomes a native text view, and the button's press feedback (`.active(..)`, `activeStyle`) runs on the main thread. When you tap, `count.update` changes one signal, and only the text that reads it is updated: the component function does not run again. The Rust app is native code from start to end; in the TSX app, only the module's own code is JavaScript.
@@ -169,7 +170,7 @@ NSH began as a way for native apps to take UI after release, and that stays one 
 
 - **Delivered after release.** A module is a signed package (`.nshpkg`) the app downloads at run time. The app checks its signature against the keys it trusts and against a revocation list before running it ([Signed packages](./signed-packages.md)). The host app ships the runtime; teams build modules against its API and deliver them on their own schedule.
 - **The host stays in control.** Each module runs in its own QuickJS VM, with memory, call-time and node limits, and reaches only what the host grants: network hosts, web pages, the status bar ([Sandbox and capabilities](./sandbox-and-capabilities.md)). Several modules run side by side.
-- **It looks like the rest of the app.** Modules render with the platform's own UI, and the host can register its own native views — a map, a player, a design-system component — for modules to use ([Native components](./native-components.md)).
+- **Modules can match the rest of the app.** Modules can reuse the app’s component styles, and the host can register its own native views — a map, a player, a design-system component — for modules to use ([Native components](./native-components.md)).
 
 The same mechanism lets an app **answer with an interface**. A model writes a small TSX module (a form, a chart, a booking card), your server checks, builds and signs it, and the app shows it natively:
 
@@ -208,7 +209,8 @@ NSH is designed for software written with AI, whole apps as much as generated sc
 | [Web](./web.md) | Modern browsers | HTML | `createPlayer`, iframe |
 | [TUI](./tui.md) | Terminals on macOS, Windows and Linux | ratatui | `AppView` (ratatui area) |
 | [GPUI](./gpui.md) | Desktops | GPUI | `AppView` (GPUI, GPUI Kit apps) |
-| Mac Catalyst | macOS | UIKit | For development (`--target catalyst`) |
+
+As a development tool, Mac Catalyst (`--target catalyst`) runs the iOS backend on a Mac for Catalyst-specific work.
 
 <div class="diagram-scroll">
 <img class="diagram diagram-light" src="/diagrams/platforms-light.svg" alt="One module, many hosts: the same bundle and Rust runtime on iOS, Android, Linux, macOS with AppKit and Windows with Win32 / Direct2D, GPUI on all three desktops, and web pages drawn with HTML.">

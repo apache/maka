@@ -370,10 +370,14 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
                     ? tr('Advanced')
                     : tr('Add a DeepSeek connection')
                   : general.title(),
-              nested: () => general.editor() !== null,
+              nested: () => adding() || general.editor() !== null,
               navigation: () => (adding() ? form.navigation() : general.navigation()),
               back,
               leave: (next) => (adding() ? form.leave(next) : general.leave(next)),
+              returnToRoot: () => {
+                if (adding()) finish();
+                if (general.editor() !== null) general.back();
+              },
               backLabel: () => tr('Back from general settings'),
               busy: operations.navigationBusy,
             },

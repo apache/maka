@@ -378,9 +378,11 @@ impl NativeSurface for TerminalSurface {
             }
             self.view.surface().drain();
             if self.view.surface().wants_frames() {
-                self.view
-                    .surface()
-                    .frame(objc2_quartz_core::CACurrentMediaTime(), 1.0 / 60.0);
+                self.view.surface().frame(
+                    objc2_quartz_core::CACurrentMediaTime(),
+                    1.0 / 60.0,
+                    true,
+                );
             }
             if self
                 .fence

@@ -38,6 +38,7 @@ fn author(name: &'static str, picture: &'static str) -> impl IntoElement {
 ```tsx tabs
 import { mount } from "nsh";
 import { Avatar } from "nsh/base";
+import { Window } from "nsh/desktop";
 
 function App() {
   return (
@@ -51,7 +52,11 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 `Avatar` and `AvatarGroup` come from [`nsh/base`](../modules/nsh-base.md), the `nsh-base` crate in Rust. In Rust,

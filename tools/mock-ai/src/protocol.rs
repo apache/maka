@@ -17,6 +17,7 @@
  * under the License.
  */
 
+use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -151,6 +152,9 @@ pub struct NormalizedRequest {
     pub estimated_input_tokens: u64,
     /// Full raw JSON request payload for protocol-level assertions.
     pub raw_body: Value,
+    /// Exact raw wire payload bytes as received over HTTP or WebSocket.
+    #[serde(skip)]
+    pub raw_wire_bytes: Bytes,
 }
 
 impl NormalizedRequest {
@@ -235,9 +239,10 @@ pub fn normalize_request(
     transport: Transport,
     path: String,
     headers: BTreeMap<String, String>,
-    prompt_bytes: usize,
+    raw_wire_bytes: Bytes,
     raw_body: Value,
 ) -> NormalizedRequest {
+    let prompt_bytes = raw_wire_bytes.len();
     let model = raw_body["model"]
         .as_str()
         .unwrap_or("mock-model")
@@ -543,6 +548,7 @@ pub fn normalize_request(
         anthropic_compaction_enabled,
         estimated_input_tokens,
         raw_body,
+        raw_wire_bytes,
     }
 }
 

@@ -20,7 +20,7 @@ use nsh_testing::Headless;
 const PLANS: [&str; 4] = ["Free", "Plus", "Team", "Enterprise"];
 
 fn start<C: Component<Props = ()>>() -> Headless {
-    launch(Root::of::<C>())
+    launch(nsh_testing::windowed_root::<C>())
 }
 
 fn launch(root: Root) -> Headless {
@@ -134,7 +134,7 @@ fn arrows_move_and_check_wrapping_and_skipping_disabled_radios() {
 
 #[test]
 fn right_to_left_trades_left_and_right_and_keeps_up_and_down() {
-    let mut app = launch_in(Root::of::<Plans>(), true);
+    let mut app = launch_in(nsh_testing::windowed_root::<Plans>(), true);
     app.press_key("tab").unwrap();
     // Left is the next radio, Right the previous.
     app.press_key("left").unwrap();
@@ -268,7 +268,9 @@ fn ManyRadios(props: ManyProps) -> impl IntoElement {
 /// The mount items one Down sends in a group of `count` radios, and
 /// whether any made or removed a view.
 fn items_per_key(count: usize) -> (usize, usize) {
-    let mut app = launch(Root::new::<ManyRadios>(move || ManyProps { count }));
+    let mut app = launch(nsh_testing::windowed_root_with::<ManyRadios>(move || {
+        ManyProps { count }
+    }));
     let items = Arc::new(AtomicUsize::new(0));
     let made = Arc::new(AtomicUsize::new(0));
     let (seen, created) = (items.clone(), made.clone());
@@ -314,7 +316,7 @@ mod hit_slop {
     use std::sync::{Arc, Mutex};
 
     use nsh_base::{radio, radio_group};
-    use nsh_core::{EdgeInsets, MountBatch, MountItem, NodeId, Size, element::Root, prelude::*};
+    use nsh_core::{EdgeInsets, MountBatch, MountItem, NodeId, Size, prelude::*};
     use nsh_engine::EngineConfig;
     use nsh_testing::Headless;
 
@@ -324,7 +326,7 @@ mod hit_slop {
     fn start<C: Component<Props = ()>>() -> (Headless, Seen) {
         let config = EngineConfig {
             viewport: Size::new(px(390.0), px(844.0)),
-            ..EngineConfig::new(Root::of::<C>())
+            ..EngineConfig::new(nsh_testing::windowed_root::<C>())
         };
         let mut app = Headless::start(config).unwrap();
         let seen = Seen::default();

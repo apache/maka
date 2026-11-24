@@ -458,7 +458,7 @@ impl Headless {
 
 #[cfg(test)]
 mod tests {
-    use nsh_core::{element::Root, prelude::*, url_scheme::HistoryBehavior};
+    use nsh_core::{prelude::*, url_scheme::HistoryBehavior};
     use nsh_engine::EngineConfig;
 
     use super::*;
@@ -541,7 +541,9 @@ mod tests {
     }
 
     fn open_mail() -> Headless {
-        let mut app = Headless::start_at_page(EngineConfig::new(Root::of::<Mail>()), PAGE).unwrap();
+        let mut app =
+            Headless::start_at_page(EngineConfig::new(crate::windowed_root::<Mail>()), PAGE)
+                .unwrap();
         app.first_render().unwrap();
         app
     }
@@ -663,7 +665,7 @@ mod tests {
         assert!(app.browser().back().is_err());
         assert!(app.browser().forward().is_err());
 
-        let mut app = Headless::start(EngineConfig::new(Root::of::<Mail>())).unwrap();
+        let mut app = Headless::start(EngineConfig::new(crate::windowed_root::<Mail>())).unwrap();
         app.first_render().unwrap();
         assert!(app.browser().entries().is_empty());
         assert!(app.browser().back().is_err());

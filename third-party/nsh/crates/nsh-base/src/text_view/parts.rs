@@ -138,6 +138,9 @@ parts! {
     /// Highlighted text (`<mark>`; on the document's color when it gives
     /// one).
     highlight => Highlight,
+    /// Text in styles the document gives it (`<span style="color: …">`,
+    /// `<font color>`; in the document's color when it gives one).
+    text_style => TextStyle,
     /// Superscript (smaller).
     superscript => Superscript,
     /// Subscript (smaller).

@@ -8,9 +8,10 @@
 
 use super::{Core, Key, Kind, NO_KEY, dirty, disabling_changes};
 use crate::{
+    element::JsEvent,
     geometry::{Points, Size},
     mount::MountItem,
-    ops::NodeId,
+    ops::{EventKind, EventPayload, NodeId},
     platform::{Appearance, ColorScheme, InputModality},
     props::PointerEvents,
     style::{Color, Style, StylePatch, ViewStyle},
@@ -38,6 +39,11 @@ const REPORTED: u16 = state::PRESSED | state::HOVERED | state::FOCUSED;
 /// ([`crate::input::reported_states`]): never forgotten when its tracking
 /// changes.
 const ALWAYS_REPORTED: u16 = state::FOCUSED;
+
+/// The states a view is in for a moment, by the user's hand: a terminal
+/// lays a view out as it rests, without them (`Node::resting_fill`).
+const INTERACTION: u16 =
+    state::PRESSED | state::HOVERED | state::FOCUSED | state::FOCUS_VISIBLE | state::FOCUS_WITHIN;
 
 /// The `class` and `classList` props as set.
 #[derive(Debug, Default)]
@@ -226,6 +232,9 @@ impl<M: TextEngine> Core<M> {
             // platform must reach classes resolved before it was known.
             | (if env.platform != self.class_env.platform { u16::MAX } else { 0 });
         self.class_env = env;
+        if env.reduce_motion {
+            self.clear_pressed_impulses();
+        }
         self.restyle_where(changed);
         self.parts_restyled();
     }
@@ -243,9 +252,95 @@ impl<M: TextEngine> Core<M> {
         self.set_node_states(key, states);
     }
 
+    /// Reports the interaction states of view `id` after a short completed
+    /// press, holding `state::PRESSED` for `hold` so same-turn tap-to-click
+    /// releases still render `:active` feedback before settling to `states`.
+    /// Any subsequent state report for `id` (including a new press or
+    /// cancellation) supersedes the pending release.
+    pub fn release_states_after(&mut self, id: NodeId, states: u16, hold: std::time::Duration) {
+        let Ok(key) = self.key(id) else { return };
+        self.pressed_impulses.retain(|&(k, _, _)| k != key);
+        if self.class_env.reduce_motion
+            || hold.is_zero()
+            || crate::time::manual()
+            || states & state::PRESSED != 0
+            || self.press_cancelled(key)
+        {
+            self.set_node_states(key, states);
+            return;
+        }
+        self.set_node_states(key, states | state::PRESSED);
+        if self.nodes[key as usize].states & state::PRESSED != 0 {
+            self.pressed_impulses
+                .push((key, id, crate::time::now() + hold));
+        }
+    }
+
+    /// Earliest deadline at which a short press's held `PRESSED` state ends.
+    pub fn next_state_timer(&self) -> Option<crate::time::Instant> {
+        self.pressed_impulses.iter().map(|&(_, _, due)| due).min()
+    }
+
+    /// Releases any short-press `PRESSED` impulses due by `now`; returns
+    /// whether any state changed.
+    pub fn expire_state_timers(&mut self, now: crate::time::Instant) -> bool {
+        if self.pressed_impulses.iter().all(|&(_, _, due)| due > now) {
+            return false;
+        }
+        let mut due = Vec::new();
+        self.pressed_impulses.retain(|&(k, id, at)| {
+            if at <= now {
+                due.push((k, id));
+                false
+            } else {
+                true
+            }
+        });
+        let mut changed = false;
+        for (key, id) in due {
+            let Some(current) = self
+                .nodes
+                .get(key as usize)
+                .filter(|n| n.id == id)
+                .map(|n| n.states & REPORTED)
+            else {
+                continue;
+            };
+            if current & state::PRESSED != 0 {
+                let before = self.nodes[key as usize].states;
+                self.set_node_states(key, current & !state::PRESSED);
+                changed |= self.nodes[key as usize].states != before;
+            }
+        }
+        changed
+    }
+
+    fn clear_pressed_impulses(&mut self) {
+        let pending = std::mem::take(&mut self.pressed_impulses);
+        for (key, id, _) in pending {
+            if let Some(current) = self
+                .nodes
+                .get(key as usize)
+                .filter(|n| n.id == id)
+                .map(|n| n.states & REPORTED)
+                && current & state::PRESSED != 0
+            {
+                self.set_node_states(key, current & !state::PRESSED);
+            }
+        }
+    }
+
     /// [`Self::set_states`] by key.
     fn set_node_states(&mut self, key: Key, states: u16) {
-        let held = self.held_pressed() == Some(key);
+        if states & state::PRESSED != 0 || self.press_cancelled(key) {
+            self.pressed_impulses.retain(|&(k, _, _)| k != key);
+        }
+        let id = self.nodes[key as usize].id;
+        let impulse_held = self
+            .pressed_impulses
+            .iter()
+            .any(|&(k, imp_id, _)| k == key && imp_id == id);
+        let held = self.held_pressed() == Some(key) || impulse_held;
         let node = &mut self.nodes[key as usize];
         let mut new = node.states & !REPORTED | states & REPORTED;
         if held {
@@ -478,7 +573,12 @@ impl<M: TextEngine> Core<M> {
             };
             if node.states & state::FOCUS_WITHIN != 0 {
                 node.states &= !state::FOCUS_WITHIN;
+                let hears = node.events.contains(EventKind::FocusOut);
                 self.states_changed(k);
+                if hears {
+                    self.events
+                        .push(JsEvent::Event(id, EventKind::FocusOut, EventPayload::None));
+                }
             }
         }
         for i in 0..self.focus_chain.len() {
@@ -486,7 +586,12 @@ impl<M: TextEngine> Core<M> {
             let node = &mut self.nodes[k as usize];
             if node.states & state::FOCUS_WITHIN == 0 {
                 node.states |= state::FOCUS_WITHIN;
+                let (id, hears) = (node.id, node.events.contains(EventKind::FocusIn));
                 self.states_changed(k);
+                if hears {
+                    self.events
+                        .push(JsEvent::Event(id, EventKind::FocusIn, EventPayload::None));
+                }
             }
         }
         self.focus_scratch = old;
@@ -517,10 +622,17 @@ impl<M: TextEngine> Core<M> {
         let before = self.held_pressed();
         self.components.touch.pressed = id;
         if let Some(key) = before {
-            let node = &mut self.nodes[key as usize];
-            if node.states & state::PRESSED != 0 {
-                node.states &= !state::PRESSED;
-                self.states_changed(key);
+            let prev_id = self.nodes[key as usize].id;
+            let impulse_held = self
+                .pressed_impulses
+                .iter()
+                .any(|&(k, imp_id, _)| k == key && imp_id == prev_id);
+            if !impulse_held {
+                let node = &mut self.nodes[key as usize];
+                if node.states & state::PRESSED != 0 {
+                    node.states &= !state::PRESSED;
+                    self.states_changed(key);
+                }
             }
         }
         if let Some(key) = self.held_pressed() {
@@ -872,7 +984,7 @@ impl<M: TextEngine> Core<M> {
         }
     }
 
-    /// The padding and gaps a list's `contentClass` sets.
+    /// The padding, gaps and cell alignment a list's `contentClass` sets.
     fn list_content(&self, key: Key) -> crate::ListContentStyle {
         let Some(style) = self.part_resolved(key, Part::Content) else {
             return crate::ListContentStyle::default();
@@ -882,6 +994,12 @@ impl<M: TextEngine> Core<M> {
             _ => crate::geometry::Points::ZERO,
         };
         let p = &style.layout.padding;
+        let align = style.layout.align_items;
+        let align_items = (align == taffy::AlignItems::STRETCH
+            || align == taffy::AlignItems::FLEX_START
+            || align == taffy::AlignItems::CENTER
+            || align == taffy::AlignItems::FLEX_END)
+            .then_some(align);
         crate::ListContentStyle {
             padding: crate::EdgeInsets {
                 top: px(p.top),
@@ -891,6 +1009,7 @@ impl<M: TextEngine> Core<M> {
             },
             row_gap: px(style.layout.gap.height),
             column_gap: px(style.layout.gap.width),
+            align_items,
         }
     }
 
@@ -1155,6 +1274,9 @@ impl<M: TextEngine> Core<M> {
                 });
             }
             if stale != 0 {
+                if stale & state::PRESSED != 0 {
+                    self.pressed_impulses.retain(|&(k, _, _)| k != key);
+                }
                 self.set_node_states(key, states);
             }
         }
@@ -1420,6 +1542,10 @@ impl<M: TextEngine> Core<M> {
     /// [`Self::restyle`] with `position` already known (`None`: query it).
     fn restyle_at(&mut self, key: Key, position: Option<u8>) {
         let mut base = Style::default();
+        // The synthetic root stays sized to the host's viewport when restyled.
+        if key == self.root {
+            base.layout = super::root_style(self.viewport);
+        }
         // Under its own classes and style, as `:where()` is in CSS.
         let space = self.space_of(key);
         if let Some(space) = space {
@@ -1450,6 +1576,7 @@ impl<M: TextEngine> Core<M> {
             Some(font) => self.zero_advance(font),
             None => crate::tailwind::DEFAULT_CH,
         };
+        let base_for_rest = base.clone();
         let mut style;
         let mut props;
         match inherited_font {
@@ -1476,6 +1603,23 @@ impl<M: TextEngine> Core<M> {
             let id = node.id;
             self.ch_styled.push((key, id));
         }
+        // In a terminal, a box's fill decides its layout (a band or a
+        // line, [`terminal_layout::Surface`]): the fill it rests with does,
+        // never one a hover or a press gives it for a moment.
+        let resting = (self.layout.grid().is_some()
+            && self.styled_states(key) & INTERACTION != 0
+            && self.nodes[key as usize]
+                .classes
+                .as_ref()
+                .is_some_and(|c| c.deps() & deps::STATE != 0))
+        .then(|| {
+            let mut rest = base_for_rest;
+            let mut rest_props = ClassProps::default();
+            self.resolve_classes_in(key, ch, position, INTERACTION, &mut rest, &mut rest_props);
+            rest.view.background_color
+        })
+        .filter(|&fill| fill != style.view.background_color);
+        self.nodes[key as usize].resting_fill = resting;
         style.node_props(&mut props);
         self.set_class_props(key, props);
         let id = self.nodes[key as usize].id;
@@ -1576,6 +1720,20 @@ impl<M: TextEngine> Core<M> {
         style: &mut Style,
         props: &mut ClassProps,
     ) {
+        self.resolve_classes_in(key, ch, position, 0, style, props);
+    }
+
+    /// [`Self::resolve_classes`] as if `key` were not in the states
+    /// `without`.
+    fn resolve_classes_in(
+        &mut self,
+        key: Key,
+        ch: f32,
+        position: Option<u8>,
+        without: u16,
+        style: &mut Style,
+        props: &mut ClassProps,
+    ) {
         let node = &self.nodes[key as usize];
         if let Some(classes) = node.classes.clone() {
             let group = |name: &str| self.group_states(key, name);
@@ -1597,7 +1755,7 @@ impl<M: TextEngine> Core<M> {
                 // detached takes the root's), so its sided classes land
                 // right the first time.
                 rtl: self.resolved_rtl(key),
-                states: self.styled_states(key),
+                states: self.styled_states(key) & !without,
                 position: pos,
                 group: &group,
             };
@@ -1834,7 +1992,8 @@ impl<M: TextEngine> Core<M> {
         let paragraph = old.number_of_lines != props.number_of_lines
             || old.selectable != props.selectable
             || old.ellipsize != props.ellipsize
-            || old.no_wrap != props.no_wrap;
+            || old.no_wrap != props.no_wrap
+            || old.pretty != props.pretty;
         let pointer = old.pointer_events != props.pointer_events;
         let none = Some(crate::props::PointerEvents::None);
         match (old.pointer_events == none, props.pointer_events == none) {
@@ -1849,12 +2008,16 @@ impl<M: TextEngine> Core<M> {
             || old.selection_color != props.selection_color;
         let selection = old.selection_color != props.selection_color;
         let (props_no_wrap, props_selectable) = (props.no_wrap, props.selectable);
+        let pretty = old.pretty != props.pretty;
         node.class_props = (props != ClassProps::default()).then(|| Box::new(props));
         let kind = node.kind;
         if paragraph && kind == Kind::Text {
             self.mark_text_block(key);
         }
-        if (old.no_wrap != props_no_wrap || old.selectable != props_selectable || selection)
+        if (old.no_wrap != props_no_wrap
+            || old.selectable != props_selectable
+            || selection
+            || pretty)
             && kind != Kind::Text
         {
             // The texts inside inherit them.

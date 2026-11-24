@@ -245,10 +245,189 @@ unsafe extern "C" fn available_locales(
     _argc: c_int,
     _argv: *mut JsValue,
 ) -> JsValue {
+    // Read so that views listing locales update when translations change.
+    // SAFETY: calling the signal reads (and tracks) it.
+    unsafe {
+        let v = qjs::JS_Call(cx, version(cx), UNDEFINED, 0, ptr::null_mut());
+        qjs::JS_FreeValue(cx, v);
+    }
     let locales = i18n(cx).translations.borrow().locales().to_vec();
     let mut items: Vec<JsValue> = locales.iter().map(|l| string(cx, l)).collect();
     // SAFETY: the array takes the strings.
     unsafe { qjs::JS_NewArrayFrom(cx, items.len() as c_int, items.as_mut_ptr()) }
+}
+
+fn atom_string(cx: *mut JsContext, atom: qjs::JSAtom) -> Option<String> {
+    let mut len: qjs::size_t = 0;
+    // SAFETY: converts a live atom to a UTF-8 string and frees the C buffer.
+    unsafe {
+        let ptr = qjs::JS_AtomToCStringLen(cx, &mut len, atom);
+        if ptr.is_null() {
+            return None;
+        }
+        let bytes = std::slice::from_raw_parts(ptr.cast::<u8>(), len as usize);
+        let text = String::from_utf8_lossy(bytes).into_owned();
+        qjs::JS_FreeCString(cx, ptr);
+        Some(text)
+    }
+}
+
+fn is_plain_object(cx: *mut JsContext, value: JsValue) -> bool {
+    // SAFETY: inline tag and object-kind checks on a live context.
+    unsafe { qjs::JS_IsObject(value) && !qjs::JS_IsArray(value) && !qjs::JS_IsFunction(cx, value) }
+}
+
+fn parse_locale_table(
+    cx: *mut JsContext,
+    table: JsValue,
+    flags: c_int,
+) -> Result<HashMap<String, String>, JsValue> {
+    if !is_plain_object(cx, table) {
+        // SAFETY: throws on a live context.
+        return Err(unsafe {
+            qjs::JS_ThrowTypeError(
+                cx,
+                c"addTranslations: expected an object of translations for each locale".as_ptr(),
+            )
+        });
+    }
+    let mut tab: *mut qjs::JSPropertyEnum = ptr::null_mut();
+    let mut len = 0u32;
+    // SAFETY: own-property enumeration on a live object; every value and
+    // the property table are freed before returning.
+    unsafe {
+        if qjs::JS_GetOwnPropertyNames(cx, &mut tab, &mut len, table, flags) != 0 {
+            return Err(qjs::JS_EXCEPTION);
+        }
+        let mut texts = HashMap::with_capacity(len as usize);
+        let mut error = None;
+        for i in 0..len as usize {
+            let atom = (*tab.add(i)).atom;
+            let Some(key) = atom_string(cx, atom) else {
+                error = Some(qjs::JS_EXCEPTION);
+                break;
+            };
+            let val = qjs::JS_GetProperty(cx, table, atom);
+            if qjs::JS_IsException(val) {
+                error = Some(qjs::JS_EXCEPTION);
+                break;
+            }
+            if !qjs::JS_IsString(val) {
+                qjs::JS_FreeValue(cx, val);
+                error = Some(qjs::JS_ThrowTypeError(
+                    cx,
+                    c"addTranslations: expected string translation values".as_ptr(),
+                ));
+                break;
+            }
+            let text = crate::dom::string_arg(cx, val);
+            qjs::JS_FreeValue(cx, val);
+            match text {
+                Some(text) => {
+                    texts.insert(key, text);
+                }
+                None => {
+                    error = Some(qjs::JS_EXCEPTION);
+                    break;
+                }
+            }
+        }
+        qjs::JS_FreePropertyEnum(cx, tab, len);
+        match error {
+            Some(e) => Err(e),
+            None => Ok(texts),
+        }
+    }
+}
+
+/// Reads `{ [locale]: { [key]: string } }` from `value`, throwing a
+/// `TypeError` for anything else.
+fn parse_translations(
+    cx: *mut JsContext,
+    value: JsValue,
+) -> Result<HashMap<String, HashMap<String, String>>, JsValue> {
+    if !is_plain_object(cx, value) {
+        // SAFETY: throws on a live context.
+        return Err(unsafe {
+            qjs::JS_ThrowTypeError(
+                cx,
+                c"addTranslations: expected an object of { [locale]: { [key]: string } }".as_ptr(),
+            )
+        });
+    }
+    let flags = (qjs::JS_GPN_STRING_MASK | qjs::JS_GPN_ENUM_ONLY) as c_int;
+    let mut locale_tab: *mut qjs::JSPropertyEnum = ptr::null_mut();
+    let mut locale_len = 0u32;
+    // SAFETY: own-property enumeration on a live object; every property
+    // value and the property table are freed before returning.
+    unsafe {
+        if qjs::JS_GetOwnPropertyNames(cx, &mut locale_tab, &mut locale_len, value, flags) != 0 {
+            return Err(qjs::JS_EXCEPTION);
+        }
+        let mut map = HashMap::with_capacity(locale_len as usize);
+        let mut error = None;
+        for i in 0..locale_len as usize {
+            let atom = (*locale_tab.add(i)).atom;
+            let Some(locale) = atom_string(cx, atom) else {
+                error = Some(qjs::JS_EXCEPTION);
+                break;
+            };
+            let table = qjs::JS_GetProperty(cx, value, atom);
+            if qjs::JS_IsException(table) {
+                error = Some(qjs::JS_EXCEPTION);
+                break;
+            }
+            let parsed = parse_locale_table(cx, table, flags);
+            qjs::JS_FreeValue(cx, table);
+            match parsed {
+                Ok(texts) => {
+                    map.insert(locale, texts);
+                }
+                Err(e) => {
+                    error = Some(e);
+                    break;
+                }
+            }
+        }
+        qjs::JS_FreePropertyEnum(cx, locale_tab, locale_len);
+        match error {
+            Some(e) => Err(e),
+            None => Ok(map),
+        }
+    }
+}
+
+/// `addTranslations(translations)`.
+unsafe extern "C" fn add_translations(
+    cx: *mut JsContext,
+    _this: JsValue,
+    argc: c_int,
+    argv: *mut JsValue,
+) -> JsValue {
+    let map = match parse_translations(cx, arg(argc, argv, 0)) {
+        Ok(map) => map,
+        Err(e) => return e,
+    };
+    if map.is_empty() {
+        return UNDEFINED;
+    }
+    let state = i18n(cx);
+    let merged = state.translations.borrow().extend(map.clone());
+    state.translations.replace(merged);
+    let op = nsh_core::Op::Rust(nsh_core::element::RustOp {
+        call: 0,
+        run: nsh_core::element::RustCall::Op(Box::new(move |module| {
+            module.add_translations(map);
+            Ok(Box::new(()))
+        })),
+    });
+    if let Err(e) = crate::dom::push_op(cx, op) {
+        return e;
+    }
+    let next = state.versions.get().wrapping_add(1);
+    state.versions.set(next);
+    reactive::set_signal(cx, version(cx), qjs::JS_NewFloat64(next.into()));
+    reactive::finish_value(cx, UNDEFINED)
 }
 
 /// The exports of `nsh/i18n`.
@@ -257,7 +436,7 @@ pub(crate) const EXPORTS: &[Item] = &[
         "t",
         Export::Function(t, 2),
         Ts::function(
-            "The text of `key` in the language the app shows: the first of the user's\npreferred languages (`localeSettings().languages`) the app has\ntranslations in, else `locale()`'s. From the app's `locales/` files (rust-i18n's formats): `t(\"hello\")`,\n`t(\"messages.hello\", { name: \"Jason\" })` fills `%{name}`, and\n`{ locale: \"zh-CN\" }` asks for another language. A key a language lacks\ncomes from the language without its last subtag (`zh-Hant`, then `zh`),\nthen from English; where none has it, the text is `<locale>.<key>`.\nReading it follows the language, so a view that shows it changes with\n`setLocale`.",
+            "The text of `key` in the language the app shows: the first of the user's\npreferred languages (`localeSettings().languages`) the app has\ntranslations in, else `locale()`'s. From the app's `locales/` files (rust-i18n's formats) and any\nadded with `addTranslations`: `t(\"hello\")`,\n`t(\"messages.hello\", { name: \"Jason\" })` fills `%{name}`, and\n`{ locale: \"zh-CN\" }` asks for another language. A key a language lacks\ncomes from the language without its last subtag (`zh-Hant`, then `zh`),\nthen from English; where none has it, the text is `<locale>.<key>`.\nReading it follows the language and translations, so a view that shows\nit changes with `setLocale` and `addTranslations`.",
             &["(key: string, options?: { locale?: string; [name: string]: unknown }): string"],
         ),
     ),
@@ -273,8 +452,94 @@ pub(crate) const EXPORTS: &[Item] = &[
         "availableLocales",
         Export::Function(available_locales, 0),
         Ts::function(
-            "The languages the app has translations in, sorted.",
+            "The languages the app has translations in, sorted. Reading it follows\nchanges to translations (such as `addTranslations`).",
             &["(): string[]"],
         ),
     ),
+    (
+        "addTranslations",
+        Export::Function(add_translations, 1),
+        Ts::function(
+            "Merges `translations` (keys and their text by language) into this\nsurface's dictionary at run time: keys of an existing language overwrite\nthose keys and leave the rest, and new languages are added. Views\nreading `t` and `availableLocales` update in place.",
+            &["(translations: Record<string, Record<string, string>>): void"],
+        ),
+    ),
 ];
+
+#[cfg(test)]
+mod tests {
+    use crate::Host;
+
+    #[test]
+    fn add_translations_merges_reactively_and_validates_input() {
+        let host = Host::new().unwrap();
+        host.eval_source(
+            r#"
+            import { i18n } from "nsh:rt";
+            import { effect } from "nsh";
+            import { addTranslations, availableLocales, t } from "nsh/i18n";
+
+            i18n(JSON.stringify({
+                translations: {
+                    en: { hello: "Hello", greet: "Hello, %{name}!", keep: "Kept" },
+                    zh: { hello: "你好" },
+                },
+                languages: {},
+            }));
+
+            const seen = [];
+            effect(() => {
+                seen.push([
+                    t("hello"),
+                    t("extra"),
+                    t("hello", { locale: "fr" }),
+                    availableLocales().join(","),
+                ]);
+            });
+
+            // Empty object is a no-op.
+            addTranslations({});
+            if (seen.length !== 1) throw new Error(`expected 1 run, got ${seen.length}`);
+
+            // Merge new locale, new key into existing locale, and overwrite existing key.
+            addTranslations({
+                en: { hello: "Hi", extra: "Loaded" },
+                fr: { hello: "Bonjour" },
+            });
+
+            if (seen.length !== 2) throw new Error(`expected 2 runs, got ${seen.length}`);
+            const [hello, extra, frHello, locales] = seen[1];
+            if (hello !== "Hi") throw new Error(`hello=${hello}`);
+            if (extra !== "Loaded") throw new Error(`extra=${extra}`);
+            if (frHello !== "Bonjour") throw new Error(`frHello=${frHello}`);
+            if (locales !== "en,fr,zh") throw new Error(`locales=${locales}`);
+            if (t("keep") !== "Kept") throw new Error(`keep=${t("keep")}`);
+            if (t("greet", { name: "Ada" }) !== "Hello, Ada!") throw new Error(`greet=${t("greet", { name: "Ada" })}`);
+            if (t("hello", { locale: "zh" }) !== "你好") throw new Error(`zh=${t("hello", { locale: "zh" })}`);
+
+            // Invalid arguments throw TypeError without mutating existing translations.
+            for (const bad of [null, undefined, "en", 42, [], { en: null }, { en: [] }, { en: { hello: 123 } }]) {
+                let threw = false;
+                try {
+                    addTranslations(bad);
+                } catch (e) {
+                    threw = e instanceof TypeError;
+                }
+                if (!threw) throw new Error(`expected TypeError for ${JSON.stringify(bad)}`);
+            }
+            if (t("hello") !== "Hi" || availableLocales().join(",") !== "en,fr,zh") {
+                throw new Error("state mutated after invalid addTranslations");
+            }
+            "#,
+        )
+        .unwrap();
+
+        let mut ops = Vec::new();
+        host.take_ops(&mut ops);
+        let rust_ops = ops
+            .iter()
+            .filter(|op| matches!(op, nsh_core::Op::Rust(_)))
+            .count();
+        assert_eq!(rust_ops, 2, "expected setup + addTranslations Rust ops");
+    }
+}

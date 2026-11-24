@@ -123,6 +123,27 @@ class Box extends ViewGroup implements Node, NshView.ShaderFrames {
         return content != null ? content : this;
     }
 
+    /**
+     * Assistive technologies see only a child component that stands for its
+     * siblings ({@link MenuButtonComponent}'s button over the app's content,
+     * as iOS's {@code accessibilityElements}): the content under it is drawn,
+     * not read twice. The siblings keep their own accessibility settings,
+     * which {@link A11y} owns.
+     */
+    @Override
+    public void addChildrenForAccessibility(java.util.ArrayList<View> out) {
+        if (content == null) {
+            for (int i = 0; i < getChildCount(); i++) {
+                View c = getChildAt(i);
+                if (c instanceof ComponentBox && ((ComponentBox) c).component instanceof MenuButtonComponent) {
+                    c.addChildrenForAccessibility(out);
+                    return;
+                }
+            }
+        }
+        super.addChildrenForAccessibility(out);
+    }
+
     /** Frame of a child, in px, relative to its parent. Margin layout params,
      * so frame layouts (screens, modals) can host core-placed views. */
     static final class Frame extends ViewGroup.MarginLayoutParams {
@@ -532,8 +553,11 @@ class Box extends ViewGroup implements Node, NshView.ShaderFrames {
 
     @Override
     public void draw(Canvas canvas) {
-        if (decor.masks.length == 0) super.draw(canvas);
-        else decor.drawMasked(canvas, this, () -> super.draw(canvas));
+        // `clipPath` clips everything, its shadows and children included.
+        decor.drawClipped(canvas, this, () -> {
+            if (decor.masks.length == 0) super.draw(canvas);
+            else decor.drawMasked(canvas, this, () -> super.draw(canvas));
+        });
     }
 
     @Override
@@ -559,12 +583,87 @@ class Box extends ViewGroup implements Node, NshView.ShaderFrames {
         }
     }
 
+    // --- Hover routing: pointerEvents -----------------------------------------
+
+    /*
+     * Hovers follow pointerEvents as touches do (below). Android gives a
+     * hover to the topmost view under the pointer that handles it, and a
+     * clickable view handles it whatever its pointerEvents. So an inert
+     * overlay (pointerEvents none, a press-to-dismiss scrim kept mounted
+     * while hidden) took the hovers of the views under it, and neither a
+     * mouse nor a screen reader's touch exploration (TalkBack explores with
+     * hover events) reached them.
+     *
+     * ViewGroup keeps its own hover state and sends no exit or enter when
+     * only pointerEvents changes: a box that turns inert while hovered stays
+     * its parent's hover target, with no exit until the pointer leaves its
+     * area (a full-screen overlay's never), so it sends itself the exit.
+     */
+
+    /** The last hover this box passed on, to its children or itself, was not an exit. */
+    private boolean hoverPassed;
+    /** The last hover this box handled itself was not an exit. */
+    private boolean hoverSelf;
+
+    @Override
+    protected boolean dispatchHoverEvent(MotionEvent e) {
+        boolean exit = e.getActionMasked() == MotionEvent.ACTION_HOVER_EXIT;
+        if (pointerEvents == 1) {
+            if (!hoverPassed) return false;
+            hoverPassed = false;
+            if (exit) return super.dispatchHoverEvent(e);
+            hoverAs(e, MotionEvent.ACTION_HOVER_EXIT, true);
+            return false;
+        }
+        hoverPassed = !exit;
+        return super.dispatchHoverEvent(e);
+    }
+
+    @Override
+    public boolean onInterceptHoverEvent(MotionEvent e) {
+        if (pointerEvents == 3) return true;
+        return super.onInterceptHoverEvent(e);
+    }
+
+    @Override
+    public boolean onHoverEvent(MotionEvent e) {
+        int action = e.getActionMasked();
+        boolean exit = action == MotionEvent.ACTION_HOVER_EXIT;
+        if (pointerEvents == 2) {
+            if (!hoverSelf) return false;
+            hoverSelf = false;
+            if (exit) return super.onHoverEvent(e);
+            hoverAs(e, MotionEvent.ACTION_HOVER_EXIT, false);
+            return false;
+        }
+        // Box-none no longer: the group, which counted this view hovered all
+        // along, sends a move, not the enter that marks it hovered.
+        if (!hoverSelf && action == MotionEvent.ACTION_HOVER_MOVE) hoverAs(e, MotionEvent.ACTION_HOVER_ENTER, false);
+        hoverSelf = !exit;
+        return super.onHoverEvent(e);
+    }
+
+    /** {@code e} as {@code action}, through the group (children and self) or to this view only. */
+    private void hoverAs(MotionEvent e, int action, boolean group) {
+        MotionEvent copy = MotionEvent.obtainNoHistory(e);
+        copy.setAction(action);
+        if (group) super.dispatchHoverEvent(copy);
+        else super.onHoverEvent(copy);
+        copy.recycle();
+    }
+
     // --- Touch routing: pointerEvents and hitSlop -----------------------------
 
     @Override
     public boolean dispatchTouchEvent(MotionEvent e) {
         if (pointerEvents == 1) return false;
         int action = e.getActionMasked();
+        // Outside its clip path, neither the box nor its children: the touch
+        // goes on to what is under it.
+        if (action == MotionEvent.ACTION_DOWN && decor.clipsOut(this, e.getX(), e.getY())) {
+            overflowTarget = null;
+            return false;
+        }
         if (action == MotionEvent.ACTION_DOWN) {
             overflowTarget = null;
             // ViewGroup only delivers a touch to a child that contains it: a
@@ -653,6 +752,9 @@ class Box extends ViewGroup implements Node, NshView.ShaderFrames {
             View c = group.getChildAt(i);
             if (c.getVisibility() != VISIBLE) continue;
             float[] pt = inChild(c, x, y);
+            // Clipped out of the child: the point is for those under it.
+            Decor clipped = Decor.of(c);
+            if (clipped != null && clipped.clipsOut(c, pt[0], pt[1])) continue;
             if (pt[0] >= 0 && pt[1] >= 0 && pt[0] < c.getWidth() && pt[1] < c.getHeight()) {
                 return inBounds ? c : null;
             }
@@ -721,6 +823,8 @@ class Box extends ViewGroup implements Node, NshView.ShaderFrames {
     // --- Gestures ----------------------------------------------------------
 
     private float downRawX, downRawY;
+    /** This touch never starts the pan: it went down away from an edge pan's edge, or its activation failed. */
+    private boolean panRefused;
     /** Where the press went down (for the ripple). */
     private float pressX, pressY;
     /** The touch, for the press events' payload. */
@@ -807,12 +911,43 @@ class Box extends ViewGroup implements Node, NshView.ShaderFrames {
         screen.recycle();
     }
 
-    /** Whether a movement of (dx, dy) starts this view's pan. */
+    /** Whether this view's pan would start for a drag by ({@code dx}, {@code dy}) px (a scroll view inside asks). */
+    boolean takesPan(float dx, float dy) {
+        if (!pannable() || panRefused) return false;
+        float[] a = mounter.panActivation(id);
+        if (a == null) return panStarts(dx, dy, 0);
+        float d = mounter.density;
+        return TouchTracker.mayActivate(a, dx / d, dy / d);
+    }
+
+    /**
+     * Whether a movement of (dx, dy) px starts this view's pan: past the slop, along its axis, or as its
+     * `panActivation` decides when it has one (once that fails, never for this touch).
+     */
     private boolean panStarts(float dx, float dy, float slop) {
-        if (Math.hypot(dx, dy) <= slop) return false;
+        if (panRefused || Math.hypot(dx, dy) <= slop) return false;
+        float[] a = mounter.panActivation(id);
+        if (a != null) {
+            float d = mounter.density;
+            Boolean decision = TouchTracker.decideActivation(a, dx / d, dy / d);
+            if (decision == null) return false;
+            panRefused = !decision;
+            return decision;
+        }
         if (panAxis == 1) return Math.abs(dx) > Math.abs(dy);
         if (panAxis == 2) return Math.abs(dy) > Math.abs(dx);
         return true;
+    }
+
+    /**
+     * A finger went down at the screen point ({@code rawX}, {@code rawY}): away from the edge of an edge pan
+     * (`PanActivation::edge`), the pan does not start for this touch.
+     */
+    private void panDown(float rawX, float rawY) {
+        downRawX = rawX;
+        downRawY = rawY;
+        float[] a = mounter.panActivation(id);
+        panRefused = a != null && !TouchTracker.startsAt(a, this, rawX, rawY, mounter.density);
     }
 
     /**
@@ -842,10 +977,7 @@ class Box extends ViewGroup implements Node, NshView.ShaderFrames {
         if (contentWrapper) return false;
         if (pointerEvents == 3) return true;
         int action = e.getActionMasked();
-        if (action == MotionEvent.ACTION_DOWN) {
-            downRawX = e.getRawX();
-            downRawY = e.getRawY();
-        }
+        if (action == MotionEvent.ACTION_DOWN) panDown(e.getRawX(), e.getRawY());
         if (action == MotionEvent.ACTION_POINTER_DOWN && twoFinger() && e.getPointerCount() == 2) {
             // A second finger: take over from the child for pinch / rotation.
             tracking = false;
@@ -866,7 +998,7 @@ class Box extends ViewGroup implements Node, NshView.ShaderFrames {
                 panning = true;
                 getParent().requestDisallowInterceptTouchEvent(true);
                 float density = mounter.density;
-                mounter.pan(id, 0, dx / density, dy / density, 0, 0);
+                mounter.pan(id, 0, dx / density, dy / density, 0, 0, this, downRawX, downRawY);
                 return true;
             }
         }
@@ -891,8 +1023,7 @@ class Box extends ViewGroup implements Node, NshView.ShaderFrames {
         if (pressable) longOnly.forward(e, mounter.handlesTap(id), mounter);
         switch (e.getActionMasked()) {
             case MotionEvent.ACTION_DOWN:
-                downRawX = e.getRawX();
-                downRawY = e.getRawY();
+                panDown(e.getRawX(), e.getRawY());
                 tracking = true;
                 pressedIn = false;
                 longPressed = false;
@@ -929,9 +1060,9 @@ class Box extends ViewGroup implements Node, NshView.ShaderFrames {
                     tracking = false;
                     pressOut();
                     getParent().requestDisallowInterceptTouchEvent(true);
-                    mounter.pan(id, 0, dx / density, dy / density, 0, 0);
+                    mounter.pan(id, 0, dx / density, dy / density, 0, 0, this, downRawX, downRawY);
                 } else if (panning) {
-                    mounter.pan(id, 1, dx / density, dy / density, 0, 0);
+                    mounter.pan(id, 1, dx / density, dy / density, 0, 0, this, downRawX, downRawY);
                 } else if (tracking && !inside(e)) {
                     tracking = false;
                     pressOut();
@@ -951,7 +1082,8 @@ class Box extends ViewGroup implements Node, NshView.ShaderFrames {
                     float dx = e.getRawX() - downRawX, dy = e.getRawY() - downRawY;
                     // Velocity in the parent's space, like the translation.
                     mounter.pan(id, up ? 2 : 3, dx / density, dy / density,
-                            velocity.getXVelocity() / density, velocity.getYVelocity() / density);
+                            velocity.getXVelocity() / density, velocity.getYVelocity() / density,
+                            this, downRawX, downRawY);
                 } else if (up && tracking) {
                     if (!pressedIn) onPressIn();
                     boolean press = !longPressed && wants(Native.PRESS);

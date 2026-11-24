@@ -30,8 +30,8 @@ const missing = !existsSync(PLAYER) || !existsSync(DEMO)
 if (missing) console.warn(`[storage.test] skipped: ${missing}`);
 
 // A page beside the player (the same directory, so the same storage prefix):
-// it puts keys of its own in localStorage, runs the demo in a frame, then
-// presses its Reset button, and writes what localStorage held at each step
+// it puts keys of its own in localStorage, runs the demo in a frame, changes
+// the demo's count as another tab would, then presses its Reset button, and writes what localStorage held at each step
 // into its DOM, which `--dump-dom` prints.
 const CHECK_PAGE = `<!doctype html>
 <meta charset="utf-8">
@@ -54,6 +54,10 @@ const CHECK_PAGE = `<!doctype html>
     try {
       await wait(() => text().includes("Opened 1 time"), 6000);
       out.started = snapshot();
+      // Another tab's change (this page is another document of the origin).
+      localStorage.setItem("nsh:/play/:opened", "41");
+      await wait(() => text().includes("Opened 41 times"), 4000);
+      out.followed = snapshot();
       const win = frame.contentWindow;
       const reset = [...frame.contentDocument.querySelectorAll("*")]
         .find((e) => e.childElementCount === 0 && e.textContent.trim() === "Reset");
@@ -143,18 +147,24 @@ describe.skipIf(!!missing)('Storage in the browser', () => {
     expect(result.started.other).toBe('x');
     // keys() sees the app's own keys, without their prefix.
     expect(result.started.text).toContain('Keys: lastOpened, opened');
+    // The demo followed what another document of the origin changed.
+    expect(result.followed.text).toContain('Opened 41 times');
     expect(result.reset.keys).toEqual(['nsh:/elsewhere/:opened', 'other']);
     expect(result.reset.other).toBe('x');
     expect(result.reset.text).toContain('Keys: none');
   }, 60_000);
 
-  test('without localStorage the app keeps its entries in memory', async () => {
-    // An opaque origin: localStorage throws. The player's own requests
-    // then come from origin "null", hence the CORS header.
+  test("without localStorage the app's writes are refused and nothing is kept", async () => {
+    // An opaque origin: localStorage throws, so `setItem` rejects and the
+    // demo says its count was not saved. The player's own requests then
+    // come from origin "null", hence the CORS header.
     using server = serve({ 'content-security-policy': 'sandbox allow-scripts', 'access-control-allow-origin': '*' });
     const url = `http://127.0.0.1:${server.port}/play/index.html#mod-storage`;
-    expect(counter(await dumpDom(url, profile('blocked')))).toBe('Opened 1 time');
-    expect(counter(await dumpDom(url, profile('blocked')))).toBe('Opened 1 time');
+    for (let load = 0; load < 2; load++) {
+      const dom = await dumpDom(url, profile('blocked'));
+      expect(counter(dom)).toBe('Opened 1 time');
+      expect(dom).toContain('Not saved: this browser keeps no storage for the page.');
+    }
   }, 60_000);
 });
 

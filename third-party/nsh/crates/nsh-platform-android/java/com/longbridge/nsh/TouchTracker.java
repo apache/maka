@@ -77,7 +77,7 @@ final class TouchTracker {
                 t.pointer = e.getPointerId(i);
                 t.id = nextId++;
                 tracked.add(t);
-                if (action == MotionEvent.ACTION_DOWN) findGate(t, e.getX(i), e.getY(i));
+                if (action == MotionEvent.ACTION_DOWN) findGate(t, e.getX(i), e.getY(i), e.getRawX(), e.getRawY());
                 update(e);
                 report(0, new int[] {t.id}, true, -1);
                 return true;
@@ -220,13 +220,14 @@ final class TouchTracker {
         endGate();
     }
 
-    /** The view with a `panActivation` around the first finger's target, if any. */
-    private void findGate(Tracked t, float x, float y) {
+    /** The view with a `panActivation` around the first finger's target, if any, that a finger going down at the
+     * screen point ({@code rawX}, {@code rawY}) may start. */
+    private void findGate(Tracked t, float x, float y, float rawX, float rawY) {
         endGate();
         for (View v = t.view; v != null; ) {
             if (v instanceof Node) {
                 float[] offsets = mounter.panActivation(((Node) v).nodeId());
-                if (offsets != null) {
+                if (offsets != null && startsAt(offsets, v, rawX, rawY, mounter.density)) {
                     gate = v;
                     gateId = ((Node) v).nodeId();
                     gateOffsets = offsets;
@@ -252,20 +253,75 @@ final class TouchTracker {
         int i = e.findPointerIndex(gatePointer);
         if (i < 0) return -1;
         float d = mounter.density;
-        float dx = Math.abs(e.getX(i) - gateX) / d, dy = Math.abs(e.getY(i) - gateY) / d;
-        float[] o = gateOffsets;
-        if (dx > o[2] || dy > o[3]) {
-            // NaN offsets never compare greater: no limit.
+        Boolean decision = decideActivation(gateOffsets, (e.getX(i) - gateX) / d, (e.getY(i) - gateY) / d);
+        if (decision == null) return -1;
+        if (!decision) {
             gateState = 2;
             return -1;
         }
-        boolean active = Float.isNaN(o[0]) && Float.isNaN(o[1])
-                ? Math.hypot(dx, dy) > MIN_PAN_DISTANCE
-                : dx > o[0] || dy > o[1];
-        if (!active) return -1;
         gateState = 1;
         mounter.gateBlock(gate);
         return gateId;
+    }
+
+    /**
+     * `PanActivation::decide` on a drag by ({@code dx}, {@code dy}) points, for a `panActivation` as
+     * {@link Mounter#panActivation} gives it: true activates, false fails, null waits.
+     */
+    static Boolean decideActivation(float[] a, float dx, float dy) {
+        // NaN offsets never compare greater: no limit.
+        if (Math.abs(dx) > a[2] || Math.abs(dy) > a[3]) return Boolean.FALSE;
+        int way = (int) a[4];
+        if (way >= 0) {
+            boolean horizontal = way <= 1;
+            float along = (way == 1 || way == 3 ? 1 : -1) * (horizontal ? dx : dy);
+            float across = Math.abs(horizontal ? dy : dx);
+            float active = horizontal ? a[0] : a[1];
+            float limit = Float.isNaN(active) ? MIN_PAN_DISTANCE : active;
+            if (along > limit && along >= across) return Boolean.TRUE;
+            boolean acrossFails = Float.isNaN(horizontal ? a[3] : a[2]) && across > limit && across > along;
+            return -along > limit || acrossFails ? Boolean.FALSE : null;
+        }
+        boolean active = Float.isNaN(a[0]) && Float.isNaN(a[1])
+                ? Math.hypot(dx, dy) > MIN_PAN_DISTANCE
+                : Math.abs(dx) > a[0] || Math.abs(dy) > a[1];
+        return active ? Boolean.TRUE : null;
+    }
+
+    /**
+     * Whether a pan with `panActivation` {@code a} could still activate for a drag by ({@code dx}, {@code dy})
+     * points: it activated, or it waits and the drag heads its way (any way without one).
+     */
+    static boolean mayActivate(float[] a, float dx, float dy) {
+        Boolean decision = decideActivation(a, dx, dy);
+        if (decision != null) return decision;
+        int way = (int) a[4];
+        if (way < 0) return true;
+        boolean horizontal = way <= 1;
+        float along = (way == 1 || way == 3 ? 1 : -1) * (horizontal ? dx : dy);
+        return along > 0 && along >= Math.abs(horizontal ? dy : dx);
+    }
+
+    /**
+     * `PanActivation::starts_at`: whether a finger going down at the screen point ({@code rawX}, {@code rawY}) px
+     * may start the pans of {@code view}, whose `panActivation` is {@code a}: anywhere without an edge, else within
+     * `PanActivation::EDGE_WIDTH` of that edge of its window. The system's back gesture keeps the left and right
+     * edges under gesture navigation: it takes the swipes it recognizes there, and the pan ends cancelled.
+     */
+    static boolean startsAt(float[] a, View view, float rawX, float rawY, float density) {
+        int edge = (int) a[5];
+        if (edge < 0) return true;
+        View window = view.getRootView();
+        int[] at = new int[2];
+        window.getLocationOnScreen(at);
+        float x = (rawX - at[0]) / density, y = (rawY - at[1]) / density;
+        float w = window.getWidth() / density, h = window.getHeight() / density;
+        switch (edge) {
+            case 0: return x <= EDGE_WIDTH;
+            case 1: return x >= w - EDGE_WIDTH;
+            case 2: return y <= EDGE_WIDTH;
+            default: return y >= h - EDGE_WIDTH;
+        }
     }
 
     private void endGate() {
@@ -277,6 +333,9 @@ final class TouchTracker {
 
     /** `PanActivation::MIN_DISTANCE`: how far a pan without active offsets moves before it activates (points). */
     private static final float MIN_PAN_DISTANCE = 10;
+
+    /** `PanActivation::EDGE_WIDTH`: how far from its edge a finger goes down to start an edge pan (points). */
+    private static final float EDGE_WIDTH = 20;
 
     /** The pressure, tilt and kind of pointer {@code i} of {@code e}. */
     private static void pointer(Tracked t, MotionEvent e, int i) {
@@ -378,7 +437,7 @@ final class TouchTracker {
     }
 
     /** The innermost node view that can take a touch at ({@code x}, {@code y}) of {@code v}. */
-    private static View deepest(View v, float x, float y) {
+    static View deepest(View v, float x, float y) {
         int pointerEvents = v instanceof Box ? ((Box) v).pointerEvents
                 : v instanceof InputBox ? ((InputBox) v).pointerEvents : 0;
         if (pointerEvents == 1 || v.getVisibility() != View.VISIBLE) return null;

@@ -38,7 +38,7 @@ In Rust, styles are typed methods named as Tailwind's utilities are (`.px_4()`, 
 listeners are methods too (`.on_press(..)`); platform-only settings have methods of their own. In TSX, props keep
 their camelCase names (`onPress`, `allowFontScaling`, `backgroundColor`); every element accepts `style`, `class` /
 `classList` ([Tailwind](./tailwind.md)), `ref`, touch handlers, accessibility props and `testID`, and platform-only
-props go in `ios={{…}}`, `android={{…}}`, `macos={{…}}`, `desktop={{…}}` or `web={{…}}`, where only the current platform's object is sent:
+props go in `ios={{…}}`, `android={{…}}`, `macos={{…}}`, `windows={{…}}`, `desktop={{…}}` or `web={{…}}`, where only the current platform's object is sent:
 
 ```rust tabs
 view()
@@ -429,24 +429,41 @@ Components are typed by their own declarations: Rust's props structs are checked
 
 ## Mounting and the root
 
-A Rust app's root is the component `nsh.json`'s `"root"` names; `nsh run` and `nsh package` mount it. A TSX entry calls `mount(App)` to render the root component (`mount(App, props)` passes it props). The root view fills the surface (the window, or the view an app embeds NSH in). Give the root `flex: 1` so it fills the screen, and a background color: the surface's own background depends on the platform.
+> **Window model v2:** on the desktops an app declares its windows as top-level `<Window>` scenes, the first
+> included. A released app that calls `mount(App)` with a view root still runs: `mount` gives it the implicit first
+> window (`id` `"main"`). The wrapper shown here (`mount(() => <Window id="main">…`) makes that window explicit, and
+> is how an app that opens more than one window declares them.
+
+A Rust app's root is the component `nsh.json`'s `"root"` names; `nsh run` and `nsh package` mount it. A TSX entry calls `mount(App)` to render the root component (`mount(App, props)` passes it props). On the desktops the app root is a host, not a surface: it declares the app's windows as top-level [`<Window>`](./windows.md) scenes, and a window's content fills that window; a root that returns views instead renders them in the implicit first window, as a released app's main window was. Off the desktops (phones, the web) the root's view is the app's screen. Give the content `flex: 1` so it fills the window, and a background color: the platform's own background shows through otherwise.
 
 ```rust tabs
 // nsh.json: { "rust": ".", "root": "App" }
+use nsh_core::element::desktop::window;
+use nsh_core::prelude::*;
+
 #[component]
 pub fn App() -> impl IntoElement {
-    view()
-        .flex_1()
-        .bg(move || theme().background)
-        .child(home())
+    let content = || {
+        view()
+            .flex_1()
+            .bg(move || theme().background)
+            .child(home())
+    };
+    window().id("main").content(content)
 }
 ```
 
 ```tsx tabs
+import { Window } from "nsh/desktop";
+
 mount(() => (
-  <View style={{ flex: 1, backgroundColor: "#ffffff" }}>
-    <App />
-  </View>
+  <Window id="main">
+    {() => (
+      <View style={{ flex: 1, backgroundColor: "#ffffff" }}>
+        <App />
+      </View>
+    )}
+  </Window>
 ));
 ```
 

@@ -1842,28 +1842,14 @@ async fn followup_pairs_tool_call_with_failure_observed_after_run_termination() 
     let mut rig = Rig::new()?;
     rig.model_overrides = json!({"llama3.2": {"codeMode": false, "vision": true, "apiProtocol": "openai-chat-completions"}});
     let (request, mut captured) = tokio::sync::mpsc::channel(1);
-    let app = axum::Router::new().route(
-        "/v1/chat/completions",
-        axum::routing::post(move |body: axum::body::Bytes| {
-            let request = request.clone();
-            async move {
-                let _ = request.try_send(serde_json::from_slice::<Value>(&body).expect("model request JSON"));
-                ([( "content-type", "text/event-stream")], concat!(
-                    "data: {\"id\":\"followup\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"The click did not run.\"},\"finish_reason\":null}]}\n\n",
-                    "data: {\"id\":\"followup\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
-                    "data: [DONE]\n\n",
-                ))
-            }
-        }),
-    );
     let listener = tokio::net::TcpListener::from_std(rig.model_listener.try_clone()?)?;
-    let stop = CancellationToken::new();
-    let server_stop = stop.clone();
-    let server = tokio::spawn(async move {
-        axum::serve(listener, app)
-            .with_graceful_shutdown(server_stop.cancelled_owned())
-            .await
-    });
+    let server = MockAiBuilder::new()
+        .handler_fn(move |req, _| {
+            let _ = request.try_send(req.raw_body.clone());
+            TurnPlan::text("The click did not run.").with_response_id("followup")
+        })
+        .start_with_listener(listener)
+        .await?;
     let result = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(30), async {
         let session = rig.start().await?;
         rig.assemble(&session).await?;
@@ -2078,8 +2064,7 @@ async fn followup_pairs_tool_call_with_failure_observed_after_run_termination() 
     }))
     .catch_unwind()
     .await;
-    stop.cancel();
-    server.await??;
+    server.shutdown().await;
     let cleanup = rig.finish().await;
     assert!(matches!(&result, Ok(Ok(Ok(())))), "{result:?}");
     assert!(cleanup.is_empty(), "{cleanup:?}");
@@ -2175,36 +2160,24 @@ async fn history_shows_only_the_final_model_failure() -> TestResult<()> {
         (false, StatusCode::SERVICE_UNAVAILABLE),
     ] {
         let mut rig = Rig::new()?;
-        let first_request = Arc::new(AtomicBool::new(true));
-        let app = axum::Router::new().route(
-            "/v1/chat/completions",
-            axum::routing::post(move |_: axum::body::Bytes| {
-                let first = first_request.swap(false, Ordering::SeqCst);
-                async move {
-                    if status == StatusCode::SERVICE_UNAVAILABLE {
-                        return (status, [("content-type", "application/json")], r#"{"error":{"message":"example unavailable"}}"#);
-                    }
-                    let body = if recover && !first {
-                        concat!(
-                            "data: {\"id\":\"retry\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"Recovered after retry.\"},\"finish_reason\":null}]}\n\n",
-                            "data: {\"id\":\"retry\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
-                            "data: [DONE]\n\n",
-                        )
-                    } else {
-                        ": stream ended before completion\n\n"
-                    };
-                    (status, [("content-type", "text/event-stream")], body)
-                }
-            }),
-        );
         let listener = tokio::net::TcpListener::from_std(rig.model_listener.try_clone()?)?;
-        let stop = CancellationToken::new();
-        let server_stop = stop.clone();
-        let server = tokio::spawn(async move {
-            axum::serve(listener, app)
-                .with_graceful_shutdown(server_stop.cancelled_owned())
-                .await
-        });
+        let server = MockAiBuilder::new()
+            .handler_fn(move |_, ctx| {
+                if status == StatusCode::SERVICE_UNAVAILABLE {
+                    TurnPlan::http_error(HttpErrorSpec::raw(
+                        503,
+                        json!({"error":{"message":"example unavailable"}}),
+                    ))
+                } else if recover && ctx.global_turn > 1 {
+                    TurnPlan::text("Recovered after retry.").with_response_id("retry")
+                } else {
+                    TurnPlan::new()
+                        .push_sse_comment("stream ended before completion")
+                        .push(TurnEvent::TruncateEof)
+                }
+            })
+            .start_with_listener(listener)
+            .await?;
         let result = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(30), async {
             let session = rig.start().await?;
             let budget = Budget {
@@ -2338,8 +2311,7 @@ async fn history_shows_only_the_final_model_failure() -> TestResult<()> {
         }))
         .catch_unwind()
         .await;
-        stop.cancel();
-        server.await??;
+        server.shutdown().await;
         assert_eq!(rig.finish().await, Vec::<String>::new());
         result.expect("retry history assertion failed")??;
     }
@@ -2352,30 +2324,17 @@ async fn history_exposes_only_reported_prompt_cache_usage() -> TestResult<()> {
 
     for reported in [Some(60), Some(0), None] {
         let mut rig = Rig::new()?;
-        let mut usage = json!({"prompt_tokens": 100, "completion_tokens": 5});
-        if let Some(read) = reported {
-            usage["prompt_tokens_details"] = json!({"cached_tokens": read});
-        }
-        let event = json!({
-            "id":"cache-reply",
-            "choices":[{"index":0,"delta":{"role":"assistant","content":"Cached turn."},"finish_reason":"stop"}],
-            "usage":usage,
-        });
-        let body = format!("data: {event}\n\ndata: [DONE]\n\n");
-        let app = axum::Router::new().route(
-            "/v1/chat/completions",
-            axum::routing::post(
-                move || async move { ([("content-type", "text/event-stream")], body) },
-            ),
-        );
+        let mut usage = Usage::new(100, 5);
+        usage.cache_read_tokens = reported;
         let listener = tokio::net::TcpListener::from_std(rig.model_listener.try_clone()?)?;
-        let stop = CancellationToken::new();
-        let server_stop = stop.clone();
-        let server = tokio::spawn(async move {
-            axum::serve(listener, app)
-                .with_graceful_shutdown(server_stop.cancelled_owned())
-                .await
-        });
+        let server = MockAiBuilder::new()
+            .scripted([TurnPlan::new()
+                .with_response_id("cache-reply")
+                .push_text("Cached turn.")
+                .with_usage(usage)
+                .finish(FinishReason::Stop)])
+            .start_with_listener(listener)
+            .await?;
         let result = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(30), async {
             let session = rig.start().await?;
             rig.assemble_model(
@@ -2440,8 +2399,7 @@ async fn history_exposes_only_reported_prompt_cache_usage() -> TestResult<()> {
         }))
         .catch_unwind()
         .await;
-        stop.cancel();
-        server.await??;
+        server.shutdown().await;
         assert_eq!(rig.finish().await, Vec::<String>::new());
         result.expect("prompt cache history assertion failed")??;
     }
@@ -3940,139 +3898,42 @@ async fn executor_history_keeps_message_boundaries_and_tool_results() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn continue_run_recovers_across_interrupted_boundaries() -> TestResult<()> {
-    use futures_util::{SinkExt, StreamExt};
-    use tokio_tungstenite::tungstenite::Message as WsMessage;
-
     const PIXEL_PNG: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
 
     let mut rig = Rig::new()?;
     let base = rig.directory.path().to_path_buf();
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
-    let mut boot = model_recovery::bootstrap(
-        &base,
-        format!("http://{}/v1", listener.local_addr()?),
-        false,
-    )
-    .await?;
+    let (requests, mut resumed) = tokio::sync::mpsc::unbounded_channel();
+    let mut server = MockAiBuilder::new()
+        .interactive_filtered(8, move |req, ctx| {
+            assert_eq!(req.protocol, maka_mock_ai::Protocol::OpenaiResponsesWs);
+            // Length-limited replies can trigger another request before the Run reaches terminal.
+            let plan = match ctx.global_turn {
+                1..=6 => return None,
+                7 => TurnPlan::new()
+                    .with_response_id("r-5")
+                    .push_reasoning_encrypted("orphan", "enc-orphan")
+                    .push_flush()
+                    .with_usage(Usage::new(50, 10))
+                    .finish(FinishReason::Length),
+                8 => TurnPlan::new()
+                    .with_response_id("r-6")
+                    .push_text("First half.")
+                    .with_usage(Usage::new(50, 10))
+                    .finish(FinishReason::Length),
+                _ => TurnPlan::new()
+                    .with_response_id("r-done")
+                    .push_text("Second half.")
+                    .with_usage(Usage::new(60, 10))
+                    .finish(FinishReason::Stop),
+            };
+            let _ = requests.send(req.raw_body.clone());
+            Some(plan)
+        })
+        .start()
+        .await?;
+    let mut boot = model_recovery::bootstrap(&base, server.base_url(), false).await?;
     boot.replay = true;
     model_recovery::attach(&mut rig, &boot).await?;
-
-    let (req_tx, mut req_rx) = tokio::sync::mpsc::channel::<Value>(8);
-    let steer_ready = Arc::new(tokio::sync::Notify::new());
-    let steer_signal = steer_ready.clone();
-    let note_ready = Arc::new(tokio::sync::Notify::new());
-    let note_signal = note_ready.clone();
-    let stop = CancellationToken::new();
-    let ws_stop = stop.clone();
-    let server = tokio::spawn(async move {
-        let step = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let mut conns = tokio::task::JoinSet::<TestResult<()>>::new();
-        loop {
-            let (tcp, _) = tokio::select! {
-                _ = ws_stop.cancelled() => break,
-                accepted = listener.accept() => accepted?,
-            };
-            let (req_tx, steer_signal, note_signal, ws_stop, step) = (
-                req_tx.clone(),
-                steer_signal.clone(),
-                note_signal.clone(),
-                ws_stop.clone(),
-                step.clone(),
-            );
-            conns.spawn(async move {
-                let mut ws = tokio_tungstenite::accept_async(tcp).await?;
-                loop {
-                    let frame = tokio::select! {
-                        _ = ws_stop.cancelled() => return Ok(()),
-                        frame = ws.next() => frame,
-                    };
-                    let text = match frame {
-                        Some(Ok(WsMessage::Text(text))) => text,
-                        Some(Ok(WsMessage::Ping(_) | WsMessage::Pong(_))) => continue,
-                        _ => return Ok(()),
-                    };
-                    let idx = step.fetch_add(1, Ordering::SeqCst);
-                    req_tx.send(serde_json::from_str(&text)?).await?;
-                    let events = match idx {
-                        0 => {
-                            for ev in [
-                                json!({"type":"response.created","response":{"id":"resp-0"}}),
-                                json!({
-                                    "type": "response.output_item.done",
-                                    "item": {"type":"reasoning","id":"rs-steer","encrypted_content":"enc-steer","summary":[{"type":"summary_text","text":"thinking"}]}
-                                }),
-                            ] {
-                                ws.send(WsMessage::text(ev.to_string())).await?;
-                            }
-                            steer_signal.notify_one();
-                            continue;
-                        }
-                        1 => {
-                            let hold_call = json!({
-                                "type": "custom_tool_call",
-                                "id": "fc-hold",
-                                "call_id": "call-2-hold",
-                                "name": "exec",
-                                "input": format!(
-                                    r#"// @exec: {{"yield_time_ms": 30000}}
-image({PIXEL_PNG:?}); text('pixel-ok'); await yield_control();
-for (let i = 0; i < 40; i++) {{
-  await new Promise((r) => setTimeout(r, 50));
-  notify('bg-note');
-}}
-await new Promise((r) => setTimeout(r, 30000));"#
-                                )
-                            });
-                            vec![
-                                json!({"type":"response.created","response":{"id":"r-1"}}),
-                                json!({"type":"response.output_item.done","item":hold_call}),
-                                json!({"type":"response.completed","response":{"id":"r-1","model":"llama3.2","output":[hold_call],"usage":{"input_tokens":50,"output_tokens":10}}}),
-                            ]
-                        }
-                        2 => {
-                            for ev in [
-                                json!({"type":"response.created","response":{"id":"r-2"}}),
-                                json!({"type":"response.output_item.done","item":{"type":"reasoning","id":"rs-bg-prefix","encrypted_content":"enc-bg","summary":[{"type":"summary_text","text":"bg"}]}}),
-                            ] {
-                                ws.send(WsMessage::text(ev.to_string())).await?;
-                            }
-                            tokio::select! {
-                                _ = ws_stop.cancelled() => {}
-                                _ = note_signal.notified() => {}
-                            }
-                            return Ok(());
-                        }
-                        3..=5 => continue,
-                        6 => vec![
-                            json!({"type":"response.created","response":{"id":"r-5"}}),
-                            json!({"type":"response.output_item.done","item":{"type":"reasoning","id":"rs-orphan","encrypted_content":"enc-orphan","summary":[{"type":"summary_text","text":"orphan"}]}}),
-                            json!({"type":"response.incomplete","response":{"id":"r-5","model":"llama3.2","incomplete_details":{"reason":"max_output_tokens"},"usage":{"input_tokens":50,"output_tokens":10}}}),
-                        ],
-                        7 => vec![
-                            json!({"type":"response.created","response":{"id":"r-6"}}),
-                            json!({"type":"response.output_item.done","item":{"type":"message","id":"m-half","role":"assistant","content":[{"type":"output_text","text":"First half."}]}}),
-                            json!({"type":"response.incomplete","response":{"id":"r-6","model":"llama3.2","incomplete_details":{"reason":"max_output_tokens"},"usage":{"input_tokens":50,"output_tokens":10}}}),
-                        ],
-                        _ => {
-                            let msg = json!({"type":"message","id":"m-done","role":"assistant","content":[{"type":"output_text","text":"Second half."}]});
-                            vec![
-                                json!({"type":"response.created","response":{"id":"r-done"}}),
-                                json!({"type":"response.output_item.done","item":msg}),
-                                json!({"type":"response.completed","response":{"id":"r-done","model":"llama3.2","output":[msg],"usage":{"input_tokens":60,"output_tokens":10}}}),
-                            ]
-                        }
-                    };
-                    for event in events {
-                        ws.send(WsMessage::text(event.to_string())).await?;
-                    }
-                }
-            });
-        }
-        while let Some(joined) = conns.join_next().await {
-            let _ = joined?;
-        }
-        Ok::<_, Box<dyn Error + Send + Sync>>(())
-    });
 
     let phase = std::cell::Cell::new("configure connection and session");
     let result = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(60), async {
@@ -4138,8 +3999,12 @@ await new Promise((r) => setTimeout(r, 30000));"#
             "backend": backend
         })).await?;
         phase.set("initial provider request");
-        let _ = req_rx.recv().await.ok_or("initial request missing")?;
-        steer_ready.notified().await;
+        let initial = server.next_turn().await.ok_or("initial request missing")?;
+        initial.send_plan(
+            TurnPlan::new().with_response_id("resp-0")
+                .push_reasoning_encrypted("thinking", "enc-steer")
+                .push_flush().push(TurnEvent::Stall),
+        );
         phase.set("persist interrupted reasoning");
         let r1: RunId = loop {
             let obs = model_recovery::call(client, "agent", "observe", json!({"sessionId":session})).await?;
@@ -4162,21 +4027,39 @@ await new Promise((r) => setTimeout(r, 30000));"#
             "backend": backend
         })).await?;
         phase.set("steered provider request");
-        let steered_req = req_rx.recv().await.ok_or("steered request missing")?;
-        assert!(!steered_req.to_string().contains("rs-steer"), "{steered_req}");
+        let steered = server.next_turn().await.ok_or("steered request missing")?;
+        let steered_req = steered.body().to_string();
+        assert!(!steered_req.contains("rs_resp-0_0") && !steered_req.contains("enc-steer"), "{steered_req}");
+        let code = format!(r#"// @exec: {{"yield_time_ms": 30000}}
+image({PIXEL_PNG:?}); text('pixel-ok'); await yield_control();
+for (let i = 0; i < 40; i++) {{
+  await new Promise((r) => setTimeout(r, 50));
+  notify('bg-note');
+}}
+await new Promise((r) => setTimeout(r, 30000));"#);
+        steered.send_plan(
+            TurnPlan::new().with_response_id("r-1")
+                .push_custom_tool_call("call-2-hold", "exec", code)
+                .with_usage(Usage::new(50, 10)).finish(FinishReason::ToolCalls),
+        );
         phase.set("provider request after yielding image");
-        let step3_req = req_rx.recv().await.ok_or("post-yield request missing")?;
+        let step3 = server.next_turn().await.ok_or("post-yield request missing")?;
+        let step3_req = step3.body();
         assert!(step3_req.to_string().contains("input_image"), "{step3_req}");
+        step3.set_response_id("r-2");
+        step3.reasoning_encrypted("bg", "enc-bg").await;
+        step3.flush_item().await;
         phase.set("persist background notification");
         while owner.durable.cells().notifications(r1, None, 1).await?.is_empty() {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        note_ready.notify_one();
+        step3.drop_connection().await;
         phase.set("provider request after background notification");
-        let note_req = req_rx.recv().await.ok_or("post-notification request missing")?;
-        let note_text = note_req.to_string();
+        let note_req = server.next_turn().await.ok_or("post-notification request missing")?;
+        let note_text = note_req.body().to_string();
+        note_req.send_plan(TurnPlan::stall());
         assert!(note_text.contains("bg-note"), "{note_text}");
-        assert!(!note_text.contains("rs-bg-prefix"), "prefix reasoning leaked before notification: {note_text}");
+        assert!(!note_text.contains("rs_r-2_0") && !note_text.contains("enc-bg"), "prefix reasoning leaked before notification: {note_text}");
         model_recovery::call(client, "agent", "stop", json!({"sessionId":session,"runId":r1})).await?;
         phase.set("cancel original run");
         let r1_exec = wait_terminal(client, &session, json!(r1)).await?;
@@ -4186,7 +4069,7 @@ await new Promise((r) => setTimeout(r, 30000));"#
         phase.set("cancel two continued runs");
         for _ in 0..2 {
             let next_id = continue_from(source["runId"].clone()).await?;
-            let _ = req_rx.recv().await.ok_or("held continuation request missing")?;
+            server.next_turn().await.ok_or("held continuation request missing")?.send_plan(TurnPlan::stall());
             model_recovery::call(client, "agent", "stop", json!({"sessionId":session,"runId":next_id})).await?;
             source = wait_terminal(client, &session, next_id.clone()).await?;
             assert_eq!(source["state"]["kind"], "cancelled");
@@ -4200,7 +4083,7 @@ await new Promise((r) => setTimeout(r, 30000));"#
 
         phase.set("continue with the unaccepted image");
         let r4 = continue_from(source["runId"].clone()).await?;
-        let req2 = req_rx.recv().await.ok_or("r4 request missing")?;
+        let req2 = resumed.recv().await.ok_or("r4 request missing")?;
         let req2_text = req2.to_string();
         assert!(req2_text.contains("input_image"), "unaccepted tool image lost: {req2_text}");
         assert!(req2_text.contains("call-2-hold"), "unaccepted interrupted cell lost: {req2_text}");
@@ -4208,15 +4091,15 @@ await new Promise((r) => setTimeout(r, 30000));"#
 
         phase.set("continue after orphan reasoning");
         let r5 = continue_from(r4_exec["runId"].clone()).await?;
-        let req3 = req_rx.recv().await.ok_or("r5 request missing")?;
+        let req3 = resumed.recv().await.ok_or("r5 request missing")?;
         let req3_text = req3.to_string();
-        assert!(!req3_text.contains("rs-orphan"), "orphan reasoning leaked: {req3_text}");
+        assert!(!req3_text.contains("rs_r-5_0") && !req3_text.contains("enc-orphan"), "orphan reasoning leaked: {req3_text}");
         assert!(!req3_text.contains("Continue from where"), "unexpected cue: {req3_text}");
         let r5_exec = wait_terminal(client, &session, r5).await?;
 
         phase.set("continue after partial output");
         let r6 = continue_from(r5_exec["runId"].clone()).await?;
-        let req4 = req_rx.recv().await.ok_or("r6 request missing")?;
+        let req4 = resumed.recv().await.ok_or("r6 request missing")?;
         let req4_text = req4.to_string();
         assert!(req4_text.contains("First half."), "{req4_text}");
         assert!(req4_text.contains("Continue from where"), "{req4_text}");
@@ -4226,8 +4109,7 @@ await new Promise((r) => setTimeout(r, 30000));"#
     }))
     .catch_unwind()
     .await;
-    stop.cancel();
-    server.await??;
+    server.shutdown().await;
     let cleanup = rig.finish().await;
     assert!(
         matches!(&result, Ok(Ok(Ok(())))),

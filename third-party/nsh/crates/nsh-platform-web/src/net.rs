@@ -48,6 +48,7 @@ impl Network for WebNetwork {
             body,
             kind,
             request.follow_redirects,
+            request.cache.as_str(),
         );
         Box::new(Task { id })
     }

@@ -44,6 +44,7 @@ fn verification(verify: impl Fn(&str) + 'static) -> impl IntoElement {
 ```tsx tabs
 import { mount, signal } from "nsh";
 import { OtpInput } from "nsh/base";
+import { Window } from "nsh/desktop";
 
 function App() {
   const code = signal("");
@@ -64,7 +65,11 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 `OtpInput` 来自 [`nsh/base`](../modules/nsh-base.md)，在 Rust 中是 `nsh-base` crate。在 Rust 中，`otp_input()` 创建一个输入框，每个 prop 有一个 setter（`.length(..)`、`.cell_style(..)`），每个事件有一个监听方法（`.on_complete(..)`），输入框本身用带类型的样式方法设置样式。

@@ -30,7 +30,7 @@ use nsh_base::{
 };
 use nsh_core::{
     Command, EventKind, EventPayload, MountItem, NodeId, Size, animation::AnimationOp,
-    element::Root, geometry::Axis, platform::Os, prelude::*,
+    geometry::Axis, platform::Os, prelude::*,
 };
 use nsh_engine::EngineConfig;
 use nsh_testing::Headless;
@@ -327,7 +327,9 @@ fn start_in(props: HarnessProps, reduce_motion: bool, rtl: bool) -> App {
     let mut config = EngineConfig {
         viewport: Size::new(px(390.0), px(844.0)),
         clock: nsh_engine::Clock::manual(std::time::SystemTime::now()),
-        ..EngineConfig::new(Root::new::<Harness>(move || props.clone()))
+        ..EngineConfig::new(nsh_testing::windowed_root_with::<Harness>(move || {
+            props.clone()
+        }))
     };
     config.environment.os = Os::MacOs;
     config.environment.reduce_motion = reduce_motion;

@@ -41,6 +41,7 @@ fn release_notes() -> impl IntoElement {
 ```tsx tabs
 import { mount, Scroll } from "nsh";
 import { TextView } from "nsh/base";
+import { Window } from "nsh/desktop";
 
 const README = `# Release notes
 
@@ -71,7 +72,11 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 在 Rust 中，`text_view()` 像 `view()` 创建视图一样创建它：每个属性一个设置方法（`.markdown(..)`、`.options(..)`、`.selectable(..)`），每个渲染函数一个闭包（`.render_image(|image| ..)`），每个事件一个监听方法（`.on_link_press(..)`），根节点使用类型化的样式方法（`.p_5()`、`.text_color(..)`），其中的文本样式会传给每个部件。
@@ -82,7 +87,7 @@ mount(App);
 
 `TextView` 由 [`Text`](./text.md) 元素组成，其中的文本行为与 Text 页面描述的完全一致。每个段落、标题、表格单元格和代码块都是一个原生 `Text`：一个独立排版、换行、跟随字体缩放的文本块，设置 `selectable` 后可以选择和复制。加粗、强调、删除线等行内标记是它的[片段](./text.md#片段)；行内代码是带[片段背景](./text.md#片段背景)的片段，因此 `code: "rounded bg-neutral-100"` 会给它一个圆角背景；链接是[可点击的片段](./text.md#链接)；图片和行内自定义节点是[行内附件](./text.md#行内视图和图片)。根节点上的文本样式会传给每个部件，就像[文本样式](./text.md#文本样式)从 `Text` 传给它的片段一样。
 
-设置 `selectable` 后，整个文档作为一体选择，就像网页一样：拖动（在触摸屏上是长按后拖动选择手柄）可以从一个段落、列表项、单元格或代码块延伸到下一个，复制会取得它们全部的文字。设置了 `selectable` 的 `TextView` 自己作为一体选择；放在[可选择视图](./text-selection.md)里时，它的选区还会延伸到周围的文字和其他 `TextView`。
+设置 `selectable` 后，整个文档作为一体选择，就像网页一样：拖动（在触摸屏上是长按后拖动选择手柄）可以从一个段落、列表项、单元格或代码块延伸到下一个，复制会取得它们全部的正文内容，列表项目符号与序号、任务勾选符号、提示图标、折叠三角以及操作按钮等装饰与控件文字不会混入选区。部件的类名或样式可以把它们重新纳入选区：设置 `classes={{ listMarker: "select-text" }}` 后，项目符号与序号会随列表项一起被选中和复制。设置了 `selectable` 的 `TextView` 自己作为一体选择；放在[可选择视图](./text-selection.md)里时，它的选区还会延伸到周围的文字和其他 `TextView`。
 
 `TextView` 增加的是其余部分：把 Markdown、HTML 或文档读成文档块，文本周围的视图（列表、引用、表格、代码块、折叠块、脚注），流式输出，按部件设定样式，渲染函数和扩展。
 
@@ -93,7 +98,7 @@ mount(App);
 内容来自以下三个属性之一，按此顺序读取：
 
 - **`markdown`**：CommonMark 加上 GitHub 的扩展（表格、任务列表、删除线、自动链接、脚注、提示块）、公式（`$…$` 和 `$$…$$`）以及 Markdown 中的 HTML。中日韩文字旁的强调按 CommonMark 的 CJK 友好修订判定，`**涨幅：**5%` 会加粗到冒号为止；裸网址遇到中日韩文字或弯引号即结束：`https://example.com。下一句` 只链接 `https://example.com`。写在尖括号里（`<https://zh.wikipedia.org/wiki/中文>`）或写成链接的网址保留全部字符。标签名既不是 HTML 元素、也不是 `tag` 扩展时（`<US tech>`、`<公司名>`），按原样显示为文字。
-- **`html`**：按阅读模式的方式显示 HTML。文本、结构和行内格式都会保留；脚本、样式、表单控件和隐藏元素不会显示。片段和完整页面都可以（完整页面显示其 body）。
+- **`html`**：按阅读模式的方式显示 HTML。文本、结构和行内格式都会保留，文字颜色也会保留（`<span style="color: …">` 和 `<font color="…">` 读成带该颜色的 `textStyle`）；脚本、样式、表单控件和隐藏元素不会显示。片段和完整页面都可以（完整页面显示其 body）。
 - **`document`**：应用构建或保存的文档块：TSX 中是普通对象，Rust 中是 `nsh_base::text_view::Document`（[文档模型](#the-document-model)）。
 
 ```rust tabs
@@ -215,6 +220,7 @@ fn reply(markdown: Signal<SharedString>) -> impl IntoElement {
 | `strikethrough` | `Strikethrough` | 删除线文本。 |
 | `underline` | `Underline` | 下划线文本（`<u>`、`<ins>`）。 |
 | `highlight` | `Highlight` | 高亮文本（`<mark>`，圆角黄色底）。 |
+| `textStyle` | `TextStyle` | 带文档自己颜色的文字（`<span style="color: …">`、`<font color>`、`textStyle` 节点），浅色和深色外观下相同。它的类名和样式优先于文档的颜色，应用可以借此保留自己的颜色：`classes={{ textStyle: "dark:text-foreground" }}` 让这些文字在深色外观下用正文颜色。 |
 | `superscript`、`subscript` | `Superscript`, `Subscript` | 上标和下标（字号更小）。 |
 | `link` | `Link` | 链接（主题的 `primary` 色，带下划线）。 |
 | `image` | `Image` | 图片。 |
@@ -422,6 +428,11 @@ import { Image, View } from "nsh";
 
 `Highlighted` 和 `MathView`（Rust 中是 `highlighted` 和 `math_view`）代表应用自己的组件（高亮器、公式渲染器，或应用 Rust crate 中的组件）。没有 `renderMath` 时，`TextView` 自己排版公式（`math` 和 `mathBlock` 部件）：支持 KaTeX 的 TeX 语法并使用 KaTeX 字体，颜色跟随文本，在各平台上效果一致；无法解析的 TeX 以等宽字体显示其源码。
 
+复制选中的段落时，文字中的公式（`$…$`）给出它的源码 `$x^2$`。公式块（`$$…$$`）不在文字中，复制时仍不包含。`renderMath` 返回的视图把源码设为它的
+[`copyText`](./text.md#行内视图和图片)，复制时也会保留公式：
+`` renderMath={(math) => <MathView tex={math.tex} copyText={`$${math.tex}$`} />} ``（Rust 中为
+`.copy_text(format!("${}$", math.tex))`）。
+
 <a id="markdown-extensions"></a>
 
 ## Markdown 扩展
@@ -585,6 +596,7 @@ function Custom(props: { node: TextViewCustomNode }) {
 |---|---|
 | `text` | `text` |
 | `strong`、`emphasis`、`strikethrough`、`underline`、`highlight`、`superscript`、`subscript` | `content` |
+| `textStyle` | `content`、`color?`（CSS 颜色：`"#e54545"`、`"rgb(229 69 69)"`、`"red"`） |
 | `code` | `code` |
 | `keyboard` | `text` |
 | `link` | `url`、`title?`、`content` |

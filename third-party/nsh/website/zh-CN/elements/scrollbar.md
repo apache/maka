@@ -57,6 +57,7 @@ fn inbox(rows: impl IntoElement) -> impl IntoElement {
 ```tsx tabs
 import { mount, Scroll, Text, View, type YNode } from "nsh";
 import { Scrollbar } from "nsh/base";
+import { Window } from "nsh/desktop";
 
 function App() {
   let list: YNode | undefined;
@@ -79,7 +80,11 @@ function App() {
   );
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 `Scrollbar` 来自 [`nsh/base`](../modules/nsh-base.md)，在 Rust 中是 `nsh-base` crate。在 Rust 中，`scrollbar()` 创建一个滚动条，每个
@@ -142,7 +147,7 @@ Scrollbar.setTheme({
 
 之后再调用 `setTheme` 会重新设置这些滚动条的样式，`Scrollbar.setTheme(null)` 让视图恢复平台的滚动指示器。单个视图可以用
 `scrollbar` 属性设置自己的主题（`<Scroll scrollbar={{ mode: "always", vertical: { … } }}>`），无论应用是否设置了主题；
-`scrollbar={false}` 让视图没有滚动条。在父视图视口中布局的列表（`viewport="parent"`）随那个视图及其滚动条一起滚动。多行 `Input` 也会在文本上显示纵向外观的滚动条，像文本视图自己的指示器一样滚动文本。
+`scrollbar={false}` 让视图没有滚动条。在父视图视口中布局的列表（`viewport="parent"`）随那个视图及其滚动条一起滚动。多行 `Input` 也会在文本上显示纵向外观的滚动条，像文本视图自己的指示器一样滚动文本。滚动条铺满整个输入框（含内边距），文字在各平台上都只在内边距以内显示。在 Rust 中，滚动视图和多行输入框的 `.scrollbar(theme)` 接受 `ScrollbarTheme`，与 `.scrollbar(true)`、`.scrollbar(false)` 并用。
 
 ## 它滚动的滚动视图
 
@@ -155,6 +160,8 @@ Scrollbar.setTheme({
 - 拖动滑块时，内容滚动的量与滑块移动的量相对应。按压轨道会让滑块中点移到指针下方，之后的拖动从那里继续。
 - 纵向滚动条跟随纵向滚动视图；`axis="horizontal"` 为横向滚动视图提供滚动条（沿底边放置）。每个方向一个滚动条。
 - 列表同样适用：随着行被测量和加入，滑块跟随列表的总长度。
+- 多行 `Input` 也一样：用 `scrollbar={false}` 关闭它自己的滚动条，在 `scroll` 中指明它；滚动条跟随并滚动它的文字。只有在有滚动条跟随时，
+  输入框才上报自己的滚动。
 
 ## 何时显示
 

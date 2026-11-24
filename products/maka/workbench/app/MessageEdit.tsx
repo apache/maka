@@ -17,15 +17,9 @@
  * under the License.
  */
 
-import {
-  createText,
-  UiError,
-  errorText,
-  message as uiMessage,
-  renderText,
-  type UiText,
-} from './text';
+import { UiError, errorText, message as uiMessage, renderText, type UiText } from './text';
 import { tr } from './locale';
+import { toast } from './toastStore';
 import { cleanup, computed, effect, inputAction, keymap, signal, Text, untracked, View } from 'nsh';
 import type { Signal } from 'nsh';
 import { Button, Input } from 'nsh/base';
@@ -155,7 +149,6 @@ export function MessageEdit(
 ) {
   const host = useHost();
   const pending = signal(false);
-  const notice = createText();
   let alive = true;
   cleanup(() => {
     alive = false;
@@ -169,7 +162,6 @@ export function MessageEdit(
   };
   const edit = async (original: Target | null) => {
     if (!original || !owns(original) || pending() || editing()) return;
-    notice.set('');
     // The editor replaces this row of actions and reads the original itself.
     if (inPlace()) return props.inline!.set({ text: null, sending: false, notice: '' });
     pending.set(true);
@@ -180,10 +172,21 @@ export function MessageEdit(
       const opened = await forkBefore(host, props, original, text, props.regenerate ?? false, () =>
         owns(original),
       );
-      if (opened === false && owns(original))
-        notice.set(uiMessage('Fork created. Open it in Sessions.'));
+      if (opened === false && owns(original)) {
+        toast.show({
+          id: 'message.edit-fork',
+          tone: 'info',
+          message: renderText(uiMessage('Fork created. Open it in Sessions.')),
+        });
+      }
     } catch (reason) {
-      if (owns(original)) notice.set(errorText(reason, 'Could not fork the conversation.'));
+      if (owns(original)) {
+        toast.show({
+          id: 'message.edit-fork',
+          tone: 'danger',
+          message: renderText(errorText(reason, 'Could not fork the conversation.')),
+        });
+      }
     } finally {
       if (alive) pending.set(false);
     }
@@ -198,23 +201,14 @@ export function MessageEdit(
   });
   // Render nothing when hidden, so the row of actions keeps its spacing.
   return (
-    <If when={Boolean(notice()) || (!props.menuOnly && target() !== null)}>
-      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, minWidth: 0 }}>
-        <If when={notice()}>
-          <Text style={[{ color: C.danger, fontSize: 12, lineHeight: 16 }, { userSelect: 'text' }]}>
-            {notice()}
-          </Text>
-        </If>
-        <If when={!props.menuOnly && target() !== null}>
-          <IconButton
-            label={label()}
-            tooltip={pending() ? tr('Creating fork…') : undefined}
-            icon={props.regenerate ? 'refresh' : 'edit'}
-            disabled={pending() || editing()}
-            onPress={inputAction(edit, target())}
-          />
-        </If>
-      </View>
+    <If when={!props.menuOnly && target() !== null}>
+      <IconButton
+        label={label()}
+        tooltip={pending() ? tr('Creating fork…') : undefined}
+        icon={props.regenerate ? 'refresh' : 'edit'}
+        disabled={pending() || editing()}
+        onPress={inputAction(edit, target())}
+      />
     </If>
   );
 }
@@ -437,7 +431,6 @@ export function TurnRetry(props: {
 }) {
   const host = useHost();
   const pending = signal(false);
-  const notice = createText();
   let alive = true;
   cleanup(() => {
     alive = false;
@@ -462,8 +455,11 @@ export function TurnRetry(props: {
   const owns = (original: Target) => alive && sameTarget(target(), original);
   const retry = async (original: Target | null) => {
     if (!original || !owns(original) || pending()) return;
-    notice.set(props.blocked() ?? '');
-    if (props.blocked()) return;
+    const initialBlocked = props.blocked();
+    if (initialBlocked) {
+      toast.show({ id: 'message.retry', tone: 'warning', message: renderText(initialBlocked) });
+      return;
+    }
     pending.set(true);
     try {
       const text = await readOriginal(host, original, () => owns(original));
@@ -472,12 +468,18 @@ export function TurnRetry(props: {
       // The draft may have changed while the text was read.
       const blocked = props.blocked();
       if (blocked) {
-        notice.set(blocked);
+        toast.show({ id: 'message.retry', tone: 'warning', message: renderText(blocked) });
         return;
       }
       await props.send(text);
     } catch (reason) {
-      if (owns(original)) notice.set(errorText(reason, 'Could not send the message.'));
+      if (owns(original)) {
+        toast.show({
+          id: 'message.retry',
+          tone: 'danger',
+          message: renderText(errorText(reason, 'Could not send the message.')),
+        });
+      }
     } finally {
       if (alive) pending.set(false);
     }
@@ -506,11 +508,6 @@ export function TurnRetry(props: {
           <Icon name="refresh" color={C.accent} />
           <Text style={{ ...captionTextStyle, color: C.accent }}>{tr('Retry')}</Text>
         </Button>
-        <If when={notice()}>
-          <Text style={[{ ...captionTextStyle, color: C.muted }, { userSelect: 'text' }]}>
-            {notice()}
-          </Text>
-        </If>
       </View>
     </If>
   );

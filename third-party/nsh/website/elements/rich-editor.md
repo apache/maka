@@ -25,6 +25,7 @@ you know of them. Both are MIT-licensed, and their licenses apply to what is por
 ```tsx
 import { mount } from "nsh";
 import { RichEditor, createRichEditor, history, inputRules, keymap, markdown, markdownRules, starterKeymap, baseKeymap, toggleMark } from "nsh/base";
+import { Window } from "nsh/desktop";
 
 const editor = createRichEditor({
   content: "# Notes\n\nStart typing…",
@@ -43,7 +44,11 @@ function App() {
   return <RichEditor editor={editor} class="flex-1" />;
 }
 
-mount(App);
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
 ```
 
 Without `schema` an editor uses the starter schema (`starterSchema()`); without `plugins` it gets the starter kit
@@ -110,6 +115,34 @@ once everything is selected, and a read-only editor offers Copy and Select All. 
 toolbar's `isActive` follows the selection, `toggleMark` formats it, and undo takes a cut or a paste back. Taps,
 keys, input methods and the mouse select as before.
 
+### A bar over the keyboard
+
+`inputAccessoryViewID` (Rust `.input_accessory(id)`) shows the
+[`InputAccessoryView`](../docs/forms-and-keyboard.md#a-bar-over-the-keyboard-ios-inputaccessoryview) with that
+`nativeID` on top of the keyboard while the editor has the focus, as an `Input`'s `ios={{ inputAccessoryViewID }}`
+does: it comes and goes with the keyboard and moves with it natively. Formatting buttons there run on the session and
+leave the focus in the editor:
+
+```tsx
+import { Text, View } from "nsh";
+import { Button, RichEditor, command } from "nsh/base";
+import { InputAccessoryView } from "nsh/mobile";
+
+<RichEditor editor={editor} inputAccessoryViewID="format" />
+<InputAccessoryView nativeID="format">
+  <View style={{ flexDirection: "row", padding: 8, gap: 8 }}>
+    <Button onPress={() => editor.run(command("toggleBold"))}>
+      <Text>Bold</Text>
+    </Button>
+    <Button onPress={() => editor.blur()}>
+      <Text>Done</Text>
+    </Button>
+  </View>
+</InputAccessoryView>
+```
+
+Input accessories are iOS's; elsewhere the editor shows none.
+
 ### Bubble menu
 
 `bubbleMenu` is Tiptap's bubble menu: the app's content shown next to the selection, above it by default
@@ -163,6 +196,10 @@ their bytes, `uris` the copied files' `file:` URLs. On the desktops, files dragg
 the editor call its `onFileDrop` with `{ uris, mimeTypes }`, as a [view's file drops](./view.md#desktop-file-drops)
 do, and `onFileDragEnter` / `onFileDragLeave` follow the drag, for a hint such as "Release to attach". Without
 `onFileDrop` the editor leaves dropped files to the view around it that listens.
+
+Text dragged onto the editor from another app or another view goes in where it is let go: the caret moves there and
+the text goes in as a paste of it would (with its HTML when the drag has some, through `transformPasted` and
+`handlePaste`), as one undo step. iOS delivers text drops; the desktops and Android leave text drags to the platform.
 
 ```tsx
 <RichEditor

@@ -441,6 +441,30 @@ fn send(surface: &Surface, id: NodeId, selected: Selected) {
     surface.event(id, EventKind::SelectionChange, EventPayload::Map(fields));
 }
 
+/// `ref.clearSelection()` on `view` (`Command::ClearSelection`): ends the
+/// current area's selection when the area is `view`, inside it or around
+/// it.
+pub(crate) fn clear_in(view: &NshView) {
+    let within = |inner: &NshView, outer: &NshView| {
+        let mut at = Some(inner.clone());
+        while let Some(v) = at {
+            if &v == outer {
+                return true;
+            }
+            at = v.parent_view();
+        }
+        false
+    };
+    let hit = CURRENT.with_borrow(|current| {
+        current
+            .as_ref()
+            .is_some_and(|c| within(&c.area, view) || within(view, &c.area))
+    });
+    if hit {
+        clear();
+    }
+}
+
 /// Ends the current area's selection (a single text was selected).
 pub(crate) fn clear() {
     if let Some(current) = CURRENT.take() {

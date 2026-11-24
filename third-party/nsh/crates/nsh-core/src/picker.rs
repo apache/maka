@@ -28,11 +28,15 @@
 //! ([`Core::set_picker`](crate::Core::set_picker), `EngineConfig::picker`)
 //! answers every pick, and the platform's picker is never shown. Tests
 //! answer picks the same way.
+//!
+//! Modules that bring images of their own to JS (a camera in an nshm)
+//! return them as a [`PickedImage`], the shape `pickImages` resolves with.
 
 use std::{future::Future, pin::Pin, time::SystemTime};
 
 use crate::{
     ImageData,
+    element::{JsHost, JsIn, JsOwned, JsValue, PropError, TsTypes},
     file_dialog::{FileFilter, OpenDialog},
     geometry::{DevicePixels, Percentage, Size},
 };
@@ -435,6 +439,54 @@ pub fn file_name(name: &str, mime: &str) -> String {
         return name.into();
     }
     format!("{stem}.{ext}")
+}
+
+/// An image for the app: its `File` and its size in pixels, as JS gets
+/// each of `Picker.pickImages`' images. A module returning images of its
+/// own (a photo taken) returns this, so apps handle them the same way.
+#[derive(Clone, Debug, Default, PartialEq)]
+#[non_exhaustive]
+pub struct PickedImage {
+    /// The image's file and its size ([`finish`] completes both).
+    pub file: PickedFile,
+}
+
+impl PickedImage {
+    /// `file` as an image for the app.
+    pub fn new(file: PickedFile) -> Self {
+        Self { file }
+    }
+}
+
+impl JsValue for PickedImage {
+    fn ts_type(types: &mut TsTypes) -> String {
+        let size = Size::<DevicePixels>::ts_type(types);
+        types.declare("PickedImage", |_| {
+            format!(
+                "/** An image the user picked (`Picker.pickImages`) or took. */\n\
+                 export interface PickedImage {{\n\
+                 \x20 /** The image's file: its name, type (`image/jpeg`), size in bytes and bytes. */\n\
+                 \x20 file: File;\n\
+                 \x20 /** Its size in pixels, as it shows (its orientation applied). */\n\
+                 \x20 size: {size};\n\
+                 }}"
+            )
+        })
+    }
+
+    fn from_js(value: JsIn<'_>) -> Result<Self, PropError> {
+        Err(value.expected("no value: a picked image is only returned"))
+    }
+
+    fn to_js<'a>(&self, host: &'a dyn JsHost) -> Result<JsOwned<'a>, PropError> {
+        let file = &self.file;
+        let owned = JsOwned::new(host, host.new_object()?);
+        let object = owned.get().raw();
+        let js_file = host.new_file(&file.data, &file.mime, &file.name, file.last_modified)?;
+        host.set_field(object, "file", js_file)?;
+        host.set_field(object, "size", file.size.to_js(host)?.into_raw())?;
+        Ok(owned)
+    }
 }
 
 /// The files a pick resolves with, as the core hands them to the app.
