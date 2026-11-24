@@ -32,8 +32,13 @@ export function nativeDesktop() {
   cleanup(main.on('closePress', () => main.hide()));
   cleanup(() => Tray.set(null));
   effect(() => {
+    const icon = appearance.trayIcon();
+    if (!appearance.trayIconKnown() || icon === 'none') {
+      Tray.set(null);
+      return;
+    }
     Tray.set({
-      icon: `asset:/maka/tray-${appearance.trayIcon()}.svg`,
+      icon: `asset:/maka/tray-${icon}.svg`,
       tooltip: 'Maka',
       onClick: () => main.focus(),
       menu: [
