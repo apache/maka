@@ -8793,6 +8793,7 @@ dependencies = [
  "base64 0.23.1",
  "cap-fs-ext",
  "cap-std",
+ "dunce",
  "fastrand",
  "futures-util",
  "hex",
@@ -9751,9 +9752,11 @@ name = "maka-process"
 version = "0.3.0"
 dependencies = [
  "alacritty_terminal",
+ "dirs",
  "dunce",
  "libc",
  "maka-agent-facts",
+ "maka-event-log",
  "maka-network",
  "maka-plugin-core",
  "maka-sandbox",
@@ -9939,7 +9942,6 @@ dependencies = [
  "cap-fs-ext",
  "cap-std",
  "dunce",
- "flatbuffers",
  "globset",
  "hex",
  "libc",
@@ -10799,8 +10801,9 @@ dependencies = [
 
 [[package]]
 name = "mxc-sdk"
-version = "1.0.1"
-source = "git+https://github.com/microsoft/mxc?rev=05a430bc17a3e1b3fa2131524fc52e4319e07298#05a430bc17a3e1b3fa2131524fc52e4319e07298"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a6f702443261f9e5d12f607f16f591e99ea3ff6fd886281e041b700cbbb2b5de"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -10810,6 +10813,7 @@ dependencies = [
  "flatbuffers",
  "getrandom 0.2.17",
  "libc",
+ "native-tls",
  "nix 0.29.0",
  "same-file",
  "semver",
@@ -10822,6 +10826,7 @@ dependencies = [
  "tokio",
  "tracelogging",
  "unicode-general-category",
+ "ureq",
  "url",
  "uuid",
  "widestring",
@@ -19258,14 +19263,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3ac5cecf619ca81f66a96482db09687c9f7465af65f4300a8c30cca05bd5a59d"
 dependencies = [
  "base64 0.23.1",
+ "der 0.8.2",
  "flate2",
  "log",
+ "native-tls",
  "percent-encoding",
  "rustls",
  "rustls-pki-types",
  "rustls-platform-verifier",
  "ureq-proto",
  "utf8-zero",
+ "webpki-root-certs",
  "webpki-roots 1.0.11",
 ]
 

@@ -29,7 +29,7 @@ pub use filesystem::{
     FileIdentity, create_private_directory, create_private_file, file_identity, open_nofollow,
     private_directory,
 };
-pub use security::{PrivateSecurity, validate_private};
+pub use security::{PrivateSecurity, validate_private, validate_protected_private};
 
 use std::{ffi::c_void, io, os::windows::ffi::OsStrExt};
 use windows_sys::Win32::Foundation::LocalFree;

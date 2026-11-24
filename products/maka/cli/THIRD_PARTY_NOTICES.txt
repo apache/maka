@@ -29137,7 +29137,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ================================================================================
 
 msvc_spectre_libs@0.1.3 (MIT OR Apache-2.0)
-mxc-sdk@1.0.1 (MIT)
+mxc-sdk@1.1.0 (MIT)
 rustybuzz@0.20.1 (MIT); authors declared by package: Caleb Maclennan <caleb@alerque.com>, Laurenz Stampfl <laurenz.stampfl@gmail.com>, Yevhenii Reizner <razrfalcon@gmail.com>, خالد حسني (Khaled Hosny) <khaled@aliftype.com>
 windows-collections@0.3.2 (MIT OR Apache-2.0)
 windows-core@0.57.0 (MIT OR Apache-2.0); authors declared by package: Microsoft
@@ -29163,9 +29163,11 @@ windows-result@0.4.1 (MIT OR Apache-2.0)
 windows-strings@0.1.0 (MIT OR Apache-2.0); authors declared by package: Microsoft
 windows-strings@0.3.1 (MIT OR Apache-2.0); authors declared by package: Microsoft
 windows-strings@0.5.1 (MIT OR Apache-2.0)
+windows-sys@0.48.0 (MIT OR Apache-2.0); authors declared by package: Microsoft
 windows-sys@0.52.0 (MIT OR Apache-2.0); authors declared by package: Microsoft
 windows-sys@0.59.0 (MIT OR Apache-2.0); authors declared by package: Microsoft
 windows-sys@0.61.2 (MIT OR Apache-2.0)
+windows-targets@0.48.5 (MIT OR Apache-2.0); authors declared by package: Microsoft
 windows-targets@0.52.6 (MIT OR Apache-2.0); authors declared by package: Microsoft
 windows-targets@0.53.5 (MIT OR Apache-2.0)
 windows-threading@0.2.1 (MIT OR Apache-2.0)
@@ -29173,6 +29175,7 @@ windows@0.57.0 (MIT OR Apache-2.0); authors declared by package: Microsoft
 windows@0.58.0 (MIT OR Apache-2.0); authors declared by package: Microsoft
 windows@0.59.0 (MIT OR Apache-2.0); authors declared by package: Microsoft
 windows@0.62.2 (MIT OR Apache-2.0)
+windows_x86_64_msvc@0.48.5 (MIT OR Apache-2.0); authors declared by package: Microsoft
 windows_x86_64_msvc@0.52.6 (MIT OR Apache-2.0); authors declared by package: Microsoft
 windows_x86_64_msvc@0.53.1 (MIT OR Apache-2.0)
 
@@ -29202,9 +29205,11 @@ https://crates.io/api/v1/crates/windows-result/0.4.1/download :: license-mit
 https://crates.io/api/v1/crates/windows-strings/0.1.0/download :: license-mit
 https://crates.io/api/v1/crates/windows-strings/0.3.1/download :: license-mit
 https://crates.io/api/v1/crates/windows-strings/0.5.1/download :: license-mit
+https://crates.io/api/v1/crates/windows-sys/0.48.0/download :: license-mit
 https://crates.io/api/v1/crates/windows-sys/0.52.0/download :: license-mit
 https://crates.io/api/v1/crates/windows-sys/0.59.0/download :: license-mit
 https://crates.io/api/v1/crates/windows-sys/0.61.2/download :: license-mit
+https://crates.io/api/v1/crates/windows-targets/0.48.5/download :: license-mit
 https://crates.io/api/v1/crates/windows-targets/0.52.6/download :: license-mit
 https://crates.io/api/v1/crates/windows-targets/0.53.5/download :: license-mit
 https://crates.io/api/v1/crates/windows-threading/0.2.1/download :: license-mit
@@ -29212,9 +29217,10 @@ https://crates.io/api/v1/crates/windows/0.57.0/download :: license-mit
 https://crates.io/api/v1/crates/windows/0.58.0/download :: license-mit
 https://crates.io/api/v1/crates/windows/0.59.0/download :: license-mit
 https://crates.io/api/v1/crates/windows/0.62.2/download :: license-mit
+https://crates.io/api/v1/crates/windows_x86_64_msvc/0.48.5/download :: license-mit
 https://crates.io/api/v1/crates/windows_x86_64_msvc/0.52.6/download :: license-mit
 https://crates.io/api/v1/crates/windows_x86_64_msvc/0.53.1/download :: license-mit
-https://raw.githubusercontent.com/microsoft/mxc/05a430bc17a3e1b3fa2131524fc52e4319e07298/LICENSE.md
+https://raw.githubusercontent.com/microsoft/mxc/6a89e69c72104bdf83b1f682a2f576b529b8bd65/LICENSE.md
 
 MIT License
 
@@ -53493,9 +53499,11 @@ windows-result@0.4.1 (MIT OR Apache-2.0)
 windows-strings@0.1.0 (MIT OR Apache-2.0); authors declared by package: Microsoft
 windows-strings@0.3.1 (MIT OR Apache-2.0); authors declared by package: Microsoft
 windows-strings@0.5.1 (MIT OR Apache-2.0)
+windows-sys@0.48.0 (MIT OR Apache-2.0); authors declared by package: Microsoft
 windows-sys@0.52.0 (MIT OR Apache-2.0); authors declared by package: Microsoft
 windows-sys@0.59.0 (MIT OR Apache-2.0); authors declared by package: Microsoft
 windows-sys@0.61.2 (MIT OR Apache-2.0)
+windows-targets@0.48.5 (MIT OR Apache-2.0); authors declared by package: Microsoft
 windows-targets@0.52.6 (MIT OR Apache-2.0); authors declared by package: Microsoft
 windows-targets@0.53.5 (MIT OR Apache-2.0)
 windows-threading@0.2.1 (MIT OR Apache-2.0)
@@ -53503,6 +53511,7 @@ windows@0.57.0 (MIT OR Apache-2.0); authors declared by package: Microsoft
 windows@0.58.0 (MIT OR Apache-2.0); authors declared by package: Microsoft
 windows@0.59.0 (MIT OR Apache-2.0); authors declared by package: Microsoft
 windows@0.62.2 (MIT OR Apache-2.0)
+windows_x86_64_msvc@0.48.5 (MIT OR Apache-2.0); authors declared by package: Microsoft
 windows_x86_64_msvc@0.52.6 (MIT OR Apache-2.0); authors declared by package: Microsoft
 windows_x86_64_msvc@0.53.1 (MIT OR Apache-2.0)
 
@@ -53530,9 +53539,11 @@ https://crates.io/api/v1/crates/windows-result/0.4.1/download :: license-apache-
 https://crates.io/api/v1/crates/windows-strings/0.1.0/download :: license-apache-2.0
 https://crates.io/api/v1/crates/windows-strings/0.3.1/download :: license-apache-2.0
 https://crates.io/api/v1/crates/windows-strings/0.5.1/download :: license-apache-2.0
+https://crates.io/api/v1/crates/windows-sys/0.48.0/download :: license-apache-2.0
 https://crates.io/api/v1/crates/windows-sys/0.52.0/download :: license-apache-2.0
 https://crates.io/api/v1/crates/windows-sys/0.59.0/download :: license-apache-2.0
 https://crates.io/api/v1/crates/windows-sys/0.61.2/download :: license-apache-2.0
+https://crates.io/api/v1/crates/windows-targets/0.48.5/download :: license-apache-2.0
 https://crates.io/api/v1/crates/windows-targets/0.52.6/download :: license-apache-2.0
 https://crates.io/api/v1/crates/windows-targets/0.53.5/download :: license-apache-2.0
 https://crates.io/api/v1/crates/windows-threading/0.2.1/download :: license-apache-2.0
@@ -53540,6 +53551,7 @@ https://crates.io/api/v1/crates/windows/0.57.0/download :: license-apache-2.0
 https://crates.io/api/v1/crates/windows/0.58.0/download :: license-apache-2.0
 https://crates.io/api/v1/crates/windows/0.59.0/download :: license-apache-2.0
 https://crates.io/api/v1/crates/windows/0.62.2/download :: license-apache-2.0
+https://crates.io/api/v1/crates/windows_x86_64_msvc/0.48.5/download :: license-apache-2.0
 https://crates.io/api/v1/crates/windows_x86_64_msvc/0.52.6/download :: license-apache-2.0
 https://crates.io/api/v1/crates/windows_x86_64_msvc/0.53.1/download :: license-apache-2.0
 

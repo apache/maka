@@ -23,6 +23,7 @@
 
 mod coordinator;
 mod target;
+pub(super) use target::identity;
 pub use target::{Removal, Target};
 
 use super::{LocalMemory, checked};

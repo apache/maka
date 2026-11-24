@@ -21,7 +21,7 @@ use crate::Command;
 use maka_sandbox::filesystem::Policy;
 use std::path::Path;
 
-pub(super) const SUPPORTED: bool = cfg!(any(target_os = "macos", target_os = "linux"));
+pub(super) const SUPPORTED: bool = cfg!(any(target_os = "macos", target_os = "linux", windows));
 
 /// Sandbox installation selected by the trusted launcher, never by a task manifest.
 #[derive(Default)]
@@ -76,13 +76,24 @@ pub(super) fn private_stdio(_command: &mut Command) {
 }
 
 pub(super) fn set_helper_namespace(_command: &mut Command, _resource: &Path) {
+    let temp = _resource
+        .parent()
+        .and_then(Path::parent)
+        .expect("native task namespace");
     #[cfg(unix)]
+    _command.env("TMPDIR", temp);
+    #[cfg(windows)]
     {
-        // Evidence pinning must resolve the same namespace in the cleared helper environment.
-        let temp = _resource
-            .parent()
-            .and_then(Path::parent)
-            .expect("native task namespace");
-        _command.env("TMPDIR", temp);
+        for key in ["SystemRoot", "SystemDrive"] {
+            if let Some(value) = std::env::var_os(key) {
+                _command.env(key, value);
+            }
+        }
+        _command.env("TEMP", temp).env("TMP", temp);
     }
+}
+
+pub(super) async fn canonical(path: &Path) -> std::io::Result<std::path::PathBuf> {
+    let canonical = tokio::fs::canonicalize(path).await?;
+    Ok(dunce::simplified(&canonical).to_owned())
 }

@@ -273,7 +273,7 @@ fn reject_reparse(file: &File) -> io::Result<()> {
     }
     Ok(())
 }
-fn identity(file: &File) -> io::Result<FILE_ID_INFO> {
+pub(in crate::windows) fn identity(file: &File) -> io::Result<FILE_ID_INFO> {
     let mut identity = FILE_ID_INFO::default();
     if unsafe {
         GetFileInformationByHandleEx(

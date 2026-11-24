@@ -24,6 +24,7 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+dunce = "1.0.5"
 maka-plugin-core.workspace = true
 maka-agent-facts.workspace = true
 alacritty_terminal = { version = "0.26.0", default-features = false }
@@ -43,11 +44,11 @@ unicode-width = "0.2.2"
 libc.workspace = true
 rustix = { version = "1.1.5", features = ["pty", "termios", "fs", "process", "net"] }
 
-
 [target.'cfg(windows)'.dependencies]
-dunce = "1.0.5"
+dirs = "5.0.1"
+maka-event-log.workspace = true
 uuid.workspace = true
-windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Com", "Win32_UI_Shell", "Win32_System_Console", "Win32_System_JobObjects", "Win32_System_Pipes", "Win32_System_Registry", "Win32_System_Threading", "Win32_System_SystemInformation", "Wdk_System_SystemServices"] }
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Com", "Win32_UI_Shell", "Win32_System_Console", "Win32_System_JobObjects", "Win32_System_Pipes", "Win32_System_Registry", "Win32_System_Threading", "Win32_System_SystemInformation", "Wdk_System_SystemServices", "Wdk_Foundation", "Wdk_Storage_FileSystem", "Win32_System_IO"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }

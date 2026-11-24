@@ -41,7 +41,10 @@ pub struct PublishChange {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SourceIdentity {
     pub device: u64,
+    #[cfg(unix)]
     pub inode: u64,
+    #[cfg(windows)]
+    pub inode: [u8; 16],
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

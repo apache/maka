@@ -34,16 +34,26 @@ use {
     },
 };
 
+#[cfg(windows)]
+mod windows;
+#[cfg(windows)]
+use std::{
+    io,
+    path::{Component, Path},
+    sync::Arc,
+};
+#[cfg(windows)]
+use windows::freeze;
+
 /// Custody of the HOME created by this original owner, never host HOME or a
 /// descriptor-derived credential grant. Retain before consuming TaskOwner.
 #[derive(Clone)]
 pub struct HomeCapture {
-    #[cfg(unix)]
     input: Arc<HomeInput>,
 }
-#[cfg(unix)]
 struct HomeInput {
     resource: File,
+    #[cfg(unix)]
     resource_path: PathBuf,
     home: File,
     initial: Vec<(PathBuf, File)>,
@@ -52,14 +62,12 @@ struct HomeInput {
 /// A selected protected tree, not an atomic cut or proof that escaped writers
 /// have died. Files are exact COW clones, accessed only through read-only FDs.
 pub struct FrozenHome {
-    #[cfg(unix)]
     input: Arc<HomeInput>,
     #[cfg(unix)]
     container: File,
-    #[cfg(unix)]
     directory: File,
-    #[cfg(not(unix))]
-    _private: (),
+    #[cfg(windows)]
+    entries: Arc<[super::SnapshotFile]>,
 }
 
 pub struct HomeEntry {
@@ -75,7 +83,10 @@ pub enum HomeEntryKind {
 }
 
 pub struct HomeEntries {
-    #[cfg(unix)]
+    #[cfg(windows)]
+    entries: Arc<[super::SnapshotFile]>,
+    #[cfg(windows)]
+    next: usize,
     directory: File,
     #[cfg(unix)]
     records:
@@ -102,7 +113,6 @@ enum Kind {
 
 pub(super) enum SeedState {
     Fresh,
-    #[cfg(unix)]
     Seeded,
     Failed,
 }
@@ -128,38 +138,18 @@ impl HomeCapture {
             }),
         })
     }
-    #[cfg(not(unix))]
-    pub(super) fn from_resource(_: &std::path::Path) -> Result<Self, Error> {
-        Err(unavailable())
-    }
-
     /// Compare two already held capabilities. This cannot mint either one.
     pub fn owns(&self, frozen: &FrozenHome) -> bool {
-        #[cfg(unix)]
-        {
-            Arc::ptr_eq(&self.input, &frozen.input)
-        }
-        #[cfg(not(unix))]
-        {
-            let _ = frozen;
-            false
-        }
+        Arc::ptr_eq(&self.input, &frozen.input)
     }
 
     /// Requires the original group's closure and drained streams. AuthACK,
     /// current Root authority and profile publication remain broker decisions.
     pub async fn freeze(&self) -> Result<FrozenHome, Error> {
-        #[cfg(unix)]
-        {
-            let input = self.input.clone();
-            tokio::task::spawn_blocking(move || freeze(input))
-                .await
-                .map_err(io::Error::other)?
-        }
-        #[cfg(not(unix))]
-        {
-            Err(unavailable())
-        }
+        let input = self.input.clone();
+        tokio::task::spawn_blocking(move || freeze(input))
+            .await
+            .map_err(io::Error::other)?
     }
 }
 impl FrozenHome {
@@ -174,10 +164,12 @@ impl FrozenHome {
                 failed: false,
             })
         }
-        #[cfg(not(unix))]
-        {
-            Err(unavailable())
-        }
+        #[cfg(windows)]
+        Ok(HomeEntries {
+            directory: self.directory.try_clone()?,
+            entries: self.entries.clone(),
+            next: 0,
+        })
     }
 }
 impl Iterator for HomeEntries {
@@ -225,33 +217,27 @@ impl Iterator for HomeEntries {
             }
             Some(entry)
         }
-        #[cfg(not(unix))]
+        #[cfg(windows)]
         {
-            None
+            let entry = self.entries.get(self.next)?;
+            self.next += 1;
+            Some(windows::entry(&self.directory, entry))
         }
     }
 }
 
-#[cfg(not(unix))]
-fn unavailable() -> Error {
-    Error::CaptureUnsupported("private HOME custody unavailable on this platform".into())
-}
-#[cfg(unix)]
 fn invalid(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, message)
 }
-#[cfg(unix)]
 fn unsupported(message: &str) -> Error {
     Error::CaptureUnsupported(message.into())
 }
-#[cfg(unix)]
 fn valid_mode(mode: u32) -> Result<(), Error> {
     if mode & !0o777 != 0 {
         return Err(unsupported("HOME entry contains special permission bits"));
     }
     Ok(())
 }
-#[cfg(unix)]
 fn valid_path(path: &Path) -> Result<(), Error> {
     if path.as_os_str().is_empty()
         || path
@@ -532,10 +518,17 @@ pub(super) fn seed(
         owner.home_seed = SeedState::Seeded;
         Ok(())
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
     {
-        let _ = entries;
-        Err(unavailable())
+        windows::seed(
+            owner
+                .home_capture
+                .as_ref()
+                .ok_or_else(|| unsupported("live task has no private HOME"))?,
+            entries,
+        )?;
+        owner.home_seed = SeedState::Seeded;
+        Ok(())
     }
 }
 #[cfg(unix)]

@@ -158,12 +158,30 @@ impl SecurityInfo {
     }
 }
 
-/// Validate the held object, not a separately resolved pathname. Unknown ACE
-/// forms fail closed; inherited account/SYSTEM entries are valid for child files.
-pub fn validate_private(file: &File) -> io::Result<()> {
+/// Private task evidence requires a protected DACL on the held object itself.
+pub fn validate_protected_private(file: &File) -> io::Result<()> {
+    use windows_sys::Win32::Security::{GetSecurityDescriptorControl, SE_DACL_PROTECTED};
     let info = SecurityInfo::read(file)?;
+    let mut control = 0;
+    let mut revision = 0;
+    // SAFETY: GetSecurityInfo owns the descriptor for the duration of this query.
+    checked(unsafe {
+        GetSecurityDescriptorControl(info._allocation.0, &mut control, &mut revision)
+    })?;
+    if control & SE_DACL_PROTECTED == 0 {
+        return Err(denied());
+    }
+    validate_account_acl(&info)
+}
+
+/// Root children may inherit account/SYSTEM entries from their private parent.
+pub fn validate_private(file: &File) -> io::Result<()> {
+    validate_account_acl(&SecurityInfo::read(file)?)
+}
+
+fn validate_account_acl(info: &SecurityInfo) -> io::Result<()> {
     let account = AccountSid::current()?;
-    validate_owner(&info, &account)?;
+    validate_owner(info, &account)?;
     // SAFETY: Windows returned a valid ACL and owns its structural validation.
     for index in 0..unsafe { (*info.dacl).AceCount } {
         let mut ace = ptr::null_mut();

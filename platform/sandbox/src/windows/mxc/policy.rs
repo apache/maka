@@ -22,32 +22,29 @@ use crate::{
     filesystem::{Access, Policy, Scope},
     path,
 };
-use mxc_sdk::mxc_common::{
-    filesystem_object::{
-        ExistingObjectComparison, compare_existing_filesystem_objects, normalize_object_conflicts,
-    },
-    logger::{Logger, Mode},
-    models::{
-        BaseProcessUiConfig, ContainerPolicy, NetworkAction, NetworkCidr, NetworkEgressPolicy,
-        NetworkIngressPolicy, NetworkPeer, NetworkRule, UiPolicy,
-    },
+use mxc_sdk::v1::{
+    ContainerRequest, Containment, FilesystemPolicy, NetworkAction, NetworkEgressPolicy,
+    NetworkIngressPolicy, NetworkPeerPolicy, NetworkPolicy, NetworkRulePolicy, UiPolicy,
+    configs::{ProcessContainerConfig, ProcessContainerUi, ProcessContainerUiIsolation},
 };
 use std::{
+    collections::HashMap,
     fs, io,
-    net::{Ipv4Addr, Ipv6Addr},
-    os::windows::ffi::OsStrExt,
+    os::windows::{ffi::OsStrExt, fs::OpenOptionsExt},
     path::{Path, PathBuf},
 };
 use windows_sys::Win32::Foundation::{
     ERROR_BAD_NETPATH, ERROR_CONNECTION_UNAVAIL, ERROR_DEVICE_NOT_CONNECTED, ERROR_NOT_READY,
 };
-use windows_sys::Win32::Storage::FileSystem::{GetDriveTypeW, GetLogicalDrives};
+use windows_sys::Win32::Storage::FileSystem::{
+    FILE_FLAG_BACKUP_SEMANTICS, FILE_READ_ATTRIBUTES, GetDriveTypeW, GetLogicalDrives,
+};
 
 pub(super) fn prepare(
     filesystem: &Policy,
     network: &Network,
     cwd: &Path,
-) -> Result<ContainerPolicy, Error> {
+) -> Result<ContainerRequest, Error> {
     path::validate(cwd)?;
     let filesystem = filesystem.compile()?.process_snapshot()?.compile()?;
     if !filesystem.access(cwd).can_read() {
@@ -59,14 +56,27 @@ pub(super) fn prepare(
     }
     let volumes = volume_roots(cwd)?;
     let policy = filesystem_policy(filesystem.policy(), &volumes, cwd)?;
-    Ok(with_network(policy, network))
+    let mut native = ProcessContainerConfig::default();
+    let mut desktop = ProcessContainerUi::default();
+    desktop.isolation = ProcessContainerUiIsolation::Desktop;
+    native.ui = Some(desktop);
+    native.capabilities.push("registryRead".into());
+    let mut request = ContainerRequest::new("");
+    request.containment = Containment::ProcessContainer(native);
+    request.filesystem = Some(policy);
+    request.network = Some(network_policy(network));
+    request.ui = Some(UiPolicy {
+        disable: false,
+        ..Default::default()
+    });
+    Ok(request)
 }
 
 fn filesystem_policy(
     filesystem: &Policy,
     volumes: &[PathBuf],
     cwd: &Path,
-) -> Result<ContainerPolicy, Error> {
+) -> Result<FilesystemPolicy, Error> {
     let mut read = Vec::new();
     let mut write = Vec::new();
     let mut deny = Vec::new();
@@ -111,20 +121,6 @@ fn filesystem_policy(
                 Ok(_) => {}
             }
         }
-        // Native deny paths are absolute masks, whereas Maka can explicitly
-        // reopen a descendant. Such a policy must use a capable backend.
-        if rule.access != Access::Deny
-            && filesystem.rules.iter().any(|ancestor| {
-                ancestor.access == Access::Deny
-                    && ancestor.scope == Scope::Subtree
-                    && !path::compare(&ancestor.path, &rule.path).is_eq()
-                    && path::within(&rule.path, &ancestor.path)
-            })
-        {
-            return Err(Error::Unsupported(
-                "native MXC cannot reopen a descendant of a denied path".into(),
-            ));
-        }
         for paths in [&mut read, &mut write, &mut deny] {
             paths.retain(|path| !crate::path::compare(path, &rule.path).is_eq());
         }
@@ -136,7 +132,7 @@ fn filesystem_policy(
     }
     // Resolve junction/hardlink identities before expanding volume grants so
     // generated children inherit any restriction on the volume itself.
-    let normalized = normalize(ContainerPolicy {
+    let normalized = normalize(FilesystemPolicy {
         readonly_paths: strings(read)?,
         readwrite_paths: strings(write)?,
         denied_paths: strings(deny)?,
@@ -148,7 +144,7 @@ fn filesystem_policy(
     write.retain(|path| !contains(&readonly, path) && !contains(&denied, path));
     let mut read = expand_volume_roots(readonly, volumes)?;
     read.retain(|path| !contains(&write, path) && !contains(&denied, path));
-    normalize(ContainerPolicy {
+    normalize(FilesystemPolicy {
         readonly_paths: strings(read)?,
         readwrite_paths: strings(write)?,
         denied_paths: normalized.denied_paths,
@@ -156,74 +152,83 @@ fn filesystem_policy(
     })
 }
 
-fn with_network(mut policy: ContainerPolicy, network: &Network) -> ContainerPolicy {
-    let enabled = matches!(network, Network::Allowed);
-    let proxied = matches!(network, Network::Restricted { .. });
-    let default = if enabled {
+fn network_policy(network: &Network) -> NetworkPolicy {
+    let default = if matches!(network, Network::Allowed) {
         NetworkAction::Allow
     } else {
         NetworkAction::Deny
     };
-    let mut egress = NetworkEgressPolicy {
-        default,
-        ..Default::default()
+    let restricted = matches!(network, Network::Restricted { .. });
+    let loopback = NetworkRulePolicy {
+        to: Some(vec![
+            NetworkPeerPolicy::new("127.0.0.0/8"),
+            NetworkPeerPolicy::new("::1/128"),
+        ]),
+        ports: None,
     };
-    if proxied {
-        // Codex's managed-network contract permits local clients and servers.
-        // Maka's execution-owned proxy still enforces destination host+port.
-        egress.allow.push(NetworkRule {
-            to: vec![
-                NetworkPeer {
-                    cidr: NetworkCidr {
-                        address: Ipv4Addr::new(127, 0, 0, 0).into(),
-                        prefix_length: 8,
-                    },
-                    except: Vec::new(),
-                },
-                NetworkPeer {
-                    cidr: NetworkCidr {
-                        address: Ipv6Addr::LOCALHOST.into(),
-                        prefix_length: 128,
-                    },
-                    except: Vec::new(),
-                },
-            ],
-            ports: Vec::new(),
-        });
+    NetworkPolicy {
+        egress: Some(NetworkEgressPolicy {
+            default: Some(default),
+            allow: restricted.then(|| vec![loopback]),
+            deny: None,
+        }),
+        ingress: Some(NetworkIngressPolicy {
+            default: Some(default),
+            host_loopback: Some(if restricted {
+                NetworkAction::Allow
+            } else {
+                default
+            }),
+        }),
+        runtime_config: None,
     }
-    policy.capabilities = vec!["registryRead".into()];
-    policy.network_egress = Some(egress);
-    policy.network_ingress = Some(NetworkIngressPolicy {
-        default,
-        host_loopback: if enabled || proxied {
-            NetworkAction::Allow
-        } else {
-            NetworkAction::Deny
-        },
-    });
-    policy.network_specified = true;
-    policy.network_mode_specified = true;
-    // PowerShell DLL startup requires Win32k and desktop handles. Keep the
-    // default clipboard, input-injection and system-control restrictions.
-    policy.ui = UiPolicy {
-        disable: false,
-        ..Default::default()
-    };
-    policy.base_process_ui = BaseProcessUiConfig {
-        isolation: "desktop".into(),
-        ..Default::default()
-    };
-    policy
 }
 
-fn normalize(mut policy: ContainerPolicy) -> Result<ContainerPolicy, Error> {
-    let mut logger = Logger::new(Mode::Buffer);
-    if let Some(normalized) =
-        normalize_object_conflicts(&policy, &mut logger).map_err(io::Error::other)?
-    {
-        policy = normalized;
+fn object(path: &Path) -> io::Result<(u64, [u8; 16])> {
+    let file = fs::OpenOptions::new()
+        .access_mode(FILE_READ_ATTRIBUTES)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+        .open(path)?;
+    let id = crate::windows::acl::identity(&file)?;
+    Ok((id.VolumeSerialNumber, id.FileId.Identifier))
+}
+
+// PSEC grants apply to objects. All spellings of a junction or hardlink
+// must carry the intersection of their permissions, including generated grants.
+fn normalize(policy: FilesystemPolicy) -> Result<FilesystemPolicy, Error> {
+    let mut entries = Vec::new();
+    let mut access_by_id = HashMap::new();
+    for (paths, access) in [
+        (policy.readonly_paths, Access::Read),
+        (policy.readwrite_paths, Access::Write),
+        (policy.denied_paths, Access::Deny),
+    ] {
+        for path in paths {
+            let id = match object(Path::new(&path)) {
+                Ok(id) => {
+                    access_by_id
+                        .entry(id)
+                        .and_modify(|a: &mut Access| *a = a.intersect(access))
+                        .or_insert(access);
+                    Some(id)
+                }
+                Err(error) if access == Access::Deny && error.kind() == io::ErrorKind::NotFound => {
+                    None
+                }
+                Err(error) => return Err(error.into()),
+            };
+            entries.push((path, id, access));
+        }
     }
-    Ok(policy)
+    let mut result = FilesystemPolicy::default();
+    for (path, id, access) in entries {
+        match id.map_or(access, |id| access_by_id[&id]) {
+            Access::Read => result.readonly_paths.push(path),
+            Access::Write => result.readwrite_paths.push(path),
+            Access::Deny => result.denied_paths.push(path),
+        }
+    }
+    Ok(result)
 }
 
 fn volume_roots(cwd: &Path) -> io::Result<Vec<PathBuf>> {
@@ -251,7 +256,7 @@ fn implicit_read_root(root: &Path, cwd: &Path) -> bool {
     // SAFETY: the root is NUL terminated for this call.
     (unsafe { GetDriveTypeW(wide.as_ptr()) }) != DRIVE_REMOTE
         || path::within(cwd, root)
-        || compare_existing_filesystem_objects(root, root) == ExistingObjectComparison::Same
+        || object(root).is_ok()
 }
 
 // PSEC volume-root grants do not recurse. Like Codex, grant their current
@@ -264,10 +269,7 @@ fn expand_volume_roots(roots: Vec<PathBuf>, volumes: &[PathBuf]) -> Result<Vec<P
                 Ok(entries) => {
                     for entry in entries {
                         let child = entry?.path();
-                        if child.to_str().is_some()
-                            && compare_existing_filesystem_objects(&child, &child)
-                                == ExistingObjectComparison::Same
-                        {
+                        if child.to_str().is_some() && object(&child).is_ok() {
                             expanded.push(child);
                         }
                     }
@@ -325,56 +327,35 @@ fn strings(paths: Vec<PathBuf>) -> Result<Vec<String>, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
-
     #[test]
-    fn native_policy_keeps_permissions_without_retired_dacl_fallback() {
-        for (network, egress, ingress) in [
-            (
-                Network::Denied,
-                json!({"default":"deny","allow":[],"deny":[]}),
-                json!({"default":"deny","host_loopback":"deny"}),
-            ),
-            (
-                Network::Allowed,
-                json!({"default":"allow","allow":[],"deny":[]}),
-                json!({"default":"allow","host_loopback":"allow"}),
-            ),
-            (
-                Network::destination(crate::Destination::new("example.test", 443).unwrap()),
-                json!({"default":"deny","allow":[{"to":[
-                    {"cidr":{"address":"127.0.0.0","prefix_length":8},"except":[]},
-                    {"cidr":{"address":"::1","prefix_length":128},"except":[]}
-                ],"ports":[]}],"deny":[]}),
-                json!({"default":"deny","host_loopback":"allow"}),
-            ),
+    fn restricted_network_only_grants_loopback_peers() {
+        let restricted =
+            Network::destination(crate::Destination::new("example.test", 443).unwrap());
+        for (network, default, loopback) in [
+            (Network::Allowed, NetworkAction::Allow, NetworkAction::Allow),
+            (Network::Denied, NetworkAction::Deny, NetworkAction::Deny),
+            (restricted, NetworkAction::Deny, NetworkAction::Allow),
         ] {
-            let policy = with_network(
-                ContainerPolicy {
-                    readonly_paths: vec![r"C:\readonly".into()],
-                    readwrite_paths: vec![r"C:\writable".into()],
-                    denied_paths: vec![r"C:\denied".into()],
-                    ..Default::default()
-                },
-                &network,
-            );
-            assert!(policy.network_specified && policy.network_mode_specified);
-            let wire = serde_json::to_value(policy).unwrap();
-            assert_eq!(wire["network_egress"], egress);
-            assert_eq!(wire["network_ingress"], ingress);
-            assert_eq!(wire["readonly_paths"], json!([r"C:\readonly"]));
-            assert_eq!(wire["readwrite_paths"], json!([r"C:\writable"]));
-            assert_eq!(wire["denied_paths"], json!([r"C:\denied"]));
-            assert_eq!(wire["capabilities"], json!(["registryRead"]));
-            assert_eq!(
-                wire["ui"],
-                json!({"disable":false,"clipboard":"none","injection":false})
-            );
-            assert_eq!(
-                wire["base_process_ui"],
-                json!({"isolation":"desktop","desktopSystemControl":false,"systemSettings":"none","ime":false})
-            );
-            assert!(wire.get("fallback").is_none());
+            let policy = network_policy(&network);
+            let egress = policy.egress.unwrap();
+            assert_eq!(egress.default, Some(default));
+            let ingress = policy.ingress.unwrap();
+            assert_eq!(ingress.default, Some(default));
+            assert_eq!(ingress.host_loopback, Some(loopback));
+            if matches!(network, Network::Restricted { .. }) {
+                assert_eq!(
+                    egress.allow.unwrap(),
+                    [NetworkRulePolicy {
+                        to: Some(vec![
+                            NetworkPeerPolicy::new("127.0.0.0/8"),
+                            NetworkPeerPolicy::new("::1/128")
+                        ]),
+                        ports: None,
+                    }]
+                );
+            } else {
+                assert!(egress.allow.is_none());
+            }
         }
     }
 }

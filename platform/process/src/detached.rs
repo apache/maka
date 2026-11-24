@@ -25,6 +25,8 @@ mod windows;
 #[cfg(unix)]
 pub use tokio::process::Child;
 #[cfg(windows)]
+pub(crate) use windows::spawn_helper;
+#[cfg(windows)]
 pub use windows::{Child, spawn};
 
 #[cfg(unix)]

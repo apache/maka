@@ -43,6 +43,23 @@ pub(crate) fn launch(
     console: Console,
 ) -> io::Result<(OwnedHandle, u32)> {
     let jobs = [job.0.as_raw_handle()];
+    launch_with_handles(
+        plan,
+        &jobs,
+        stdio,
+        match console {
+            Console::None => CREATE_NO_WINDOW,
+            Console::Inherited => 0,
+        },
+    )
+}
+
+pub(crate) fn launch_with_handles(
+    plan: &crate::command::Prepared,
+    jobs: &[windows_sys::Win32::Foundation::HANDLE],
+    stdio: [&File; 3],
+    flags: u32,
+) -> io::Result<(OwnedHandle, u32)> {
     let handles = stdio.map(AsRawHandle::as_raw_handle);
     for handle in handles {
         unsafe {
@@ -53,7 +70,7 @@ pub(crate) fn launch(
             ))?;
         }
     }
-    let mut attributes = Attributes::stdio(&handles, &jobs)?;
+    let mut attributes = Attributes::stdio(&handles, jobs)?;
     let mut startup = STARTUPINFOEXW::default();
     startup.StartupInfo.cb = size_of::<STARTUPINFOEXW>() as u32;
     startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
@@ -61,10 +78,6 @@ pub(crate) fn launch(
     startup.StartupInfo.hStdOutput = handles[1];
     startup.StartupInfo.hStdError = handles[2];
     startup.lpAttributeList = attributes.as_ptr();
-    let flags = match console {
-        Console::None => CREATE_NO_WINDOW,
-        Console::Inherited => 0,
-    };
     let process = unsafe { plan.spawn_windows(&startup, true, flags) }?;
     let handle = owned(process.hProcess)?;
     let _thread = owned(process.hThread)?;

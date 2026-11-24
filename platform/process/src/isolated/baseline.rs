@@ -17,7 +17,6 @@
  * under the License.
  */
 
-#[cfg(unix)]
 use super::SnapshotKind;
 use super::SnapshotProof;
 use std::{
@@ -29,7 +28,6 @@ use std::{
 /// Read-only original capture custody, not a permission document or job owner.
 /// Methods perform native filesystem I/O; call them on a blocking worker.
 pub struct BaselineReader {
-    #[cfg(unix)]
     directory: File,
     proof: SnapshotProof,
 }
@@ -67,31 +65,23 @@ impl BaselineReader {
         }
         Ok(Self { directory, proof })
     }
-    #[cfg(not(unix))]
-    pub(super) fn from_resource(_: &File, _: SnapshotProof) -> io::Result<Self> {
-        Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "immutable baseline unavailable",
-        ))
+    #[cfg(windows)]
+    pub(super) fn from_resource(resource: &File, proof: SnapshotProof) -> io::Result<Self> {
+        let directory = super::fs::directory(resource, "baseline".as_ref())?;
+        if super::fs::identity(&directory)? != proof.baseline_identity() {
+            return Err(changed());
+        }
+        Ok(Self { directory, proof })
     }
 
     /// Return original entry bytes/type for an already selected candidate path.
     /// No mtime/size shortcut is used, and no working-tree path is followed.
     /// Missing includes names that were outside the original read ceiling;
     /// publication must still prove current source absence and current authority.
-    #[cfg(unix)]
     pub fn open_entry(&self, relative: &Path) -> io::Result<BaselineEntry> {
         open_entry(&self.directory, self.proof.files(), relative)
     }
-    #[cfg(not(unix))]
-    pub fn open_entry(&self, _: &Path) -> io::Result<BaselineEntry> {
-        Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "immutable baseline unavailable",
-        ))
-    }
 }
-#[cfg(unix)]
 fn changed() -> io::Error {
     io::Error::new(
         io::ErrorKind::InvalidData,
@@ -183,5 +173,41 @@ pub(super) fn open_entry(
                 working_target: working_target.clone(),
             })
         }
+    }
+}
+
+#[cfg(windows)]
+pub(super) fn open_entry(
+    directory: &File,
+    files: &[super::SnapshotFile],
+    relative: &Path,
+) -> io::Result<BaselineEntry> {
+    if relative.as_os_str().is_empty()
+        || relative
+            .components()
+            .any(|p| !matches!(p, std::path::Component::Normal(_)))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "expected a relative baseline path",
+        ));
+    }
+    let Ok(index) = files.binary_search_by(|f| f.relative_path.as_path().cmp(relative)) else {
+        return Ok(BaselineEntry::Missing);
+    };
+    let entry = &files[index];
+    let file = super::fs::open_relative(directory, relative)?;
+    if super::fs::identity(&file)? != entry.identity {
+        return Err(changed());
+    }
+    match entry.kind {
+        SnapshotKind::File if file.metadata()?.is_file() => Ok(BaselineEntry::File {
+            file,
+            mode: entry.mode,
+        }),
+        SnapshotKind::Directory if file.metadata()?.is_dir() => {
+            Ok(BaselineEntry::Directory { mode: entry.mode })
+        }
+        _ => Err(changed()),
     }
 }

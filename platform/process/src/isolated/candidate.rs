@@ -32,7 +32,6 @@ pub struct CandidateCapture {
 }
 struct CaptureInput {
     resource: File,
-    #[cfg(unix)]
     working: File,
     proof: SnapshotProof,
 }
@@ -42,12 +41,10 @@ struct CaptureInput {
 /// Dropping this handle leaves the protected artifact intact.
 pub struct FrozenCandidate {
     input: Arc<CaptureInput>,
-    #[cfg(unix)]
     directory: File,
     entries: Vec<SnapshotFile>,
 }
 impl CandidateCapture {
-    #[cfg(unix)]
     pub(super) fn from_owner(owner: &TaskOwner) -> Result<Self, Error> {
         let resource = super::evidence::open_resource(&owner.resource)?;
         // Verify the original baseline identity before capturing working custody.
@@ -56,6 +53,9 @@ impl CandidateCapture {
             .clone()
             .ok_or_else(|| io::Error::other("live task has no publication candidate"))?;
         BaselineReader::from_resource(&resource, proof.clone())?;
+        #[cfg(windows)]
+        let working = super::fs::directory(&resource, "workspace".as_ref())?;
+        #[cfg(unix)]
         let working = directory_at(&resource, OsStr::new("workspace"))?;
         Ok(Self {
             input: Arc::new(CaptureInput {
@@ -65,13 +65,6 @@ impl CandidateCapture {
             }),
         })
     }
-    #[cfg(not(unix))]
-    pub(super) fn from_owner(_: &TaskOwner) -> Result<Self, Error> {
-        Err(Error::CaptureUnsupported(
-            "physical candidate COW unavailable".into(),
-        ))
-    }
-
     /// Caller supplies real Known/current-Root admission. This only freezes
     /// private bytes; it never reads or writes the original shared source.
     /// Observed structural changes fail the whole capture, without retries.
@@ -94,23 +87,34 @@ impl FrozenCandidate {
         BaselineReader::from_resource(&self.input.resource, self.input.proof.clone())
     }
     /// Read immutable artifact entries only; never follow working-tree paths.
-    #[cfg(unix)]
     pub fn open_entry(&self, relative: &Path) -> io::Result<BaselineEntry> {
         super::baseline::open_entry(&self.directory, &self.entries, relative)
     }
-    #[cfg(not(unix))]
-    pub fn open_entry(&self, _: &Path) -> io::Result<BaselineEntry> {
-        Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "candidate reader unavailable",
-        ))
-    }
 }
-#[cfg(not(unix))]
-fn freeze(_: Arc<CaptureInput>) -> Result<FrozenCandidate, Error> {
-    Err(Error::CaptureUnsupported(
-        "physical candidate COW unavailable".into(),
-    ))
+#[cfg(windows)]
+fn freeze(input: Arc<CaptureInput>) -> Result<FrozenCandidate, Error> {
+    use super::fs::{copy_tree, directory, identity, mkdir};
+    let check = || -> Result<(), Error> {
+        if identity(&directory(&input.resource, "workspace".as_ref())?)?
+            != identity(&input.working)?
+        {
+            return Err(Error::CaptureUnstable("workspace".into()));
+        }
+        Ok(())
+    };
+    let current = directory(&input.resource, "workspace".as_ref())?;
+    if identity(&current)? != identity(&input.working)? {
+        return Err(Error::CaptureUnstable("workspace".into()));
+    }
+    let owner = directory(&input.resource, "owner".as_ref())?;
+    let directory = mkdir(&owner, format!("frozen-{}", uuid::Uuid::new_v4()).as_ref())?;
+    let (entries, _) = copy_tree(&current, &directory, |_| true)?;
+    check()?;
+    Ok(FrozenCandidate {
+        input,
+        directory,
+        entries,
+    })
 }
 
 #[cfg(unix)]
