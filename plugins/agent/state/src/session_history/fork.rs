@@ -176,6 +176,7 @@ fn validate_ranges(
             })
             || view.external.as_ref().is_some_and(|task| {
                 (task.closed.is_none()
+                    && !view.closed_native_process()
                     && view.terminal != Some(maka_agent_facts::durable::Terminal::Cancelled))
                     || task.cleanup != OperationCleanup::Confirmed
                     || task.effects.values().any(|effect| effect.unsettled())

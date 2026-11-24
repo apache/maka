@@ -128,7 +128,7 @@ impl Query for ReadQuiescence {
     }
 }
 
-fn observe(
+pub(crate) fn observe(
     c: &Connection,
     owner: &RunOwner,
     session: &str,
@@ -163,7 +163,7 @@ fn observe(
         ),
         (
             SessionObligation::ExternalTask,
-            "SELECT EXISTS(SELECT 1 FROM agent_runs WHERE owner=?1 AND session=?2 AND local=1 AND json_extract(external,'$.admitted')=1 AND ((json_extract(external,'$.closed') IS NULL AND json_extract(terminal,'$') IS NOT 'cancelled') OR json_extract(external,'$.cleanup.kind') IS NOT 'confirmed'))",
+            "SELECT EXISTS(SELECT 1 FROM agent_runs r LEFT JOIN agent_run_specs s ON s.run=r.run LEFT JOIN contents c ON c.id=s.spec_content_id WHERE r.owner=?1 AND r.session=?2 AND r.local=1 AND json_extract(r.external,'$.admitted')=1 AND (json_extract(r.external,'$.cleanup.kind') IS NOT 'confirmed' OR (json_extract(r.external,'$.closed') IS NULL AND json_extract(r.terminal,'$') IS NOT 'cancelled' AND NOT (r.terminal IS NOT NULL AND COALESCE(CAST(c.payload AS TEXT)->>'$.backend.kind'='executor' AND CAST(c.payload AS TEXT)->>'$.backend.selection.executor'='external',0)))))",
         ),
         (
             SessionObligation::ExternalSteering,

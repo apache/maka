@@ -606,6 +606,40 @@ fn verify_sqlite_integrity_and_migrations(root: &Path) -> BTreeMap<String, Vec<i
                     );
                 }
             }
+            if has_runs > 0 && versions.contains(&55) {
+                for view in [
+                    "agent_memory_operation_field_source",
+                    "agent_memory_termination_receipts",
+                    "agent_memory_recall_outputs",
+                ] {
+                    let _: i64 = conn
+                        .query_row(&format!("SELECT COUNT(*) FROM {view}"), [], |row| {
+                            row.get(0)
+                        })
+                        .unwrap_or_else(|e| panic!("v55 view {view} failed on {rel}: {e}"));
+                }
+                let missing_ended_unknown: i64 = conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM agent_session_history h
+                         JOIN agent_facts f ON f.sequence=h.sequence
+                         JOIN contents b ON b.id=f.body_content_id
+                         WHERE h.kind='external_effect' AND h.tool_start=0 AND h.result_source=0
+                           AND CAST(b.payload AS TEXT)->>'$.fact.event.kind'='observed'
+                           AND CAST(b.payload AS TEXT)->>'$.fact.event.observation.receipt.outcome.kind'='unknown'
+                           AND CAST(b.payload AS TEXT)->>'$.fact.event.observation.receipt.cleanup.kind'='confirmed'
+                           AND NOT EXISTS (
+                             SELECT 1 FROM agent_recall_messages m
+                             WHERE m.owner=h.owner AND m.session=h.session AND m.sequence=h.sequence
+                           )",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .unwrap();
+                assert_eq!(
+                    missing_ended_unknown, 0,
+                    "v55 must index every ended-unknown external observation on {rel}"
+                );
+            }
             ledgers.insert(rel, versions);
         }
     }

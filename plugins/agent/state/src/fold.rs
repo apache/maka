@@ -608,17 +608,21 @@ impl RunView {
         self.has_unsettled_recovery_except(|_| false, |_| false)
     }
 
+    pub(crate) fn closed_native_process(&self) -> bool {
+        matches!(&self.spec.backend, BackendSpec::Executor { selection, .. }
+            if selection.executor == "external")
+            && self
+                .external
+                .as_ref()
+                .is_some_and(|task| task.cleanup == OperationCleanup::Confirmed)
+    }
+
     fn has_unsettled_recovery_except(
         &self,
         ignore_unknown_tool: impl Fn(&Tool) -> bool,
         ignore_unknown_external: impl Fn(&crate::external_effects::ExternalEffect) -> bool,
     ) -> bool {
-        let closed_native_process = matches!(&self.spec.backend, BackendSpec::Executor { selection, .. }
-            if selection.executor == "external")
-            && self
-                .external
-                .as_ref()
-                .is_some_and(|task| task.cleanup == OperationCleanup::Confirmed);
+        let closed_native_process = self.closed_native_process();
         let sealed_provider_call =
             |tool: &Tool| self.terminal.is_some() && tool.call.provider_executed;
         self.recovery_failures().any(|reason| {

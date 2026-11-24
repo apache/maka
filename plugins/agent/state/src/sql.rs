@@ -2824,7 +2824,8 @@ mod tests {
                              diagnostic: &str,
                              initial_cleanup: OperationCleanup,
                              terminal: Terminal,
-                             terminal_diag: Option<String>| {
+                             terminal_diag: Option<String>,
+                             pre_v55_recall: bool| {
             let run = RunId::new();
             let (mut spec, _) = crate::store::stop_tests::spec();
             let task = ExternalTaskId::new();
@@ -3050,13 +3051,14 @@ mod tests {
                     crate::external_effects::replay(&db, run, revision, event).unwrap();
                 }
                 crate::session_history::index(&db, &recorded).unwrap();
-                // Simulate pre-v55 Recall: skip ExternalEffectEvent::Observed while advancing heads.
-                if !matches!(
-                    recorded.fact,
-                    Fact::ExternalEffect {
-                        event: ExternalEffectEvent::Observed { .. }
-                    }
-                ) {
+                if !pre_v55_recall
+                    || !matches!(
+                        recorded.fact,
+                        Fact::ExternalEffect {
+                            event: ExternalEffectEvent::Observed { .. }
+                        }
+                    )
+                {
                     crate::recall::index_fact(&db, &spec, &recorded, seq).unwrap();
                 } else {
                     let digest: String = db
@@ -3078,16 +3080,27 @@ mod tests {
             (run, spec, key, reference, view, recorded_facts)
         };
 
-        // Run A: pre-v55 ended-unknown observation omitted from Recall while head advanced.
+        // Run A: real v54 failed external run (no ExternalTaskClosed, generic v54 RunTerminated
+        // diagnostic, Observed(Unknown, Confirmed) skipped by pre-v55 Recall while head advanced).
         let diag_a = "paste-v54-secret-alpha";
-        let (run_a, spec_a, _key_a, _ref_a, _view_a, facts_a) = seed_external(
+        let (run_a, spec_a, _key_a, _ref_a, view_a, facts_a) = seed_external(
             "mig55-a",
             diag_a,
             OperationCleanup::Confirmed,
-            Terminal::Completed,
-            None,
+            Terminal::Failed,
+            Some("Could not determine the outcome of an external agent operation.".into()),
+            true,
         );
         let obs_a_seq = facts_a[6].0;
+        let obs_a_id = facts_a[6].1.id;
+        let prep_a_id = facts_a[3].1.id;
+        let pre_facts_a: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM agent_facts WHERE run=?",
+                [run_a.to_string()],
+                |r| r.get(0),
+            )
+            .unwrap();
         let pre_count: i64 = db
             .query_row(
                 "SELECT COUNT(*) FROM agent_recall_messages WHERE sequence=?",
@@ -3100,25 +3113,23 @@ mod tests {
             "v54 must omit Observed from agent_recall_messages"
         );
 
-        // Run B: pre-v55 failed external_effect_unknown termination before late Confirmed arrives.
-        let diag_b = "paste-v54-secret-beta";
-        let term_diag_b =
-            format!("{diag_b}. The call may still be running; its end was not confirmed.");
-        let (run_b, spec_b, key_b, ref_b, mut view_b, facts_b) = seed_external(
-            "mig55-b",
-            diag_b,
-            OperationCleanup::Unconfirmed,
-            Terminal::Failed,
-            Some(term_diag_b.clone()),
-        );
-        let prep_b_id = facts_b[3].1.id;
-        let term_b_seq = facts_b.last().unwrap().0;
-        let term_b_id = facts_b.last().unwrap().1.id;
-
         // Cold upgrade v54 -> v55 without manual Recall rebuild.
         maka_event_log::migration::run(&db, &catalog).unwrap();
 
-        // 1) Run A's pre-existing Observed(Confirmed) is now in Recall with a single Field::Result.
+        let post_facts_a: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM agent_facts WHERE run=?",
+                [run_a.to_string()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            post_facts_a, pre_facts_a,
+            "v55 must not rewrite canonical facts"
+        );
+
+        // 1) Run A's pre-existing Observed(Confirmed) is indexed in Recall (single Field::Result),
+        // surfaces its real diagnostic, and is Quiescent despite closed == None.
         let (body_a, fields_a): (String, String) = db
             .query_row(
                 "SELECT body, fields_json FROM agent_recall_messages WHERE sequence=?",
@@ -3144,18 +3155,113 @@ mod tests {
             fts_hits, 1,
             "rebuilt Recall FTS must index migrated observation for {run_a}"
         );
+        assert!(!view_a.blocks_followup());
+        assert_eq!(
+            view_a.recovery_failure_diagnostic().as_deref(),
+            Some(diag_a)
+        );
+        assert_eq!(
+            crate::store::quiescence::observe(&db, &spec_a.owner, &spec_a.session_id).unwrap(),
+            crate::SessionQuiescence::Quiescent
+        );
 
-        // 2) Run B's pre-existing RunTerminated was backfilled into agent_memory_shared_fields.
-        let shared_b_before: i64 = db
-            .query_row(
-                "SELECT COUNT(*) FROM agent_memory_shared_fields WHERE run=? AND fact=?",
-                params![run_b.to_string(), term_b_id.to_string()],
-                |r| r.get(0),
+        let restrict_fact = |owner: &maka_agent_facts::durable::RunOwner,
+                             session: &str,
+                             fact_id: FactId,
+                             seq: u64,
+                             start: usize,
+                             end: usize,
+                             quote: &str| {
+            let owner_json = serde_json::to_string(owner).unwrap();
+            let mem_id = Uuid::new_v4().to_string();
+            let user_src = serde_json::to_string(&MemorySource::UserOperation {
+                operation_id: Uuid::new_v4(),
+                observed_at: 0,
+            })
+            .unwrap();
+            let conv_src = serde_json::json!({
+                "kind": "conversation",
+                "reference": {
+                    "sessionId": session,
+                    "sequence": seq,
+                    "factId": fact_id.to_string(),
+                    "itemIndex": 0,
+                    "start": start,
+                    "end": end,
+                    "quote": quote,
+                    "fingerprint": "fp"
+                }
+            })
+            .to_string();
+            db.execute(
+                    "INSERT INTO agent_memories VALUES(?1,'personal',?2,1,1,'user_recall','suppressed',0,0)",
+                    params![owner_json, mem_id],
+                )
+                .unwrap();
+            db.execute(
+                    "INSERT INTO agent_memory_versions(namespace,scope,id,revision,body,source,digest,disposition)
+                     VALUES(?1,'personal',?2,1,?3,?4,'digest','suppressed')",
+                    params![owner_json, mem_id, quote, user_src],
+                )
+                .unwrap();
+            db.execute(
+                "INSERT INTO agent_memory_evidence(namespace,scope,id,assertion,source,source_key)
+                     VALUES(?1,'personal',?2,1,?3,?4)",
+                params![owner_json, mem_id, conv_src, format!("ev-{mem_id}")],
             )
             .unwrap();
-        assert_eq!(shared_b_before, 1);
+            mem_id
+        };
 
-        // Append late Observed(Confirmed) on Run B after upgrade (changes recovery wording by dropping suffix).
+        let obs_a_start = body_a.find(diag_a).unwrap();
+        let _mem_a = restrict_fact(
+            &spec_a.owner,
+            &spec_a.session_id,
+            obs_a_id,
+            obs_a_seq,
+            obs_a_start,
+            obs_a_start + diag_a.len(),
+            diag_a,
+        );
+        assert_eq!(
+            crate::session_history::recovery_diagnostic(&db, &view_a, true)
+                .unwrap()
+                .as_deref(),
+            Some("The operation outcome is unknown.")
+        );
+        assert_eq!(
+            RestrictedArchives {
+                owner: spec_a.owner.clone(),
+                facts: vec![prep_a_id],
+            }
+            .execute(&db)
+            .unwrap()
+            .get(&prep_a_id),
+            Some(&ArchiveRestriction::PairedResult)
+        );
+
+        // 2) Post-v55 failed external run (no ExternalTaskClosed, v55 RunTerminated carrying
+        // unconfirmed diagnostic) before late Observed(Confirmed) arrives: quiescence reports
+        // Busy(ExternalEffect) -> Quiescent, and RunTerminated <-> Observed redaction works both ways.
+        let diag_b = "paste-v55-secret-beta";
+        let term_diag_b =
+            format!("{diag_b}. The call may still be running; its end was not confirmed.");
+        let (run_b, spec_b, key_b, ref_b, mut view_b, facts_b) = seed_external(
+            "mig55-b",
+            diag_b,
+            OperationCleanup::Unconfirmed,
+            Terminal::Failed,
+            Some(term_diag_b),
+            false,
+        );
+        let prep_b_id = facts_b[3].1.id;
+        let term_b_seq = facts_b.last().unwrap().0;
+        let term_b_id = facts_b.last().unwrap().1.id;
+        assert_eq!(
+            crate::store::quiescence::observe(&db, &spec_b.owner, &spec_b.session_id).unwrap(),
+            crate::SessionQuiescence::Busy(crate::SessionObligation::ExternalEffect)
+        );
+
         let late_obs_rev = (facts_b.len() + 1) as u64;
         let late_obs = RecordedFact {
             schema_version: SCHEMA_VERSION,
@@ -3190,56 +3296,30 @@ mod tests {
         )
         .unwrap();
         let late_seq = db.last_insert_rowid() as u64;
+        if let Fact::ExternalEffect { event } = &late_obs.fact {
+            crate::external_effects::replay(&db, run_b, late_obs_rev, event).unwrap();
+        }
         crate::session_history::index(&db, &late_obs).unwrap();
         crate::recall::index_fact(&db, &spec_b, &late_obs, late_seq).unwrap();
-
-        let owner_b_json = serde_json::to_string(&spec_b.owner).unwrap();
-        let restrict_fact = |fact_id: FactId, seq: u64, start: usize, end: usize, quote: &str| {
-            let mem_id = Uuid::new_v4().to_string();
-            let user_src = serde_json::to_string(&MemorySource::UserOperation {
-                operation_id: Uuid::new_v4(),
-                observed_at: 0,
-            })
-            .unwrap();
-            let conv_src = serde_json::json!({
-                "kind": "conversation",
-                "reference": {
-                    "sessionId": spec_b.session_id,
-                    "sequence": seq,
-                    "factId": fact_id.to_string(),
-                    "itemIndex": 0,
-                    "start": start,
-                    "end": end,
-                    "quote": quote,
-                    "fingerprint": "fp"
-                }
-            })
-            .to_string();
-            db.execute(
-                "INSERT INTO agent_memories VALUES(?1,'personal',?2,1,1,'user_recall','suppressed',0,0)",
-                params![owner_b_json, mem_id],
-            )
-            .unwrap();
-            db.execute(
-                "INSERT INTO agent_memory_versions(namespace,scope,id,revision,body,source,digest,disposition)
-                 VALUES(?1,'personal',?2,1,?3,?4,'digest','suppressed')",
-                params![owner_b_json, mem_id, quote, user_src],
-            )
-            .unwrap();
-            db.execute(
-                "INSERT INTO agent_memory_evidence(namespace,scope,id,assertion,source,source_key)
-                 VALUES(?1,'personal',?2,1,?3,?4)",
-                params![owner_b_json, mem_id, conv_src, format!("ev-{mem_id}")],
-            )
-            .unwrap();
-            mem_id
-        };
+        assert_eq!(
+            crate::store::quiescence::observe(&db, &spec_b.owner, &spec_b.session_id).unwrap(),
+            crate::SessionQuiescence::Quiescent
+        );
 
         // Direction 1: Restrict RunTerminated -> masks late Observed(Confirmed) AND recovery_diagnostic.
-        let mem1 = restrict_fact(term_b_id, term_b_seq, 0, diag_b.len(), diag_b);
-        let spans = indexed_spans(&db, &spec_b.owner, &[(0, late_obs.id, 0)], &[]).unwrap();
+        let mem1 = restrict_fact(
+            &spec_b.owner,
+            &spec_b.session_id,
+            term_b_id,
+            term_b_seq,
+            0,
+            diag_b.len(),
+            diag_b,
+        );
         assert!(
-            spans.contains_key(&0),
+            indexed_spans(&db, &spec_b.owner, &[(0, late_obs.id, 0)], &[])
+                .unwrap()
+                .contains_key(&0),
             "RunTerminated restriction must propagate to late Observed"
         );
         assert_eq!(
@@ -3255,8 +3335,7 @@ mod tests {
             Some(diag_b)
         );
 
-        // Remove Direction 1, test Direction 2: Restrict late Observed(Confirmed) -> masks RunTerminated,
-        // restricts paired Prepared archive, AND masks recovery_diagnostic.
+        // Direction 2: Restrict late Observed(Confirmed) -> masks RunTerminated, paired Prepared, and recovery_diagnostic.
         db.execute("DELETE FROM agent_memory_evidence WHERE id=?", [&mem1])
             .unwrap();
         db.execute("DELETE FROM agent_memory_versions WHERE id=?", [&mem1])
@@ -3266,25 +3345,28 @@ mod tests {
         let obs_body = maka_agent_facts::tool_output::ended_unknown_message(diag_b);
         let obs_start = obs_body.find(diag_b).unwrap();
         let _mem2 = restrict_fact(
+            &spec_b.owner,
+            &spec_b.session_id,
             late_obs.id,
             late_seq,
             obs_start,
             obs_start + diag_b.len(),
             diag_b,
         );
-        let term_spans = indexed_spans(&db, &spec_b.owner, &[(0, term_b_id, 0)], &[]).unwrap();
         assert!(
-            term_spans.contains_key(&0),
+            indexed_spans(&db, &spec_b.owner, &[(0, term_b_id, 0)], &[])
+                .unwrap()
+                .contains_key(&0),
             "Observed restriction must propagate to RunTerminated"
         );
-        let archives = RestrictedArchives {
-            owner: spec_b.owner.clone(),
-            facts: vec![prep_b_id],
-        }
-        .execute(&db)
-        .unwrap();
         assert_eq!(
-            archives.get(&prep_b_id),
+            RestrictedArchives {
+                owner: spec_b.owner.clone(),
+                facts: vec![prep_b_id],
+            }
+            .execute(&db)
+            .unwrap()
+            .get(&prep_b_id),
             Some(&ArchiveRestriction::PairedResult)
         );
         assert_eq!(
@@ -3293,6 +3375,5 @@ mod tests {
                 .as_deref(),
             Some("The operation outcome is unknown.")
         );
-        assert_eq!(spec_a.session_id, "mig55-a");
     }
 }

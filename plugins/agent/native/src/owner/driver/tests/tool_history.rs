@@ -2307,12 +2307,6 @@ async fn external_effect_ended_unknown_releases_followup_and_projects_history() 
                     task,
                     cleanup: OperationCleanup::Confirmed,
                 },
-                Fact::ExternalTaskClosed {
-                    task,
-                    outcome: Terminal::Failed,
-                    diagnostic: None,
-                    final_message: None,
-                },
                 Fact::RunTerminated {
                     terminal: Terminal::Failed,
                     diagnostic: Some(format!(

@@ -283,7 +283,7 @@ impl Query for ReferencedMcpRevisions {
         let mut retained = BTreeSet::new();
         // Filter with the existing owner/run/pending indexes before reading any
         // frontier bodies; completed history alone is not an execution reference.
-        let mut statement=c.prepare_cached("SELECT r.run,s.schema_version,s.owner,s.session,json_object('schemaVersion',json_extract(b.payload,'$.schemaVersion'),'owner',json_extract(b.payload,'$.owner'),'sessionId',json_extract(b.payload,'$.sessionId'),'origin',json_extract(b.payload,'$.origin'),'trigger',json_extract(b.payload,'$.trigger'),'mcpRevision',json_extract(b.payload,'$.mcpRevision')),r.terminal,r.external,r.schema_version,r.session FROM agent_runs r LEFT JOIN agent_run_specs s ON s.run=r.run LEFT JOIN contents b ON b.id=s.spec_content_id WHERE r.owner=?1 AND r.local=1 AND (r.terminal IS NULL OR r.external IS NOT NULL OR EXISTS(SELECT 1 FROM agent_attempts a WHERE a.run=r.run AND a.pending=1) OR EXISTS(SELECT 1 FROM agent_tools t WHERE t.run=r.run AND t.pending=1) OR EXISTS(SELECT 1 FROM agent_cells c WHERE c.run=r.run AND c.pending=1) OR EXISTS(SELECT 1 FROM agent_external_effects e WHERE e.run=r.run AND e.pending=1) OR EXISTS(SELECT 1 FROM agent_external_publications p WHERE p.run=r.run))")?;
+        let mut statement=c.prepare_cached("SELECT r.run,s.schema_version,s.owner,s.session,json_object('schemaVersion',json_extract(b.payload,'$.schemaVersion'),'owner',json_extract(b.payload,'$.owner'),'sessionId',json_extract(b.payload,'$.sessionId'),'origin',json_extract(b.payload,'$.origin'),'trigger',json_extract(b.payload,'$.trigger'),'mcpRevision',json_extract(b.payload,'$.mcpRevision')),r.terminal,r.external,r.schema_version,r.session,COALESCE(CAST(b.payload AS TEXT)->>'$.backend.kind'='executor' AND CAST(b.payload AS TEXT)->>'$.backend.selection.executor'='external',0) FROM agent_runs r LEFT JOIN agent_run_specs s ON s.run=r.run LEFT JOIN contents b ON b.id=s.spec_content_id WHERE r.owner=?1 AND r.local=1 AND (r.terminal IS NULL OR r.external IS NOT NULL OR EXISTS(SELECT 1 FROM agent_attempts a WHERE a.run=r.run AND a.pending=1) OR EXISTS(SELECT 1 FROM agent_tools t WHERE t.run=r.run AND t.pending=1) OR EXISTS(SELECT 1 FROM agent_cells c WHERE c.run=r.run AND c.pending=1) OR EXISTS(SELECT 1 FROM agent_external_effects e WHERE e.run=r.run AND e.pending=1) OR EXISTS(SELECT 1 FROM agent_external_publications p WHERE p.run=r.run))")?;
         let mut rows = statement.query([&owner])?;
         while let Some(row) = rows.next()? {
             let spec = run_metadata(row, &self.0)?;
@@ -307,6 +307,7 @@ impl Query for ReferencedMcpRevisions {
                     run_id(row.get(0)?)?,
                     terminal,
                     row.get::<_, Option<String>>(6)?.as_deref(),
+                    row.get::<_, bool>(9)?,
                 )?,
             };
             if needed {
@@ -381,6 +382,7 @@ fn terminal_needs_catalog(
     run: RunId,
     terminal: &Terminal,
     external: Option<&str>,
+    native_external: bool,
 ) -> Result<bool, StoreError> {
     if any_pending::<Attempt>(
         c,
@@ -407,7 +409,10 @@ fn terminal_needs_catalog(
     }
     if let Some(body) = external {
         let task: ExternalTask = serde_json::from_str(body)?;
-        if task.admitted && (task.closed.is_none() || task.cleanup != OperationCleanup::Confirmed) {
+        if task.admitted
+            && (task.cleanup != OperationCleanup::Confirmed
+                || (task.closed.is_none() && !native_external && *terminal != Terminal::Cancelled))
+        {
             return Ok(true);
         }
     }
