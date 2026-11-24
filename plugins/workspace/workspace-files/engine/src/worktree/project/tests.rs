@@ -145,10 +145,24 @@ fn local_files_starting_point_preserves_the_source_index_and_file_contents() {
             .join("ready"),
     )
     .unwrap();
+    git(
+        root,
+        &[
+            "worktree",
+            "lock",
+            "--reason",
+            &plan.reflog_message(),
+            plan.directory.to_str().unwrap(),
+        ],
+    );
+    // Simulate exit after Git materialized the files, before it restored the index.
+    git(&plan.directory, &["add", "--all"]);
     assert_eq!(
         fixture.ensure(&plan).unwrap().as_deref(),
         Some("maka-snapshot")
     );
+    assert_eq!(git(&plan.directory, &["show", ":file"]), "staged");
+    assert!(git(&plan.directory, &["ls-files", "--", "new"]).is_empty());
     fs::write(plan.directory.join("file"), "user updated the new checkout").unwrap();
     fixture.ensure(&plan).unwrap();
     assert_eq!(

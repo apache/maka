@@ -471,15 +471,15 @@ impl Allocation {
             save(&pending, &admin)?;
         }
         if checkout.index_path().is_file() {
-            // An interrupted send may reuse a completed checkout. Leave any
-            // unexpected edits or incomplete staging for the user to inspect.
+            // Resume a completed or partially staged checkout only if its contents match.
             let unchanged = match &self.snapshot {
-                Some(snapshot) => snapshot.matches(
+                Some(snapshot) => snapshot.resume(
                     &checkout,
                     &self.directory,
                     &directory,
                     private_root,
                     &cancel,
+                    locked && self.owns_branch(&repo, &branch_ref, commit)?,
                 )?,
                 None => crate::git::status(
                     &self.directory,

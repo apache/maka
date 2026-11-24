@@ -110,16 +110,30 @@ impl Snapshot {
         })
     }
 
-    pub(super) fn matches(
+    pub(super) fn resume(
         &self,
         repo: &gix::Repository,
         path: &Path,
         identity: &directory::Observation,
         private_root: &Path,
         cancel: &AtomicBool,
+        owns_registration: bool,
     ) -> Result<bool> {
         let current = Self::capture(repo, path, identity, private_root, cancel, None)?;
-        Ok(current.staged == self.staged && current.working == self.working)
+        if current.working != self.working {
+            return Ok(false);
+        }
+        if current.staged == self.staged {
+            return Ok(true);
+        }
+        // The first read-tree wrote the working snapshot as both the files and the index.
+        if !owns_registration || current.staged != self.working {
+            return Ok(false);
+        }
+        interrupted(cancel)?;
+        directory::open(path, identity)?;
+        self.restore_index(repo)?;
+        Ok(true)
     }
 
     pub(super) fn checkout(&self, repo: &gix::Repository) -> Result<()> {
@@ -129,6 +143,10 @@ impl Snapshot {
             "-u",
             &self.working,
         ]))?;
+        self.restore_index(repo)
+    }
+
+    fn restore_index(&self, repo: &gix::Repository) -> Result<()> {
         // Restore staging without changing the files just checked out.
         local_git::checked(local_git::command(repo)?.args(["read-tree", &self.staged]))
     }

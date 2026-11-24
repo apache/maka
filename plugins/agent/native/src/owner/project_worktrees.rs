@@ -525,7 +525,7 @@ fn checkout_failure(error: CreateError) -> ProjectWorktreeCreated {
         ),
         CreateError::Git(Git::Unsupported) => (
             Reason::Unsupported,
-            "Use a checkout and base branch without sparse checkout, submodules, relative worktree paths, or external filters.",
+            "Use a checkout and base branch without sparse checkout, submodules, relative worktree paths, Git config includes, or external filters.",
         ),
         CreateError::Git(Git::Io(error)) => {
             tracing::warn!(%error, "Project worktree creation did not complete");
