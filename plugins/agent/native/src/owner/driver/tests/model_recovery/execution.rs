@@ -45,6 +45,8 @@ async fn exercise(rig: &mut Rig, expire: bool, recovery: bool) -> TestResult<()>
     let mut observed = provider.take_interactive_rx().unwrap();
     let boot = bootstrap_deployment(&base, provider.base_url(), true, |config| {
         config["todo"] = json!(true);
+        config["goals"] = json!(true);
+        config["scheduledTasks"] = json!(true);
         config["permissions"]["access"] = json!("danger_full_access");
         config["permissions"]["requestPermissions"] = json!(true);
         config["tools"] = json!([
@@ -232,9 +234,11 @@ async fn exercise(rig: &mut Rig, expire: bool, recovery: bool) -> TestResult<()>
                 "Write".into(),
                 "Shell".into(),
                 "WebFetch".into(),
+                "CreateGoal".into(),
+                "ScheduledTask".into(),
             ]),
         },
-        lease_millis: if expire { 20_000 } else { 120_000 },
+        lease_millis: if expire { 2_000 } else { 120_000 },
     };
     let ClaimResult::Granted { grant, .. } = repository.claim(request.clone()).await? else {
         return Err("grant missing".into());
@@ -294,176 +298,189 @@ async fn exercise(rig: &mut Rig, expire: bool, recovery: bool) -> TestResult<()>
         provider.shutdown().await;
         return Ok(());
     }
-    assert!(
-        call(
+    let next = if expire {
+        Claim {
+            activation: Uuid::new_v4(),
+            start: None,
+            ..request
+        }
+    } else {
+        assert!(
+            call(
+                client,
+                "agent",
+                "send",
+                json!({
+                    "sessionId":sessions[1],"message":"Not authorized.","backend":backend
+                })
+            )
+            .await
+            .is_err()
+        );
+        let sent = call(
             client,
             "agent",
             "send",
             json!({
-                "sessionId":sessions[1],"message":"Not authorized.","backend":backend
-            })
+                "sessionId":sessions[0],"message":"Read the todo list.","backend":backend
+            }),
         )
-        .await
-        .is_err()
-    );
-    let sent = call(
-        client,
-        "agent",
-        "send",
-        json!({
-            "sessionId":sessions[0],"message":"Read the todo list.","backend":backend
-        }),
-    )
-    .await?;
-    assert_eq!(sent["kind"], "queued", "{sent}");
-    let reply = observed.recv().await.ok_or("model request missing")?;
-    assert!(!super::bot_tools::has_tool(reply.body(), "todo_write"));
-    for name in ["Write", "Shell", "WebFetch"] {
-        assert!(super::bot_tools::has_tool(reply.body(), name), "{name}");
-    }
-    reply.send_plan(super::bot_tools::tool_response("todo_read", json!({})));
-    let mut reply = observed.recv().await.ok_or("tool result missing")?;
-    assert!(
-        reply.body()["messages"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|m| m["role"] == "tool")
-    );
-    let blocked_file = base.join("workspace/forbidden.txt");
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
-    let url = format!("http://{}/forbidden", listener.local_addr()?);
-    for (name, input) in [
-        (
-            "Write",
-            json!({"path":"forbidden.txt","content":"must not write"}),
-        ),
-        ("WebFetch", json!({"url":url})),
-        (
-            "Shell",
-            json!({"command":"echo unauthorized > forbidden.txt","login":false,
+        .await?;
+        assert_eq!(sent["kind"], "queued", "{sent}");
+        let reply = observed.recv().await.ok_or("model request missing")?;
+        for forbidden in ["todo_write", "CreateGoal", "GoalStatus", "ScheduledTask"] {
+            assert!(
+                !super::bot_tools::has_tool(reply.body(), forbidden),
+                "{forbidden}"
+            );
+        }
+        for name in ["Write", "Shell", "WebFetch"] {
+            assert!(super::bot_tools::has_tool(reply.body(), name), "{name}");
+        }
+        reply.send_plan(super::bot_tools::tool_response("todo_read", json!({})));
+        let mut reply = observed.recv().await.ok_or("tool result missing")?;
+        assert!(
+            reply.body()["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|m| m["role"] == "tool")
+        );
+        let blocked_file = base.join("workspace/forbidden.txt");
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
+        let url = format!("http://{}/forbidden", listener.local_addr()?);
+        for (name, input) in [
+            (
+                "Write",
+                json!({"path":"forbidden.txt","content":"must not write"}),
+            ),
+            ("WebFetch", json!({"url":url})),
+            (
+                "Shell",
+                json!({"command":"echo unauthorized > forbidden.txt","login":false,
             "additional_permissions":{"filesystem":[{"path":blocked_file,"scope":"exact","access":"write"}],"network":"allowed"},
             "justification":"Request broader access"}),
-        ),
-    ] {
-        reply.send_plan(super::bot_tools::tool_response(name, input));
-        reply = observed.recv().await.ok_or("denied tool result missing")?;
-        let tool = reply.body()["messages"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .rev()
-            .find(|m| m["role"] == "tool")
-            .ok_or("tool receipt missing")?;
-        let content = tool["content"].as_str().ok_or("tool result not text")?;
+            ),
+        ] {
+            reply.send_plan(super::bot_tools::tool_response(name, input));
+            reply = observed.recv().await.ok_or("denied tool result missing")?;
+            let tool = reply.body()["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .rev()
+                .find(|m| m["role"] == "tool")
+                .ok_or("tool receipt missing")?;
+            let content = tool["content"].as_str().ok_or("tool result not text")?;
+            assert!(
+                content.contains("failed")
+                    || content.contains("denied")
+                    || content.contains("permission")
+                    || content.contains("Permission"),
+                "{name}: {content}"
+            );
+            assert!(!blocked_file.exists(), "grant allowed a forbidden write");
+            let pending = call(
+                client,
+                "agent",
+                "pendingInteractions",
+                json!({"sessionId":sessions[0]}),
+            )
+            .await?;
+            assert!(
+                pending["entries"].as_array().unwrap().is_empty(),
+                "grant ceiling became an approvable request: {pending}"
+            );
+        }
         assert!(
-            content.contains("failed")
-                || content.contains("denied")
-                || content.contains("permission")
-                || content.contains("Permission"),
-            "{name}: {content}"
+            tokio::time::timeout(Duration::from_millis(100), listener.accept())
+                .await
+                .is_err(),
+            "denied network tool reached its destination"
         );
-        assert!(!blocked_file.exists(), "grant allowed a forbidden write");
-        let pending = call(
+        reply.reply_text("Done.");
+        quiescent_message(client, &sessions[0], &sent["messageId"]).await?;
+        // Exercise the real mutation dispatcher, including methods unrelated to send.
+        let current = call(client, "agent", "observe", json!({"sessionId":sessions[0]})).await?;
+        let renamed = call(
             client,
             "agent",
-            "pendingInteractions",
+            "metadata",
+            json!({
+                "sessionId":sessions[0], "expectedRevision":current["session"]["revision"],
+                "title":"Authorized rename", "labels":[]
+            }),
+        )
+        .await?;
+        assert_eq!(renamed["kind"], "committed");
+        let foreign = call(client, "agent", "observe", json!({"sessionId":sessions[1]})).await?;
+        for (method, input) in [
+            (
+                "metadata",
+                json!({"sessionId":sessions[1],"expectedRevision":foreign["session"]["revision"],"title":"Unauthorized rename","labels":[]}),
+            ),
+            (
+                "changeSession",
+                json!({"sessionId":sessions[1],"expectedRevision":1,"action":"remove"}),
+            ),
+            (
+                "saveFile",
+                json!({"sessionId":sessions[1],"path":maka_fs_tools::path::WorkspacePath::from_bytes(b"forbidden.txt")?,"expectedVersion":"missing"}),
+            ),
+            (
+                "create",
+                json!({"title":"Unauthorized","automaticTitle":false,"labels":[],"workspace":{"kind":"directory","path":base.join("workspace")}}),
+            ),
+            (
+                "fork",
+                json!({"sessionId":sessions[0],"expectedRevision":1,"position":{"kind":"end"},"title":"Unauthorized fork","labels":[]}),
+            ),
+        ] {
+            let mut attachments = Attachments::new();
+            if method == "saveFile" {
+                attachments.insert("content".into(), Arc::new(EditedText));
+            }
+            let error = call_with_attachments(client, "agent", method, input, attachments)
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.contains("execution grant") || error.contains("execution_grant"),
+                "{method}: {error}"
+            );
+        }
+        assert_eq!(
+            call(client, "agent", "observe", json!({"sessionId":sessions[1]})).await?,
+            foreign
+        );
+        // The real publisher uses the same generation-aware repository adapter.
+        let preview = call(
+            client,
+            "agent",
+            "previewHistoryCheckpoint",
             json!({"sessionId":sessions[0]}),
         )
         .await?;
-        assert!(
-            pending["entries"].as_array().unwrap().is_empty(),
-            "grant ceiling became an approvable request: {pending}"
-        );
-    }
-    assert!(
-        tokio::time::timeout(Duration::from_millis(100), listener.accept())
-            .await
-            .is_err(),
-        "denied network tool reached its destination"
-    );
-    reply.reply_text("Done.");
-    quiescent_message(client, &sessions[0], &sent["messageId"]).await?;
-    // Exercise the real mutation dispatcher, including methods unrelated to send.
-    let current = call(client, "agent", "observe", json!({"sessionId":sessions[0]})).await?;
-    let renamed = call(
-        client,
-        "agent",
-        "metadata",
-        json!({
-            "sessionId":sessions[0], "expectedRevision":current["session"]["revision"],
-            "title":"Authorized rename", "labels":[]
-        }),
-    )
-    .await?;
-    assert_eq!(renamed["kind"], "committed");
-    let foreign = call(client, "agent", "observe", json!({"sessionId":sessions[1]})).await?;
-    for (method, input) in [
-        (
-            "metadata",
-            json!({"sessionId":sessions[1],"expectedRevision":foreign["session"]["revision"],"title":"Unauthorized rename","labels":[]}),
-        ),
-        (
-            "changeSession",
-            json!({"sessionId":sessions[1],"expectedRevision":1,"action":"remove"}),
-        ),
-        (
-            "saveFile",
-            json!({"sessionId":sessions[1],"path":maka_fs_tools::path::WorkspacePath::from_bytes(b"forbidden.txt")?,"expectedVersion":"missing"}),
-        ),
-        (
-            "create",
-            json!({"title":"Unauthorized","automaticTitle":false,"labels":[],"workspace":{"kind":"directory","path":base.join("workspace")}}),
-        ),
-        (
-            "fork",
-            json!({"sessionId":sessions[0],"expectedRevision":1,"position":{"kind":"end"},"title":"Unauthorized fork","labels":[]}),
-        ),
-    ] {
-        let mut attachments = Attachments::new();
-        if method == "saveFile" {
-            attachments.insert("content".into(), Arc::new(EditedText));
+        let published = call(
+            client,
+            "agent",
+            "publishCheckpoint",
+            json!({
+                "sessionId":sessions[0],"expectedRevision":null,
+                "confirmedSubtreeDigest":preview["subtreeDigest"],"workspaceConsistency":null
+            }),
+        )
+        .await?;
+        assert_eq!(published["state"]["kind"], "published", "{published}");
+        let head = repository
+            .read_head(binding.identity.clone())
+            .await?
+            .ok_or("Head missing")?;
+        Claim {
+            activation: Uuid::new_v4(),
+            start: Some(head.head.revision),
+            ..request
         }
-        let error = call_with_attachments(client, "agent", method, input, attachments)
-            .await
-            .unwrap_err()
-            .to_string();
-        assert!(
-            error.contains("execution grant") || error.contains("execution_grant"),
-            "{method}: {error}"
-        );
-    }
-    assert_eq!(
-        call(client, "agent", "observe", json!({"sessionId":sessions[1]})).await?,
-        foreign
-    );
-    // The real publisher uses the same generation-aware repository adapter.
-    let preview = call(
-        client,
-        "agent",
-        "previewHistoryCheckpoint",
-        json!({"sessionId":sessions[0]}),
-    )
-    .await?;
-    let published = call(
-        client,
-        "agent",
-        "publishCheckpoint",
-        json!({
-            "sessionId":sessions[0],"expectedRevision":null,
-            "confirmedSubtreeDigest":preview["subtreeDigest"],"workspaceConsistency":null
-        }),
-    )
-    .await?;
-    assert_eq!(published["state"]["kind"], "published", "{published}");
-    let head = repository
-        .read_head(binding.identity.clone())
-        .await?
-        .ok_or("Head missing")?;
-    let next = Claim {
-        activation: Uuid::new_v4(),
-        start: Some(head.head.revision),
-        ..request
     };
 
     call(
@@ -476,9 +493,15 @@ async fn exercise(rig: &mut Rig, expire: bool, recovery: bool) -> TestResult<()>
     )
     .await?;
     let held_response = observed.recv().await.ok_or("held request missing")?;
-    if !expire {
+    let held_response = if expire {
+        Some(held_response)
+    } else {
         assert_eq!(repository.revoke(grant.clone()).await?, Status::Draining);
-    }
+        // A non-Service tool proposed right after revoke must be fenced at validate_tool
+        // without waiting for the background watcher tick.
+        held_response.send_plan(super::bot_tools::tool_response("todo_read", json!({})));
+        None
+    };
     assert_eq!(repository.claim(next.clone()).await?, ClaimResult::Busy);
     let host = rig.host.as_ref().unwrap();
     tokio::time::timeout(Duration::from_secs(30), async {
@@ -505,9 +528,11 @@ async fn exercise(rig: &mut Rig, expire: bool, recovery: bool) -> TestResult<()>
         .await
         .is_err()
     );
-    assert!(!blocked_file.exists());
-    tokio::time::timeout(Duration::from_secs(5), held_response.wait_closed()).await?;
-    drop(held_response);
+    assert!(!base.join("workspace/forbidden.txt").exists());
+    if let Some(held_response) = held_response {
+        tokio::time::timeout(Duration::from_secs(5), held_response.wait_closed()).await?;
+        drop(held_response);
+    }
     rig.host.as_ref().unwrap().stop_execution().await?;
     assert_eq!(repository.observe(grant.clone()).await?, Status::Stopped);
     assert_eq!(

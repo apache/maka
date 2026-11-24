@@ -382,7 +382,7 @@ impl Owner {
         if !jsonschema_valid(&input) {
             return Err("agent_configuration_invalid".into());
         }
-        let settings: Configuration =
+        let mut settings: Configuration =
             serde_json::from_value(input).map_err(|_| "agent_configuration_invalid")?;
         let persistence = context.persistence().ok_or("agent_requires_persistence")?;
         durable
@@ -411,6 +411,10 @@ impl Owner {
                 return Err("agent_execution_scope_mismatch".into());
             }
             execution.check().await.map_err(|e| e.to_string())?;
+            // Managed execution owns one ordinary Session, not Root-wide producers or tools.
+            settings.goals = false;
+            settings.scheduled_tasks = false;
+            settings.bot = false;
         }
         let prefix = maka_agent_authority::session_namespace(
             &persistence.source().state_domain,

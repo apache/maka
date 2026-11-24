@@ -1811,6 +1811,7 @@ impl NativeCellPort {
         {
             return Err(ToolError::Failed("Cell child admission is closed".into()));
         }
+        self.run.access.require_execution().await?;
         self.run
             .access
             .check_tool(&self.child_context(cell, operation), &name)

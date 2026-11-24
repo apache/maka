@@ -478,16 +478,19 @@ impl RunAccess {
         Ok(())
     }
 
+    pub(crate) async fn require_execution(&self) -> Result<(), ToolError> {
+        self.owner()
+            .map_err(ToolError::Failed)?
+            .require_execution(&self.execution.session_id)
+            .await
+            .map_err(ToolError::Failed)
+    }
+
     pub(crate) async fn check_tool(
         &self,
         context: &ToolCallContext,
         name: &str,
     ) -> Result<(), ToolError> {
-        self.owner()
-            .map_err(ToolError::Failed)?
-            .require_execution(&self.execution.session_id)
-            .await
-            .map_err(ToolError::Failed)?;
         self.check_context(context).await?;
         let configuration = self.live_configuration().await?;
         if configuration
