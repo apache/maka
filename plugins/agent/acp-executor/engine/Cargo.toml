@@ -24,6 +24,7 @@ publish.workspace = true
 
 [dependencies]
 maka-plugin-core.workspace = true
+maka-process.workspace = true
 hex.workspace = true
 maka-agent-facts.workspace = true
 maka-agent-ports.workspace = true
@@ -32,6 +33,7 @@ agent-client-protocol.workspace = true
 base64 = "0.23.1"
 cap-std.workspace = true
 cap-fs-ext.workspace = true
+dunce = "1.0.5"
 futures-util.workspace = true
 schemars.workspace = true
 serde.workspace = true
@@ -43,6 +45,9 @@ tokio-util.workspace = true
 uuid.workspace = true
 url = "2.5.8"
 zip = { version = "9.1.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

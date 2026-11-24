@@ -107,10 +107,7 @@ pub(super) async fn run(
     let (end,(),pipes)=tokio::join!(lifecycle,report(write(process.stdin,input,&finished),&failure,&fault),output);
     let (status,physical)=match end {
         LifecycleEnd::Wait(status)=>{
-            #[cfg(unix)]
             let physical=process.child.local_resources_closed();
-            #[cfg(not(unix))]
-            let physical=status.is_ok();
             (status,physical)
         },
         LifecycleEnd::Failed(diagnostic)=>(Err(diagnostic),false),

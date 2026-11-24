@@ -18,26 +18,22 @@
  */
 
 use super::*;
-#[cfg(unix)]
 use base64::{Engine, engine::general_purpose::STANDARD};
 use maka_agent_facts::{
     executor::{Output, ToolResultDetails, TurnUsage},
     model::ModelUsage,
 };
 use maka_external_agent::AcpV1Projection;
-#[cfg(unix)]
 use runtime::Pipe;
 use runtime::string;
 use serde_json::json;
 
-#[cfg(any(unix, test))]
 const HOST_SERVER: &str = "maka";
 
 #[expect(
     clippy::too_many_arguments,
     reason = "one invocation owns the original process, protocol and Host bridge"
 )]
-#[cfg(unix)]
 pub(super) async fn execute(
     fronts: &agy_front::Fronts,
     config: &NativeCommand,
@@ -131,7 +127,6 @@ pub(super) async fn execute(
     outcome
 }
 
-#[cfg(unix)]
 struct Protocol<'a> {
     cwd: &'a str,
     request: &'a Value,
@@ -140,7 +135,6 @@ struct Protocol<'a> {
     bridge: Arc<mcp::Bridge>,
 }
 
-#[cfg(unix)]
 impl Protocol<'_> {
     async fn converse(mut self, io: &mut Pipe) -> Result<Outcome, Error> {
         let setup = self.prepare(io).await;
@@ -248,13 +242,11 @@ impl Protocol<'_> {
     }
 }
 
-#[cfg(any(unix, test))]
 fn supports_system_prompt_append(initialized: &Value) -> bool {
     initialized.pointer("/agentCapabilities/_meta/antigravity/systemPrompt/append")
         == Some(&Value::Bool(true))
 }
 
-#[cfg(any(unix, test))]
 fn system_prompt_text(instructions: Option<&str>, had_user_block: bool) -> Option<String> {
     let instructions = instructions.filter(|text| !text.trim().is_empty());
     if had_user_block {
@@ -264,7 +256,6 @@ fn system_prompt_text(instructions: Option<&str>, had_user_block: bool) -> Optio
     }
 }
 
-#[cfg(any(unix, test))]
 fn open_params(
     cwd: &str,
     bridge_url: &str,
@@ -293,14 +284,12 @@ fn open_params(
     (method, params)
 }
 
-#[cfg(unix)]
 pub(super) fn initialize_params() -> Value {
     json!({"protocolVersion":1,"clientCapabilities":{},"clientInfo":{
         "name":"maka","title":"Maka","version":env!("CARGO_PKG_VERSION")
     }})
 }
 
-#[cfg(unix)]
 fn unconfirmed(error: Error) -> Error {
     match error {
         Error::Invalid(_) | Error::Provider(_) | Error::Cancelled => {
@@ -319,7 +308,6 @@ fn config_value<'a>(config: &'a Value, category: &str) -> Option<(&'a str, &'a s
     Some((option["id"].as_str()?, option["currentValue"].as_str()?))
 }
 
-#[cfg(unix)]
 async fn select_model(
     io: &mut Pipe,
     session: &str,
@@ -390,7 +378,6 @@ fn active_model(config: &Value) -> Option<String> {
         .map(str::to_owned)
 }
 
-#[cfg(unix)]
 async fn prompt_blocks(message: &str, images: &Value) -> Result<Vec<Value>, Error> {
     let mut blocks = vec![json!({"type":"text","text":message})];
     for image in images.as_array().into_iter().flatten() {
@@ -430,7 +417,6 @@ impl Turn {
         }
     }
 
-    #[cfg(unix)]
     async fn observe(
         &mut self,
         io: &mut Pipe,

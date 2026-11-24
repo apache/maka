@@ -30,10 +30,11 @@ maka-agent-facts.workspace = true
 alacritty_terminal = { version = "0.26.0", default-features = false }
 maka-sandbox.workspace = true
 maka-network.workspace = true
-notify = "8.2.1"
+notify = "8.2.2"
 serde.workspace = true
 schemars.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 tempfile.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["process", "net", "fs", "io-std"] }

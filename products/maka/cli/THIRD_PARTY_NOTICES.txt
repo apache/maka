@@ -31144,9 +31144,9 @@ DEALINGS IN THE SOFTWARE.
 
 ================================================================================
 
-notify@8.2.1 (CC0-1.0); authors declared by package: Félix Saparelli <me@passcod.name>, Daniel Faust <hessijames@gmail.com>, Aron Heinecke <Ox0p54r36@t-online.de>
+notify@8.2.2 (CC0-1.0); authors declared by package: Félix Saparelli <me@passcod.name>, Daniel Faust <hessijames@gmail.com>, Aron Heinecke <Ox0p54r36@t-online.de>
 
-https://crates.io/api/v1/crates/notify/8.2.1/download :: LICENSE-CC0
+https://crates.io/api/v1/crates/notify/8.2.2/download :: LICENSE-CC0
 
 Creative Commons CC0 1.0 Universal
 

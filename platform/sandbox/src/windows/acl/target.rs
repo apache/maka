@@ -17,6 +17,7 @@
  * under the License.
  */
 
+use crate::windows::file_identity as identity;
 use serde::{Deserialize, Serialize};
 use std::{
     fs::{File, OpenOptions},
@@ -272,21 +273,6 @@ fn reject_reparse(file: &File) -> io::Result<()> {
         ));
     }
     Ok(())
-}
-pub(in crate::windows) fn identity(file: &File) -> io::Result<FILE_ID_INFO> {
-    let mut identity = FILE_ID_INFO::default();
-    if unsafe {
-        GetFileInformationByHandleEx(
-            file.as_raw_handle(),
-            FileIdInfo,
-            (&mut identity as *mut FILE_ID_INFO).cast(),
-            size_of::<FILE_ID_INFO>() as u32,
-        )
-    } == 0
-    {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(identity)
 }
 
 fn final_name(file: &File, flags: GETFINALPATHNAMEBYHANDLE_FLAGS) -> io::Result<String> {

@@ -114,7 +114,6 @@ impl ProtocolSession {
     pub fn last_delivered_run(&self) -> Option<RunId> {
         self.session.last_delivered_run
     }
-    #[cfg(unix)]
     pub fn has_delivered_instructions(&self) -> bool {
         self.session.instructions_digest.is_some()
     }

@@ -38,6 +38,19 @@ enum Pipe {
     Client(NamedPipeClient),
 }
 impl LocalStream {
+    pub fn client_pid(&self) -> io::Result<u32> {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::System::Pipes::GetNamedPipeClientProcessId;
+        let Some(Pipe::Server(pipe)) = &self.pipe else {
+            return Err(io::Error::other("Expected a connected pipe server"));
+        };
+        let mut pid = 0;
+        // SAFETY: the connected server owns the handle throughout the query.
+        if unsafe { GetNamedPipeClientProcessId(pipe.as_raw_handle(), &mut pid) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(pid)
+    }
     pub(super) fn server(pipe: NamedPipeServer) -> Self {
         Self {
             pipe: Some(Pipe::Server(pipe)),

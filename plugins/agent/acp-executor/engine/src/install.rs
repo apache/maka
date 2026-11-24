@@ -104,6 +104,10 @@ impl Release {
         format!("antigravity-{VERSION}-{}", self.platform)
     }
 
+    fn receipt_key(&self) -> String {
+        format!("install/{}", self.destination())
+    }
+
     fn agent(&self, root: &std::path::Path) -> Agent {
         let directory = root.join(self.destination());
         let mut env = BTreeMap::from([
@@ -161,12 +165,22 @@ pub async fn antigravity(
     call: Scope,
     cancellation: &CancellationToken,
 ) -> Result<Agent, Error> {
-    let release = Release::current()?;
+    install_release(storage, http, data, call, cancellation, Release::current()?).await
+}
+
+async fn install_release(
+    storage: &dyn Store,
+    http: &dyn http::Client,
+    data: &Directory,
+    call: Scope,
+    cancellation: &CancellationToken,
+    release: Release,
+) -> Result<Agent, Error> {
     let control = Control {
         cancellation: cancellation.clone(),
     };
     let root = data.read_only().await?.location();
-    let key = format!("install/{}", release.destination());
+    let key = release.receipt_key();
     // Private files are writable by the external process. Only Host KV may
     // anchor executable identity; cache-side metadata cannot confer trust.
     let record = storage.read(key.clone()).await?;
@@ -232,6 +246,43 @@ pub async fn antigravity(
     }
     result?;
     Ok(release.agent(&root))
+}
+
+/// Only the fixed current-platform release in this plugin's namespace can
+/// supply executable inputs. The task owner checks the receipt against the
+/// bytes it actually writes, even if the original file changes after opening.
+pub async fn installed_program(
+    storage: &dyn Store,
+    data: &Directory,
+    executable: &std::path::Path,
+) -> Result<maka_process::isolated::InstalledProgram, Error> {
+    open_program(storage, data, executable, Release::current()?).await
+}
+
+async fn open_program(
+    storage: &dyn Store,
+    data: &Directory,
+    executable: &std::path::Path,
+    release: Release,
+) -> Result<maka_process::isolated::InstalledProgram, Error> {
+    use cap_fs_ext::DirExt;
+    let root = data.read_only().await?.location();
+    let directory = release.destination();
+    if dunce::simplified(executable)
+        != dunce::simplified(&root.join(&directory).join(release.server))
+    {
+        return Err(Error::Integrity);
+    }
+    let record = storage
+        .read(release.receipt_key())
+        .await?
+        .ok_or(Error::Integrity)?;
+    let receipt = serde_json::from_value(record.data.value().ok_or(Error::Integrity)?.clone())
+        .map_err(|_| Error::Integrity)?;
+    data.run(move |root, _| {
+        archive::program(&root.open_dir_nofollow(directory)?, &release, &receipt)
+    })
+    .await?
 }
 
 async fn install(

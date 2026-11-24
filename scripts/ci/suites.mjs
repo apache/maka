@@ -409,7 +409,7 @@ export const suites = {
       'scripts/rust/run-cli.test.mjs',
     ],
   },
-  'macos-agent-execution': {
+  'agent-execution': {
     workspace: 'root',
     packages: ['maka-cli'],
     cargoArgs: ['--locked', '-p', 'maka-cli', '--test', 'external_jobs'],
@@ -425,6 +425,8 @@ export const suites = {
       'maka-settings-native',
       'maka-host-runtime',
       'maka-sandbox',
+      'maka-external-agent',
+      'maka-fs-tools',
     ],
     cargoArgs: [
       '--locked',
@@ -438,6 +440,10 @@ export const suites = {
       'maka-host-runtime',
       '-p',
       'maka-sandbox',
+      '-p',
+      'maka-external-agent',
+      '-p',
+      'maka-fs-tools',
     ],
     targetArgs: ['--lib', '--test', 'integration'],
     filter: [
@@ -446,6 +452,9 @@ export const suites = {
       '(package(=maka-process) & test(git_bash))',
       '(package(=maka-settings-native) & test(shell_setting_rejects_invalid_bash_and_persists_valid_host_choice))',
       'binary_id(=maka-process::integration)',
+      '(package(=maka-process) & test(isolated::windows_tests::))',
+      '(package(=maka-external-agent) & test(install::archive::tests::))',
+      '(package(=maka-fs-tools) & test(write_target::windows::tests::))',
       '(package(=maka-host-runtime) & test(sandbox::windows::guards::tests::))',
       '(package(=maka-sandbox) & kind(lib) & test(native_task_namespace_can_be_denied_by_policy))',
     ].join(' | '),
@@ -521,7 +530,7 @@ export const workers = [
   },
   {
     id: 'native-macos',
-    suites: ['native', 'macos-host', 'macos-desktop', 'macos-agent-execution', 'desktop', 'pixels'],
+    suites: ['native', 'macos-host', 'macos-desktop', 'agent-execution', 'desktop', 'pixels'],
     cargoScope: [
       '--locked',
       '-p',
@@ -549,6 +558,7 @@ export const workers = [
     suites: [
       'native',
       'windows-shell',
+      'agent-execution',
       'windows-desktop',
       'windows-skills',
       'windows-ci',
@@ -577,6 +587,10 @@ export const workers = [
       'maka-host-runtime',
       '-p',
       'maka-sandbox',
+      '-p',
+      'maka-external-agent',
+      '-p',
+      'maka-fs-tools',
       '-p',
       'maka-skills-native',
       '-p',

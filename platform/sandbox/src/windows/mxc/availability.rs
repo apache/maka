@@ -23,12 +23,16 @@ use std::sync::OnceLock;
 fn capabilities() -> Option<&'static v1::ProbeFacts> {
     static PROBE: OnceLock<Option<v1::ProbeFacts>> = OnceLock::new();
     PROBE
-        .get_or_init(|| v1::probe(None).ok().map(|result| result.probes))
+        .get_or_init(|| {
+            v1::probe(None)
+                .ok()
+                .and_then(|result| result.tier.map(|_| result.probes))
+        })
         .as_ref()
 }
 
 pub fn is_available() -> bool {
-    capabilities().is_some_and(|facts| facts.base_container_api_present)
+    capabilities().is_some()
 }
 
 pub(super) fn supports_deny_paths() -> bool {

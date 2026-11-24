@@ -56,7 +56,6 @@ fn main() -> std::process::ExitCode {
     {
         return wsl_stdio::entry();
     }
-    #[cfg(unix)]
     if std::env::args_os().nth(1).as_deref()
         == Some(std::ffi::OsStr::new(maka_agent_native::FRONT_HELPER))
     {

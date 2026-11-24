@@ -142,6 +142,8 @@ maka-ui-build.workspace = true
 sha2.workspace = true
 
 [dev-dependencies]
+maka-external-agent.workspace = true
+dunce = "1.0.5"
 image = { version = "0.25.10", default-features = false, features = ["jpeg"] }
 crossterm.workspace = true
 nsh-engine.workspace = true

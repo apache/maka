@@ -91,6 +91,9 @@ tokio-tungstenite.workspace = true
 tracing = { version = "0.1.44", default-features = false, features = ["std"] }
 uuid.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_System_Threading"] }
+
 [dev-dependencies]
 maka-mock-ai.workspace = true
 image = { version = "0.25.10", default-features = false, features = ["png"] }

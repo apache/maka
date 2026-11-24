@@ -499,18 +499,6 @@ async fn execute_observed(
             .await
         }
         NativeRuntime::Antigravity => {
-            #[cfg(not(unix))]
-            {
-                fail_without_launch(
-                    &observation,
-                    owner,
-                    Error::Invalid(
-                        "Native session ownership is unavailable on this platform".into(),
-                    ),
-                )
-                .await
-            }
-            #[cfg(unix)]
             agy_acp::execute(
                 &external.agy_fronts,
                 config,
@@ -751,14 +739,13 @@ pub(super) struct Pipe {
     exit_deadline: Option<tokio::time::Instant>,
 }
 impl Pipe {
-    #[cfg(unix)]
     pub(super) fn session(
-        socket: tokio::net::UnixStream,
+        socket: maka_host_runtime::ipc::LocalStream,
         observation: Observation,
         stop: CancellationToken,
         failed: CancellationToken,
     ) -> Self {
-        let (read, write) = socket.into_split();
+        let (read, write) = tokio::io::split(socket);
         Self {
             wire: Wire::Lines {
                 input: Box::new(write),
@@ -1306,12 +1293,9 @@ fn child_error(
 ) -> Option<String> {
     match result {
         Ok((Err(error), child)) => {
-            #[cfg(unix)]
             if child.local_resources_closed() {
                 return None;
             }
-            #[cfg(not(unix))]
-            let _ = child;
             Some(error.clone())
         }
         Err(error) => Some(error.to_string()),

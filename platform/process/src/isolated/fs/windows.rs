@@ -255,16 +255,7 @@ pub(in crate::isolated) fn private_file(file: &File) -> io::Result<()> {
     Ok(())
 }
 pub(in crate::isolated) fn identity(file: &File) -> io::Result<FileIdentity> {
-    let mut info = FILE_ID_INFO::default();
-    // SAFETY: Windows fills a complete volume and 128-bit identifier for this held file.
-    checked(unsafe {
-        GetFileInformationByHandleEx(
-            file.as_raw_handle(),
-            FileIdInfo,
-            ptr::from_mut(&mut info).cast(),
-            size_of_val(&info) as u32,
-        )
-    })?;
+    let info = maka_sandbox::windows::file_identity(file)?;
     Ok(FileIdentity {
         device: info.VolumeSerialNumber,
         inode: info.FileId.Identifier,

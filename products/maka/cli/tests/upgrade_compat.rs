@@ -611,6 +611,23 @@ fn verify_sqlite_integrity_and_migrations(root: &Path) -> BTreeMap<String, Vec<i
                     |row| row.get(0),
                 )
                 .unwrap();
+            if has_runs > 0 && versions.contains(&17) {
+                use maka_agent_facts::external_publication::PublicationManifest;
+                use maka_fs_tools::publication::{PublicationChange, SourceIdentity};
+                let mut manifests = conn.prepare(
+                    "SELECT p.publication,c.payload FROM agent_external_publications p
+                     LEFT JOIN contents c ON c.content_sha256=json_extract(p.body,'$.manifest.digest')
+                     WHERE json_extract(p.body,'$.manifest') IS NOT NULL",
+                ).unwrap();
+                let mut rows = manifests.query([]).unwrap();
+                while let Some(row) = rows.next().unwrap() {
+                    let id: String = row.get(0).unwrap();
+                    let bytes: Vec<u8> = row.get(1).expect("missing publication manifest");
+                    let manifest: PublicationManifest<SourceIdentity, PublicationChange> =
+                        serde_json::from_slice(&bytes).expect("invalid publication manifest");
+                    assert_eq!(manifest.publication.to_string(), id);
+                }
+            }
             if has_runs > 0 && versions.contains(&53) {
                 let mut streaks = conn
                     .prepare("SELECT run, retry_streak FROM agent_runs")

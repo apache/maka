@@ -103,11 +103,11 @@ impl Router {
     async fn connect(&mut self, spec: Connect) -> io::Result<()> {
         let path = spec.resource.resource_ref.join("owner/stdout.bin");
         let spool = SessionSpool::open(spec.resource).await?;
-        let socket = match UnixStream::connect(spec.socket).await {
+        let socket = match maka_host_runtime::ipc::connect(&spec.socket).await {
             Ok(socket) => socket,
             Err(_) => return spool.seal().await,
         };
-        let (read, write) = socket.into_split();
+        let (read, write) = tokio::io::split(socket);
         let run = self.next_run;
         self.next_run += 1;
         let (written, committed) = watch::channel(0);

@@ -67,7 +67,11 @@ pub(super) enum SetupPurpose {
 enum SetupHome {
     Unprepared,
     Preparing,
-    Issued(SeededProfile),
+    Issued {
+        profile: SeededProfile,
+        // MXC resolves the snapshot source grant again when the provider starts.
+        source: tempfile::TempDir,
+    },
     Finished,
 }
 
@@ -203,7 +207,7 @@ impl SetupAccess for SetupSource {
     fn prepare_private_process<'a>(
         &'a self,
         context: &'a Context,
-        selected: &'a maka_process::Command,
+        selected: &'a mut maka_process::Command,
     ) -> BoxFuture<'a, Result<TaskOwner, Error>> {
         Box::pin(async move {
             self.validate(context).await?;
@@ -277,11 +281,14 @@ impl SetupAccess for SetupSource {
             )
             .await
             .map_err(|error| Error::Provider(error.to_string()))?;
-            task.bind_command(selected, &caller)
+            maka_agent_authority::executor::bind_program(&mut task, selected, &caller, context)
                 .await
                 .map_err(|error| Error::Provider(error.to_string()))?;
             let (task, seeded) = self.broker.seed_setup_profile(task).await?;
-            *self.home.lock().await = SetupHome::Issued(seeded);
+            *self.home.lock().await = SetupHome::Issued {
+                profile: seeded,
+                source,
+            };
             self.validate(context).await?;
             Ok(task)
         })
@@ -298,24 +305,29 @@ impl SetupAccess for SetupSource {
                     "original setup dispatch was not bound".into(),
                 ));
             }
-            let seeded = {
+            let (seeded, source) = {
                 let mut home = self.home.lock().await;
-                let SetupHome::Issued(seeded) = &*home else {
+                let SetupHome::Issued { profile, .. } = &*home else {
                     return Err(Error::Invalid(
                         "original setup HOME was not issued or was already completed".into(),
                     ));
                 };
-                if !seeded.owns(&frozen) {
+                if !profile.owns(&frozen) {
                     return Err(Error::Invalid(
                         "setup HOME does not belong to the original issued process".into(),
                     ));
                 }
-                let SetupHome::Issued(seeded) = std::mem::replace(&mut *home, SetupHome::Finished)
+                let SetupHome::Issued { profile, source } =
+                    std::mem::replace(&mut *home, SetupHome::Finished)
                 else {
                     unreachable!()
                 };
-                seeded
+                (profile, source)
             };
+            tokio::task::spawn_blocking(move || source.close())
+                .await
+                .map_err(|error| Error::Provider(error.to_string()))?
+                .map_err(|error| Error::Provider(error.to_string()))?;
             if matches!(self.purpose, SetupPurpose::Check) {
                 return Ok(());
             }

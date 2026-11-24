@@ -476,10 +476,59 @@ struct Cursor {
 }
 struct OpenedTranscript {
     file: tokio::fs::File,
-    identity: std::fs::Metadata,
+    identity: TranscriptIdentity,
     offset: u64,
     pending: Vec<u8>,
     scanned: usize,
+}
+#[cfg(unix)]
+type TranscriptIdentity = (u64, u64);
+#[cfg(windows)]
+type TranscriptIdentity = (u64, [u8; 16]);
+
+#[cfg(unix)]
+fn transcript_identity(metadata: &std::fs::Metadata) -> TranscriptIdentity {
+    use std::os::unix::fs::MetadataExt;
+    (metadata.dev(), metadata.ino())
+}
+
+async fn opened_identity(file: &tokio::fs::File) -> std::io::Result<TranscriptIdentity> {
+    #[cfg(unix)]
+    {
+        Ok(transcript_identity(&file.metadata().await?))
+    }
+    #[cfg(windows)]
+    {
+        let file = file.try_clone().await?.into_std().await;
+        tokio::task::spawn_blocking(move || {
+            let info = maka_sandbox::windows::file_identity(&file)?;
+            Ok((info.VolumeSerialNumber, info.FileId.Identifier))
+        })
+        .await
+        .map_err(std::io::Error::other)?
+    }
+}
+
+async fn named_transcript(path: &Path) -> std::io::Result<(TranscriptIdentity, u64)> {
+    #[cfg(unix)]
+    {
+        let metadata = tokio::fs::metadata(path).await?;
+        Ok((transcript_identity(&metadata), metadata.len()))
+    }
+    #[cfg(windows)]
+    {
+        let path = path.to_owned();
+        tokio::task::spawn_blocking(move || {
+            let file = std::fs::File::open(path)?;
+            let info = maka_sandbox::windows::file_identity(&file)?;
+            Ok((
+                (info.VolumeSerialNumber, info.FileId.Identifier),
+                file.metadata()?.len(),
+            ))
+        })
+        .await
+        .map_err(std::io::Error::other)?
+    }
 }
 impl Cursor {
     async fn fence(path: PathBuf, resume: bool) -> Result<Self, Error> {
@@ -489,8 +538,7 @@ impl Cursor {
                     .seek(std::io::SeekFrom::End(0))
                     .await
                     .map_err(|e| Error::Provider(e.to_string()))?;
-                let identity = file
-                    .metadata()
+                let identity = opened_identity(&file)
                     .await
                     .map_err(|e| Error::Provider(e.to_string()))?;
                 Some(OpenedTranscript {
@@ -515,7 +563,7 @@ impl Cursor {
         })
     }
     async fn next(&mut self) -> Result<Option<Value>, Error> {
-        let metadata = match tokio::fs::metadata(&self.path).await {
+        let (identity, length) = match named_transcript(&self.path).await {
             Ok(m) => m,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound && self.opened.is_none() => {
                 return Ok(None);
@@ -524,20 +572,10 @@ impl Cursor {
         };
         let opened = match &mut self.opened {
             Some(opened) => {
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::MetadataExt;
-                    if metadata.dev() != opened.identity.dev()
-                        || metadata.ino() != opened.identity.ino()
-                    {
-                        return Err(Error::Invalid("Claude live transcript rotated".into()));
-                    }
-                }
-                #[cfg(not(unix))]
-                if metadata.created().ok() != opened.identity.created().ok() {
+                if identity != opened.identity {
                     return Err(Error::Invalid("Claude live transcript rotated".into()));
                 }
-                if metadata.len() < opened.offset {
+                if length < opened.offset {
                     return Err(Error::Invalid("Claude live transcript truncated".into()));
                 }
                 opened
@@ -546,8 +584,7 @@ impl Cursor {
                 let file = tokio::fs::File::open(&self.path)
                     .await
                     .map_err(|e| Error::Provider(e.to_string()))?;
-                let identity = file
-                    .metadata()
+                let identity = opened_identity(&file)
                     .await
                     .map_err(|e| Error::Provider(e.to_string()))?;
                 slot.insert(OpenedTranscript {

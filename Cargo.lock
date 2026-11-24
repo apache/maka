@@ -8656,6 +8656,7 @@ dependencies = [
 name = "maka-acp-native"
 version = "0.3.0"
 dependencies = [
+ "dunce",
  "futures-util",
  "hex",
  "maka-agent-api",
@@ -8668,6 +8669,7 @@ dependencies = [
  "maka-host-runtime",
  "maka-interactions-api",
  "maka-plugin-core",
+ "maka-process",
  "maka-workspace-api",
  "serde",
  "serde_json",
@@ -8860,6 +8862,7 @@ dependencies = [
  "tracing-subscriber",
  "unicode-normalization",
  "uuid",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -8995,6 +8998,7 @@ dependencies = [
  "base64 0.23.1",
  "clap",
  "crossterm",
+ "dunce",
  "flate2",
  "futures-util",
  "hex",
@@ -9019,6 +9023,7 @@ dependencies = [
  "maka-computer-use",
  "maka-config",
  "maka-event-log",
+ "maka-external-agent",
  "maka-fs-tools",
  "maka-host-js",
  "maka-host-runtime",
@@ -9328,12 +9333,15 @@ dependencies = [
  "base64 0.23.1",
  "cap-fs-ext",
  "cap-std",
+ "dunce",
  "futures-util",
  "hex",
+ "libc",
  "maka-agent-facts",
  "maka-agent-ports",
  "maka-capabilities",
  "maka-plugin-core",
+ "maka-process",
  "schemars 1.2.3",
  "serde",
  "serde_json",
@@ -9765,6 +9773,7 @@ dependencies = [
  "schemars 1.2.3",
  "serde",
  "serde_json",
+ "sha2 0.11.1",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
@@ -11326,9 +11335,9 @@ dependencies = [
 
 [[package]]
 name = "notify"
-version = "8.2.1"
+version = "8.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "82f812702fbc75d35416d3f884e04925be7e9498f4eceea2e24ba34559284674"
+checksum = "c41a04a5f59df9322cc657286dd2d79f90816119b22c5f847607c850110205ab"
 dependencies = [
  "bitflags 2.13.2",
  "inotify",

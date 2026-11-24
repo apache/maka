@@ -32,6 +32,9 @@ use tokio::sync::{mpsc, oneshot, watch};
 pub(super) struct Processes {
     calls: Arc<calls::Calls>,
     configuration: Configuration,
+    storage: Arc<storage::Storage>,
+    namespace: maka_plugin_core::storage::Namespace,
+    root: Arc<maka_event_log::root::RootOwner>,
     entries: Mutex<BTreeMap<String, Arc<Entry>>>,
     workers: Arc<Resources>,
     drain: CancellationToken,
@@ -68,10 +71,19 @@ impl JobProof {
     }
 }
 impl Processes {
-    pub fn new(calls: Arc<calls::Calls>, configuration: Configuration) -> Self {
+    pub fn new(
+        calls: Arc<calls::Calls>,
+        configuration: Configuration,
+        storage: Arc<storage::Storage>,
+        namespace: maka_plugin_core::storage::Namespace,
+        root: Arc<maka_event_log::root::RootOwner>,
+    ) -> Self {
         Self {
             calls,
             configuration,
+            storage,
+            namespace,
+            root,
             entries: Mutex::default(),
             workers: Arc::default(),
             drain: CancellationToken::new(),
@@ -197,6 +209,31 @@ impl process::Processes for Processes {
                 done: completed,
                 root,
             });
+            let executable = std::path::Path::new(&command.executable);
+            let root = self.root.canonical_path();
+            let program = if dunce::simplified(executable).starts_with(dunce::simplified(root)) {
+                let root = root.to_owned();
+                let dirs = tokio::task::spawn_blocking(move || {
+                    maka_capabilities::storage::Directories::open(&root)
+                })
+                .await
+                .map_err(|e| Error::Failed(e.to_string()))?
+                .map_err(|e| Error::Failed(e.to_string()))?;
+                let directory = dirs
+                    .bind(&self.namespace, scope.clone())
+                    .map_err(|e| Error::Failed(e.to_string()))?;
+                Some(Arc::new(
+                    maka_external_agent::install::installed_program(
+                        self.storage.as_ref(),
+                        &directory,
+                        executable,
+                    )
+                    .await
+                    .map_err(|e| Error::Failed(e.to_string()))?,
+                ))
+            } else {
+                None
+            };
             let input = serde_json::to_value(protocol::Run {
                 executable: command.executable,
                 args: command.args,
@@ -231,7 +268,7 @@ impl process::Processes for Processes {
                 let pumped = CancellationToken::new();
                 let work = async {
                     let result = pump(
-                        &calls, &request, &issued, &observing, input, chunks, started,
+                        &calls, &request, &issued, &observing, input, program, chunks, started,
                     )
                     .await;
                     pumped.cancel();
@@ -305,6 +342,7 @@ async fn pump(
     issued: &calls::Issued,
     running: &Running,
     input: Value,
+    program: Option<Arc<maka_process::isolated::InstalledProgram>>,
     chunks: mpsc::Sender<Chunk>,
     started: oneshot::Sender<Uuid>,
 ) -> Done {
@@ -320,17 +358,15 @@ async fn pump(
         "resources":{"descriptors":resources.descriptors()?,"reacquisition":{"kind":"none"}},
     });
     eprintln!("acp process: stage=process_begin_enter");
-    let mut mutation = request
-        .begin_mutation(
-            "processes",
-            0,
-            "run".into(),
-            input,
-            issued.process_operation()?,
-            recovery.clone(),
-            resources,
-        )?
-        .await?;
+    let operation = issued.process_operation()?;
+    let mut mutation = match program {
+        Some(program) => request.begin_local_mutation(
+            "processes", 0, "run".into(), input, operation, recovery.clone(), program,
+        ).await?,
+        None => request.begin_mutation(
+            "processes", 0, "run".into(), input, operation, recovery.clone(), resources,
+        )?.await?,
+    };
     eprintln!("acp process: stage=process_begin_return");
     let reference = mutation.reference.clone();
     let lookup = request.lookup_intent(issued.process_operation()?)?;

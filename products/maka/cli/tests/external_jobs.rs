@@ -17,8 +17,8 @@
  * under the License.
  */
 
-#![cfg(unix)]
-
+#[path = "support/acp_release.rs"]
+mod acp_release;
 #[path = "support/host.rs"]
 mod host;
 
@@ -45,7 +45,6 @@ use serde_json::{Value, json};
 use std::{
     future::Future,
     io::Read,
-    os::unix::fs::PermissionsExt,
     panic::AssertUnwindSafe,
     path::{Path, PathBuf},
     process::Stdio,
@@ -240,18 +239,21 @@ async fn control_connection(
     stop: CancellationToken,
 ) -> Result<()> {
     let (input, mut output) = stream.into_split();
-    let mut input = BufReader::new(input);
-    let mut line = String::new();
+    let mut lines = BufReader::new(input).lines();
     loop {
-        line.clear();
         tokio::select! {
             () = stop.cancelled() => return Ok(()),
             command = commands.recv() => {
                 let Some(command) = command else { return Ok(()); };
                 output.write_all(format!("{}\n", command).as_bytes()).await.map_err(|e| e.to_string())?;
             }
-            read = input.read_line(&mut line) => {
-                if read.map_err(|e| e.to_string())? == 0 { return Ok(()); }
+            read = lines.next_line() => {
+                let line = match read {
+                    Ok(Some(line)) => line,
+                    Ok(None) => return Ok(()),
+                    Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => return Ok(()),
+                    Err(error) => return Err(error.to_string()),
+                };
                 if line.len() > 65536 { return Err("oversized controller frame".into()); }
                 let event: Value = serde_json::from_str(&line).map_err(|e| e.to_string())?;
                 let mut state = state.lock().unwrap();
@@ -369,6 +371,23 @@ fn check_transcript(transcript: &Transcript, ready: &Value, terminal: Option<&st
     }
 }
 
+async fn node_executable() -> Result<PathBuf> {
+    let output = Command::new("node")
+        .args(["-e", "if (+process.versions.node.split('.')[0] < 24) process.exit(1); process.stdout.write(process.execPath)"])
+        .stdin(Stdio::null())
+        .kill_on_drop(true)
+        .output().await.map_err(|e| e.to_string())?;
+    if !output.status.success() {
+        return Err(format!(
+            "Node 24+ is required: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    Ok(PathBuf::from(
+        String::from_utf8(output.stdout).map_err(|e| e.to_string())?,
+    ))
+}
+
 struct Rig {
     sandbox: Sandbox,
     endpoint: Option<PathBuf>,
@@ -392,52 +411,6 @@ impl Rig {
             controller: Controller::open().await?,
         })
     }
-    async fn node(&mut self) -> Result<PathBuf> {
-        let paths = std::env::var_os("PATH").ok_or("Node discovery requires the actual PATH")?;
-        let mut found = None;
-        for directory in std::env::split_paths(&paths) {
-            let path = directory.join("node");
-            match tokio::fs::metadata(&path).await {
-                Ok(metadata)
-                    if metadata.is_file() && metadata.permissions().mode() & 0o111 != 0 =>
-                {
-                    found = Some(path);
-                    break;
-                }
-                Ok(_) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => return Err(error.to_string()),
-            }
-        }
-        let node = tokio::fs::canonicalize(found.ok_or("Node executable not found")?)
-            .await
-            .map_err(|e| e.to_string())?;
-        if node
-            .to_str()
-            .ok_or("Node path is not UTF-8")?
-            .chars()
-            .any(char::is_whitespace)
-        {
-            return Err("Node path cannot form an executable shebang".into());
-        }
-        let child = Command::new(&node).args(["--input-type=module", "-e",
-            "if(Number(process.versions.node.split('.')[0]) < 24 || typeof fetch !== 'function') process.exit(1)"])
-            .env_clear().env("HOME", &self.sandbox.home).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::inherit())
-            .spawn().map_err(|e| e.to_string())?;
-        self.commands.push(child);
-        if !self
-            .commands
-            .last_mut()
-            .unwrap()
-            .wait()
-            .await
-            .map_err(|e| e.to_string())?
-            .success()
-        {
-            return Err("discovered Node cannot execute the protocol adapter".into());
-        }
-        Ok(node)
-    }
     async fn start(&mut self) -> Result<(HostClient, Client)> {
         self.hosts.push(Host::spawn(&self.sandbox)?);
         let (anchor, address) = self.hosts.last_mut().unwrap().ready().await?;
@@ -457,21 +430,11 @@ impl Rig {
         sdk: &Client,
         runtime: &str,
     ) -> Result<DeploymentRef> {
-        let node = self.node().await?;
+        let node = node_executable().await?;
         let path = self.sandbox.workspace.join("external-codex-cli.mjs");
-        tokio::fs::write(
-            &path,
-            format!(
-                "#!{}\n{}",
-                node.display(),
-                include_str!("support/external_codex_cli.mjs")
-            ),
-        )
-        .await
-        .map_err(|e| e.to_string())?;
-        tokio::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))
+        tokio::fs::write(&path, include_bytes!("support/external_codex_cli.mjs"))
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(|error| error.to_string())?;
         let external = query(sdk, "agent", "externalAgents", json!({"inspect":true})).await?;
         assert_eq!(external["configured"], false);
         let source = query(sdk, "management", "read", json!({})).await?;
@@ -485,39 +448,41 @@ impl Rig {
         )
         .await?;
         self.root_pid = Some(status.pid.get());
-        let mut changes = vec![json!({"path":target["path"]})];
-        for (tail, value) in [
-            (
-                vec!["runtimes", runtime],
-                json!({"kind":"boolean","value":true}),
-            ),
-            (
-                vec!["commands", runtime, "executable"],
-                json!({"kind":"text","text":"./external-codex-cli.mjs"}),
-            ),
-            (
-                vec!["commands", runtime, "env", "FAKE_CONTROL"],
-                json!({"kind":"text","text":self.controller.address}),
-            ),
-            (
-                vec!["commands", runtime, "env", "FAKE_ROOT_PID"],
-                json!({"kind":"text","text":status.pid.get().to_string()}),
-            ),
-        ] {
-            let mut path = target["path"]
-                .as_array()
-                .ok_or("external target path missing")?
-                .clone();
-            path.extend(tail.into_iter().map(|part| json!(part)));
-            changes.push(json!({"path":path,"value":value}));
-        }
+        let mut deployment: maka_plugin_core::deployment::management::ManagedDeployment =
+            serde_json::from_value(source).map_err(|error| error.to_string())?;
+        let external_path: Vec<String> =
+            serde_json::from_value(target["path"].clone()).map_err(|error| error.to_string())?;
+        let runtime_config = json!({
+            "runtimes": {runtime: true},
+            "commands": {runtime: {"executable": node, "args":[path], "env":{
+                "FAKE_CONTROL": self.controller.address, "FAKE_ROOT_PID": status.pid.get().to_string()
+            }}}
+        });
+        deployment
+            .source
+            .input
+            .configure(
+                &["agent".into()],
+                vec![
+                    ConfigurationField {
+                        path: external_path,
+                        value: Some(runtime_config),
+                    },
+                    ConfigurationField {
+                        path: vec!["assistant".into(), "home".into()],
+                        value: Some(json!(self.sandbox.home)),
+                    },
+                ],
+            )
+            .map_err(|error| error.to_string())?;
         let configured = mutate(
             sdk,
             "management",
-            "configureBatch",
+            "replaceSource",
             json!({
-                "expectedRevision":source["source"]["reference"]["revision"],
-                "edits":[{"instance":target["source"]["namespace"],"changes":changes}]
+                "expectedRevision": deployment.source.reference.revision,
+                "document": {"input":deployment.source.input, "packages":deployment.packages,
+                    "remoteExports":deployment.source.remote_exports}
             }),
         )
         .await?;
@@ -1105,7 +1070,7 @@ async fn run_case(crash: bool) {
                 let workspace = rig.sandbox.workspace.canonicalize().map_err(|error| error.to_string())?;
                 for hello in [hello_a, hello_b] {
                     assert_eq!(Path::new(hello["home"].as_str().unwrap()).canonicalize().unwrap(), home);
-                    assert_eq!(Path::new(hello["cwd"].as_str().unwrap()), workspace);
+                    assert_eq!(Path::new(hello["cwd"].as_str().unwrap()).canonicalize().unwrap(), workspace);
                 }
                 let expected = rig.sandbox.workspace.join("direct-write-B");
                 assert_eq!(tokio::fs::read_to_string(expected).await.map_err(|error| error.to_string())?, "B");
@@ -1200,13 +1165,176 @@ async fn run_case(crash: bool) {
     }
 }
 
-#[tokio::test]
-async fn managed_task_snapshots_and_freezes_private_workspace_and_home()
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn composed_acp_setup_checks_a_provider_without_exposing_state_root()
 -> std::result::Result<(), Box<dyn std::error::Error>> {
+    async fn run(command: &mut Command) -> Result<()> {
+        let result = command
+            .kill_on_drop(true)
+            .output()
+            .await
+            .map_err(|e| e.to_string())?;
+        if result.status.success() {
+            Ok(())
+        } else {
+            Err(format!(
+                "{:?}: {}",
+                result.status,
+                String::from_utf8_lossy(&result.stderr)
+            ))
+        }
+    }
+
+    let sandbox = Sandbox::new().await?;
+    let deployment = Uuid::new_v4().to_string();
+    let source = sandbox.directory.path().join("composition");
+    let config = sandbox.directory.path().join("installation.json");
+    run(host::command(&sandbox)?
+        .args(["host", "init", "--root"])
+        .arg(&sandbox.root))
+    .await?;
+    let secret = dunce::canonicalize(&sandbox.root)?.join("private-probe");
+    std::fs::write(&secret, "private")?;
+
+    let executable = node_executable().await?;
+    let args = [
+        "-e",
+        r#"
+        const fs = require('node:fs');
+        const assert = require('node:assert/strict');
+        const lines = require('node:readline').createInterface({input:process.stdin});
+        lines.once('line', line => {
+            const {id, method} = JSON.parse(line);
+            assert.equal(method, 'initialize');
+            assert.throws(() => fs.readFileSync(process.env.ACP_PRIVATE_PROBE),
+                error => ['EPERM','EACCES','ENOENT'].includes(error.code));
+            const result = {protocolVersion:2,info:{name:'isolated-probe',version:'1'},
+                capabilities:{session:{}},authMethods:[]};
+            console.log(JSON.stringify({jsonrpc:'2.0',id,result}));
+        });
+    "#,
+    ];
+    let helper = std::env::var_os("CARGO_BIN_EXE_maka").ok_or("missing CLI helper")?;
+    let configuration = json!({
+        "locale":"en","hostDeployment":deployment,
+        "agent":{"workspaceRoots":[{"path":sandbox.workspace,"label":"fixture"}],
+                 "permissions":{"access":"read_only","requestPermissions":false},"tools":[]},
+        "acpExecutors":[{"name":"probe","configuration":{"agent":{"id":"probe","displayName":"Probe",
+            "executable":executable,"args":args,"env":{"ACP_PRIVATE_PROBE":secret}}}}],
+        "executorProcesses":{"setupDirectory":sandbox.workspace, "helper":PathBuf::from(helper),
+            "filesystem":{"default":"read","rules":[],"denyGlobs":[]},"network":"denied"}
+    });
+    std::fs::write(&config, serde_json::to_vec(&configuration)?)?;
+    run(host::command(&sandbox)?
+        .args(["application", "compose", "--configuration"])
+        .arg(config)
+        .arg("--output")
+        .arg(&source))
+    .await?;
+    let mut commit = host::command(&sandbox)?;
+    commit
+        .args(["application", "commit", "--root"])
+        .arg(&sandbox.root)
+        .args([
+            "--deployment",
+            &deployment,
+            "--expected-revision",
+            "0",
+            "--input",
+        ])
+        .arg(source.join("host.json"));
+    for package in std::fs::read_dir(source.join("packages"))? {
+        commit.arg("--package").arg(package?.path());
+    }
+    run(&mut commit).await?;
+    let mut serve = host::command(&sandbox)?;
+    serve
+        .args(["application", "serve", "--root"])
+        .arg(&sandbox.root)
+        .args(["--deployment", &deployment, "--endpoints"])
+        .arg(source.join("endpoints.json"))
+        .arg("--native")
+        .arg(source.join("native-grants.json"));
+    let mut host = Host::spawn_service(serve)?;
+    let result = phase("composed ACP setup", async {
+        let (mut anchor, address) = host.ready().await?;
+        let client = Client::new(
+            HostClient::connect(&address, Some(anchor.epoch())).await?,
+            Journal::open(&sandbox.journal).await?,
+            "receipts".into(),
+        )?;
+        let checked = mutate(
+            &client,
+            "agent",
+            "executorSetup",
+            json!({"executor":"probe","action":{"kind":"check"}}),
+        )
+        .await?;
+        client.close().await?;
+        host.quit(&mut anchor).await?;
+        Ok(checked)
+    })
+    .await;
+    host.cleanup().await?;
+    assert_eq!(
+        result?,
+        json!({"kind":"checked","info":{"title":null,"name":"isolated-probe","version":"1"},"methods":[]})
+    );
+    Ok(())
+}
+
+fn file_digest(path: &Path) -> std::io::Result<[u8; 32]> {
+    let mut hash = sha2::Sha256::default();
+    {
+        use sha2::Digest;
+        let mut input = std::fs::File::open(path)?;
+        let mut buffer = [0; 65536];
+        loop {
+            let count = input.read(&mut buffer)?;
+            if count == 0 {
+                break;
+            }
+            hash.update(&buffer[..count]);
+        }
+    }
+    Ok(sha2::Digest::finalize(hash).into())
+}
+
+async fn private_release_task(
+    source: &Path,
+    state: &Path,
+) -> std::result::Result<isolated::TaskOwner, Box<dyn std::error::Error>> {
     use maka_sandbox::{
         Destination, Network, Sandbox as ProcessSandbox,
         filesystem::{Access, Policy},
     };
+    let helper = std::env::var_os("CARGO_BIN_EXE_maka").ok_or("missing CLI helper")?;
+    let policy = ProcessSandbox::Managed {
+        filesystem: Policy::uniform(Access::Read),
+        network: Network::destination(Destination::new("127.0.0.1", 9)?),
+    };
+    let runtime = isolated::SandboxRuntime::default();
+    #[cfg(target_os = "linux")]
+    let runtime = runtime.with_network_helper(PathBuf::from(&helper));
+    #[cfg(windows)]
+    let runtime = runtime.with_backend(Arc::new(
+        maka_host_runtime::sandbox::windows::Backend::new(state, Path::new(&helper)),
+    ));
+    Ok(isolated::TaskOwner::prepare(
+        source,
+        state,
+        Path::new(&helper),
+        &policy,
+        &Policy::uniform(Access::Read),
+        &runtime,
+        CancellationToken::new(),
+    )
+    .await?)
+}
+
+#[tokio::test]
+async fn installed_program_runs_with_private_inputs_and_publishes_its_snapshot()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
     let temp = tempfile::tempdir()?;
     let source = temp.path().join("source");
     let state = temp.path().join("root");
@@ -1214,21 +1342,7 @@ async fn managed_task_snapshots_and_freezes_private_workspace_and_home()
     std::fs::create_dir(&state)?;
     std::fs::write(source.join("document"), b"original")?;
     std::fs::write(state.join("secret"), b"private")?;
-    let helper = std::env::var_os("CARGO_BIN_EXE_maka").ok_or("missing CLI helper")?;
-    let policy = ProcessSandbox::Managed {
-        filesystem: Policy::uniform(Access::Read),
-        network: Network::destination(Destination::new("127.0.0.1", 9)?),
-    };
-    let mut owner = isolated::TaskOwner::prepare(
-        &source,
-        &state,
-        Path::new(&helper),
-        &policy,
-        &Policy::uniform(Access::Read),
-        &isolated::SandboxRuntime::default(),
-        CancellationToken::new(),
-    )
-    .await?;
+    let mut owner = private_release_task(&source, &state).await?;
     let descriptor = owner.descriptor();
     owner.seed_home([
         Ok(isolated::HomeEntry {
@@ -1236,6 +1350,7 @@ async fn managed_task_snapshots_and_freezes_private_workspace_and_home()
             mode: 0o700,
             kind: isolated::HomeEntryKind::Directory,
         }),
+        #[cfg(unix)]
         Ok(isolated::HomeEntry {
             relative_path: PathBuf::from(".config/profile-link"),
             mode: 0o777,
@@ -1246,24 +1361,50 @@ async fn managed_task_snapshots_and_freezes_private_workspace_and_home()
     ])?;
     let home = owner.home_capture().cloned().expect("managed HOME custody");
     let candidate = owner.candidate_capture()?;
-    let shell = std::fs::canonicalize("/bin/sh")?;
-    let mut command = maka_process::Command::private_task(shell);
-    command
-        .args([
-            "-eu",
-            "-c",
-            r#"
-                test "$(cat document)" = original
-                test ! -r "$1"
-                test -n "$HTTP_PROXY"
-                printf candidate > document
-                printf config > "$HOME/.config/profile-link/settings"
-            "#,
-            "managed-task",
-        ])
-        .arg(state.canonicalize()?.join("secret"));
-    command.env("PATH", "/usr/bin:/bin");
-    owner.bind_command(&command, &policy).await?;
+    // Use a real native program in both release slots so the kernel must load
+    // both delivered files. The originals deliberately live under StateRoot.
+    let installation = state.join("plugin-data").join("fixture");
+    std::fs::create_dir_all(&installation)?;
+    let node = node_executable().await?;
+    let digest = file_digest(&node)?;
+    let installed_file = |name: &'static str| -> std::io::Result<isolated::ProgramFile> {
+        let path = installation.join(name);
+        std::fs::copy(&node, &path)?;
+        Ok(isolated::ProgramFile {
+            name,
+            source: std::fs::File::open(path)?,
+            sha256: digest,
+        })
+    };
+    let program = isolated::InstalledProgram {
+        executable: installed_file(if cfg!(windows) {
+            "agy_acp_server.exe"
+        } else {
+            "agy_acp_server.par"
+        })?,
+        helper: installed_file(if cfg!(windows) {
+            "localharness_external.exe"
+        } else {
+            "localharness_external"
+        })?,
+        helper_env: "ANTIGRAVITY_HARNESS_PATH",
+    };
+    let mut command =
+        maka_process::Command::private_task(installation.join(program.executable.name));
+    command.args(["-e", r#"
+        const fs = require('node:fs'), path = require('node:path'), assert = require('node:assert/strict');
+        assert.equal(fs.readFileSync('document', 'utf8'), 'original');
+        assert.throws(() => fs.readFileSync(process.argv[1]), e => ['EACCES','EPERM','ENOENT'].includes(e.code));
+        const helper = process.env.ANTIGRAVITY_HARNESS_PATH;
+        assert.equal(require('node:child_process').execFileSync(helper, ['-p', '42'], {encoding:'utf8'}).trim(), '42');
+        assert.throws(() => fs.writeFileSync(path.join(path.dirname(helper), 'extra'), ''), e => ['EACCES','EPERM','EROFS'].includes(e.code));
+        assert.ok(process.env.HTTP_PROXY);
+        fs.writeFileSync('document', 'candidate');
+        fs.writeFileSync(path.join(process.env.HOME, '.config', process.platform === 'win32' ? 'profile' : 'profile-link', 'settings'), 'config');
+    "#]).arg(dunce::canonicalize(&state)?.join("secret"));
+    owner
+        .bind_installed_program(&mut command, Arc::new(program))
+        .await?;
     let mut watch = EvidenceWatch::open(&descriptor, EvidenceInterest::Cleanup).await?;
     let process = owner.spawn_pipe(command).await?;
     let maka_process::pipe::Spawned {
@@ -1289,14 +1430,49 @@ async fn managed_task_snapshots_and_freezes_private_workspace_and_home()
     assert!(evidence.snapshot.is_some());
     assert_eq!(std::fs::read(source.join("document")).unwrap(), b"original");
     let candidate = candidate.freeze().await?;
-    let isolated::BaselineEntry::File { mut file, .. } =
+    let isolated::BaselineEntry::File { file, mode } =
         candidate.open_entry(Path::new("document"))?
     else {
         panic!("candidate did not contain document");
     };
-    let mut contents = String::new();
-    file.read_to_string(&mut contents)?;
-    assert_eq!(contents, "candidate");
+    use maka_fs_tools::{MutationExecutor, WriteCoordinator, WriteScope, publication::*};
+    let writer = MutationExecutor::new(
+        &source,
+        WriteScope::Restricted {
+            roots: vec![source.clone()],
+        },
+        WriteCoordinator::shared(),
+    )?;
+    let identity = candidate.snapshot().source_identity();
+    let content = |bytes: &[u8]| maka_agent_facts::durable::ContentRef {
+        digest: maka_agent_facts::artifact::content_digest(bytes),
+        bytes: bytes.len() as u64,
+    };
+    let source_id = SourceIdentity {
+        device: identity.device,
+        inode: identity.inode.into(),
+    };
+    let change = PublicationChange {
+        path: "document".into(),
+        expected: PublicationEntry::File {
+            content: content(b"original"),
+            mode,
+        },
+        candidate: PublicationEntry::File {
+            content: content(b"candidate"),
+            mode,
+        },
+    };
+    let published = writer
+        .publish_change(
+            change,
+            source_id,
+            Some(Box::new(file)),
+            CancellationToken::new(),
+        )
+        .await?;
+    assert_eq!(published, PublicationResult::Applied);
+    assert_eq!(std::fs::read(source.join("document"))?, b"candidate");
     let home = home.freeze().await?;
     let settings = home
         .entries()?
@@ -1311,7 +1487,7 @@ async fn managed_task_snapshots_and_freezes_private_workspace_and_home()
     let Some(isolated::HomeEntryKind::File { mut file }) = settings else {
         panic!("frozen HOME did not contain settings");
     };
-    contents.clear();
+    let mut contents = String::new();
     file.read_to_string(&mut contents)?;
     assert_eq!(contents, "config");
     Ok(())

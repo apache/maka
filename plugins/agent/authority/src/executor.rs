@@ -48,6 +48,22 @@ pub trait ExecutorAccess: Send + Sync {
     fn prepare_private_task<'a>(
         &'a self,
         context: &'a Context,
-        selected: &'a maka_process::Command,
+        selected: &'a mut maka_process::Command,
     ) -> BoxFuture<'a, Result<maka_process::isolated::TaskOwner, Error>>;
+}
+
+pub async fn bind_program(
+    owner: &mut maka_process::isolated::TaskOwner,
+    selected: &mut maka_process::Command,
+    caller: &maka_sandbox::Sandbox,
+    context: &Context,
+) -> Result<(), maka_process::isolated::Error> {
+    match context.local_input::<Arc<maka_process::isolated::InstalledProgram>>() {
+        Some(program) => {
+            owner
+                .bind_installed_program(selected, program.clone())
+                .await
+        }
+        None => owner.bind_command(selected, caller).await,
+    }
 }

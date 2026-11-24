@@ -29,7 +29,6 @@ use std::{
 
 mod agy;
 mod agy_acp;
-#[cfg(unix)]
 pub mod agy_front;
 mod attachments;
 pub(super) mod catalog;
@@ -172,7 +171,6 @@ async fn await_closed_task(
 }
 
 pub(crate) struct External {
-    #[cfg(unix)]
     agy_fronts: agy_front::Fronts,
     commands: BTreeMap<NativeRuntime, NativeCommand>,
     queries: Arc<maka_plugin_core::work::resources::Resources>,
@@ -246,7 +244,6 @@ impl External {
             .map_err(|error| error.to_string())?,
         );
         Ok(Arc::new(Self {
-            #[cfg(unix)]
             agy_fronts: Default::default(),
             commands,
             sessions,
@@ -655,11 +652,9 @@ impl External {
             .map(|(key, endpoint)| (key.clone(), endpoint.clone()))
             .collect();
         let endpoints = self.finish_endpoints(selected).await;
-        #[cfg(unix)]
         let fronts = self.agy_fronts.finish().await;
         let queries = self.queries.finish().await.map_err(|e| e.to_string());
         let sessions = self.sessions.finish().await;
-        #[cfg(unix)]
         fronts?;
         queries?;
         endpoints?;

@@ -70,3 +70,26 @@ impl Drop for LocalMemory {
         }
     }
 }
+
+pub fn file_identity(
+    file: &impl std::os::windows::io::AsHandle,
+) -> io::Result<windows_sys::Win32::Storage::FileSystem::FILE_ID_INFO> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_ID_INFO, FileIdInfo, GetFileInformationByHandleEx,
+    };
+    let mut identity = FILE_ID_INFO::default();
+    // SAFETY: the held handle remains live and the output matches FileIdInfo.
+    if unsafe {
+        GetFileInformationByHandleEx(
+            file.as_handle().as_raw_handle(),
+            FileIdInfo,
+            (&mut identity as *mut FILE_ID_INFO).cast(),
+            size_of::<FILE_ID_INFO>() as u32,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(identity)
+}

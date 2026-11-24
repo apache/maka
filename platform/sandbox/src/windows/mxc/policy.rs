@@ -189,7 +189,7 @@ fn object(path: &Path) -> io::Result<(u64, [u8; 16])> {
         .access_mode(FILE_READ_ATTRIBUTES)
         .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
         .open(path)?;
-    let id = crate::windows::acl::identity(&file)?;
+    let id = crate::windows::file_identity(&file)?;
     Ok((id.VolumeSerialNumber, id.FileId.Identifier))
 }
 

@@ -87,7 +87,6 @@ impl Authority {
         })
     }
 
-    #[cfg(unix)]
     pub(crate) fn publication_route(&self, relative: &Path) -> Result<Option<Route>, ToolError> {
         let root = match &self.scope {
             CapturedScope::Workspace(root) => root,
@@ -108,13 +107,11 @@ impl Authority {
         }))
     }
 
-    #[cfg(unix)]
     pub(crate) fn publication_source(
         &self,
         expected: &crate::publication::SourceIdentity,
     ) -> Result<crate::publication::SourceCheck, ToolError> {
         use crate::publication::SourceCheck;
-        use cap_fs_ext::MetadataExt;
         let root = match &self.scope {
             CapturedScope::Workspace(root) => root,
             CapturedScope::Restricted(roots) if roots.len() == 1 && roots[0].path == self.cwd => {
@@ -122,12 +119,28 @@ impl Authority {
             }
             _ => return Ok(SourceCheck::Uncaptured),
         };
-        let held = root.dir.dir_metadata().map_err(io_error)?;
-        if held.dev() != expected.device || held.ino() != expected.inode {
+        fn identity(dir: &Dir) -> std::io::Result<crate::publication::SourceIdentity> {
+            #[cfg(unix)]
+            let (device, inode) = {
+                use cap_fs_ext::MetadataExt;
+                let metadata = dir.dir_metadata()?;
+                (metadata.dev(), metadata.ino())
+            };
+            #[cfg(windows)]
+            let (device, inode) = {
+                let info = maka_sandbox::windows::file_identity(dir)?;
+                (info.VolumeSerialNumber, info.FileId.Identifier)
+            };
+            Ok(crate::publication::SourceIdentity {
+                device,
+                inode: inode.into(),
+            })
+        }
+        if identity(&root.dir).map_err(io_error)? != *expected {
             return Ok(SourceCheck::Changed);
         }
         let visible = match Dir::open_ambient_dir(&root.path, ambient_authority())
-            .and_then(|directory| directory.dir_metadata())
+            .and_then(|dir| identity(&dir))
         {
             Ok(metadata) => metadata,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -135,13 +148,11 @@ impl Authority {
             }
             Err(error) => return Err(io_error(error)),
         };
-        Ok(
-            if visible.dev() == expected.device && visible.ino() == expected.inode {
-                SourceCheck::Matched
-            } else {
-                SourceCheck::Changed
-            },
-        )
+        Ok(if visible == *expected {
+            SourceCheck::Matched
+        } else {
+            SourceCheck::Changed
+        })
     }
 
     pub(crate) fn write_display_path(&self, path: &Path) -> Result<String, ToolError> {

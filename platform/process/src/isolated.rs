@@ -40,7 +40,9 @@ mod helper;
 mod os;
 pub(crate) use helper::ExternalOwner;
 pub use os::SandboxRuntime;
+mod program;
 mod session;
+pub use program::{InstalledProgram, ProgramFile};
 mod snapshot;
 pub use session::SessionSpool;
 
