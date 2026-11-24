@@ -25,11 +25,14 @@ import { tr } from './locale';
 import {
   C,
   captionTextStyle,
+  composerIconSlot,
+  composerToolbarChevronSize,
+  composerToolbarControlStyle,
+  composerToolbarIconSize,
   floatingStyle,
   menuRowStyle,
   menuSeparatorStyle,
   textTooltip,
-  toolbarControlStyle,
 } from './ui';
 
 export type RecentWorkspace = { path: string };
@@ -50,9 +53,10 @@ export function RecentWorkspaces(props: {
     props.recent().filter((item) => name(item.path) === name(path)).length > 1
       ? (parts(path).at(-2) ?? '')
       : '';
+  const iconOnly = () => useToolbarCompact();
   return (
     <Select
-      style={{ minWidth: 0, flexShrink: 1 }}
+      style={{ minWidth: 0, flexShrink: iconOnly() ? 0 : 1, maxWidth: '100%' }}
       accessibilityLabel={tr('Choose composer workspace')}
       disabled={props.disabled()}
       value={props.path() || null}
@@ -88,25 +92,30 @@ export function RecentWorkspaces(props: {
       trigger={
         <View
           tooltip={textTooltip(() => props.path() || tr('Choose workspace'))}
-          style={{
-            ...toolbarControlStyle,
-            flexDirection: 'row',
-            alignItems: 'center',
-            gap: 4,
-            maxWidth: '100%',
-            minWidth: 0,
-            flexShrink: 1,
-          }}
+          style={
+            iconOnly()
+              ? { ...composerIconSlot, borderRadius: 8 }
+              : {
+                  ...composerToolbarControlStyle,
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  gap: 4,
+                  maxWidth: '100%',
+                  minWidth: 0,
+                  flexShrink: 1,
+                }
+          }
           hoverStyle={{ backgroundColor: C.line }}
           focusStyle={{ backgroundColor: C.line }}
         >
-          <Icon name="folder" color={C.muted} />
-          <If when={!useToolbarCompact()}>
+          <Icon name="folder" size={composerToolbarIconSize} color={C.muted} />
+          <If when={!iconOnly()}>
             <Text
               style={[
                 {
                   ...captionTextStyle,
                   color: C.secondary,
+                  minWidth: 0,
                   flexShrink: 1,
                   textOverflow: 'ellipsis-middle',
                 },
@@ -116,7 +125,9 @@ export function RecentWorkspaces(props: {
               {props.path() ? name(props.path()) : tr('Choose workspace')}
             </Text>
           </If>
-          <Icon name="down" color={C.muted} />
+          <If when={!iconOnly()}>
+            <Icon name="down" size={composerToolbarChevronSize} color={C.muted} />
+          </If>
         </View>
       }
       itemStyle={{ padding: 0 }}

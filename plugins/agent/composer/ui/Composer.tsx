@@ -53,8 +53,10 @@ import {
   menuDetailTextStyle,
   menuRowHoverStyle,
   menuRowStyle,
-  toolbarControlStyle,
   composerIconSlot,
+  composerToolbarChevronSize,
+  composerToolbarControlStyle,
+  composerToolbarIconSize,
 } from '../../../../products/maka/workbench/app/ui';
 import { LoadingIndicator } from '../../../../products/maka/workbench/app/Loading';
 import { Icon } from '../../../../products/maka/workbench/app/Icon';
@@ -337,28 +339,42 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
           accessibilityLabel={tr('Choose composer workspace')}
           tooltip={textTooltip(() => props.session()?.workspace() || tr('Choose workspace'))}
           onPress={props.chooseWorkspace}
-          style={{
-            ...(platform.idiom === 'terminal' ? controlStyle : toolbarControlStyle),
-            flexDirection: 'row',
-            alignItems: 'center',
-            maxWidth: '100%',
-            minWidth: 0,
-            flexShrink: 1,
-            gap: platform.idiom === 'terminal' ? 8 : 4,
-          }}
+          style={
+            narrowToolbar()
+              ? { ...composerIconSlot, borderRadius: 8 }
+              : {
+                  ...(platform.idiom === 'terminal' ? controlStyle : composerToolbarControlStyle),
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  maxWidth: '100%',
+                  minWidth: 0,
+                  flexShrink: 1,
+                  gap: platform.idiom === 'terminal' ? 8 : 4,
+                }
+          }
           hoverStyle={{ backgroundColor: platform.idiom === 'terminal' ? C.card : C.line }}
           focusStyle={{ backgroundColor: platform.idiom === 'terminal' ? C.raised : C.line }}
         >
-          <Icon name="folder" color={platform.idiom === 'terminal' ? C.secondary : C.muted} />
-          <Text
-            style={[
-              { ...captionTextStyle, color: C.secondary, flexShrink: 1 },
-              { numberOfLines: 1 },
-            ]}
-          >
-            {workspaceLabel()}
-          </Text>
-          <Icon name="down" color={platform.idiom === 'terminal' ? C.secondary : C.muted} />
+          <Icon
+            name="folder"
+            size={composerToolbarIconSize}
+            color={platform.idiom === 'terminal' ? C.secondary : C.muted}
+          />
+          <If when={!narrowToolbar()}>
+            <Text
+              style={[
+                { ...captionTextStyle, color: C.secondary, minWidth: 0, flexShrink: 1 },
+                { numberOfLines: 1, textOverflow: 'ellipsis' },
+              ]}
+            >
+              {workspaceLabel()}
+            </Text>
+            <Icon
+              name="down"
+              size={composerToolbarChevronSize}
+              color={platform.idiom === 'terminal' ? C.secondary : C.muted}
+            />
+          </If>
         </Button>
       }
     >
@@ -413,12 +429,9 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                 : undefined
       }
       style={{
-        width: 32,
-        height: 32,
-        alignItems: 'center',
-        justifyContent: 'center',
+        ...composerIconSlot,
         backgroundColor: C.accent,
-        borderRadius: 16,
+        borderRadius: composerIconSlot.height / 2,
       }}
       hoverStyle={{ backgroundColor: C.accentHover }}
       focusStyle={{ backgroundColor: C.accentHover }}
@@ -430,11 +443,12 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
         else={
           <Icon
             name={stopPrimary() ? 'stop' : continuationSource() !== null ? 'play' : 'send'}
+            size={composerToolbarIconSize}
             color={primaryDisabled() ? C.muted : C.background}
           />
         }
       >
-        <LoadingIndicator color={C.muted} />
+        <LoadingIndicator size={composerToolbarIconSize} color={C.muted} />
       </If>
     </View>
   );
@@ -1006,12 +1020,15 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                     completion.composing() ||
                     (pending() ? pending()!.sending() : !props.session()?.editable())
                   }
-                  style={{ ...composerIconSlot, borderRadius: 16, flexShrink: 0 }}
+                  style={{
+                    ...composerIconSlot,
+                    borderRadius: composerIconSlot.height / 2,
+                  }}
                   hoverStyle={{ backgroundColor: C.line }}
                   focusStyle={{ backgroundColor: C.line }}
                   activeStyle={{ backgroundColor: C.surface }}
                 >
-                  <Icon name="plus" color={C.secondary} />
+                  <Icon name="plus" size={composerToolbarIconSize} color={C.secondary} />
                 </Button>
                 <If when={platform.idiom === 'terminal'}>
                   <If when={!externalAgent()}>
@@ -1102,11 +1119,14 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                       (pending() ? pending()!.sending() : !props.session()?.editable())
                     }
                     onPress={() => void dictation()?.start()}
-                    style={{ ...composerIconSlot, borderRadius: 16, flexShrink: 0 }}
+                    style={{
+                      ...composerIconSlot,
+                      borderRadius: composerIconSlot.height / 2,
+                    }}
                     hoverStyle={{ backgroundColor: C.line }}
                     focusStyle={{ backgroundColor: C.line }}
                   >
-                    <Icon name="mic" color={C.secondary} />
+                    <Icon name="mic" size={composerToolbarIconSize} color={C.secondary} />
                   </Button>
                 </If>
                 <If when={running() && hasContent()} else={primaryButton()}>

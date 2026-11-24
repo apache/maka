@@ -26,10 +26,10 @@ import { tr } from './locale';
 import {
   C,
   captionTextStyle,
+  composerToolbarControlStyle,
   floatingStyle,
   menuDetailTextStyle,
   textTooltip,
-  toolbarControlStyle,
 } from './ui';
 import {
   usageLabel,
@@ -117,10 +117,10 @@ function ComposerUsagePopover(props: {
           accessibilityLabel={tooltipText()}
           tooltip={textTooltip(() => (open() ? undefined : tooltipText()))}
           style={{
-            ...toolbarControlStyle,
+            ...composerToolbarControlStyle,
             flexDirection: 'row',
             alignItems: 'center',
-            gap: 6,
+            gap: 4,
             flexShrink: 0,
           }}
           hoverStyle={{ backgroundColor: C.line }}
@@ -129,13 +129,13 @@ function ComposerUsagePopover(props: {
         >
           <If when={balanceSummary() !== null}>
             <Text style={[{ ...captionTextStyle, color: C.secondary }, { numberOfLines: 1 }]}>
-              {balanceSummary()?.text ?? ''}
+              {(useToolbarCompact() ? balanceSummary()?.compactText : balanceSummary()?.text) ?? ''}
             </Text>
           </If>
           <If when={windowSummary() !== null && useToolbarCompact()}>
             <Canvas
               accessibilityElementsHidden
-              style={[{ width: 15, height: 15 }, { pointerEvents: 'none' }]}
+              style={[{ width: 14, height: 14 }, { pointerEvents: 'none' }]}
               draw={(cx) => {
                 const current = windowSummary();
                 if (!current) return;
@@ -143,13 +143,13 @@ function ComposerUsagePopover(props: {
                 cx.lineCap = 'round';
                 cx.strokeStyle = C.line;
                 cx.beginPath();
-                cx.arc(7.5, 7.5, 5.75, 0, Math.PI * 2);
+                cx.arc(7, 7, 5.5, 0, Math.PI * 2);
                 cx.stroke();
                 const start = -Math.PI / 2;
                 const share = Math.max(0.04, current.remainingPercent / 100);
                 cx.strokeStyle = fillColor();
                 cx.beginPath();
-                cx.arc(7.5, 7.5, 5.75, start, start + share * Math.PI * 2);
+                cx.arc(7, 7, 5.5, start, start + share * Math.PI * 2);
                 cx.stroke();
               }}
             />

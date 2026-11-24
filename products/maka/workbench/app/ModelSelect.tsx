@@ -59,9 +59,12 @@ import {
 } from './modelSelection';
 import { SettingsSegmented } from './SettingsPage';
 import { createText, errorText, UiError } from './text';
+import { useToolbarCompact } from './composerToolbar';
 import {
   C,
   captionTextStyle,
+  composerToolbarChevronSize,
+  composerToolbarControlStyle,
   controlDisabledStyle,
   floatingStyle,
   menuDetailTextStyle,
@@ -70,7 +73,6 @@ import {
   menuSeparatorStyle,
   shortcut,
   textTooltip,
-  toolbarControlStyle,
 } from './ui';
 
 type SelectionAction = {
@@ -147,7 +149,7 @@ export function ModelSelect(props: {
       align="end"
       offset={8}
       margin={8}
-      style={{ minWidth: 0, alignItems: 'flex-end' }}
+      style={{ minWidth: 0, flexShrink: 1, maxWidth: '100%', alignItems: 'flex-end' }}
       popupStyle={{
         ...floatingStyle(),
         width: platform.idiom === 'terminal' ? 420 : 340,
@@ -164,7 +166,7 @@ export function ModelSelect(props: {
               : `${tooltipLabel()} · ${shortcut(tr(props.running?.() ? 'Model for queued and future messages' : 'Choose model and effort'), 'mod+g')}`,
           )}
           style={{
-            ...toolbarControlStyle,
+            ...composerToolbarControlStyle,
             maxWidth: '100%',
             minWidth: 0,
             flexDirection: 'row',
@@ -182,6 +184,7 @@ export function ModelSelect(props: {
               alignItems: 'center',
               minWidth: 0,
               flexShrink: 1,
+              overflow: 'hidden',
             }}
           >
             <Text
@@ -192,20 +195,23 @@ export function ModelSelect(props: {
                   minWidth: 0,
                   flexShrink: 1,
                 },
-                { numberOfLines: 1 },
+                { numberOfLines: 1, textOverflow: 'ellipsis' },
               ]}
             >
               {model()}
             </Text>
-            <If when={modifiers()}>
+            <If when={modifiers() && !useToolbarCompact()}>
               <Text
-                style={[{ color: C.secondary, fontSize: 13, flexShrink: 0 }, { numberOfLines: 1 }]}
+                style={[
+                  { color: C.secondary, fontSize: 13, flexShrink: 0 },
+                  { numberOfLines: 1, textOverflow: 'ellipsis' },
+                ]}
               >
                 {` · ${modifiers()}`}
               </Text>
             </If>
           </View>
-          <Icon name="down" color={C.muted} />
+          <Icon name="down" size={composerToolbarChevronSize} color={C.muted} />
         </Button>
       }
     >
