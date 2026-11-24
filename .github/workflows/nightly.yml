@@ -292,7 +292,7 @@ jobs:
         env:
           MAKA_CI_ROLE: nightly-release-${{ matrix.target }}
           MAKA_CI_WORKSPACE: root
-          MAKA_CI_PROFILE: release
+          MAKA_CI_PROFILE: dist
         run: |
           node scripts/ci/setup.mjs keys
           echo "target=$(node --input-type=module -e 'import { rustTarget } from "./scripts/rust/build-cli.mjs"; console.log(rustTarget());')" >> "$GITHUB_OUTPUT"
@@ -310,30 +310,31 @@ jobs:
 
       - name: Restore Rust release dependencies
         id: rust-cache
+        if: runner.os != 'Linux'
         uses: actions/cache/restore@v6
         with:
           path: |
             target/CACHEDIR.TAG
-            target/release/.fingerprint
-            target/release/build
-            target/release/deps/*.*
-            target/${{ steps.rust-cache-keys.outputs.target }}/release/.fingerprint
-            target/${{ steps.rust-cache-keys.outputs.target }}/release/build
-            target/${{ steps.rust-cache-keys.outputs.target }}/release/deps/*.*
+            target/dist/.fingerprint
+            target/dist/build
+            target/dist/deps/*.*
+            target/${{ steps.rust-cache-keys.outputs.target }}/dist/.fingerprint
+            target/${{ steps.rust-cache-keys.outputs.target }}/dist/build
+            target/${{ steps.rust-cache-keys.outputs.target }}/dist/deps/*.*
             !target/**/deps/*.exe
             !target/**/deps/*.pdb
           key: ${{ steps.rust-cache-keys.outputs.compiled }}
           restore-keys: ${{ steps.rust-cache-keys.outputs.compiled_prefix }}
 
       - name: Stabilize third-party timestamps on exact cache hit
-        if: steps.rust-cache.outputs.cache-hit == 'true'
+        if: runner.os != 'Linux' && steps.rust-cache.outputs.cache-hit == 'true'
         run: node scripts/ci/setup.mjs stamp-third-party
 
       - name: Clean vendored third-party outputs on fallback restore
-        if: steps.rust-cache.outputs.cache-hit != 'true'
+        if: runner.os != 'Linux' && steps.rust-cache.outputs.cache-hit != 'true'
         env:
           MAKA_CI_WORKSPACE: root
-          MAKA_CI_PROFILE: release
+          MAKA_CI_PROFILE: dist
           MAKA_CI_TARGET: ${{ steps.rust-cache-keys.outputs.target }}
         run: node scripts/ci/setup.mjs clean-third-party
 
@@ -388,25 +389,25 @@ jobs:
           compression-level: 0
 
       - name: Prune workspace crates from Rust release cache
-        if: ${{ !cancelled() && steps.rust-cache.outputs.cache-hit != 'true' && steps.build.outcome == 'success' }}
+        if: ${{ !cancelled() && runner.os != 'Linux' && steps.rust-cache.outputs.cache-hit != 'true' && steps.build.outcome == 'success' }}
         env:
           MAKA_CI_WORKSPACE: root
-          MAKA_CI_PROFILE: release
+          MAKA_CI_PROFILE: dist
           MAKA_CI_TARGET: ${{ steps.rust-cache-keys.outputs.target }}
         run: node scripts/ci/setup.mjs prune
 
       - name: Save Rust release dependencies
         uses: actions/cache/save@v6
-        if: ${{ !cancelled() && steps.rust-cache.outputs.cache-hit != 'true' && steps.build.outcome == 'success' }}
+        if: ${{ !cancelled() && runner.os != 'Linux' && steps.rust-cache.outputs.cache-hit != 'true' && steps.build.outcome == 'success' }}
         with:
           path: |
             target/CACHEDIR.TAG
-            target/release/.fingerprint
-            target/release/build
-            target/release/deps/*.*
-            target/${{ steps.rust-cache-keys.outputs.target }}/release/.fingerprint
-            target/${{ steps.rust-cache-keys.outputs.target }}/release/build
-            target/${{ steps.rust-cache-keys.outputs.target }}/release/deps/*.*
+            target/dist/.fingerprint
+            target/dist/build
+            target/dist/deps/*.*
+            target/${{ steps.rust-cache-keys.outputs.target }}/dist/.fingerprint
+            target/${{ steps.rust-cache-keys.outputs.target }}/dist/build
+            target/${{ steps.rust-cache-keys.outputs.target }}/dist/deps/*.*
             !target/**/deps/*.exe
             !target/**/deps/*.pdb
           key: ${{ steps.rust-cache-keys.outputs.compiled }}
@@ -490,15 +491,13 @@ jobs:
           mkdir -p "$dest"
           tar -xzf "v8-staged/v8-aarch64-unknown-linux-gnu-${{ steps.v8-key.outputs.key }}.tar.gz" -C "$dest"
 
-      - name: Identify Rust release cache
+      - name: Identify Cargo download cache
         id: rust-cache-keys
         env:
           MAKA_CI_ROLE: nightly-release-linux-arm64-gnu
           MAKA_CI_WORKSPACE: root
-          MAKA_CI_PROFILE: release
-        run: |
-          node scripts/ci/setup.mjs keys
-          echo "target=$(node --input-type=module -e 'import { rustTarget } from "./scripts/rust/build-cli.mjs"; console.log(rustTarget());')" >> "$GITHUB_OUTPUT"
+          MAKA_CI_PROFILE: dist
+        run: node scripts/ci/setup.mjs keys
 
       - name: Restore shared Cargo downloads
         uses: actions/cache/restore@v6
@@ -510,35 +509,6 @@ jobs:
           key: ${{ steps.rust-cache-keys.outputs.downloads }}
           restore-keys: ${{ steps.rust-cache-keys.outputs.downloads_prefix }}
           enableCrossOsArchive: true
-
-      - name: Restore Rust release dependencies
-        id: rust-cache
-        uses: actions/cache/restore@v6
-        with:
-          path: |
-            target/CACHEDIR.TAG
-            target/release/.fingerprint
-            target/release/build
-            target/release/deps/*.*
-            target/${{ steps.rust-cache-keys.outputs.target }}/release/.fingerprint
-            target/${{ steps.rust-cache-keys.outputs.target }}/release/build
-            target/${{ steps.rust-cache-keys.outputs.target }}/release/deps/*.*
-            !target/**/deps/*.exe
-            !target/**/deps/*.pdb
-          key: ${{ steps.rust-cache-keys.outputs.compiled }}
-          restore-keys: ${{ steps.rust-cache-keys.outputs.compiled_prefix }}
-
-      - name: Stabilize third-party timestamps on exact cache hit
-        if: steps.rust-cache.outputs.cache-hit == 'true'
-        run: node scripts/ci/setup.mjs stamp-third-party
-
-      - name: Clean vendored third-party outputs on fallback restore
-        if: steps.rust-cache.outputs.cache-hit != 'true'
-        env:
-          MAKA_CI_WORKSPACE: root
-          MAKA_CI_PROFILE: release
-          MAKA_CI_TARGET: ${{ steps.rust-cache-keys.outputs.target }}
-        run: node scripts/ci/setup.mjs clean-third-party
 
       - name: Build, smoke test, and package nightly artifacts
         id: build
@@ -576,30 +546,6 @@ jobs:
           path: v8-out/*
           if-no-files-found: error
           compression-level: 0
-
-      - name: Prune workspace crates from Rust release cache
-        if: ${{ !cancelled() && steps.rust-cache.outputs.cache-hit != 'true' && steps.build.outcome == 'success' }}
-        env:
-          MAKA_CI_WORKSPACE: root
-          MAKA_CI_PROFILE: release
-          MAKA_CI_TARGET: ${{ steps.rust-cache-keys.outputs.target }}
-        run: node scripts/ci/setup.mjs prune
-
-      - name: Save Rust release dependencies
-        uses: actions/cache/save@v6
-        if: ${{ !cancelled() && steps.rust-cache.outputs.cache-hit != 'true' && steps.build.outcome == 'success' }}
-        with:
-          path: |
-            target/CACHEDIR.TAG
-            target/release/.fingerprint
-            target/release/build
-            target/release/deps/*.*
-            target/${{ steps.rust-cache-keys.outputs.target }}/release/.fingerprint
-            target/${{ steps.rust-cache-keys.outputs.target }}/release/build
-            target/${{ steps.rust-cache-keys.outputs.target }}/release/deps/*.*
-            !target/**/deps/*.exe
-            !target/**/deps/*.pdb
-          key: ${{ steps.rust-cache-keys.outputs.compiled }}
 
   compat-gate:
     needs: [prepare, build]
@@ -801,7 +747,6 @@ jobs:
 
           gh release delete nightly-previous --repo "$GITHUB_REPOSITORY" --yes 2>/dev/null || true
           gh api -X DELETE "repos/$GITHUB_REPOSITORY/git/refs/tags/nightly-previous" 2>/dev/null || true
-          gh api -X POST "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/nightly-previous" -f sha="$PREV_COMMIT"
 
           export PREV_COMMIT PREV_VERSION
           node --input-type=module -e '
@@ -822,8 +767,12 @@ jobs:
 
           shopt -s nullglob
           prev_files=(prev-dist/*)
+          # Point the rolling tag at main (not $PREV_COMMIT) so GITHUB_TOKEN
+          # never hits HTTP 403 when .github/workflows/ changed since $PREV_COMMIT;
+          # exact PREV_COMMIT and PREV_VERSION live in prev-meta.json and prev-notes.md.
           gh release create nightly-previous "${prev_files[@]}" \
             --repo "$GITHUB_REPOSITORY" \
+            --target main \
             --prerelease \
             --latest=false \
             --title "Maka Nightly (Previous: ${PREV_VERSION})" \
@@ -863,12 +812,15 @@ jobs:
         run: |
           gh release delete nightly --repo "$GITHUB_REPOSITORY" --yes 2>/dev/null || true
           gh api -X DELETE "repos/$GITHUB_REPOSITORY/git/refs/tags/nightly" 2>/dev/null || true
-          gh api -X POST "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/nightly" -f sha="${{ needs.prepare.outputs.commit }}"
 
           shopt -s nullglob
           assets=(dist/*)
+          # Point the rolling tag at main so GITHUB_TOKEN never hits HTTP 403 if a
+          # workflow change landed on main during the build; exact build commit lives
+          # in nightly-meta.json, latest.json, and release-notes.md.
           gh release create nightly "${assets[@]}" \
             --repo "$GITHUB_REPOSITORY" \
+            --target main \
             --prerelease \
             --latest=false \
             --title "Maka Nightly (${{ needs.prepare.outputs.version }})" \

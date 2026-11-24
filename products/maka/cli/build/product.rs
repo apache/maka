@@ -137,11 +137,19 @@ pub fn bundle() {
     for input in inputs {
         println!("cargo:rerun-if-changed={}", input.display());
     }
+    let authoring = output.join("composition.mjs.zst");
+    maka_ui_build::write_if_changed(
+        &authoring,
+        &zstd::stream::compress_file(product.join("authoring/composition.mjs"), 9).unwrap(),
+    )
+    .unwrap();
     let mut source = format!(
-        "const PRODUCT_VERSION: &str = include_str!({:?});\nconst AUTHORING: &str = include_str!({:?});\nconst BUNDLED: &[Bundled] = &[\n",
+        "const PRODUCT_VERSION: &str = include_str!({:?});\nconst AUTHORING: &[u8] = include_bytes!({:?});\nconst BUNDLED: &[Bundled] = &[\n",
         product.join("product-version.txt").to_str().unwrap(),
-        product.join("authoring/composition.mjs").to_str().unwrap()
+        authoring.to_str().unwrap()
     );
+    let mut originals =
+        String::from("#[cfg(test)] const ORIGINAL_FILES: &[(&str, &str, &[u8])] = &[\n");
     let packages = product.join("packages");
     let mut entries = fs::read_dir(&packages)
         .unwrap()
@@ -153,7 +161,11 @@ pub fn bundle() {
         let name = entry.file_name().into_string().unwrap();
         let mut paths = Vec::new();
         files(&entry.path(), &mut paths);
-        source.push_str(&format!("Bundled {{ name: {name:?}, files: &[\n"));
+        let frame = output.join(format!("{name}.package.zst"));
+        let mut contents = Vec::new();
+        source.push_str(&format!(
+            "Bundled {{ name: {name:?}, frame: include_bytes!({frame:?}), files: &[\n"
+        ));
         for path in paths {
             let relative = path
                 .strip_prefix(entry.path())
@@ -161,13 +173,19 @@ pub fn bundle() {
                 .to_str()
                 .unwrap()
                 .replace('\\', "/");
-            source.push_str(&format!(
-                "({relative:?}, include_bytes!({:?})),\n",
-                path.to_str().unwrap()
+            originals.push_str(&format!(
+                "({name:?}, {relative:?}, include_bytes!({path:?})),\n"
             ));
+            let bytes = fs::read(path).unwrap();
+            source.push_str(&format!("({relative:?}, {}),\n", bytes.len()));
+            contents.extend_from_slice(&bytes);
         }
+        maka_ui_build::write_if_changed(&frame, &zstd::bulk::compress(&contents, 9).unwrap())
+            .unwrap();
         source.push_str("] },\n");
     }
+    source.push_str("];\n");
+    source.push_str(&originals);
     source.push_str("];\n");
     maka_ui_build::write_if_changed(&output.join("product-assets.rs"), source.as_bytes()).unwrap();
 }

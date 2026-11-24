@@ -17,6 +17,7 @@
  * under the License.
  */
 
+use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
     env, fs,
@@ -196,6 +197,8 @@ fn main() {
         .unwrap()
         .parent()
         .unwrap();
+    let output = PathBuf::from(env::var_os("OUT_DIR").unwrap());
+    let mut originals = String::from("#[cfg(test)] const ORIGINALS: &[(&str, &str, &[u8])] = &[\n");
     let mut source = String::from("const BUNDLED: &[Bundled] = &[\n");
     for (id, relative, resources) in [
         ("maka-cua", "platform/computer-use/skills/maka-cua", &[][..]),
@@ -241,18 +244,26 @@ fn main() {
             "Bundled {{ id: {id:?}, content: include_str!({:?}), files: &[\n",
             document.to_str().unwrap()
         ));
-        for (name, path) in files {
-            source.push_str(&format!(
-                "({name:?}, include_bytes!({:?})),\n",
-                path.to_str().unwrap()
-            ));
+        for (i, (name, path)) in files.into_iter().enumerate() {
+            let bytes = fs::read(&path).unwrap();
+            let text = if std::str::from_utf8(&bytes).is_ok() {
+                let digest = hex::encode(Sha256::digest(&bytes));
+                let frame = output.join(format!("{id}-{i}.zst"));
+                fs::write(&frame, zstd::bulk::compress(&bytes, 9).unwrap()).unwrap();
+                format!(
+                    "Some({{ static TEXT: EmbeddedText = EmbeddedText::new(include_bytes!({frame:?}), {hash:?}); &TEXT }})",
+                    hash = format!("sha256:{digest}")
+                )
+            } else {
+                "None".into()
+            };
+            source.push_str(&format!("({name:?}, {text}),\n"));
+            originals.push_str(&format!("({id:?}, {name:?}, include_bytes!({path:?})),\n"));
         }
         source.push_str("] },\n");
     }
     source.push_str("];\n");
-    fs::write(
-        PathBuf::from(env::var_os("OUT_DIR").unwrap()).join("bundled.rs"),
-        source,
-    )
-    .unwrap();
+    source.push_str(&originals);
+    source.push_str("];\n");
+    fs::write(output.join("bundled.rs"), source).unwrap();
 }

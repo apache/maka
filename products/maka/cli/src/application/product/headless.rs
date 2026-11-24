@@ -20,7 +20,7 @@
 mod decisions;
 mod publication;
 pub(super) mod update;
-use super::{HostError, Input, launch, packages};
+use super::{HostError, Input, launch, load_product};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use maka_event_log::{
     EventLog,
@@ -346,10 +346,8 @@ async fn begin(
     roots: Option<Vec<DirectoryRootSpec>>,
 ) -> Result<(Uuid, Selection, PreparedApplication), HostError> {
     let roots = directories(roots)?;
-    let packages = tokio::task::spawn_blocking(packages).await??;
-    let source = super::authoring()?;
+    let (packages, source) = tokio::task::spawn_blocking(load_product).await??;
     let release = super::bundle_fingerprint()?;
-    super::verified_fingerprint(&source, &packages, &release)?;
     let (sources, baseline) = super::baseline::generate(
         super::baseline::Environment {
             workspace: roots

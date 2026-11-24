@@ -17,8 +17,7 @@
  * under the License.
  */
 
-import { cleanup, effect, signal, Text, View, type JSX } from 'nsh';
-import { Button } from 'nsh/base';
+import { cleanup, effect, signal, View, type JSX } from 'nsh';
 import type { AgentSession } from '../../../../packages/plugin-sdk/src/index.js';
 import type {
   UiCommandContext,
@@ -51,8 +50,9 @@ import {
 } from '../../../../products/maka/workbench/app/RoomWorkspace';
 import type { RoomComposerHandle } from '../../../../products/maka/workbench/app/RoomComposer';
 import { LoadingIndicator } from '../../../../products/maka/workbench/app/Loading';
+import { RegionEmptyError } from '../../../../products/maka/workbench/app/Feedback';
 import { tr } from '../../../../products/maka/workbench/app/locale';
-import { C, controlStyle, Header } from '../../../../products/maka/workbench/app/ui';
+import { Header } from '../../../../products/maka/workbench/app/ui';
 import { createText, errorText } from '../../../../products/maka/workbench/app/text';
 
 export const activate: UiModule<JSX.Element>['activate'] = (context) => {
@@ -175,10 +175,11 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
           <View style={{ flex: 1 }}>
             <SplitHeader title="" close={shell.closePane!} />
             <If when={failure()} else={<LoadingIndicator />}>
-              <Text style={{ color: C.warning, padding: 12 }}>{failure()}</Text>
-              <Button style={controlStyle} onPress={() => void resolve(shell.sessionId()!)}>
-                <Text>{tr('Retry')}</Text>
-              </Button>
+              <RegionEmptyError
+                tone="danger"
+                title={failure()!}
+                retry={() => void resolve(shell.sessionId()!)}
+              />
             </If>
           </View>
         }

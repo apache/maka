@@ -79,7 +79,7 @@ async fn last_tool_output(
     provider: &mut Provider,
     rig: &Rig,
     session: &str,
-) -> TestResult<(String, oneshot::Sender<ModelReply>)> {
+) -> TestResult<(String, TurnHandle)> {
     let (request, reply) = match provider.next().await {
         Ok(next) => next,
         Err(error) => {
@@ -105,20 +105,13 @@ async fn echo_turn(
     let client = rig.client.as_ref().unwrap();
     let message = send(client, session, "Echo the marker.").await?;
     let (_, reply) = last_tool_output(provider, rig, session).await?;
-    reply
-        .send(tool_response(
-            &format!("mcp__{server}__echo"),
-            json!({"marker":marker}),
-        ))
-        .map_err(|_| "echo response lost")?;
+    reply.send_plan(tool_response(
+        &format!("mcp__{server}__echo"),
+        json!({"marker":marker}),
+    ));
     let (output, reply) = last_tool_output(provider, rig, session).await?;
     assert!(output.contains(marker), "{output}");
-    reply
-        .send(completion(
-            json!({"role":"assistant","content":"Done."}),
-            "stop",
-        ))
-        .map_err(|_| "final response lost")?;
+    reply.reply_text("Done.");
     tokio::time::timeout(
         Duration::from_secs(20),
         completed_message(client, session, &message),
@@ -165,19 +158,17 @@ async fn crashed_session(
         }})
         .to_string(),
     )?;
-    let boot = bootstrap_with(base, provider.url.clone(), |config| {
+    let boot = bootstrap_with(base, provider.server.base_url(), |config| {
         config["assistant"] = json!({"home":base.join("home")});
     })
     .await?;
     attach(rig, &boot).await?;
     let client = rig.client.as_ref().unwrap();
-    let model = model(client, &provider.url, false).await?;
+    let model = model(client, &provider.server.base_url(), false).await?;
     let session = full_access_session(rig, base, &model).await?;
     let message = send(client, &session, "Call the server.").await?;
     let (_, reply) = last_tool_output(provider, rig, &session).await?;
-    reply
-        .send(tool_response("mcp__fixture__crash", json!({})))
-        .map_err(|_| "crash response lost")?;
+    reply.send_plan(tool_response("mcp__fixture__crash", json!({})));
     tokio::time::timeout(
         Duration::from_secs(20),
         terminal(client, &session, &message),
@@ -327,23 +318,19 @@ async fn mcp_zero_tool_server_reopens_after_retiring() -> TestResult<()> {
             }})
             .to_string(),
         )?;
-        let boot = bootstrap_with(&base, provider.url.clone(), |config| {
+        let boot = bootstrap_with(&base, provider.server.base_url(), |config| {
             config["assistant"] = json!({"home":base.join("home")});
         })
         .await?;
         attach(&mut rig, &boot).await?;
         let client = rig.client.as_ref().unwrap();
-        let model = model(client, &provider.url, false).await?;
+        let model = model(client, &provider.server.base_url(), false).await?;
         let session = full_access_session(&rig, &base, &model).await?;
 
         let first = send(client, &session, "Start with empty tool list.").await?;
         let (_, reply) = last_tool_output(&mut provider, &rig, &session).await?;
         reply
-            .send(completion(
-                json!({"role":"assistant","content":"Done."}),
-                "stop",
-            ))
-            .map_err(|_| "first response lost")?;
+            .reply_text("Done.");
         tokio::time::timeout(
             Duration::from_secs(20),
             completed_message(client, &session, &first),

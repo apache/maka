@@ -233,10 +233,21 @@ impl WireEncoder for ChatCompletionsEncoder {
                     out.push(sse_data(&value));
                 }
             }
+            TurnEvent::StreamStart => {
+                if !self.started_role {
+                    self.emit_chunk(serde_json::Map::new(), Value::Null, out);
+                }
+            }
+            TurnEvent::SseComment { comment } => {
+                if self.stream {
+                    out.push(WireFrame::Sse(Bytes::from(format!(": {comment}\n\n"))));
+                }
+            }
             TurnEvent::RawBytes(bytes) => {
                 out.push(WireFrame::Raw(bytes));
             }
-            TurnEvent::NativeTool(_)
+            TurnEvent::Flush
+            | TurnEvent::NativeTool(_)
             | TurnEvent::NativeCompaction(_)
             | TurnEvent::RedactedThinking { .. }
             | TurnEvent::Delay { .. }

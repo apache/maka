@@ -332,14 +332,26 @@ export const suites = {
     cargoArgs: ['--locked', '-p', 'maka-desktop-shell'],
     targetArgs: ['--bin', 'maka-desktop-shell', '--test', 'open_directly'],
     filter: 'package(=maka-desktop-shell)',
-    extraInputs: productInputs,
+    extraInputs: [...productInputs, 'products/maka/cli/src/application/command_line.rs'],
   },
   'windows-desktop': {
     workspace: 'root',
-    packages: ['maka-desktop-shell'],
-    cargoArgs: ['--locked', '-p', 'maka-desktop-shell'],
-    targetArgs: ['--bin', 'maka-desktop-shell', '--test', 'open_directly'],
-    filter: 'package(=maka-desktop-shell)',
+    packages: ['maka-desktop-shell', 'maka-workbench'],
+    cargoArgs: [
+      '--locked',
+      '-p',
+      'maka-desktop-shell',
+      '-p',
+      'maka-workbench',
+      '--lib',
+      '--bin',
+      'maka-desktop-shell',
+      '--test',
+      'open_directly',
+    ],
+    targetArgs: ['--lib', '--bin', 'maka-desktop-shell', '--test', 'open_directly'],
+    filter:
+      'package(=maka-desktop-shell) | (package(=maka-workbench) & test(=bindings::quick_tools::windows_history::tests::isolated_windows_history_round_trip))',
     extraInputs: productInputs,
   },
   'windows-skills': {
@@ -374,9 +386,11 @@ export const suites = {
   'macos-host': {
     workspace: 'root',
     packages: ['maka-cli', 'maka-host-shell'],
-    cargoArgs: ['--locked', '-p', 'maka-cli', '--bin', 'maka'],
-    targetArgs: ['--bin', 'maka'],
-    filter: 'binary_id(=maka-cli::bin/maka) & test(deployment::host_identity::tests::)',
+    cargoArgs: ['--locked', '-p', 'maka-cli', '--bin', 'maka', '--test', 'integration'],
+    targetArgs: ['--bin', 'maka', '--test', 'integration'],
+    filter:
+      '(binary_id(=maka-cli::bin/maka) & test(deployment::host_identity::tests::)) | ' +
+      '(binary_id(=maka-cli::integration) & test(terminal_shell::))',
     extraInputs: [
       ...distributionInputs,
       'scripts/rust/build-cli.mjs',
@@ -540,6 +554,8 @@ export const workers = [
       'maka-host-runtime',
       '-p',
       'maka-skills-native',
+      '-p',
+      'maka-workbench',
       '--features',
       'maka-cli/desktop-tests',
     ],

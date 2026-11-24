@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { Clipboard, computed, signal, Text, View } from 'nsh';
+import { Clipboard, computed, platform, signal, Text, View } from 'nsh';
 import { Button, ContextMenu, MenuItem, TextView } from 'nsh/base';
 import { MarkdownImageView } from './MarkdownImage';
 import { MermaidView } from './MermaidView';
@@ -27,6 +27,7 @@ import { tr } from './locale';
 import { compactCopyInset, CompactReplyFooter, LocalMessageCopy } from './CompactReplyFooter';
 import type { replyMetrics } from './replyDetails';
 import { Icon } from './Icon';
+import { ShimmerText, ThinkingMark } from './Loading';
 import { splitSpecMarkdown } from './spec/session.ts';
 import { C, bodyTextStyle, captionTextStyle } from './ui';
 
@@ -274,12 +275,23 @@ export function BotWaiting(props: {
 
 /** Shown at the end of Chat while a Turn is at work and has no header of its own yet. */
 export function BotWorking(props: { detail: () => string }) {
+  const text = () => (props.detail() ? `${tr('Working…')} · ${props.detail()}` : tr('Working…'));
   return (
     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 8 }}>
-      <Icon name="activity" color={C.accent} />
-      <Text style={[{ ...captionTextStyle, color: C.muted }, { numberOfLines: 1 }]}>
-        {props.detail() ? `${tr('Working…')} · ${props.detail()}` : tr('Working…')}
-      </Text>
+      <If
+        when={platform.idiom === 'terminal'}
+        else={
+          <>
+            <ThinkingMark />
+            <ShimmerText text={text()} style={captionTextStyle} />
+          </>
+        }
+      >
+        <Icon name="activity" color={C.accent} />
+        <Text style={[{ ...captionTextStyle, color: C.muted }, { numberOfLines: 1 }]}>
+          {text()}
+        </Text>
+      </If>
     </View>
   );
 }

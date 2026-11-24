@@ -167,7 +167,7 @@ export async function releaseNativeCli({ source, keys, target, validator, output
     });
     const triple = rustTarget(platform.os, platform.cpu);
     const { binary, bundleInputs } = await buildCli({
-      release: true,
+      profile: 'dist',
       target: triple,
       repositoryRoot,
       env: { ...env, ...v8.environment },

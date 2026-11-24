@@ -770,7 +770,7 @@ export async function buildAndPackageNightly({
     };
 
     const { binary } = await buildCli({
-      release: true,
+      profile: 'dist',
       target: triple,
       repositoryRoot,
       env: buildEnv,

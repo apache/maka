@@ -38,6 +38,11 @@ mod sandbox;
 mod serve;
 mod signals;
 mod startup;
+#[cfg(target_os = "macos")]
+#[path = "../../terminal-shell/src/args.rs"]
+mod terminal_args;
+#[cfg(not(target_os = "macos"))]
+use maka_terminal_shell::args as terminal_args;
 mod update;
 #[cfg(windows)]
 mod windows;
@@ -230,14 +235,7 @@ fn main() -> std::process::ExitCode {
         // can read the environment while this process-local default is set.
         unsafe { std::env::set_var("GALLIUM_DRIVER", "d3d12") };
     }
-    let logging = if cli.logs_to_stderr() {
-        logging::initialize()
-    } else if cli.is_terminal_shell() {
-        logging::initialize_terminal_interaction()
-    } else {
-        Ok(())
-    };
-    if let Err(error) = logging {
+    if let Err(error) = logging::initialize_for(&cli) {
         eprintln!("logging startup: {error}");
         return std::process::ExitCode::FAILURE;
     }
@@ -248,7 +246,7 @@ fn main() -> std::process::ExitCode {
         Ok(runtime) => runtime.block_on(run(cli)),
         Err(error) => {
             if cli.is_terminal_shell() {
-                report_terminal_error(format!("runtime startup: {error}"));
+                terminal_args::report_error(format!("runtime startup: {error}"));
             } else {
                 eprintln!("runtime startup: {error}");
             }
@@ -299,24 +297,6 @@ fn sandbox_helper(role: &str) -> std::io::Result<()> {
         })
 }
 
-fn report_terminal_error(error: String) {
-    use std::io::Write;
-
-    let (sent, received) = std::sync::mpsc::sync_channel(1);
-    if std::thread::Builder::new()
-        .name("maka-terminal-diagnostic".into())
-        .spawn(move || {
-            let result = writeln!(std::io::stderr().lock(), "maka terminal-shell: {error}");
-            let _ = sent.send(result);
-        })
-        .is_ok()
-    {
-        // stderr can share the same blocked terminal as stdout. Diagnostic
-        // delivery must not hold the already closed client scope alive.
-        let _ = received.recv_timeout(std::time::Duration::from_millis(100));
-    }
-}
-
 async fn run(cli: args::Cli) -> std::process::ExitCode {
     let error_exit = cli.error_exit_code();
     let terminal = cli.is_terminal_shell();
@@ -324,7 +304,7 @@ async fn run(cli: args::Cli) -> std::process::ExitCode {
     match result {
         Err(error) => {
             if terminal {
-                report_terminal_error(error.to_string());
+                terminal_args::report_error(error.to_string());
             } else {
                 eprintln!("{error}");
             }

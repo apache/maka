@@ -70,13 +70,16 @@ function watchClipboard(host: ApplicationHost, history: History) {
   let active = true;
   let seen: number | null = null;
   let reading = false;
-  const timer = setInterval(() => {
+  let readFailure: unknown = null;
+  const poll = () => {
     if (reading) return;
     reading = true;
     host
       .clipboardHistoryChange(seen)
       .then(({ change, entry }) => {
         if (!active) return;
+        if (readFailure !== null && history.failure() === readFailure) history.failure.set(null);
+        readFailure = null;
         // The first read only learns the position; what was already there is not history.
         if (seen !== null && entry)
           history.entries.set(
@@ -89,13 +92,16 @@ function watchClipboard(host: ApplicationHost, history: History) {
         seen = change;
       })
       .catch((reason) => {
+        if (!active) return;
+        readFailure = reason;
         history.failure.set(reason);
-        clearInterval(timer);
       })
       .finally(() => {
         reading = false;
       });
-  }, POLL_MS);
+  };
+  poll();
+  const timer = setInterval(poll, POLL_MS);
   cleanup(() => {
     active = false;
     clearInterval(timer);
@@ -107,7 +113,13 @@ const PDF = 'com.adobe.pdf';
 
 function entryTitle(entry: HistoryEntry): string {
   if (entry.paths.length)
-    return entry.paths.map((p) => p.slice(p.lastIndexOf('/') + 1)).join(' · ');
+    return entry.paths
+      .map((p) =>
+        p.slice(
+          Math.max(p.lastIndexOf('/'), platform.os === 'windows' ? p.lastIndexOf('\\') : -1) + 1,
+        ),
+      )
+      .join(' · ');
   if (entry.format === TEXT) return entry.data.replace(/\s+/g, ' ').trim().slice(0, 200);
   const type =
     entry.format === PDF
@@ -163,7 +175,10 @@ function ClipboardHistory(props: {
           : entry.format.split('.').pop()!.toUpperCase();
       const fields = [{ label: tr('Clipboard format'), value: format }];
       if (entry.dimensions)
-        fields.push({ label: tr('Pixel dimensions'), value: entry.dimensions + ' px' });
+        fields.push({
+          label: tr('Pixel dimensions'),
+          value: entry.dimensions + ' px',
+        });
       fields.push({
         label: tr('Copied at'),
         value: new Date(entry.copiedAt).toLocaleString(currentLocale()),
@@ -179,7 +194,12 @@ function ClipboardHistory(props: {
       };
     },
     entries: () => [
-      { id: 'history', title: tr('Clipboard history'), icon: 'clipboard', keywords: KEYWORDS },
+      {
+        id: 'history',
+        title: tr('Clipboard history'),
+        icon: 'clipboard',
+        keywords: KEYWORDS,
+      },
     ],
   });
   return null;
@@ -187,7 +207,7 @@ function ClipboardHistory(props: {
 
 export const activate: UiModule<JSX.Element>['activate'] = (context) => {
   effect(() => currentLocale.set(context.locale()));
-  const history = platform.os === 'macos' ? createHistory() : null;
+  const history = platform.os === 'macos' || platform.os === 'windows' ? createHistory() : null;
   return {
     exports: {
       tool: {

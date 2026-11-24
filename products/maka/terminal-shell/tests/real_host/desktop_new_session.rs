@@ -35,7 +35,7 @@ use std::{
     future::Future,
     path::Path,
     rc::Rc,
-    sync::{Arc, Mutex, atomic::Ordering},
+    sync::{Arc, Mutex},
     time::Duration,
 };
 use tokio::sync::{Notify, watch};
@@ -342,6 +342,17 @@ impl Desktop {
         .await;
     }
 
+    async fn copy_at(
+        &self,
+        stage: &str,
+        position: nsh_terminal::Point<nsh_terminal::Pixels>,
+    ) -> String {
+        let _ = self.platform.take_clipboard_write();
+        self.press_at(position);
+        self.until(stage, || self.platform.take_clipboard_write())
+            .await
+    }
+
     async fn copy_input(&self) -> String {
         self.target_after(None).await;
         let _ = self.platform.take_clipboard_write();
@@ -350,7 +361,7 @@ impl Desktop {
             if let Some(copied) = self.platform.take_clipboard_write() {
                 return Some(copied);
             }
-            if acted.is_none_or(|at| at.elapsed() >= Duration::from_millis(200)) {
+            if acted.is_none_or(|at| at.elapsed() >= Duration::from_secs(1)) {
                 if self.platform.text_input_target().is_none()
                     && let [composer] = self.controls("Focus message composer").as_slice()
                 {
@@ -768,7 +779,6 @@ async fn desktop_remembers_folders_without_restoring_unsent_drafts() {
         .await
         .unwrap();
     desktop.target_after(None).await;
-    let _ = desktop.platform.take_clipboard_write();
     assert!(desktop.controls("Send message").is_empty());
     assert!(
         desktop
@@ -1071,11 +1081,8 @@ async fn desktop_composer_previews_markdown_and_sends_its_source() {
             desktop.draws_in(copy).then_some(copy)
         })
         .await;
-    desktop.press_at(copy.center());
     let copied = desktop
-        .until("the sent message was not copied", || {
-            desktop.platform.take_clipboard_write()
-        })
+        .copy_at("the sent message was not copied", copy.center())
         .await;
     assert_eq!(copied, source);
     desktop.close().await;
@@ -1140,7 +1147,7 @@ async fn desktop_creates_only_on_first_submission_and_preserves_the_confirmed_sn
         .collect();
     assert_eq!(messages.len(), 1);
     assert_eq!(messages[0]["attachments"].as_array().unwrap().len(), 1);
-    assert_eq!(fixture.request_count.load(Ordering::SeqCst), 1);
+    assert_eq!(fixture.request_count(), 1);
     desktop.close().await;
     fixture.finish().await;
 }
@@ -1846,7 +1853,7 @@ async fn desktop_continues_a_failed_run_without_duplicating_the_user_message() {
         .as_str()
         .unwrap();
     fixture.idle(&desktop.client, session).await;
-    assert_eq!(fixture.request_count.load(Ordering::SeqCst), 2);
+    assert_eq!(fixture.request_count(), 2);
     desktop.close().await;
     fixture.finish().await;
 }
@@ -1873,21 +1880,19 @@ async fn desktop_history_anchors_keep_the_reader_off_live_output_until_latest() 
             )
             .await;
     }
+    desktop.control("Jump to turn: History prompt 6").await;
     desktop.press("Jump to turn: History prompt 2").await;
     desktop.control("Return to latest").await;
     let copy = desktop.control("Copy user message").await;
-    let _ = desktop.platform.take_clipboard_write();
     desktop.hover_at(copy.center());
     desktop
         .until("the copy action did not appear on hover", || {
             desktop.draws_in(copy).then_some(())
         })
         .await;
-    desktop.press("Copy user message").await;
+    let copy = desktop.control("Copy user message").await;
     let copied = desktop
-        .until("the selected user message was not copied", || {
-            desktop.platform.take_clipboard_write()
-        })
+        .copy_at("the selected user message was not copied", copy.center())
         .await;
     assert_eq!(copied, "History prompt 2");
     desktop.artifact("history-anchor");
@@ -2122,7 +2127,7 @@ async fn desktop_edits_a_message_in_place_and_forks_only_when_sent() {
         .unwrap()
         .to_owned();
     fixture.idle(&desktop.client, &fork).await;
-    assert_eq!(fixture.request_count.load(Ordering::SeqCst), 2);
+    assert_eq!(fixture.request_count(), 2);
     desktop.close().await;
     fixture.finish().await;
 }
@@ -2274,7 +2279,7 @@ async fn desktop_steering_freezes_each_message_and_queue_is_one_shot() {
         })
         .await;
     assert_eq!(
-        fixture.request_count.load(Ordering::SeqCst),
+        fixture.request_count(),
         2,
         "IME confirmation must not send a message"
     );
@@ -2382,7 +2387,7 @@ async fn desktop_steering_freezes_each_message_and_queue_is_one_shot() {
             "Preserve this draft after stopping.\n\n{queued_followup}"
         ))
         .await;
-    assert_eq!(fixture.request_count.load(Ordering::SeqCst), 3);
+    assert_eq!(fixture.request_count(), 3);
     desktop.close().await;
     fixture.finish().await;
 }
@@ -2433,13 +2438,21 @@ async fn desktop_file_gestures_preserve_drafts_and_stage_an_image() {
             desktop.key_with("right", native!(Modifiers { shift: true }));
         }
         let _ = desktop.platform.take_clipboard_write();
+        let mut acted = None::<std::time::Instant>;
         desktop
             .until("the replacement range was not selected", || {
-                desktop.key("c", true);
-                desktop
+                if desktop
                     .platform
                     .take_clipboard_write()
-                    .filter(|text| text == "待替换")
+                    .is_some_and(|text| text == "待替换")
+                {
+                    return Some(());
+                }
+                if acted.is_none_or(|at| at.elapsed() >= Duration::from_secs(1)) {
+                    desktop.key("c", true);
+                    acted = Some(std::time::Instant::now());
+                }
+                None
             })
             .await;
         if blur {
@@ -2482,7 +2495,7 @@ async fn desktop_file_gestures_preserve_drafts_and_stage_an_image() {
             })
             .await;
     }
-    assert_eq!(fixture.request_count.load(Ordering::SeqCst), 0);
+    assert_eq!(fixture.request_count(), 0);
     let bytes = STANDARD.decode(PNG).unwrap();
     let name = "image.png";
     desktop.paste_image(&bytes).await;

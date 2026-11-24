@@ -27,13 +27,14 @@ use maka_capabilities::filesystem::entries::Kind;
 use std::{
     collections::BTreeMap,
     path::{Component, Path},
-    sync::Arc,
+    sync::{Arc, OnceLock},
 };
 use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Clone)]
 enum Resource {
     Text { content: Arc<str>, hash: String },
+    Embedded(&'static EmbeddedText),
     Unavailable(DiscoveryFailure),
 }
 
@@ -43,44 +44,44 @@ pub struct Resources {
     incomplete: bool,
 }
 
-/// Build assets are immutable and carry no filesystem authority. Parse and hash
-/// them once and share the complete immutable snapshot across discoveries.
-#[derive(Debug, Clone)]
-pub(crate) struct Embedded {
-    prepared: Resources,
+/// Discovery needs only the original content hash. Pages share the text once read.
+#[derive(Debug)]
+pub(crate) struct EmbeddedText {
+    frame: &'static [u8],
+    pub(crate) hash: &'static str,
+    decoded: OnceLock<String>,
 }
-impl Embedded {
-    pub fn new(files: &'static [(&'static str, &'static [u8])]) -> Result<Self, ScanError> {
-        Ok(Self {
-            prepared: Resources::embedded(files)?,
+
+impl EmbeddedText {
+    pub(crate) const fn new(frame: &'static [u8], hash: &'static str) -> Self {
+        Self {
+            frame,
+            hash,
+            decoded: OnceLock::new(),
+        }
+    }
+
+    pub(crate) fn content(&self) -> &str {
+        self.decoded.get_or_init(|| {
+            String::from_utf8(zstd::decode_all(self.frame).expect("bundled skill frame"))
+                .expect("bundled UTF-8 skill resource")
         })
     }
-    pub fn capture(&self) -> Resources {
-        self.prepared.clone()
-    }
 }
+
 impl Resources {
-    pub(crate) fn embedded(files: &[(&str, &[u8])]) -> Result<Self, ScanError> {
-        Self::capture_embedded(files, |_, bytes| {
-            Ok(match std::str::from_utf8(bytes) {
-                Ok(content) => Resource::Text {
-                    content: content.into(),
-                    hash: maka_agent_facts::artifact::content_digest(bytes),
-                },
-                Err(_) => Resource::Unavailable(DiscoveryFailure::ReadFailed),
-            })
-        })
-    }
-    fn capture_embedded(
-        files: &[(&str, &[u8])],
-        mut resource: impl FnMut(&str, &[u8]) -> Result<Resource, ScanError>,
+    pub(crate) fn embedded(
+        files: &[(&str, Option<&'static EmbeddedText>)],
     ) -> Result<Self, ScanError> {
         let mut result = Self::default();
-        for (path, bytes) in files {
+        for (path, text) in files {
             if !valid_path(path) {
                 return Err(ScanError::Unavailable);
             }
-            let resource = resource(path, bytes)?;
+            let resource = match text {
+                Some(text) => Resource::Embedded(text),
+                None => Resource::Unavailable(DiscoveryFailure::ReadFailed),
+            };
             if result.files.insert((*path).into(), resource).is_some() {
                 return Err(ScanError::Unavailable);
             }
@@ -192,6 +193,7 @@ impl Resources {
                         path.as_str(),
                         match resource {
                             Resource::Text { hash, .. } => hash.as_str(),
+                            Resource::Embedded(text) => text.hash,
                             Resource::Unavailable(DiscoveryFailure::BlockedPath) => "blocked",
                             Resource::Unavailable(DiscoveryFailure::ReadFailed) => "unreadable",
                         },
@@ -227,7 +229,8 @@ impl Resources {
             return Err("Skill resource path must stay inside this skill directory".into());
         }
         let content = match self.files.get(&path) {
-            Some(Resource::Text { content, .. }) => content,
+            Some(Resource::Text { content, .. }) => content.as_ref(),
+            Some(Resource::Embedded(text)) => text.content(),
             Some(Resource::Unavailable(_)) => {
                 return Err(
                     "Skill resource was not a readable regular UTF-8 file at request capture"
@@ -270,30 +273,25 @@ fn valid_path(path: &str) -> bool {
 mod tests {
     use super::*;
     #[test]
-    fn embedded_resources_preserve_complete_originals_and_enforce_containment() {
-        for path in [
-            "../secret",
-            "/secret",
-            "a//b",
-            "a/./b",
-            "a\\b",
-            "a:b",
-            "a/.hidden",
+    fn embedded_resources_enforce_containment_and_uniqueness() {
+        for files in [
+            &[("../secret", None)][..],
+            &[("/secret", None)],
+            &[("a//b", None)],
+            &[("a/./b", None)],
+            &[("a\\b", None)],
+            &[("a:b", None)],
+            &[("a/.hidden", None)],
+            &[("same", None), ("same", None)],
         ] {
-            assert!(Resources::embedded(&[(path, b"text")]).is_err());
+            assert!(Resources::embedded(files).is_err());
         }
-        assert!(Resources::embedded(&[("same", b"a"), ("same", b"b")]).is_err());
-        let prepared = Embedded::new(&[
-            ("one", b"abc"),
-            ("binary", &[255]),
-            ("a/b/c/d/e/f/g/h/i/j", b"deep"),
-        ])
-        .unwrap();
-        let captured = prepared.capture();
-        let Resource::Text { content, .. } = &captured.files["one"] else {
-            panic!("text")
-        };
-        assert_eq!(content.as_ref(), "abc");
+        static FRAME: std::sync::LazyLock<Vec<u8>> =
+            std::sync::LazyLock::new(|| zstd::bulk::compress(b"deep", 9).unwrap());
+        static TEXT: std::sync::LazyLock<EmbeddedText> =
+            std::sync::LazyLock::new(|| EmbeddedText::new(&FRAME, "fixture"));
+        let path = "a/b/c/d/e/f/g/h/i/j";
+        let captured = Resources::embedded(&[(path, Some(&TEXT)), ("binary", None)]).unwrap();
         assert!(matches!(
             captured.files["binary"],
             Resource::Unavailable(DiscoveryFailure::ReadFailed)
@@ -302,7 +300,7 @@ mod tests {
             .page(
                 "bundled:test",
                 &ReadInput {
-                    path: "a/b/c/d/e/f/g/h/i/j".into(),
+                    path: path.into(),
                     offset: None,
                     limit: None,
                 },

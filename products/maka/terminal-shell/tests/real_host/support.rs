@@ -31,8 +31,8 @@ use maka_host_runtime::{
     ipc::{self, LocalListener},
 };
 use maka_mock_ai::{
-    AuthPolicy, ControlPlaneConfig, FinishReason, HttpErrorSpec, InteractiveHandler, MockAiBuilder,
-    MockAiServer, ModelEntry, NormalizedRequest, TurnContext, TurnHandle, TurnHandler, Usage,
+    AuthPolicy, ControlPlaneConfig, FinishReason, HttpErrorSpec, MockAiBuilder, MockAiServer,
+    ModelEntry, TurnHandle, Usage,
 };
 use maka_packages::Package;
 use maka_plugin_core::operation::{OperationCleanup, OperationOutcome, OperationResult, Receipt};
@@ -43,7 +43,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc, OnceLock,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicBool, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -127,7 +127,6 @@ pub struct Fixture {
     pub address: PathBuf,
     pub session: String,
     pub selection: Value,
-    pub request_count: Arc<AtomicUsize>,
     requests: mpsc::Receiver<TurnHandle>,
     host: Arc<Host>,
     #[cfg(feature = "desktop-tests")]
@@ -178,22 +177,6 @@ impl Fixture {
             )
             .unwrap(),
         );
-        let request_count = Arc::new(AtomicUsize::new(0));
-        let (interactive, requests) = InteractiveHandler::channel(8);
-        struct CountingInteractive {
-            inner: Arc<InteractiveHandler>,
-            count: Arc<AtomicUsize>,
-        }
-        impl TurnHandler for CountingInteractive {
-            fn handle<'a>(
-                &'a self,
-                req: &'a NormalizedRequest,
-                ctx: &'a TurnContext,
-            ) -> maka_mock_ai::handler::HandlerFuture<'a> {
-                self.count.fetch_add(1, Ordering::SeqCst);
-                self.inner.handle(req, ctx)
-            }
-        }
         let discovered = ModelEntry::simple("fixture-discovered-model")
             .with_name("Discovered UI Model")
             .with_context(131072, 4096)
@@ -206,7 +189,7 @@ impl Fixture {
                     "default_effort": "high"
                 }),
             );
-        let provider = MockAiBuilder::new()
+        let mut provider = MockAiBuilder::new()
             .auth(AuthPolicy::ApiKey {
                 token: PROVIDER_KEY.into(),
             })
@@ -223,13 +206,11 @@ impl Fixture {
                 })),
                 ..Default::default()
             })
-            .handler(Arc::new(CountingInteractive {
-                inner: interactive,
-                count: request_count.clone(),
-            }))
+            .interactive(8)
             .start()
             .await
             .unwrap();
+        let requests = provider.take_interactive_rx().unwrap();
         let bundled = product_packages().await;
         let home = directory.path().join("assistant-home");
         std::fs::create_dir(&home).unwrap();
@@ -361,7 +342,6 @@ impl Fixture {
             address,
             session: String::new(),
             selection,
-            request_count,
             requests,
             host,
             #[cfg(feature = "desktop-tests")]
@@ -378,6 +358,9 @@ impl Fixture {
         fixture.session = created["session"]["id"].as_str().unwrap().to_owned();
         client.close().await.unwrap();
         fixture
+    }
+    pub fn request_count(&self) -> usize {
+        self.provider.request_count() as usize
     }
     pub fn control_plane_requests(&self) -> u64 {
         self.provider.metrics().control_plane_requests
@@ -594,20 +577,20 @@ impl ModelRequest {
     pub async fn http_error(self, body: Value) {
         let closed = self.handle.closed_signal();
         self.handle.http_error(HttpErrorSpec::raw(400, body)).await;
-        closed.notified().await;
+        closed.cancelled().await;
     }
 
     async fn finish_with_reason(self, reason: FinishReason) {
         let closed = self.handle.closed_signal();
         let _ = self.handle.usage(Usage::new(1, 2)).await;
         self.handle.finish_with(reason).await;
-        closed.notified().await;
+        closed.cancelled().await;
     }
 
     pub async fn finish_stream(self) {
         let closed = self.handle.closed_signal();
         drop(self.handle);
-        closed.notified().await;
+        closed.cancelled().await;
     }
 }
 pub async fn wait_enabled_button(

@@ -88,6 +88,7 @@ export function linuxSystemLibraryRustflags(triple, env = {}, exists = existsSyn
 
 export async function compileCli({
   release = false,
+  profile,
   target,
   timings = false,
   desktop = true,
@@ -99,7 +100,8 @@ export async function compileCli({
 } = {}) {
   const host = rustTarget(platform, arch);
   const triple = target ?? host;
-  const linuxRelease = release && target !== undefined && triple.includes('-linux-');
+  const isRelease = release || (profile !== undefined && profile !== 'dev');
+  const linuxRelease = isRelease && target !== undefined && triple.includes('-linux-');
   if (linuxRelease && !/^(x86_64|aarch64)-unknown-linux-gnu$/u.test(triple)) {
     throw new Error('Linux releases require an x86_64 or aarch64 GNU target');
   }
@@ -116,8 +118,9 @@ export async function compileCli({
     '-p',
     'maka-python-runtime',
   ];
-  if (!release && triple === host) args.push(...developmentFeatures(env, platform, releaseName));
-  if (release) args.push('--release');
+  if (!isRelease && triple === host) args.push(...developmentFeatures(env, platform, releaseName));
+  if (profile) args.push('--profile', profile);
+  else if (release) args.push('--release');
   if (timings) args.push('--timings');
   if (outputTarget) args.push('--target', linuxRelease ? `${triple}.2.28` : outputTarget);
   // cargo-config2 in zigbuild misreads Cargo's empty wrapper configuration as a program.
@@ -415,6 +418,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
   const { values } = parseArgs({
     options: {
       release: { type: 'boolean' },
+      profile: { type: 'string' },
       target: { type: 'string' },
       timings: { type: 'boolean' },
     },

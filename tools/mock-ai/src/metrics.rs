@@ -46,6 +46,17 @@ fn default_ring_max_bytes() -> usize {
     64 * 1024 * 1024
 }
 
+/// Compact record of an observed control-plane or custom HTTP request (e.g. `GET /v1/models`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecordedControlRequest {
+    pub method: String,
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub query: Option<String>,
+    pub headers: BTreeMap<String, String>,
+}
+
 /// Compact record of an observed model turn request.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -757,8 +768,25 @@ fn escape_prom_label(s: &str) -> String {
         .replace('\n', "\\n")
 }
 
+enum RecordedEntry {
+    Model(RecordedRequest),
+    Control {
+        entry: RecordedControlRequest,
+        bytes: usize,
+    },
+}
+
+impl RecordedEntry {
+    fn bytes(&self) -> usize {
+        match self {
+            Self::Model(r) => r.prompt_bytes,
+            Self::Control { bytes, .. } => *bytes,
+        }
+    }
+}
+
 struct RecorderInner {
-    items: VecDeque<RecordedRequest>,
+    entries: VecDeque<RecordedEntry>,
     retained_bytes: usize,
 }
 
@@ -773,7 +801,7 @@ impl RequestRecorder {
         Self {
             mode,
             inner: Mutex::new(RecorderInner {
-                items: VecDeque::new(),
+                entries: VecDeque::new(),
                 retained_bytes: 0,
             }),
         }
@@ -783,52 +811,99 @@ impl RequestRecorder {
         self.mode
     }
 
-    pub fn record(&self, req: &NormalizedRequest) {
+    fn push_entry(&self, entry: RecordedEntry) {
+        let bytes = entry.bytes();
         match self.mode {
             RecorderMode::MetricsOnly => {}
             RecorderMode::Full => {
                 let mut guard = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-                guard.retained_bytes = guard.retained_bytes.saturating_add(req.prompt_bytes);
-                guard.items.push_back(RecordedRequest::from(req));
+                guard.retained_bytes = guard.retained_bytes.saturating_add(bytes);
+                guard.entries.push_back(entry);
             }
             RecorderMode::Ring {
                 capacity,
                 max_bytes,
             } => {
-                if capacity == 0 || max_bytes == 0 {
+                if capacity == 0 || max_bytes == 0 || bytes > max_bytes {
                     return;
                 }
                 let mut guard = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-                while guard.items.len() >= capacity
-                    || (guard.retained_bytes.saturating_add(req.prompt_bytes) > max_bytes
-                        && !guard.items.is_empty())
+                while guard.entries.len() >= capacity
+                    || (guard.retained_bytes.saturating_add(bytes) > max_bytes
+                        && !guard.entries.is_empty())
                 {
-                    if let Some(evicted) = guard.items.pop_front() {
-                        guard.retained_bytes =
-                            guard.retained_bytes.saturating_sub(evicted.prompt_bytes);
+                    if let Some(evicted) = guard.entries.pop_front() {
+                        guard.retained_bytes = guard.retained_bytes.saturating_sub(evicted.bytes());
                     }
                 }
-                if req.prompt_bytes <= max_bytes {
-                    guard.retained_bytes = guard.retained_bytes.saturating_add(req.prompt_bytes);
-                    guard.items.push_back(RecordedRequest::from(req));
-                }
+                guard.retained_bytes = guard.retained_bytes.saturating_add(bytes);
+                guard.entries.push_back(entry);
             }
         }
+    }
+
+    pub fn record(&self, req: &NormalizedRequest) {
+        if matches!(self.mode, RecorderMode::MetricsOnly) {
+            return;
+        }
+        self.push_entry(RecordedEntry::Model(RecordedRequest::from(req)));
+    }
+
+    pub fn record_control(
+        &self,
+        method: &str,
+        path: &str,
+        query: Option<&str>,
+        headers: &BTreeMap<String, String>,
+    ) {
+        if matches!(self.mode, RecorderMode::MetricsOnly) {
+            return;
+        }
+        let bytes = method.len()
+            + path.len()
+            + query.map_or(0, str::len)
+            + headers
+                .iter()
+                .map(|(k, v)| k.len() + v.len())
+                .sum::<usize>();
+        let entry = RecordedControlRequest {
+            method: method.to_owned(),
+            path: path.to_owned(),
+            query: query.map(str::to_owned),
+            headers: headers.clone(),
+        };
+        self.push_entry(RecordedEntry::Control { entry, bytes });
     }
 
     pub fn snapshot(&self) -> Vec<RecordedRequest> {
         self.inner
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .items
+            .entries
             .iter()
-            .cloned()
+            .filter_map(|e| match e {
+                RecordedEntry::Model(r) => Some(r.clone()),
+                RecordedEntry::Control { .. } => None,
+            })
+            .collect()
+    }
+
+    pub fn control_snapshot(&self) -> Vec<RecordedControlRequest> {
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entries
+            .iter()
+            .filter_map(|e| match e {
+                RecordedEntry::Control { entry, .. } => Some(entry.clone()),
+                RecordedEntry::Model(_) => None,
+            })
             .collect()
     }
 
     pub fn clear(&self) {
         let mut guard = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        guard.items.clear();
+        guard.entries.clear();
         guard.retained_bytes = 0;
     }
 }

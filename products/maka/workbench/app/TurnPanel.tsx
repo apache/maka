@@ -20,7 +20,7 @@
 import { formatCount } from './numberFormat';
 import { formatDuration } from './duration';
 import { ExecutorTokenCounts } from './TurnUsage';
-import { LoadingIndicator, ShimmerText } from './Loading';
+import { LoadingIndicator, ShimmerText, ThinkingMark, ThinkingPeek } from './Loading';
 import { createText, errorText } from './text';
 import { displayText, tr } from './locale';
 import { Canvas, cleanup, computed, effect, inputAction, List, signal, Text, View } from 'nsh';
@@ -645,9 +645,25 @@ type TurnPanelProps = {
 
 export function TurnPanel(props: TurnPanelProps) {
   const desktop = platform.idiom !== 'terminal';
+  // What the model is thinking right now, while its steps are folded.
+  const thought = () => {
+    const activity = props.activity();
+    if (
+      props.state.open() ||
+      !props.turn().active ||
+      activity.kind !== 'thinking' ||
+      !activity.rowId ||
+      !props.group().rowIds.includes(activity.rowId)
+    )
+      return null;
+    return props.row(activity.rowId)?.text.trim() || null;
+  };
   return (
     <View style={desktop ? { ...panelStyle, gap: 0 } : panelStyle}>
       <GroupHeader {...props} />
+      <If when={desktop && thought() !== null}>
+        <ThinkingPeek text={() => thought() ?? ''} />
+      </If>
       <If when={props.state.open()}>
         <View
           style={
@@ -707,6 +723,7 @@ function activityVerbs(group: ProcessGroup, row: (id: string) => Row | undefined
   return [...new Set(kinds.map(stepVerb))].join(tr(', '));
 }
 
+const thinkingMark = () => <ThinkingMark />;
 function GroupHeader(props: TurnPanelProps) {
   const active = () =>
     props.turn().active &&
@@ -743,7 +760,10 @@ function GroupHeader(props: TurnPanelProps) {
       activity.rowId &&
       props.group().rowIds.includes(activity.rowId)
     )
-      return `${tr('Analyzing the request')}${activity.detail ? ` · ${activity.detail}` : ''}`;
+      // On the desktop the thought itself passes under the header while it is folded.
+      return desktop && !props.state.open()
+        ? tr('Analyzing the request')
+        : `${tr('Analyzing the request')}${activity.detail ? ` · ${activity.detail}` : ''}`;
     const work = latestWork(props.group(), props.row);
     const latest = work ? work.lastCall : props.row(props.group().rowIds.at(-1) ?? '')?.tool?.call;
     return latest ? activityTitle(latest) : tr('Working…');
@@ -775,6 +795,9 @@ function GroupHeader(props: TurnPanelProps) {
     if (last?.kind === 'tool') return activityIcon(last.presentation);
     return last?.kind === 'thought' ? 'thinking' : 'activity';
   };
+  // The mark keeps moving for as long as the turn is at work, through its
+  // thoughts and its tools alike.
+  const working = computed(() => active());
   if (desktop)
     return (
       <Disclosure
@@ -782,6 +805,7 @@ function GroupHeader(props: TurnPanelProps) {
         open={props.state.open()}
         foldable={foldable()}
         icon={icon()}
+        mark={working() ? thinkingMark : undefined}
         onPress={inputAction(choose, {
           sessionId: props.sessionId,
           key: props.group().key,

@@ -25,17 +25,24 @@ use rusqlite::Connection;
 use sha2::{Digest, Sha256};
 use std::sync::LazyLock;
 
-const FACTS: &str = include_str!("../../data/pricing-facts.json");
-static DIGEST: LazyLock<String> = LazyLock::new(|| hex::encode(Sha256::digest(FACTS)));
-static PRICES: LazyLock<Vec<Pricing>> = LazyLock::new(|| {
-    let prices: Vec<Pricing> = serde_json::from_str(FACTS).expect("generated model rates");
+struct Catalog {
+    prices: Vec<Pricing>,
+    digest: String,
+}
+
+static CATALOG: LazyLock<Catalog> = LazyLock::new(|| {
+    let bytes = zstd::decode_all(&include_bytes!(concat!(env!("OUT_DIR"), "/pricing.zst"))[..])
+        .expect("bundled pricing frame");
+    let digest = hex::encode(Sha256::digest(&bytes));
+    let prices: Vec<Pricing> = serde_json::from_slice(&bytes).expect("generated model rates");
     for price in &prices {
         price.validate().expect("valid generated model rate");
     }
-    prices
+    Catalog { prices, digest }
 });
 
 pub(crate) fn initialize(connection: &Connection) -> Result<(), StoreError> {
+    let catalog = &*CATALOG;
     let tx =
         rusqlite::Transaction::new_unchecked(connection, rusqlite::TransactionBehavior::Immediate)?;
     tx.execute_batch(
@@ -56,7 +63,7 @@ pub(crate) fn initialize(connection: &Connection) -> Result<(), StoreError> {
         let mut insert = tx.prepare_cached(
             "INSERT INTO builtin_pricing(model_key, sort_key, record_json) VALUES (?, ?, ?)",
         )?;
-        for pricing in PRICES.iter() {
+        for pricing in &catalog.prices {
             insert.execute(rusqlite::params![
                 &pricing.model_key,
                 sort_key(&pricing.model_key),
@@ -72,13 +79,17 @@ pub(crate) fn initialize(connection: &Connection) -> Result<(), StoreError> {
              builtin_digest = ?
          WHERE singleton = 1 AND builtin_digest IS NOT ?
            AND (builtin_digest IS NULL OR revision < ?)",
-        rusqlite::params![DIGEST.as_str(), DIGEST.as_str(), MAX_REVISION as i64],
+        rusqlite::params![
+            catalog.digest.as_str(),
+            catalog.digest.as_str(),
+            MAX_REVISION as i64
+        ],
     )?;
     if changed == 0 {
         let digest: String = tx
             .prepare_cached("SELECT builtin_digest FROM pricing_authority WHERE singleton = 1")?
             .query_row(rusqlite::params![], |row| row.get(0))?;
-        if digest != *DIGEST {
+        if digest != catalog.digest {
             return Err(StoreError::InvalidTransition(
                 "pricing revision exhausted".into(),
             ));

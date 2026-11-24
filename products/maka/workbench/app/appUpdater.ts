@@ -67,6 +67,22 @@ function isSnapshot(value: unknown): value is UpdaterSnapshot {
   );
 }
 
+function sameSnapshot(a: UpdaterSnapshot | null, b: UpdaterSnapshot): boolean {
+  return (
+    a !== null &&
+    a.channel === b.channel &&
+    a.currentVersion === b.currentVersion &&
+    a.canInstall === b.canInstall &&
+    a.status === b.status &&
+    (a.error ?? null) === (b.error ?? null) &&
+    (a.available?.version ?? null) === (b.available?.version ?? null) &&
+    (a.available?.url ?? null) === (b.available?.url ?? null) &&
+    (a.available?.size ?? null) === (b.available?.size ?? null) &&
+    (a.progress?.received ?? null) === (b.progress?.received ?? null) &&
+    (a.progress?.total ?? null) === (b.progress?.total ?? null)
+  );
+}
+
 export function createAppUpdater(
   bridge: {
     call: (method: string, payload?: unknown) => Promise<unknown>;
@@ -76,31 +92,27 @@ export function createAppUpdater(
   supported: boolean,
 ) {
   const snapshot = signal<UpdaterSnapshot | null>(null);
-  const dismissedVersion = signal<string | null>(null);
-  let initialized = false;
 
   const apply = (value: unknown) => {
     if (!isSnapshot(value)) return;
-    const prev = snapshot();
+    if (sameSnapshot(snapshot(), value)) return;
     snapshot.set(value);
-    if (value.available?.version && value.available.version !== prev?.available?.version) {
-      dismissedVersion.set(null);
-    }
   };
 
+  // NSH ties host.on() cleanup to the active reactive owner, so each mounted
+  // consumer registers its own subscription instead of sharing a one-shot flag.
   const init = () => {
-    if (!supported || initialized) return;
-    initialized = true;
-    bridge.on('updater.state', apply);
+    if (!supported) return () => {};
+    const off = bridge.on('updater.state', apply);
     void bridge
       .call('updater.state')
       .then(apply)
       .catch(() => undefined);
+    return off;
   };
 
   const check = async () => {
     if (!supported) return;
-    dismissedVersion.set(null);
     try {
       apply(await bridge.call('updater.check'));
     } catch (error) {
@@ -117,7 +129,6 @@ export function createAppUpdater(
 
   const download = async () => {
     if (!supported) return;
-    dismissedVersion.set(null);
     try {
       apply(await bridge.call('updater.download'));
     } catch (error) {
@@ -138,11 +149,12 @@ export function createAppUpdater(
       await bridge.call('updater.installAndRestart');
     } catch (error) {
       const current = snapshot();
-      if (current) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (current && current.error !== message) {
         snapshot.set({
           ...current,
-          status: 'error',
-          error: error instanceof Error ? error.message : String(error),
+          status: current.status === 'ready' ? 'ready' : 'error',
+          error: message,
         });
       }
     }
@@ -154,30 +166,11 @@ export function createAppUpdater(
     await bridge.openUrl(url).catch(() => undefined);
   };
 
-  const dismiss = () => {
-    const version = snapshot()?.available?.version;
-    if (version) dismissedVersion.set(version);
-  };
-
-  const bannerVisible = () => {
+  /** Sidebar stays silent during discovery and download; only ready/installing surface an action. */
+  const sidebarVisible = () => {
     const current = snapshot();
     if (!current || current.channel === 'dev') return false;
-    if (
-      current.status !== 'available' &&
-      current.status !== 'downloading' &&
-      current.status !== 'ready' &&
-      current.status !== 'installing'
-    ) {
-      return false;
-    }
-    if (
-      (current.status === 'available' || current.status === 'ready') &&
-      current.available?.version &&
-      dismissedVersion() === current.available.version
-    ) {
-      return false;
-    }
-    return true;
+    return current.status === 'ready' || current.status === 'installing';
   };
 
   const progressPercent = () => {
@@ -194,8 +187,7 @@ export function createAppUpdater(
     download,
     installAndRestart,
     openDownload,
-    dismiss,
-    bannerVisible,
+    sidebarVisible,
     progressPercent,
   };
 }

@@ -119,7 +119,7 @@ export function createComputerAppControls(access: ComposerComputerAccess, height
               )}
             </Each>
             <If when={failure() && current(failure()!.operationId)}>
-              <Text style={{ ...bodyTextStyle, color: C.danger }}>
+              <Text style={{ ...captionTextStyle, color: C.danger }}>
                 {failure() ? renderText(failure()!.message) : ''}
               </Text>
             </If>

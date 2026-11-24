@@ -10421,6 +10421,7 @@ impl<M: TextEngine> Core<M> {
         let mut awaiting = std::mem::take(&mut self.awaiting_renders);
         self.cells_awaiting_renders(&mut awaiting);
         self.awaiting_renders = awaiting;
+        let mut settle_pins = Vec::new();
         for i in 0..self.lists.len() {
             let key = self.lists[i];
             let id = self.nodes[key as usize].id;
@@ -10464,7 +10465,9 @@ impl<M: TextEngine> Core<M> {
             {
                 continue;
             }
-            self.update_list(key, relayout, None);
+            if self.update_list(key, relayout, None) {
+                settle_pins.push(key);
+            }
         }
         if !self.parent_lists.is_empty() {
             for i in 0..self.parent_lists.len() {
@@ -10476,7 +10479,26 @@ impl<M: TextEngine> Core<M> {
                 let Some(outer) = self.outer_input(key) else {
                     continue;
                 };
-                self.update_list(key, relayout, Some(outer));
+                if self.update_list(key, relayout, Some(outer)) {
+                    settle_pins.push(key);
+                }
+                if self.nodes[outer.view as usize]
+                    .list
+                    .as_ref()
+                    .is_some_and(|l| l.can_settle_pin())
+                    && !settle_pins.contains(&outer.view)
+                {
+                    settle_pins.push(outer.view);
+                }
+            }
+        }
+        for key in settle_pins {
+            if !self.needs_layout
+                && !self.extent_changed
+                && self.list_viewport_settled(key)
+                && let Some(list) = self.nodes[key as usize].list.as_mut()
+            {
+                list.unpin();
             }
         }
         if !self.sticky_nodes.is_empty()
@@ -10577,7 +10599,7 @@ impl<M: TextEngine> Core<M> {
         key: Key,
         relayout: bool,
         outer: Option<parent_viewport::OuterInput>,
-    ) {
+    ) -> bool {
         let moved = match &outer {
             Some(o) => self.nodes[key as usize]
                 .list
@@ -10588,11 +10610,11 @@ impl<M: TextEngine> Core<M> {
         };
         let node = &self.nodes[key as usize];
         if !node.created {
-            return;
+            return false;
         }
         let list = node.list.as_ref().expect("list");
         if !(relayout || moved || list.dirty || self.commands.iter().any(|c| c.0 == node.id)) {
-            return;
+            return false;
         }
         let list_hidden = self.displays_none(key);
         let (id, events) = (node.id, node.events);
@@ -10738,7 +10760,12 @@ impl<M: TextEngine> Core<M> {
         // The last scroll command's target moves as its cells are
         // measured: the list follows it.
         let mut retarget = None;
-        match self.follow_list_pin(key, anchor) {
+        let (follow, mut check_settle) = self.nodes[key as usize]
+            .list
+            .as_mut()
+            .expect("list")
+            .follow_pin_step(anchor);
+        match follow {
             Follow::Stay => {}
             Follow::By(delta) => anchor += delta,
             Follow::To { offset, animated } => retarget = Some((offset, animated)),
@@ -10791,11 +10818,13 @@ impl<M: TextEngine> Core<M> {
             };
             if automatic && !list.idle() {
                 list.wait_for_idle(pin.expect("automatic index target"), animated);
+                check_settle = false;
                 retarget = None;
                 continue;
             }
             // An offset of the app's own ends the pin.
             list.pin(pin, offset, animated, automatic);
+            check_settle = false;
             // A new command replaces the pin's retargeting.
             retarget = None;
             if !animated {
@@ -11155,7 +11184,7 @@ impl<M: TextEngine> Core<M> {
                 self.ask_outer(o.view, outer_to, 0.0);
             }
             self.sync_spacer(key, false);
-            return;
+            return check_settle;
         }
         let content = if horizontal {
             size_pt(content_len, cross)
@@ -11230,22 +11259,7 @@ impl<M: TextEngine> Core<M> {
         if motion {
             self.move_list_cells(key, id, horizontal, anchor, placed);
         }
-    }
-
-    fn follow_list_pin(&mut self, key: Key, anchored: f32) -> Follow {
-        let (follow, check_settle) = self.nodes[key as usize]
-            .list
-            .as_mut()
-            .expect("list")
-            .follow_pin_step(anchored);
-        if check_settle && self.list_viewport_settled(key) {
-            self.nodes[key as usize]
-                .list
-                .as_mut()
-                .expect("list")
-                .unpin();
-        }
-        follow
+        check_settle
     }
 
     fn list_cells_settled(&self, list: &ListState) -> bool {
@@ -11283,11 +11297,32 @@ impl<M: TextEngine> Core<M> {
         None
     }
 
+    fn list_assigned_cells_settled(&self, list: &ListState) -> bool {
+        for slot in &list.slots {
+            let Some(i) = slot.index else {
+                continue;
+            };
+            if slot.ready() != Some(i) || !list.item_measured(i) {
+                return false;
+            }
+            if self.awaiting_renders.binary_search(&slot.cell).is_ok() {
+                return false;
+            }
+            if self.nodes[slot.cell as usize]
+                .layout
+                .is_some_and(|layout| self.layout.dirty(layout))
+            {
+                return false;
+            }
+        }
+        true
+    }
+
     fn list_viewport_settled(&self, key: Key) -> bool {
         let Some(list) = self.nodes[key as usize].list.as_ref() else {
             return true;
         };
-        if !self.list_cells_settled(list) {
+        if list.dirty || !self.list_cells_settled(list) {
             return false;
         }
         let Some((first, last)) = list.viewport_items() else {
@@ -11313,7 +11348,7 @@ impl<M: TextEngine> Core<M> {
                     continue;
                 }
                 let dep_node = &self.nodes[dep_key as usize];
-                if !dep_node.created {
+                if !dep_node.created || self.outer_input(dep_key).is_none() {
                     if in_viewport {
                         return false;
                     }
@@ -11322,7 +11357,10 @@ impl<M: TextEngine> Core<M> {
                 let Some(dep) = dep_node.list.as_ref() else {
                     continue;
                 };
-                if dep.has_paced()
+                if dep.dirty
+                    || dep.items_changed
+                    || dep.spacer.is_some_and(|(_, len)| len != dep.content_len())
+                    || dep.has_paced()
                     || (dep.count > 0 && dep.viewport <= 0.0)
                     || dep.source_rows.as_ref().is_some_and(|rows| {
                         rows.provisional || rows.projection_len < rows.source_len
@@ -11330,7 +11368,7 @@ impl<M: TextEngine> Core<M> {
                 {
                     return false;
                 }
-                if !self.list_cells_settled(dep) {
+                if !self.list_cells_settled(dep) || !self.list_assigned_cells_settled(dep) {
                     return false;
                 }
             }

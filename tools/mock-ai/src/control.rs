@@ -311,9 +311,37 @@ impl StoredResponses {
     }
 }
 
-/// Optional dynamic custom HTTP handler hook for test-specific extra endpoints.
+/// HTTP response returned by a `CustomRouteFn`.
+#[derive(Debug, Clone)]
+pub struct CustomResponse {
+    pub status: u16,
+    pub headers: BTreeMap<String, String>,
+    pub body: Vec<u8>,
+}
+
+impl CustomResponse {
+    pub fn new(status: u16, content_type: impl Into<String>, body: impl Into<Vec<u8>>) -> Self {
+        let mut headers = BTreeMap::new();
+        headers.insert("content-type".into(), content_type.into());
+        Self {
+            status,
+            headers,
+            body: body.into(),
+        }
+    }
+
+    pub fn text(status: u16, body: impl Into<String>) -> Self {
+        Self::new(status, "text/plain", body.into().into_bytes())
+    }
+
+    pub fn with_header(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
+        self.headers.insert(name.into(), value.into());
+        self
+    }
+}
+
+/// Optional dynamic custom HTTP handler hook evaluated before built-in control-plane
+/// and generation routes.
 pub type CustomRouteFn = Arc<
-    dyn Fn(&str, &str, &BTreeMap<String, String>, &[u8]) -> Option<(u16, String, Vec<u8>)>
-        + Send
-        + Sync,
+    dyn Fn(&str, &str, &BTreeMap<String, String>, &[u8]) -> Option<CustomResponse> + Send + Sync,
 >;

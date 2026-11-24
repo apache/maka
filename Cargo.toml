@@ -94,6 +94,7 @@ license = "Apache-2.0"
 publish = false
 
 [workspace.dependencies]
+zstd = { version = "0.14.3", default-features = false }
 asyncband = "*"
 mxc-sdk = { git = "https://github.com/microsoft/mxc", rev = "05a430bc17a3e1b3fa2131524fc52e4319e07298" }
 flatbuffers = "25.12.19"
@@ -112,7 +113,7 @@ nsh-platform-windows = { path = "third-party/nsh/crates/nsh-platform-windows", d
 nsh-platform-macos = { path = "third-party/nsh/crates/nsh-platform-macos", default-features = false, features = ["js", "svg", "updater", "websocket", "zlib", "crypto", "editor", "emoji-picker", "highlight", "math", "plot", "rich-editor", "term"] }
 nsh-bundler = { path = "third-party/nsh/crates/nsh-bundler", default-features = false }
 nsh-base = { path = "third-party/nsh/crates/nsh-base", features = ["math", "emoji-picker", "plot"] }
-maka-mock-ai = { path = "tools/mock-ai" }
+maka-mock-ai = { path = "tools/mock-ai", default-features = false }
 maka-ui-build = { path = "tools/ui-build" }
 maka-agent-facts = { path = "plugins/agent/facts" }
 maka-agent-state = { path = "plugins/agent/state" }
@@ -258,6 +259,62 @@ opt-level = 3
 opt-level = 3
 
 [profile.dev.package.icy_sixel]
+opt-level = 3
+
+[profile.dist]
+inherits = "release"
+# Shipped release profile: optimize for compact binaries (npm/installer limits +
+# I-cache locality) and whole-program ThinLTO while staying within 7 GB macOS CI
+# runner memory. Kept separate from [profile.release] for fast local builds.
+# Never set panic = "abort": catch_unwind is required across the workspace.
+opt-level = "s"
+lto = "thin"
+strip = "symbols"
+
+# Keep compute-hot engines, renderers, and codecs at maximum optimization.
+[profile.dist.package.quickjs-jit-sys]
+opt-level = 3
+
+[profile.dist.package.taffy]
+opt-level = 3
+
+[profile.dist.package.nsh-terminal]
+opt-level = 3
+
+[profile.dist.package.quantette]
+opt-level = 3
+
+[profile.dist.package.icy_sixel]
+opt-level = 3
+
+[profile.dist.package.regex-automata]
+opt-level = 3
+
+[profile.dist.package.blake3]
+opt-level = 3
+
+[profile.dist.package.sha2]
+opt-level = 3
+
+[profile.dist.package.libsqlite3-sys]
+opt-level = 3
+
+[profile.dist.package.zune-jpeg]
+opt-level = 3
+
+[profile.dist.package.png]
+opt-level = 3
+
+[profile.dist.package.image-webp]
+opt-level = 3
+
+[profile.dist.package.tiny-skia]
+opt-level = 3
+
+[profile.dist.package.resvg]
+opt-level = 3
+
+[profile.dist.package.syntect]
 opt-level = 3
 
 [patch.crates-io]

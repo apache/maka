@@ -16,7 +16,7 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-use super::bot_tools::{agent_call, completion, has_tool, observed_provider, tool_response};
+use super::bot_tools::{agent_call, has_tool, tool_response};
 use super::*;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -24,22 +24,18 @@ async fn requested_compaction_resumes_from_checkpoint_with_optional_focus_and_mo
 -> TestResult<()> {
     let mut rig = Rig::new()?;
     let base = rig.directory.path().to_path_buf();
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
-    let boot = bootstrap_with(
-        &base,
-        format!("http://{}/v1", listener.local_addr()?),
-        |config| {
-            config["toolDiscovery"] = json!(true);
-            config["todo"] = json!(true);
-            config["tools"] = json!(["write", "edit", "applyPatch"].map(|method| json!({
-                "name":match method { "write" => "Write", "edit" => "Edit", _ => "ApplyPatch" },
-                "description":method,"target":{"kind":"import","name":"files"},
-                "method":method,"nestable":true,"result":"json","confirmation":"preapproved"
-            })));
-        },
-    )
+    let mut provider = MockAiBuilder::new().interactive(1).start().await?;
+    let boot = bootstrap_with(&base, provider.base_url(), |config| {
+        config["toolDiscovery"] = json!(true);
+        config["todo"] = json!(true);
+        config["tools"] = json!(["write", "edit", "applyPatch"].map(|method| json!({
+            "name":match method { "write" => "Write", "edit" => "Edit", _ => "ApplyPatch" },
+            "description":method,"target":{"kind":"import","name":"files"},
+            "method":method,"nestable":true,"result":"json","confirmation":"preapproved"
+        })));
+    })
     .await?;
-    let (mut observed, provider) = observed_provider(listener);
+    let mut observed = provider.take_interactive_rx().unwrap();
     let result: Result<TestResult<()>, _> = tokio::time::timeout(Duration::from_secs(60), async {
         attach(&mut rig, &boot).await?;
         let client = rig.client.as_ref().unwrap();
@@ -68,7 +64,6 @@ async fn requested_compaction_resumes_from_checkpoint_with_optional_focus_and_mo
             let mut args = json!({});
             if focused { args["prompt"] = json!("Keep the release checksum."); }
             if switch { args["resumeModel"] = json!({"connectionId":backend["connectionId"],"modelId":"successor"}); }
-            let text = |s| completion(json!({"role":"assistant","content":s}), "stop");
             let send = json!({"sessionId":session,"message":"Keep the open task.","backend":backend});
             let mut caller_session = None;
             let sent = if switch && !focused {
@@ -76,20 +71,21 @@ async fn requested_compaction_resumes_from_checkpoint_with_optional_focus_and_mo
                     "workspace":{"kind":"directory","path":base.join("workspace")}})).await?;
                 let caller = caller["session"]["id"].as_str().unwrap().to_owned();
                 let parent = call(client,"agent","send",json!({"sessionId":caller,"message":"Delegate the check.","backend":backend})).await?;
-                let (_, parent_reply) = observed.recv().await.ok_or("caller missing")?;
+                let parent_reply = observed.recv().await.ok_or("caller missing")?;
                 let mut send = send;
                 send["onComplete"] = json!("notify_caller");
                 let delegated = agent_call(&owner, &caller, "send", send).await?;
                 assert_eq!(delegated["completion"], "registered");
-                parent_reply.send(text("Waiting for the worker.")).map_err(|_| "caller closed")?;
+                parent_reply.reply_text("Waiting for the worker.");
                 quiescent_message(client,&caller,&parent["messageId"]).await?;
                 caller_session = Some(caller);
                 delegated
             } else { call(client, "agent", "send", send).await? };
-            let (main, reply) = observed.recv().await.ok_or("initial request missing")?;
+            let reply = observed.recv().await.ok_or("initial request missing")?;
+            let main = reply.body();
             let code = source == "code-source";
-            assert_eq!(has_tool(&main, "exec"), code);
-            assert!(!has_tool(&main, "CompactContext"));
+            assert_eq!(has_tool(main, "exec"), code);
+            assert!(!has_tool(main, "CompactContext"));
             let description = |name: &str| main["tools"].as_array().unwrap().iter()
                 .find(|t| t["function"]["name"] == name).unwrap()["function"]["description"].as_str().unwrap();
             assert!(description("tool_search").contains("CompactContext"));
@@ -98,29 +94,29 @@ async fn requested_compaction_resumes_from_checkpoint_with_optional_focus_and_mo
                 assert!(description("exec").contains("todo_read"));
                 assert!(!description("exec").contains("CompactContext"));
             }
-            let has_edit = |name: &str| if code { description("exec").contains(name) } else { has_tool(&main, name) };
+            let has_edit = |name: &str| if code { description("exec").contains(name) } else { has_tool(main, name) };
             assert!(has_edit("Write") && has_edit("Edit") && !has_edit("ApplyPatch"));
-            reply.send(tool_response("tool_search", json!({"query":"CompactContext","limit":1})))
-                .map_err(|_| "provider closed")?;
-            let (loaded, reply) = observed.recv().await.ok_or("request after search missing")?;
+            reply.send_plan(tool_response("tool_search", json!({"query":"CompactContext","limit":1})));
+            let reply = observed.recv().await.ok_or("request after search missing")?;
+            let loaded = reply.body();
             let receipt = loaded["messages"].as_array().unwrap().iter()
                 .find(|m| m["tool_call_id"] == "call-tool_search").ok_or("search receipt missing")?;
             assert_eq!(serde_json::from_str::<Value>(receipt["content"].as_str().unwrap())?, json!({"activated":["CompactContext"]}));
-            assert!(has_tool(&loaded, "CompactContext"));
+            assert!(has_tool(loaded, "CompactContext"));
             let reply = if stop {
-                reply.send(tool_response("CompactContext", json!({"resumeModel":{
-                    "connectionId":backend["connectionId"],"modelId":"low-only"}}))).map_err(|_| "provider closed")?;
-                let (rejected, reply) = observed.recv().await.ok_or("unsupported thinking level missing")?;
+                reply.send_plan(tool_response("CompactContext", json!({"resumeModel":{
+                    "connectionId":backend["connectionId"],"modelId":"low-only"}})));
+                let reply = observed.recv().await.ok_or("unsupported thinking level missing")?;
+                let rejected = reply.body();
                 assert!(rejected["messages"].to_string().contains("does not support this session's thinking level"), "{rejected}");
                 assert_eq!(rejected["model"],source);
                 reply
             } else { reply };
-            reply.send(completion(json!({"role":"assistant","tool_calls":[
-                {"index":0,"id":"request-compact","type":"function","function":{"name":"CompactContext","arguments":args.to_string()}},
-                {"index":1,"id":"lookup","type":"function","function":{"name":"tool_search","arguments":json!({"query":"todo_read"}).to_string()}}
-            ]}), "tool_calls")).map_err(|_| "provider closed")?;
+            reply.send_plan(TurnPlan::new().push_tool_call("request-compact", "CompactContext", args)
+                .push_tool_call("lookup", "tool_search", json!({"query":"todo_read"})).finish(FinishReason::ToolCalls));
 
-            let (summary, reply) = observed.recv().await.ok_or("summary request missing")?;
+            let reply = observed.recv().await.ok_or("summary request missing")?;
+            let summary = reply.body();
             assert!(summary["tools"].as_array().is_none_or(Vec::is_empty));
             let messages = summary["messages"].as_array().unwrap();
             assert_eq!(summary["model"], source);
@@ -138,7 +134,7 @@ async fn requested_compaction_resumes_from_checkpoint_with_optional_focus_and_mo
                 let work = call(client, "agent", "work", json!({"sessionId":session,"target":{"kind":"message","messageId":sent["messageId"]}})).await?;
                 let run = &work["execution"]["runId"];
                 call(client, "agent", "stop", json!({"sessionId":session,"runId":run})).await?;
-                let _ = reply.send(completion(json!({"role":"assistant","content":"Late checkpoint"}), "stop"));
+                reply.reply_text("Late checkpoint");
                 loop {
                     let work = call(client, "agent", "work", json!({"sessionId":session,"target":{"kind":"run","runId":run}})).await?;
                     match work["execution"]["state"]["kind"].as_str() {
@@ -153,9 +149,10 @@ async fn requested_compaction_resumes_from_checkpoint_with_optional_focus_and_mo
             }
             let target = json!({"sessionId":session,"target":{"kind":"message","messageId":sent["messageId"]}});
             let original = call(client,"agent","work",target.clone()).await?;
-            reply.send(text("Checkpoint: the open task is ready.")).map_err(|_| "provider closed")?;
+            reply.reply_text("Checkpoint: the open task is ready.");
 
-            let (resumed, reply) = observed.recv().await.ok_or("resumed request missing")?;
+            let reply = observed.recv().await.ok_or("resumed request missing")?;
+            let resumed = reply.body();
             assert!(resumed["messages"].to_string().contains("Checkpoint: the open task is ready."));
             let expected = if switch { "successor" } else { source };
             assert_eq!(resumed["model"], expected);
@@ -166,7 +163,7 @@ async fn requested_compaction_resumes_from_checkpoint_with_optional_focus_and_mo
             assert_eq!(remembered["modelId"],expected);
             assert_eq!(remembered["thinkingLevel"],"high");
             if switch {
-                assert!(has_tool(&resumed,"ApplyPatch") && !has_tool(&resumed,"Write") && !has_tool(&resumed,"Edit"));
+                assert!(has_tool(resumed,"ApplyPatch") && !has_tool(resumed,"Write") && !has_tool(resumed,"Edit"));
                 assert_eq!(serde_json::to_value(owner.session(session).await?.configuration.backend)?["thinkingLevel"],"high");
             }
             if caller_session.is_some() {
@@ -176,35 +173,38 @@ async fn requested_compaction_resumes_from_checkpoint_with_optional_focus_and_mo
             assert!(!resumed["messages"].to_string().contains("Keep the release checksum."));
             let reply = if focused && !switch {
                 // A second checkpoint in the same Run must resume without another user message.
-                reply.send(completion(json!({"role":"assistant","tool_calls":[{
-                    "index":0,"id":"find-again","type":"function","function":{"name":"tool_search","arguments":r#"{"query":"CompactContext"}"#}
-                }]}), "tool_calls")).map_err(|_| "provider closed")?;
-                let (loaded, reply) = observed.recv().await.ok_or("second lookup missing")?;
-                assert!(has_tool(&loaded, "CompactContext"));
-                reply.send(tool_response("CompactContext", json!({}))).map_err(|_| "provider closed")?;
-                let (summary, reply) = observed.recv().await.ok_or("second summary missing")?;
+                reply.reply_tool_call("find-again", "tool_search", json!({"query":"CompactContext"}));
+                let reply = observed.recv().await.ok_or("second lookup missing")?;
+                let loaded = reply.body();
+                assert!(has_tool(loaded, "CompactContext"));
+                reply.send_plan(tool_response("CompactContext", json!({})));
+                let reply = observed.recv().await.ok_or("second summary missing")?;
+                let summary = reply.body();
                 assert!(summary["tools"].as_array().is_none_or(Vec::is_empty));
-                reply.send(text("Second checkpoint.")).map_err(|_| "provider closed")?;
-                let (next, reply) = observed.recv().await.ok_or("second continuation missing")?;
+                reply.reply_text("Second checkpoint.");
+                let reply = observed.recv().await.ok_or("second continuation missing")?;
+                let next = reply.body();
                 assert!(next["messages"].to_string().contains("Second checkpoint."));
                 reply
             } else { reply };
-            reply.send(text("Done.")).map_err(|_| "provider closed")?;
+            reply.reply_text("Done.");
             quiescent_message(client, session, &sent["messageId"]).await?;
             let finished = call(client,"agent","work",target).await?;
             assert_eq!(finished["execution"]["runId"], running["execution"]["runId"]);
             assert_eq!(finished["answer"]["text"], "Done.");
             if caller_session.is_some() {
-                let (notice, parent_reply) = observed.recv().await.ok_or("completion notice missing")?;
+                let parent_reply = observed.recv().await.ok_or("completion notice missing")?;
+                let notice = parent_reply.body();
                 let last = notice["messages"].as_array().unwrap().iter().rev().find(|m| m["role"]=="user").unwrap();
                 assert!(last["content"].to_string().contains("Done."),"{last}");
-                parent_reply.send(text("Received.")).map_err(|_| "caller closed")?;
+                parent_reply.reply_text("Received.");
             }
             let follow = call(client, "agent", "send", json!({"sessionId":session, "message":"Which model is answering?", "delivery":"queue"})).await?;
-            let (next, reply) = observed.recv().await.ok_or("follow-up missing")?;
+            let reply = observed.recv().await.ok_or("follow-up missing")?;
+            let next = reply.body();
             assert_eq!(next["model"], expected);
             assert!(owner.session(session).await?.configuration.compaction_prompt.is_none());
-            reply.send(text("Still here.")).map_err(|_| "provider closed")?;
+            reply.reply_text("Still here.");
             quiescent_message(client, session, &follow["messageId"]).await?;
             let page = call(client, "agent", "history", json!({
                 "sessionId":session, "position":{"kind":"tail"}, "view":"conversation", "includeThinking":true
@@ -218,7 +218,7 @@ async fn requested_compaction_resumes_from_checkpoint_with_optional_focus_and_mo
         assert!(observed.try_recv().is_err());
         Ok(())
     }).await;
-    provider.abort();
+    provider.shutdown().await;
     let errors = rig.finish().await;
     result??;
     assert!(errors.is_empty(), "{errors:?}");
@@ -230,24 +230,20 @@ async fn summary_repair_recovers_from_rejected_tool_content_and_preserves_frozen
 -> TestResult<()> {
     let mut rig = Rig::new()?;
     let base = rig.directory.path().to_path_buf();
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
-    let boot = bootstrap_with(
-        &base,
-        format!("http://{}/v1", listener.local_addr()?),
-        |config| {
-            config["tools"] = json!([{
-                "name":"Write",
-                "description":"write",
-                "target":{"kind":"import","name":"files"},
-                "method":"write",
-                "nestable":true,
-                "result":"json",
-                "confirmation":"preapproved"
-            }]);
-        },
-    )
+    let mut provider = MockAiBuilder::new().interactive(1).start().await?;
+    let boot = bootstrap_with(&base, provider.base_url(), |config| {
+        config["tools"] = json!([{
+            "name":"Write",
+            "description":"write",
+            "target":{"kind":"import","name":"files"},
+            "method":"write",
+            "nestable":true,
+            "result":"json",
+            "confirmation":"preapproved"
+        }]);
+    })
     .await?;
-    let (mut observed, provider) = observed_provider(listener);
+    let mut observed = provider.take_interactive_rx().unwrap();
     let result: Result<TestResult<()>, _> = tokio::time::timeout(Duration::from_secs(60), async {
         attach(&mut rig, &boot).await?;
         let client = rig.client.as_ref().unwrap();
@@ -285,7 +281,6 @@ async fn summary_repair_recovers_from_rejected_tool_content_and_preserves_frozen
             "workspace": {"kind":"directory","path": base.join("workspace")}
         })).await?;
         let session = created["session"]["id"].as_str().ok_or("Session missing")?;
-        let text = |s| completion(json!({"role":"assistant","content":s}), "stop");
 
         // Seed one completed turn so manual compaction has history to summarize.
         let first = call(client, "agent", "send", json!({
@@ -293,8 +288,8 @@ async fn summary_repair_recovers_from_rejected_tool_content_and_preserves_frozen
             "message": "Seed turn before compaction.",
             "backend": backend
         })).await?;
-        let (_main, reply) = observed.recv().await.ok_or("seed main missing")?;
-        reply.send(text("Seed done.")).map_err(|_| "provider closed")?;
+        let reply = observed.recv().await.ok_or("seed main missing")?;
+        reply.reply_text("Seed done.");
         quiescent_message(client, session, &first["messageId"]).await?;
 
         // Trigger explicit compaction; first Summary attempt emits a tool call (RejectedToolContent).
@@ -314,28 +309,28 @@ async fn summary_repair_recovers_from_rejected_tool_content_and_preserves_frozen
                 .as_u64()
                 .or_else(|| req["max_completion_tokens"].as_u64())
         };
-        let (summary_req, summary_reply) = observed.recv().await.ok_or("initial summary missing")?;
+        let summary_reply = observed.recv().await.ok_or("initial summary missing")?;
+        let summary_req = summary_reply.body();
         assert!(summary_req["tools"].as_array().is_none_or(Vec::is_empty));
         assert_eq!(
-            req_output_limit(&summary_req),
+            req_output_limit(summary_req),
             Some(4096),
             "initial summary must preserve frozen 4096 output cap instead of inflating to 8000: {summary_req}"
         );
         summary_reply
-            .send(tool_response("Write", json!({"path":"nope.txt","content":"bad"})))
-            .map_err(|_| "provider closed")?;
+            .send_plan(tool_response("Write", json!({"path":"nope.txt","content":"bad"})));
 
         // Engine must issue a SummaryRepair request preserving both the original frozen cut and output budget.
-        let (repair_req, repair_reply) = observed.recv().await.ok_or("summary repair request missing")?;
+        let repair_reply = observed.recv().await.ok_or("summary repair request missing")?;
+        let repair_req = repair_reply.body();
         assert!(repair_req["tools"].as_array().is_none_or(Vec::is_empty));
         assert_eq!(
-            req_output_limit(&repair_req),
+            req_output_limit(repair_req),
             Some(4096),
             "summary repair must preserve frozen 4096 output cap instead of inflating to 8000: {repair_req}"
         );
         repair_reply
-            .send(text("Repaired compaction checkpoint."))
-            .map_err(|_| "provider closed")?;
+            .reply_text("Repaired compaction checkpoint.");
 
         // Follow-up turn must succeed and include the repaired compaction summary.
         let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
@@ -367,16 +362,17 @@ async fn summary_repair_recovers_from_rejected_tool_content_and_preserves_frozen
             "delivery": "queue"
         })).await?;
         assert!(follow["kind"] == "accepted" || follow["kind"] == "queued", "follow-up send rejected: {follow}");
-        let (follow_req, follow_reply) = observed.recv().await.ok_or("follow-up missing")?;
+        let follow_reply = observed.recv().await.ok_or("follow-up missing")?;
+        let follow_req = follow_reply.body();
         assert!(
             follow_req["messages"].to_string().contains("Repaired compaction checkpoint."),
             "follow-up request did not carry repaired summary: {follow_req}"
         );
-        follow_reply.send(text("Continued.")).map_err(|_| "provider closed")?;
+        follow_reply.reply_text("Continued.");
         quiescent_message(client, session, &follow["messageId"]).await?;
         Ok(())
     }).await;
-    provider.abort();
+    provider.shutdown().await;
     let errors = rig.finish().await;
     result??;
     assert!(errors.is_empty(), "{errors:?}");
@@ -387,24 +383,20 @@ async fn summary_repair_recovers_from_rejected_tool_content_and_preserves_frozen
 async fn cell_notifications_deduplicate_child_knowledge_per_step_cut() -> TestResult<()> {
     let mut rig = Rig::new()?;
     let base = rig.directory.path().to_path_buf();
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
-    let boot = bootstrap_with(
-        &base,
-        format!("http://{}/v1", listener.local_addr()?),
-        |config| {
-            config["tools"] = json!([{
-                "name":"Write",
-                "description":"write",
-                "target":{"kind":"import","name":"files"},
-                "method":"write",
-                "nestable":true,
-                "result":"json",
-                "confirmation":"preapproved"
-            }]);
-        },
-    )
+    let mut provider = MockAiBuilder::new().interactive(1).start().await?;
+    let boot = bootstrap_with(&base, provider.base_url(), |config| {
+        config["tools"] = json!([{
+            "name":"Write",
+            "description":"write",
+            "target":{"kind":"import","name":"files"},
+            "method":"write",
+            "nestable":true,
+            "result":"json",
+            "confirmation":"preapproved"
+        }]);
+    })
     .await?;
-    let (mut observed, provider) = observed_provider(listener);
+    let mut observed = provider.take_interactive_rx().unwrap();
     let result: Result<TestResult<()>, _> = tokio::time::timeout(Duration::from_secs(60), async {
         attach(&mut rig, &boot).await?;
         let client = rig.client.as_ref().unwrap();
@@ -442,24 +434,23 @@ async fn cell_notifications_deduplicate_child_knowledge_per_step_cut() -> TestRe
             "workspace": {"kind":"directory","path": base.join("workspace")}
         })).await?;
         let session = created["session"]["id"].as_str().ok_or("Session missing")?;
-        let text = |s| completion(json!({"role":"assistant","content":s}), "stop");
 
         let sent = call(client, "agent", "send", json!({
             "sessionId": session,
             "message": "Emit 12 notifications after nested tools.",
             "backend": backend
         })).await?;
-        let (_req1, reply1) = observed.recv().await.ok_or("first request missing")?;
+        let reply1 = observed.recv().await.ok_or("first request missing")?;
         let code = r#"
             await Promise.all([0,1,2,3].map(i => tools.Write({ path: "n" + i + ".txt", content: "v" + i })));
             for (let i = 0; i < 12; i++) notify("burst-note-" + i);
             text("cell-done");
         "#;
         reply1
-            .send(tool_response("exec", json!({ "code": code, "yield_time_ms": 15000 })))
-            .map_err(|_| "provider closed")?;
+            .send_plan(tool_response("exec", json!({ "code": code, "yield_time_ms": 15000 })));
 
-        let (req2, reply2) = observed.recv().await.ok_or("second request missing")?;
+        let reply2 = observed.recv().await.ok_or("second request missing")?;
+        let req2 = reply2.body();
         let wire = req2["messages"].to_string();
         for i in 0..12 {
             assert!(
@@ -477,22 +468,22 @@ async fn cell_notifications_deduplicate_child_knowledge_per_step_cut() -> TestRe
         // without racing against an asynchronous FinalNotificationQueued from a
         // background cell completing between step 2 and step 3.
         reply2
-            .send(tool_response("Write", json!({ "path": "step2.txt", "content": "ok" })))
-            .map_err(|_| "provider closed")?;
+            .send_plan(tool_response("Write", json!({ "path": "step2.txt", "content": "ok" })));
 
-        let (req3, reply3) = observed.recv().await.ok_or("third request missing")?;
+        let reply3 = observed.recv().await.ok_or("third request missing")?;
+        let req3 = reply3.body();
         let wire3 = req3["messages"].to_string();
         assert_eq!(
             wire3.matches("[Host Cell child knowledge;").count(),
             1,
             "replayed step must preserve single deduplicated cell child knowledge block"
         );
-        reply3.send(text("All 12 notes processed.")).map_err(|_| "provider closed")?;
+        reply3.reply_text("All 12 notes processed.");
 
         quiescent_message(client, session, &sent["messageId"]).await?;
         Ok(())
     }).await;
-    provider.abort();
+    provider.shutdown().await;
     let errors = rig.finish().await;
     result??;
     assert!(errors.is_empty(), "{errors:?}");

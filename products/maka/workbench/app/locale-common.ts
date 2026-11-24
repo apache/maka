@@ -423,10 +423,10 @@ export const commonMessages = {
   '{count} entries': ['{count} entries', '共 {count} 条', '共 {count} 筆'],
   Clear: ['Clear', '清空', '清除'],
   'Confirm clear': ['Confirm clear', '确认清空', '確認清除'],
-  'Kept in memory only and gone when Maka quits. Copies from password managers are skipped.': [
-    'Kept in memory only and gone when Maka quits. Copies from password managers are skipped.',
-    '只保存在内存中，退出 Maka 后清空；不记录密码管理器复制的内容。',
-    '只保存在記憶體中，結束 Maka 後清除；不記錄密碼管理器複製的內容。',
+  'History stays in memory until Maka quits. Copies marked private are skipped.': [
+    'History stays in memory until Maka quits. Copies marked private are skipped.',
+    '历史只保存在内存中，退出 Maka 后清空；不记录标记为私密的内容。',
+    '歷史只保存在記憶體中，結束 Maka 後清除；不記錄標記為私密的內容。',
   ],
   Note: ['Note', '笔记', '筆記'],
   Snippet: ['Snippet', '片段', '片段'],
@@ -434,4 +434,12 @@ export const commonMessages = {
   Symbols: ['Symbols', '符号', '符號'],
   'screenshot keyword': ['screenshot', '截图', '截圖'],
   Delete: ['Delete', '删除', '刪除'],
+  Dismiss: ['Dismiss', '关闭', '關閉'],
+  'Diagnostic details': ['Diagnostic details', '诊断详情', '診斷詳情'],
+  'Could not open terminal.': ['Could not open terminal.', '无法打开终端。', '無法開啟終端機。'],
+  'Terminal observation interrupted.': [
+    'Terminal observation interrupted.',
+    '终端连接已中断。',
+    '終端機連線已中斷。',
+  ],
 } as const satisfies Catalog;

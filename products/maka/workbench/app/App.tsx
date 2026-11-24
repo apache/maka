@@ -52,7 +52,7 @@ import {
 } from '../../../../packages/plugin-sdk/src/workbench-views.js';
 import { currentWindow } from 'nsh/desktop';
 import { QuickLauncher } from './QuickLauncher';
-import { UpdateBanner } from './UpdateBanner';
+import { appUpdater } from './appUpdater';
 import { createQuickTools, QuickToolsSettings, type QuickTools } from './QuickTools';
 import { ownTitleBar, windowTitle } from './chrome';
 import {
@@ -65,7 +65,9 @@ import {
 } from './Workbench';
 import { createWorkbenchPlugins, type PanelRoute } from './plugins/context';
 import { PluginPanel } from './plugins/PluginPanel';
+import { Toaster } from './Feedback';
 import { currentLocale, tr } from './locale';
+import { toast } from './toastStore';
 import { bodyTextStyle, C, controlStyle, controlHoverStyle, controlFocusStyle } from './ui';
 
 type Configuration = {
@@ -97,6 +99,7 @@ function App(
     quick: QuickTools;
   },
 ) {
+  appUpdater.init();
   const { context, runtime } = props;
   const configuration = context.configuration as unknown as Configuration;
   const saved = context.restored as SavedRoot | null;
@@ -107,6 +110,7 @@ function App(
   const settingsOpened = signal(saved?.settings !== null && saved?.settings !== undefined);
   const settingsModel = signal<ModelSelection | undefined>(saved?.settings?.model);
   const settingsPage = signal<string | undefined>(saved?.settings?.page);
+  const settingsNavigation = signal(0);
   const session = signal<ConversationSessionHandle | null>(null);
   windowTitle(() =>
     workspaceMode() === 'rooms'
@@ -290,6 +294,37 @@ function App(
     const reason = runtime.updateError();
     return reason instanceof Error ? reason.message : String(reason);
   };
+  const CONNECTION_TOAST_ID = 'workbench.connection-interrupted';
+  effect(() => {
+    if (platform.idiom === 'terminal') return;
+    currentLocale();
+    const reason = runtime.updateError();
+    if (reason === null) {
+      toast.dismiss(CONNECTION_TOAST_ID);
+      return;
+    }
+    toast.upsert(CONNECTION_TOAST_ID, {
+      tone: 'warning',
+      persistent: true,
+      dismissible: false,
+      message: tr('Connection interrupted. Reconnect to continue; your draft is kept.'),
+      details: {
+        label: tr('Details'),
+        text: connectionDiagnostic(),
+      },
+      actions: [
+        {
+          label: tr('Retry'),
+          primary: true,
+          dismissOnPress: false,
+          onPress: runtime.retryUpdates,
+        },
+      ],
+    });
+  });
+  cleanup(() => {
+    toast.dismiss(CONNECTION_TOAST_ID);
+  });
   const conversationPaneVisible = () => shell.visible() && !previewFullscreen() && !previewDialog();
   const shell: ConversationShell = {
     sessionId: selected,
@@ -307,6 +342,7 @@ function App(
       batch(() => {
         settingsModel.set(model);
         settingsPage.set(page);
+        settingsNavigation.set(settingsNavigation() + 1);
         settingsOpened.set(true);
       });
     },
@@ -576,8 +612,7 @@ function App(
           },
         })}
       </WorkspaceSurface>
-      <UpdateBanner />
-      <If when={runtime.updateError() !== null}>
+      <If when={platform.idiom === 'terminal' && runtime.updateError() !== null}>
         <View
           style={{
             flexDirection: 'row',
@@ -633,6 +668,7 @@ function App(
         settingsViewContract,
         {
           opened: settingsOpened,
+          navigation: settingsNavigation,
           close: () => {
             if (!alive || blocked()) return;
             navigationGeneration++;
@@ -647,6 +683,7 @@ function App(
         },
         { loading: false },
       )}
+      <Toaster />
     </View>
   );
 }

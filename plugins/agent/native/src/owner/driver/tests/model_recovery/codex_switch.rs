@@ -18,7 +18,7 @@
  */
 
 use super::*;
-use futures_util::{SinkExt, StreamExt};
+use maka_mock_ai::CompactionOutput;
 
 fn observation(
     binding: &maka_agent_facts::execution::ModelBinding,
@@ -47,7 +47,7 @@ fn observation(
     context
 }
 
-fn response(request: &Value) -> (u16, Vec<Value>) {
+fn response(request: &Value) -> TurnPlan {
     let compact = request["input"].as_array().is_some_and(|items| {
         items
             .iter()
@@ -57,21 +57,19 @@ fn response(request: &Value) -> (u16, Vec<Value>) {
     let body = request.to_string();
     let large = body.contains("old-input-second") || body.contains("converted-second");
     if !compact && body.contains("old-input-stopped") && request["model"] == "llama3.2" {
-        return (
-            200,
-            vec![
-                json!({"type":"response.output_item.done","item":replay_reasoning()}),
-                json!({"type":"response.output_item.done","item":{"type":"message","id":"partial","role":"assistant","content":[{"type":"output_text","text":"committed-before-stop"}]}}),
-            ],
-        );
+        return TurnPlan::new()
+            .push_reasoning_encrypted("visible summary", "opaque-original")
+            .push_flush()
+            .push_text("committed-before-stop")
+            .push_flush()
+            .push(TurnEvent::Stall);
     }
     if compact && body.contains("old-input-fallback") && request["model"] == "llama3.2" {
-        return (
+        return TurnPlan::http_error(HttpErrorSpec::new(
             400,
-            vec![
-                json!({"error":{"type":"invalid_request_error","message":"previous model unavailable"}}),
-            ],
-        );
+            "invalid_request_error",
+            "previous model unavailable",
+        ));
     }
     let handoff = request["input"]
         .as_array()
@@ -79,35 +77,52 @@ fn response(request: &Value) -> (u16, Vec<Value>) {
         .flatten()
         .filter_map(|item| item.pointer("/content/0/text").and_then(Value::as_str))
         .find_map(|text| text.strip_prefix("fixture-handoff/"));
-    let item = if let Some(connection) = handoff
+    let plan = if let Some(connection) = handoff
         && !body.contains("handoff-call")
     {
-        json!({"type":"function_call","id":"handoff-item","call_id":"handoff-call","name":"CompactContext","arguments":json!({"resumeModel":{"connectionId":connection,"modelId":"llama3.1"}}).to_string(),"status":"completed"})
+        TurnPlan::new().push_tool_call(
+            "handoff-call",
+            "CompactContext",
+            json!({"resumeModel":{"connectionId":connection,"modelId":"llama3.1"}}),
+        )
     } else if !compact && body.contains("handoff-call") {
-        json!({"type":"message","id":"summary","role":"assistant","content":[{"type":"output_text","text":"Portable checkpoint for the new model."}]})
+        TurnPlan::new().push_text("Portable checkpoint for the new model.")
     } else if !compact
         && body.contains("native-focus-fixture")
         && !body.contains("focus-call")
         && !body.contains("converted-state")
     {
-        json!({"type":"function_call","id":"focus-item","call_id":"focus-call","name":"CompactContext","arguments":json!({"prompt":"Retain the checksum."}).to_string(),"status":"completed"})
+        TurnPlan::new().push_tool_call(
+            "focus-call",
+            "CompactContext",
+            json!({"prompt":"Retain the checksum."}),
+        )
     } else if compact {
-        json!({"type":"compaction","id":"switch-cp","encrypted_content":format!("{}-{}", if large {"converted-second"} else if body.contains("converted-state") {"reconverted-state"} else {"converted-state"}, request["model"].as_str().unwrap())})
+        TurnPlan::new().push_compaction(
+            CompactionOutput::new(format!(
+                "{}-{}",
+                if large {
+                    "converted-second"
+                } else if body.contains("converted-state") {
+                    "reconverted-state"
+                } else {
+                    "converted-state"
+                },
+                request["model"].as_str().unwrap()
+            ))
+            .with_id("switch-cp"),
+        )
     } else {
-        json!({"type":"message","id":"answer","role":"assistant","content":[{"type":"output_text","text":"done"}]})
+        TurnPlan::new().push_text("done")
     };
     let output_tokens = if compact && large && request["model"] == "llama3.2" {
         120_000
     } else {
         10
     };
-    (
-        200,
-        vec![
-            json!({"type":"response.output_item.done","item":item}),
-            json!({"type":"response.completed","response":{"id":"switch-response","model":request["model"],"output":[item],"usage":{"input_tokens":100,"output_tokens":output_tokens}}}),
-        ],
-    )
+    let reason = plan.inferred_finish_reason();
+    plan.with_usage(Usage::new(100, output_tokens))
+        .finish(reason)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -117,88 +132,17 @@ async fn switching_compacts_with_previous_model_before_target_input() {
         .with_test_writer()
         .try_init();
     let mut rig = Rig::new().unwrap();
-    let stop = CancellationToken::new();
     let listener =
         tokio::net::TcpListener::from_std(rig.model_listener.try_clone().unwrap()).unwrap();
     let (sent, mut received) = tokio::sync::mpsc::unbounded_channel();
-    let http_listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+    let server = MockAiBuilder::new()
+        .handler_fn(move |req, _| {
+            let _ = sent.send(req.raw_body.clone());
+            response(&req.raw_body)
+        })
+        .start_with_listener(listener)
         .await
         .unwrap();
-    let http_address = http_listener.local_addr().unwrap();
-    let app = axum::Router::new().route(
-        "/v1/responses",
-        axum::routing::post({
-            let sent = sent.clone();
-            move |request: axum::extract::Request| {
-                let sent = sent.clone();
-                async move {
-                    let body = axum::body::to_bytes(request.into_body(), 1024 * 1024)
-                        .await
-                        .unwrap();
-                    let request: Value = serde_json::from_slice(&body).unwrap();
-                    sent.send(request.clone()).unwrap();
-                    let (status, events) = response(&request);
-                    let body = if status == 200 {
-                        events
-                            .iter()
-                            .map(|event| format!("data: {event}\n\n"))
-                            .collect::<String>()
-                    } else {
-                        events[0].to_string()
-                    };
-                    (
-                        axum::http::StatusCode::from_u16(status).unwrap(),
-                        [("content-type", "text/event-stream")],
-                        body,
-                    )
-                }
-            }
-        }),
-    );
-    let http_stop = stop.clone();
-    let http_server = tokio::spawn(async move {
-        axum::serve(http_listener, app)
-            .with_graceful_shutdown(http_stop.cancelled_owned())
-            .await
-    });
-    let shutdown = stop.clone();
-    let server = tokio::spawn(async move {
-        let mut connections = tokio::task::JoinSet::new();
-        loop {
-            let stream = tokio::select! { _ = shutdown.cancelled() => break, result = listener.accept() => result?.0 };
-            let sent = sent.clone();
-            let shutdown = shutdown.clone();
-            connections.spawn(async move {
-                let mut stream = stream;
-                let mut method = [0u8; 4];
-                tokio::select! { _ = shutdown.cancelled() => return Ok(()), result = stream.peek(&mut method) => { result?; } }
-                if method[0] == b'P' {
-                    let mut upstream = tokio::net::TcpStream::connect(http_address).await?;
-                    tokio::select! { _ = shutdown.cancelled() => {}, result = tokio::io::copy_bidirectional(&mut stream, &mut upstream) => { result?; } }
-                    return Ok(());
-                }
-                let mut socket = tokio::select! {
-                    _ = shutdown.cancelled() => return Ok(()),
-                    socket = tokio_tungstenite::accept_async(stream) => socket?,
-                };
-                loop {
-                    let frame = tokio::select! { _ = shutdown.cancelled() => break, frame = socket.next() => frame };
-                    let Some(Ok(tokio_tungstenite::tungstenite::Message::Text(text))) = frame else { break };
-                    let request: Value = serde_json::from_str(&text)?;
-                    sent.send(request.clone())?;
-                    let (_, events) = response(&request);
-                    for event in events {
-                        socket.send(tokio_tungstenite::tungstenite::Message::text(event.to_string())).await?;
-                    }
-                }
-                Ok::<_, Box<dyn Error + Send + Sync>>(())
-            });
-        }
-        while let Some(result) = connections.join_next().await {
-            result??;
-        }
-        Ok::<_, Box<dyn Error + Send + Sync>>(())
-    });
     let outcome = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(180), async {
         let base = rig.directory.path().to_path_buf();
         let boot = bootstrap(&base, format!("http://{}/v1", rig.model_listener.local_addr()?), true).await?;
@@ -358,12 +302,8 @@ async fn switching_compacts_with_previous_model_before_target_input() {
         }
         Ok::<_, Box<dyn Error + Send + Sync>>(())
     })).catch_unwind().await;
-    stop.cancel();
-    let wire = server.await;
-    let http = http_server.await;
+    server.shutdown().await;
     let cleanup = rig.finish().await;
     assert!(matches!(&outcome, Ok(Ok(Ok(())))), "{outcome:?}");
-    assert!(matches!(wire, Ok(Ok(()))), "{wire:?}");
-    assert!(matches!(http, Ok(Ok(()))), "{http:?}");
     assert!(cleanup.is_empty(), "{cleanup:?}");
 }

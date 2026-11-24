@@ -420,20 +420,22 @@ pub(crate) fn load(
             "Run indexes have an old projection schema; rebuild required",
         ));
     }
-    let (phase, finish, proactive_summary, output_limit_continuations): (
+    let (phase, finish, proactive_summary, output_limit_continuations, retry_streak): (
         String,
         bool,
         Option<String>,
         u32,
+        String,
     ) = c.query_row(
-        "SELECT retry_phase,finish_requested,proactive_summary,output_limit_continuations FROM agent_runs WHERE run=?",
+        "SELECT retry_phase,finish_requested,proactive_summary,output_limit_continuations,retry_streak FROM agent_runs WHERE run=?",
         [run.to_string()],
-        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
     )?;
     view.retry_phase = identity(phase)?;
     view.finish_requested = finish;
     view.proactive_summary = proactive_summary.map(identity).transpose()?;
     view.output_limit_continuations = output_limit_continuations;
+    view.retry_streak = serde_json::from_str(&retry_streak)?;
     view.revision = raw.1;
     view.control_version = raw.2;
     view.stopped = raw.3;
@@ -617,7 +619,7 @@ fn persist(c: &Connection, view: &RunView) -> Result<(), StoreError> {
         .query_row([view.run.to_string()], |r| column_u64(r, 0))?;
     c.prepare_cached("INSERT INTO agent_runs(run,schema_version,owner,session,admission_sequence,local,revision,control_version,stopped,terminal,tokens,retries,retry_due_at,retry_pending,current_step,current_attempt,cancelled_by_risk,replans,baseline,external,stop_request,stop_assessed) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(run) DO UPDATE SET schema_version=excluded.schema_version,revision=excluded.revision,control_version=excluded.control_version,stopped=excluded.stopped,terminal=excluded.terminal,tokens=excluded.tokens,retries=excluded.retries,retry_due_at=excluded.retry_due_at,retry_pending=excluded.retry_pending,current_step=excluded.current_step,current_attempt=excluded.current_attempt,cancelled_by_risk=excluded.cancelled_by_risk,replans=excluded.replans,baseline=excluded.baseline,external=excluded.external,stop_request=excluded.stop_request,stop_assessed=excluded.stop_assessed")?.execute(params![view.run.to_string(),HEADER_SCHEMA_VERSION,serde_json::to_string(&view.spec.owner)?,view.spec.session_id,signed(admission_sequence)?,matches!(view.spec.origin,RunOrigin::Local),signed(view.revision)?,signed(view.control_version)?,view.stopped,view.terminal.as_ref().map(serde_json::to_string).transpose()?,signed(view.tokens)?,view.retries,view.retry_due_at.map(|t|t.0),view.retry_pending.map(|v|v.to_string()),view.current_step.map(|v|v.to_string()),view.current_attempt.map(|v|v.to_string()),view.cancelled_by_risk,serde_json::to_string(&view.replans)?,view.baseline.as_ref().map(serde_json::to_string).transpose()?,view.external.as_ref().map(external_header).transpose()?,view.stop_request.map(|id|id.to_string()),view.stop_assessed.map(|id|id.to_string())])?;
     c.execute(
-        "UPDATE agent_runs SET retry_phase=?,finish_requested=?,proactive_summary=?,output_limit_continuations=? WHERE run=?",
+        "UPDATE agent_runs SET retry_phase=?,finish_requested=?,proactive_summary=?,output_limit_continuations=?,retry_streak=? WHERE run=?",
         params![
             match view.retry_phase {
                 maka_agent_facts::model::retry_transport::RetryTransportPhase::Primary => "primary",
@@ -627,6 +629,7 @@ fn persist(c: &Connection, view: &RunView) -> Result<(), StoreError> {
             view.finish_requested(),
             view.proactive_summary.map(|attempt| attempt.to_string()),
             view.output_limit_continuations,
+            serde_json::to_string(&view.retry_streak)?,
             view.run.to_string()
         ],
     )?;
@@ -2371,6 +2374,69 @@ mod answer_page_tests {
     }
 }
 
+pub(crate) fn migrate_retry_streak(c: &Connection) -> Result<(), maka_event_log::StoreError> {
+    let runs: Vec<String> = {
+        let mut statement =
+            c.prepare("SELECT run FROM agent_runs WHERE retries > 0 OR retry_phase = 'fallback'")?;
+        let rows = statement.query_map([], |row| row.get(0))?;
+        rows.collect::<Result<_, _>>()?
+    };
+    if runs.is_empty() {
+        return Ok(());
+    }
+    let mut facts = c.prepare(
+        "SELECT c.payload FROM agent_facts f          JOIN contents c ON c.id = f.body_content_id          WHERE f.run = ?          ORDER BY f.revision ASC",
+    )?;
+    let mut update = c.prepare("UPDATE agent_runs SET retry_streak = ? WHERE run = ?")?;
+    for run in runs {
+        let mut current_attempt = None;
+        let mut streak = fold::RetryStreak::default();
+        let payloads = facts.query_map([&run], |row| row.get::<_, Vec<u8>>(0))?;
+        for payload in payloads {
+            let bytes = payload?;
+            let recorded: RecordedFact = serde_json::from_slice(&bytes).map_err(|error| {
+                maka_event_log::StoreError::Migration(format!(
+                    "failed to decode agent fact for retry_streak backfill on run {run}: {error}"
+                ))
+            })?;
+            match &recorded.fact {
+                Fact::ModelAttemptPrepared { attempt, .. } => {
+                    current_attempt = Some(*attempt);
+                }
+                Fact::ModelTransportSelected {
+                    attempt,
+                    phase: maka_agent_facts::model::retry_transport::RetryTransportPhase::Fallback,
+                } => {
+                    streak = fold::RetryStreak::FallbackTransitionPending { attempt: *attempt };
+                }
+                Fact::RetryCharged { attempt, .. } => {
+                    streak = streak.on_retry_charged(*attempt).map_err(|error| {
+                        maka_event_log::StoreError::Migration(format!(
+                            "failed to replay retry_streak for run {run}: {error}"
+                        ))
+                    })?;
+                }
+                Fact::ModelClosed {
+                    attempt,
+                    outcome: maka_agent_facts::accounting::Outcome::Success,
+                    diagnostic: None,
+                    ..
+                } if current_attempt == Some(*attempt) => {
+                    streak = fold::RetryStreak::default();
+                }
+                _ => {}
+            }
+        }
+        let encoded = serde_json::to_string(&streak).map_err(|error| {
+            maka_event_log::StoreError::Migration(format!(
+                "failed to encode retry_streak for run {run}: {error}"
+            ))
+        })?;
+        update.execute(params![encoded, run])?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::MODEL_RECONCILIATION_RUNS_SQL;
@@ -2404,5 +2470,311 @@ mod tests {
                 .any(|step| step.contains("SEARCH r USING") && step.contains("(run=?)")),
             "outer join must probe agent_runs by run PK from candidates: {plan:?}"
         );
+    }
+
+    #[test]
+    fn migration_53_backfills_retry_streak_matching_fact_replay() {
+        use crate::{
+            ContentBlob,
+            fold::{self, RunView},
+        };
+        use maka_agent_facts::{
+            accounting::Outcome,
+            context::ModelClosureProtocol,
+            durable::{
+                AttemptRecovery, Fact, FactId, ModelAttemptId, RecordedFact, RunId, SCHEMA_VERSION,
+                StepId, UnixMillis,
+            },
+            model::{ModelFinishReason, retry_transport::RetryTransportPhase},
+        };
+        use maka_plugin_core::operation::OperationCleanup;
+
+        let db = Connection::open_in_memory().unwrap();
+        let catalog: Vec<_> = maka_event_log::ROOT_MIGRATIONS
+            .iter()
+            .chain(crate::MIGRATIONS)
+            .copied()
+            .collect();
+        let through_52: Vec<_> = catalog
+            .iter()
+            .filter(|m| m.version <= 52)
+            .copied()
+            .collect();
+        maka_event_log::migration::run(&db, &through_52).unwrap();
+
+        let seed_run = |facts: Vec<Fact>, retries: u32, retry_phase: &str| -> (RunId, RunView) {
+            let run = RunId::new();
+            let (mut spec, _) = crate::store::stop_tests::spec();
+            spec.session_id = format!("mig53-{run}");
+            spec.budget.retries = 2;
+            let spec_blob = ContentBlob::json(&spec).unwrap();
+            let spec_cid = super::put(&db, &spec_blob).unwrap();
+            let owner_json = serde_json::to_string(&spec.owner).unwrap();
+            db.execute(
+                "INSERT INTO agent_run_specs(run,schema_version,owner,session,spec_content_id) VALUES(?,?,?,?,?)",
+                params![run.to_string(), SCHEMA_VERSION, owner_json, spec.session_id, spec_cid],
+            )
+            .unwrap();
+
+            let mut view = RunView::admitted(run, spec).unwrap();
+            let all_facts = std::iter::once(Fact::RunAdmitted {
+                spec: spec_blob.reference().clone(),
+            })
+            .chain(facts);
+            let mut admission_seq = 0_i64;
+            let mut revision = 0_u64;
+            for fact in all_facts {
+                revision += 1;
+                let recorded = RecordedFact {
+                    schema_version: SCHEMA_VERSION,
+                    id: FactId::new(),
+                    run,
+                    revision,
+                    at: UnixMillis(revision as i64),
+                    fact,
+                };
+                view.apply(&recorded).unwrap();
+                let fact_blob = ContentBlob::json(&recorded).unwrap();
+                let cid = super::put(&db, &fact_blob).unwrap();
+                db.execute(
+                    "INSERT INTO agent_facts(id,run,revision,schema_version,at,body_content_id) VALUES(?,?,?,?,?,?)",
+                    params![
+                        recorded.id.to_string(),
+                        run.to_string(),
+                        revision as i64,
+                        SCHEMA_VERSION,
+                        recorded.at.0,
+                        cid
+                    ],
+                )
+                .unwrap();
+                if revision == 1 {
+                    admission_seq = db.last_insert_rowid();
+                }
+            }
+            db.execute(
+                "INSERT INTO agent_runs(run,schema_version,owner,session,admission_sequence,local,revision,control_version,stopped,terminal,tokens,retries,retry_due_at,retry_pending,current_step,current_attempt,cancelled_by_risk,replans,baseline,external,stop_request,stop_assessed,retry_phase,finish_requested,proactive_summary,output_limit_continuations)                  VALUES(?,?,?,?,?,?,?,?,0,NULL,0,?,NULL,NULL,NULL,NULL,0,'{}',NULL,NULL,NULL,NULL,?,0,NULL,0)",
+                params![
+                    run.to_string(),
+                    super::HEADER_SCHEMA_VERSION,
+                    owner_json,
+                    format!("mig53-{run}"),
+                    admission_seq,
+                    1_i64,
+                    revision as i64,
+                    0_i64,
+                    retries,
+                    retry_phase,
+                ],
+            )
+            .unwrap();
+            (run, view)
+        };
+
+        let req = ContentBlob::json(&serde_json::json!({}))
+            .unwrap()
+            .reference()
+            .clone();
+        let ok_protocol = serde_json::to_value(ModelClosureProtocol {
+            model_time_ms: None,
+            finish_reason: ModelFinishReason::Stop,
+            provider_options: None,
+            cache_read_reported: None,
+            response_id: None,
+            model: None,
+            timestamp: None,
+            compaction: None,
+            summary: None,
+        })
+        .unwrap();
+        let fail_facts = |step: StepId, attempt: ModelAttemptId, prepare_step: bool| {
+            let mut out = Vec::new();
+            if prepare_step {
+                out.push(Fact::StepPrepared {
+                    step,
+                    request: req.clone(),
+                    adjudications: vec![],
+                });
+            }
+            out.extend([
+                Fact::ModelAttemptPrepared { attempt, step },
+                Fact::ModelAttemptAdmitted {
+                    attempt,
+                    upstream: serde_json::Value::Null,
+                },
+                Fact::ModelInterrupted {
+                    attempt,
+                    diagnostic: "timed out".into(),
+                },
+                Fact::AttemptRecoveryRecorded {
+                    attempt,
+                    recovery: AttemptRecovery::FrozenRetrySafe { not_before: None },
+                },
+                Fact::ModelCleanupObserved {
+                    attempt,
+                    cleanup: OperationCleanup::Confirmed,
+                },
+            ]);
+            out
+        };
+        let succeed_facts = |step: StepId, attempt: ModelAttemptId| {
+            vec![
+                Fact::ModelAttemptPrepared { attempt, step },
+                Fact::ModelAttemptAdmitted {
+                    attempt,
+                    upstream: serde_json::Value::Null,
+                },
+                Fact::ModelClosed {
+                    attempt,
+                    outcome: Outcome::Success,
+                    diagnostic: None,
+                    usage: Default::default(),
+                    protocol: ok_protocol.clone(),
+                },
+                Fact::ModelCleanupObserved {
+                    attempt,
+                    cleanup: OperationCleanup::Confirmed,
+                },
+            ]
+        };
+
+        // 1) Primary mid-streak with a succeeding background proactive summary (must NOT reset).
+        let (s1, a1, bg1) = (StepId::new(), ModelAttemptId::new(), ModelAttemptId::new());
+        let mut f1 = fail_facts(s1, a1, true);
+        f1.push(Fact::RetryCharged {
+            attempt: a1,
+            phase: RetryTransportPhase::Primary,
+            due_at: UnixMillis(10),
+            diagnostic: "retry".into(),
+        });
+        f1.extend([
+            Fact::ProactiveSummaryPrepared {
+                step: StepId::new(),
+                request: req.clone(),
+                attempt: bg1,
+            },
+            Fact::ModelAttemptAdmitted {
+                attempt: bg1,
+                upstream: serde_json::Value::Null,
+            },
+            Fact::ModelClosed {
+                attempt: bg1,
+                outcome: Outcome::Success,
+                diagnostic: None,
+                usage: Default::default(),
+                protocol: ok_protocol.clone(),
+            },
+            Fact::ModelCleanupObserved {
+                attempt: bg1,
+                cleanup: OperationCleanup::Confirmed,
+            },
+        ]);
+        let (run_mid_primary, view_mid_primary) = seed_run(f1, 1, "primary");
+
+        // 2) Primary retry followed by foreground success (resets to Regular { charged: 0 }).
+        let (s2, a2, a2_ok) = (StepId::new(), ModelAttemptId::new(), ModelAttemptId::new());
+        let mut f2 = fail_facts(s2, a2, true);
+        f2.push(Fact::RetryCharged {
+            attempt: a2,
+            phase: RetryTransportPhase::Primary,
+            due_at: UnixMillis(1),
+            diagnostic: "retry".into(),
+        });
+        f2.extend(succeed_facts(s2, a2_ok));
+        let (run_reset_primary, view_reset_primary) = seed_run(f2, 1, "primary");
+
+        // 3) ModelTransportSelected(Fallback) pending its transition RetryCharged.
+        let (s3, a3_1, a3_2, a3_3) = (
+            StepId::new(),
+            ModelAttemptId::new(),
+            ModelAttemptId::new(),
+            ModelAttemptId::new(),
+        );
+        let mut f3 = fail_facts(s3, a3_1, true);
+        f3.push(Fact::RetryCharged {
+            attempt: a3_1,
+            phase: RetryTransportPhase::Primary,
+            due_at: UnixMillis(1),
+            diagnostic: "r1".into(),
+        });
+        f3.extend(fail_facts(s3, a3_2, false));
+        f3.push(Fact::RetryCharged {
+            attempt: a3_2,
+            phase: RetryTransportPhase::Primary,
+            due_at: UnixMillis(1),
+            diagnostic: "r2".into(),
+        });
+        f3.extend(fail_facts(s3, a3_3, false));
+        f3.push(Fact::ModelTransportSelected {
+            attempt: a3_3,
+            phase: RetryTransportPhase::Fallback,
+        });
+        let (run_fallback_pending, view_fallback_pending) = seed_run(f3.clone(), 2, "fallback");
+
+        // 4) Fallback transition + one post-transition Fallback retry -> AfterFallbackTransition { charged: 1 }.
+        let a4_4 = ModelAttemptId::new();
+        let mut f4 = f3.clone();
+        f4.push(Fact::RetryCharged {
+            attempt: a3_3,
+            phase: RetryTransportPhase::Fallback,
+            due_at: UnixMillis(1),
+            diagnostic: "fallback-transition".into(),
+        });
+        f4.extend(fail_facts(s3, a4_4, false));
+        f4.push(Fact::RetryCharged {
+            attempt: a4_4,
+            phase: RetryTransportPhase::Fallback,
+            due_at: UnixMillis(1),
+            diagnostic: "fallback-r1".into(),
+        });
+        let (run_fallback_charged, view_fallback_charged) = seed_run(f4.clone(), 4, "fallback");
+
+        // 5) Fallback succeeded -> reset to Regular { charged: 0 }.
+        let mut f5 = f4;
+        f5.extend(succeed_facts(s3, ModelAttemptId::new()));
+        let (run_fallback_reset, view_fallback_reset) = seed_run(f5, 4, "fallback");
+
+        // Apply migration 53 (SQL + atomic data backfill).
+        maka_event_log::migration::run(&db, &catalog).unwrap();
+
+        let expected = [
+            (
+                run_mid_primary,
+                view_mid_primary.retry_streak,
+                fold::RetryStreak::Regular { charged: 1 },
+            ),
+            (
+                run_reset_primary,
+                view_reset_primary.retry_streak,
+                fold::RetryStreak::Regular { charged: 0 },
+            ),
+            (
+                run_fallback_pending,
+                view_fallback_pending.retry_streak,
+                fold::RetryStreak::FallbackTransitionPending { attempt: a3_3 },
+            ),
+            (
+                run_fallback_charged,
+                view_fallback_charged.retry_streak,
+                fold::RetryStreak::AfterFallbackTransition { charged: 1 },
+            ),
+            (
+                run_fallback_reset,
+                view_fallback_reset.retry_streak,
+                fold::RetryStreak::Regular { charged: 0 },
+            ),
+        ];
+        for (run, folded, want) in expected {
+            assert_eq!(folded, want, "folded streak mismatch for {run}");
+            let raw: String = db
+                .query_row(
+                    "SELECT retry_streak FROM agent_runs WHERE run = ?",
+                    [run.to_string()],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            let migrated: fold::RetryStreak = serde_json::from_str(&raw).unwrap();
+            assert_eq!(migrated, folded, "migrated streak mismatch for {run}");
+        }
     }
 }

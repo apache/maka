@@ -35,7 +35,6 @@ pub(crate) struct Requests {
     pub(crate) exits: tokio::sync::mpsc::UnboundedReceiver<()>,
     pub(crate) folders: tokio::sync::mpsc::UnboundedReceiver<HostCall>,
     pub(crate) text_sizes: tokio::sync::mpsc::UnboundedReceiver<f32>,
-    pub(crate) notices: tokio::sync::mpsc::UnboundedReceiver<HostCall>,
 }
 
 /// What the window gives each workbench it loads, beside its Host.
@@ -48,9 +47,7 @@ pub(crate) struct Shell {
     /// Asks for a folder with the system's dialog.
     folder: tokio::sync::mpsc::UnboundedSender<HostCall>,
     text_size: tokio::sync::mpsc::UnboundedSender<f32>,
-    /// Posts a system notification.
-    notify: tokio::sync::mpsc::UnboundedSender<HostCall>,
-    /// The loaded workbench's host channel, which hears the notification chosen.
+    /// The loaded workbench's host channel for shell events.
     pub(crate) events: Arc<Mutex<Option<HostChannel>>>,
     updater: Option<Arc<crate::updater::Controller>>,
 }
@@ -60,13 +57,11 @@ impl Shell {
         let (exit, exits) = tokio::sync::mpsc::unbounded_channel();
         let (folder, folders) = tokio::sync::mpsc::unbounded_channel();
         let (text_size, text_sizes) = tokio::sync::mpsc::unbounded_channel();
-        let (notify, notices) = tokio::sync::mpsc::unbounded_channel();
         let shell = Self {
             foreground,
             exit,
             folder,
             text_size,
-            notify,
             events: Arc::default(),
             updater: None,
         };
@@ -74,7 +69,6 @@ impl Shell {
             exits,
             folders,
             text_sizes,
-            notices,
         };
         (shell, requests)
     }
@@ -127,12 +121,6 @@ impl Shell {
             call.resolve(JsonValue::Bool(crate::appkit::command_only(
                 objc2_app_kit::NSEvent::modifierFlags_class(),
             )));
-        });
-        let notify = self.notify.clone();
-        config.host.handle("notification.show", move |call| {
-            if let Err(error) = notify.send(call) {
-                error.0.reject("the window is closing");
-            }
         });
         if let Some(updater) = self.updater.clone() {
             let state_controller = Arc::clone(&updater);

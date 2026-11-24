@@ -128,15 +128,15 @@ async fn synchronize_loaded(
         }
         return Ok(outcome);
     }
-    let version = tokio::task::spawn_blocking(super::super::bundle_fingerprint).await??;
-    let packages = tokio::task::spawn_blocking(super::super::packages).await??;
-    let authoring = super::super::authoring()?;
-    super::super::verified_fingerprint(&authoring, &packages, &version)?;
+    let version = super::super::bundle_fingerprint()?;
+    let (packages, authoring) = tokio::task::spawn_blocking(super::super::load_product).await??;
     synchronize_loaded_packages(
         apply,
         record,
         current.ok_or("public Host source missing")?,
         packages,
+        &authoring,
+        &version,
     )
     .await
 }
@@ -248,10 +248,8 @@ pub(crate) async fn live_update_available(
     {
         return Err("Host management read returned another deployment".into());
     }
-    let version = tokio::task::spawn_blocking(super::super::bundle_fingerprint).await??;
-    let packages = tokio::task::spawn_blocking(super::super::packages).await??;
-    let authoring = super::super::authoring()?;
-    super::super::verified_fingerprint(&authoring, &packages, &version)?;
+    let version = super::super::bundle_fingerprint()?;
+    let (packages, _) = tokio::task::spawn_blocking(super::super::load_product).await??;
     let replacements = bundled_replacements(&packages)?;
     if let Some(base) = &metadata.source.input.base
         && base.package.id == baseline::ID
@@ -388,6 +386,8 @@ async fn synchronize_loaded_packages(
     record: Launch,
     loaded: maka_event_log::applications::LoadedDeployment,
     bundled: BTreeMap<String, Package>,
+    source: &str,
+    release: &str,
 ) -> Result<Outcome, HostError> {
     if !loaded.source().remote_exports.is_empty() {
         return Err("public Host source cannot use remote observations".into());
@@ -399,15 +399,13 @@ async fn synchronize_loaded_packages(
         available.insert(package.application_ref(), package.clone());
     }
     let available: Vec<_> = available.into_values().collect();
-    let source = super::super::authoring()?;
-    let release = super::super::bundle_fingerprint()?;
     let rebuilt = baseline::rebase(
         &loaded.source().input,
         loaded.packages(),
         &bundled,
         record.deployment,
-        &source,
-        &release,
+        source,
+        release,
     )
     .await?;
     let mut available = available;

@@ -23,6 +23,7 @@ import { compactTranscriptSize, CompactInputBar } from './QuickBar';
 import type { createQuickQuestion } from './quickQuestion';
 import { MessageRow } from './MessageRow';
 import { BotWorking } from './BotReply';
+import { InlineCallout } from './Feedback';
 import { Icon } from './Icon';
 import { tr } from './locale';
 import {
@@ -175,9 +176,16 @@ export function QuickQuestionPanel(props: {
           </View>
         </If>
         <If when={!!question.error()}>
-          <Text style={{ paddingHorizontal: 16, paddingVertical: 8, color: C.warning }}>
-            {question.error()}
-          </Text>
+          <View style={{ paddingHorizontal: 16, paddingVertical: 8 }}>
+            <InlineCallout
+              tone={
+                question.error() === tr('Continue in the main window to keep chatting.')
+                  ? 'warning'
+                  : 'danger'
+              }
+              message={question.error()}
+            />
+          </View>
         </If>
       </View>
     </View>

@@ -30,8 +30,7 @@ struct Fixture {
 impl Fixture {
     async fn new() -> Self {
         let directory = tempfile::tempdir().unwrap();
-        let bundled = super::super::packages().unwrap();
-        let source = super::super::authoring().unwrap();
+        let (bundled, source) = super::super::load_product().unwrap();
         let release = super::super::bundle_fingerprint().unwrap();
         let deployment = Uuid::new_v4();
         let (_, package) = generate(

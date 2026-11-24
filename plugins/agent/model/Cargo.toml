@@ -48,4 +48,5 @@ tokio-util.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+maka-mock-ai.workspace = true
 tokio = { workspace = true, features = ["net", "io-util", "test-util"] }

@@ -16,46 +16,24 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-use super::bot_tools::completion;
 use super::*;
 
-fn search(id: &str) -> String {
-    completion(
-        json!({"role":"assistant","tool_calls":[{
-            "index":0,"id":id,"type":"function",
-            "function":{"name":"tool_search","arguments":json!({"query":id}).to_string()}
-        }]}),
-        "tool_calls",
-    )
+fn search(id: &str) -> TurnPlan {
+    TurnPlan::new()
+        .push_tool_call(id, "tool_search", json!({"query":id}))
+        .finish(FinishReason::ToolCalls)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn chat_history_reads_a_turns_steps_as_one_growing_group() -> TestResult<()> {
     let mut rig = Rig::new()?;
     let base = rig.directory.path().to_path_buf();
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
-    let boot = bootstrap_with(
-        &base,
-        format!("http://{}/v1", listener.local_addr()?),
-        |config| config["toolDiscovery"] = json!(true),
-    )
+    let mut provider = MockAiBuilder::new().interactive(1).start().await?;
+    let boot = bootstrap_with(&base, provider.base_url(), |config| {
+        config["toolDiscovery"] = json!(true)
+    })
     .await?;
-    let (requests, mut observed) = tokio::sync::mpsc::channel(1);
-    let app = axum::Router::new().route(
-        "/v1/chat/completions",
-        axum::routing::post(move || {
-            let requests = requests.clone();
-            async move {
-                let (reply, response) = oneshot::channel::<String>();
-                let _ = requests.send(reply).await;
-                (
-                    [("content-type", "text/event-stream")],
-                    response.await.unwrap_or_default(),
-                )
-            }
-        }),
-    );
-    let provider = tokio::spawn(async move { axum::serve(listener, app).await });
+    let mut observed = provider.take_interactive_rx().unwrap();
     let result: Result<TestResult<()>, _> = tokio::time::timeout(Duration::from_secs(60), async {
         attach(&mut rig, &boot).await?;
         let client = rig.client.as_ref().unwrap();
@@ -87,7 +65,7 @@ async fn chat_history_reads_a_turns_steps_as_one_growing_group() -> TestResult<(
         };
 
         observed.recv().await.ok_or("first request missing")?
-            .send(search("first")).map_err(|_| "provider stopped")?;
+            .send_plan(search("first"));
         let respond = observed.recv().await.ok_or("second request missing")?;
         let tail = history(Value::Null, json!({"kind":"tail"}), "chat").await?;
         let [group] = &groups(&tail)[..] else { return Err(format!("{tail}").into()) };
@@ -95,7 +73,7 @@ async fn chat_history_reads_a_turns_steps_as_one_growing_group() -> TestResult<(
         assert_eq!(group["work"]["kinds"][0]["kind"], "tool", "{group}");
         assert!(tail["chunks"].as_array().unwrap().iter().all(|chunk| chunk["tool"].is_null()));
 
-        respond.send(search("second")).map_err(|_| "provider stopped")?;
+        respond.send_plan(search("second"));
         let respond = observed.recv().await.ok_or("third request missing")?;
         let through = history(Value::Null, json!({"kind":"tail"}), "chat").await?["through"].clone();
         let next = history(through.clone(), json!({"kind":"after","cursor":group["work"]["end"]}), "chat").await?;
@@ -119,12 +97,11 @@ async fn chat_history_reads_a_turns_steps_as_one_growing_group() -> TestResult<(
         assert!(ids.len() == 2 && ids[0] != ids[1], "{steps}");
         assert!(steps["after"].is_null(), "{steps}");
 
-        respond.send(completion(json!({"role":"assistant","content":"Done."}), "stop"))
-            .map_err(|_| "provider stopped")?;
+        respond.reply_text("Done.");
         quiescent_message(client, session, &sent["messageId"]).await?;
         Ok(())
     }).await;
-    provider.abort();
+    provider.shutdown().await;
     let errors = tokio::time::timeout(Duration::from_secs(30), rig.finish()).await?;
     result??;
     assert!(errors.is_empty(), "cleanup: {errors:?}");

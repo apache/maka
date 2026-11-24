@@ -1116,28 +1116,32 @@ mod tests {
 
     use super::{AudioEvent, decode, decode_off_main, extension};
 
-    /// A WAV file of `millis` of a 440 Hz tone: 16-bit mono at 8 kHz.
+    /// A WAV file of `millis` of a 440 Hz tone: 32-bit IEEE float mono at 8 kHz.
+    ///
+    /// Matching `MFAudioFormat_Float` lets Media Foundation's source reader bind
+    /// directly without invoking `MFTEnumEx` / `StateRepository` out-of-process
+    /// Store codec enumeration (which stalls intermittently on cold CI VMs).
     fn wav(millis: u32) -> Vec<u8> {
         let rate = 8_000u32;
         let frames = rate * millis / 1000;
-        let data = frames * 2;
+        let data = frames * 4;
         let mut out = Vec::new();
         out.extend_from_slice(b"RIFF");
         out.extend_from_slice(&(36 + data).to_le_bytes());
         out.extend_from_slice(b"WAVEfmt ");
         out.extend_from_slice(&16u32.to_le_bytes());
-        out.extend_from_slice(&1u16.to_le_bytes()); // PCM
+        out.extend_from_slice(&3u16.to_le_bytes()); // WAVE_FORMAT_IEEE_FLOAT
         out.extend_from_slice(&1u16.to_le_bytes()); // mono
         out.extend_from_slice(&rate.to_le_bytes());
-        out.extend_from_slice(&(rate * 2).to_le_bytes());
-        out.extend_from_slice(&2u16.to_le_bytes());
-        out.extend_from_slice(&16u16.to_le_bytes());
+        out.extend_from_slice(&(rate * 4).to_le_bytes());
+        out.extend_from_slice(&4u16.to_le_bytes());
+        out.extend_from_slice(&32u16.to_le_bytes());
         out.extend_from_slice(b"data");
         out.extend_from_slice(&data.to_le_bytes());
         for i in 0..frames {
             let t = i as f32 / rate as f32;
-            let v = (t * 440.0 * std::f32::consts::TAU).sin() * 8_000.0;
-            out.extend_from_slice(&(v as i16).to_le_bytes());
+            let v = (t * 440.0 * std::f32::consts::TAU).sin() * 0.25;
+            out.extend_from_slice(&v.to_le_bytes());
         }
         out
     }

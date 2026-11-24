@@ -29,6 +29,11 @@ use maka_workbench::{
     bindings::Bindings,
     reload::{Request, UiReload},
 };
+use nsh_core::{
+    desktop::{MenuRole, WindowAttributes},
+    element::{Root, desktop},
+    prelude::*,
+};
 use nsh_engine::JsonValue;
 use nsh_platform_windows::{AppOptions, AppView, quit_app, run_app_with_config, with_running_view};
 use std::time::{Duration, Instant};
@@ -40,6 +45,91 @@ use tokio::{
 const FIRST_PAUSE: Duration = Duration::from_secs(1);
 const RECONNECT_LIMIT: Duration = Duration::from_secs(30);
 const STEADY: Duration = Duration::from_secs(60);
+
+struct WslReconnect {
+    errors: watch::Receiver<Option<String>>,
+}
+
+#[component]
+fn WslReconnectView() -> impl IntoElement {
+    let reconnect = engine_context::<WslReconnect>().expect("WSL reconnect view context");
+    let mut errors = reconnect.errors.clone();
+    let error = signal(errors.borrow_and_update().clone());
+    spawn(async move {
+        while errors.changed().await.is_ok() {
+            error.set(errors.borrow_and_update().clone());
+        }
+    });
+    let locale = locale();
+    let (connecting, unavailable, quit) = match locale.language() {
+        "zh" if locale.as_str().contains("-Hant")
+            || matches!(locale.region(), Some("TW" | "HK" | "MO")) =>
+        {
+            (
+                "正在重新連線到 WSL Host…",
+                "無法連線到 WSL Host。Maka 會自動重試。",
+                "結束 Maka",
+            )
+        }
+        "zh" => (
+            "正在重新连接 WSL Host…",
+            "无法连接 WSL Host。Maka 会自动重试。",
+            "退出 Maka",
+        ),
+        _ => (
+            "Reconnecting to the WSL Host…",
+            "Could not connect to the WSL Host. Maka will retry automatically.",
+            "Quit Maka",
+        ),
+    };
+    desktop::set_application_menu(vec![desktop::MenuItem::submenu(
+        TITLE,
+        [desktop::MenuItem::role(MenuRole::Quit)
+            .label(quit)
+            .shortcut("ctrl+q")],
+    )]);
+    let mut attrs = WindowAttributes::default();
+    attrs.title = Some(TITLE.into());
+    attrs.title_bar = Some(Default::default());
+    attrs.close_on_press = Some(true);
+    attrs.close_on_escape = Some(false);
+    attrs.close_on_blur = Some(false);
+    desktop::current_window().set(attrs);
+    view()
+        .h_full()
+        .p_6()
+        .flex()
+        .flex_col()
+        .gap_2()
+        .justify_center()
+        .items_center()
+        .child(
+            text(move || {
+                if error.get().is_some() {
+                    unavailable
+                } else {
+                    connecting
+                }
+            })
+            .text_lg()
+            .text_color(AdaptiveColor::rgb(0x171717, 0xf5f5f5)),
+        )
+        .child(when(
+            move || error.get().is_some(),
+            move || {
+                text(move || error.get().unwrap_or_default())
+                    .selectable(true)
+                    .text_center()
+                    .text_color(AdaptiveColor::rgb(0x525252, 0xa3a3a3))
+            },
+        ))
+}
+
+fn wsl_reconnect_config(errors: watch::Receiver<Option<String>>) -> nsh_engine::EngineConfig {
+    let mut config = nsh_engine::EngineConfig::new(Root::of::<WslReconnectView>());
+    config.context = config.context.with(WslReconnect { errors });
+    config
+}
 
 pub(crate) fn start(target: crate::Target) -> Result<(), String> {
     use maka_host_runtime::application::host::Client as HostClient;
@@ -119,13 +209,7 @@ pub(crate) fn run_wsl(
         exits,
         mut folders,
         mut text_sizes,
-        mut notices,
     } = requests;
-    runtime.spawn(async move {
-        while let Some(call) = notices.recv().await {
-            call.reject("the Direct2D window does not support system notifications");
-        }
-    });
     runtime.spawn(async move {
         while let Some(call) = folders.recv().await {
             call.reject("the Windows folder dialog cannot choose Linux paths for a WSL Host");
@@ -176,6 +260,7 @@ fn window_options() -> AppOptions {
         title: TITLE.into(),
         size: SIZE,
         min_size: Some((MIN_SIZE.0 as i32, MIN_SIZE.1 as i32)),
+        notifications: true,
         ..Default::default()
     }
 }
@@ -259,11 +344,16 @@ async fn follow_wsl(
         if quit {
             break 'connected;
         }
+        let (report_error, errors) = watch::channel(None);
         if !run_on_view(
             &mut window_started,
             &mut exits,
             &mut window_closed,
-            |view| view.stop(),
+            move |view| {
+                view.load_with_config(wsl_reconnect_config(errors));
+                // Replacing the workbench also removes its tray entry.
+                view.show();
+            },
         )
         .await
         {
@@ -302,9 +392,13 @@ async fn follow_wsl(
                 Ok(session) => break session,
                 Err(error) => {
                     eprintln!("maka-desktop-shell: reconnecting WSL Host: {error}");
-                    // The tray left with the engine: a hidden window is the
-                    // only way back while no Host answers.
-                    with_running_view(|view| view.show());
+                    report_error.send_if_modified(|previous| {
+                        if previous.as_ref() == Some(&error) {
+                            return false;
+                        }
+                        *previous = Some(error);
+                        true
+                    });
                 }
             }
         };
@@ -361,13 +455,7 @@ fn carry_out(requests: Requests, runtime: &Runtime) {
         mut exits,
         mut folders,
         mut text_sizes,
-        mut notices,
     } = requests;
-    runtime.spawn(async move {
-        while let Some(call) = notices.recv().await {
-            call.reject("the Direct2D window does not support system notifications");
-        }
-    });
     runtime.spawn(async move {
         if exits.recv().await.is_some() {
             quit_app();
@@ -409,6 +497,81 @@ mod tests {
     use super::*;
 
     const WM_CLOSE: u32 = 0x0010;
+
+    #[component]
+    fn WorkbenchChrome() -> impl IntoElement {
+        use nsh_core::desktop::{TitleBarOptions, TitleBarStyle};
+        let mut attrs = WindowAttributes::default();
+        attrs.title = Some("Workbench chrome fixture".into());
+        let mut title_bar = TitleBarOptions::default();
+        title_bar.style = TitleBarStyle::Hidden;
+        title_bar.height = Some(px(48.0));
+        attrs.title_bar = Some(title_bar);
+        attrs.close_on_press = Some(false);
+        desktop::current_window().set(attrs);
+        view()
+    }
+
+    #[test]
+    fn wsl_reconnect_restores_native_window_close() {
+        use nsh_platform_windows::windows::Win32::UI::WindowsAndMessaging::{
+            DispatchMessageW, GetWindowTextW, IsWindow, MSG, PM_REMOVE, PeekMessageW,
+            TranslateMessage,
+        };
+
+        fn pump_until(mut done: impl FnMut() -> bool, failure: &str) {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while !done() {
+                assert!(Instant::now() < deadline, "{failure}");
+                // SAFETY: this test owns a Win32 message queue and its window on this thread.
+                unsafe {
+                    let mut message = MSG::default();
+                    while PeekMessageW(&mut message, None, 0, 0, PM_REMOVE).as_bool() {
+                        let _ = TranslateMessage(&message);
+                        DispatchMessageW(&message);
+                    }
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+
+        let window = AppView::new(
+            None,
+            AppOptions {
+                title: "Before workbench chrome".into(),
+                size: (400, 250),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let hwnd = window.hwnd();
+        let has_title = |expected: &str| {
+            let mut text = [0; 64];
+            // SAFETY: hwnd belongs to this test window and the output is a local buffer.
+            let length = unsafe { GetWindowTextW(hwnd, &mut text) };
+            String::from_utf16_lossy(&text[..length as usize]) == expected
+        };
+        window.load_with_config(nsh_engine::EngineConfig::new(Root::of::<WorkbenchChrome>()));
+        window.show();
+        pump_until(
+            || has_title("Workbench chrome fixture"),
+            "workbench window attributes were not applied",
+        );
+
+        let (_errors, receiver) = watch::channel(None);
+        window.load_with_config(wsl_reconnect_config(receiver));
+        pump_until(
+            || has_title(TITLE),
+            "reconnect window attributes were not applied",
+        );
+        // SAFETY: post WM_CLOSE to the test's live window on this thread.
+        assert_ne!(unsafe { post_message(hwnd.0, WM_CLOSE, 0, 0) }, 0);
+        pump_until(
+            // SAFETY: querying a Win32 window handle is valid even after its window is destroyed.
+            || !unsafe { IsWindow(Some(hwnd)) }.as_bool(),
+            "WM_CLOSE did not close the reconnect window",
+        );
+    }
 
     #[link(name = "user32")]
     unsafe extern "system" {

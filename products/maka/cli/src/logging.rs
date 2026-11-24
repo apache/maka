@@ -19,6 +19,17 @@
 
 //! Process logging belongs to executable entry, before runtime/store startup.
 
+pub(super) fn initialize_for(cli: &crate::args::Cli) -> Result<(), maka_host_runtime::HostError> {
+    if cli.logs_to_stderr() {
+        return initialize();
+    }
+    #[cfg(not(target_os = "macos"))]
+    if cli.is_terminal_shell() {
+        return maka_terminal_shell::entry::initialize_terminal_interaction();
+    }
+    Ok(())
+}
+
 pub(super) fn initialize() -> Result<(), maka_host_runtime::HostError> {
     tracing_subscriber::fmt()
         .with_max_level(tracing_subscriber::filter::LevelFilter::WARN)
@@ -66,31 +77,6 @@ fn extension_browser_trace_requested(
         && origin
             .and_then(std::ffi::OsStr::to_str)
             .is_some_and(|origin| origin.starts_with("chrome-extension://"))
-}
-
-/// Explicit terminal diagnostics stay in a file and include no text or keys.
-pub(super) fn initialize_terminal_interaction() -> Result<(), maka_host_runtime::HostError> {
-    use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
-
-    let Some(path) = std::env::var_os("MAKA_TERMINAL_INTERACTION_LOG") else {
-        return Ok(());
-    };
-    let file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)?;
-    let level = tracing_subscriber::filter::LevelFilter::DEBUG;
-    let targets = tracing_subscriber::filter::Targets::new()
-        .with_target("nsh::interaction", level)
-        .with_target("nsh::scroll", level);
-    tracing_subscriber::fmt()
-        .with_max_level(level)
-        .with_ansi(false)
-        .with_writer(std::sync::Mutex::new(file))
-        .finish()
-        .with(targets)
-        .try_init()?;
-    Ok(())
 }
 
 /// Dedicated Host processes keep stderr attached through final error reporting

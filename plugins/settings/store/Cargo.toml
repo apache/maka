@@ -24,6 +24,7 @@ publish.workspace = true
 autotests = false
 
 [dependencies]
+zstd.workspace = true
 hex.workspace = true
 maka-plugin-core.workspace = true
 maka-agent-facts.workspace = true
@@ -40,6 +41,9 @@ sys-locale.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
+
+[build-dependencies]
+zstd.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
