@@ -82,28 +82,15 @@ fn attachment_text(
     language: Language,
 ) -> String {
     let mut text = String::from("<attachment>\n");
-    let read_label = match language {
-        Language::En => "Read argument",
-        Language::ZhCn => "Read 参数",
-        Language::ZhTw => "Read 參數",
-    };
-    let image_label = match language {
-        Language::En => "Markdown image source",
-        Language::ZhCn => "Markdown 图片来源",
-        Language::ZhTw => "Markdown 圖片來源",
-    };
+    let read_label = maka_agent_facts::i18n::history::attachment_read_argument_label(language);
+    let image_label =
+        maka_agent_facts::i18n::history::attachment_markdown_image_source_label(language);
     if let Some(resource) = reference.and_then(StorageRef::resource_ref) {
         text.push_str(&format!("{read_label}: {}\n", json!({"path":resource})));
         if attachment.kind == AttachmentKind::Image {
             text.push_str(&format!("{image_label}: {}\n", json!(resource)));
         }
-        text.push_str(match language {
-            Language::En => {
-                "Session resource; the Read path above differs from the display name.\n"
-            }
-            Language::ZhCn => "会话资源；上面的 Read 路径与显示名称不同。\n",
-            Language::ZhTw => "工作階段資源；上面的 Read 路徑與顯示名稱不同。\n",
-        });
+        text.push_str(maka_agent_facts::i18n::history::attachment_session_resource_note(language));
     } else {
         match reference {
             Some(StorageRef::WorkspaceFile { relative_path }) => {
@@ -119,11 +106,7 @@ fn attachment_text(
                 ));
             }
             Some(StorageRef::SessionFile { .. } | StorageRef::SessionContext { .. }) | None => text
-                .push_str(match language {
-                    Language::En => "The attachment content is unavailable to Read.\n",
-                    Language::ZhCn => "Read 无法读取该附件内容。\n",
-                    Language::ZhTw => "Read 無法讀取該附件內容。\n",
-                }),
+                .push_str(maka_agent_facts::i18n::history::attachment_unavailable_note(language)),
         }
     }
     text.push_str(&format!(

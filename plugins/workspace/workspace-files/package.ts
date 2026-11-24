@@ -18,15 +18,12 @@
  */
 
 import * as sdk from '../../../packages/plugin-sdk/src/index.js';
-import { native, one } from '../../shared/package.js';
-export default {
+import { native, one, localizePackage } from '../../shared/package.js';
+export default localizePackage({
   schemaVersion: 1,
   id: 'maka.agent.workspace-files',
   displayName: 'Workspace files',
   description: 'Read and modify files within granted workspace access.',
-  localizations: {
-    'zh-CN': { displayName: '工作区文件', description: '在获准的工作区范围内读取和修改文件。' },
-  },
   application: {
     host: native(sdk.nativeImplementations.workspaceFiles),
     ui: {
@@ -76,4 +73,4 @@ export default {
       },
     },
   },
-};
+});

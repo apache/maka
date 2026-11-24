@@ -178,11 +178,11 @@ impl Owner {
                     sources: vec![source],
                 }
             });
-            prompt.text.push_str(match language {
-                Language::ZhCn => "\n\n# 会话角色说明\n在当前任务的明确要求不与之冲突的前提下，遵循以下角色设定：\n\n",
-                Language::ZhTw => "\n\n# 會話角色說明\n在目前任務的明確要求不與之衝突的前提下，遵循以下角色設定：\n\n",
-                Language::En => "\n\n# Session role\nFollow these role instructions unless the user's explicit requirements for the current task conflict with them.\n\n",
-            });
+            prompt
+                .text
+                .push_str(maka_agent_facts::i18n::assistant::session_role_heading(
+                    language,
+                ));
             prompt.text.push_str(&preset.instruction);
             prompt.validate().map_err(|_| "agent_prompt_invalid")?;
         }

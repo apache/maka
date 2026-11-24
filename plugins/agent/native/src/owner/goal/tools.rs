@@ -121,11 +121,9 @@ impl ToolPreparer for Goals {
                 )
                 .map(|objective| {
                     let objective = objective.fallback;
-                    maka_agent_facts::display::Text::localized(
-                        &format!("Create goal · {objective}"),
-                        &format!("创建目标 · {objective}"),
-                        &format!("建立目標 · {objective}"),
-                    )
+                    maka_agent_facts::display::Text::for_locales(|locale| {
+                        maka_agent_facts::i18n::tool_title::create_goal(locale, &objective)
+                    })
                 }),
                 _ => None,
             };

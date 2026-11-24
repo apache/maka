@@ -306,7 +306,8 @@ impl Owner {
         snapshot
             .policy
             .language
-            .unwrap_or(self.configured_locale)
+            .as_ref()
+            .unwrap_or(&self.configured_locale)
             .resolve(self.native_language)
     }
 

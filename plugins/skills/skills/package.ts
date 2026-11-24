@@ -18,16 +18,13 @@
  */
 
 import * as sdk from '../../../packages/plugin-sdk/src/index.js';
-import { native } from '../../shared/package.js';
-export default {
+import { native, localizePackage } from '../../shared/package.js';
+export default localizePackage({
   schemaVersion: 1,
   id: 'maka.agent.skills',
   displayName: 'Skill storage',
   description: 'Discover, install, and load assistant skills.',
-  localizations: {
-    'zh-CN': { displayName: '技能存储', description: '发现、安装和加载助手技能。' },
-  },
   application: {
     host: native(sdk.nativeImplementations.skillLibrary),
   },
-};
+});

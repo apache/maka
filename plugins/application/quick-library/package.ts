@@ -17,24 +17,14 @@
  * under the License.
  */
 
-import { empty } from '../../shared/package.js';
+import { empty, localizePackage } from '../../shared/package.js';
 
-export default {
+export default localizePackage({
   schemaVersion: 1,
   id: 'maka.quick-library',
   displayName: 'Quick Library',
   description:
     'Snippets, notes and links you manage in Settings, one search away in the quick launcher.',
-  localizations: {
-    'zh-CN': {
-      displayName: '快捷资料',
-      description: '在设置里管理片段、笔记和链接，在快捷启动器里随时搜索。',
-    },
-    'zh-TW': {
-      displayName: '快速資料',
-      description: '在設定裡管理片段、筆記和連結，在快速啟動器裡隨時搜尋。',
-    },
-  },
   application: {
     ui: {
       module: 'ui.js',
@@ -65,4 +55,4 @@ export default {
       },
     },
   },
-};
+});

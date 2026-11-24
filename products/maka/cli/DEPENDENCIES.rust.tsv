@@ -674,6 +674,8 @@ maka-fs-tools@0.3.0		X
 maka-goal@0.3.0		X																	
 maka-host-js@0.3.0		X																	
 maka-host-runtime@0.3.0		X																	
+maka-i18n-build@0.3.0		X																	
+maka-i18n@0.3.0		X																	
 maka-interactions-api@0.3.0		X																	
 maka-interactions-native@0.3.0		X																	
 maka-js-runtime@0.3.0		X																	

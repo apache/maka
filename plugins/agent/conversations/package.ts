@@ -18,7 +18,7 @@
  */
 
 import { contracts } from '../../../packages/plugin-sdk/src/index.js';
-import { one } from '../../shared/package.js';
+import { one, localizePackage } from '../../shared/package.js';
 
 const target = {
   type: 'object',
@@ -30,17 +30,11 @@ const target = {
   additionalProperties: false,
 };
 
-export default {
+export default localizePackage({
   schemaVersion: 1,
   id: 'maka.conversations',
   displayName: 'Conversations',
   description: 'Browse conversations, read history and coordinate session work.',
-  localizations: {
-    'zh-CN': {
-      displayName: '会话',
-      description: '浏览会话、阅读历史并协调会话任务。',
-    },
-  },
   application: {
     ui: {
       module: 'ui/index.js',
@@ -351,4 +345,4 @@ export default {
       },
     },
   },
-};
+});

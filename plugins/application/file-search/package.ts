@@ -17,24 +17,14 @@
  * under the License.
  */
 
-import { empty } from '../../shared/package.js';
+import { empty, localizePackage } from '../../shared/package.js';
 
-export default {
+export default localizePackage({
   schemaVersion: 1,
   id: 'maka.file-search',
   displayName: 'File Search',
   description:
     'Type "f" and a name in the quick launcher to find files in your selected folders on macOS.',
-  localizations: {
-    'zh-CN': {
-      displayName: '文件搜索',
-      description: '在 macOS 的快捷启动器输入“文件”或 f 加名称，查找所选目录中的文件。',
-    },
-    'zh-TW': {
-      displayName: '檔案搜尋',
-      description: '在 macOS 的快速啟動器輸入「文件」或 f 加名稱，尋找所選目錄中的檔案。',
-    },
-  },
   application: {
     ui: {
       module: 'ui.js',
@@ -52,4 +42,4 @@ export default {
       },
     },
   },
-};
+});

@@ -79,7 +79,7 @@ pub(super) fn present(
                     on_screen_only: Some(false),
                 })
                 .await
-                .map_err(|error| crate::driver::native_error(&error, Language::En))?
+                .map_err(|error| crate::driver::native_error(&error, Language::EN))?
                 .windows
                 .into_iter()
                 .find(|window| {
@@ -101,7 +101,7 @@ pub(super) fn present(
                     session: None,
                 })
                 .await
-                .map_err(|error| crate::driver::native_error(&error, Language::En))?;
+                .map_err(|error| crate::driver::native_error(&error, Language::EN))?;
             let mut details = json!({"placement": serde_json::from_str::<Value>(&frame.raw_json).map_err(failed)?});
             if frame.is_error
                 || !matches!(
@@ -129,7 +129,7 @@ pub(super) fn present(
             {
                 Ok(result) => result,
                 Err(error) => {
-                    let error = crate::driver::native_error(&error, Language::En);
+                    let error = crate::driver::native_error(&error, Language::EN);
                     return crate::preview::presentation_failure(error, details);
                 }
             };

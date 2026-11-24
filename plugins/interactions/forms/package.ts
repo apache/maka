@@ -18,16 +18,13 @@
  */
 
 import * as sdk from '../../../packages/plugin-sdk/src/index.js';
-import { native } from '../../shared/package.js';
-export default {
+import { native, localizePackage } from '../../shared/package.js';
+export default localizePackage({
   schemaVersion: 1,
   id: 'maka.agent.forms',
   displayName: 'Structured forms',
   description: 'Collect structured answers during an assistant task.',
-  localizations: {
-    'zh-CN': { displayName: '结构化表单', description: '在助手任务中收集结构化回答。' },
-  },
   application: {
     host: native(sdk.nativeImplementations.forms),
   },
-};
+});

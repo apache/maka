@@ -78,11 +78,13 @@ members = [
     "plugins/skills/core",
     "plugins/agent/tool-catalog",
     "plugins/agent/tools",
+    "platform/i18n",
     "platform/ui-support",
     "plugins/workspace/workspace-web/native",
     "plugins/workspace/workspace-computer/native",
     "products/eval",
     "tools/mock-ai",
+    "tools/i18n-build",
     "tools/ui-build",
 ]
 resolver = "3"
@@ -189,6 +191,8 @@ maka-tool-catalog = { path = "plugins/agent/tool-catalog" }
 maka-tools = { path = "plugins/agent/tools" }
 maka-terminal-shell = { path = "products/maka/terminal-shell" }
 maka-updater = { path = "products/maka/updater" }
+maka-i18n = { path = "platform/i18n" }
+maka-i18n-build = { path = "tools/i18n-build" }
 maka-ui-support = { path = "platform/ui-support" }
 maka-web = { path = "plugins/workspace/workspace-web/native" }
 maka-workbench = { path = "products/maka/workbench" }

@@ -44,6 +44,7 @@ const bundledPackages = Object.values(
 );
 
 const sharedProductContractInputs = [
+  'locales.manifest.json',
   'products/maka/bundle',
   'packages/plugin-sdk',
   'plugins/shared',
@@ -129,7 +130,15 @@ export const suites = {
     extraInputPackages: [
       {
         inputs: sharedProductContractInputs,
-        packages: [...productConsumers, 'maka-agent-native', 'maka-skills', 'maka-skills-native'],
+        packages: [
+          ...productConsumers,
+          'maka-i18n',
+          'maka-agent-facts',
+          'maka-computer-use',
+          'maka-agent-native',
+          'maka-skills',
+          'maka-skills-native',
+        ],
       },
       { inputs: uiProductInputs, packages: productConsumers },
       { inputs: skillInputs, packages: skillConsumers },

@@ -17,23 +17,13 @@
  * under the License.
  */
 
-import { empty } from '../../shared/package.js';
+import { empty, localizePackage } from '../../shared/package.js';
 
-export default {
+export default localizePackage({
   schemaVersion: 1,
   id: 'maka.applications',
   displayName: 'Applications',
   description: 'Find, open and manage installed applications from the quick launcher on macOS.',
-  localizations: {
-    'zh-CN': {
-      displayName: '应用',
-      description: '在 macOS 的快捷启动器里查找、打开和管理已安装的应用。',
-    },
-    'zh-TW': {
-      displayName: '應用程式',
-      description: '在 macOS 的快速啟動器裡尋找、開啟和管理已安裝的應用程式。',
-    },
-  },
   application: {
     ui: {
       module: 'ui.js',
@@ -44,4 +34,4 @@ export default {
       },
     },
   },
-};
+});

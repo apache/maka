@@ -745,20 +745,12 @@ impl Session {
                         .filter(|(_, row)| row["bindable"].as_bool() == Some(true))
                         .map(|(_, row)| row)
                         .collect::<Vec<_>>();
-                    return Err(failed(match language {
-                        Language::En => format!(
-                            "App selection requires one exact open window. Bindable windows: {}",
-                            json!(windows)
+                    let windows = json!(windows).to_string();
+                    return Err(failed(
+                        crate::language::i18n_catalog::desktop::app_selection_requires_window(
+                            language, &windows,
                         ),
-                        Language::ZhCn => format!(
-                            "应用选择需要指定一个打开的窗口。可绑定窗口：{}",
-                            json!(windows)
-                        ),
-                        Language::ZhTw => format!(
-                            "應用程式選擇需要指定一個開啟的視窗。可繫結視窗：{}",
-                            json!(windows)
-                        ),
-                    }));
+                    ));
                 }
                 let window = candidates.into_iter().next().unwrap();
                 let pid = window
@@ -1122,11 +1114,9 @@ impl Session {
         #[cfg(target_os = "windows")] invocation: &crate::InvocationContext<'_>,
     ) -> Result<WindowInfo, ToolError> {
         let target = self.targets.get(handle).ok_or_else(|| {
-            failed(match language {
-                Language::En => "stale_target: bind the app again",
-                Language::ZhCn => "stale_target: 请重新绑定应用",
-                Language::ZhTw => "stale_target: 請重新綁定應用程式",
-            })
+            failed(crate::language::i18n_catalog::desktop::stale_target_rebind(
+                language,
+            ))
         })?;
         #[cfg(target_os = "macos")]
         crate::macos::require_desktop().await?;
@@ -1135,11 +1125,9 @@ impl Session {
             .pid
             .ok_or_else(|| failed("window has no process"))?;
         if crate::identity::process(pid).ok().as_ref() != Some(&target.process) {
-            let error = failed(match language {
-                Language::En => "stale_target: application process ended or changed; bind it again",
-                Language::ZhCn => "stale_target: 应用进程已结束或改变；请重新绑定",
-                Language::ZhTw => "stale_target: 應用程式程序已結束或變更；請重新綁定",
-            });
+            let error = failed(
+                crate::language::i18n_catalog::desktop::stale_target_process_changed(language),
+            );
             #[cfg(target_os = "macos")]
             Driver::retire_mac_generation(
                 &self.native,
@@ -1166,11 +1154,9 @@ impl Session {
             .into_iter()
             .find(|w| w.pid == Some(pid) && w.window_id == id)
         else {
-            let error = failed(match language {
-                Language::En => "stale_target: window closed; bind a current window",
-                Language::ZhCn => "stale_target: 窗口已关闭；请绑定当前窗口",
-                Language::ZhTw => "stale_target: 視窗已關閉；請綁定目前視窗",
-            });
+            let error = failed(
+                crate::language::i18n_catalog::desktop::stale_target_window_closed(language),
+            );
             return Err(self.retire_failed_target(handle, error).await);
         };
         #[cfg(target_os = "macos")]
@@ -1465,11 +1451,9 @@ impl Session {
                 .bounds
                 != window.bounds
         {
-            return Err(failed(match language {
-                Language::En => "window geometry changed during capture; capture again",
-                Language::ZhCn => "截图期间窗口几何信息已改变；请重新截图",
-                Language::ZhTw => "擷取畫面期間視窗幾何資訊已變更；請重新擷取畫面",
-            }));
+            return Err(failed(
+                crate::language::i18n_catalog::desktop::window_geometry_changed(language),
+            ));
         }
         if !ax
             && !native_linux_ax
@@ -1527,33 +1511,31 @@ impl Session {
             } else {
                 full.clone()
             };
-            let (window_label, app_label) = match language {
-                Language::En => ("Window", "App"),
-                Language::ZhCn => ("窗口", "应用"),
-                Language::ZhTw => ("視窗", "應用程式"),
-            };
             let mut state = if native_linux_ax {
                 body
             } else {
-                format!(
-                    "{window_label}: {:?}, {app_label}: {:?}.\n{body}",
-                    window.title, window.app_name
-                )
+                let app = format!("{:?}", window.app_name);
+                let title = format!("{:?}", window.title);
+                let header =
+                    crate::language::i18n_catalog::desktop::window_header(language, &app, &title);
+                format!("{header}\n{body}")
             };
             if !native_linux_ax
                 && (snapshot.truncated == Some(true) || snapshot.degraded == Some(true))
             {
-                let (label, fallback) = match language {
-                    Language::En => ("Observation incomplete", "partial accessibility tree"),
-                    Language::ZhCn => ("观察不完整", "部分无障碍树"),
-                    Language::ZhTw => ("觀察不完整", "部分輔助使用樹"),
-                };
+                let fallback =
+                    crate::language::i18n_catalog::desktop::partial_accessibility_tree(language);
                 let reason = snapshot
                     .truncation_reason
                     .as_deref()
                     .or(snapshot.degraded_reason.as_deref())
                     .unwrap_or(fallback);
-                state.push_str(&format!("\n{label}: {reason}"));
+                state.push('\n');
+                state.push_str(
+                    &crate::language::i18n_catalog::desktop::observation_incomplete(
+                        language, reason,
+                    ),
+                );
             }
             target.previous = Some(full);
             output.insert("state".into(), json!(state));
@@ -2110,7 +2092,7 @@ impl Session {
             return Ok(if restored {
                 Value::Null
             } else {
-                json!({"warning":match language { Language::En => "Clipboard changed during paste; preserved the newer clipboard contents.", Language::ZhCn => "粘贴期间剪贴板已改变；已保留较新的剪贴板内容。", Language::ZhTw => "貼上期間剪貼簿已變更；已保留較新的剪貼簿內容。" }})
+                json!({"warning": crate::language::i18n_catalog::desktop::clipboard_changed_during_paste(language)})
             });
         }
         let (name, args) = match action {
@@ -2463,13 +2445,11 @@ impl Session {
                 #[cfg(not(target_os = "windows"))]
                 {
                     let _ = index;
-                    Err(failed(match language {
-                        Language::En => {
-                            "native cursor element geometry unavailable; use screenshot coordinates"
-                        }
-                        Language::ZhCn => "无法获取原生光标元素几何信息；请使用截图坐标",
-                        Language::ZhTw => "無法取得原生游標元素幾何資訊；請使用擷取畫面座標",
-                    }))
+                    Err(failed(
+                        crate::language::i18n_catalog::desktop::cursor_geometry_unavailable(
+                            language,
+                        ),
+                    ))
                 }
             }
         }
@@ -2550,11 +2530,7 @@ impl Target {
                     .find(|e| e.element_index == index && e.element_token.is_some())
             })
             .ok_or_else(|| {
-                failed(match language {
-                    Language::En => "stale_element: read getAXState before using this index",
-                    Language::ZhCn => "stale_element: 使用此索引前请先读取 getAXState",
-                    Language::ZhTw => "stale_element: 使用此索引前請先讀取 getAXState",
-                })
+                failed(crate::language::i18n_catalog::desktop::stale_element_read_ax(language))
             })
     }
     fn point(
@@ -2573,11 +2549,9 @@ impl Target {
         #[cfg(not(target_os = "linux"))]
         {
             let snapshot = self.snapshot.as_ref().ok_or_else(|| {
-                failed(match language {
-                    Language::En => "capture_required: read getScreenshot before coordinate input",
-                    Language::ZhCn => "capture_required: 按坐标输入前请先读取 getScreenshot",
-                    Language::ZhTw => "capture_required: 按座標輸入前請先讀取 getScreenshot",
-                })
+                failed(crate::language::i18n_catalog::desktop::capture_required(
+                    language,
+                ))
             })?;
             #[cfg(target_os = "macos")]
             let missing_frame = snapshot.screenshot_frame_valid != Some(true);
@@ -2587,17 +2561,9 @@ impl Target {
                 || self.window.bounds != window.bounds
                 || snapshot.screenshot_frame_valid == Some(false)
             {
-                return Err(failed(match language {
-                    Language::En => {
-                        "stale_capture: window changed or capture was consumed; getScreenshot again"
-                    }
-                    Language::ZhCn => {
-                        "stale_capture: 窗口已改变或截图已消耗；请重新调用 getScreenshot"
-                    }
-                    Language::ZhTw => {
-                        "stale_capture: 視窗已變更或擷取畫面已消耗；請重新呼叫 getScreenshot"
-                    }
-                }));
+                return Err(failed(
+                    crate::language::i18n_catalog::desktop::stale_capture(language),
+                ));
             }
             if !point.iter().all(|v| v.is_finite() && *v >= 0.0)
                 || point[0] >= f64::from(snapshot.screenshot_width.unwrap_or(0))
@@ -2817,7 +2783,7 @@ async fn window_inventory_marks_the_cli_test_process_as_unbindable() {
             on_current_space: None,
             space_ids: None,
         }],
-        Language::En,
+        Language::EN,
     )
     .await
     .unwrap();
@@ -2846,12 +2812,7 @@ pub(crate) fn display_diff(previous: Option<&str>, current: &str, language: Lang
         return current.into();
     };
     if previous == current {
-        return match language {
-            Language::En => "Accessibility state unchanged.",
-            Language::ZhCn => "无障碍状态未改变。",
-            Language::ZhTw => "輔助使用狀態未變更。",
-        }
-        .into();
+        return crate::language::i18n_catalog::desktop::ax_unchanged(language).into();
     }
     let old: std::collections::HashSet<_> = previous.lines().collect();
     let new: std::collections::HashSet<_> = current.lines().collect();
@@ -2866,11 +2827,7 @@ pub(crate) fn display_diff(previous: Option<&str>, current: &str, language: Lang
                 .map(|line| format!("+ {line}")),
         )
         .collect();
-    let label = match language {
-        Language::En => "Accessibility changes",
-        Language::ZhCn => "无障碍变化",
-        Language::ZhTw => "輔助使用變更",
-    };
+    let label = crate::language::i18n_catalog::desktop::ax_changes_header(language);
     let diff = format!("{label}:\n{}", changes.join("\n"));
     if changes.is_empty() || diff.len() >= current.len() {
         current.into()
@@ -2901,18 +2858,14 @@ fn launch_args(app: &str, inventory: &[AppInfo], language: Language) -> Result<V
         .iter()
         .filter(|candidate| app_id(candidate) == app);
     let target = matches.next().ok_or_else(|| {
-        failed(match language {
-            Language::En => "app identity missing; refresh cua.listApps before launch",
-            Language::ZhCn => "应用标识已缺失；启动前请刷新 cua.listApps",
-            Language::ZhTw => "應用程式識別已缺少；啟動前請重新整理 cua.listApps",
-        })
+        failed(crate::language::i18n_catalog::desktop::launch_app_missing(
+            language,
+        ))
     })?;
     if matches.next().is_some() {
-        return Err(failed(match language {
-            Language::En => "app identity ambiguous; refresh cua.listApps before launch",
-            Language::ZhCn => "应用标识有歧义；启动前请刷新 cua.listApps",
-            Language::ZhTw => "應用程式識別有歧義；啟動前請重新整理 cua.listApps",
-        }));
+        return Err(failed(
+            crate::language::i18n_catalog::desktop::launch_app_ambiguous(language),
+        ));
     }
     if target.kind.as_deref() == Some("uwp")
         && let Some(bundle) = target
@@ -2924,10 +2877,8 @@ fn launch_args(app: &str, inventory: &[AppInfo], language: Language) -> Result<V
     } else if let Some(path) = &target.launch_path {
         Ok(json!({"launch_path":path}))
     } else {
-        Err(failed(match language {
-            Language::En => "launch unavailable for this inventory entry; select its open window",
-            Language::ZhCn => "此清单条目不支持启动；请选择其已打开的窗口",
-            Language::ZhTw => "此清單項目不支援啟動；請選擇其已開啟的視窗",
-        }))
+        Err(failed(
+            crate::language::i18n_catalog::desktop::launch_unavailable(language),
+        ))
     }
 }

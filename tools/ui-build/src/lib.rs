@@ -147,6 +147,7 @@ pub fn compile(entry: &Path, output: &Path, asset_root: Option<&Path>) -> Result
         .map(Into::into)
         .chain(std::iter::once(host.into()))
         .collect();
+    let (manifest_path, locales) = bundled_locales(&entry)?;
     let bundled = nsh_bundler::bundle(&nsh_bundler::BundleOptions {
         entry: entry.clone(),
         minify: false,
@@ -154,6 +155,7 @@ pub fn compile(entry: &Path, output: &Path, asset_root: Option<&Path>) -> Result
         fail_on_unresolved_imports: true,
         ui_sets,
         asset_root_from: asset_root.map(Path::to_path_buf),
+        locales,
         ..Default::default()
     })?;
     fs::create_dir_all(&output)?;
@@ -186,6 +188,9 @@ pub fn compile(entry: &Path, output: &Path, asset_root: Option<&Path>) -> Result
     if let Some(configuration) = configuration(&entry) {
         inputs.push(configuration);
     }
+    if let Some(manifest_path) = manifest_path {
+        inputs.push(manifest_path);
+    }
     inputs.sort();
     inputs.dedup();
     let manifest = CompiledUi {
@@ -212,6 +217,27 @@ pub fn write_if_changed(path: &Path, bytes: &[u8]) -> io::Result<()> {
 
 fn digest(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
+}
+
+fn bundled_locales(entry: &Path) -> Result<(Option<PathBuf>, Option<Vec<String>>)> {
+    #[derive(Deserialize)]
+    struct LocaleManifest {
+        locales: Vec<LocaleManifestEntry>,
+    }
+    #[derive(Deserialize)]
+    struct LocaleManifestEntry {
+        tag: String,
+    }
+    let Some(path) = entry
+        .ancestors()
+        .map(|dir| dir.join("locales.manifest.json"))
+        .find(|candidate| candidate.is_file())
+    else {
+        return Ok((None, None));
+    };
+    let manifest: LocaleManifest = serde_json::from_str(&fs::read_to_string(&path)?)?;
+    let tags = manifest.locales.into_iter().map(|l| l.tag).collect();
+    Ok((Some(fs::canonicalize(path)?), Some(tags)))
 }
 
 fn configuration(entry: &Path) -> Option<PathBuf> {

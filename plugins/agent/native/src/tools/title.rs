@@ -82,31 +82,36 @@ impl Kind {
     pub(crate) fn render_target(self, target: &str, continuation: bool) -> Option<Text> {
         let is_session_uri = matches!(self, Self::Read)
             && (target.starts_with("maka://session/") || target.starts_with("session:"));
-        let (en, zh, tw) = match self {
-            Self::Read if is_session_uri => ("Read session", "读取会话", "讀取對話"),
-            Self::Read => ("Read file", "读取文件", "讀取檔案"),
-            Self::Write => ("Write file", "写入文件", "寫入檔案"),
-            Self::Edit => ("Edit file", "编辑文件", "編輯檔案"),
-            Self::Patch => ("Patch file", "修补文件", "修補檔案"),
-            Self::Glob => ("Find files", "查找文件", "尋找檔案"),
-            Self::List => ("List directory", "列出目录", "列出目錄"),
-            Self::Fetch => ("Read web page", "读取网页", "讀取網頁"),
-            Self::Search => ("Search the web", "搜索网络", "搜尋網路"),
-            Self::CreateSession => ("Create conversation", "创建会话", "建立對話"),
-            Self::ForkSession => ("Branch conversation", "从会话分支", "從對話建立分支"),
-            Self::SendSession => ("Send message to agent", "向协作者发消息", "傳訊息給協作者"),
-        };
         let target = Text::single_line(target)?.fallback;
-        let (en_more, zh_more, tw_more) = if continuation {
-            (" · continued", " · 续读", " · 續讀")
-        } else {
-            ("", "", "")
-        };
-        Some(Text::localized(
-            &format!("{en} · {target}{en_more}"),
-            &format!("{zh} · {target}{zh_more}"),
-            &format!("{tw} · {target}{tw_more}"),
-        ))
+        Some(Text::for_locales(|locale| {
+            let action = match self {
+                Self::Read if is_session_uri => {
+                    maka_agent_facts::i18n::tool_title::read_session(locale)
+                }
+                Self::Read => maka_agent_facts::i18n::tool_title::read_file(locale),
+                Self::Write => maka_agent_facts::i18n::tool_title::write_file(locale),
+                Self::Edit => maka_agent_facts::i18n::tool_title::edit_file(locale),
+                Self::Patch => maka_agent_facts::i18n::tool_title::patch_file(locale),
+                Self::Glob => maka_agent_facts::i18n::tool_title::find_files(locale),
+                Self::List => maka_agent_facts::i18n::tool_title::list_directory(locale),
+                Self::Fetch => maka_agent_facts::i18n::tool_title::read_web_page(locale),
+                Self::Search => maka_agent_facts::i18n::tool_title::search_web(locale),
+                Self::CreateSession => {
+                    maka_agent_facts::i18n::tool_title::create_conversation(locale)
+                }
+                Self::ForkSession => {
+                    maka_agent_facts::i18n::tool_title::branch_conversation(locale)
+                }
+                Self::SendSession => {
+                    maka_agent_facts::i18n::tool_title::send_message_to_agent(locale)
+                }
+            };
+            if continuation {
+                maka_agent_facts::i18n::tool_title::with_target_continued(locale, action, &target)
+            } else {
+                maka_agent_facts::i18n::tool_title::with_target(locale, action, &target)
+            }
+        }))
     }
 }
 

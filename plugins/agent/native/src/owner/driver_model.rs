@@ -809,11 +809,7 @@ impl DriverModel {
         let adapter = self.executor.binding(&model.provider)?;
         let dynamic_context = vec![format!(
             "{}\n{}",
-            match view.spec.language {
-                maka_agent_facts::language::Language::En => "Session context (data):",
-                maka_agent_facts::language::Language::ZhCn => "会话上下文（数据）：",
-                maka_agent_facts::language::Language::ZhTw => "工作階段上下文（資料）：",
-            },
+            maka_agent_facts::i18n::session::context_data_heading(view.spec.language),
             json!({"cwd": view.spec.workspace, "sessionId": view.spec.session_id})
         )];
         let mut rendered = system
@@ -1770,11 +1766,7 @@ impl DriverModel {
         }
         rendered.push_str(&format!(
             "{}\n{}",
-            match original.spec.language {
-                maka_agent_facts::language::Language::En => "Session context (data):",
-                maka_agent_facts::language::Language::ZhCn => "会话上下文（数据）：",
-                maka_agent_facts::language::Language::ZhTw => "工作階段上下文（資料）：",
-            },
+            maka_agent_facts::i18n::session::context_data_heading(original.spec.language),
             json!({"cwd":original.spec.workspace,"sessionId":original.spec.session_id})
         ));
         let prompt = preparation::prepare_prompt(
@@ -4251,18 +4243,7 @@ fn withheld_before_in(
 }
 
 fn withheld_note(language: maka_agent_facts::language::Language, reason: &str) -> String {
-    use maka_agent_facts::language::Language;
-    match language {
-        Language::En => format!(
-            "[Host] The model provider did not return your previous response: {reason}. Do not repeat it. Take a different approach, or tell the user why you cannot continue."
-        ),
-        Language::ZhCn => format!(
-            "[Host] 模型服务商没有返回你上一次的回复：{reason}。不要重复它。换一种做法，或者告诉用户为什么无法继续。"
-        ),
-        Language::ZhTw => format!(
-            "[Host] 模型服務商沒有返回你上一次的回覆：{reason}。不要重複它。換一種做法，或者告訴使用者為什麼無法繼續。"
-        ),
-    }
+    maka_agent_facts::i18n::driver::withheld_response_note(language, reason)
 }
 
 fn missing_provider_result(parts: &[maka_agent_facts::model::ModelPart]) -> Option<&str> {
@@ -4391,17 +4372,7 @@ pub(crate) async fn append_continuation_cue(
     messages: &mut preparation::PromptBuilder,
 ) -> Result<(), RunError> {
     if messages.needs_continuation_cue() {
-        let cue = match language {
-            maka_agent_facts::language::Language::En => {
-                "Continue from where the previous response stopped without repeating text already output."
-            }
-            maka_agent_facts::language::Language::ZhCn => {
-                "请紧接上一段中断处继续，不要重复已经输出的内容。"
-            }
-            maka_agent_facts::language::Language::ZhTw => {
-                "請緊接上一段中斷處繼續，不要重複已經輸出的內容。"
-            }
-        };
+        let cue = maka_agent_facts::i18n::driver::continuation_cue(language);
         messages
             .append(maka_model::prompt::Message::user(cue))
             .await?;
@@ -4410,17 +4381,7 @@ pub(crate) async fn append_continuation_cue(
 }
 
 fn length_limit_no_output_cue(language: maka_agent_facts::language::Language) -> &'static str {
-    match language {
-        maka_agent_facts::language::Language::En => {
-            "Your previous response reached the output length limit before producing a visible answer or tool call. Keep reasoning brief and respond directly or break the work into smaller steps."
-        }
-        maka_agent_facts::language::Language::ZhCn => {
-            "你上一次回复在输出可见内容或工具调用前就达到了输出长度上限。请精简思考过程，直接作答或拆分成更小的步骤。"
-        }
-        maka_agent_facts::language::Language::ZhTw => {
-            "你上一次回覆在輸出可見內容或工具呼叫前就達到了輸出長度上限。請精簡思考過程，直接作答或拆分成更小的步驟。"
-        }
-    }
+    maka_agent_facts::i18n::driver::length_limit_no_output_cue(language)
 }
 
 /// The longest provider-requested wait a Run sleeps through before ending instead.

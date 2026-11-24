@@ -17,23 +17,13 @@
  * under the License.
  */
 
-import { empty } from '../../shared/package.js';
+import { empty, localizePackage } from '../../shared/package.js';
 
-export default {
+export default localizePackage({
   schemaVersion: 1,
   id: 'maka.screenshot',
   displayName: 'Screenshot',
   description: 'Capture a screen region to the clipboard from the quick launcher on macOS.',
-  localizations: {
-    'zh-CN': {
-      displayName: '截图',
-      description: '在 macOS 的快捷启动器里截取屏幕区域并复制到剪贴板。',
-    },
-    'zh-TW': {
-      displayName: '截圖',
-      description: '在 macOS 的快速啟動器裡擷取螢幕區域並複製到剪貼簿。',
-    },
-  },
   application: {
     ui: {
       module: 'ui.js',
@@ -51,4 +41,4 @@ export default {
       },
     },
   },
-};
+});

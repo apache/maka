@@ -18,15 +18,12 @@
  */
 
 import * as sdk from '../../../packages/plugin-sdk/src/index.js';
-import { native } from '../../shared/package.js';
-export default {
+import { native, localizePackage } from '../../shared/package.js';
+export default localizePackage({
   schemaVersion: 1,
   id: 'maka.agent.workspace-processes',
   displayName: 'Workspace processes',
   description: 'Start and manage commands in the workspace.',
-  localizations: {
-    'zh-CN': { displayName: '工作区进程', description: '启动和管理工作区中的命令。' },
-  },
   application: {
     host: {
       ...native(sdk.nativeImplementations.workspaceProcesses),
@@ -35,4 +32,4 @@ export default {
       },
     },
   },
-};
+});

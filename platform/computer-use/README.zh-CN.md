@@ -21,7 +21,7 @@
 
 [English](README.md)
 
-`maka-computer-use` 通过会话独占的独立 JavaScript REPL（`cua_repl` 与 `cua_reset`）操控原生桌面应用和浏览器标签页，不依赖 Code Mode 开关。完整对象接口见 [`src/api.zh-CN.md`](src/api.zh-CN.md)，操作范式见内置技能 [`skills/maka-cua/SKILL.md`](skills/maka-cua/SKILL.md)。
+`maka-computer-use` 通过会话独占的独立 JavaScript REPL（`cua_repl` 与 `cua_reset`）操控原生桌面应用和浏览器标签页，不依赖 Code Mode 开关。完整对象接口见 [`locales/docs/api.zh-CN.md`](locales/docs/api.zh-CN.md)，操作范式见内置技能 [`skills/maka-cua/SKILL.md`](skills/maka-cua/SKILL.md)。
 
 每个会话各自维护 REPL 上下文、目标绑定与最近一次无障碍树/截图观测；权限校验与底层驱动则由 Host 实时把关。跨轮次保留 JS 对象引用不会延续旧授权，REPL 内也不暴露 Node、文件系统或任意网络 API。
 

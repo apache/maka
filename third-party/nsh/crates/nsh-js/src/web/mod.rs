@@ -93,9 +93,10 @@ pub(crate) enum Class {
     WebSocket,
     NumberFormat,
     DateTimeFormat,
+    PluralRules,
 }
 
-const CLASS_COUNT: usize = Class::DateTimeFormat as usize + 1;
+const CLASS_COUNT: usize = Class::PluralRules as usize + 1;
 
 /// A method key: a name or a well-known symbol.
 pub(crate) enum Key {

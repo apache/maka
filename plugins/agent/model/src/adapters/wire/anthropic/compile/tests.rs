@@ -103,7 +103,7 @@ async fn message_cursor_emits_one_part_before_opening_later_bodies() {
         }
     }
     let reads = Arc::new(AtomicUsize::new(0));
-    let compiler = Compiler::new(Arc::new(opts()), Language::En);
+    let compiler = Compiler::new(Arc::new(opts()), Language::EN);
     let mut cursor = compiler
         .open(
             MessageRecipe::User {
@@ -151,7 +151,7 @@ async fn summary_media_allocation_bound_never_opens_blob_bodies() {
             panic!("allocation-only fit bound opened a blob")
         }
     }
-    let compiler = Compiler::new(Arc::new(opts()), Language::En);
+    let compiler = Compiler::new(Arc::new(opts()), Language::EN);
     for mime in ["image/*", "application/*", "audio/unknown"] {
         let bound = compiler
             .count_user_part_bound(

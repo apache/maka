@@ -8989,6 +8989,7 @@ impl<M: TextEngine> Core<M> {
             align: directed_align(align, node.rtl && !physical),
             writing_direction: node.text_style.writing_direction,
             rtl: node.rtl,
+            locale: Some(self.components.environment.locale),
             max_lines,
             ellipsize,
             // A line clamp already keeps lines from wrapping past it, and
@@ -12515,6 +12516,7 @@ fn min_content_width<M: TextEngine>(
             let mut part = AttributedText {
                 no_wrap: true,
                 rtl: text.rtl,
+                locale: text.locale,
                 writing_direction: text.writing_direction,
                 ..Default::default()
             };

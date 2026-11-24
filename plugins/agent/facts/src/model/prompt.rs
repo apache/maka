@@ -184,7 +184,6 @@ pub fn notification_fallback(
     messages: Vec<Message>,
     language: crate::language::Language,
 ) -> Vec<Message> {
-    use crate::language::Language;
     messages
         .into_iter()
         .flat_map(|message| {
@@ -205,11 +204,7 @@ pub fn notification_fallback(
             for part in content {
                 if part.is_notification() {
                     let id = part.tool_call_id;
-                    let header = match language {
-                        Language::En => format!("[Notification from tool {id}]"),
-                        Language::ZhCn => format!("[来自工具 {id} 的通知]"),
-                        Language::ZhTw => format!("[來自工具 {id} 的通知]"),
-                    };
+                    let header = crate::i18n::wire::tool_notification(language, &id);
                     let mut content = vec![ContentPart::text(header)];
                     match part.output {
                         ToolOutput::Text(text) => content.push(ContentPart::text(text)),

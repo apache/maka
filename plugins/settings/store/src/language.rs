@@ -21,51 +21,5 @@
 use maka_agent_facts::language::Language;
 
 pub fn native_language() -> Language {
-    language_from_sources(|name| std::env::var(name).ok(), sys_locale::get_locale)
-}
-
-fn language_from_sources(
-    environment: impl Fn(&str) -> Option<String>,
-    system: impl FnOnce() -> Option<String>,
-) -> Language {
-    for name in ["LC_ALL", "LC_MESSAGES", "LANG"] {
-        if let Some(locale) = environment(name).filter(|locale| !locale.trim().is_empty()) {
-            return Language::from_locale(&locale);
-        }
-    }
-    system()
-        .as_deref()
-        .map(Language::from_locale)
-        .unwrap_or_default()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn environment_precedence_and_system_fallback() {
-        let resolve = |all: &str, messages: &str, lang: &str, system: &str| {
-            language_from_sources(
-                |name| {
-                    Some(
-                        match name {
-                            "LC_ALL" => all,
-                            "LC_MESSAGES" => messages,
-                            "LANG" => lang,
-                            _ => unreachable!(),
-                        }
-                        .into(),
-                    )
-                },
-                || Some(system.into()),
-            )
-        };
-        assert_eq!(resolve("en_US", "zh_TW", "zh_CN", "zh_TW"), Language::En);
-        assert_eq!(resolve("", "zh_TW", "zh_CN", "en_US"), Language::ZhTw);
-        assert_eq!(resolve(" ", "", "zh_CN.UTF-8", "en_US"), Language::ZhCn);
-        assert_eq!(resolve("", "", "", "zh-Hant"), Language::ZhTw);
-        assert_eq!(resolve("fr_FR", "zh_TW", "zh_CN", "zh_TW"), Language::En);
-        assert_eq!(language_from_sources(|_| None, || None), Language::En);
-    }
+    Language::from(maka_i18n::negotiate_builtin(&maka_i18n::system_locales()))
 }

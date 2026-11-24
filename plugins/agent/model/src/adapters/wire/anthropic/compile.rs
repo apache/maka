@@ -67,6 +67,12 @@ fn static_text(value: &'static str) -> TextSource {
         TextEncoding::Utf8,
     )
 }
+fn owned_text(value: String) -> TextSource {
+    TextSource::new(
+        SourceBytes::Inline(Bytes::from(value.into_bytes())),
+        TextEncoding::Utf8,
+    )
+}
 fn literal(value: &'static [u8]) -> SourceFragment {
     SourceFragment::literal(value)
 }
@@ -1017,33 +1023,24 @@ impl Compiler {
                 .checked_mul(4)
                 .and_then(|len| len.checked_add(u64::from(length % 3 != 0) * 4))
                 .ok_or_else(|| invalid("audio length overflow"))?;
-            let (head, middle, tail) = match self.language {
-                Language::En => (
-                    "Audio input (",
-                    ", ",
-                    " base64 characters) is not supported by this model adapter. The audio remains in the tool evidence.",
-                ),
-                Language::ZhCn => (
-                    "此模型适配器不支持音频输入（",
-                    "，",
-                    " 个 base64 字符）。音频仍保留在工具证据中。",
-                ),
-                Language::ZhTw => (
-                    "此模型介接器不支援音訊輸入（",
-                    "，",
-                    " 個 base64 字元）。音訊仍保留在工具證據中。",
-                ),
-            };
+            const MEDIA_SLOT: &str = "\0MEDIA\0";
+            let encoded = encoded.to_string();
+            let rendered = maka_agent_facts::i18n::wire::unsupported_audio(
+                self.language,
+                &encoded,
+                MEDIA_SLOT,
+            );
+            let (head, tail) = rendered
+                .split_once(MEDIA_SLOT)
+                .expect("unsupported_audio contains media_type placeholder");
             let mut plan = Plan::new("text");
             plan.field(
                 "text",
                 vec![
                     literal(b"\""),
-                    SourceFragment::Text(static_text(head)),
+                    SourceFragment::Text(owned_text(head.to_owned())),
                     SourceFragment::Text(media.media_type),
-                    SourceFragment::Text(static_text(middle)),
-                    SourceFragment::owned(encoded.to_string().into_bytes()),
-                    SourceFragment::Text(static_text(tail)),
+                    SourceFragment::Text(owned_text(tail.to_owned())),
                     literal(b"\""),
                 ],
             );

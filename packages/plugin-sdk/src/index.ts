@@ -24,6 +24,7 @@ export { contracts } from './contracts.js';
 export { configurations } from './configurations.js';
 export type * from './workbench.js';
 export { defineUiViewContract } from './workbench.js';
+export * from './i18n.js';
 
 import type {
   HostRequest,

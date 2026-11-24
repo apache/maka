@@ -18,7 +18,7 @@
  */
 
 import { execFileSync } from 'node:child_process';
-import { constants, existsSync } from 'node:fs';
+import { constants, existsSync, readFileSync } from 'node:fs';
 import { release as osRelease } from 'node:os';
 import { parseArgs } from 'node:util';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -37,6 +37,9 @@ import {
 import { cargoBuild } from './cargo.mjs';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
+const bundleLocalizations = JSON.parse(
+  readFileSync(join(root, 'locales.manifest.json'), 'utf8'),
+).locales.map((entry) => entry.appleLocalization);
 
 export function rustTarget(platform = process.platform, arch = process.arch) {
   const cpu = { x64: 'x86_64', arm64: 'aarch64' }[arch];
@@ -382,6 +385,10 @@ function infoPlist({
       ['CFBundleVersion', build],
       ['LSMinimumSystemVersion', '11.0'],
     ].map(([key, value]) => `  <key>${key}</key>\n  <string>${escape(value)}</string>`),
+    '  <key>CFBundleLocalizations</key>',
+    '  <array>',
+    ...bundleLocalizations.map((locale) => `    <string>${escape(locale)}</string>`),
+    '  </array>',
     '  <key>NSHighResolutionCapable</key>',
     '  <true/>',
     ...extra.map(([key, value]) =>

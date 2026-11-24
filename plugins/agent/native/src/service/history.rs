@@ -1243,7 +1243,7 @@ pub(crate) async fn readable_context_into(
                             .spec
                             .language
                     }
-                    SourceItem::Imported { .. } => maka_agent_facts::language::Language::En,
+                    SourceItem::Imported { .. } => maka_agent_facts::language::Language::EN,
                 };
                 stream::write_bytes(writer, origin.prompt_header(language).as_bytes(), stop)
                     .await?;

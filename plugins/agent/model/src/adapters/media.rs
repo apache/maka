@@ -40,18 +40,10 @@ pub(super) fn audio_fallback(
                         "audio/wav" | "audio/mpeg" | "audio/mp3"
                     ))
             {
-                let length = data.len();
-                *part = ContentPart::text(match language {
-                    Language::En => format!(
-                        "Audio input ({media_type}, {length} base64 characters) is not supported by this model adapter. The audio remains in the tool evidence."
-                    ),
-                    Language::ZhCn => format!(
-                        "此模型适配器不支持音频输入（{media_type}，{length} 个 base64 字符）。音频仍保留在工具证据中。"
-                    ),
-                    Language::ZhTw => format!(
-                        "此模型介接器不支援音訊輸入（{media_type}，{length} 個 base64 字元）。音訊仍保留在工具證據中。"
-                    ),
-                });
+                let length = data.len().to_string();
+                *part = ContentPart::text(maka_agent_facts::i18n::wire::unsupported_audio(
+                    language, &length, media_type,
+                ));
             }
         }
     }
@@ -80,11 +72,11 @@ mod language_tests {
     fn unsupported_audio_reports_original_metadata_in_captured_language() {
         for (language, expected) in [
             (
-                Language::ZhCn,
+                Language::ZH_CN,
                 "不支持音频输入（audio/ogg，8 个 base64 字符）",
             ),
             (
-                Language::ZhTw,
+                Language::ZH_TW,
                 "不支援音訊輸入（audio/ogg，8 個 base64 字元）",
             ),
         ] {

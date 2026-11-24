@@ -17,6 +17,8 @@
  * under the License.
  */
 
+import { localizePackage } from '../../../plugins/shared/package.js';
+
 const target = {
   type: 'object',
   properties: {
@@ -27,14 +29,11 @@ const target = {
   additionalProperties: false,
 };
 
-export default {
+export default localizePackage({
   schemaVersion: 1,
   id: 'maka.workbench',
   displayName: 'Maka',
   description: 'Compose the Maka workbench layout from UI contributions.',
-  localizations: {
-    'zh-CN': { displayName: 'Maka', description: '通过 UI 贡献组合 Maka 工作台布局。' },
-  },
   application: {
     ui: {
       module: 'app/App.js',
@@ -63,4 +62,4 @@ export default {
       },
     },
   },
-};
+});

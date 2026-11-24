@@ -18,15 +18,12 @@
  */
 
 import * as sdk from '../../../packages/plugin-sdk/src/index.js';
-import { one, native } from '../../shared/package.js';
-export default {
+import { one, native, localizePackage } from '../../shared/package.js';
+export default localizePackage({
   schemaVersion: 1,
   id: 'maka.agent.acp-executor',
   displayName: 'ACP agents',
   description: 'Run agents through the Agent Client Protocol.',
-  localizations: {
-    'zh-CN': { displayName: 'ACP 助手', description: '通过 Agent Client Protocol 运行助手。' },
-  },
   application: {
     host: {
       ...native(sdk.nativeImplementations.acpExecutor),
@@ -37,4 +34,4 @@ export default {
       },
     },
   },
-};
+});

@@ -25,11 +25,11 @@ import {
   type QuickItem,
   type QuickToolInput,
 } from '../../../packages/plugin-sdk/src/workbench-views.js';
-import { currentLocale, tr } from '../../../products/maka/workbench/app/locale';
+import { currentLocale, localizedKeywords, tr } from '../../../products/maka/workbench/app/locale';
 import { createScopes, ScopeSettings, statusLabel } from './settings';
 import { afterKeyword } from '../../shared/quick-search';
 
-const KEYWORDS = ['f', 'file', '文件', '檔案'];
+const keywords = () => localizedKeywords(['f', 'file'], 'launcher.keywords.file_search');
 const SETTLE_MS = 200;
 
 function FileSearch(props: {
@@ -41,7 +41,7 @@ function FileSearch(props: {
   const found = signal<readonly string[]>([]);
   const hint = signal('');
   effect(() => {
-    const text = afterKeyword(input.query(), KEYWORDS);
+    const text = afterKeyword(input.query(), keywords());
     const roots = props.settings.roots();
     found.set([]);
     hint.set('');
@@ -86,7 +86,9 @@ function FileSearch(props: {
           run: () => void host.openLocalPath(path).then(input.close, input.report),
         };
       }),
-    entries: () => [{ id: 'search', title: tr('Search files'), icon: 'file', keywords: KEYWORDS }],
+    entries: () => [
+      { id: 'search', title: tr('Search files'), icon: 'file', keywords: keywords() },
+    ],
   });
   return null;
 }

@@ -27,16 +27,14 @@ use maka_workspace_api::computer::ResultValue;
 pub(super) fn title(method: &str, input: &Value) -> maka_agent_facts::display::Text {
     use maka_agent_facts::display::Text;
     if method == "reset" {
-        return Text::localized(
-            "Reset computer session",
-            "重置电脑操作环境",
-            "重設電腦操作環境",
-        );
+        return Text::for_locales(|locale| {
+            maka_agent_facts::i18n::tool_title::reset_computer(locale).to_owned()
+        });
     }
     if let Some(title) = input["title"].as_str().and_then(Text::single_line) {
         return title;
     }
-    Text::localized("Use computer", "操作电脑", "操作電腦")
+    Text::for_locales(|locale| maka_agent_facts::i18n::tool_title::use_computer(locale).to_owned())
 }
 
 pub(super) async fn project(
@@ -73,11 +71,7 @@ async fn parts(
     language: Language,
 ) -> Result<Vec<ToolContent>, ToolError> {
     let result = result.map_err(|_| ToolError::Failed("Computer result invalid".into()))?;
-    let state_label = match language {
-        Language::En => "REPL state",
-        Language::ZhCn => "REPL 状态",
-        Language::ZhTw => "REPL 狀態",
-    };
+    let state_label = maka_agent_facts::i18n::driver::computer_repl_state_label(language);
     let parts = match result {
         ResultValue::Failed { message, state } => vec![ToolContent::Text(format!(
             "{message}\n{state_label}: {}",

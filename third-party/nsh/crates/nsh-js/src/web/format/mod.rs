@@ -1195,6 +1195,7 @@ pub(crate) fn namespace(cx: Ctx) -> R<V> {
     for (name, class) in [
         ("NumberFormat", Class::NumberFormat),
         ("DateTimeFormat", Class::DateTimeFormat),
+        ("PluralRules", Class::PluralRules),
     ] {
         let ctor = super::constructor(cx, class)?;
         js::define(cx, global.raw(), name, ctor, false)?;
@@ -1254,7 +1255,162 @@ pub(crate) const SPECS: &[Spec] = &[
         global: false,
         ts: super::ClassTs::NONE,
     },
+    Spec {
+        class: Class::PluralRules,
+        name: c"PluralRules",
+        parent: None,
+        constructor: Some((plural_rules_constructor, 0)),
+        methods: &[
+            (Key::Name(c"select"), plural_rules_select, 1),
+            (
+                Key::Name(c"resolvedOptions"),
+                plural_rules_resolved_options,
+                0,
+            ),
+        ],
+        accessors: &[],
+        statics: &[(c"supportedLocalesOf", supported_locales_of, 1)],
+        constants: &[],
+        global: false,
+        ts: super::ClassTs::NONE,
+    },
 ];
+
+struct PluralRules {
+    locale: Locale,
+    ordinal: bool,
+}
+
+trace!(PluralRules {});
+
+impl Object for PluralRules {}
+
+fn plural_select(tag: &str, ordinal: bool, n: f64) -> &'static str {
+    if !n.is_finite() {
+        return "other";
+    }
+    let abs = n.abs();
+    let is_int = abs.fract() == 0.0 && abs <= (u64::MAX as f64);
+    let i = abs as u64;
+    let lang = tag
+        .split(['-', '_'])
+        .next()
+        .unwrap_or("en")
+        .to_ascii_lowercase();
+    if ordinal {
+        return match lang.as_str() {
+            "en" => match (i % 10, i % 100) {
+                (1, m) if m != 11 => "one",
+                (2, m) if m != 12 => "two",
+                (3, m) if m != 13 => "few",
+                _ => "other",
+            },
+            "fr" | "sv" => {
+                if i == 1 {
+                    "one"
+                } else {
+                    "other"
+                }
+            }
+            "it" => {
+                if matches!(i, 8 | 11 | 80 | 800) {
+                    "many"
+                } else {
+                    "other"
+                }
+            }
+            _ => "other",
+        };
+    }
+    match lang.as_str() {
+        "zh" | "yue" | "ja" | "ko" | "vi" | "th" | "id" => "other",
+        "fr" | "pt" | "hi" => {
+            if is_int && (i == 0 || i == 1) {
+                "one"
+            } else {
+                "other"
+            }
+        }
+        "ru" => {
+            if !is_int {
+                "other"
+            } else {
+                let m10 = i % 10;
+                let m100 = i % 100;
+                if m10 == 1 && m100 != 11 {
+                    "one"
+                } else if matches!(m10, 2..=4) && !matches!(m100, 12..=14) {
+                    "few"
+                } else {
+                    "many"
+                }
+            }
+        }
+        "pl" => {
+            if !is_int {
+                "other"
+            } else if i == 1 {
+                "one"
+            } else {
+                let m10 = i % 10;
+                let m100 = i % 100;
+                if matches!(m10, 2..=4) && !matches!(m100, 12..=14) {
+                    "few"
+                } else {
+                    "many"
+                }
+            }
+        }
+        _ => {
+            if is_int && i == 1 {
+                "one"
+            } else {
+                "other"
+            }
+        }
+    }
+}
+
+native!(
+    fn plural_rules_constructor(cx, this, args) {
+        let locale = resolve(cx, args.get(0))?;
+        let opts = options(cx, args.get(1))?;
+        let kind = string_option(cx, &opts, "type", &["cardinal", "ordinal"])?;
+        instance(
+            cx,
+            this,
+            Class::PluralRules,
+            PluralRules {
+                locale,
+                ordinal: kind == Some("ordinal"),
+            },
+        )
+    }
+);
+
+native!(
+    fn plural_rules_select(cx, this, args) {
+        let rules = data::<PluralRules>(cx, this, "PluralRules")?;
+        let value = js::to_number(cx, args.get(0))?;
+        js::string(cx, plural_select(rules.locale.tag.as_str(), rules.ordinal, value))
+    }
+);
+
+native!(
+    fn plural_rules_resolved_options(cx, this, _args) {
+        let rules = data::<PluralRules>(cx, this, "PluralRules")?;
+        let o = js::new_object(cx)?;
+        js::define(cx, o.raw(), "locale", js::string(cx, rules.locale.tag.as_str())?, true)?;
+        js::define(
+            cx,
+            o.raw(),
+            "type",
+            js::string(cx, if rules.ordinal { "ordinal" } else { "cardinal" })?,
+            true,
+        )?;
+        Ok(o)
+    }
+);
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {

@@ -30,7 +30,7 @@ use objc2_core_text::{
     CTWritingDirection, kCTFontAttributeName, kCTFontCascadeListAttribute,
     kCTFontFamilyNameAttribute, kCTFontFeatureSettingsAttribute, kCTFontOpenTypeFeatureTag,
     kCTFontOpenTypeFeatureValue, kCTFontTraitsAttribute, kCTFontWeightTrait,
-    kCTForegroundColorFromContextAttributeName, kCTKernAttributeName,
+    kCTForegroundColorFromContextAttributeName, kCTKernAttributeName, kCTLanguageAttributeName,
     kCTParagraphStyleAttributeName, kCTRunDelegateAttributeName, kCTRunDelegateCurrentVersion,
     kCTUnderlineStyleAttributeName,
 };
@@ -568,6 +568,17 @@ impl CoreTextEngine {
             unsafe { kCTParagraphStyleAttributeName },
             paragraph.as_ref(),
         );
+        if let Some(locale) = text.locale {
+            let language = CFString::from_str(locale.as_str());
+            set(
+                CFRange {
+                    location: 0,
+                    length,
+                },
+                unsafe { kCTLanguageAttributeName },
+                language.as_ref(),
+            );
+        }
         for span in &text.spans {
             let range = CFRange {
                 location: span.start as CFIndex,
@@ -4706,5 +4717,44 @@ mod cut_lines {
                 );
             }
         }
+    }
+
+    #[test]
+    fn cjk_locale_selects_distinct_coretext_glyph_fonts() {
+        let engine = CoreTextEngine::default();
+        let mut fonts = Vec::new();
+        for tag in ["zh-CN", "zh-TW", "zh-HK", "ja", "ko"] {
+            let mut text = AttributedText {
+                locale: nsh_core::platform::Locale::parse(tag),
+                ..Default::default()
+            };
+            text.push("直骨海刃", ResolvedTextStyle::default());
+            let attr = engine.attributed_string(&text, &nsh_core::AttachmentAlignments::default());
+            let line = unsafe { CTLine::with_attributed_string(attr.as_ref()) };
+            let runs = unsafe { line.glyph_runs() };
+            let mut names = Vec::new();
+            for i in 0..runs.count() {
+                let run: &CTRun = unsafe { &*runs.value_at_index(i).cast::<CTRun>() };
+                let attrs = unsafe { run.attributes() };
+                let font_ptr =
+                    unsafe { attrs.value((kCTFontAttributeName as *const CFString).cast()) };
+                if !font_ptr.is_null() {
+                    let font: &CTFont = unsafe { &*font_ptr.cast::<CTFont>() };
+                    names.push(unsafe { font.post_script_name() }.to_string());
+                }
+            }
+            fonts.push((tag, names.join(",")));
+        }
+        let by_tag = |target: &str| {
+            fonts
+                .iter()
+                .find(|(t, _)| *t == target)
+                .map(|(_, f)| f.as_str())
+                .unwrap()
+        };
+        assert_ne!(by_tag("zh-CN"), by_tag("zh-TW"));
+        assert_ne!(by_tag("zh-TW"), by_tag("zh-HK"));
+        assert_ne!(by_tag("zh-CN"), by_tag("ja"));
+        assert_ne!(by_tag("ja"), by_tag("ko"));
     }
 }

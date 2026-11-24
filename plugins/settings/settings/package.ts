@@ -18,16 +18,13 @@
  */
 
 import * as sdk from '../../../packages/plugin-sdk/src/index.js';
-import { empty, one, native } from '../../shared/package.js';
+import { empty, one, native, localizePackage } from '../../shared/package.js';
 
-export default {
+export default localizePackage({
   schemaVersion: 1,
   id: 'maka.agent.settings',
   displayName: 'Settings',
   description: 'Configure connections, models, preferences and installed UI.',
-  localizations: {
-    'zh-CN': { displayName: '设置', description: '配置连接、模型、偏好与已安装界面。' },
-  },
   application: {
     host: native(sdk.nativeImplementations.settings),
     ui: {
@@ -120,4 +117,4 @@ export default {
       },
     },
   },
-};
+});

@@ -38,7 +38,7 @@ import {
   quickToolView,
   type QuickToolInput,
 } from '../../../packages/plugin-sdk/src/workbench-views.js';
-import { currentLocale, tr } from '../../../products/maka/workbench/app/locale';
+import { currentLocale, localizedKeywords, tr } from '../../../products/maka/workbench/app/locale';
 import {
   COLORS,
   createSettings,
@@ -49,7 +49,11 @@ import {
   type ScreenshotSettings,
 } from './settings';
 
-const TERMS = ['screenshot', 'capture', 'snip', 'jietu', 'jt', '截图', '截圖', '截屏'];
+const terms = () =>
+  localizedKeywords(
+    ['screenshot', 'capture', 'snip', 'jietu', 'jt'],
+    'launcher.keywords.screenshot',
+  );
 
 type Failure = { message: string; permission: boolean };
 type Rect = { x: number; y: number; width: number; height: number };
@@ -449,7 +453,7 @@ function Screenshot(props: { input: QuickToolInput; settings: ScreenshotSettings
         id: 'capture',
         title: tr('Capture a screen region'),
         icon: 'camera',
-        keywords: [tr('screenshot keyword'), ...TERMS],
+        keywords: [tr('screenshot keyword'), ...terms()],
         run: () => {
           // The launcher floats above everything, so it has to be gone before the screen freezes.
           input.close();

@@ -17,14 +17,13 @@
  * under the License.
  */
 
-export default {
+import { localizePackage } from '../../shared/package.js';
+
+export default localizePackage({
   schemaVersion: 1,
   id: 'maka.composer',
   displayName: 'Composer',
   description: 'Compose messages with skills, files, images and session controls.',
-  localizations: {
-    'zh-CN': { displayName: '消息输入', description: '通过技能、文件、图片和会话控件编写消息。' },
-  },
   application: {
     ui: {
       module: 'ui/index.js',
@@ -33,4 +32,4 @@ export default {
       contributions: { composer: { kind: 'view', contract: 'maka.composer' } },
     },
   },
-};
+});

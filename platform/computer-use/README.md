@@ -21,7 +21,7 @@
 
 [简体中文](README.zh-CN.md)
 
-`maka-computer-use` drives native desktop applications and browser tabs through a dedicated, session-scoped JavaScript REPL (`cua_repl` and `cua_reset`), independent of Code Mode. See [`src/api.md`](src/api.md) for the guest object reference and [`skills/maka-cua/SKILL.md`](skills/maka-cua/SKILL.md) for usage patterns.
+`maka-computer-use` drives native desktop applications and browser tabs through a dedicated, session-scoped JavaScript REPL (`cua_repl` and `cua_reset`), independent of Code Mode. See [`locales/docs/api.en.md`](locales/docs/api.en.md) for the guest object reference and [`skills/maka-cua/SKILL.md`](skills/maka-cua/SKILL.md) for usage patterns.
 
 Each Agent session owns its REPL bindings and latest accessibility/screenshot observations, while the Host enforces live permission grants on every call. Holding a JavaScript handle across turns never bypasses current Host authorization, and the REPL exposes no ambient Node, filesystem, or network globals.
 

@@ -24,7 +24,7 @@ import {
   quickToolView,
   type QuickToolInput,
 } from '../../../packages/plugin-sdk/src/workbench-views.js';
-import { currentLocale, tr } from '../../../products/maka/workbench/app/locale';
+import { currentLocale, localizedKeywords, tr } from '../../../products/maka/workbench/app/locale';
 import { dictationPreferences as preferences } from '../../../products/maka/workbench/app/dictationPreferences';
 import {
   SettingsBody,
@@ -45,7 +45,10 @@ function Tool({ input }: UiEmbeddedViewProps<DictationInput, JSX.Element>) {
         id: 'start',
         title: tr('Start dictation'),
         icon: 'mic',
-        keywords: ['dictate', 'dictation', 'voice', '听写', '聽寫'],
+        keywords: localizedKeywords(
+          ['dictate', 'dictation', 'voice'],
+          'launcher.keywords.dictation',
+        ),
         run: input.startDictation,
       },
     ],
