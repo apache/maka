@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { Clipboard, Text, View, cleanup, computed, effect, signal, windowSize } from 'nsh';
+import { Text, View, cleanup, computed, effect, signal, windowSize } from 'nsh';
 import type { InputRef, JSX, ViewRef } from 'nsh';
 import { Button, Command, Input, Popover, Select } from 'nsh/base';
 import type { ServiceMethods } from '../../../../packages/plugin-sdk/src/generated/methods.js';
@@ -77,7 +77,6 @@ const addProject = 'add-project';
 const newWorktree = 'new-worktree';
 const localFiles = 'local-files';
 const localCheckout = 'local';
-const copyPath = 'copy-path';
 const retry = 'retry';
 const actions = 'actions';
 const branchPrefix = 'maka-';
@@ -86,7 +85,8 @@ const branchErrors = {
   branch_unavailable: 'This branch is no longer available.',
   already_exists: 'This branch already exists. Choose another name.',
   checked_out_elsewhere: 'This branch is already checked out in another worktree.',
-  overwrites_changes: 'Switching branches would overwrite local files. Save your changes first.',
+  overwrites_changes:
+    'Switching branches would overwrite local changes. Commit or stash them first.',
   workspace_busy: 'This folder is in use. Try again when the current operation finishes.',
   git_required: 'Install Git to switch or create branches.',
   unsupported: 'This Git configuration does not support switching branches here.',
@@ -416,12 +416,10 @@ export function SessionWorkspaces(props: {
     const result = info();
     return result?.kind === 'git' ? result : null;
   });
-  const worktree = computed(() => {
+  const worktreeName = computed(() => {
     const repository = git();
     const path = props.path();
-    return repository && path !== repository.root
-      ? { path, name: basenameLabel(path), branch: repository.headBranch }
-      : null;
+    return repository && path !== repository.root ? basenameLabel(path) : null;
   });
   const projectPath = () => git()?.root ?? props.path();
   const loadRecentProjects = async () => {
@@ -571,11 +569,8 @@ export function SessionWorkspaces(props: {
   const selectLocation = async (value: string) => {
     if (blocked()) return;
     if (value === newWorktree) return startWorktree();
-    const path = worktree()?.path;
-    if (value === copyPath && path) return void Clipboard.writeText(path).catch(props.report);
-    const repository = git();
-    if (!repository) return;
-    const target = value === localCheckout ? repository.root : value === path ? path : undefined;
+    if (value !== localCheckout) return;
+    const target = git()?.root;
     if (!target) return;
     if (target === props.path()) {
       props.selectWorktree(null);
@@ -593,7 +588,7 @@ export function SessionWorkspaces(props: {
   const locationChoices = (): Choice[] => {
     const repository = git();
     if (!repository) return [];
-    const choices: Choice[] = [
+    return [
       { value: localCheckout, title: tr('Local'), icon: 'laptop', group: tr('Work location') },
       {
         value: newWorktree,
@@ -607,21 +602,6 @@ export function SessionWorkspaces(props: {
             : undefined,
       },
     ];
-    const current = worktree();
-    if (current) {
-      choices.push(
-        {
-          value: current.path,
-          title: current.name,
-          detail:
-            current.branch === current.name ? undefined : (current.branch ?? tr('Detached HEAD')),
-          icon: 'fork',
-          group: actions,
-        },
-        { value: copyPath, title: tr('Copy worktree path'), icon: 'copy', group: actions },
-      );
-    }
-    return choices;
   };
   const branchChoices = computed((): Choice[] => {
     const repository = git();
@@ -757,13 +737,13 @@ export function SessionWorkspaces(props: {
         <WorkspaceSelect
           label={tr('Work location')}
           labelText={
-            props.worktreeSelection() ? tr('New local worktree') : (worktree()?.name ?? tr('Local'))
+            props.worktreeSelection() ? tr('New local worktree') : (worktreeName() ?? tr('Local'))
           }
           description={props.worktreeSelection() ? undefined : props.path()}
-          icon={props.worktreeSelection() || worktree() ? 'fork' : 'laptop'}
+          icon={props.worktreeSelection() || worktreeName() ? 'fork' : 'laptop'}
           emphasized={props.worktreeSelection() !== null}
-          width={worktree() ? 240 : 208}
-          value={props.worktreeSelection() ? newWorktree : (worktree()?.path ?? localCheckout)}
+          width={208}
+          value={props.worktreeSelection() ? newWorktree : worktreeName() ? null : localCheckout}
           choices={locationChoices()}
           open={openMenu() === 'location'}
           onOpenChange={(open) => toggle('location', open)}

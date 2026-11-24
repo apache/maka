@@ -101,10 +101,10 @@ export const workspaceMessages = {
     '这个分支已在另一个工作树中检出。',
     '這個分支已在另一個工作樹中取出。',
   ],
-  'Switching branches would overwrite local files. Save your changes first.': [
-    'Switching branches would overwrite local files. Save your changes first.',
-    '切换分支会覆盖本地文件。请先保存改动。',
-    '切換分支會覆寫本機檔案。請先儲存變更。',
+  'Switching branches would overwrite local changes. Commit or stash them first.': [
+    'Switching branches would overwrite local changes. Commit or stash them first.',
+    '切换分支会覆盖本地改动。请先提交，或用 git stash 临时保存。',
+    '切換分支會覆寫本機變更。請先提交，或用 git stash 暫時保存。',
   ],
   'This folder is in use. Try again when the current operation finishes.': [
     'This folder is in use. Try again when the current operation finishes.',
@@ -146,7 +146,6 @@ export const workspaceMessages = {
     '未提交 · {count} 个文件',
     '未提交 · {count} 個檔案',
   ],
-  'Copy worktree path': ['Copy worktree path', '复制工作树路径', '複製工作樹路徑'],
   'Create worktree': ['Create worktree', '创建工作树', '建立工作樹'],
   'Could not assign a worktree name. Send again to try another name.': [
     'Could not assign a worktree name. Send again to try another name.',

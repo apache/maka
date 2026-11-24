@@ -1174,16 +1174,21 @@ async fn desktop_creates_and_reopens_a_named_worktree() {
         .join("worktree-project");
     std::fs::create_dir(&project).unwrap();
     git(&project, &["init", "-b", "main"]);
-    std::fs::write(project.join("tracked.txt"), "main").unwrap();
-    git(&project, &["add", "tracked.txt"]);
+    let tracked = project.join("tracked.txt");
+    let shared = project.join("shared.txt");
+    std::fs::write(&tracked, "main").unwrap();
+    std::fs::write(&shared, "shared file").unwrap();
+    git(&project, &["add", "tracked.txt", "shared.txt"]);
     git(&project, &["commit", "-m", "Main"]);
     git(&project, &["switch", "-c", "release-base"]);
     const WORKTREE_FILE: &str = "WORKTREE_ONLY_FILE_CONTENT";
-    std::fs::write(project.join("tracked.txt"), WORKTREE_FILE).unwrap();
+    std::fs::write(&tracked, WORKTREE_FILE).unwrap();
     git(&project, &["commit", "-am", "Release"]);
     let base = git(&project, &["rev-parse", "HEAD"]);
     git(&project, &["update-ref", "refs/remotes/origin/main", &base]);
     git(&project, &["switch", "main"]);
+    std::fs::write(&tracked, "uncommitted conflict").unwrap();
+    std::fs::write(&shared, "uncommitted safe edit").unwrap();
     std::fs::write(project.join("main-only.txt"), "local draft").unwrap();
 
     let other = project.with_file_name("other-project");
@@ -1215,12 +1220,33 @@ async fn desktop_creates_and_reopens_a_named_worktree() {
     assert!(starting_branch.origin.y < branch.origin.y);
     desktop.artifact("local-branches");
     desktop.press("release-base").await;
+    desktop.control("Switch branch").await;
+    assert_eq!(git(&project, &["branch", "--show-current"]), "main");
+    assert_eq!(
+        std::fs::read_to_string(&tracked).unwrap(),
+        "uncommitted conflict"
+    );
+    desktop.artifact("local-branch-conflict");
+    std::fs::write(&tracked, "main").unwrap();
+
+    desktop.press("Switch branch").await;
+    desktop.press("release-base").await;
     desktop
         .until("local checkout stayed on main", || {
             (git(&project, &["branch", "--show-current"]) == "release-base").then_some(())
         })
         .await;
+    assert_eq!(
+        std::fs::read_to_string(&shared).unwrap(),
+        "uncommitted safe edit"
+    );
+    assert_eq!(
+        std::fs::read_to_string(project.join("main-only.txt")).unwrap(),
+        "local draft"
+    );
     desktop.press("Switch branch").await;
+    desktop.control("release-base").await;
+    desktop.artifact("local-branch-switched");
     desktop.press("Create and check out new branch…").await;
     desktop.expect_text("maka-").await;
     desktop.artifact("create-local-branch");
@@ -1478,18 +1504,21 @@ async fn desktop_creates_and_reopens_a_named_worktree() {
     let desktop = desktop
         .restart(&fixture, nsh_core::platform::Appearance::Light)
         .await;
-    desktop.press("Work location").await;
-    desktop.control(name).await;
-    desktop.artifact("worktree-reopened");
-    let _ = desktop.platform.take_clipboard_write();
-    desktop.press("Copy worktree path").await;
-    let copied_path = desktop
-        .until("the reopened worktree path was not copied", || {
-            desktop.platform.take_clipboard_write()
-        })
+    desktop
+        .press_until("Work location", "New local worktree")
         .await;
-    assert_eq!(copied_path, checkout.to_str().unwrap());
-    desktop.press_until("Work location", "Local").await;
+    desktop.control("Local").await;
+    assert!(desktop.controls(name).is_empty());
+    assert!(desktop.controls("Copy worktree path").is_empty());
+    desktop.artifact("worktree-reopened");
+    let reopened_session = desktop
+        .client
+        .query("agent", "observe", json!({ "sessionId": id }))
+        .await;
+    assert_eq!(
+        reopened_session.unwrap()["session"]["workspace"]["path"],
+        worktree["path"]
+    );
     let reopened = desktop
         .client
         .query("agent", "projectWorktrees", json!({"path": project}))
@@ -1626,8 +1655,9 @@ async fn desktop_uses_the_selected_checkout() {
     desktop.press("Focus message composer").await;
     desktop.type_text("PRIMARY_CHECKOUT_MESSAGE").await;
     desktop
-        .press_until("Work location", "linked-checkout")
+        .press_until("Work location", "New local worktree")
         .await;
+    assert!(desktop.controls("linked-checkout").is_empty());
     desktop.artifact("linked-checkout-selected");
     desktop.press("Local").await;
     desktop.control("Switch branch").await;
