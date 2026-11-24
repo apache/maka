@@ -1548,6 +1548,135 @@ async fn desktop_edits_a_message_in_place_and_forks_only_when_sent() {
     fixture.finish().await;
 }
 
+async fn desktop_asks_a_side_question_beside_a_reply() {
+    let mut fixture = Fixture::open().await;
+    let (_, appearance, _, _, _) = visual_case();
+    let desktop = Desktop::open_at(
+        &fixture,
+        &fixture.address,
+        size(
+            nsh_terminal::DevicePixels(1440),
+            nsh_terminal::DevicePixels(820),
+        ),
+        appearance,
+    )
+    .await;
+    desktop.new_draft().await;
+    desktop.type_text("How does the cache layer work?").await;
+    desktop.submit().await;
+    let mut reply = desktop.request(&mut fixture).await;
+    reply
+        .delta(
+            "The cache layer sits between the API handlers and the database.\n\n\
+             Reads go through a **write-through** cache keyed by the request digest. \
+             On a miss the handler loads the row, stores it for five minutes, and returns it.\n\n\
+             Writes invalidate the key first and then update the row, so a reader never \
+             sees a value older than the last committed write. CACHE_LAYER_EXPLAINED",
+        )
+        .await;
+    desktop
+        .wait("the reply did not finish", reply.finish())
+        .await;
+    let listed = desktop.sessions().await.len();
+
+    // The card opens at once; nothing is created until the question is sent.
+    let original = desktop.platform.text_input_target();
+    desktop.press("Ask beside").await;
+    desktop.target_after(original).await;
+    desktop.control("Close side question").await;
+    desktop.artifact("side-1-ask");
+    assert_eq!(desktop.sessions().await.len(), listed);
+    desktop.type_text("Why invalidate before the update?").await;
+    desktop.artifact("side-2-typed");
+    desktop.submit().await;
+    let mut side = desktop.request(&mut fixture).await;
+    let body = side.body.to_string();
+    assert!(
+        body.contains("CACHE_LAYER_EXPLAINED"),
+        "the side question lacks the conversation it was asked beside: {body}"
+    );
+    assert!(body.contains("Why invalidate before the update?"), "{body}");
+    desktop.artifact("side-3-working");
+    side.delta(
+        "If the row were updated first, a reader could cache the **old** value just after \
+         the write and keep it for five minutes. Invalidating first closes that window: \
+         the next read misses and loads the committed row. SIDE_ANSWER",
+    )
+    .await;
+    desktop
+        .wait("the side answer did not finish", side.finish())
+        .await;
+    // Its answer stands: the reactions are offered, and the reply names it.
+    desktop.control("Simpler").await;
+    desktop
+        .control("Side question: Why invalidate before the update?")
+        .await;
+    desktop.artifact("side-4-answered");
+    // A side question is not one of the listed conversations.
+    assert_eq!(desktop.sessions().await.len(), listed);
+
+    // A reaction asks on with what it says.
+    desktop.press("Simpler").await;
+    let mut simpler = desktop.request(&mut fixture).await;
+    let body = simpler.body.to_string();
+    assert!(body.contains("Explain that more simply."), "{body}");
+    desktop.artifact("side-5-follow-up");
+    simpler
+        .delta("A reader must never keep a stale copy, so the copy is thrown away first.")
+        .await;
+    desktop
+        .wait("the follow-up did not finish", simpler.finish())
+        .await;
+    desktop.control("Simpler").await;
+    desktop.artifact("side-6-follow-up-answered");
+
+    // Bringing it back puts a reference in the main draft, not its text.
+    desktop.press("Bring to the main conversation").await;
+    desktop
+        .wait("the reference did not reach the main draft", async {
+            loop {
+                let draft = desktop.copy_input().await;
+                if draft.starts_with("[@Why invalidate before the update?](maka://session/") {
+                    break;
+                }
+            }
+        })
+        .await;
+    desktop.artifact("side-7-attached");
+
+    // Closed, the card comes back from its reply.
+    desktop.press("Got it, close").await;
+    desktop
+        .until("the card did not close", || {
+            desktop
+                .controls("Close side question")
+                .is_empty()
+                .then_some(())
+        })
+        .await;
+    desktop.artifact("side-8-closed");
+    desktop
+        .press("Side question: Why invalidate before the update?")
+        .await;
+    desktop.control("Close side question").await;
+    desktop.control("Simpler").await;
+    desktop.artifact("side-9-reopened");
+
+    // Discarded, it leaves its reply too.
+    desktop.press("Discard this side question").await;
+    desktop
+        .until("the discarded side question stayed on its reply", || {
+            (desktop.controls("Close side question").is_empty()
+                && desktop
+                    .controls("Side question: Why invalidate before the update?")
+                    .is_empty())
+            .then_some(())
+        })
+        .await;
+    desktop.close().await;
+    fixture.finish().await;
+}
+
 async fn desktop_steering_freezes_each_message_and_queue_is_one_shot() {
     let mut fixture = Fixture::open().await;
     let gate = ReplyGate::send(fixture.directory.path(), fixture.address.clone());
@@ -2713,6 +2842,7 @@ pub(crate) const CASES: &[&str] = &[
     #[cfg(target_os = "macos")]
     "desktop_resumes_live_activity_when_scrolling_back_to_latest",
     "desktop_edits_a_message_in_place_and_forks_only_when_sent",
+    "desktop_asks_a_side_question_beside_a_reply",
     "desktop_steering_freezes_each_message_and_queue_is_one_shot",
     "desktop_file_gestures_preserve_drafts_and_stage_an_image",
     "desktop_composer_large_paste_keeps_controls_on_screen",
@@ -2758,6 +2888,9 @@ pub(crate) fn run(name: &str) {
         }
         "desktop_edits_a_message_in_place_and_forks_only_when_sent" => {
             runtime.block_on(desktop_edits_a_message_in_place_and_forks_only_when_sent())
+        }
+        "desktop_asks_a_side_question_beside_a_reply" => {
+            runtime.block_on(desktop_asks_a_side_question_beside_a_reply())
         }
         "desktop_steering_freezes_each_message_and_queue_is_one_shot" => {
             runtime.block_on(desktop_steering_freezes_each_message_and_queue_is_one_shot())

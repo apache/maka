@@ -31,6 +31,8 @@ import {
   type Signal,
 } from 'nsh';
 import { host as nativeHost } from 'maka/host';
+import type { QuoteRef } from '../../../../packages/plugin-sdk/src/index.js';
+import { SideAskCard, SideCardFrame } from './SideQuestionCard';
 import { Button } from 'nsh/base';
 import type { UiModule, UiRootProps } from '../../../../packages/plugin-sdk/src/workbench.js';
 import type {
@@ -45,6 +47,7 @@ import {
   type RoomWorkspaceHandle,
   settingsViewContract,
   type ConversationCompact,
+  type SideQuestionRequest,
   type SettingsPageInput,
   type ConversationShell,
   type ConversationSessionHandle,
@@ -126,20 +129,29 @@ function App(
     paneShell = sideShell,
     firstMessage?: string,
     compact?: ConversationCompact,
+    firstQuotes?: readonly QuoteRef[],
   ): SidePane {
+    // The first message is handed over once: a pane rendered again, as a card
+    // is after another mode was shown, must not send it a second time.
+    let first =
+      firstMessage === undefined ? undefined : { text: firstMessage, quotes: firstQuotes };
     const pane: SidePane = {
       id: signal(id),
       handle: signal<ConversationSessionHandle | null>(null),
-      render: () =>
-        runtime.renderView(configuration.session, conversationSessionView, {
+      render: () => {
+        const opening = first;
+        first = undefined;
+        return runtime.renderView(configuration.session, conversationSessionView, {
           shell: paneShell(pane),
           active: () => workspaceMode() === 'conversations',
-          firstMessage,
+          firstMessage: opening?.text,
+          firstQuotes: opening?.quotes,
           compact,
           attach(handle) {
             if (pane.handle() !== handle) pane.handle.set(handle);
           },
-        }),
+        });
+      },
     };
     return pane;
   }
@@ -214,7 +226,111 @@ function App(
   // A conversation is open in one pane at a time, and the popup is one of them.
   const releaseAssistant = (id: string | null) =>
     id !== null && assistant()?.id() === id ? closeLauncher() : Promise.resolve(true);
-  const openElsewhere = (id: string) => sideFor(id) !== undefined || assistant()?.id() === id;
+  const openElsewhere = (id: string) =>
+    sideFor(id) !== undefined || assistant()?.id() === id || sideCard()?.pane()?.id() === id;
+  // A side question's card beside the selected conversation: first where it is
+  // asked, then its conversation. One at a time; it stays with that conversation.
+  type SideCard = {
+    parent: string | null;
+    /** Its conversation, once the question is asked. */
+    pane: Signal<SidePane | null>;
+    render(): JSX.Element;
+  };
+  const sideCard = signal<SideCard | null>(null);
+  const closeSideCard = async (): Promise<boolean> => {
+    const card = sideCard();
+    if (card === null) return true;
+    try {
+      const owner = card.pane()?.handle();
+      if (owner && !(await owner.leave())) return false;
+    } catch (reason) {
+      console.warn('Could not close the side question:', reason);
+      return false;
+    }
+    if (sideCard() === card) sideCard.set(null);
+    return true;
+  };
+  const sidePane = (id: string, first?: { text: string; quotes: readonly QuoteRef[] }) =>
+    createSide(
+      id,
+      (self) => ({
+        ...sideShell(self),
+        visible: shell.visible,
+        paneVisible: conversationPaneVisible,
+        previewDocked: () => false,
+        // What a side question links to opens in the window, not in its card.
+        openSession: (next) => (next === self.id() ? Promise.resolve(true) : openSession(next)),
+        closePane: () => void closeSideCard(),
+      }),
+      first?.text,
+      {
+        close: () => void closeSideCard(),
+        expand: () =>
+          void closeSideCard().then((closed) => {
+            if (!closed) return;
+            if (sideRoom() > 0) openBeside(id);
+            else void openSession(id);
+          }),
+        side: { attach: (reference) => session()?.appendToDraft?.(reference) },
+      },
+      first?.quotes,
+    );
+  const askBeside = (request: SideQuestionRequest) => {
+    if (!alive || blocked()) return;
+    void closeSideCard().then((closed) => {
+      if (!closed || !alive || blocked()) return;
+      const card: SideCard = {
+        parent: selected(),
+        pane: signal<SidePane | null>(null),
+        // The card stays as its question becomes a conversation.
+        render: () => (
+          <SideCardFrame>
+            <If
+              when={card.pane()}
+              else={
+                <SideAskCard
+                  quotes={request.quotes}
+                  ask={async (text) => {
+                    const id = await request.ask(text);
+                    if (alive && sideCard() === card)
+                      card.pane.set(sidePane(id, { text, quotes: request.quotes }));
+                    // The card closed while its conversation was created: the
+                    // question is never sent, so no empty side question stays.
+                    else
+                      void request
+                        .discard(id)
+                        .catch((reason) =>
+                          console.warn('An unasked side question was not discarded:', reason),
+                        );
+                  }}
+                  close={() => void closeSideCard()}
+                />
+              }
+            >
+              {card.pane()!.render()}
+            </If>
+          </SideCardFrame>
+        ),
+      };
+      sideCard.set(card);
+    });
+  };
+  const openSideQuestion = (id: string) => {
+    if (!alive || blocked() || id === selected() || openElsewhere(id)) return;
+    void closeSideCard().then((closed) => {
+      if (!closed || !alive || blocked() || openElsewhere(id)) return;
+      const pane = sidePane(id);
+      sideCard.set({
+        parent: selected(),
+        pane: signal<SidePane | null>(pane),
+        render: () => <SideCardFrame>{pane.render()}</SideCardFrame>,
+      });
+    });
+  };
+  effect(() => {
+    const card = sideCard();
+    if (card !== null && card.parent !== selected()) void closeSideCard();
+  });
   const openSide = async (pane: SidePane, id: string | null): Promise<boolean> => {
     if (!alive || blocked() || !(await releaseAssistant(id))) return false;
     const original = pane.id();
@@ -254,6 +370,7 @@ function App(
     // A conversation is open in one pane at a time; selecting a side one moves it here.
     const from = id === null ? undefined : sideFor(id);
     if (from && !(await openSide(from, null))) return false;
+    if (id !== null && sideCard()?.pane()?.id() === id && !(await closeSideCard())) return false;
     const generation = ++navigationGeneration;
     const original = selected();
     const owner = session();
@@ -365,7 +482,14 @@ function App(
     get openBeside() {
       return platform.idiom !== 'terminal' && sideRoom() > 0 ? openBeside : undefined;
     },
-    ...(platform.idiom === 'terminal' ? {} : { besideSessionIds: besides }),
+    ...(platform.idiom === 'terminal'
+      ? {}
+      : {
+          besideSessionIds: besides,
+          askBeside,
+          openSideQuestion,
+          sideQuestionId: () => sideCard()?.pane()?.id() ?? null,
+        }),
   };
   const sidebarHover = createSidebarHover(
     () => !sidebarExpanded() && conversationPaneVisible() && !blocked(),
@@ -375,7 +499,11 @@ function App(
     if (mode === workspaceMode()) return true;
     if (workspaceMode() === 'rooms') await roomWorkspace()?.flush();
     else {
-      const panes = [session(), ...sides().map((pane) => pane.handle())];
+      const panes = [
+        session(),
+        ...sides().map((pane) => pane.handle()),
+        sideCard()?.pane()?.handle(),
+      ];
       if ((await Promise.all(panes.map((pane) => pane?.leave()))).includes(false)) return false;
     }
     batch(() => {
@@ -560,6 +688,7 @@ function App(
           previewDialog={previewDialog}
           closePreview={closePreview}
           sides={sides}
+          card={() => (workspaceMode() === 'conversations' ? sideCard() : null)}
           navigation={(temporary) =>
             runtime.renderView(configuration.navigation, conversationNavigationView, {
               shell,

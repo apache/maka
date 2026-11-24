@@ -39,6 +39,13 @@ import {
 import { Button, Dialog, TextView } from 'nsh/base';
 import { CompactComposer } from './CompactComposer';
 import { currentWindow, isAvailable as desktopAvailable } from 'nsh/desktop';
+import {
+  SideComposer,
+  SideHeader,
+  SideReactions,
+} from '../../../../products/maka/workbench/app/SideQuestionCard';
+import { sessionInvocation } from '../../composer/ui/composerCompletionSyntax';
+import type { QuoteRef } from '../../../../packages/plugin-sdk/src/index.js';
 import { ComputerStageView } from './ComputerStageView';
 import { createComputerStage, type ComputerSnapshot } from './computerStageController';
 import type { ComputerFrameSource } from './computerFrames';
@@ -1188,7 +1195,13 @@ export function createConversationUi(
   // taken once by its Conversation.
   const prefills = new Map<
     string,
-    { text: string; send: boolean; files?: StagedFile[]; first?: boolean }
+    {
+      text: string;
+      send: boolean;
+      files?: StagedFile[];
+      first?: boolean;
+      quotes?: readonly QuoteRef[];
+    }
   >();
   const abandonHandoff = (attempt: SubmissionAttempt, sessionId: string) => {
     const current = currentSubmission(attempt);
@@ -2377,8 +2390,43 @@ export function createConversationUi(
         command.trigger !== undefined && command.id !== ownedContributions().get('queue')?.key,
     ),
   );
+  // A side question's card offers its reactions once its answer stands and
+  // nothing is being typed or sent.
+  const sideAttached = signal(false);
+  const sideSettled = () => {
+    const session = composerSession();
+    return (
+      session !== null &&
+      !session.empty() &&
+      session.run() === null &&
+      !session.recovering() &&
+      session.draft().trim() === ''
+    );
+  };
+  const discardSide = async (close: () => void) => {
+    const id = selected();
+    if (id === null) return;
+    const observed = await host.query('agent', 'observe', { sessionId: id });
+    const archived = await control('changeSession', {
+      sessionId: id,
+      expectedRevision: observed.session.revision,
+      action: 'archive',
+    });
+    if (archived.kind !== 'changed')
+      throw new UiError('The side question could not be discarded: {reason}', {
+        reason: archived.reason ?? archived.kind,
+      });
+    close();
+  };
   const sessionHandle: ConversationSessionHandle = {
     title: () => handle()?.title() ?? null,
+    appendToDraft(text) {
+      const owner = handle();
+      if (!owner?.editable()) return;
+      const draft = owner.draft();
+      owner.changeDraft(draft === '' || /\s$/.test(draft) ? draft + text : `${draft} ${text}`);
+      owner.focus();
+    },
     floatingComposer: () =>
       selected() === null ? null : (
         <StageFloatingComposer
@@ -2570,7 +2618,11 @@ export function createConversationUi(
     },
     session(input: ConversationSessionInput) {
       if (input.firstMessage !== undefined)
-        prefills.set(input.shell.sessionId()!, { text: input.firstMessage, send: true });
+        prefills.set(input.shell.sessionId()!, {
+          text: input.firstMessage,
+          send: true,
+          quotes: input.firstQuotes,
+        });
       bind(input.shell);
       input.attach(sessionHandle);
       // Route transient action feedback, fork banner, and recovered-fork CTA to Mode A Toasts.
@@ -2852,7 +2904,17 @@ export function createConversationUi(
                 />
               </View>
             </If>
-            <If when={input.compact !== undefined}>
+            <If when={input.compact?.side !== undefined}>
+              <SideHeader
+                title={() => {
+                  const title = handle()?.title() ?? '';
+                  return title === selected() ? '' : title;
+                }}
+                expand={input.compact!.expand}
+                close={input.compact!.close}
+              />
+            </If>
+            <If when={input.compact !== undefined && input.compact.side === undefined}>
               <CompactComposer
                 session={composerSession}
                 stop={() => stopAction()()}
@@ -2880,6 +2942,10 @@ export function createConversationUi(
                 <Conversation
                   chooseModel={() => open({ kind: 'models', sessionId: id() })}
                   compact={input.compact !== undefined}
+                  side={input.compact?.side !== undefined}
+                  askBeside={shell()?.askBeside}
+                  openSideQuestion={shell()?.openSideQuestion}
+                  sideQuestionId={shell()?.sideQuestionId}
                   client={host.session(id())}
                   connectionLost={connectionLost}
                   botSession={botSession}
@@ -2898,12 +2964,19 @@ export function createConversationUi(
                   fork={async (action) => {
                     await changeBrowsedSession(action, id());
                   }}
-                  edit={(action, text, send) => changeBrowsedSession(action, id(), { text, send })}
+                  // A fork made to edit or regenerate opens in the window: a side
+                  // question's card would lose it, so it offers neither.
+                  edit={
+                    input.compact?.side !== undefined
+                      ? undefined
+                      : (action, text, send) => changeBrowsedSession(action, id(), { text, send })
+                  }
                   firstMessage={() => {
                     const prefill = prefills.get(id());
                     if (!prefill?.send) return null;
                     return {
                       text: prefill.text,
+                      quotes: prefill.quotes,
                       files: prefill.files?.map((file) => {
                         const meta = file.metadata() as { name: string; bytes: number };
                         return {
@@ -3035,6 +3108,34 @@ export function createConversationUi(
               )}
             </Each>
             <If when={input.compact !== undefined}>{request}</If>
+            <If when={input.compact?.side !== undefined}>
+              <If when={sideSettled()}>
+                <SideReactions
+                  followUp={(item) => {
+                    const session = composerSession();
+                    if (session && !session.blockedReason()) session.submit({ text: item.message });
+                  }}
+                  attached={sideAttached}
+                  attach={() => {
+                    const id = selected();
+                    if (id === null) return;
+                    input.compact!.side!.attach(
+                      `${sessionInvocation({ id, title: handle()?.title() ?? '', kind: 'agent' })} `,
+                    );
+                    sideAttached.set(true);
+                  }}
+                  resolve={input.compact!.close}
+                  archive={() => void discardSide(input.compact!.close).catch(report)}
+                />
+              </If>
+              <SideComposer
+                session={composerSession}
+                stop={() => stopAction()()}
+                attach={(node) => {
+                  compactInput = node;
+                }}
+              />
+            </If>
             <If when={input.compact === undefined}>
               <ComposerView
                 dropFiles={(drop) => {

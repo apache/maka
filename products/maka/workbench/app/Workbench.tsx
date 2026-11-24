@@ -39,6 +39,8 @@ const CENTER_MIN = 48 * CELL;
 const BROWSER_MIN = 24 * CELL;
 const BROWSER_MAX = 40 * CELL;
 const PREVIEW_MIN = 40 * CELL;
+/** A side question's card: it takes this much of the selected conversation's panel. */
+export const SIDE_CARD_WIDTH = 47 * CELL;
 const GAP = platform.idiom === 'terminal' ? CELL : 0;
 const INSET = platform.idiom === 'terminal' ? 0 : PANEL_INSET;
 const available = () => windowSize().width - 2 * INSET;
@@ -129,6 +131,9 @@ export function Workbench(props: {
   preview(docked: boolean): JSX.Element;
   /** Stable pane objects keep their mounted conversations through reorder and resize. */
   sides?(): readonly { render(): JSX.Element }[];
+  /** A side question's card, in the selected conversation's panel at its right.
+   * A stable object, so what it renders is mounted once. */
+  card?(): { render(): JSX.Element } | null;
   children: JSX.Element;
 }) {
   const preferredWidth = signal(32 * CELL);
@@ -137,12 +142,34 @@ export function Workbench(props: {
   const fullscreen = () => props.previewFullscreen?.() ?? false;
   const browser = () => props.expanded() && canDockBrowser(props.previewShown() && !fullscreen());
   const room = () => (fullscreen() ? 0 : sidePaneRoom(browser(), preview()));
+  const card = () => (fullscreen() ? null : (props.card?.() ?? null));
   let unbindFullscreen: (() => void) | undefined;
   cleanup(() => unbindFullscreen?.());
   const panes = () => (
     <>
-      <ResizablePanel visible={!fullscreen()} minSize={CENTER_MIN} style={{ minHeight: 0 }}>
-        {props.children}
+      <ResizablePanel
+        visible={!fullscreen()}
+        minSize={CENTER_MIN + (card() ? SIDE_CARD_WIDTH : 0)}
+        style={{ minHeight: 0 }}
+      >
+        <View style={{ flex: 1, minWidth: 0, minHeight: 0, flexDirection: 'row' }}>
+          <View style={{ flex: 1, minWidth: 0, minHeight: 0 }}>{props.children}</View>
+          <Each of={card() ? [card()!] : []} key={(shown) => shown}>
+            {(shown) => (
+              <View
+                style={{
+                  width: SIDE_CARD_WIDTH,
+                  minHeight: 0,
+                  paddingTop: 12,
+                  paddingRight: 12,
+                  paddingBottom: 12,
+                }}
+              >
+                {shown().render()}
+              </View>
+            )}
+          </Each>
+        </View>
       </ResizablePanel>
       <Each of={props.sides?.() ?? []} key={(pane) => pane}>
         {(pane, index) => (
@@ -173,6 +200,7 @@ export function Workbench(props: {
     (fullscreen()
       ? PREVIEW_MIN
       : CENTER_MIN * (1 + Math.min(room(), props.sides?.().length ?? 0)) +
+        (card() ? SIDE_CARD_WIDTH : 0) +
         (preview() ? PREVIEW_MIN : 0)) +
     INSET * (browser() ? 1 : 2);
   return (

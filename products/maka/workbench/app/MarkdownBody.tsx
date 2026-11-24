@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import type { JSX } from 'nsh';
 import { cleanup, computed, platform, signal, Text, View } from 'nsh';
 import { TextView } from 'nsh/base';
 import { SourceChip } from './AnswerSources';
@@ -28,6 +29,8 @@ import { MarkdownImageView } from './MarkdownImage';
 import { SpecView, markdownExtensions } from './SpecView';
 import { SourceText } from './SourceText';
 import { tr } from './locale';
+import { markPassages, sideLinkTarget, type SideMark } from './sideMarks';
+import { notePassage } from './sideQuestions';
 import { splitSpecMarkdown } from './spec/session.ts';
 import { C, bodyTextStyle, isDark, secondaryTextStyle } from './ui';
 
@@ -41,6 +44,14 @@ export function MarkdownBody(props: {
   interactiveBlocks?: boolean;
   /** False when the surrounding message owns text selection. */
   selectable?: boolean;
+  /**
+   * Wraps the selectable text in the message's own context menu. A secondary click on
+   * selectable text reaches only a menu bound to the selectable view itself.
+   */
+  menu?(body: JSX.Element): JSX.Element;
+  /** The side questions asked beside this reply, whose passages are underlined. */
+  marks?(): readonly SideMark[];
+  openSide?(sessionId: string): void;
   /** Compact size in the full text color, for a message another agent sent. */
   fullColor?: boolean;
   /** The complete text, read apart from the row, shown in place of the row's own. */
@@ -84,7 +95,13 @@ export function MarkdownBody(props: {
     });
   };
 
-  const rawMarkdown = () => (props.text ? props.text() : props.row().text);
+  // Citations are placed by byte offsets of the reply as written, so a reply
+  // that has them keeps its text; its side questions stay listed under it.
+  const marks = () => (props.citations?.()?.length ? [] : (props.marks?.() ?? []));
+  const rawMarkdown = computed(() => {
+    const text = props.text ? props.text() : props.row().text;
+    return marks().length > 0 ? markPassages(text, marks()).markdown : text;
+  });
   const segments = computed(() => {
     const text = rawMarkdown();
     return props.interactiveBlocks === false
@@ -137,8 +154,13 @@ export function MarkdownBody(props: {
   const color = () => (props.compact && !props.fullColor ? C.muted : C.text);
   const blockGap = props.compact ? 6 : 16;
 
-  return (
-    <View selectable={props.selectable ?? true}>
+  const body = (
+    <View
+      selectable={props.selectable ?? true}
+      onSelectionChange={(event: { text: string }) =>
+        notePassage(props.sessionId, props.row().turnId, props.sourceId, event.text)
+      }
+    >
       <If
         when={props.text !== undefined || hasTextPrefix(props.row())}
         else={
@@ -203,6 +225,11 @@ export function MarkdownBody(props: {
                       onScrollIntent={props.userScroll}
                       onParseError={({ reason }) => failure.set(reason)}
                       onLinkPress={(event) => {
+                        const side = sideLinkTarget(event.url);
+                        if (side !== null) {
+                          props.openSide?.(side);
+                          return;
+                        }
                         const owns = makeLinkGuard();
                         const target = event.target;
                         if (owns() && target?.isLive())
@@ -240,6 +267,10 @@ export function MarkdownBody(props: {
                         heading6: { fontSize: props.compact ? secondaryTextStyle.fontSize : 14 },
                         blockquote: { borderLeftColor: C.line, color: C.secondary },
                         link: { color: C.accent },
+                        // A marked passage keeps the reply's own text; its link underlines it.
+                        ...(marks().length > 0
+                          ? { highlight: { backgroundColor: 'transparent', color: color() } }
+                          : {}),
                         code: { color: color(), backgroundColor: C.card, borderRadius: 4 },
                         ...codeBlockStyles(color(), props.compact ? 8 : 12),
                         // On the desktop a table is framed as a code block is and ruled only
@@ -314,6 +345,7 @@ export function MarkdownBody(props: {
       </If>
     </View>
   );
+  return props.menu ? props.menu(body) : body;
 }
 
 /** A desktop table cell's lines: a rule `top` wide above it, none beside or below. */
