@@ -222,6 +222,8 @@ async function mountRevisionWorld(): Promise<RevisionWorld> {
         attachments: [],
         restoreQuotes: () => {},
         clearQuotes: () => [],
+        restoreAttachments: () => {},
+        clearAttachments: () => [],
       }),
     },
     openSessionInChat: (sessionId: string) => {

@@ -44,6 +44,9 @@ export interface DesktopSessionSummary extends SessionSummary {
   readonly profileKind: RuntimeHostProfileKind;
   /** Present only for Session projections granted to a Guest principal. */
   readonly shared?: true;
+  /** Revision copies only (#5109): the edited turn's attachments restaged into
+   *  the copy with target-owned refs, for the composer's re-attach. */
+  readonly stagedAttachments?: readonly AttachmentRef[];
 }
 
 export type DesktopSessionSummaryInput = SessionSummary & { readonly revision: number; readonly localState?: 'pending' | 'cached'; readonly localCreatedAt?: number };

@@ -28,9 +28,9 @@ import type { PendingAttachment } from './composer-attachments.js';
  * staging hooks bind their mutators to the active session's draft key, which
  * moves across the revision commit (source → branch child). Restoring and
  * clearing take an explicit owner key so the lifecycle can re-key the staged
- * quotes across that commit; attachments do not restage — a revision copy
- * excludes the revised turn and no target-owned refs exist client-side, so
- * an edit of a message carrying them is refused outright (#5109 review).
+ * quotes and attachments across that commit; restaged attachments carry
+ * source-owned refs until prepare swaps them for the copy's target-owned
+ * ones (#5109).
  */
 export type RevisionStagedContext = {
   quotes: readonly QuoteRef[];
@@ -39,6 +39,9 @@ export type RevisionStagedContext = {
   /** Removes and returns what an owner key holds, so the cancel path can
    *  re-stage the entries the edit did not stage itself (#5274 review). */
   clearQuotes(ownerKey: string): readonly QuoteRef[];
+  restoreAttachments(ownerKey: string, attachments: readonly PendingAttachment[]): void;
+  /** Removes and returns what an owner key holds, mirroring clearQuotes. */
+  clearAttachments(ownerKey: string): readonly PendingAttachment[];
 };
 
 /** The edit-and-resend source context a staged plate must match verbatim. */
@@ -61,8 +64,26 @@ export type TurnRevisionDraftBase<Phase> = {
   previousComposerText: string;
   originalQuotes: readonly QuoteRef[];
   originalAttachments: readonly AttachmentRef[];
+  /** Staging keys of the entries the edit staged itself, so the cancel path
+   *  can drop them by identity: their refs mutate across prepare's rewrite,
+   *  but the staging key survives it (#6246 review). */
+  editOwnedStagingKeys: readonly string[];
 };
 
+
+/** The retained pending form of a source message attachment: it carries the
+ *  source-owned ref verbatim until prepare swaps in the copy's target-owned
+ *  one (#5109). */
+export function retainedAttachmentToPending(attachment: AttachmentRef): PendingAttachment {
+  return {
+    stagingKey: crypto.randomUUID(),
+    displayName: attachment.name,
+    mimeType: attachment.mimeType,
+    kind: attachment.kind,
+    size: attachment.bytes,
+    source: { type: 'retained', attachment: structuredClone(attachment) },
+  };
+}
 
 function quoteKey(quote: QuoteRef): string {
   // Every field participates: two snapshots can share text, label, and turn
@@ -85,17 +106,26 @@ function quoteKey(quote: QuoteRef): string {
 
 /**
  * Snapshot the source message's context at edit start and restage its quotes
- * under the edit's owner key, so the gate can later tell the edit's own
- * staging from the user's.
+ * and attachments under the edit's owner key, so the gate can later tell the
+ * edit's own staging from the user's. The restaged items go onto the plate
+ * verbatim (the surface's restorer appends them untouched), so their staging
+ * keys name the edit's own entries for the cancel path.
  */
 export function stageRevisionSourceContext(
-  staged: Pick<RevisionStagedContext, 'restoreQuotes'>,
+  staged: Pick<RevisionStagedContext, 'restoreQuotes' | 'restoreAttachments'>,
   ownerKey: string,
-  message: { quotes?: readonly QuoteRef[] },
-): RevisionStagedSource {
+  message: { quotes?: readonly QuoteRef[]; attachments?: readonly AttachmentRef[] },
+): RevisionStagedSource & { editOwnedStagingKeys: readonly string[] } {
   const sourceQuotes = [...(message.quotes ?? [])];
   if (sourceQuotes.length > 0) staged.restoreQuotes(ownerKey, sourceQuotes);
-  return { originalQuotes: sourceQuotes, originalAttachments: [] };
+  const sourceAttachments = [...(message.attachments ?? [])];
+  const stagedItems = sourceAttachments.map(retainedAttachmentToPending);
+  if (stagedItems.length > 0) staged.restoreAttachments(ownerKey, stagedItems);
+  return {
+    originalQuotes: sourceQuotes,
+    originalAttachments: sourceAttachments,
+    editOwnedStagingKeys: stagedItems.map((item) => item.stagingKey),
+  };
 }
 
 /**
@@ -128,9 +158,13 @@ export function revisionSendGate(
  * Session the cancel returns to (#5274 review).
  */
 export function clearRevisionStagedContext(
-  staged: Pick<RevisionStagedContext, 'clearQuotes' | 'restoreQuotes'>,
+  staged: Pick<
+    RevisionStagedContext,
+    'clearQuotes' | 'restoreQuotes' | 'clearAttachments' | 'restoreAttachments'
+  >,
   ownerKeys: readonly string[],
   editOwnedQuotes: readonly QuoteRef[],
+  editOwnedStagingKeys: readonly string[] = [],
 ): void {
   const keys = [...new Set(ownerKeys)];
   const owned = new Map<string, number>();
@@ -151,6 +185,20 @@ export function clearRevisionStagedContext(
     if (ownedCount <= 0) kept.push(quote);
   }
   if (keys.length > 0 && kept.length > 0) staged.restoreQuotes(keys[0], kept);
+  // Attachments: the edit's own entries are dropped by staging key — the
+  // identity that survives prepare's ref rewrite. Matching the source ref's
+  // JSON cannot work: the rewritten entry no longer carries the source shape,
+  // and the ref nested in a pending item is not the whole ref the snapshot
+  // holds (#6246 review). Anything else on the plates was staged by the user
+  // during the edit and survives on the first owner key. ponytail: count-based
+  // survival can mirror the quote logic if duplicated user additions matter.
+  const editOwnedKeys = new Set(editOwnedStagingKeys);
+  const dropped: PendingAttachment[] = [];
+  for (const ownerKey of keys) dropped.push(...staged.clearAttachments(ownerKey));
+  const keptAttachments = dropped.filter((item) => !editOwnedKeys.has(item.stagingKey));
+  if (keys.length > 0 && keptAttachments.length > 0) {
+    staged.restoreAttachments(keys[0], keptAttachments);
+  }
 }
 
 /** Localized strings an edit-and-resend surface needs from its own catalog. */
@@ -219,7 +267,7 @@ export interface RevisionActionsEnv<
   reviseBeforeTurn(
     sourceSessionId: string,
     input: { sourceTurnId: string; copyId: string },
-  ): Promise<{ id: string }>;
+  ): Promise<{ id: string; stagedAttachments?: readonly AttachmentRef[] }>;
   abandonSessionCopy(sourceSessionId: string, copyId: string): Promise<void>;
   localizedShellErrorMessage(error: unknown, fallback: string, locale: UiLocale): string;
   /** True when the error is the workspace-unavailable class, having toasted. */
@@ -303,23 +351,21 @@ export function createRevisionActions<
       });
       return;
     }
-    if ((userMessage.attachments?.length ?? 0) > 0) {
-      // Host-side attachment ownership does not follow a revision copy — the
-      // copied transcript stops before the selected turn, so no target-owned
-      // refs exist to restage. The edit refuses rather than silently dropping
-      // the files (#5109 review, #5274 review).
-      toastApi.info(copy.revisionUnavailableTitle, copy.revisionAttachmentsUnsupported);
-      return;
-    }
-
     // The selected message's quotes and attachments restage into the surface's
     // plates (#5109): the plates make the carried context visible and
     // explicitly removable, and the commit re-keys them onto the branch child
-    // (prepareRevisionSend). The edit refuses while the user has own context
+    // (prepareRevisionSend). Attachments restage as retained pending items
+    // carrying their source-owned refs — prepare swaps those for the copy's
+    // target-owned refs, because the Host stages the artifacts into the new
+    // Session at copy time. The edit refuses while the user has own context
     // staged, so the plate ends up holding exactly the source context.
     const staged = stagedContext();
     if (staged.quotes.length > 0) {
       toastApi.info(copy.revisionUnavailableTitle, copy.revisionDraftQuoteConflict);
+      return;
+    }
+    if (staged.attachments.length > 0) {
+      toastApi.info(copy.revisionUnavailableTitle, copy.revisionDraftAttachmentConflict);
       return;
     }
     if (userMessage.displayText !== undefined && userMessage.displayText !== userMessage.text) {
@@ -332,11 +378,11 @@ export function createRevisionActions<
       revisionCopyKey(sessionId, turnId),
       turnId,
     );
-    const { originalQuotes, originalAttachments } = stageRevisionSourceContext(
-      staged,
-      sessionId,
-      userMessage,
-    );
+    const {
+      originalQuotes,
+      originalAttachments,
+      editOwnedStagingKeys,
+    } = stageRevisionSourceContext(staged, sessionId, userMessage);
     commitRevisionDraft({
       sourceSessionId: sessionId,
       sourceTurnId: copyAttempt.sourceTurnId,
@@ -346,6 +392,7 @@ export function createRevisionActions<
       previousComposerText: composerRef.current?.getText() ?? '',
       originalQuotes,
       originalAttachments,
+      editOwnedStagingKeys,
     });
     composerRef.current?.setText(prompt);
     composerRef.current?.focus();
@@ -505,6 +552,29 @@ export function createRevisionActions<
       // source key.
       staged.restoreQuotes(newSession.id, staged.quotes);
       staged.clearQuotes(startedDraft.sourceSessionId);
+      // Restaged attachments re-key onto the branch child with their refs
+      // swapped for the copy's target-owned ones (#5109): the copy response
+      // lists the edited turn's attachments in source order, matched back to
+      // the plate items by their source ref. An attachment whose rewrite is
+      // missing keeps its source ref — the Host's session-owned guard will
+      // fail that submit loudly rather than send a dangling reference.
+      const rewritten = newSession.stagedAttachments ?? [];
+      const refKey = (ref: AttachmentRef['ref']): string => JSON.stringify(ref);
+      staged.restoreAttachments(
+        newSession.id,
+        staged.attachments.map((item) => {
+          const source = item.source;
+          if (source.type !== 'retained') return item;
+          const index = startedDraft.originalAttachments.findIndex(
+            (candidate) => refKey(candidate.ref) === refKey(source.attachment.ref),
+          );
+          const target = index >= 0 ? rewritten[index] : undefined;
+          return target
+            ? { ...item, source: { type: 'retained' as const, attachment: target } }
+            : item;
+        }),
+      );
+      staged.clearAttachments(startedDraft.sourceSessionId);
       composerRef.current?.focus();
       toastApi.info(copy.revisionReadyTitle, copy.revisionReadyDescription);
       return true;
@@ -548,6 +618,7 @@ export function createRevisionActions<
       stagedContext(),
       [draft.sourceSessionId, draft.draftSessionId],
       draft.originalQuotes,
+      draft.editOwnedStagingKeys,
     );
     composerRef.current?.setDraft(draft.sourceSessionId, draft.previousComposerText);
     if (draft.draftSessionId !== draft.sourceSessionId) {
