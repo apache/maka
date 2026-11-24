@@ -2076,6 +2076,7 @@ plain@0.2.3 (MIT/Apache-2.0); authors declared by package: jzr
 png@0.17.16 (MIT OR Apache-2.0); authors declared by package: The image-rs Developers
 png@0.18.1 (MIT OR Apache-2.0); authors declared by package: The image-rs Developers
 polling@3.11.0 (Apache-2.0 OR MIT); authors declared by package: Stjepan Glavina <stjepang@gmail.com>, John Nunley <dev@notgull.net>
+postcard-derive@0.2.3 (MIT OR Apache-2.0); authors declared by package: Lachlan Sneff <lachlan.sneff@gmail.com>, James Munns <james@onevariable.com>
 postcard@1.1.3 (MIT OR Apache-2.0); authors declared by package: James Munns <james@onevariable.com>
 proptest@1.12.0 (MIT OR Apache-2.0); authors declared by package: Jason Lingle
 prost-derive@0.14.6 (Apache-2.0); authors declared by package: Dan Burkert <dan@danburkert.com>, Lucio Franco <luciofranco14@gmail.com>, Casper Meijn <casper@meijn.net>, Tokio Contributors <team@tokio.rs>
@@ -2330,6 +2331,7 @@ https://crates.io/api/v1/crates/plain/0.2.3/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/png/0.17.16/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/png/0.18.1/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/polling/3.11.0/download :: LICENSE-APACHE
+https://crates.io/api/v1/crates/postcard-derive/0.2.3/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/postcard/1.1.3/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/proptest/1.12.0/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/prost-derive/0.14.6/download :: LICENSE
@@ -3112,6 +3114,7 @@ unicode-id-start@1.5.0 ((MIT OR Apache-2.0) AND Unicode-3.0); authors declared b
 unicode-ident@1.0.27 ((MIT OR Apache-2.0) AND Unicode-3.0); authors declared by package: David Tolnay <dtolnay@gmail.com>
 utf-8@0.7.6 (MIT OR Apache-2.0); authors declared by package: Simon Sapin <simon.sapin@exyr.org>
 utf8-zero@0.8.1 (MIT OR Apache-2.0); authors declared by package: Simon Sapin <simon.sapin@exyr.org>, Martin Algesten <martin@algesten.se>
+utf8parse@0.2.2 (Apache-2.0 OR MIT); authors declared by package: Joe Wilm <joe@jwilm.com>, Christian Duerr <contact@christianduerr.com>
 v8@150.4.0 (MIT); authors declared by package: the Deno authors
 vte@0.15.0 (Apache-2.0 OR MIT); authors declared by package: Joe Wilm <joe@jwilm.com>, Christian Duerr <contact@christianduerr.com>
 whoami@1.6.1 (Apache-2.0 OR BSL-1.0 OR MIT)
@@ -3174,6 +3177,7 @@ https://crates.io/api/v1/crates/unicode-id-start/1.5.0/download :: LICENSE-APACH
 https://crates.io/api/v1/crates/unicode-ident/1.0.27/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/utf-8/0.7.6/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/utf8-zero/0.8.1/download :: LICENSE-APACHE
+https://crates.io/api/v1/crates/utf8parse/0.2.2/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/vte/0.15.0/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/whoami/1.6.1/download :: LICENSE_APACHE
 https://crates.io/api/v1/crates/whoami/2.1.3/download :: LICENSE_APACHE
@@ -3652,12 +3656,19 @@ Software.
 ================================================================================
 
 annotate-snippets@0.12.17 (MIT OR Apache-2.0)
+anstream@1.0.0 (MIT OR Apache-2.0)
+anstyle-parse@1.0.0 (MIT OR Apache-2.0)
+anstyle-query@1.1.5 (MIT OR Apache-2.0)
+anstyle-wincon@3.0.11 (MIT OR Apache-2.0)
 anstyle@1.0.14 (MIT OR Apache-2.0)
 clap@4.6.7 (MIT OR Apache-2.0)
 clap_builder@4.6.7 (MIT OR Apache-2.0)
 clap_derive@4.6.7 (MIT OR Apache-2.0)
 clap_lex@1.1.1 (MIT OR Apache-2.0)
+colorchoice@1.0.5 (MIT OR Apache-2.0)
 env_filter@2.0.0 (MIT OR Apache-2.0)
+is_terminal_polyfill@1.70.2 (MIT OR Apache-2.0)
+once_cell_polyfill@1.70.2 (MIT OR Apache-2.0)
 serde_spanned@0.6.9 (MIT OR Apache-2.0)
 serde_spanned@1.1.2 (MIT OR Apache-2.0)
 toml@0.8.23 (MIT OR Apache-2.0)
@@ -3671,12 +3682,19 @@ toml_write@0.1.2 (MIT OR Apache-2.0)
 toml_writer@1.1.3+spec-1.1.0 (MIT OR Apache-2.0)
 
 https://crates.io/api/v1/crates/annotate-snippets/0.12.17/download :: LICENSE-MIT
+https://crates.io/api/v1/crates/anstream/1.0.0/download :: LICENSE-MIT
+https://crates.io/api/v1/crates/anstyle-parse/1.0.0/download :: LICENSE-MIT
+https://crates.io/api/v1/crates/anstyle-query/1.1.5/download :: LICENSE-MIT
+https://crates.io/api/v1/crates/anstyle-wincon/3.0.11/download :: LICENSE-MIT
 https://crates.io/api/v1/crates/anstyle/1.0.14/download :: LICENSE-MIT
 https://crates.io/api/v1/crates/clap/4.6.7/download :: LICENSE-MIT
 https://crates.io/api/v1/crates/clap_builder/4.6.7/download :: LICENSE-MIT
 https://crates.io/api/v1/crates/clap_derive/4.6.7/download :: LICENSE-MIT
 https://crates.io/api/v1/crates/clap_lex/1.1.1/download :: LICENSE-MIT
+https://crates.io/api/v1/crates/colorchoice/1.0.5/download :: LICENSE-MIT
 https://crates.io/api/v1/crates/env_filter/2.0.0/download :: LICENSE-MIT
+https://crates.io/api/v1/crates/is_terminal_polyfill/1.70.2/download :: LICENSE-MIT
+https://crates.io/api/v1/crates/once_cell_polyfill/1.70.2/download :: LICENSE-MIT
 https://crates.io/api/v1/crates/serde_spanned/0.6.9/download :: LICENSE-MIT
 https://crates.io/api/v1/crates/serde_spanned/1.1.2/download :: LICENSE-MIT
 https://crates.io/api/v1/crates/toml/0.8.23/download :: LICENSE-MIT
@@ -3939,9 +3957,14 @@ Apache License
 
 ================================================================================
 
+anstream@1.0.0 (MIT OR Apache-2.0)
+anstyle-parse@1.0.0 (MIT OR Apache-2.0)
+anstyle-query@1.1.5 (MIT OR Apache-2.0)
+anstyle-wincon@3.0.11 (MIT OR Apache-2.0)
 anstyle@1.0.14 (MIT OR Apache-2.0)
 bytecount@0.6.9 (Apache-2.0/MIT); authors declared by package: Andre Bogus <bogusandre@gmail.de>, Joshua Landau <joshua@landau.ws>
 cobs@0.3.0 (MIT OR Apache-2.0); authors declared by package: Allen Welkie <>, James Munns <james@onevariable.com>
+colorchoice@1.0.5 (MIT OR Apache-2.0)
 crc32fast@1.5.3 (MIT OR Apache-2.0); authors declared by package: Sam Rijs <srijs@airpost.net>, Alex Crichton <alex@alexcrichton.com>
 diff@0.1.13 (MIT OR Apache-2.0); authors declared by package: Utkarsh Kukreti <utkarshkukreti@gmail.com>
 enum-as-inner@0.6.1 (MIT/Apache-2.0); authors declared by package: Benjamin Fry <benjaminfry@me.com>
@@ -3954,7 +3977,9 @@ foreign-types-shared@0.3.1 (MIT/Apache-2.0); authors declared by package: Steven
 foreign-types@0.3.2 (MIT/Apache-2.0); authors declared by package: Steven Fackler <sfackler@gmail.com>
 foreign-types@0.5.0 (MIT/Apache-2.0); authors declared by package: Steven Fackler <sfackler@gmail.com>
 hex@0.4.3 (MIT OR Apache-2.0); authors declared by package: KokaKiwi <kokakiwi@kokakiwi.net>
+is_terminal_polyfill@1.70.2 (MIT OR Apache-2.0)
 native-tls@0.2.18 (MIT OR Apache-2.0); authors declared by package: Steven Fackler <sfackler@gmail.com>
+once_cell_polyfill@1.70.2 (MIT OR Apache-2.0)
 openssl-macros@0.1.1 (MIT/Apache-2.0)
 openssl@0.10.81 (Apache-2.0); authors declared by package: Steven Fackler <sfackler@gmail.com>
 pretty_assertions@1.4.1 (MIT OR Apache-2.0); authors declared by package: Colin Kiegel <kiegel@gmx.de>, Florent Fayolle <florent.fayolle69@gmail.com>, Tom Milligan <code@tommilligan.net>
@@ -3969,9 +3994,14 @@ toml_write@0.1.2 (MIT OR Apache-2.0)
 unicode-general-category@1.1.0 (Apache-2.0); authors declared by package: YesLogic Pty. Ltd. <info@yeslogic.com>
 winapi@0.3.9 (MIT/Apache-2.0); authors declared by package: Peter Atashian <retep998@gmail.com>
 
+https://crates.io/api/v1/crates/anstream/1.0.0/download :: LICENSE-APACHE
+https://crates.io/api/v1/crates/anstyle-parse/1.0.0/download :: LICENSE-APACHE
+https://crates.io/api/v1/crates/anstyle-query/1.1.5/download :: LICENSE-APACHE
+https://crates.io/api/v1/crates/anstyle-wincon/3.0.11/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/anstyle/1.0.14/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/bytecount/0.6.9/download :: LICENSE.Apache2
 https://crates.io/api/v1/crates/cobs/0.3.0/download :: LICENSE-APACHE
+https://crates.io/api/v1/crates/colorchoice/1.0.5/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/crc32fast/1.5.3/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/diff/0.1.13/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/enum-as-inner/0.6.1/download :: LICENSE-APACHE
@@ -3984,7 +4014,9 @@ https://crates.io/api/v1/crates/foreign-types-shared/0.3.1/download :: LICENSE-A
 https://crates.io/api/v1/crates/foreign-types/0.3.2/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/foreign-types/0.5.0/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/hex/0.4.3/download :: LICENSE-APACHE
+https://crates.io/api/v1/crates/is_terminal_polyfill/1.70.2/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/native-tls/0.2.18/download :: LICENSE-APACHE
+https://crates.io/api/v1/crates/once_cell_polyfill/1.70.2/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/openssl-macros/0.1.1/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/openssl/0.10.81/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/pretty_assertions/1.4.1/download :: LICENSE-APACHE
@@ -26553,6 +26585,32 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ================================================================================
 
+matchers@0.2.0 (MIT); authors declared by package: Eliza Weisman <eliza@buoyant.io>
+
+https://crates.io/api/v1/crates/matchers/0.2.0/download :: LICENSE
+
+Copyright (c) 2019 Eliza Weisman
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+================================================================================
+
 matchit@0.8.4 (MIT AND BSD-3-Clause); authors declared by package: Ibraheem Ahmed <ibraheem@ibraheem.ca>
 
 https://crates.io/api/v1/crates/matchit/0.8.4/download :: LICENSE
@@ -37431,8 +37489,10 @@ DEALINGS IN THE SOFTWARE.
 
 ================================================================================
 
+postcard-derive@0.2.3 (MIT OR Apache-2.0); authors declared by package: Lachlan Sneff <lachlan.sneff@gmail.com>, James Munns <james@onevariable.com>
 postcard@1.1.3 (MIT OR Apache-2.0); authors declared by package: James Munns <james@onevariable.com>
 
+https://crates.io/api/v1/crates/postcard-derive/0.2.3/download :: LICENSE-MIT
 https://crates.io/api/v1/crates/postcard/1.1.3/download :: LICENSE-MIT
 
 Copyright (c) 2019 Anthony James Munns
@@ -48084,6 +48144,40 @@ licensed under the Apache License, Version 2.0 <LICENSE-APACHE> or
 
 ================================================================================
 
+utf8parse@0.2.2 (Apache-2.0 OR MIT); authors declared by package: Joe Wilm <joe@jwilm.com>, Christian Duerr <contact@christianduerr.com>
+vte@0.15.0 (Apache-2.0 OR MIT); authors declared by package: Joe Wilm <joe@jwilm.com>, Christian Duerr <contact@christianduerr.com>
+
+https://crates.io/api/v1/crates/utf8parse/0.2.2/download :: LICENSE-MIT
+https://crates.io/api/v1/crates/vte/0.15.0/download :: LICENSE-MIT
+
+Copyright (c) 2016 Joe Wilm
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+
+================================================================================
+
 uuid@1.29.0 (Apache-2.0 OR MIT); authors declared by package: Ashley Mannix<ashleymannix@live.com.au>, Dylan DPC<dylan.dpc@gmail.com>, Hunar Roop Kahlon<hunar.roop@gmail.com>
 
 https://crates.io/api/v1/crates/uuid/1.29.0/download :: LICENSE-MIT
@@ -49439,38 +49533,6 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
-================================================================================
-
-vte@0.15.0 (Apache-2.0 OR MIT); authors declared by package: Joe Wilm <joe@jwilm.com>, Christian Duerr <contact@christianduerr.com>
-
-https://crates.io/api/v1/crates/vte/0.15.0/download :: LICENSE-MIT
-
-Copyright (c) 2016 Joe Wilm
-
-Permission is hereby granted, free of charge, to any
-person obtaining a copy of this software and associated
-documentation files (the "Software"), to deal in the
-Software without restriction, including without
-limitation the rights to use, copy, modify, merge,
-publish, distribute, sublicense, and/or sell copies of
-the Software, and to permit persons to whom the Software
-is furnished to do so, subject to the following
-conditions:
-
-The above copyright notice and this permission notice
-shall be included in all copies or substantial portions
-of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
-ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
-TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
-PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
-SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
-IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-DEALINGS IN THE SOFTWARE.
 
 ================================================================================
 

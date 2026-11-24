@@ -31,6 +31,7 @@ maka-agent-facts.workspace = true
 maka-capabilities.workspace = true
 maka-event-log.workspace = true
 rusqlite.workspace = true
+time = { version = "0.3.55", features = ["formatting"] }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

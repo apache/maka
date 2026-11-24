@@ -41,6 +41,8 @@ mod candidate;
 mod initialize;
 #[cfg(target_os = "linux")]
 mod network_sandbox;
+#[cfg(unix)]
+mod peer_access;
 
 mod run;
 mod sandbox;

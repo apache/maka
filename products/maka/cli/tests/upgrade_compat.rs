@@ -85,6 +85,24 @@ const ATTACHMENT_BYTES: &[u8] = "compat capsule attachment — 兼容性附件\n
 const COMPACTION_PROMPT: &str = "Preserve upgrade compatibility markers across restarts.";
 const PRESET_NAME: &str = "Compat Reviewer";
 const COMPAT_PEER_GRANT: &str = "compat-host-publication";
+const COMPAT_PAIRING_HASH: [u8; 32] = [31; 32];
+
+async fn seed_pairing_invite(settings: &ConfigurationStore) {
+    settings
+        .create_host_peer_pairing_invite(
+            maka_config::access::NewHostPeerPairingInvite {
+                invite_id: "compat-pairing-invite".into(),
+                secret_hash: COMPAT_PAIRING_HASH,
+                host_grant: COMPAT_PEER_GRANT.into(),
+                label: Some("Compat device".into()),
+                expires_at_ms: i64::MAX as u64,
+                created_at: "2026-09-12T00:00:00Z".into(),
+            },
+            0,
+        )
+        .await
+        .unwrap();
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -116,6 +134,8 @@ struct CapsuleManifest {
     migrations: BTreeMap<String, Vec<i64>>,
     #[serde(default)]
     host_peer_id: Option<String>,
+    #[serde(default)]
+    host_pairing_invite: bool,
 }
 
 struct FixtureSecret;
@@ -1094,6 +1114,7 @@ async fn produce_capsule(bin: &Path, capsule_dir: &Path) -> CapsuleManifest {
             )
             .await
             .unwrap();
+        seed_pairing_invite(&settings).await;
         settings.close().await.unwrap();
         let migrations = verify_sqlite_integrity_and_migrations(&dirs.root);
         CapsuleManifest {
@@ -1119,6 +1140,7 @@ async fn produce_capsule(bin: &Path, capsule_dir: &Path) -> CapsuleManifest {
             execution_authority,
             migrations,
             host_peer_id: Some(host_peer_id),
+            host_pairing_invite: true,
         }
     })
     .catch_unwind()
@@ -1516,8 +1538,8 @@ async fn verify_capsule(bin: &Path, capsule_dir: &Path) {
 
         host.quit(&mut client).await.expect("Host quit");
 
-        // Old capsules have no transport grants; new ones must keep the exact
-        // binding. Both must support live mutations after cold startup.
+        // Cold startup preserves historical device rows but must prune
+        // invitations for a publication this Host is not serving.
         let settings = open_compat_settings(&dirs.root).await;
         let peer = PeerId::new(
             manifest
@@ -1531,21 +1553,37 @@ async fn verify_capsule(bin: &Path, capsule_dir: &Path) {
             .await
             .unwrap();
         assert_eq!(granted, manifest.host_peer_id.is_some());
-        if !granted {
-            settings
-                .grant_host_peer_access(peer.clone(), COMPAT_PEER_GRANT.into())
-                .await
-                .unwrap();
+        if granted {
+            let devices = settings.list_host_peer_access().await.unwrap();
+            let device = devices.iter().find(|device| device.peer_id == peer.as_str()).unwrap();
+            assert!(device.label.is_empty() && device.created_at.is_empty());
+            assert!(settings.revoke_host_peer_access(peer.clone()).await.unwrap());
         }
-        assert!(settings.revoke_host_peer_access(peer.clone()).await.unwrap());
+        let redeem = async |settings: &ConfigurationStore| {
+                settings
+                    .redeem_host_peer_pairing_invite(
+                        COMPAT_PAIRING_HASH,
+                        peer.clone(),
+                        COMPAT_PEER_GRANT.into(),
+                        None,
+                    )
+                    .await
+                    .unwrap()
+        };
+        if manifest.host_pairing_invite {
+            assert!(!redeem(&settings).await, "cold startup kept a foreign-grant invitation");
+        }
+        seed_pairing_invite(&settings).await;
+        assert!(redeem(&settings).await);
         settings.close().await.unwrap();
         let settings = open_compat_settings(&dirs.root).await;
-        assert!(
-            !settings
-                .has_host_peer_access(peer, COMPAT_PEER_GRANT.into())
-                .await
-                .unwrap()
-        );
+        assert!(!redeem(&settings).await, "reopen revived a consumed invitation");
+        let devices = settings.list_host_peer_access().await.unwrap();
+        let device = devices.iter().find(|device| device.peer_id == peer.as_str()).unwrap();
+        assert_eq!(device.grant, COMPAT_PEER_GRANT);
+        assert_eq!(device.label, "Compat device");
+        assert!(!device.created_at.is_empty());
+        assert!(settings.revoke_host_peer_access(peer).await.unwrap());
         settings.close().await.unwrap();
 
         // Online checkpoint re-export & open sweep on the upgraded live Root

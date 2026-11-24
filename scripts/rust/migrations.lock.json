@@ -241,6 +241,10 @@
       "plugins/settings/store/migrations/0003_host_peer_access.sql": {
         "version": 3,
         "sha384": "ac28400bc91b50a65433658e859d8dd4a81da71661ace37b60fe6d4867c2f4e2263e1ab2f4f39b57c84eac10b183af85"
+      },
+      "plugins/settings/store/migrations/0004_host_peer_pairing.sql": {
+        "version": 4,
+        "sha384": "dff70e09bf539ac65a1f794e24c41751269765effdf387f910c3fc09dae3c820062d9e128dc11be1e6abfeb938857eca"
       }
     },
     "deployment": {

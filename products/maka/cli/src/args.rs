@@ -71,7 +71,7 @@ enum Command {
 enum HostCommand {
     /// Download and verify an exact native CLI package without installing or starting it.
     Fetch(crate::distribution::Fetch),
-    /// Prepare one-time remote Desktop pairing or revoke a credential.
+    /// Prepare remote access and manage credentials and native peers.
     #[command(subcommand)]
     Access(crate::access::Access),
     /// Initialize an empty native State Root, or verify its existing identity.
