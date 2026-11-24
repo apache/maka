@@ -84,12 +84,6 @@ export function WorkspacePicker(props: {
   changed(): void;
 }) {
   const host = useHost();
-  // The terminal surface never learns the terminal's own colours, so NSH draws
-  // every app fill as its bandless fallback and a `selected` row as a reversed
-  // band whose ink is the terminal's own: a label on either washes out. Mark
-  // selection with weight and accent there instead; the desktop, whose
-  // surfaces are real, keeps the fill.
-  const terminal = platform.idiom === 'terminal';
   const managing = signal(false);
   const picking = signal(false);
   const operations = createSettingsOperations(host);
@@ -634,7 +628,7 @@ export function WorkspacePicker(props: {
                     disabled={!!error()}
                     accessibilityLabel={tr('Browse folder {name}', { name: entry().name })}
                     tooltip={textTooltip(() => entry().path)}
-                    selected={isSelected(entry()) && !terminal}
+                    selected={isSelected(entry())}
                     onPress={inputAction(browse, {
                       location: read.id,
                       path: entry().path,
@@ -645,27 +639,14 @@ export function WorkspacePicker(props: {
                       flexDirection: 'row',
                       alignItems: 'center',
                       gap: 12,
-                      backgroundColor: isSelected(entry()) && !terminal ? C.line : C.surface,
+                      backgroundColor: isSelected(entry()) ? C.line : C.surface,
                     }}
-                    hoverStyle={{ backgroundColor: terminal ? C.surface : C.raised }}
-                    focusStyle={{ backgroundColor: terminal ? C.surface : C.raised }}
+                    hoverStyle={{ backgroundColor: C.raised }}
+                    focusStyle={{ backgroundColor: C.raised }}
                     disabledStyle={controlDisabledStyle}
                   >
-                    <Icon
-                      name="folder"
-                      color={isSelected(entry()) && terminal ? C.accent : C.muted}
-                    />
-                    <Text
-                      style={[
-                        {
-                          flex: 1,
-                          color: isSelected(entry()) && terminal ? C.accent : C.text,
-                          fontSize: 13,
-                          fontWeight: isSelected(entry()) && terminal ? '600' : undefined,
-                        },
-                        { numberOfLines: 1 },
-                      ]}
-                    >
+                    <Icon name="folder" color={C.muted} />
+                    <Text style={[{ flex: 1, color: C.text, fontSize: 13 }, { numberOfLines: 1 }]}>
                       {entry().name}
                     </Text>
                     <Icon name="right" color={C.muted} />
