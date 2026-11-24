@@ -7237,6 +7237,178 @@ async fn failed_background_summary_is_prepared_again_on_the_next_step() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn interrupted_proactive_summary_with_active_model_wait_falls_back_to_foreground_compaction()
+{
+    use maka_agent_engine::{DriverExit, Engine, ports::Preparation};
+    use maka_mock_ai::FinishReason;
+
+    const SUMMARY: &str = "Foreground fallback summary.";
+    let mut rig = Rig::new().unwrap();
+    rig.model_overrides = json!({"llama3.2":{"compactionThreshold":1_900}});
+    let listener =
+        tokio::net::TcpListener::from_std(rig.model_listener.try_clone().unwrap()).unwrap();
+    let mut server = MockAiBuilder::new()
+        .interactive(8)
+        .start_with_listener(listener)
+        .await
+        .unwrap();
+    let mut turns = server.take_interactive_rx().unwrap();
+    let result = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(30), async {
+        let session = rig.start().await?;
+        rig.assemble_model(
+            &session,
+            Budget {
+                tokens: None,
+                retries: 0,
+                deadline: None,
+            },
+            false,
+        )
+        .await?;
+        let driver = rig.driver.as_ref().unwrap();
+        let run = driver.access.execution().run_id;
+        rig.record_model_reply(Preparation::Initial, None).await?;
+        let view = driver.state.frontier(run).await?;
+        let mut main = driver
+            .model()?
+            .prepare_step(&view, Preparation::Initial, driver)
+            .await?;
+        let body = ContentBlob::json(&main.request)?;
+        main.contents.push(body.clone());
+        rig.append(
+            vec![Fact::StepPrepared {
+                step: main.request.step,
+                request: body.reference().clone(),
+                adjudications: vec![],
+            }],
+            main.contents,
+        )
+        .await?;
+
+        let is_summary = |handle: &maka_mock_ai::TurnHandle| {
+            handle.body()["tools"].as_array().is_none_or(Vec::is_empty)
+        };
+        let orchestrate = async {
+            let mut changes = driver.state.subscribe()?;
+            let mut first_main = None;
+            let mut bg_summary = None;
+            while first_main.is_none() || bg_summary.is_none() {
+                let turn = turns.recv().await.ok_or("mock-ai channel closed early")?;
+                if is_summary(&turn) {
+                    turn.delta("Partial background summary").await;
+                    bg_summary = Some(turn);
+                } else {
+                    first_main = Some(turn);
+                }
+            }
+            let first_main = first_main.unwrap();
+            let bg_summary = bg_summary.unwrap();
+            let background = loop {
+                changes.borrow_and_update();
+                if let Some(background) = driver.state.frontier(run).await?.proactive_summary
+                    && driver.state.history(run, 0, 256).await?.iter().any(|fact| {
+                        matches!(fact.fact, Fact::ModelFirstTokenObserved { attempt } if attempt == background)
+                    })
+                {
+                    break background;
+                }
+                changes.changed().await?;
+            };
+            first_main.delta("Long output. ".repeat(600)).await;
+            first_main.finish_with(FinishReason::Length).await;
+            loop {
+                changes.borrow_and_update();
+                let view = driver.state.frontier(run).await?;
+                if view.waits.values().any(|wait| {
+                    wait.satisfied.is_none()
+                        && wait.cancelled.is_none()
+                        && wait.due_at.is_none()
+                        && matches!(wait.reason, WaitReason::Model { attempt } if attempt == background)
+                }) {
+                    break;
+                }
+                changes.changed().await?;
+            }
+            bg_summary.truncate_eof().await;
+            let fg_summary = turns.recv().await.ok_or("foreground summary missing")?;
+            assert!(is_summary(&fg_summary));
+            fg_summary.reply_text(SUMMARY);
+            let final_main = turns.recv().await.ok_or("final main turn missing")?;
+            assert!(!is_summary(&final_main));
+            let final_body = final_main.body().to_string();
+            assert!(final_body.contains(SUMMARY), "{final_body}");
+            final_main.reply_text("Done.");
+            Ok::<_, Box<dyn Error + Send + Sync>>(background)
+        };
+        let engine = Engine::new(driver.state.clone());
+        let drive = async {
+            let mut changes = driver.state.subscribe()?;
+            loop {
+                changes.borrow_and_update();
+                let exit = engine
+                    .drive(
+                        driver.access.claim().clone(),
+                        driver.clone(),
+                        CancellationToken::new(),
+                    )
+                    .await?;
+                if !matches!(exit, DriverExit::Waiting { .. }) {
+                    return Ok::<_, Box<dyn Error + Send + Sync>>(exit);
+                }
+                changes.changed().await?;
+            }
+        };
+        let (background, exit) = tokio::try_join!(orchestrate, Box::pin(drive))?;
+        assert!(
+            matches!(exit, DriverExit::Terminal { terminal: Terminal::Completed, .. }),
+            "{exit:?}"
+        );
+        let history = driver.state.history(run, 0, 512).await?;
+        let wait_id = history
+            .iter()
+            .find_map(|fact| match fact.fact {
+                Fact::WaitRegistered {
+                    wait,
+                    reason: WaitReason::Model { attempt },
+                    due_at: None,
+                } if attempt == background => Some(wait),
+                _ => None,
+            })
+            .ok_or("expected proactive summary WaitReason::Model")?;
+        let interrupted_rev = history
+            .iter()
+            .find_map(|fact| match fact.fact {
+                Fact::ModelInterrupted { attempt, .. } if attempt == background => {
+                    Some(fact.revision)
+                }
+                _ => None,
+            })
+            .ok_or("expected interrupted proactive summary")?;
+        let satisfied_rev = history
+            .iter()
+            .find_map(|fact| match fact.fact {
+                Fact::WaitSatisfied { wait, .. } if wait == wait_id => Some(fact.revision),
+                _ => None,
+            })
+            .ok_or("expected proactive summary wait to be satisfied")?;
+        assert!(interrupted_rev < satisfied_rev, "{interrupted_rev} >= {satisfied_rev}");
+        Ok::<_, Box<dyn Error + Send + Sync>>(())
+    }))
+    .catch_unwind()
+    .await;
+    drop(turns);
+    server.shutdown().await;
+    let cleanup = rig.finish().await;
+    assert!(cleanup.is_empty(), "{cleanup:?}");
+    match result {
+        Ok(result) => result
+            .expect("interrupted background summary fallback timed out")
+            .unwrap(),
+        Err(panic) => std::panic::resume_unwind(panic),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn continue_from_history_enforces_retry_budget_and_resets_after_success() {
     use axum::{body::Body, response::IntoResponse};
     use maka_agent_engine::{DriverExit, Engine};
