@@ -1181,7 +1181,7 @@ async fn execution_bootstrap_preserves_unique_head_and_cannot_downgrade_authorit
         else {
             panic!("claim rejected");
         };
-        let grant = *grant;
+        let grant = Arc::new(*grant);
         let execution = Execution::attach(repo.clone(), grant.clone())
             .await
             .unwrap();

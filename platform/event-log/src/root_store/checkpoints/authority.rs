@@ -104,22 +104,38 @@ pub(in crate::root_store) async fn configure(
         let configuration = match current {
             Some(json) => {
                 let current: Configuration = serde_json::from_str(&json)?;
-                let same = match &expected {
-                    Some(expected) => *expected == current,
-                    None => matches!(current, Configuration::Local { .. }),
+                let replacement = match (&current, expected) {
+                    (Configuration::Local { .. }, None) => None,
+                    (_, Some(expected)) if expected == current => None,
+                    (Configuration::Local { .. }, Some(next @ Configuration::Executing { .. })) => {
+                        let occupied: bool = tx.query_row(
+                            "SELECT EXISTS(SELECT 1 FROM checkpoint_repository_sessions) OR EXISTS(SELECT 1 FROM history_checkpoint_publications) OR EXISTS(SELECT 1 FROM history_checkpoint_heads)",
+                            [], |r| r.get(0),
+                        )?;
+                        if occupied {
+                            return Err(invalid("existing local checkpoints require explicit repository migration"));
+                        }
+                        Some(next)
+                    }
+                    (Configuration::Shared { repository, objects, agent },
+                        Some(Configuration::Executing { repository: next_repository, objects: next_objects, grant }))
+                        if *repository == next_repository && *objects == next_objects && *agent == grant.binding.identity.agent => {
+                            Some(Configuration::Executing { repository: next_repository, objects: next_objects, grant })
+                        }
+                    _ => return Err(invalid("Root requires its original checkpoint repository/execution; explicit migration required")),
                 };
-                if !same {
-                    let empty_local: bool = matches!(current, Configuration::Local { .. })
-                        && !tx.query_row("SELECT EXISTS(SELECT 1 FROM checkpoint_repository_sessions) OR EXISTS(SELECT 1 FROM history_checkpoint_publications) OR EXISTS(SELECT 1 FROM history_checkpoint_heads)", [], |r| r.get::<_,bool>(0))?;
-                    let activating = (empty_local && matches!(expected, Some(Configuration::Executing { .. }))) || matches!((&current, &expected),
-                        (Configuration::Shared { repository, objects, agent }, Some(Configuration::Executing { repository: r, objects: o, grant }))
-                            if repository == r && objects == o && *agent == grant.binding.identity.agent);
-                    let pending: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM history_checkpoint_publications WHERE json_extract(publication_json,'$.state.kind') IN ('capturing','prepared'))", [], |r| r.get(0))?;
-                    if !activating || pending { return Err(invalid("Root requires its original checkpoint repository/execution; explicit migration required")); }
-                    let expected = expected.expect("activating has a configuration");
-                    tx.execute("UPDATE checkpoint_repository_settings SET configuration_json=? WHERE singleton=1", [serde_json::to_string(&expected)?])?;
-                    expected
-                } else { current }
+                match replacement {
+                    Some(next) => {
+                        let pending: bool = tx.query_row(
+                            "SELECT EXISTS(SELECT 1 FROM history_checkpoint_publications WHERE json_extract(publication_json,'$.state.kind') IN ('capturing','prepared'))",
+                            [], |r| r.get(0),
+                        )?;
+                        if pending { return Err(invalid("pending checkpoint requires its original authority")); }
+                        tx.execute("UPDATE checkpoint_repository_settings SET configuration_json=? WHERE singleton=1", [serde_json::to_string(&next)?])?;
+                        next
+                    }
+                    None => current,
+                }
             }
             None => {
                 if expected.is_some() {
@@ -127,7 +143,7 @@ pub(in crate::root_store) async fn configure(
                     if local { return Err(invalid("existing local checkpoints require explicit repository migration")); }
                 }
                 let configuration = expected.unwrap_or_else(|| Configuration::Local { agent: Uuid::new_v4() });
-                tx.execute("INSERT INTO checkpoint_repository_settings VALUES(1,?)", [serde_json::to_string(&configuration)?])?;
+                tx.execute("INSERT INTO checkpoint_repository_settings (singleton,configuration_json) VALUES(1,?)", [serde_json::to_string(&configuration)?])?;
                 configuration
             }
         };

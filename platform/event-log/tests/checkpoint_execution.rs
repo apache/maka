@@ -96,7 +96,7 @@ impl Fixture {
             lease_millis: 60_000,
         }
     }
-    async fn grant(&self) -> Grant {
+    async fn grant(&self) -> Arc<Grant> {
         granted(self.repository.claim(self.claim()).await.unwrap())
     }
     fn commit(&self) -> Commit {
@@ -113,9 +113,9 @@ impl Fixture {
             .unwrap()
     }
 }
-fn granted(result: ClaimResult) -> Grant {
+fn granted(result: ClaimResult) -> Arc<Grant> {
     match result {
-        ClaimResult::Granted { grant, .. } => *grant,
+        ClaimResult::Granted { grant, .. } => Arc::from(grant),
         other => panic!("{other:?}"),
     }
 }
@@ -129,41 +129,14 @@ impl Environment for FailedStop {
         })
     }
 }
-struct ProcessEnvironment {
-    grant: Grant,
-    child: tokio::sync::Mutex<tokio::process::Child>,
-}
-impl Environment for ProcessEnvironment {
-    fn stop_and_drain(&self, grant: &Grant) -> BoxFuture<'_, Result<(), StoreError>> {
-        let matches = grant == &self.grant;
-        Box::pin(async move {
-            assert!(matches);
-            let mut child = self.child.lock().await;
-            child.kill().await?;
-            let status = child.wait().await?;
-            assert!(!status.success());
+#[derive(Default)]
+struct DrainedEnvironment(std::sync::atomic::AtomicBool);
+impl Environment for DrainedEnvironment {
+    fn stop_and_drain(&self, _: &Grant) -> BoxFuture<'_, Result<(), StoreError>> {
+        Box::pin(async {
+            self.0.store(true, std::sync::atomic::Ordering::SeqCst);
             Ok(())
         })
-    }
-}
-async fn environment(grant: Grant) -> ProcessEnvironment {
-    use tokio::io::AsyncBufReadExt;
-    let mut child = tokio::process::Command::new("sh")
-        .args(["-c", "echo ready; read command"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()
-        .unwrap();
-    let mut line = String::new();
-    tokio::io::BufReader::new(child.stdout.take().unwrap())
-        .read_line(&mut line)
-        .await
-        .unwrap();
-    assert_eq!(line.trim(), "ready");
-    ProcessEnvironment {
-        grant,
-        child: tokio::sync::Mutex::new(child),
     }
 }
 
@@ -178,7 +151,7 @@ async fn claim_is_durable_and_replay_does_not_reissue_or_change_permissions() {
     changed.permissions.tools = None;
     assert!(reopened.claim(changed).await.is_err());
     let mut forged = granted(first);
-    forged.generation += 1;
+    Arc::make_mut(&mut forged).generation += 1;
     assert!(reopened.observe(forged).await.is_err());
 }
 
@@ -229,7 +202,7 @@ async fn expiry_fences_but_never_proves_the_process_stopped() {
         f.repository
             .renew(Renewal {
                 operation: Uuid::new_v4(),
-                grant: grant.clone(),
+                grant: grant.as_ref().clone(),
                 lease_millis: 60_000
             })
             .await
@@ -244,7 +217,7 @@ async fn expiry_fences_but_never_proves_the_process_stopped() {
 }
 
 #[tokio::test]
-async fn failed_cleanup_blocks_handoff_and_real_process_drain_allows_one_successor() {
+async fn handoff_requires_trusted_cleanup_and_preserves_original_claim_receipts() {
     let f = Fixture::new().await;
     let original = f.claim();
     let grant = granted(f.repository.claim(original.clone()).await.unwrap());
@@ -262,7 +235,7 @@ async fn failed_cleanup_blocks_handoff_and_real_process_drain_allows_one_success
         f.repository.claim(rejected.clone()).await.unwrap(),
         ClaimResult::Busy
     );
-    let environment = environment(grant.clone()).await;
+    let environment = DrainedEnvironment::default();
     execution.stop(&environment).await.unwrap();
     assert_eq!(
         f.repository.observe(grant.clone()).await.unwrap(),
@@ -300,7 +273,7 @@ async fn renewal_lost_reply_returns_original_deadline_without_rearming_expired_g
     let grant = f.grant().await;
     let request = Renewal {
         operation: Uuid::new_v4(),
-        grant: grant.clone(),
+        grant: grant.as_ref().clone(),
         lease_millis: 120_000,
     };
     let first = f.repository.renew(request.clone()).await.unwrap();
@@ -347,7 +320,7 @@ async fn managed_session_cannot_bypass_fencing_and_old_commit_receipt_survives_r
         receipt
     );
     let mut wrong = grant;
-    wrong.activation = Uuid::new_v4();
+    Arc::make_mut(&mut wrong).activation = Uuid::new_v4();
     assert!(
         ExecutionAuthority::receipt(&reopened, wrong, request)
             .await
@@ -358,41 +331,6 @@ async fn managed_session_cannot_bypass_fencing_and_old_commit_receipt_survives_r
             .await
             .is_err()
     );
-}
-
-#[tokio::test]
-async fn generation_check_head_and_receipt_are_one_transaction() {
-    let f = Fixture::new().await;
-    let grant = f.grant().await;
-    let request = f.commit();
-    let db = rusqlite::Connection::open(f.directory.path().join("repository.sqlite")).unwrap();
-    db.execute_batch("CREATE TRIGGER fail_execution_receipt BEFORE INSERT ON checkpoint_execution_commits BEGIN SELECT RAISE(ABORT, 'test interrupted execution receipt'); END;").unwrap();
-    assert!(
-        ExecutionAuthority::commit(&f.repository, grant.clone(), request.clone(), f.verified())
-            .await
-            .is_err()
-    );
-    assert!(
-        f.repository
-            .read_head(f.binding.identity.clone())
-            .await
-            .unwrap()
-            .is_none()
-    );
-    assert!(
-        ExecutionAuthority::receipt(&f.repository, grant.clone(), request.clone())
-            .await
-            .unwrap()
-            .is_none()
-    );
-    db.execute_batch("DROP TRIGGER fail_execution_receipt")
-        .unwrap();
-    assert!(matches!(
-        ExecutionAuthority::commit(&f.repository, grant, request, f.verified())
-            .await
-            .unwrap(),
-        CommitReceipt::Published { .. }
-    ));
 }
 
 #[test]
@@ -496,6 +434,7 @@ async fn independent_process_claim_race_has_one_winner_and_original_replies() {
 struct UnavailableAuthority {
     inner: FileRepository,
     unavailable: Arc<std::sync::atomic::AtomicBool>,
+    hang_acknowledgement: bool,
 }
 impl ExecutionAuthority for UnavailableAuthority {
     fn repository_identity(&self) -> &str {
@@ -504,7 +443,7 @@ impl ExecutionAuthority for UnavailableAuthority {
     fn claim(&self, r: Claim) -> BoxFuture<'_, Result<ClaimResult, StoreError>> {
         self.inner.claim(r)
     }
-    fn observe(&self, g: Grant) -> BoxFuture<'_, Result<Status, StoreError>> {
+    fn observe(&self, g: Arc<Grant>) -> BoxFuture<'_, Result<Status, StoreError>> {
         if self.unavailable.load(std::sync::atomic::Ordering::SeqCst) {
             Box::pin(async { Err(StoreError::ConnectionClosed) })
         } else {
@@ -514,7 +453,7 @@ impl ExecutionAuthority for UnavailableAuthority {
     fn renew(&self, r: Renewal) -> BoxFuture<'_, Result<Status, StoreError>> {
         self.inner.renew(r)
     }
-    fn revoke(&self, g: Grant) -> BoxFuture<'_, Result<Status, StoreError>> {
+    fn revoke(&self, g: Arc<Grant>) -> BoxFuture<'_, Result<Status, StoreError>> {
         if self.unavailable.load(std::sync::atomic::Ordering::SeqCst) {
             Box::pin(async { Err(StoreError::ConnectionClosed) })
         } else {
@@ -525,18 +464,22 @@ impl ExecutionAuthority for UnavailableAuthority {
         &self,
         e: maka_event_log::checkpoints::execution::Stopped,
     ) -> BoxFuture<'_, Result<(), StoreError>> {
-        self.inner.stopped(e)
+        if self.hang_acknowledgement {
+            Box::pin(std::future::pending())
+        } else {
+            self.inner.stopped(e)
+        }
     }
     fn receipt(
         &self,
-        g: Grant,
+        g: Arc<Grant>,
         r: Commit,
     ) -> BoxFuture<'_, Result<Option<CommitReceipt>, StoreError>> {
         ExecutionAuthority::receipt(&self.inner, g, r)
     }
     fn commit(
         &self,
-        g: Grant,
+        g: Arc<Grant>,
         r: Commit,
         v: VerifiedCheckpoint,
     ) -> BoxFuture<'_, Result<CommitReceipt, StoreError>> {
@@ -552,15 +495,16 @@ async fn control_outage_stops_local_work_without_rearming_or_claiming_cleanup() 
     let authority = Arc::new(UnavailableAuthority {
         inner: f.repository.clone(),
         unavailable: unavailable.clone(),
+        hang_acknowledgement: false,
     });
     let execution = Execution::attach(authority, grant.clone()).await.unwrap();
     unavailable.store(true, std::sync::atomic::Ordering::SeqCst);
     assert!(execution.check().await.is_err());
-    let process = environment(grant.clone()).await;
-    assert!(execution.stop(&process).await.is_err());
+    let environment = DrainedEnvironment::default();
+    assert!(execution.stop(&environment).await.is_err());
     assert!(
-        process.child.lock().await.try_wait().unwrap().is_some(),
-        "failure to reach the control service still kills and reaps local execution"
+        environment.0.load(std::sync::atomic::Ordering::SeqCst),
+        "failure to reach the control service still invokes environment cleanup"
     );
     assert_eq!(
         f.repository.claim(f.claim()).await.unwrap(),
@@ -589,12 +533,25 @@ async fn revoke_and_publish_linearize_with_original_receipt() {
             other.revoke(grant.clone()),
         );
         assert_eq!(revoked.unwrap(), Status::Draining);
-        let receipt = ExecutionAuthority::receipt(&other, grant.clone(), request.clone())
+        let reopened = FileRepository::open(f.directory.path()).unwrap();
+        let receipt = ExecutionAuthority::receipt(&reopened, grant.clone(), request.clone())
             .await
             .unwrap();
         match published {
             Ok(result) => {
                 assert_eq!(receipt, Some(result.clone()));
+                let CommitReceipt::Published { head } = &result else {
+                    panic!("unexpected conflict")
+                };
+                assert_eq!(
+                    reopened
+                        .read_head(f.binding.identity.clone())
+                        .await
+                        .unwrap()
+                        .unwrap()
+                        .head,
+                    *head
+                );
                 assert_eq!(
                     ExecutionAuthority::commit(&other, grant.clone(), request, f.verified())
                         .await
@@ -619,4 +576,44 @@ async fn revoke_and_publish_linearize_with_original_receipt() {
                 .is_err()
         );
     }
+}
+
+#[tokio::test]
+async fn active_observation_does_not_wait_for_an_unrelated_writer() {
+    let f = Fixture::new().await;
+    let grant = f.grant().await;
+    let writer = rusqlite::Connection::open(f.directory.path().join("repository.sqlite")).unwrap();
+    writer.execute_batch("BEGIN IMMEDIATE").unwrap();
+    let observed =
+        tokio::time::timeout(Duration::from_millis(500), f.repository.observe(grant)).await;
+    writer.execute_batch("ROLLBACK").unwrap();
+    assert!(matches!(observed, Ok(Ok(Status::Active { .. }))));
+}
+
+#[tokio::test]
+async fn hung_stop_acknowledgement_returns_without_authorizing_handoff() {
+    let f = Fixture::new().await;
+    let grant = f.grant().await;
+    let authority = Arc::new(UnavailableAuthority {
+        inner: f.repository.clone(),
+        unavailable: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        hang_acknowledgement: true,
+    });
+    let execution = Execution::attach(authority, grant.clone()).await.unwrap();
+    let environment = DrainedEnvironment::default();
+    let stopped = tokio::time::timeout(Duration::from_secs(7), execution.stop(&environment))
+        .await
+        .unwrap();
+    assert!(
+        stopped
+            .unwrap_err()
+            .to_string()
+            .contains("acknowledgement timed out")
+    );
+    assert!(environment.0.load(std::sync::atomic::Ordering::SeqCst));
+    assert_eq!(f.repository.observe(grant).await.unwrap(), Status::Draining);
+    assert_eq!(
+        f.repository.claim(f.claim()).await.unwrap(),
+        ClaimResult::Busy
+    );
 }

@@ -825,9 +825,30 @@ async fn pausing_a_goal_preserves_pending_steering_as_an_independent_turn() {
             .len(),
         1
     );
+    queue
+        .recover_undelivered_steering(
+            spec.owner.clone(),
+            Some("another-session".into()),
+            UnixMillis(4),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        queue
+            .steering(spec.session_id.clone(), goal.run())
+            .await
+            .unwrap()
+            .entries
+            .len(),
+        1
+    );
     for _ in 0..2 {
         queue
-            .recover_undelivered_steering(spec.owner.clone(), UnixMillis(4))
+            .recover_undelivered_steering(
+                spec.owner.clone(),
+                Some(spec.session_id.clone()),
+                UnixMillis(4),
+            )
             .await
             .unwrap();
         assert_eq!(queue.read(spec.session_id.clone()).await.unwrap(), pending);

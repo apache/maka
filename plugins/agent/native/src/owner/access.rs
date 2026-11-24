@@ -357,7 +357,13 @@ impl RunAccess {
 
     async fn driver_view(&self, allow_stopped: bool) -> Result<RunView, String> {
         let owner = self.owner()?;
-        owner.require_execution(&self.execution.session_id).await?;
+        if owner
+            .store
+            .checkpoint_execution()
+            .is_some_and(|e| e.cancellation().is_cancelled())
+        {
+            return Err("Session execution is draining".into());
+        }
         if owner.stop.is_cancelled() {
             return Err("agent_run_owner_closed".into());
         }
@@ -477,6 +483,11 @@ impl RunAccess {
         context: &ToolCallContext,
         name: &str,
     ) -> Result<(), ToolError> {
+        self.owner()
+            .map_err(ToolError::Failed)?
+            .require_execution(&self.execution.session_id)
+            .await
+            .map_err(ToolError::Failed)?;
         self.check_context(context).await?;
         let configuration = self.live_configuration().await?;
         if configuration

@@ -41,6 +41,8 @@
 
 #![cfg(unix)]
 
+#[path = "support/execution_compat.rs"]
+mod execution_compat;
 #[path = "support/host.rs"]
 mod host;
 
@@ -103,6 +105,8 @@ struct CapsuleManifest {
     session_data_key: String,
     #[serde(default)]
     operation_ref: Option<Value>,
+    #[serde(default)]
+    execution_authority: Option<execution_compat::Capsule>,
     migrations: BTreeMap<String, Vec<i64>>,
 }
 
@@ -1033,6 +1037,7 @@ async fn produce_capsule(bin: &Path, capsule_dir: &Path) -> CapsuleManifest {
 
         host.quit(&mut client).await.expect("Host quit");
 
+        let execution_authority = Some(execution_compat::produce(capsule_dir).await);
         let migrations = verify_sqlite_integrity_and_migrations(&dirs.root);
         CapsuleManifest {
             format_version: 1,
@@ -1053,6 +1058,7 @@ async fn produce_capsule(bin: &Path, capsule_dir: &Path) -> CapsuleManifest {
             portable_archive: portable_archive_name,
             session_data_key: "compat_capsule_state".into(),
             operation_ref,
+            execution_authority,
             migrations,
         }
     })
@@ -1459,6 +1465,10 @@ async fn verify_capsule(bin: &Path, capsule_dir: &Path) {
         );
         let inspected: Value = serde_json::from_slice(&inspect_out.stdout).unwrap();
         assert!(!inspected["facts"].as_array().unwrap().is_empty());
+
+        if let Some(execution) = &manifest.execution_authority {
+            execution_compat::verify(capsule_dir, execution).await;
+        }
 
         // Post-upgrade SQLite integrity and monotonic migration check.
         let upgraded_migrations = verify_sqlite_integrity_and_migrations(&dirs.root);

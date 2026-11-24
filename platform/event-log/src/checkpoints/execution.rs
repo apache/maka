@@ -89,10 +89,13 @@ pub trait Environment: Send + Sync {
 }
 
 pub struct Stopped {
-    grant: Grant,
+    grant: Arc<Grant>,
 }
 impl Stopped {
-    pub async fn verify(environment: &dyn Environment, grant: Grant) -> Result<Self, StoreError> {
+    pub async fn verify(
+        environment: &dyn Environment,
+        grant: Arc<Grant>,
+    ) -> Result<Self, StoreError> {
         environment.stop_and_drain(&grant).await?;
         Ok(Self { grant })
     }
@@ -108,18 +111,18 @@ impl Stopped {
 pub trait ExecutionAuthority: Send + Sync {
     fn repository_identity(&self) -> &str;
     fn claim(&self, request: Claim) -> BoxFuture<'_, Result<ClaimResult, StoreError>>;
-    fn observe(&self, grant: Grant) -> BoxFuture<'_, Result<Status, StoreError>>;
+    fn observe(&self, grant: Arc<Grant>) -> BoxFuture<'_, Result<Status, StoreError>>;
     fn renew(&self, request: Renewal) -> BoxFuture<'_, Result<Status, StoreError>>;
-    fn revoke(&self, grant: Grant) -> BoxFuture<'_, Result<Status, StoreError>>;
+    fn revoke(&self, grant: Arc<Grant>) -> BoxFuture<'_, Result<Status, StoreError>>;
     fn stopped(&self, evidence: Stopped) -> BoxFuture<'_, Result<(), StoreError>>;
     fn receipt(
         &self,
-        grant: Grant,
+        grant: Arc<Grant>,
         request: Commit,
     ) -> BoxFuture<'_, Result<Option<CommitReceipt>, StoreError>>;
     fn commit(
         &self,
-        grant: Grant,
+        grant: Arc<Grant>,
         request: Commit,
         verified: VerifiedCheckpoint,
     ) -> BoxFuture<'_, Result<CommitReceipt, StoreError>>;
@@ -136,11 +139,11 @@ pub struct Execution {
 impl Execution {
     pub async fn attach(
         authority: Arc<dyn ExecutionAuthority>,
-        grant: Grant,
+        grant: Arc<Grant>,
     ) -> Result<Self, StoreError> {
         let execution = Self {
             authority,
-            grant: Arc::new(grant),
+            grant,
             cancellation: CancellationToken::new(),
         };
         execution.check().await?;
@@ -161,7 +164,7 @@ impl Execution {
         }
         let observation = tokio::time::timeout(
             std::time::Duration::from_secs(5),
-            self.authority.observe(self.grant.as_ref().clone()),
+            self.authority.observe(self.grant.clone()),
         )
         .await
         .unwrap_or_else(|_| Err(invalid("execution authority observation timed out")));
@@ -190,13 +193,18 @@ impl Execution {
         let (revoked, stopped) = tokio::join!(
             tokio::time::timeout(
                 std::time::Duration::from_secs(5),
-                self.authority.revoke(self.grant.as_ref().clone())
+                self.authority.revoke(self.grant.clone())
             ),
-            Stopped::verify(environment, self.grant.as_ref().clone()),
+            Stopped::verify(environment, self.grant.clone()),
         );
         let stopped = stopped?;
         revoked.map_err(|_| invalid("execution revocation timed out"))??;
-        self.authority.stopped(stopped).await
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            self.authority.stopped(stopped),
+        )
+        .await
+        .map_err(|_| invalid("execution stop acknowledgement timed out"))?
     }
     pub(crate) fn authority(&self) -> &Arc<dyn ExecutionAuthority> {
         &self.authority

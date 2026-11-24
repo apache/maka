@@ -77,7 +77,7 @@ impl SessionRepository for ExecutingRepository {
     fn receipt(&self, request: Commit) -> BoxFuture<'_, Result<Option<CommitReceipt>, StoreError>> {
         self.execution
             .authority()
-            .receipt(self.execution.grant().clone(), request)
+            .receipt(self.execution.grant.clone(), request)
     }
     fn commit(
         &self,
@@ -85,13 +85,19 @@ impl SessionRepository for ExecutingRepository {
         verified: VerifiedCheckpoint,
     ) -> BoxFuture<'_, Result<CommitReceipt, StoreError>> {
         Box::pin(async move {
-            let authority = self.execution.authority();
-            let grant = self.execution.grant().clone();
-            if let Some(receipt) = authority.receipt(grant.clone(), request.clone()).await? {
-                return Ok(receipt);
+            if self.execution.cancellation.is_cancelled() {
+                return Err(invalid("Session execution is draining"));
             }
-            self.execution.check().await?;
-            authority.commit(grant, request, verified).await
+            // The authority atomically arbitrates generation, Head and receipt.
+            let result = self
+                .execution
+                .authority()
+                .commit(self.execution.grant.clone(), request, verified)
+                .await;
+            if result.is_err() {
+                self.execution.cancellation.cancel();
+            }
+            result
         })
     }
 }

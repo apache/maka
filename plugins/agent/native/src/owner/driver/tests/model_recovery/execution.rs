@@ -18,6 +18,7 @@
  */
 
 use super::*;
+use maka_agent_state::queue::{Placement, PreparedRequest, QueueCommand, QueueEdit, RequestId};
 use maka_event_log::checkpoints::{
     Scope as CheckpointScope,
     execution::{Claim, ClaimResult, Execution, ExecutionAuthority, Permissions, Status},
@@ -29,7 +30,7 @@ async fn execution_grant_gates_real_host_and_drains_before_handoff() {
     let mut rig = Rig::new().unwrap();
     let result = AssertUnwindSafe(tokio::time::timeout(
         Duration::from_secs(120),
-        exercise(&mut rig),
+        exercise(&mut rig, false, false),
     ))
     .catch_unwind()
     .await;
@@ -38,41 +39,20 @@ async fn execution_grant_gates_real_host_and_drains_before_handoff() {
     assert!(cleanup.is_empty(), "{cleanup:?}");
 }
 
-async fn exercise(rig: &mut Rig) -> TestResult<()> {
+async fn exercise(rig: &mut Rig, expire: bool, recovery: bool) -> TestResult<()> {
     let base = rig.directory.path().to_path_buf();
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
-    let boot = bootstrap_with(
-        &base,
-        format!("http://{}/v1", listener.local_addr()?),
-        |config| {
-            config["todo"] = json!(true);
-            config["permissions"]["access"] = json!("danger_full_access");
-            config["permissions"]["requestPermissions"] = json!(true);
-        },
-    )
-    .await?;
-    let (requests, mut observed) = tokio::sync::mpsc::channel(1);
-    let app = axum::Router::new().route(
-        "/v1/chat/completions",
-        axum::routing::post(move |request: axum::extract::Request| {
-            let requests = requests.clone();
-            async move {
-                let bytes = axum::body::to_bytes(request.into_body(), 8 * 1024 * 1024)
-                    .await
-                    .unwrap();
-                let request: Value = serde_json::from_slice(&bytes).unwrap();
-                let (reply, response) = oneshot::channel::<String>();
-                let _ = requests.send((request, reply)).await;
-                (
-                    [("content-type", "text/event-stream")],
-                    response.await.unwrap_or_default(),
-                )
-            }
-        }),
-    );
-    let provider = tokio::spawn(async move { axum::serve(listener, app).await });
-    // Abort-on-drop owns the fixture server even on assertion failure.
-    let _provider = AbortOnDrop(provider);
+    let mut provider = MockAiBuilder::new().interactive(1).start().await?;
+    let mut observed = provider.take_interactive_rx().unwrap();
+    let boot = bootstrap_deployment(&base, provider.base_url(), true, |config| {
+        config["todo"] = json!(true);
+        config["permissions"]["access"] = json!("danger_full_access");
+        config["permissions"]["requestPermissions"] = json!(true);
+        config["tools"] = json!([
+            {"name":"Write","description":"Write a file","target":{"kind":"import","name":"files"},"method":"write","nestable":true,"result":"json","confirmation":"preapproved"},
+            {"name":"Shell","description":"Run a command","target":{"kind":"import","name":"processes"},"method":"execute","input":"shell","nestable":true,"result":"json","confirmation":"preapproved"},
+            {"name":"WebFetch","description":"Fetch a page","target":{"kind":"import","name":"web"},"method":"fetch","input":"web","nestable":true,"result":"json","confirmation":"preapproved"}
+        ]);
+    }).await?;
     attach(rig, &boot).await?;
     let client = rig.client.as_ref().unwrap();
     let catalog = call(client, "settings", "connections", json!({"kind":"start"})).await?;
@@ -103,6 +83,116 @@ async fn exercise(rig: &mut Rig) -> TestResult<()> {
                 .ok_or("Session missing")?
                 .to_owned(),
         );
+    }
+    let mut retained = Vec::new();
+    let mut queued = Vec::new();
+    if recovery {
+        let owner = rig.captured.lock().unwrap().clone().unwrap();
+        let mut originals = Vec::new();
+        for session in &sessions {
+            let sent = call(client, "agent", "send", json!({"sessionId":session,"message":"Capture the original permissions.","backend":backend})).await?;
+            observed
+                .recv()
+                .await
+                .ok_or("initial model request missing")?
+                .reply_text("Captured.");
+            quiescent_message(client, session, &sent["messageId"]).await?;
+            let run = owner
+                .durable
+                .latest_run(session.clone())
+                .await?
+                .ok_or("original Run missing")?;
+            originals.push(owner.durable.frontier(run).await?);
+        }
+        // Stop scheduling, then persist unfinished admissions through the storage contract.
+        // Their permissions come from real unrestricted sends, not a mutated in-memory Run.
+        owner.stop.cancel();
+        owner.producers.close();
+        owner.producers.wait().await;
+        for original in originals {
+            let mut contents = Vec::new();
+            for reference in original.spec.content_refs() {
+                contents.push(ContentBlob::new(
+                    owner
+                        .durable
+                        .content(original.run, reference.clone())
+                        .await?,
+                ));
+            }
+            let input: RunInput = serde_json::from_slice(
+                &owner
+                    .durable
+                    .content(original.run, original.spec.input.clone())
+                    .await?,
+            )?;
+            let RunInput::Message {
+                mut source_messages,
+                ..
+            } = input
+            else {
+                return Err("message input missing".into());
+            };
+            let mut source = source_messages.pop().ok_or("message source missing")?;
+            source.message.message_id = Uuid::new_v4().to_string();
+            let queue_input = ContentBlob::json(&RunInput::Message {
+                content: source.message.content.clone(),
+                request_fingerprint: None,
+                source_messages: vec![source.clone()],
+            })?;
+            let source_blob = ContentBlob::json(&source)?;
+            let resources = ContentBlob::json(
+                &json!({"kind":"message_resources","attachments":null,"reacquisition":{"kind":"immutable_user_uploads","requiresAuthorization":true}}),
+            )?;
+            let mut queue_spec = original.spec.clone();
+            queue_spec.turn_id = Uuid::new_v4().to_string();
+            queue_spec.trigger = Trigger::Message {
+                message_id: source.message.message_id.clone(),
+            };
+            queue_spec.input = queue_input.reference().clone();
+            let session = queue_spec.session_id.clone();
+            let queued_request = PreparedRequest {
+                id: RequestId(Uuid::new_v4().to_string()),
+                message_id: source.message.message_id.clone(),
+                spec: queue_spec,
+                source: source_blob.reference().clone(),
+                resources: resources.reference().clone(),
+                required_tools: Default::default(),
+            };
+            let queue = owner.durable.queue();
+            queue
+                .execute(
+                    session.clone(),
+                    QueueCommand {
+                        id: FactId::new(),
+                        at: at(),
+                        expected_revision: queue.read(session.clone()).await?.revision,
+                        edit: QueueEdit::Enqueue {
+                            request: Box::new(queued_request),
+                            placement: Placement::Followup,
+                        },
+                    },
+                    vec![queue_input, source_blob, resources],
+                )
+                .await?;
+            queued.push((session.clone(), queue.read(session).await?));
+            let mut spec = original.spec;
+            spec.turn_id = Uuid::new_v4().to_string();
+            source.message.message_id = Uuid::new_v4().to_string();
+            spec.trigger = Trigger::Message {
+                message_id: source.message.message_id.clone(),
+            };
+            let input = ContentBlob::json(&RunInput::Message {
+                content: source.message.content.clone(),
+                request_fingerprint: None,
+                source_messages: vec![source],
+            })?;
+            spec.input = input.reference().clone();
+            contents.push(input);
+            let admission = Admission::new(spec, at(), contents);
+            let run = admission.run();
+            owner.durable.admit(admission).await?;
+            retained.push((run, facts(&owner.durable, run).await?));
+        }
     }
     let source = {
         let owner = rig.captured.lock().unwrap().clone().unwrap();
@@ -137,14 +227,19 @@ async fn exercise(rig: &mut Rig) -> TestResult<()> {
                 ),
                 network: maka_sandbox::Network::Denied,
             },
-            tools: Some(vec!["todo_read".into()]),
+            tools: Some(vec![
+                "todo_read".into(),
+                "Write".into(),
+                "Shell".into(),
+                "WebFetch".into(),
+            ]),
         },
-        lease_millis: 120_000,
+        lease_millis: if expire { 20_000 } else { 120_000 },
     };
     let ClaimResult::Granted { grant, .. } = repository.claim(request.clone()).await? else {
         return Err("grant missing".into());
     };
-    let grant = *grant;
+    let grant = Arc::new(*grant);
     let execution = Execution::attach(repository.clone(), grant.clone()).await?;
     let storage = repository
         .storage(binding.identity.agent)?
@@ -169,6 +264,36 @@ async fn exercise(rig: &mut Rig) -> TestResult<()> {
     rig.attach_host(store, boot.deployment, boot.gateway, true, None)
         .await?;
     let client = rig.client.as_ref().unwrap();
+    if recovery {
+        let owner = rig.captured.lock().unwrap().clone().unwrap();
+        // Let the real activated scheduler reconcile multiple times while mutations wake it.
+        for _ in 0..3 {
+            owner.wake_notify.notify_one();
+            assert!(
+                tokio::time::timeout(Duration::from_millis(200), observed.recv())
+                    .await
+                    .is_err(),
+                "restart executed a foreign or overprivileged Run"
+            );
+            for (run, original) in &retained {
+                assert_eq!(
+                    &facts(&owner.durable, *run).await?,
+                    original,
+                    "recovery wrote failure/blocker facts without authority"
+                );
+            }
+            for (session, original) in &queued {
+                assert_eq!(
+                    &owner.durable.queue().read(session.clone()).await?,
+                    original,
+                    "recovery consumed unauthorized queued work"
+                );
+            }
+        }
+        rig.host.as_ref().unwrap().stop_execution().await?;
+        provider.shutdown().await;
+        return Ok(());
+    }
     assert!(
         call(
             client,
@@ -191,83 +316,127 @@ async fn exercise(rig: &mut Rig) -> TestResult<()> {
     )
     .await?;
     assert_eq!(sent["kind"], "queued", "{sent}");
-    let (model_request, respond) = observed.recv().await.ok_or("model request missing")?;
-    let owner = rig.captured.lock().unwrap().clone().unwrap();
-    let access = owner
-        .runs
-        .state()
-        .await
-        .controls
-        .get(&sessions[0])
-        .and_then(|c| c.access.upgrade())
-        .ok_or("Run access missing")?;
-    assert_eq!(
-        access.live_configuration().await?.tools,
-        Some(vec!["todo_read".into()])
-    );
-    let captured = access.fresh().await?;
-    let maka_sandbox::Sandbox::Managed { filesystem, .. } =
-        &captured.spec.permission_ceiling.sandbox
-    else {
-        return Err("grant sandbox ceiling was removed".into());
-    };
-    assert_eq!(
-        filesystem
-            .compile()?
-            .access(&base.join("workspace/new.txt")),
-        maka_sandbox::filesystem::Access::Read
-    );
-    assert_eq!(
-        captured.spec.network_approval_ceiling(),
-        &maka_sandbox::Network::Denied
-    );
-    assert_eq!(
-        access.network_approval_ceiling()?,
-        maka_sandbox::Network::Denied
-    );
-    let maka_sandbox::Sandbox::Managed { filesystem, .. } = captured.spec.approval_ceiling() else {
-        return Err("grant approval ceiling was removed".into());
-    };
-    assert_eq!(
-        filesystem
-            .compile()?
-            .access(&base.join("workspace/new.txt")),
-        maka_sandbox::filesystem::Access::Read
-    );
-    assert!(owner.restored_data(&captured).await.is_ok());
-    // Captures made before execution-managed bootstrap cannot retain wider rights.
-    let mut wider = captured.clone();
-    wider.spec.permission_ceiling.sandbox = maka_sandbox::Sandbox::Disabled;
-    assert!(owner.restored_data(&wider).await.is_err());
-    let mut wider = captured.clone();
-    wider.spec.filesystem_approval_ceiling = Some(maka_sandbox::filesystem::Policy::uniform(
-        maka_sandbox::filesystem::Access::Write,
-    ));
-    assert!(owner.restored_data(&wider).await.is_err());
+    let reply = observed.recv().await.ok_or("model request missing")?;
+    assert!(!super::bot_tools::has_tool(reply.body(), "todo_write"));
+    for name in ["Write", "Shell", "WebFetch"] {
+        assert!(super::bot_tools::has_tool(reply.body(), name), "{name}");
+    }
+    reply.send_plan(super::bot_tools::tool_response("todo_read", json!({})));
+    let mut reply = observed.recv().await.ok_or("tool result missing")?;
     assert!(
-        !model_request["tools"].to_string().contains("todo_write"),
-        "{model_request}"
-    );
-    respond
-        .send(super::bot_tools::tool_response("todo_read", json!({})))
-        .map_err(|_| "model stopped")?;
-    let (after_tool, respond) = observed.recv().await.ok_or("tool result missing")?;
-    assert!(
-        after_tool["messages"]
+        reply.body()["messages"]
             .as_array()
             .unwrap()
             .iter()
-            .any(|m| m["role"] == "tool"),
-        "{after_tool}"
+            .any(|m| m["role"] == "tool")
     );
-    respond
-        .send(super::bot_tools::completion(
-            json!({"role":"assistant","content":"Done."}),
-            "stop",
-        ))
-        .map_err(|_| "model stopped")?;
+    let blocked_file = base.join("workspace/forbidden.txt");
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
+    let url = format!("http://{}/forbidden", listener.local_addr()?);
+    for (name, input) in [
+        (
+            "Write",
+            json!({"path":"forbidden.txt","content":"must not write"}),
+        ),
+        ("WebFetch", json!({"url":url})),
+        (
+            "Shell",
+            json!({"command":"echo unauthorized > forbidden.txt","login":false,
+            "additional_permissions":{"filesystem":[{"path":blocked_file,"scope":"exact","access":"write"}],"network":"allowed"},
+            "justification":"Request broader access"}),
+        ),
+    ] {
+        reply.send_plan(super::bot_tools::tool_response(name, input));
+        reply = observed.recv().await.ok_or("denied tool result missing")?;
+        let tool = reply.body()["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .rev()
+            .find(|m| m["role"] == "tool")
+            .ok_or("tool receipt missing")?;
+        let content = tool["content"].as_str().ok_or("tool result not text")?;
+        assert!(
+            content.contains("failed")
+                || content.contains("denied")
+                || content.contains("permission")
+                || content.contains("Permission"),
+            "{name}: {content}"
+        );
+        assert!(!blocked_file.exists(), "grant allowed a forbidden write");
+        let pending = call(
+            client,
+            "agent",
+            "pendingInteractions",
+            json!({"sessionId":sessions[0]}),
+        )
+        .await?;
+        assert!(
+            pending["entries"].as_array().unwrap().is_empty(),
+            "grant ceiling became an approvable request: {pending}"
+        );
+    }
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), listener.accept())
+            .await
+            .is_err(),
+        "denied network tool reached its destination"
+    );
+    reply.reply_text("Done.");
     quiescent_message(client, &sessions[0], &sent["messageId"]).await?;
-    drop(access);
+    // Exercise the real mutation dispatcher, including methods unrelated to send.
+    let current = call(client, "agent", "observe", json!({"sessionId":sessions[0]})).await?;
+    let renamed = call(
+        client,
+        "agent",
+        "metadata",
+        json!({
+            "sessionId":sessions[0], "expectedRevision":current["session"]["revision"],
+            "title":"Authorized rename", "labels":[]
+        }),
+    )
+    .await?;
+    assert_eq!(renamed["kind"], "committed");
+    let foreign = call(client, "agent", "observe", json!({"sessionId":sessions[1]})).await?;
+    for (method, input) in [
+        (
+            "metadata",
+            json!({"sessionId":sessions[1],"expectedRevision":foreign["session"]["revision"],"title":"Unauthorized rename","labels":[]}),
+        ),
+        (
+            "changeSession",
+            json!({"sessionId":sessions[1],"expectedRevision":1,"action":"remove"}),
+        ),
+        (
+            "saveFile",
+            json!({"sessionId":sessions[1],"path":maka_fs_tools::path::WorkspacePath::from_bytes(b"forbidden.txt")?,"expectedVersion":"missing"}),
+        ),
+        (
+            "create",
+            json!({"title":"Unauthorized","automaticTitle":false,"labels":[],"workspace":{"kind":"directory","path":base.join("workspace")}}),
+        ),
+        (
+            "fork",
+            json!({"sessionId":sessions[0],"expectedRevision":1,"position":{"kind":"end"},"title":"Unauthorized fork","labels":[]}),
+        ),
+    ] {
+        let mut attachments = Attachments::new();
+        if method == "saveFile" {
+            attachments.insert("content".into(), Arc::new(EditedText));
+        }
+        let error = call_with_attachments(client, "agent", method, input, attachments)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("execution grant") || error.contains("execution_grant"),
+            "{method}: {error}"
+        );
+    }
+    assert_eq!(
+        call(client, "agent", "observe", json!({"sessionId":sessions[1]})).await?,
+        foreign
+    );
     // The real publisher uses the same generation-aware repository adapter.
     let preview = call(
         client,
@@ -306,26 +475,39 @@ async fn exercise(rig: &mut Rig) -> TestResult<()> {
         }),
     )
     .await?;
-    let (_, held_response) = observed.recv().await.ok_or("held request missing")?;
-    let access = owner
-        .runs
-        .state()
-        .await
-        .controls
-        .get(&sessions[0])
-        .and_then(|c| c.access.upgrade())
-        .ok_or("Run access missing")?;
-    assert_eq!(repository.revoke(grant.clone()).await?, Status::Draining);
+    let held_response = observed.recv().await.ok_or("held request missing")?;
+    if !expire {
+        assert_eq!(repository.revoke(grant.clone()).await?, Status::Draining);
+    }
     assert_eq!(repository.claim(next.clone()).await?, ClaimResult::Busy);
-    assert!(
-        access.live_configuration().await.is_err(),
-        "old model/tool admission must close"
-    );
+    let host = rig.host.as_ref().unwrap();
+    tokio::time::timeout(Duration::from_secs(30), async {
+        while !host.status().closed {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await?;
+    assert!(host.status().cleanup_error.is_none(), "{:?}", host.status());
+    // The watch must stop the Host itself; only then may the supervisor acknowledge it.
+    assert_eq!(repository.observe(grant.clone()).await?, Status::Draining);
     assert!(call(client, "agent", "send", json!({
         "sessionId":sessions[0],"message":"Old writer must not start again.","backend":backend
     })).await.is_err());
+    assert!(
+        call(
+            client,
+            "agent",
+            "metadata",
+            json!({
+                "sessionId":sessions[0],"expectedRevision":1,"title":"Revoked","labels":[]
+            })
+        )
+        .await
+        .is_err()
+    );
+    assert!(!blocked_file.exists());
+    tokio::time::timeout(Duration::from_secs(5), held_response.wait_closed()).await?;
     drop(held_response);
-    drop(access);
     rig.host.as_ref().unwrap().stop_execution().await?;
     assert_eq!(repository.observe(grant.clone()).await?, Status::Stopped);
     assert_eq!(
@@ -346,12 +528,56 @@ async fn exercise(rig: &mut Rig) -> TestResult<()> {
         observed.try_recv().is_err(),
         "revoked Host issued another model request"
     );
+    provider.shutdown().await;
     Ok(())
 }
 
-struct AbortOnDrop<T>(tokio::task::JoinHandle<T>);
-impl<T> Drop for AbortOnDrop<T> {
-    fn drop(&mut self) {
-        self.0.abort();
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn lease_expiry_automatically_drains_real_host() {
+    let mut rig = Rig::new().unwrap();
+    let result = AssertUnwindSafe(tokio::time::timeout(
+        Duration::from_secs(120),
+        exercise(&mut rig, true, false),
+    ))
+    .catch_unwind()
+    .await;
+    let cleanup = rig.finish().await;
+    assert!(matches!(result, Ok(Ok(Ok(())))), "{result:?}");
+    assert!(cleanup.is_empty(), "{cleanup:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn managed_restart_preserves_foreign_and_overprivileged_unfinished_work() {
+    let mut rig = Rig::new().unwrap();
+    let result = AssertUnwindSafe(tokio::time::timeout(
+        Duration::from_secs(120),
+        exercise(&mut rig, false, true),
+    ))
+    .catch_unwind()
+    .await;
+    let cleanup = rig.finish().await;
+    assert!(matches!(result, Ok(Ok(Ok(())))), "{result:?}");
+    assert!(cleanup.is_empty(), "{cleanup:?}");
+}
+
+struct EditedText;
+impl maka_capabilities::call::ReadResource for EditedText {
+    fn encoding(&self) -> maka_capabilities::call::ResourceEncoding {
+        maka_capabilities::call::ResourceEncoding::Utf8
+    }
+    fn resource_type(&self) -> maka_plugin_core::contract::ResourceType {
+        maka_plugin_core::contract::text_resource_type()
+    }
+    fn bytes(&self) -> usize {
+        b"forbidden edit".len()
+    }
+    fn metadata(&self) -> Value {
+        json!({})
+    }
+    fn read(&self, range: std::ops::Range<usize>) -> Result<Vec<u8>, String> {
+        b"forbidden edit"
+            .get(range)
+            .map(<[u8]>::to_vec)
+            .ok_or_else(|| "invalid range".into())
     }
 }

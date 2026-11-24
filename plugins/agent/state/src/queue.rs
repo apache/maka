@@ -389,22 +389,25 @@ impl QueueStore {
     pub async fn recover_undelivered_steering(
         &self,
         owner: RunOwner,
+        session: Option<String>,
         at: UnixMillis,
     ) -> Result<(), StoreError> {
         self.data
-            .write(RecoverUndeliveredSteering { owner, at })
+            .write(RecoverUndeliveredSteering { owner, session, at })
             .await
     }
 }
 struct RecoverUndeliveredSteering {
     owner: RunOwner,
+    session: Option<String>,
     at: UnixMillis,
 }
 impl Statement for RecoverUndeliveredSteering {
     type Value = ();
     type Output = ();
     fn execute(self, c: &Connection) -> Result<Prepared<()>, StoreError> {
-        let sessions = sql::recover_undelivered_steering(c, &self.owner, self.at)?;
+        let sessions =
+            sql::recover_undelivered_steering(c, &self.owner, self.session.as_deref(), self.at)?;
         Ok(Prepared {
             value: (),
             changed: !sessions.is_empty(),

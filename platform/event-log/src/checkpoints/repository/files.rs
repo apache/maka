@@ -199,11 +199,11 @@ impl FileRepository {
                     configure: None,
                     data: None,
                 },
-                crate::migration::Migration {
-                    version: 3,
-                    description: "checkpoint execution authority",
-                    sql: include_str!("../../../migrations/repository/0003_execution.sql"),
-                },
+                crate::migration::Migration::sql(
+                    3,
+                    "checkpoint execution authority",
+                    include_str!("../../../migrations/repository/0003_execution.sql"),
+                ),
             ],
         )?;
         let id: Option<String> = tx

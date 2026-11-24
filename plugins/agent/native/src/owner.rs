@@ -96,7 +96,7 @@ mod worktrees;
 use maka_agent_facts::composition::SourceKind;
 use maka_agent_facts::composition::SourceRevision;
 use maka_agent_facts::configuration::policy::RuntimePolicySnapshot;
-use maka_agent_facts::durable::ExecutionIdentity;
+use maka_agent_facts::durable::{BackendSpec, ExecutionIdentity, RunSpec};
 use maka_agent_facts::execution::*;
 use maka_agent_facts::input::DeliveredMessage;
 use maka_agent_facts::input::MessageInput;
@@ -273,6 +273,31 @@ pub(crate) struct Owner {
     stop: CancellationToken,
 }
 impl Owner {
+    pub(super) fn execution_contains_session(&self, session: &str) -> bool {
+        self.store
+            .checkpoint_execution()
+            .is_none_or(|execution| execution.grant().binding.source.session == session)
+    }
+
+    pub(super) async fn require_execution_spec(&self, spec: &RunSpec) -> Result<(), String> {
+        self.require_execution(&spec.session_id).await?;
+        if let Some(execution) = self.store.checkpoint_execution() {
+            if !matches!(spec.backend, BackendSpec::Model { .. }) {
+                return Err("execution_grant_requires_native_model_backend".into());
+            }
+            if !execution
+                .grant()
+                .permissions
+                .sandbox
+                .contains(&spec.approval_ceiling())
+                .map_err(|error| error.to_string())?
+            {
+                return Err("restored_run_exceeds_execution_grant".into());
+            }
+        }
+        Ok(())
+    }
+
     pub(super) async fn require_execution(&self, session: &str) -> Result<(), String> {
         if let Some(execution) = self.store.checkpoint_execution() {
             execution

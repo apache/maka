@@ -47,7 +47,7 @@ fn transaction(db: &Connection) -> Result<Transaction<'_>, StoreError> {
         TransactionBehavior::Immediate,
     )?)
 }
-fn status(db: &Connection, grant: &Grant, at: u64) -> Result<Status, StoreError> {
+fn read_status(db: &Connection, grant: &Grant, at: u64) -> Result<(Status, bool), StoreError> {
     let row: Option<(String, String, i64)> = db
         .query_row(
             "SELECT grant_json,state,expires_at FROM checkpoint_executions WHERE activation_id=?",
@@ -61,20 +61,28 @@ fn status(db: &Connection, grant: &Grant, at: u64) -> Result<Status, StoreError>
     }
     let expires = expires as u64;
     match state.as_str() {
-        "active" if expires > at => Ok(Status::Active {
-            expires_at: expires,
-        }),
-        "active" => {
-            db.execute(
-                "UPDATE checkpoint_executions SET state='draining' WHERE activation_id=?",
-                [grant.activation.to_string()],
-            )?;
-            Ok(Status::Draining)
-        }
-        "draining" => Ok(Status::Draining),
-        "stopped" => Ok(Status::Stopped),
+        "active" if expires > at => Ok((
+            Status::Active {
+                expires_at: expires,
+            },
+            false,
+        )),
+        "active" => Ok((Status::Draining, true)),
+        "draining" => Ok((Status::Draining, false)),
+        "stopped" => Ok((Status::Stopped, false)),
         _ => Err(invalid("invalid execution state")),
     }
+}
+
+fn status(db: &Connection, grant: &Grant, at: u64) -> Result<Status, StoreError> {
+    let (status, expired) = read_status(db, grant, at)?;
+    if expired {
+        db.execute(
+            "UPDATE checkpoint_executions SET state='draining' WHERE activation_id=?",
+            [grant.activation.to_string()],
+        )?;
+    }
+    Ok(status)
 }
 
 impl ExecutionAuthority for FileRepository {
@@ -83,12 +91,15 @@ impl ExecutionAuthority for FileRepository {
     }
     fn claim(&self, request: Claim) -> BoxFuture<'_, Result<ClaimResult, StoreError>> {
         self.run(move |db| {
-            if request.activation.is_nil() { return Err(invalid("execution activation is nil")); }
+            if request.activation.is_nil() {
+                return Err(invalid("execution activation is nil"));
+            }
             request.binding.source.validate()?;
             let tx = transaction(db)?;
             let previous: Option<(String, String)> = tx.query_row(
                 "SELECT request_json,receipt_json FROM checkpoint_execution_claims WHERE activation_id=?",
-                [request.activation.to_string()], |r| Ok((r.get(0)?,r.get(1)?))
+                [request.activation.to_string()],
+                |r| Ok((r.get(0)?, r.get(1)?)),
             ).optional()?;
             if let Some((original, receipt)) = previous {
                 if serde_json::from_str::<Claim>(&original)? != request {
@@ -100,36 +111,66 @@ impl ExecutionAuthority for FileRepository {
                 return Err(invalid("execution source has no matching Session binding"));
             }
             let expires_at = deadline(now()?, request.lease_millis)?;
-            let busy: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM checkpoint_executions WHERE session_id=? AND state!='stopped')",
-                [request.binding.identity.session.to_string()], |r| r.get(0))?;
+            let busy: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM checkpoint_executions WHERE session_id=? AND state!='stopped')",
+                [request.binding.identity.session.to_string()],
+                |r| r.get(0),
+            )?;
             let actual = sql::head(&tx, &request.binding.identity)?.map(|h| h.head.revision);
             let receipt = if busy {
                 ClaimResult::Busy
             } else if actual != request.start {
                 ClaimResult::Conflict { actual }
             } else {
-                let previous: i64 = tx.query_row("SELECT COALESCE(MAX(generation),0) FROM checkpoint_executions WHERE session_id=?",
-                    [request.binding.identity.session.to_string()], |r| r.get(0))?;
+                let previous: i64 = tx.query_row(
+                    "SELECT COALESCE(MAX(generation),0) FROM checkpoint_executions WHERE session_id=?",
+                    [request.binding.identity.session.to_string()],
+                    |r| r.get(0),
+                )?;
                 let generation = previous.checked_add(1)
                     .ok_or_else(|| invalid("execution generation exhausted"))?;
-                ClaimResult::Granted { grant: Box::new(Grant {
-                    activation: request.activation, generation: generation as u64, binding: request.binding.clone(),
-                    start: request.start, permissions: request.permissions.clone(),
-                }), expires_at }
+                ClaimResult::Granted {
+                    grant: Box::new(Grant {
+                        activation: request.activation,
+                        generation: generation as u64,
+                        binding: request.binding.clone(),
+                        start: request.start,
+                        permissions: request.permissions.clone(),
+                    }),
+                    expires_at,
+                }
             };
-            tx.execute("INSERT INTO checkpoint_execution_claims VALUES(?,?,?)", params![
-                request.activation.to_string(), serde_json::to_string(&request)?, serde_json::to_string(&receipt)?])?;
+            tx.execute(
+                "INSERT INTO checkpoint_execution_claims (activation_id,request_json,receipt_json) VALUES(?,?,?)",
+                params![
+                    request.activation.to_string(),
+                    serde_json::to_string(&request)?,
+                    serde_json::to_string(&receipt)?,
+                ],
+            )?;
             if let ClaimResult::Granted { grant, expires_at } = &receipt {
-                tx.execute("INSERT INTO checkpoint_executions VALUES(?,?,?,?,'active',?)", params![
-                    grant.activation.to_string(), grant.binding.identity.session.to_string(), i64::try_from(grant.generation).map_err(|_| invalid("execution generation overflow"))?,
-                    serde_json::to_string(grant)?, *expires_at as i64])?;
+                tx.execute(
+                    "INSERT INTO checkpoint_executions (activation_id,session_id,generation,grant_json,state,expires_at) VALUES(?,?,?,?,'active',?)",
+                    params![
+                        grant.activation.to_string(),
+                        grant.binding.identity.session.to_string(),
+                        i64::try_from(grant.generation).map_err(|_| invalid("execution generation overflow"))?,
+                        serde_json::to_string(grant)?,
+                        *expires_at as i64,
+                    ],
+                )?;
             }
             tx.commit().map_err(StoreError::CommitUnknown)?;
             Ok(receipt)
         })
     }
-    fn observe(&self, grant: Grant) -> BoxFuture<'_, Result<Status, StoreError>> {
+    fn observe(&self, grant: Arc<Grant>) -> BoxFuture<'_, Result<Status, StoreError>> {
         self.run(move |db| {
+            let (current, expired) = read_status(db, &grant, now()?)?;
+            if !expired {
+                return Ok(current);
+            }
+            // Re-read under the write lock: a concurrent renewal may have won.
             let tx = transaction(db)?;
             let result = status(&tx, &grant, now()?)?;
             tx.commit().map_err(StoreError::CommitUnknown)?;
@@ -138,12 +179,19 @@ impl ExecutionAuthority for FileRepository {
     }
     fn renew(&self, request: Renewal) -> BoxFuture<'_, Result<Status, StoreError>> {
         self.run(move |db| {
-            if request.operation.is_nil() { return Err(invalid("execution renewal operation is nil")); }
+            if request.operation.is_nil() {
+                return Err(invalid("execution renewal operation is nil"));
+            }
             let tx = transaction(db)?;
-            let old: Option<(String,String)> = tx.query_row("SELECT request_json,receipt_json FROM checkpoint_execution_renewals WHERE operation_id=?",
-                [request.operation.to_string()], |r| Ok((r.get(0)?,r.get(1)?))).optional()?;
+            let old: Option<(String, String)> = tx.query_row(
+                "SELECT request_json,receipt_json FROM checkpoint_execution_renewals WHERE operation_id=?",
+                [request.operation.to_string()],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            ).optional()?;
             if let Some((original, receipt)) = old {
-                if serde_json::from_str::<Renewal>(&original)? != request { return Err(invalid("execution renewal identity conflict")); }
+                if serde_json::from_str::<Renewal>(&original)? != request {
+                    return Err(invalid("execution renewal identity conflict"));
+                }
                 return Ok(serde_json::from_str(&receipt)?);
             }
             let at = now()?;
@@ -151,19 +199,27 @@ impl ExecutionAuthority for FileRepository {
             let result = match status(&tx, &request.grant, at)? {
                 Status::Active { expires_at } => {
                     let expires_at = expires_at.max(proposed);
-                    tx.execute("UPDATE checkpoint_executions SET expires_at=? WHERE activation_id=?",
-                        params![expires_at as i64, request.grant.activation.to_string()])?;
+                    tx.execute(
+                        "UPDATE checkpoint_executions SET expires_at=? WHERE activation_id=?",
+                        params![expires_at as i64, request.grant.activation.to_string()],
+                    )?;
                     Status::Active { expires_at }
                 }
                 other => other,
             };
-            tx.execute("INSERT INTO checkpoint_execution_renewals VALUES(?,?,?)", params![
-                request.operation.to_string(), serde_json::to_string(&request)?, serde_json::to_string(&result)?])?;
+            tx.execute(
+                "INSERT INTO checkpoint_execution_renewals (operation_id,request_json,receipt_json) VALUES(?,?,?)",
+                params![
+                    request.operation.to_string(),
+                    serde_json::to_string(&request)?,
+                    serde_json::to_string(&result)?,
+                ],
+            )?;
             tx.commit().map_err(StoreError::CommitUnknown)?;
             Ok(result)
         })
     }
-    fn revoke(&self, grant: Grant) -> BoxFuture<'_, Result<Status, StoreError>> {
+    fn revoke(&self, grant: Arc<Grant>) -> BoxFuture<'_, Result<Status, StoreError>> {
         self.run(move |db| {
             let tx = transaction(db)?;
             let result = match status(&tx, &grant, now()?)? {
@@ -202,14 +258,14 @@ impl ExecutionAuthority for FileRepository {
     }
     fn receipt(
         &self,
-        grant: Grant,
+        grant: Arc<Grant>,
         request: Commit,
     ) -> BoxFuture<'_, Result<Option<CommitReceipt>, StoreError>> {
         self.run(move |db| execution_receipt(db, &grant, &request))
     }
     fn commit(
         &self,
-        grant: Grant,
+        grant: Arc<Grant>,
         request: Commit,
         verified: VerifiedCheckpoint,
     ) -> BoxFuture<'_, Result<CommitReceipt, StoreError>> {
@@ -227,8 +283,8 @@ impl ExecutionAuthority for FileRepository {
             }
             let receipt = sql::commit_in(&tx, &request)?;
             tx.execute(
-                "INSERT INTO checkpoint_execution_commits VALUES(?,?)",
-                params![request.key()?, serde_json::to_string(&grant)?],
+                "INSERT INTO checkpoint_execution_commits (operation_key,grant_json) VALUES(?,?)",
+                params![request.key()?, serde_json::to_string(grant.as_ref())?],
             )?;
             tx.commit().map_err(StoreError::CommitUnknown)?;
             Ok(receipt)

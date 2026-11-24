@@ -1071,6 +1071,7 @@ pub(crate) fn release_steering(
 pub(super) fn recover_undelivered_steering(
     c: &Connection,
     owner: &RunOwner,
+    session: Option<&str>,
     at: UnixMillis,
 ) -> Result<BTreeSet<String>, StoreError> {
     let rows = c
@@ -1079,6 +1080,7 @@ pub(super) fn recover_undelivered_steering(
          FROM agent_queue_items q
          JOIN agent_runs r ON r.run=q.target_run AND r.session=q.session AND r.owner=q.owner
          WHERE q.owner=?1 AND q.state='pending' AND q.lane='steering' AND r.local=1
+           AND (?3 IS NULL OR q.session=?3)
            AND (r.terminal IS NOT NULL OR EXISTS (
                SELECT 1 FROM agent_facts f JOIN contents b ON b.id=f.body_content_id
                WHERE f.id=r.stop_request AND f.run=r.run
@@ -1086,7 +1088,7 @@ pub(super) fn recover_undelivered_steering(
            ))",
         )?
         .query_map(
-            params![serde_json::to_string(owner)?, GOAL_CONTROL_STOP],
+            params![serde_json::to_string(owner)?, GOAL_CONTROL_STOP, session],
             |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
         )?
         .collect::<Result<Vec<_>, _>>()?;

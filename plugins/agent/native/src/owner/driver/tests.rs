@@ -553,6 +553,8 @@ impl Rig {
                 "schedule",
                 "schedules",
                 "metadata",
+                "changeSession",
+                "saveFile",
                 "project",
                 "projects",
                 "projectMcp",
