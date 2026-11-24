@@ -178,7 +178,7 @@ fn validate_ranges(
                 (task.closed.is_none()
                     && view.terminal != Some(maka_agent_facts::durable::Terminal::Cancelled))
                     || task.cleanup != OperationCleanup::Confirmed
-                    || task.effects.values().any(|effect| effect.pending())
+                    || task.effects.values().any(|effect| effect.unsettled())
             })
         {
             return Err(invalid(

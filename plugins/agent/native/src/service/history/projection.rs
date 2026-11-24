@@ -997,12 +997,6 @@ pub(super) async fn project(
                             maka_agent_facts::tool_output::ended_unknown_message(diagnostic).into(),
                         ),
                     ));
-                    row.fields.push((
-                        SourceField::Receipt,
-                        Field::Json(
-                            serde_json::to_value(observation).map_err(|error| error.to_string())?,
-                        ),
-                    ));
                     row
                 }
                 _ => unreachable!("selected external history event"),

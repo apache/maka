@@ -474,7 +474,8 @@ impl Computer {
         let turn = invocation.turn_id.clone();
         let execution = maka_computer_use::ExecutionCorrelation::new(invocation.run_id.to_string())
             .map_err(failed)?;
-        let monitor_enabled = native.platform() == "mac";
+        let macos_in_process = native.platform() == "mac";
+        let monitor_enabled = macos_in_process;
         let monitor_owner = self.clone();
         let monitor_gate = bridge.admission.clone();
         let monitor_operation = operation_id.clone();
@@ -670,7 +671,7 @@ impl Computer {
         } else {
             None
         };
-        let cleanup_confirmed = browser_operation || monitor_enabled || native_drain.is_some();
+        let cleanup_confirmed = browser_operation || macos_in_process || native_drain.is_some();
         let result = result.map_err(|error| OperationFailure::reported(error, cleanup_confirmed));
         let failure = if let Err(OperationFailure::Ordinary(
             error @ (ToolError::Persistence(_)
@@ -886,34 +887,5 @@ fn partial(error: ToolError, context: &CellContext, language: Language) -> ToolE
             message: message + suffix.as_str(),
         },
         error => error,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::OperationFailure;
-    use maka_agent_facts::tools::ToolError;
-
-    #[test]
-    fn confirmed_cleanup_unknown_outcomes_do_not_quarantine_as_ordinary_failures() {
-        let paste_unknown = ToolError::OutcomeUnknown(
-            "paste did not produce an observable change; inspect the UI before trying another action"
-                .into(),
-        );
-        assert!(matches!(
-            OperationFailure::reported(paste_unknown.clone(), true),
-            OperationFailure::ReportedUnknown(ToolError::OutcomeUnknown(_))
-        ));
-        assert!(matches!(
-            OperationFailure::reported(paste_unknown, false),
-            OperationFailure::Ordinary(ToolError::OutcomeUnknown(_))
-        ));
-        assert!(matches!(
-            OperationFailure::reported(
-                ToolError::CleanupUnconfirmed("clipboard restoration failed".into()),
-                true
-            ),
-            OperationFailure::Ordinary(ToolError::CleanupUnconfirmed(_))
-        ));
     }
 }

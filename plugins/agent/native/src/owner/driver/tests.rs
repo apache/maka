@@ -3524,6 +3524,239 @@ mod source_recovery {
             "owned Stop recovery fixture did not settle"
         );
     }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn ended_unknown_external_host_tool_keeps_mcp_open_and_releases_custody() {
+        use maka_agent_facts::tool_output::{ToolOutput, ToolSuccess};
+        use maka_plugin_core::{
+            contract::Transport,
+            deployment::DeploymentRef,
+            operation::{
+                OperationCleanup, OperationOutcome, OperationReply, Receipt, RecoveryContract,
+                RecoveryProtocol, RecoveryRef,
+            },
+        };
+
+        struct ScriptedHostTool(
+            StdMutex<std::collections::VecDeque<Result<ToolOutput, ToolError>>>,
+        );
+        impl ToolPreparer for ScriptedHostTool {
+            fn names(&self) -> Vec<String> {
+                vec!["cua_repl".into()]
+            }
+            fn prepare(
+                &self,
+                _name: String,
+                _input: Value,
+                _context: ToolCallContext,
+                _cancellation: CancellationToken,
+            ) -> PreparationFuture {
+                let outcome = self.0.lock().unwrap().pop_front().unwrap();
+                Box::pin(async move {
+                    Ok(PreparedEffect::new(|_| {
+                        Box::pin(async move { outcome.map(ToolSuccess::from) })
+                    }))
+                })
+            }
+        }
+
+        let mut rig = Rig::new().expect("external host-tool fixture");
+        let result = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(30), async {
+            let session = rig
+                .start_configured(None, |config| {
+                    config["external"] = json!({"runtimes": {"codex": true}});
+                })
+                .await?;
+            let make_reply = |cleanup: OperationCleanup, diagnostic: &str| {
+                let digest = format!("sha256-{}", "a".repeat(64));
+                OperationReply {
+                    reference: RecoveryRef {
+                        source: DeploymentRef {
+                            state_domain: "b".repeat(64),
+                            deployment: Uuid::new_v4(),
+                            revision: 1,
+                        },
+                        namespace: maka_plugin_core::composition::InstanceId(vec![Uuid::new_v4()]),
+                        export: "computer".into(),
+                        method: "evaluate".into(),
+                        operation: Uuid::new_v4(),
+                        fingerprint: digest.clone(),
+                        contract: RecoveryContract {
+                            name: "maka.workspace.Computer".into(),
+                            version: 1,
+                            transport: Transport::Remote,
+                            digest,
+                        },
+                        recovery: RecoveryProtocol::JournalV1,
+                    },
+                    receipt: Receipt::Recorded {
+                        outcome: OperationOutcome::Unknown {
+                            diagnostic: diagnostic.into(),
+                        },
+                        cleanup,
+                    },
+                }
+            };
+            let diag_err = "paste did not produce an observable change; inspect the UI before trying another action";
+            let diag_ok = "second paste outcome unknown";
+            let diag_unconfirmed = "third action still running";
+            rig.extra_tools.push(ToolRegistration {
+                definition: ToolDefinition {
+                    name: "cua_repl".into(),
+                    description: "scripted host computer operation".into(),
+                    input_schema: json!({"type": "object", "properties": {}, "additionalProperties": false}),
+                    provider: None,
+                    freeform: None,
+                    output_schema: None,
+                },
+                nesting: ToolNesting::DirectOnly,
+                semantics: ToolSemantics::Parallel,
+                handler: ToolHandler::Prepared(Arc::new(ScriptedHostTool(StdMutex::new(
+                    std::collections::VecDeque::from([
+                        Err(ToolError::OperationUnknown {
+                            message: "outcome unknown".into(),
+                            observation: Box::new(make_reply(OperationCleanup::Confirmed, diag_err)),
+                        }),
+                        Ok(ToolOutput::Operation(Box::new(make_reply(
+                            OperationCleanup::Confirmed,
+                            diag_ok,
+                        )))),
+                        Ok(ToolOutput::Text("inspected UI".into())),
+                        Err(ToolError::OperationUnknown {
+                            message: "outcome unknown".into(),
+                            observation: Box::new(make_reply(
+                                OperationCleanup::Unconfirmed,
+                                diag_unconfirmed,
+                            )),
+                        }),
+                    ]),
+                )))),
+            });
+
+            rig.assemble_backend(
+                &session,
+                Budget {
+                    tokens: None,
+                    retries: 0,
+                    deadline: None,
+                },
+                false,
+                true,
+            )
+            .await?;
+            let driver = rig.driver.as_ref().unwrap().clone();
+            let run = driver.access.execution().run_id;
+            let task = ExternalTaskId::new();
+            let source = maka_agent_facts::executor::Binding {
+                executor_id: "external".to_string().try_into()?,
+                package_id: "maka.agent".into(),
+                entry_id: "maka.agent".into(),
+                activation: "fixture".into(),
+            };
+            let task_descriptor = ContentBlob::json(&maka_agent_facts::executor::TaskDescriptor {
+                protocol: maka_agent_facts::executor::NATIVE_TASK_PROTOCOL.into(),
+                source: source.clone(),
+                payload: json!({}),
+            })?;
+            rig.append(
+                vec![
+                    Fact::ExternalTaskPrepared {
+                        task,
+                        descriptor: task_descriptor.reference().clone(),
+                        live_workspace: true,
+                    },
+                    Fact::ExternalTaskAdmitted { task },
+                ],
+                vec![task_descriptor],
+            )
+            .await?;
+
+            let effects = driver
+                .external_effects
+                .get()
+                .cloned()
+                .ok_or("external effects missing")?;
+            let tools = crate::executor::external::Tools::for_test(
+                driver.catalog.clone(),
+                Arc::new(effects),
+                driver.access.execution().clone(),
+                driver.access.custody().clone(),
+                task,
+                source,
+            );
+
+            // 1) Err(OperationUnknown) with Confirmed cleanup: non-fatal MCP error, releases custody.
+            let (first, fatal) = tools
+                .invoke("cua_repl".into(), json!({}), CancellationToken::new())
+                .await;
+            assert!(fatal.is_none(), "confirmed cleanup must keep MCP open: {fatal:?}");
+            assert_eq!(first["isError"], true);
+            let first_payload: Value =
+                serde_json::from_str(first["content"][0]["text"].as_str().unwrap())?;
+            assert_eq!(
+                first_payload["message"],
+                maka_agent_facts::tool_output::ended_unknown_message(diag_err)
+            );
+            assert!(driver.state.frontier(run).await?.blockers.is_empty());
+
+            // 2) Ok(ToolOutput::Operation) with Unknown + Confirmed in the SAME turn: also non-fatal.
+            let (second, fatal) = tools
+                .invoke("cua_repl".into(), json!({}), CancellationToken::new())
+                .await;
+            assert!(fatal.is_none(), "returned unknown receipt must keep MCP open: {fatal:?}");
+            assert_eq!(second["isError"], true);
+            let second_payload: Value =
+                serde_json::from_str(second["content"][0]["text"].as_str().unwrap())?;
+            assert_eq!(
+                second_payload["message"],
+                maka_agent_facts::tool_output::ended_unknown_message(diag_ok)
+            );
+
+            // 3) Subsequent normal inspection tool in the SAME turn succeeds cleanly.
+            let (third, fatal) = tools
+                .invoke("cua_repl".into(), json!({}), CancellationToken::new())
+                .await;
+            assert!(fatal.is_none(), "{fatal:?}");
+            assert_ne!(third["isError"], true);
+            assert!(
+                third["content"][0]["text"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .contains("inspected UI"),
+                "{third}"
+            );
+            let after_third = driver.state.frontier(run).await?;
+            let effects = &after_third.external.as_ref().unwrap().effects;
+            assert_eq!(effects.len(), 2);
+            assert!(effects
+                .values()
+                .all(|effect| effect.ended_unknown() && !effect.unsettled()));
+
+            // 4) Unconfirmed cleanup stays fatal and leaves that effect unsettled.
+            let (_fourth, fatal) = tools
+                .invoke("cua_repl".into(), json!({}), CancellationToken::new())
+                .await;
+            assert!(
+                matches!(fatal, Some(maka_agent_ports::executor::Error::Unknown)),
+                "unconfirmed cleanup must stay fatal: {fatal:?}"
+            );
+            let after_fourth = driver.state.frontier(run).await?;
+            assert!(after_fourth
+                .external
+                .as_ref()
+                .unwrap()
+                .effects
+                .values()
+                .any(|effect| effect.unsettled()));
+
+            Ok::<_, Box<dyn Error + Send + Sync>>(())
+        }))
+        .catch_unwind()
+        .await;
+        let cleanup = rig.finish().await;
+        assert!(matches!(&result, Ok(Ok(Ok(())))), "{result:?}");
+        assert!(cleanup.is_empty(), "{cleanup:?}");
+    }
 }
 
 mod model_recovery {

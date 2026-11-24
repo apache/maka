@@ -350,20 +350,11 @@ impl Producer {
                         )
                         .await?;
                     }
-                    Rule::ExternalObserved {
-                        diagnostic,
-                        observation,
-                    } => {
+                    Rule::ExternalObserved(diagnostic) => {
                         literal(
                             &mut doc,
                             Field::Result,
                             &maka_agent_facts::tool_output::ended_unknown_message(diagnostic),
-                        )
-                        .await?;
-                        literal(
-                            &mut doc,
-                            Field::Receipt,
-                            &serde_json::to_string(observation)?,
                         )
                         .await?;
                     }

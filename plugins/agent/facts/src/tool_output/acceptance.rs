@@ -239,7 +239,7 @@ pub fn ended_unknown_diagnostic(
 /// Format an ended tool call whose external outcome could not be confirmed.
 pub fn ended_unknown_message(diagnostic: &str) -> String {
     format!(
-        "The call ended, but its result is unknown: {}. It may or may not have          taken effect. Check the current state before deciding what to do next;          do not simply repeat the call.",
+        "The call ended, but its result is unknown: {}. It may or may not have taken effect. Check the current state before deciding what to do next; do not simply repeat the call.",
         diagnostic.trim_end_matches('.')
     )
 }

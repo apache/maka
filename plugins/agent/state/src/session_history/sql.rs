@@ -1503,7 +1503,7 @@ pub(super) fn recovery_failure_at(
     recovery_diagnostic(c, &view, mask_evidence)
 }
 
-pub(super) fn recovery_diagnostic(
+pub(crate) fn recovery_diagnostic(
     c: &Connection,
     view: &crate::fold::RunView,
     mask_evidence: bool,
@@ -1532,9 +1532,15 @@ pub(super) fn recovery_diagnostic(
                     &format!("external:{task}:{operation}"),
                 );
                 let restricted: bool = c.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM agent_session_history h CROSS JOIN agent_memory_hidden_spans s
-                     WHERE h.run=?1 AND h.tool_use_id=?2 AND h.tool_start=0
-                     AND s.namespace=?3 AND s.fact=h.fact_id AND s.ordinal=0)",
+                    "SELECT EXISTS(
+                        SELECT 1 FROM agent_memory_shared_fields f CROSS JOIN agent_memory_hidden_spans s
+                        WHERE f.run=?1 AND f.tool=?2 AND s.namespace=?3 AND s.fact=f.fact AND s.ordinal=0
+                          AND s.start<f.end AND s.end>f.start
+                        UNION ALL
+                        SELECT 1 FROM agent_session_history h CROSS JOIN agent_memory_hidden_spans s
+                        WHERE h.run=?1 AND h.tool_use_id=?2 AND h.tool_start=0
+                          AND s.namespace=?3 AND s.fact=h.fact_id AND s.ordinal=0
+                    )",
                     params![view.run.to_string(), use_id, encode(&view.spec.owner)?],
                     |r| r.get(0),
                 )?;

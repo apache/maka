@@ -2275,7 +2275,7 @@ async fn external_effect_ended_unknown_releases_followup_and_projects_history() 
             vec![task_descriptor],
         )
         .await?;
-        rig.append(
+        let committed = rig.append(
             vec![
                 Fact::ExternalEffect {
                     event: ExternalEffectEvent::Prepared {
@@ -2315,14 +2315,16 @@ async fn external_effect_ended_unknown_releases_followup_and_projects_history() 
                 },
                 Fact::RunTerminated {
                     terminal: Terminal::Failed,
-                    diagnostic: Some(
-                        "Could not determine the outcome of an external agent operation.".into(),
-                    ),
+                    diagnostic: Some(format!(
+                        "{diagnostic}. The call may still be running; its end was not confirmed."
+                    )),
                 },
             ],
             vec![descriptor],
         )
         .await?;
+        let prepared_fact_id = committed.facts[0].id;
+        let termination_fact_id = committed.facts.last().unwrap().id;
 
         let page = live(&rig, &session, wire::Position::Tail).await?;
         let failures: Vec<_> = page["chunks"]
@@ -2362,11 +2364,21 @@ async fn external_effect_ended_unknown_releases_followup_and_projects_history() 
             driver.state.session_quiescence(owner.clone(), session.clone()).await?,
             SessionQuiescence::Busy(SessionObligation::ExternalEffect)
         );
+        let revision = driver.owner.mutable_session(&session).await?.revision;
+        let blocked_fork = model_recovery::call(
+            client,
+            "agent",
+            "fork",
+            json!({"sessionId": session, "expectedRevision": revision, "position": {"kind": "end"}, "title": "Blocked fork", "labels": []}),
+        )
+        .await?;
+        assert_ne!(blocked_fork["kind"], "forked", "unconfirmed external effect must block fork: {blocked_fork}");
 
-        driver
+        let confirmed = driver
             .state
             .observe(run, vec![Change::new(observed(OperationCleanup::Confirmed), at())], vec![])
             .await?;
+        let observed_fact_id = confirmed.facts[0].id;
 
         assert_eq!(
             driver
@@ -2405,22 +2417,17 @@ async fn external_effect_ended_unknown_releases_followup_and_projects_history() 
             .await?,
         )?;
         reader.finish().await?;
-        assert!(
-            detail["source"]["text"]
-                .as_str()
-                .unwrap_or_default()
-                .contains(diagnostic),
-            "{detail}"
-        );
+        let expected_text = maka_agent_facts::tool_output::ended_unknown_message(diagnostic);
+        assert_eq!(detail["source"]["text"], expected_text);
 
-        // Snapshot projection and rebuilt Recall index agree with live history.
+        // Snapshot projection, Recall search, and Session Fork all succeed after cleanup confirms.
         let history = driver.state.session_history(owner.clone(), session.clone());
         let cut = history.capture().await?;
         let snapshot = history
             .capture_snapshot(
                 CaptureRequest {
                     id: SnapshotId::new(),
-                    cut,
+                    cut: cut.clone(),
                 },
                 CancellationToken::new(),
             )
@@ -2438,6 +2445,96 @@ async fn external_effect_ended_unknown_releases_followup_and_projects_history() 
         assert!(frozen["chunks"].as_array().unwrap().iter().any(|row| {
             row["role"] == "tool_result" && row["tool"]["result"]["settlement"] == "unknown"
         }));
+
+        let find = |query: &str, mask_evidence: bool| {
+            maka_agent_state::session_history::navigation::SourceFind {
+                after: None,
+                query: query.into(),
+                case_sensitive: true,
+                whole_word: false,
+                include_internal: true,
+                mask_evidence,
+            }
+        };
+        let live_tree =
+            maka_agent_state::session_history::source_tree::SourceTree::live(&history, &cut)
+                .await?;
+        let snapshot_tree =
+            maka_agent_state::session_history::source_tree::SourceTree::snapshot(&snapshot).await?;
+        for tree in [&live_tree, &snapshot_tree] {
+            let hits = tree.find_page(find(diagnostic, false), CancellationToken::new()).await?;
+            assert!(
+                hits.matches.iter().any(|hit| {
+                    hit.field == maka_agent_state::recall::Field::Result
+                        && hit.preview.contains(diagnostic)
+                }),
+                "Recall search must find ended-unknown observation (got {} hits)",
+                hits.matches.len()
+            );
+        }
+
+        let revision = driver.owner.mutable_session(&session).await?.revision;
+        let forked = model_recovery::call(
+            client,
+            "agent",
+            "fork",
+            json!({"sessionId": session, "expectedRevision": revision, "position": {"kind": "end"}, "title": "Fork after ended unknown", "labels": []}),
+        )
+        .await?;
+        assert_eq!(forked["kind"], "forked", "ended-unknown external effect must not block fork: {forked}");
+
+        // Restricting the diagnostic hides it from restricted Recall search, paired archive,
+        // RunTerminated failure row, and model recovery diagnostic, while audit readers keep it.
+        let obs_seq = history
+            .fact_sequence(&cut, run, observed_fact_id)
+            .await?
+            .ok_or("missing observed sequence")?;
+        let term_seq = history
+            .fact_sequence(&cut, run, termination_fact_id)
+            .await?
+            .ok_or("missing termination sequence")?;
+        let termination = history
+            .item(&cut, term_seq)
+            .await?
+            .ok_or("missing termination item")?;
+        let start = expected_text.find(diagnostic).ok_or("missing diagnostic")?;
+        suppress_history_quotes(&rig, &session, &[(obs_seq, start, diagnostic)]).await?;
+
+        for tree in [&live_tree, &snapshot_tree] {
+            let leaked = tree.find_page(find(diagnostic, true), CancellationToken::new()).await?;
+            assert!(leaked.matches.is_empty(), "restricted Recall search leaked diagnostic");
+            let masked = tree
+                .find_page(find("The call ended", true), CancellationToken::new())
+                .await?;
+            assert!(masked.matches.iter().any(|hit| {
+                hit.field == maka_agent_state::recall::Field::Result
+                    && !hit.preview.contains(diagnostic)
+            }));
+        }
+        let restricted = history
+            .restricted_archives(vec![prepared_fact_id, termination_fact_id])
+            .await?;
+        assert!(restricted.contains_key(&prepared_fact_id), "{restricted:?}");
+        assert!(restricted.contains_key(&termination_fact_id), "{restricted:?}");
+        let live_source = maka_agent_state::session_history::source_tree::HistoryDataSource::Live {
+            history,
+            cut,
+        };
+        let archived_source =
+            maka_agent_state::session_history::source_tree::HistoryDataSource::Snapshot(snapshot);
+        for data in [live_source, archived_source] {
+            let model = data.recovery_failure_for_reader(&termination, true).await?;
+            assert!(
+                model.as_deref() == Some("The operation outcome is unknown."),
+                "restricted recovery diagnostic leaked: {model:?}"
+            );
+            assert_eq!(
+                data.recovery_failure_at(&termination).await?.as_deref(),
+                Some(format!(
+                    "{diagnostic}. The call may still be running; its end was not confirmed."
+                ).as_str())
+            );
+        }
 
         assert_eq!(
             driver

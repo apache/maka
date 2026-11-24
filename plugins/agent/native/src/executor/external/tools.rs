@@ -58,7 +58,7 @@ pub(crate) struct HostTools {
     pub effects: Arc<dyn HostEffects>,
 }
 
-pub(super) struct Tools {
+pub(crate) struct Tools {
     tools: Option<BoundTools>,
     execution: ExecutionIdentity,
     custody: Arc<dyn WorkCustody>,
@@ -111,6 +111,29 @@ impl Tools {
             task: request.task_id,
             source: owner.source_identity(),
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_test(
+        catalog: ToolCatalog,
+        effects: Arc<dyn HostEffects>,
+        execution: ExecutionIdentity,
+        custody: Arc<dyn WorkCustody>,
+        task: ExternalTaskId,
+        source: maka_agent_facts::executor::Binding,
+    ) -> Self {
+        let definitions = catalog.definitions().cloned().collect();
+        Self {
+            tools: Some(BoundTools {
+                catalog,
+                definitions,
+                effects,
+            }),
+            execution,
+            custody,
+            task,
+            source,
+        }
     }
 
     pub fn finish_signal(&self) -> CancellationToken {
@@ -352,93 +375,4 @@ fn map_tool_error(operation_id: &str, error: ToolError) -> (Value, Option<Error>
 
 fn mcp_error(value: Value) -> Value {
     mcp(value, true)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::map_tool_error;
-    use maka_agent_facts::tools::ToolError;
-    use maka_agent_ports::executor::Error;
-    use maka_plugin_core::{
-        composition::InstanceId,
-        contract::Transport,
-        deployment::DeploymentRef,
-        operation::{
-            OperationCleanup, OperationOutcome, OperationReply, Receipt, RecoveryContract,
-            RecoveryProtocol, RecoveryRef,
-        },
-    };
-    use uuid::Uuid;
-
-    fn reply(cleanup: OperationCleanup, diagnostic: &str) -> OperationReply {
-        let digest = format!("sha256-{}", "a".repeat(64));
-        OperationReply {
-            reference: RecoveryRef {
-                source: DeploymentRef {
-                    state_domain: "b".repeat(64),
-                    deployment: Uuid::new_v4(),
-                    revision: 1,
-                },
-                namespace: InstanceId(vec![Uuid::new_v4()]),
-                export: "computer".into(),
-                method: "evaluate".into(),
-                operation: Uuid::new_v4(),
-                fingerprint: digest.clone(),
-                contract: RecoveryContract {
-                    name: "maka.workspace.Computer".into(),
-                    version: 1,
-                    transport: Transport::Remote,
-                    digest,
-                },
-                recovery: RecoveryProtocol::JournalV1,
-            },
-            receipt: Receipt::Recorded {
-                outcome: OperationOutcome::Unknown {
-                    diagnostic: diagnostic.into(),
-                },
-                cleanup,
-            },
-        }
-    }
-
-    #[test]
-    fn ended_unknown_host_operation_is_non_fatal_mcp_error_while_unconfirmed_stays_fatal() {
-        let diagnostic = "paste did not produce an observable change; inspect the UI before trying another action";
-        let (value, fatal) = map_tool_error(
-            "external:task:op1",
-            ToolError::OperationUnknown {
-                message: "The operation result could not be confirmed.".into(),
-                observation: Box::new(reply(OperationCleanup::Confirmed, diagnostic)),
-            },
-        );
-        assert!(
-            fatal.is_none(),
-            "confirmed cleanup should keep MCP open: {fatal:?}"
-        );
-        assert_eq!(value["isError"], true);
-        let text = value["content"][0]["text"].as_str().unwrap();
-        assert!(text.contains(diagnostic), "{text}");
-        assert!(
-            text.contains("The call ended, but its result is unknown"),
-            "{text}"
-        );
-
-        let (_, fatal_unconfirmed) = map_tool_error(
-            "external:task:op2",
-            ToolError::OperationUnknown {
-                message: "unknown".into(),
-                observation: Box::new(reply(OperationCleanup::Unconfirmed, diagnostic)),
-            },
-        );
-        assert!(matches!(fatal_unconfirmed, Some(Error::Unknown)));
-
-        let (_, fatal_cleanup) = map_tool_error(
-            "external:task:op3",
-            ToolError::OperationCleanupUnconfirmed {
-                message: "cleanup failed".into(),
-                observation: Box::new(reply(OperationCleanup::Confirmed, diagnostic)),
-            },
-        );
-        assert!(matches!(fatal_cleanup, Some(Error::CleanupUnconfirmed)));
-    }
 }

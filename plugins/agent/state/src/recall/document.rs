@@ -44,10 +44,7 @@ pub(crate) enum Rule<'a> {
         descriptor: &'a ContentRef,
     },
     ExternalReturned(&'a ContentRef),
-    ExternalObserved {
-        diagnostic: &'a str,
-        observation: &'a maka_plugin_core::operation::OperationReply,
-    },
+    ExternalObserved(&'a str),
     Cell(&'a CellEvent),
     Receipt(&'a maka_agent_facts::operation::RecordedOperationReply),
     Failure(&'a str),
@@ -82,10 +79,9 @@ pub(crate) fn rule(fact: &Fact) -> Option<Rule<'_>> {
                 maka_agent_facts::external_effects::ExternalEffectEvent::Observed {
                     observation, ..
                 },
-        } => Rule::ExternalObserved {
-            diagnostic: maka_agent_facts::tool_output::ended_unknown_diagnostic(observation)?,
+        } => Rule::ExternalObserved(maka_agent_facts::tool_output::ended_unknown_diagnostic(
             observation,
-        },
+        )?),
         Fact::Cell { event } => Rule::Cell(event),
         Fact::OperationObserved { reply, .. } => Rule::Receipt(reply),
         Fact::ModelInterrupted { diagnostic, .. }

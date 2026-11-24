@@ -266,21 +266,12 @@ fn project(
             })?;
             message.references.push(output.clone());
         }
-        Rule::ExternalObserved {
-            diagnostic,
-            observation,
-        } => {
+        Rule::ExternalObserved(diagnostic) => {
             message.role = Role::ToolResult;
             field(
                 &mut message,
                 Field::Result,
                 &maka_agent_facts::tool_output::ended_unknown_message(diagnostic),
-                false,
-            );
-            field(
-                &mut message,
-                Field::Receipt,
-                &serde_json::to_string(observation)?,
                 false,
             );
         }
@@ -674,6 +665,46 @@ pub(super) fn rebuild(
 ) -> Result<(), StoreError> {
     store.session(session)?;
     let owner = store.key()?;
+    rebuild_session(c, &store.owner, &owner, session)
+}
+
+pub(crate) fn migrate_external_effect_observations(c: &Connection) -> Result<(), StoreError> {
+    let sessions: Vec<(String, String)> = c
+        .prepare_cached(
+            "SELECT DISTINCT r.owner, r.session
+             FROM (SELECT DISTINCT run FROM agent_external_effects) e
+             JOIN agent_run_specs r ON r.run = e.run
+             WHERE EXISTS (
+               SELECT 1
+               FROM agent_session_history h
+               JOIN agent_facts f ON f.sequence = h.sequence
+               JOIN contents b ON b.id = f.body_content_id
+               WHERE h.owner = r.owner
+                 AND h.session = r.session
+                 AND h.run = e.run
+                 AND h.kind = 'external_effect'
+                 AND h.tool_start = 0
+                 AND h.result_source = 0
+                 AND CAST(b.payload AS TEXT)->>'$.fact.event.kind' = 'observed'
+                 AND CAST(b.payload AS TEXT)->>'$.fact.event.observation.receipt.outcome.kind' = 'unknown'
+                 AND CAST(b.payload AS TEXT)->>'$.fact.event.observation.receipt.cleanup.kind' = 'confirmed'
+             )",
+        )?
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect::<Result<_, _>>()?;
+    for (owner_json, session) in sessions {
+        let owner: RunOwner = serde_json::from_str(&owner_json)?;
+        rebuild_session(c, &owner, &owner_json, &session)?;
+    }
+    Ok(())
+}
+
+fn rebuild_session(
+    c: &Connection,
+    expected_owner: &RunOwner,
+    owner: &str,
+    session: &str,
+) -> Result<(), StoreError> {
     c.execute("DELETE FROM agent_recall_terms WHERE rowid IN(SELECT id FROM agent_recall_messages WHERE owner=? AND session=?)",params![owner,session])?;
     for table in [
         "agent_recall_messages",
@@ -699,7 +730,7 @@ pub(super) fn rebuild(
                         r.get(0)
                     })?;
                 let spec: RunSpec = serde_json::from_slice(&bytes)?;
-                if spec.owner != store.owner || spec.session_id != session {
+                if &spec.owner != expected_owner || spec.session_id != session {
                     return Err(StoreError::EventConflict);
                 }
                 cached_spec = Some((spec_id, spec));

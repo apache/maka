@@ -47,6 +47,8 @@ const PRESENTATION_VERSION: u32 = 3;
 const AGY_ACP_VERSION: u32 = 5;
 const CONTEXT_VERSION: u32 = 6;
 pub(crate) use history::Inputs;
+#[cfg(test)]
+pub(crate) use tools::Tools;
 pub(crate) use tools::{HostEffects, HostTools};
 
 /// Observation addresses from the original runtime acknowledgement. None is a
