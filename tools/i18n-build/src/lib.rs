@@ -25,7 +25,7 @@ use icu::{Node, ParamType, PluralSelector, collect_params, parse_message};
 use serde::Deserialize;
 use serde_json::Value;
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeMap,
     env, fs,
     path::{Path, PathBuf},
 };
@@ -530,6 +530,7 @@ pub fn compile_docs(
     prefix: &str,
     out_file: &str,
     required_markers: &[&str],
+    protocol_marker_prefixes: &[&str],
 ) {
     let crate_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let dir = crate_dir.join(docs_dir);
@@ -563,7 +564,7 @@ pub fn compile_docs(
     }
 
     let base_doc = &contents[&manifest.default_locale];
-    let base_anchors = extract_html_markers(base_doc);
+    let base_anchors = extract_html_markers(base_doc, protocol_marker_prefixes);
 
     let count = manifest.locales.len();
     let mut code = String::new();
@@ -585,12 +586,14 @@ pub fn compile_docs(
                 entry.tag
             );
         }
-        let anchors = extract_html_markers(text);
-        assert_eq!(
-            anchors, base_anchors,
-            "HTML comment protocol markers mismatch in {prefix}.{}.md",
-            entry.tag
-        );
+        if !protocol_marker_prefixes.is_empty() {
+            let anchors = extract_html_markers(text, protocol_marker_prefixes);
+            assert_eq!(
+                anchors, base_anchors,
+                "HTML comment protocol markers mismatch in {prefix}.{}.md",
+                entry.tag
+            );
+        }
         let frame_name = format!("{prefix}.{}.md.zst", entry.tag);
         let compressed = zstd::bulk::compress(text.as_bytes(), 9)
             .unwrap_or_else(|e| panic!("zstd compress failed for {frame_name}: {e}"));
@@ -614,8 +617,11 @@ pub fn compile_docs(
     fs::write(out_dir.join(out_file), code).unwrap();
 }
 
-fn extract_html_markers(doc: &str) -> BTreeSet<String> {
-    let mut out = BTreeSet::new();
+fn extract_html_markers(doc: &str, prefixes: &[&str]) -> Vec<String> {
+    if prefixes.is_empty() {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
     let mut rest = doc;
     while let Some(start) = rest.find("<!--") {
         rest = &rest[start..];
@@ -623,11 +629,8 @@ fn extract_html_markers(doc: &str) -> BTreeSet<String> {
             break;
         };
         let marker = rest[..end + 3].trim();
-        if marker.starts_with("<!-- browser-document:")
-            || marker == "<!-- /browser-document -->"
-            || marker == "<!-- named-browser-documents -->"
-        {
-            out.insert(marker.to_owned());
+        if prefixes.iter().any(|p| marker.starts_with(p)) {
+            out.push(marker.to_owned());
         }
         rest = &rest[end + 3..];
     }
@@ -639,20 +642,81 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_plural_select_and_escaped_braces() {
+    fn parses_plural_nested_select_and_escaped_literals() {
         let ast = parse_message(
-            "{count, plural, =0 {none} one {# tool for {user}} other {# tools '{raw}' it''s ok}}",
+            "{count, plural, =0 {none} one {# tool for {user}} other {{kind, select, a {# tools '{raw}' it''s ok} other {# items}}}}",
         )
         .unwrap();
         let mut params = BTreeMap::new();
         collect_params(&ast, &mut params).unwrap();
         assert_eq!(params.get("count"), Some(&ParamType::Count));
         assert_eq!(params.get("user"), Some(&ParamType::Text));
-        assert_eq!(params.len(), 2);
+        assert_eq!(params.get("kind"), Some(&ParamType::Text));
+        assert_eq!(params.len(), 3);
+
+        // Verify unescaped literal content & # preserved inside nested select under plural.
+        let Node::Plural { cases, .. } = &ast[0] else {
+            panic!("expected plural node");
+        };
+        let other_branch = &cases[2].1;
+        let Node::Select {
+            cases: sel_cases, ..
+        } = &other_branch[0]
+        else {
+            panic!("expected nested select node");
+        };
+        assert_eq!(
+            sel_cases[0].1,
+            vec![Node::Hash, Node::Literal(" tools {raw} it's ok".to_owned()),]
+        );
+
+        // Outside plural, '# does not open a quoted span.
+        let outside = parse_message("Issue '#12 failed: {reason}").unwrap();
+        assert_eq!(
+            outside,
+            vec![
+                Node::Literal("Issue '#12 failed: ".to_owned()),
+                Node::Var("reason".to_owned()),
+            ]
+        );
     }
 
     #[test]
-    fn rejects_plural_without_other_branch() {
+    fn rejects_invalid_icu_syntax_and_type_conflicts() {
         assert!(parse_message("{count, plural, one {# item}}").is_err());
+        assert!(parse_message("{kind, select, a {A}}").is_err());
+        assert!(parse_message("Use '{foo} {bar}").is_err());
+        assert!(parse_message("{count, plural, one {a} one {b} other {c}}").is_err());
+        assert!(parse_message("{kind, select, a {A} a {B} other {C}}").is_err());
+
+        for conflict in [
+            "{x, select, a {A} other {B}} {x, plural, other {#}}",
+            "{x, plural, other {#}} {x, select, a {A} other {B}}",
+        ] {
+            let ast = parse_message(conflict).unwrap();
+            let mut params = BTreeMap::new();
+            assert!(collect_params(&ast, &mut params).is_err(), "{conflict}");
+        }
+    }
+
+    #[test]
+    fn extract_html_markers_preserves_order_and_duplicate_closing_tags() {
+        let prefixes = &[
+            "<!-- named-browser-documents -->",
+            "<!-- browser-document:",
+            "<!-- /browser-document -->",
+        ];
+        let a = "<!-- named-browser-documents --><!-- browser-document: one -->x<!-- /browser-document --><!-- browser-document: two -->y<!-- /browser-document -->";
+        let missing_close = "<!-- named-browser-documents --><!-- browser-document: one -->x<!-- /browser-document --><!-- browser-document: two -->y";
+        let reordered = "<!-- named-browser-documents --><!-- browser-document: two -->y<!-- /browser-document --><!-- browser-document: one -->x<!-- /browser-document -->";
+        assert_eq!(extract_html_markers(a, prefixes).len(), 5);
+        assert_ne!(
+            extract_html_markers(a, prefixes),
+            extract_html_markers(missing_close, prefixes)
+        );
+        assert_ne!(
+            extract_html_markers(a, prefixes),
+            extract_html_markers(reordered, prefixes)
+        );
     }
 }

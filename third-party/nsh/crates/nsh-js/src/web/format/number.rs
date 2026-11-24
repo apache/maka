@@ -112,6 +112,53 @@ impl Format {
     };
 }
 
+/// Exact CLDR plural operands computed from the ECMA-402 rounded decimal digits.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct PluralOperands {
+    pub(crate) i_is_zero: bool,
+    pub(crate) i_is_one: bool,
+    pub(crate) i_exact: Option<u64>,
+    pub(crate) mod10: u8,
+    pub(crate) mod100: u8,
+    pub(crate) div_million: bool,
+    pub(crate) v: usize,
+    pub(crate) f_nonzero: bool,
+}
+
+impl PluralOperands {
+    /// Returns None for NaN / Infinity (which always map to "other").
+    pub(crate) fn from_f64(value: f64, rounding: Rounding) -> Option<Self> {
+        let Value::Finite(decimal) = Value::from_f64(value) else {
+            return None;
+        };
+        let (rounded, min_frac) = decimal.rounded(rounding);
+        let (int, frac) = rounded.split(1, min_frac);
+        let bytes = int.as_bytes();
+        let i_is_zero = bytes.iter().all(|&b| b == b'0');
+        let i_is_one = int == "1";
+        let mod10 = bytes.last().map_or(0, |&b| b - b'0');
+        let mod100 = int
+            .get(int.len().saturating_sub(2)..)
+            .and_then(|s| s.parse::<u8>().ok())
+            .unwrap_or(0);
+        let div_million =
+            !i_is_zero && bytes.len() > 6 && bytes[bytes.len() - 6..].iter().all(|&b| b == b'0');
+        let i_exact = int.parse::<u64>().ok();
+        let v = frac.len();
+        let f_nonzero = frac.bytes().any(|b| b != b'0');
+        Some(Self {
+            i_is_zero,
+            i_is_one,
+            i_exact,
+            mod10,
+            mod100,
+            div_million,
+            v,
+            f_nonzero,
+        })
+    }
+}
+
 /// The fraction digits of a currency (ISO 4217).
 pub(crate) fn currency_digits(code: &str) -> u8 {
     match code {

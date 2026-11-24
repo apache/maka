@@ -170,4 +170,49 @@ async fn summary_media_allocation_bound_never_opens_blob_bodies() {
         assert!(bound.retained > 0);
         assert_eq!(bound.documents, usize::from(!mime.starts_with("audio/")));
     }
+
+    // Verify localized audio fallback charges owned heap text and allocation bound covers actual retained bytes.
+    for lang in [Language::EN, Language::FR, Language::RU, Language::JA] {
+        let compiler = Compiler::new(Arc::new(opts()), lang);
+        let bound = compiler
+            .count_user_part_bound(
+                ContentRecipe::Media {
+                    media: MediaSource {
+                        bytes: SourceBytes::Source(Arc::new(NoBlob)),
+                        media_type: raw("audio/wav"),
+                        detail: None,
+                    },
+                    provider_options: None,
+                },
+                Arc::new(Budget),
+            )
+            .await
+            .unwrap();
+        let mut actual_plan = compiler
+            .media(
+                MediaSource {
+                    bytes: SourceBytes::Inline(Bytes::from_static(b"123456")),
+                    media_type: raw("audio/wav"),
+                    detail: None,
+                },
+                None,
+                false,
+                MediaInspection::Wire,
+                Arc::new(Budget),
+            )
+            .await
+            .unwrap();
+        actual_plan.fragments.push(literal(b"}"));
+        let actual_retained = actual_plan.allocation_bytes().unwrap();
+        assert!(
+            actual_plan.owned_bytes > 0,
+            "{lang:?} must charge owned fallback text"
+        );
+        assert!(
+            bound.retained >= actual_retained,
+            "{lang:?} bound {} < actual {}",
+            bound.retained,
+            actual_retained
+        );
+    }
 }

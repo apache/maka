@@ -48,6 +48,8 @@ struct Cache {
     output: PathBuf,
     configuration: Option<PathBuf>,
     asset_root: Option<PathBuf>,
+    #[serde(default)]
+    include_locales: bool,
     compiler: String,
     inputs: BTreeMap<PathBuf, String>,
     outputs: BTreeMap<PathBuf, String>,
@@ -66,12 +68,24 @@ pub fn compiler_identity() -> Result<String> {
     ))
 }
 
-/// Compile a UI entry, reusing verified output when its compiler and inputs are unchanged.
+/// Compile a plugin UI chunk (loaded into a root VM that already registered nsh:i18n).
 pub fn compile_cached(
     entry: &Path,
     output: &Path,
     asset_root: Option<&Path>,
     compiler: &str,
+) -> Result<CompiledUi> {
+    compile_cached_with_locales(entry, output, asset_root, compiler, false)
+}
+
+/// Compile a standalone root UI surface (such as Bootstrap or PermissionSetup),
+/// optionally embedding all locales from locales.manifest.json into nsh:i18n.
+pub fn compile_cached_with_locales(
+    entry: &Path,
+    output: &Path,
+    asset_root: Option<&Path>,
+    compiler: &str,
+    include_locales: bool,
 ) -> Result<CompiledUi> {
     let entry = fs::canonicalize(entry)?;
     let output = std::path::absolute(output)?;
@@ -83,6 +97,7 @@ pub fn compile_cached(
                 if cache.entry == entry
                     && cache.output == output
                     && cache.asset_root == asset_root
+                    && cache.include_locales == include_locales
                     && cache.configuration == configuration(&entry)
                     && cache.compiler == compiler
                     && matches_files(&cache.inputs)?
@@ -95,7 +110,7 @@ pub fn compile_cached(
         }
     }
     let started = SystemTime::now();
-    let manifest = compile(&entry, &output, asset_root.as_deref())?;
+    let manifest = compile_with_locales(&entry, &output, asset_root.as_deref(), include_locales)?;
     let inputs = fingerprint(&manifest.inputs)?;
     let outputs = fingerprint(
         &std::iter::once(manifest.module.clone())
@@ -112,6 +127,7 @@ pub fn compile_cached(
             &serde_json::to_vec(&Cache {
                 configuration: configuration(&entry),
                 asset_root,
+                include_locales,
                 entry,
                 output,
                 compiler: compiler.into(),
@@ -128,6 +144,15 @@ pub fn compile_cached(
 
 /// Compile and stage a plugin's NSH module and assets without a persistent input cache.
 pub fn compile(entry: &Path, output: &Path, asset_root: Option<&Path>) -> Result<CompiledUi> {
+    compile_with_locales(entry, output, asset_root, false)
+}
+
+pub fn compile_with_locales(
+    entry: &Path,
+    output: &Path,
+    asset_root: Option<&Path>,
+    include_locales: bool,
+) -> Result<CompiledUi> {
     let entry = fs::canonicalize(entry)?;
     let output = std::path::absolute(output)?;
     let mut host = nsh_core::element::Registry::ui_set("maka/host");
@@ -147,7 +172,11 @@ pub fn compile(entry: &Path, output: &Path, asset_root: Option<&Path>) -> Result
         .map(Into::into)
         .chain(std::iter::once(host.into()))
         .collect();
-    let (manifest_path, locales) = bundled_locales(&entry)?;
+    let (manifest_path, locales) = if include_locales {
+        bundled_locales(&entry)?
+    } else {
+        (None, None)
+    };
     let bundled = nsh_bundler::bundle(&nsh_bundler::BundleOptions {
         entry: entry.clone(),
         minify: false,

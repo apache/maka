@@ -17,14 +17,14 @@
  * under the License.
  */
 
-import { effect, platform, signal, type JSX } from 'nsh';
+import { platform, signal, type JSX } from 'nsh';
 import { host } from 'maka/host';
 import type { UiEmbeddedViewProps, UiModule } from '../../../packages/plugin-sdk/src/workbench.js';
 import {
   quickToolView,
   type QuickToolInput,
 } from '../../../packages/plugin-sdk/src/workbench-views.js';
-import { currentLocale, localizedKeywords, tr } from '../../../products/maka/workbench/app/locale';
+import { localizedKeywords, tr } from '../../../products/maka/workbench/app/locale';
 import { dictationPreferences as preferences } from '../../../products/maka/workbench/app/dictationPreferences';
 import {
   SettingsBody,
@@ -102,8 +102,7 @@ function Preferences() {
   );
 }
 
-export const activate: UiModule<JSX.Element>['activate'] = (context) => {
-  effect(() => currentLocale.set(context.locale()));
+export const activate: UiModule<JSX.Element>['activate'] = () => {
   const supported = platform.os === 'macos' && platform.idiom !== 'terminal';
   return {
     exports: {

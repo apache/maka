@@ -60,7 +60,8 @@
     "media_kind_image": "Bild",
     "media_from_tool": "{kind} von Tool {name} ({id}):",
     "media_supplied_below": "{kind} unten bereitgestellt.",
-    "unsupported_audio": "Audioeingabe ({media_type}, {length} base64-Zeichen) wird von diesem Modelladapter nicht unterstützt. Die Audiodaten verbleiben in den Tool-Belegen."
+    "unsupported_audio": "Audioeingabe ({media_type}, {length} base64-Zeichen) wird von diesem Modelladapter nicht unterstützt. Die Audiodaten verbleiben in den Tool-Belegen.",
+    "tool_error_prefix": "Fehler: "
   },
   "goal": {
     "pause_for_settings": "Überprüfen Sie die Modellverbindung und die Unterhaltungseinstellungen und setzen Sie das Ziel dann fort.",

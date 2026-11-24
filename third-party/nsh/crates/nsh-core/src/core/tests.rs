@@ -56144,3 +56144,80 @@ fn a_focus_outside_the_overlay_does_not_take_its_escape() {
     c.commit();
     assert!(!c.focus_takes_escape());
 }
+
+#[test]
+fn locale_change_rebuilds_existing_text_and_input_locales() {
+    use crate::element::Environment;
+    use crate::platform::Locale;
+
+    let en = Locale::parse("en-US").unwrap();
+    let ja = Locale::parse("ja").unwrap();
+    let zh_hk = Locale::parse("zh-HK").unwrap();
+
+    let mut c = core();
+    c.set_environment(Environment {
+        locale: en,
+        ..Default::default()
+    });
+    apply(
+        &mut c,
+        vec![
+            Op::Create {
+                id: 2,
+                tag: Tag::Text,
+            },
+            Op::SetText {
+                id: 2,
+                text: "直骨海刃".into(),
+            },
+            Op::Insert {
+                parent: ROOT_ID,
+                child: 2,
+                before: None,
+            },
+            Op::Create {
+                id: 3,
+                tag: Tag::Input,
+            },
+            Op::Insert {
+                parent: ROOT_ID,
+                child: 3,
+                before: None,
+            },
+        ],
+    );
+    let initial = c.commit().expect("initial batch");
+    let text_locale = |batch: &MountBatch| {
+        batch.items.iter().rev().find_map(|item| match item {
+            MountItem::Text { id: 2, text, .. } => text.locale,
+            _ => None,
+        })
+    };
+    let input_locale = |batch: &MountBatch| {
+        batch.items.iter().rev().find_map(|item| match item {
+            MountItem::Input { id: 3, config } => config.locale,
+            _ => None,
+        })
+    };
+    assert_eq!(text_locale(&initial), Some(en));
+    assert_eq!(input_locale(&initial), Some(en));
+
+    // Switching locale at runtime must rebuild AttributedText.locale and InputConfig.locale
+    // on existing nodes without requiring any text or prop change.
+    c.set_environment(Environment {
+        locale: ja,
+        ..Default::default()
+    });
+    let after_ja = c.commit().expect("ja locale batch");
+    assert_eq!(text_locale(&after_ja), Some(ja));
+    assert_eq!(input_locale(&after_ja), Some(ja));
+
+    // Switching again to zh-HK propagates the exact regional Han tag.
+    c.set_environment(Environment {
+        locale: zh_hk,
+        ..Default::default()
+    });
+    let after_hk = c.commit().expect("zh-HK locale batch");
+    assert_eq!(text_locale(&after_hk), Some(zh_hk));
+    assert_eq!(input_locale(&after_hk), Some(zh_hk));
+}

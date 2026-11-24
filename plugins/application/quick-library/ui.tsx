@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { effect, Clipboard, computed, openUrl, signal, Storage, type JSX } from 'nsh';
+import { Clipboard, computed, openUrl, signal, Storage, type JSX } from 'nsh';
 import type { UiEmbeddedViewProps, UiModule } from '../../../packages/plugin-sdk/src/workbench.js';
 import {
   quickToolView,
@@ -25,7 +25,7 @@ import {
   type QuickItem,
   type QuickToolInput,
 } from '../../../packages/plugin-sdk/src/workbench-views.js';
-import { currentLocale, localizedKeywords, tr } from '../../../products/maka/workbench/app/locale';
+import { localizedKeywords, tr } from '../../../products/maka/workbench/app/locale';
 import { afterKeyword, search } from '../../shared/quick-search';
 import {
   expandLink,
@@ -201,8 +201,7 @@ function LibraryTool(props: { input: QuickToolInput; library: Library; kind: Lib
   return null;
 }
 
-export const activate: UiModule<JSX.Element>['activate'] = (context) => {
-  effect(() => currentLocale.set(context.locale()));
+export const activate: UiModule<JSX.Element>['activate'] = () => {
   const library = createLibrary();
   const tool = (kind: LibraryKind) => ({
     kind: 'view' as const,

@@ -23,6 +23,7 @@ import { DiscoveryPanel } from '../../app/DiscoveryPanel';
 import { MessageRow } from '../../app/MessageRow';
 import { BotReply } from '../../app/BotReply';
 import { HostProvider, type Host } from '../../app/host';
+import { installWorkbenchLocaleCatalog } from '../../app/localeCatalog';
 
 const systemTimezone = '+08:00';
 Intl.DateTimeFormat = new Proxy(Intl.DateTimeFormat, {
@@ -32,6 +33,7 @@ Intl.DateTimeFormat = new Proxy(Intl.DateTimeFormat, {
 });
 
 mount(() => {
+  installWorkbenchLocaleCatalog();
   let detail: any = null,
     revision = 0;
   let failDetailOnce = false;

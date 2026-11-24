@@ -45,5 +45,5 @@ export function formatCompactCount(value: number): string {
     maximumFractionDigits: 1,
   })
     .format(value)
-    .toLowerCase();
+    .replace(/([KMBT])$/, (unit) => unit.toLowerCase());
 }

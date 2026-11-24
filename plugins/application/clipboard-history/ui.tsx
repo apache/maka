@@ -206,7 +206,6 @@ function ClipboardHistory(props: {
 }
 
 export const activate: UiModule<JSX.Element>['activate'] = (context) => {
-  effect(() => currentLocale.set(context.locale()));
   const history = platform.os === 'macos' || platform.os === 'windows' ? createHistory() : null;
   return {
     exports: {

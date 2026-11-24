@@ -17,66 +17,83 @@
  * under the License.
  */
 
-import { effect, signal } from 'nsh';
-import { setLocale as setNshLocale } from 'nsh/i18n';
+import { signal, type Signal } from 'nsh';
 import { host as nativeHost } from 'maka/host';
 import {
-  createI18n,
+  formatMessage,
   negotiateLocale,
+  normalizeLocaleTag,
   resolveDisplayText,
   resolveLocale,
   resolveLocalizedPresentation,
   type DisplayText,
   type LanguagePreference,
 } from '../../../../packages/plugin-sdk/src/index.js';
-import en from '../locales/en.json' with { type: 'json' };
-import zhCN from '../locales/zh-CN.json' with { type: 'json' };
-import zhTW from '../locales/zh-TW.json' with { type: 'json' };
-import zhHK from '../locales/zh-HK.json' with { type: 'json' };
-import ja from '../locales/ja.json' with { type: 'json' };
-import ko from '../locales/ko.json' with { type: 'json' };
-import es from '../locales/es.json' with { type: 'json' };
-import fr from '../locales/fr.json' with { type: 'json' };
-import de from '../locales/de.json' with { type: 'json' };
-import ptBR from '../locales/pt-BR.json' with { type: 'json' };
-import ru from '../locales/ru.json' with { type: 'json' };
-import it from '../locales/it.json' with { type: 'json' };
+import type en from '../locales/en.json';
 
 export type MessageKey = keyof typeof en;
 
-const catalog = createI18n<MessageKey>({
-  en,
-  'zh-CN': zhCN,
-  'zh-TW': zhTW,
-  'zh-HK': zhHK,
-  ja,
-  ko,
-  es,
-  fr,
-  de,
-  'pt-BR': ptBR,
-  ru,
-  it,
-});
+type WorkbenchTranslator = (
+  locale: string,
+  key: MessageKey,
+  values?: Readonly<Record<string, string | number>>,
+) => string;
 
-const nativeLocale = nativeHost.systemLocale;
-export const currentLocale = signal(resolveLocale('auto', nativeLocale));
-let observedRevision = -1;
-
-// Keep NSH's native environment (Intl, system menus, and CoreText/DirectWrite/Pango
-// CJK glyph selection) synchronized with the active workbench locale.
-function syncNshLocale(locale: string) {
-  try {
-    setNshLocale(locale);
-  } catch {
-    // Headless unit test stubs may omit nsh/i18n runtime bindings.
-  }
+interface WorkbenchLocaleState {
+  readonly nativeLocale: unknown;
+  readonly currentLocale: Signal<string>;
+  observedRevision: number;
+  translate: WorkbenchTranslator | null;
+  nshSynced: boolean;
 }
 
-syncNshLocale(currentLocale());
-effect(() => {
-  syncNshLocale(currentLocale());
-});
+const WORKBENCH_LOCALE_KEY = Symbol.for('maka.workbench.i18n');
+
+/**
+ * Keep regional tags whose primary language matches the negotiated built-in locale
+ * (e.g. en-GB -> en-GB, fr-CA -> fr-CA) so Intl preserves regional date/number
+ * formatting, while remapping aliases and unsupported tags (e.g. yue-Hant-HK -> zh-HK,
+ * zh-MO -> zh-HK, zh-Hant -> zh-TW, ar-SA -> en) onto their negotiated built-in tag so
+ * QuickJS Intl and native CJK glyph shaping never fall back to en-US or Simplified Han.
+ */
+export function resolveUiLocale(raw: string): string {
+  const normalized = normalizeLocaleTag(raw);
+  const builtin = negotiateLocale(raw);
+  if (!normalized) return builtin;
+  if (builtin.startsWith('zh-')) {
+    const lower = normalized.toLowerCase();
+    const builtinLower = builtin.toLowerCase();
+    return lower === builtinLower || lower.startsWith(`${builtinLower}-`) ? normalized : builtin;
+  }
+  const rawLang = normalized.split('-')[0];
+  const builtinLang = builtin.split('-')[0];
+  return rawLang === builtinLang ? normalized : builtin;
+}
+
+const globals = globalThis as Record<symbol, WorkbenchLocaleState | undefined>;
+const state: WorkbenchLocaleState =
+  globals[WORKBENCH_LOCALE_KEY] ??
+  (globals[WORKBENCH_LOCALE_KEY] = {
+    nativeLocale: nativeHost.systemLocale,
+    currentLocale: signal(resolveUiLocale(resolveLocale('auto', nativeHost.systemLocale))),
+    observedRevision: -1,
+    translate: null,
+    nshSynced: false,
+  });
+
+export const currentLocale = state.currentLocale;
+
+/** Register the single window-owned catalog and NSH locale sync (idempotent). */
+export function registerWorkbenchLocaleRuntime(
+  translate: WorkbenchTranslator,
+  bindNshSync?: () => void,
+) {
+  state.translate = translate;
+  if (!state.nshSynced && bindNshSync) {
+    state.nshSynced = true;
+    bindNshSync();
+  }
+}
 
 /** Host preferences are the authority; an older startup read cannot undo a saved change. */
 export function applyLanguagePreference(
@@ -84,15 +101,15 @@ export function applyLanguagePreference(
   revision: number,
   resolvedLanguage?: string,
 ) {
-  if (revision < observedRevision) return;
-  observedRevision = revision;
+  if (revision < state.observedRevision) return;
+  state.observedRevision = revision;
   if (preference !== 'auto') {
-    currentLocale.set(resolveLocale(preference, nativeLocale));
+    currentLocale.set(resolveUiLocale(resolveLocale(preference, state.nativeLocale)));
     return;
   }
-  const local = resolveLocale('auto', nativeLocale);
+  const local = resolveUiLocale(resolveLocale('auto', state.nativeLocale));
   if (resolvedLanguage && negotiateLocale(local) !== negotiateLocale(resolvedLanguage)) {
-    currentLocale.set(resolvedLanguage);
+    currentLocale.set(resolveUiLocale(resolvedLanguage));
   } else {
     currentLocale.set(local);
   }
@@ -100,7 +117,11 @@ export function applyLanguagePreference(
 
 /** Render selects one immutable catalog and formats ICU placeholders/plurals for the active locale. */
 export function tr(key: MessageKey, values?: Readonly<Record<string, string | number>>): string {
-  return catalog.t(currentLocale(), key, values);
+  const locale = currentLocale();
+  if (state.translate) {
+    return state.translate(locale, key, values);
+  }
+  return formatMessage(key, locale, values);
 }
 
 /** Merge stable ASCII shortcuts with localized search keywords for the active locale. */

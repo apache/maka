@@ -60,7 +60,8 @@
     "media_kind_image": "Immagine",
     "media_from_tool": "{kind} dallo strumento {name} ({id}):",
     "media_supplied_below": "{kind} disponibile di seguito.",
-    "unsupported_audio": "L'input audio ({media_type}, {length} caratteri base64) non è supportato da questo adattatore di modello. L'audio rimane nelle evidenze dello strumento."
+    "unsupported_audio": "L'input audio ({media_type}, {length} caratteri base64) non è supportato da questo adattatore di modello. L'audio rimane nelle evidenze dello strumento.",
+    "tool_error_prefix": "Errore: "
   },
   "goal": {
     "pause_for_settings": "Verifica la connessione del modello e le impostazioni della conversazione, poi riprendi l'Obiettivo.",

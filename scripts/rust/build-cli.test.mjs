@@ -57,9 +57,18 @@ function logo(size = 1024) {
   return png;
 }
 
+const repoLocaleManifest = await readFile(
+  new URL('../../locales.manifest.json', import.meta.url),
+  'utf8',
+);
+const expectedAppleLocalizations = JSON.parse(repoLocaleManifest).locales.map(
+  (entry) => entry.appleLocalization,
+);
+
 async function repository(root) {
   await mkdir(root, { recursive: true });
   await writeFile(join(root, 'Cargo.toml'), manifest);
+  await writeFile(join(root, 'locales.manifest.json'), repoLocaleManifest);
   await mkdir(join(root, 'assets'), { recursive: true });
   await writeFile(join(root, 'assets/logo.png'), logo());
 }
@@ -185,6 +194,17 @@ test('CLI builds use the requested target and artifact path', async (t) => {
         ['CFBundleVersion', '1.2.3'],
       ])
         assert.ok(plist.includes(`<key>${key}</key>\n  <string>${value}</string>`), key);
+      assert.ok(
+        plist.includes(
+          [
+            '  <key>CFBundleLocalizations</key>',
+            '  <array>',
+            ...expectedAppleLocalizations.map((loc) => `    <string>${loc}</string>`),
+            '  </array>',
+          ].join('\n'),
+        ),
+        'CFBundleLocalizations',
+      );
       if (process.platform === 'darwin')
         childProcess.execFileSync('plutil', ['-lint', join(contents, 'Info.plist')]);
       const icon = await readFile(join(contents, 'Resources/Maka.icns'));

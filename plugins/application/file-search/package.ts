@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { empty, localizePackage } from '../../shared/package.js';
+import { empty, localizePackage, localizedTitle } from '../../shared/package.js';
 
 export default localizePackage({
   schemaVersion: 1,
@@ -33,10 +33,7 @@ export default localizePackage({
       contributions: {
         preferences: {
           kind: 'settings',
-          title: {
-            fallback: 'Search files',
-            translations: { 'zh-CN': '文件搜索', 'zh-TW': '檔案搜尋' },
-          },
+          title: localizedTitle('Search files'),
         },
         tool: { kind: 'view', contract: 'maka.quick-launcher.tool' },
       },

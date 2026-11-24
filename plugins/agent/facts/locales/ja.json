@@ -60,7 +60,8 @@
     "media_kind_image": "画像",
     "media_from_tool": "ツール {name}（{id}）からの{kind}：",
     "media_supplied_below": "{kind}は以下に提供されています。",
-    "unsupported_audio": "このモデルアダプターは音声入力（{media_type}、base64 {length} 文字）に対応していません。音声はツールの証拠データ内に保持されています。"
+    "unsupported_audio": "このモデルアダプターは音声入力（{media_type}、base64 {length} 文字）に対応していません。音声はツールの証拠データ内に保持されています。",
+    "tool_error_prefix": "エラー: "
   },
   "goal": {
     "pause_for_settings": "モデル接続と会話設定を確認してから、ゴールを再開してください。",

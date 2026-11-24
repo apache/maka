@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { empty, localizePackage } from '../../shared/package.js';
+import { empty, localizePackage, localizedTitle } from '../../shared/package.js';
 
 export default localizePackage({
   schemaVersion: 1,
@@ -33,10 +33,7 @@ export default localizePackage({
         tool: { kind: 'view', contract: 'maka.quick-launcher.tool' },
         preferences: {
           kind: 'settings',
-          title: {
-            fallback: 'Dictation',
-            translations: { 'zh-CN': '语音听写', 'zh-TW': '語音聽寫' },
-          },
+          title: localizedTitle('Dictation'),
         },
       },
     },

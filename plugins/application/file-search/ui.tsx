@@ -25,7 +25,7 @@ import {
   type QuickItem,
   type QuickToolInput,
 } from '../../../packages/plugin-sdk/src/workbench-views.js';
-import { currentLocale, localizedKeywords, tr } from '../../../products/maka/workbench/app/locale';
+import { localizedKeywords, tr } from '../../../products/maka/workbench/app/locale';
 import { createScopes, ScopeSettings, statusLabel } from './settings';
 import { afterKeyword } from '../../shared/quick-search';
 
@@ -94,7 +94,6 @@ function FileSearch(props: {
 }
 
 export const activate: UiModule<JSX.Element>['activate'] = (context) => {
-  effect(() => currentLocale.set(context.locale()));
   const host = context.application as ApplicationHost;
   const settings = createScopes();
   return {

@@ -25,6 +25,7 @@ mod generated_catalog {
     include!(concat!(env!("OUT_DIR"), "/i18n_catalog.rs"));
 }
 pub use generated_catalog::i18n_catalog;
+#[cfg(feature = "native-desktop")]
 include!(concat!(env!("OUT_DIR"), "/i18n_docs.rs"));
 
 #[cfg(feature = "native-desktop")]
@@ -109,9 +110,25 @@ mod named_documentation_tests {
 
     #[test]
     fn named_lookup_is_exact_and_cannot_become_a_filesystem_path() {
+        let base_names: Vec<&str> = documentation_source(Language::EN)
+            .split_once("<!-- named-browser-documents -->")
+            .unwrap()
+            .1
+            .split("<!-- browser-document: ")
+            .skip(1)
+            .flat_map(|block| block.split_once(" -->").unwrap().0.split_ascii_whitespace())
+            .collect();
+        assert!(base_names.len() >= 16);
+
         for language in Language::all() {
-            assert!(named_documentation(language, "session-naming").is_some());
-            assert!(named_documentation(language, "capabilities/browser/viewport").is_some());
+            for name in &base_names {
+                let body = named_documentation(language, name)
+                    .unwrap_or_else(|| panic!("missing doc {name:?} in {language:?}"));
+                assert!(
+                    !body.trim().is_empty(),
+                    "empty doc {name:?} in {language:?}"
+                );
+            }
             for missing in [
                 "",
                 " session-naming",
@@ -140,9 +157,15 @@ mod named_documentation_tests {
             i18n_catalog::browser::tab_header(Language::ZH_CN, "t1", "https://example.com"),
             "标签页 t1: https://example.com"
         );
+        // Inherited from zh-TW
         assert_eq!(
             i18n_catalog::browser::tab_header(Language::ZH_HK, "t1", "https://example.com"),
-            "分頁 t1: https://example.com"
+            i18n_catalog::browser::tab_header(Language::ZH_TW, "t1", "https://example.com")
+        );
+        // Genuine zh-HK overlay override differs from zh-TW
+        assert_ne!(
+            i18n_catalog::activity::capture_screenshot(Language::ZH_HK),
+            i18n_catalog::activity::capture_screenshot(Language::ZH_TW)
         );
         assert_eq!(
             javascript_error(Language::EN, "boom"),

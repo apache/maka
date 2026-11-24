@@ -1471,7 +1471,7 @@ impl<M: TextEngine> Core<M> {
             self.localize_platform();
         }
         if locale_changed {
-            self.fonts_changed();
+            self.locale_changed();
         }
         // A main window that keeps its placement saves it as it changes.
         if let Some(state) = environment.window_state {

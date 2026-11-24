@@ -212,10 +212,12 @@ pub fn notification_fallback(
                             content.push(ContentPart::text(value.to_string()))
                         }
                         ToolOutput::ErrorText(text) => {
-                            content.push(ContentPart::text(format!("Error: {text}")))
+                            let prefix = crate::i18n::wire::tool_error_prefix(language);
+                            content.push(ContentPart::text(format!("{prefix}{text}")))
                         }
                         ToolOutput::ErrorJson(value) => {
-                            content.push(ContentPart::text(format!("Error: {value}")))
+                            let prefix = crate::i18n::wire::tool_error_prefix(language);
+                            content.push(ContentPart::text(format!("{prefix}{value}")))
                         }
                         ToolOutput::Content(parts) => content.extend(parts),
                     }

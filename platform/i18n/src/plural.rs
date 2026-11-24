@@ -52,9 +52,18 @@ pub const fn plural_category(locale: BuiltinLocale, n: i64) -> PluralCategory {
         | BuiltinLocale::ZhHk
         | BuiltinLocale::Ja
         | BuiltinLocale::Ko => PluralCategory::Other,
-        BuiltinLocale::En | BuiltinLocale::De | BuiltinLocale::Es | BuiltinLocale::It => {
+        BuiltinLocale::En | BuiltinLocale::De => {
             if abs == 1 {
                 PluralCategory::One
+            } else {
+                PluralCategory::Other
+            }
+        }
+        BuiltinLocale::Es | BuiltinLocale::It => {
+            if abs == 1 {
+                PluralCategory::One
+            } else if abs != 0 && abs % 1_000_000 == 0 {
+                PluralCategory::Many
             } else {
                 PluralCategory::Other
             }
@@ -62,6 +71,8 @@ pub const fn plural_category(locale: BuiltinLocale, n: i64) -> PluralCategory {
         BuiltinLocale::Fr | BuiltinLocale::PtBr => {
             if abs == 0 || abs == 1 {
                 PluralCategory::One
+            } else if abs != 0 && abs % 1_000_000 == 0 {
+                PluralCategory::Many
             } else {
                 PluralCategory::Other
             }
@@ -111,6 +122,16 @@ mod tests {
             assert_eq!(plural_category(locale, 0), PluralCategory::One);
             assert_eq!(plural_category(locale, 1), PluralCategory::One);
             assert_eq!(plural_category(locale, 2), PluralCategory::Other);
+            assert_eq!(plural_category(locale, 1_000_000), PluralCategory::Many);
+            assert_eq!(plural_category(locale, 2_000_000), PluralCategory::Many);
+            assert_eq!(plural_category(locale, 1_000_001), PluralCategory::Other);
+        }
+        for locale in [BuiltinLocale::Es, BuiltinLocale::It] {
+            assert_eq!(plural_category(locale, 1_000_000), PluralCategory::Many);
+            assert_eq!(plural_category(locale, 1_000_001), PluralCategory::Other);
+        }
+        for locale in [BuiltinLocale::En, BuiltinLocale::De] {
+            assert_eq!(plural_category(locale, 1_000_000), PluralCategory::Other);
         }
         assert_eq!(plural_category(BuiltinLocale::Ru, 0), PluralCategory::Many);
         assert_eq!(plural_category(BuiltinLocale::Ru, 1), PluralCategory::One);

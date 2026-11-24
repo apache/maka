@@ -60,7 +60,8 @@
     "media_kind_image": "Imagem",
     "media_from_tool": "{kind} da ferramenta {name} ({id}):",
     "media_supplied_below": "{kind} disponível abaixo.",
-    "unsupported_audio": "A entrada de áudio ({media_type}, {length} caracteres base64) não é suportada por este adaptador de modelo. O áudio permanece nas evidências da ferramenta."
+    "unsupported_audio": "A entrada de áudio ({media_type}, {length} caracteres base64) não é suportada por este adaptador de modelo. O áudio permanece nas evidências da ferramenta.",
+    "tool_error_prefix": "Erro: "
   },
   "goal": {
     "pause_for_settings": "Revise a conexão do modelo e as configurações da conversa e, em seguida, retome a Meta.",

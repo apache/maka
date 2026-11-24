@@ -60,7 +60,8 @@
     "media_kind_image": "影像",
     "media_from_tool": "來自工具 {name}（{id}）的{kind}：",
     "media_supplied_below": "{kind}見下方。",
-    "unsupported_audio": "此模型介接器不支援音訊輸入（{media_type}，{length} 個 base64 字元）。音訊仍保留在工具證據中。"
+    "unsupported_audio": "此模型介接器不支援音訊輸入（{media_type}，{length} 個 base64 字元）。音訊仍保留在工具證據中。",
+    "tool_error_prefix": "錯誤："
   },
   "goal": {
     "pause_for_settings": "請檢查模型連線和對話設定，然後繼續目標。",

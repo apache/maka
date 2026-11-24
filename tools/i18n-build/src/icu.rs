@@ -69,6 +69,15 @@ pub fn parse_message(input: &str) -> Result<Vec<Node>, String> {
 }
 
 pub fn collect_params(nodes: &[Node], out: &mut BTreeMap<String, ParamType>) -> Result<(), String> {
+    let mut select_vars = std::collections::BTreeSet::new();
+    collect_params_inner(nodes, out, &mut select_vars)
+}
+
+fn collect_params_inner(
+    nodes: &[Node],
+    out: &mut BTreeMap<String, ParamType>,
+    select_vars: &mut std::collections::BTreeSet<String>,
+) -> Result<(), String> {
     for node in nodes {
         match node {
             Node::Literal(_) | Node::Hash => {}
@@ -76,22 +85,26 @@ pub fn collect_params(nodes: &[Node], out: &mut BTreeMap<String, ParamType>) -> 
                 out.entry(name.clone()).or_insert(ParamType::Text);
             }
             Node::Plural { var, cases } => {
+                if select_vars.contains(var) {
+                    return Err(format!(
+                        "variable {var} used as both select text and plural count"
+                    ));
+                }
                 out.insert(var.clone(), ParamType::Count);
                 for (_, branch) in cases {
-                    collect_params(branch, out)?;
+                    collect_params_inner(branch, out, select_vars)?;
                 }
             }
             Node::Select { var, cases } => {
-                if let Some(prev) = out.get(var) {
-                    if *prev == ParamType::Count {
-                        return Err(format!(
-                            "variable {var} used as both plural count and select text"
-                        ));
-                    }
+                if out.get(var) == Some(&ParamType::Count) {
+                    return Err(format!(
+                        "variable {var} used as both plural count and select text"
+                    ));
                 }
+                select_vars.insert(var.clone());
                 out.insert(var.clone(), ParamType::Text);
                 for (_, branch) in cases {
-                    collect_params(branch, out)?;
+                    collect_params_inner(branch, out, select_vars)?;
                 }
             }
         }
@@ -165,11 +178,11 @@ impl<'a> Parser<'a> {
                     self.pos += 2;
                     continue;
                 }
-                if matches!(
-                    self.bytes.get(self.pos + 1),
-                    Some(b'{') | Some(b'}') | Some(b'#')
-                ) {
+                let next = self.bytes.get(self.pos + 1);
+                if matches!(next, Some(b'{') | Some(b'}')) || (in_plural && next == Some(&b'#')) {
+                    let quote_start = self.pos;
                     self.pos += 1;
+                    let mut closed = false;
                     while self.pos < self.bytes.len() {
                         if self.bytes[self.pos] == b'\'' {
                             if self.bytes.get(self.pos + 1) == Some(&b'\'') {
@@ -177,6 +190,7 @@ impl<'a> Parser<'a> {
                                 self.pos += 2;
                             } else {
                                 self.pos += 1;
+                                closed = true;
                                 break;
                             }
                         } else {
@@ -186,6 +200,11 @@ impl<'a> Parser<'a> {
                             self.pos += ch.len_utf8();
                         }
                     }
+                    if !closed {
+                        return Err(format!(
+                            "unclosed quoted literal starting at byte {quote_start}"
+                        ));
+                    }
                     continue;
                 }
                 lit.push('\'');
@@ -194,7 +213,7 @@ impl<'a> Parser<'a> {
             }
             if b == b'{' {
                 flush(&mut lit, &mut nodes);
-                nodes.push(self.parse_brace()?);
+                nodes.push(self.parse_brace(in_plural)?);
                 continue;
             }
             let rest = std::str::from_utf8(&self.bytes[self.pos..]).unwrap();
@@ -210,7 +229,7 @@ impl<'a> Parser<'a> {
         Ok(nodes)
     }
 
-    fn parse_brace(&mut self) -> Result<Node, String> {
+    fn parse_brace(&mut self, in_plural: bool) -> Result<Node, String> {
         debug_assert_eq!(self.peek(), Some(b'{'));
         self.pos += 1;
         let var = self.read_ident()?;
@@ -243,6 +262,11 @@ impl<'a> Parser<'a> {
                             }
                             let sel_str = self.read_ident()?;
                             let selector = parse_plural_selector(&sel_str)?;
+                            if cases.iter().any(|(existing, _)| *existing == selector) {
+                                return Err(format!(
+                                    "duplicate plural selector {sel_str:?} on {var}"
+                                ));
+                            }
                             if selector == PluralSelector::Other {
                                 has_other = true;
                             }
@@ -277,6 +301,9 @@ impl<'a> Parser<'a> {
                                 break;
                             }
                             let key = self.read_ident()?;
+                            if cases.iter().any(|(existing, _)| existing == &key) {
+                                return Err(format!("duplicate select branch {key:?} on {var}"));
+                            }
                             if key == "other" {
                                 has_other = true;
                             }
@@ -287,7 +314,7 @@ impl<'a> Parser<'a> {
                                 ));
                             }
                             self.pos += 1;
-                            let body = self.parse_nodes(true, false)?;
+                            let body = self.parse_nodes(true, in_plural)?;
                             if self.peek() != Some(b'}') {
                                 return Err(format!(
                                     "expected closing brace for select branch {key}"

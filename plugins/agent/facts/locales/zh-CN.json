@@ -60,7 +60,8 @@
     "media_kind_image": "图像",
     "media_from_tool": "来自工具 {name}（{id}）的{kind}：",
     "media_supplied_below": "{kind}见下方。",
-    "unsupported_audio": "此模型适配器不支持音频输入（{media_type}，{length} 个 base64 字符）。音频仍保留在工具证据中。"
+    "unsupported_audio": "此模型适配器不支持音频输入（{media_type}，{length} 个 base64 字符）。音频仍保留在工具证据中。",
+    "tool_error_prefix": "错误："
   },
   "goal": {
     "pause_for_settings": "请检查模型连接和对话设置，然后继续目标。",

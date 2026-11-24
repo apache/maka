@@ -67,11 +67,13 @@ fn static_text(value: &'static str) -> TextSource {
         TextEncoding::Utf8,
     )
 }
-fn owned_text(value: String) -> TextSource {
-    TextSource::new(
-        SourceBytes::Inline(Bytes::from(value.into_bytes())),
+fn push_owned_text(plan: &mut Plan, value: String) -> SourceFragment {
+    let bytes = value.into_bytes();
+    plan.owned_bytes += bytes.capacity();
+    SourceFragment::Text(TextSource::new(
+        SourceBytes::Inline(Bytes::from(bytes)),
         TextEncoding::Utf8,
-    )
+    ))
 }
 fn literal(value: &'static [u8]) -> SourceFragment {
     SourceFragment::literal(value)
@@ -1001,28 +1003,32 @@ impl Compiler {
                 .await
                 .map_err(failure)?;
         if prefix(media.media_type.clone(), b"audio/", budget.clone()).await? {
-            let length = match &media.bytes {
-                SourceBytes::Inline(bytes) => bytes.len() as u64,
-                SourceBytes::Source(source) => match source.len() {
-                    Some(len) => len,
-                    None => {
-                        let mut len = 0;
-                        let mut cursor = FragmentCursor::new(SourceFragment::Raw(JsonSource::new(
-                            media.bytes.clone(),
-                        )));
-                        while let Some(bytes) =
-                            cursor.next(budget.clone()).await.map_err(failure)?
-                        {
-                            len += bytes.len() as u64;
+            let encoded = if inspection == MediaInspection::Allocation {
+                u64::MAX
+            } else {
+                let length = match &media.bytes {
+                    SourceBytes::Inline(bytes) => bytes.len() as u64,
+                    SourceBytes::Source(source) => match source.len() {
+                        Some(len) => len,
+                        None => {
+                            let mut len = 0;
+                            let mut cursor = FragmentCursor::new(SourceFragment::Raw(
+                                JsonSource::new(media.bytes.clone()),
+                            ));
+                            while let Some(bytes) =
+                                cursor.next(budget.clone()).await.map_err(failure)?
+                            {
+                                len += bytes.len() as u64;
+                            }
+                            len
                         }
-                        len
-                    }
-                },
+                    },
+                };
+                (length / 3)
+                    .checked_mul(4)
+                    .and_then(|len| len.checked_add(u64::from(length % 3 != 0) * 4))
+                    .ok_or_else(|| invalid("audio length overflow"))?
             };
-            let encoded = (length / 3)
-                .checked_mul(4)
-                .and_then(|len| len.checked_add(u64::from(length % 3 != 0) * 4))
-                .ok_or_else(|| invalid("audio length overflow"))?;
             const MEDIA_SLOT: &str = "\0MEDIA\0";
             let encoded = encoded.to_string();
             let rendered = maka_agent_facts::i18n::wire::unsupported_audio(
@@ -1030,20 +1036,21 @@ impl Compiler {
                 &encoded,
                 MEDIA_SLOT,
             );
-            let (head, tail) = rendered
-                .split_once(MEDIA_SLOT)
-                .expect("unsupported_audio contains media_type placeholder");
             let mut plan = Plan::new("text");
-            plan.field(
-                "text",
-                vec![
-                    literal(b"\""),
-                    SourceFragment::Text(owned_text(head.to_owned())),
-                    SourceFragment::Text(media.media_type),
-                    SourceFragment::Text(owned_text(tail.to_owned())),
-                    literal(b"\""),
-                ],
-            );
+            let mut fragments = vec![literal(b"\"")];
+            let mut rest = rendered.as_str();
+            while let Some((before, after)) = rest.split_once(MEDIA_SLOT) {
+                if !before.is_empty() {
+                    fragments.push(push_owned_text(&mut plan, before.to_owned()));
+                }
+                fragments.push(SourceFragment::Text(media.media_type.clone()));
+                rest = after;
+            }
+            if !rest.is_empty() {
+                fragments.push(push_owned_text(&mut plan, rest.to_owned()));
+            }
+            fragments.push(literal(b"\""));
+            plan.field("text", fragments);
             plan.audio_fallback = true;
             if !result {
                 plan.cache_slot_at = Some(plan.fragments.len());
@@ -1716,7 +1723,7 @@ impl Compiler {
                 if !audio {
                     media.media_type = static_text("application/pdf");
                 }
-                let mut plan = self
+                let plan = self
                     .media(
                         media,
                         provider_options.clone(),
@@ -1725,16 +1732,6 @@ impl Compiler {
                         budget.clone(),
                     )
                     .await?;
-                if audio {
-                    for fragment in &mut plan.fragments {
-                        if let SourceFragment::OwnedLiteral { bytes, .. } = fragment
-                            && !bytes.is_empty()
-                            && bytes.iter().all(u8::is_ascii_digit)
-                        {
-                            *fragment = SourceFragment::owned(u64::MAX.to_string().into_bytes());
-                        }
-                    }
-                }
                 (
                     plan,
                     if audio { None } else { provider_options },

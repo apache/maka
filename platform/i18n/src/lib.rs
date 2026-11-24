@@ -141,11 +141,17 @@ pub fn normalize_bcp47(raw: &str) -> Option<String> {
     }
     let mut out = Vec::with_capacity(parts.len());
     out.push(first.to_ascii_lowercase());
+    let mut in_extension = false;
     for (idx, part) in parts.iter().enumerate().skip(1) {
         if part.is_empty() || part.len() > 8 || !part.bytes().all(|b| b.is_ascii_alphanumeric()) {
             return None;
         }
-        if idx == 1 && part.len() == 4 && part.bytes().all(|b| b.is_ascii_alphabetic()) {
+        if part.len() == 1 {
+            in_extension = true;
+            out.push(part.to_ascii_lowercase());
+        } else if in_extension {
+            out.push(part.to_ascii_lowercase());
+        } else if idx == 1 && part.len() == 4 && part.bytes().all(|b| b.is_ascii_alphabetic()) {
             let mut script = String::with_capacity(4);
             let mut chars = part.chars();
             if let Some(c) = chars.next() {
@@ -176,7 +182,8 @@ pub fn negotiate_builtin_tag(locale: &str) -> Option<BuiltinLocale> {
     let lower = normalized.to_ascii_lowercase();
     let mut parts = lower.split('-');
     let lang = parts.next()?;
-    let rest: Vec<&str> = parts.collect();
+    // Stop before BCP 47 extension / private-use singletons (u, t, x, ...).
+    let rest: Vec<&str> = parts.take_while(|p| p.len() > 1).collect();
 
     match lang {
         "zh" => {
@@ -231,6 +238,15 @@ pub fn negotiate_builtin<S: AsRef<str>>(preferred: &[S]) -> BuiltinLocale {
 
 /// Resolve an open translation map (such as DisplayText or plugin localizations)
 /// using script-aware BCP 47 fallback without crossing zh-Hant into zh-Hans.
+fn lookup_ci<'a>(translations: &'a BTreeMap<String, String>, tag: &str) -> Option<&'a str> {
+    translations.get(tag).map(String::as_str).or_else(|| {
+        translations
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(tag))
+            .map(|(_, v)| v.as_str())
+    })
+}
+
 pub fn resolve_translation<'a>(
     translations: &'a BTreeMap<String, String>,
     fallback: &'a str,
@@ -243,29 +259,36 @@ pub fn resolve_translation<'a>(
         return exact.as_str();
     }
     if let Some(normalized) = normalize_bcp47(locale) {
-        if let Some(exact) = translations.get(&normalized) {
-            return exact.as_str();
+        if let Some(found) = lookup_ci(translations, &normalized) {
+            return found;
         }
-        if let Some((_, value)) = translations
-            .iter()
-            .find(|(k, _)| k.eq_ignore_ascii_case(&normalized))
-        {
-            return value.as_str();
-        }
-        if let Some(builtin) = negotiate_builtin_tag(&normalized) {
-            for candidate in std::iter::once(builtin).chain(builtin.fallbacks().iter().copied()) {
-                if let Some(found) = translations.get(candidate.tag()) {
-                    return found.as_str();
+        let builtin = negotiate_builtin_tag(&normalized);
+        if let Some(b) = builtin {
+            if let Some(found) = lookup_ci(translations, b.tag()) {
+                return found;
+            }
+            for candidate in b
+                .fallbacks()
+                .iter()
+                .copied()
+                .filter(|c| *c != BuiltinLocale::En)
+            {
+                if let Some(found) = lookup_ci(translations, candidate.tag()) {
+                    return found;
                 }
             }
         }
         if let Some((lang, _)) = normalized.split_once('-') {
             if !lang.eq_ignore_ascii_case("zh") && !lang.eq_ignore_ascii_case("yue") {
-                if let Some((_, value)) = translations
-                    .iter()
-                    .find(|(k, _)| k.eq_ignore_ascii_case(lang))
-                {
-                    return value.as_str();
+                if let Some(found) = lookup_ci(translations, lang) {
+                    return found;
+                }
+            }
+        }
+        if let Some(b) = builtin {
+            if b.fallbacks().contains(&BuiltinLocale::En) {
+                if let Some(found) = lookup_ci(translations, BuiltinLocale::En.tag()) {
+                    return found;
                 }
             }
         }

@@ -146,7 +146,8 @@ fn prefix_capacity(language: Language) -> usize {
     maka_agent_facts::i18n::summary::media_label_prefix(language, &max, &max).len()
 }
 fn media_omitted_capacity(language: Language) -> usize {
-    [0, 1, 2, 5, i64::MAX]
+    // Include max-digit representatives for Russian/CLDR One (...01), Few (...02), and Many (...07).
+    [0, 1, 2, 5, i64::MAX, i64::MAX - 5, i64::MAX - 6]
         .into_iter()
         .map(|n| maka_agent_facts::i18n::summary::media_omitted(language, n).len())
         .max()

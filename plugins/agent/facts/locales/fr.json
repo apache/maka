@@ -60,7 +60,8 @@
     "media_kind_image": "Image",
     "media_from_tool": "{kind} provenant de l'outil {name} ({id}) :",
     "media_supplied_below": "{kind} disponible ci-dessous.",
-    "unsupported_audio": "L'entrée audio ({media_type}, {length} caractères base64) n'est pas prise en charge par cet adaptateur de modèle. L'audio reste conservé dans les preuves de l'outil."
+    "unsupported_audio": "L'entrée audio ({media_type}, {length} caractères base64) n'est pas prise en charge par cet adaptateur de modèle. L'audio reste conservé dans les preuves de l'outil.",
+    "tool_error_prefix": "Erreur : "
   },
   "goal": {
     "pause_for_settings": "Vérifiez la connexion au modèle et les paramètres de conversation, puis reprenez l'Objectif.",

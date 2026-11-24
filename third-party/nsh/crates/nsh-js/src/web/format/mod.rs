@@ -28,7 +28,7 @@
 //! without moving local time, so `Intl` keeps naming the machine's. TypeScript declares all of
 //! it in its ECMAScript library (`lib.es2023`), so `globals.d.ts` does not.
 //!
-//! Not there: `Collator`, `PluralRules`, `RelativeTimeFormat`,
+//! Not there: `Collator`, `RelativeTimeFormat`,
 //! `ListFormat`, `DisplayNames`, `Segmenter`, `Intl.Locale`; time zones
 //! other than the device's, UTC and fixed offsets (no zone database);
 //! calendars other than the Gregorian, non-Latin digits, `currencySign:
@@ -1276,44 +1276,77 @@ pub(crate) const SPECS: &[Spec] = &[
     },
 ];
 
+use number::Rounding;
+
+#[derive(Clone, Copy)]
 struct PluralRules {
-    locale: Locale,
+    tag: nsh_core::platform::Locale,
     ordinal: bool,
+    min_integer: u8,
+    rounding: Rounding,
 }
 
 trace!(PluralRules {});
 
 impl Object for PluralRules {}
 
-fn plural_select(tag: &str, ordinal: bool, n: f64) -> &'static str {
-    if !n.is_finite() {
-        return "other";
-    }
-    let abs = n.abs();
-    let is_int = abs.fract() == 0.0 && abs <= (u64::MAX as f64);
-    let i = abs as u64;
-    let lang = tag
-        .split(['-', '_'])
-        .next()
-        .unwrap_or("en")
-        .to_ascii_lowercase();
+fn plural_categories(lang: &str, ordinal: bool) -> &'static [&'static str] {
     if ordinal {
-        return match lang.as_str() {
-            "en" => match (i % 10, i % 100) {
-                (1, m) if m != 11 => "one",
-                (2, m) if m != 12 => "two",
-                (3, m) if m != 13 => "few",
-                _ => "other",
-            },
-            "fr" | "sv" => {
-                if i == 1 {
+        return match lang {
+            "en" => &["one", "two", "few", "other"],
+            "fr" | "sv" => &["one", "other"],
+            "it" => &["many", "other"],
+            _ => &["other"],
+        };
+    }
+    match lang {
+        "zh" | "ja" | "ko" | "th" | "vi" | "id" | "ms" => &["other"],
+        "es" | "fr" | "it" | "pt" => &["one", "many", "other"],
+        "ru" | "uk" | "pl" => &["one", "few", "many", "other"],
+        _ => &["one", "other"],
+    }
+}
+
+/// CLDR 45+ plural category selection for cardinal and ordinal rules using
+/// exact ECMA-402 formatted decimal operands.
+fn plural_select(tag: &str, ordinal: bool, rounding: Rounding, value: f64) -> &'static str {
+    let Some(op) = number::PluralOperands::from_f64(value, rounding) else {
+        return "other";
+    };
+    let lang = tag.split('-').next().unwrap_or("en");
+
+    if ordinal {
+        if op.f_nonzero {
+            return "other";
+        }
+        return match lang {
+            "en" => {
+                if op.mod10 == 1 && op.mod100 != 11 {
+                    "one"
+                } else if op.mod10 == 2 && op.mod100 != 12 {
+                    "two"
+                } else if op.mod10 == 3 && op.mod100 != 13 {
+                    "few"
+                } else {
+                    "other"
+                }
+            }
+            "fr" => {
+                if op.i_is_one {
+                    "one"
+                } else {
+                    "other"
+                }
+            }
+            "sv" => {
+                if matches!(op.mod10, 1 | 2) && !matches!(op.mod100, 11 | 12) {
                     "one"
                 } else {
                     "other"
                 }
             }
             "it" => {
-                if matches!(i, 8 | 11 | 80 | 800) {
+                if matches!(op.i_exact, Some(8 | 11 | 80 | 800)) {
                     "many"
                 } else {
                     "other"
@@ -1322,47 +1355,67 @@ fn plural_select(tag: &str, ordinal: bool, n: f64) -> &'static str {
             _ => "other",
         };
     }
-    match lang.as_str() {
-        "zh" | "yue" | "ja" | "ko" | "vi" | "th" | "id" => "other",
-        "fr" | "pt" | "hi" => {
-            if is_int && (i == 0 || i == 1) {
+
+    match lang {
+        "zh" | "ja" | "ko" | "th" | "vi" | "id" | "ms" => "other",
+        "fr" | "pt" => {
+            if op.i_is_zero || op.i_is_one {
+                "one"
+            } else if op.div_million && op.v == 0 {
+                "many"
+            } else {
+                "other"
+            }
+        }
+        "hi" => {
+            if op.i_is_zero || (op.i_is_one && !op.f_nonzero) {
                 "one"
             } else {
                 "other"
             }
         }
-        "ru" => {
-            if !is_int {
-                "other"
+        "es" => {
+            if op.i_is_one && !op.f_nonzero {
+                "one"
+            } else if op.div_million && op.v == 0 {
+                "many"
             } else {
-                let m10 = i % 10;
-                let m100 = i % 100;
-                if m10 == 1 && m100 != 11 {
-                    "one"
-                } else if matches!(m10, 2..=4) && !matches!(m100, 12..=14) {
-                    "few"
-                } else {
-                    "many"
-                }
+                "other"
+            }
+        }
+        "it" => {
+            if op.i_is_one && op.v == 0 {
+                "one"
+            } else if op.div_million && op.v == 0 {
+                "many"
+            } else {
+                "other"
+            }
+        }
+        "ru" | "uk" => {
+            if op.v != 0 {
+                "other"
+            } else if op.mod10 == 1 && op.mod100 != 11 {
+                "one"
+            } else if matches!(op.mod10, 2..=4) && !matches!(op.mod100, 12..=14) {
+                "few"
+            } else {
+                "many"
             }
         }
         "pl" => {
-            if !is_int {
+            if op.v != 0 {
                 "other"
-            } else if i == 1 {
+            } else if op.i_is_one {
                 "one"
+            } else if matches!(op.mod10, 2..=4) && !matches!(op.mod100, 12..=14) {
+                "few"
             } else {
-                let m10 = i % 10;
-                let m100 = i % 100;
-                if matches!(m10, 2..=4) && !matches!(m100, 12..=14) {
-                    "few"
-                } else {
-                    "many"
-                }
+                "many"
             }
         }
         _ => {
-            if is_int && i == 1 {
+            if op.i_is_one && op.v == 0 {
                 "one"
             } else {
                 "other"
@@ -1376,13 +1429,68 @@ native!(
         let locale = resolve(cx, args.get(0))?;
         let opts = options(cx, args.get(1))?;
         let kind = string_option(cx, &opts, "type", &["cardinal", "ordinal"])?;
+        let min_integer = number_option(cx, &opts, "minimumIntegerDigits", 1, 21)?.unwrap_or(1);
+        let mnfd = number_option(cx, &opts, "minimumFractionDigits", 0, 100)?;
+        let mxfd = number_option(cx, &opts, "maximumFractionDigits", 0, 100)?;
+        let mnsd = number_option(cx, &opts, "minimumSignificantDigits", 1, 21)?;
+        let mxsd = number_option(cx, &opts, "maximumSignificantDigits", 1, 21)?;
+        let priority = string_option(
+            cx,
+            &opts,
+            "roundingPriority",
+            &["auto", "morePrecision", "lessPrecision"],
+        )?
+        .unwrap_or("auto");
+        let has_sd = mnsd.is_some() || mxsd.is_some();
+        let has_fd = mnfd.is_some() || mxfd.is_some();
+        let need_sd = priority != "auto" || has_sd;
+        let need_fd = priority != "auto" || !has_sd;
+        let (min_sig, max_sig) = (mnsd.unwrap_or(1), mxsd.unwrap_or(21));
+        if need_sd && min_sig > max_sig {
+            return Err(js::range_error(
+                cx,
+                "maximumSignificantDigits value is out of range.",
+            ));
+        }
+        let (min_frac, max_frac) = match (mnfd, mxfd) {
+            _ if !has_fd => (0, 3),
+            (Some(min), Some(max)) if min > max => {
+                return Err(js::range_error(
+                    cx,
+                    "maximumFractionDigits value is out of range.",
+                ));
+            }
+            (Some(min), Some(max)) => (min, max),
+            (Some(min), None) => (min, 3u8.max(min)),
+            (None, Some(max)) => (0, max),
+            (None, None) => (0, 3),
+        };
+        let rounding = match (need_sd, need_fd) {
+            (true, false) => Rounding::Significant {
+                min: min_sig,
+                max: max_sig,
+            },
+            (false, true) => Rounding::Fraction {
+                min: min_frac,
+                max: max_frac,
+            },
+            _ => Rounding::Both {
+                min_fraction: min_frac,
+                max_fraction: max_frac,
+                min_significant: min_sig,
+                max_significant: max_sig,
+                more: priority != "lessPrecision",
+            },
+        };
         instance(
             cx,
             this,
             Class::PluralRules,
             PluralRules {
-                locale,
+                tag: locale.tag,
                 ordinal: kind == Some("ordinal"),
+                min_integer,
+                rounding,
             },
         )
     }
@@ -1390,17 +1498,26 @@ native!(
 
 native!(
     fn plural_rules_select(cx, this, args) {
-        let rules = data::<PluralRules>(cx, this, "PluralRules")?;
+        let rules = *data::<PluralRules>(cx, this, "PluralRules")?;
         let value = js::to_number(cx, args.get(0))?;
-        js::string(cx, plural_select(rules.locale.tag.as_str(), rules.ordinal, value))
+        js::string(
+            cx,
+            plural_select(rules.tag.as_str(), rules.ordinal, rules.rounding, value),
+        )
     }
 );
 
 native!(
     fn plural_rules_resolved_options(cx, this, _args) {
-        let rules = data::<PluralRules>(cx, this, "PluralRules")?;
+        let rules = *data::<PluralRules>(cx, this, "PluralRules")?;
         let o = js::new_object(cx)?;
-        js::define(cx, o.raw(), "locale", js::string(cx, rules.locale.tag.as_str())?, true)?;
+        js::define(
+            cx,
+            o.raw(),
+            "locale",
+            js::string(cx, rules.tag.as_str())?,
+            true,
+        )?;
         js::define(
             cx,
             o.raw(),
@@ -1408,6 +1525,67 @@ native!(
             js::string(cx, if rules.ordinal { "ordinal" } else { "cardinal" })?,
             true,
         )?;
+        js::define(
+            cx,
+            o.raw(),
+            "minimumIntegerDigits",
+            V::num(f64::from(rules.min_integer)),
+            true,
+        )?;
+        let (fraction, significant) = match rules.rounding {
+            Rounding::Fraction { min, max } => (Some((min, max)), None),
+            Rounding::Significant { min, max } => (None, Some((min, max))),
+            Rounding::Both {
+                min_fraction,
+                max_fraction,
+                min_significant,
+                max_significant,
+                ..
+            } => (
+                Some((min_fraction, max_fraction)),
+                Some((min_significant, max_significant)),
+            ),
+        };
+        if let Some((min, max)) = fraction {
+            js::define(
+                cx,
+                o.raw(),
+                "minimumFractionDigits",
+                V::num(f64::from(min)),
+                true,
+            )?;
+            js::define(
+                cx,
+                o.raw(),
+                "maximumFractionDigits",
+                V::num(f64::from(max)),
+                true,
+            )?;
+        }
+        if let Some((min, max)) = significant {
+            js::define(
+                cx,
+                o.raw(),
+                "minimumSignificantDigits",
+                V::num(f64::from(min)),
+                true,
+            )?;
+            js::define(
+                cx,
+                o.raw(),
+                "maximumSignificantDigits",
+                V::num(f64::from(max)),
+                true,
+            )?;
+        }
+        let lang = rules.tag.as_str().split('-').next().unwrap_or("en");
+        let cats = plural_categories(lang, rules.ordinal);
+        let mut items = Vec::with_capacity(cats.len());
+        for cat in cats {
+            items.push(js::string(cx, cat)?);
+        }
+        let arr = js::new_array(cx, items)?;
+        js::define(cx, o.raw(), "pluralCategories", arr, true)?;
         Ok(o)
     }
 );

@@ -89,8 +89,8 @@ use objc2_app_kit::{
 use objc2_core_foundation::{CGAffineTransform, CGFloat, CGPoint, CGRect, CGSize};
 use objc2_core_graphics::CGPath;
 use objc2_foundation::{
-    NSArray, NSAttributedString, NSDictionary, NSNotification, NSObject, NSObjectProtocol, NSPoint,
-    NSRange, NSRect, NSString, NSUndoManager,
+    NSArray, NSAttributedString, NSDictionary, NSMutableDictionary, NSNotification, NSObject,
+    NSObjectProtocol, NSPoint, NSRange, NSRect, NSString, NSUndoManager,
 };
 use objc2_quartz_core::{CALayer, CAShapeLayer};
 use rustc_hash::FxHashMap;
@@ -2231,6 +2231,9 @@ impl InputState {
         self.applying.set(true);
         self.clear_undo(&editor);
         editor.set_text(text);
+        let config = self.config.borrow();
+        apply_editor_locale(&editor, &config);
+        drop(config);
         if let Some(caret) = caret {
             let len = utf16_len(text) as u32;
             let caret = if caret >= old_len {
@@ -2333,6 +2336,7 @@ impl InputState {
             NSDictionary::from_slices(&[key], &[AsRef::<AnyObject>::as_ref(&*selection)]);
         // SAFETY: valid text attributes.
         unsafe { view.setSelectedTextAttributes(&attributes) };
+        apply_text_view_locale(&view, config.locale);
         Some(view)
     }
 
@@ -2715,6 +2719,7 @@ pub(crate) fn config(surface: &Rc<Surface>, view: &NshView, config: &InputConfig
                 editor.setEditable(config.editable);
                 editor.setSelectable(true);
             }
+            apply_editor_locale(&editor, config);
         }
         Editor::Area {
             scroller,
@@ -2750,12 +2755,13 @@ pub(crate) fn config(surface: &Rc<Surface>, view: &NshView, config: &InputConfig
             text.setDefaultParagraphStyle(Some(&paragraph(line, align)));
             // The space above the first line and below the last.
             text.setTextContainerInset(CGSize::new(0.0, line.inset));
+            apply_text_view_locale(text, config.locale);
             let label = &input.placeholder;
             label.setFont(Some(&font));
             label.setTextColor(Some(&placeholder_color(config)));
             label.setAlignment(align);
             label.setBaseWritingDirection(direction);
-            label.setStringValue(&NSString::from_str(&config.placeholder));
+            label.setAttributedStringValue(&placeholder(config, &font, align));
         }
     }
     *input.config.borrow_mut() = config.clone();
@@ -2975,37 +2981,148 @@ fn placeholder_color(config: &InputConfig) -> Retained<NSColor> {
     ns_color(config.placeholder_color.unwrap_or(c.with_alpha(0.5)))
 }
 
-/// A field's placeholder, in the field's font.
+fn language_attr_key() -> Retained<NSString> {
+    // Toll-free bridged with CoreText's kCTLanguageAttributeName.
+    NSString::from_str("NSLanguage")
+}
+
+fn apply_text_view_locale(view: &NSTextView, locale: Option<nsh_core::platform::Locale>) {
+    let key = language_attr_key();
+    let typing = NSMutableDictionary::<NSString, AnyObject>::dictionaryWithDictionary(
+        &view.typingAttributes(),
+    );
+    if let Some(locale) = locale {
+        let value = NSString::from_str(locale.as_str());
+        // SAFETY: key is NSString ("NSLanguage"), value is NSString (BCP 47 locale tag).
+        unsafe {
+            let _: () = msg_send![&*typing, setObject: &*value, forKey: &*key];
+        }
+    } else {
+        // SAFETY: removing a string key from an NSMutableDictionary.
+        unsafe {
+            let _: () = msg_send![&*typing, removeObjectForKey: &*key];
+        }
+    }
+    // SAFETY: typingAttributes dictionary has valid NSAttributedString keys and values.
+    unsafe { view.setTypingAttributes(&typing) };
+
+    if let Some(storage) = unsafe { view.textStorage() } {
+        let len = storage.length();
+        if len > 0 {
+            let range = NSRange::new(0, len);
+            if let Some(locale) = locale {
+                let value = NSString::from_str(locale.as_str());
+                // SAFETY: range is within storage bounds; key and value are NSStrings.
+                unsafe {
+                    let _: () = msg_send![
+                        &*storage,
+                        addAttribute: &*key,
+                        value: &*value,
+                        range: range
+                    ];
+                }
+            } else {
+                // SAFETY: range is within storage bounds; key is NSString.
+                unsafe {
+                    let _: () = msg_send![&*storage, removeAttribute: &*key, range: range];
+                }
+            }
+        }
+    }
+}
+
+fn apply_editor_locale(editor: &Editor, config: &InputConfig) {
+    match editor {
+        Editor::Line { field, secure } => {
+            if let Some(active) = field
+                .currentEditor()
+                .and_then(|e| e.downcast::<NSTextView>().ok())
+            {
+                apply_text_view_locale(&active, config.locale);
+            } else if !secure {
+                let raw = field.stringValue();
+                if raw.length() > 0 {
+                    let font = crate::text::ns_font(&config.style);
+                    let color = ns_color(config.style.color);
+                    let align = alignment(config.align);
+                    let attributed = styled_text(&raw, &font, &color, align, config.locale);
+                    field.setAttributedStringValue(&attributed);
+                }
+            }
+        }
+        Editor::Area { view, .. } => {
+            apply_text_view_locale(view, config.locale);
+        }
+    }
+}
+
+fn styled_text(
+    text: &NSString,
+    font: &objc2_app_kit::NSFont,
+    color: &NSColor,
+    align: NSTextAlignment,
+    locale: Option<nsh_core::platform::Locale>,
+) -> Retained<NSAttributedString> {
+    // AppKit's single-line field editor uses the font's natural line
+    // height. A fixed paragraph height here would move only the
+    // placeholder's baseline, away from the text and caret.
+    let paragraph = NSMutableParagraphStyle::new();
+    paragraph.setAlignment(align);
+    let lang_key = language_attr_key();
+    let lang_val = locale.map(|l| NSString::from_str(l.as_str()));
+    let attributes = if let Some(lang_val) = &lang_val {
+        // SAFETY: immutable AppKit/CoreText attribute keys with values of their documented types.
+        let keys: [&NSString; 4] = unsafe {
+            [
+                NSFontAttributeName,
+                NSForegroundColorAttributeName,
+                NSParagraphStyleAttributeName,
+                &*lang_key,
+            ]
+        };
+        let values: [&AnyObject; 4] = [
+            font.as_ref(),
+            color.as_ref(),
+            paragraph.as_ref(),
+            lang_val.as_ref(),
+        ];
+        NSDictionary::from_slices(&keys, &values)
+    } else {
+        // SAFETY: immutable AppKit attribute keys with values of their documented types.
+        let keys = unsafe {
+            [
+                NSFontAttributeName,
+                NSForegroundColorAttributeName,
+                NSParagraphStyleAttributeName,
+            ]
+        };
+        let values: [&AnyObject; 3] = [font.as_ref(), color.as_ref(), paragraph.as_ref()];
+        NSDictionary::from_slices(&keys, &values)
+    };
+    // SAFETY: a string and a dictionary of valid attributes.
+    unsafe {
+        NSAttributedString::initWithString_attributes(
+            NSAttributedString::alloc(),
+            text,
+            Some(&attributes),
+        )
+    }
+}
+
+/// A field's placeholder, in the field's font and active locale.
 fn placeholder(
     config: &InputConfig,
     font: &objc2_app_kit::NSFont,
     align: NSTextAlignment,
 ) -> Retained<NSAttributedString> {
     let color = placeholder_color(config);
-    // AppKit's single-line field editor uses the font's natural line
-    // height. A fixed paragraph height here would move only the
-    // placeholder's baseline, away from the text and caret.
-    let paragraph = NSMutableParagraphStyle::new();
-    paragraph.setAlignment(align);
-    // SAFETY: immutable AppKit attribute keys with values of their
-    // documented types (NSFont, NSColor, NSParagraphStyle).
-    let keys = unsafe {
-        [
-            NSFontAttributeName,
-            NSForegroundColorAttributeName,
-            NSParagraphStyleAttributeName,
-        ]
-    };
-    let values: [&AnyObject; 3] = [font.as_ref(), color.as_ref(), paragraph.as_ref()];
-    let attributes = NSDictionary::from_slices(&keys, &values);
-    // SAFETY: a string and a dictionary of valid attributes.
-    unsafe {
-        NSAttributedString::initWithString_attributes(
-            NSAttributedString::alloc(),
-            &NSString::from_str(&config.placeholder),
-            Some(&attributes),
-        )
-    }
+    styled_text(
+        &NSString::from_str(&config.placeholder),
+        font,
+        &color,
+        align,
+        config.locale,
+    )
 }
 
 /// Focuses the input once it is in a window (`autoFocus`): the view is

@@ -60,7 +60,8 @@
     "media_kind_image": "Image",
     "media_from_tool": "{kind} from tool {name} ({id}):",
     "media_supplied_below": "{kind} supplied below.",
-    "unsupported_audio": "Audio input ({media_type}, {length} base64 characters) is not supported by this model adapter. The audio remains in the tool evidence."
+    "unsupported_audio": "Audio input ({media_type}, {length} base64 characters) is not supported by this model adapter. The audio remains in the tool evidence.",
+    "tool_error_prefix": "Error: "
   },
   "goal": {
     "pause_for_settings": "Review the model connection and conversation settings, then resume the Goal.",

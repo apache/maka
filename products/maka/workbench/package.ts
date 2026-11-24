@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { localizePackage } from '../../../plugins/shared/package.js';
+import { localizePackage, localizedTitle } from '../../../plugins/shared/package.js';
 
 const target = {
   type: 'object',
@@ -54,10 +54,7 @@ export default localizePackage({
         root: { kind: 'root' },
         quickTools: {
           kind: 'settings',
-          title: {
-            fallback: 'Quick tools',
-            translations: { 'zh-CN': '快捷工具', 'zh-TW': '快速工具' },
-          },
+          title: localizedTitle('Quick tools'),
         },
       },
     },

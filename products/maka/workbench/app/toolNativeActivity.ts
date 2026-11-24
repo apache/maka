@@ -315,9 +315,10 @@ function botResult(value: unknown): ToolSection[] | null {
       text:
         result.duplicate === true
           ? tr('Message already sent')
-          : result.count === 1
-            ? tr('Sent 1 message')
-            : tr('Sent {count} messages', { count: numberText(result.count) }),
+          : tr('tool.sent_messages_count', {
+              count: result.count,
+              formatted: numberText(result.count),
+            }),
     },
   ];
 }
@@ -440,11 +441,12 @@ export const nativeToolPresentations: Record<string, ActivityPresentation> = {
         {
           label: tr('Find tools'),
           text:
-            activated.length === 1
-              ? tr('1 tool made available')
-              : activated.length > 1
-                ? tr('{count} tools made available', { count: numberText(activated.length) })
-                : tr('No additional tools found'),
+            activated.length > 0
+              ? tr('tool.tools_made_available_count', {
+                  count: activated.length,
+                  formatted: numberText(activated.length),
+                })
+              : tr('No additional tools found'),
         },
       ];
     },

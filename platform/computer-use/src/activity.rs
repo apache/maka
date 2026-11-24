@@ -29,7 +29,7 @@ fn clean(text: &str, max: usize) -> String {
             output.push(' ');
         }
         for c in word.chars().filter(|c| {
-            !c.is_control() && !matches!(c, '\u{202a}'..'\u{202e}' | '\u{2066}'..'\u{2069}')
+            !c.is_control() && !matches!(c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
         }) {
             if output.len() + c.len_utf8() > max {
                 return output;
@@ -190,5 +190,8 @@ mod tests {
         command(&action, Some(&"中".repeat(1000)))
             .validate()
             .unwrap();
+        let bidi = command(&action, Some("A\u{202a}\u{202e}\u{2066}\u{2069}B"));
+        bidi.validate().unwrap();
+        assert_eq!(bidi.resolve("en"), "Enter text · AB");
     }
 }

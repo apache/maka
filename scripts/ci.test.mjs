@@ -254,6 +254,20 @@ test('Node tooling tests under scripts/ map to tooling instead of triggering ful
   assert.deepEqual(plan.workers, []);
 });
 
+test('locales.manifest.json triggers a full CI plan including contracts, product, and native builds', () => {
+  const plan = createPlan({
+    root,
+    changes: ['locales.manifest.json'],
+    metadata: {},
+    revision: 'test',
+    baseline: 'base',
+  });
+  assert.equal(plan.full, true);
+  for (const id of ['tooling', 'contracts', 'product', 'root', 'native-build']) {
+    assert.ok(plan.suites[id], `expected suite ${id}`);
+  }
+});
+
 test('skill and product inputs still select the native Windows skills consumer', () => {
   for (const path of [
     'skills/maka-generative-ui/SKILL.md',

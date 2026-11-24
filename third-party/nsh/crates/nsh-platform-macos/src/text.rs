@@ -4718,38 +4718,62 @@ mod cut_lines {
             }
         }
     }
+}
+
+#[cfg(test)]
+mod cjk_locale_shaping {
+    use super::*;
+    use objc2_core_graphics::{CGBitmapContextCreate, CGColorSpace, CGContext};
+
+    fn rasterize_line(tag: &str, sample: &str) -> Vec<u8> {
+        let engine = CoreTextEngine::default();
+        let mut text = AttributedText {
+            locale: nsh_core::platform::Locale::parse(tag),
+            ..Default::default()
+        };
+        text.push(sample, ResolvedTextStyle::default());
+        let attr = engine.attributed_string(&text, &nsh_core::AttachmentAlignments::default());
+        let line = unsafe { CTLine::with_attributed_string(attr.as_ref()) };
+        let width = 128usize;
+        let height = 32usize;
+        let mut pixels = vec![0u8; width * height];
+        let space = CGColorSpace::new_device_gray().expect("gray colorspace");
+        let ctx = unsafe {
+            CGBitmapContextCreate(
+                pixels.as_mut_ptr().cast(),
+                width,
+                height,
+                8,
+                width,
+                Some(&space),
+                0,
+            )
+        }
+        .expect("bitmap context");
+        CGContext::set_gray_fill_color(Some(&ctx), 1.0, 1.0);
+        CGContext::set_text_position(Some(&ctx), 4.0, 8.0);
+        unsafe { line.draw(&ctx) };
+        pixels
+    }
 
     #[test]
-    fn cjk_locale_selects_distinct_coretext_glyph_fonts() {
-        let engine = CoreTextEngine::default();
-        let mut fonts = Vec::new();
-        for tag in ["zh-CN", "zh-TW", "zh-HK", "ja", "ko"] {
-            let mut text = AttributedText {
-                locale: nsh_core::platform::Locale::parse(tag),
-                ..Default::default()
-            };
-            text.push("直骨海刃", ResolvedTextStyle::default());
-            let attr = engine.attributed_string(&text, &nsh_core::AttachmentAlignments::default());
-            let line = unsafe { CTLine::with_attributed_string(attr.as_ref()) };
-            let runs = unsafe { line.glyph_runs() };
-            let mut names = Vec::new();
-            for i in 0..runs.count() {
-                let run: &CTRun = unsafe { &*runs.value_at_index(i).cast::<CTRun>() };
-                let attrs = unsafe { run.attributes() };
-                let font_ptr =
-                    unsafe { attrs.value((kCTFontAttributeName as *const CFString).cast()) };
-                if !font_ptr.is_null() {
-                    let font: &CTFont = unsafe { &*font_ptr.cast::<CTFont>() };
-                    names.push(unsafe { font.post_script_name() }.to_string());
-                }
-            }
-            fonts.push((tag, names.join(",")));
-        }
+    fn cjk_locales_render_distinct_han_variant_glyph_bitmaps() {
+        let renders: Vec<(&str, Vec<u8>)> = ["zh-CN", "zh-TW", "zh-HK", "ja", "ko"]
+            .into_iter()
+            .map(|tag| {
+                let pixels = rasterize_line(tag, "直骨海刃");
+                assert!(
+                    pixels.iter().any(|&p| p > 0),
+                    "{tag} rendered an empty bitmap"
+                );
+                (tag, pixels)
+            })
+            .collect();
         let by_tag = |target: &str| {
-            fonts
+            renders
                 .iter()
                 .find(|(t, _)| *t == target)
-                .map(|(_, f)| f.as_str())
+                .map(|(_, p)| p.as_slice())
                 .unwrap()
         };
         assert_ne!(by_tag("zh-CN"), by_tag("zh-TW"));

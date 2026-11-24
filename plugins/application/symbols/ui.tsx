@@ -17,14 +17,14 @@
  * under the License.
  */
 
-import { effect, Clipboard, computed, type JSX } from 'nsh';
+import { Clipboard, computed, type JSX } from 'nsh';
 import type { UiEmbeddedViewProps, UiModule } from '../../../packages/plugin-sdk/src/workbench.js';
 import {
   quickToolView,
   type QuickItem,
   type QuickToolInput,
 } from '../../../packages/plugin-sdk/src/workbench-views.js';
-import { currentLocale, localizedKeywords, tr } from '../../../products/maka/workbench/app/locale';
+import { localizedKeywords, tr } from '../../../products/maka/workbench/app/locale';
 import { search } from '../../shared/quick-search';
 import { symbols } from './symbols';
 
@@ -54,8 +54,7 @@ function Symbols(props: { input: QuickToolInput }) {
   return null;
 }
 
-export const activate: UiModule<JSX.Element>['activate'] = (context) => {
-  effect(() => currentLocale.set(context.locale()));
+export const activate: UiModule<JSX.Element>['activate'] = () => {
   return {
     exports: {
       tool: {

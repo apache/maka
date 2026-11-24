@@ -25,6 +25,7 @@ import { createPlugins } from './plugins/registry';
 import { PluginInstances, renderContribution } from './plugins/RuntimeView';
 import { errorText, renderText } from './text';
 import { tr } from './locale';
+import { installWorkbenchLocaleCatalog } from './localeCatalog';
 import { initializeAppearance } from './appearance';
 import { initializeComposerToolbar } from './composerToolbar';
 import { initializeSidebarPreferences } from './sidebarPreferences';
@@ -33,6 +34,7 @@ import { LoadingState } from './Loading';
 import { nativeDesktop } from './nativeDesktop';
 
 function Bootstrap() {
+  installWorkbenchLocaleCatalog();
   nativeDesktop();
   initializeAppearance();
   initializeComposerToolbar();

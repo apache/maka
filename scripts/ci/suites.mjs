@@ -44,7 +44,6 @@ const bundledPackages = Object.values(
 );
 
 const sharedProductContractInputs = [
-  'locales.manifest.json',
   'products/maka/bundle',
   'packages/plugin-sdk',
   'plugins/shared',

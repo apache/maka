@@ -795,7 +795,9 @@ pub(super) fn notification_content(
     template.push('\n');
     let mut head_parts = splice_template(&template, &[(ID_SLOT, result.tool_call_id)], owned)?;
     if failed {
-        head_parts.push(generated("Error: "));
+        head_parts.push(generated(maka_agent_facts::i18n::wire::tool_error_prefix(
+            language,
+        )));
     }
     let head = combined(head_parts, budget, owned)?;
     let output = match result.output {

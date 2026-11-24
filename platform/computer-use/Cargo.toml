@@ -48,6 +48,7 @@ native-desktop = [
     "dep:regex",
     "dep:markdown",
     "dep:sysinfo",
+    "dep:zstd",
 ]
 
 [dependencies]
@@ -60,7 +61,7 @@ maka-agent-facts.workspace = true
 maka-capabilities.workspace = true
 maka-i18n.workspace = true
 maka-plugin-core.workspace = true
-zstd.workspace = true
+zstd = { workspace = true, optional = true }
 futures-util.workspace = true
 cua-driver-contract = { workspace = true, optional = true }
 cua-driver-sdk = { workspace = true, optional = true }

@@ -19,10 +19,17 @@
 
 fn main() {
     maka_i18n_build::compile_catalog("locales", "i18n_catalog.rs");
-    maka_i18n_build::compile_docs(
-        "locales/docs",
-        "api",
-        "i18n_docs.rs",
-        &["<!-- named-browser-documents -->"],
-    );
+    if std::env::var_os("CARGO_FEATURE_NATIVE_DESKTOP").is_some() {
+        maka_i18n_build::compile_docs(
+            "locales/docs",
+            "api",
+            "i18n_docs.rs",
+            &["<!-- named-browser-documents -->"],
+            &[
+                "<!-- named-browser-documents -->",
+                "<!-- browser-document:",
+                "<!-- /browser-document -->",
+            ],
+        );
+    }
 }

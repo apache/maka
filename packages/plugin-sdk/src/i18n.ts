@@ -104,10 +104,16 @@ export function normalizeLocaleTag(raw: string): string | null {
   const first = parts[0];
   if (!first || !/^[a-zA-Z]{2,3}$/.test(first)) return null;
   const out = [first.toLowerCase()];
+  let inExtension = false;
   for (let i = 1; i < parts.length; i += 1) {
     const part = parts[i]!;
     if (!/^[a-zA-Z0-9]{1,8}$/.test(part)) return null;
-    if (i === 1 && /^[a-zA-Z]{4}$/.test(part)) {
+    if (part.length === 1) {
+      inExtension = true;
+      out.push(part.toLowerCase());
+    } else if (inExtension) {
+      out.push(part.toLowerCase());
+    } else if (i === 1 && /^[a-zA-Z]{4}$/.test(part)) {
       out.push(part[0]!.toUpperCase() + part.slice(1).toLowerCase());
     } else if (/^[a-zA-Z]{2}$/.test(part) || /^[0-9]{3}$/.test(part)) {
       out.push(part.toUpperCase());
@@ -126,7 +132,13 @@ export function negotiateSingleLocale(locale: string): SupportedLocaleTag | null
   if (exact) return exact;
   const parts = normalized.toLowerCase().split('-');
   const lang = parts[0];
-  const rest = parts.slice(1);
+  // Stop before BCP 47 extension / private-use singletons (u, t, x, ...).
+  const rest: string[] = [];
+  for (let i = 1; i < parts.length; i += 1) {
+    const part = parts[i]!;
+    if (part.length === 1) break;
+    rest.push(part);
+  }
   switch (lang) {
     case 'zh':
       if (rest.includes('hans')) return 'zh-CN';
@@ -184,10 +196,12 @@ export function resolveLocale(configured: string | null | undefined, native: unk
   return 'en';
 }
 
-/** CLDR cardinal plural category for integer counts, aligned with maka-i18n. */
+/** CLDR 45+ cardinal plural category for numeric counts, aligned with maka-i18n. */
 export function pluralCategory(locale: string, count: number): PluralCategory {
+  if (!Number.isFinite(count)) return 'other';
   const tag = negotiateLocale(locale);
-  const abs = Math.abs(Math.trunc(count));
+  const abs = Math.abs(count);
+  const isInt = Number.isInteger(abs);
   switch (tag) {
     case 'zh-CN':
     case 'zh-TW':
@@ -197,8 +211,19 @@ export function pluralCategory(locale: string, count: number): PluralCategory {
       return 'other';
     case 'fr':
     case 'pt-BR':
-      return abs === 0 || abs === 1 ? 'one' : 'other';
+      if (abs < 2) return 'one';
+      if (isInt && abs !== 0 && abs % 1_000_000 === 0) return 'many';
+      return 'other';
+    case 'es':
+      if (abs === 1) return 'one';
+      if (isInt && abs !== 0 && abs % 1_000_000 === 0) return 'many';
+      return 'other';
+    case 'it':
+      if (isInt && abs === 1) return 'one';
+      if (isInt && abs !== 0 && abs % 1_000_000 === 0) return 'many';
+      return 'other';
     case 'ru': {
+      if (!isInt) return 'other';
       const m10 = abs % 10;
       const m100 = abs % 100;
       if (m10 === 1 && m100 !== 11) return 'one';
@@ -206,7 +231,7 @@ export function pluralCategory(locale: string, count: number): PluralCategory {
       return 'many';
     }
     default:
-      return abs === 1 ? 'one' : 'other';
+      return isInt && abs === 1 ? 'one' : 'other';
   }
 }
 
@@ -217,6 +242,7 @@ type IcuNode =
   | { kind: 'plural'; name: string; exact: Map<number, IcuNode[]>; forms: Map<string, IcuNode[]> }
   | { kind: 'select'; name: string; cases: Map<string, IcuNode[]> };
 
+const MAX_AST_CACHE = 4096;
 const astCache = new Map<string, IcuNode[]>();
 
 function parseIcu(input: string): IcuNode[] {
@@ -261,7 +287,7 @@ function parseIcu(input: string): IcuNode[] {
           pos += 2;
           continue;
         }
-        if (next === '{' || next === '}' || next === '#') {
+        if (next === '{' || next === '}' || (inPlural && next === '#')) {
           pos += 1;
           while (pos < input.length) {
             if (input[pos] === "'") {
@@ -286,7 +312,7 @@ function parseIcu(input: string): IcuNode[] {
       if (ch === '{') {
         if (pos + 1 < input.length && /[a-zA-Z_]/.test(input[pos + 1]!)) {
           flush();
-          nodes.push(parseBrace());
+          nodes.push(parseBrace(inPlural));
           continue;
         }
         lit += ch;
@@ -300,7 +326,8 @@ function parseIcu(input: string): IcuNode[] {
     return nodes;
   };
 
-  const parseBrace = (): IcuNode => {
+  const parseBrace = (inPlural: boolean): IcuNode => {
+    const start = pos;
     pos += 1; // '{'
     const name = readIdent();
     skipWs();
@@ -312,49 +339,54 @@ function parseIcu(input: string): IcuNode[] {
       pos += 1;
       const type = readIdent();
       skipWs();
-      if (input[pos] === ',') pos += 1;
-      if (type === 'plural') {
-        const exact = new Map<number, IcuNode[]>();
-        const forms = new Map<string, IcuNode[]>();
-        while (pos < input.length) {
-          skipWs();
-          if (input[pos] === '}') {
+      if ((type === 'plural' || type === 'select') && input[pos] === ',') {
+        pos += 1;
+        if (type === 'plural') {
+          const exact = new Map<number, IcuNode[]>();
+          const forms = new Map<string, IcuNode[]>();
+          while (pos < input.length) {
+            skipWs();
+            if (input[pos] === '}') {
+              pos += 1;
+              return { kind: 'plural', name, exact, forms };
+            }
+            const sel = readIdent();
+            skipWs();
+            if (!sel || input[pos] !== '{') break;
             pos += 1;
-            break;
-          }
-          const sel = readIdent();
-          skipWs();
-          if (input[pos] === '{') pos += 1;
-          const body = parseNodes(true, true);
-          if (input[pos] === '}') pos += 1;
-          if (sel.startsWith('=')) exact.set(Number(sel.slice(1)), body);
-          else forms.set(sel, body);
-        }
-        return { kind: 'plural', name, exact, forms };
-      }
-      if (type === 'select') {
-        const cases = new Map<string, IcuNode[]>();
-        while (pos < input.length) {
-          skipWs();
-          if (input[pos] === '}') {
+            const body = parseNodes(true, true);
+            if (input[pos] !== '}') break;
             pos += 1;
-            break;
+            if (sel.startsWith('=')) exact.set(Number(sel.slice(1)), body);
+            else forms.set(sel, body);
           }
-          const key = readIdent();
-          skipWs();
-          if (input[pos] === '{') pos += 1;
-          const body = parseNodes(true, false);
-          if (input[pos] === '}') pos += 1;
-          cases.set(key, body);
+        } else {
+          const cases = new Map<string, IcuNode[]>();
+          while (pos < input.length) {
+            skipWs();
+            if (input[pos] === '}') {
+              pos += 1;
+              return { kind: 'select', name, cases };
+            }
+            const key = readIdent();
+            skipWs();
+            if (!key || input[pos] !== '{') break;
+            pos += 1;
+            const body = parseNodes(true, inPlural);
+            if (input[pos] !== '}') break;
+            pos += 1;
+            cases.set(key, body);
+          }
         }
-        return { kind: 'select', name, cases };
       }
     }
-    // Fallback: preserve malformed placeholder verbatim
-    return { kind: 'lit', text: '{' + name + '}' };
+    // Malformed or unsupported placeholder: rewind and emit literal '{' so the rest stays intact.
+    pos = start + 1;
+    return { kind: 'lit', text: '{' };
   };
 
   const parsed = parseNodes(false, false);
+  if (astCache.size >= MAX_AST_CACHE) astCache.clear();
   astCache.set(input, parsed);
   return parsed;
 }
@@ -448,7 +480,7 @@ export function createI18n<K extends string>(bundle: LocaleCatalogBundle<K>) {
     values?: Readonly<Record<string, string | number>>,
   ): string => {
     const message = catalogFor(locale)[key];
-    return values === undefined && !message.includes('{')
+    return values === undefined && !message.includes('{') && !message.includes("'")
       ? message
       : formatMessage(message, locale, values);
   };
@@ -464,6 +496,18 @@ export function createI18n<K extends string>(bundle: LocaleCatalogBundle<K>) {
   };
 }
 
+function lookupCi<V>(
+  translations: Readonly<Record<string, V | undefined>>,
+  tag: string,
+): V | undefined {
+  if (translations[tag] !== undefined) return translations[tag];
+  const lower = tag.toLowerCase();
+  for (const [key, value] of Object.entries(translations)) {
+    if (value !== undefined && key.toLowerCase() === lower) return value;
+  }
+  return undefined;
+}
+
 /** Script-aware resolution for open translation maps (matches maka_i18n::resolve_translation). */
 function resolveFromMap<V>(
   translations: Readonly<Record<string, V | undefined>> | undefined,
@@ -473,23 +517,25 @@ function resolveFromMap<V>(
   if (translations[locale] !== undefined) return translations[locale];
   const normalized = normalizeLocaleTag(locale);
   if (!normalized) return undefined;
-  if (translations[normalized] !== undefined) return translations[normalized];
-  const lower = normalized.toLowerCase();
-  for (const [key, value] of Object.entries(translations)) {
-    if (value !== undefined && key.toLowerCase() === lower) return value;
-  }
+  const direct = lookupCi(translations, normalized);
+  if (direct !== undefined) return direct;
   const builtin = negotiateSingleLocale(normalized);
   if (builtin) {
-    const info = LOCALE_INFO_BY_TAG[builtin];
-    for (const candidate of [builtin, ...info.fallbacks]) {
-      if (translations[candidate] !== undefined) return translations[candidate];
+    const hit = lookupCi(translations, builtin);
+    if (hit !== undefined) return hit;
+    for (const fallbackTag of LOCALE_INFO_BY_TAG[builtin].fallbacks) {
+      if (fallbackTag === 'en') continue;
+      const fbHit = lookupCi(translations, fallbackTag);
+      if (fbHit !== undefined) return fbHit;
     }
   }
   const primary = normalized.split('-')[0]!;
   if (primary !== 'zh' && primary !== 'yue') {
-    for (const [key, value] of Object.entries(translations)) {
-      if (value !== undefined && key.toLowerCase() === primary) return value;
-    }
+    const primaryHit = lookupCi(translations, primary);
+    if (primaryHit !== undefined) return primaryHit;
+  }
+  if (builtin && LOCALE_INFO_BY_TAG[builtin].fallbacks.includes('en')) {
+    return lookupCi(translations, 'en');
   }
   return undefined;
 }

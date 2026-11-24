@@ -85,33 +85,10 @@ export function localizedTitle(fallback: string): DisplayText {
   return { fallback, translations };
 }
 
-function localizeDisplayTexts(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(localizeDisplayTexts);
-  if (value === null || typeof value !== 'object') return value;
-  const record = value as Record<string, unknown>;
-  if (
-    typeof record.fallback === 'string' &&
-    record.translations !== null &&
-    typeof record.translations === 'object' &&
-    !Array.isArray(record.translations)
-  ) {
-    const key = `title.${record.fallback}` as ManifestKey;
-    if (key in en) return localizedTitle(record.fallback);
-  }
-  const out: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(record)) {
-    out[k] = localizeDisplayTexts(v);
-  }
-  return out;
-}
-
-/** Populate all 12 built-in locales for a package manifest's localizations and DisplayText fields. */
+/** Populate all 12 built-in locales for a package manifest's localizations. */
 export function localizePackage<T extends { id: string }>(manifest: T): T {
-  const localized = localizeDisplayTexts(manifest) as T & {
-    localizations?: Record<string, { displayName: string; description: string }>;
-  };
   return {
-    ...localized,
+    ...manifest,
     localizations: packageLocalizations(manifest.id),
   };
 }

@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { Clipboard, effect, computed, platform, signal, type JSX } from 'nsh';
+import { Clipboard, computed, platform, signal, type JSX } from 'nsh';
 import type { ApplicationHost } from 'maka/host';
 import type { UiEmbeddedViewProps, UiModule } from '../../../packages/plugin-sdk/src/workbench.js';
 import {
@@ -26,7 +26,7 @@ import {
   type QuickAction,
   type QuickToolInput,
 } from '../../../packages/plugin-sdk/src/workbench-views.js';
-import { currentLocale, localizedKeywords, tr } from '../../../products/maka/workbench/app/locale';
+import { localizedKeywords, tr } from '../../../products/maka/workbench/app/locale';
 import { search } from '../../shared/quick-search';
 
 const keywords = () =>
@@ -115,7 +115,6 @@ function Applications(props: { input: QuickToolInput; host: ApplicationHost }) {
 }
 
 export const activate: UiModule<JSX.Element>['activate'] = (context) => {
-  effect(() => currentLocale.set(context.locale()));
   return {
     exports: {
       tool: {

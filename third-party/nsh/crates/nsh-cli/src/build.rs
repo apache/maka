@@ -261,6 +261,7 @@ fn compile_with(
         ui_sets: crate::ui_sets().to_vec(),
         app,
         asset_root_from: None,
+        locales: None,
     })?;
     let sources: Vec<(&str, &str)> = std::iter::once((nsh_js::BUNDLE_NAME, bundle.code.as_str()))
         .chain(

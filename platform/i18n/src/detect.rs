@@ -100,11 +100,17 @@ fn resolve_locales(
     let mut out = Vec::new();
 
     if let Some(override_val) = env("MAKA_LOCALE").filter(|s| !s.trim().is_empty()) {
-        for part in override_val.split([':', ',']) {
-            push_posix(&mut out, part);
-        }
-        if !out.is_empty() {
-            return out;
+        let first = override_val
+            .split([':', ','])
+            .map(str::trim)
+            .find(|part| !part.is_empty());
+        if !first.is_some_and(|part| part.eq_ignore_ascii_case("auto")) {
+            for part in override_val.split([':', ',']) {
+                push_posix(&mut out, part);
+            }
+            if !out.is_empty() {
+                return out;
+            }
         }
     }
 
@@ -194,6 +200,15 @@ mod tests {
         );
         assert_eq!(locales, vec!["ar-SA", "ja-JP", "en-US"]);
         assert_eq!(select_startup_locale(&locales), "ja-JP");
+    }
+
+    #[test]
+    fn maka_locale_auto_delegates_to_os_detection() {
+        for raw in ["auto", "AUTO", "auto,ja"] {
+            let env = |key: &str| (key == "MAKA_LOCALE").then(|| raw.into());
+            let locales = resolve_locales(Platform::Apple, env, || vec!["zh-Hant-HK".into()]);
+            assert_eq!(locales, vec!["zh-Hant-HK"], "{raw}");
+        }
     }
 
     #[test]

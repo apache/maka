@@ -19,18 +19,15 @@
 
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
-const manifest = JSON.parse(readFileSync(join(repo, 'locales.manifest.json'), 'utf8'));
-const tags = manifest.locales.map((l) => l.tag);
-const overlays = new Map(manifest.locales.filter((l) => l.overlay).map((l) => [l.tag, l.overlay]));
 
-const CATALOG_DIRS = [
-  'products/maka/workbench/locales',
-  'plugins/shared/manifest-locales',
-  'plugins/agent/facts/locales',
-  'platform/computer-use/locales',
+const CATALOGS = [
+  { dir: 'products/maka/workbench/locales', strictBraces: false },
+  { dir: 'plugins/shared/manifest-locales', strictBraces: true },
+  { dir: 'platform/computer-use/locales', strictBraces: true },
+  { dir: 'plugins/agent/facts/locales', strictBraces: true },
 ];
 
 const DOC_SETS = [
@@ -38,299 +35,372 @@ const DOC_SETS = [
     dir: 'platform/computer-use/locales/docs',
     prefix: 'api',
     requiredMarkers: ['<!-- named-browser-documents -->'],
+    protocolMarkerPrefixes: [
+      '<!-- named-browser-documents -->',
+      '<!-- browser-document:',
+      '<!-- /browser-document -->',
+    ],
   },
 ];
 
 function flatten(obj, prefix = '', out = new Map()) {
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) {
+    throw new Error(`Expected JSON object at ${prefix || '<root>'}`);
+  }
   for (const [k, v] of Object.entries(obj)) {
-    const key = prefix ? prefix + '.' + k : k;
+    const full = prefix ? `${prefix}.${k}` : k;
     if (typeof v === 'string') {
-      if (out.has(key)) throw new Error('Duplicate flattened key: ' + key);
-      out.set(key, v);
+      out.set(full, v);
     } else if (v && typeof v === 'object' && !Array.isArray(v)) {
-      flatten(v, key, out);
+      flatten(v, full, out);
     } else {
-      throw new Error('Invalid value at key ' + key);
+      throw new Error(`Unsupported value at ${full}`);
     }
   }
   return out;
 }
 
-/** Parse ICU MessageFormat subset and extract parameter types (text vs count). */
-function parseIcuParams(input) {
+export function parseIcuParams(input, { strictBraces = false } = {}) {
   let pos = 0;
   const params = new Map();
-  const skipWs = () => {
+  const selectVars = new Set();
+
+  function skipWs() {
     while (pos < input.length && /\s/.test(input[pos])) pos++;
-  };
-  const readIdent = () => {
+  }
+
+  function readIdent() {
     skipWs();
     const start = pos;
     while (pos < input.length && /[a-zA-Z0-9_=-]/.test(input[pos])) pos++;
-    if (pos === start) throw new Error('Expected identifier at ' + pos);
     return input.slice(start, pos);
-  };
-  const parseNodes = (stopOnClose, inPlural) => {
+  }
+
+  function parseNodes(stopOnRbrace, inPlural) {
     while (pos < input.length) {
       const ch = input[pos];
       if (ch === '}') {
-        if (stopOnClose) return;
-        pos += 1;
+        if (stopOnRbrace) return;
+        if (strictBraces) throw new Error(`Unmatched '}' at ${pos}`);
+        pos++;
         continue;
       }
-      if (ch === "'") {
+      if (ch === "'" && pos + 1 < input.length) {
         const next = input[pos + 1];
         if (next === "'") {
           pos += 2;
           continue;
         }
-        if (next === '{' || next === '}' || next === '#') {
-          pos += 1;
+        if (next === '{' || next === '}' || (inPlural && next === '#')) {
+          const quoteStart = pos;
+          pos++;
+          let closed = false;
           while (pos < input.length) {
             if (input[pos] === "'") {
               if (input[pos + 1] === "'") pos += 2;
               else {
-                pos += 1;
+                pos++;
+                closed = true;
                 break;
               }
-            } else pos += 1;
+            } else {
+              pos++;
+            }
+          }
+          if (!closed) {
+            throw new Error(`Unclosed quoted literal starting at ${quoteStart}`);
           }
           continue;
         }
-        pos += 1;
-        continue;
       }
       if (ch === '{') {
-        if (pos + 1 >= input.length || !/[a-zA-Z_]/.test(input[pos + 1])) {
-          pos += 1;
+        const start = pos;
+        pos++;
+        if (strictBraces) {
+          skipWs();
+        }
+        if (pos >= input.length || !/[a-zA-Z_]/.test(input[pos])) {
+          if (strictBraces) throw new Error(`Invalid placeholder at ${start}`);
           continue;
         }
-        pos += 1;
         const name = readIdent();
         if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(name)) {
-          throw new Error('Invalid placeholder name: ' + name);
+          if (strictBraces) throw new Error(`Invalid placeholder name '${name}' at ${start}`);
+          pos = start + 1;
+          continue;
         }
         skipWs();
         if (input[pos] === '}') {
-          pos += 1;
+          pos++;
           if (!params.has(name)) params.set(name, 'text');
-        } else if (input[pos] === ',') {
-          pos += 1;
+          continue;
+        }
+        if (input[pos] === ',') {
+          pos++;
           const kind = readIdent();
           skipWs();
-          if (input[pos] !== ',') throw new Error('Expected comma after ' + kind);
-          pos += 1;
+          if (input[pos] !== ',') throw new Error(`Expected ',' after ${kind} at ${pos}`);
+          pos++;
           if (kind === 'plural') {
+            if (selectVars.has(name)) {
+              throw new Error(`Variable '${name}' used as both select and plural`);
+            }
             params.set(name, 'count');
+            const seen = new Set();
             let hasOther = false;
+            let closed = false;
             while (pos < input.length) {
               skipWs();
               if (input[pos] === '}') {
-                pos += 1;
+                pos++;
+                closed = true;
                 break;
               }
               const sel = readIdent();
-              if (sel === 'other') hasOther = true;
-              else if (!/^(=-?\d+|zero|one|two|few|many)$/.test(sel)) {
-                throw new Error('Unknown plural selector: ' + sel);
+              if (!sel) throw new Error(`Expected plural selector at ${pos}`);
+              if (!/^(=-?\d+|zero|one|two|few|many|other)$/.test(sel)) {
+                throw new Error(`Invalid plural selector '${sel}' on ${name}`);
               }
+              if (seen.has(sel)) {
+                throw new Error(`Duplicate plural selector '${sel}' on ${name}`);
+              }
+              seen.add(sel);
+              if (sel === 'other') hasOther = true;
               skipWs();
-              if (input[pos] !== '{') throw new Error('Expected { for plural branch ' + sel);
-              pos += 1;
+              if (input[pos] !== '{') throw new Error(`Expected '{' for plural branch ${sel}`);
+              pos++;
               parseNodes(true, true);
-              if (input[pos] !== '}') throw new Error('Expected } for plural branch ' + sel);
-              pos += 1;
+              if (input[pos] !== '}') throw new Error(`Expected '}' for plural branch ${sel}`);
+              pos++;
             }
-            if (!hasOther) throw new Error('Plural on ' + name + ' missing other branch');
-          } else if (kind === 'select') {
+            if (!closed) throw new Error(`Unclosed plural block for ${name}`);
+            if (!hasOther) throw new Error(`Plural for ${name} missing 'other' branch`);
+            continue;
+          }
+          if (kind === 'select') {
             if (params.get(name) === 'count') {
-              throw new Error('Variable ' + name + ' used as both count and select');
+              throw new Error(`Variable '${name}' used as both plural and select`);
             }
+            selectVars.add(name);
             params.set(name, 'text');
+            const seen = new Set();
             let hasOther = false;
+            let closed = false;
             while (pos < input.length) {
               skipWs();
               if (input[pos] === '}') {
-                pos += 1;
+                pos++;
+                closed = true;
                 break;
               }
-              const sel = readIdent();
-              if (sel === 'other') hasOther = true;
+              const key = readIdent();
+              if (!key) throw new Error(`Expected select key at ${pos}`);
+              if (seen.has(key)) {
+                throw new Error(`Duplicate select branch '${key}' on ${name}`);
+              }
+              seen.add(key);
+              if (key === 'other') hasOther = true;
               skipWs();
-              if (input[pos] !== '{') throw new Error('Expected { for select branch ' + sel);
-              pos += 1;
-              parseNodes(true, false);
-              if (input[pos] !== '}') throw new Error('Expected } for select branch ' + sel);
-              pos += 1;
+              if (input[pos] !== '{') throw new Error(`Expected '{' for select branch ${key}`);
+              pos++;
+              parseNodes(true, inPlural);
+              if (input[pos] !== '}') throw new Error(`Expected '}' for select branch ${key}`);
+              pos++;
             }
-            if (!hasOther) throw new Error('Select on ' + name + ' missing other branch');
-          } else {
-            throw new Error('Unsupported ICU type: ' + kind);
+            if (!closed) throw new Error(`Unclosed select block for ${name}`);
+            if (!hasOther) throw new Error(`Select for ${name} missing 'other' branch`);
+            continue;
           }
-        } else {
-          throw new Error('Expected } or , after ' + name);
+          throw new Error(`Unsupported ICU type '${kind}' for ${name}`);
         }
+        if (strictBraces) throw new Error(`Malformed placeholder '${name}' at ${start}`);
+        pos = start + 1;
         continue;
       }
-      pos += 1;
+      pos++;
     }
-    if (stopOnClose) throw new Error('Unclosed { in ICU message');
-  };
+    if (stopOnRbrace) throw new Error('Unclosed ICU brace');
+  }
+
   parseNodes(false, false);
   return [...params.entries()].sort((a, b) => a[0].localeCompare(b[0]));
 }
 
-function extractMarkers(doc) {
-  const markers = new Set();
+export function extractMarkers(doc, prefixes) {
+  const markers = [];
   for (const m of doc.matchAll(/<!--[^]*?-->/g)) {
     const trimmed = m[0].trim();
-    if (
-      trimmed.startsWith('<!-- browser-document:') ||
-      trimmed === '<!-- /browser-document -->' ||
-      trimmed === '<!-- named-browser-documents -->'
-    ) {
-      markers.add(trimmed);
+    if (prefixes.some((p) => trimmed.startsWith(p))) {
+      markers.push(trimmed);
     }
   }
-  return [...markers].sort();
+  return markers;
 }
 
-const errors = [];
-const fail = (msg) => errors.push(msg);
+export async function checkRepository(rootDir = repo) {
+  const manifest = JSON.parse(readFileSync(join(rootDir, 'locales.manifest.json'), 'utf8'));
+  const tags = manifest.locales.map((l) => l.tag);
+  const overlays = new Map(
+    manifest.locales.filter((l) => l.overlay).map((l) => [l.tag, l.overlay]),
+  );
 
-// 1. Check SDK SUPPORTED_LOCALES matches locales.manifest.json
-const sdkSrc = readFileSync(join(repo, 'packages/plugin-sdk/src/i18n.ts'), 'utf8');
-for (const entry of manifest.locales) {
-  if (!sdkSrc.includes("tag: '" + entry.tag + "'")) {
-    fail('packages/plugin-sdk/src/i18n.ts is missing locale tag ' + entry.tag);
-  }
-  if (!sdkSrc.includes("autonym: '" + entry.autonym + "'")) {
-    fail('packages/plugin-sdk/src/i18n.ts autonym mismatch for ' + entry.tag);
-  }
-}
+  const errors = [];
+  const fail = (msg) => errors.push(msg);
 
-// 2. Check all JSON catalogs
-for (const relDir of CATALOG_DIRS) {
-  const dir = join(repo, relDir);
-  if (!existsSync(dir)) {
-    fail('Missing catalog directory: ' + relDir);
-    continue;
-  }
-  const enPath = join(dir, manifest.defaultLocale + '.json');
-  if (!existsSync(enPath)) {
-    fail('Missing default locale file: ' + enPath);
-    continue;
-  }
-  const enMap = flatten(JSON.parse(readFileSync(enPath, 'utf8')));
-  const enSchema = new Map();
-  for (const [k, v] of enMap) {
-    try {
-      enSchema.set(k, JSON.stringify(parseIcuParams(v)));
-    } catch (e) {
-      fail(relDir + '/en.json [' + k + ']: ' + e.message);
-    }
+  // 1. Structurally verify SDK SUPPORTED_LOCALES matches locales.manifest.json
+  const sdkUrl = pathToFileURL(join(rootDir, 'packages/plugin-sdk/src/i18n.ts')).href;
+  const { SUPPORTED_LOCALES } = await import(sdkUrl);
+  const expectedLocales = manifest.locales.map((entry) => ({
+    tag: entry.tag,
+    autonym: entry.autonym,
+    englishName: entry.englishName,
+    dir: entry.dir,
+    ...(entry.overlay ? { overlay: entry.overlay } : {}),
+    fallbacks: entry.fallbacks,
+  }));
+  const actualLocales = SUPPORTED_LOCALES.map((entry) => ({
+    tag: entry.tag,
+    autonym: entry.autonym,
+    englishName: entry.englishName,
+    dir: entry.dir,
+    ...(entry.overlay ? { overlay: entry.overlay } : {}),
+    fallbacks: [...entry.fallbacks],
+  }));
+  if (JSON.stringify(actualLocales) !== JSON.stringify(expectedLocales)) {
+    fail('packages/plugin-sdk/src/i18n.ts SUPPORTED_LOCALES does not match locales.manifest.json');
   }
 
-  for (const tag of tags) {
-    if (tag === manifest.defaultLocale) continue;
-    const p = join(dir, tag + '.json');
-    const isOverlay = overlays.has(tag);
-    if (!existsSync(p)) {
-      if (!isOverlay) fail('Missing locale file: ' + relDir + '/' + tag + '.json');
+  // 2. Check all JSON catalogs
+  for (const { dir: relDir, strictBraces } of CATALOGS) {
+    const dir = join(rootDir, relDir);
+    if (!existsSync(dir)) {
+      fail('Missing catalog directory: ' + relDir);
       continue;
     }
-    let map;
-    try {
-      map = flatten(JSON.parse(readFileSync(p, 'utf8')));
-    } catch (e) {
-      fail(relDir + '/' + tag + '.json: ' + e.message);
+    const enPath = join(dir, manifest.defaultLocale + '.json');
+    if (!existsSync(enPath)) {
+      fail('Missing default locale file: ' + enPath);
       continue;
     }
-    if (!isOverlay) {
-      for (const k of enMap.keys()) {
-        if (!map.has(k)) fail(relDir + '/' + tag + '.json missing key: ' + k);
+    const enMap = flatten(JSON.parse(readFileSync(enPath, 'utf8')));
+    const enSchema = new Map();
+    for (const [k, v] of enMap) {
+      try {
+        enSchema.set(k, JSON.stringify(parseIcuParams(v, { strictBraces })));
+      } catch (e) {
+        fail(`${relDir}/en.json [${k}]: ${e.message}`);
       }
     }
-    for (const [k, v] of map) {
-      if (!enMap.has(k)) {
-        fail(relDir + '/' + tag + '.json defines unknown key: ' + k);
+
+    const loadedMaps = new Map([[manifest.defaultLocale, enMap]]);
+    for (const tag of tags) {
+      if (tag === manifest.defaultLocale) continue;
+      const p = join(dir, tag + '.json');
+      const isOverlay = overlays.has(tag);
+      if (!existsSync(p)) {
+        if (!isOverlay) fail(`Missing locale file: ${relDir}/${tag}.json`);
         continue;
       }
+      let map;
       try {
-        const actual = new Map(parseIcuParams(v));
-        const expected = new Map(JSON.parse(enSchema.get(k)));
-        for (const [name, ty] of actual) {
-          const expTy = expected.get(name);
-          if (!expTy || (expTy !== ty && !(expTy === 'count' && ty === 'text'))) {
-            fail(
-              relDir +
-                '/' +
-                tag +
-                '.json [' +
-                k +
-                '] placeholder ' +
-                name +
-                ' mismatch: expected ' +
-                (expTy ?? 'none') +
-                ', got ' +
-                ty,
-            );
-          }
-        }
-        for (const [name, expTy] of expected) {
-          if (!actual.has(name) && expTy !== 'count') {
-            fail(relDir + '/' + tag + '.json [' + k + '] missing placeholder: ' + name);
-          }
-        }
+        map = flatten(JSON.parse(readFileSync(p, 'utf8')));
       } catch (e) {
-        fail(relDir + '/' + tag + '.json [' + k + ']: ' + e.message);
+        fail(`${relDir}/${tag}.json: ${e.message}`);
+        continue;
+      }
+      loadedMaps.set(tag, map);
+      if (!isOverlay) {
+        for (const k of enMap.keys()) {
+          if (!map.has(k)) fail(`${relDir}/${tag}.json missing key: ${k}`);
+        }
+      }
+      for (const [k, v] of map) {
+        if (!enMap.has(k)) {
+          fail(`${relDir}/${tag}.json defines unknown key: ${k}`);
+          continue;
+        }
+        try {
+          const actual = new Map(parseIcuParams(v, { strictBraces }));
+          const expected = new Map(JSON.parse(enSchema.get(k)));
+          for (const [name, ty] of actual) {
+            const expTy = expected.get(name);
+            if (!expTy || (expTy !== ty && !(expTy === 'count' && ty === 'text'))) {
+              fail(
+                `${relDir}/${tag}.json [${k}] placeholder ${name} mismatch: expected ${expTy ?? 'none'}, got ${ty}`,
+              );
+            }
+          }
+          for (const [name, expTy] of expected) {
+            if (!actual.has(name) && expTy !== 'count') {
+              fail(`${relDir}/${tag}.json [${k}] missing placeholder: ${name}`);
+            }
+          }
+        } catch (e) {
+          fail(`${relDir}/${tag}.json [${k}]: ${e.message}`);
+        }
+      }
+    }
+
+    // Reject redundant overlay entries identical to their parent locale
+    for (const [tag, parentTag] of overlays) {
+      const overlayMap = loadedMaps.get(tag);
+      const parentMap = loadedMaps.get(parentTag);
+      if (!overlayMap || !parentMap) continue;
+      for (const [k, v] of overlayMap) {
+        if (parentMap.get(k) === v) {
+          fail(`${relDir}/${tag}.json [${k}] duplicates parent ${parentTag}.json`);
+        }
       }
     }
   }
-}
 
-// 3. Check localized Markdown docs
-for (const docSet of DOC_SETS) {
-  const dir = join(repo, docSet.dir);
-  const enPath = existsSync(join(dir, docSet.prefix + '.en.md'))
-    ? join(dir, docSet.prefix + '.en.md')
-    : join(dir, docSet.prefix + '.md');
-  if (!existsSync(enPath)) {
-    fail('Missing base doc: ' + enPath);
-    continue;
-  }
-  const enDoc = readFileSync(enPath, 'utf8');
-  const enMarkers = JSON.stringify(extractMarkers(enDoc));
-  for (const tag of tags) {
-    if (tag === manifest.defaultLocale) continue;
-    const p = join(dir, docSet.prefix + '.' + tag + '.md');
-    if (!existsSync(p)) {
-      if (!overlays.has(tag))
-        fail('Missing localized doc: ' + docSet.dir + '/' + docSet.prefix + '.' + tag + '.md');
+  // 3. Check localized Markdown docs
+  for (const docSet of DOC_SETS) {
+    const dir = join(rootDir, docSet.dir);
+    const enPath = existsSync(join(dir, docSet.prefix + '.en.md'))
+      ? join(dir, docSet.prefix + '.en.md')
+      : join(dir, docSet.prefix + '.md');
+    if (!existsSync(enPath)) {
+      fail('Missing base doc: ' + enPath);
       continue;
     }
-    const text = readFileSync(p, 'utf8');
-    for (const m of docSet.requiredMarkers) {
-      if (!text.includes(m)) fail(p + ' missing required marker ' + m);
-    }
-    const markers = JSON.stringify(extractMarkers(text));
-    if (markers !== enMarkers) {
-      fail(p + ' protocol HTML comment markers differ from en');
+    const enDoc = readFileSync(enPath, 'utf8');
+    const enMarkers = JSON.stringify(extractMarkers(enDoc, docSet.protocolMarkerPrefixes));
+    for (const tag of tags) {
+      if (tag === manifest.defaultLocale) continue;
+      const p = join(dir, docSet.prefix + '.' + tag + '.md');
+      if (!existsSync(p)) {
+        if (!overlays.has(tag))
+          fail(`Missing localized doc: ${docSet.dir}/${docSet.prefix}.${tag}.md`);
+        continue;
+      }
+      const text = readFileSync(p, 'utf8');
+      for (const m of docSet.requiredMarkers) {
+        if (!text.includes(m)) fail(`${p} missing required marker ${m}`);
+      }
+      const markers = JSON.stringify(extractMarkers(text, docSet.protocolMarkerPrefixes));
+      if (markers !== enMarkers) {
+        fail(`${p} protocol HTML comment markers differ from en`);
+      }
     }
   }
+
+  return {
+    errors,
+    tagsCount: tags.length,
+    catalogsCount: CATALOGS.length,
+    docsCount: DOC_SETS.length,
+  };
 }
 
-if (errors.length > 0) {
-  console.error('i18n check failed with ' + errors.length + ' error(s):');
-  for (const e of errors.slice(0, 50)) console.error('  - ' + e);
-  process.exit(1);
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  const { errors, tagsCount, catalogsCount, docsCount } = await checkRepository();
+  if (errors.length > 0) {
+    console.error(`i18n check failed with ${errors.length} error(s):`);
+    for (const e of errors.slice(0, 50)) console.error('  - ' + e);
+    process.exit(1);
+  }
+  console.log(
+    `i18n check passed (${tagsCount} locales, ${catalogsCount} catalogs, ${docsCount} doc sets).`,
+  );
 }
-console.log(
-  'i18n check passed (' +
-    tags.length +
-    ' locales, ' +
-    CATALOG_DIRS.length +
-    ' catalogs, ' +
-    DOC_SETS.length +
-    ' doc sets).',
-);

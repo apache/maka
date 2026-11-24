@@ -60,7 +60,8 @@
     "media_kind_image": "이미지",
     "media_from_tool": "도구 {name}({id})의 {kind}:",
     "media_supplied_below": "아래에 {kind}가 제공됩니다.",
-    "unsupported_audio": "이 모델 어댑터는 오디오 입력({media_type}, base64 {length}자)을 지원하지 않습니다. 오디오는 도구 증거에 그대로 남아 있습니다."
+    "unsupported_audio": "이 모델 어댑터는 오디오 입력({media_type}, base64 {length}자)을 지원하지 않습니다. 오디오는 도구 증거에 그대로 남아 있습니다.",
+    "tool_error_prefix": "오류: "
   },
   "goal": {
     "pause_for_settings": "모델 연결과 대화 설정을 확인한 뒤 목표를 재개하세요.",
