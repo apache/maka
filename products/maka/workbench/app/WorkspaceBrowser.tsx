@@ -28,7 +28,9 @@ import {
   cleanup,
   computed,
   effect,
+  fontScale,
   inputAction,
+  lifecycle,
   signal,
   Text,
   untracked,
@@ -73,6 +75,11 @@ import {
   type SidebarFeature,
   type SidebarSortMode,
 } from './sidebarPreferences';
+import {
+  formatSidebarRelativeTime,
+  isValidRelativeTimestamp,
+  nextMinuteTickDelay,
+} from './sidebarRelativeTime';
 import { workspaceSessions } from './sessionNesting';
 import type { AgentSession } from '../../../../packages/plugin-sdk/src/index.js';
 import {
@@ -322,6 +329,25 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
   } | null>(null);
 
   const viewportHeight = signal(160);
+  // One shared minute-aligned clock for all desktop conversation rows, paused while inactive.
+  const relativeTimeNow = signal(Date.now());
+  effect(() => {
+    if (platform.idiom === 'terminal' || lifecycle() !== 'active') return;
+    const now = Date.now();
+    relativeTimeNow.set(now);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const schedule = (current: number) => {
+      timer = setTimeout(() => {
+        const next = Date.now();
+        relativeTimeNow.set(next);
+        schedule(next);
+      }, nextMinuteTickDelay(current));
+    };
+    schedule(now);
+    cleanup(() => {
+      if (timer !== undefined) clearTimeout(timer);
+    });
+  });
   let navigationTarget: ViewRef | undefined;
   let list: ListRef | undefined;
   let removeEscape = () => {};
@@ -1441,9 +1467,10 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                 if (target.session.id === key()) openActions(target);
               };
               // On the desktop the More button sits inside the row and shows on
-              // the selected row, while the pointer is on the row, or while its
-              // menu is open.
+              // the selected row, while the pointer is on the row, while keyboard
+              // focus is inside the row, or while its menu is open.
               const hovered = signal(false);
+              const focusedWithin = signal(false);
               const menuOpen = signal(false);
               const menuItems = () => {
                 const target = {
@@ -1507,19 +1534,25 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
               const actionsShown = () =>
                 platform.idiom === 'terminal' ||
                 hovered() ||
+                focusedWithin() ||
                 menuOpen() ||
                 highlightedId() === key() ||
                 actions()?.session.id === key();
               const current = () => highlightedId() === key();
+              const updatedAt = () => session()?.updatedAt;
               // What the row's end shows while its More button is away: the
-              // desktop's one lane for a running thread (self or active child) or unread.
+              // desktop's one lane for a running thread (self or active child),
+              // an unread one, or its compact relative timestamp (bubbled child
+              // rows show only their Waiting signal).
               const lane = () =>
                 activityKnown() &&
                 (session()?.activity === 'working' || session()?.hasActiveChildren)
                   ? 'working'
                   : session()?.hasUnread
                     ? 'unread'
-                    : null;
+                    : !isBubble() && isValidRelativeTimestamp(updatedAt())
+                      ? 'time'
+                      : null;
               return (
                 <View>
                   <If
@@ -1565,6 +1598,8 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                         <View
                           onMouseEnter={() => hovered.set(true)}
                           onMouseLeave={() => hovered.set(false)}
+                          onFocusIn={() => focusedWithin.set(true)}
+                          onFocusOut={() => focusedWithin.set(false)}
                           style={{
                             flex: 1,
                             minWidth: 0,
@@ -1602,7 +1637,13 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                             style={{
                               flex: 1,
                               minWidth: 0,
-                              paddingHorizontal: 8,
+                              paddingLeft: 8,
+                              // Reserve clearance ahead of the trailing timestamp lane (inset
+                              // 8pt from the row's right edge) at both default and enlarged text
+                              // scales so titles and captions never shift or collide with
+                              // timestamps across idle/hover/focus/selected states.
+                              paddingRight:
+                                platform.idiom === 'terminal' ? 8 : fontScale() > 1 ? 24 : 16,
                               justifyContent: 'center',
                               borderRadius: radius(8),
                               backgroundColor:
@@ -1701,36 +1742,75 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                               platform.idiom !== 'terminal' && lane() !== null && !actionsShown()
                             }
                           >
-                            <View
-                              style={[
-                                {
-                                  position: 'absolute',
-                                  right: 8,
-                                  top: 0,
-                                  bottom: 0,
-                                  width: 16,
-                                  alignItems: 'center',
-                                  justifyContent: 'center',
-                                },
-                                { pointerEvents: 'none' },
-                              ]}
+                            <If
+                              when={lane() === 'time'}
+                              else={
+                                <View
+                                  style={[
+                                    {
+                                      position: 'absolute',
+                                      right: 8,
+                                      top: 0,
+                                      bottom: 0,
+                                      width: 16,
+                                      alignItems: 'center',
+                                      justifyContent: 'center',
+                                    },
+                                    { pointerEvents: 'none' },
+                                  ]}
+                                >
+                                  <If
+                                    when={lane() === 'working'}
+                                    else={
+                                      <View
+                                        style={{
+                                          width: 6,
+                                          height: 6,
+                                          borderRadius: 3,
+                                          backgroundColor: C.accent,
+                                        }}
+                                      />
+                                    }
+                                  >
+                                    <LoadingIndicator
+                                      size={12}
+                                      label={sessionStatusCaption.working}
+                                    />
+                                  </If>
+                                </View>
+                              }
                             >
-                              <If
-                                when={lane() === 'working'}
-                                else={
-                                  <View
-                                    style={{
-                                      width: 6,
-                                      height: 6,
-                                      borderRadius: 3,
-                                      backgroundColor: C.accent,
-                                    }}
-                                  />
-                                }
+                              <View
+                                style={[
+                                  {
+                                    position: 'absolute',
+                                    right: 8,
+                                    top: 0,
+                                    bottom: 0,
+                                    justifyContent: 'center',
+                                  },
+                                  { pointerEvents: 'none' },
+                                ]}
                               >
-                                <LoadingIndicator size={12} label={sessionStatusCaption.working} />
-                              </If>
-                            </View>
+                                <Text
+                                  style={[
+                                    {
+                                      ...menuDetailTextStyle,
+                                      color: C.muted,
+                                      textAlign: 'right',
+                                      fontVariant: ['tabular-nums'],
+                                    },
+                                    { numberOfLines: 1 },
+                                  ]}
+                                >
+                                  {formatSidebarRelativeTime(
+                                    updatedAt(),
+                                    relativeTimeNow(),
+                                    tr('now'),
+                                  )}
+                                </Text>
+                              </View>
+                            </If>
                           </If>
                           <Menu
                             offset={4}

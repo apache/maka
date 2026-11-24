@@ -2635,6 +2635,244 @@ mod tests {
         assert!(!app.screen().selected("role:tab[Time]").unwrap());
         assert!(!app.screen().matches("text:Today").unwrap());
     }
+
+    #[test]
+    fn sidebar_relative_time_shares_trailing_slot_without_layout_shift() {
+        let mut registry = crate::bindings::ui_registry();
+        registry.value("host", || Instance::new(CompletionHost));
+        let sets = vec![nsh_base::registry(), registry];
+        let bundle = nsh_bundler::bundle(&nsh_bundler::BundleOptions {
+            entry: std::path::Path::new("tests/fixtures/sidebar-relative-time.tsx")
+                .canonicalize()
+                .unwrap(),
+            minify: false,
+            split: false,
+            ui_sets: sets
+                .iter()
+                .flat_map(nsh_core::element::Registry::sets)
+                .map(Into::into)
+                .collect(),
+            asset_root_from: Some(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.."),
+            ),
+            ..Default::default()
+        })
+        .unwrap();
+        let clock = nsh_core::time::Clock::manual(
+            std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_760_000_040),
+        );
+        let mut app = nsh_testing::Headless::start(nsh_engine::EngineConfig {
+            viewport: Size::new(px(192.0), px(680.0)),
+            environment: Environment {
+                os: Os::MacOs,
+                native_focus_scopes: true,
+                ..Environment::default()
+            },
+            clock,
+            ui_sets: sets,
+            ..nsh_engine::EngineConfig::new(nsh_engine::Bundle::source(bundle.code))
+        })
+        .unwrap();
+        let bounds_of = |app: &nsh_testing::Headless, selector: &str| {
+            let id = app.screen().id(selector).unwrap();
+            app.screen()
+                .layout_nodes()
+                .into_iter()
+                .find(|node| node.id == id)
+                .unwrap()
+                .bounds
+        };
+        let assert_no_overlap =
+            |app: &nsh_testing::Headless, preceding_sel: &str, time_label: &str| {
+                let preceding = bounds_of(app, preceding_sel);
+                let time = bounds_of(app, &format!("text:{time_label}"));
+                assert!(time.size.width.0 > 0.0, "{time_label} has zero width");
+                assert!(
+                    preceding.origin.x.0 + preceding.size.width.0 < time.origin.x.0,
+                    "{time_label} overlaps {preceding_sel}: preceding={preceding:?}, time={time:?}"
+                );
+            };
+
+        let title_caption = "Pinned caption alignment check";
+        let title_59m = "Investigate trailing timestamp alignment on narrow desktop sidebar rows";
+        let title_11mo = "Audit eleven month relative timestamp width and truncation boundary";
+        let open_caption = format!("label:Open conversation {title_caption}");
+        let open_59m = format!("label:Open conversation {title_59m}");
+        let open_11mo = format!("label:Open conversation {title_11mo}");
+        let more_59m_sel = format!("label:Actions for {title_59m}");
+        let open_selected = "label:Open conversation Selected annual roadmap review";
+
+        app.wait_for("text:now").unwrap();
+        app.wait_for("text:5m").unwrap();
+        app.wait_for("text:59m").unwrap();
+        app.wait_for("text:11mo").unwrap();
+        app.wait_for("text:alpha-repo").unwrap();
+
+        // Trailing-slot mutual exclusion: working, unread, selected, and bubbled waiting rows suppress timestamps.
+        assert!(!app.screen().shows("17d"));
+        assert!(!app.screen().shows("2h"));
+        assert!(!app.screen().shows("1y"));
+        assert!(!app.screen().shows("4h"));
+        assert!(app.screen().matches("label:Working").unwrap());
+        assert!(app.screen().shows("Waiting for you"));
+
+        // Every desktop row reserves the exact same title slot regardless of trailing state,
+        // and timestamps stay clear of both titles and desktopCaption() while sharing one right edge.
+        let text_59m_idle = bounds_of(&app, &format!("text:{title_59m}"));
+        let text_caption_idle = bounds_of(&app, "text:alpha-repo");
+        for selector in [
+            format!("text:{title_11mo}"),
+            "text:Unread release checklist review".into(),
+            "text:Running integration suite now".into(),
+            "text:Selected annual roadmap review".into(),
+        ] {
+            let bounds = bounds_of(&app, &selector);
+            assert_eq!(bounds.origin.x, text_59m_idle.origin.x);
+            assert_eq!(bounds.size.width, text_59m_idle.size.width);
+        }
+        assert_no_overlap(&app, &format!("text:{title_59m}"), "59m");
+        assert_no_overlap(&app, &format!("text:{title_11mo}"), "11mo");
+        assert_no_overlap(&app, "text:alpha-repo", "5m");
+        let right_59m = {
+            let b = bounds_of(&app, "text:59m");
+            b.origin.x.0 + b.size.width.0
+        };
+        let right_11mo = {
+            let b = bounds_of(&app, "text:11mo");
+            b.origin.x.0 + b.size.width.0
+        };
+        assert_eq!(right_59m, right_11mo);
+
+        // Hovering swaps timestamp to More with zero horizontal shift on titles and desktopCaption().
+        app.hover(&open_caption).unwrap();
+        assert!(!app.screen().shows("5m"));
+        assert_eq!(bounds_of(&app, "text:alpha-repo"), text_caption_idle);
+
+        app.hover(&open_59m).unwrap();
+        app.wait_for("text:5m").unwrap();
+        assert!(!app.screen().shows("59m"));
+        assert_eq!(bounds_of(&app, &format!("text:{title_59m}")), text_59m_idle);
+
+        // Keyboard focus-within reveals More and hides the timestamp across both row Tab stops.
+        app.hover("label:New conversation").unwrap();
+        app.wait_for("text:59m").unwrap();
+        let more_opacity = |app: &nsh_testing::Headless| {
+            app.screen()
+                .view_style(&more_59m_sel)
+                .unwrap()
+                .unwrap()
+                .opacity
+        };
+        assert_eq!(more_opacity(&app), 0.0);
+        let mut reached = false;
+        for _ in 0..32 {
+            app.press_key("tab").unwrap();
+            if more_opacity(&app) == 1.0 {
+                reached = true;
+                break;
+            }
+        }
+        assert!(reached, "Tab never reached {more_59m_sel}");
+        assert!(!app.screen().shows("59m"));
+        assert_eq!(bounds_of(&app, &format!("text:{title_59m}")), text_59m_idle);
+        app.press_key("tab").unwrap();
+        assert_eq!(more_opacity(&app), 1.0);
+        assert!(!app.screen().shows("59m"));
+        app.press_key("tab").unwrap();
+        assert_eq!(more_opacity(&app), 0.0);
+        app.wait_for("text:59m").unwrap();
+
+        // Transitioning a row through unread -> working -> idle keeps title bounds invariant.
+        for patch in [
+            serde_json::json!({ "id": "idle-59m", "hasUnread": true }),
+            serde_json::json!({ "id": "idle-59m", "activity": "working" }),
+        ] {
+            app.send_host_event("set-row-state", patch).unwrap();
+            assert!(app.settle());
+            assert!(!app.screen().shows("59m"));
+            assert_eq!(bounds_of(&app, &format!("text:{title_59m}")), text_59m_idle);
+        }
+        app.send_host_event(
+            "set-row-state",
+            serde_json::json!({ "id": "idle-59m", "activity": "idle", "hasUnread": false }),
+        )
+        .unwrap();
+        app.wait_for("text:59m").unwrap();
+        assert_eq!(bounds_of(&app, &format!("text:{title_59m}")), text_59m_idle);
+
+        // Selection swaps the trailing slot between rows, and JSON catalogs localize < 1m labels.
+        app.press("label:Open conversation Fresh quick check")
+            .unwrap();
+        app.wait_for("text:1y").unwrap();
+        assert!(!app.screen().shows("now"));
+        app.press(open_selected).unwrap();
+        app.wait_for("text:now").unwrap();
+        let locale_now = [
+            ("zh-CN", "刚刚"),
+            ("zh-TW", "剛剛"),
+            ("ja", "今"),
+            ("ko", "방금"),
+            ("de", "jetzt"),
+            ("es", "ahora"),
+            ("fr", "<1m"),
+            ("it", "ora"),
+            ("pt-BR", "agora"),
+            ("ru", "сейч."),
+            ("en", "now"),
+        ];
+        for (locale, expected) in locale_now {
+            app.send_host_event("locale", serde_json::json!(locale))
+                .unwrap();
+            app.wait_for(&format!("text:{expected}")).unwrap();
+            assert_no_overlap(&app, "text:Fresh quick check", expected);
+        }
+
+        // Enlarged text scale keeps trailing timestamps clear of titles and captions without hover shift.
+        app.set_environment("large-text", |env| env.font_scale = 1.3)
+            .unwrap();
+        assert!(app.settle());
+        for (locale, expected) in locale_now {
+            app.send_host_event("locale", serde_json::json!(locale))
+                .unwrap();
+            app.wait_for(&format!("text:{expected}")).unwrap();
+            assert_no_overlap(&app, "text:Fresh quick check", expected);
+        }
+        let text_11mo_large = bounds_of(&app, &format!("text:{title_11mo}"));
+        assert_no_overlap(&app, &format!("text:{title_11mo}"), "11mo");
+        assert_no_overlap(&app, "text:alpha-repo", "5m");
+        app.hover(&open_11mo).unwrap();
+        assert!(!app.screen().shows("11mo"));
+        assert_eq!(
+            bounds_of(&app, &format!("text:{title_11mo}")),
+            text_11mo_large
+        );
+        app.hover("label:New conversation").unwrap();
+        app.set_environment("default-text", |env| env.font_scale = 1.0)
+            .unwrap();
+        assert!(app.settle());
+
+        // Single shared clock ticks on minute boundaries, pauses in background, and catches up on active.
+        app.fast_forward(std::time::Duration::from_secs(60))
+            .unwrap();
+        app.wait_for("text:1m").unwrap();
+        app.wait_for("text:6m").unwrap();
+        app.wait_for("text:1h").unwrap();
+
+        app.set_environment("background", |env| {
+            env.lifecycle = nsh_core::platform::Lifecycle::Background;
+        })
+        .unwrap();
+        app.fast_forward(std::time::Duration::from_secs(300))
+            .unwrap();
+        assert!(app.screen().shows("6m"));
+        assert!(!app.screen().shows("11m"));
+
+        app.set_environment("active", |env| {
+            env.lifecycle = nsh_core::platform::Lifecycle::Active;
+        })
+        .unwrap();
+        app.wait_for("text:11m").unwrap();
+    }
 }
 
 #[cfg(test)]
