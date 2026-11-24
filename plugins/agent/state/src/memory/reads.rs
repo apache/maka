@@ -287,23 +287,6 @@ impl Query for CheckReads {
     }
 }
 
-pub(crate) fn capture_upgrade_boundary(c: &Connection) -> Result<(), StoreError> {
-    let upgraded: bool = c.query_row(
-        "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='agent_memory_legacy_runs')",
-        [],
-        |row| row.get(0),
-    )?;
-    if !upgraded {
-        c.execute_batch(
-            "DROP TABLE IF EXISTS temp.legacy_v53;
-             CREATE TEMP TABLE legacy_v53 AS SELECT data_version,
-             EXISTS(SELECT 1 FROM sqlite_schema WHERE name='agent_memory_external_epochs') AS published
-             FROM pragma_data_version;",
-        )?;
-    }
-    Ok(())
-}
-
 pub struct OriginalAdmission(pub RunId);
 impl Query for OriginalAdmission {
     type Output = Option<bool>;
@@ -368,7 +351,7 @@ mod tests {
     use uuid::Uuid;
 
     #[test]
-    fn recap_upgrade_keeps_receipts_and_preserves_their_original_visibility() {
+    fn recap_upgrade_preserves_legacy_receipts_without_granting_visibility() {
         let db = Connection::open_in_memory().unwrap();
         let catalog: Vec<_> = maka_event_log::ROOT_MIGRATIONS
             .iter()
@@ -382,12 +365,11 @@ mod tests {
             .collect();
         maka_event_log::migration::run(&db, &old).unwrap();
         db.execute_batch(r#"INSERT INTO session_control(id,fingerprint,revision,created_at,updated_at,archived,configuration)
-             VALUES('source','test',1,0,0,0,'{}'),('other','test',1,0,0,0,'{}');
-             UPDATE session_control SET archived=1 WHERE id='other';
+             VALUES('source','test',1,0,0,0,'{}');
              INSERT INTO plugin_data VALUES('maka.session-recap','profile','old',4,
                '{"kind":"ready","operationId":"00000000-0000-0000-0000-000000000000","through":1,"modelId":"m","text":"old"}'),
-             ('maka.session-recap','profile','checked',5,
-               '{"visibility":1,"receipt":{"kind":"ready","operationId":"00000000-0000-0000-0000-000000000000","through":1,"modelId":"m","text":"checked"}}');"#).unwrap();
+             ('maka.session-recap','profile','deleted',5,
+               NULL);"#).unwrap();
         maka_event_log::migration::run(&db, &catalog).unwrap();
         let mut rows=db.prepare("SELECT revision,value_json->>'visibility',value_json->>'$.receipt.text' FROM plugin_data ORDER BY revision").unwrap();
         let receipts = rows
@@ -395,23 +377,20 @@ mod tests {
                 Ok((
                     r.get::<_, i64>(0)?,
                     r.get::<_, Option<u64>>(1)?,
-                    r.get::<_, String>(2)?,
+                    r.get::<_, Option<String>>(2)?,
                 ))
             })
             .unwrap()
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
-        assert_eq!(
-            receipts,
-            [(4, None, "old".into()), (5, Some(1), "checked".into())]
-        );
-        assert_eq!(Visibility("source".into()).execute(&db).unwrap(), 1);
+        assert_eq!(receipts, [(4, None, Some("old".into())), (5, None, None)]);
+        assert_eq!(Visibility("source".into()).execute(&db).unwrap(), 0);
         db.execute(
             "UPDATE session_control SET archived=1 WHERE id='source'",
             [],
         )
         .unwrap();
-        assert!(Visibility("source".into()).execute(&db).unwrap() > 1);
+        assert!(Visibility("source".into()).execute(&db).unwrap() > 0);
     }
 
     #[test]

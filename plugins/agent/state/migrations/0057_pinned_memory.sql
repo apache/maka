@@ -158,30 +158,13 @@ CREATE TRIGGER agent_memory_snapshot_index AFTER INSERT ON agent_memory_indexed_
 END;
 INSERT INTO agent_memory_indexed_snapshots SELECT DISTINCT snapshot FROM agent_history_snapshot_entries WHERE kind='run';
 
--- An existing request may also inherit an opaque checkpoint or adjudication from an
--- earlier Run. Its original dependencies cannot be reconstructed on upgrade.
-WITH first_read(owner, session, first_run) AS (
- SELECT owner, session, min(admission_sequence) FROM agent_runs
- WHERE run IN (SELECT run FROM agent_memory_recall_calls)
-    OR run IN (SELECT run FROM agent_session_history WHERE tool_start=1 AND
-               sequence <= (SELECT last_existing_fact FROM agent_memory_history_boundary))
-    OR local=0
- GROUP BY owner, session
-)
-INSERT INTO agent_memory_history_reads(run, revision)
- SELECT r.run,-1 FROM first_read f JOIN agent_runs r
- ON r.owner=f.owner AND r.session=f.session AND r.admission_sequence>=f.first_run;
-
--- A native executor journal can retain remote context across Runs. Rotate its
--- key once for affected legacy sessions, even after the source Run is retired.
+-- The executor may keep prior context outside the local database.
 CREATE TABLE agent_memory_external_epochs (
- session TEXT PRIMARY KEY REFERENCES session_control(id) ON DELETE CASCADE
+ session TEXT PRIMARY KEY REFERENCES session_control(id) ON DELETE CASCADE,
+ revision INTEGER NOT NULL DEFAULT 0
 ) WITHOUT ROWID;
-INSERT INTO agent_memory_external_epochs
- SELECT DISTINCT r.session FROM agent_memory_history_reads h
- JOIN agent_run_specs r ON r.run=h.run JOIN session_control s ON s.id=r.session;
 
--- Only outstanding pre-v53 admissions can still switch models. Keep their original
+-- Only outstanding legacy admissions can still switch models. Keep their original
 -- receiver's identity without retaining operation inputs, results or memory text.
 CREATE TEMP TABLE memory_handoff_runs(run TEXT PRIMARY KEY) WITHOUT ROWID;
 WITH RECURSIVE pending(run) AS (
@@ -191,8 +174,8 @@ WITH RECURSIVE pending(run) AS (
  JOIN contents b ON b.id=s.spec_content_id WHERE b.payload->>'$.trigger.kind'='checkpoint_handoff'
 )
 INSERT INTO memory_handoff_runs SELECT run FROM pending;
-CREATE TABLE agent_memory_legacy_sources (
- session TEXT NOT NULL REFERENCES session_control(id) ON DELETE CASCADE,
+CREATE TEMP TABLE legacy_sources (
+ session TEXT NOT NULL,
  source TEXT NOT NULL, ordinary INTEGER NOT NULL, PRIMARY KEY(session,source)
 ) WITHOUT ROWID;
 CREATE TEMP TABLE memory_handoff_targets (
@@ -207,7 +190,7 @@ INSERT INTO memory_handoff_targets
         CASE b.payload->>'$.trigger.kind' WHEN 'context_compact' THEN 'compact' ELSE 'continueRun' END
  FROM memory_handoff_runs p CROSS JOIN agent_run_specs s ON s.run=p.run JOIN contents b ON b.id=s.spec_content_id
  WHERE b.payload->>'$.trigger.kind' IN ('context_compact','continuation');
-INSERT INTO agent_memory_legacy_sources
+INSERT INTO legacy_sources
  SELECT t.session,t.source,min(o.request_json->>'$.origin.kind' IN ('native','remote'))
  FROM (SELECT 1 FROM memory_handoff_targets LIMIT 1) CROSS JOIN application_operations o
  CROSS JOIN contents r ON r.id=o.outcome_content_id
@@ -222,28 +205,280 @@ INSERT INTO agent_memory_legacy_sources
 DROP TABLE memory_handoff_targets;
 DROP TABLE memory_handoff_runs;
 
--- Dispatch records a dependency at the actual data reader. A shared SessionRead
--- or file tool can also serve a Room post or ordinary workspace content.
-CREATE TRIGGER agent_memory_history_revoke AFTER INSERT ON agent_memory_run_restrictions BEGIN
- UPDATE agent_memory_visibility SET revision=revision+1 WHERE id=1;
+-- The global clock orders a search against changes while its result sessions are
+-- still unknown. Only changes to one of its returned sources invalidate a read.
+CREATE TABLE agent_memory_session_visibility (
+ session TEXT PRIMARY KEY REFERENCES session_control(id) ON DELETE CASCADE,
+ revision INTEGER NOT NULL
+) WITHOUT ROWID;
+CREATE TABLE agent_memory_session_reads (
+ run TEXT NOT NULL REFERENCES agent_run_specs(run) ON DELETE CASCADE,
+ session TEXT NOT NULL, revision INTEGER NOT NULL, PRIMARY KEY(run,session)
+) WITHOUT ROWID;
+CREATE INDEX agent_memory_read_source ON agent_memory_session_reads(session,run);
+CREATE INDEX agent_memory_conversation_source ON agent_memory_evidence(namespace,source->>'$.reference.sessionId')
+ WHERE source->>'kind'='conversation';
+CREATE INDEX agent_memory_snapshots_by_fact ON agent_history_snapshot_entries(json_extract(entry_json,'$.id'),snapshot)
+ WHERE kind='fact';
+CREATE INDEX agent_memory_adoptions_by_snapshot ON agent_history_snapshot_adoptions(snapshot,run);
+
+-- Track only the dependencies of the current remote conversation. Once the
+-- executor rotates, changes to its discarded journal cannot rotate its successor.
+CREATE TABLE agent_memory_external_sources (
+ session TEXT NOT NULL REFERENCES session_control(id) ON DELETE CASCADE,
+ source TEXT NOT NULL, PRIMARY KEY(source,session)
+) WITHOUT ROWID;
+CREATE INDEX agent_memory_external_sources_reader ON agent_memory_external_sources(session);
+CREATE INDEX agent_memory_visibility_change ON agent_memory_session_visibility(revision,session);
+CREATE VIEW agent_memory_rotate_external(session,revision) AS SELECT session,revision FROM agent_memory_external_epochs;
+CREATE TRIGGER agent_memory_rotate_journal INSTEAD OF INSERT ON agent_memory_rotate_external BEGIN
+ INSERT INTO agent_memory_external_epochs VALUES(NEW.session,NEW.revision)
+ ON CONFLICT(session) DO UPDATE SET revision=excluded.revision;
+ DELETE FROM agent_memory_external_sources WHERE session=NEW.session;
 END;
--- Hidden spans also cover sources older than the v51 history index.
-CREATE TRIGGER agent_memory_hidden_span_revoke AFTER UPDATE OF disposition ON agent_memory_versions
-WHEN OLD.disposition='current' AND NEW.disposition<>'current' AND EXISTS (
- SELECT 1 FROM agent_memory_evidence WHERE namespace=NEW.namespace AND scope=NEW.scope
- AND id=NEW.id AND assertion=NEW.revision AND source->>'kind'='conversation'
-) BEGIN
+
+CREATE VIEW agent_memory_changed_sessions(session) AS SELECT session FROM agent_memory_session_visibility;
+CREATE TRIGGER agent_memory_change_session INSTEAD OF INSERT ON agent_memory_changed_sessions BEGIN
  UPDATE agent_memory_visibility SET revision=revision+1 WHERE id=1;
+ INSERT INTO agent_memory_session_visibility
+ WITH RECURSIVE affected(session) AS (
+   SELECT NEW.session UNION
+   SELECT r.session FROM affected a CROSS JOIN agent_memory_session_reads h ON h.session=a.session
+   CROSS JOIN agent_run_specs r ON r.run=h.run
+ )
+ SELECT s.id,(SELECT revision FROM agent_memory_visibility) FROM affected a
+ CROSS JOIN session_control s ON s.id=a.session WHERE 1
+ ON CONFLICT(session) DO UPDATE SET revision=excluded.revision;
+ INSERT INTO agent_memory_rotate_external
+ WITH journals AS MATERIALIZED (
+  SELECT DISTINCT e.session,v.revision FROM agent_memory_session_visibility v
+  CROSS JOIN agent_memory_external_sources e ON e.source=v.session
+  WHERE v.revision=(SELECT revision FROM agent_memory_visibility)
+ ) SELECT session,revision FROM journals;
+END;
+
+-- The parent snapshot pins the complete nested inventory, including each
+-- nested manifest. A fork can retain an evidence fact after its live source retires.
+CREATE VIEW agent_memory_adopted_snapshots(owner,session,snapshot) AS
+ SELECT r.owner,r.session,a.snapshot FROM agent_run_specs r JOIN agent_history_snapshot_adoptions a ON a.run=r.run
+ UNION ALL
+ SELECT r.owner,r.session,child.snapshot FROM agent_run_specs r JOIN agent_history_snapshot_adoptions a ON a.run=r.run
+ JOIN agent_history_snapshot_pins p ON p.snapshot=a.snapshot
+ JOIN agent_history_snapshots child ON child.manifest_content_id=p.content_id AND child.snapshot<>a.snapshot;
+CREATE VIEW agent_memory_evidence_sessions(namespace,scope,id,assertion,evidence,session) AS
+ SELECT namespace,scope,id,assertion,sequence,source->>'$.reference.sessionId' FROM agent_memory_evidence WHERE source->>'kind'='conversation'
+ UNION ALL
+ SELECT e.namespace,e.scope,e.id,e.assertion,e.sequence,r.session FROM agent_memory_evidence e
+ CROSS JOIN agent_history_snapshot_entries f ON f.kind='fact' AND json_extract(f.entry_json,'$.id')=e.source->>'$.reference.factId'
+ CROSS JOIN agent_history_snapshot_adoptions a ON a.snapshot=f.snapshot
+ CROSS JOIN agent_run_specs r ON r.run=a.run AND r.owner=e.namespace
+ WHERE e.source->>'kind'='conversation'
+ UNION ALL
+ SELECT e.namespace,e.scope,e.id,e.assertion,e.sequence,r.session FROM agent_memory_evidence e
+ CROSS JOIN agent_history_snapshot_entries f ON f.kind='fact' AND json_extract(f.entry_json,'$.id')=e.source->>'$.reference.factId'
+ CROSS JOIN agent_history_snapshots child ON child.snapshot=f.snapshot
+ CROSS JOIN agent_history_snapshot_pins p ON p.content_id=child.manifest_content_id AND p.snapshot<>child.snapshot
+ CROSS JOIN agent_history_snapshot_adoptions a ON a.snapshot=p.snapshot
+ CROSS JOIN agent_run_specs r ON r.run=a.run AND r.owner=e.namespace
+ WHERE e.source->>'kind'='conversation';
+CREATE TRIGGER agent_memory_history_revoke AFTER INSERT ON agent_memory_run_restrictions BEGIN
+ INSERT INTO agent_memory_changed_sessions SELECT DISTINCT session FROM agent_memory_evidence_sessions WHERE evidence=NEW.evidence;
+END;
+CREATE TRIGGER agent_memory_hidden_span_revoke AFTER UPDATE OF disposition ON agent_memory_versions
+WHEN OLD.disposition='current' AND NEW.disposition<>'current' BEGIN
+ INSERT INTO agent_memory_changed_sessions SELECT DISTINCT session FROM agent_memory_evidence_sessions
+ WHERE namespace=NEW.namespace AND scope=NEW.scope AND id=NEW.id AND assertion=NEW.revision;
 END;
 CREATE TRIGGER agent_memory_source_private AFTER UPDATE OF archived,configuration ON session_control
 WHEN (OLD.archived=0 AND NEW.archived=1) OR
  (coalesce(OLD.configuration->>'incognito',0)=0 AND NEW.configuration->>'incognito'=1) BEGIN
- UPDATE agent_memory_visibility SET revision=revision+1 WHERE id=1;
+ INSERT INTO agent_memory_changed_sessions VALUES(NEW.id);
 END;
 CREATE TRIGGER agent_memory_source_retired AFTER INSERT ON session_retirements WHEN NEW.remove_session=1 BEGIN
- UPDATE agent_memory_visibility SET revision=revision+1 WHERE id=1;
+ INSERT INTO agent_memory_changed_sessions VALUES(NEW.session_id);
 END;
 CREATE TRIGGER agent_memory_source_removal AFTER UPDATE OF remove_session ON session_retirements
 WHEN OLD.remove_session=0 AND NEW.remove_session=1 BEGIN
- UPDATE agent_memory_visibility SET revision=revision+1 WHERE id=1;
+ INSERT INTO agent_memory_changed_sessions VALUES(NEW.session_id);
 END;
+
+-- A bare receipt predates visibility capture. Its text remains available to its
+-- human owner. Preserve the plugin store revision and deletion tombstones.
+UPDATE plugin_data SET value_json=json_object('visibility',NULL,'receipt',json(value_json))
+ WHERE package_id='maka.session-recap' AND scope_id='profile'
+ AND value_json->>'kind' IN ('ready','pending','failed');
+
+-- A later Run can inherit context from an earlier Run in the same session.
+CREATE TEMP TABLE legacy_candidates(run TEXT PRIMARY KEY) WITHOUT ROWID;
+WITH first_read(owner, session, first_run) AS (
+ SELECT owner, session, min(admission_sequence) FROM agent_runs
+ WHERE run IN (SELECT run FROM agent_memory_recall_calls)
+    OR run IN (SELECT run FROM agent_session_history WHERE tool_start=1 AND
+               sequence <= (SELECT last_existing_fact FROM agent_memory_history_boundary))
+    OR local=0
+ GROUP BY owner, session
+)
+INSERT INTO legacy_candidates(run)
+ SELECT r.run FROM first_read f JOIN agent_runs r
+ ON r.owner=f.owner AND r.session=f.session AND r.admission_sequence>=f.first_run;
+
+-- A spelling is not a binding. Old file selections have a host-appended
+-- paragraph in the frozen definition that was absent from the caller's own
+-- declaration. This proves the file contract even for aliases on import slots.
+CREATE TEMP TABLE legacy_bindings (
+ run TEXT NOT NULL, name TEXT NOT NULL, reader TEXT NOT NULL, PRIMARY KEY(run,name)
+) WITHOUT ROWID;
+INSERT INTO legacy_bindings
+ SELECT r.run,a.value->>'$.selection.name',CASE
+  WHEN a.value->>'$.history_reader'='file' THEN 'file'
+  WHEN a.value->>'$.history_reader'='session' THEN 'opaque'
+  WHEN a.value->>'$.selection.method'='execute' AND a.value->>'$.selection.input'='shell' AND a.value->>'$.selection.result'='json' THEN 'plain'
+  WHEN a.value->>'$.selection.method'='read' AND EXISTS(
+   SELECT 1 FROM json_each(selection.payload,'$.definitions') d
+   WHERE d.value->>'$.name'=a.value->>'$.selection.name' AND d.value->>'$.description'=
+    (a.value->>'$.selection.description') || char(10,10) ||
+    'Also reads Maka resources (maka://session/<id>, maka://session/<id>/tool-results/<event-id>, attachment:<id>, archive:<event-id>). Pass page.next unchanged to continue reading.'
+  ) THEN 'file'
+  ELSE 'opaque' END
+ FROM legacy_candidates h JOIN agent_run_specs r ON r.run=h.run
+ JOIN contents spec ON spec.id=r.spec_content_id
+ JOIN contents selection ON selection.content_sha256=spec.payload->>'$.toolSelection.digest'
+ CROSS JOIN json_each(selection.payload,'$.services') a;
+
+CREATE TEMP TABLE legacy_opaque(run TEXT PRIMARY KEY) WITHOUT ROWID;
+WITH calls AS (
+ SELECT h.owner,h.session,h.run,h.tool_use_id,h.attempt,
+  coalesce(b.payload->>'$.fact.part.call.name',b.payload->>'$.fact.event.name',
+   b.payload->>'$.fact.output.name',x.payload->>'$.name') AS name,
+  coalesce(b.payload->>'$.fact.part.call.input.data.path',b.payload->>'$.fact.output.input.path',
+   x.payload->>'$.input.path',i.payload->>'$.path') AS path
+ FROM legacy_candidates old JOIN agent_session_history h ON h.run=old.run AND h.tool_start=1
+ LEFT JOIN agent_facts f ON f.sequence=h.sequence AND f.run=h.run
+ LEFT JOIN contents b ON b.id=f.body_content_id
+ LEFT JOIN contents x ON x.content_sha256=b.payload->>'$.fact.event.descriptor.digest'
+ LEFT JOIN contents i ON i.content_sha256=b.payload->>'$.fact.event.input.digest'
+)
+INSERT OR IGNORE INTO legacy_opaque
+ SELECT c.run FROM calls c LEFT JOIN legacy_bindings a ON a.run=c.run AND a.name=c.name
+ WHERE CASE a.reader WHEN 'plain' THEN 0 WHEN 'file' THEN CASE WHEN typeof(c.path)='text'
+ THEN maka_reads_history_resource(c.path) ELSE 1 END ELSE 1 END
+ AND NOT EXISTS (
+  SELECT 1 FROM agent_session_history h JOIN agent_facts f ON f.sequence=h.sequence JOIN contents b ON b.id=f.body_content_id
+  WHERE h.owner=c.owner AND h.session=c.session AND h.tool_use_id=c.tool_use_id AND h.run=c.run
+  AND h.attempt=c.attempt AND h.kind='tool_original_bound'
+  AND b.payload->>'$.fact.reference.contract.name'='maka.workspace.Files'
+  AND b.payload->>'$.fact.reference.method' IN ('edit','write','applyPatch')
+ );
+INSERT OR IGNORE INTO legacy_opaque SELECT run FROM agent_memory_recall_calls;
+-- Profile-scoped retirement may retain a Run stub after releasing its facts.
+-- An incomplete projection cannot establish the absence of a historical read.
+INSERT OR IGNORE INTO legacy_opaque SELECT r.run FROM agent_runs r
+ JOIN agent_run_specs s ON s.run=r.run JOIN contents b ON b.id=s.spec_content_id
+ WHERE b.payload->>'$.memoryAdmission' IS NULL AND
+ (r.revision<>(SELECT count(*) FROM agent_facts f WHERE f.run=r.run) OR EXISTS(
+   SELECT 1 FROM agent_facts f LEFT JOIN agent_session_history h ON h.sequence=f.sequence
+   WHERE f.run=r.run AND (h.run IS NOT f.run OR h.fact_id IS NOT f.id)
+ ));
+DROP TABLE legacy_bindings;
+
+-- Imported text-only inventories have no previous Agent read or checkpoint.
+-- Canonical forks, opaque provider context and incomplete inventories stay fenced.
+INSERT OR IGNORE INTO legacy_opaque SELECT r.run FROM agent_runs r
+ JOIN legacy_candidates old ON old.run=r.run
+ WHERE r.local=0 AND NOT EXISTS (
+  SELECT 1 FROM agent_history_snapshot_adoptions a JOIN agent_history_snapshots s ON s.snapshot=a.snapshot
+  JOIN contents manifest ON manifest.id=s.manifest_content_id
+  WHERE a.run=r.run AND manifest.payload->>'$.origin.kind'='imported'
+  AND EXISTS (SELECT 1 FROM agent_history_snapshot_entries e WHERE e.snapshot=a.snapshot AND e.kind='imported')
+  AND NOT EXISTS (
+   SELECT 1 FROM agent_history_snapshot_entries e
+   LEFT JOIN contents m ON m.content_sha256=e.entry_json->>'$.message.digest'
+   LEFT JOIN json_each(m.payload,'$.parts') part
+   LEFT JOIN contents b ON b.content_sha256=part.value->>'$.digest'
+   WHERE e.snapshot=a.snapshot AND (e.kind IN ('run','fact','source') OR
+     (e.kind='imported' AND (m.payload->>'$.role' IS NOT 'user' OR b.payload->>'$.kind' IS NOT 'input'
+       OR typeof(b.payload->>'$.content.text')!='text' OR m.payload->>'$.providerMetadata' IS NOT NULL
+       OR coalesce(json_array_length(m.payload,'$.media'),0)>0 OR coalesce(json_array_length(b.payload,'$.content.directory_references'),0)>0
+       OR coalesce(json_array_length(b.payload,'$.content.attachments'),0)>0 OR coalesce(json_array_length(b.payload,'$.content.quotes'),0)>0
+       OR coalesce(json_array_length(b.payload,'$.content.inline_references'),0)>0 OR coalesce(json_array_length(b.payload,'$.content.preparation'),0)>0)))
+  )
+ );
+
+CREATE TEMP TABLE legacy_boundary(owner TEXT,session TEXT,first_run INTEGER,PRIMARY KEY(owner,session)) WITHOUT ROWID;
+INSERT INTO legacy_boundary SELECT r.owner,r.session,min(r.admission_sequence)
+ FROM legacy_opaque o JOIN agent_runs r ON r.run=o.run GROUP BY r.owner,r.session;
+INSERT INTO agent_memory_history_reads(run,revision)
+ SELECT r.run,-1 FROM legacy_boundary b JOIN agent_runs r ON r.owner=b.owner AND r.session=b.session
+ AND r.admission_sequence>=b.first_run JOIN legacy_candidates c ON c.run=r.run;
+INSERT INTO agent_memory_external_epochs(session)
+ SELECT DISTINCT r.session FROM legacy_candidates c JOIN agent_run_specs r ON r.run=c.run
+ JOIN session_control s ON s.id=r.session WHERE r.session IN (SELECT session FROM legacy_boundary);
+DROP TABLE legacy_candidates;
+DROP TABLE legacy_opaque;
+
+-- The immutable request and checkpoint bytes predate the replay field. Record
+-- positive evidence once; detached or removed sources have no such authority.
+CREATE TABLE agent_memory_legacy_runs (
+ run TEXT PRIMARY KEY REFERENCES agent_run_specs(run) ON DELETE CASCADE,
+ shared INTEGER NOT NULL, ordinary INTEGER
+) WITHOUT ROWID;
+INSERT INTO agent_memory_legacy_runs(run,shared)
+ SELECT r.run,NOT EXISTS(SELECT 1 FROM legacy_boundary boundary WHERE boundary.owner=r.owner
+                        AND boundary.session=r.session AND boundary.first_run<=r.admission_sequence)
+
+ FROM agent_runs r JOIN agent_run_specs s ON s.run=r.run JOIN contents spec ON spec.id=s.spec_content_id
+ WHERE spec.payload->>'$.memoryAdmission' IS NULL;
+DROP TABLE legacy_boundary;
+
+-- Freeze the original receiver for outstanding handoffs in this transaction.
+WITH RECURSIVE ancestors(target,run) AS (
+ SELECT r.run,r.run FROM agent_runs r JOIN agent_memory_legacy_runs a ON a.run=r.run
+ WHERE r.local=1 AND r.terminal IS NULL
+ UNION
+ SELECT a.target,b.payload->>'$.trigger.source' FROM ancestors a JOIN agent_run_specs s ON s.run=a.run
+ JOIN contents b ON b.id=s.spec_content_id WHERE b.payload->>'$.trigger.kind'='checkpoint_handoff'
+ AND b.payload->>'$.origin.kind'='local' AND b.payload->>'$.allowedTools' IS NULL
+), inputs AS (
+ SELECT a.target,s.session,s.run,b.payload AS spec,i.payload AS input FROM ancestors a
+ JOIN agent_run_specs s ON s.run=a.run JOIN contents b ON b.id=s.spec_content_id
+ LEFT JOIN contents i ON i.content_sha256=b.payload->>'$.input.digest'
+ WHERE b.payload->>'$.trigger.kind' IS NOT 'checkpoint_handoff' OR b.payload->>'$.origin.kind' IS NOT 'local'
+ OR b.payload->>'$.allowedTools' IS NOT NULL
+), decisions AS (
+ SELECT target,CASE
+  WHEN spec->>'$.origin.kind' IS NOT 'local' OR spec->>'$.allowedTools' IS NOT NULL THEN 0
+  WHEN spec->>'$.trigger.kind' IN ('context_compact','continuation') THEN
+    (SELECT ordinary FROM legacy_sources WHERE session=i.session AND source=i.run)
+  WHEN spec->>'$.trigger.kind' IS NOT 'message' THEN 0
+  WHEN input->>'$.kind' IS NOT 'message' THEN NULL
+  WHEN coalesce(json_array_length(input,'$.source_messages'),0)=0 THEN
+   (SELECT ordinary FROM legacy_sources WHERE session=i.session AND source=spec->>'$.trigger.message_id')
+  WHEN json_array_length(input,'$.source_messages')=1 AND input->>'$.request_fingerprint' IS NULL THEN 0
+  ELSE (SELECT CASE WHEN min(CASE WHEN m.value->>'$.origin' IS NOT NULL THEN 0 ELSE s.ordinary END)=0 THEN 0
+                WHEN count(s.ordinary)=count(*) THEN 1 END
+        FROM json_each(input,'$.source_messages') m LEFT JOIN legacy_sources s
+        ON s.session=i.session AND s.source=m.value->>'$.message_id') END AS ordinary
+ FROM inputs i
+)
+UPDATE agent_memory_legacy_runs AS r SET ordinary=d.ordinary FROM decisions d WHERE r.run=d.target;
+
+-- Queue events are immutable. Keep the migrated decision independent of the
+-- queue projection so an explicit rebuild can restore it after replay.
+CREATE TABLE agent_memory_legacy_queue (
+ session TEXT NOT NULL REFERENCES session_control(id) ON DELETE CASCADE,
+ request TEXT NOT NULL, admission TEXT NOT NULL, PRIMARY KEY(session,request)
+) WITHOUT ROWID;
+INSERT INTO agent_memory_legacy_queue
+ SELECT q.session,q.request,CASE
+ WHEN q.entry_json->>'$.request.spec.origin.kind'!='local' OR q.entry_json->>'$.request.spec.allowedTools' IS NOT NULL
+ OR q.entry_json->>'$.request.spec.trigger.kind'!='message' OR origin.payload->>'$.origin' IS NOT NULL OR s.ordinary=0 THEN 'excluded'
+ WHEN q.entry_json->>'$.request.spec.origin.kind'='local' AND q.entry_json->>'$.request.spec.trigger.kind'='message'
+ AND q.entry_json->>'$.request.spec.trigger.message_id'=q.message AND origin.payload->>'$.message_id'=q.message
+ AND s.ordinary=1 THEN 'disabled' ELSE 'legacy' END FROM agent_queue_items q JOIN session_control c ON c.id=q.session
+ LEFT JOIN legacy_sources s ON s.session=q.session AND s.source=q.message
+ LEFT JOIN contents origin ON origin.content_sha256=q.entry_json->>'$.request.source.digest'
+ WHERE q.state='pending' AND json_type(q.entry_json,'$.request.spec')='object'
+ AND q.entry_json->>'$.request.spec.memoryAdmission' IS NULL;
+UPDATE agent_queue_items AS q SET entry_json=json_set(entry_json,'$.request.spec.memoryAdmission',l.admission)
+ FROM agent_memory_legacy_queue l WHERE q.session=l.session AND q.request=l.request;
+DROP TABLE legacy_sources;

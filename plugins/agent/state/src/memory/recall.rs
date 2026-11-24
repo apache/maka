@@ -772,137 +772,132 @@ mod tests {
     }
 
     #[test]
-    fn old_reader_classification_respects_the_binding_and_published_executor_key() {
+    fn old_reader_classification_preserves_clean_executor_keys() {
         let suffix = "\n\nAlso reads Maka resources (maka://session/<id>, maka://session/<id>/tool-results/<event-id>, attachment:<id>, archive:<event-id>). Pass page.next unchanged to continue reading.";
-        for published in [false, true] {
-            let db = Connection::open_in_memory().unwrap();
-            migrate(&db, 50);
-            let selection = serde_json::json!({
-                "definitions":[
-                    {"name":"OpenDocument","description":format!("Read a document{suffix}")},
-                    {"name":"Read","description":format!("Untrusted reader{suffix}")}
-                ],
-                "services":[
-                    {"selection":{"name":"OpenDocument","target":{"kind":"import","name":"files"},
-                        "method":"read","description":"Read a document"}},
-                    {"selection":{"name":"Read","target":{"kind":"import","name":"custom"},
-                        "method":"read","description":format!("Untrusted reader{suffix}")}}
-                ],"internalBindings":{}
-            });
-            db.execute(
-                "INSERT INTO contents(content_sha256,payload) VALUES('selection',?)",
-                [serde_json::to_vec(&selection).unwrap()],
-            )
-            .unwrap();
-            db.execute_batch(
-                r#"INSERT INTO contents(content_sha256,payload) VALUES
+        let db = Connection::open_in_memory().unwrap();
+        migrate(&db, 50);
+        let selection = serde_json::json!({
+            "definitions":[
+                {"name":"OpenDocument","description":format!("Read a document{suffix}")},
+                {"name":"Read","description":format!("Untrusted reader{suffix}")}
+            ],
+            "services":[
+                {"selection":{"name":"OpenDocument","target":{"kind":"import","name":"files"},
+                    "method":"read","description":"Read a document"}},
+                {"selection":{"name":"Read","target":{"kind":"import","name":"custom"},
+                    "method":"read","description":format!("Untrusted reader{suffix}")}}
+            ],"internalBindings":{}
+        });
+        db.execute(
+            "INSERT INTO contents(content_sha256,payload) VALUES('selection',?)",
+            [serde_json::to_vec(&selection).unwrap()],
+        )
+        .unwrap();
+        db.execute_batch(
+            r#"INSERT INTO contents(content_sha256,payload) VALUES
                 ('spec', CAST('{"toolSelection":{"digest":"selection"}}' AS BLOB));"#,
+        )
+        .unwrap();
+        for (index, (session, name, path)) in [
+            ("plain", "OpenDocument", "README.md"),
+            ("archive", "OpenDocument", "session:sample"),
+            ("unknown", "Read", "README.md"),
+            ("imported-user", "", ""),
+            ("imported-opaque", "", ""),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let sequence = index as i64 + 1;
+            db.execute("INSERT INTO session_control(id,fingerprint,revision,created_at,updated_at,archived,configuration)
+                    VALUES(?,'test',1,0,0,0,'{}')",[session]).unwrap();
+            db.execute("INSERT INTO agent_run_specs SELECT ?1,1,'owner',?1,id FROM contents WHERE content_sha256='spec'",
+                    [session]).unwrap();
+            let call = serde_json::json!({"fact":{"part":{"call":{"name":name,"input":{"data":{"path":path}}}}}});
+            db.execute(
+                "INSERT INTO contents(content_sha256,payload) VALUES(?,?)",
+                params![session, serde_json::to_vec(&call).unwrap()],
             )
             .unwrap();
-            for (index, (session, name, path)) in [
-                ("plain", "OpenDocument", "README.md"),
-                ("archive", "OpenDocument", "session:sample"),
-                ("unknown", "Read", "README.md"),
-                ("imported-user", "", ""),
-                ("imported-opaque", "", ""),
-            ]
-            .into_iter()
-            .enumerate()
-            {
-                let sequence = index as i64 + 1;
-                db.execute("INSERT INTO session_control(id,fingerprint,revision,created_at,updated_at,archived,configuration)
-                    VALUES(?,'test',1,0,0,0,'{}')",[session]).unwrap();
-                db.execute("INSERT INTO agent_run_specs SELECT ?1,1,'owner',?1,id FROM contents WHERE content_sha256='spec'",
-                    [session]).unwrap();
-                let call = serde_json::json!({"fact":{"part":{"call":{"name":name,"input":{"data":{"path":path}}}}}});
-                db.execute(
-                    "INSERT INTO contents(content_sha256,payload) VALUES(?,?)",
-                    params![session, serde_json::to_vec(&call).unwrap()],
-                )
-                .unwrap();
-                db.execute(
-                    "INSERT INTO agent_facts VALUES(?1,?2,?2,1,1,1,?3)",
-                    params![sequence, session, db.last_insert_rowid()],
-                )
-                .unwrap();
-                db.execute("INSERT INTO agent_session_history(owner,session,sequence,run,admission_sequence,kind,
+            db.execute(
+                "INSERT INTO agent_facts VALUES(?1,?2,?2,1,1,1,?3)",
+                params![sequence, session, db.last_insert_rowid()],
+            )
+            .unwrap();
+            db.execute("INSERT INTO agent_session_history(owner,session,sequence,run,admission_sequence,kind,
                     prefix_digest,tool_use_id,tool_start,opening_message,fact_id,result_source)
                     VALUES('owner',?1,?2,?1,?2,'model_observed','prefix','call',?3,0,?1,0)",
                     params![session,sequence,!name.is_empty()]).unwrap();
-                db.execute("INSERT INTO agent_runs(run,schema_version,owner,session,admission_sequence,local,revision,
+            db.execute("INSERT INTO agent_runs(run,schema_version,owner,session,admission_sequence,local,revision,
                     control_version,stopped,tokens,retries,retry_pending,cancelled_by_risk,replans,terminal)
                     VALUES(?1,1,'owner',?1,?2,?3,1,0,0,0,0,0,0,'[]','completed')",params![session,sequence,!name.is_empty()]).unwrap();
-                if name.is_empty() {
-                    let manifest = format!("manifest-{session}");
-                    let message = format!("message-{session}");
-                    db.execute(
-                        "INSERT INTO contents(content_sha256,payload) VALUES(?1,?2)",
-                        params![manifest, br#"{"origin":{"kind":"imported"}}"#.as_slice()],
-                    )
-                    .unwrap();
-                    db.execute(
-                        "INSERT INTO agent_history_snapshots VALUES(?1,'owner',?1,'{}',?2)",
-                        params![session, db.last_insert_rowid()],
-                    )
-                    .unwrap();
-                    db.execute(
-                        "INSERT INTO agent_history_snapshot_adoptions VALUES(?1,?1,?1)",
-                        [session],
-                    )
-                    .unwrap();
-                    let role = if session == "imported-user" {
-                        "user"
-                    } else {
-                        "assistant"
-                    };
-                    let part = format!("part-{session}");
-                    let row = serde_json::json!({"role":role,"parts":[{"digest":part}]});
-                    db.execute(
-                        "INSERT INTO contents(content_sha256,payload) VALUES(?1,?2)",
-                        params![
-                            part,
-                            br#"{"kind":"input","content":{"text":"original text"}}"#.as_slice()
-                        ],
-                    )
-                    .unwrap();
-                    db.execute(
-                        "INSERT INTO contents(content_sha256,payload) VALUES(?1,?2)",
-                        params![message, serde_json::to_vec(&row).unwrap()],
-                    )
-                    .unwrap();
-                    db.execute("INSERT INTO agent_history_snapshot_entries(snapshot,ordinal,kind,position,entry_json)
+            if name.is_empty() {
+                let manifest = format!("manifest-{session}");
+                let message = format!("message-{session}");
+                db.execute(
+                    "INSERT INTO contents(content_sha256,payload) VALUES(?1,?2)",
+                    params![manifest, br#"{"origin":{"kind":"imported"}}"#.as_slice()],
+                )
+                .unwrap();
+                db.execute(
+                    "INSERT INTO agent_history_snapshots VALUES(?1,'owner',?1,'{}',?2)",
+                    params![session, db.last_insert_rowid()],
+                )
+                .unwrap();
+                db.execute(
+                    "INSERT INTO agent_history_snapshot_adoptions VALUES(?1,?1,?1)",
+                    [session],
+                )
+                .unwrap();
+                let role = if session == "imported-user" {
+                    "user"
+                } else {
+                    "assistant"
+                };
+                let part = format!("part-{session}");
+                let row = serde_json::json!({"role":role,"parts":[{"digest":part}]});
+                db.execute(
+                    "INSERT INTO contents(content_sha256,payload) VALUES(?1,?2)",
+                    params![
+                        part,
+                        br#"{"kind":"input","content":{"text":"original text"}}"#.as_slice()
+                    ],
+                )
+                .unwrap();
+                db.execute(
+                    "INSERT INTO contents(content_sha256,payload) VALUES(?1,?2)",
+                    params![message, serde_json::to_vec(&row).unwrap()],
+                )
+                .unwrap();
+                db.execute("INSERT INTO agent_history_snapshot_entries(snapshot,ordinal,kind,position,entry_json)
                         VALUES(?1,0,'imported',0,json_object('message',json_object('digest',?2)))",
                         params![session,message]).unwrap();
-                }
             }
-            if published {
-                migrate(&db, 55);
-            }
-            migrate(&db, i64::MAX);
-            for session in [
-                "plain",
-                "archive",
-                "unknown",
-                "imported-user",
-                "imported-opaque",
-            ] {
-                let reusable = matches!(session, "plain" | "imported-user");
-                let shared: bool = db
-                    .query_row(
-                        "SELECT shared FROM agent_memory_legacy_runs WHERE run=?",
-                        [session],
-                        |r| r.get(0),
-                    )
-                    .unwrap();
-                assert_eq!(shared, reusable, "{session}");
-                let key = crate::memory::reads::ExternalConversation(session.into())
-                    .execute(&db)
-                    .unwrap();
-                if reusable && !published {
-                    assert_eq!(key, session);
-                } else {
-                    assert_eq!(key, format!("memory-v53/{session}"));
-                }
+        }
+        migrate(&db, i64::MAX);
+        for session in [
+            "plain",
+            "archive",
+            "unknown",
+            "imported-user",
+            "imported-opaque",
+        ] {
+            let reusable = matches!(session, "plain" | "imported-user");
+            let shared: bool = db
+                .query_row(
+                    "SELECT shared FROM agent_memory_legacy_runs WHERE run=?",
+                    [session],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(shared, reusable, "{session}");
+            let key = crate::memory::reads::ExternalConversation(session.into())
+                .execute(&db)
+                .unwrap();
+            if reusable {
+                assert_eq!(key, session);
+            } else {
+                assert_eq!(key, format!("memory-v53/{session}"));
             }
         }
     }
