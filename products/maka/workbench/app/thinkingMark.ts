@@ -97,8 +97,13 @@ const PEEK_TAIL = 480;
  */
 export function thoughtTail(thought: string) {
   // Paragraphs follow one another without the empty line between them: the
-  // window has three lines to show.
-  const text = thought.trimEnd().replace(/\n\s*\n/g, '\n');
+  // window has three lines to show. Inline code keeps its content intact while
+  // bold, heading marks and a trailing lone `*` (half of a bold mark arriving)
+  // are left out.
+  const text = thought
+    .trimEnd()
+    .replace(/`([^`\n]*)`?|\*\*|^#{1,6} +|\*(?![\s\S])/gm, (_, code) => code ?? '')
+    .replace(/\n\s*\n/g, '\n');
   if (text.length <= PEEK_TAIL) return text;
   const paragraph = text.lastIndexOf('\n', text.length - PEEK_TAIL);
   if (paragraph >= 0 && text.length - paragraph <= PEEK_TAIL * 1.5)

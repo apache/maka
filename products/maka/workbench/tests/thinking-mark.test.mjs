@@ -45,3 +45,15 @@ test('the tail of a thought stays short when its last paragraph is long', () => 
   assert.ok(thoughtTail(long).length <= 720);
   assert.equal(thoughtTail(`${'a'.repeat(100)}\n${'b'.repeat(500)}`), 'b'.repeat(500));
 });
+
+test('thoughtTail strips Markdown marks without altering inline code', () => {
+  assert.equal(thoughtTail('**Plan*'), 'Plan');
+  assert.equal(thoughtTail('**Plan**'), 'Plan');
+  assert.equal(thoughtTail('**Plan** '), 'Plan');
+  assert.equal(
+    thoughtTail('## Plan\n\nMatch `**/*.ts` and `src/*`'),
+    'Plan\nMatch **/*.ts and src/*',
+  );
+  assert.equal(thoughtTail('`*`'), '*');
+  assert.equal(thoughtTail('**Checking** the `price` now *'), 'Checking the price now ');
+});
