@@ -37,12 +37,19 @@ import {
   type JSX,
 } from 'nsh';
 import { Button, Dialog, TextView } from 'nsh/base';
+import { randomUUID } from 'crypto';
 import { CompactComposer } from './CompactComposer';
+import {
+  readProjectLocation,
+  SessionWorkspaces,
+  type WorktreeSelection,
+} from './SessionWorkspaces';
 import { currentWindow, isAvailable as desktopAvailable } from 'nsh/desktop';
 import { ComputerStageView } from './ComputerStageView';
 import { createComputerStage, type ComputerSnapshot } from './computerStageController';
 import type { ComputerFrameSource } from './computerFrames';
 import type { UiSubscription } from '../../../../packages/plugin-sdk/src/workbench.js';
+import type { ServiceMethods } from '../../../../packages/plugin-sdk/src/generated/methods.js';
 import { hasComposerContent } from '../../../../packages/plugin-sdk/src/composer-view.js';
 import { StageFloatingComposer } from '../../../../products/maka/workbench/app/StageFloatingComposer';
 import { ComposerUsageLimits } from '../../../../products/maka/workbench/app/ComposerUsageLimits';
@@ -62,6 +69,7 @@ import type {
   SettingsAssistantPreferences,
   SettingsPreferencesUpdated,
   ModelSelection,
+  OperationReply,
   RunId,
   UiTarget,
 } from '../../../../packages/plugin-sdk/src/generated/runtime.js';
@@ -82,6 +90,7 @@ import {
   type ComposerViewInput,
 } from '../../../../packages/plugin-sdk/src/workbench-views.js';
 import { InlineCallout } from '../../../../products/maka/workbench/app/Feedback';
+import { delayed } from '../../../../products/maka/workbench/app/delayed';
 import { toast } from '../../../../products/maka/workbench/app/toastStore';
 import {
   createText,
@@ -104,9 +113,6 @@ import {
   bodyTextStyle,
   C,
   Header,
-  controlStyle,
-  controlHoverStyle,
-  controlFocusStyle,
   textTooltip,
   type BrowserHeader,
 } from '../../../../products/maka/workbench/app/ui';
@@ -232,6 +238,7 @@ const accessOfSandboxMode = {
 type PendingDraft = {
   workspace: BrowserWorkspace;
   workspaceLabel: string;
+  worktree: WorktreeSelection | null;
   text: string;
   backend: ModelBackend | null;
   access: AgentWorkspaceAccess | null;
@@ -241,10 +248,30 @@ type PendingDraft = {
   target: { kind: 'creating'; operationId: string } | { kind: 'session'; sessionId: string } | null;
   revision: number;
 };
+type CreateWorktree = ServiceMethods['agent']['createProjectWorktree'];
+const worktreeFailureMessages = {
+  invalid_name: 'Could not assign a worktree name. Send again to try another name.',
+  invalid_branch: 'Could not assign a worktree name. Send again to try another name.',
+  base_unavailable: 'This base branch is unavailable. Choose another branch.',
+  branch_conflict: 'Could not assign a worktree name. Send again to try another name.',
+  directory_conflict: 'Could not assign a worktree name. Send again to try another name.',
+  snapshot_unavailable:
+    'Could not copy local changes. Check the current branch and resolve any Git conflicts.',
+  git_required: 'Install Git to create a worktree.',
+  location_not_allowed:
+    'Add the folder containing this repository to Workspace Locations, then retry.',
+  unavailable: 'This Git project is unavailable. Open it again and retry.',
+  unsupported:
+    'The checkout or base branch uses an unsupported Git feature. Choose another checkout or branch.',
+  unknown: 'Could not confirm worktree creation. Send again to check the same worktree.',
+} as const satisfies Record<
+  Extract<CreateWorktree['output'], { kind: 'failed' }>['reason'],
+  MessageKey
+>;
 type SubmissionAttempt = object;
 type Submission =
   | { kind: 'idle' }
-  | { kind: 'preparing'; attempt: SubmissionAttempt }
+  | { kind: 'preparing'; attempt: SubmissionAttempt; worktree?: 'creating' | 'confirming' }
   | {
       kind: 'handing_off';
       attempt: SubmissionAttempt;
@@ -317,7 +344,6 @@ export function createConversationUi(
   const status = createTransientText();
   const switching = signal(false);
   const busy = signal(false);
-  const creatingFork = signal(false);
   const controls = signal<any[]>([]);
   const controlsKnown = signal(false);
   const recovering = signal(false);
@@ -344,6 +370,8 @@ export function createConversationUi(
   const recentWorkspaces = signal<RecentWorkspace[]>([]);
   const recentKnown = signal(platform.idiom === 'terminal' || !!side);
   const workspaceReady = signal(false);
+  const pendingWorkspaceSelection = signal(false);
+  const draftWorkspaceRequest = signal<object | null>(null);
   const workspaceError = createText();
   const recentOpen = signal(false);
   let recentWrite = Promise.resolve();
@@ -364,8 +392,32 @@ export function createConversationUi(
   };
   const pendingWorkspace = computed(() => pending()?.workspace ?? null);
   const pendingWorkspaceLabel = computed(() => pending()?.workspaceLabel ?? '');
+  const pendingWorktree = computed(() => pending()?.worktree ?? null);
+  const uncertainWorktrees = signal<ReadonlyMap<string, CreateWorktree['input']>>(new Map());
+  const retryWorktree = () => {
+    const selection = pendingWorktree();
+    return selection ? uncertainWorktrees().get(selection.path) : undefined;
+  };
+  const recordWorktreeAttempt = (input: CreateWorktree['input'], uncertain: boolean) => {
+    const attempts = uncertainWorktrees();
+    if (!uncertain && !attempts.has(input.path)) return;
+    const next = new Map(attempts);
+    if (uncertain) next.set(input.path, input);
+    else next.delete(input.path);
+    uncertainWorktrees.set(next);
+  };
+  const pendingWorkspaceReady = () =>
+    workspaceReady() &&
+    !pendingWorkspaceSelection() &&
+    draftWorkspaceRequest() === null &&
+    (!pendingWorktree() || !!pendingWorktree()?.baseRef);
   const pendingText = computed(() => pending()?.text ?? '');
   const submission = signal<Submission>({ kind: 'idle' });
+  const worktreePhase = () => {
+    const current = submission();
+    return selected() === null && current.kind === 'preparing' ? current.worktree : undefined;
+  };
+  const waitingForWorktree = delayed(() => worktreePhase() !== undefined);
   const pendingSending = computed(() => {
     const current = submission();
     return (
@@ -678,11 +730,13 @@ export function createConversationUi(
     }
   };
   const controlLabels: Readonly<Partial<Record<string, MessageKey>>> = {
+    checkoutProjectBranch: 'Switch branch',
     changeGoal: 'Update goal',
     changeSession: 'Update conversation',
     compact: 'Compact conversation',
     continueRun: 'Continue response',
     create: 'New conversation',
+    createProjectWorktree: 'Create worktree',
     editQueue: 'Edit queued message',
     fork: 'Fork conversation',
     markBotRead: 'Mark conversation as read',
@@ -702,6 +756,8 @@ export function createConversationUi(
       ? new UiError('{action} did not run. Try again.', { action: uiMessage(label) })
       : new Error(`Conversation control ${method} did not run`);
   };
+  const recordedOutcome = (reply?: OperationReply) =>
+    reply?.receipt.kind === 'recorded' ? reply.receipt.outcome : null;
   const returned = (method: string, reply: any) => {
     const receipt = reply?.receipt;
     if (receipt?.kind === 'recorded' && receipt.outcome?.kind === 'unknown') {
@@ -720,6 +776,86 @@ export function createConversationUi(
     const result = receipt.outcome.result;
     if (result.kind === 'failure') throw new Error(result.diagnostic);
     return result.value;
+  };
+  const pendingCreationReply = (reply: OperationReply) => {
+    const outcome = recordedOutcome(reply);
+    if (outcome?.kind === 'unknown' || outcome?.kind === 'not_executed')
+      updatePending({ target: null });
+    const result = returned('create', reply);
+    updatePending({
+      target: result.kind === 'created' ? { kind: 'session', sessionId: result.session.id } : null,
+    });
+    return result;
+  };
+  const selectPendingWorktree = (selection: WorktreeSelection | null) => {
+    if (pendingSending() || pendingCreated() || pendingCreateUncertain()) return;
+    const saved = selection ? uncertainWorktrees().get(selection.path) : undefined;
+    updatePending({
+      worktree:
+        selection && saved
+          ? { ...selection, baseRef: saved.baseRef, includeChanges: !!saved.includeChanges }
+          : selection,
+    });
+    error.set('');
+  };
+  const resolveWorktree = async (
+    workspace: BrowserWorkspace,
+    attempt: SubmissionAttempt,
+    current: () => boolean,
+  ) => {
+    const preparing = currentSubmission(attempt);
+    if (!current() || preparing?.kind !== 'preparing') return null;
+    const selection = pendingWorktree();
+    if (!selection) return workspace;
+    if (!selection.baseRef) throw new UiError('Select base branch');
+
+    const retry = retryWorktree();
+    const name = retry?.name ?? `maka-${randomUUID().replaceAll('-', '').slice(0, 12)}`;
+    const input = retry ?? {
+      path: selection.path,
+      baseRef: selection.baseRef,
+      includeChanges: selection.includeChanges,
+      name,
+      branch: name,
+    };
+    submission.set({ ...preparing, worktree: retry ? 'confirming' : 'creating' });
+    let reply: OperationReply | undefined;
+    let result: CreateWorktree['output'];
+    try {
+      reply = (await context.application.mutation('agent', 'createProjectWorktree', input)).reply;
+      result = returned('createProjectWorktree', reply);
+    } catch (reason) {
+      if (
+        recordedOutcome(reply)?.kind === 'not_executed' ||
+        errorMessage(reason) === 'client mutation was cancelled before dispatch'
+      ) {
+        if (!retry) throw notExecuted('createProjectWorktree');
+      } else {
+        recordWorktreeAttempt(input, true);
+      }
+      throw new UiError(worktreeFailureMessages.unknown);
+    } finally {
+      if (currentSubmission(attempt)?.kind === 'preparing') submission.set(preparing);
+    }
+    if (result.kind === 'failed') {
+      const reason = result.reason;
+      const interruptedConfirmation =
+        retry !== undefined &&
+        (reason === 'git_required' ||
+          reason === 'location_not_allowed' ||
+          reason === 'snapshot_unavailable' ||
+          reason === 'unavailable');
+      recordWorktreeAttempt(input, reason === 'unknown' || interruptedConfirmation);
+      throw new UiError(worktreeFailureMessages[result.reason]);
+    }
+    recordWorktreeAttempt(input, false);
+    if (!alive || pendingWorkspace() !== workspace || pendingWorktree() !== selection) return null;
+    const continueSending = current();
+    const path = result.worktree.path;
+    const target = { kind: 'directory', path } as const;
+    updatePending({ workspace: target, workspaceLabel: path, worktree: null });
+    rememberWorkspace(target, path);
+    return continueSending ? target : null;
   };
   const control: Control = async (method, input) => {
     const urgent = method === 'stop' || method === 'stopComputerApp';
@@ -742,10 +878,7 @@ export function createConversationUi(
     );
     if (unresolved || (!urgent && busy())) throw new ActionPending();
     const pendingCreation = method === 'create' && pendingSending() && pendingWorkspace() !== null;
-    if (!urgent) {
-      busy.set(true);
-      creatingFork.set(method === 'fork');
-    }
+    if (!urgent) busy.set(true);
     try {
       let result: any;
       if (pendingCreation) {
@@ -761,18 +894,7 @@ export function createConversationUi(
             throw notExecuted(method);
           }
           if (event.kind === 'finished') {
-            if (
-              event.reply?.receipt?.kind === 'recorded' &&
-              event.reply.receipt.outcome?.kind === 'unknown'
-            )
-              updatePending({ target: null });
-            result = returned(method, event.reply);
-            updatePending({
-              target:
-                result.kind === 'created'
-                  ? { kind: 'session', sessionId: result.session.id }
-                  : null,
-            });
+            result = pendingCreationReply(event.reply);
             break;
           }
         }
@@ -784,10 +906,7 @@ export function createConversationUi(
         controlsKnown.set(false);
         report(reason);
       });
-      if (!urgent && alive) {
-        busy.set(false);
-        creatingFork.set(false);
-      }
+      if (!urgent && alive) busy.set(false);
     }
   };
   const closeOverlay = (instance: number) => {
@@ -893,99 +1012,118 @@ export function createConversationUi(
     if (!alive || selected() !== expectedSessionId) return;
     if (platform.idiom !== 'terminal') {
       if (pendingSending() || pendingFileBusy() || pendingCreateUncertain()) return;
-      let recentWorkspace = workspace;
-      let label =
-        workspaceLabel ??
-        (workspace.kind === 'session'
-          ? (handle()?.workspace() ?? '')
-          : (workspace.path.split(/[\\/]/).filter(Boolean).at(-1) ?? ''));
-      if (workspace.kind === 'session') {
-        const observed = await host.query('agent', 'observe', { sessionId: workspace.sessionId });
-        if (!alive || selected() !== expectedSessionId) return;
-        label = observed.session.workspace.path;
-        if (!observed.session.workspace.worktree)
-          recentWorkspace = { kind: 'directory', path: label };
-      }
-      if (!(await shell()!.openSession(null)) || !alive || selected() !== null) return;
-      if (expectedSessionId === null && pendingWorkspace()) {
-        try {
-          await readPendingSession();
-        } catch (reason) {
-          report(reason);
+      const request = {};
+      draftWorkspaceRequest.set(request);
+      const owns = () => alive && draftWorkspaceRequest() === request;
+      try {
+        let recentWorkspace = workspace;
+        let label =
+          workspaceLabel ??
+          (workspace.kind === 'session'
+            ? (handle()?.workspace() ?? '')
+            : (workspace.path.split(/[\\/]/).filter(Boolean).at(-1) ?? ''));
+        if (workspace.kind === 'session') {
+          const observed = await host.query('agent', 'observe', { sessionId: workspace.sessionId });
+          if (!owns() || selected() !== expectedSessionId) return;
+          label = observed.session.workspace.path;
+          if (!observed.session.workspace.worktree)
+            recentWorkspace = { kind: 'directory', path: label };
+        } else if (workspace.kind === 'project') {
+          // Project.path is the last-used location. A new project draft starts
+          // at the main checkout when that checkout is available to the Host.
+          const target = await readProjectLocation(host, workspace.path);
+          if (!owns() || selected() !== expectedSessionId) return;
+          label = target.path;
+          if (target.path !== workspace.path) {
+            workspace = { kind: 'directory', path: target.path };
+            recentWorkspace = workspace;
+          }
+        }
+        if (!(await shell()!.openSession(null)) || !owns() || selected() !== null) return;
+        if (expectedSessionId === null && pendingWorkspace()) {
+          try {
+            await readPendingSession();
+          } catch (reason) {
+            if (owns()) report(reason);
+            return;
+          }
+          if (!owns() || selected() !== null) return;
+          if (pendingCreated()) {
+            report(
+              new UiError(
+                'This conversation was already created. Finish sending it before changing workspaces.',
+              ),
+            );
+            return;
+          }
+          updatePending({ workspace, workspaceLabel: label, worktree: null });
+          if (remember) rememberWorkspace(recentWorkspace, label);
+          pendingDraftGeneration.set(pendingDraftGeneration() + 1);
+          pendingModelInstance.set(null);
+          overlay.set(null);
+          focusComposer();
           return;
         }
-        if (pendingCreated()) {
-          report(
-            new UiError(
-              'This conversation was already created. Finish sending it before changing workspaces.',
-            ),
-          );
+        if (
+          pendingWorkspace() &&
+          (pendingText() ||
+            pendingFiles().length ||
+            pendingCreated() ||
+            pendingAccess() !== null ||
+            pendingRequests() !== null ||
+            pendingModelChosen())
+        ) {
+          overlay.set(null);
+          focusComposer();
           return;
         }
-        updatePending({ workspace, workspaceLabel: label });
+        replacePending({
+          workspace,
+          workspaceLabel: label,
+          worktree: null,
+          text: '',
+          backend: null,
+          access: null,
+          requests: null,
+          modelChosen: false,
+          files: [],
+          target: null,
+          revision: 0,
+        });
         if (remember) rememberWorkspace(recentWorkspace, label);
         pendingDraftGeneration.set(pendingDraftGeneration() + 1);
+        const generation = ++pendingDefaultEpoch;
+        pendingPicker.set(false);
+        pendingModelGeneration += 1;
+        pendingModelDetails.set({
+          kind: 'unavailable',
+          message: uiMessage('Choose a model.'),
+        });
         pendingModelInstance.set(null);
+        refreshDefaultAccess();
+        pendingDefaultRead = host
+          .query('settings', 'connections', { kind: 'start' })
+          .then((page) => {
+            if (
+              !alive ||
+              pendingDefaultEpoch !== generation ||
+              pendingWorkspace() === null ||
+              pendingBackend() ||
+              page.kind !== 'ready' ||
+              !page.defaultTarget
+            )
+              return;
+            updatePending({
+              backend: { kind: 'model', ...page.defaultTarget, thinkingLevel: null },
+            });
+            return pendingModel.refreshModel();
+          })
+          .catch(report);
         overlay.set(null);
         focusComposer();
-        return;
+      } finally {
+        if (owns()) draftWorkspaceRequest.set(null);
       }
-      if (
-        pendingWorkspace() &&
-        (pendingText() ||
-          pendingFiles().length ||
-          pendingCreated() ||
-          pendingAccess() !== null ||
-          pendingRequests() !== null ||
-          pendingModelChosen())
-      ) {
-        overlay.set(null);
-        focusComposer();
-        return;
-      }
-      replacePending({
-        workspace,
-        workspaceLabel: label,
-        text: '',
-        backend: null,
-        access: null,
-        requests: null,
-        modelChosen: false,
-        files: [],
-        target: null,
-        revision: 0,
-      });
-      if (remember) rememberWorkspace(recentWorkspace, label);
-      pendingDraftGeneration.set(pendingDraftGeneration() + 1);
-      const generation = ++pendingDefaultEpoch;
-      pendingPicker.set(false);
-      pendingModelGeneration += 1;
-      pendingModelDetails.set({
-        kind: 'unavailable',
-        message: uiMessage('Choose a model.'),
-      });
-      pendingModelInstance.set(null);
-      refreshDefaultAccess();
-      pendingDefaultRead = host
-        .query('settings', 'connections', { kind: 'start' })
-        .then((page) => {
-          if (
-            !alive ||
-            pendingDefaultEpoch !== generation ||
-            pendingWorkspace() === null ||
-            pendingBackend() ||
-            page.kind !== 'ready' ||
-            !page.defaultTarget
-          )
-            return;
-          updatePending({
-            backend: { kind: 'model', ...page.defaultTarget, thinkingLevel: null },
-          });
-          return pendingModel.refreshModel();
-        })
-        .catch(report);
-      overlay.set(null);
-      focusComposer();
       return;
     }
     const source = {
@@ -1096,18 +1234,23 @@ export function createConversationUi(
       });
     pendingIntake.set(intake);
   };
+  const pendingCompletion = computed(() =>
+    projectComposerCompletion(host, { kind: 'draft', workspace: pendingWorkspace() }),
+  );
   const pendingComposer = computed(() => {
     const generation = pendingDraftGeneration();
-    const workspace = pendingWorkspace();
+    // The same editor keeps its draft when a confirmed worktree becomes its workspace.
     const owns = () =>
       alive &&
       selected() === null &&
-      pendingWorkspace() === workspace &&
+      pendingWorkspace() !== null &&
       pendingDraftGeneration() === generation;
     const confirmation = () => `${generation}/${pending()?.revision ?? 0}`;
     return {
       id: `pending/${generation}`,
-      completion: projectComposerCompletion(host, { kind: 'draft', workspace }),
+      get completion() {
+        return pendingCompletion();
+      },
       draft: pendingText,
       workspace: pendingWorkspaceLabel,
       backend: pendingBackend,
@@ -1136,7 +1279,7 @@ export function createConversationUi(
       },
       confirmation,
       sending: pendingSending,
-      ready: () => workspaceReady() && !pendingCreateUncertain() && !pendingFileBusy(),
+      ready: () => pendingWorkspaceReady() && !pendingCreateUncertain() && !pendingFileBusy(),
       files: pendingFiles,
       picking: pendingPicker,
       openPicker: (open: boolean) => {
@@ -1164,7 +1307,7 @@ export function createConversationUi(
         if (
           !owns() ||
           !workspace ||
-          !workspaceReady() ||
+          !pendingWorkspaceReady() ||
           text !== pendingText() ||
           (expected !== undefined && expected !== confirmation()) ||
           (!text.trim() && files.length === 0) ||
@@ -1219,11 +1362,15 @@ export function createConversationUi(
             }
             const reusingSession = id !== null;
             if (!id) {
+              const workspaceForSession = await resolveWorktree(workspace, attempt, owns);
+              if (!workspaceForSession || !currentSubmission(attempt) || selected() !== null)
+                return;
+              requireUnchangedDraft();
               const result = await control('create', {
                 title: tr('New conversation'),
                 automaticTitle: true,
                 labels: [],
-                workspace,
+                workspace: workspaceForSession,
                 backend,
               });
               if (result.kind !== 'created')
@@ -1540,14 +1687,14 @@ export function createConversationUi(
   const goalCreating = signal(false);
   const pendingGoal: import('../../../../packages/plugin-sdk/src/composer-view.js').ComposerGoal = {
     view: () => ({ enabled: true, current: null }),
-    pending: () => goalCreating() || pendingFileBusy(),
+    pending: () => goalCreating() || pendingFileBusy() || !pendingWorkspaceReady(),
     error: pendingGoalError,
     change: async () => false,
     async create(objective, tokenBudget) {
-      const workspace = pendingWorkspace();
+      let workspace = pendingWorkspace();
       if (
         !workspace ||
-        !workspaceReady() ||
+        !pendingWorkspaceReady() ||
         goalCreating() ||
         pendingSending() ||
         pendingFileBusy() ||
@@ -1584,6 +1731,10 @@ export function createConversationUi(
         let id = pendingCreated();
         const reusingSession = id !== null;
         if (!id) {
+          const workspaceForSession = await resolveWorktree(workspace, attempt, owns);
+          if (!workspaceForSession) return false;
+          workspace = workspaceForSession;
+          requireOwner();
           const result = await control('create', {
             title: tr('New conversation'),
             automaticTitle: true,
@@ -1815,13 +1966,10 @@ export function createConversationUi(
           }
           if (reply?.receipt?.kind === 'recorded' && reply.receipt.outcome?.kind === 'unresolved')
             continue;
-          if (
-            original.method === 'create' &&
-            original.id === pendingCreateAttempt() &&
-            reply?.receipt?.kind === 'recorded' &&
-            reply.receipt.outcome?.kind === 'unknown'
-          )
-            updatePending({ target: null });
+          if (original.method === 'create' && original.id === pendingCreateAttempt()) {
+            pendingCreationReply(reply);
+            continue;
+          }
           const result = returned(original.method, reply);
           if (
             original.method === 'respond' &&
@@ -1854,14 +2002,7 @@ export function createConversationUi(
             botSession.set(result.sessionId);
             await switchSession(result.sessionId);
           }
-          if (original.method === 'create' && original.id === pendingCreateAttempt()) {
-            updatePending({
-              target:
-                result.kind === 'created'
-                  ? { kind: 'session', sessionId: result.session.id }
-                  : null,
-            });
-          } else if (original.method === 'create' && result.kind === 'created') {
+          if (original.method === 'create' && result.kind === 'created') {
             await switchSession(result.session.id);
             if (selected() === result.session.id && !result.session.backend)
               open({
@@ -2518,7 +2659,15 @@ export function createConversationUi(
             onDismiss: () => error.set(''),
           };
         }
-        if (!current) return null;
+        if (!current) {
+          const phase = worktreePhase();
+          return waitingForWorktree() && phase
+            ? {
+                tone: 'info',
+                message: tr(phase === 'creating' ? 'Preparing worktree…' : 'Confirming worktree…'),
+              }
+            : null;
+        }
         if (current.reconnecting()) {
           return {
             tone: 'warning',
@@ -2920,6 +3069,49 @@ export function createConversationUi(
                   id: 'workspace',
                   sessionId: selected(),
                 })}
+                workspaceBar={
+                  platform.idiom !== 'terminal' && !side && selected() === null ? (
+                    <SessionWorkspaces
+                      host={host}
+                      path={pendingWorkspaceLabel}
+                      recent={recentWorkspaces}
+                      projects={browsing.projects}
+                      projectError={browsing.projectError}
+                      refreshProjects={() => void browsing.refresh()}
+                      blocked={() =>
+                        selected() !== null ||
+                        draftWorkspaceRequest() !== null ||
+                        reloading() ||
+                        pendingSending() ||
+                        pendingFileBusy() ||
+                        pendingCreateUncertain() ||
+                        pendingCreated() !== null ||
+                        overlay() !== null
+                      }
+                      worktreeSelection={pendingWorktree}
+                      retryingWorktree={() => !!retryWorktree()}
+                      selectWorktree={selectPendingWorktree}
+                      selectionPending={(pending) => pendingWorkspaceSelection.set(pending)}
+                      choose={(path) => create({ kind: 'directory', path }, null, path)}
+                      focusComposer={focusComposer}
+                      checkout={async (input) => {
+                        error.set('');
+                        return returned(
+                          'checkoutProjectBranch',
+                          (
+                            await context.application.mutation(
+                              'agent',
+                              'checkoutProjectBranch',
+                              input,
+                            )
+                          ).reply,
+                        );
+                      }}
+                      browse={() => invokeOwn('workspace')}
+                      report={report}
+                    />
+                  ) : undefined
+                }
                 usageLimits={
                   platform.idiom === 'terminal' ? undefined : (
                     <ComposerUsageLimits

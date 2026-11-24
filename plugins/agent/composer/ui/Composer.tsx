@@ -543,7 +543,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
               {tr('Make something remarkable.')}
             </Text>
           </View>
-          {/* The desktop keeps the workspace in the toolbar and asks only for a missing connection. */}
+          {/* The terminal workspace entry is above the composer. */}
           <If when={platform.idiom === 'terminal'}>
             <View
               style={{
@@ -629,6 +629,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
             );
           }}
         </Each>
+        {props.workspaceBar}
         <View
           ref={(node) => {
             cardRoot.set(node);
@@ -1052,7 +1053,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                         );
                       }
                       if (slot === 'workspace') {
-                        return <If when={hero()}>{workspaceControl()}</If>;
+                        return <If when={hero() && !props.workspaceBar}>{workspaceControl()}</If>;
                       }
                       if (slot === 'usage') {
                         return (

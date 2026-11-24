@@ -47,6 +47,7 @@ mod host;
 use futures_util::FutureExt;
 use host::Host;
 use maka_capabilities::call::{Attachments, ReadResource, ResourceEncoding};
+use maka_fs_tools::directory::{self, Observation};
 use maka_host_runtime::application::{host::Client, transport::Reply};
 use maka_mock_ai::{
     ControlPlaneConfig, FinishReason, MockAiBuilder, MockAiServer, ModelEntry, NormalizedRequest,
@@ -80,6 +81,12 @@ const BIN_ENV: &str = "MAKA_COMPAT_BIN";
 const ATTACHMENT_BYTES: &[u8] = "compat capsule attachment — 兼容性附件\n".as_bytes();
 const COMPACTION_PROMPT: &str = "Preserve upgrade compatibility markers across restarts.";
 const PRESET_NAME: &str = "Compat Reviewer";
+const WORKTREE_PROJECT: &str = "compat-git-project";
+const WORKTREE_NAME: &str = "Compat Worktree";
+const WORKTREE_BRANCH: &str = "compat/worktree";
+const TRACKED_CONTENT: &str = "compat checkout fixture\n";
+const SOURCE_CHANGES: &str = "uncommitted file copied into the compat checkout\n";
+const WORKTREE_EDIT: &str = "local edit in the compat checkout\n";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -103,7 +110,18 @@ struct CapsuleManifest {
     session_data_key: String,
     #[serde(default)]
     operation_ref: Option<Value>,
+    #[serde(default)]
+    project_worktree: Option<CapsuleWorktree>,
     migrations: BTreeMap<String, Vec<i64>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CapsuleWorktree {
+    entry: Value,
+    checkout_identity: Observation,
+    #[serde(default)]
+    include_changes: bool,
 }
 
 struct FixtureSecret;
@@ -259,6 +277,63 @@ async fn call(
     call_with_ref(client, endpoint, method, input, attachments)
         .await
         .0
+}
+
+async fn prepare_git_project(home: &Path, project: &Path) {
+    tokio::fs::create_dir(project).await.unwrap();
+    tokio::fs::write(project.join("tracked.txt"), TRACKED_CONTENT)
+        .await
+        .unwrap();
+    let commands: &[&[&str]] = &[
+        &["init", "--initial-branch=main", "--template="],
+        &["add", "tracked.txt"],
+        &[
+            "-c",
+            "user.name=Compatibility Test",
+            "-c",
+            "user.email=compat@example.invalid",
+            "commit",
+            "-m",
+            "Initial fixture",
+        ],
+    ];
+    for args in commands {
+        let output = host::command_for(Path::new("git"), home, project)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .args(*args)
+            .output()
+            .await
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+async fn create_compat_worktree(client: &Client, project: &Path, include_changes: bool) -> Value {
+    call(
+        client,
+        "agent",
+        "createProjectWorktree",
+        json!({
+            "path": project,
+            "name": WORKTREE_NAME,
+            "branch": WORKTREE_BRANCH,
+            "baseRef": "refs/heads/main",
+            "includeChanges": include_changes
+        }),
+        Attachments::new(),
+    )
+    .await
+}
+
+async fn worktree_identity(checkout: &Path) -> Observation {
+    let checkout = checkout.to_owned();
+    tokio::task::spawn_blocking(move || directory::capture(&checkout).unwrap().1)
+        .await
+        .unwrap()
 }
 
 async fn wait_run_completed(client: &Client, session: &str, message_id: &str) -> Value {
@@ -703,6 +778,11 @@ async fn produce_capsule(bin: &Path, capsule_dir: &Path) -> CapsuleManifest {
     let canonical_base = fs::canonicalize(capsule_dir).unwrap();
     let dirs = EnvDirs::in_base(&canonical_base);
     dirs.prepare();
+    let git_project = dirs.home.join(WORKTREE_PROJECT);
+    prepare_git_project(&dirs.home, &git_project).await;
+    tokio::fs::write(git_project.join("uncommitted.txt"), SOURCE_CHANGES)
+        .await
+        .unwrap();
 
     let version_out = build_command(bin, &dirs)
         .arg("--version")
@@ -1031,6 +1111,32 @@ async fn produce_capsule(bin: &Path, capsule_dir: &Path) -> CapsuleManifest {
             String::from_utf8_lossy(&export_out.stderr)
         );
 
+        // 8. Managed worktree persists even before a session is started there.
+        let created = create_compat_worktree(&client, &git_project, true).await;
+        assert_eq!(created["kind"], "created", "{created}");
+        let worktree = &created["worktree"];
+        assert_eq!(worktree["name"], WORKTREE_NAME, "{created}");
+        assert_eq!(worktree["branch"], WORKTREE_BRANCH, "{created}");
+        let checkout = Path::new(worktree["path"].as_str().unwrap());
+        assert_ne!(checkout, git_project.as_path());
+        let tracked = checkout.join("tracked.txt");
+        assert_eq!(
+            tokio::fs::read_to_string(&tracked).await.unwrap(),
+            TRACKED_CONTENT
+        );
+        assert_eq!(
+            tokio::fs::read_to_string(checkout.join("uncommitted.txt"))
+                .await
+                .unwrap(),
+            SOURCE_CHANGES
+        );
+        tokio::fs::write(&tracked, WORKTREE_EDIT).await.unwrap();
+        let project_worktree = CapsuleWorktree {
+            entry: worktree.clone(),
+            checkout_identity: worktree_identity(checkout).await,
+            include_changes: true,
+        };
+
         host.quit(&mut client).await.expect("Host quit");
 
         let migrations = verify_sqlite_integrity_and_migrations(&dirs.root);
@@ -1053,6 +1159,7 @@ async fn produce_capsule(bin: &Path, capsule_dir: &Path) -> CapsuleManifest {
             portable_archive: portable_archive_name,
             session_data_key: "compat_capsule_state".into(),
             operation_ref,
+            project_worktree: Some(project_worktree),
             migrations,
         }
     })
@@ -1223,6 +1330,71 @@ async fn verify_capsule(bin: &Path, capsule_dir: &Path) {
                 receipt_json.contains(&manifest.primary_session_id),
                 "persisted application_operations receipt lost across upgrade: {receipt}"
             );
+        }
+
+        if let Some(fixture) = &manifest.project_worktree {
+            let project = dirs.home.join(WORKTREE_PROJECT);
+            let checkout = Path::new(fixture.entry["path"].as_str().unwrap());
+            let checkout_identity = worktree_identity(checkout).await;
+            let listed = call(
+                &client,
+                "agent",
+                "projectWorktrees",
+                json!({"path": project}),
+                Attachments::new(),
+            )
+            .await;
+            let retry = create_compat_worktree(&client, &project, fixture.include_changes).await;
+            assert_eq!(
+                tokio::fs::read_to_string(checkout.join("tracked.txt"))
+                    .await
+                    .unwrap(),
+                WORKTREE_EDIT
+            );
+            if fixture.include_changes {
+                assert_eq!(
+                    tokio::fs::read_to_string(checkout.join("uncommitted.txt")).await.unwrap(),
+                    SOURCE_CHANGES
+                );
+            }
+            if checkout_identity == fixture.checkout_identity {
+                let Some([listed_worktree]) = listed["worktrees"].as_array().map(Vec::as_slice)
+                else {
+                    panic!("expected exactly one worktree: {listed}");
+                };
+                assert_eq!(retry["kind"], "created", "{retry}");
+                for field in ["id", "name", "branch", "path"] {
+                    assert_eq!(listed_worktree[field], fixture.entry[field], "{listed}");
+                    assert_eq!(retry["worktree"][field], fixture.entry[field], "{retry}");
+                }
+                let session = call(
+                    &client,
+                    "agent",
+                    "create",
+                    json!({
+                        "title": "Compat Worktree Session",
+                        "automaticTitle": false,
+                        "labels": ["compat"],
+                        "tools": ["Shell"],
+                        "workspace": {"kind": "directory", "path": checkout},
+                        "backend": {
+                            "kind": "model",
+                            "connectionId": manifest.connection_id,
+                            "modelId": "gpt-4.1",
+                            "thinkingLevel": null
+                        }
+                    }),
+                    Attachments::new(),
+                )
+                .await;
+                assert_eq!(session["kind"], "created", "{session}");
+                assert_eq!(session["session"]["workspace"]["path"], fixture.entry["path"]);
+            } else {
+                // An extracted tarball gives both directories new filesystem
+                // identities. Their old paths alone cannot grant ownership.
+                assert_eq!(listed["worktrees"], json!([]), "{listed}");
+                assert_eq!(retry["kind"], "failed", "{retry}");
+            }
         }
 
         // Exact personal memory sweep by ID + body (independent of chat Recall passages).

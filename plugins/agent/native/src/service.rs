@@ -1061,6 +1061,38 @@ impl Handler for Agent {
             "gitRevisions" => json_rpc(&mut args, |owner, input, context| async move {
                 encode(owner.git_revisions(decode(input)?, context.scope()).await?)
             }),
+            "projectWorktrees" => json_rpc(&mut args, |owner, input, context| async move {
+                if context.scope().identity.agent().is_some() {
+                    return Err("agent_worktree_user_action_required".into());
+                }
+                encode(
+                    owner
+                        .project_worktrees(decode(input)?, context.scope())
+                        .await?,
+                )
+            }),
+            "createProjectWorktree" => json_rpc(&mut args, |owner, input, context| async move {
+                if context.scope().identity.agent().is_some() {
+                    return Err("agent_worktree_user_action_required".into());
+                }
+                let operation = context.operation().ok_or("agent_mutation_required")?;
+                encode(
+                    owner
+                        .create_project_worktree(decode(input)?, operation, context.scope())
+                        .await?,
+                )
+            }),
+            "checkoutProjectBranch" => json_rpc(&mut args, |owner, input, context| async move {
+                if context.scope().identity.agent().is_some() {
+                    return Err("agent_worktree_user_action_required".into());
+                }
+                context.operation().ok_or("agent_mutation_required")?;
+                encode(
+                    owner
+                        .checkout_project_branch(decode(input)?, context.scope())
+                        .await?,
+                )
+            }),
             "gitCompare" => json_rpc(&mut args, |owner, input, context| async move {
                 encode(owner.git_compare(decode(input)?, context.scope()).await?)
             }),

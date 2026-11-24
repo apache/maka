@@ -35,85 +35,8 @@ const MAX_MERGE_BASE_STEPS: usize = 32_768;
 const MAX_COMPARE_PATCH_BYTES: usize = 2 * 1024 * 1024;
 
 pub(super) fn read_revisions(repo: &repository::Repository) -> io::Result<GitRevisions> {
-    interrupted(&repo.cancel)?;
-    let head_branch = repo
-        .repo
-        .head_name()
-        .map_err(io::Error::other)?
-        .and_then(|name| {
-            name.as_bstr()
-                .strip_prefix(b"refs/heads/")
-                .and_then(|bytes| std::str::from_utf8(bytes).ok())
-                .map(str::to_owned)
-        });
-
-    let mut branches = Vec::new();
-    let refs = repo.repo.references().map_err(io::Error::other)?;
-    if let Ok(local_iter) = refs.local_branches() {
-        for item in local_iter {
-            interrupted(&repo.cancel)?;
-            if branches.len() >= MAX_BRANCHES {
-                break;
-            }
-            let Ok(mut reference) = item else { continue };
-            let Some(name) = reference
-                .name()
-                .as_bstr()
-                .strip_prefix(b"refs/heads/")
-                .and_then(|bytes| std::str::from_utf8(bytes).ok())
-                .map(str::to_owned)
-            else {
-                continue;
-            };
-            let Ok(id) = reference.peel_to_id() else {
-                continue;
-            };
-            let oid = id.detach();
-            if repo.repo.find_commit(oid).is_err() {
-                continue;
-            }
-            branches.push(GitBranchEntry {
-                name,
-                oid: oid.to_string(),
-                remote: false,
-            });
-        }
-    }
-    if let Ok(remote_iter) = refs.remote_branches() {
-        for item in remote_iter {
-            interrupted(&repo.cancel)?;
-            if branches.len() >= MAX_BRANCHES {
-                break;
-            }
-            let Ok(mut reference) = item else { continue };
-            let Some(name) = reference
-                .name()
-                .as_bstr()
-                .strip_prefix(b"refs/remotes/")
-                .and_then(|bytes| std::str::from_utf8(bytes).ok())
-                .map(str::to_owned)
-            else {
-                continue;
-            };
-            if name.ends_with("/HEAD") {
-                continue;
-            }
-            let Ok(id) = reference.peel_to_id() else {
-                continue;
-            };
-            let oid = id.detach();
-            if repo.repo.find_commit(oid).is_err() {
-                continue;
-            }
-            branches.push(GitBranchEntry {
-                name,
-                oid: oid.to_string(),
-                remote: true,
-            });
-        }
-    }
-    branches.sort_by(|a, b| a.remote.cmp(&b.remote).then_with(|| a.name.cmp(&b.name)));
-
+    let head_branch = head_branch(&repo.repo)?;
+    let branches = read_branches(&repo.repo, &repo.cancel)?;
     let default_base = detect_default_base(repo, head_branch.as_deref(), &branches);
     let commits = read_recent_commits(repo)?;
     let remotes = read_remotes(repo)?;
@@ -128,6 +51,66 @@ pub(super) fn read_revisions(repo: &repository::Repository) -> io::Result<GitRev
         remotes,
         worktrees,
     })
+}
+
+pub(crate) fn head_branch(repo: &gix::Repository) -> io::Result<Option<String>> {
+    Ok(repo
+        .head_name()
+        .map_err(io::Error::other)?
+        .and_then(|name| {
+            name.as_bstr()
+                .strip_prefix(b"refs/heads/")
+                .and_then(|bytes| std::str::from_utf8(bytes).ok())
+                .map(str::to_owned)
+        }))
+}
+
+pub(crate) fn read_branches(
+    repo: &gix::Repository,
+    cancel: &std::sync::atomic::AtomicBool,
+) -> io::Result<Vec<GitBranchEntry>> {
+    interrupted(cancel)?;
+    let mut branches = Vec::new();
+    let refs = repo.references().map_err(io::Error::other)?;
+    for (prefix, remote) in [("refs/heads/", false), ("refs/remotes/", true)] {
+        let Ok(iter) = refs.prefixed(prefix) else {
+            continue;
+        };
+        for item in iter {
+            interrupted(cancel)?;
+            if branches.len() >= MAX_BRANCHES {
+                break;
+            }
+            let Ok(mut reference) = item else { continue };
+            let Some(name) = reference
+                .name()
+                .as_bstr()
+                .strip_prefix(prefix.as_bytes())
+                .and_then(|bytes| std::str::from_utf8(bytes).ok())
+                .map(str::to_owned)
+            else {
+                continue;
+            };
+            if remote && name.ends_with("/HEAD") {
+                continue;
+            }
+            let Ok(id) = reference.peel_to_id() else {
+                continue;
+            };
+            let oid = id.detach();
+            if repo.find_commit(oid).is_err() {
+                continue;
+            }
+            branches.push(GitBranchEntry {
+                name,
+                oid: oid.to_string(),
+                remote,
+            });
+        }
+    }
+    branches.sort_by(|a, b| a.remote.cmp(&b.remote).then_with(|| a.name.cmp(&b.name)));
+
+    Ok(branches)
 }
 
 fn detect_default_base(

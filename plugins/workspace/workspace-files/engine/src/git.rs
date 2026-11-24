@@ -36,7 +36,7 @@ use std::{
 mod diff;
 pub(crate) mod image;
 mod repository;
-mod revisions;
+pub(crate) mod revisions;
 mod scan;
 #[cfg(test)]
 mod tests;

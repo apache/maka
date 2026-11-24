@@ -36,6 +36,150 @@ import {
 } from '../../../../plugins/shared/locale-messages.js';
 
 export const workspaceMessages = {
+  Local: ['Local', '本地', '本機'],
+  'Work location': ['Work location', '工作位置', '工作位置'],
+  'Changes from': ['Changes from', '改动来源', '變更來源'],
+  'Choose worktree for changes': [
+    'Choose worktree for changes',
+    '选择要查看改动的工作树',
+    '選擇要檢視變更的工作樹',
+  ],
+  'Search projects…': ['Search projects…', '搜索项目…', '搜尋專案…'],
+  'Add project folder…': ['Add project folder…', '添加项目文件夹…', '加入專案資料夾…'],
+  'Could not load projects. Retry': [
+    'Could not load projects. Retry',
+    '无法加载项目，点此重试',
+    '無法載入專案，按此重試',
+  ],
+  'Could not read work locations. Retry': [
+    'Could not read work locations. Retry',
+    '无法读取工作位置，点此重试',
+    '無法讀取工作位置，按此重試',
+  ],
+  'New local worktree': ['New local worktree', '新建本地工作树', '新增本機工作樹'],
+  'Base branch': ['Base branch', '基准分支', '基準分支'],
+  Branches: ['Branches', '分支', '分支'],
+  'Local branches': ['Local branches', '本地分支', '本機分支'],
+  'Remote branches': ['Remote branches', '远程分支', '遠端分支'],
+  'Starting points': ['Starting points', '起始状态', '起始狀態'],
+  'Includes local changes': ['Includes local changes', '含本地未提交改动', '含本機未提交變更'],
+  '{branch} + local changes': [
+    '{branch} + local changes',
+    '{branch} + 本地改动',
+    '{branch} + 本機變更',
+  ],
+  'Switch branch': ['Switch branch', '切换分支', '切換分支'],
+  'Branch name': ['Branch name', '分支名称', '分支名稱'],
+  'Create and check out new branch…': [
+    'Create and check out new branch…',
+    '创建并检出新分支…',
+    '建立並取出新分支…',
+  ],
+  'Create and check out branch': [
+    'Create and check out branch',
+    '创建并检出分支',
+    '建立並取出分支',
+  ],
+  'Create and check out': ['Create and check out', '创建并检出', '建立並取出'],
+  'Enter a valid Git branch name.': [
+    'Enter a valid Git branch name.',
+    '请输入有效的 Git 分支名。',
+    '請輸入有效的 Git 分支名稱。',
+  ],
+  'This branch is no longer available.': [
+    'This branch is no longer available.',
+    '这个分支已不可用。',
+    '這個分支已無法使用。',
+  ],
+  'This branch already exists. Choose another name.': [
+    'This branch already exists. Choose another name.',
+    '这个分支已存在，请换个名字。',
+    '這個分支已存在，請換個名稱。',
+  ],
+  'This branch is already checked out in another worktree.': [
+    'This branch is already checked out in another worktree.',
+    '这个分支已在另一个工作树中检出。',
+    '這個分支已在另一個工作樹中取出。',
+  ],
+  'Switching branches would overwrite local changes. Commit or stash them first.': [
+    'Switching branches would overwrite local changes. Commit or stash them first.',
+    '切换分支会覆盖本地改动。请先提交，或用 git stash 临时保存。',
+    '切換分支會覆寫本機變更。請先提交，或用 git stash 暫時保存。',
+  ],
+  'This folder is in use. Try again when the current operation finishes.': [
+    'This folder is in use. Try again when the current operation finishes.',
+    '这个目录正在使用中。请等当前操作结束后再试。',
+    '這個目錄正在使用中。請等目前操作結束後再試。',
+  ],
+  'Install Git to switch or create branches.': [
+    'Install Git to switch or create branches.',
+    '请先安装 Git，再切换或新建分支。',
+    '請先安裝 Git，再切換或建立分支。',
+  ],
+  'This Git configuration does not support switching branches here.': [
+    'This Git configuration does not support switching branches here.',
+    '当前 Git 配置不支持在这里切换分支。',
+    '目前的 Git 設定不支援在這裡切換分支。',
+  ],
+  'Could not check out the branch.': [
+    'Could not check out the branch.',
+    '无法检出分支。',
+    '無法取出分支。',
+  ],
+  'Could not copy local changes. Check the current branch and resolve any Git conflicts.': [
+    'Could not copy local changes. Check the current branch and resolve any Git conflicts.',
+    '无法复制本地改动。请检查当前分支，并处理 Git 冲突。',
+    '無法複製本機變更。請檢查目前的分支，並處理 Git 衝突。',
+  ],
+  'Install Git to create a worktree.': [
+    'Install Git to create a worktree.',
+    '请先安装 Git，再创建工作树。',
+    '請先安裝 Git，再建立工作樹。',
+  ],
+  'Commit to a branch before creating a worktree.': [
+    'Commit to a branch before creating a worktree.',
+    '请先在一个分支上提交，再创建工作树。',
+    '請先在一個分支上提交，再建立工作樹。',
+  ],
+  'Uncommitted files · {count}': [
+    'Uncommitted files · {count}',
+    '未提交 · {count} 个文件',
+    '未提交 · {count} 個檔案',
+  ],
+  'Create worktree': ['Create worktree', '创建工作树', '建立工作樹'],
+  'Could not assign a worktree name. Send again to try another name.': [
+    'Could not assign a worktree name. Send again to try another name.',
+    '工作树或分支命名失败。再点一次发送，Maka 会换个名字。',
+    '工作樹或分支命名失敗。再按一次傳送，Maka 會換個名稱。',
+  ],
+  'This base branch is unavailable. Choose another branch.': [
+    'This base branch is unavailable. Choose another branch.',
+    '这个基准分支不可用，请另选一个。',
+    '這個基準分支無法使用，請另選一個。',
+  ],
+  'This Git project is unavailable. Open it again and retry.': [
+    'This Git project is unavailable. Open it again and retry.',
+    '此 Git 项目不可用，请重新打开项目后重试。',
+    '此 Git 專案無法使用，請重新開啟專案後重試。',
+  ],
+  'Add the folder containing this repository to Workspace Locations, then retry.': [
+    'Add the folder containing this repository to Workspace Locations, then retry.',
+    '请在工作区位置中添加此仓库的上一级文件夹，然后重试。',
+    '請在工作區位置中加入此版本庫的上層資料夾，然後重試。',
+  ],
+  'The checkout or base branch uses an unsupported Git feature. Choose another checkout or branch.':
+    [
+      'The checkout or base branch uses an unsupported Git feature. Choose another checkout or branch.',
+      '当前目录或基准分支使用了暂不支持的 Git 功能。请另选目录或分支。',
+      '目前的目錄或基準分支使用了尚未支援的 Git 功能。請另選目錄或分支。',
+    ],
+  'Preparing worktree…': ['Preparing worktree…', '正在准备工作树…', '正在準備工作樹…'],
+  'Confirming worktree…': ['Confirming worktree…', '正在确认工作树…', '正在確認工作樹…'],
+  'Could not confirm worktree creation. Send again to check the same worktree.': [
+    'Could not confirm worktree creation. Send again to check the same worktree.',
+    '无法确认工作树是否已建好。再点一次发送会检查同一个工作树。',
+    '無法確認工作樹是否已建立。再按一次傳送會檢查同一個工作樹。',
+  ],
   'Checking terminal command status…': [
     'Checking terminal command status…',
     '正在确认终端命令状态…',
@@ -872,6 +1016,7 @@ export const workspaceMessages = {
   'Unborn HEAD': ['Unborn HEAD', '初始分支', '初始分支'],
   'Select base branch': ['Select base branch', '选择基准分支', '選擇基準分支'],
   'Filter branches…': ['Filter branches…', '筛选分支…', '篩選分支…'],
+  'Search branches…': ['Search branches…', '搜索分支…', '搜尋分支…'],
   'Select commit': ['Select commit', '选择提交', '選擇提交'],
   'Select a commit': ['Select a commit', '选择一条提交', '選擇一筆提交'],
   '(no commit message)': ['(no commit message)', '（无提交说明）', '（無提交說明）'],

@@ -55,6 +55,7 @@ ICONS = [
     'highlighter',
     'image',
     'inbox',
+    'laptop-minimal',
     'link',
     'list-end',
     'list-ordered',
