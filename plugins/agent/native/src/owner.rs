@@ -96,7 +96,7 @@ mod worktrees;
 use maka_agent_facts::composition::SourceKind;
 use maka_agent_facts::composition::SourceRevision;
 use maka_agent_facts::configuration::policy::RuntimePolicySnapshot;
-use maka_agent_facts::durable::ExecutionIdentity;
+use maka_agent_facts::durable::{BackendSpec, ExecutionIdentity, RunSpec};
 use maka_agent_facts::execution::*;
 use maka_agent_facts::input::DeliveredMessage;
 use maka_agent_facts::input::MessageInput;
@@ -273,6 +273,41 @@ pub(crate) struct Owner {
     stop: CancellationToken,
 }
 impl Owner {
+    pub(super) fn execution_contains_session(&self, session: &str) -> bool {
+        self.store
+            .checkpoint_execution()
+            .is_none_or(|execution| execution.grant().binding.source.session == session)
+    }
+
+    pub(super) async fn require_execution_spec(&self, spec: &RunSpec) -> Result<(), String> {
+        self.require_execution(&spec.session_id).await?;
+        if let Some(execution) = self.store.checkpoint_execution() {
+            if !matches!(spec.backend, BackendSpec::Model { .. }) {
+                return Err("execution_grant_requires_native_model_backend".into());
+            }
+            if !execution
+                .grant()
+                .permissions
+                .sandbox
+                .contains(&spec.approval_ceiling())
+                .map_err(|error| error.to_string())?
+            {
+                return Err("restored_run_exceeds_execution_grant".into());
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) async fn require_execution(&self, session: &str) -> Result<(), String> {
+        if let Some(execution) = self.store.checkpoint_execution() {
+            execution
+                .check_session(session)
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn preview_epoch(&self) -> &str {
         &self.revision.activation
     }
@@ -347,7 +382,7 @@ impl Owner {
         if !jsonschema_valid(&input) {
             return Err("agent_configuration_invalid".into());
         }
-        let settings: Configuration =
+        let mut settings: Configuration =
             serde_json::from_value(input).map_err(|_| "agent_configuration_invalid")?;
         let persistence = context.persistence().ok_or("agent_requires_persistence")?;
         durable
@@ -367,6 +402,20 @@ impl Owner {
             deployment: persistence.source().deployment,
             namespace: context.activation().instance().clone(),
         };
+        if let Some(execution) = persistence.store().checkpoint_execution() {
+            let source = &execution.grant().binding.source;
+            if source.scope.state_domain != data_source.state_domain
+                || source.scope.deployment != data_source.deployment
+                || source.scope.namespace != data_source.namespace
+            {
+                return Err("agent_execution_scope_mismatch".into());
+            }
+            execution.check().await.map_err(|e| e.to_string())?;
+            // Managed execution owns one ordinary Session, not Root-wide producers or tools.
+            settings.goals = false;
+            settings.scheduled_tasks = false;
+            settings.bot = false;
+        }
         let prefix = maka_agent_authority::session_namespace(
             &persistence.source().state_domain,
             persistence.source().deployment,
@@ -387,7 +436,11 @@ impl Owner {
         .map_err(|_| "agent_workspace_configuration_worker_failed")??;
         let home = std::env::home_dir();
         let workers = TaskTracker::new();
-        let stop = CancellationToken::new();
+        let stop = persistence
+            .store()
+            .checkpoint_execution()
+            .map(|execution| execution.cancellation().child_token())
+            .unwrap_or_default();
         let revision = SourceRevision {
             kind: SourceKind::ModelProvider,
             name: IMPLEMENTATION.into(),

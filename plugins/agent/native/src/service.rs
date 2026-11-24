@@ -50,6 +50,7 @@ fn complete_control(
     }
 }
 struct CallArgs {
+    method: String,
     owner: Arc<Owner>,
     input: Value,
     context: Context,
@@ -63,6 +64,7 @@ impl Handler for Agent {
         context: Context,
     ) -> BoxFuture<'static, HandlerResult> {
         let mut args = Some(CallArgs {
+            method: method.clone(),
             owner: self.0.clone(),
             input,
             context,
@@ -1189,6 +1191,43 @@ impl Handler for Agent {
     }
 }
 
+async fn execution_admission(args: &CallArgs) -> Result<(), String> {
+    if args.owner.store.checkpoint_execution().is_none()
+        || (args.context.operation().is_none() && args.method != "executorSetup")
+    {
+        return Ok(());
+    }
+    // Only single-Session mutations belong to this grant. Global and cross-Session
+    // mutations require a separate authority and fail closed in this bootstrap mode.
+    if !matches!(
+        args.method.as_str(),
+        "send"
+            | "metadata"
+            | "selectBackend"
+            | "setCompactionPrompt"
+            | "changeSession"
+            | "saveFile"
+            | "snapshotPatch"
+            | "uploadAttachment"
+            | "markRead"
+            | "editQueue"
+            | "compact"
+            | "continueRun"
+            | "stop"
+            | "stopComputerApp"
+            | "respond"
+            | "publishCheckpoint"
+    ) {
+        return Err("mutation_is_outside_execution_grant".into());
+    }
+    let session = args
+        .input
+        .get("sessionId")
+        .and_then(Value::as_str)
+        .ok_or("execution_grant_requires_session")?;
+    args.owner.require_execution(session).await
+}
+
 #[inline(never)]
 fn box_rpc<Fut>(
     args: &mut Option<CallArgs>,
@@ -1197,12 +1236,11 @@ fn box_rpc<Fut>(
 where
     Fut: Future<Output = HandlerResult> + std::marker::Send + 'static,
 {
-    let CallArgs {
-        owner,
-        input,
-        context,
-    } = args.take().expect("RPC args consumed once");
-    Box::pin(async move { make(owner, input, context).await })
+    let args = args.take().expect("RPC args consumed once");
+    Box::pin(async move {
+        execution_admission(&args).await.map_err(handler_error)?;
+        make(args.owner, args.input, args.context).await
+    })
 }
 #[inline(never)]
 fn handler_rpc<Fut>(
@@ -1212,12 +1250,9 @@ fn handler_rpc<Fut>(
 where
     Fut: Future<Output = Result<HandlerValue, String>> + std::marker::Send + 'static,
 {
-    let CallArgs {
-        owner,
-        input,
-        context,
-    } = args.take().expect("RPC args consumed once");
-    Box::pin(async move { make(owner, input, context).await.map_err(handler_error) })
+    box_rpc(args, |owner, input, context| async move {
+        make(owner, input, context).await.map_err(handler_error)
+    })
 }
 #[inline(never)]
 fn json_rpc<Fut>(
@@ -1227,18 +1262,14 @@ fn json_rpc<Fut>(
 where
     Fut: Future<Output = Result<Value, String>> + std::marker::Send + 'static,
 {
-    let CallArgs {
-        owner,
-        input,
-        context,
-    } = args.take().expect("RPC args consumed once");
-    Box::pin(async move {
+    box_rpc(args, |owner, input, context| async move {
         make(owner, input, context)
             .await
             .map(HandlerValue::Json)
             .map_err(handler_error)
     })
 }
+
 fn decode<T: DeserializeOwned>(input: Value) -> Result<T, String> {
     serde_json::from_value(input).map_err(|_| "agent_input_invalid".into())
 }

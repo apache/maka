@@ -223,6 +223,10 @@
       "platform/event-log/migrations/repository/0002_heads.sql": {
         "version": 2,
         "sha384": "a5171e87fb87fb89d2378e60bbe33beb922f498d706d9d1af5c106f2afeb22255f9ed80d86c02b8ea1869bf4bc623ebb"
+      },
+      "platform/event-log/migrations/repository/0003_execution.sql": {
+        "version": 3,
+        "sha384": "3960aa8017e95726dbd9d162788f681b8e86d0b13e67ddf2d01ad2a24b3ec974f59f72d9deca5a80357fee307afec32a"
       }
     },
     "settings": {

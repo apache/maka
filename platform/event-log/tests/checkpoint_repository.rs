@@ -1134,3 +1134,101 @@ async fn legacy_local_head_remains_readable_and_accepts_a_successor() {
     assert_eq!(history.read_head().await.unwrap(), Some(successor));
     store.shutdown().await.unwrap();
 }
+
+#[tokio::test]
+async fn execution_bootstrap_preserves_unique_head_and_cannot_downgrade_authority() {
+    use maka_event_log::checkpoints::execution::{
+        Claim, ClaimResult, Execution, ExecutionAuthority, Permissions,
+    };
+    for shared in [false, true] {
+        let base = tempfile::tempdir().unwrap();
+        let external = tempfile::tempdir().unwrap();
+        let repo = Arc::new(FileRepository::open(external.path()).unwrap());
+        let agent = Uuid::new_v4();
+        let plain = repo.storage(agent).unwrap();
+        let store = open(base.path(), true, shared.then_some(plain.clone())).await;
+        session(&store).await;
+        let history = store.history_checkpoints("session", scope()).await.unwrap();
+        let (binding, start) = if shared {
+            let binding = history.binding().await.unwrap();
+            let revision =
+                head(history.publish(request(), material()).await.unwrap().state).revision;
+            (binding, Some(revision))
+        } else {
+            let source = Source {
+                root_id: store.owned_root().unwrap().root_id().into(),
+                scope: scope(),
+                session: "session".into(),
+            };
+            (repo.bind(source, agent).await.unwrap(), None)
+        };
+        store.shutdown().await.unwrap();
+        drop(history);
+        drop(store);
+        let ClaimResult::Granted { grant, .. } = repo
+            .claim(Claim {
+                activation: Uuid::new_v4(),
+                binding: binding.clone(),
+                start,
+                permissions: Permissions {
+                    sandbox: maka_sandbox::Sandbox::Disabled,
+                    tools: None,
+                },
+                lease_millis: 60_000,
+            })
+            .await
+            .unwrap()
+        else {
+            panic!("claim rejected");
+        };
+        let grant = Arc::new(*grant);
+        let execution = Execution::attach(repo.clone(), grant.clone())
+            .await
+            .unwrap();
+        let storage = plain.clone().with_execution(execution.clone()).unwrap();
+        let store = open(base.path(), false, Some(storage)).await;
+        let history = store.history_checkpoints("session", scope()).await.unwrap();
+        assert_eq!(history.binding().await.unwrap(), binding);
+        let mut next = request();
+        next.expected_revision = start;
+        let saved = head(history.publish(next, material()).await.unwrap().state);
+        assert_eq!(
+            repo.read_head(binding.identity.clone())
+                .await
+                .unwrap()
+                .unwrap()
+                .head,
+            saved
+        );
+        // Local fail-closed cancellation alone must fence commits, even if the
+        // control service still observes an active generation.
+        execution.cancellation().cancel();
+        let mut denied = request();
+        denied.expected_revision = Some(saved.revision);
+        assert!(history.publish(denied, material()).await.is_err());
+        assert_eq!(
+            repo.read_head(binding.identity)
+                .await
+                .unwrap()
+                .unwrap()
+                .head,
+            saved
+        );
+        store.shutdown().await.unwrap();
+        drop(history);
+        drop(store);
+        for storage in [None, Some(plain)] {
+            assert!(
+                RootStore::open_with_checkpoint_storage(
+                    owner(base.path(), false),
+                    ROOT_MIGRATIONS,
+                    storage
+                )
+                .await
+                .is_err(),
+                "execution configuration cannot silently fall back to an unrestricted repository"
+            );
+        }
+        repo.revoke(grant).await.unwrap();
+    }
+}

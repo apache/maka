@@ -65,3 +65,7 @@ path = "tests/checkpoint_restore.rs"
 [[test]]
 name = "checkpoint_repository"
 path = "tests/checkpoint_repository.rs"
+
+[[test]]
+name = "checkpoint_execution"
+path = "tests/checkpoint_execution.rs"

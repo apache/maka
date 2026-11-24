@@ -537,6 +537,8 @@ impl Rig {
                 "uploadAttachment",
                 "work",
                 "workReadiness",
+                "previewHistoryCheckpoint",
+                "publishCheckpoint",
                 "queue",
                 "queueMessage",
                 "editQueue",
@@ -551,6 +553,8 @@ impl Rig {
                 "schedule",
                 "schedules",
                 "metadata",
+                "changeSession",
+                "saveFile",
                 "project",
                 "projects",
                 "projectMcp",
@@ -3539,6 +3543,7 @@ mod model_recovery {
     mod codex_switch;
     mod compaction;
     mod discovery;
+    mod execution;
     mod memory;
     mod predictions;
     mod preset_acceptance;

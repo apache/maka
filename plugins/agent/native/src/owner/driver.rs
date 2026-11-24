@@ -1103,6 +1103,10 @@ impl DriverPorts for NativeDriver {
         tool: &'a Tool,
     ) -> BoxFuture<'a, Result<ToolValidation, RunError>> {
         Box::pin(async move {
+            self.owner
+                .require_execution(&self.access.execution().session_id)
+                .await
+                .map_err(RunError::InvalidInput)?;
             let configuration = match self.access.live_configuration().await {
                 Ok(configuration) => configuration,
                 Err(error) => {

@@ -199,6 +199,11 @@ impl FileRepository {
                     configure: None,
                     data: None,
                 },
+                crate::migration::Migration::sql(
+                    3,
+                    "checkpoint execution authority",
+                    include_str!("../../../migrations/repository/0003_execution.sql"),
+                ),
             ],
         )?;
         let id: Option<String> = tx
@@ -250,7 +255,7 @@ impl FileRepository {
     pub fn storage(&self, agent: Uuid) -> Result<Storage, StoreError> {
         Storage::new(self.objects(), Arc::new(self.clone()), agent)
     }
-    fn run<T: Send + 'static>(
+    pub(crate) fn run<T: Send + 'static>(
         &self,
         action: impl FnOnce(&Connection) -> Result<T, StoreError> + Send + 'static,
     ) -> BoxFuture<'static, Result<T, StoreError>> {
