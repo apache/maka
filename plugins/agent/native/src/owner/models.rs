@@ -85,18 +85,19 @@ impl Owner {
         requested_runtime: Option<&str>,
         read: CatalogRead,
         cancellation: &CancellationToken,
-    ) -> Result<(Vec<ModelChoice>, bool), ExecutorError> {
+    ) -> Result<(Vec<ModelChoice>, bool, bool), ExecutorError> {
         if !self.executors.contains("external") {
-            return Ok((Vec::new(), false));
+            return Ok((Vec::new(), false, false));
         }
         let Some(cwd) = self.external_cwd().await.map_err(ExecutorError::Provider)? else {
-            return Ok((Vec::new(), false));
+            return Ok((Vec::new(), false, false));
         };
         let (runtimes, refreshing) = self
             .executors
             .external_catalog(cwd, requested_runtime, read, cancellation.clone())
             .await?;
         let mut choices = Vec::new();
+        let mut discovery_failed = false;
         for runtime in &runtimes {
             let runtime_id = runtime
                 .get("runtime")
@@ -110,6 +111,7 @@ impl Owner {
                     .get(field)
                     .filter(|value| value.get("kind").and_then(Value::as_str) == Some("error"))
                 {
+                    discovery_failed = true;
                     tracing::warn!(
                         runtime = runtime_id,
                         stage = field,
@@ -206,7 +208,7 @@ impl Owner {
                 });
             }
         }
-        Ok((choices, refreshing))
+        Ok((choices, refreshing, discovery_failed))
     }
     pub(super) async fn external_cwd(&self) -> Result<Option<String>, String> {
         let DirectoryPage::Roots { roots } = workspace::query(
@@ -252,7 +254,7 @@ impl Owner {
             )
             .await
         {
-            Ok((external, pending)) => {
+            Ok((external, pending, _)) => {
                 choices.extend(external);
                 refreshing = pending;
             }
@@ -308,27 +310,26 @@ impl Owner {
         if cancellation.is_cancelled() {
             return Err(ExecutorError::Cancelled.to_string());
         }
-        let choices = match &input.backend {
-            BackendPreference::Model { .. } => self.native_choices().await?,
+        let (choices, discovery_failed) = match &input.backend {
+            BackendPreference::Model { .. } => (self.native_choices().await?, false),
             BackendPreference::Executor { selection } if selection.executor == "external" => {
                 match selection.settings.runtime.as_deref() {
                     Some(runtime) => match self
                         .external_choices(Some(runtime), CatalogRead::Resolve, cancellation)
                         .await
                     {
-                        Ok((choices, _)) => choices,
-                        Err(error @ (ExecutorError::Cancelled | ExecutorError::Retired)) => {
+                        Ok((choices, _, failed)) => (choices, failed),
+                        Err(error) => {
+                            if !matches!(error, ExecutorError::Cancelled | ExecutorError::Retired) {
+                                tracing::warn!(runtime, %error, "External model validation failed");
+                            }
                             return Err(error.to_string());
                         }
-                        Err(error) => {
-                            tracing::warn!(runtime, %error, "External model validation unavailable");
-                            Vec::new()
-                        }
                     },
-                    None => Vec::new(),
+                    None => (Vec::new(), false),
                 }
             }
-            BackendPreference::Executor { .. } => Vec::new(),
+            BackendPreference::Executor { .. } => (Vec::new(), false),
         };
         match choices.into_iter().find(|choice| {
             same_model(&choice.selection, &input.backend)
@@ -340,6 +341,7 @@ impl Owner {
             Some(choice) => Ok(ModelResult::Ready {
                 choice: Box::new(choice),
             }),
+            None if discovery_failed => Err("External agent model discovery failed".into()),
             None => Ok(ModelResult::Unavailable {
                 message: "Selected execution source or model is unavailable".into(),
             }),

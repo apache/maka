@@ -2631,6 +2631,29 @@ async fn desktop_remembers_home_model_across_reopen_and_unavailable_fallback() {
         Some(saved.clone())
     );
 
+    let mut stale_tier = saved.clone();
+    if let maka_agent_facts::executor::BackendPreference::Model { service_tier, .. } =
+        &mut stale_tier.backend
+    {
+        *service_tier = Some("fast".into());
+    }
+    desktop.client.set_recent_model(stale_tier).await.unwrap();
+    let desktop = desktop
+        .restart(&fixture, nsh_core::platform::Appearance::Dark)
+        .await;
+    desktop.target_after(None).await;
+    desktop.type_text("STALE_SPEED_TIER_NORMALIZED").await;
+    desktop.submit().await;
+    let request = desktop.request(&mut fixture).await;
+    assert_eq!(
+        request.body["model"], "fixture-model-alt",
+        "{}",
+        request.body
+    );
+    desktop
+        .wait("normalized-tier message did not finish", request.finish())
+        .await;
+
     let unavailable = maka_app_client::RecentModel {
         backend: maka_agent_facts::executor::BackendPreference::Executor {
             selection: maka_agent_facts::executor::Selection {

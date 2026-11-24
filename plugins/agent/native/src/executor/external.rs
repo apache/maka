@@ -517,7 +517,7 @@ impl External {
                 ));
             }
             let snapshot = cache.snapshot(selected);
-            if read != catalog::Read::Resolve || !snapshot.0.is_empty() || !snapshot.1 {
+            if read != catalog::Read::Resolve || !snapshot.1 {
                 return Ok(snapshot);
             }
             drop(cache);

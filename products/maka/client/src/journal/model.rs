@@ -31,14 +31,44 @@ pub struct RecentModel {
     pub label: Option<String>,
 }
 
+fn valid_selector(value: &str) -> bool {
+    !value.trim().is_empty() && !value.chars().any(char::is_control)
+}
+
 impl RecentModel {
-    fn normalized(mut self) -> Self {
+    pub fn validate(&self) -> Result<()> {
+        match &self.backend {
+            BackendPreference::Model {
+                connection_id,
+                model_id,
+                service_tier,
+                ..
+            } => {
+                if !valid_selector(connection_id)
+                    || !valid_selector(model_id)
+                    || service_tier
+                        .as_deref()
+                        .is_some_and(|tier| !valid_selector(tier))
+                {
+                    return Err("Invalid recent model".into());
+                }
+            }
+            BackendPreference::Executor { selection } => {
+                if !valid_selector(&selection.executor) || selection.settings.validate().is_err() {
+                    return Err("Invalid recent model".into());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn normalized(mut self) -> Result<Self> {
+        self.validate()?;
         self.label = self.label.and_then(|label| {
             let trimmed = label.trim();
-            (!trimmed.is_empty() && !trimmed.chars().any(char::is_control))
-                .then(|| trimmed.to_owned())
+            valid_selector(trimmed).then(|| trimmed.to_owned())
         });
-        self
+        Ok(self)
     }
 }
 
@@ -50,11 +80,11 @@ impl Journal {
                 .fetch_optional(&self.pool)
                 .await
                 .map_err(error)?;
-        // Ignore a corrupt or schema-drifted row so a broken client preference never blocks startup.
+        // Ignore a corrupt, schema-drifted, or structurally invalid row so startup stays safe.
         Ok(value.and_then(|value| {
             serde_json::from_str::<RecentModel>(&value)
                 .ok()
-                .map(RecentModel::normalized)
+                .and_then(|model| model.normalized().ok())
         }))
     }
 
@@ -63,11 +93,9 @@ impl Journal {
         owner: String,
         model: RecentModel,
     ) -> Result<RecentModel> {
+        let model = model.normalized()?;
         let write::Output::RecentModel(saved) = self
-            .write(write::Command::SetRecentModel {
-                owner,
-                model: model.normalized(),
-            })
+            .write(write::Command::SetRecentModel { owner, model })
             .await?
         else {
             unreachable!("recent model write returned a different result")
@@ -81,7 +109,7 @@ pub(super) async fn set(
     owner: String,
     model: RecentModel,
 ) -> Result<RecentModel> {
-    let model = model.normalized();
+    let model = model.normalized()?;
     sqlx::query(
         "INSERT INTO recent_model(owner,value) VALUES (?,?) ON CONFLICT(owner) DO UPDATE SET value=excluded.value",
     )
@@ -115,12 +143,22 @@ mod tests {
             },
             label: Some("  GPT-5  ".into()),
         };
-        let saved = journal
-            .set_recent_model("host-a".into(), native.clone())
+        journal
+            .set_recent_model("host-a".into(), native)
             .await
             .unwrap();
-        assert_eq!(saved.label.as_deref(), Some("GPT-5"));
-        assert_eq!(journal.recent_model("host-a").await.unwrap(), Some(saved));
+        assert_eq!(
+            journal.recent_model("host-a").await.unwrap(),
+            Some(RecentModel {
+                backend: BackendPreference::Model {
+                    connection_id: "conn-1".into(),
+                    model_id: "gpt-5".into(),
+                    service_tier: Some("fast".into()),
+                    thinking_level: Some(ThinkingLevel::High),
+                },
+                label: Some("GPT-5".into()),
+            })
+        );
         assert_eq!(journal.recent_model("host-b").await.unwrap(), None);
 
         let external = RecentModel {
@@ -136,42 +174,99 @@ mod tests {
             },
             label: Some("Gemini 4 Neon".into()),
         };
-        let saved_ext = journal
+        journal
             .set_recent_model("host-a".into(), external.clone())
             .await
             .unwrap();
         assert_eq!(
             journal.recent_model("host-a").await.unwrap(),
-            Some(saved_ext.clone())
+            Some(RecentModel {
+                backend: BackendPreference::Executor {
+                    selection: Selection {
+                        executor: "external".into(),
+                        settings: Settings {
+                            runtime: Some("antigravity".into()),
+                            model: Some("gemini-4-neon".into()),
+                            thinking_level: Some(Effort::try_from("high".to_owned()).unwrap()),
+                        },
+                    },
+                },
+                label: Some("Gemini 4 Neon".into()),
+            })
         );
 
         let blank_label = RecentModel {
             backend: external.backend.clone(),
             label: Some("  \n ".into()),
         };
-        let saved_blank = journal
+        journal
             .set_recent_model("host-b".into(), blank_label)
             .await
             .unwrap();
-        assert_eq!(saved_blank.label, None);
+        assert_eq!(
+            journal.recent_model("host-b").await.unwrap().unwrap().label,
+            None
+        );
         assert_eq!(
             journal.recent_model("host-a").await.unwrap(),
-            Some(saved_ext)
+            Some(external.clone())
         );
 
-        sqlx::query("UPDATE recent_model SET value='not valid json' WHERE owner='host-a'")
-            .execute(&journal.pool)
-            .await
-            .unwrap();
-        assert_eq!(journal.recent_model("host-a").await.unwrap(), None);
+        let invalid_native = RecentModel {
+            backend: BackendPreference::Model {
+                connection_id: "conn-1".into(),
+                model_id: "".into(),
+                service_tier: None,
+                thinking_level: None,
+            },
+            label: None,
+        };
+        assert!(
+            journal
+                .set_recent_model("host-a".into(), invalid_native)
+                .await
+                .is_err()
+        );
+        let invalid_executor = RecentModel {
+            backend: BackendPreference::Executor {
+                selection: Selection {
+                    executor: "external".into(),
+                    settings: Settings {
+                        runtime: Some("".into()),
+                        model: Some("gemini-4-neon".into()),
+                        thinking_level: None,
+                    },
+                },
+            },
+            label: None,
+        };
+        assert!(
+            journal
+                .set_recent_model("host-a".into(), invalid_executor)
+                .await
+                .is_err()
+        );
 
-        let repaired = journal
-            .set_recent_model("host-a".into(), external)
+        for broken in [
+            "not valid json",
+            r#"{"backend":{"kind":"model","connectionId":"conn","modelId":"","thinkingLevel":null}}"#,
+            r#"{"backend":{"kind":"executor","selection":{"executor":"external","settings":{"runtime":"","model":"gemini"}}}}"#,
+        ] {
+            sqlx::query("UPDATE recent_model SET value=? WHERE owner='host-a'")
+                .bind(broken)
+                .execute(&journal.pool)
+                .await
+                .unwrap();
+            assert_eq!(journal.recent_model("host-a").await.unwrap(), None);
+        }
+
+        journal
+            .set_recent_model("host-a".into(), external.clone())
             .await
             .unwrap();
         assert_eq!(
             journal.recent_model("host-a").await.unwrap(),
-            Some(repaired)
+            Some(external)
         );
     }
 }

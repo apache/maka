@@ -243,6 +243,7 @@ type PendingDraft = {
   text: string;
   backend: ModelBackend | null;
   backendLabel: string | null;
+  rememberedModel: boolean;
   access: AgentWorkspaceAccess | null;
   requests: boolean | null;
   modelChosen: boolean;
@@ -487,52 +488,62 @@ export function createConversationUi(
   const pendingDraftGeneration = signal(0);
   let pendingDefaultEpoch = 0;
   let pendingDefaultRead: Promise<void> | null = null;
-  const refreshPendingModel = async (): Promise<'ready' | 'unavailable' | 'stale'> => {
-    const backend = pendingBackend();
-    const generation = ++pendingModelGeneration;
-    if (!backend) {
-      pendingModelDetails.set({
-        kind: 'unavailable',
-        message: uiMessage('Choose a model.'),
-      });
-      return 'unavailable';
-    }
-    pendingModelDetails.set({ kind: 'loading', label: pendingBackendLabel() });
-    try {
-      const result = await host.query('agent', 'model', { backend });
-      if (!alive || generation !== pendingModelGeneration) return 'stale';
-      if (result.kind === 'ready') {
-        pendingModelDetails.set({ kind: 'ready', choice: result.choice });
-        if (
-          sameBackend(pendingBackend(), backend) &&
-          selectionForChoice(backend, result.choice) &&
-          pendingBackendLabel() !== result.choice.label
-        )
-          updatePending({ backendLabel: result.choice.label });
-        return 'ready';
-      }
-      pendingModelDetails.set({
-        kind: 'unavailable',
-        message: uiMessage('Model unavailable: {model}.', {
-          model: backendName(backend),
-        }),
-      });
-      return 'unavailable';
-    } catch (reason) {
-      if (!alive || generation !== pendingModelGeneration) return 'stale';
-      pendingModelDetails.set({
-        kind: 'unavailable',
-        message: errorText(reason, 'Could not load models.'),
-      });
-      return 'unavailable';
-    }
-  };
   const pendingModel = {
     sessionId: 'pending',
     backend: pendingBackend,
     modelDetails: pendingModelDetails,
     async refreshModel() {
-      await refreshPendingModel();
+      const backend = pendingBackend();
+      const generation = ++pendingModelGeneration;
+      if (!backend) {
+        pendingModelDetails.set({
+          kind: 'unavailable',
+          message: uiMessage('Choose a model.'),
+        });
+        return;
+      }
+      pendingModelDetails.set({ kind: 'loading', label: pendingBackendLabel() });
+      try {
+        const result = await host.query('agent', 'model', { backend });
+        if (!alive || generation !== pendingModelGeneration) return;
+        if (result.kind === 'ready') {
+          pendingModelDetails.set({ kind: 'ready', choice: result.choice });
+          const normalized = selectionForChoice(backend, result.choice);
+          if (normalized && sameBackend(pendingBackend(), backend)) {
+            const patch: Partial<Omit<PendingDraft, 'revision'>> = {};
+            if (!sameBackend(backend, normalized)) patch.backend = normalized;
+            if (pendingBackendLabel() !== result.choice.label)
+              patch.backendLabel = result.choice.label;
+            if (Object.keys(patch).length > 0) updatePending(patch);
+          }
+          return;
+        }
+        if (
+          pending()?.rememberedModel &&
+          selected() === null &&
+          !pendingSending() &&
+          sameBackend(pendingBackend(), backend)
+        ) {
+          updatePending({ backend: null, backendLabel: null, rememberedModel: false });
+          pendingModelDetails.set({
+            kind: 'unavailable',
+            message: uiMessage('Choose a model.'),
+          });
+          return;
+        }
+        pendingModelDetails.set({
+          kind: 'unavailable',
+          message: uiMessage('Model unavailable: {model}.', {
+            model: backendName(backend),
+          }),
+        });
+      } catch (reason) {
+        if (!alive || generation !== pendingModelGeneration) return;
+        pendingModelDetails.set({
+          kind: 'unavailable',
+          message: errorText(reason, 'Could not load models.'),
+        });
+      }
     },
   };
   let dropFiles: ((event: { uris: string[] }) => void) | null = null;
@@ -702,8 +713,10 @@ export function createConversationUi(
       if (priorFork && priorFork.id !== id && forkNotice()?.id === priorFork.id) {
         forkNotice.set(null);
       }
-      if (source.sessionId === null && pendingWorkspace())
+      if (source.sessionId === null && pendingWorkspace()) {
         pendingDraftGeneration.set(pendingDraftGeneration() + 1);
+        if (pending()?.rememberedModel) updatePending({ rememberedModel: false });
+      }
       if (overlay() === sourceOverlay) overlay.set(null);
       status.set('');
       if (revealed) await revealed;
@@ -988,6 +1001,7 @@ export function createConversationUi(
         text: '',
         backend: null,
         backendLabel: null,
+        rememberedModel: false,
         access: null,
         requests: null,
         modelChosen: false,
@@ -1016,26 +1030,12 @@ export function createConversationUi(
         const saved = await readRecentModel();
         if (!canApplyDefault()) return;
         if (saved) {
-          const cachedLabel = saved.label ?? null;
-          updatePending({ backend: saved.backend, backendLabel: cachedLabel });
-          void refreshPendingModel().then((outcome) => {
-            if (
-              outcome !== 'unavailable' ||
-              !alive ||
-              pendingDefaultEpoch !== generation ||
-              pendingWorkspace() === null ||
-              pendingModelChosen() ||
-              pendingSending() ||
-              !sameBackend(pendingBackend(), saved.backend)
-            )
-              return;
-            pendingModelGeneration += 1;
-            updatePending({ backend: null, backendLabel: null });
-            pendingModelDetails.set({
-              kind: 'unavailable',
-              message: uiMessage('Choose a model.'),
-            });
+          updatePending({
+            backend: saved.backend,
+            backendLabel: saved.label ?? null,
+            rememberedModel: true,
           });
+          void pendingModel.refreshModel();
           return;
         }
         const page = await host.query('settings', 'connections', { kind: 'start' });
@@ -1043,6 +1043,7 @@ export function createConversationUi(
         updatePending({
           backend: { kind: 'model', ...page.defaultTarget, thinkingLevel: null },
           backendLabel: null,
+          rememberedModel: false,
         });
         await pendingModel.refreshModel();
       })().catch(report);
@@ -1250,17 +1251,22 @@ export function createConversationUi(
             await pendingDefaultRead;
             if (!alive || selected() !== null || pendingWorkspace() !== workspace) return;
             requireUnchangedDraft();
-            const backend = pendingBackend();
-            if (!backend) {
+            const initialBackend = pendingBackend();
+            if (!initialBackend) {
               pendingModelInstance.set(++overlayInstance);
               return;
             }
             await pendingModel.refreshModel();
             if (!alive || selected() !== null || pendingWorkspace() !== workspace) return;
             requireUnchangedDraft();
-            if (pendingBackend() !== backend || pendingModelDetails().kind !== 'ready')
+            const details = pendingModelDetails();
+            const backend =
+              details.kind === 'ready'
+                ? (selectionForChoice(initialBackend, details.choice) ?? initialBackend)
+                : initialBackend;
+            if (!sameBackend(pendingBackend(), backend) || details.kind !== 'ready')
               throw new UiError('Model unavailable: {model}. Choose another model.', {
-                model: backendName(backend),
+                model: backendName(initialBackend),
               });
             let id = pendingCreated();
             let sendFirst = true;
@@ -1636,12 +1642,16 @@ export function createConversationUi(
       try {
         await pendingDefaultRead;
         requireOwner();
-        const backend = pendingBackend();
-        if (!backend) throw new UiError('Choose a model.');
+        const initialBackend = pendingBackend();
+        if (!initialBackend) throw new UiError('Choose a model.');
         await pendingModel.refreshModel();
         requireOwner();
         const model = pendingModelDetails();
-        if (pendingBackend() !== backend || model.kind !== 'ready')
+        const backend =
+          model.kind === 'ready'
+            ? (selectionForChoice(initialBackend, model.choice) ?? initialBackend)
+            : initialBackend;
+        if (!sameBackend(pendingBackend(), backend) || model.kind !== 'ready')
           throw new UiError('Choose a model.');
         let id = pendingCreated();
         const reusingSession = id !== null;
@@ -2943,26 +2953,19 @@ export function createConversationUi(
                           pendingModelInstance.set(null);
                           shell()?.openSettings();
                         }}
-                        select={async (_instance, backend) => {
+                        select={async (_instance, backend, label) => {
                           if (pendingSending()) return;
-                          const preservedLabel = sameRoute(pendingBackend(), backend)
-                            ? pendingBackendLabel()
-                            : null;
+                          const nextLabel =
+                            label ??
+                            (sameRoute(pendingBackend(), backend) ? pendingBackendLabel() : null);
                           updatePending({
                             backend,
-                            backendLabel: preservedLabel,
+                            backendLabel: nextLabel,
                             modelChosen: true,
+                            rememberedModel: false,
                           });
+                          rememberModel(backend, nextLabel);
                           await pendingModel.refreshModel();
-                          if (!alive || !sameBackend(pendingBackend(), backend)) return;
-                          const details = pendingModelDetails();
-                          const label =
-                            details.kind === 'ready' && selectionForChoice(backend, details.choice)
-                              ? details.choice.label
-                              : preservedLabel;
-                          if (label !== pendingBackendLabel())
-                            updatePending({ backendLabel: label });
-                          rememberModel(backend, label);
                         }}
                       />
                     </If>

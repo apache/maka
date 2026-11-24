@@ -535,6 +535,7 @@ impl ApplicationHost {
     ) -> Result<JsonValue, String> {
         let model: maka_app_client::RecentModel =
             serde_json::from_value(model).map_err(|_| "Invalid recent model")?;
+        model.validate()?;
         let (owner, source) = this.with(|host| (host.owner.clone(), host.client.clone()));
         drop(this);
         let original = owner.clone();
