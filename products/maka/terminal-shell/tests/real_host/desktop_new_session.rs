@@ -449,6 +449,37 @@ impl Desktop {
         self.control("Focus message composer").await;
     }
 
+    async fn choose_workspace_folder(&self, path: &Path) {
+        let row = format!(
+            "Browse folder {}",
+            path.file_name().unwrap().to_str().unwrap()
+        );
+        self.press("Choose composer workspace").await;
+        self.press("Choose another folder…").await;
+        self.press("Browse folder Workspace").await;
+        self.press(&row).await;
+        self.until("the picker did not leave the parent folder", || {
+            self.controls(&row).is_empty().then_some(())
+        })
+        .await;
+        self.press_until("Use this workspace folder", "Focus message composer")
+            .await;
+        assert!(self.controls("Close workspace picker").is_empty());
+        self.wait("the chosen workspace folder was not saved", async {
+            loop {
+                let recent = self.client.recent_workspaces().await.unwrap();
+                if recent
+                    .first()
+                    .is_some_and(|item| item.path == path.to_str().unwrap())
+                {
+                    return;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
+    }
+
     async fn attach(&self, path: &Path) {
         let previous = self.platform.text_input_target();
         self.key("u", true);
@@ -1114,6 +1145,22 @@ async fn desktop_creates_only_on_first_submission_and_preserves_the_confirmed_sn
     fixture.finish().await;
 }
 
+fn git(directory: &Path, args: &[&str]) -> String {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(directory)
+        .args(["-c", "user.name=Maka", "-c", "user.email=maka@example.test"])
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "Git {args:?}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).unwrap().trim().to_owned()
+}
+
 async fn desktop_creates_and_reopens_a_named_worktree() {
     let mut fixture = Fixture::configured(Options {
         workspace_read: true,
@@ -1126,21 +1173,6 @@ async fn desktop_creates_and_reopens_a_named_worktree() {
         .join("workspace")
         .join("worktree-project");
     std::fs::create_dir(&project).unwrap();
-    let git = |directory: &Path, args: &[&str]| {
-        let output = std::process::Command::new("git")
-            .arg("-C")
-            .arg(directory)
-            .args(["-c", "user.name=Maka", "-c", "user.email=maka@example.test"])
-            .args(args)
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "Git {args:?}: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        String::from_utf8(output.stdout).unwrap().trim().to_owned()
-    };
     git(&project, &["init", "-b", "main"]);
     std::fs::write(project.join("tracked.txt"), "main").unwrap();
     git(&project, &["add", "tracked.txt"]);
@@ -1173,11 +1205,7 @@ async fn desktop_creates_and_reopens_a_named_worktree() {
     let gate = ReplyGate::worktree(fixture.directory.path(), fixture.address.clone());
     let desktop = Desktop::open(&fixture, &gate.address).await;
     desktop.new_draft().await;
-    desktop.press("Choose composer workspace").await;
-    desktop.press("Choose another folder…").await;
-    desktop.press("Browse folder Workspace").await;
-    desktop.press("Browse folder worktree-project").await;
-    desktop.press("Use this workspace folder").await;
+    desktop.choose_workspace_folder(&project).await;
     desktop.press("Focus message composer").await;
     desktop.type_text("FIRST_WORKTREE_MESSAGE").await;
 
@@ -1245,11 +1273,7 @@ async fn desktop_creates_and_reopens_a_named_worktree() {
     desktop.artifact("worktree-creation-unconfirmed");
 
     // A known failure in a different project cannot settle the original attempt.
-    desktop.press("Choose composer workspace").await;
-    desktop.press("Choose another folder…").await;
-    desktop.press("Browse folder Workspace").await;
-    desktop.press("Browse folder other-project").await;
-    desktop.press("Use this workspace folder").await;
+    desktop.choose_workspace_folder(&other).await;
     desktop
         .press_until("Work location", "New local worktree")
         .await;
@@ -1286,6 +1310,19 @@ async fn desktop_creates_and_reopens_a_named_worktree() {
     desktop.submit().await;
     let request = desktop.request(&mut fixture).await;
     assert!(request.body.to_string().contains("FIRST_WORKTREE_MESSAGE"));
+    for branch in ["release-base", "main"] {
+        assert_eq!(
+            mutate(
+                &desktop.client,
+                "checkoutProjectBranch",
+                json!({"path": project, "branch": branch})
+            )
+            .await,
+            json!({"kind": "checked_out"}),
+            "the active linked checkout should leave the primary checkout available"
+        );
+        assert_eq!(git(&project, &["branch", "--show-current"]), branch);
+    }
     assert_eq!(
         desktop
             .client
@@ -1372,6 +1409,7 @@ async fn desktop_creates_and_reopens_a_named_worktree() {
         .await;
     desktop.press("Work location").await;
     desktop.control(name).await;
+    let _ = desktop.platform.take_clipboard_write();
     desktop.press("Copy worktree path").await;
     let copied_path = desktop
         .until("the reopened worktree path was not copied", || {
@@ -1476,6 +1514,83 @@ async fn desktop_creates_and_reopens_a_named_worktree() {
         git(Path::new(copied), &["rev-parse", "HEAD"]),
         git(&project, &["rev-parse", "HEAD"])
     );
+    desktop.close().await;
+    fixture.finish().await;
+}
+
+async fn desktop_uses_the_selected_checkout() {
+    let mut fixture = Fixture::open().await;
+    let root = fixture.directory.path().join("workspace");
+    let project = root.join("checkout-project");
+    let linked = root.join("linked-checkout");
+    std::fs::create_dir(&project).unwrap();
+    git(&project, &["init", "-b", "main"]);
+    git(&project, &["commit", "--allow-empty", "-m", "Main"]);
+    git(&project, &["branch", "release"]);
+    git(
+        &project,
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "linked-branch",
+            linked.to_str().unwrap(),
+        ],
+    );
+
+    let desktop = Desktop::open_at(
+        &fixture,
+        &fixture.address,
+        size(
+            nsh_terminal::DevicePixels(900),
+            nsh_terminal::DevicePixels(640),
+        ),
+        nsh_core::platform::Appearance::Light,
+    )
+    .await;
+    desktop.new_draft().await;
+    desktop.choose_workspace_folder(&linked).await;
+    desktop.press("Focus message composer").await;
+    desktop.type_text("PRIMARY_CHECKOUT_MESSAGE").await;
+    desktop
+        .press_until("Work location", "linked-checkout")
+        .await;
+    desktop.artifact("linked-checkout-selected");
+    desktop.press("Local").await;
+    desktop.control("Switch branch").await;
+    desktop.press("Focus message composer").await;
+    desktop.expect_text("PRIMARY_CHECKOUT_MESSAGE").await;
+    desktop.submit().await;
+
+    let request = desktop.request(&mut fixture).await;
+    let sessions = desktop.sessions().await;
+    let id = sessions
+        .iter()
+        .find(|session| session["id"] != fixture.session)
+        .unwrap()["id"]
+        .as_str()
+        .unwrap();
+    let observed = desktop
+        .client
+        .query("agent", "observe", json!({"sessionId": id}))
+        .await
+        .unwrap();
+    assert_eq!(observed["session"]["workspace"]["path"], json!(project));
+    let switch = json!({"path": project, "branch": "release"});
+    assert_eq!(
+        mutate(&desktop.client, "checkoutProjectBranch", switch.clone()).await,
+        json!({"kind": "failed", "reason": "workspace_busy"})
+    );
+    assert_eq!(git(&project, &["branch", "--show-current"]), "main");
+    desktop
+        .wait("the main checkout run did not finish", request.finish())
+        .await;
+    fixture.idle(&desktop.client, id).await;
+    assert_eq!(
+        mutate(&desktop.client, "checkoutProjectBranch", switch).await,
+        json!({"kind": "checked_out"})
+    );
+    assert_eq!(git(&project, &["branch", "--show-current"]), "release");
     desktop.close().await;
     fixture.finish().await;
 }
@@ -2922,6 +3037,7 @@ pub(crate) const CASES: &[&str] = &[
     "desktop_composer_previews_markdown_and_sends_its_source",
     "desktop_creates_only_on_first_submission_and_preserves_the_confirmed_snapshot",
     "desktop_creates_and_reopens_a_named_worktree",
+    "desktop_uses_the_selected_checkout",
     "desktop_continues_a_failed_run_without_duplicating_the_user_message",
     "desktop_history_anchors_keep_the_reader_off_live_output_until_latest",
     #[cfg(target_os = "macos")]
@@ -2959,6 +3075,9 @@ pub(crate) fn run(name: &str) {
             ),
         "desktop_creates_and_reopens_a_named_worktree" => {
             runtime.block_on(desktop_creates_and_reopens_a_named_worktree())
+        }
+        "desktop_uses_the_selected_checkout" => {
+            runtime.block_on(desktop_uses_the_selected_checkout())
         }
         "desktop_continues_a_failed_run_without_duplicating_the_user_message" => {
             runtime.block_on(desktop_continues_a_failed_run_without_duplicating_the_user_message())

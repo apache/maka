@@ -106,6 +106,11 @@ export const workspaceMessages = {
     '切换分支会覆盖本地文件。请先保存改动。',
     '切換分支會覆寫本機檔案。請先儲存變更。',
   ],
+  'This folder is in use. Try again when the current operation finishes.': [
+    'This folder is in use. Try again when the current operation finishes.',
+    '这个目录正在使用中。请等当前操作结束后再试。',
+    '這個目錄正在使用中。請等目前操作結束後再試。',
+  ],
   'Install Git to switch or create branches.': [
     'Install Git to switch or create branches.',
     '请先安装 Git，再切换或新建分支。',

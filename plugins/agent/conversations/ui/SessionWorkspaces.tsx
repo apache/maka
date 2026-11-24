@@ -82,6 +82,7 @@ const branchErrors = {
   already_exists: 'This branch already exists. Choose another name.',
   checked_out_elsewhere: 'This branch is already checked out in another worktree.',
   overwrites_changes: 'Switching branches would overwrite local files. Save your changes first.',
+  workspace_busy: 'This folder is in use. Try again when the current operation finishes.',
   git_required: 'Install Git to switch or create branches.',
   unsupported: 'This Git configuration does not support switching branches here.',
   unavailable: 'Could not check out the branch.',
@@ -401,7 +402,18 @@ export function SessionWorkspaces(props: {
     const result = info();
     return result?.kind === 'git' ? result : null;
   });
-  const worktree = computed(() => git()?.worktrees.find((item) => item.path === props.path()));
+  const worktrees = computed(() => {
+    const repository = git();
+    if (!repository) return [];
+    const path = props.path();
+    if (path === repository.root || repository.worktrees.some((item) => item.path === path))
+      return repository.worktrees;
+    return [
+      { path, name: basenameLabel(path), branch: repository.headBranch },
+      ...repository.worktrees,
+    ];
+  });
+  const worktree = computed(() => worktrees().find((item) => item.path === props.path()));
   const projectPath = () => git()?.root ?? props.path();
   const loadRecentProjects = async () => {
     const request = ++projectRead;
@@ -557,7 +569,7 @@ export function SessionWorkspaces(props: {
     const target =
       value === localCheckout
         ? repository.root
-        : repository.worktrees.find((item) => item.id === value)?.path;
+        : worktrees().find((item) => item.path === value)?.path;
     if (!target) return;
     if (target === props.path()) {
       props.selectWorktree(null);
@@ -588,9 +600,9 @@ export function SessionWorkspaces(props: {
             ? tr('Commit to a branch before creating a worktree.')
             : undefined,
       },
-      ...repository.worktrees.map(
+      ...worktrees().map(
         (item): Choice => ({
-          value: item.id,
+          value: item.path,
           title: item.name,
           detail: item.branch === item.name ? undefined : (item.branch ?? tr('Detached HEAD')),
           icon: 'fork',
@@ -749,7 +761,7 @@ export function SessionWorkspaces(props: {
           icon={props.worktreeSelection() || worktree() ? 'fork' : 'laptop'}
           emphasized={props.worktreeSelection() !== null}
           width={252}
-          value={props.worktreeSelection() ? newWorktree : (worktree()?.id ?? localCheckout)}
+          value={props.worktreeSelection() ? newWorktree : (worktree()?.path ?? localCheckout)}
           choices={locationChoices()}
           open={openMenu() === 'location'}
           onOpenChange={(open) => toggle('location', open)}

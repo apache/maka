@@ -195,8 +195,26 @@ impl Owner {
         {
             return Ok(unavailable);
         }
+        let directory =
+            workspace::open_directory(&self.workspace_roots, &source, &self.managed_worktrees)
+                .await?;
+        let workspace = self
+            .store
+            .workspace(directory)
+            .await
+            .map_err(|_| UNAVAILABLE)?;
+        let fence = match self.store.fence_workspace(&workspace).await {
+            Ok(fence) => fence,
+            Err(StoreError::SessionBusy) => {
+                return Ok(ProjectBranchCheckedOut::Failed {
+                    reason: ProjectBranchFailure::WorkspaceBusy,
+                });
+            }
+            Err(error) => return Err(error.to_string()),
+        };
         let roots = self.workspace_roots.clone();
         worktrees::blocking(scope, &self.stop, move |cancel| {
+            let _fence = fence;
             state.validate_current().map_err(|_| UNAVAILABLE)?;
             if ![&repository.root, &repository.common_dir]
                 .into_iter()

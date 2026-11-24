@@ -185,6 +185,7 @@ pub enum ProjectBranchFailure {
     AlreadyExists,
     CheckedOutElsewhere,
     OverwritesChanges,
+    WorkspaceBusy,
     GitRequired,
     Unsupported,
     Unavailable,

@@ -94,6 +94,7 @@ export type AgentCheckoutProjectBranchOutput_AgentProjectBranchFailure =
   | 'already_exists'
   | 'checked_out_elsewhere'
   | 'overwrites_changes'
+  | 'workspace_busy'
   | 'git_required'
   | 'unsupported'
   | 'unavailable';
