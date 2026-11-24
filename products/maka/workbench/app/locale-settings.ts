@@ -1336,6 +1336,7 @@ export const settingsMessages = {
   ],
   'Checking for updates…': ['Checking for updates…', '正在检查更新…', '正在檢查更新…'],
   'Check for updates': ['Check for updates', '检查更新', '檢查更新'],
+  'Check for updates…': ['Check for updates…', '检查更新…', '檢查更新…'],
   'Check for updates on this channel.': [
     'Check for updates on this channel.',
     '检查该频道是否有可用更新。',
@@ -1356,16 +1357,7 @@ export const settingsMessages = {
     '发现新版本 {version}（当前目录不可写，请手动下载）。',
     '發現新版本 {version}（目前目錄不可寫，請手動下載）。',
   ],
-  'Nightly update {version} is available (unofficial developer build).': [
-    'Nightly update {version} is available (unofficial developer build).',
-    '有新的 Nightly 测试版 {version} 可用（非 Apache 官方版本）。',
-    '有新的 Nightly 測試版 {version} 可用（非 Apache 官方版本）。',
-  ],
-  'Maka {version} is available.': [
-    'Maka {version} is available.',
-    'Maka {version} 已发布。',
-    'Maka {version} 已發佈。',
-  ],
+  'Downloading update…': ['Downloading update…', '正在下载更新…', '正在下載更新…'],
   'Downloading update {version}…': [
     'Downloading update {version}…',
     '正在下载更新 {version}…',
@@ -1389,6 +1381,13 @@ export const settingsMessages = {
   ],
   'Download update': ['Download update', '下载更新', '下載更新'],
   'Restart to update': ['Restart to update', '重启并更新', '重啟並更新'],
+  'Restart to update…': ['Restart to update…', '重启并更新…', '重啟並更新…'],
+  'Restart to update to {version}': [
+    'Restart to update to {version}',
+    '重启以更新到 {version}',
+    '重啟以更新到 {version}',
+  ],
+  'Installing update…': ['Installing update…', '正在安装更新…', '正在安裝更新…'],
   'Open download': ['Open download', '打开下载页', '開啟下載頁'],
   Later: ['Later', '稍后', '稍後'],
   'Update check failed.': ['Update check failed.', '检查更新失败。', '檢查更新失敗。'],

@@ -52,7 +52,7 @@ import {
 } from '../../../../packages/plugin-sdk/src/workbench-views.js';
 import { currentWindow } from 'nsh/desktop';
 import { QuickLauncher } from './QuickLauncher';
-import { UpdateBanner } from './UpdateBanner';
+import { appUpdater } from './appUpdater';
 import { createQuickTools, QuickToolsSettings, type QuickTools } from './QuickTools';
 import { ownTitleBar, windowTitle } from './chrome';
 import {
@@ -97,6 +97,7 @@ function App(
     quick: QuickTools;
   },
 ) {
+  appUpdater.init();
   const { context, runtime } = props;
   const configuration = context.configuration as unknown as Configuration;
   const saved = context.restored as SavedRoot | null;
@@ -107,6 +108,7 @@ function App(
   const settingsOpened = signal(saved?.settings !== null && saved?.settings !== undefined);
   const settingsModel = signal<ModelSelection | undefined>(saved?.settings?.model);
   const settingsPage = signal<string | undefined>(saved?.settings?.page);
+  const settingsNavigation = signal(0);
   const session = signal<ConversationSessionHandle | null>(null);
   windowTitle(() =>
     workspaceMode() === 'rooms'
@@ -307,6 +309,7 @@ function App(
       batch(() => {
         settingsModel.set(model);
         settingsPage.set(page);
+        settingsNavigation.set(settingsNavigation() + 1);
         settingsOpened.set(true);
       });
     },
@@ -576,7 +579,6 @@ function App(
           },
         })}
       </WorkspaceSurface>
-      <UpdateBanner />
       <If when={runtime.updateError() !== null}>
         <View
           style={{
@@ -633,6 +635,7 @@ function App(
         settingsViewContract,
         {
           opened: settingsOpened,
+          navigation: settingsNavigation,
           close: () => {
             if (!alive || blocked()) return;
             navigationGeneration++;
