@@ -723,6 +723,7 @@ function activityVerbs(group: ProcessGroup, row: (id: string) => Row | undefined
   return [...new Set(kinds.map(stepVerb))].join(tr(', '));
 }
 
+const thinkingMark = () => <ThinkingMark />;
 function GroupHeader(props: TurnPanelProps) {
   const active = () =>
     props.turn().active &&
@@ -796,7 +797,7 @@ function GroupHeader(props: TurnPanelProps) {
   };
   // The mark keeps moving for as long as the turn is at work, through its
   // thoughts and its tools alike.
-  const thinking = () => active();
+  const working = computed(() => active());
   if (desktop)
     return (
       <Disclosure
@@ -804,7 +805,7 @@ function GroupHeader(props: TurnPanelProps) {
         open={props.state.open()}
         foldable={foldable()}
         icon={icon()}
-        mark={thinking() ? <ThinkingMark /> : undefined}
+        mark={working() ? thinkingMark : undefined}
         onPress={inputAction(choose, {
           sessionId: props.sessionId,
           key: props.group().key,

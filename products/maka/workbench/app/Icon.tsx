@@ -61,7 +61,7 @@ const icons = {
   conversation: { lucide: 'message-square', glyph: '▱' },
   user: { lucide: 'user-round', glyph: '●' },
   inbox: { lucide: 'inbox', glyph: '?' },
-  thinking: { custom: 'thinking', glyph: '✦' },
+  thinking: { custom: 'thinking', glyph: '◌' },
   statusRecorded: { lucide: 'circle-dot', glyph: '●' },
   statusSuccess: { lucide: 'circle-check', glyph: '✓' },
   statusError: { lucide: 'circle-x', glyph: '×' },

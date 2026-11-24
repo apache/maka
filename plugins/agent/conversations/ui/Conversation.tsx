@@ -25,13 +25,14 @@ import {
 } from '../../../../products/maka/workbench/app/answerCitations';
 import { createTrajectoryRequests } from './trajectoryRequests';
 import {
-  appendDraftQuote,
   DRAFT_QUOTE_LIMIT,
+  appendDraftQuote,
   mergeRestoredIntoHeldDraft,
   restoredDraftQuotes,
   sendReceiptFailure,
   shouldHideAcceptedQueuedStatus,
   shouldProjectPendingSend,
+  unsettledSends,
 } from './sendReceipt';
 import { createHistoryPrefetch, HISTORY_LOOKAHEAD_VIEWPORTS } from './historyPrefetch';
 import { quietWaits, retrying, waitActivity } from './runWaits';
@@ -565,26 +566,18 @@ export function Conversation(props: ConversationProps) {
   const activeSends = signal<Map<string, FrozenSend>>(new Map());
   // A message that starts a run is shown in the conversation as it is sent,
   // before the Host has saved or accepted it; one sent into a running run waits
-  // in the composer's list. `settledSends` are those whose accepted row took over.
+  // in the composer's list. `settledSends` are the active sends whose accepted
+  // row took over.
   const settledSends = signal<ReadonlySet<string>>(new Set());
-  // Decided once, as the message is sent: the run it starts must not move it.
-  const runStarters = new Map<string, boolean>();
-  const startsRun = (frozen: FrozenSend) => {
-    let starts = runStarters.get(frozen.id);
-    if (starts === undefined) {
-      starts = frozen.selection.expectedRunId === undefined && untracked(runId) === null;
-      runStarters.set(frozen.id, starts);
-    }
-    return starts;
-  };
+  const startsRun = (frozen: FrozenSend) => frozen.selection.expectedRunId === undefined;
   const outgoing = computed<Row[]>(() => {
     const freezing = freezeState();
-    const sends = [
-      ...(freezing.kind === 'reserving' ? [freezing.frozen] : []),
-      ...activeSends().values(),
-    ];
-    return sends
-      .filter((frozen) => startsRun(frozen) && !settledSends().has(frozen.id))
+    return unsettledSends(
+      freezing.kind === 'reserving' ? freezing.frozen : undefined,
+      activeSends(),
+      settledSends(),
+    )
+      .filter(startsRun)
       .map((frozen) => ({
         key: `pending/local/${frozen.id}`,
         quotes: frozen.edit.quotes,
@@ -1181,7 +1174,12 @@ export function Conversation(props: ConversationProps) {
     // this row in place instead of arriving above an already shown reply.
     const working = (turnId: string | undefined) => {
       const running = runTurn();
-      if (!runAtWork() || workingShown || (turnId !== undefined && turnId !== running)) return;
+      if (
+        !(runAtWork() || outgoing().length > 0) ||
+        workingShown ||
+        (turnId !== undefined && turnId !== running)
+      )
+        return;
       const headed = result.some(
         (item) =>
           running !== null &&
@@ -3301,6 +3299,8 @@ export function Conversation(props: ConversationProps) {
         const next = new Map(activeSends());
         next.delete(id);
         activeSends.set(next);
+        const settled = new Set(settledSends());
+        if (settled.delete(id)) settledSends.set(settled);
       }
     }
   };

@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { Clipboard, computed, signal, Text, View } from 'nsh';
+import { Clipboard, computed, platform, signal, Text, View } from 'nsh';
 import { Button, ContextMenu, MenuItem, TextView } from 'nsh/base';
 import { MarkdownImageView } from './MarkdownImage';
 import { MermaidView } from './MermaidView';
@@ -275,13 +275,23 @@ export function BotWaiting(props: {
 
 /** Shown at the end of Chat while a Turn is at work and has no header of its own yet. */
 export function BotWorking(props: { detail: () => string }) {
+  const text = () => (props.detail() ? `${tr('Working…')} · ${props.detail()}` : tr('Working…'));
   return (
     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 8 }}>
-      <ThinkingMark />
-      <ShimmerText
-        text={props.detail() ? `${tr('Working…')} · ${props.detail()}` : tr('Working…')}
-        style={captionTextStyle}
-      />
+      <If
+        when={platform.idiom === 'terminal'}
+        else={
+          <>
+            <ThinkingMark />
+            <ShimmerText text={text()} style={captionTextStyle} />
+          </>
+        }
+      >
+        <Icon name="activity" color={C.accent} />
+        <Text style={[{ ...captionTextStyle, color: C.muted }, { numberOfLines: 1 }]}>
+          {text()}
+        </Text>
+      </If>
     </View>
   );
 }

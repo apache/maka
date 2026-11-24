@@ -25,6 +25,7 @@ import {
   sendReceiptFailure,
   shouldHideAcceptedQueuedStatus,
   shouldProjectPendingSend,
+  unsettledSends,
 } from '../../../../plugins/agent/conversations/ui/sendReceipt.ts';
 
 const recorded = (outcome) => ({ kind: 'recorded', outcome, cleanup: { kind: 'confirmed' } });
@@ -188,4 +189,14 @@ test('an in-flight restore reserves exactly its distinct quotes while the draft 
   assert.equal(restored.quotes.length, 16);
   assert.deepEqual(restored.quotes, [current[0], added, ...fifteen.slice(1)]);
   assert.equal(restored.text, 'typed during restore\n\nrestored text');
+});
+
+test('a sent message leaves its own row once its operation is accepted', () => {
+  // The send is known by its draft while it is saved and by the Host's
+  // operation once it is in flight; only the operation settles it.
+  const send = { id: 'draft-send-1' };
+  assert.deepEqual(unsettledSends(send, new Map(), new Set()), [send]);
+  const inFlight = new Map([['operation-7', send]]);
+  assert.deepEqual(unsettledSends(undefined, inFlight, new Set(['draft-send-1'])), [send]);
+  assert.deepEqual(unsettledSends(undefined, inFlight, new Set(['operation-7'])), []);
 });
