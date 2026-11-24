@@ -131,10 +131,10 @@ export const workspaceMessages = {
     '无法复制本地改动。请检查当前分支，并处理 Git 冲突。',
     '無法複製本機變更。請檢查目前的分支，並處理 Git 衝突。',
   ],
-  'Install Git to start a worktree with local changes.': [
-    'Install Git to start a worktree with local changes.',
-    '请先安装 Git，再创建包含本地改动的工作树。',
-    '請先安裝 Git，再建立包含本機變更的工作樹。',
+  'Install Git to create a worktree.': [
+    'Install Git to create a worktree.',
+    '请先安装 Git，再创建工作树。',
+    '請先安裝 Git，再建立工作樹。',
   ],
   'Commit to a branch before creating a worktree.': [
     'Commit to a branch before creating a worktree.',

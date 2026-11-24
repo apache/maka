@@ -503,14 +503,18 @@ fn checkout_failure(error: CreateError) -> ProjectWorktreeCreated {
             Reason::DirectoryConflict,
             "This directory is already in use. Choose another worktree name.",
         ),
-        CreateError::Git(Git::SnapshotUnavailable) => (
-            Reason::SnapshotUnavailable,
-            "Could not copy the current files. Check the local branch and resolve any Git conflicts.",
-        ),
-        CreateError::Git(Git::GitRequired) => (
-            Reason::GitRequired,
-            "Install Git to start a worktree with local changes.",
-        ),
+        CreateError::Git(error @ (Git::SnapshotUnavailable | Git::SnapshotCommand(_))) => {
+            if let Git::SnapshotCommand(error) = error {
+                tracing::warn!(%error, "Git could not capture the project worktree snapshot");
+            }
+            (
+                Reason::SnapshotUnavailable,
+                "Could not copy the current files. Check the local branch and resolve any Git conflicts.",
+            )
+        }
+        CreateError::Git(Git::GitRequired) => {
+            (Reason::GitRequired, "Install Git to create a worktree.")
+        }
         CreateError::LocationNotAllowed => (
             Reason::LocationNotAllowed,
             "Add the folder containing this repository to Workspace Locations, then try again.",

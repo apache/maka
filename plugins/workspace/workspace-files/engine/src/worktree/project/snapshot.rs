@@ -19,7 +19,7 @@
 
 use super::{Error, Result, interrupted, local_git};
 use crate::directory;
-use gix::{hash::ObjectId, index::entry::Mode, worktree::add::PrepareCheckout};
+use gix::{hash::ObjectId, index::entry::Mode};
 use serde::{Deserialize, Serialize};
 use std::{
     fs, io,
@@ -67,17 +67,18 @@ impl Snapshot {
         let scratch = tempfile::tempdir_in(private_root)?;
         let index = scratch.path().join("index");
         fs::write(&index, &original)?;
+        let git_index = dunce::simplified(&index);
         let mut git = local_git::command(repo)?;
-        git.env("GIT_INDEX_FILE", &index).arg("write-tree");
+        git.env("GIT_INDEX_FILE", git_index).arg("write-tree");
         let staged = tree_id(&mut git)?;
         interrupted(cancel)?;
         let output = local_git::run(
             local_git::command(repo)?
-                .env("GIT_INDEX_FILE", &index)
+                .env("GIT_INDEX_FILE", git_index)
                 .args(["add", "--all", "--", "."]),
         )?;
         if !output.status.success() {
-            return Err(Error::SnapshotUnavailable);
+            return Err(Error::SnapshotCommand(local_git::git_error(&output)));
         }
         let working = tree_id(&mut git)?;
         interrupted(cancel)?;
@@ -121,53 +122,22 @@ impl Snapshot {
         Ok(current.staged == self.staged && current.working == self.working)
     }
 
-    pub(super) fn checkout(
-        &self,
-        prepared: PrepareCheckout,
-        cancel: &AtomicBool,
-    ) -> Result<gix::Repository> {
-        let repo = prepared.repo();
-        let working = ObjectId::from_hex(self.working.as_bytes()).map_err(io::Error::other)?;
-        let staged = ObjectId::from_hex(self.staged.as_bytes()).map_err(io::Error::other)?;
-        let mut files = repo.index_from_tree(&working).map_err(io::Error::other)?;
-        let mut options = repo
-            .checkout_options(gix::worktree::stack::state::attributes::Source::IdMapping)
-            .map_err(io::Error::other)?;
-        options.destination_is_initially_empty = true;
-        let outcome = gix::worktree::state::checkout(
-            &mut files,
-            repo.workdir().ok_or(Error::Unavailable)?,
-            repo.objects.clone().into_arc()?,
-            &gix::progress::Discard,
-            &gix::progress::Discard,
-            cancel,
-            options,
-        )
-        .map_err(io::Error::other)?;
-        interrupted(cancel)?;
-        if !outcome.collisions.is_empty()
-            || !outcome.errors.is_empty()
-            || !outcome.delayed_paths_unknown.is_empty()
-            || !outcome.delayed_paths_unprocessed.is_empty()
-        {
-            return Err(Error::Unsupported);
-        }
-        // Use the captured index independently of the files so staged and
-        // unstaged edits are still distinguishable in the new checkout.
-        repo.index_from_tree(&staged)
-            .map_err(io::Error::other)?
-            .write(Default::default())
-            .map_err(io::Error::other)?;
-        prepared
-            .persist()
-            .map_err(|error| Error::Io(io::Error::other(error)))
+    pub(super) fn checkout(&self, repo: &gix::Repository) -> Result<()> {
+        local_git::checked(local_git::command(repo)?.args([
+            "read-tree",
+            "-m",
+            "-u",
+            &self.working,
+        ]))?;
+        // Restore staging without changing the files just checked out.
+        local_git::checked(local_git::command(repo)?.args(["read-tree", &self.staged]))
     }
 }
 
 fn tree_id(command: &mut std::process::Command) -> Result<ObjectId> {
     let output = local_git::run(command)?;
     if !output.status.success() {
-        return Err(Error::SnapshotUnavailable);
+        return Err(Error::SnapshotCommand(local_git::git_error(&output)));
     }
     ObjectId::from_hex(output.stdout.trim_ascii()).map_err(|_| Error::SnapshotUnavailable)
 }

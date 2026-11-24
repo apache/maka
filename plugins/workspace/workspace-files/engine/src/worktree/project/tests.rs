@@ -113,7 +113,7 @@ fn local_files_starting_point_preserves_the_source_index_and_file_contents() {
                 reference: "refs/heads/main".into(),
                 source: root,
                 identity: &identity,
-                private_root: &fixture.state,
+                private_root: &fs::canonicalize(&fixture.state).unwrap(),
                 cancel: &cancel,
             },
         )
@@ -130,6 +130,7 @@ fn local_files_starting_point_preserves_the_source_index_and_file_contents() {
     assert_eq!(git(&plan.directory, &["show", ":file"]), "staged");
     assert_eq!(fs::read(plan.directory.join("file")).unwrap(), b"unstaged");
     assert_eq!(fs::read(plan.directory.join("new")).unwrap(), [0, 0xff, 1]);
+    assert!(git(&plan.directory, &["ls-files", "--", "new"]).is_empty());
     assert!(!plan.directory.join("ignored").exists());
     assert_eq!(
         fs::read(root.join("file")).unwrap(),
@@ -279,6 +280,54 @@ fn creates_from_pinned_commit_and_recovers_the_same_checkout() {
         git(&fixture.repo.root, &["config", "core.logAllRefUpdates"]).trim(),
         "false"
     );
+}
+
+#[test]
+fn resumes_a_git_registration_interrupted_before_recording_it() {
+    let fixture = Fixture::new();
+    let plan = fixture.plan("a", "Task", "feature/task").unwrap();
+    let operation = fixture.state.join(OPERATIONS_DIR).join(&plan.id);
+    fs::create_dir_all(&operation).unwrap();
+    plan.reserve_destination(&fixture.parent).unwrap();
+    let (_, observation) = directory::capture(&plan.directory).unwrap();
+    save(&operation.join("directory.json"), &observation).unwrap();
+    git(
+        &fixture.repo.root,
+        &[
+            "update-ref",
+            "--create-reflog",
+            "-m",
+            &plan.reflog_message(),
+            &format!("refs/heads/{}", plan.branch),
+            &plan.base_commit,
+            "",
+        ],
+    );
+    git(
+        &fixture.repo.root,
+        &[
+            "worktree",
+            "add",
+            "--no-checkout",
+            "--lock",
+            "--reason",
+            &plan.reflog_message(),
+            plan.directory.to_str().unwrap(),
+            &plan.branch,
+        ],
+    );
+    let path = plan.directory.join("file");
+    fs::write(&path, "user edits").unwrap();
+    assert!(matches!(fixture.ensure(&plan), Err(Error::Unavailable)));
+    assert_eq!(fs::read_to_string(&path).unwrap(), "user edits");
+    fs::remove_file(&path).unwrap();
+    assert_eq!(
+        fixture.ensure(&plan).unwrap().as_deref(),
+        Some("feature/task")
+    );
+    assert_eq!(fs::read_to_string(&path).unwrap(), "first commit");
+    let worktrees = git(&fixture.repo.root, &["worktree", "list", "--porcelain"]);
+    assert!(!worktrees.lines().any(|line| line.starts_with("locked")));
 }
 
 #[test]

@@ -257,7 +257,7 @@ const worktreeFailureMessages = {
   directory_conflict: 'Could not assign a worktree name. Send again to try another name.',
   snapshot_unavailable:
     'Could not copy local changes. Check the current branch and resolve any Git conflicts.',
-  git_required: 'Install Git to start a worktree with local changes.',
+  git_required: 'Install Git to create a worktree.',
   location_not_allowed:
     'Add the folder containing this repository to Workspace Locations, then retry.',
   unavailable: 'This Git project is unavailable. Open it again and retry.',

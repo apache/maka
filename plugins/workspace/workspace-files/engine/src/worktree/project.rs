@@ -44,6 +44,7 @@ pub enum Error {
     BranchConflict,
     DirectoryConflict,
     SnapshotUnavailable,
+    SnapshotCommand(io::Error),
     GitRequired,
     Unavailable,
     Unsupported,
@@ -332,7 +333,7 @@ impl Allocation {
         let directory = load::<directory::Observation>(&local.join("directory.json"))?
             .ok_or(Error::Unavailable)?;
         let admin = load::<PathBuf>(&local.join("git.json"))?.ok_or(Error::Unavailable)?;
-        let repo = self.open_registration(&directory, &admin)?;
+        let (repo, _) = self.open_registration(&directory, Some(&admin))?;
         Ok(Some(revisions::head_branch(&repo)?))
     }
 
@@ -386,106 +387,151 @@ impl Allocation {
         };
 
         let pending = local.join("git.json");
-        if let Some(admin) = load::<PathBuf>(&pending)? {
-            if exists(&self.directory.join(".git"))? {
-                let candidate = self.open_registration(&directory, &admin)?;
-                // Git writes its index after checkout. Verify the interrupted
-                // checkout before accepting it, without resetting or deleting it.
-                if revisions::head_branch(&candidate)?.as_deref() != Some(&self.branch)
-                    || !candidate.index_path().is_file()
-                    || candidate.head_id().map_err(io::Error::other)?.detach() != commit
+        let mut recorded = load::<PathBuf>(&pending)?;
+        let claim = self.reflog_message();
+        if !exists(&self.directory.join(".git"))? {
+            if let Some(admin) = recorded.take() {
+                if exists(&admin)? {
+                    return Err(Error::Unavailable);
+                }
+                fs::remove_file(&pending)?;
+            }
+            if fs::read_dir(&self.directory)?.next().transpose()?.is_some() {
+                return Err(Error::DirectoryConflict);
+            }
+            match self
+                .repository
+                .common_dir
+                .join("worktrees")
+                .symlink_metadata()
+            {
+                Ok(entry) if !entry.file_type().is_dir() => {
+                    return Err(Error::Unavailable);
+                }
+                Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error.into()),
+                _ => {}
+            }
+            let mut git = local_git::command(&repo)?;
+            if let Err(error) = self.ensure_branch(&repo, branch_ref.clone(), commit) {
+                if matches!(error, Error::BranchConflict) && fs::remove_dir(&self.directory).is_ok()
                 {
-                    return Err(Error::Unavailable);
+                    fs::remove_file(&reserved)?;
                 }
-                let unchanged = match &self.snapshot {
-                    Some(snapshot) => snapshot.matches(
-                        &candidate,
-                        &self.directory,
-                        &directory,
-                        private_root,
-                        &cancel,
-                    )?,
-                    None => crate::git::status(
-                        &self.directory,
-                        &directory,
-                        private_root,
-                        None,
-                        cancel.clone(),
-                    )?
-                    .is_some_and(|status| status.entries.is_empty()),
-                };
-                if !unchanged {
-                    return Err(Error::Unavailable);
-                }
-                interrupted(&cancel)?;
-                save(&local.join("ready"), &())?;
-                return Ok(Some(self.branch.clone()));
+                return Err(error);
             }
-            // gix rolled back its incomplete registration. A stale or replaced
-            // admin directory needs manual inspection before checkout can run.
-            if exists(&admin)? {
-                return Err(Error::Unavailable);
+            interrupted(&cancel)?;
+            directory::open(&self.directory, &directory)?;
+            let output = local_git::run(
+                git.args([
+                    "worktree",
+                    "add",
+                    "--no-checkout",
+                    "--no-guess-remote",
+                    "--lock",
+                    "--reason",
+                    &claim,
+                    "--",
+                ])
+                .arg(&self.directory)
+                .arg(&self.branch),
+            )?;
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                return Err(
+                    if stderr.contains("already checked out")
+                        || stderr.contains("already used by worktree")
+                    {
+                        Error::BranchConflict
+                    } else if stderr.contains("already exists")
+                        || stderr.contains("already registered")
+                    {
+                        Error::DirectoryConflict
+                    } else {
+                        local_git::git_error(&output).into()
+                    },
+                );
             }
-            fs::remove_file(&pending)?;
         }
-        if fs::read_dir(&self.directory)?.next().transpose()?.is_some() {
-            return Err(Error::DirectoryConflict);
-        }
-        if let Err(error) = self.ensure_branch(&repo, branch_ref.clone(), commit) {
-            if matches!(error, Error::BranchConflict) && fs::remove_dir(&self.directory).is_ok() {
-                fs::remove_file(&reserved)?;
-            }
-            return Err(error);
-        }
-        interrupted(&cancel)?;
-        directory::open(&self.directory, &directory)?;
-        let prepared = repo
-            .prepare_add_worktree(
-                &self.directory,
-                gix::worktree::add::Head::Attached(branch_ref),
-                &cancel,
-            )
-            .map_err(|error| {
-                use gix::worktree::add::Error as GitError;
-                match error.downcast_any_ref::<GitError>() {
-                    Some(GitError::CheckedOut { .. }) => Error::BranchConflict,
-                    Some(GitError::DestinationRegistered { .. }) => Error::DirectoryConflict,
-                    _ => Error::Io(io::Error::other(error)),
-                }
-            })?;
-        let admin = dunce::canonicalize(prepared.repo().git_dir())?;
-        if prepared
-            .repo()
-            .head_id()
-            .map_err(io::Error::other)?
-            .detach()
-            != commit
+        let (checkout, admin) = self.open_registration(&directory, recorded.as_deref())?;
+        if revisions::head_branch(&checkout)?.as_deref() != Some(&self.branch)
+            || checkout.head_id().map_err(io::Error::other)?.detach() != commit
         {
             return Err(Error::BranchConflict);
         }
-        save(&pending, &admin)?;
-        let checkout = match &self.snapshot {
-            Some(snapshot) => snapshot.checkout(prepared, &cancel)?,
-            None => {
-                let (checkout, outcome) = prepared
-                    .checkout(gix::progress::Discard, &cancel)
-                    .map_err(io::Error::other)?;
-                if !outcome.collisions.is_empty()
-                    || !outcome.errors.is_empty()
-                    || !outcome.delayed_paths_unknown.is_empty()
-                    || !outcome.delayed_paths_unprocessed.is_empty()
-                {
-                    return Err(Error::Unsupported);
-                }
-                checkout
-            }
+        // The Git lock bridges a crash between registration and recording its admin path.
+        let locked = match fs::read(admin.join("locked")) {
+            Ok(contents) => contents.trim_ascii_end() == claim.as_bytes(),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => false,
+            Err(error) => return Err(error.into()),
         };
-        let observed = self.open_registration(&directory, &admin)?;
-        if checkout.head_id().map_err(io::Error::other)?.detach() != commit {
+        if recorded.is_none() {
+            if !locked {
+                return Err(Error::Unavailable);
+            }
+            save(&pending, &admin)?;
+        }
+        if checkout.index_path().is_file() {
+            // An interrupted send may reuse a completed checkout. Leave any
+            // unexpected edits or incomplete staging for the user to inspect.
+            let unchanged = match &self.snapshot {
+                Some(snapshot) => snapshot.matches(
+                    &checkout,
+                    &self.directory,
+                    &directory,
+                    private_root,
+                    &cancel,
+                )?,
+                None => crate::git::status(
+                    &self.directory,
+                    &directory,
+                    private_root,
+                    None,
+                    cancel.clone(),
+                )?
+                .is_some_and(|status| status.entries.is_empty()),
+            };
+            if !unchanged {
+                return Err(Error::Unavailable);
+            }
+        } else {
+            if !locked || !self.owns_branch(&repo, &branch_ref, commit)? {
+                return Err(Error::Unavailable);
+            }
+            for entry in fs::read_dir(&self.directory)? {
+                if entry?.file_name() != ".git" {
+                    return Err(Error::Unavailable);
+                }
+            }
+            interrupted(&cancel)?;
+            directory::open(&self.directory, &directory)?;
+            match &self.snapshot {
+                Some(snapshot) => snapshot.checkout(&checkout)?,
+                // Unlike a hard reset, read-tree never advances the attached branch.
+                None => local_git::checked(local_git::command(&checkout)?.args([
+                    "read-tree",
+                    "-m",
+                    "-u",
+                    &self.base_commit,
+                ]))?,
+            }
+        }
+        interrupted(&cancel)?;
+        let (observed, _) = self.open_registration(&directory, Some(&admin))?;
+        let branch = revisions::head_branch(&observed)?;
+        if branch.as_deref() != Some(&self.branch)
+            || observed.head_id().map_err(io::Error::other)?.detach() != commit
+        {
             return Err(Error::BranchConflict);
         }
+        if locked {
+            local_git::checked(
+                local_git::command(&repo)?
+                    .args(["worktree", "unlock", "--"])
+                    .arg(&self.directory),
+            )?;
+        }
         save(&local.join("ready"), &())?;
-        revisions::head_branch(&observed).map_err(Into::into)
+        Ok(branch)
     }
 
     fn reserve_destination(&self, observed: &directory::Observation) -> Result<()> {
@@ -521,8 +567,8 @@ impl Allocation {
     fn open_registration(
         &self,
         directory: &directory::Observation,
-        admin: &Path,
-    ) -> Result<gix::Repository> {
+        expected_admin: Option<&Path>,
+    ) -> Result<(gix::Repository, PathBuf)> {
         if !fs::symlink_metadata(&self.directory).is_ok_and(|entry| entry.file_type().is_dir())
             || !fs::symlink_metadata(self.directory.join(".git"))
                 .is_ok_and(|entry| entry.file_type().is_file())
@@ -532,7 +578,8 @@ impl Allocation {
         directory::open(&self.directory, directory)?;
         directory::open(&self.repository.common_dir, &self.repository.identity)?;
         let repo = git::discover(&self.directory)?;
-        if dunce::canonicalize(repo.git_dir())? != admin
+        let admin = dunce::canonicalize(repo.git_dir())?;
+        if expected_admin.is_some_and(|expected| expected != admin)
             || dunce::canonicalize(repo.common_dir())? != self.repository.common_dir
             || !admin.starts_with(self.repository.common_dir.join("worktrees"))
             || repo
@@ -549,7 +596,7 @@ impl Allocation {
         if dunce::canonicalize(admin.join(backlink))? != self.directory.join(".git") {
             return Err(Error::Unavailable);
         }
-        Ok(repo)
+        Ok((repo, admin))
     }
 
     fn ensure_branch(

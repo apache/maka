@@ -92,7 +92,7 @@ impl Repository {
         } else if create && branch_occupied(&repo, &reference)? {
             Err(BranchError::AlreadyExists)
         } else {
-            Err(git_error(&output).into())
+            Err(Error::Io(git_error(&output)).into())
         }
     }
 }
@@ -108,7 +108,7 @@ pub(super) fn command(repo: &gix::Repository) -> Result<Command> {
     {
         return Err(Error::Unsupported);
     }
-    let root = repo.workdir().ok_or(Error::Unavailable)?;
+    let root = dunce::simplified(repo.workdir().ok_or(Error::Unavailable)?);
     let search_path = env::var_os("PATH").unwrap_or_default();
     let executable = env::split_paths(&search_path)
         .filter(|path| path.is_absolute())
@@ -131,7 +131,7 @@ pub(super) fn command(repo: &gix::Repository) -> Result<Command> {
         .env("GIT_NO_LAZY_FETCH", "1")
         .env("GIT_TERMINAL_PROMPT", "0")
         .arg("--git-dir")
-        .arg(repo.git_dir())
+        .arg(dunce::simplified(repo.git_dir()))
         .arg("--work-tree")
         .arg(root)
         .args([
@@ -167,10 +167,19 @@ pub(super) fn run(git: &mut Command) -> Result<Output> {
     })
 }
 
-pub(super) fn git_error(output: &Output) -> Error {
-    Error::Io(io::Error::other(format!(
+pub(super) fn checked(git: &mut Command) -> Result<()> {
+    let output = run(git)?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(git_error(&output).into())
+    }
+}
+
+pub(super) fn git_error(output: &Output) -> io::Error {
+    io::Error::other(format!(
         "git {}: {}",
         output.status,
         String::from_utf8_lossy(&output.stderr).trim(),
-    )))
+    ))
 }
