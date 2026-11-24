@@ -3094,13 +3094,17 @@ mod tests {
         let obs_a_seq = facts_a[6].0;
         let obs_a_id = facts_a[6].1.id;
         let prep_a_id = facts_a[3].1.id;
-        let pre_facts_a: i64 = db
-            .query_row(
-                "SELECT COUNT(*) FROM agent_facts WHERE run=?",
-                [run_a.to_string()],
-                |r| r.get(0),
+        let canonical_facts = || -> Vec<(String, String)> {
+            db.prepare(
+                "SELECT f.id, b.content_sha256 FROM agent_facts f JOIN contents b ON b.id=f.body_content_id WHERE f.run=? ORDER BY f.revision",
             )
-            .unwrap();
+            .unwrap()
+            .query_map([run_a.to_string()], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+        };
+        let pre_facts_a = canonical_facts();
         let pre_count: i64 = db
             .query_row(
                 "SELECT COUNT(*) FROM agent_recall_messages WHERE sequence=?",
@@ -3116,15 +3120,9 @@ mod tests {
         // Cold upgrade v54 -> v55 without manual Recall rebuild.
         maka_event_log::migration::run(&db, &catalog).unwrap();
 
-        let post_facts_a: i64 = db
-            .query_row(
-                "SELECT COUNT(*) FROM agent_facts WHERE run=?",
-                [run_a.to_string()],
-                |r| r.get(0),
-            )
-            .unwrap();
         assert_eq!(
-            post_facts_a, pre_facts_a,
+            canonical_facts(),
+            pre_facts_a,
             "v55 must not rewrite canonical facts"
         );
 

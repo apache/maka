@@ -45,7 +45,7 @@ pub use composition::ControlledStatement;
 mod index;
 mod planned;
 mod query;
-pub(crate) use index::{fact_message, index_fact, index_run, run_status};
+pub(crate) use index::{fact_message, has_unknown_effects, index_fact, index_run, run_status};
 pub use planned::PlannedCatalog;
 pub(crate) use planned::SourceSummary;
 pub(crate) use query::records_in_snapshot;
