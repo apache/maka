@@ -280,6 +280,30 @@ pub(crate) fn wait(
         Action::Wait(reason, due)
     }
 }
+
+fn wait_proactive_summary(
+    view: &RunView,
+    live: &Live,
+    attempt: ModelAttemptId,
+    now: UnixMillis,
+) -> Action {
+    let Some(summary) = view.attempts.get(&attempt) else {
+        return Action::Idle;
+    };
+    if summary.admission.is_none() {
+        return Action::Idle;
+    }
+    if summary.cleanup == maka_plugin_core::operation::OperationCleanup::Confirmed {
+        if summary.closed.is_none()
+            && summary.interrupted.is_none()
+            && !live.work.contains(&WorkKey::Model(attempt))
+        {
+            return Action::Interrupt(attempt, "Background summary did not finish".into());
+        }
+        return Action::Idle;
+    }
+    wait(view, WaitReason::Model { attempt }, None, now)
+}
 fn recovered_cell(view: &RunView, tool: &maka_agent_state::fold::Tool) -> Option<CellId> {
     if tool.accepted.is_some()
         || tool.local_returned.as_ref().is_some_and(|result| {
@@ -892,7 +916,8 @@ fn next_action(
             WaitReason::Blocker { blocker } => view.blockers.get(blocker).is_none_or(|blocker| !active(blocker)),
             WaitReason::Model { attempt } => view.attempts.get(attempt).is_some_and(|attempt| {
                 if pending.due_at.is_none() {
-                    attempt.cleanup == maka_plugin_core::operation::OperationCleanup::Confirmed
+                    (attempt.closed.is_some() || attempt.interrupted.is_some())
+                        && attempt.cleanup == maka_plugin_core::operation::OperationCleanup::Confirmed
                 } else {
                     attempt.closed.is_some() || attempt.interrupted.is_some()
                 }
@@ -1396,7 +1421,7 @@ fn next_action(
                 attempt,
                 adopt: true,
             }) => {
-                return wait(view, WaitReason::Model { attempt }, None, now);
+                return wait_proactive_summary(view, live, attempt, now);
             }
             Some(CompactionLevel::Candidate {
                 origin,
@@ -1610,7 +1635,7 @@ fn next_action(
                 && let Some(CompactionLevel::Pending { attempt, .. }) =
                     model.map(|model| model.compaction)
             {
-                return wait(view, WaitReason::Model { attempt }, None, now);
+                return wait_proactive_summary(view, live, attempt, now);
             }
             if compactable && live.work.contains(&WorkKey::PrepareProactiveSummary) {
                 return Action::Idle;

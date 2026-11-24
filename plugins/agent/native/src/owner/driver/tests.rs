@@ -7235,6 +7235,270 @@ async fn failed_background_summary_is_prepared_again_on_the_next_step() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn interrupted_proactive_summary_with_active_model_wait_falls_back_to_foreground_compaction()
+{
+    use axum::{body::Body, response::IntoResponse};
+    use maka_agent_engine::{DriverExit, Engine, ports::Preparation};
+    use std::sync::atomic::AtomicUsize;
+
+    const SUMMARY: &str = "Foreground fallback summary.";
+    let mut rig = Rig::new().unwrap();
+    rig.model_overrides = json!({"llama3.2":{"compactionThreshold":1_900}});
+    let stop = CancellationToken::new();
+    let main_ready = Arc::new(tokio::sync::Notify::new());
+    let drop_summary = Arc::new(tokio::sync::Notify::new());
+    let summaries = Arc::new(AtomicUsize::new(0));
+    let (finals, mut final_request) = tokio::sync::mpsc::unbounded_channel();
+    let listener =
+        tokio::net::TcpListener::from_std(rig.model_listener.try_clone().unwrap()).unwrap();
+    let (release_main, release_summary, summary_posts, mains) = (
+        main_ready.clone(),
+        drop_summary.clone(),
+        summaries.clone(),
+        Arc::new(AtomicUsize::new(0)),
+    );
+    let app = axum::Router::new().route(
+        "/v1/chat/completions",
+        axum::routing::post(move |request: axum::extract::Request| {
+            let (release_main, release_summary, summaries, mains, finals) = (
+                release_main.clone(),
+                release_summary.clone(),
+                summary_posts.clone(),
+                mains.clone(),
+                finals.clone(),
+            );
+            async move {
+                let bytes = axum::body::to_bytes(request.into_body(), 4 * 1024 * 1024)
+                    .await
+                    .unwrap();
+                let request: Value = serde_json::from_slice(&bytes).unwrap();
+                let chunk = |id: &str, delta: Value, finish: Value| {
+                    format!(
+                        "data: {}
+
+",
+                        json!({
+                            "id": id,
+                            "object": "chat.completion.chunk",
+                            "created": 1,
+                            "model": "llama3.2",
+                            "choices": [{"index": 0, "delta": delta, "finish_reason": finish}]
+                        })
+                    )
+                };
+                let reply = |content: &str, finish: &str| {
+                    let body = chunk(
+                        "background-interrupted",
+                        json!({"role": "assistant", "content": content}),
+                        Value::Null,
+                    ) + chunk("background-interrupted", json!({}), json!(finish))
+                        .as_str()
+                        + "data: [DONE]
+
+";
+                    ([("content-type", "text/event-stream")], Body::from(body)).into_response()
+                };
+                if request["tools"].as_array().is_none_or(Vec::is_empty) {
+                    if summaries.fetch_add(1, Ordering::SeqCst) == 0 {
+                        let first = chunk(
+                            "background-interrupted",
+                            json!({"role": "assistant", "content": "Partial background summary"}),
+                            Value::Null,
+                        );
+                        let stream = futures_util::stream::unfold(
+                            (Some(first), Some(release_summary)),
+                            |(first, wait)| async move {
+                                if let Some(first) = first {
+                                    return Some((Ok::<_, std::io::Error>(first), (None, wait)));
+                                }
+                                if let Some(wait) = wait {
+                                    wait.notified().await;
+                                }
+                                None
+                            },
+                        );
+                        return (
+                            [("content-type", "text/event-stream")],
+                            Body::from_stream(stream),
+                        )
+                            .into_response();
+                    }
+                    return reply(SUMMARY, "stop");
+                }
+                match mains.fetch_add(1, Ordering::SeqCst) {
+                    0 => {
+                        release_main.notified().await;
+                        // Pushes the next Step past the compaction threshold while the
+                        // background summary is still streaming, registering WaitReason::Model.
+                        reply(&"Long output. ".repeat(600), "length")
+                    }
+                    _ => {
+                        finals.send(bytes.to_vec()).unwrap();
+                        reply("Done.", "stop")
+                    }
+                }
+            }
+        }),
+    );
+    let shutdown = stop.clone();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .with_graceful_shutdown(shutdown.cancelled_owned())
+            .await
+    });
+    let result = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(30), async {
+        let session = rig.start().await?;
+        rig.assemble_model(
+            &session,
+            Budget {
+                tokens: None,
+                retries: 0,
+                deadline: None,
+            },
+            false,
+        )
+        .await?;
+        let driver = rig.driver.as_ref().unwrap();
+        let run = driver.access.execution().run_id;
+        rig.record_model_reply(Preparation::Initial, None).await?;
+        let view = driver.state.frontier(run).await?;
+        let mut main = driver
+            .model()?
+            .prepare_step(&view, Preparation::Initial, driver)
+            .await?;
+        let body = ContentBlob::json(&main.request)?;
+        main.contents.push(body.clone());
+        rig.append(
+            vec![Fact::StepPrepared {
+                step: main.request.step,
+                request: body.reference().clone(),
+                adjudications: vec![],
+            }],
+            main.contents,
+        )
+        .await?;
+
+        let coordinate = async {
+            let mut changes = driver.state.subscribe()?;
+            let mut main_released = false;
+            loop {
+                changes.borrow_and_update();
+                let view = driver.state.frontier(run).await?;
+                if let Some(background) = view.proactive_summary {
+                    if !main_released {
+                        let history = driver.state.history(run, 0, 256).await?;
+                        if history.iter().any(|fact| {
+                            matches!(fact.fact, Fact::ModelFirstTokenObserved { attempt } if attempt == background)
+                        }) {
+                            main_released = true;
+                            main_ready.notify_one();
+                        }
+                    } else if view.waits.values().any(|wait| {
+                        wait.satisfied.is_none()
+                            && wait.cancelled.is_none()
+                            && wait.due_at.is_none()
+                            && matches!(wait.reason, WaitReason::Model { attempt } if attempt == background)
+                    }) {
+                        drop_summary.notify_one();
+                        return Ok::<_, Box<dyn Error + Send + Sync>>(background);
+                    }
+                }
+                changes.changed().await?;
+            }
+        };
+        let engine = Engine::new(driver.state.clone());
+        let drive = async {
+            let mut changes = driver.state.subscribe()?;
+            loop {
+                changes.borrow_and_update();
+                let exit = engine
+                    .drive(
+                        driver.access.claim().clone(),
+                        driver.clone(),
+                        CancellationToken::new(),
+                    )
+                    .await?;
+                if !matches!(exit, DriverExit::Waiting { .. }) {
+                    return Ok::<_, Box<dyn Error + Send + Sync>>(exit);
+                }
+                changes.changed().await?;
+            }
+        };
+        let (background, exit) = tokio::try_join!(coordinate, Box::pin(drive))?;
+        assert!(
+            matches!(
+                exit,
+                DriverExit::Terminal {
+                    terminal: Terminal::Completed,
+                    ..
+                }
+            ),
+            "{exit:?}"
+        );
+        let history = driver.state.history(run, 0, 512).await?;
+        let wait_id = history
+            .iter()
+            .find_map(|fact| match fact.fact {
+                Fact::WaitRegistered {
+                    wait,
+                    reason: WaitReason::Model { attempt },
+                    due_at: None,
+                } if attempt == background => Some(wait),
+                _ => None,
+            })
+            .ok_or("expected proactive summary WaitReason::Model to be registered")?;
+        let cleanup_rev = history
+            .iter()
+            .find_map(|fact| match fact.fact {
+                Fact::ModelCleanupObserved {
+                    attempt,
+                    cleanup: OperationCleanup::Confirmed,
+                } if attempt == background => Some(fact.revision),
+                _ => None,
+            })
+            .ok_or("expected confirmed cleanup for interrupted proactive summary")?;
+        let interrupted_rev = history
+            .iter()
+            .find_map(|fact| match fact.fact {
+                Fact::ModelInterrupted { attempt, .. } if attempt == background => {
+                    Some(fact.revision)
+                }
+                _ => None,
+            })
+            .ok_or("expected interrupted proactive summary")?;
+        let satisfied_rev = history
+            .iter()
+            .find_map(|fact| match fact.fact {
+                Fact::WaitSatisfied { wait, .. } if wait == wait_id => Some(fact.revision),
+                _ => None,
+            })
+            .ok_or("expected proactive summary wait to be satisfied")?;
+        assert!(
+            cleanup_rev < interrupted_rev && interrupted_rev < satisfied_rev,
+            "expected confirmed cleanup < interruption < wait satisfaction ({cleanup_rev}, {interrupted_rev}, {satisfied_rev})"
+        );
+        assert_eq!(summaries.load(Ordering::SeqCst), 2);
+        let last = String::from_utf8(final_request.try_recv()?)?;
+        assert!(last.contains(SUMMARY), "{last}");
+        Ok::<_, Box<dyn Error + Send + Sync>>(())
+    }))
+    .catch_unwind()
+    .await;
+    stop.cancel();
+    main_ready.notify_one();
+    drop_summary.notify_one();
+    server.await.unwrap().unwrap();
+    let cleanup = rig.finish().await;
+    assert!(cleanup.is_empty(), "{cleanup:?}");
+    match result {
+        Ok(result) => result
+            .expect("interrupted background summary fallback timed out")
+            .unwrap(),
+        Err(panic) => std::panic::resume_unwind(panic),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn continue_from_history_enforces_retry_budget_and_resets_after_success() {
     use axum::{body::Body, response::IntoResponse};
     use maka_agent_engine::{DriverExit, Engine};

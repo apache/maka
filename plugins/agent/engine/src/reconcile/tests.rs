@@ -1846,3 +1846,250 @@ fn a_tool_call_on_an_uninterrupted_overflow_is_rejected_without_execution() {
         Action::Reject(rejected, ToolRejection::PreparationFailed { .. }) if rejected == key
     ));
 }
+
+#[test]
+fn proactive_summary_model_wait_waits_for_interruption_after_cleanup_confirmation() {
+    use maka_agent_facts::input::RunInput;
+    use maka_plugin_core::operation::OperationCleanup;
+
+    let mut view = policy_view(None);
+    let source = view.spec.input.clone();
+    let step_1 = StepId::new();
+    let main_attempt = ModelAttemptId::new();
+    let summary_step = StepId::new();
+    let summary_attempt = ModelAttemptId::new();
+    let step_2 = StepId::new();
+    let failure = ContentBlob::json(&serde_json::json!({"failure": "timed_out"})).unwrap();
+
+    let spec = ContentBlob::json(&view.spec).unwrap();
+    for fact in [
+        Fact::RunAdmitted {
+            spec: spec.reference().clone(),
+        },
+        Fact::StepPrepared {
+            step: step_1,
+            request: source.clone(),
+            adjudications: vec![],
+        },
+        Fact::ModelAttemptPrepared {
+            attempt: main_attempt,
+            step: step_1,
+        },
+        Fact::ModelAttemptAdmitted {
+            attempt: main_attempt,
+            upstream: serde_json::json!({}),
+        },
+        Fact::ProactiveSummaryPrepared {
+            step: summary_step,
+            request: source.clone(),
+            attempt: summary_attempt,
+        },
+        Fact::ModelClosed {
+            attempt: main_attempt,
+            outcome: maka_agent_facts::accounting::Outcome::Success,
+            diagnostic: None,
+            usage: Default::default(),
+            protocol: serde_json::json!({}),
+        },
+        Fact::ModelCleanupObserved {
+            attempt: main_attempt,
+            cleanup: OperationCleanup::Confirmed,
+        },
+        Fact::StepPrepared {
+            step: step_2,
+            request: source.clone(),
+            adjudications: vec![],
+        },
+    ] {
+        apply_policy_fact(&mut view, fact);
+    }
+
+    let model = ModelLevel {
+        handoff: None,
+        input: RunInput::ContextCompact {
+            request_fingerprint: String::new(),
+        },
+        request: None,
+        baseline: None,
+        compaction: CompactionLevel::Pending {
+            attempt: summary_attempt,
+            adopt: true,
+        },
+        failure: None,
+        fallback_available: false,
+        codex: false,
+    };
+    let now = UnixMillis(1);
+    let mut live = Live::default();
+
+    // Unadmitted proactive Summary must never emit WaitReason::Model (fold rejects it).
+    assert!(matches!(
+        next(&view, &live, now, Some(&model), false),
+        Action::Idle
+    ));
+
+    apply_policy_fact(
+        &mut view,
+        Fact::ModelAttemptAdmitted {
+            attempt: summary_attempt,
+            upstream: serde_json::json!({}),
+        },
+    );
+    live.work.insert(WorkKey::Model(summary_attempt));
+
+    // Once admitted with unconfirmed cleanup, adopting registers WaitReason::Model.
+    assert!(matches!(
+        next(&view, &live, now, Some(&model), false),
+        Action::Wait(WaitReason::Model { attempt }, None) if attempt == summary_attempt
+    ));
+    let wait_id = WaitId::new();
+    let mut without_wait = view.clone();
+    apply_policy_fact(
+        &mut view,
+        Fact::WaitRegistered {
+            wait: wait_id,
+            reason: WaitReason::Model {
+                attempt: summary_attempt,
+            },
+            due_at: None,
+        },
+    );
+
+    // Non-terminal failure records source failure + confirmed cleanup before ModelInterrupted.
+    for fact in [
+        Fact::ModelSourceFailureCaptured {
+            attempt: summary_attempt,
+            failure: failure.reference().clone(),
+        },
+        Fact::ModelCleanupObserved {
+            attempt: summary_attempt,
+            cleanup: OperationCleanup::Confirmed,
+        },
+    ] {
+        apply_policy_fact(&mut view, fact.clone());
+        apply_policy_fact(&mut without_wait, fact);
+    }
+
+    // Wait must stay open (Idle so driver drains live worker's Err -> ModelInterrupted)
+    // rather than satisfying early and then re-registering an invalid Model wait.
+    assert!(
+        matches!(next(&view, &live, now, Some(&model), false), Action::Idle),
+        "expected Action::Idle while open proactive Summary awaits live interruption"
+    );
+    // Even without an earlier wait, an already-cleaned-up open Summary must not register a Model wait.
+    assert!(
+        matches!(
+            next(&without_wait, &live, now, Some(&model), false),
+            Action::Idle
+        ),
+        "expected Action::Idle instead of invalid WaitReason::Model after confirmed cleanup"
+    );
+    // If the worker is no longer live (e.g. after restart), interrupt the open Summary.
+    assert!(matches!(
+        next(&without_wait, &Live::default(), now, Some(&model), false),
+        Action::Interrupt(attempt, _) if attempt == summary_attempt
+    ));
+
+    // Once ModelInterrupted is recorded, the pending wait becomes ready to satisfy.
+    live.work.remove(&WorkKey::Model(summary_attempt));
+    apply_policy_fact(
+        &mut view,
+        Fact::ModelInterrupted {
+            attempt: summary_attempt,
+            diagnostic: "provider failed (TimedOut): model stream idle timeout exceeded".into(),
+        },
+    );
+    assert!(matches!(
+        next(&view, &live, now, Some(&model), false),
+        Action::Satisfy(id) if id == wait_id
+    ));
+}
+
+#[test]
+fn context_overflow_does_not_register_model_wait_for_cleaned_up_open_proactive_summary() {
+    use maka_agent_facts::input::RunInput;
+    use maka_plugin_core::operation::OperationCleanup;
+
+    let mut view = policy_view(None);
+    let source = view.spec.input.clone();
+    let step_1 = StepId::new();
+    let main_attempt = ModelAttemptId::new();
+    let summary_step = StepId::new();
+    let summary_attempt = ModelAttemptId::new();
+
+    let spec = ContentBlob::json(&view.spec).unwrap();
+    for fact in [
+        Fact::RunAdmitted {
+            spec: spec.reference().clone(),
+        },
+        Fact::StepPrepared {
+            step: step_1,
+            request: source.clone(),
+            adjudications: vec![],
+        },
+        Fact::ModelAttemptPrepared {
+            attempt: main_attempt,
+            step: step_1,
+        },
+        Fact::ModelAttemptAdmitted {
+            attempt: main_attempt,
+            upstream: serde_json::json!({}),
+        },
+        Fact::ProactiveSummaryPrepared {
+            step: summary_step,
+            request: source,
+            attempt: summary_attempt,
+        },
+        Fact::ModelAttemptAdmitted {
+            attempt: summary_attempt,
+            upstream: serde_json::json!({}),
+        },
+        Fact::ModelCleanupObserved {
+            attempt: main_attempt,
+            cleanup: OperationCleanup::Confirmed,
+        },
+        Fact::ModelInterrupted {
+            attempt: main_attempt,
+            diagnostic: "context overflow".into(),
+        },
+        Fact::AttemptRecoveryRecorded {
+            attempt: main_attempt,
+            recovery: AttemptRecovery::ContextOverflow {
+                observed_output: false,
+            },
+        },
+        Fact::ModelCleanupObserved {
+            attempt: summary_attempt,
+            cleanup: OperationCleanup::Confirmed,
+        },
+    ] {
+        apply_policy_fact(&mut view, fact);
+    }
+
+    let model = ModelLevel {
+        handoff: None,
+        input: RunInput::ContextCompact {
+            request_fingerprint: String::new(),
+        },
+        request: None,
+        baseline: None,
+        compaction: CompactionLevel::Pending {
+            attempt: summary_attempt,
+            adopt: false,
+        },
+        failure: None,
+        fallback_available: false,
+        codex: false,
+    };
+    let mut live = Live::default();
+    live.work.insert(WorkKey::Model(summary_attempt));
+
+    assert!(matches!(
+        next(&view, &live, UnixMillis(1), Some(&model), false),
+        Action::Idle
+    ));
+    assert!(matches!(
+        next(&view, &Live::default(), UnixMillis(1), Some(&model), false),
+        Action::Interrupt(attempt, _) if attempt == summary_attempt
+    ));
+}
