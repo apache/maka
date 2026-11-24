@@ -130,6 +130,10 @@ test('BCP 47 extensions, fractional/million plurals, and ICU edge cases', () => 
   assert.equal(negotiateLocale('zh-CN-x-hk'), 'zh-CN');
 
   // CLDR 45+ million many & fractional / non-finite handling
+  assert.equal(pluralCategory('pt-PT', 0), 'other');
+  assert.equal(pluralCategory('pt-BR', 0), 'one');
+  assert.equal(formatMessage('{n, plural, one {one} other {other}}', 'pt-PT', { n: 0 }), 'other');
+  assert.equal(formatMessage('{n, plural, one {one} other {other}}', 'pt-BR', { n: 0 }), 'one');
   assert.equal(pluralCategory('es', 1_000_000), 'many');
   assert.equal(pluralCategory('fr', 1_000_000), 'many');
   assert.equal(pluralCategory('it', 1_000_000), 'many');

@@ -167,14 +167,30 @@ export function resolveLocale(configured: string | null | undefined, native: unk
   return 'en';
 }
 
-const pluralRulesCache = new Map<SupportedLocaleTag, Intl.PluralRules>();
+const MAX_PLURAL_RULES_CACHE = 64;
+const pluralRulesCache = new Map<string, Intl.PluralRules>();
 
-/** CLDR 45+ cardinal plural category via Intl.PluralRules, aligned with maka-i18n. */
+function pluralLocaleTag(locale: string): string {
+  const normalized = normalizeLocaleTag(locale);
+  const builtin = negotiateLocale(locale);
+  if (!normalized || builtin.startsWith('zh-')) return builtin;
+  const parts = normalized.split('-');
+  if (parts[0] !== builtin.split('-')[0]) return builtin;
+  const base: string[] = [];
+  for (const part of parts) {
+    if (part.length === 1) break;
+    base.push(part);
+  }
+  return base.join('-');
+}
+
+/** CLDR 45+ cardinal plural category via Intl.PluralRules, preserving regional rules like pt-PT vs pt-BR. */
 export function pluralCategory(locale: string, count: number): PluralCategory {
   if (!Number.isFinite(count)) return 'other';
-  const tag = negotiateLocale(locale);
+  const tag = pluralLocaleTag(locale);
   let rules = pluralRulesCache.get(tag);
   if (!rules) {
+    if (pluralRulesCache.size >= MAX_PLURAL_RULES_CACHE) pluralRulesCache.clear();
     rules = new Intl.PluralRules(tag);
     pluralRulesCache.set(tag, rules);
   }
