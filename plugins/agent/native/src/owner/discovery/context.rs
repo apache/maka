@@ -80,7 +80,7 @@ impl Owner {
                         },
                         needs_you_only: false,
                         room: Some(false),
-                        side: maka_agent_state::session_catalog::SideQuestions::Any,
+                        side: maka_agent_state::session_catalog::SideQuestions::Hidden,
                     },
                     MAX_SESSION_PAGE as u32,
                 )

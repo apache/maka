@@ -939,6 +939,7 @@ async fn produce_capsule(bin: &Path, capsule_dir: &Path) -> CapsuleManifest {
         )
         .await;
         assert_eq!(side["kind"], "forked", "{side}");
+        assert_eq!(side["session"]["branch"]["side"], true, "{side}");
         let side_session_id = side["session"]["id"].as_str().unwrap().to_owned();
 
         // 4. Multi-participant Room + persisted message.
@@ -1264,6 +1265,15 @@ async fn verify_capsule(bin: &Path, capsule_dir: &Path) {
             .await;
             assert!(!ids(&all).contains(side_session_id), "{all}");
             assert!(ids(&all).contains(&manifest.forked_session_id), "{all}");
+            let observed = call(
+                &client,
+                "agent",
+                "observe",
+                json!({"sessionId": side_session_id}),
+                Attachments::new(),
+            )
+            .await;
+            assert_eq!(observed["session"]["branch"]["side"], true, "{observed}");
         }
 
         // Presets sweep.

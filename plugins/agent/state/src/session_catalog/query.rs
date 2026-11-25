@@ -76,10 +76,10 @@ const BASE: &str = "WITH base AS (
  AND (?10=0 OR (?10=1 AND s.archived=0) OR (?10=2 AND s.archived=1))
  AND (?13 IS NULL OR (room.session IS NOT NULL)=?13)
  AND (?14=0
-  OR (?14=1 AND (COALESCE(json_extract(k.lineage,'$.origin.side'),json_extract(k.lineage,'$.branch.side')) IS NULL
+  OR (?14=1 AND (COALESCE(json_extract(k.lineage,'$.origin.side'),json_extract(k.lineage,'$.branch.side'),0)=0
    OR NOT EXISTS(SELECT 1 FROM session_control p WHERE p.id=COALESCE(json_extract(k.lineage,'$.origin.parent_session_id'),json_extract(k.lineage,'$.branch.parent_session_id'))
     AND NOT EXISTS(SELECT 1 FROM session_retirements d WHERE d.session_id=p.id AND d.remove_session=1))))
-  OR (?14=2 AND COALESCE(json_extract(k.lineage,'$.origin.side'),json_extract(k.lineage,'$.branch.side')) IS NOT NULL
+  OR (?14=2 AND COALESCE(json_extract(k.lineage,'$.origin.side'),json_extract(k.lineage,'$.branch.side'))=1
    AND COALESCE(json_extract(k.lineage,'$.origin.parent_session_id'),json_extract(k.lineage,'$.branch.parent_session_id'))=?15))
 ), selected AS (SELECT *, (pending_since IS NOT NULL) AS needs_you FROM base)";
 const FILTER: &str =
@@ -829,6 +829,20 @@ mod tests {
                     rusqlite::params![self.0, session, serde_json::to_string(&lineage)?],
                 )?;
             }
+            // Explicit `"side": false` must still read as an ordinary branch.
+            let explicit_false = serde_json::json!({
+                "kind": "branch",
+                "origin": {
+                    "parent_session_id": "sess-01",
+                    "position": { "kind": "end" },
+                    "side": false
+                }
+            })
+            .to_string();
+            c.execute(
+                "INSERT INTO agent_catalog_controls(owner,session,revision,lineage) VALUES(?1,'sess-06',0,?2)",
+                rusqlite::params![self.0, explicit_false],
+            )?;
             c.execute(
                 "INSERT INTO session_retirements(session_id,remove_session,completed) VALUES('sess-05',1,0)",
                 [],
@@ -848,49 +862,63 @@ mod tests {
     #[tokio::test]
     async fn side_questions_are_listed_under_their_parent_until_it_is_removed() {
         let dir = tempfile::tempdir().unwrap();
-        let (root, data, catalog) = seeded(dir.path(), 5).await;
+        let (root, data, catalog) = seeded(dir.path(), 6).await;
         data.write(SeedBranches(catalog.owner_key().unwrap()))
             .await
             .unwrap();
-        let listed = async |side: SideQuestions| {
-            let page = catalog
-                .page(
-                    CatalogScope::Profile,
-                    None,
-                    Position::Start,
-                    Filter {
-                        base: CatalogFilter {
-                            roots_only: false,
-                            archived_only: false,
-                            include_archived: true,
-                        },
-                        needs_you_only: false,
-                        room: None,
-                        side,
-                    },
-                    32,
-                )
-                .await
-                .unwrap();
-            page.sessions
-                .into_iter()
-                .map(|record| record.metadata.id)
-                .collect::<Vec<_>>()
+        let pages = async |side: SideQuestions, limit: u32| {
+            let filter = Filter {
+                base: CatalogFilter {
+                    roots_only: false,
+                    archived_only: false,
+                    include_archived: true,
+                },
+                needs_you_only: false,
+                room: None,
+                side,
+            };
+            let mut revision = None;
+            let mut position = Position::Start;
+            let mut chunks = Vec::new();
+            loop {
+                let page = catalog
+                    .page(
+                        CatalogScope::Profile,
+                        revision.clone(),
+                        position,
+                        filter.clone(),
+                        limit,
+                    )
+                    .await
+                    .unwrap();
+                chunks.push(
+                    page.sessions
+                        .into_iter()
+                        .map(|record| record.metadata.id)
+                        .collect::<Vec<_>>(),
+                );
+                let Some(cursor) = page.next_cursor else {
+                    break;
+                };
+                revision = Some(page.revision);
+                position = Position::After(cursor);
+            }
+            chunks
         };
-        // sess-05 is removed. Its side question sess-04 has no parent left to
-        // be listed under, so it is an ordinary conversation again.
+        // sess-05 is removed, so its side question sess-04 returns to ordinary
+        // lists; hidden sess-02 takes no room in a 2-item page.
         assert_eq!(
-            listed(SideQuestions::Hidden).await,
-            ["sess-04", "sess-03", "sess-01"]
+            pages(SideQuestions::Hidden, 2).await,
+            vec![vec!["sess-06", "sess-04"], vec!["sess-03", "sess-01"]]
         );
-        // An ordinary branch of the same parent is not a side question.
+        // Ordinary branches (omitted or explicit side=false) stay out of Of().
         assert_eq!(
-            listed(SideQuestions::Of("sess-01".into())).await,
-            ["sess-02"]
+            pages(SideQuestions::Of("sess-01".into()), 2).await,
+            vec![vec!["sess-02"]]
         );
         assert_eq!(
-            listed(SideQuestions::Any).await,
-            ["sess-04", "sess-03", "sess-02", "sess-01"]
+            pages(SideQuestions::Any, 32).await,
+            vec![vec!["sess-06", "sess-04", "sess-03", "sess-02", "sess-01"]]
         );
         root.close().await.unwrap();
     }
