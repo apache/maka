@@ -2829,6 +2829,162 @@ async fn desktop_remembers_home_model_across_reopen_and_unavailable_fallback() {
     fixture.finish().await;
 }
 
+async fn desktop_renders_provider_citation_markers_as_clean_inline_chips() {
+    let mut fixture = Fixture::configured(Options {
+        responses: true,
+        ..Options::default()
+    })
+    .await;
+    let client = fixture.client().await;
+    mutate(
+        &client,
+        "send",
+        json!({"sessionId": fixture.session, "backend": {
+            "kind": "model", "connectionId": fixture.selection["connectionId"],
+            "modelId": fixture.selection["modelId"],
+        }, "message": "排查 Windows VM 重启卡在 Hyper-V STIMER0 的原因，并核对 QEMU 上游记录"}),
+    )
+    .await;
+    let mut reply = fixture.next_request().await;
+
+    let commentary_prefix = "定位到了，卡住的 vCPU 反复在写 Hyper-V 的 `STIMER0`，和 QEMU 已记录的 AMD `hv_passthrough` 启动死锁对上了。我会只改这台 VM 的 CPU 参数，用显式的 Hyper-V 特性列表避开这个组合，保留 KVM 和现有磁盘。";
+    let commentary_marker = "\u{E200}cite\u{E202}turn137145search0\u{E201}";
+    let commentary_text = format!("{commentary_prefix} {commentary_marker}");
+    let commentary_start = format!("{commentary_prefix} ").chars().count() as u64;
+    let commentary_end = commentary_text.chars().count() as u64;
+
+    let gitlab_url = "https://gitlab.com/qemu-project/qemu/-/work_items/3468";
+    let gitlab_title = "hv-passthrough on AMD intermittently deadlocks Windows Server 2022 boot in STIMER0 re-arm loop (#3468) · Issues · QEMU / QEMU · GitLab";
+    let github_url = "https://github.com/trycua/cua/commit/8caf2c5d66e8d9d4db11f5c4089a78cce";
+    let github_title =
+        "fix(ci): drop the linux-kvm (concurrent) quarantine · trycua/cua@8caf2c5 · GitHub";
+
+    reply
+        .packet(json!({"type":"response.output_item.done","item":{
+            "type":"reasoning","id":"reason-stimer0",
+            "summary":[{"type":"summary_text","text":"核对 QEMU AMD hv_passthrough 与 Hyper-V STIMER0 死锁 issue"}]
+        }}))
+        .await;
+    reply
+        .packet(json!({"type":"response.output_item.added","item":{
+            "type":"message","id":"msg-commentary","role":"assistant","phase":"commentary","content":[]
+        }}))
+        .await;
+    reply
+        .packet(json!({"type":"response.output_text.delta","item_id":"msg-commentary","delta":format!("{commentary_prefix} \u{E200}ci")}))
+        .await;
+    reply
+        .packet(json!({"type":"response.output_text.delta","item_id":"msg-commentary","delta":"te\u{E202}turn137145search0\u{E201}"}))
+        .await;
+    reply
+        .packet(json!({"type":"response.output_item.done","item":{
+            "type":"message","id":"msg-commentary","role":"assistant","phase":"commentary",
+            "content":[{
+                "type":"output_text",
+                "text": commentary_text,
+                "annotations":[{
+                    "type":"url_citation",
+                    "url": gitlab_url,
+                    "title": gitlab_title,
+                    "start_index": commentary_start,
+                    "end_index": commentary_end
+                }]
+            }]
+        }}))
+        .await;
+
+    let final_p1_a = "已定位根因：\u{E200}entity\u{E202}[\"software\",\"QEMU\",\"emulator\"]\u{E201} 在 AMD 宿主上开启 `hv_passthrough` 时会触发 \u{E203}STIMER0 re-arm loop\u{E204} 死锁";
+    let final_m1 = "\u{E200}cite\u{E202}turn137145search0\u{E201}";
+    let final_m2 = "\u{E200}cite\u{E202}turn903513view0\u{E201}";
+    let final_p1_b = "，导致 Windows Guest 重启卡死。\n\n建议改为显式 Hyper-V 特性列表（关闭 `hv_passthrough`），保留 KVM 与现有磁盘。";
+    let final_m3 = "\u{E200}cite\u{E202}turn137145search0\u{E201}";
+    let final_text = format!("{final_p1_a} {final_m1} {final_m2}{final_p1_b} {final_m3}");
+    let m1_start = format!("{final_p1_a} ").chars().count() as u64;
+    let m1_end = m1_start + final_m1.chars().count() as u64;
+    let m2_start = m1_end + 1;
+    let m2_end = m2_start + final_m2.chars().count() as u64;
+    let m3_start = format!("{final_p1_a} {final_m1} {final_m2}{final_p1_b} ")
+        .chars()
+        .count() as u64;
+    let m3_end = final_text.chars().count() as u64;
+
+    reply
+        .packet(json!({"type":"response.output_item.done","item":{
+            "type":"message","id":"msg-final","role":"assistant","phase":"final_answer",
+            "content":[{
+                "type":"output_text",
+                "text": final_text,
+                "annotations":[
+                    {"type":"url_citation","url":gitlab_url,"title":gitlab_title,"start_index":m1_start,"end_index":m1_end},
+                    {"type":"url_citation","url":github_url,"title":github_title,"start_index":m2_start,"end_index":m2_end},
+                    {"type":"url_citation","url":gitlab_url,"title":gitlab_title,"start_index":m3_start,"end_index":m3_end}
+                ]
+            }]
+        }}))
+        .await;
+    reply
+        .packet(json!({"type":"response.completed","response":{
+            "id":"response-citations","usage":{"input_tokens":42,"output_tokens":96}
+        }}))
+        .await;
+    reply.finish_stream().await;
+
+    let desktop = Desktop::open_at(
+        &fixture,
+        &fixture.address,
+        size(
+            nsh_terminal::DevicePixels(1080),
+            nsh_terminal::DevicePixels(760),
+        ),
+        nsh_core::platform::Appearance::Dark,
+    )
+    .await;
+
+    desktop
+        .until(
+            "inline citation chips did not appear on final answer",
+            || {
+                (desktop.controls("gitlab.com").len() == 2
+                    && desktop.controls("github.com").len() == 1)
+                    .then_some(())
+            },
+        )
+        .await;
+
+    desktop.artifact("01-final-answer");
+
+    let copy = desktop.control("Copy message").await;
+    let copied = desktop
+        .copy_at("final answer was not copied", copy.center())
+        .await;
+    assert_eq!(
+        copied,
+        "已定位根因：QEMU 在 AMD 宿主上开启 `hv_passthrough` 时会触发 STIMER0 re-arm loop 死锁，导致 Windows Guest 重启卡死。\n\n建议改为显式 Hyper-V 特性列表（关闭 `hv_passthrough`），保留 KVM 与现有磁盘。"
+    );
+
+    desktop.press("Turn work details").await;
+    desktop
+        .until("expanded commentary citation chip did not appear", || {
+            (desktop.controls("gitlab.com").len() == 3 && desktop.controls("github.com").len() == 1)
+                .then_some(())
+        })
+        .await;
+    desktop.artifact("02-expanded-commentary");
+
+    desktop.press("Sources").await;
+    desktop
+        .until("sources inspector links did not appear", || {
+            (!desktop.controls(gitlab_title).is_empty()
+                && !desktop.controls(github_title).is_empty())
+            .then_some(())
+        })
+        .await;
+    desktop.artifact("03-sources-inspector");
+
+    desktop.close().await;
+    fixture.finish().await;
+}
+
 /// Native cases run on the process main thread, required by AppKit.
 pub(crate) const CASES: &[&str] = &[
     "desktop_room_reply_wakes_an_agent_without_mixing_drafts",
@@ -2848,6 +3004,7 @@ pub(crate) const CASES: &[&str] = &[
     "desktop_composer_large_paste_keeps_controls_on_screen",
     "desktop_system_permission_guidance_uses_native_actions_without_paths",
     "desktop_workspace_stage_inspector_worktrees_and_fullscreen_review",
+    "desktop_renders_provider_citation_markers_as_clean_inline_chips",
 ];
 
 pub(crate) fn run(name: &str) {
@@ -2906,6 +3063,9 @@ pub(crate) fn run(name: &str) {
         }
         "desktop_workspace_stage_inspector_worktrees_and_fullscreen_review" => {
             runtime.block_on(desktop_workspace_stage_inspector_worktrees_and_fullscreen_review())
+        }
+        "desktop_renders_provider_citation_markers_as_clean_inline_chips" => {
+            runtime.block_on(desktop_renders_provider_citation_markers_as_clean_inline_chips())
         }
         other => panic!("unknown native desktop case: {other}"),
     }

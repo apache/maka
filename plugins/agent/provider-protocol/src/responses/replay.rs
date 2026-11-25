@@ -72,6 +72,8 @@ struct TextPart {
     bytes: usize,
     key: TextKey,
     fields: Map<String, Value>,
+    #[serde(rename = "rawText", default, skip_serializing_if = "Option::is_none")]
+    raw_text: Option<String>,
 }
 #[derive(Deserialize)]
 struct StoredReplay {
@@ -89,6 +91,15 @@ impl<'de> Deserialize<'de> for Replay {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
         let stored = StoredReplay::deserialize(deserializer)?;
         let kind = stored.fields.get("type").and_then(Value::as_str);
+        let parts = stored.parts.as_deref().unwrap_or_default();
+        let any_raw = parts.iter().any(|part| part.raw_text.is_some());
+        let invalid_raw = any_raw
+            && (kind != Some("message")
+                || parts.iter().any(|part| {
+                    part.raw_text
+                        .as_deref()
+                        .is_none_or(|raw| raw.len() != part.bytes)
+                }));
         if stored.version != 1
             || !matches!(
                 kind,
@@ -105,6 +116,7 @@ impl<'de> Deserialize<'de> for Replay {
             || stored.action && kind != Some("web_search_call")
             || matches!(stored.text_field, Some(TextField::Content)) && kind != Some("message")
             || matches!(stored.text_field, Some(TextField::Summary)) && kind != Some("reasoning")
+            || invalid_raw
         {
             return Err(D::Error::custom("invalid accepted Responses item metadata"));
         }
@@ -147,8 +159,20 @@ pub fn capture(item: &Value) -> Option<Replay> {
     if let Some(field) = field
         && let Some(values) = object.get(field.as_str())
     {
-        let mut captured = Vec::new();
-        for value in values.as_array()? {
+        let entries = values.as_array()?;
+        let preserve_raw = kind == "message"
+            && entries.iter().any(|value| {
+                let key = if value["type"] == "refusal" && value.get("refusal").is_some() {
+                    "refusal"
+                } else {
+                    "text"
+                };
+                value[key]
+                    .as_str()
+                    .is_some_and(super::markers::has_citation_markers)
+            });
+        let mut captured = Vec::with_capacity(entries.len());
+        for value in entries {
             let object = value.as_object()?;
             let key = if value["type"] == "refusal" && object.contains_key("refusal") {
                 TextKey::Refusal
@@ -165,6 +189,7 @@ pub fn capture(item: &Value) -> Option<Replay> {
                 bytes: text.len(),
                 key,
                 fields,
+                raw_text: preserve_raw.then(|| text.to_owned()),
             });
         }
         text_field = Some(field);
@@ -193,30 +218,41 @@ impl Replay {
         }
         let mut item = Value::Object(self.fields.clone());
         if let Some(field) = self.text_field {
-            let mut offset = 0usize;
             let parts = self
                 .parts
                 .as_deref()
                 .expect("text replay includes its boundaries");
             let mut content = Vec::with_capacity(parts.len());
-            for part in parts {
-                let end = offset.checked_add(part.bytes).ok_or_else(|| {
-                    Error::Invalid("accepted Responses text length overflow".into())
-                })?;
-                let value = text.get(offset..end).ok_or_else(|| {
-                    Error::Invalid(
+            if parts.iter().any(|part| part.raw_text.is_some()) {
+                for part in parts {
+                    let raw = part.raw_text.as_deref().ok_or_else(|| {
+                        Error::Invalid("accepted Responses raw text metadata is incomplete".into())
+                    })?;
+                    let mut fields = part.fields.clone();
+                    fields.insert(part.key.as_str().into(), Value::String(raw.into()));
+                    content.push(Value::Object(fields));
+                }
+            } else {
+                let mut offset = 0usize;
+                for part in parts {
+                    let end = offset.checked_add(part.bytes).ok_or_else(|| {
+                        Error::Invalid("accepted Responses text length overflow".into())
+                    })?;
+                    let value = text.get(offset..end).ok_or_else(|| {
+                        Error::Invalid(
+                            "accepted Responses text no longer matches its boundaries".into(),
+                        )
+                    })?;
+                    let mut fields = part.fields.clone();
+                    fields.insert(part.key.as_str().into(), Value::String(value.into()));
+                    content.push(Value::Object(fields));
+                    offset = end;
+                }
+                if offset != text.len() {
+                    return Err(Error::Invalid(
                         "accepted Responses text no longer matches its boundaries".into(),
-                    )
-                })?;
-                let mut fields = part.fields.clone();
-                fields.insert(part.key.as_str().into(), Value::String(value.into()));
-                content.push(Value::Object(fields));
-                offset = end;
-            }
-            if offset != text.len() {
-                return Err(Error::Invalid(
-                    "accepted Responses text no longer matches its boundaries".into(),
-                ));
+                    ));
+                }
             }
             item[field.as_str()] = Value::Array(content);
         } else if !text.is_empty() {
@@ -303,6 +339,27 @@ mod tests {
             replay
                 .call("function_call", "call", "read", " {\"n\":\n")
                 .unwrap(),
+            original
+        );
+    }
+
+    #[test]
+    fn marker_bearing_message_preserves_exact_wire_text_across_sanitized_storage() {
+        let original = json!({
+            "type": "message",
+            "id": "msg_cited",
+            "role": "assistant",
+            "status": "completed",
+            "content": [
+                {"type": "output_text", "text": "Fixed. \u{E200}cite\u{E202}turn0search0\u{E201}", "annotations": []},
+                {"type": "output_text", "text": " Done.", "annotations": []}
+            ]
+        });
+        let template = capture(&original).unwrap();
+        let serialized = serde_json::to_string(&template).unwrap();
+        let parsed: Replay = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(
+            parsed.text("Fixed. Done.", "message", None).unwrap(),
             original
         );
     }

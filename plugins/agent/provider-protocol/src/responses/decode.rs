@@ -319,6 +319,7 @@ pub(crate) struct ProviderError {
 struct Part {
     kind: TextKind,
     text: String,
+    sanitizer: Option<super::markers::StreamSanitizer>,
     summary_index: Option<usize>,
     summary_breaks: Vec<usize>,
     annotations: BTreeMap<(usize, u64), Annotation>,
@@ -528,6 +529,7 @@ impl Decoder {
             Part {
                 kind,
                 text: String::new(),
+                sanitizer: (kind == TextKind::Text).then(super::markers::StreamSanitizer::new),
                 summary_index: None,
                 summary_breaks: Vec::new(),
                 annotations: BTreeMap::new(),
@@ -566,11 +568,18 @@ impl Decoder {
             }
         });
         part.text.push_str(&text);
-        out.push(OutputEvent::PartDelta {
-            id,
-            text,
-            summary_breaks,
-        });
+        let emitted = if let Some(sanitizer) = &mut part.sanitizer {
+            sanitizer.push(&text)
+        } else {
+            text
+        };
+        if !emitted.is_empty() || summary_breaks.is_some() {
+            out.push(OutputEvent::PartDelta {
+                id,
+                text: emitted,
+                summary_breaks,
+            });
+        }
         Ok(())
     }
     fn finish_part(
@@ -593,17 +602,30 @@ impl Decoder {
                 "final Responses item disagrees with streamed text",
             ));
         }
-        if text.len() > part.text.len() {
-            self.delta(id.clone(), text[part.text.len()..].into(), kind, None, out)?;
+        let mut part = self.open.remove(&id).expect("checked open part");
+        let remaining = &text[part.text.len()..];
+        let emitted = if let Some(sanitizer) = &mut part.sanitizer {
+            let mut buf = sanitizer.push(remaining);
+            buf.push_str(&sanitizer.finish());
+            buf
+        } else {
+            remaining.to_owned()
+        };
+        if !emitted.is_empty() {
+            out.push(OutputEvent::PartDelta {
+                id: id.clone(),
+                text: emitted,
+                summary_breaks: None,
+            });
         }
         if metadata.is_some() {
             self.replay_safe = false;
         }
-        self.open.remove(&id);
         self.done.insert(id.clone());
         out.push(OutputEvent::PartFinished { id, metadata });
         Ok(())
     }
+    #[allow(clippy::too_many_arguments)]
     fn citation(
         &mut self,
         item_id: &str,
@@ -611,6 +633,7 @@ impl Decoder {
         annotation_index: u64,
         annotation: Annotation,
         span: Option<&std::ops::Range<u64>>,
+        scalar_map: Option<&[u64]>,
         out: &mut Vec<OutputEvent>,
     ) {
         let id = format!("{item_id}:{content_index}:{annotation_index}");
@@ -625,12 +648,28 @@ impl Decoder {
             self.replay_safe = false;
             let anchor = span.and_then(|span| {
                 let (start, end) = start_index.zip(end_index)?;
-                (start < end && end <= span.end - span.start).then(|| {
-                    crate::output::CitationAnchor::Range {
-                        part: item_id.to_owned(),
-                        start: span.start + start,
-                        end: span.start + end,
+                if !(start < end && end <= span.end - span.start) {
+                    return None;
+                }
+                let raw_start = span.start + start;
+                let raw_end = span.start + end;
+                let (mapped_start, mapped_end) = if let Some(map) = scalar_map {
+                    let s = map[raw_start as usize];
+                    let e = map[raw_end as usize];
+                    if s < e {
+                        (s, e)
+                    } else if e > 0 {
+                        (e - 1, e)
+                    } else {
+                        return None;
                     }
+                } else {
+                    (raw_start, raw_end)
+                };
+                Some(crate::output::CitationAnchor::Range {
+                    part: item_id.to_owned(),
+                    start: mapped_start,
+                    end: mapped_end,
                 })
             });
             out.push(OutputEvent::Citation(Citation {
@@ -655,6 +694,7 @@ impl Decoder {
         if annotations.is_empty() && content.iter().all(|part| part.annotations.is_empty()) {
             return;
         }
+        let mut raw_text = String::new();
         let mut offset = 0;
         let spans: Vec<_> = content
             .into_iter()
@@ -662,6 +702,7 @@ impl Decoder {
             .map(|(index, part)| {
                 let start = offset;
                 offset += part.text.chars().count() as u64;
+                raw_text.push_str(&part.text);
                 annotations.extend(
                     part.annotations
                         .into_iter()
@@ -671,6 +712,7 @@ impl Decoder {
                 start..offset
             })
             .collect();
+        let scalar_map = super::markers::raw_to_clean_scalar_map(&raw_text);
         for ((content_index, annotation_index), annotation) in annotations {
             self.citation(
                 id,
@@ -678,6 +720,7 @@ impl Decoder {
                 annotation_index,
                 annotation,
                 spans.get(content_index),
+                scalar_map.as_deref(),
                 out,
             );
         }
@@ -1038,6 +1081,7 @@ impl Decoder {
                         content_index,
                         annotation_index,
                         annotation,
+                        None,
                         None,
                         &mut out,
                     );
@@ -1551,6 +1595,82 @@ mod tests {
                 ..
             }]
         ));
+    }
+
+    #[test]
+    fn strips_pua_markers_at_decode_remaps_citation_anchors_and_preserves_replay() {
+        let mut decoder = Decoder::new(ReasoningMode::Encrypted, None);
+        let prefix = "已定位根因：\u{E200}entity\u{E202}[\"software\",\"QEMU\",\"emulator\"]\u{E201} 触发 \u{E203}STIMER0\u{E204}";
+        let m1 = "\u{E200}cite\u{E202}turn0search0\u{E201}";
+        let suffix = "，已修复。";
+        let full = format!("{prefix} {m1}{suffix}");
+        let m1_start = format!("{prefix} ").chars().count() as u64;
+        let m1_end = m1_start + m1.chars().count() as u64;
+        let item = json!({
+            "type": "message",
+            "id": "msg_pua",
+            "role": "assistant",
+            "status": "completed",
+            "content": [{
+                "type": "output_text",
+                "text": full,
+                "annotations": [{
+                    "type": "url_citation",
+                    "url": "https://example.test/issue",
+                    "title": "Issue",
+                    "start_index": m1_start,
+                    "end_index": m1_end
+                }]
+            }]
+        });
+
+        let mut clean = String::new();
+        decoder
+            .push(json!({"type":"response.output_item.added","item":{"type":"message","id":"msg_pua","role":"assistant","content":[]}}))
+            .unwrap();
+        let split = format!("{prefix} \u{E200}ci");
+        for delta in [&split[..], &full[split.len()..]] {
+            for ev in decoder
+                .push(
+                    json!({"type":"response.output_text.delta","item_id":"msg_pua","delta":delta}),
+                )
+                .unwrap()
+            {
+                if let OutputEvent::PartDelta { text, .. } = ev {
+                    assert!(!text.contains('\u{E200}'));
+                    clean.push_str(&text);
+                }
+            }
+        }
+        let done = decoder
+            .push(json!({"type":"response.output_item.done","item":item}))
+            .unwrap();
+        let mut replay = None;
+        let mut anchor = None;
+        for ev in done {
+            match ev {
+                OutputEvent::PartDelta { text, .. } => clean.push_str(&text),
+                OutputEvent::PartFinished {
+                    metadata: Some(PartMetadata::Item(meta)),
+                    ..
+                } => replay = meta.replay,
+                OutputEvent::Citation(c) => anchor = c.anchor,
+                _ => {}
+            }
+        }
+
+        let expected = "已定位根因：QEMU 触发 STIMER0，已修复。";
+        assert_eq!(clean, expected);
+        let after_stimer0 = "已定位根因：QEMU 触发 STIMER0".chars().count() as u64;
+        assert_eq!(
+            anchor,
+            Some(crate::output::CitationAnchor::Range {
+                part: "msg_pua".into(),
+                start: after_stimer0 - 1,
+                end: after_stimer0,
+            })
+        );
+        assert_eq!(replay.unwrap().text(&clean, "message", None).unwrap(), item);
     }
 
     #[test]
