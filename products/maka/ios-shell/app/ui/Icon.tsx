@@ -175,6 +175,51 @@ const glyphs = {
     { tag: 'path', d: 'M9.5 9.5a2.6 2.6 0 0 1 5 1c0 1.6-2.5 2-2.5 3.5' },
     { tag: 'circle', cx: 12, cy: 17, r: 0.7 },
   ],
+  compose: [
+    { tag: 'path', d: 'M12 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-6' },
+    { tag: 'path', d: 'M18.5 3.5a2.1 2.1 0 0 1 3 3L12 16l-4 1 1-4z' },
+  ],
+  send: [
+    { tag: 'line', x1: 12, y1: 18, x2: 12, y2: 6 },
+    { tag: 'path', d: 'm7 11 5-5 5 5' },
+  ],
+  stop: [{ tag: 'rect', x: 6.5, y: 6.5, width: 11, height: 11, rx: 2 }],
+  folder: [
+    {
+      tag: 'path',
+      d: 'M3.5 7A2 2 0 0 1 5.5 5H9l2 2.5h7.5a2 2 0 0 1 2 2V17a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z',
+    },
+  ],
+  file: [
+    {
+      tag: 'path',
+      d: 'M6.5 3.5h7.5l4.5 4.5V19a1.5 1.5 0 0 1-1.5 1.5h-10.5A1.5 1.5 0 0 1 5 19V5A1.5 1.5 0 0 1 6.5 3.5z',
+    },
+    { tag: 'path', d: 'M14 3.5V8h4.5' },
+  ],
+  diff: [
+    { tag: 'path', d: 'M12 4.5v9' },
+    { tag: 'path', d: 'M7.5 9h9' },
+    { tag: 'path', d: 'M7.5 18.5h9' },
+  ],
+  queue: [
+    { tag: 'line', x1: 4.5, y1: 7, x2: 19.5, y2: 7 },
+    { tag: 'line', x1: 4.5, y1: 12, x2: 15, y2: 12 },
+    { tag: 'line', x1: 4.5, y1: 17, x2: 12, y2: 17 },
+  ],
+  quote: [
+    { tag: 'path', d: 'M6 9h4v4H7.5c0 1.5.8 2.5 2 3' },
+    { tag: 'path', d: 'M14 9h4v4h-2.5c0 1.5.8 2.5 2 3' },
+  ],
+  arrowDown: [
+    { tag: 'line', x1: 12, y1: 6, x2: 12, y2: 18 },
+    { tag: 'path', d: 'm7 13 5 5 5-5' },
+  ],
+  pin: [{ tag: 'path', d: 'm15 4.5 4.5 4.5-3.5 3.5 1 4-4.5-4.5-5 5-1-1 5-5L7 6.5l4 1z' }],
+  keyboardDown: [
+    { tag: 'rect', x: 3.5, y: 5, width: 17, height: 10, rx: 2 },
+    { tag: 'path', d: 'm9.5 18.5 2.5 2.5 2.5-2.5' },
+  ],
 } satisfies Record<string, Shape[]>;
 
 export type IconName = keyof typeof glyphs;

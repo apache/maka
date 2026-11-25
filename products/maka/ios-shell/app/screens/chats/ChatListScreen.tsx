@@ -17,10 +17,10 @@
  * under the License.
  */
 
-import { safeAreaInsets, Scroll, Text, View, token } from 'nsh';
-import { NavPage } from 'nsh/base';
-import { currentLocale, tr } from '../../locale';
+import { safeAreaInsets, Scroll, signal, Text, View, token } from 'nsh';
+import { AlertDialog, ContextMenu, Input, NavPage, Sheet } from 'nsh/base';
 import { hasAgentEndpoint } from '../../bridge';
+import { currentLocale, tr } from '../../locale';
 import {
   connectedHosts,
   connectSavedHost,
@@ -37,20 +37,24 @@ import {
   selectScope,
 } from '../../state/hostPool';
 import {
+  deleteSession,
   needsAttentionSessions,
   pinnedSessions,
   recentSessions,
   refreshAllSessions,
+  renameSession,
   sessionSearchQuery,
   sessionsLoading,
   setSessionSearchQuery,
   setShowingArchivedSessions,
   showingArchivedSessions,
+  togglePinSession,
   workingSessions,
   type ScopedSession,
 } from '../../state/sessions';
 import { spacing, type } from '../../theme/tokens';
 import {
+  ActionButton,
   BannerNotice,
   EmptyState,
   GroupDivider,
@@ -62,6 +66,7 @@ import {
   StatusDot,
   type ScopePillItem,
 } from '../../ui';
+import { NewChatSheet } from './NewChatSheet';
 
 function formatRelativeTime(timestampMs: number): string {
   if (!timestampMs) return '';
@@ -86,6 +91,7 @@ function SessionRow(props: {
   item: ScopedSession;
   divider: boolean;
   onOpen: (item: ScopedSession) => void;
+  onRequestRename: (item: ScopedSession) => void;
 }) {
   const s = () => props.item.session;
   const workspaceName = () =>
@@ -99,83 +105,133 @@ function SessionRow(props: {
     return null;
   };
 
-  return (
-    <View>
-      <View
-        role="button"
-        accessibilityLabel={tr('Conversation: {title}', { title: s().title })}
-        onPress={() => props.onOpen(props.item)}
-        class="active:bg-row-pressed transition-colors duration-150"
-        style={{
-          minHeight: 68,
-          paddingHorizontal: 16,
-          paddingVertical: 12,
-          flexDirection: 'row',
-          alignItems: 'center',
-          gap: 12,
-        }}
-      >
-        <View style={{ flex: 1, minWidth: 0, gap: 4 }}>
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7 }}>
-            <If when={statusKind()}>
-              <StatusDot kind={statusKind()!} size={8} />
-            </If>
-            <Text
-              numberOfLines={1}
-              style={{
-                ...type.headline,
-                fontSize: 16,
-                color: token('foreground'),
-                flex: 1,
-              }}
-            >
-              {s().title}
-            </Text>
-            <If when={s().updatedAt > 0}>
-              <Text
-                style={{
-                  ...type.caption,
-                  fontVariant: ['tabular-nums'],
-                  color: token('tertiary-foreground'),
-                }}
-              >
-                {formatRelativeTime(s().updatedAt)}
-              </Text>
-            </If>
-          </View>
+  const confirmDelete = async () => {
+    const { action } = await AlertDialog.show({
+      title: tr('Delete conversation?'),
+      description: tr('“{title}” on {computer} will be permanently deleted.', {
+        title: s().title,
+        computer: props.item.hostName,
+      }),
+      actions: [
+        { id: 'cancel', label: tr('Cancel'), role: 'cancel' },
+        { id: 'delete', label: tr('Delete'), role: 'destructive' },
+      ],
+    });
+    if (action === 'delete') {
+      await deleteSession(props.item);
+    }
+  };
 
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-            <Icon name="laptop" color={token('muted-foreground')} size={13} />
+  const rowTrigger = (
+    <View
+      role="button"
+      accessibilityLabel={tr('Conversation: {title}', { title: s().title })}
+      onPress={() => props.onOpen(props.item)}
+      class="active:bg-row-pressed transition-colors duration-150"
+      style={{
+        minHeight: 70,
+        paddingHorizontal: 16,
+        paddingVertical: 12,
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 12,
+      }}
+    >
+      <View style={{ flex: 1, minWidth: 0, gap: 4 }}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7 }}>
+          <If when={statusKind()}>
+            <StatusDot kind={statusKind()!} size={8} />
+          </If>
+          <If when={s().pinned && !statusKind()}>
+            <Icon name="pin" color={token('primary')} size={13} />
+          </If>
+          <Text
+            style={{
+              ...type.headline,
+              fontSize: 16,
+              color: token('foreground'),
+              flex: 1,
+              numberOfLines: 1,
+              textOverflow: 'ellipsis',
+            }}
+          >
+            {s().title}
+          </Text>
+          <If when={s().updatedAt > 0}>
             <Text
-              numberOfLines={1}
               style={{
-                ...type.footnote,
-                color: token('muted-foreground'),
-                flex: 1,
+                ...type.caption,
+                fontVariant: ['tabular-nums'],
+                color: token('tertiary-foreground'),
               }}
             >
-              {attribution()}
+              {formatRelativeTime(s().updatedAt)}
             </Text>
-            <If when={s().kind === 'room'}>
-              <Text
-                style={{
-                  ...type.caption,
-                  color: token('primary'),
-                }}
-              >
-                {tr('Room')}
-              </Text>
-            </If>
-          </View>
+          </If>
         </View>
 
-        <Icon
-          name="chevronRight"
-          color={token('tertiary-foreground')}
-          size={16}
-          strokeWidth={2.1}
-        />
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+          <Icon name="laptop" color={token('muted-foreground')} size={13} />
+          <Text
+            style={{
+              ...type.footnote,
+              color: token('muted-foreground'),
+              flex: 1,
+              numberOfLines: 1,
+              textOverflow: 'ellipsis',
+            }}
+          >
+            {attribution()}
+          </Text>
+          <If when={s().activity === 'waiting'}>
+            <Text style={{ ...type.caption, fontWeight: '600', color: token('warning') }}>
+              {tr('Needs approval')}
+            </Text>
+          </If>
+          <If when={s().activity === 'working'}>
+            <Text style={{ ...type.caption, fontWeight: '600', color: token('primary') }}>
+              {tr('Running')}
+            </Text>
+          </If>
+          <If when={s().kind === 'room' && s().activity === 'idle'}>
+            <Text style={{ ...type.caption, color: token('primary') }}>{tr('Room')}</Text>
+          </If>
+        </View>
       </View>
+
+      <Icon name="chevronRight" color={token('tertiary-foreground')} size={16} strokeWidth={2.1} />
+    </View>
+  );
+
+  return (
+    <View>
+      <ContextMenu
+        title={s().title}
+        items={[
+          {
+            id: 'pin',
+            label: s().pinned ? tr('Unpin') : tr('Pin'),
+            icon: s().pinned ? 'pin.slash' : 'pin',
+          },
+          {
+            id: 'rename',
+            label: tr('Rename'),
+            icon: 'pencil',
+          },
+          {
+            id: 'delete',
+            label: tr('Delete'),
+            icon: 'trash',
+            destructive: true,
+          },
+        ]}
+        onSelect={({ id }) => {
+          if (id === 'pin') void togglePinSession(props.item);
+          else if (id === 'rename') props.onRequestRename(props.item);
+          else if (id === 'delete') void confirmDelete();
+        }}
+        trigger={rowTrigger}
+      />
       <If when={props.divider}>
         <GroupDivider inset={16} />
       </If>
@@ -187,6 +243,7 @@ function SessionSection(props: {
   title: string;
   items: readonly ScopedSession[];
   onOpen: (item: ScopedSession) => void;
+  onRequestRename: (item: ScopedSession) => void;
 }) {
   return (
     <If when={props.items.length > 0}>
@@ -197,6 +254,7 @@ function SessionSection(props: {
               item={item()}
               divider={index() < props.items.length - 1}
               onOpen={props.onOpen}
+              onRequestRename={props.onRequestRename}
             />
           )}
         </Each>
@@ -207,6 +265,12 @@ function SessionSection(props: {
 
 export function ChatListScreen(props: { onOpenSession: (item: ScopedSession) => void }) {
   const insets = safeAreaInsets();
+  const newChatOpen = signal(false);
+  const renamingItem = signal<ScopedSession | null>(null);
+  const renameValue = signal('');
+  const renamingBusy = signal(false);
+
+  const canCompose = () => connectedHosts().some((c) => hasAgentEndpoint(c.connection));
 
   const scopeItems = (): ScopePillItem[] => [
     { id: 'all', label: tr('All Computers') },
@@ -258,6 +322,23 @@ export function ChatListScreen(props: { onOpenSession: (item: ScopedSession) => 
         );
   };
 
+  const openRename = (item: ScopedSession) => {
+    renameValue.set(item.session.title);
+    renamingItem.set(item);
+  };
+
+  const submitRename = async () => {
+    const item = renamingItem();
+    if (!item || renamingBusy()) return;
+    renamingBusy.set(true);
+    try {
+      const ok = await renameSession(item, renameValue());
+      if (ok) renamingItem.set(null);
+    } finally {
+      renamingBusy.set(false);
+    }
+  };
+
   return (
     <NavPage
       style={{ flex: 1 }}
@@ -269,10 +350,13 @@ export function ChatListScreen(props: { onOpenSession: (item: ScopedSession) => 
       ios={{
         headerRightItems: [
           {
-            key: 'add-computer',
-            symbol: 'plus',
-            label: tr('Add Computer'),
-            onPress: openAddComputerFlow,
+            key: 'compose',
+            symbol: 'square.and.pencil',
+            label: tr('New Chat'),
+            onPress: () => {
+              if (canCompose()) newChatOpen.set(true);
+              else openAddComputerFlow();
+            },
           },
           {
             key: 'filter-menu',
@@ -293,7 +377,29 @@ export function ChatListScreen(props: { onOpenSession: (item: ScopedSession) => 
           },
         ],
       }}
-      header={<ScreenHeader title={tr('Chats')} large />}
+      header={
+        <ScreenHeader
+          title={tr('Chats')}
+          large
+          trailing={
+            <If when={canCompose()}>
+              <View
+                role="button"
+                accessibilityLabel={tr('New Chat')}
+                onPress={() => newChatOpen.set(true)}
+                style={{
+                  minHeight: 44,
+                  minWidth: 44,
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                }}
+              >
+                <Icon name="compose" color={token('primary')} size={20} />
+              </View>
+            </If>
+          }
+        />
+      }
     >
       <View style={{ flex: 1, backgroundColor: token('grouped-bg') }}>
         <Scroll
@@ -301,7 +407,8 @@ export function ChatListScreen(props: { onOpenSession: (item: ScopedSession) => 
           keyboardDismissMode="interactive"
           refreshing={sessionsLoading()}
           onRefresh={() => void refreshAllSessions()}
-          contentContainerStyle={{
+          contentStyle={{
+            flexGrow: 1,
             paddingTop: 8,
             paddingBottom: insets().bottom + spacing.tabBarClearance,
           }}
@@ -348,110 +455,166 @@ export function ChatListScreen(props: { onOpenSession: (item: ScopedSession) => 
             title={tr('Needs Attention')}
             items={needsAttentionSessions()}
             onOpen={props.onOpenSession}
+            onRequestRename={openRename}
           />
           <SessionSection
-            title={tr('In Progress')}
+            title={tr('Running')}
             items={workingSessions()}
             onOpen={props.onOpenSession}
+            onRequestRename={openRename}
           />
           <SessionSection
             title={tr('Pinned')}
             items={pinnedSessions()}
             onOpen={props.onOpenSession}
+            onRequestRename={openRename}
           />
           <SessionSection
             title={showingArchivedSessions() ? tr('Archived') : tr('Recent')}
             items={recentSessions()}
             onOpen={props.onOpenSession}
+            onRequestRename={openRename}
           />
 
           <If when={!hasAnySessions()}>
-            <If
-              when={selectedOfflineHost()}
-              else={
-                <If
-                  when={connectedNonAgentHost()}
-                  else={
+            <View style={{ flex: 1, justifyContent: 'center', paddingBottom: 40 }}>
+              <If
+                when={selectedOfflineHost()}
+                else={
+                  <If
+                    when={connectedNonAgentHost()}
+                    else={
+                      <EmptyState
+                        icon="chat"
+                        title={
+                          sessionSearchQuery().trim()
+                            ? tr('No matching chats')
+                            : tr('No conversations yet')
+                        }
+                        subtitle={
+                          sessionSearchQuery().trim()
+                            ? tr('Try a different search term or switch the computer filter.')
+                            : tr(
+                                'Start a conversation on any connected computer and it will appear here automatically.',
+                              )
+                        }
+                        actionTitle={
+                          !sessionSearchQuery().trim() && canCompose() ? tr('New Chat') : undefined
+                        }
+                        onAction={
+                          !sessionSearchQuery().trim() && canCompose()
+                            ? () => newChatOpen.set(true)
+                            : undefined
+                        }
+                      />
+                    }
+                  >
                     <EmptyState
-                      icon="chat"
-                      title={
-                        sessionSearchQuery().trim()
-                          ? tr('No matching chats')
-                          : tr('No conversations yet')
-                      }
-                      subtitle={
-                        sessionSearchQuery().trim()
-                          ? tr('Try a different search term or switch the computer filter.')
-                          : tr(
-                              'Start a conversation on any connected computer and it will appear here automatically.',
-                            )
-                      }
+                      icon="laptop"
+                      tint="success"
+                      title={tr('{name} · Online', { name: connectedNonAgentHost()!.hostName })}
+                      subtitle={tr(
+                        'This computer is connected, and Agent conversations are not enabled on it.',
+                      )}
                     />
-                  }
-                >
-                  <EmptyState
-                    icon="laptop"
-                    tint="success"
-                    title={tr('{name} · Online', { name: connectedNonAgentHost()!.hostName })}
-                    subtitle={tr(
-                      'This computer is connected, and Agent conversations are not enabled on it.',
-                    )}
-                  />
-                </If>
-              }
-            >
-              <EmptyState
-                icon="laptop"
-                tint="muted"
-                title={tr('{name} is offline', { name: selectedOfflineHost()!.hostName })}
-                subtitle={tr('Reconnect to sync your conversations from this computer.')}
-                actionTitle={tr('Reconnect')}
-                onAction={() => void connectSavedHost(selectedOfflineHost()!.rootId)}
-              />
-            </If>
+                  </If>
+                }
+              >
+                <EmptyState
+                  icon="laptop"
+                  tint="muted"
+                  title={tr('{name} is offline', { name: selectedOfflineHost()!.hostName })}
+                  subtitle={tr('Reconnect to sync your conversations from this computer.')}
+                  actionTitle={tr('Reconnect')}
+                  onAction={() => void connectSavedHost(selectedOfflineHost()!.rootId)}
+                />
+              </If>
+            </View>
           </If>
         </Scroll>
-      </View>
-    </NavPage>
-  );
-}
 
-/** Lightweight M1 detail view pushed when tapping a conversation row (M2 expands into full chat). */
-export function ChatDetailScreen(props: { item: ScopedSession; onBack: () => void }) {
-  const insets = safeAreaInsets();
-  const s = () => props.item.session;
-  const workspace = () => s().workspace?.name || s().workspace?.path || tr('Default workspace');
+        <NewChatSheet
+          open={newChatOpen()}
+          onClose={() => newChatOpen.set(false)}
+          onCreated={(created) => props.onOpenSession(created)}
+        />
 
-  return (
-    <NavPage
-      style={{ flex: 1 }}
-      title={s().title}
-      hidesBottomBarWhenPushed
-      headerShadowVisible={false}
-      header={<ScreenHeader title={s().title} backLabel={tr('Chats')} onBack={props.onBack} />}
-    >
-      <View style={{ flex: 1, backgroundColor: token('grouped-bg') }}>
-        <Scroll
-          style={{ flex: 1 }}
-          contentContainerStyle={{
-            paddingTop: 16,
-            paddingBottom: Math.max(insets().bottom, 20) + 24,
+        {/* Rename Conversation Sheet */}
+        <Sheet
+          open={renamingItem() !== null}
+          accessibilityLabel={tr('Rename conversation')}
+          detents={['medium']}
+          defaultDetent="medium"
+          grabber
+          closeOnSwipe
+          onOpenChange={({ open }) => {
+            if (!open) renamingItem.set(null);
+          }}
+          backdropStyle={{ backgroundColor: token('scrim') }}
+          popupStyle={{
+            backgroundColor: token('grouped-bg'),
+            borderTopLeftRadius: 20,
+            borderTopRightRadius: 20,
+            borderCurve: 'continuous',
+            paddingTop: 4,
+          }}
+          grabberStyle={{
+            width: 36,
+            height: 5,
+            borderRadius: 3,
+            alignSelf: 'center',
+            backgroundColor: token('tertiary-foreground'),
+            marginTop: 6,
+            marginBottom: 4,
           }}
         >
-          <InsetGroup header={tr('Conversation')}>
-            <View style={{ paddingHorizontal: 16, paddingVertical: 14, gap: 6 }}>
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                <StatusDot kind={hostStatusKind(props.item.rootId)} size={8} />
-                <Text style={{ ...type.headline, color: token('foreground') }}>
-                  {props.item.hostName}
-                </Text>
-              </View>
-              <Text style={{ ...type.subheadline, color: token('muted-foreground') }}>
-                {workspace()}
-              </Text>
+          <View
+            style={{
+              flexDirection: 'row',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              paddingHorizontal: spacing.pageX,
+              paddingTop: 6,
+              paddingBottom: 14,
+            }}
+          >
+            <Text style={{ ...type.headline, color: token('foreground') }}>
+              {tr('Rename conversation')}
+            </Text>
+            <View
+              role="button"
+              accessibilityLabel={tr('Cancel')}
+              onPress={() => renamingItem.set(null)}
+              style={{ minHeight: 36, paddingHorizontal: 8, justifyContent: 'center' }}
+            >
+              <Text style={{ ...type.bodyMedium, color: token('primary') }}>{tr('Cancel')}</Text>
+            </View>
+          </View>
+          <InsetGroup elevated>
+            <View style={{ paddingHorizontal: 16, paddingVertical: 10 }}>
+              <Input
+                accessibilityLabel={tr('Conversation title')}
+                value={renameValue()}
+                placeholder={tr('Conversation title')}
+                onChange={({ value }) => renameValue.set(value)}
+                style={{
+                  minHeight: 40,
+                  ...type.body,
+                  color: token('foreground'),
+                  placeholderColor: token('muted-foreground'),
+                  backgroundColor: 'transparent',
+                }}
+              />
             </View>
           </InsetGroup>
-        </Scroll>
+          <View style={{ paddingHorizontal: spacing.pageX }}>
+            <ActionButton
+              title={tr('Save')}
+              disabled={renamingBusy() || !renameValue().trim()}
+              onPress={() => void submitRename()}
+            />
+          </View>
+        </Sheet>
       </View>
     </NavPage>
   );

@@ -732,3 +732,321 @@ async fn multi_host_tab_shell_isolates_scopes_and_routes_inbox_approval_by_root(
     assert_eq!(mutation["input"]["requestId"], "req-b");
     app.wait_for("text:All caught up").unwrap();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn chat_streaming_collapsible_tools_inline_approval_and_queue_never_steers() {
+    let channel = HostChannel::new();
+    channel.handle("ios.bootstrap", |call| {
+        call.reply(Ok(json!({
+            "revision": 1,
+            "devicePeerId": "ios-device",
+            "filter": { "kind": "all_computers" },
+            "hosts": [
+                { "rootId": "root-a", "hostName": "MacBook Pro", "peerId": "peer-a", "connected": true, "endpoints": ["agent"] }
+            ],
+            "active": {
+                "rootId": "root-a", "hostName": "MacBook Pro", "epoch": "ea", "session": "sa", "generation": 1, "endpoints": ["agent"], "pathSummary": null, "transport": "quic"
+            },
+            "connections": {
+                "root-a": { "status": "connected", "connection": { "rootId": "root-a", "hostName": "MacBook Pro", "epoch": "ea", "session": "sa", "generation": 1, "endpoints": ["agent"], "pathSummary": null, "transport": "quic" } }
+            }
+        })));
+    });
+    let session = json!({
+        "id": "chat-1", "title": "Auth refactor", "kind": "agent", "parentSessionId": null,
+        "labels": [], "workspace": { "name": "maka-agent", "path": "/src/maka-agent" },
+        "revision": 1, "updatedAt": 1700000002000u64, "archived": false, "pinned": false, "hasUnread": false, "activity": "working"
+    });
+    let session_q = session.clone();
+    channel.handle("ios.hostQuery", move |mut call| {
+        let data = call.take_data();
+        let method = data["method"].as_str().unwrap();
+        let value = match method {
+            "list" => json!({ "revision": "1", "needsYouCount": 1, "before": null, "after": null, "sessions": [session_q] }),
+            "observe" => json!({
+                "session": session_q, "lastCompletedTurnId": "t0", "compacting": null, "through": 5,
+                "run": { "backend": "model", "runId": "run-1", "turnId": "t1", "state": "running" },
+                "parts": [], "toolSeeds": []
+            }),
+            "history" => json!({
+                "kind": "ready", "through": 5, "before": null, "after": null,
+                "chunks": [
+                    { "field": "body", "position": { "kind": "live", "sequence": 1, "fact": "00000000-0000-4000-8000-000000000001", "itemIndex": 0 }, "order": { "path": [1], "itemIndex": 0 }, "offset": 0, "messageId": "m1", "turnId": "t0", "timestamp": 1, "role": "user", "text": "Fix the OAuth token refresh." },
+                    { "field": "thinking", "position": { "kind": "live", "sequence": 2, "fact": "00000000-0000-4000-8000-000000000002", "itemIndex": 0 }, "order": { "path": [2], "itemIndex": 0 }, "offset": 0, "messageId": "m2", "turnId": "t0", "timestamp": 2, "role": "assistant", "text": "Inspecting token expiry window first." },
+                    { "field": "body", "position": { "kind": "live", "sequence": 3, "fact": "00000000-0000-4000-8000-000000000003", "itemIndex": 0 }, "order": { "path": [3], "itemIndex": 0 }, "offset": 0, "messageId": "m2", "turnId": "t0", "timestamp": 3, "role": "assistant", "text": "", "tool": { "toolUseId": "tu1", "name": "Shell", "title": "cargo test oauth", "isError": false } },
+                    { "field": "body", "position": { "kind": "live", "sequence": 4, "fact": "00000000-0000-4000-8000-000000000004", "itemIndex": 0 }, "order": { "path": [4], "itemIndex": 0 }, "offset": 0, "messageId": "m2", "turnId": "t0", "timestamp": 4, "role": "assistant", "text": "Updated refresh window to 60 seconds." }
+                ]
+            }),
+            "models" => json!({ "kind": "ready", "choices": [{ "selection": { "kind": "model", "modelId": "claude-sonnet", "thinkingLevel": "high" }, "label": "Claude Sonnet · High", "sourceName": "anthropic", "thinkingLevels": ["high"], "defaultThinkingLevel": "high" }] }),
+            "pendingInteractions" => json!({ "revision": 1, "entries": [{ "requestId": "perm-1", "kind": "permissions", "toolUseId": "tu2" }] }),
+            "interaction" => json!({
+                "requestId": "perm-1", "outcome": null,
+                "request": {
+                    "kind": "permissions", "target": {}, "toolUseId": "tu2", "basis": {},
+                    "request": { "reason": "Run integration test suite", "command": { "command": "cargo test -p auth", "cwd": "/src/maka-agent" }, "permissions": { "filesystem": [], "network": "denied" } }
+                }
+            }),
+            _ => json!({}),
+        };
+        call.reply(Ok(json!({ "value": value })));
+    });
+    let (watch_tx, mut watch_rx) = mpsc::unbounded_channel();
+    channel.handle("ios.subscribe", move |mut call| {
+        let data = call.take_data();
+        let sub_id = data["subscriptionId"].as_str().unwrap().to_owned();
+        if data["method"] == "watch" {
+            let _ = watch_tx.send(sub_id.clone());
+        }
+        call.reply(Ok(
+            json!({ "subscriptionId": sub_id, "rootId": "root-a", "generation": 1 }),
+        ));
+    });
+    channel.handle("ios.unsubscribe", |call| {
+        call.reply(Ok(json!({ "cancelled": true })));
+    });
+    let (send_tx, mut send_rx) = mpsc::unbounded_channel();
+    channel.handle("ios.hostMutate", move |mut call| {
+        let data = call.take_data();
+        let _ = send_tx.send(data);
+        call.reply(Ok(json!({ "value": { "kind": "recorded" } })));
+    });
+
+    let mut config = engine_config(channel, tokio::runtime::Handle::current());
+    config.viewport = Size::new(px(390.), px(844.));
+    config.environment = Environment {
+        os: Os::MacOs,
+        reduce_motion: true,
+        ..Environment::default()
+    };
+    let mut app = Headless::start(config).unwrap();
+
+    app.wait_for("label:Conversation: Auth refactor").unwrap();
+    app.press("label:Conversation: Auth refactor").unwrap();
+
+    // Committed turns + collapsible activity summary + inline approval render cleanly.
+    app.wait_for("text:Fix the OAuth token refresh.").unwrap();
+    app.wait_for("text:Updated refresh window to 60 seconds.")
+        .unwrap();
+    app.wait_for("text:Thought process · 1 tool").unwrap();
+    assert!(!app.shows("Inspecting token expiry window first."));
+    app.press("label:Thought process · 1 tool").unwrap();
+    app.wait_for("text:Inspecting token expiry window first.")
+        .unwrap();
+    app.wait_for("text:cargo test oauth").unwrap();
+    app.wait_for("text:Run integration test suite").unwrap();
+
+    // Stream live Markdown preview + queued turn over watch subscription.
+    let watch_sub_id = watch_rx.recv().await.unwrap();
+    app.send_host_event("ios.subscriptionItem", json!({
+        "subscriptionId": watch_sub_id,
+        "rootId": "root-a",
+        "generation": 1,
+        "item": {
+            "kind": "preview",
+            "page": {
+                "kind": "cut", "hostEpoch": "ea", "runId": "run-1", "turnId": "t1", "stepId": "s1", "attemptId": "a1",
+                "revision": 1, "dependsOn": 0, "first": true, "last": false,
+                "parts": [{ "ordinal": 0, "messageId": "m3", "providerPartId": null, "startedAt": 1, "field": { "kind": "text", "textKind": "text" }, "offset": 0, "totalBytes": 30, "text": "Streaming live verification..." }]
+            }
+        }
+    })).unwrap();
+    app.wait_for("text:Streaming live verification...").unwrap();
+
+    app.send_host_event("ios.subscriptionItem", json!({
+        "subscriptionId": watch_sub_id,
+        "rootId": "root-a",
+        "generation": 1,
+        "item": {
+            "kind": "queue",
+            "queue": { "revision": 2, "entries": [{ "messageId": "q1", "kind": "followup", "preview": "Add changelog entry" }] }
+        }
+    })).unwrap();
+    app.wait_for("text:1 message queued").unwrap();
+
+    // Sending while running MUST use delivery = "queue" (never "steer").
+    app.type_text("label:Message composer", "Follow up after tests")
+        .unwrap();
+    app.press("label:Queue message").unwrap();
+    let sent = send_rx.recv().await.unwrap();
+    assert_eq!(sent["rootId"], "root-a");
+    assert_eq!(sent["method"], "send");
+    assert_eq!(sent["input"]["delivery"], "queue");
+    assert_eq!(sent["input"]["message"], "Follow up after tests");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn diff_line_quote_inserts_into_draft_and_returns_to_chat_preserving_existing_draft() {
+    let channel = HostChannel::new();
+    channel.handle("ios.bootstrap", |call| {
+        call.reply(Ok(json!({
+            "revision": 1,
+            "devicePeerId": "ios-device",
+            "filter": { "kind": "all_computers" },
+            "hosts": [
+                { "rootId": "root-a", "hostName": "MacBook Pro", "peerId": "peer-a", "connected": true, "endpoints": ["agent"] }
+            ],
+            "active": {
+                "rootId": "root-a", "hostName": "MacBook Pro", "epoch": "ea", "session": "sa", "generation": 1, "endpoints": ["agent"], "pathSummary": null, "transport": "quic"
+            },
+            "connections": {
+                "root-a": { "status": "connected", "connection": { "rootId": "root-a", "hostName": "MacBook Pro", "epoch": "ea", "session": "sa", "generation": 1, "endpoints": ["agent"], "pathSummary": null, "transport": "quic" } }
+            }
+        })));
+    });
+    let session = json!({
+        "id": "chat-diff", "title": "Login fix", "kind": "agent", "parentSessionId": null,
+        "labels": [], "workspace": { "name": "maka-agent", "path": "/src/maka-agent" },
+        "revision": 1, "updatedAt": 1700000002000u64, "archived": false, "pinned": false, "hasUnread": false, "activity": "idle"
+    });
+    let session_q = session.clone();
+    let sample_patch = "diff --git a/src/auth.rs b/src/auth.rs
+--- a/src/auth.rs
++++ b/src/auth.rs
+@@ -12,3 +12,3 @@ fn refresh() {
+-    let ttl = 30;
++    let ttl = 60;
+     ttl
+ }
+";
+    channel.handle("ios.hostQuery", move |mut call| {
+        let data = call.take_data();
+        let value = match data["method"].as_str().unwrap() {
+            "list" => json!({ "revision": "1", "needsYouCount": 0, "before": null, "after": null, "sessions": [session_q] }),
+            "observe" => json!({ "session": session_q, "lastCompletedTurnId": null, "compacting": null, "through": 1, "run": null, "parts": [], "toolSeeds": [] }),
+            "history" => json!({ "kind": "ready", "through": 1, "before": null, "after": null, "chunks": [] }),
+            "models" => json!({ "kind": "ready", "choices": [] }),
+            "pendingInteractions" => json!({ "revision": 1, "entries": [] }),
+            "gitWorkspaceDiff" => json!({ "patch": sample_patch, "truncated": false, "skippedFiles": 0 }),
+            _ => json!({}),
+        };
+        call.reply(Ok(json!({ "value": value })));
+    });
+    channel.handle("ios.subscribe", |mut call| {
+        let data = call.take_data();
+        call.reply(Ok(json!({ "subscriptionId": data["subscriptionId"], "rootId": "root-a", "generation": 1 })));
+    });
+    channel.handle("ios.unsubscribe", |call| {
+        call.reply(Ok(json!({ "cancelled": true })));
+    });
+
+    let mut config = engine_config(channel, tokio::runtime::Handle::current());
+    config.viewport = Size::new(px(390.), px(844.));
+    config.environment = Environment {
+        os: Os::MacOs,
+        reduce_motion: true,
+        ..Environment::default()
+    };
+    let mut app = Headless::start(config).unwrap();
+
+    app.wait_for("label:Conversation: Login fix").unwrap();
+    app.press("label:Conversation: Login fix").unwrap();
+    app.wait_for("label:Message composer").unwrap();
+
+    // Type an unsent draft before navigating to ProjectFiles -> DiffScreen.
+    app.type_text("label:Message composer", "Please check this:")
+        .unwrap();
+    app.press("label:Files & Changes").unwrap();
+    app.wait_for("label:Diff: src/auth.rs").unwrap();
+    app.press("label:Diff: src/auth.rs").unwrap();
+    app.wait_for("label:Quote line to chat").unwrap();
+    app.press("label:Quote line to chat").unwrap();
+
+    // Returns cleanly to ChatScreen with both original draft and quoted path:line.
+    app.wait_for("text:/Please check this:/").unwrap();
+    app.wait_for(r"text:/src\/auth\.rs:12/").unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn inbox_review_detail_reflects_remote_desktop_resolution_and_disables_duplicate_submit() {
+    let channel = HostChannel::new();
+    channel.handle("ios.bootstrap", |call| {
+        call.reply(Ok(json!({
+            "revision": 1,
+            "devicePeerId": "ios-device",
+            "filter": { "kind": "all_computers" },
+            "hosts": [
+                { "rootId": "root-a", "hostName": "MacBook Pro", "peerId": "peer-a", "connected": true, "endpoints": ["agent"] }
+            ],
+            "active": {
+                "rootId": "root-a", "hostName": "MacBook Pro", "epoch": "ea", "session": "sa", "generation": 1, "endpoints": ["agent"], "pathSummary": null, "transport": "quic"
+            },
+            "connections": {
+                "root-a": { "status": "connected", "connection": { "rootId": "root-a", "hostName": "MacBook Pro", "epoch": "ea", "session": "sa", "generation": 1, "endpoints": ["agent"], "pathSummary": null, "transport": "quic" } }
+            }
+        })));
+    });
+    let resolved_remotely = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let resolved_q = resolved_remotely.clone();
+    channel.handle("ios.hostQuery", move |mut call| {
+        let data = call.take_data();
+        let is_resolved = resolved_q.load(std::sync::atomic::Ordering::SeqCst);
+        let value = match data["method"].as_str().unwrap() {
+            "list" => json!({
+                "revision": "1", "needsYouCount": 1, "before": null, "after": null,
+                "sessions": [{
+                    "id": "s-1", "title": "Deploy API", "kind": "agent", "parentSessionId": null,
+                    "labels": [], "workspace": { "name": "api", "path": "/srv/api" },
+                    "revision": 1, "updatedAt": 1700000002000u64, "archived": false, "pinned": false, "hasUnread": false, "activity": "waiting"
+                }]
+            }),
+            "pendingInteractions" => json!({ "revision": 1, "entries": [{ "requestId": "req-1", "kind": "service_approval", "toolUseId": "tu-1" }] }),
+            "interaction" => json!({
+                "requestId": "req-1",
+                "outcome": if is_resolved { json!({ "decision": "allow" }) } else { Value::Null },
+                "request": {
+                    "kind": "service_approval", "toolUseId": "tu-1", "toolName": "ReleaseTool",
+                    "service": "release", "method": "publish", "binding": "prod", "through": 1
+                }
+            }),
+            _ => json!({}),
+        };
+        call.reply(Ok(json!({ "value": value })));
+    });
+    let (sub_tx, mut sub_rx) = mpsc::unbounded_channel();
+    channel.handle("ios.subscribe", move |mut call| {
+        let data = call.take_data();
+        let id = data["subscriptionId"].as_str().unwrap().to_owned();
+        let _ = sub_tx.send(id.clone());
+        call.reply(Ok(
+            json!({ "subscriptionId": id, "rootId": "root-a", "generation": 1 }),
+        ));
+    });
+    channel.handle("ios.unsubscribe", |call| {
+        call.reply(Ok(json!({ "cancelled": true })));
+    });
+
+    let mut config = engine_config(channel, tokio::runtime::Handle::current());
+    config.viewport = Size::new(px(390.), px(844.));
+    config.environment = Environment {
+        os: Os::MacOs,
+        reduce_motion: true,
+        ..Environment::default()
+    };
+    let mut app = Headless::start(config).unwrap();
+
+    app.wait_for("label:Pending").unwrap();
+    app.press("label:Pending").unwrap();
+    app.wait_for("text:Allow service call ReleaseTool?")
+        .unwrap();
+    app.press("text:Allow service call ReleaseTool?").unwrap();
+    app.wait_for("label:Allow once").unwrap();
+
+    // Desktop resolves the interaction while iPhone is viewing ReviewDetailScreen.
+    resolved_remotely.store(true, std::sync::atomic::Ordering::SeqCst);
+    let sub_id = sub_rx.recv().await.unwrap();
+    app.send_host_event(
+        "ios.subscriptionItem",
+        json!({
+            "subscriptionId": sub_id,
+            "rootId": "root-a",
+            "generation": 1,
+            "item": { "kind": "changed" }
+        }),
+    )
+    .unwrap();
+
+    app.wait_for("text:Approved on another device").unwrap();
+    app.wait_for_gone("label:Allow once", Duration::from_secs(2))
+        .unwrap();
+    app.wait_for("label:Open Conversation").unwrap();
+}

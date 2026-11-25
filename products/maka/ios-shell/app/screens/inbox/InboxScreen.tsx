@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { safeAreaInsets, Scroll, Text, View, token } from 'nsh';
+import { safeAreaInsets, Scroll, signal, View, token } from 'nsh';
 import { NavPage } from 'nsh/base';
 import { describeChildDecision, describePermissions } from '../../approval';
 import { tr } from '../../locale';
@@ -31,9 +31,9 @@ import {
   respondInboxItem,
   type InboxItem,
 } from '../../state/inbox';
-import { spacing, type } from '../../theme/tokens';
+import { hapticSelection } from '../../state/preferences';
+import { spacing } from '../../theme/tokens';
 import {
-  ActionButton,
   ApprovalCard,
   EmptyState,
   InsetGroup,
@@ -41,6 +41,8 @@ import {
   ScreenHeader,
   type ScopePillItem,
 } from '../../ui';
+
+type CategoryFilter = 'all' | 'approvals' | 'questions';
 
 function interactionBadge(kind: InboxItem['summary']['kind']): string {
   switch (kind) {
@@ -149,6 +151,18 @@ function buildDenyAnswer(item: InboxItem): Record<string, unknown> | null {
 
 export function InboxScreen(props: { onOpenItem: (item: InboxItem) => void }) {
   const insets = safeAreaInsets();
+  const category = signal<CategoryFilter>('all');
+
+  const visibleItems = () => {
+    const list = filteredInboxItems();
+    if (category() === 'questions') {
+      return list.filter((i) => i.summary.kind === 'question');
+    }
+    if (category() === 'approvals') {
+      return list.filter((i) => i.summary.kind !== 'question');
+    }
+    return list;
+  };
 
   const scopeItems = (): ScopePillItem[] => [
     { id: 'all', label: tr('All Computers') },
@@ -159,6 +173,17 @@ export function InboxScreen(props: { onOpenItem: (item: InboxItem) => void }) {
       count: pendingCountForHost(host.rootId),
     })),
   ];
+
+  const categoryItems = (): ScopePillItem[] => {
+    const all = filteredInboxItems();
+    const qCount = all.filter((i) => i.summary.kind === 'question').length;
+    const aCount = all.length - qCount;
+    return [
+      { id: 'all', label: tr('All'), count: all.length },
+      { id: 'approvals', label: tr('Approvals'), count: aCount },
+      { id: 'questions', label: tr('Questions'), count: qCount },
+    ];
+  };
 
   return (
     <NavPage
@@ -175,7 +200,8 @@ export function InboxScreen(props: { onOpenItem: (item: InboxItem) => void }) {
           style={{ flex: 1 }}
           refreshing={inboxLoading()}
           onRefresh={() => void refreshAllInbox()}
-          contentContainerStyle={{
+          contentStyle={{
+            flexGrow: 1,
             paddingTop: 8,
             paddingBottom: insets().bottom + spacing.tabBarClearance,
           }}
@@ -188,21 +214,34 @@ export function InboxScreen(props: { onOpenItem: (item: InboxItem) => void }) {
             />
           </If>
 
+          <If when={filteredInboxItems().length > 0}>
+            <ScopePills
+              items={categoryItems()}
+              selectedId={category()}
+              onSelect={(id) => {
+                hapticSelection();
+                category.set(id as CategoryFilter);
+              }}
+            />
+          </If>
+
           <If
-            when={filteredInboxItems().length > 0}
+            when={visibleItems().length > 0}
             else={
-              <EmptyState
-                icon="checkCircle"
-                tint="success"
-                title={tr('All caught up')}
-                subtitle={tr(
-                  'No approvals or questions are waiting across your connected computers.',
-                )}
-              />
+              <View style={{ flex: 1, justifyContent: 'center', paddingBottom: 150 }}>
+                <EmptyState
+                  icon="checkCircle"
+                  tint="success"
+                  title={tr('All caught up')}
+                  subtitle={tr(
+                    'No approvals or questions are waiting across your connected computers.',
+                  )}
+                />
+              </View>
             }
           >
             <InsetGroup header={tr('Waiting for your response')}>
-              <Each of={filteredInboxItems()} key={(item) => item.key}>
+              <Each of={visibleItems()} key={(item) => item.key}>
                 {(item, index) => {
                   const detail = () => interactionDetail(item());
                   const allow = () => buildAllowAnswer(item());
@@ -230,104 +269,12 @@ export function InboxScreen(props: { onOpenItem: (item: InboxItem) => void }) {
                         deny() ? () => void respondInboxItem(item(), deny()!, 'warning') : undefined
                       }
                       onPress={() => props.onOpenItem(item())}
-                      divider={index() < filteredInboxItems().length - 1}
+                      divider={index() < visibleItems().length - 1}
                     />
                   );
                 }}
               </Each>
             </InsetGroup>
-          </If>
-        </Scroll>
-      </View>
-    </NavPage>
-  );
-}
-
-/** Review detail pushed from Tab 2 Pending card (M3 adds Diff linkage & full forms). */
-export function ReviewDetailScreen(props: { item: InboxItem; onBack: () => void }) {
-  const insets = safeAreaInsets();
-  const detail = () => interactionDetail(props.item);
-  const allow = () => buildAllowAnswer(props.item);
-  const deny = () => buildDenyAnswer(props.item);
-
-  return (
-    <NavPage
-      style={{ flex: 1 }}
-      title={interactionBadge(props.item.summary.kind)}
-      hidesBottomBarWhenPushed
-      headerShadowVisible={false}
-      header={
-        <ScreenHeader
-          title={interactionBadge(props.item.summary.kind)}
-          backLabel={tr('Pending')}
-          onBack={props.onBack}
-        />
-      }
-    >
-      <View style={{ flex: 1, backgroundColor: token('grouped-bg') }}>
-        <Scroll
-          style={{ flex: 1 }}
-          contentContainerStyle={{
-            paddingTop: 16,
-            paddingBottom: Math.max(insets().bottom, 20) + 24,
-          }}
-        >
-          <InsetGroup header={tr('Request details')}>
-            <View style={{ paddingHorizontal: 16, paddingVertical: 14, gap: 10 }}>
-              <Text style={{ ...type.footnote, color: token('muted-foreground') }}>
-                {[props.item.hostName, props.item.workspaceName, props.item.sessionTitle]
-                  .filter(Boolean)
-                  .join(' · ')}
-              </Text>
-              <Text style={{ ...type.headline, color: token('foreground') }}>
-                {interactionTitle(props.item)}
-              </Text>
-              <If when={detail().text}>
-                <View
-                  style={{
-                    padding: 12,
-                    borderRadius: 10,
-                    borderCurve: 'continuous',
-                    backgroundColor: token('grouped-bg'),
-                  }}
-                >
-                  <Text
-                    style={{
-                      ...(detail().mono ? type.mono : type.subheadline),
-                      color: token('foreground'),
-                    }}
-                  >
-                    {detail().text}
-                  </Text>
-                </View>
-              </If>
-            </View>
-          </InsetGroup>
-
-          <If when={allow() || deny()}>
-            <View style={{ paddingHorizontal: spacing.pageX, gap: 10 }}>
-              <If when={allow()}>
-                <ActionButton
-                  title={tr('Allow once')}
-                  disabled={isInboxItemBusy(props.item.key)}
-                  onPress={async () => {
-                    const ok = await respondInboxItem(props.item, allow()!, 'success');
-                    if (ok) props.onBack();
-                  }}
-                />
-              </If>
-              <If when={deny()}>
-                <ActionButton
-                  title={tr('Deny')}
-                  variant="destructive"
-                  disabled={isInboxItemBusy(props.item.key)}
-                  onPress={async () => {
-                    const ok = await respondInboxItem(props.item, deny()!, 'warning');
-                    if (ok) props.onBack();
-                  }}
-                />
-              </If>
-            </View>
           </If>
         </Scroll>
       </View>

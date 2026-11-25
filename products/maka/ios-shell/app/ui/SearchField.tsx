@@ -54,6 +54,7 @@ export function SearchField(props: {
           flex: 1,
           ...type.body,
           color: token('foreground'),
+          placeholderColor: token('muted-foreground'),
           paddingVertical: 6,
           backgroundColor: 'transparent',
         }}

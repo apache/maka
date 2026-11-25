@@ -128,7 +128,7 @@ export function SettingsRootScreen(props: {
       <View style={{ flex: 1, backgroundColor: token('grouped-bg') }}>
         <Scroll
           style={{ flex: 1 }}
-          contentContainerStyle={{
+          contentStyle={{
             paddingTop: 12,
             paddingBottom: insets().bottom + spacing.tabBarClearance,
           }}

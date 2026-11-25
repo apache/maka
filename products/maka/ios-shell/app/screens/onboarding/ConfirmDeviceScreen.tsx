@@ -90,7 +90,7 @@ export function ConfirmDeviceScreen(props: { onCancelled: () => void; onConfirme
       <View style={{ flex: 1, backgroundColor: token('grouped-bg') }}>
         <Scroll
           style={{ flex: 1 }}
-          contentContainerStyle={{
+          contentStyle={{
             paddingTop: 24,
             paddingBottom: Math.max(insets().bottom, 20) + 24,
           }}

@@ -21,8 +21,12 @@ import { effect, Overlay, safeAreaInsets, signal, Text, View, token } from 'nsh'
 import { createNavStack, NavStack, Toast, ToastStack } from 'nsh/base';
 import { isAvailable, TabBar, type TabBarItem } from 'nsh/mobile';
 import { tr } from './locale';
-import { ChatDetailScreen, ChatListScreen } from './screens/chats/ChatListScreen';
-import { InboxScreen, ReviewDetailScreen } from './screens/inbox/InboxScreen';
+import { ChatListScreen } from './screens/chats/ChatListScreen';
+import { ChatScreen } from './screens/chats/ChatScreen';
+import { DiffScreen } from './screens/chats/DiffScreen';
+import { ProjectFilesScreen } from './screens/chats/ProjectFilesScreen';
+import { InboxScreen } from './screens/inbox/InboxScreen';
+import { ReviewDetailScreen } from './screens/inbox/ReviewDetailScreen';
 import { AdvancedConnectSheet } from './screens/onboarding/AdvancedConnectSheet';
 import { ConfirmDeviceScreen } from './screens/onboarding/ConfirmDeviceScreen';
 import { ScanScreen } from './screens/onboarding/ScanScreen';
@@ -33,6 +37,7 @@ import {
   type HostSettingDomain,
 } from './screens/settings/HostSettingPlaceholderScreen';
 import { SettingsRootScreen } from './screens/settings/SettingsRootScreen';
+import type { ParsedDiffFile } from './state/chat';
 import {
   closeAddComputerFlow,
   currentDeepLink,
@@ -47,12 +52,16 @@ import {
 } from './state/hostPool';
 import { startInboxStore, totalPendingCount, type InboxItem } from './state/inbox';
 import { hapticSelection } from './state/preferences';
-import { startSessionsStore, type ScopedSession } from './state/sessions';
+import { findScopedSession, startSessionsStore, type ScopedSession } from './state/sessions';
 import { type } from './theme/tokens';
 import { BannerNotice } from './ui';
 
 type OnboardingRoute = { name: 'welcome' } | { name: 'scan' } | { name: 'confirm' };
-type ChatsRoute = { name: 'list' } | { name: 'detail'; item: ScopedSession };
+type ChatsRoute =
+  | { name: 'list' }
+  | { name: 'chat'; item: ScopedSession }
+  | { name: 'files'; item: ScopedSession }
+  | { name: 'diff'; item: ScopedSession; file: ParsedDiffFile };
 type InboxRoute = { name: 'list' } | { name: 'review'; item: InboxItem };
 type SettingsRoute =
   | { name: 'root' }
@@ -70,7 +79,6 @@ function OnboardingFlow(props: { isModal: boolean }) {
   };
 
   effect(() => {
-    // If pairing ticket was cleared while on Confirm, return cleanly to Welcome.
     if (!currentPendingTicket()) {
       const routes = nav.routes();
       if (routes[routes.length - 1]?.name === 'confirm') {
@@ -161,6 +169,36 @@ function MainTabShell() {
     activeTab.set(index);
   };
 
+  const jumpToConversation = (
+    rootId: string,
+    sessionId: string,
+    hostName: string,
+    sessionTitle: string,
+  ) => {
+    const existing = findScopedSession(rootId, sessionId);
+    const target: ScopedSession = existing ?? {
+      key: rootId + '::' + sessionId,
+      rootId,
+      hostName,
+      session: {
+        id: sessionId,
+        title: sessionTitle,
+        kind: 'agent',
+        parentSessionId: null,
+        labels: [],
+        workspace: {},
+        revision: 0,
+        updatedAt: Date.now(),
+        archived: false,
+        pinned: false,
+        hasUnread: false,
+        activity: 'idle',
+      },
+    };
+    chatsNav.setRoutes([{ name: 'list' }, { name: 'chat', item: target }]);
+    activeTab.set(0);
+  };
+
   return (
     <View style={{ flex: 1, backgroundColor: token('grouped-bg') }}>
       {/* Tab 1: Chats */}
@@ -176,11 +214,38 @@ function MainTabShell() {
       >
         <NavStack state={chatsNav} style={{ flex: 1 }}>
           {(route) => {
-            if (route.name === 'detail') {
-              return <ChatDetailScreen item={route.item} onBack={() => chatsNav.pop()} />;
+            if (route.name === 'chat') {
+              return (
+                <ChatScreen
+                  item={route.item}
+                  onBack={() => chatsNav.pop()}
+                  onOpenProjectFiles={(item) => chatsNav.push({ name: 'files', item })}
+                />
+              );
+            }
+            if (route.name === 'files') {
+              return (
+                <ProjectFilesScreen
+                  item={route.item}
+                  onBack={() => chatsNav.pop()}
+                  onOpenDiff={(file) => chatsNav.push({ name: 'diff', item: route.item, file })}
+                  onQuotedBackToChat={() => chatsNav.pop()}
+                />
+              );
+            }
+            if (route.name === 'diff') {
+              return (
+                <DiffScreen
+                  rootId={route.item.rootId}
+                  sessionId={route.item.session.id}
+                  file={route.file}
+                  onBack={() => chatsNav.pop()}
+                  onQuotedBackToChat={() => chatsNav.pop(2)}
+                />
+              );
             }
             return (
-              <ChatListScreen onOpenSession={(item) => chatsNav.push({ name: 'detail', item })} />
+              <ChatListScreen onOpenSession={(item) => chatsNav.push({ name: 'chat', item })} />
             );
           }}
         </NavStack>
@@ -200,7 +265,13 @@ function MainTabShell() {
         <NavStack state={inboxNav} style={{ flex: 1 }}>
           {(route) => {
             if (route.name === 'review') {
-              return <ReviewDetailScreen item={route.item} onBack={() => inboxNav.pop()} />;
+              return (
+                <ReviewDetailScreen
+                  item={route.item}
+                  onBack={() => inboxNav.pop()}
+                  onOpenConversation={jumpToConversation}
+                />
+              );
             }
             return <InboxScreen onOpenItem={(item) => inboxNav.push({ name: 'review', item })} />;
           }}
