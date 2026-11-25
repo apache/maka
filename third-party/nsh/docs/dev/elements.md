@@ -336,8 +336,11 @@ misses the deadline is not waited for again until it catches up (`docs/dev/macos
   it is, giving it up if the view is still not shown 3 s later: the latest request wins; a `blur()` of it, of a view
   holding it, or `Keyboard.dismiss()`, any focus taken meanwhile (in hosted native content or the embedding app's
   views too) or the view's removal end it; a request dropped without effect logs a warning (`PendingFocus`; an input
-  waits for its field on its own, `InputBox.focus`, and reports the wait, so the same rules end it). Windows and GPUI
-  leave `focus()` on views to them; iOS focuses inputs only.
+  waits for its field on its own, `InputBox.focus`, and reports the wait, so the same rules end it). iOS makes the
+  stop the first responder, a transparent one too (`keyboard::shown`: a popup coming in from `opacity: 0` focuses the
+  item it asked for as it opens), and asks UIKit's focus engine to follow (`keyboard::request_focus`), which it does
+  for a visible stop: Tab and the engine pass over a transparent one (`keyboard::visible`). Windows and GPUI leave
+  `focus()` on views to them.
 - **`onPanEnd` / `onPanStart`** carry `value` (`{ x?, y? }`, the axes `pan` binds): the bound pan values at that moment (a drag may grab a value mid
   animation), for snapping.
 - **Imperative calls**: nodes have `focus()`, `blur()` (inputs, and views that take presses where they are stops of
@@ -437,7 +440,11 @@ misses the deadline is not waited for again until it catches up (`docs/dev/macos
   the description and then the hint (`Accessibility::help_text`). Roles and states follow ARIA where `gpui-base` (AccessKit) has them: `group`, `region`,
   `navigation`, `tree` / `treeitem`, `menuitemcheckbox` / `menuitemradio`, `dialog` / `alertdialog` (`nsh-base`'s
   `Dialog` is a `dialog` unless the app gives it another role, named by its label; the platforms map it to their own
-  dialog roles, and on iOS to a semantic group so a labelled dialog never hides its content); `accessibilityState.pressed` (`aria-pressed`:
+  dialog roles, and on iOS to a semantic group so a labelled dialog never hides its content), `tabpanel` (the content
+  a tab list's selected tab shows, which the tabs name with `accessibilityControls`: a `DockArea` group's content
+  frame; GTK's tab panel role, which GTK gives AT-SPI as a panel, AccessKit's, macOS's `AXGroup` with WebKit's
+  `AXTabPanel` subrole, a UIA pane read as "tab panel", a semantic group on iOS, the role description "tab panel" on
+  Android); `accessibilityState.pressed` (`aria-pressed`:
   a button that has one is a toggle button) and `current` (`aria-current`: `true`, `page`, `step`, `location`, `date`,
   `time`), `hasPopup` (`aria-haspopup`: the element opens a popup, a menu or a list, and its `expanded` says whether
   it is open; `nsh-base`'s `Popover`, `Menu`, `HoverCard`, `Select`, `Combobox` and `DatePicker` set it on their
@@ -486,7 +493,9 @@ misses the deadline is not waited for again until it catches up (`docs/dev/macos
   send one, as its props change. The state words iOS and Android supply (checked, expanded, current, invalid...)
   are in the language of the app's text, as NSH's menus on the desktops are (`i18n::text_locale`): the core sends
   `Command::TextLocale` on the root of those surfaces when it changes, and the words of mounted views follow it the
-  next time a screen reader reads them.
+  next time a screen reader reads them. Android's `DateTimePicker` shows its value in that language too (the user's 12-
+  or 24-hour clock kept), formatted again when it changes, and its date and time dialogs their own words (buttons,
+  month and day names, the date dialog's header) from the next dialog opened.
   The `increment` / `decrement` actions make an element adjustable whatever its
   role: iOS adds the adjustable trait to the traits of its role (`native_view.rs` `traits`), so VoiceOver's swipe up /
   down performs them (an `image`, `Plot`'s role, stays an image), Android offers scroll forward / backward, Windows
@@ -655,7 +664,10 @@ misses the deadline is not waited for again until it catches up (`docs/dev/macos
 - **Paste**: `onPaste` reports what the user pasted (`EventPayload::Paste`, `PasteEvent`): `text`, `html` (the clipboard's `text/html`, read on Linux, UTF-8 or UTF-16 as Firefox
   writes it, and on the web; `RichEditor` parses it into its schema), `files` (data on
   the clipboard, images: `PastedFile`s whose bytes become JS `File`s in `nsh-js` `payload_object`, never a JS string
-  or base64) and `uris` (local files' `file:` URLs, as `onFileDrop`'s). The platform reads the clipboard in the
+  or base64) and `uris` (local files' `file:` URLs, as `onFileDrop`'s). A file larger than `pasteMaxSize`
+  (`InputConfig::paste_max_size`) goes to `too_large` (JS `tooLarge`: name, type, size) without its bytes: the
+  engine moves any the platform read into it, and platforms that know a file's size first (iOS, Android, web) never
+  copy its bytes. The platform reads the clipboard in the
   paste's own handler, on the user's paste only, and only when the app listens. Whether the input inserts the text is
   answered at once from `pasteBehavior` (`InputConfig::paste_behavior`: `"insert"`, the default, or `"report"`);
   images and files are never inserted. Inserted text is clipped to what `maxLength` leaves room for, as a browser's
@@ -675,7 +687,8 @@ misses the deadline is not waited for again until it catches up (`docs/dev/macos
   named as its item provider suggests) and `canPerformAction:withSender:`; with a `maxLength` they insert the clipped text
   themselves (`paste_text`, the test agent's paste too) instead of UIKit's `paste:`; Android: `setOnReceiveContentListener` (API 31;
   the clipboard and keyboards' rich content; images read from their content URIs, through `Native.paste`; the text
-  goes back to the EditText while it inserts) and `onTextContextMenuItem` before; macOS: `TextArea` and a field
+  goes back to the EditText while it inserts) and `onTextContextMenuItem` before; on every version a paste from the
+  EditText's text toolbar ends that toolbar, one that inserted nothing included; macOS: `TextArea` and a field
   editor of NSH's (`FieldEditor`, from `FieldCell`'s `fieldEditorForView:`, one per window; masked fields keep
   AppKit's) override `paste:` / `pasteAsPlainText:` and `validateUserInterfaceItem:`; Windows and GPUI: their own
   editors' paste (the clipboard's PNG or bitmap, `CF_HDROP`; GPUI's `ClipboardEntry::Image` / `ExternalPaths`);

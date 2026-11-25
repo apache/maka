@@ -1,7 +1,7 @@
 //! Notifications and the badge on Apple platforms
 //! (`Command::Notification`, `nsh`'s `Notifications`): the UserNotifications
 //! framework. Shared by macOS and iOS through `nsh-platform-apple`: the
-//! framework is loaded and messaged dynamically, as `speech.rs` does.
+//! framework is loaded and messaged dynamically, as `audio.rs` does.
 //!
 //! The framework ends an executable without a bundle identifier that
 //! touches it (the macOS development host run from a terminal), so there

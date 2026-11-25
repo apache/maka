@@ -1,7 +1,10 @@
 //! The payloads of the page's events (`event::payload`): every field
 //! `web/nsh.js` sends reaches the core.
 
-use nsh_core::{EventKind, EventPayload, PayloadValue};
+use nsh_core::{
+    EventKind, EventPayload, PayloadValue,
+    geometry::{bounds, point, px, size},
+};
 use serde_json::json;
 
 use crate::event::payload;
@@ -50,6 +53,10 @@ fn every_field_the_page_sends_reaches_the_core() {
         ("onKeyPress", json!({ "key": "Enter" })),
         ("onSelectionChange", json!({ "start": 1, "end": 2 })),
         (
+            "onSelectionChange",
+            json!({ "text": "a", "start": 0, "bounds": { "origin": { "x": 1, "y": 2 }, "size": { "width": 3, "height": 4 } } }),
+        ),
+        (
             "onCompositionChange",
             json!({ "composing": true, "text": "a" }),
         ),
@@ -89,6 +96,37 @@ fn keys_are_kept_once() {
     let second = fields("onOpenUrl", json!({ "opened": false }));
     // The same static key, not one allocated per event.
     assert!(std::ptr::eq(first[0].0, second[0].0));
+}
+
+#[test]
+fn a_selection_s_box_reaches_the_core_as_bounds() {
+    // A selectable view's selection (`areaSelectionChanged`): the core adds
+    // `pageBounds` to the box it gets.
+    let selected = fields(
+        "onSelectionChange",
+        json!({
+            "text": "beta",
+            "start": 6,
+            "bounds": { "origin": { "x": 12.5, "y": 0 }, "size": { "width": 40, "height": 22 } },
+        }),
+    );
+    assert_eq!(
+        get(&selected, "bounds"),
+        Some(PayloadValue::Bounds(bounds(
+            point(px(12.5), px(0.0)),
+            size(px(40.0), px(22.0))
+        )))
+    );
+    assert_eq!(
+        get(&selected, "text"),
+        Some(PayloadValue::Str("beta".into()))
+    );
+    // An object that is no box is left out, as other nested values.
+    let partial = fields(
+        "onSelectionChange",
+        json!({ "text": "beta", "bounds": { "origin": { "x": 1 } } }),
+    );
+    assert_eq!(get(&partial, "bounds"), None);
 }
 
 #[test]

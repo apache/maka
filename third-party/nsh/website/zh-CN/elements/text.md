@@ -10,6 +10,12 @@ demo: el-text
 
 `Text` 绘制一个段落。它是显示字符串的元素：`View` 的字符串子节点什么也不会画。段落在原生侧排版（iOS 和 Mac Catalyst 上用 CoreText，Android 上用 `StaticLayout`），并在引擎线程上测量，主线程只负责绘制。Rust 用 `text(content)` 创建，TSX 用从 `nsh` 导入的 `<Text>`。
 
+```tsx tabs
+<Text style={{ fontSize: 16, lineHeight: 24, color: "#1f2328" }}>
+  继续之前请阅读<Text style={{ fontWeight: "700" }}>条款</Text>。
+</Text>
+```
+
 ```rust tabs
 use nsh_core::prelude::*;
 
@@ -21,25 +27,11 @@ text("继续之前请阅读")
     .child("。")
 ```
 
-```tsx tabs
-<Text style={{ fontSize: 16, lineHeight: 24, color: "#1f2328" }}>
-  继续之前请阅读<Text style={{ fontWeight: "700" }}>条款</Text>。
-</Text>
-```
-
 `text(..)` 接受字符串、`SharedString`、signal 或闭包（`text(move || format!("{} 项", count.get()))`）：闭包或 signal 读取的内容变化时，文本就地更新。
 
 ## 片段
 
 文本里的文本是同一段落中的一个片段（span），而不是单独的视图。片段继承段落的文本样式（`color`、`fontSize`、`fontWeight` 等），并覆盖自己设置的部分。整个文本块是一个原生视图。在 Rust 中，`text(..)` 先显示自身内容，再显示子元素：`.child(text(..))` 添加一个片段，`.child("…")` 添加一段普通文字。
-
-```rust tabs
-text("")
-    .text_size(px(17.0))
-    .child(text("Light ").font_weight(FontWeight::LIGHT))
-    .child(text("Bold ").font_weight(FontWeight::BOLD))
-    .child(text("Italic").italic().text_color(rgb(0x8250df)))
-```
 
 ```tsx tabs
 <Text style={{ fontSize: 17 }}>
@@ -49,9 +41,27 @@ text("")
 </Text>
 ```
 
+```rust tabs
+text("")
+    .text_size(px(17.0))
+    .child(text("Light ").font_weight(FontWeight::LIGHT))
+    .child(text("Bold ").font_weight(FontWeight::BOLD))
+    .child(text("Italic").italic().text_color(rgb(0x8250df)))
+```
+
 ### 片段背景
 
 设置了背景的片段会在字符后面填充它们的方框：高度就是字体的高度（基线以上的 ascent 加基线以下的 descent，与行高无关）；片段换到几行，每行各画一个方框，圆角取片段的圆角半径。片段内部的片段沿用它的背景，除非自己另设。背景只影响绘制：文本排版与不设背景时相同，可选中的文本复制时连同片段的字符一起复制。行内代码就是一个片段：
+
+```tsx tabs
+<Text style={{ userSelect: "text", fontSize: 15, lineHeight: 22 }}>
+  {"提交前先运行 "}
+  <Text style={{ fontFamily: "ui-monospace", fontSize: 13, backgroundColor: "#eff1f3", borderRadius: 4 }}>
+    {" cargo test "}
+  </Text>
+  {"。"}
+</Text>
+```
 
 ```rust tabs
 text("提交前先运行 ")
@@ -68,21 +78,17 @@ text("提交前先运行 ")
     .child("。")
 ```
 
-```tsx tabs
-<Text style={{ userSelect: "text", fontSize: 15, lineHeight: 22 }}>
-  {"提交前先运行 "}
-  <Text style={{ fontFamily: "ui-monospace", fontSize: 13, backgroundColor: "#eff1f3", borderRadius: 4 }}>
-    {" cargo test "}
-  </Text>
-  {"。"}
-</Text>
-```
-
 Tailwind 类同样适用：`<Text class="bg-gray-100 rounded px-1">`。水平内边距会在片段两端的行内占位，背景也覆盖这段空间，与 CSS 行内盒一致；垂直内边距会让背景向文字上下延伸，但不改变行高；边框对片段不起作用。
 
 ### 隐藏片段
 
 片段上的 `visibility: "hidden"`（Rust 中为 `.invisible()`，类名 `invisible`）让它的字符原地隐藏：字符仍在行中占位，文字的排版与显示时完全相同，但不绘制任何内容（字形、彩色 emoji、装饰线、背景、阴影）。复制选区和屏幕阅读器都会略过这些字符，它们也不响应按压。隐藏片段里的片段随之隐藏，其中的视图和图片也一样：保留位置、不绘制、不响应按压。重新显示（`visibility: "visible"`）在字符原来的位置绘制它们，不重新测量文字，也不移动任何内容，适合在流式输出的段落末尾逐词显示：
+
+```tsx tabs
+<Text style={{ userSelect: "text" }}>
+  The answer is <Text style={{ visibility: "hidden" }}>forty-two</Text>.
+</Text>
+```
 
 ```rust tabs
 text("The answer is ")
@@ -91,30 +97,11 @@ text("The answer is ")
     .child(".")
 ```
 
-```tsx tabs
-<Text style={{ userSelect: "text" }}>
-  The answer is <Text style={{ visibility: "hidden" }}>forty-two</Text>.
-</Text>
-```
-
 这段文字与 “The answer is forty-two.” 一样宽，显示为 “The answer is”，复制得到 “The answer is .”。
 
 ### 链接
 
 带按压处理函数的片段就是链接：按在它的字符上由该片段处理，按在其他位置则由段落处理。鼠标停在片段的字符上时，片段采用它的悬停样式（`hoverStyle`、`hover:`、`.hover(..)`）；按住链接时，链接采用它的按下样式（`activeStyle`、`active:`、`.active(..)`）；段落其余部分保持原样。鼠标停在链接里的片段上时，悬停的是链接：把样式写在链接上。在终端里，每个链接也是一个键盘焦点停靠点：Tab 依次到达段落里的链接，Return 按下获得焦点的那一个。
-
-```rust tabs
-text("继续即表示你同意")
-    .text_size(px(15.0))
-    .on_press(move || log("整句话"))
-    .child(
-        text("服务条款")
-            .text_color(rgb(0x0969da))
-            .hover(|s| s.underline())
-            .on_press(move || open("terms")),
-    )
-    .child("。")
-```
 
 ```tsx tabs
 <Text style={{ fontSize: 15 }} onPress={() => log("整句话")}>
@@ -130,9 +117,33 @@ text("继续即表示你同意")
 </Text>
 ```
 
+```rust tabs
+text("继续即表示你同意")
+    .text_size(px(15.0))
+    .on_press(move || log("整句话"))
+    .child(
+        text("服务条款")
+            .text_color(rgb(0x0969da))
+            .hover(|s| s.underline())
+            .on_press(move || open("terms")),
+    )
+    .child("。")
+```
+
 ### 行内视图和图片
 
 文本中的其他元素（视图、图片，即使位于片段内）都是行内附件：按自身尺寸布局，坐落在基线上（或由样式 `verticalAlign` 决定位置：`"text-top"`、`"text-bottom"`、`"middle"`，与 CSS 一致；所在行会撑高以容纳它；在基线上时，内部有文字的视图以其首行文字的基线对齐所在行，与 `inline-flex` 盒子一致），并随文字一起换行。它们可以单独响应按压。
+
+```tsx tabs
+<Text style={{ fontSize: 16, lineHeight: 26 }}>
+  {"基于 "}
+  <Image src={logo} style={{ width: 18, height: 18, borderRadius: 4 }} />
+  {" NSH 构建。状态 "}
+  <View style={{ backgroundColor: "#1a7f37", borderRadius: 9, paddingHorizontal: 7, height: 18, justifyContent: "center" }}>
+    <Text style={{ color: "#ffffff", fontSize: 11, fontWeight: "700" }}>LIVE</Text>
+  </View>
+</Text>
+```
 
 ```rust tabs
 text("基于 ")
@@ -151,25 +162,8 @@ text("基于 ")
     )
 ```
 
-```tsx tabs
-<Text style={{ fontSize: 16, lineHeight: 26 }}>
-  {"基于 "}
-  <Image src={logo} style={{ width: 18, height: 18, borderRadius: 4 }} />
-  {" NSH 构建。状态 "}
-  <View style={{ backgroundColor: "#1a7f37", borderRadius: 9, paddingHorizontal: 7, height: 18, justifyContent: "center" }}>
-    <Text style={{ color: "#ffffff", fontSize: 11, fontWeight: "700" }}>LIVE</Text>
-  </View>
-</Text>
-```
-
 被 `numberOfLines` 或省略号截掉的附件会被隐藏。复制可选中的文本时不包含附件，除非附件设置了 `copyText`（Rust 中为
 `.copy_text(..)`）：复制结果会在附件的位置放上这段文字，就像浏览器复制行内图片时取它的 `alt`。行内公式可以这样在复制时保留源码：
-
-```rust tabs
-text("Area is ")
-    .child(view().copy_text("$x^2$").label("x squared").child(formula))
-    .child(" here.")
-```
 
 ```tsx tabs
 <Text>
@@ -179,6 +173,12 @@ text("Area is ")
   </View>{" "}
   here.
 </Text>
+```
+
+```rust tabs
+text("Area is ")
+    .child(view().copy_text("$x^2$").label("x squared").child(formula))
+    .child(" here.")
 ```
 
 复制整行得到 `Area is $x^2$ here.`。屏幕阅读器仍按视图的标签朗读它。`copyText` 只对文本中的视图和图片生效（也包括
@@ -212,18 +212,18 @@ Tailwind 类 `select-text`、`select-none` 和 `select-auto` 设置 `userSelect`
 
 字体族可以是系统字体族，也可以是应用的字体文件：
 
-```rust tabs
-// assets/fonts/Inter-Regular.ttf，由注册表随应用发布（`registry.assets(assets!())`）。
-const INTER: FontAsset = asset!("fonts/Inter-Regular.ttf");
-
-text("Inter").font_family(INTER.family).text_size(px(17.0))
-```
-
 ```tsx tabs
 import { Text } from "nsh";
 import Inter from "./fonts/Inter-Regular.ttf";
 
 <Text style={{ fontFamily: Inter, fontSize: 17 }}>Inter</Text>;
+```
+
+```rust tabs
+// assets/fonts/Inter-Regular.ttf，由注册表随应用发布（`registry.assets(assets!())`）。
+const INTER: FontAsset = asset!("fonts/Inter-Regular.ttf");
+
+text("Inter").font_family(INTER.family).text_size(px(17.0))
 ```
 
 字体会在第一帧之前注册。参见[字体](../docs/fonts.md)。

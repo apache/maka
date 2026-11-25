@@ -15,8 +15,8 @@ platforms' engines and what `nsh.json` grants.
 Apps need to make sound: a trade confirmation, a price alert, a message
 arriving, a voice message, a recording played back. NSH has no way to do that
 today except `<Video>`, which is a view that takes a frame on the screen.
-`Speech` is the other direction only (the microphone to a transcript) and
-synthesizes nothing.
+`nsh-extra`'s `Speech` is the other direction only (the microphone to a
+transcript) and synthesizes nothing.
 
 Two capabilities are added to `nsh`, as two separate primitives, because they
 are two different things on every platform (the browser has the Web Audio API
@@ -117,13 +117,13 @@ submodule (the per-primitive submodules are the deprecated past).
 
 | | File |
 |---|---|
-| The requests, events, errors and the `AudioBackend` trait | `crates/nsh-core/src/audio.rs` (as `speech.rs`) |
-| The JS face: `Sound`, `AudioPlayer` (`#[module]`, `#[class]`) | `crates/nsh-core/src/runtime/audio.rs` (as `runtime/speech.rs`) |
-| The Rust face for components | `nsh_core::prelude`: `sound()`, `audio_player()` (as `speech_available()`), through `element::ambient` |
+| The requests, events, errors and the `AudioBackend` trait | `crates/nsh-core/src/audio.rs` |
+| The JS face: `Sound`, `AudioPlayer` (`#[module]`, `#[class]`) | `crates/nsh-core/src/runtime/audio.rs` |
+| The Rust face for components | `nsh_core::prelude`: `sound()`, `audio_player()`, through `element::ambient` |
 | Root commands and events | `ops.rs`: `Command::Audio(AudioCommand)`, `EventKind::Audio` → `EventPayload::Audio { id, event }` |
 | The platform's say | `Environment::audio: bool` (`platform.rs`, `element/env.rs`) |
-| The platforms | `nsh-platform-apple` `audio.rs` (macOS and iOS, as `speech.rs` is), `nsh-platform-android` `Audio.java` + JNI, `nsh-platform-windows` `native/audio.rs`, `nsh-platform-linux` and `nsh-platform-gpui` on GStreamer, `nsh-platform-web/web/nsh.js` |
-| Tests | `nsh-testing`'s headless driver gets an `AudioBackend` fake (as speech's); `tests/compat/cases/audio/` |
+| The platforms | `nsh-platform-apple` `audio.rs` (macOS and iOS), `nsh-platform-android` `Audio.java` + JNI, `nsh-platform-windows` `native/audio.rs`, `nsh-platform-linux` and `nsh-platform-gpui` on GStreamer, `nsh-platform-web/web/nsh.js` |
+| Tests | `nsh-testing`'s headless driver gets an `AudioBackend` fake; `tests/compat/cases/audio/` |
 
 ## The API
 
@@ -225,12 +225,11 @@ Errors' `code`s name the Web's `MediaError` and the Speech module's words:
 `nsh_core::prelude` gets `load_sound(src).await -> Result<Sound, AudioFailure>`,
 `audio_player(src, settings) -> AudioPlayer` and `audio_available()`
 (`nsh_core::element::audio`), the same objects without the JS wrapping. A
-player's events come from `player.next().await`, as a speech recognition's
-do. A Rust handle releases its sound (with the last `Sound` over its source)
+player's events come from `player.next().await`, as `nsh-extra`'s speech
+recognition's do. A Rust handle releases its sound (with the last `Sound` over its source)
 or player on `Drop`;
-the JS classes queue `Command::Audio` from their methods as `SpeechSession`'s
-do, and `play`'s range checks throw synchronously before anything is queued.
-The rest of the Rust face is the builder's, patterned on `speech.rs`'s.
+the JS classes queue `Command::Audio` from their methods, and `play`'s range checks throw synchronously before anything is queued.
+The rest of the Rust face is the builder's.
 
 ## How it works
 
@@ -447,7 +446,7 @@ My calls (change them if wrong):
 ## Left to the builder
 
 - The exact `AudioCommand` / `AudioEvent` fields and the `AudioBackend`
-  signatures, patterned on `speech.rs`.
+  signatures.
 - The `#[class]` declarations (`overload`s of `on` per event, as
   `SpeechSession`'s) and the generated TypeScript.
 - The per-platform details: engine start-up, cleanup on engine drop, the JNI

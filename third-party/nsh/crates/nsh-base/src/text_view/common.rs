@@ -6,7 +6,7 @@ use std::{cell::RefCell, collections::HashMap};
 use regex::Regex;
 
 use super::{
-    MarkdownExtension,
+    MarkdownExtension, MarkdownOptions,
     document::{CustomNode, Inline},
 };
 
@@ -38,6 +38,99 @@ pub(crate) fn apply_patterns(
         return inlines;
     }
     apply(&patterns, inlines)
+}
+
+/// `inlines` with the links and images `options` leaves off made plain: a
+/// link is its content, an image its `alt` text.
+pub(crate) fn without_links_and_images(
+    options: &MarkdownOptions,
+    inlines: Vec<Inline>,
+) -> Vec<Inline> {
+    if options.links && options.images {
+        return inlines;
+    }
+    plain(options, inlines)
+}
+
+fn plain(options: &MarkdownOptions, inlines: Vec<Inline>) -> Vec<Inline> {
+    let mut out = Vec::with_capacity(inlines.len());
+    for inline in inlines {
+        match inline {
+            Inline::Text { text } => push_text(&mut out, &text),
+            Inline::Link {
+                url,
+                title,
+                content,
+            } => {
+                let content = plain(options, content);
+                if options.links {
+                    out.push(Inline::Link {
+                        url,
+                        title,
+                        content,
+                    });
+                } else {
+                    extend(&mut out, content);
+                }
+            }
+            Inline::Image(image) if !options.images => push_text(&mut out, &image.alt),
+            Inline::Strong { content } => out.push(Inline::Strong {
+                content: plain(options, content),
+            }),
+            Inline::Emphasis { content } => out.push(Inline::Emphasis {
+                content: plain(options, content),
+            }),
+            Inline::Strikethrough { content } => out.push(Inline::Strikethrough {
+                content: plain(options, content),
+            }),
+            Inline::Underline { content } => out.push(Inline::Underline {
+                content: plain(options, content),
+            }),
+            Inline::Highlight { content, color } => out.push(Inline::Highlight {
+                content: plain(options, content),
+                color,
+            }),
+            Inline::TextStyle { content, color } => out.push(Inline::TextStyle {
+                content: plain(options, content),
+                color,
+            }),
+            Inline::Superscript { content } => out.push(Inline::Superscript {
+                content: plain(options, content),
+            }),
+            Inline::Subscript { content } => out.push(Inline::Subscript {
+                content: plain(options, content),
+            }),
+            Inline::Small { content } => out.push(Inline::Small {
+                content: plain(options, content),
+            }),
+            Inline::Custom(mut node) => {
+                node.content = plain(options, std::mem::take(&mut node.content));
+                out.push(Inline::Custom(node));
+            }
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+fn push_text(out: &mut Vec<Inline>, text: &str) {
+    if text.is_empty() {
+        return;
+    }
+    if let Some(Inline::Text { text: last }) = out.last_mut() {
+        last.push_str(text);
+    } else {
+        out.push(Inline::text(text));
+    }
+}
+
+fn extend(out: &mut Vec<Inline>, inlines: Vec<Inline>) {
+    for inline in inlines {
+        match inline {
+            Inline::Text { text } => push_text(out, &text),
+            other => out.push(other),
+        }
+    }
 }
 
 fn compile(pattern: &str) -> Option<Regex> {

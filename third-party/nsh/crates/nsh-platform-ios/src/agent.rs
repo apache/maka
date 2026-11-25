@@ -645,6 +645,12 @@ impl Native for IosNative {
     }
 
     fn type_text(&self, text: &str) {
+        if let Err(error) = self.try_type_text(text) {
+            log::warn!("test: {error}");
+        }
+    }
+
+    fn try_type_text(&self, text: &str) -> Result<(), String> {
         // As the software keyboard types, a character at a time, at a
         // quick typist's pace: a controlled input's value comes back from
         // the app between keys, as it does on a device. Each key waits
@@ -657,7 +663,8 @@ impl Native for IosNative {
                 .on_main(|_, window| synth::focused_text(window))
                 .flatten();
             let s = ch.to_string();
-            self.on_main(move |_, window| synth::insert_text(window, &s));
+            self.on_main(move |_, window| synth::insert_text(window, &s))
+                .unwrap_or_else(|| Err("the window is gone".into()))?;
             // Without a focused text there is nothing to watch: waiting
             // would only add `KEY_LANDS` to every key.
             let deadline = Instant::now() + KEY_LANDS;
@@ -673,15 +680,23 @@ impl Native for IosNative {
             }
             std::thread::sleep(KEY);
         }
+        Ok(())
     }
 
     fn key(&self, key: Key) {
+        if let Err(error) = self.try_key(key) {
+            log::warn!("test: {error}");
+        }
+    }
+
+    fn try_key(&self, key: Key) -> Result<(), String> {
         self.on_main(move |_, window| match key {
             // The keyboard's return key types a line break.
             Key::Return => synth::insert_text(window, "\n"),
             Key::Backspace => synth::delete_backward(window),
             Key::SelectAll => synth::select_all(window),
-        });
+        })
+        .unwrap_or_else(|| Err("the window is gone".into()))
     }
 
     fn press_keys(&self, keys: &str) -> Result<(), String> {

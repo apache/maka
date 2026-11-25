@@ -14,27 +14,6 @@ events with no JavaScript, and what screen readers get: an image labelled with t
 app's: an `Avatar` has no size, shape, colors or font of its own. An `AvatarGroup` shows the first few avatars of a
 row and an overflow that stands for the others ("+5").
 
-```rust tabs
-use nsh_base::{avatar, theme};
-use nsh_core::prelude::*;
-
-fn author(name: &'static str, picture: &'static str) -> impl IntoElement {
-    avatar()
-        .src(picture)
-        .name(name)
-        .size(px(40.0))
-        .image_style(|s| s.rounded_full())
-        .fallback_style(|s| {
-            s.rounded_full()
-                .items_center()
-                .justify_center()
-                .bg(move || theme().muted)
-                .text_color(move || theme().muted_foreground)
-                .text_sm()
-        })
-}
-```
-
 ```tsx tabs
 import { mount } from "nsh";
 import { Avatar } from "nsh/base";
@@ -57,6 +36,27 @@ mount(() => (
     <App />
   </Window>
 ));
+```
+
+```rust tabs
+use nsh_base::{avatar, theme};
+use nsh_core::prelude::*;
+
+fn author(name: &'static str, picture: &'static str) -> impl IntoElement {
+    avatar()
+        .src(picture)
+        .name(name)
+        .size(px(40.0))
+        .image_style(|s| s.rounded_full())
+        .fallback_style(|s| {
+            s.rounded_full()
+                .items_center()
+                .justify_center()
+                .bg(move || theme().muted)
+                .text_color(move || theme().muted_foreground)
+                .text_sm()
+        })
+}
 ```
 
 `Avatar` and `AvatarGroup` come from [`nsh/base`](../modules/nsh-base.md), the `nsh-base` crate in Rust. In Rust,

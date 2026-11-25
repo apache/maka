@@ -3,7 +3,9 @@
 //! (`showsMenuAsPrimaryAction`, iOS 14), so a tap, VoiceOver's activation
 //! or a hardware keyboard's opens the system's menu at once, without asking
 //! JS. The menu is made from the `items` prop as it changes; a chosen
-//! action emits `select` with the app's id.
+//! action emits `select` with the app's id. The menu grows out of the
+//! app's content around the button (its preview), which UIKit hides while
+//! the menu is up, as it does a system button.
 //!
 //! The button is what VoiceOver reaches inside the element (named by
 //! `accessibilityLabel`, with `accessibilityHint` describing its action):
@@ -20,8 +22,10 @@ use objc2::{
 };
 use objc2_foundation::{NSArray, NSObject, NSString};
 use objc2_ui_kit::{
-    UIAction, UIButton, UIButtonType, UIControl, UIImage, UIMenu, UIMenuElement,
-    UIMenuElementAttributes, UIMenuElementState, UIMenuOptions, UIResponder, UIView, UIWindow,
+    UIAction, UIButton, UIButtonType, UIColor, UIContextMenuConfiguration,
+    UIContextMenuInteraction, UIControl, UIImage, UIMenu, UIMenuElement, UIMenuElementAttributes,
+    UIMenuElementState, UIMenuOptions, UIPreviewParameters, UIResponder, UITargetedPreview, UIView,
+    UIWindow,
 };
 
 use crate::component::{ComponentContext, ComponentFactory, NativeComponent};
@@ -252,8 +256,71 @@ define_class!(
             // SAFETY: calling the superclass implementation.
             let () = unsafe { msg_send![super(self), willMoveToWindow: window] };
         }
+
+        // The menu grows out of the trigger the app drew, not the
+        // transparent button over it: UIKit hides the view of the preview
+        // it morphs into the menu (iOS 26) or lifts beside it while the
+        // menu is up, without touching its alpha or `hidden`, which stay
+        // the mounter's. With the button as the preview, the app's trigger
+        // stayed in place and showed through the menu's glass. UIButton
+        // answers only these (pre-iOS 16) names, which UIKit asks a
+        // delegate without the newer ones.
+        #[unsafe(method_id(contextMenuInteraction:previewForHighlightingMenuWithConfiguration:))]
+        fn highlighting_preview(
+            &self,
+            interaction: &UIContextMenuInteraction,
+            configuration: &UIContextMenuConfiguration,
+        ) -> Option<Retained<UITargetedPreview>> {
+            // SAFETY: calling the superclass implementation (UIControl's
+            // delegate method, declared for subclasses to override).
+            let button: Option<Retained<UITargetedPreview>> = unsafe {
+                msg_send![
+                    super(self),
+                    contextMenuInteraction: interaction,
+                    previewForHighlightingMenuWithConfiguration: configuration
+                ]
+            };
+            self.trigger_preview().or(button)
+        }
+
+        // The menu goes back into the same view it came from.
+        #[unsafe(method_id(contextMenuInteraction:previewForDismissingMenuWithConfiguration:))]
+        fn dismissing_preview(
+            &self,
+            interaction: &UIContextMenuInteraction,
+            configuration: &UIContextMenuConfiguration,
+        ) -> Option<Retained<UITargetedPreview>> {
+            // SAFETY: as above.
+            let button: Option<Retained<UITargetedPreview>> = unsafe {
+                msg_send![
+                    super(self),
+                    contextMenuInteraction: interaction,
+                    previewForDismissingMenuWithConfiguration: configuration
+                ]
+            };
+            self.trigger_preview().or(button)
+        }
     }
 );
+
+impl NshMenuButton {
+    /// The trigger the app drew (the element around the button's
+    /// container) as the menu's preview: clipped to its outline, on no
+    /// platter, as UIButton's own preview of itself is.
+    fn trigger_preview(&self) -> Option<Retained<UITargetedPreview>> {
+        let element = self.superview()?.superview()?;
+        element.window()?;
+        let mtm = self.mtm();
+        let parameters = UIPreviewParameters::new(mtm);
+        parameters.setBackgroundColor(Some(&UIColor::clearColor()));
+        parameters.setVisiblePath(Some(&crate::decor::outline(&element)));
+        Some(UITargetedPreview::initWithView_parameters(
+            UITargetedPreview::alloc(mtm),
+            &element,
+            &parameters,
+        ))
+    }
+}
 
 /// Whether `listed` (an element's `accessibilityElements`) is exactly the
 /// list the button set: only then is it the button's to clear, so a list

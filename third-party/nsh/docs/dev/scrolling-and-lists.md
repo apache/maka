@@ -5,6 +5,10 @@
   shows moved, with a `ScrollBy` in the same batch, clamped to its content. Text above the viewport wrapping onto more
   lines moves nothing on screen, through a window's drag and when text that waited catches up (`docs/dev/text.md`).
   Lists keep their rows themselves.
+- **Content extent** (`scroll_extent` in `core/mod.rs`): a scroll view's content size is its content's own extent along
+  its axis, below the viewport too. A platform adds its own insets around the viewport (iOS's bars under a large
+  title), so a floor there would leave it a range to scroll over content that fits. The cross axis keeps the
+  viewport's length, which the content spans.
 - **Scrolling**: `pagingEnabled`, `snapToInterval` / `snapToOffsets` / `snapToAlignment`, `disableIntervalMomentum`,
   `decelerationRate`, `scrollable`, `bounces`, `contentInset`, `scrollbarInset`, `contentOffset`, `keyboardShouldPersistTaps`
   (`never` / `handled` / `always`), `onScroll` (+ `scrollEventThrottle`; at most once per engine turn), `onScrollDragStart` /
@@ -17,12 +21,13 @@
   `contentInset`), since the bridge cannot tell it from an unset one. Snapping is decided
   by `ScrollBehavior::snap_target` (core) on iOS and its Java port on Android, from the release offset, the projected glide and
   the velocity. Lists scrolled past their start keep the visible rows in place when items are inserted above them
-  (`splice`), as a browser's scroll anchoring does; at their start the rows that arrive show, unless the list loads
-  pages at its start (`onLoadMoreAtStart`: the page it prepends keeps the rows in place there too). Keyed changes
+  (`splice`), as a browser's scroll anchoring does, anchored on the first row that starts in the viewport (a row the
+  viewport's start cuts through counts as above it, `ListState::reading_anchor`); at their start the rows that arrive
+  show, unless the list loads pages at its start (`onLoadMoreAtStart`: the page it prepends keeps the rows in place there too). Keyed changes
   (`keyExtractor`, or item identity; Rust's `.keys`) are matched row by row (`nsh_core::list_diff`, the core's
   `ListState::reorder`): a row that stays keeps its cell, its content and its measured size wherever it moves, and so
   do the rows a moved row passes (a window of rows that slides, an item sorted to the top); only new keys need cells.
-  The visible rows stay in place, anchored on the first of them that kept its order.
+  The visible rows stay in place, anchored on the first of them, from that row, that kept its order.
 - **Input**: fingers (and pens) drag scroll views; on the desktop backends and the web the mouse never does (dragging
   the content is a touchscreen's way to scroll): it scrolls with the wheel, the touchpad, the keyboard and the
   indicator (a scroll bar), and its drags are the app's (pans, responders, text selection). On Linux, Windows and desktop Web, the indicator shows while scrolling or when the pointer reaches its draggable thumb;

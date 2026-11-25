@@ -20,6 +20,13 @@ pub(crate) fn task_detail(id: u32) -> Screen {
                     .text_lg()
                     .text_color(move || theme().foreground),
             )
+            // Made by name: the web build loads its code when the page opens.
+            .child(
+                ComponentElement::<nsh_base::rich_editor::view::RichEditor>::by_name(
+                    Default::default(),
+                )
+                .flex_1(),
+            )
             .child(
                 switch()
                     .checked(move || task().is_some_and(|task| task.done))

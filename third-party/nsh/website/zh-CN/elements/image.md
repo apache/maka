@@ -10,6 +10,20 @@ demo: el-image
 
 `Image` 显示来自应用资源或 URL 的图片。图片在主线程之外下载和解码，按视图显示的尺寸降采样，并缓存在内存中。动态 GIF、WebP 和 APNG 图片会自动播放。Rust 用 `image(src)` 创建，TSX 用从 `nsh` 导入的 `<Image>`。
 
+```tsx tabs
+import { Image, View } from "nsh";
+import logo from "./assets/logo.png";
+
+<View style={{ flexDirection: "row", gap: 12 }}>
+  <Image src={logo} />
+  <Image
+    src="https://example.com/avatar.jpg"
+    placeholder={logo}
+    style={{ width: 64, height: 64, borderRadius: 32 }}
+  />
+</View>;
+```
+
 ```rust tabs
 use nsh_core::prelude::*;
 
@@ -29,20 +43,6 @@ view()
     )
 ```
 
-```tsx tabs
-import { Image, View } from "nsh";
-import logo from "./assets/logo.png";
-
-<View style={{ flexDirection: "row", gap: 12 }}>
-  <Image src={logo} />
-  <Image
-    src="https://example.com/avatar.jpg"
-    placeholder={logo}
-    style={{ width: 64, height: 64, borderRadius: 32 }}
-  />
-</View>;
-```
-
 资源知道自己的尺寸：不设宽高时图片使用该尺寸；只设其中一个时，另一个按资源的宽高比计算。URL 的尺寸在加载完成后才知道，所以要给远程图片设置宽和高（或者其中一个加上宽高比）。
 
 ## 图片来源
@@ -60,11 +60,6 @@ import logo from "./assets/logo.png";
 来自应用已有字节的图片无需请求即可显示。聊天应用在照片上传期间用它的 blob 显示所选照片，上传完成后把 `src`
 换成照片的 URL：
 
-```rust tabs
-// `data:` URI 中的字节（应用生成或内联收到的图片）。
-image(format!("data:image/png;base64,{encoded}")).size(px(64.0))
-```
-
 ```tsx tabs
 import { Image, signal } from "nsh";
 
@@ -76,6 +71,11 @@ upload(photo).then((url) => {
 });
 
 <Image src={src()} style={{ width: 240, height: 180 }} />;
+```
+
+```rust tabs
+// `data:` URI 中的字节（应用生成或内联收到的图片）。
+image(format!("data:image/png;base64,{encoded}")).size(px(64.0))
 ```
 
 相同的字节是同一张图片：同一张图片无论作为 `data:` URI 还是 blob，都只解码一次并共享缓存。
@@ -108,12 +108,12 @@ upload(photo).then((url) => {
 
 `ImageStyle` 在视图样式之上增加了 `tintColor`，为模板图片（单色绘制的图标）重新着色；以及 `objectPosition`，决定图片在盒子中的位置（[图片位置](../docs/images-and-assets.md#图片位置)）。
 
-```rust tabs
-image(ICON).size(px(24.0)).tint_color(rgb(0x0969da))
-```
-
 ```tsx tabs
 <Image src={icon} style={{ width: 24, height: 24, tintColor: "#0969da" }} />
+```
+
+```rust tabs
+image(ICON).size(px(24.0)).tint_color(rgb(0x0969da))
 ```
 
 ## 事件
@@ -126,16 +126,6 @@ image(ICON).size(px(24.0)).tint_color(rgb(0x0969da))
 | `onError` | `.on_error` | `{ message, code? }`（`&str`，即消息） | 加载或解码失败，或主机不在应用的能力范围内（`code` 为 `"ERR_ACCESS_DENIED"`）。 |
 | `onLoadEnd` | `.on_load_end` | 无 | 在 `onLoad` 或 `onError` 之后。 |
 
-```rust tabs
-let state = signal(SharedString::from("加载中"));
-
-image(url)
-    .w_full()
-    .aspect_ratio(16.0 / 9.0)
-    .on_load(move |size: &Size<DevicePixels>| state.set(format!("{}×{}", size.width.0, size.height.0).into()))
-    .on_error(move |message: &str| state.set(message.to_string().into()))
-```
-
 ```tsx tabs
 const state = signal("加载中");
 <Image
@@ -144,6 +134,16 @@ const state = signal("加载中");
   onLoad={({ size }) => state.set(`${size.width}×${size.height} px`)}
   onError={(e) => state.set(e.message)}
 />;
+```
+
+```rust tabs
+let state = signal(SharedString::from("加载中"));
+
+image(url)
+    .w_full()
+    .aspect_ratio(16.0 / 9.0)
+    .on_load(move |size: &Size<DevicePixels>| state.set(format!("{}×{}", size.width.0, size.height.0).into()))
+    .on_error(move |message: &str| state.set(message.to_string().into()))
 ```
 
 带有[像素密度变体](../docs/images-and-assets.md#像素密度)的图片会加载其中一个文件，`onLoad` 报告的是该文件的像素尺寸：对于 64×64 点的 `logo.png`，在 3× 屏幕上报告 `logo@3x.png` 的 192×192。像素比变化、图片加载另一个变体时，这次加载同样会触发事件：先是 `onLoadStart`，然后是带有新文件尺寸的 `onLoad`（或 `onError`），最后是 `onLoadEnd`。

@@ -15,6 +15,24 @@ message and end in the next; Copy puts the selected text on the clipboard, with 
 the others by a line break. Rust sets it with `view().selectable(true)`, TSX with `<View selectable>`; whether a single
 text can be selected is its `userSelect` style.
 
+```tsx tabs
+import { Text, View } from "nsh";
+import { TextView } from "nsh/base";
+
+function ReleaseNotes(props: { notes: string }) {
+  return (
+    <View selectable class="gap-3 p-4">
+      <Text class="font-semibold">Release notes</Text>
+      <TextView markdown={props.notes} />
+      <View class="flex-row gap-2">
+        <Text style={{ userSelect: "none" }} class="text-neutral-500">Updated</Text>
+        <Text>October 21</Text>
+      </View>
+    </View>
+  );
+}
+```
+
 ```rust tabs
 use nsh_base::text_view;
 use nsh_core::prelude::*;
@@ -36,24 +54,6 @@ fn release_notes(notes: &'static str) -> impl IntoElement {
 }
 ```
 
-```tsx tabs
-import { Text, View } from "nsh";
-import { TextView } from "nsh/base";
-
-function ReleaseNotes(props: { notes: string }) {
-  return (
-    <View selectable class="gap-3 p-4">
-      <Text class="font-semibold">Release notes</Text>
-      <TextView markdown={props.notes} />
-      <View class="flex-row gap-2">
-        <Text style={{ userSelect: "none" }} class="text-neutral-500">Updated</Text>
-        <Text>October 21</Text>
-      </View>
-    </View>
-  );
-}
-```
-
 The view's layout and look are the app's styles, and its content is its children. The selection itself is the
 platform's: the view draws nothing of its own for it.
 
@@ -61,6 +61,17 @@ platform's: the view draws nothing of its own for it.
 
 A transcript in one selectable view selects as one page: a drag starts in one reply and ends in another, and Copy
 takes the text of every message in between.
+
+```tsx tabs
+import { Scroll, View } from "nsh";
+import { TextView } from "nsh/base";
+
+<Scroll class="flex-1">
+  <View selectable class="gap-4 p-4">
+    <Each of={replies}>{(reply) => <TextView markdown={reply()} />}</Each>
+  </View>
+</Scroll>
+```
 
 ```rust tabs
 use nsh_base::text_view;
@@ -77,17 +88,6 @@ fn transcript(replies: Signal<Vec<SharedString>>) -> impl IntoElement {
 }
 ```
 
-```tsx tabs
-import { Scroll, View } from "nsh";
-import { TextView } from "nsh/base";
-
-<Scroll class="flex-1">
-  <View selectable class="gap-4 p-4">
-    <Each of={replies}>{(reply) => <TextView markdown={reply()} />}</Each>
-  </View>
-</Scroll>
-```
-
 ## Reading the selection
 
 `onSelectionChange` on a selectable view (`.on_text_selection_change(..)` in Rust) hears the selected text each
@@ -98,17 +98,6 @@ Escape, another view selecting). It reports only changes, of the text or of its 
 reports, as it holds the one selection. A `selectable` [`TextView`](./text-view.md) reports its own the same way
 (`onSelectionChange`, `.on_selection_change(..)`). A chat uses it to quote the part of a reply the reader selected:
 
-```rust tabs
-use nsh_core::prelude::*;
-
-fn reply(markdown: SharedString, quote: Signal<String>) -> impl IntoElement {
-    view()
-        .selectable(true)
-        .on_text_selection_change(move |e: &TextSelectionEvent| quote.set(e.text.clone()))
-        .child(nsh_base::text_view().markdown(markdown))
-}
-```
-
 ```tsx tabs
 import { signal, View } from "nsh";
 import { TextView } from "nsh/base";
@@ -118,6 +107,17 @@ const quote = signal("");
 <View selectable onSelectionChange={({ text }) => quote.set(text)}>
   <TextView markdown={reply} />
 </View>
+```
+
+```rust tabs
+use nsh_core::prelude::*;
+
+fn reply(markdown: SharedString, quote: Signal<String>) -> impl IntoElement {
+    view()
+        .selectable(true)
+        .on_text_selection_change(move |e: &TextSelectionEvent| quote.set(e.text.clone()))
+        .child(nsh_base::text_view().markdown(markdown))
+}
 ```
 
 `ref.clearSelection()` on the selectable view, or on a view inside it, clears the selection as a press elsewhere does:
@@ -132,6 +132,21 @@ rebuilt from the nodes it covers, so the marks, links, list items and code block
 numbers, a table row keeps the table's header). With all of it selected it gives the source as written, when the
 document came in that format. `""` when nothing is selected. In Rust it is `TextViewApi::selected_text` with
 `TextSelectionOptions::format(TextSelectionFormat::Markdown)`.
+
+```tsx tabs
+import { signal } from "nsh";
+import { TextView, type TextViewRef } from "nsh/base";
+
+let doc: TextViewRef | undefined;
+const quote = signal("");
+
+<TextView
+  ref={(r) => (doc = r)}
+  selectable
+  markdown={reply}
+  onSelectionChange={async () => quote.set((await doc?.selectedText({ format: "markdown" })) ?? "")}
+/>
+```
 
 ```rust tabs
 use nsh_base::{TextSelectionFormat, TextSelectionOptions, TextView, TextViewApi, text_view};
@@ -150,21 +165,6 @@ fn reply(markdown: SharedString, quote: Signal<String>) -> impl IntoElement {
             }
         })
 }
-```
-
-```tsx tabs
-import { signal } from "nsh";
-import { TextView, type TextViewRef } from "nsh/base";
-
-let doc: TextViewRef | undefined;
-const quote = signal("");
-
-<TextView
-  ref={(r) => (doc = r)}
-  selectable
-  markdown={reply}
-  onSelectionChange={async () => quote.set((await doc?.selectedText({ format: "markdown" })) ?? "")}
-/>
 ```
 
 It reads the selection the view holds: in a `selectable` view inside another, the outer view holds it, and the inner

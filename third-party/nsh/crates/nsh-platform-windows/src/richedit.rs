@@ -203,8 +203,8 @@ struct Host {
     refs: Cell<u32>,
     /// The window the text services were created on: `TxGetWindow` and the
     /// input context stay here (moving them to `shown_in` leaves compositions
-    /// lost, upstream #2094), so `update_ime` keeps this window's IMC attached
-    /// whenever any window's field takes IME input.
+    /// lost, #2094), so `update_ime` keeps this window's IMC attached whenever
+    /// any window's field takes IME input.
     hwnd: HWND,
     /// The window the field shows in (`hwnd`'s, or one of the app's own):
     /// where its client points are on the screen.

@@ -13,7 +13,10 @@
 use std::{cell::Cell, ffi::c_void, sync::OnceLock};
 
 use objc2::{
-    MainThreadMarker, MainThreadOnly, Message, msg_send, rc::Retained, runtime::AnyObject,
+    MainThreadMarker, MainThreadOnly, Message, msg_send,
+    rc::Retained,
+    runtime::{AnyObject, Sel},
+    sel,
 };
 use objc2_quartz_core::CAMediaTiming;
 use objc2_ui_kit::{UIApplication, UIWindow};
@@ -338,33 +341,53 @@ fn keyboard() -> Option<Retained<AnyObject>> {
     unsafe { msg_send![class, activeInstance] }
 }
 
+/// The first responder, when it implements `action` (`insertText:`,
+/// `deleteBackward`, `selectAll:`), to `what` in. What has the focus need
+/// not be a text input (the root of a sheet over the field has it), and
+/// sending it a message it does not implement raises an exception that
+/// ends the host: the step fails instead.
+fn text_responder(
+    window: &UIWindow,
+    action: Sel,
+    what: &str,
+) -> Result<Retained<AnyObject>, String> {
+    let responder = first_responder(window).ok_or_else(|| format!("no focused input to {what}"))?;
+    // SAFETY: NSObject's method, which every responder has.
+    let takes: bool = unsafe { msg_send![&*responder, respondsToSelector: action] };
+    if !takes {
+        return Err(format!(
+            "the focused view (`{}`) is not a text input to {what}",
+            responder.class().name().to_string_lossy()
+        ));
+    }
+    Ok(responder)
+}
+
 /// Types `text` into the first responder as the software keyboard does.
-pub(crate) fn insert_text(window: &UIWindow, text: &str) {
+pub(crate) fn insert_text(window: &UIWindow, text: &str) -> Result<(), String> {
     let s = objc2_foundation::NSString::from_str(text);
     if let Some(keyboard) = keyboard() {
         // SAFETY: UIKeyboardImpl's method for a typed string.
         let _: () = unsafe { msg_send![&*keyboard, addInputString: &*s] };
-        return;
+        return Ok(());
     }
-    let Some(responder) = first_responder(window) else {
-        return log::warn!("test: no focused input to type into");
-    };
-    // SAFETY: UIKeyInput's method, which text inputs implement.
+    let responder = text_responder(window, sel!(insertText:), "type into")?;
+    // SAFETY: UIKeyInput's method, checked above.
     let _: () = unsafe { msg_send![&*responder, insertText: &*s] };
+    Ok(())
 }
 
 /// Deletes as the keyboard's delete key does.
-pub(crate) fn delete_backward(window: &UIWindow) {
+pub(crate) fn delete_backward(window: &UIWindow) -> Result<(), String> {
     if let Some(keyboard) = keyboard() {
         // SAFETY: UIKeyboardImpl's method for the delete key.
         let _: () = unsafe { msg_send![&*keyboard, deleteFromInput] };
-        return;
+        return Ok(());
     }
-    let Some(responder) = first_responder(window) else {
-        return log::warn!("test: no focused input");
-    };
-    // SAFETY: UIKeyInput's method.
+    let responder = text_responder(window, sel!(deleteBackward), "delete from")?;
+    // SAFETY: UIKeyInput's method, checked above.
     let _: () = unsafe { msg_send![&*responder, deleteBackward] };
+    Ok(())
 }
 
 /// Focuses the text input at `(x, y)` (window points), if a tap there
@@ -388,12 +411,11 @@ pub(crate) fn focus_input_at(window: &UIWindow, x: f64, y: f64) {
 }
 
 /// Selects all the focused input's text (the edit menu's Select All).
-pub(crate) fn select_all(window: &UIWindow) {
-    let Some(responder) = first_responder(window) else {
-        return log::warn!("test: no focused input");
-    };
-    // SAFETY: UIResponderStandardEditActions' method, with no sender.
+pub(crate) fn select_all(window: &UIWindow) -> Result<(), String> {
+    let responder = text_responder(window, sel!(selectAll:), "select the text of")?;
+    // SAFETY: UIResponderStandardEditActions' method, checked above, with no sender.
     let _: () = unsafe { msg_send![&*responder, selectAll: std::ptr::null::<AnyObject>()] };
+    Ok(())
 }
 
 /// Whether something moves in `window`: a finite Core Animation animation

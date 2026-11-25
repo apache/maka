@@ -7581,12 +7581,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fa8377070c6bae868759445e5a77f66d84f0b72f3a054bfb00e6d038b8282da7"
 
 [[package]]
+name = "jiff-tzdb"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "12e71a1b68a875a44a33bb7a1dd84392cb77145a3367a552a3cfe6a4f5cf3afc"
+
+[[package]]
 name = "jiff-tzdb-platform"
 version = "0.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "875a5a69ac2bab1a891711cf5eccbec1ce0341ea805560dcd90b7a2e925132e8"
 dependencies = [
- "jiff-tzdb",
+ "jiff-tzdb 0.1.9",
 ]
 
 [[package]]
@@ -10533,7 +10539,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-base"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "chrono",
  "html5ever 0.27.0",
@@ -10562,7 +10568,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-bundler"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "anyhow",
  "dunce",
@@ -10587,7 +10593,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-core"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "cap-std",
  "chrono",
@@ -10629,7 +10635,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-engine"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "crossbeam-channel",
  "env_filter",
@@ -10650,15 +10656,16 @@ dependencies = [
 
 [[package]]
 name = "nsh-i18n"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
+ "jiff-tzdb 1.0.0",
  "rust-i18n-support",
  "serde_json",
 ]
 
 [[package]]
 name = "nsh-js"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "futures-util",
  "getrandom 0.4.3",
@@ -10682,7 +10689,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-macros"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "imagesize 0.15.0",
  "proc-macro2",
@@ -10694,12 +10701,11 @@ dependencies = [
 
 [[package]]
 name = "nsh-package"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "base64 0.22.1",
  "ed25519-dalek 2.2.0",
  "getrandom 0.3.4",
- "nsh-core",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -10708,7 +10714,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-platform-apple"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "block2 0.6.2",
  "cc",
@@ -10731,7 +10737,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-platform-linux"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "crossbeam-channel",
  "gdk4-x11",
@@ -10751,7 +10757,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-platform-macos"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "block2 0.6.2",
  "crossbeam-channel",
@@ -10780,7 +10786,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-platform-tui"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "base64 0.22.1",
  "crossbeam-channel",
@@ -10798,7 +10804,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-platform-windows"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "crossbeam-channel",
  "image",
@@ -10818,7 +10824,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-terminal"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -10830,7 +10836,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-testing"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "crossbeam-channel",
  "log",
@@ -10842,7 +10848,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-updater"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "base64 0.22.1",
  "ed25519-dalek 2.2.0",
@@ -16910,9 +16916,9 @@ dependencies = [
 
 [[package]]
 name = "taffy"
-version = "0.15.0"
+version = "0.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3c8480887e8803986d96a7173729565520d4bbb721ad6b7ad6941a22897207aa"
+checksum = "cae92eb1b204bfd239b5c463e1bd2c3ce4913d2d3abfb5c64f5cfee9d65e5c68"
 dependencies = [
  "serde",
  "slotmap",

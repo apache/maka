@@ -251,7 +251,6 @@ events! {
     ClipboardWrite = "onClipboardWrite": "A [`Command::SetClipboard`] or [`Command::SetClipboardItem`] finished, in the order of the writes (root only, platforms with [`crate::platform::Environment::clipboard_write_result`]; payload: `written`: whether the system clipboard took it).",
     ScreenColor = "onScreenColor": "A [`Command::PickScreenColor`] request finished (root only; payload: `id`, `color`: the color picked, packed `0xRRGGBBAA`, absent when cancelled).",
     FileRequest = "onFileRequest": "A [`Command::FileRequest`] finished (root only; payload: [`EventPayload::FileRequest`]).",
-    Speech = "onSpeech": "A speech recognition session reported (root only; payload: [`EventPayload::Speech`]).",
     Download = "onDownload": "A web view's download started, finished, failed or was cancelled (payload: `state`, `id`, `url`, `filename`, `path`, `source`; `bytes` once finished, `code` and `message` when it failed, `reason` when it was cancelled).",
     Notification = "onNotification": "The platform answered a [`Command::Notification`], or the user pressed a notification (root only; payload: the fields of [`crate::notifications::NotificationEvent`]).",
     UrlScheme = "onUrlScheme": "The system handed the app a URL that opens it (root only; payload: `url`, [`crate::url_scheme::URL`]); the core keeps those of the schemes the app claims ([`crate::url_scheme`]).",
@@ -980,6 +979,10 @@ pub struct PasteEvent {
     /// Files with their bytes: images (a screenshot, an image copied from a
     /// page or an app), in the platform's order.
     pub files: Vec<PastedFile>,
+    /// Files larger than the input's `pasteMaxSize`, whose bytes were not
+    /// read: each with its name, type and size ([`PastedFile::len`]) only,
+    /// in the platform's order.
+    pub too_large: Vec<PastedFile>,
     /// Absolute `file:` URLs of local files copied in a file manager, in the
     /// platform's order (as [`EventPayload::FileDrop`]'s).
     pub uris: Vec<String>,
@@ -1045,11 +1048,29 @@ impl PasteEvent {
         self.text.is_empty()
             && self.html.is_empty()
             && self.files.is_empty()
+            && self.too_large.is_empty()
             && self.uris.is_empty()
+    }
+
+    /// Moves the files larger than `max_size` bytes to
+    /// [`Self::too_large`], without their bytes.
+    pub(crate) fn limit_files(&mut self, max_size: u64) {
+        if self.files.iter().all(|file| file.len <= max_size) {
+            return;
+        }
+        let (read, over): (Vec<_>, Vec<_>) = std::mem::take(&mut self.files)
+            .into_iter()
+            .partition(|file| file.len <= max_size);
+        self.files = read;
+        self.too_large.extend(
+            over.into_iter()
+                .map(|file| PastedFile::too_large(file.name, file.mime, file.len)),
+        );
     }
 }
 
 /// A file pasted with its bytes ([`PasteEvent::files`]): JS gets a `File`.
+/// One too large to read ([`PasteEvent::too_large`]) has no bytes.
 #[derive(Debug, Clone, Default, PartialEq)]
 #[non_exhaustive]
 pub struct PastedFile {
@@ -1059,6 +1080,9 @@ pub struct PastedFile {
     pub mime: String,
     /// Its bytes.
     pub data: Vec<u8>,
+    /// Its size in bytes: its bytes' length, or for one not read, the size
+    /// its platform gave.
+    pub len: u64,
 }
 
 impl PastedFile {
@@ -1067,7 +1091,19 @@ impl PastedFile {
         PastedFile {
             name: name.into(),
             mime: mime.into(),
+            len: data.len() as u64,
             data,
+        }
+    }
+
+    /// The file `name` of type `mime` and `len` bytes, too large to read
+    /// ([`PasteEvent::too_large`]): no bytes.
+    pub fn too_large(name: impl Into<String>, mime: impl Into<String>, len: u64) -> PastedFile {
+        PastedFile {
+            name: name.into(),
+            mime: mime.into(),
+            data: Vec::new(),
+            len,
         }
     }
 
@@ -1322,14 +1358,6 @@ pub enum EventPayload {
         id: u32,
         /// The files, in the order picked; none when cancelled.
         files: Vec<crate::picker::PickedFile>,
-    },
-    /// What a speech recognition session reported ([`EventKind::Speech`],
-    /// [`crate::speech`]).
-    Speech {
-        /// The session ([`crate::speech::SpeechCommand::Start`]).
-        id: u32,
-        /// What it reported.
-        event: crate::speech::SpeechEvent,
     },
     /// What a sound or a player reported ([`EventKind::Audio`],
     /// [`crate::audio`]).
@@ -2047,7 +2075,7 @@ pub enum ScrollProp {
     #[prop(js = "bouncesZoom", default = true, on = SCROLL)]
     BouncesZoom(bool),
     /// `zoomable`: the user can pinch to zoom (default true).
-    #[prop(js = "zoomable", default = true, on = SCROLL)]
+    #[prop(js = "zoomable", default = true, on = SCROLL, shared)]
     Pinch(bool),
     /// `centerContent`: content smaller than the viewport (zoomed out) is centered.
     #[prop(js = "centerContent", on = SCROLL)]
@@ -3083,11 +3111,6 @@ pub enum Command {
         /// What to do.
         request: Box<crate::file_dialog::FileRequest>,
     },
-    /// Start, stop or abort a speech recognition session (on the root;
-    /// `Speech` of `nsh`, [`crate::speech`]) and report it as
-    /// [`EventKind::Speech`] ([`EventPayload::Speech`]). Sent only on
-    /// platforms whose [`crate::platform::Environment::speech`] is set.
-    Speech(crate::speech::SpeechCommand),
     /// Load, play and free sounds, open and drive players (on the root;
     /// `Sound` and `AudioPlayer` of `nsh`, [`crate::audio`]) and report
     /// what happens as [`EventKind::Audio`] ([`EventPayload::Audio`]). Sent
@@ -3713,6 +3736,13 @@ pub enum Prop {
     /// either way. Decided natively when the user pastes.
     #[prop(js = "pasteBehavior", on = INPUT)]
     PasteBehavior(PasteBehavior),
+    /// `pasteMaxSize`: the largest pasted file read, in bytes; a larger
+    /// one reaches `onPaste` in `tooLarge`, its name, type and size only,
+    /// so the app can tell the user. Decided natively when the user
+    /// pastes, before the file is read where the platform says its size.
+    /// Default: every file is read.
+    #[prop(js = "pasteMaxSize", on = INPUT)]
+    PasteMaxSize(Option<u64>),
     /// `autoFocus`: focused when it appears.
     #[prop(js = "autoFocus", on = INPUT)]
     AutoFocus(bool),
@@ -3761,9 +3791,12 @@ pub enum Prop {
     /// `hitSlop`: extends the touch area beyond the bounds.
     #[prop(js = "hitSlop", with = crate::js::host_values::hit_slop, reset = Prop::HitSlop(EdgeInsets::default()), ts = "number | Partial<Edges>")]
     HitSlop(EdgeInsets),
-    /// Where a link goes (`nsh/base`'s `Link` sets its `href`), carried
-    /// to the platform as data: a terminal draws the text inside the view
-    /// as a hyperlink to it. Set by the link component, never by JS.
+    /// Where a link goes (`nsh/base`'s `Link` sets its `href`, `TextView`
+    /// its links' URL on their span), carried to the platform as data: a
+    /// terminal draws the text inside the view as a hyperlink to it, and a
+    /// span's is recorded in its block's text
+    /// (`AttributedText::link_hrefs`).
+    /// Set by the link components, never by JS.
     Href(Option<Arc<str>>),
     /// `panActivation`: the view's touch responder waits for a pan that the
     /// platform activates past an offset on one axis (and fails past one on
@@ -4064,6 +4097,17 @@ pub enum NativeProp {
     /// resolve against.
     #[prop(js = "baseUrl", on = WEBVIEW)]
     BaseUrl(Option<Arc<str>>),
+    /// `allowOrigin` (web views): one more origin this web view may show and
+    /// navigate to besides `webview.hosts`, for an origin known only while
+    /// the app runs: `scheme://host[:port]`, `http` or `https`, matched
+    /// exactly ([`crate::access::WebOrigin`]). It needs
+    /// `"runtimeOrigin": true` in `capabilities.webview`; another value or
+    /// no grant is refused with a message and the web view has none. Set
+    /// with `src` in the same render, it applies to that `src`; changed
+    /// later, it applies from the next navigation. Other web views and
+    /// the windows a page opens do not have it.
+    #[prop(js = "allowOrigin", on = WEBVIEW)]
+    AllowOrigin(Option<Arc<str>>),
     /// `injectedJavaScript` (web views): runs after each page loads.
     #[prop(js = "injectedJavaScript", on = WEBVIEW)]
     InjectedJavaScript(Option<Arc<str>>),
@@ -4096,6 +4140,15 @@ pub enum NativeProp {
     /// (with a warning): render a new element to change it.
     #[prop(js = "incognito", on = WEBVIEW)]
     Incognito(bool),
+    /// `zoomable` (web views): the person can pinch to zoom the page, also
+    /// past the scale limits of its viewport (Android's built-in zoom with
+    /// no on-screen buttons, WebKit ignoring the viewport's scale limits on
+    /// iOS, magnification on macOS). False keeps each platform's own
+    /// behavior: Android and macOS do not zoom, iOS zooms as far as the
+    /// page's viewport allows, WebView2 (Windows) zooms by default. Read
+    /// when the web view is made, as `incognito`.
+    #[prop(js = "zoomable", on = WEBVIEW, shared)]
+    Zoomable(bool),
     /// The URL schemes a web view serves from the app (Rust's
     /// `WebView::url_scheme`). Read when the web view is made, as
     /// `incognito`.

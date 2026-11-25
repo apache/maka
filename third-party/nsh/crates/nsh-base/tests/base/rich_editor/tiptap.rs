@@ -125,19 +125,19 @@ fn pressed(state: &EditorState, key: &str) -> EditorState {
 
 fn type_text(state: &EditorState, text: &str) -> EditorState {
     let (from, to) = (state.selection().from(), state.selection().to());
-    let mut out = None;
+    let mut trs = Vec::new();
     let handled = state
         .plugins()
         .iter()
-        .any(|plugin| plugin.handle_text_input(state, from, to, text, &mut |tr| out = Some(tr)));
-    let tr = if handled {
-        out.unwrap()
+        .any(|plugin| plugin.handle_text_input(state, from, to, text, &mut |tr| trs.push(tr)));
+    if handled {
+        trs.into_iter()
+            .fold(state.clone(), |s, tr| s.apply(tr).unwrap())
     } else {
         let mut tr = state.tr();
         tr.insert_text(text, Some(from), Some(to));
-        tr
-    };
-    state.apply(tr).unwrap()
+        state.apply(tr).unwrap()
+    }
 }
 
 fn type_all(state: &EditorState, text: &str) -> EditorState {
@@ -232,10 +232,10 @@ fn mark_shortcuts_toggle_tiptaps_marks() {
 }
 
 #[test]
-fn subscript_and_superscript_exclude_each_other() {
+fn subscript_and_superscript_can_combine() {
     let s = pressed(&state_with(vec![p("ab")], 1, Some(3), false), "Mod-,");
     let s = pressed(&s, "Mod-.");
-    assert_doc(&s, r#"doc(paragraph(superscript("ab")))"#);
+    assert_doc(&s, r#"doc(paragraph(subscript(superscript("ab"))))"#);
 }
 
 #[test]
@@ -271,6 +271,41 @@ fn shift_enter_inserts_a_hard_break_keeping_marks() {
     let s = pressed(&s, "Shift-Enter");
     let s = type_text(&s, "c");
     assert_doc(&s, r#"doc(paragraph(bold("ab"), hardBreak, bold("c")))"#);
+}
+
+#[test]
+fn enter_keeps_splittable_marks_in_paragraphs_and_list_items() {
+    let s = pressed(&state_with(vec![p("ab")], 1, Some(3), false), "Mod-i");
+    let mut tr = s.tr();
+    tr.set_selection(TextSelection::create(s.doc(), 3, None));
+    let s = s.apply(tr).unwrap();
+    let s = pressed(&s, "Enter");
+    let s = type_text(&s, "c");
+    assert_doc(
+        &s,
+        r#"doc(paragraph(italic("ab")), paragraph(italic("c")))"#,
+    );
+
+    let s = pressed(
+        &state_with(vec![list("bulletList", &["ab"])], 3, Some(5), false),
+        "Mod-b",
+    );
+    let mut tr = s.tr();
+    tr.set_selection(TextSelection::create(s.doc(), 5, None));
+    let s = s.apply(tr).unwrap();
+    let s = pressed(&s, "Enter");
+    let s = type_text(&s, "c");
+    assert_doc(
+        &s,
+        r#"doc(bulletList(listItem(paragraph(bold("ab"))), listItem(paragraph(bold("c")))))"#,
+    );
+
+    // Links are not kept across Enter.
+    let link = json!({"type": "paragraph", "content": [{"type": "text", "text": "ab", "marks": [{"type": "link", "attrs": {"href": "https://example.com"}}]}]});
+    let s = state(vec![link], 3);
+    let s = pressed(&s, "Enter");
+    let s = type_text(&s, "c");
+    assert_doc(&s, r#"doc(paragraph(link("ab")), paragraph("c"))"#);
 }
 
 #[test]

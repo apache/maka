@@ -90,6 +90,7 @@ pub(crate) fn add_config(
     built.assets.push(crate::build::Asset {
         path: CONFIG_ASSET.to_owned(),
         source,
+        targets: Vec::new(),
     });
     Ok(())
 }

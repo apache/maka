@@ -1,6 +1,6 @@
 ---
 title: macOS
-description: 在 macOS 上用 AppKit 窗口运行 Rust 和 TSX 编写的 NSH 应用、打包为 .app、用 AppView 嵌入 Mac 应用，以及 macOS 上的差异。
+description: 在 macOS 上用 AppKit 窗口运行 TSX 和 Rust 编写的 NSH 应用、打包为 .app、用 AppView 嵌入 Mac 应用，以及 macOS 上的差异。
 order: 13
 group: platforms
 ---
@@ -306,6 +306,7 @@ Return 不会提交。`onKeyPress` 报告的内容与 React Native 一致：输�
 
 ## 另见
 
+- [签名、公证与分发](./packaging.md#sign-notarize-and-distribute)
 - [CLI](./cli.md)：`nsh run --target macos`、`nsh package --target macos`
 - [打包](./packaging.md)
 - [平台特定代码](./platform-specific.md)

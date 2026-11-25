@@ -1,6 +1,6 @@
 ---
 title: 开发服务器与调试
-description: 用 nsh run 和 nsh dev 运行 Rust 和 TSX 应用，连接模拟器、Android 模拟器和真机，并使用重新构建、模块热替换、日志、错误浮层和经 source map 映射的调用栈。
+description: 用 nsh run 和 nsh dev 运行 TSX 和 Rust 应用，连接模拟器、Android 模拟器和真机，并使用重新构建、模块热替换、日志、错误浮层和经 source map 映射的调用栈。
 order: 60
 group: tools
 ---
@@ -76,10 +76,11 @@ nsh dev App.tsx --server-only
 | 参数 | 说明 |
 |---|---|
 | `--port <port>` | 开发服务器端口。规则与 `nsh run` 相同；使用 `--server-only` 时默认 8790，并替换该端口上之前的 NSH 会话。 |
+| `--host <ipv4>` | 绑定的 IPv4 地址。`--server-only` 以及 `--target ios`、`android`、`web` 默认绑定 `0.0.0.0`，本机目标默认绑定 `127.0.0.1`。使用 `--target android` 时仅支持 `127.0.0.1` 和 `0.0.0.0`（`adb reverse` 转发到本机 `127.0.0.1`）。 |
 | `--release` | 提供 release 构建。 |
 
-`nsh dev --server-only` 监听这台电脑的所有地址，网络中的手机和其他电脑都可以连接。`nsh run` 和 `nsh dev` 在这台电脑上启动宿主
-（窗口、终端、Catalyst）时监听 `127.0.0.1`；使用 `--target ios`、`android` 或 `web` 时与 `--server-only` 一样监听所有地址。
+默认情况下，`nsh dev --server-only` 监听这台电脑的所有地址（`0.0.0.0`），网络中的手机和其他电脑都可以连接。`nsh run` 和 `nsh dev` 在这台电脑上启动宿主
+（窗口、终端、Catalyst）时默认监听 `127.0.0.1`；使用 `--target ios`、`android` 或 `web` 时与 `--server-only` 一样默认监听所有地址。传入 `--host <ipv4>` 可覆盖绑定地址，例如 `nsh dev App.tsx --server-only --host 127.0.0.1` 让 `--server-only` 仅监听本机回环地址。
 
 将宿主连接到打印出的 URL：
 
@@ -99,7 +100,7 @@ UI 集，例如为另一个应用构建的开发宿主）不会收到构建：�
 ## 修改 Rust 代码
 
 Rust 需要编译：修改应用的 crate，或它以路径依赖的 crate，会重新构建应用，`nsh run` 用新代码重启它。应用的状态从头开始；需要在重启后
-保留的内容请放进[存储](../modules/nsh.md#storage)。构建错误会打印在终端，下一次能编译通过的保存会重新运行。在同时有 Rust 和 TSX
+保留的内容请放进[存储](../modules/nsh.md#storage)。构建错误会打印在终端，下一次能编译通过的保存会重新运行。在同时有 TSX 和 Rust
 的应用中，修改 TSX 仍是热更新（见下文），修改 Rust 会重启应用。
 
 ## 模块热替换
@@ -200,7 +201,7 @@ Studio 会显示），Linux 应用写入标准错误。
 
 #### 桌面上的日志文件和级别
 
-打包后的 macOS、Windows、Linux 应用除了写入平台日志，还把日志写到它数据目录下的文件 `logs/app.log`：
+打包后的 macOS、Windows、Linux 应用除了写入平台日志，还把日志写到它数据目录下的文件 `logs/app.log`。应用可以用 `nsh.json` 的 `logDir` 另选目录（见[项目结构](./project-structure.md)），下表是默认位置：
 
 | 平台 | 日志文件 |
 |---|---|
@@ -214,6 +215,12 @@ Studio 会显示），Linux 应用写入标准错误。
 Rust 中的 `log_file()`、TSX 中的 `process.logFile` 给出这个文件的路径，应用可以把它附进诊断报告，或者提供“打开日志文件夹”；
 日志只写入平台日志时（开发宿主、嵌入应用、移动端、Web）为 `None`（`null`）。
 
+```tsx tabs
+import process from "process";
+
+const report = { logFile: process.logFile, version: "1.4.0" };
+```
+
 ```rust tabs
 use nsh_core::prelude::*;
 
@@ -223,12 +230,6 @@ if let Some(file) = log_file() {
         let _ = reveal_path(file).await;
     });
 }
-```
-
-```tsx tabs
-import process from "process";
-
-const report = { logFile: process.logFile, version: "1.4.0" };
 ```
 
 默认情况下，打包应用记录它的警告、错误和 `js` 日志（`nsh run` 下记录 info 及以上的所有日志）。环境变量 `RUST_LOG`

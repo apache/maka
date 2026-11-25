@@ -230,23 +230,25 @@ build without syntect. Without the feature, code blocks the app does not highlig
   does), `render` shows a custom node in Rust. A view provides them to every `TextView` below it with
   `provide_context(MarkdownPlugins::new().with(..))`. A plugin's `render` comes before `renderCustom`, which comes
   before the node's content.
-- **`MarkdownOptions`**: `math`, `html`, `alerts` (default on), `frontmatter`, `mdx`, `streaming` (default off).
+- **`MarkdownOptions`**: `math`, `html`, `alerts`, `links`, `images` (default on), `frontmatter`, `mdx`, `streaming` (default off).
   With `mdx`, JSX elements are custom nodes named by their tag and `{expressions}` custom nodes `expression`; raw HTML
   is then text.
 
 ## Streaming
 
 With `options.streaming`, `markdown/streaming.rs` repairs the last block of the text before parsing (the blocks before
-it are complete; a text ending inside a fenced code or `$$` block needs nothing): emphasis, strong, strikethrough
-(`**`, `*`, `__`, `_`, `~~`), inline code and formulas left open are closed in the reverse order they opened, a marker
-with nothing after it yet is removed (so is half a formula closer, `\[1\` reads as `\[1\]`, which escaped brackets
-around a reference number keep as text); `[text` and `[text](partial` show as their text, `![alt` and `![alt](partial`
-are removed; an HTML tag being typed (`<di`, `<a href="x`) is removed; a table's header followed by the start of its
-delimiter row is completed to a table (and a lone `-` under it is no heading). A last line not yet ended whose meaning the next
-characters decide is held back: a list marker alone, digits that may become one, a line of `-` or `=` (an underline
-now, a rule, an item or text later), a fence's opening line and the start of its closer; a lone `*` inside a word
-(`a*b`) is never closed. So a reply never flashes literal `**`
-or `[` while the next chunk is on its way. The repair is a `Cow`: text with nothing open is parsed as it is.
+it are complete; a text ending inside a fenced code or `$$` block needs nothing): emphasis, strong, strikethrough (`**`,
+`*`, `__`, `_`, `~~`), inline code and formulas left open are closed in the reverse order they opened, a marker with
+nothing after it yet is removed (so is half a formula closer, `\[1\` reads as `\[1\]`, which escaped brackets around a
+reference number keep as text), and a closer typed in part (`**bold*`, `~~del~`, `` ``a`b` ``) is completed rather than
+followed by a whole one; `[text`, `[text]` at the end and `[text](partial` show as their text, `![alt`, `![alt]` and
+`![alt](partial` are removed (a footnote reference and an alert marker stay); an HTML tag being typed
+(`<di`, `<a href="x`) is removed; a table's header followed by the start of its delimiter row is completed to a table
+(and a lone `-` under it is no heading). A last line not yet ended whose meaning the next characters decide is held
+back: a list marker alone, digits that may become one, an item's task box alone (`- [x]`), a line of `-` or `=` (an
+underline now, a rule, an item or text later), a fence's opening line and the start of its closer; a lone `*` inside a
+word (`a*b`) is never closed. So a reply never flashes literal `**` or `[` while the next chunk is on its way. The
+repair is a `Cow`: text with nothing open is parsed as it is.
 
 ### Reading only what can change
 

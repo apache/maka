@@ -71,6 +71,7 @@ pub fn input_from_crossterm(event: crossterm::event::Event) -> Option<Input> {
         alt: keys.contains(KeyModifiers::ALT),
         shift: keys.contains(KeyModifiers::SHIFT),
         cmd: keys.contains(KeyModifiers::SUPER),
+        alt_graph: false,
     };
     let button = |button: MouseButton| match button {
         MouseButton::Left => nsh_platform_tui::MouseButton::Left,

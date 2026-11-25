@@ -18,6 +18,63 @@ thread, in the same frame as the pointer, and on release the content snaps to th
 When it comes to rest the carousel reports the slide with `onChange`. The controls, the pagination, the keys and the
 app's `index` scroll the content natively to the slide, animated.
 
+```tsx tabs
+import { mount, signal, Text, View } from "nsh";
+import {
+  Carousel,
+  CarouselContent,
+  CarouselItem,
+  CarouselNext,
+  CarouselPagination,
+  CarouselPaginationItem,
+  CarouselPrevious,
+} from "nsh/base";
+import { Window } from "nsh/desktop";
+
+const NAMES = ["Harbor", "Dunes", "Glacier"];
+
+function App() {
+  const index = signal(0);
+  return (
+    <Carousel index={index()} onChange={({ index: next }) => index.set(next)} accessibilityLabel="Photos" class="gap-3">
+      <CarouselContent class="h-[180px] w-full gap-3">
+        {NAMES.map((name, i) => (
+          <CarouselItem
+            accessibilityLabel={`${i + 1} of ${NAMES.length}: ${name}`}
+            class="w-full items-center justify-center rounded-(--radius) bg-muted"
+          >
+            <Text>{name}</Text>
+          </CarouselItem>
+        ))}
+      </CarouselContent>
+      <View class="flex-row items-center gap-2">
+        <CarouselPrevious accessibilityLabel="Previous photo" class="disabled:opacity-40">
+          <Text>‹</Text>
+        </CarouselPrevious>
+        <CarouselPagination class="flex-row gap-1">
+          {NAMES.map((_, i) => (
+            <CarouselPaginationItem
+              index={i}
+              accessibilityLabel={`Photo ${i + 1}`}
+              class="size-2 rounded-full bg-border selected:bg-primary"
+            />
+          ))}
+        </CarouselPagination>
+        <CarouselNext accessibilityLabel="Next photo" class="disabled:opacity-40">
+          <Text>›</Text>
+        </CarouselNext>
+      </View>
+    </Carousel>
+  );
+}
+
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
+```
+
 ```rust tabs
 use nsh_base::{
     carousel, carousel_content, carousel_item, carousel_next, carousel_pagination,
@@ -78,63 +135,6 @@ fn photos() -> impl IntoElement {
                 .child(carousel_next().accessibility_label("Next photo").child(text("›"))),
         )
 }
-```
-
-```tsx tabs
-import { mount, signal, Text, View } from "nsh";
-import {
-  Carousel,
-  CarouselContent,
-  CarouselItem,
-  CarouselNext,
-  CarouselPagination,
-  CarouselPaginationItem,
-  CarouselPrevious,
-} from "nsh/base";
-import { Window } from "nsh/desktop";
-
-const NAMES = ["Harbor", "Dunes", "Glacier"];
-
-function App() {
-  const index = signal(0);
-  return (
-    <Carousel index={index()} onChange={({ index: next }) => index.set(next)} accessibilityLabel="Photos" class="gap-3">
-      <CarouselContent class="h-[180px] w-full gap-3">
-        {NAMES.map((name, i) => (
-          <CarouselItem
-            accessibilityLabel={`${i + 1} of ${NAMES.length}: ${name}`}
-            class="w-full items-center justify-center rounded-(--radius) bg-muted"
-          >
-            <Text>{name}</Text>
-          </CarouselItem>
-        ))}
-      </CarouselContent>
-      <View class="flex-row items-center gap-2">
-        <CarouselPrevious accessibilityLabel="Previous photo" class="disabled:opacity-40">
-          <Text>‹</Text>
-        </CarouselPrevious>
-        <CarouselPagination class="flex-row gap-1">
-          {NAMES.map((_, i) => (
-            <CarouselPaginationItem
-              index={i}
-              accessibilityLabel={`Photo ${i + 1}`}
-              class="size-2 rounded-full bg-border selected:bg-primary"
-            />
-          ))}
-        </CarouselPagination>
-        <CarouselNext accessibilityLabel="Next photo" class="disabled:opacity-40">
-          <Text>›</Text>
-        </CarouselNext>
-      </View>
-    </Carousel>
-  );
-}
-
-mount(() => (
-  <Window id="main">
-    <App />
-  </Window>
-));
 ```
 
 `Carousel` and its parts come from [`nsh/base`](../modules/nsh-base.md), the `nsh-base` crate in Rust. The slide

@@ -24,7 +24,9 @@ pub struct FileDropEvent {
     /// `pagePosition`), on backends that know it (Linux).
     pub page_position: Option<Point<Points>>,
     /// The dropped regular files with their contents, on backends that hand
-    /// over contents instead of paths (the Web, where `uris` is empty):
+    /// over contents instead of paths (the Web, and on macOS files a drag
+    /// only promises, such as an image out of a browser's page; `uris` is
+    /// empty then):
     /// in the drop's order, directories left out, so not by index of
     /// `uris`. Each keeps its bytes after the listener returns.
     pub files: Vec<crate::picker::PickedFile>,

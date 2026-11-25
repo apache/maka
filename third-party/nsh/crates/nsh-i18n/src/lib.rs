@@ -12,8 +12,16 @@
 //!   language, or `_version: 2`, one file with every language; YAML, JSON
 //!   or TOML), read with rust-i18n.
 //!
-//! [`bundle_json`] writes both as the JSON the runtime takes
+//! - **Time zones** (feature `build`): the rules of the named zones the
+//!   app's `nsh.json` `timeZones` lists ([`zones`]), from the IANA Time
+//!   Zone Database. The runtime knows the device's zone, UTC and offsets;
+//!   `Intl.DateTimeFormat` takes the names of these too.
+//!
+//! [`bundle_json`] writes them as the JSON the runtime takes
 //! (`nsh_core::i18n`, `nsh:rt`'s `i18n`).
+
+#[cfg(feature = "build")]
+pub mod zones;
 
 #[cfg(feature = "build")]
 use std::{
@@ -135,13 +143,16 @@ pub fn app_locales(translations: &Translations, locales: Option<&[String]>) -> V
 
 #[cfg(feature = "build")]
 /// What the bundle hands the runtime (`nsh:rt`'s `i18n`):
-/// `{"translations": {...}, "languages": {...}}`, the data of the languages
-/// `locales` lists (`nsh.json`), or, where it is `None`, of the
-/// translations' languages. `None` when there is neither. A language
-/// without data is reported to `warn` and formats as English.
+/// `{"translations": {...}, "languages": {...}, "zones": [...]}`, the data
+/// of the languages `locales` lists (`nsh.json`), or, where it is `None`,
+/// of the translations' languages, and of the time zones `time_zones`
+/// lists (`nsh.json` `timeZones`: [`zones`]). `None` when there is none of
+/// them. A language without data is reported to `warn` and formats as
+/// English; a zone the database does not have is reported and left out.
 pub fn bundle_json(
     translations: &Translations,
     locales: Option<&[String]>,
+    time_zones: &[String],
     mut warn: impl FnMut(String),
 ) -> Option<String> {
     let wanted = app_locales(translations, locales);
@@ -162,13 +173,24 @@ pub fn bundle_json(
             None => {}
         }
     }
-    if translations.is_empty() && languages.is_empty() {
+    let mut packed = Vec::<serde_json::Value>::new();
+    for name in time_zones {
+        match zones::zone_data(name) {
+            Ok(zone) if !packed.iter().any(|z| z["name"] == zone["name"]) => packed.push(zone),
+            Ok(_) => {}
+            Err(e) => warn(e),
+        }
+    }
+    if translations.is_empty() && languages.is_empty() && packed.is_empty() {
         return None;
     }
-    let bundle = serde_json::json!({
+    let mut bundle = serde_json::json!({
         "translations": translations,
         "languages": languages,
     });
+    if !packed.is_empty() {
+        bundle["zones"] = packed.into();
+    }
     Some(bundle.to_string())
 }
 
@@ -198,17 +220,47 @@ mod tests {
             BTreeMap::from([("hello".into(), "你好".into())]),
         );
         let mut warnings = Vec::new();
-        let json = bundle_json(&translations, None, |w| warnings.push(w)).unwrap();
+        let json = bundle_json(&translations, None, &[], |w| warnings.push(w)).unwrap();
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert!(value["languages"]["zh"].is_object());
         assert_eq!(value["translations"]["zh-CN"]["hello"], "你好");
         let listed = ["de-CH".to_owned(), "en-GB".to_owned(), "xx".to_owned()];
-        let json = bundle_json(&Translations::new(), Some(&listed), |w| warnings.push(w)).unwrap();
+        let json = bundle_json(&Translations::new(), Some(&listed), &[], |w| {
+            warnings.push(w)
+        })
+        .unwrap();
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
         let languages = value["languages"].as_object().unwrap();
         assert_eq!(languages.keys().collect::<Vec<_>>(), ["de"]);
         assert_eq!(warnings.len(), 1);
-        assert!(bundle_json(&Translations::new(), None, |_| {}).is_none());
+        assert!(bundle_json(&Translations::new(), None, &[], |_| {}).is_none());
+    }
+
+    #[cfg(feature = "build")]
+    #[test]
+    fn the_bundle_carries_the_listed_zones() {
+        let mut warnings = Vec::new();
+        let listed = [
+            "America/New_York",
+            "US/Eastern",
+            "Asia/Kolkata",
+            "Nowhere/Town",
+        ]
+        .map(String::from);
+        let json = bundle_json(&Translations::new(), None, &listed, |w| warnings.push(w)).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let names = value["zones"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|z| z["name"].as_str().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(names, ["America/New_York", "US/Eastern", "Asia/Kolkata"]);
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("Nowhere/Town"));
+        let json =
+            bundle_json(&Translations::new(), Some(&["de".to_owned()]), &[], |_| {}).unwrap();
+        assert!(!json.contains("zones"));
     }
 
     #[cfg(feature = "build")]

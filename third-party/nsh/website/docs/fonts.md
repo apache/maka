@@ -26,6 +26,13 @@ A family installed on the device can be named directly (`"Georgia"`, `"Avenir Ne
 
 A Rust crate ships the files of its `assets/` directory: `registry.assets(assets!())` in its `#[native_module]` function ships them all, and `asset!("fonts/Pacifico-Regular.ttf")` is a `FontAsset` whose `family` is the font's family name, read from the file when the crate compiles. In TSX, import a `.ttf`, `.otf`, `.woff` or `.woff2` file: the import evaluates to the font's family name. Either way the font is registered before the first frame, so it is ready when text first renders. WOFF and WOFF2 files are compressed TrueType or OpenType fonts (a WOFF2 file is often half its TrueType's size, which the app's package and the web's downloads save): NSH reads them as the fonts they hold, on every platform:
 
+```tsx tabs
+import { Text } from "nsh";
+import Pacifico from "./fonts/Pacifico-Regular.ttf";
+
+<Text style={{ fontFamily: Pacifico, fontSize: 30 }}>Custom fonts</Text>
+```
+
 ```rust tabs
 use nsh_core::{element::FontAsset, prelude::*};
 
@@ -39,13 +46,6 @@ fn native(registry: &mut Registry) {
 text("Custom fonts").font_family(PACIFICO.family).text_size(px(30.0))
 ```
 
-```tsx tabs
-import { Text } from "nsh";
-import Pacifico from "./fonts/Pacifico-Regular.ttf";
-
-<Text style={{ fontFamily: Pacifico, fontSize: 30 }}>Custom fonts</Text>
-```
-
 `PACIFICO.family` and the TSX import `Pacifico` are the string `"Pacifico"`: the family name stored in the font file (its typographic family name, or else its family name), not the file name. Using the asset's value instead of writing the name by hand keeps the two in sync; a missing or broken file fails the Rust build, and an imported file is sure to be bundled.
 
 The files ship with the app like any other [asset](./images-and-assets.md). Fonts are registered for the app's process only; they are not installed on the device.
@@ -57,12 +57,12 @@ The files ship with the app like any other [asset](./images-and-assets.md). Font
 
 `fontFamily` takes a list, as CSS does: families separated by commas, most preferred first, a name with spaces quoted or not (`"Brand, 'Noto Sans SC', sans-serif"`), a quoted name keeping its commas (`'ACME, Inc'`). Text is set in the first family the platform has, and a character that family lacks (another script, a symbol) comes from the next family in the list that has it, then from the system's fallback fonts. A list lets a brand font that covers Latin only show Chinese in a matching font, or name a font the app downloads with a system font to show until it arrives:
 
-```rust tabs
-text("Brand 品牌").font_family("Brand, 'Noto Sans SC', sans-serif")
-```
-
 ```tsx tabs
 <Text style={{ fontFamily: "Brand, 'Noto Sans SC', sans-serif" }}>Brand 品牌</Text>
+```
+
+```rust tabs
+text("Brand 品牌").font_family("Brand, 'Noto Sans SC', sans-serif")
 ```
 
 Each platform keeps the list's order with its own font machinery: a cascade list on iOS and macOS, a font fallback on Windows (one per paragraph: its first style's list), a Pango family list on Linux, the browser's on the web, GPUI's fallbacks. On Android, text is set in the first family it has; when that one is a font the app registers, the registered fonts after it in the list are its fallbacks (Android 10 and later).
@@ -70,6 +70,15 @@ Each platform keeps the list's order with its own font machinery: a cascade list
 ## Registering a font while the app runs
 
 A font that is not known when the app ships (one a user picks from a catalog, one a server sends with a document, one the app makes) is registered while the app runs: `register_font(data)` in Rust, `registerFont(source)` in TSX. It takes TrueType, OpenType, WOFF or WOFF2 data (in TSX a `Uint8Array`, or the URL of the file: one of the app's, `asset:/...`, or one on the network, read as `fetch` reads it, so the `network` capability applies) and resolves to the font's family name (in TSX as `{ family }`). Text that names the family is laid out with it from then on, and text shown before the font arrived is laid out again:
+
+```tsx tabs
+import { registerFont, signal, Text } from "nsh";
+
+const family = signal("");
+registerFont("https://fonts.example.com/Brand.woff2").then((font) => family.set(font.family));
+
+<Text style={{ fontFamily: family() }}>Branded</Text>
+```
 
 ```rust tabs
 use nsh_core::prelude::*;
@@ -84,35 +93,11 @@ spawn(async move {
 text("Branded").font_family(move || family.get())
 ```
 
-```tsx tabs
-import { registerFont, signal, Text } from "nsh";
-
-const family = signal("");
-registerFont("https://fonts.example.com/Brand.woff2").then((font) => family.set(font.family));
-
-<Text style={{ fontFamily: family() }}>Branded</Text>
-```
-
 `registerFont` rejects with an `Error` when the URL does not load or the data is no font, its `code` `"ERR_ACCESS_DENIED"` when the `network` capability does not grant the URL or a redirect of it; Rust's `register_font` resolves to the reason. Registering the same font again is harmless. Like an imported font, a registered one is the app's alone and is not installed on the device.
 
 ## Weights and italics
 
 A family usually comes as several files, one per weight and style. Ship each one (put them in `assets/` in Rust, import each in TSX); they register under the same family name, and the weight and style choose the face:
-
-```rust tabs
-// assets/fonts: Inter-Regular.ttf, Inter-Medium.ttf, Inter-Bold.ttf, Inter-Italic.ttf
-const INTER: FontAsset = asset!("fonts/Inter-Regular.ttf");
-
-text("Regular, ")
-    .font_family(INTER.family)
-    .text_size(px(16.0))
-    .child(text("medium").font_weight(FontWeight::MEDIUM))
-    .child(", ")
-    .child(text("bold").font_weight(FontWeight::BOLD))
-    .child(" and ")
-    .child(text("italic").italic())
-    .child(".")
-```
 
 ```tsx tabs
 import { Text } from "nsh";
@@ -129,12 +114,26 @@ const body = { fontFamily: Inter, fontSize: 16 } as const;
 </Text>
 ```
 
-When no registered face has the exact weight asked for, the nearest one is used. The platforms differ when a face is missing:
+```rust tabs
+// assets/fonts: Inter-Regular.ttf, Inter-Medium.ttf, Inter-Bold.ttf, Inter-Italic.ttf
+const INTER: FontAsset = asset!("fonts/Inter-Regular.ttf");
+
+text("Regular, ")
+    .font_family(INTER.family)
+    .text_size(px(16.0))
+    .child(text("medium").font_weight(FontWeight::MEDIUM))
+    .child(", ")
+    .child(text("bold").font_weight(FontWeight::BOLD))
+    .child(" and ")
+    .child(text("italic").italic())
+    .child(".")
+```
+
+When no registered face has the exact weight asked for, the nearest one is used. Italic text in a family without an italic face, such as the CJK system fonts or a family shipped without its italic files, is its upright face slanted, as browsers draw it, on iOS and Android alike. The platforms differ when a weight is missing:
 
 | | iOS | Android |
 |---|---|---|
 | Weight without a face | The nearest registered face | The nearest face, with Android's synthetic bold where it applies |
-| Italic without an italic face | The upright face (no slanting) | A slanted version of the upright face |
 
 Ship the faces you use to get the same result on both.
 
@@ -150,13 +149,6 @@ In Rust, `.font_family(..)` takes the asset's family wherever a style goes, and 
 }
 ```
 
-```rust tabs
-use nsh_core::element::palette::VIOLET;
-
-text("Custom fonts").font_family(PACIFICO.family).text_3xl().text_color(VIOLET.shade(600))
-text("Bold Inter").font_family(INTER.family).font_weight(FontWeight::BOLD)
-```
-
 ```tsx tabs
 import { Text } from "nsh";
 import "./fonts/Pacifico-Regular.ttf";
@@ -165,6 +157,13 @@ import "./fonts/Inter-Bold.ttf";
 
 <Text class="font-display text-3xl text-violet-600">Custom fonts</Text>
 <Text class="font-body font-bold">Bold Inter</Text>
+```
+
+```rust tabs
+use nsh_core::element::palette::VIOLET;
+
+text("Custom fonts").font_family(PACIFICO.family).text_3xl().text_color(VIOLET.shade(600))
+text("Bold Inter").font_family(INTER.family).font_weight(FontWeight::BOLD)
 ```
 
 An arbitrary family works without a theme entry: `font-[Pacifico]`. Weight classes (`font-light`, `font-semibold`, `font-bold`, ...) select faces as `fontWeight` does. Text styles on a view pass down to the texts inside it, so `.font_family(INTER.family)` on a view, or `<View class="font-body">`, sets the family for a whole screen.
@@ -190,17 +189,6 @@ The theme's `font-sans` is the app's font: every text that sets no family of its
 
 The first family of the list that is not a generic one is the font; a generic first family (`system-ui`, `sans-serif`) is the system font. The font can also be set on a container: the texts inside inherit it.
 
-```rust tabs
-use nsh_core::{element::desktop::window, prelude::*};
-
-#[component]
-pub fn Root() -> impl IntoElement {
-    window()
-        .id("main")
-        .content(view().flex_1().font_family(INTER.family).child(app()))
-}
-```
-
 ```tsx tabs
 import { mount, View } from "nsh";
 import { Window } from "nsh/desktop";
@@ -212,6 +200,17 @@ mount(() => (
     </View>
   </Window>
 ));
+```
+
+```rust tabs
+use nsh_core::{element::desktop::window, prelude::*};
+
+#[component]
+pub fn Root() -> impl IntoElement {
+    window()
+        .id("main")
+        .content(view().flex_1().font_family(INTER.family).child(app()))
+}
 ```
 
 ## Font features

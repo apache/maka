@@ -436,8 +436,8 @@ fn rounded_borders_draw_rounded_dim_corners_and_no_fill() {
     view.load(App::Rust(Root::new::<Bordered>(|| ()))).unwrap();
     draw_until(&mut view, &mut terminal, &rx, "╭────╮");
     let buffer = terminal.backend().buffer();
-    assert_eq!(buffer[(0, 2)].symbol(), "╰");
-    assert_eq!(buffer[(5, 2)].symbol(), "╯");
+    assert_eq!(buffer[(0, 4)].symbol(), "╰");
+    assert_eq!(buffer[(5, 4)].symbol(), "╯");
     assert_eq!(buffer[(2, 1)].bg, Color::Reset, "no fill");
     assert_eq!(buffer[(0, 0)].fg, Color::Reset);
     assert!(

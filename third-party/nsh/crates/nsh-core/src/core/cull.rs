@@ -192,7 +192,7 @@ impl<M: TextEngine> Core<M> {
             if node.kind == Kind::Scroll
                 && let Some(scroll) = node.scroll.as_mut()
             {
-                scroll.culled_content = Some(scroll_extent(&l));
+                scroll.culled_content = Some(scroll_extent(&l, scroll.horizontal));
             }
             if let Some(parent) = self.nodes.get(self.nodes[key as usize].parent as usize)
                 && parent.rtl
@@ -452,6 +452,46 @@ impl<M: TextEngine> Core<M> {
             self.make_culled(parent, node);
         }
         self.nodes[key as usize].created
+    }
+
+    /// Makes any culled descendants of made `root` that no longer sit under
+    /// an outer scroll view's culling scope (for example, a view promoted to
+    /// `position: fixed`, which becomes a layout root that the outer scroll
+    /// view's `sync_culled_in` skips). Stops at nested scroll views, lists,
+    /// overlays, and layout roots, which manage their own subtrees.
+    pub(super) fn uncull_subtree(&mut self, root: Key) {
+        let node = &self.nodes[root as usize];
+        if !node.created
+            || !node.kind.is_container()
+            || node.kind == Kind::Scroll
+            || node.list.is_some()
+        {
+            return;
+        }
+        let mut stack = vec![root];
+        while let Some(parent) = stack.pop() {
+            let mut i = 0;
+            while let Some(&child) = self.nodes[parent as usize].children.get(i) {
+                i += 1;
+                let c = &self.nodes[child as usize];
+                if c.layout.is_none() || c.is_layout_root() || c.is_overlay() {
+                    continue;
+                }
+                if c.created {
+                    if c.kind.is_container() && c.kind != Kind::Scroll && c.list.is_none() {
+                        stack.push(child);
+                    }
+                    continue;
+                }
+                if c.culled {
+                    if c.placeholder {
+                        self.ask_row(child);
+                    } else {
+                        self.make_culled(parent, child);
+                    }
+                }
+            }
+        }
     }
 
     /// Text block `key` gets its view: what it was laid out with while

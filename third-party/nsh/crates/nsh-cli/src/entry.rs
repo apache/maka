@@ -22,7 +22,7 @@ pub(crate) fn resolve(path: &Path) -> anyhow::Result<PathBuf> {
         bail!("{} does not exist", path.display());
     }
     let config = path.join("nsh.json");
-    if std::fs::read_to_string(&config)
+    if nsh_bundler::app_dir::read(&config)
         .ok()
         .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
         .is_some_and(|json| json.get("root").is_some())
@@ -81,6 +81,13 @@ mod tests {
         assert_eq!(resolve(&dir).unwrap(), dir.join("app.tsx"));
         // A Rust app: its `nsh.json`, unless the TSX entry is named.
         std::fs::write(dir.join("nsh.json"), r#"{ "rust": ".", "root": "App" }"#).unwrap();
+        assert_eq!(resolve(&dir).unwrap(), dir.join("nsh.json"));
+        // A BOM (a Windows editor's UTF-8) does not hide it.
+        std::fs::write(
+            dir.join("nsh.json"),
+            "\u{feff}{ \"rust\": \".\", \"root\": \"App\" }",
+        )
+        .unwrap();
         assert_eq!(resolve(&dir).unwrap(), dir.join("nsh.json"));
         assert_eq!(resolve(&dir.join("app.tsx")).unwrap(), dir.join("app.tsx"));
         // The entry `nsh.json` names, relative to it.

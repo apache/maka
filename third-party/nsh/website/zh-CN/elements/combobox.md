@@ -14,6 +14,53 @@ demo: el-combobox
 
 组合框负责行为：值（应用的，或它自己的）、展开状态、键盘、搜索、分组、高亮的行，以及屏幕阅读器听到的内容。在 `multiple` 时，一次选择会把该条目加入或移出值，列表保持打开，所以可以一次选好多个。外观由应用决定：应用为字段、弹出层、列表、行、分组标题、输入框和底部区域设置样式，或者自己绘制行。
 
+```tsx tabs
+import { mount, signal, Text, View } from "nsh";
+import { Combobox } from "nsh/base";
+import { Window } from "nsh/desktop";
+
+const TAGS = [
+  { value: "bug", title: "Bug" },
+  { value: "design", title: "Design" },
+  { value: "docs", title: "Docs" },
+  { value: "perf", title: "Performance" },
+  { value: "security", title: "Security" },
+];
+
+function App() {
+  const tags = signal<string[]>([]);
+  return (
+    <Combobox
+      items={TAGS}
+      multiple
+      placeholder={tags().length ? `${tags().length} tags` : "Add tags"}
+      value={tags()}
+      onChange={({ value }) => tags.set(value)}
+      accessibilityLabel="Tags"
+      offset={4}
+      popupClass="rounded-lg border border-border bg-popover p-1 text-popover-foreground shadow-md"
+      backdropClass="bg-black/40"
+      class="h-9 w-48 flex-row items-center rounded-md border border-input px-3"
+      inputClass="flex-1 text-sm placeholder:text-muted-foreground"
+      itemClass="group rounded-md px-2 py-1.5 text-sm focus:bg-accent focus:text-accent-foreground"
+      triggerButton={<Text class="px-1 text-muted-foreground">⌄</Text>}
+      renderItem={(item) => (
+        <View class="flex-row justify-between">
+          <Text>{item.title}</Text>
+          <Text class="opacity-0 group-selected:opacity-100">✓</Text>
+        </View>
+      )}
+    />
+  );
+}
+
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
+```
+
 ```rust tabs
 use nsh_base::{SelectEntry, SelectItem, combobox, theme};
 use nsh_core::prelude::*;
@@ -65,53 +112,6 @@ fn tag_picker() -> impl IntoElement {
         .item_class("rounded-md focus:bg-accent selected:font-medium disabled:opacity-50")
         .render_item(|item: &SelectEntry| view().px_2().py_1p5().child(text(item.title.clone()).text_sm()))
 }
-```
-
-```tsx tabs
-import { mount, signal, Text, View } from "nsh";
-import { Combobox } from "nsh/base";
-import { Window } from "nsh/desktop";
-
-const TAGS = [
-  { value: "bug", title: "Bug" },
-  { value: "design", title: "Design" },
-  { value: "docs", title: "Docs" },
-  { value: "perf", title: "Performance" },
-  { value: "security", title: "Security" },
-];
-
-function App() {
-  const tags = signal<string[]>([]);
-  return (
-    <Combobox
-      items={TAGS}
-      multiple
-      placeholder={tags().length ? `${tags().length} tags` : "Add tags"}
-      value={tags()}
-      onChange={({ value }) => tags.set(value)}
-      accessibilityLabel="Tags"
-      offset={4}
-      popupClass="rounded-lg border border-border bg-popover p-1 text-popover-foreground shadow-md"
-      backdropClass="bg-black/40"
-      class="h-9 w-48 flex-row items-center rounded-md border border-input px-3"
-      inputClass="flex-1 text-sm placeholder:text-muted-foreground"
-      itemClass="group rounded-md px-2 py-1.5 text-sm focus:bg-accent focus:text-accent-foreground"
-      triggerButton={<Text class="px-1 text-muted-foreground">⌄</Text>}
-      renderItem={(item) => (
-        <View class="flex-row justify-between">
-          <Text>{item.title}</Text>
-          <Text class="opacity-0 group-selected:opacity-100">✓</Text>
-        </View>
-      )}
-    />
-  );
-}
-
-mount(() => (
-  <Window id="main">
-    <App />
-  </Window>
-));
 ```
 
 `Combobox` 来自 [`nsh/base`](../modules/nsh-base.md)，在 Rust 中是 `nsh-base` crate。在 Rust 中，`combobox()` 创建一个组合框，每个属性有一个设置方法（`.items(..)`、`.value(..)`、`.multiple(..)`），每个事件有一个监听方法（`.on_change(..)`）。它的条目与 `Select` 的相同：`SelectItem::new(value, title)`，可以用 `.disabled(..)` 和 `.group(..)`，分组方式也和选择框一样（见[条目](./select.md#items)）。

@@ -173,6 +173,7 @@ impl Modifiers {
             alt: self.alt,
             shift: self.shift,
             cmd: self.meta,
+            alt_graph: false,
         }
     }
 }
@@ -1241,6 +1242,11 @@ pub(crate) fn pointer(surface: &Rc<Surface>, event: PointerEvent) {
     if event.kind == PointerKind::Down {
         surface.chrome.context_area.take();
         surface.control(|c| c.set_input_modality(InputModality::Pointer));
+        if let Some(owner) = crate::text_input::focused_view(surface)
+            && crate::app_window::window_of(surface, &owner) != surface.input_root().id()
+        {
+            crate::text_input::blur_all(surface);
+        }
     }
     let key = if event.touch || event.pen {
         Key::Touch(event.pointer)
@@ -1600,6 +1606,9 @@ pub(crate) fn key_now(surface: &Rc<Surface>, event: KeyEvent) -> bool {
             && !m.shift
             && !m.meta
             && !crate::text_input::composing_focused(surface);
+        if is_copy && crate::keymap::scoped_copy(surface, &event) {
+            return true;
+        }
         if is_copy || is_escape {
             if crate::text::key(surface, &event) || crate::selectable_view::key(surface, &event) {
                 crate::keymap::drop_char(surface);
@@ -2079,14 +2088,21 @@ fn down(
         _ => {
             if let Some(target) = crate::keyboard::focus_target(surface, &hit.view) {
                 crate::keyboard::focus_pointer(surface, &target);
+            } else if !matches!(item, Some(Item::Text(_) | Item::Area(..)))
+                && let Some(field) = crate::text_input::focused(surface)
+            {
+                // A press on no stop (blank space) leaves the field of its
+                // window, as one on a stop does: the field is drawn here,
+                // not a system control that would lose the focus to the
+                // click itself. A press that starts a text selection keeps
+                // the field focused, so Ctrl+C copies the selection around
+                // a chat's composer (copy-selection-windows.test.tsx).
+                crate::text_input::blur(&field);
             }
         }
     }
     let native = matches!(item, Some(Item::Hosted(..) | Item::Input(_)));
     let selects = matches!(item, Some(Item::Text(_) | Item::Area(..)));
-    if selects {
-        crate::text_input::blur_all(surface);
-    }
     let input = &surface.input;
     if input.pointers.borrow().is_empty() {
         input.js_block.set(false);
@@ -3412,6 +3428,242 @@ mod tests {
         assert_eq!(pressed(60.0), None);
     }
 
+    /// A click on blank space (no stop of the keyboard focus) blurs the
+    /// field that has the focus; a click on the field keeps it.
+    #[test]
+    fn a_click_on_blank_space_blurs_the_field() {
+        let surface = Surface::new(nsh_core::platform::Environment::default());
+        surface.root.state_mut().frame = rect(0.0, 0.0, 400.0, 400.0);
+        let field = view(
+            &surface.root,
+            2,
+            ViewKind::Input,
+            rect(0.0, 0.0, 200.0, 40.0),
+        );
+        crate::text_input::create(&surface, &field);
+        // A field left focused reaches thread-locals the test thread has
+        // already dropped as it ends: blurred however the test ends.
+        struct Blurred(Rc<Surface>);
+        impl Drop for Blurred {
+            fn drop(&mut self) {
+                crate::text_input::blur_all(&self.0);
+            }
+        }
+        let _blurred = Blurred(surface.clone());
+        view(
+            &surface.root,
+            4,
+            ViewKind::View,
+            rect(0.0, 100.0, 400.0, 200.0),
+        );
+        let area = view(
+            &surface.root,
+            5,
+            ViewKind::View,
+            rect(0.0, 300.0, 400.0, 100.0),
+        );
+        area.state_mut().props.selectable_view = true;
+        let click = |x: f32, y: f32| {
+            let event = |kind| PointerEvent {
+                kind,
+                x,
+                y,
+                button: 0,
+                buttons: if kind == PointerKind::Down { 1 } else { 0 },
+                pointer: 1,
+                touch: false,
+                pen: false,
+                time: 0.0,
+                clicks: 1,
+                modifiers: Modifiers::default(),
+            };
+            pointer(&surface, event(PointerKind::Down));
+            pointer(&surface, event(PointerKind::Up));
+        };
+        click(10.0, 10.0);
+        assert_eq!(crate::text_input::focused(&surface), Some(field.clone()));
+        click(10.0, 10.0);
+        assert_eq!(crate::text_input::focused(&surface), Some(field.clone()));
+        // A press that starts a selection keeps the field focused, so
+        // Ctrl+C copies the selection around it.
+        click(200.0, 350.0);
+        assert_eq!(crate::text_input::focused(&surface), Some(field.clone()));
+        click(200.0, 200.0);
+        assert_eq!(crate::text_input::focused(&surface), None);
+    }
+
+    fn drag_text(surface: &Rc<Surface>, y: f32) {
+        for (kind, x, buttons, time) in [
+            (PointerKind::Down, 1.0, 1, 0.0),
+            (PointerKind::Move, 180.0, 1, 0.1),
+            (PointerKind::Up, 180.0, 0, 0.2),
+        ] {
+            pointer(
+                surface,
+                PointerEvent {
+                    kind,
+                    x,
+                    y,
+                    button: 0,
+                    buttons,
+                    pointer: 1,
+                    touch: false,
+                    pen: false,
+                    time,
+                    clicks: 1,
+                    modifiers: Modifiers::default(),
+                },
+            );
+        }
+    }
+
+    #[test]
+    fn selecting_in_another_window_does_not_type_into_the_old_field() {
+        use nsh_core::{AttributedText, TextEngine, desktop::DesktopCommand};
+        use windows::Win32::{
+            Foundation::{LPARAM, WPARAM},
+            UI::WindowsAndMessaging::{DestroyWindow, SendMessageW, WM_CHAR},
+        };
+
+        let app = crate::AppView::new(None, Default::default()).unwrap();
+        let surface = app.surface();
+        let field = view(
+            &surface.root,
+            2,
+            ViewKind::Input,
+            rect(0.0, 0.0, 200.0, 40.0),
+        );
+        crate::text_input::create(surface, &field);
+        crate::text_input::focus(&field);
+        crate::text_input::char_input(surface, "draft");
+        let value = || crate::text_input::accessible_value(&field).unwrap().text;
+        assert_eq!(value(), "draft");
+
+        let second = NshView::new(3, ViewKind::Modal);
+        crate::app_window::command(
+            surface,
+            second.id(),
+            Some(&second),
+            &DesktopCommand::OpenWindow(Default::default()),
+        );
+        let hwnd = crate::app_window::hwnd_of(surface, second.id()).unwrap();
+        let bounds = rect(0.0, 0.0, 200.0, 40.0);
+        let reply = view(&second, 4, ViewKind::Text, bounds);
+        let mut text = AttributedText::default();
+        text.push("reply text", Default::default());
+        text.selectable = Some(true);
+        let engine = crate::text::DWriteTextEngine::new(crate::text::ui_family());
+        let prepared = engine.prepare(&text);
+        let layout = engine.layout(&prepared, engine.measure(&prepared, Some(Points(200.0))));
+        crate::text::set(&reply, &std::sync::Arc::new(text), &layout, bounds);
+        {
+            let _root = crate::app_window::enter(surface, second.id()).unwrap();
+            drag_text(surface, 10.0);
+        }
+        assert!(crate::text::has_selection(surface));
+        // SAFETY: these HWNDs belong to this thread and the message has no pointer payload.
+        unsafe { SendMessageW(hwnd, WM_CHAR, Some(WPARAM(b'x' as usize)), Some(LPARAM(1))) };
+        assert_eq!(value(), "draft");
+        app.stop();
+        // SAFETY: the host HWND belongs to this test.
+        unsafe {
+            let _ = DestroyWindow(app.hwnd());
+        }
+    }
+
+    #[cfg(feature = "rich-editor")]
+    #[test]
+    fn rich_editor_copy_uses_its_document_selection_before_the_reply() {
+        use nsh_base::rich_editor::{
+            extensions::starter,
+            model::Schema,
+            state::{EditorState, EditorStateConfig},
+            view::{EditorSession, NodeViews, rich_editor},
+        };
+        use nsh_core::prelude::{IntoElement, ParentElement, Styled, component, px, text};
+        use std::time::Duration;
+        use windows::Win32::UI::WindowsAndMessaging::DestroyWindow;
+
+        fn settle(surface: &Rc<Surface>) {
+            let (tx, rx) = std::sync::mpsc::channel();
+            surface.control(|c| c.flush(move |_| tx.send(()).unwrap()));
+            rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            surface.drain();
+        }
+
+        fn sink(view: &NshView) -> Option<NshView> {
+            if view.kind() == ViewKind::Input {
+                return Some(view.clone());
+            }
+            view.with_children(|children| children.iter().find_map(sink))
+        }
+
+        #[component]
+        fn Page() -> impl IntoElement {
+            let schema = Schema::new(starter::schema_spec()).unwrap();
+            let doc = schema.node_from_json(&serde_json::json!({
+                "type": "doc",
+                "content": [{"type": "paragraph", "content": [{"type": "text", "text": "draft words"}]}]
+            })).unwrap();
+            let state = EditorState::create(EditorStateConfig::new(schema).doc(doc)).unwrap();
+            let editor = EditorSession::new(state, NodeViews::new());
+            nsh_core::prelude::view()
+                .child(text("reply text").select_text().text_size(px(18.0)))
+                .child(rich_editor().editor(editor))
+        }
+
+        let app = crate::AppView::new(None, Default::default()).unwrap();
+        let surface = app.surface();
+        surface.resized((400, 300), 1.0);
+        app.load(crate::App::Rust(crate::Root::of::<Page>()));
+        settle(surface);
+        let sink = sink(&surface.root).expect("the rich editor's native sink");
+        crate::text_input::focus(&sink);
+        settle(surface);
+        let press = |vk, ctrl| {
+            key(
+                surface,
+                KeyEvent::synthetic(
+                    vk,
+                    true,
+                    false,
+                    Modifiers {
+                        ctrl,
+                        ..Default::default()
+                    },
+                ),
+            );
+            settle(surface);
+        };
+        let before = crate::system::clipboard_text();
+        // Select the document, not the hidden native field, and drag across the reply.
+        press(0x41, true);
+        assert!(!crate::text_input::focused_has_selection(surface));
+        drag_text(surface, 10.0);
+        assert!(crate::text::has_selection(surface));
+        assert_eq!(crate::text_input::focused(surface), Some(sink));
+        settle(surface);
+        press(0x43, true);
+        let with_draft_selection = crate::system::clipboard_text();
+
+        press(0x27, false); // Collapse the editor selection.
+        drag_text(surface, 10.0);
+        assert!(crate::text::has_selection(surface));
+        settle(surface);
+        press(0x43, true);
+        let without_draft_selection = crate::system::clipboard_text();
+        if let Some(before) = before {
+            crate::system::set_clipboard_text(&before);
+        }
+        app.stop();
+        // SAFETY: the HWND belongs to this test.
+        unsafe {
+            let _ = DestroyWindow(app.hwnd());
+        }
+        assert_eq!(with_draft_selection.as_deref(), Some("draft words"));
+        assert_eq!(without_draft_selection.as_deref(), Some("reply text"));
+    }
+
     #[test]
     fn a_right_click_captures_only_the_selectable_areas_own_request() {
         let surface = Surface::new(nsh_core::platform::Environment::default());
@@ -3457,7 +3709,7 @@ mod tests {
     }
 
     #[test]
-    fn selecting_output_releases_the_field_and_routes_selection_keys() {
+    fn selecting_output_keeps_the_field_focused_and_routes_selection_keys() {
         use nsh_core::{AttributedText, InputConfig, TextEngine};
 
         for area in [false, true] {
@@ -3493,6 +3745,7 @@ mod tests {
                 rect(0.0, 0.0, 200.0, 40.0),
             );
             crate::text_input::focus_view(&surface, &field);
+            crate::text_input::char_input(&surface, "draft");
             assert_eq!(
                 crate::text_input::focused_view(&surface),
                 Some(field.clone())
@@ -3508,27 +3761,25 @@ mod tests {
                 Modifiers::default(),
             );
             up(&surface, Key::Mouse, Some((10.0, 90.0)), 1.0, false);
-            assert!(crate::text_input::focused_view(&surface).is_none());
-            assert!(key(
-                &surface,
-                KeyEvent::synthetic(
-                    0x41,
-                    true,
-                    false,
-                    Modifiers {
-                        ctrl: true,
-                        ..Default::default()
-                    }
-                )
-            ));
+            assert_eq!(
+                crate::text_input::focused_view(&surface),
+                Some(field.clone())
+            );
+            assert!(
+                crate::text::has_selection(&surface)
+                    || crate::selectable_view::has_selection(&surface)
+            );
             assert!(key(
                 &surface,
                 KeyEvent::synthetic(0x1B, true, false, Modifiers::default())
             ));
+            assert!(
+                !crate::text::has_selection(&surface)
+                    && !crate::selectable_view::has_selection(&surface)
+            );
 
-            // Programmatically refocusing an empty field while output remains
-            // selected keeps Ctrl+C on the output selection until another key
-            // edits or selects in the field.
+            // An empty field selection leaves Ctrl+C to the output until
+            // another key edits or selects in the field.
             down(
                 &surface,
                 Key::Mouse,
@@ -3558,9 +3809,6 @@ mod tests {
                     ),
                 ])),
             );
-            crate::text_input::focus_view(&surface, &field);
-            crate::text_input::disarm(&surface);
-
             // Pressing bare Control before C must not clear the output selection.
             let _ = key(
                 &surface,
@@ -3610,6 +3858,8 @@ mod tests {
                 !crate::text::has_selection(&surface)
                     && !crate::selectable_view::has_selection(&surface)
             );
+            assert!(crate::text_input::focused_has_selection(&surface));
+            crate::text_input::blur_all(&surface);
         }
     }
 

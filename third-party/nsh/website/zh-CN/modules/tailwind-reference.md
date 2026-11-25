@@ -12,6 +12,13 @@ order: 17
 
 Rust 组件不使用 class 字符串：它们用 `Styled`（`nsh_core::prelude`）的类型化方法为元素设置样式，这些方法以本页的工具类命名，解析到相同的值，包括 Tailwind 的默认刻度（`px-4` 即 `.px_4()`，`rounded-2xl` 即 `.rounded_2xl()`，`shadow-md` 即 `.shadow_md()`，`bg-linear-to-br` 即 `.bg_linear_to_br()`）。颜色是值：主题颜色，或 `nsh_core::element::palette` 中的 Tailwind 调色板（`ZINC.shade(800)` 即 `zinc-800`）。变体是接受样式闭包的方法：`.active(|s| …)`、`.hover(…)`、`.focus(…)`、`.disabled_style(…)`、`.dark(…)`、`.group_active(…)`，其余用 `.style_when(condition, …)`。[样式参考](./style-reference.md) 给出了每个样式键对应的方法。
 
+```tsx tabs
+<View class="flex-row items-center gap-3 rounded-2xl bg-white p-4 shadow-md active:scale-[0.98] transition dark:bg-zinc-800">
+  <Text class="text-base font-semibold text-zinc-900 dark:text-white">Inbox</Text>
+  <Text classList={{ "text-red-500": unread() > 0, "text-zinc-400": unread() === 0 }}>{unread()}</Text>
+</View>
+```
+
 ```rust tabs
 use nsh_core::{element::palette::{RED, ZINC}, prelude::*};
 
@@ -37,13 +44,6 @@ view()
         text(move || unread.get().to_string())
             .text_color(move || if unread.get() > 0 { RED.shade(500) } else { ZINC.shade(400) }),
     )
-```
-
-```tsx tabs
-<View class="flex-row items-center gap-3 rounded-2xl bg-white p-4 shadow-md active:scale-[0.98] transition dark:bg-zinc-800">
-  <Text class="text-base font-semibold text-zinc-900 dark:text-white">Inbox</Text>
-  <Text classList={{ "text-red-500": unread() > 0, "text-zinc-400": unread() === 0 }}>{unread()}</Text>
-</View>
 ```
 
 ## 类如何组合
@@ -294,6 +294,10 @@ Tailwind 的文字阴影有多层；原生只绘制一层，即最宽的那层�
 
 与 Tailwind CSS 的写法（`in oklab`）一致，渐变工具类在 Oklab 中混合颜色；位置为任意值时（`bg-linear-[25deg]`、`bg-conic-[0.25turn]`）遵循 CSS 的默认规则：使用调色板颜色时在 Oklab 中混合，所有色标都是十六进制、`rgb()`、`hsl()` 或具名颜色时在 sRGB 中混合。
 
+```tsx tabs
+<View class="h-32 rounded-2xl bg-linear-to-br from-indigo-500 via-purple-500 via-40% to-pink-500" />
+```
+
 ```rust tabs
 view()
     .h_32()
@@ -303,10 +307,6 @@ view()
     .gradient_via(PURPLE.shade(500))
     .gradient_via_position(percentage(0.4))
     .gradient_to(PINK.shade(500))
-```
-
-```tsx tabs
-<View class="h-32 rounded-2xl bg-linear-to-br from-indigo-500 via-purple-500 via-40% to-pink-500" />
 ```
 
 ## 边框
@@ -502,6 +502,16 @@ view()
 
 `disabled` 适用于任何元素：它会让 `disabled:` 生效，并移除元素的按压处理器，因此也不会显示按压反馈。
 
+```tsx tabs
+<View
+  onPress={save}
+  disabled={saving()}
+  class="rounded-lg bg-blue-600 px-4 py-2 transition active:scale-95 active:bg-blue-700 disabled:opacity-40"
+>
+  <Text class="font-medium text-white">Save</Text>
+</View>
+```
+
 ```rust tabs
 view()
     .on_press(save)
@@ -514,16 +524,6 @@ view()
     .active(|s| s.scale(0.95).bg(BLUE.shade(700)))
     .disabled_style(|s| s.opacity(0.4))
     .child(text("Save").font_weight(FontWeight::MEDIUM).text_color(white()))
-```
-
-```tsx tabs
-<View
-  onPress={save}
-  disabled={saving()}
-  class="rounded-lg bg-blue-600 px-4 py-2 transition active:scale-95 active:bg-blue-700 disabled:opacity-40"
->
-  <Text class="font-medium text-white">Save</Text>
-</View>
 ```
 
 ### 分组
@@ -545,6 +545,13 @@ view()
 | `group-aria-pressed:` | 处于开启状态的切换按钮 |  |
 | `group-aria-busy:`、`group-aria-checked:`、`group-aria-selected:` | 忙碌、已勾选、已选中 |  |
 | `group-data-<name>:` | 带有名为 `name` 的 `data-*` 属性 |  |
+
+```tsx tabs
+<View onPress={open} class="group/row flex-row items-center gap-3 p-3 active:bg-zinc-100">
+  <Text class="flex-1 text-zinc-900 group-active/row:text-blue-600">Settings</Text>
+  <Text class="text-zinc-400 group-active/row:translate-x-1 transition-transform">›</Text>
+</View>
+```
 
 ```rust tabs
 view()
@@ -569,13 +576,6 @@ view()
     )
 ```
 
-```tsx tabs
-<View onPress={open} class="group/row flex-row items-center gap-3 p-3 active:bg-zinc-100">
-  <Text class="flex-1 text-zinc-900 group-active/row:text-blue-600">Settings</Text>
-  <Text class="text-zinc-400 group-active/row:translate-x-1 transition-transform">›</Text>
-</View>
-```
-
 ### 在兄弟元素中的位置
 
 | 变体 | 作用于 |
@@ -586,6 +586,10 @@ view()
 | `odd:` | 第 1、3……个子元素 |
 | `even:` | 第 2、4……个子元素 |
 
+```tsx tabs
+<Each of={items()}>{(item) => <Text class="border-b border-zinc-200 py-3 last:border-b-0">{item().name}</Text>}</Each>
+```
+
 ```rust tabs
 each(items, |item: &Item| item.id, move |item, index| {
     text(move || item.with(|i| i.name.clone()))
@@ -594,10 +598,6 @@ each(items, |item: &Item| item.id, move |item, index| {
         .py_3()
         .style_when(move || index.get() + 1 == items.with(Vec::len), |s| s.border_b(px(0.0)))
 })
-```
-
-```tsx tabs
-<Each of={items()}>{(item) => <Text class="border-b border-zinc-200 py-3 last:border-b-0">{item().name}</Text>}</Each>
 ```
 
 ### 占位符与选区

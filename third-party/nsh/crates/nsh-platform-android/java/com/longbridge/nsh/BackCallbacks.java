@@ -49,7 +49,7 @@ final class BackCallbacks {
             // Only a pop follows the finger; modals and the app's listeners
             // (they hear the button before the stack) decide on release.
             stack = mounter.wantsBack() ? mounter.backStack() : null;
-            if (stack != null && !mounter.hasShownModal() && !mounter.listensToBack() && stack.canSwipe()) {
+            if (stack != null && !mounter.hasShownModal() && !mounter.hasSelection() && !mounter.listensToBack() && stack.canSwipe()) {
                 stack.backStarted();
             } else {
                 stack = null;

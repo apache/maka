@@ -138,6 +138,8 @@ pub(crate) fn draw_into(
             dc.SetTarget(target);
             dc.SetDpi(96.0 * scale, 96.0 * scale);
             dc.SetTextAntialiasMode(cx.dc.GetTextAntialiasMode());
+            let params = cx.dc.GetTextRenderingParams().ok();
+            dc.SetTextRenderingParams(params.as_ref());
             dc.BeginDraw();
             dc.SetTransform(&Matrix3x2::identity());
             if clear {

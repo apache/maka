@@ -14,7 +14,7 @@ use crate::rich_editor::{
         BoxCommand, Dispatch, chain_commands, command, create_paragraph_near, delete_selection,
         exit_code, join_backward, join_forward, lift_empty_block, newline_in_code, select_all,
         select_node_backward, select_node_forward, select_textblock_end, select_textblock_start,
-        split_block,
+        split_block_keep_marks,
     },
     state::{EditorState, Selection},
 };
@@ -90,7 +90,7 @@ pub fn enter() -> BoxCommand {
         command(newline_in_code),
         command(create_paragraph_near),
         command(lift_empty_block),
-        command(split_block),
+        command(split_block_keep_marks),
     ])
 }
 

@@ -463,8 +463,9 @@ pub struct DatePickerProps {
     pub row_style: Prop<Style>,
     /// The classes of each item of the calendar (`selected:`, `disabled:`,
     /// `focus-visible:` and the days' `data-range-start:`, `data-range-end:`,
-    /// `data-range-middle:`, `data-today:`, `data-outside:` as
-    /// `Calendar`'s).
+    /// `data-range-middle:`, `data-range-preview-start:`,
+    /// `data-range-preview-end:`, `data-range-preview-middle:`,
+    /// `data-today:`, `data-outside:` as `Calendar`'s).
     pub item_class: Prop<Option<SharedString>>,
     /// The style of each item, its text styles too.
     #[prop(default)]

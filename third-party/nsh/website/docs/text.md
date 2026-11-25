@@ -1,6 +1,6 @@
 ---
 title: Text
-description: Showing text with the text element in Rust and TSX - nested spans and links, inline views, fonts and decorations, truncation, system text size, selection and onTextLayout.
+description: Showing text with the text element in TSX and Rust - nested spans and links, inline views, fonts and decorations, truncation, system text size, selection and onTextLayout.
 order: 35
 group: ui
 ---
@@ -8,6 +8,16 @@ group: ui
 # Text
 
 All text is shown by text elements: `text(..)` in Rust, `<Text>` in TSX. A text element is one paragraph, typeset by the platform's text engine (CoreText on Apple platforms, `StaticLayout` on Android) on the engine thread when it is laid out, and only drawn on the main thread. Nested text elements are spans of the same paragraph, not separate views.
+
+```tsx tabs
+<Text style={{ fontSize: 16, lineHeight: 24, color: "#1f2328" }}>
+  By continuing you agree to the{" "}
+  <Text style={{ color: "#0969da", textDecorationLine: "underline" }} onPress={openTerms}>
+    Terms of service
+  </Text>
+  .
+</Text>
+```
 
 ```rust tabs
 text("By continuing you agree to the ")
@@ -23,16 +33,6 @@ text("By continuing you agree to the ")
     .child(".")
 ```
 
-```tsx tabs
-<Text style={{ fontSize: 16, lineHeight: 24, color: "#1f2328" }}>
-  By continuing you agree to the{" "}
-  <Text style={{ color: "#0969da", textDecorationLine: "underline" }} onPress={openTerms}>
-    Terms of service
-  </Text>
-  .
-</Text>
-```
-
 > [!IMPORTANT]
 > Strings are displayed by text elements. In TSX, a string placed directly in a `<View>` is not shown: wrap it in `<Text>`.
 
@@ -42,10 +42,6 @@ The element itself is documented on [text](../elements/text.md); this page is ab
 
 In Rust, a text's content is a string, shown as written: `\n` breaks the line. Content that reads signals is a closure, and the text updates when they change. In TSX, JSX text follows the same rules as in React: each line is trimmed, lines that are only whitespace are dropped, and the remaining lines are joined with a single space. Whitespace within one line is kept, so `{first} {last}` keeps its space. Use `{" "}` for a space at the start or end of a line, and `{"\n"}` for a line break:
 
-```rust tabs
-text(move || format!("Hello, {}!\nWelcome back.", name.get()))
-```
-
 ```tsx tabs
 <Text>
   Hello,
@@ -54,11 +50,24 @@ text(move || format!("Hello, {}!\nWelcome back.", name.get()))
 </Text>
 ```
 
+```rust tabs
+text(move || format!("Hello, {}!\nWelcome back.", name.get()))
+```
+
 Expressions in text follow what they read: `text(move || format!("{} items", count.get()))` and `<Text>{count()} items</Text>` update when `count` changes.
 
 ## Spans and inheritance
 
 A text inside a text is a span. It inherits the text style of its parent and overrides what it sets:
+
+```tsx tabs
+<Text style={{ fontSize: 17, color: "#1f2328" }}>
+  <Text style={{ fontWeight: "300" }}>Light </Text>
+  <Text style={{ fontWeight: "700" }}>Bold </Text>
+  <Text style={{ fontStyle: "italic" }}>Italic </Text>
+  <Text style={{ letterSpacing: 4 }}>Spaced</Text>
+</Text>
+```
 
 ```rust tabs
 text("")
@@ -70,20 +79,17 @@ text("")
     .child(text("Spaced").letter_spacing(px(4.0)))
 ```
 
-```tsx tabs
-<Text style={{ fontSize: 17, color: "#1f2328" }}>
-  <Text style={{ fontWeight: "300" }}>Light </Text>
-  <Text style={{ fontWeight: "700" }}>Bold </Text>
-  <Text style={{ fontStyle: "italic" }}>Italic </Text>
-  <Text style={{ letterSpacing: 4 }}>Spaced</Text>
-</Text>
-```
-
 Text styles also pass down from views, as in CSS: `view().text_color(white()).text_sm()` in Rust and `<View class="text-white text-sm">` in TSX style the text and input elements inside them.
 
 ### Links
 
 A span with a press handler (`.on_press(..)` or `.on_long_press(..)`; `onPress` or `onLongPress`) is a link: a press on its characters goes to the span, a press elsewhere to the paragraph. Links in nested spans work too.
+
+```tsx tabs
+<Text onPress={() => log("the sentence")}>
+  Read the <Text style={{ color: "#0969da" }} onPress={() => open(termsUrl)}>terms</Text> first.
+</Text>
+```
 
 ```rust tabs
 text("Read the ")
@@ -92,28 +98,22 @@ text("Read the ")
     .child(" first.")
 ```
 
-```tsx tabs
-<Text onPress={() => log("the sentence")}>
-  Read the <Text style={{ color: "#0969da" }} onPress={() => open(termsUrl)}>terms</Text> first.
-</Text>
-```
-
 ### Backgrounds of spans
 
 A span's background color and corner radius paint a box behind its characters on each line it reaches, as tall as
 its font; the text lays out the same and copies whole, so inline code is a span
 ([Text element](../elements/text.md#span-backgrounds)):
 
-```rust tabs
-text("Run ")
-    .child(text("npm test").font_family("ui-monospace").bg(rgb(0xeff1f3)).rounded(px(4.0)).px(px(4.0)))
-    .child(" first.")
-```
-
 ```tsx tabs
 <Text>
   Run <Text style={{ fontFamily: "ui-monospace", backgroundColor: "#eff1f3", borderRadius: 4, paddingHorizontal: 4 }}>npm test</Text> first.
 </Text>
+```
+
+```rust tabs
+text("Run ")
+    .child(text("npm test").font_family("ui-monospace").bg(rgb(0xeff1f3)).rounded(px(4.0)).px(px(4.0)))
+    .child(" first.")
 ```
 
 Horizontal padding on a span takes room in its line at the span's two ends, and its background covers it, as a CSS
@@ -134,19 +134,28 @@ of them (or of views and images inside it) is drawn, and copies and screen reade
 again draws it without moving anything, so a paragraph that is still being written can reveal its last words one at a time
 ([Text element](../elements/text.md#hidden-spans)):
 
-```rust tabs
-text("Loading ").child(text("the next words").invisible())
-```
-
 ```tsx tabs
 <Text>
   Loading <Text style={{ visibility: "hidden" }}>the next words</Text>
 </Text>
 ```
 
+```rust tabs
+text("Loading ").child(text("the next words").invisible())
+```
+
 ### Views and images inside text
 
 Any element other than a text inside a text is laid out inline, on the baseline, and wraps with the words. It can take presses of its own:
+
+```tsx tabs
+<Text style={{ fontSize: 16, lineHeight: 26 }}>
+  Made with <Image src={logo} style={{ width: 18, height: 18 }} /> nsh. Status{" "}
+  <View style={{ backgroundColor: "#1a7f37", borderRadius: 9, paddingHorizontal: 7, height: 18, justifyContent: "center" }}>
+    <Text style={{ color: "#ffffff", fontSize: 11, fontWeight: "700" }}>LIVE</Text>
+  </View>
+</Text>
+```
 
 ```rust tabs
 text("Made with ")
@@ -163,15 +172,6 @@ text("Made with ")
             .justify_center()
             .child(text("LIVE").text_color(white()).text_size(px(11.0)).font_weight(FontWeight::BOLD)),
     )
-```
-
-```tsx tabs
-<Text style={{ fontSize: 16, lineHeight: 26 }}>
-  Made with <Image src={logo} style={{ width: 18, height: 18 }} /> nsh. Status{" "}
-  <View style={{ backgroundColor: "#1a7f37", borderRadius: 9, paddingHorizontal: 7, height: 18, justifyContent: "center" }}>
-    <Text style={{ color: "#ffffff", fontSize: 11, fontWeight: "700" }}>LIVE</Text>
-  </View>
-</Text>
 ```
 
 Inline elements cut off by `numberOfLines` or an ellipsis are hidden; copying the text leaves them out, except an
@@ -215,7 +215,7 @@ baseline. A view without text (an image, a colored box) stands on its bottom edg
 | `color` | A [color](./styling.md#colors). Default black | `.text_color(..)` |
 | `fontSize` | Points. Default 14. Or relative to the inherited size, as CSS's `em` and percentages: `"0.875em"`, `"87.5%"` | `.text_size(px(..))`, `.text_size(relative(0.875))`, `.text_sm()`, `.text_lg()`, ... |
 | `fontWeight` | `"normal"` (400), `"bold"` (700), or `100`–`900` (number or string) | `.font_weight(FontWeight::BOLD)` |
-| `fontStyle` | `"normal"`, `"italic"`: color emoji stay upright | `.italic()` |
+| `fontStyle` | `"normal"`, `"italic"`: a family without an italic face slants, color emoji stay upright | `.italic()` |
 | `fontFamily` | A system family, a generic family, or an [imported font](./fonts.md) | `.font_family(..)` |
 | `lineHeight` | Points | `.line_height(px(..))` |
 | `letterSpacing` | Points | `.letter_spacing(px(..))` |
@@ -230,6 +230,14 @@ baseline. A view without text (an image, a colored box) stands on its bottom edg
 | `writingDirection` | `"auto"`, `"ltr"`, `"rtl"`: the base direction of the paragraph | `.writing_direction(WritingDirection::Rtl)` |
 
 A text element is also a view: it takes backgrounds, borders, corners, padding and the other [view styles](./styling.md).
+
+```tsx tabs
+<Text style={{ fontSize: 18, fontVariant: ["tabular-nums"] }}>{price().toFixed(2)}</Text>
+<Text style={{ textDecorationLine: "underline", textDecorationStyle: "wavy", textDecorationColor: "#cf222e" }}>Typo</Text>
+<Text style={{ fontSize: 26, fontWeight: "800", color: "#ffffff", textShadow: "2px 2px 4px rgba(0,0,0,0.6)" }}>
+  Shadow
+</Text>
+```
 
 ```rust tabs
 text(move || format!("{:.2}", price.get())).text_size(px(18.0)).tabular_nums()
@@ -246,26 +254,18 @@ text("Shadow")
     }])
 ```
 
-```tsx tabs
-<Text style={{ fontSize: 18, fontVariant: ["tabular-nums"] }}>{price().toFixed(2)}</Text>
-<Text style={{ textDecorationLine: "underline", textDecorationStyle: "wavy", textDecorationColor: "#cf222e" }}>Typo</Text>
-<Text style={{ fontSize: 26, fontWeight: "800", color: "#ffffff", textShadow: "2px 2px 4px rgba(0,0,0,0.6)" }}>
-  Shadow
-</Text>
-```
-
 `tabular-nums` gives every digit the same width, which keeps counters and prices from jittering as they change.
 
 ## Truncation
 
-```rust tabs
-text(long_description).number_of_lines(2)
-text(file_path).number_of_lines(1).text_overflow(EllipsizeMode::Middle)
-```
-
 ```tsx tabs
 <Text style={{ numberOfLines: 2 }}>{longDescription}</Text>
 <Text style={{ numberOfLines: 1, textOverflow: "ellipsis-middle" }}>{filePath}</Text>
+```
+
+```rust tabs
+text(long_description).number_of_lines(2)
+text(file_path).number_of_lines(1).text_overflow(EllipsizeMode::Middle)
 ```
 
 | Style key / prop | Rust | Description |
@@ -275,6 +275,12 @@ text(file_path).number_of_lines(1).text_overflow(EllipsizeMode::Middle)
 | `adjustsFontSizeToFit` | `.shrink_to_fit(min_scale)` | Shrink the font until the text fits its lines and box |
 | `minimumFontScale` | | How far `adjustsFontSizeToFit` may shrink (0–1) |
 
+```tsx tabs
+<Text adjustsFontSizeToFit minimumFontScale={0.5} style={{ numberOfLines: 1, fontSize: 48, width: 200 }}>
+  {total()}
+</Text>
+```
+
 ```rust tabs
 text(move || total.get())
     .number_of_lines(1)
@@ -283,22 +289,16 @@ text(move || total.get())
     .w(px(200.0))
 ```
 
-```tsx tabs
-<Text adjustsFontSizeToFit minimumFontScale={0.5} style={{ numberOfLines: 1, fontSize: 48, width: 200 }}>
-  {total()}
-</Text>
-```
-
 The Tailwind classes `line-clamp-*`, `text-ellipsis` and `text-clip` set the same keys, and `truncate` (`.truncate()`) is one line cut with an ellipsis; as style keys they also take state styles and variants.
 
 `whitespace-nowrap` (`.whitespace_nowrap()`) keeps a text on one line. `text-pretty` (`.text_pretty()`) wraps without leaving a word or two alone on the last line: a last line shorter than a quarter of the box takes words from the lines above, without adding a line. `whitespace-normal` (`.whitespace_normal()`) wraps as usual. Set on a view, they reach the texts inside it, as CSS's `white-space` does:
 
-```rust tabs
-text(description).text_pretty()
-```
-
 ```tsx tabs
 <Text class="text-pretty">{description}</Text>
+```
+
+```rust tabs
+text(description).text_pretty()
 ```
 
 ## System text size
@@ -312,12 +312,12 @@ Text follows the user's text size setting (Dynamic Type on iOS, font size on And
 
 `font_scale()` in Rust and `fontScale()` from [`nsh`](../modules/nsh.md#device) in TSX are the current scale, and change when the user changes the setting. Inputs take `allowFontScaling` and `maxFontSizeMultiplier` too.
 
-```rust tabs
-text("Tab label").max_font_size_multiplier(1.3).text_size(px(13.0))
-```
-
 ```tsx tabs
 <Text maxFontSizeMultiplier={1.3} style={{ fontSize: 13 }}>Tab label</Text>
+```
+
+```rust tabs
+text("Tab label").max_font_size_multiplier(1.3).text_size(px(13.0))
 ```
 
 Prefer limiting the scale over turning it off: large text is an accessibility setting people rely on.
@@ -328,12 +328,12 @@ The style key `userSelect: "text"` (`.select_text()`, the class `select-text`) l
 
 In desktop browsers text is selectable by default, as on a web page, except inside interactive elements (views with press or touch handlers, such as buttons and pressable rows); `userSelect: "none"` (`.select_none()`, the class `select-none`) keeps a text unselectable there. Phone and tablet browsers follow the native rule.
 
-```rust tabs
-text(order_number).select_text().selection_color(rgb(0x7c3aed))
-```
-
 ```tsx tabs
 <Text style={{ userSelect: "text", selectionColor: "#7c3aed" }}>{orderNumber}</Text>
+```
+
+```rust tabs
+text(order_number).select_text().selection_color(rgb(0x7c3aed))
 ```
 
 To copy from code (a Copy button), use `set_clipboard(..)` in Rust or [`Clipboard`](../modules/nsh.md#clipboard) in TSX.
@@ -347,14 +347,6 @@ and Esc or any other key clears it. With nothing selected, Ctrl+C quits the term
 
 `onTextLayout` (the `TextLayout` event in Rust) reports the laid-out lines after each layout, in the text's content box:
 
-```rust tabs
-text(move || body.get()).on(EventKind::TextLayout, move |e: &EventPayload| {
-    if let EventPayload::TextLayout(laid_out) = e {
-        lines.set(laid_out.len());
-    }
-})
-```
-
 ```tsx tabs
 <Text
   onTextLayout={(e) => {
@@ -364,6 +356,14 @@ text(move || body.get()).on(EventKind::TextLayout, move |e: &EventPayload| {
 >
   {body()}
 </Text>
+```
+
+```rust tabs
+text(move || body.get()).on(EventKind::TextLayout, move |e: &EventPayload| {
+    if let EventPayload::TextLayout(laid_out) = e {
+        lines.set(laid_out.len());
+    }
+})
 ```
 
 Each line has `text`, `x`, `y`, `width`, `height`, `ascender`, `descender`, `capHeight` and `xHeight` (`cap_height` and `x_height` in Rust). Use it to show a "Read more" button only when text was cut, or to align other content with a baseline.

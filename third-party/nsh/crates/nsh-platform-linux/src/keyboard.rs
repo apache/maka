@@ -179,6 +179,45 @@ pub(crate) fn captures(
     false
 }
 
+/// The text input a typing key moves into: the first enabled `Input` inside
+/// the nearest enabled ancestor of `view` (itself included) whose
+/// `captureKeys` rule is `"text"`. `None` when no rule applies or the rule's
+/// view holds no enabled input.
+pub(crate) fn text_target(surface: &Surface, view: &NshView) -> Option<NshView> {
+    let mut current = Some(key_start(surface, view));
+    while let Some(view) = current {
+        let rule = {
+            let state = view.state();
+            !state.props.accessibility.state.disabled && state.props.key_capture.types_into_input()
+        };
+        if rule {
+            return first_input(&view);
+        }
+        current = keyboard_parent(surface, &view);
+    }
+    None
+}
+
+/// The first visible, enabled `Input` in `view`'s subtree, in tree order.
+fn first_input(view: &NshView) -> Option<NshView> {
+    for child in view.child_views() {
+        {
+            let state = child.state();
+            if state.style.hidden || state.props.accessibility.state.disabled {
+                continue;
+            }
+            if state.kind == ViewKind::Input {
+                drop(state);
+                return Some(child);
+            }
+        }
+        if let Some(input) = first_input(&child) {
+            return Some(input);
+        }
+    }
+    None
+}
+
 /// Reports a key transition to the focused view (`KeyDown` / `KeyUp`): the
 /// engine bubbles it to the view's ancestors, whatever they (or a
 /// capture) do with it.

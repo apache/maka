@@ -1,6 +1,6 @@
 ---
 title: Windows
-description: Run Rust and TSX NSH apps on Windows in Win32 windows drawn with Direct2D, package them, embed them in a Win32 app with AppView, and what differs on Windows.
+description: Run TSX and Rust NSH apps on Windows in Win32 windows drawn with Direct2D, package them, embed them in a Win32 app with AppView, and what differs on Windows.
 order: 14
 group: platforms
 ---
@@ -232,6 +232,7 @@ Different, or not supported:
 
 ## See also
 
+- [Sign and distribute](./packaging.md#sign-and-distribute)
 - [CLI](./cli.md): `nsh run --target windows`, `nsh package --target windows`
 - [Packaging](./packaging.md)
 - [Platform-specific code](./platform-specific.md)

@@ -16,31 +16,6 @@ NSH 的触摸处理分三个层次。**按压**（Rust 中的 `.on_press`、TSX 
 
 所有元素都接受按压事件，不需要单独的 "touchable" 组件。把 `.on_press` / `onPress` 加在视图、文本、图片或任何其他元素上即可。
 
-```rust tabs
-use nsh_core::prelude::*;
-
-#[component]
-fn App() -> impl IntoElement {
-    let count = signal(0_u32);
-    view().flex_1().items_center().justify_center().child(
-        view()
-            .on_press(move || count.update(|n| *n += 1))
-            .on_long_press(move || count.set(0))
-            .active(|s| s.opacity(0.6))
-            .role(AccessibilityRole::Button)
-            .px(px(20.0))
-            .py(px(12.0))
-            .rounded(px(10.0))
-            .bg(rgb(0x0969da))
-            .child(
-                text(move || format!("Pressed {} times", count.get()))
-                    .text_color(white())
-                    .font_weight(FontWeight::SEMIBOLD),
-            ),
-    )
-}
-```
-
 ```tsx tabs
 import { mount, signal, Text, View } from "nsh";
 import { Window } from "nsh/desktop";
@@ -67,6 +42,31 @@ mount(() => (
     <App />
   </Window>
 ));
+```
+
+```rust tabs
+use nsh_core::prelude::*;
+
+#[component]
+fn App() -> impl IntoElement {
+    let count = signal(0_u32);
+    view().flex_1().items_center().justify_center().child(
+        view()
+            .on_press(move || count.update(|n| *n += 1))
+            .on_long_press(move || count.set(0))
+            .active(|s| s.opacity(0.6))
+            .role(AccessibilityRole::Button)
+            .px(px(20.0))
+            .py(px(12.0))
+            .rounded(px(10.0))
+            .bg(rgb(0x0969da))
+            .child(
+                text(move || format!("Pressed {} times", count.get()))
+                    .text_color(white())
+                    .font_weight(FontWeight::SEMIBOLD),
+            ),
+    )
+}
 ```
 
 | Rust | TSX | 默认值 | 说明 |
@@ -103,6 +103,20 @@ mount(() => (
 
 状态样式叠加在视图自身的样式之上。后面的状态优先（hover、focus、active），禁用样式优先于所有状态，视图禁用时其他状态样式不生效。
 
+```tsx tabs
+<View onPress={open} activeStyle={{ opacity: 0.5 }}>…</View>
+
+<View onPress={open} activeStyle={{ backgroundColor: "#ddf4ff" }} style={{ padding: 16 }}>…</View>
+
+<View
+  onPress={open}
+  activeStyle={{ opacity: 0.6 }}
+  android={{ ripple: { color: "rgba(9,105,218,0.3)" } }}
+>
+  …
+</View>
+```
+
 ```rust tabs
 use nsh_core::{Ripple, prelude::*};
 
@@ -119,23 +133,18 @@ view()
     })
 ```
 
-```tsx tabs
-<View onPress={open} activeStyle={{ opacity: 0.5 }}>…</View>
-
-<View onPress={open} activeStyle={{ backgroundColor: "#ddf4ff" }} style={{ padding: 16 }}>…</View>
-
-<View
-  onPress={open}
-  activeStyle={{ opacity: 0.6 }}
-  android={{ ripple: { color: "rgba(9,105,218,0.3)" } }}
->
-  …
-</View>
-```
-
 无边界水波纹会扩散到视图之外，适合图标按钮：`Ripple { borderless: true, radius: Some(px(24.0)), .. }`、`android={{ ripple: { borderless: true, radius: 24 } }}`。见[平台特定代码](./platform-specific.md)。
 
 加上过渡（`.transition()`、`transition` 类）后，状态变化会有动画。`.group()`（`group` 类）让视图成为一个组，`.group_active(..)`（`group-active:`）在它被按下时给子元素设置样式：
+
+```tsx tabs
+<View
+  onPress={save}
+  class="group rounded-xl bg-emerald-600 p-4 transition active:scale-95 active:bg-emerald-800"
+>
+  <Text class="font-semibold text-white group-active:opacity-85">Save</Text>
+</View>
+```
 
 ```rust tabs
 view()
@@ -154,18 +163,14 @@ view()
     )
 ```
 
-```tsx tabs
-<View
-  onPress={save}
-  class="group rounded-xl bg-emerald-600 p-4 transition active:scale-95 active:bg-emerald-800"
->
-  <Text class="font-semibold text-white group-active:opacity-85">Save</Text>
-</View>
-```
-
 ## 点击区域：hitSlop
 
 点击区域扩展（`.hit_slop(..)`、`hitSlop`）把接收触摸的区域扩展到视图边界之外，而不改变布局。适合关闭按钮、开关之类的小目标。
+
+```tsx tabs
+<View hitSlop={12} onPress={close} style={{ width: 20, height: 20 }}>…</View>
+<View hitSlop={{ top: 10, bottom: 10, left: 4, right: 4 }} onPress={next}>…</View>
+```
 
 ```rust tabs
 view().hit_slop(EdgeInsets::all(px(12.0))).on_press(close).size(px(20.0))
@@ -173,11 +178,6 @@ view().hit_slop(EdgeInsets::all(px(12.0))).on_press(close).size(px(20.0))
 view()
     .hit_slop(EdgeInsets { top: px(10.0), bottom: px(10.0), left: px(4.0), right: px(4.0) })
     .on_press(next)
-```
-
-```tsx tabs
-<View hitSlop={12} onPress={close} style={{ width: 20, height: 20 }}>…</View>
-<View hitSlop={{ top: 10, bottom: 10, left: 4, right: 4 }} onPress={next}>…</View>
 ```
 
 | Rust | TSX | 说明 |
@@ -205,6 +205,18 @@ view()
 
 典型用法：不能挡住下层内容的覆盖层（none）；全屏容器的空白处要把触摸让给后面的内容、而其中的按钮仍然可用（box-none）；手指落在子视图上时也要由整行接收按压（box-only）。
 
+```tsx tabs
+<View style={{ flex: 1 }}>
+  <Map />
+  {/* 浮动工具栏：空白区域把触摸交给地图。 */}
+  <View style={{ pointerEvents: "box-none", position: "absolute", top: 0, left: 0, right: 0, bottom: 0, justifyContent: "flex-end", padding: 16 }}>
+    <View onPress={locate} style={{ alignSelf: "flex-end", padding: 12, borderRadius: 24, backgroundColor: "#ffffff" }}>
+      <Text>Locate</Text>
+    </View>
+  </View>
+</View>
+```
+
 ```rust tabs
 view().flex_1().child(map()).child(
     // 浮动工具栏：空白区域把触摸交给地图。
@@ -226,48 +238,11 @@ view().flex_1().child(map()).child(
 )
 ```
 
-```tsx tabs
-<View style={{ flex: 1 }}>
-  <Map />
-  {/* 浮动工具栏：空白区域把触摸交给地图。 */}
-  <View style={{ pointerEvents: "box-none", position: "absolute", top: 0, left: 0, right: 0, bottom: 0, justifyContent: "flex-end", padding: 16 }}>
-    <View onPress={locate} style={{ alignSelf: "flex-end", padding: 12, borderRadius: 24, backgroundColor: "#ffffff" }}>
-      <Text>Locate</Text>
-    </View>
-  </View>
-</View>
-```
-
 `"none"` 与 CSS 的 `pointer-events` 一样会继承：其中设置了 `"auto"` 的视图会重新接收触摸。`"box-none"` 和 `"box-only"` 只作用于设置它们的视图。Tailwind 类 `pointer-events-none` 和 `pointer-events-auto` 分别设置 `"none"` 和 `"auto"`；作为样式键，`pointerEvents` 也能用在状态样式（`activeStyle` 等）和变体中。
 
 ## 原生手势：拖动、捏合与旋转
 
 要让拖动、捏合和旋转移动屏幕上的东西，就把[动画值](./animation.md#动画值)绑定到手势上。平台的手势识别器在 UI 线程上写入这些值，绑定了它们的视图在同一帧移动；你的代码只在手势开始和结束时得到通知。
-
-```rust tabs
-use nsh_core::prelude::*;
-
-#[component]
-fn App() -> impl IntoElement {
-    let x = animated_value(0.0);
-    let y = animated_value(0.0);
-    view().flex_1().items_center().justify_center().child(
-        view()
-            .pan_values(Some(&x), Some(&y))
-            .on_pan_end(move |e: &PanEvent| {
-                // 以松手时的速度弹回原位。
-                let spring = |velocity| Spring { velocity: Some(velocity), ..Spring::default() };
-                x.spring(0.0, spring(e.velocity_x));
-                y.spring(0.0, spring(e.velocity_y));
-            })
-            .size(px(120.0))
-            .rounded(px(24.0))
-            .bg(rgb(0x8250df))
-            .bind_translate_x(&x)
-            .bind_translate_y(&y),
-    )
-}
-```
 
 ```tsx tabs
 import { mount, View } from "nsh";
@@ -299,6 +274,31 @@ mount(() => (
 ));
 ```
 
+```rust tabs
+use nsh_core::prelude::*;
+
+#[component]
+fn App() -> impl IntoElement {
+    let x = animated_value(0.0);
+    let y = animated_value(0.0);
+    view().flex_1().items_center().justify_center().child(
+        view()
+            .pan_values(Some(&x), Some(&y))
+            .on_pan_end(move |e: &PanEvent| {
+                // 以松手时的速度弹回原位。
+                let spring = |velocity| Spring { velocity: Some(velocity), ..Spring::default() };
+                x.spring(0.0, spring(e.velocity_x));
+                y.spring(0.0, spring(e.velocity_y));
+            })
+            .size(px(120.0))
+            .rounded(px(24.0))
+            .bg(rgb(0x8250df))
+            .bind_translate_x(&x)
+            .bind_translate_y(&y),
+    )
+}
+```
+
 | Rust | TSX | 说明 |
 |---|---|---|
 | `.pan_values(Some(&x), Some(&y))` | `pan={{ x?, y? }}` | 单指拖动驱动这些值，单位为点。 |
@@ -319,18 +319,6 @@ mount(() => (
 
 视图挂着拖动回调或 `pan` 值时就可以拖动，所以在表达式里写条件就能开关它的拖动：`onPanEnd={zoomed() ? undefined : close}` 在 `zoomed()` 为真时把拖动交给里面的内容。条件要写在表达式里：只写一个名字（`onPanEnd={handler}`）只设置一次（[哪些会重新运行](./jsx-and-components.md#哪些会重新运行)）。
 
-```rust tabs
-// 吸附到左边或右边的卡片。
-view()
-    .pan_values(Some(&x), None)
-    .on_pan_end(move |e: &PanEvent| {
-        let projected = e.value_x.unwrap_or(0.0) + e.velocity_x * 0.2;
-        let to = if projected > 0.0 { 140.0 } else { -140.0 };
-        x.spring(to, Spring { velocity: Some(e.velocity_x), ..Spring::default() });
-    })
-    .bind_translate_x(&x)
-```
-
 ```tsx tabs
 // 吸附到左边或右边的卡片。
 <View
@@ -341,6 +329,18 @@ view()
   }}
   style={{ translate: [x, 0] }}
 />
+```
+
+```rust tabs
+// 吸附到左边或右边的卡片。
+view()
+    .pan_values(Some(&x), None)
+    .on_pan_end(move |e: &PanEvent| {
+        let projected = e.value_x.unwrap_or(0.0) + e.velocity_x * 0.2;
+        let to = if projected > 0.0 { 140.0 } else { -140.0 };
+        x.spring(to, Spring { velocity: Some(e.velocity_x), ..Spring::default() });
+    })
+    .bind_translate_x(&x)
 ```
 
 > [!TIP]
@@ -375,6 +375,14 @@ view()
 | `nativeEvent` | 事件本身，因此 `e.nativeEvent.locationX` 也可用。 |
 | `stopPropagation()` | 外层视图不再收到这次触摸事件。 |
 
+```tsx tabs
+<View
+  onTouchStart={(e) => console.log("down", e.locationX, e.locationY, e.touches.length)}
+  onTouchMove={(e) => console.log("move", e.pageX, e.pageY)}
+  onTouchEnd={() => console.log("up")}
+/>
+```
+
 ```rust tabs
 use nsh_core::{TouchPhase, element::{TouchEvent}, prelude::*};
 
@@ -388,17 +396,24 @@ view().on_touch(|e: &TouchEvent| {
 })
 ```
 
-```tsx tabs
-<View
-  onTouchStart={(e) => console.log("down", e.locationX, e.locationY, e.touches.length)}
-  onTouchMove={(e) => console.log("move", e.pageX, e.pageY)}
-  onTouchEnd={() => console.log("up")}
-/>
-```
-
 ### 视图的位置：measure
 
 触摸的位置相对于手指按下的那个视图，而它可能是你关心的视图的子视图（例如滑块的滑钮）。测量一个视图可以得知它的位置，这样就能改用 page 坐标。在 Rust 中，给视图放一个 `element_ref()`，然后 await 它的 `measure()`；在 TSX 中，调用它的 ref 的 `measure()`：
+
+```tsx tabs
+let track!: ViewRef;
+let origin = 0;
+<View
+  ref={track}
+  onStartShouldSetResponder={() => true}
+  onResponderGrant={async (e) => {
+    const x = e.pageX;
+    origin = (await track.measure())?.pagePosition.x ?? 0;
+    seek(x - origin);
+  }}
+  onResponderMove={(e) => seek(e.pageX - origin)}
+/>;
+```
 
 ```rust tabs
 let track = element_ref();
@@ -415,21 +430,6 @@ view()
         });
     })
     .on_responder_move(move |e: &ResponderEvent| seek(e.page.x - origin.get()))
-```
-
-```tsx tabs
-let track!: ViewRef;
-let origin = 0;
-<View
-  ref={track}
-  onStartShouldSetResponder={() => true}
-  onResponderGrant={async (e) => {
-    const x = e.pageX;
-    origin = (await track.measure())?.pagePosition.x ?? 0;
-    seek(x - origin);
-  }}
-  onResponderMove={(e) => seek(e.pageX - origin)}
-/>;
 ```
 
 它在此前的改动完成布局后返回：Rust 中是一个 `Measurement`（`frame`，即布局处理函数报告的、相对于父视图的框架；以及 `page`，即左上角），TSX 中是 `{ bounds, pagePosition }`。左上角位于 surface 中，或位于视图所在的对话框中，与触摸的 page 坐标相同。周围滚动视图和列表的偏移会计入；transform（包括动画）不计入。视图不在屏幕上时返回 `None` / `null`。
@@ -465,37 +465,6 @@ let origin = 0;
 Rust 组件的响应者从成为响应者起一直保持按下状态，直到它的触摸结束，无论手指或指针移到哪里，就像 CSS 的 `:active` 会保持到按钮松开：它的 `.active(..)` 样式和其中的 `group-active:` 类在整个拖动过程中保持不变（例如拖出条带的调整大小手柄）。
 
 Rust 处理函数收到一个 `ResponderEvent`：手指在它按下的视图中的位置 `location`、page 坐标 `page`、`timestamp`、按下时按住的修饰键 `modifiers`，以及自成为响应者以来的手势 `gesture`。
-
-```rust tabs
-use nsh_core::prelude::*;
-
-fn sketch() -> impl IntoElement {
-    let strokes = signal(Vec::<Vec<Point<Points>>>::new());
-    canvas(move || {
-        strokes.with(|all| {
-            all.iter().fold(Painter::new().line_width(3.0), |p, s| {
-                let mut p = p.begin_path();
-                for (i, pt) in s.iter().enumerate() {
-                    p = if i == 0 { p.move_to(pt.x, pt.y) } else { p.line_to(pt.x, pt.y) };
-                }
-                p.stroke()
-            })
-        })
-    })
-    .flex_1()
-    // 成为响应者：外层的滚动视图不会接管触摸。
-    .claim_touches(TouchClaim::on_start())
-    .keep_touches(true)
-    .on_responder_grant(move |e: &ResponderEvent| strokes.update(|all| all.push(vec![e.location])))
-    .on_responder_move(move |e: &ResponderEvent| {
-        strokes.update(|all| {
-            if let Some(last) = all.last_mut() {
-                last.push(e.location);
-            }
-        })
-    })
-}
-```
 
 ```tsx tabs
 import { Canvas, type GestureResponderEvent, mount, signal } from "nsh";
@@ -536,6 +505,37 @@ mount(() => (
 ));
 ```
 
+```rust tabs
+use nsh_core::prelude::*;
+
+fn sketch() -> impl IntoElement {
+    let strokes = signal(Vec::<Vec<Point<Points>>>::new());
+    canvas(move || {
+        strokes.with(|all| {
+            all.iter().fold(Painter::new().line_width(3.0), |p, s| {
+                let mut p = p.begin_path();
+                for (i, pt) in s.iter().enumerate() {
+                    p = if i == 0 { p.move_to(pt.x, pt.y) } else { p.line_to(pt.x, pt.y) };
+                }
+                p.stroke()
+            })
+        })
+    })
+    .flex_1()
+    // 成为响应者：外层的滚动视图不会接管触摸。
+    .claim_touches(TouchClaim::on_start())
+    .keep_touches(true)
+    .on_responder_grant(move |e: &ResponderEvent| strokes.update(|all| all.push(vec![e.location])))
+    .on_responder_move(move |e: &ResponderEvent| {
+        strokes.update(|all| {
+            if let Some(last) = all.last_mut() {
+                last.push(e.location);
+            }
+        })
+    })
+}
+```
+
 运行方式：带有任何触摸或响应者处理函数的视图会在原生端监听触摸；平台把发生在它上面（及其内部）的触摸连同沿途正在监听的视图路径一起上报，协商过程在 NSH 的 Rust 核心中进行，按顺序询问接管声明并调用你的处理函数：先从最外层视图向内处理捕获阶段，再从目标向外处理其他的。由此有两个结果：
 
 - **原生滚动视图与响应者相互竞争。** 响应者阻止滚动视图时，外层的滚动视图会停止接管触摸，直到手势结束。如果原生滚动视图先开始拖动，则滚动视图获胜：响应者收到 terminate 处理函数，触摸处理函数收到 cancel。
@@ -544,35 +544,6 @@ mount(() => (
 ## PanResponder
 
 在 Rust 中，响应者事件已经带有手势：`ResponderEvent::gesture` 是一个 `PanGesture`，包含自开始以来的距离、速度和手指数量。在 TSX 中，`nsh` 中的 `PanResponder` 封装了手势响应者系统，并附加同样的手势状态；把它的 `panHandlers` 展开到视图上。
-
-```rust tabs
-use nsh_core::prelude::*;
-
-fn ball() -> impl IntoElement {
-    let pos = signal((0.0_f32, 0.0_f32));
-    let start = stored((0.0_f32, 0.0_f32));
-    view()
-        .size(px(60.0))
-        .rounded(px(30.0))
-        .bg(rgb(0x0969da))
-        .style_with(move |s| {
-            let (x, y) = pos.get();
-            s.translate_x(px(x)).translate_y(px(y))
-        })
-        .claim_touches(TouchClaim::on_start())
-        .on_responder_grant(move |_: &ResponderEvent| {
-            start.replace(pos.get_untracked());
-        })
-        .on_responder_move(move |e: &ResponderEvent| {
-            let (x, y) = start.get();
-            let d = e.gesture.delta;
-            pos.set((x + d.x.0, y + d.y.0));
-        })
-        .on_responder_release(move |e: &ResponderEvent| {
-            log::info!("released at {} {} pt/s", e.gesture.vx, e.gesture.vy)
-        })
-}
-```
 
 ```tsx tabs
 import { mount, signal, View } from "nsh";
@@ -605,6 +576,35 @@ mount(() => (
 ));
 ```
 
+```rust tabs
+use nsh_core::prelude::*;
+
+fn ball() -> impl IntoElement {
+    let pos = signal((0.0_f32, 0.0_f32));
+    let start = stored((0.0_f32, 0.0_f32));
+    view()
+        .size(px(60.0))
+        .rounded(px(30.0))
+        .bg(rgb(0x0969da))
+        .style_with(move |s| {
+            let (x, y) = pos.get();
+            s.translate_x(px(x)).translate_y(px(y))
+        })
+        .claim_touches(TouchClaim::on_start())
+        .on_responder_grant(move |_: &ResponderEvent| {
+            start.replace(pos.get_untracked());
+        })
+        .on_responder_move(move |e: &ResponderEvent| {
+            let (x, y) = start.get();
+            let d = e.gesture.delta;
+            pos.set((x + d.x.0, y + d.y.0));
+        })
+        .on_responder_release(move |e: &ResponderEvent| {
+            log::info!("released at {} {} pt/s", e.gesture.vx, e.gesture.vy)
+        })
+}
+```
+
 手势状态：
 
 | Rust（`PanGesture`） | TSX（`gestureState`） | 说明 |
@@ -622,15 +622,6 @@ mount(() => (
 
 纵向滚动视图里一个可以横向拖动查看数值的图表，需要接管横向拖动、把纵向拖动留给滚动视图。按下时就接管触摸会让滚动从第一个像素起就被挡住；在你的代码里根据移动来判断又太晚：等它回答时，滚动视图可能已经拿走了触摸。拖动激活（`TouchClaim::on_pan(..)`、`panActivation`）让平台在主线程上随着手指移动来决定：
 
-```rust tabs
-view()
-    .claim_touches(TouchClaim::on_pan(PanActivation::horizontal(px(10.0), px(10.0))))
-    .on_responder_grant(|e: &ResponderEvent| scrub(Some(e.location.x)))
-    .on_responder_move(|e: &ResponderEvent| scrub(Some(e.location.x)))
-    .on_responder_release(|_: &ResponderEvent| scrub(None))
-    .child(chart())
-```
-
 ```tsx tabs
 <View
   panActivation={{ activeOffsetX: 10, failOffsetY: 10 }}
@@ -640,6 +631,15 @@ view()
 >
   <Chart />
 </View>
+```
+
+```rust tabs
+view()
+    .claim_touches(TouchClaim::on_pan(PanActivation::horizontal(px(10.0), px(10.0))))
+    .on_responder_grant(|e: &ResponderEvent| scrub(Some(e.location.x)))
+    .on_responder_move(|e: &ResponderEvent| scrub(Some(e.location.x)))
+    .on_responder_release(|_: &ResponderEvent| scrub(None))
+    .child(chart())
 ```
 
 | Rust（`PanActivation`） | TSX | 说明 |
@@ -655,6 +655,13 @@ view()
 
 视图自己的拖动（`pan` 值、`onPanStart` / `onPanEnd`）同样遵循它的拖动激活设置：激活时才开始。比如抽屉从屏幕左边缘拖出来打开，打开后的内容只在向左拖时关闭，其他方向的拖动交给下面的分页或列表：
 
+```tsx tabs
+{/* 从屏幕左边缘拖出来打开。 */}
+<View panActivation={{ edge: "left" }} pan={{ x: offset }} onPanEnd={settle} />
+{/* 打开的抽屉：只有向左拖才关闭。 */}
+<View panActivation={{ direction: "left" }} pan={{ x: offset }} onPanEnd={settle} />
+```
+
 ```rust tabs
 // 从屏幕左边缘拖出来打开。
 let opener = view()
@@ -666,13 +673,6 @@ let content = view()
     .pan_activation(PanActivation::default().direction(PanDirection::Left))
     .pan_values(Some(&offset), None)
     .on_pan_end(move |e: &PanEvent| settle(e));
-```
-
-```tsx tabs
-{/* 从屏幕左边缘拖出来打开。 */}
-<View panActivation={{ edge: "left" }} pan={{ x: offset }} onPanEnd={settle} />
-{/* 打开的抽屉：只有向左拖才关闭。 */}
-<View panActivation={{ direction: "left" }} pan={{ x: offset }} onPanEnd={settle} />
 ```
 
 边缘拖动只在手指按在离这条边 20 点以内时开始：手机和平板上是屏幕的边，桌面上是窗口的边，Web 上是页面的边。拖动事件的 `origin` 给出按下的位置。

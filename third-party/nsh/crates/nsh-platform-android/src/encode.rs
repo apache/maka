@@ -918,9 +918,6 @@ pub(crate) fn encode(batch: MountBatch, web_generation: u64) -> Encoded {
                         });
                         canvas(&mut e, &drawing);
                     }
-                    // No speech recognizer (`Environment::speech`): the core
-                    // ends the sessions first.
-                    | Command::Speech(_)
                     // Trusted web view input is macOS's for now.
                     | Command::SendInput(_)
                     // No performance monitor on Android yet.
@@ -1437,6 +1434,10 @@ fn native_props(e: &mut Encoded, p: &NativeProps) {
             e.bool(w.scrollable);
             e.bool(w.javascript_enabled);
             e.bool(w.incognito);
+            e.bool(w.zoomable);
+            // Its one written form, which `Native.allowsWebview` reads back.
+            let origin = w.allow_origin.as_ref().map(ToString::to_string);
+            e.opt_string(origin.as_deref());
         }
         NativeProps::Video(v) => {
             e.int(4);
@@ -1487,6 +1488,7 @@ fn screen_config(e: &mut Encoded, c: &ScreenConfig) {
         HeaderTitleAlign::Left => 0,
         HeaderTitleAlign::Center => 1,
     });
+    e.bool(c.hides_bottom_bar_when_pushed);
 }
 
 fn view_props(e: &mut Encoded, p: &ViewProps) {
@@ -1701,6 +1703,8 @@ fn role_index(role: AccessibilityRole) -> i32 {
         MenuItemRadio => 42,
         Dialog => 43,
         AlertDialog => 44,
+        Textbox => 45,
+        TabPanel => 46,
     }
 }
 
@@ -1842,6 +1846,12 @@ fn input(e: &mut Encoded, c: &InputConfig) {
     e.bool(c.caret_hidden);
     // `pasteBehavior`: whether a paste inserts its text.
     e.bool(c.paste_behavior == nsh_core::PasteBehavior::Insert);
+    // `pasteMaxSize` in bytes (-1: none); a Java array holds at most
+    // `i32::MAX` bytes, so a larger limit reads what the heap holds.
+    e.int(
+        c.paste_max_size
+            .map_or(-1, |max| max.min(i32::MAX as u64) as i32),
+    );
     // A multiline input's own scroll bar shows; whether it reports how far
     // its text scrolled (a bar of the app's follows it).
     e.bool(c.scrollbar_visible);
@@ -2182,6 +2192,16 @@ mod tests {
     use nsh_core::file_dialog::{self, FileRequest};
 
     use super::*;
+
+    /// A text box is the edit text class, after the roles `A11y.java`
+    /// already names.
+    #[test]
+    fn a_textbox_follows_the_roles_a11y_java_names() {
+        assert_eq!(
+            role_index(AccessibilityRole::Textbox),
+            role_index(AccessibilityRole::AlertDialog) + 1
+        );
+    }
 
     /// `drawImage(uri, 1, 2)` encoded for `CanvasPainter.java`: the URI,
     /// no source, the source's four floats, the file name's density, then

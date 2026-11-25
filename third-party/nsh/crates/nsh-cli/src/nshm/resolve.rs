@@ -7,6 +7,12 @@
 //! requirement accepts. The app's own entry decides where a package comes
 //! from; nshm that depend on it from elsewhere are overruled, as Cargo's
 //! `[patch]` does, while their version requirements still apply.
+//!
+//! A requirement by version on one of nsh's own nshm ([`OWN_NSHM`]) is one
+//! on the nsh the app builds with ([`Nsh`]): crates.io at that nsh's version,
+//! the nightly's commit of nsh's repository, or the checkout's crate. The
+//! lock records it as such a Git or path entry, which the same nsh takes
+//! again and another resolves anew.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -18,11 +24,13 @@ use anyhow::{Context as _, bail};
 use serde::{Deserialize, Serialize};
 
 use super::{
-    dep::{Dep, Origin},
+    NshOf,
+    dep::{Dep, Origin, Ref},
     fetch::{Candidate, Fetch},
     manifest::Manifest,
     relative,
 };
+use crate::rust_app::{NSH_REPOSITORY, Nsh, OWN_NSHM, VERSION};
 
 /// The version of `nsh.lock`'s format.
 const LOCK_VERSION: u64 = 2;
@@ -141,6 +149,8 @@ pub(crate) struct Resolved {
     /// Its directory.
     pub dir: PathBuf,
     pub manifest: Manifest,
+    /// One of nsh's own nshm, taken from the nsh the app builds with.
+    pub own: bool,
 }
 
 /// Who requires a package, and how.
@@ -155,7 +165,8 @@ struct Requirement {
 const MAX_TRIES: usize = 256;
 
 /// Resolves `deps` (the app's in `app`), keeping what `lock` has where it
-/// still fits except for the packages `fresh` names.
+/// still fits except for the packages `fresh` names. `nsh` gives the nsh
+/// the app builds with, asked only when one of its own nshm is required.
 ///
 /// A depth-first search: each package in turn takes the locked version,
 /// then the others newest first, and a choice that leaves a later package
@@ -165,6 +176,7 @@ pub(crate) fn resolve(
     deps: &[Dep],
     lock: &Lock,
     fresh: &dyn Fn(&str) -> bool,
+    nsh: &NshOf,
     fetch: &mut dyn Fetch,
 ) -> anyhow::Result<Vec<Resolved>> {
     let mut search = Search {
@@ -172,6 +184,9 @@ pub(crate) fn resolve(
         deps,
         lock,
         fresh,
+        nsh,
+        found: None,
+        own: BTreeSet::new(),
         fetch,
         dead_end: None,
         tries: 0,
@@ -196,6 +211,11 @@ struct Search<'a> {
     deps: &'a [Dep],
     lock: &'a Lock,
     fresh: &'a dyn Fn(&str) -> bool,
+    nsh: &'a NshOf<'a>,
+    /// The nsh the app builds with, once asked.
+    found: Option<Nsh>,
+    /// nsh's own nshm taken from it.
+    own: BTreeSet<String>,
     fetch: &'a mut dyn Fetch,
     /// The first dead end met: the error when every way ends in one.
     dead_end: Option<String>,
@@ -210,7 +230,8 @@ impl Search<'_> {
     /// Extends `chosen` to every package the app reaches, each a version
     /// all its requirements accept: `false` when nothing can (a dead end).
     fn solve(&mut self, chosen: &mut BTreeMap<String, Resolved>) -> anyhow::Result<bool> {
-        let required = requirements(self.app, self.deps, chosen)?;
+        let mut required = requirements(self.app, self.deps, chosen)?;
+        self.take_own(&mut required)?;
         for (name, reqs) in &required {
             if let Some(current) = chosen.get(name) {
                 let origin = origin_of(name, reqs)?;
@@ -269,14 +290,108 @@ impl Search<'_> {
         Ok(false)
     }
 
+    /// The nsh the app builds with.
+    fn nsh(&mut self) -> anyhow::Result<&Nsh> {
+        if self.found.is_none() {
+            self.found = Some((self.nsh)()?);
+        }
+        Ok(self.found.as_ref().expect("found above"))
+    }
+
+    /// Where nsh's own nshm `name` comes from: the nsh the app builds with.
+    fn own_origin(&mut self, name: &str) -> anyhow::Result<Origin> {
+        let app = dunce::canonicalize(self.app).unwrap_or_else(|_| self.app.to_owned());
+        Ok(match self.nsh()? {
+            Nsh::Registry => Origin::Registry,
+            Nsh::Nightly(rev) => Origin::Git {
+                url: NSH_REPOSITORY.to_owned(),
+                reference: Ref::Rev((*rev).to_owned()),
+            },
+            Nsh::Git {
+                url,
+                rev: Some(rev),
+                ..
+            } => Origin::Git {
+                url: url.clone(),
+                reference: Ref::Rev(rev.clone()),
+            },
+            nsh @ (Nsh::Source(_) | Nsh::Git { .. }) => {
+                let dir = nsh.crate_dir(name).expect("a checkout has crates");
+                let dir = dunce::canonicalize(&dir).with_context(|| {
+                    format!(
+                        "{name} comes with nsh, but its checkout has no {}",
+                        dir.display()
+                    )
+                })?;
+                Origin::Path(relative(&app, &dir))
+            }
+        })
+    }
+
+    /// Sends the requirements by version on nsh's own nshm (from crates.io,
+    /// as written) to the nsh the app builds with ([`Self::own_origin`]),
+    /// where the app does not say otherwise: one from crates.io is that
+    /// nsh's version. One with another version stops the resolution, naming
+    /// both.
+    fn take_own(
+        &mut self,
+        required: &mut BTreeMap<String, Vec<Requirement>>,
+    ) -> anyhow::Result<()> {
+        for (name, reqs) in required.iter_mut() {
+            if !OWN_NSHM.contains(&name.as_str())
+                || !reqs.iter().any(|r| r.dep.origin == Origin::Registry)
+            {
+                continue;
+            }
+            let origin = self.own_origin(name)?;
+            for r in reqs.iter_mut().filter(|r| r.dep.origin == Origin::Registry) {
+                r.dep.origin = origin.clone();
+            }
+            if origin_of(name, reqs)? != origin {
+                continue;
+            }
+            self.own.insert(name.clone());
+            // From crates.io or Git, it is this nsh's version; a checkout's
+            // crate says its own.
+            if matches!(origin, Origin::Path(_)) {
+                continue;
+            }
+            let version = semver::Version::parse(VERSION).context("nsh's own version")?;
+            if let Some(r) = reqs.iter().find(|r| !r.dep.version_req().matches(&version)) {
+                bail!(
+                    "{} asks for {name} {}, but {name} comes with nsh, and this app builds with \
+                     nsh {version}: ask for {name} \"^{}.{}\", or build with an nsh that {} accepts",
+                    r.by,
+                    r.dep.req.as_deref().unwrap_or("*"),
+                    version.major,
+                    version.minor,
+                    r.dep.req.as_deref().unwrap_or("*"),
+                );
+            }
+            if origin == Origin::Registry {
+                reqs.push(Requirement {
+                    by: format!("nsh {VERSION}"),
+                    dep: Dep {
+                        name: name.clone(),
+                        origin: Origin::Registry,
+                        req: Some(format!("={VERSION}")),
+                        features: Vec::new(),
+                    },
+                });
+            }
+        }
+        Ok(())
+    }
+
     /// Tries `resolved` for `name`, and the rest after it.
     fn choose(
         &mut self,
         name: &str,
         reqs: &[Requirement],
-        resolved: Resolved,
+        mut resolved: Resolved,
         chosen: &mut BTreeMap<String, Resolved>,
     ) -> anyhow::Result<bool> {
+        resolved.own = self.own.contains(name);
         self.tries += 1;
         if self.tries > MAX_TRIES {
             bail!(
@@ -504,6 +619,7 @@ fn finish(
         origin: origin.clone(),
         dir,
         manifest,
+        own: false,
     })
 }
 
@@ -653,6 +769,7 @@ mod tests {
             &[dep("ui", "^1")],
             &Lock::default(),
             &|_| false,
+            &registry,
             &mut f,
         )
         .unwrap();
@@ -665,6 +782,7 @@ mod tests {
             &[dep("ui", "1.0"), dep("chart", "*")],
             &Lock::default(),
             &|_| false,
+            &registry,
             &mut f,
         )
         .unwrap();
@@ -675,6 +793,7 @@ mod tests {
             &[dep("ui", "^2"), dep("chart", "*")],
             &Lock::default(),
             &|_| false,
+            &registry,
             &mut f,
         )
         .unwrap_err()
@@ -695,6 +814,7 @@ mod tests {
             &[dep("ui", "=1.0.0")],
             &Lock::default(),
             &|_| false,
+            &registry,
             &mut f,
         )
         .unwrap();
@@ -702,14 +822,30 @@ mod tests {
         assert_eq!(versions(&first), ["icons@1.3.0", "ui@1.0.0"]);
         // Wider now: the locked versions stay, nothing is listed.
         f.listed.clear();
-        let again = resolve(&app, &[dep("ui", "^1")], &lock, &|_| false, &mut f).unwrap();
+        let again = resolve(
+            &app,
+            &[dep("ui", "^1")],
+            &lock,
+            &|_| false,
+            &registry,
+            &mut f,
+        )
+        .unwrap();
         assert_eq!(versions(&again), versions(&first));
         assert!(f.listed.is_empty(), "{:?}", f.listed);
         // Updating `ui` takes its newest; `icons` still fits.
-        let updated = resolve(&app, &[dep("ui", "^1")], &lock, &|n| n == "ui", &mut f).unwrap();
+        let updated = resolve(
+            &app,
+            &[dep("ui", "^1")],
+            &lock,
+            &|n| n == "ui",
+            &registry,
+            &mut f,
+        )
+        .unwrap();
         assert_eq!(versions(&updated), ["icons@1.3.0", "ui@1.1.0"]);
         // A package no longer required leaves the lock.
-        let none = resolve(&app, &[], &lock, &|_| false, &mut f).unwrap();
+        let none = resolve(&app, &[], &lock, &|_| false, &registry, &mut f).unwrap();
         assert!(none.is_empty());
         fs::remove_dir_all(&f.root).unwrap();
     }
@@ -738,6 +874,7 @@ mod tests {
             &[dep("ui", "^1"), icons],
             &Lock::default(),
             &|_| false,
+            &registry,
             &mut f,
         )
         .unwrap();
@@ -754,6 +891,239 @@ mod tests {
                     reference: Ref::Tag("v1".into())
                 }
         );
+        fs::remove_dir_all(&f.root).unwrap();
+    }
+
+    /// What the app builds with in these tests, when it is asked.
+    fn registry() -> anyhow::Result<Nsh> {
+        Ok(Nsh::Registry)
+    }
+
+    /// Writes nsh's own `nsh-extra` crate in `dir` at `version`, or taking
+    /// its version from the workspace above when `version` is `None`, as
+    /// in nsh's repository.
+    fn extra_crate(dir: &Path, version: Option<&str>) {
+        fs::create_dir_all(dir.join("src")).unwrap();
+        let version = match version {
+            Some(v) => format!("version = {v:?}"),
+            None => "version.workspace = true".to_owned(),
+        };
+        fs::write(
+            dir.join("Cargo.toml"),
+            format!("[package]\nname = \"nsh-extra\"\n{version}\n"),
+        )
+        .unwrap();
+        fs::write(
+            dir.join("src/lib.rs"),
+            "#[native_module(\"nsh-extra\")]\nfn native(r: &mut Registry) {}\n",
+        )
+        .unwrap();
+    }
+
+    /// Writes a checkout of nsh at `version` in `dir`, with its `nsh-extra`.
+    fn nsh_checkout(dir: &Path, version: &str) {
+        fs::create_dir_all(dir).unwrap();
+        fs::write(
+            dir.join("Cargo.toml"),
+            format!("[workspace]\nmembers = [\"crates/*\"]\n\n[workspace.package]\nversion = {version:?}\n"),
+        )
+        .unwrap();
+        extra_crate(&dir.join("crates/nsh-extra"), None);
+    }
+
+    /// nsh's own `nsh-extra` on crates.io (`registry`) and in nsh's
+    /// repository at any commit, at this nsh's version, installed as
+    /// `fetch::Net` installs them.
+    struct Nshs {
+        root: PathBuf,
+        registry: Vec<String>,
+        listed: Vec<String>,
+    }
+
+    impl Fetch for Nshs {
+        fn root(&self) -> &Path {
+            &self.root
+        }
+
+        fn candidates(&mut self, name: &str, origin: &Origin) -> anyhow::Result<Vec<Candidate>> {
+            self.listed.push(name.to_owned());
+            Ok(match origin {
+                Origin::Registry => self
+                    .registry
+                    .iter()
+                    .map(|v| Candidate {
+                        version: Some(semver::Version::parse(v).unwrap()),
+                        commit: None,
+                        checksum: None,
+                        yanked: false,
+                    })
+                    .collect(),
+                Origin::Git {
+                    reference: Ref::Rev(rev),
+                    ..
+                } => vec![Candidate {
+                    version: None,
+                    commit: Some(rev.clone()),
+                    checksum: None,
+                    yanked: false,
+                }],
+                other => bail!("no {name} from {other:?}"),
+            })
+        }
+
+        fn install(
+            &mut self,
+            name: &str,
+            origin: &Origin,
+            c: &Candidate,
+        ) -> anyhow::Result<String> {
+            let base = super::super::fetch::installed_dir(name, origin, c)?;
+            Ok(match origin {
+                Origin::Git { .. } => {
+                    nsh_checkout(&self.root.join(&base), VERSION);
+                    format!("{base}/crates/{name}")
+                }
+                _ => {
+                    extra_crate(
+                        &self.root.join(&base),
+                        Some(&c.version.as_ref().unwrap().to_string()),
+                    );
+                    base
+                }
+            })
+        }
+    }
+
+    fn nshs(label: &str) -> Nshs {
+        let root =
+            std::env::temp_dir().join(format!("nsh-resolve-own-{label}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let this = semver::Version::parse(VERSION).unwrap();
+        let newer = semver::Version::new(this.major, this.minor, this.patch + 1);
+        Nshs {
+            root,
+            registry: vec![VERSION.to_owned(), newer.to_string()],
+            listed: Vec::new(),
+        }
+    }
+
+    /// `"^<major>.<minor>"` of this nsh: what an app asks nsh-extra for.
+    fn this_minor() -> String {
+        let v = semver::Version::parse(VERSION).unwrap();
+        format!("^{}.{}", v.major, v.minor)
+    }
+
+    #[test]
+    fn nsh_extra_by_version_is_the_one_of_the_nsh_the_app_builds_with() {
+        let mut f = nshs("follow");
+        let app = f.root.join("app");
+        fs::create_dir_all(&app).unwrap();
+        let deps = [dep("nsh-extra", &this_minor())];
+
+        // A release: crates.io, at its version, though a newer one fits.
+        let r = resolve(&app, &deps, &Lock::default(), &|_| false, &registry, &mut f).unwrap();
+        assert_eq!(versions(&r), [format!("nsh-extra@{VERSION}")]);
+        assert_eq!(r[0].locked.source.as_deref(), Some("crates.io"));
+        assert!(r[0].own);
+
+        // A nightly: nsh's repository at its commit, the crate in it.
+        let rev = "f577c51901a2857956f8ba0580da4db9ce3a3311";
+        let nightly = || Ok(Nsh::Nightly(rev));
+        let r = resolve(&app, &deps, &Lock::default(), &|_| false, &nightly, &mut f).unwrap();
+        assert_eq!(versions(&r), [format!("nsh-extra@{VERSION}")]);
+        let locked = &r[0].locked;
+        assert_eq!(
+            locked.source.as_deref(),
+            Some(format!("git+{NSH_REPOSITORY}?rev={rev}").as_str())
+        );
+        assert_eq!(locked.commit.as_deref(), Some(rev));
+        assert_eq!(
+            locked.dir.as_deref(),
+            Some("github.com/longbridge/nsh/f577c51901a2/crates/nsh-extra")
+        );
+        assert!(r[0].own && r[0].dir.ends_with("crates/nsh-extra"));
+        // Its lock, written and read back, is taken again with nothing
+        // listed; a release resolves it anew.
+        let lock = Lock::of(&r);
+        let text = serde_json::to_string(&lock).unwrap();
+        let lock: Lock = serde_json::from_str(&text).unwrap();
+        f.listed.clear();
+        let again = resolve(&app, &deps, &lock, &|_| false, &nightly, &mut f).unwrap();
+        assert_eq!(Lock::of(&again), lock);
+        assert!(f.listed.is_empty(), "{:?}", f.listed);
+        let release = resolve(&app, &deps, &lock, &|_| false, &registry, &mut f).unwrap();
+        assert_eq!(release[0].locked.source.as_deref(), Some("crates.io"));
+
+        // A checkout: its crate, where it is, at the version it says.
+        let checkout = f.root.join("nsh");
+        nsh_checkout(&checkout, VERSION);
+        let source = || Ok(Nsh::Source(checkout.clone()));
+        let r = resolve(&app, &deps, &Lock::default(), &|_| false, &source, &mut f).unwrap();
+        assert_eq!(r[0].locked.path.as_deref(), Some("../nsh/crates/nsh-extra"));
+        assert_eq!(r[0].locked.dir, None);
+        assert!(r[0].own);
+
+        // Another place the app names stays its own.
+        let local = f.root.join("extra-fork");
+        extra_crate(&local, Some(VERSION));
+        let fork = Dep {
+            origin: Origin::Path("../extra-fork".into()),
+            ..dep("nsh-extra", &this_minor())
+        };
+        let r = resolve(&app, &[fork], &Lock::default(), &|_| false, &source, &mut f).unwrap();
+        assert_eq!(r[0].locked.path.as_deref(), Some("../extra-fork"));
+        assert!(!r[0].own);
+        fs::remove_dir_all(&f.root).unwrap();
+    }
+
+    #[test]
+    fn nsh_extra_of_another_version_than_its_nsh_names_both() {
+        let mut f = nshs("mismatch");
+        let app = f.root.join("app");
+        fs::create_dir_all(&app).unwrap();
+        let this = semver::Version::parse(VERSION).unwrap();
+        let other = format!("^{}", this.major + 1);
+        let deps = [dep("nsh-extra", &other)];
+        let err = resolve(&app, &deps, &Lock::default(), &|_| false, &registry, &mut f)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains(&format!("nsh.json asks for nsh-extra {other}"))
+                && err.contains(&format!("builds with nsh {VERSION}")),
+            "{err}"
+        );
+        // A checkout's crate of another version is a dead end naming both.
+        let checkout = f.root.join("nsh");
+        nsh_checkout(&checkout, "9.9.9");
+        let source = || Ok(Nsh::Source(checkout.clone()));
+        let deps = [dep("nsh-extra", &this_minor())];
+        let err = resolve(&app, &deps, &Lock::default(), &|_| false, &source, &mut f)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("9.9.9") && err.contains(&this_minor()),
+            "{err}"
+        );
+        fs::remove_dir_all(&f.root).unwrap();
+    }
+
+    /// Without nsh's own nshm the nsh the app builds with is never asked.
+    #[test]
+    fn other_nshm_never_ask_for_the_nsh() {
+        let mut f = fake("unasked");
+        let app = f.root.clone();
+        let never = || -> anyhow::Result<Nsh> { panic!("asked for the nsh") };
+        let r = resolve(
+            &app,
+            &[dep("ui", "^1")],
+            &Lock::default(),
+            &|_| false,
+            &never,
+            &mut f,
+        )
+        .unwrap();
+        assert!(r.iter().all(|r| !r.own));
         fs::remove_dir_all(&f.root).unwrap();
     }
 }

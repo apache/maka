@@ -323,7 +323,18 @@ fn in_window(ns: &NSView, rect: NSRect) -> Option<Bounds<Points>> {
 /// its middle.
 fn mapped(view: &crate::view::NshView, rect: NSRect) -> Option<Bounds<Points>> {
     crate::scroll::commit_ancestors(view);
-    let plain = in_window(view.ns(), rect)?;
+    // A leaf (#2066) is in no window: measure it in its parent's container.
+    let plain = match view.parent_view().filter(|_| view.is_leaf_layer()) {
+        Some(parent) => {
+            let o = view.ns().frame().origin;
+            let at = NSRect::new(
+                NSPoint::new(o.x + rect.origin.x, o.y + rect.origin.y),
+                rect.size,
+            );
+            in_window(&parent.container(), at)?
+        }
+        None => in_window(view.ns(), rect)?,
+    };
     let (x0, y0) = (rect.origin.x as f32, rect.origin.y as f32);
     let (w, h) = (rect.size.width as f32, rect.size.height as f32);
     let (mut min_x, mut min_y, mut max_x, mut max_y) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);

@@ -40,6 +40,8 @@ pub enum AccessibilityRole {
     Link,
     /// A search field.
     Search,
+    /// A text box: a field the user types text into.
+    Textbox,
     /// An image.
     Image,
     /// An image that acts as a button.
@@ -141,6 +143,11 @@ pub enum AccessibilityRole {
     /// its `label`.
     #[prop(rename = "alertdialog")]
     AlertDialog,
+    /// The content a tab of a [`Tablist`](Self::Tablist) shows: the
+    /// selected tab's section, which the tabs name with
+    /// `accessibilityControls`.
+    #[prop(rename = "tabpanel")]
+    TabPanel,
 }
 
 impl AccessibilityRole {
@@ -488,7 +495,9 @@ pub struct ViewProps {
     pub web_element: Option<crate::WebElement>,
     /// Where the view goes as a link (`Link`'s `href`): data for the
     /// platform, never shown or read to accessibility clients. A terminal
-    /// draws the text inside the view as an OSC 8 hyperlink to it.
+    /// draws the text inside the view as an OSC 8 hyperlink to it. A
+    /// span's (`TextView`'s links) goes into its block's text instead
+    /// (`AttributedText::link_hrefs`).
     pub href: Option<Arc<str>>,
     /// `panActivation`: the view's touch responder waits for a pan the
     /// platform recognizes.

@@ -13,22 +13,6 @@ A web view shows a web page, or HTML you pass in, inside the app: WKWebView on i
 view, in order with the views around it. Rust makes one with `web_view(url)` or `web_view_html(html, base_url)`, TSX
 with `<WebView>` from `nsh`.
 
-```rust tabs
-use nsh_core::prelude::*;
-
-fn browser() -> impl IntoElement {
-    let title = signal(SharedString::from("Loading…"));
-    view()
-        .flex_1()
-        .child(text(title).number_of_lines(1))
-        .child(
-            web_view("https://example.com")
-                .flex_1()
-                .on_navigation_state_change(move |e: &WebNavigation| title.set(e.title.clone().into())),
-        )
-}
-```
-
 ```tsx tabs
 import { signal, Text, View, WebView, type WebViewNavigation } from "nsh";
 
@@ -47,6 +31,22 @@ function Browser() {
 }
 ```
 
+```rust tabs
+use nsh_core::prelude::*;
+
+fn browser() -> impl IntoElement {
+    let title = signal(SharedString::from("Loading…"));
+    view()
+        .flex_1()
+        .child(text(title).number_of_lines(1))
+        .child(
+            web_view("https://example.com")
+                .flex_1()
+                .on_navigation_state_change(move |e: &WebNavigation| title.set(e.title.clone().into())),
+        )
+}
+```
+
 In TSX a web view takes one of `src` and `html` (see the [WebView API](../modules/nsh-webview.md)). The
 [web view and video guide](../docs/web-view-and-video.md) covers messaging patterns and capabilities.
 
@@ -59,12 +59,14 @@ A web view takes the props of a [view](./view.md) (it has no children) plus:
 | `src` | `web_view(url)` | `string` | | The URL of the page to show. |
 | `html` | `web_view_html(html, base_url)`, `.html(html, base_url)` | `string` | | Inline HTML, shown instead of `src`. |
 | `baseUrl` | `base_url` of `web_view_html` / `.html` | `string` | | What `html`'s relative links resolve against. It needs the same grant as a page there (`webview.hosts`); without it the HTML loads with no base URL and `onError` reports `ERR_ACCESS_DENIED`. |
+| `allowOrigin` | `.allow_origin(..)` | `string` | | One more origin this web view may show and navigate to besides `webview.hosts`, for an origin known only while the app runs (a server the user named): `scheme://host[:port]`, `http` or `https`, matched exactly (same scheme, host and port; never a subdomain). Needs `"runtimeOrigin": true` in [`capabilities.webview`](../docs/sandbox-and-capabilities.md#webview); another value is refused with a message. Set in the same render as `src`, it applies to it; changed later, from the next navigation. Other web views and the windows a page opens do not have it. |
 | `injectedJavaScript` | `.injected_java_script(..)` | `string` | | Runs after each page loads. |
 | `injectedJavaScriptBeforeContentLoaded` | `.injected_java_script_before_content(..)` | `string` | | Runs before each page's own scripts. |
 | `userAgent` | `.user_agent(..)` | `string` | | The browser's user agent string. |
 | `javaScriptEnabled` | `.java_script_enabled(..)` | `boolean` | `true` | Pages run scripts. |
 | `scrollable` | `.scrollable(..)` | `boolean` | `true` | The user can scroll the page. |
 | `incognito` | `.incognito(bool)` | `boolean` | `false` | The pages' website data (cookies, storage, the cache) lives only as long as the web view, apart from the app's; on Android the web view loads without the HTTP cache and saves no form data ([website data](../docs/web-view-and-video.md#website-data)). Read when the web view is made. |
+| `zoomable` | `.zoomable(bool)` | `boolean` | `false` | The person can pinch to zoom the page, also past its viewport's scale limits: built-in zoom without on-screen buttons on Android, the viewport's limits ignored on iOS, magnification on macOS. Off keeps each platform's own behavior (Android and macOS do not zoom, iOS zooms as far as the viewport allows, Windows zooms). Read when the web view is made. |
 
 | `ios` key | Rust | Type | Description |
 |---|---|---|---|
@@ -170,6 +172,29 @@ lifecycle. Applications can compose a save-path picker with `accept` where the p
 The app and the page exchange strings. The page posts with `window.nsh.postMessage(data)`; the app posts
 with the ref's `postMessage(data)` (`post_message(..)` in Rust). Send JSON for structured data.
 
+```tsx tabs
+import { signal, Text, View, WebView, type WebViewRef } from "nsh";
+
+const page = `<!doctype html>
+<meta name="viewport" content="width=device-width">
+<button onclick="window.nsh.postMessage('hello from the page')">Post to the app</button>
+<p id="got"></p>
+<script>
+  window.addEventListener("message", (e) => { document.getElementById("got").textContent = e.data; });
+</script>`;
+
+function Bridge() {
+  const message = signal("");
+  let web!: WebViewRef;
+  return (
+    <View style={{ gap: 12 }}>
+      <WebView ref={web} html={page} style={{ height: 200 }} onMessage={(e) => message.set(e.data)} />
+      <Text onPress={() => web.postMessage("hi from the app")}>Post to the page · got: {message()}</Text>
+    </View>
+  );
+}
+```
+
 ```rust tabs
 use nsh_core::prelude::*;
 
@@ -196,29 +221,6 @@ fn bridge() -> impl IntoElement {
             text(move || format!("Post to the page · got: {}", message.get()))
                 .on_press(move || web.post_message("hi from the app")),
         )
-}
-```
-
-```tsx tabs
-import { signal, Text, View, WebView, type WebViewRef } from "nsh";
-
-const page = `<!doctype html>
-<meta name="viewport" content="width=device-width">
-<button onclick="window.nsh.postMessage('hello from the page')">Post to the app</button>
-<p id="got"></p>
-<script>
-  window.addEventListener("message", (e) => { document.getElementById("got").textContent = e.data; });
-</script>`;
-
-function Bridge() {
-  const message = signal("");
-  let web!: WebViewRef;
-  return (
-    <View style={{ gap: 12 }}>
-      <WebView ref={web} html={page} style={{ height: 200 }} onMessage={(e) => message.set(e.data)} />
-      <Text onPress={() => web.postMessage("hi from the app")}>Post to the page · got: {message()}</Text>
-    </View>
-  );
 }
 ```
 

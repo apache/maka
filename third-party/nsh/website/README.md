@@ -132,15 +132,15 @@ demo: guide-getting-started     # optional; a demo from demos/<name>.tsx
   → Rust, `tsx` → TSX, others capitalized). The first tab is selected;
   choosing another switches every group on the page and is remembered. Any
   other text between the fences (a blank line is fine) ends the group.
-  Show examples Rust first, then TSX:
+  Put the TSX tab before the Rust tab, so TSX is what a reader sees:
 
   ````md
-  ```rust tabs
-  view().child(text("Hello"))
-  ```
-
   ```tsx tabs
   <View><Text>Hello</Text></View>
+  ```
+
+  ```rust tabs
+  view().child(text("Hello"))
   ```
   ````
 

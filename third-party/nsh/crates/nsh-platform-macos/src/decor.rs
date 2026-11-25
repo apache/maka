@@ -589,11 +589,30 @@ impl Decor {
             layer.setShadowPath(None);
         }
         let covered = covers_shadows && kind != Kind::Text;
+        // The corner mask sits on the view's own layer when there is no
+        // container: the visual masks that layer too, and chains its masks
+        // under this one.
+        let corner: Option<&CALayer> = self
+            .mask
+            .as_deref()
+            .filter(|_| clip_layer.is_some() && container.is_none())
+            .map(|m| &**m);
+        if corner.is_none()
+            && let Some(m) = &self.mask
+            && m.mask().is_some()
+        {
+            // The shape masked the layer with the visual's mask (a gradient
+            // or clip shape) until a container took it over: the visual
+            // would make it the layer's mask too, and a layer is the mask of
+            // one layer only.
+            // SAFETY: clearing the mask of the decoration's own shape.
+            unsafe { m.setMask(None) };
+        }
         match &mut self.visual {
-            Some(visual) => visual.apply(view, layer, style, local, radii, kind, covered),
+            Some(visual) => visual.apply(view, layer, style, local, radii, kind, covered, corner),
             None => {
                 let mut visual = crate::visual::Visual::default();
-                visual.apply(view, layer, style, local, radii, kind, covered);
+                visual.apply(view, layer, style, local, radii, kind, covered, corner);
                 if !visual.is_empty() {
                     self.visual = Some(Box::new(visual));
                 }

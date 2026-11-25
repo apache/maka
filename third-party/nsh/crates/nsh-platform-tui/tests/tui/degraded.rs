@@ -14,7 +14,10 @@ use ratatui_core::{
     terminal::Terminal,
 };
 
-use super::app::{draw_until, draw_until_still, mouse};
+use super::{
+    ACCENT,
+    app::{draw_until, draw_until_still, mouse},
+};
 
 /// A surface on a terminal that shows `depth`.
 fn surface_at(depth: ColorDepth) -> (AppView, crossbeam_channel::Receiver<()>) {
@@ -265,8 +268,13 @@ fn without_the_terminals_colors_the_state_marks_are_not_bands() {
         draw_until_still(&mut view, &mut terminal, &rx);
         view.handle(tab());
         view.handle(tab());
+        let accent = if depth == ColorDepth::TrueColor {
+            ACCENT
+        } else {
+            Color::Blue
+        };
         draw_while(&mut view, &mut terminal, &rx, |buffer| {
-            buffer[second].fg == Color::Blue
+            buffer[second].fg == accent
         });
         let buffer = terminal.backend().buffer();
         let focused = &buffer[second];

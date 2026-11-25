@@ -195,8 +195,9 @@ final class TextBox extends android.view.ViewGroup implements Node {
                 downX = e.getX();
                 downY = e.getY();
                 extending = false;
-                // A tap on the text ends its selection (a long press makes a new one).
-                clearSelection();
+                // A long press makes a new selection; a tap ends this one
+                // (`Mounter.touchUp`), a scroll keeps it.
+                removeCallbacks(longPress);
                 postDelayed(longPress, android.view.ViewConfiguration.getLongPressTimeout());
                 break;
             case android.view.MotionEvent.ACTION_MOVE: {
@@ -299,6 +300,8 @@ final class TextBox extends android.view.ViewGroup implements Node {
             // One selection per surface.
             if (mounter.selectedArea != null) mounter.selectedArea.clear();
             mounter.selectedText = this;
+            mounter.keepSelection();
+            mounter.updateBack();
         }
         placeHandles();
         if (toolbar) showToolbar();
@@ -315,7 +318,10 @@ final class TextBox extends android.view.ViewGroup implements Node {
         startHandle.dismiss();
         endHandle.dismiss();
         getViewTreeObserver().removeOnPreDrawListener(follow);
-        if (mounter.selectedText == this) mounter.selectedText = null;
+        if (mounter.selectedText == this) {
+            mounter.selectedText = null;
+            mounter.updateBack();
+        }
         android.view.ActionMode m = mode;
         mode = null;
         if (m != null) m.finish();
@@ -403,7 +409,7 @@ final class TextBox extends android.view.ViewGroup implements Node {
                             .setType("text/plain")
                             .putExtra(android.content.Intent.EXTRA_TEXT, selectedText());
                     android.content.Intent chooser = android.content.Intent.createChooser(send, null);
-                    if (!(getContext() instanceof android.app.Activity)) {
+                    if (SystemUi.activity(getContext()) == null) {
                         chooser.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK);
                     }
                     try {

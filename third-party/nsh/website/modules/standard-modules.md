@@ -110,6 +110,8 @@ videos and sounds show ([sandbox](../docs/sandbox-and-capabilities.md#network)).
 }
 ```
 
+A file the user pastes into an input or drops on a view is readable at its exact path for the rest of the app's run, whatever the `read` roots say: once the `onPaste` or `onFileDrop` handler gets its `file:` URL in `uris`, `readFile`, `stat`, `exists` and the other `read` operations accept that path (as the URL names it, or resolved), as a file chosen in a picker would be. Only that path: a dropped folder lists its own entries but nothing in it is granted, nothing beside a file is, a drag that only entered (`onFileDragEnter`) grants nothing, and no `write` operation is granted. An embedding host that narrows `fs.read` narrows these too.
+
 Roots are absolute paths, `${dataDir}` (this app's data directory, chosen by the host), `${pluginDir}` (the app's directory), `${homeDir}`, or paths relative to the app's directory. A relative path in a call is resolved in each granted root in turn. An embedding host may narrow the grants further. Every operation stays inside its granted root, symlinks included; an absolute path is checked as written, so a root is reached by its own path (or its resolved one), not through a link outside it. `lstat`, `readlink`, `exists`, `unlink`, `rename` and `rmdir` act on a symlink itself: `exists` is `true` for a symlink whose target is missing, and `unlink` removes the link and keeps its target.
 
 Failures carry Node's error properties: `code` (`ENOENT`, `EEXIST`, `ENOTDIR`, `EISDIR`, `ENOTEMPTY`, `ELOOP`, `EACCES`, `EPERM`, ...; `EILSEQ` for text that is not UTF-8, `ERR_FS_FILE_TOO_LARGE` past the read limit), `syscall` and `path`, so `error.code === "ENOENT"` tells a missing file apart. A path outside the grants rejects with `ERR_ACCESS_DENIED`, a call on iOS or Android (whose apps keep data with [`Storage`](./nsh.md#storage)) with `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM`, and a wrong argument (an unknown encoding or option) with a `TypeError`.
@@ -132,6 +134,15 @@ Browser storage is scoped to the page's origin and the app's own namespace, with
 ```
 
 Commands match `process.execute` exactly: `git` and `/usr/bin/git` are separate grants. Bare commands resolve through the absolute directories of the host's `PATH`; on Windows a bare command also finds `<name>.com` and `<name>.exe` there. A batch file (`.cmd`, `.bat`) runs through `cmd.exe`: grant its absolute path (`C:\Windows\System32\cmd.exe`) and pass `/d`, `/c` and the script as arguments. A child's environment is `PATH`, `HOME`, `USERPROFILE`, `SystemRoot`, `TEMP`, `TMP`, `TMPDIR`, `LANG` and `LC_*` from the host, plus the names `process.env` grants (matched exactly, ignoring case only on Windows, whose environment does). A child runs in the app's data directory (created when missing), or in `cwd`, an existing directory within an `fs.write` root, since the child may write where it runs. An embedding host can narrow the grants.
+
+```tsx tabs
+import process from "process";
+
+const { code, stdout } = await process.run("git", ["status", "--short"]);
+const child = process.spawn("git", ["log", "--oneline"], { lines: true });
+child.on("stdout", (line) => console.log(line));
+child.on("exit", ({ code, signal }) => console.log("done", code, signal));
+```
 
 ```rust tabs
 use std::{
@@ -157,15 +168,6 @@ spawn(async move {
     })
     .await;
 });
-```
-
-```tsx tabs
-import process from "process";
-
-const { code, stdout } = await process.run("git", ["status", "--short"]);
-const child = process.spawn("git", ["log", "--oneline"], { lines: true });
-child.on("stdout", (line) => console.log(line));
-child.on("exit", ({ code, signal }) => console.log("done", code, signal));
 ```
 
 `run` resolves `{ code, signal, stdout, stderr }` for any exit status: `code` is the exit status and `signal` `null`, or, when a signal ended the child, `code` is `null` and `signal` its name (`"SIGTERM"`). It rejects on every failure. `spawn` returns a child at once; `stdin: "pipe"` enables `write` and `end`, and `lines: true` delivers complete lines. `on(event, handler)` returns the child, and a handler gets the event's payload: the text, or `{ code, signal }` once, after the final output (with `error` when the runtime ended the child: a timeout, an over-long line) (at once for a listener added later). `pid` is the child's process id. `spawn` throws what `run` rejects with, before the child starts: a command `process.execute` does not grant fails with `ERR_ACCESS_DENIED` (`permission` `"process"`, `resource` the command), a `cwd` outside the `fs.write` grants with `ERR_ACCESS_DENIED` (`permission` `"fs"`, `resource` the `cwd`), a call off the desktops with `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM`, and a call past the children limit with `ERR_NSH_QUOTA_EXCEEDED`; a launch failure carries `code` (`ENOENT` for a missing executable, `EACCES` for one the OS cannot run), `syscall` (`spawn <command>`) and `path`. `run` rejects with `ETIMEDOUT` at its deadline and with a `RangeError` (`code` `ERR_CHILD_PROCESS_STDIO_MAXBUFFER`) for output past its capture; a spawned child's exit carries the same message in `error` and its code in `errorCode`. `process.dataDir` is `null` when the host has no data directory. `kill`, a timeout, the reactive owner's cleanup and the VM's teardown end the whole process tree: on Unix its process group gets SIGTERM and then SIGKILL after 250 ms (at teardown, SIGKILL at once).
@@ -230,6 +232,12 @@ This `nsh.json` fragment permits the GET handshake for this `wss` URL, keeping i
 }
 ```
 
+```tsx tabs
+const socket = new WebSocket("wss://chat.example.com/socket");
+socket.addEventListener("open", () => socket.send("hello"));
+socket.addEventListener("message", (event) => console.log(event.data));
+```
+
 ```rust tabs
 use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
@@ -247,12 +255,6 @@ spawn(async move {
 });
 ```
 
-```tsx tabs
-const socket = new WebSocket("wss://chat.example.com/socket");
-socket.addEventListener("open", () => socket.send("hello"));
-socket.addEventListener("message", (event) => console.log(event.data));
-```
-
 ## TCP grant example
 
 TCP uses a socket grant: the exact host and port the app connects to.
@@ -262,6 +264,19 @@ TCP uses a socket grant: the exact host and port the app connects to.
   "capabilities": {
     "network": { "sockets": ["tcp.example.com:9000"] }
   }
+}
+```
+
+```tsx tabs
+import { connect } from "net";
+
+const socket = await connect({ host: "tcp.example.com", port: 9000 });
+try {
+  await socket.write("hello\n");
+  const bytes = await socket.read(1024);
+  if (bytes) console.log(new TextDecoder().decode(bytes));
+} finally {
+  socket.close();
 }
 ```
 
@@ -284,19 +299,6 @@ spawn(async move {
         log::info!("{reply}");
     }
 });
-```
-
-```tsx tabs
-import { connect } from "net";
-
-const socket = await connect({ host: "tcp.example.com", port: 9000 });
-try {
-  await socket.write("hello\n");
-  const bytes = await socket.read(1024);
-  if (bytes) console.log(new TextDecoder().decode(bytes));
-} finally {
-  socket.close();
-}
 ```
 
 ## Gallery

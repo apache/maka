@@ -132,16 +132,6 @@ expect Settings: not opened
 tap id:settings
 expect Settings: rejected ERR_FEATURE_UNAVAILABLE_ON_PLATFORM
 covers [nsh/mobile] AppSettings
-# mod-speech
-tap id:case-mod-speech
-# nothing recognizes speech there: available() resolves false and a session
-# ends at once with "unavailable"; a lang that is no tag throws a RangeError.
-expect Available: false
-expect Speech: not started
-tap id:start
-expect Refused: threw RangeError
-expect Speech: end unavailable "" true
-covers [nsh] Speech
 # mod-audio
 tap id:case-mod-audio
 # nothing plays sound there: available() resolves false, a sound's load

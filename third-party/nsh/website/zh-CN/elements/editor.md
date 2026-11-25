@@ -11,22 +11,6 @@ demo: el-editor
 
 编辑器负责行为，并带有一套由主题令牌构成的默认外观：主题的 `font-mono`，13pt 字号、20pt 行高，行号用 `muted-foreground`，有光标的行后面是一条淡淡的 `muted` 底色，选区是 `primary` 的浅色，缩进参考线用 `border`，语法颜色是内置的，与 [`TextView`](./text-view.md) 的代码块相同，分浅色和深色两套。每个部件都在这些默认值之上接受应用的样式（`classes` 和 `styles`）。Rust 用 `nsh_base::editor()` 创建它，TSX 用 `nsh/base` 中的 `<Editor>`。
 
-```rust tabs
-use nsh_base::editor;
-use nsh_core::prelude::*;
-
-const MAIN: &str = "fn main() {\n    println!(\"Hello, world!\");\n}\n";
-
-fn code() -> impl IntoElement {
-    let source = signal(SharedString::from(MAIN));
-    editor()
-        .value(move || Some(source.get()))
-        .language("rust")
-        .on_change(move |value: &SharedString| source.set(value.clone()))
-        .flex_1()
-}
-```
-
 ```tsx tabs
 import { mount, signal } from "nsh";
 import { Editor } from "nsh/base";
@@ -47,6 +31,22 @@ mount(() => (
     <App />
   </Window>
 ));
+```
+
+```rust tabs
+use nsh_base::editor;
+use nsh_core::prelude::*;
+
+const MAIN: &str = "fn main() {\n    println!(\"Hello, world!\");\n}\n";
+
+fn code() -> impl IntoElement {
+    let source = signal(SharedString::from(MAIN));
+    editor()
+        .value(move || Some(source.get()))
+        .language("rust")
+        .on_change(move |value: &SharedString| source.set(value.clone()))
+        .flex_1()
+}
 ```
 
 编辑器填满应用给它的盒子（`flex-1`、一个高度），在其中滚动文本：纵向总是可以滚动；行比盒子长时可以横向滚动；开启 `softWrap` 后长行在编辑器的宽度处换行，不再横向滚动。

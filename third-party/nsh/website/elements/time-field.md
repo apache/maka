@@ -15,23 +15,6 @@ The field owns the behavior: the time (the app's, or its own), which segment the
 digits, and what screen readers hear. The look is the app's: it styles the segments and the `:` between them, or
 draws the segments itself.
 
-```rust tabs
-use chrono::NaiveTime;
-use nsh_base::{HourCycle, TimeFieldSegmentEntry, TimeOfDay, time_field};
-use nsh_core::prelude::*;
-
-fn reminder_time() -> impl IntoElement {
-    let at = signal(TimeOfDay(NaiveTime::from_hms_opt(9, 30, 0).unwrap()));
-    time_field()
-        .value(move || Some(at.get()))
-        .on_change(move |next: &TimeOfDay| at.set(*next))
-        .hour_cycle(HourCycle::H12)
-        .accessibility_label("Reminder time")
-        .segment_class("rounded-sm focus:bg-accent disabled:opacity-50")
-        .render_segment(|segment: &TimeFieldSegmentEntry| view().px_1().child(text(segment.label.clone())))
-}
-```
-
 ```tsx tabs
 import { mount, signal } from "nsh";
 import { TimeField } from "nsh/base";
@@ -57,6 +40,23 @@ mount(() => (
     <App />
   </Window>
 ));
+```
+
+```rust tabs
+use chrono::NaiveTime;
+use nsh_base::{HourCycle, TimeFieldSegmentEntry, TimeOfDay, time_field};
+use nsh_core::prelude::*;
+
+fn reminder_time() -> impl IntoElement {
+    let at = signal(TimeOfDay(NaiveTime::from_hms_opt(9, 30, 0).unwrap()));
+    time_field()
+        .value(move || Some(at.get()))
+        .on_change(move |next: &TimeOfDay| at.set(*next))
+        .hour_cycle(HourCycle::H12)
+        .accessibility_label("Reminder time")
+        .segment_class("rounded-sm focus:bg-accent disabled:opacity-50")
+        .render_segment(|segment: &TimeFieldSegmentEntry| view().px_1().child(text(segment.label.clone())))
+}
 ```
 
 `TimeField` comes from [`nsh/base`](../modules/nsh-base.md), the `nsh-base` crate in Rust. In Rust, `time_field()`

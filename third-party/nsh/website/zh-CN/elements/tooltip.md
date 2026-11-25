@@ -12,28 +12,6 @@ demo: el-tooltip
 
 把 [`nsh/base`](../modules/nsh-base.md) 的 `Tooltip` 作为每个元素都有的 `tooltip` 属性传入（见[通用属性](index.md#tooltips)），与 GPUI 的 `.tooltip(..)` 相同：该元素就是指针停留的对象，也是它定位的参照。工具提示本身就是气泡：用 `class` / `style` 设置样式，子元素是它的内容。
 
-```rust tabs
-use nsh_base::tooltip;
-use nsh_core::prelude::*;
-
-fn save_button(on_save: impl Fn() + 'static) -> impl IntoElement {
-    view()
-        .on_press(on_save)
-        .accessibility_label("保存")
-        .p_2()
-        .child(text("💾"))
-        .tooltip(
-            tooltip()
-                .placement(Placement::Bottom)
-                .rounded_md()
-                .bg(rgb(0x111827))
-                .px_2()
-                .py_1()
-                .child(text("保存文档").text_color(white())),
-        )
-}
-```
-
 ```tsx tabs
 import { Text, View } from "nsh";
 import { Tooltip } from "nsh/base";
@@ -53,6 +31,28 @@ function SaveButton(props: { onSave: () => void }) {
       <Text>💾</Text>
     </View>
   );
+}
+```
+
+```rust tabs
+use nsh_base::tooltip;
+use nsh_core::prelude::*;
+
+fn save_button(on_save: impl Fn() + 'static) -> impl IntoElement {
+    view()
+        .on_press(on_save)
+        .accessibility_label("保存")
+        .p_2()
+        .child(text("💾"))
+        .tooltip(
+            tooltip()
+                .placement(Placement::Bottom)
+                .rounded_md()
+                .bg(rgb(0x111827))
+                .px_2()
+                .py_1()
+                .child(text("保存文档").text_color(white())),
+        )
 }
 ```
 

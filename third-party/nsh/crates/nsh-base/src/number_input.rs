@@ -460,9 +460,9 @@ pub fn NumberInput(props: NumberInputProps, cx: Scope<NumberInputEvent>) -> impl
         .app_class(props.input_class)
         .inline_style(move || props.input_style.get());
     // The buttons step the field from wherever the focus is and never take
-    // it (the field keeps its caret and its keys); on the desktops a press
-    // moves the focus to the field, as `gpui-base`'s, and on touch screens
-    // it leaves it, so no keyboard comes up. Screen readers step the field
+    // it: a focused field keeps its caret and its keys, and an unfocused one
+    // stays unfocused, so only a click in the field focuses it (and no
+    // software keyboard comes up on a press). Screen readers step the field
     // itself, so the buttons are hidden from them.
     let button = move |nudge: Nudge| {
         let (class, style, content) = match nudge {
@@ -481,12 +481,7 @@ pub fn NumberInput(props: NumberInputProps, cx: Scope<NumberInputEvent>) -> impl
             .focusable(false)
             .accessibility_elements_hidden(true)
             .disabled(move || !ctl.can_step(nudge))
-            .on_press(move || {
-                ctl.nudge(nudge);
-                if is_desktop() && !focused.get_untracked() {
-                    field.focus();
-                }
-            })
+            .on_press(move || ctl.nudge(nudge))
             .app_class(class)
             .inline_style(style)
             .child(content.place(|c| c))

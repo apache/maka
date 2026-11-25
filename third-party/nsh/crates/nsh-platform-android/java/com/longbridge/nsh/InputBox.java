@@ -76,6 +76,10 @@ final class InputBox extends FrameLayout implements Node {
     private boolean watching;
     /** `pasteBehavior` is `"insert"`: a paste inserts its text. */
     boolean pasteInserts = true;
+    /** `pasteMaxSize`: the largest pasted file read, in bytes (-1: any the heap holds). */
+    int pasteMaxSize = -1;
+    /** The EditText's own floating text toolbar (its selection or insertion action mode), while it is open. */
+    private android.view.ActionMode textActions;
     /** Whether the EditText shows a vertical scroll bar of its own by default. */
     private final boolean defaultVerticalBar;
     /** Platform hint colors before any explicit `placeholderTextColor` override. */
@@ -141,6 +145,11 @@ final class InputBox extends FrameLayout implements Node {
                 // TextView hides the action key of multiline inputs; one that
                 // submits shows it, as React Native does.
                 if (multiline && submit != NEWLINE) info.imeOptions &= ~EditorInfo.IME_FLAG_NO_ENTER_ACTION;
+                // In landscape an input method may otherwise go full screen,
+                // its own edit box covering the app (its layout, accessory
+                // view and action key with it), as Compose's and Flutter's
+                // fields keep it from doing.
+                info.imeOptions |= EditorInfo.IME_FLAG_NO_EXTRACT_UI | EditorInfo.IME_FLAG_NO_FULLSCREEN;
                 return connection == null ? null : new KeyConnection(connection);
             }
 
@@ -168,16 +177,26 @@ final class InputBox extends FrameLayout implements Node {
 
             @Override
             public boolean onTextContextMenuItem(int item) {
+                if (item != android.R.id.paste && item != android.R.id.pasteAsPlainText) {
+                    return super.onTextContextMenuItem(item);
+                }
                 // Before Android 12 a paste comes here (the menu, Ctrl+V);
                 // from then on `receiveContent` hears it.
-                if (Build.VERSION.SDK_INT < 31
-                        && (item == android.R.id.paste || item == android.R.id.pasteAsPlainText)) {
+                boolean done = false;
+                if (Build.VERSION.SDK_INT < 31) {
                     android.content.ClipboardManager board = (android.content.ClipboardManager)
                             getContext().getSystemService(Context.CLIPBOARD_SERVICE);
                     android.content.ClipData clip = board == null ? null : board.getPrimaryClip();
-                    if (clip != null && pasted(clip) && !pasteInserts) return true;
+                    done = clip != null && pasted(clip) && !pasteInserts;
                 }
-                return super.onTextContextMenuItem(item);
+                if (!done) done = super.onTextContextMenuItem(item);
+                // TextView ends its toolbar when an edit changes the text, so
+                // a paste of text closes it; one whose content was taken
+                // without inserting anything (an image `onPaste` received,
+                // `pasteBehavior="report"`) leaves the text, and the toolbar
+                // with Paste on it, as they were. A paste ends it either way.
+                finishTextActions();
+                return done;
             }
 
             @Override
@@ -271,6 +290,8 @@ final class InputBox extends FrameLayout implements Node {
                 edit.clearComposingText();
                 syncComposition();
             }
+            // Moving to the activity made again: the field keeps the focus for the app.
+            if (mounter != null && mounter.moving) return;
             mounter.inputFocused(this, focused);
             mounter.reportState(id, Mounter.STATE_FOCUSED, focused);
             if (mounter.wants(id, focused ? Native.FOCUS : Native.BLUR)) {
@@ -278,6 +299,32 @@ final class InputBox extends FrameLayout implements Node {
             }
         });
         addView(edit, new LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT));
+        // Keeps the EditText's toolbar at hand for a paste to end
+        // (`finishTextActions`); its items and their handling stay TextView's.
+        android.view.ActionMode.Callback textActionsTracker = new android.view.ActionMode.Callback() {
+            @Override
+            public boolean onCreateActionMode(android.view.ActionMode m, android.view.Menu menu) {
+                textActions = m;
+                return true;
+            }
+
+            @Override
+            public boolean onPrepareActionMode(android.view.ActionMode m, android.view.Menu menu) {
+                return true;
+            }
+
+            @Override
+            public boolean onActionItemClicked(android.view.ActionMode m, android.view.MenuItem item) {
+                return false;
+            }
+
+            @Override
+            public void onDestroyActionMode(android.view.ActionMode m) {
+                if (textActions == m) textActions = null;
+            }
+        };
+        edit.setCustomSelectionActionModeCallback(textActionsTracker);
+        edit.setCustomInsertionActionModeCallback(textActionsTracker);
         if (Build.VERSION.SDK_INT >= 31) {
             InputContent.install(edit, this);
         }
@@ -285,14 +332,20 @@ final class InputBox extends FrameLayout implements Node {
 
     /**
      * Reports what {@code clip} holds (`onPaste`), if the app listens: its text,
-     * its images' bytes (read from their content URIs as the user pastes) and local
-     * files' URLs. True when it reported.
+     * its images' bytes (read from their content URIs as the user pastes; one
+     * larger than {@link #pasteMaxSize} or the Java heap holds is not read, only
+     * its name, type and size reported) and local files' URLs. True when it
+     * reported.
      */
     boolean pasted(android.content.ClipData clip) {
         if (!mounter.wants(id, Native.PASTE)) return false;
         StringBuilder text = new StringBuilder();
         java.util.ArrayList<byte[]> images = new java.util.ArrayList<>();
         java.util.ArrayList<String> uris = new java.util.ArrayList<>();
+        java.util.ArrayList<String> largeNames = new java.util.ArrayList<>();
+        java.util.ArrayList<String> largeTypes = new java.util.ArrayList<>();
+        java.util.ArrayList<Long> largeLengths = new java.util.ArrayList<>();
+        int maxBytes = pasteMaxSize < 0 ? Integer.MAX_VALUE : pasteMaxSize;
         android.content.ContentResolver resolver = getContext().getContentResolver();
         for (int i = 0; i < clip.getItemCount(); i++) {
             android.content.ClipData.Item item = clip.getItemAt(i);
@@ -308,9 +361,16 @@ final class InputBox extends FrameLayout implements Node {
             }
             String type = resolver.getType(uri);
             if (type != null && type.startsWith("image/")) {
-                try (java.io.InputStream in = resolver.openInputStream(uri)) {
-                    if (in != null) images.add(readAll(in));
-                } catch (java.io.IOException | SecurityException e) {
+                try {
+                    Picker.Picked file = Picker.readFile(resolver, uri, maxBytes);
+                    if (file.bytes != null) {
+                        images.add(file.bytes);
+                    } else {
+                        largeNames.add(file.name);
+                        largeTypes.add(file.type);
+                        largeLengths.add(file.length);
+                    }
+                } catch (Exception e) {
                     android.util.Log.w("nsh", "a pasted image could not be read: " + e);
                 }
             } else {
@@ -318,15 +378,11 @@ final class InputBox extends FrameLayout implements Node {
                 if (t != null) text.append(t);
             }
         }
-        mounter.paste(id, text.toString(), images.toArray(new byte[0][]), uris.toArray(new String[0]));
+        long[] lengths = new long[largeLengths.size()];
+        for (int i = 0; i < lengths.length; i++) lengths[i] = largeLengths.get(i);
+        mounter.paste(id, text.toString(), images.toArray(new byte[0][]), uris.toArray(new String[0]),
+                largeNames.toArray(new String[0]), largeTypes.toArray(new String[0]), lengths);
         return true;
-    }
-
-    private static byte[] readAll(java.io.InputStream in) throws java.io.IOException {
-        java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
-        byte[] buffer = new byte[64 * 1024];
-        for (int n; (n = in.read(buffer)) > 0; ) out.write(buffer, 0, n);
-        return out.toByteArray();
     }
 
     void configure(float fontSizeDp, int weight, boolean italic, int color, String family, float letterSpacingDp,
@@ -760,6 +816,13 @@ final class InputBox extends FrameLayout implements Node {
     void closeEditMenu() {
         android.view.ActionMode m = editMenu;
         editMenu = null;
+        if (m != null) m.finish();
+    }
+
+    /** Ends the EditText's own toolbar, if it is open. */
+    private void finishTextActions() {
+        android.view.ActionMode m = textActions;
+        textActions = null;
         if (m != null) m.finish();
     }
 

@@ -11,33 +11,6 @@ demo: text-view
 
 它负责行为，并自带一套阅读排版：15pt 正文、宽松的 25.5pt 行高，半粗体标题且上方留有空间，链接以主题的 `primary` 色加下划线，代码使用主题的 `font-mono`，放在带边框的圆角框中，表格四边都有线、表头行带底色，引用在一侧带一条线，提示块是带图标、采用 GitHub 提示色的着色框。颜色取自主题的令牌（`foreground`、`muted-foreground`、`border`、`muted`、`primary`，警示（caution）用 `destructive`），因此主题和深色外观都会作用于它。每个部件在这些默认样式之上接收应用的样式：TSX 中是 `classes` 和 `styles`，Rust 中是按部件给出的类型化样式（`TextViewParts`）。Rust 用 `nsh_base::text_view()` 创建它，TSX 用从 `nsh/base` 导入的 `<TextView>`。
 
-```rust tabs
-use nsh_base::{TextViewLinkPressEvent, text_view, theme};
-use nsh_core::prelude::*;
-
-const README: &str = "# Release notes
-
-**Faster lists** and a new `TextView`:
-
-- Markdown and HTML
-- [x] Streaming replies
-- [ ] Your own syntax
-
-> [!TIP]
-> Style every part with `TextViewParts`.";
-
-fn release_notes() -> impl IntoElement {
-    scroll().flex_1().child(
-        text_view()
-            .markdown(README)
-            .on_link_press(|TextViewLinkPressEvent { url, .. }: &TextViewLinkPressEvent| log::info!("open {url}"))
-            .p_5()
-            .text_base()
-            .text_color(theme().foreground),
-    )
-}
-```
-
 ```tsx tabs
 import { mount, Scroll } from "nsh";
 import { TextView } from "nsh/base";
@@ -79,6 +52,33 @@ mount(() => (
 ));
 ```
 
+```rust tabs
+use nsh_base::{TextViewLinkPressEvent, text_view, theme};
+use nsh_core::prelude::*;
+
+const README: &str = "# Release notes
+
+**Faster lists** and a new `TextView`:
+
+- Markdown and HTML
+- [x] Streaming replies
+- [ ] Your own syntax
+
+> [!TIP]
+> Style every part with `TextViewParts`.";
+
+fn release_notes() -> impl IntoElement {
+    scroll().flex_1().child(
+        text_view()
+            .markdown(README)
+            .on_link_press(|TextViewLinkPressEvent { url, .. }: &TextViewLinkPressEvent| log::info!("open {url}"))
+            .p_5()
+            .text_base()
+            .text_color(theme().foreground),
+    )
+}
+```
+
 在 Rust 中，`text_view()` 像 `view()` 创建视图一样创建它：每个属性一个设置方法（`.markdown(..)`、`.options(..)`、`.selectable(..)`），每个渲染函数一个闭包（`.render_image(|image| ..)`），每个事件一个监听方法（`.on_link_press(..)`），根节点使用类型化的样式方法（`.p_5()`、`.text_color(..)`），其中的文本样式会传给每个部件。
 
 <a id="built-on-text"></a>
@@ -101,6 +101,17 @@ mount(() => (
 - **`html`**：按阅读模式的方式显示 HTML。文本、结构和行内格式都会保留，文字颜色也会保留（`<span style="color: …">` 和 `<font color="…">` 读成带该颜色的 `textStyle`）；脚本、样式、表单控件和隐藏元素不会显示。片段和完整页面都可以（完整页面显示其 body）。
 - **`document`**：应用构建或保存的文档块：TSX 中是普通对象，Rust 中是 `nsh_base::text_view::Document`（[文档模型](#the-document-model)）。
 
+```tsx tabs
+<TextView html={`<h2>Shipping</h2><p>Orders ship in <b>2 days</b>. <a href="/faq">FAQ</a></p>`} />
+
+<TextView document={{
+  blocks: [
+    { type: "heading", level: 2, content: [{ type: "text", text: "Total" }] },
+    { type: "paragraph", content: [{ type: "strong", content: [{ type: "text", text: "$42.00" }] }] },
+  ],
+}} />
+```
+
 ```rust tabs
 use nsh_base::text_view;
 use nsh_base::text_view::{Block, Document, Inline};
@@ -118,17 +129,6 @@ fn total() -> impl IntoElement {
 }
 ```
 
-```tsx tabs
-<TextView html={`<h2>Shipping</h2><p>Orders ship in <b>2 days</b>. <a href="/faq">FAQ</a></p>`} />
-
-<TextView document={{
-  blocks: [
-    { type: "heading", level: 2, content: [{ type: "text", text: "Total" }] },
-    { type: "paragraph", content: [{ type: "strong", content: [{ type: "text", text: "$42.00" }] }] },
-  ],
-}} />
-```
-
 `TextView` 随内容增高。长文档请放进 [`Scroll`](./scroll.md)（或 [`List`](./list.md) 的一行）中。
 
 <a id="styling-the-parts"></a>
@@ -136,6 +136,26 @@ fn total() -> impl IntoElement {
 ## 部件样式
 
 `class` 和 `style` 设定根节点（各文档块组成的一列）的样式；在那里设置的文本样式（颜色、字号、字体）会传给每个部件。根节点也是部件 `root`：`styles.root` 以带类型的方式接收文本样式（`style` 的类型是视图样式），`classes.root` 接收类。`classes` 按部件接收 Tailwind 类，`styles` 按部件接收内联样式。部件的类排在它自己的默认样式之后，因此优先生效；它的 `styles` 又优先于它的类。在 Rust 中，部件接收类型化的样式：`TextViewParts` 为每个 `TextViewPart` 提供一个细化其样式的函数，作用于提供它的视图下面的每个 `TextView`（[类型化的部件样式](#typed-part-styles)），根节点则使用样式方法。默认样式的行高以点为单位：改变某个部件字号的类也要设定行高（Tailwind 的 `text-*` 类会一并设定）。
+
+```tsx tabs
+<TextView
+  markdown={reply()}
+  class="gap-3 text-[15px] leading-6 text-neutral-800"
+  classes={{
+    heading: "text-neutral-950",
+    heading2: "text-xl mt-2",
+    blockquote: "border-l-2 border-neutral-300 pl-3 text-neutral-600",
+    codeBlock: "rounded-lg bg-neutral-100",
+    codeBlockHeader: "px-3 pt-2",
+    codeBlockCode: "p-3 text-[13px]",
+    table: "rounded-lg border border-neutral-200",
+    tableHead: "bg-neutral-50",
+    tableCell: "px-3 py-2 border-t border-neutral-200",
+    taskMarkerChecked: "text-green-600",
+  }}
+  styles={{ root: { fontFamily: "Inter" }, link: { color: "#2563eb" } }}
+/>
+```
 
 ```rust tabs
 use nsh_base::{TextViewPart, TextViewParts, text_view, theme};
@@ -168,26 +188,6 @@ fn reply(markdown: Signal<SharedString>) -> impl IntoElement {
         .text_color(rgb(0x262626))
         .font_family("Inter")
 }
-```
-
-```tsx tabs
-<TextView
-  markdown={reply()}
-  class="gap-3 text-[15px] leading-6 text-neutral-800"
-  classes={{
-    heading: "text-neutral-950",
-    heading2: "text-xl mt-2",
-    blockquote: "border-l-2 border-neutral-300 pl-3 text-neutral-600",
-    codeBlock: "rounded-lg bg-neutral-100",
-    codeBlockHeader: "px-3 pt-2",
-    codeBlockCode: "p-3 text-[13px]",
-    table: "rounded-lg border border-neutral-200",
-    tableHead: "bg-neutral-50",
-    tableCell: "px-3 py-2 border-t border-neutral-200",
-    taskMarkerChecked: "text-green-600",
-  }}
-  styles={{ root: { fontFamily: "Inter" }, link: { color: "#2563eb" } }}
-/>
 ```
 
 有些节点同时属于多个部件，按顺序应用：二级标题是 `heading` 再 `heading2`；提示块是 `blockquote`、`alert`，再是它的种类（`alertNote` 等）；任务标记是 `listMarker`、`taskMarker`，完成时再加 `taskMarkerChecked`；表头行是 `tableRow` 再 `tableHead`，表头单元格是 `tableCell` 再 `tableHeaderCell`。
@@ -247,25 +247,9 @@ fn reply(markdown: Signal<SharedString>) -> impl IntoElement {
 
 ## 流式 AI 回复
 
-随着回复增长传入它，并设置 `options={{ streaming: true }}`（Rust 中是 `MarkdownOptions { streaming: true, .. }`）。仍在到达的文本末尾常常留着未闭合的语法（`**bold`、`` `code ``、`[a link](htt`、刚到达表头的表格）；流式模式会把它显示成闭合后的样子，读者不会看到零散的 `**` 或 `[`。含义要看后面字符的末行在这一行结束时显示：单独的列表标记、段落下的 `-` 或 `=` 行、代码围栏的开头行或打了一半的收尾围栏，因此列表项、标题和代码块一出现就是最终的样子。词内的 `*`（`a*b`）保持原样。回复结束后（关闭 `streaming`），文本按原样解析。文档块按位置保留：已完成的块只解析一次并保留它们的视图，每次更新只重新解析并生成正在写的块，因此长回复的更新依然很轻。
+随着回复增长传入它，并设置 `options={{ streaming: true }}`（Rust 中是 `MarkdownOptions { streaming: true, .. }`）。仍在到达的文本末尾常常留着未闭合的语法（`**bold`、`**bold*`、`` `code ``、还没等到 `(` 的 `[a link]`、`[a link](htt`、刚到达表头的表格）；流式模式会把它显示成闭合后的样子，读者不会看到零散的 `**` 或 `[`。含义要看后面字符的末行在这一行结束时显示：单独的列表标记、单独的任务框（`- [x]`）、段落下的 `-` 或 `=` 行、代码围栏的开头行或打了一半的收尾围栏，因此列表项、标题和代码块一出现就是最终的样子。词内的 `*`（`a*b`）保持原样。回复结束后（关闭 `streaming`），文本按原样解析。文档块按位置保留：已完成的块只解析一次并保留它们的视图，每次更新只重新解析并生成正在写的块，因此长回复的更新依然很轻。
 
 `streamingCaret` 跟随文档末尾：以行内方式显示在最后一段文本的末尾，无论最后一个块在哪里结束（段落、列表项、代码块、表格的最后一个单元格）；否则单独一行显示在最后一个块之后（分隔线、渲染函数的内容）。回复结束后去掉它。
-
-```rust tabs
-use nsh_base::{MarkdownOptions, text_view};
-use nsh_core::prelude::*;
-
-/// A reply the app appends to as chunks arrive, with `done` set at the end.
-fn reply(text: Signal<SharedString>, done: Signal<bool>) -> impl IntoElement {
-    text_view()
-        .markdown(move || text.get())
-        .options(move || MarkdownOptions { streaming: !done.get(), ..Default::default() })
-        .streaming_caret(when(
-            move || !done.get(),
-            || view().ml_0p5().h_4().w_2().rounded_sm().bg(rgb(0xa3a3a3)),
-        ))
-}
-```
 
 ```tsx tabs
 import { signal, View } from "nsh";
@@ -288,6 +272,22 @@ function Reply(props: { stream: AsyncIterable<string> }) {
 }
 ```
 
+```rust tabs
+use nsh_base::{MarkdownOptions, text_view};
+use nsh_core::prelude::*;
+
+/// A reply the app appends to as chunks arrive, with `done` set at the end.
+fn reply(text: Signal<SharedString>, done: Signal<bool>) -> impl IntoElement {
+    text_view()
+        .markdown(move || text.get())
+        .options(move || MarkdownOptions { streaming: !done.get(), ..Default::default() })
+        .streaming_caret(when(
+            move || !done.get(),
+            || view().ml_0p5().h_4().w_2().rounded_sm().bg(rgb(0xa3a3a3)),
+        ))
+}
+```
+
 光标是应用自己的视图，可以用 [`nsh` 的动画 API](../modules/nsh.md#animation) 让它闪烁或脉动，新的文档块也可以用应用自己的动画淡入。
 
 <a id="links"></a>
@@ -295,6 +295,16 @@ function Reply(props: { stream: AsyncIterable<string> }) {
 ## 链接
 
 链接是[可点击的片段](./text.md#链接)。点击链接会以 `{ url }` 调用 `onLinkPress`；打开什么由应用决定（应用自己的页面、[`WebView`](./web-view.md)、滚动到某个标题）。标题带有锚点（GitHub 的规则：`## Getting started` 是 `#getting-started`），因此指向 `#getting-started` 的链接会以这个字符串到达，脚注引用则以 `#footnote-<label>` 到达。在终端里，Tab 依次到达每个链接和脚注引用，Return 按下获得焦点的那一个：`onLinkPress` 收到它，与收到点击一样。事件还带有按下时按住的修饰键（`modifiers`，与点击事件的相同），应用可以把按住 Command（macOS 以外是 Control）的点击交给浏览器，普通点击自己处理；键盘或辅助技术触发的按下不带修饰键。
+
+```tsx tabs
+<TextView
+  markdown={doc}
+  onLinkPress={({ url }) => {
+    if (url.startsWith("#")) scrollToAnchor(url.slice(1));
+    else nav.push({ name: "web", url });
+  }}
+/>
+```
 
 ```rust tabs
 use nsh_base::{TextViewLinkPressEvent, text_view};
@@ -310,19 +320,13 @@ fn doc(markdown: &'static str) -> impl IntoElement {
 }
 ```
 
-```tsx tabs
-<TextView
-  markdown={doc}
-  onLinkPress={({ url }) => {
-    if (url.startsWith("#")) scrollToAnchor(url.slice(1));
-    else nav.push({ name: "web", url });
-  }}
-/>
-```
-
 `scroll_to_anchor` 和 `open_web`（TSX 中是 `scrollToAnchor` 和 `nav`）代表应用自己的函数。
 
 设置 `links="open"` 后，按下指向其他网站或应用的链接（带 scheme 的 URL：`https:`、`mailto:` 等）时，在 `onLinkPress` 报告之后，还会用 [`openUrl`](../modules/nsh.md#openurl) 在应用之外打开它，受应用的 `openUrl` 能力约束；文档内的锚点（`#…`）只报告。默认值 `"report"` 什么都不打开。
+
+```tsx tabs
+<TextView markdown={doc} links="open" />
+```
 
 ```rust tabs
 use nsh_base::{TextViewLinks, text_view};
@@ -330,11 +334,9 @@ use nsh_base::{TextViewLinks, text_view};
 text_view().markdown(doc).links(TextViewLinks::Open)
 ```
 
-```tsx tabs
-<TextView markdown={doc} links="open" />
-```
-
 在桌面平台和桌面形态的 Web 上，指针停在链接上会在指针下方显示它去往哪里：链接有标题时先显示标题（`[docs](https://example.com/docs "The guide")`，或 HTML 链接的 `title`），下面一行是用主题 `muted-foreground` 颜色显示的目的地。URL 按解析后的样子显示，协议、主机和端口始终完整（国际化域名显示为 ASCII 形式，冒充的字母会显示出本来面目），过长的路径从中间截断；路径和文档内的锚点（`#…`）按原样显示。链接里的图片也以同样方式在图片下方显示链接的目的地和标题。这与 [Link](./link.md#去往哪里) 的核对相同。
+
+在 Web 上，指向网页、站内路径、邮件地址或电话号码的链接（`https:`、`http:`、路径、`mailto:`、`tel:`）在页面中是一个 `<a href>`，与带 `href` 的 [Link](./link.md#平台说明) 相同：爬虫会跟随它，浏览器会显示它去往哪里，按住修饰键点击或用鼠标中键点击时由浏览器在新标签页或新窗口中打开，不触发 `onLinkPress`；右键点击显示浏览器的链接菜单。普通点击由应用处理，由 `onLinkPress` 报告。路径与 `Link` 的 `href` 一样，放在站点的基础地址下。文档内的锚点（`#…`）和指向应用自身路由的链接（应用自己的 scheme，如 `myapp:`）是可点击的文字，每次点击都会连同修饰键一起报告。
 
 <a id="render-functions"></a>
 
@@ -352,6 +354,21 @@ text_view().markdown(doc).links(TextViewLinks::Open)
 | `renderCustom` | `.render_custom(\|node\| ..)` | `TextViewCustomNode`（`CustomNode`） | 按 `name` 显示自定义节点（[Markdown 扩展](#markdown-extensions)）。 |
 
 代码块的右上角浮动着操作按钮，外观统一：幽灵按钮，悬停或按下时显示背景；桌面上指针悬停在代码块上时显示，触摸屏上始终显示。`copy` 是内置的：复制代码，并短暂显示一个对勾。其他操作由应用定义：`renderCodeBlockAction` 绘制它们的图标，`onCodeBlockAction` 报告按下（内置的 `copy` 复制后也会报告）。`copy` 与 `Clipboard` 一样写入剪贴板，因此需要应用的 `clipboard` 权限（`nsh.json`）。
+
+```tsx tabs
+import { Text } from "nsh";
+import { TextView } from "nsh/base";
+
+<TextView
+  markdown={reply()}
+  codeBlockActions={[
+    { id: "copy", label: "Copy code" },
+    { id: "run", label: "Run" },
+  ]}
+  renderCodeBlockAction={(action) => <Text class="text-xs">▶</Text>}
+  onCodeBlockAction={({ id, code }) => id === "run" && run(code.code)}
+/>
+```
 
 ```rust tabs
 use nsh_base::{TextViewCodeAction, TextViewCodeActionEvent, text_view};
@@ -373,22 +390,20 @@ fn reply(markdown: Signal<SharedString>) -> impl IntoElement {
 }
 ```
 
+代码块开箱即有语法高亮：围栏上标明语言（`ts`、`tsx`、`rust`、`python`、`bash`、`json`、`toml`、`yaml`、`diff` 等约两百种）时，代码以 Allsum 的代码配色显示，随外观切换浅色或深色；未标明语言的代码块按原样显示。应用想用自己的高亮时，用 `renderCodeBlock` 显示代码，使用它自己的组件或它的 Rust crate 中的组件；Rust 视图通过 [`CodeHighlighter`](#syntax-highlighting) 把高亮器交给 `TextView`。下面用应用自己的高亮显示代码，并让图片占满宽度：
+
 ```tsx tabs
-import { Text } from "nsh";
-import { TextView } from "nsh/base";
+import { Image, View } from "nsh";
 
 <TextView
   markdown={reply()}
-  codeBlockActions={[
-    { id: "copy", label: "Copy code" },
-    { id: "run", label: "Run" },
-  ]}
-  renderCodeBlockAction={(action) => <Text class="text-xs">▶</Text>}
-  onCodeBlockAction={({ id, code }) => id === "run" && run(code.code)}
+  renderCodeBlock={(code) => <Highlighted language={code.language} code={code.code} />}
+  renderImage={(image) => (
+    <Image src={image.src} accessibilityLabel={image.alt} class="aspect-video w-full rounded-lg" />
+  )}
+  renderMath={(math) => <MathView tex={math.tex} display={math.display} />}
 />
 ```
-
-代码块开箱即有语法高亮：围栏上标明语言（`ts`、`tsx`、`rust`、`python`、`bash`、`json`、`toml`、`yaml`、`diff` 等约两百种）时，代码以 Allsum 的代码配色显示，随外观切换浅色或深色；未标明语言的代码块按原样显示。应用想用自己的高亮时，用 `renderCodeBlock` 显示代码，使用它自己的组件或它的 Rust crate 中的组件；Rust 视图通过 [`CodeHighlighter`](#syntax-highlighting) 把高亮器交给 `TextView`。下面用应用自己的高亮显示代码，并让图片占满宽度：
 
 ```rust tabs
 use nsh_base::text_view;
@@ -409,19 +424,6 @@ fn reply(markdown: Signal<SharedString>) -> impl IntoElement {
         })
         .render_math(|math: &TextViewMath| math_view(math.tex.to_string(), math.display))
 }
-```
-
-```tsx tabs
-import { Image, View } from "nsh";
-
-<TextView
-  markdown={reply()}
-  renderCodeBlock={(code) => <Highlighted language={code.language} code={code.code} />}
-  renderImage={(image) => (
-    <Image src={image.src} accessibilityLabel={image.alt} class="aspect-video w-full rounded-lg" />
-  )}
-  renderMath={(math) => <MathView tex={math.tex} display={math.display} />}
-/>
 ```
 
 单独成段的图片（一段或一个表格单元格里只有图片）放在与正文同宽的框里：`w-full` 填满这个宽度，`max-w-full` 让更宽的图片收在其中，固定宽度的图片保持自己的宽度，靠行首排列。位于一行文字中的图片保持它要求的尺寸。
@@ -446,6 +448,56 @@ import { Image, View } from "nsh";
 | `language` | `MarkdownExtension::language(name, language)` | 该语言的围栏代码块（```` ```chart ````） | 块节点；`text` 是代码，`attributes.meta` 是信息字符串的其余部分 |
 | `tag` | `MarkdownExtension::tag(name, tag)` | 该标签的 HTML 或 MDX 元素，不区分大小写（`<Callout kind="tip">`） | 其属性，以及解析后的内容：独占一行的元素为 `children`（文档块），文本中的元素为 `content`（行内内容） |
 | `container` | `MarkdownExtension::container(name, container)` | 容器 `:::name` … `:::` | 内部 Markdown 组成的块节点（`children`）；`:::note[Heads up]` 得到 `attributes.label`，`{key=value}` 得到其他属性 |
+
+````tsx tabs
+import { Text, View } from "nsh";
+import { TextView } from "nsh/base";
+import type { MarkdownExtension, TextViewCustomNode } from "nsh/base";
+
+const extensions: MarkdownExtension[] = [
+  { name: "mention", pattern: "@(\\w+)" },
+  { name: "chart", language: "chart" },
+  { name: "callout", tag: "callout" },
+  { name: "note", container: "note" },
+];
+
+const message = `Thanks @ada! Here are the numbers:
+
+\`\`\`chart
+12, 19, 7, 25
+\`\`\`
+
+<Callout kind="tip">Charts update live.</Callout>
+
+:::note[Heads up]
+Numbers are in thousands.
+:::`;
+
+function Custom(props: { node: TextViewCustomNode }) {
+  const node = props.node;
+  switch (node.name) {
+    case "mention":
+      return <Text class="font-semibold text-blue-600">{node.text}</Text>;
+    case "chart":
+      return <BarChart values={node.text!.split(",").map(Number)} />;
+    case "callout":
+      return (
+        <View class="rounded-lg bg-amber-50 p-3">
+          <TextView document={{ blocks: node.children ?? [] }} />
+        </View>
+      );
+    default:
+      return (
+        <View class="gap-1 border-l-4 border-blue-500 pl-3">
+          <Text class="font-semibold">{node.attributes?.label ?? "Note"}</Text>
+          <TextView document={{ blocks: node.children ?? [] }} />
+        </View>
+      );
+  }
+}
+
+<TextView markdown={message} extensions={extensions} renderCustom={(node) => <Custom node={node} />} />;
+````
 
 ````rust tabs
 use nsh_base::text_view::{CustomNode, Document};
@@ -505,56 +557,6 @@ fn message() -> impl IntoElement {
 }
 ````
 
-````tsx tabs
-import { Text, View } from "nsh";
-import { TextView } from "nsh/base";
-import type { MarkdownExtension, TextViewCustomNode } from "nsh/base";
-
-const extensions: MarkdownExtension[] = [
-  { name: "mention", pattern: "@(\\w+)" },
-  { name: "chart", language: "chart" },
-  { name: "callout", tag: "callout" },
-  { name: "note", container: "note" },
-];
-
-const message = `Thanks @ada! Here are the numbers:
-
-\`\`\`chart
-12, 19, 7, 25
-\`\`\`
-
-<Callout kind="tip">Charts update live.</Callout>
-
-:::note[Heads up]
-Numbers are in thousands.
-:::`;
-
-function Custom(props: { node: TextViewCustomNode }) {
-  const node = props.node;
-  switch (node.name) {
-    case "mention":
-      return <Text class="font-semibold text-blue-600">{node.text}</Text>;
-    case "chart":
-      return <BarChart values={node.text!.split(",").map(Number)} />;
-    case "callout":
-      return (
-        <View class="rounded-lg bg-amber-50 p-3">
-          <TextView document={{ blocks: node.children ?? [] }} />
-        </View>
-      );
-    default:
-      return (
-        <View class="gap-1 border-l-4 border-blue-500 pl-3">
-          <Text class="font-semibold">{node.attributes?.label ?? "Note"}</Text>
-          <TextView document={{ blocks: node.children ?? [] }} />
-        </View>
-      );
-  }
-}
-
-<TextView markdown={message} extensions={extensions} renderCustom={(node) => <Custom node={node} />} />;
-````
-
 `BarChart`（Rust 中是 `bar_chart`）代表应用自己的图表。提及（mention）的捕获组在 `node.attributes?.["1"]`（Rust 中是 `node.attributes["1"]`：`ada`）中，完整匹配在 `node.text`（`@ada`）中。没有渲染函数的自定义节点显示其内容。
 为行内节点返回的视图（如芯片）按它自己的 `verticalAlign` 放在行中：`align-middle`（`verticalAlign: "middle"`）让它与文字居中对齐；除非视图比行高更高，它所在的行仍保持段落的 `lineHeight`。
 
@@ -569,6 +571,8 @@ function Custom(props: { node: TextViewCustomNode }) {
 | `math` | `boolean` | `true` | 公式：文本中的 `$…$` 和 `\(…\)`，`$$…$$` 和 `\[…\]` 公式块。转义方括号里是引用编号或中日韩文字时（`\[1\]\[3\]`、`\[注\]`）按文字显示。 |
 | `html` | `boolean` | `true` | Markdown 中的 HTML 按 `html` 属性的方式读取；`false` 时显示为文本。 |
 | `alerts` | `boolean` | `true` | GitHub 的提示块：`> [!NOTE]`、`[!TIP]`、`[!IMPORTANT]`、`[!WARNING]`、`[!CAUTION]`。 |
+| `links` | `boolean` | `true` | 链接：`[text](url)`、裸 URL 和 `<a href>`；`false` 时显示其文字，不显示为链接。 |
+| `images` | `boolean` | `true` | 图片：`![alt](src)` 和 `<img>`；`false` 时显示其 `alt` 文字。 |
 | `frontmatter` | `boolean` | `false` | 开头的 YAML front matter（`---` … `---`）成为名为 `frontmatter` 的自定义节点，其 `text` 是 YAML。 |
 | `mdx` | `boolean` | `false` | MDX：JSX 元素成为以标签命名的自定义节点，`{expressions}` 成为名为 `expression` 的自定义节点；此时原始 HTML 按文本读取。 |
 | `streaming` | `boolean` | `false` | 文本仍在到达：末尾未闭合的语法显示成闭合后的样子。 |
@@ -624,6 +628,12 @@ function Custom(props: { node: TextViewCustomNode }) {
 
 复制整条回复的按钮：
 
+```tsx tabs
+<Button onPress={() => Clipboard.writeText(TextView.plainText(TextView.parse(reply())))}>
+  <Text>Copy</Text>
+</Button>
+```
+
 ```rust tabs
 use nsh_base::{TextView, button};
 use nsh_core::prelude::*;
@@ -636,12 +646,6 @@ fn copy_reply(reply: Signal<SharedString>) -> impl IntoElement {
         })
         .child(text("Copy"))
 }
-```
-
-```tsx tabs
-<Button onPress={() => Clipboard.writeText(TextView.plainText(TextView.parse(reply())))}>
-  <Text>Copy</Text>
-</Button>
 ```
 
 应用也可以只解析一次并保存文档（`document={doc}`），或者在显示之前修改它。

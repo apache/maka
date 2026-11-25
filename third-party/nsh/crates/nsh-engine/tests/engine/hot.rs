@@ -155,11 +155,18 @@ fn edits_replace_modules_and_keep_unrelated_state() {
     let mut bundle =
         nsh_bundler::bundle_hot(&dir.join("App.tsx"), &[nsh_base::registry().into()]).unwrap();
     let (code, map) = bundle.script();
+    // As `nsh dev` compiles it: without the functions' source text.
+    let bytecode =
+        nsh_js::compile_bytecode_with(&code, nsh_js::Strip::Source, &[nsh_base::registry().into()])
+            .unwrap();
     let (tx, rx) = crossbeam_channel::unbounded();
     let (failed_tx, failed) = crossbeam_channel::unbounded();
     let (errors_tx, errors) = crossbeam_channel::unbounded();
     let config = EngineConfig {
-        app: nsh_engine::App::Js(Bundle::source(code).with_source_map(map.unwrap())),
+        // SAFETY: compiled just now by this runtime.
+        app: nsh_engine::App::Js(
+            unsafe { Bundle::bytecode(bytecode) }.with_source_map(map.unwrap()),
+        ),
         viewport: Size::new(px(390.0), px(844.0)),
         trace: false,
         content_culling: false,
@@ -182,7 +189,6 @@ fn edits_replace_modules_and_keep_unrelated_state() {
         clipboard: None,
         host: Default::default(),
         picker: None,
-        speech: None,
         chunk_loader: None,
         audio: None,
         windows: None,
@@ -245,6 +251,7 @@ fn edits_replace_modules_and_keep_unrelated_state() {
     assert_eq!(screen.texts(), ["app! 0"]);
     let error = errors.try_recv().expect("the error is reported");
     assert!(error.contains("broken counter"), "{error}");
+    assert!(error.contains("Counter.tsx:"), "not symbolicated: {error}");
     std::fs::write(dir.join("Counter.tsx"), &counter).unwrap();
     control.hot_update(update(&dir, &mut bundle, 5).unwrap());
     drain(&rx, &mut screen);
@@ -348,7 +355,6 @@ fn entry_edits_keep_navigation_and_state() {
             clipboard: None,
             host: Default::default(),
             picker: None,
-            speech: None,
             chunk_loader: None,
             audio: None,
             windows: None,
@@ -499,7 +505,6 @@ fn nested_hot_components_render_the_stacks_screen() {
         clipboard: None,
         host: Default::default(),
         picker: None,
-        speech: None,
         audio: None,
         windows: None,
         login_item: None,

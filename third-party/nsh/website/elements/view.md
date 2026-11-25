@@ -12,38 +12,6 @@ demo: el-view
 Android) that lays out its children with flexbox or grid, draws a background, borders, shadows and gradients, and handles
 presses. Buttons, cards, rows and screens are all views. Rust makes one with `view()`, TSX with `<View>` from `nsh`.
 
-```rust tabs
-use nsh_core::prelude::*;
-
-fn app() -> impl IntoElement {
-    let liked = signal(false);
-    view()
-        .flex_1()
-        .p_6()
-        .gap_4()
-        .bg(rgb(0xf6f8fa))
-        .child(
-            view()
-                .flex_row()
-                .items_center()
-                .gap_3()
-                .p_4()
-                .rounded(px(16.0))
-                .bg(white())
-                .shadow_md()
-                .child(view().size(px(40.0)).rounded_full().bg(rgb(0x8250df)))
-                .child(text("A card").flex_1().text_base())
-                .child(
-                    view()
-                        .hit_slop(EdgeInsets::all(px(8.0)))
-                        .active(|s| s.opacity(0.5))
-                        .on_press(move || liked.update(|l| *l = !*l))
-                        .child(text(move || if liked.get() { "♥" } else { "♡" }).text_size(px(22.0))),
-                ),
-        )
-}
-```
-
 ```tsx tabs
 import { mount, signal, Text, View } from "nsh";
 import { Window } from "nsh/desktop";
@@ -78,6 +46,38 @@ mount(() => (
     <App />
   </Window>
 ));
+```
+
+```rust tabs
+use nsh_core::prelude::*;
+
+fn app() -> impl IntoElement {
+    let liked = signal(false);
+    view()
+        .flex_1()
+        .p_6()
+        .gap_4()
+        .bg(rgb(0xf6f8fa))
+        .child(
+            view()
+                .flex_row()
+                .items_center()
+                .gap_3()
+                .p_4()
+                .rounded(px(16.0))
+                .bg(white())
+                .shadow_md()
+                .child(view().size(px(40.0)).rounded_full().bg(rgb(0x8250df)))
+                .child(text("A card").flex_1().text_base())
+                .child(
+                    view()
+                        .hit_slop(EdgeInsets::all(px(8.0)))
+                        .active(|s| s.opacity(0.5))
+                        .on_press(move || liked.update(|l| *l = !*l))
+                        .child(text(move || if liked.get() { "♥" } else { "♡" }).text_size(px(22.0))),
+                ),
+        )
+}
 ```
 
 ## Layout
@@ -120,6 +120,19 @@ A pressable view is any view with a press handler. Its feedback is the app's: a 
 while the finger is down, with no round trip to the app's code. `hoverStyle`, `focusStyle` and `disabledStyle` do the
 same for the other states:
 
+```tsx tabs
+// Fade the whole view.
+<View onPress={open} activeStyle={{ opacity: 0.6 }}>…</View>
+
+// Show a background; group-active: styles the children.
+<View onPress={open} class="group" activeStyle={{ backgroundColor: "#e5e7eb" }}>
+  <Text class="group-active:opacity-70">Open</Text>
+</View>
+
+// Change any style while pressed with active: classes.
+<View onPress={open} class="bg-blue-600 active:bg-blue-800 active:scale-95">…</View>
+```
+
 ```rust tabs
 // Fade the whole view.
 view().on_press(open).active(|s| s.opacity(0.6))
@@ -135,23 +148,14 @@ view()
 view().on_press(open).bg(rgb(0x2563eb)).active(|s| s.bg(rgb(0x1e40af)).scale(0.95))
 ```
 
-```tsx tabs
-// Fade the whole view.
-<View onPress={open} activeStyle={{ opacity: 0.6 }}>…</View>
-
-// Show a background; group-active: styles the children.
-<View onPress={open} class="group" activeStyle={{ backgroundColor: "#e5e7eb" }}>
-  <Text class="group-active:opacity-70">Open</Text>
-</View>
-
-// Change any style while pressed with active: classes.
-<View onPress={open} class="bg-blue-600 active:bg-blue-800 active:scale-95">…</View>
-```
-
 On Android, `android={{ ripple: { color: "#0000001f" } }}` (`.ripple(Ripple { .. })` in Rust) adds the material
 ripple (`borderless`, `radius` and `foreground` adjust it).
 
 `disabled` removes the press listeners from the native view (no press, no feedback) and applies the disabled styles:
+
+```tsx tabs
+<View onPress={submit} disabled={!valid()} class="bg-green-600 disabled:opacity-40">…</View>
+```
 
 ```rust tabs
 view()
@@ -159,10 +163,6 @@ view()
     .disabled(move || !valid.get())
     .bg(rgb(0x16a34a))
     .disabled_style(|s| s.opacity(0.4))
-```
-
-```tsx tabs
-<View onPress={submit} disabled={!valid()} class="bg-green-600 disabled:opacity-40">…</View>
 ```
 
 ## Events
@@ -205,6 +205,13 @@ file-list preload finishes, including when the pointer stays still, and ignores 
 Moving between destinations reports leave then entry with the same offered list. `onFileDragLeave` clears the
 preview. Rust entry handlers receive `&FileDragEvent`; existing `||`, `|_: &()|` and `Listener<()>` handlers work too.
 
+On AppKit, a drag that carries no file URLs but promises files, such as an image dragged out of a page in Safari or
+Chrome or an attachment from Mail, is taken as well. Its files are only written once dropped, so `onFileDragEnter`
+gives `uris: []` with the promised files' `mimeTypes`, and `onFileDrop` gives `uris: []` and the files' contents in
+`files` (the same `{ file, name, type, size, status }` entries as on the Web and `Picker.pickFiles`), in the drag's
+order, with `pagePosition`. NSH writes them to a temporary folder and removes it once they are read. A drag that also
+carries file URLs, such as the screenshot thumbnail, drops its `uris` as above.
+
 On iOS (and iPadOS), a view with `onFileDrop` takes the files of a drag, such as images and documents dragged from Photos,
 Files, Safari or the app's own web views. The closest view
 that listens takes them, as on desktops. A drag's items carry no file URLs, only data in types that are read
@@ -222,26 +229,6 @@ names them (with the extension of their type when the name has none), in the dra
 then the view hears `onFileDragLeave`. NSH leaves the copies there, where the system removes them in time: move or
 upload what the app keeps. A drag that offers only text or links is no file drag and stays with text inputs; a drag
 of files over a text input inside the view goes to the view.
-
-```rust tabs
-let hint = signal(String::new());
-let files = signal(Vec::<String>::new());
-
-view()
-    .min_h(px(160.0))
-    .p_6()
-    .on_file_drag_enter(move |event: &FileDragEvent| {
-        let images = event.mime_types.iter().filter(|t| t.starts_with("image/")).count();
-        hint.set(format!("Release to add {images} of {} files as images", event.uris.len()));
-    })
-    .on_file_drag_leave(move || hint.set(String::new()))
-    .on_file_drop(move |event: &FileDropEvent| {
-        files.set(event.uris.clone());
-        hint.set(String::new());
-    })
-    .child(text(move || if hint.get().is_empty() { "Drop files here".into() } else { hint.get() }))
-    .child(text(move || files.get().join("\n")))
-```
 
 ```tsx tabs
 const hint = signal("");
@@ -262,6 +249,26 @@ const files = signal<string[]>([]);
   <Text>{hint() || "Drop files here"}</Text>
   <Text>{files().join("\n")}</Text>
 </View>
+```
+
+```rust tabs
+let hint = signal(String::new());
+let files = signal(Vec::<String>::new());
+
+view()
+    .min_h(px(160.0))
+    .p_6()
+    .on_file_drag_enter(move |event: &FileDragEvent| {
+        let images = event.mime_types.iter().filter(|t| t.starts_with("image/")).count();
+        hint.set(format!("Release to add {images} of {} files as images", event.uris.len()));
+    })
+    .on_file_drag_leave(move || hint.set(String::new()))
+    .on_file_drop(move |event: &FileDropEvent| {
+        files.set(event.uris.clone());
+        hint.set(String::new());
+    })
+    .child(text(move || if hint.get().is_empty() { "Drop files here".into() } else { hint.get() }))
+    .child(text(move || files.get().join("\n")))
 ```
 
 The closest enabled ancestor listening to `onFileDrop` receives the drop. A modal root bounds that search. `disabled`

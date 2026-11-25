@@ -14,12 +14,11 @@ use nsh_core::{
 use nsh_platform_macos as platform;
 use platform::{
     objc2::{MainThreadMarker, MainThreadOnly, Message, rc::Retained},
-    objc2_app_kit::{
-        NSAccessibility, NSApplication, NSBackingStoreType, NSMenu, NSView, NSWindow,
-        NSWindowStyleMask,
-    },
-    objc2_foundation::{NSDate, NSPoint, NSRect, NSRunLoop, NSSize, NSString},
+    objc2_app_kit::{NSApplication, NSBackingStoreType, NSMenu, NSWindow, NSWindowStyleMask},
+    objc2_foundation::{NSDate, NSPoint, NSRect, NSRunLoop, NSSize},
 };
+
+use super::menu_labels::shows;
 
 /// The times the new app's selection menu item ran.
 static MARKED: AtomicU32 = AtomicU32::new(0);
@@ -52,15 +51,6 @@ fn Marked() -> impl IntoElement {
 fn NoMenu() -> impl IntoElement {
     set_application_menu(None::<Vec<MenuItem>>);
     view().flex_1().child(text("No menu"))
-}
-
-fn shows(view: &NSView, text: &str) -> bool {
-    view.accessibilityValue()
-        .and_then(|value: Retained<platform::objc2::runtime::AnyObject>| {
-            value.downcast::<NSString>().ok()
-        })
-        .is_some_and(|value| value.to_string() == text)
-        || view.subviews().iter().any(|child| shows(&child, text))
 }
 
 /// The menu holding the item titled `title` among `menu`'s, and its index.

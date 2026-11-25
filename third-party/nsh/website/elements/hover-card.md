@@ -18,20 +18,6 @@ tablets a press on the trigger opens and closes it, and a press outside closes i
 `HoverCard` from [`nsh/base`](../modules/nsh-base.md) draws nothing of its own: the trigger is your element, the
 popup and its content are yours.
 
-```rust tabs
-use nsh_base::hover_card;
-use nsh_core::prelude::*;
-
-fn mention() -> impl IntoElement {
-    hover_card()
-        .offset(px(8.0))
-        .popup_class("w-72 gap-2 rounded-xl border border-border bg-popover p-4 shadow-lg")
-        .trigger(text("@ada").text_color(rgb(0x2563eb)))
-        .child(text("Ada Lovelace").font_weight(FontWeight::SEMIBOLD))
-        .child(text("Writes the first programs for the Analytical Engine."))
-}
-```
-
 ```tsx tabs
 import { Text } from "nsh";
 import { HoverCard } from "nsh/base";
@@ -47,6 +33,20 @@ function Mention() {
       <Text>Writes the first programs for the Analytical Engine.</Text>
     </HoverCard>
   );
+}
+```
+
+```rust tabs
+use nsh_base::hover_card;
+use nsh_core::prelude::*;
+
+fn mention() -> impl IntoElement {
+    hover_card()
+        .offset(px(8.0))
+        .popup_class("w-72 gap-2 rounded-xl border border-border bg-popover p-4 shadow-lg")
+        .trigger(text("@ada").text_color(rgb(0x2563eb)))
+        .child(text("Ada Lovelace").font_weight(FontWeight::SEMIBOLD))
+        .child(text("Writes the first programs for the Analytical Engine."))
 }
 ```
 

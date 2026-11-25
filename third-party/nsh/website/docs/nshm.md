@@ -19,7 +19,38 @@ nsh add nsh-omarchy                  # from crates.io
 nsh add github:huacnlee/nsh-omarchy  # or from GitHub
 ```
 
-Then use it from the language the app is written in, Rust or TSX. **In a Rust app**, its components are functions of the crate:
+Then use it from the language the app is written in. **In a TSX app**, an nshm that exports components, modules or classes to TSX is ready to use once `nsh add` installs it: import them by its specifier, here `nsh-omarchy`. The app needs no newer NSH and no Rust code of its own, since `nsh` builds the app's hosts with the crate.
+
+```tsx
+// App.tsx
+import { mount, signal, View } from "nsh";
+import { Body, Button, Omarchy, Panel, Switch, Toaster, toast } from "nsh-omarchy";
+
+function App() {
+  // Draw with the system's Omarchy theme, and follow it as it changes.
+  Omarchy.followSystem();
+  const notify = signal(true);
+  const saved = signal(0);
+  const save = () => {
+    saved.set(saved() + 1);
+    toast({ title: "Settings saved" });
+  };
+  return (
+    <View class="flex-1 gap-4 p-6 bg-background">
+      <Panel title="Settings">
+        <Switch label="Notifications" checked={notify()} onChange={({ checked }) => notify.set(checked)} />
+        <Button label="Save" variant="primary" onPress={save} />
+      </Panel>
+      <Body>{`Saved ${saved()} times`}</Body>
+      <Toaster />
+    </View>
+  );
+}
+
+mount(() => <App />);
+```
+
+**In a Rust app**, its components are functions of the crate:
 
 ```rust
 // src/lib.rs: the app's root component
@@ -52,37 +83,6 @@ pub fn App() -> impl IntoElement {
         .child(nsh_omarchy::body(move || format!("Saved {} times", saved.get())))
         .child(nsh_omarchy::toaster())
 }
-```
-
-**In a TSX app**, an nshm that exports components, modules or classes to TSX is ready to use once `nsh add` installs it: import them by its specifier, here `nsh-omarchy`. The app needs no newer NSH and no Rust code of its own, since `nsh` builds the app's hosts with the crate.
-
-```tsx
-// App.tsx
-import { mount, signal, View } from "nsh";
-import { Body, Button, Omarchy, Panel, Switch, Toaster, toast } from "nsh-omarchy";
-
-function App() {
-  // Draw with the system's Omarchy theme, and follow it as it changes.
-  Omarchy.followSystem();
-  const notify = signal(true);
-  const saved = signal(0);
-  const save = () => {
-    saved.set(saved() + 1);
-    toast({ title: "Settings saved" });
-  };
-  return (
-    <View class="flex-1 gap-4 p-6 bg-background">
-      <Panel title="Settings">
-        <Switch label="Notifications" checked={notify()} onChange={({ checked }) => notify.set(checked)} />
-        <Button label="Save" variant="primary" onPress={save} />
-      </Panel>
-      <Body>{`Saved ${saved()} times`}</Body>
-      <Toaster />
-    </View>
-  );
-}
-
-mount(() => <App />);
 ```
 
 An nshm is how a feature reaches the apps that need it without being part of NSH: it ships on its own schedule, and only the apps that install it pay its size, build time and dependencies.
@@ -122,6 +122,8 @@ Each version is installed once per machine, in `~/.nsh/nshms` (`NSH_HOME` moves 
 
 A Rust nshm is also added to the `[dependencies]` of the app's own crate when it has one, so the app's Rust uses it directly. An app whose nshm include a Rust one gets hosts built with it, as an app with a crate of its own does, so its development machine and CI need the Rust toolchain ([Building with Rust](./rust.md)). An app whose nshm are all TSX builds with `nsh` alone.
 
+The hosts of an app whose Rust comes from nshm only are built with the nsh that runs the app: a release with its crates from crates.io, a nightly with those of its own commit, an `nsh` built in a checkout with the checkout's. `nsh-extra` is released together with nsh, so an app that asks for it by version gets the `nsh-extra` of that same nsh (an app with a crate of its own, the one of the nsh its crate uses), and `nsh.lock` records which. A version requirement that nsh's version does not meet is an error that names both. A `"path"`, `"github"` or `"git"` entry for it is used as written.
+
 An app with a crate of its own can also depend on a Rust nshm in its `Cargo.toml` alone, as on any other crate, from crates.io, Git (a crate in a subdirectory of the repository too) or a path. `nsh` finds the Rust nshm among the crate's dependencies, direct or not, and links them as it links those of `"dependencies"`: their `#[native_module]` entries run when the app starts, with the features the crate turns on, in `nsh run`, `nsh test` and the packages alike, and TSX imports them by their specifiers. One listed in `"dependencies"` too is linked once.
 
 A crate that holds several modules keeps each behind a Cargo feature, so an app turns on only those it uses and pays
@@ -149,8 +151,10 @@ crate, imported from `nsh-extra` in TSX and called as `nsh_extra::<module>` in R
 | Feature | TSX | What it does |
 |---|---|---|
 | `camera` | `Camera` | Takes a photo with the system's camera on iOS and Android |
+| `location` | `Location` | Reads the device's position once the user allows it, on macOS, iOS and the web |
 | `photos` | `Photos` | Reads the user's recent photos on iOS, once the user allows it |
 | `push` | `Push` | Receives remote notifications from any push service on iOS, and on Android through the service's binding |
+| `speech` | `Speech` | Turns what the user says into text as they speak, on macOS, iOS, Android, Windows and the web |
 
 ```tsx
 import { Camera } from "nsh-extra";
@@ -168,6 +172,54 @@ sheet has closed. `available()` is `false` where there is no camera to show (the
 and there `takePhoto` rejects with `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM`. The feature adds what the packaged app needs:
 the camera's usage description on iOS (an app sets its own wording with `ios.infoPlist`'s
 `NSCameraUsageDescription`) and the query of camera apps on Android.
+
+### Location
+
+`Location` reads the device's position once the user allows it: once with `current`, or each time it changes with
+`watch`, shaped as the browser's `navigator.geolocation`. macOS and iOS read it with CoreLocation, the web with the
+browser's `navigator.geolocation`; the system or the browser asks the user the first time the app reads it. Only while
+the app is in use: there is no background location.
+
+```sh
+nsh add nsh-extra --features location
+```
+
+```tsx
+import { Location } from "nsh-extra";
+
+if (await Location.available()) {
+  const position = await Location.current({ accuracy: "high", timeout: 10_000 });
+  showOnMap(position.coords.latitude, position.coords.longitude, position.coords.accuracy);
+
+  const stop = Location.watch(
+    (position) => moveMarker(position.coords),
+    (error) => showError(error.code),
+    { distanceFilter: 10 },
+  );
+  // Later: stop(). The watch also stops when the component that started it goes.
+}
+```
+
+- `available()` resolves `true` on macOS and iOS apps packaged with the feature, and in browsers with
+  `navigator.geolocation`; `false` on Android, Windows, Linux, in a terminal, in headless runs, and in an Apple app
+  run as a bare binary (`nsh run --target macos`), whose missing `Info.plist` the system never asks for.
+- `authorization()` resolves with what the user allows now, without asking: `"notDetermined"`, `"whenInUse"`,
+  `"always"`, `"denied"` or `"restricted"`. The web knows only `"whenInUse"` (granted), `"denied"` and
+  `"notDetermined"` (it will ask). `requestAuthorization()` asks the user and resolves with the answer; reading asks by
+  itself, so ask first only to choose the moment.
+- `current({ accuracy, timeout })` resolves with a `Position` (`coords.latitude`, `longitude`, `accuracy` in metres,
+  `altitude`, `altitudeAccuracy`, `heading`, `speed`, each `null` when the device does not know it, and `timestamp`
+  in milliseconds since the epoch). `accuracy` is `"best"`, `"high"`, `"balanced"` (the default) or `"low"`.
+- `watch(listener, onError?, { accuracy, distanceFilter })` calls `listener` with each new position and returns a
+  function that stops it. `onError` gets the failure that ends the watch.
+- A read fails with an `Error` whose `code` is `"EACCES"` (the user does not allow it), `"ETIMEDOUT"` (nothing came
+  within `timeout`), `"ERR_POSITION_UNAVAILABLE"` (the device found no position) or
+  `"ERR_FEATURE_UNAVAILABLE_ON_PLATFORM"` (no position here); options out of range throw a `RangeError`.
+
+The feature adds `NSLocationWhenInUseUsageDescription` to the app's `Info.plist` on iOS and macOS, and the location
+entitlement of a sandboxed macOS app. Rust code uses `nsh_extra::location`: `available()`, `authorization().await`,
+`request_authorization().await`, `current(LocationRequest).await`, and `watch(LocationRequest)`, whose `next().await`
+gives each position (dropping it stops it).
 
 ### Photos
 
@@ -338,6 +390,145 @@ implements `PushProvider` (it registers the device with its service), sets it wi
 `provide_registration_failure`, `provide_notification` and `provide_background`. A press of a notification the binding
 posted opens the app with the payload as the intent's extras, and reaches `press` with them as its `payload` (Android
 does not say which notification it was, so it has no `id` or `threadId`).
+
+### Speech
+
+`Speech` turns what the user says into text (dictation): the app starts a session, the system listens to the
+microphone, and the transcript arrives as it grows. macOS and iOS recognize with the system's Speech framework,
+Android with the device's recognition service (`SpeechRecognizer`), Windows with its dictation
+(`Windows.Media.SpeechRecognition`), the web with the browser's Web Speech API; the system or the browser asks the
+user for the microphone (and on Apple platforms for speech recognition) once. Windows dictates with the user's online
+speech recognition, which they turn on in Settings > Privacy & security > Speech; while it is off, a session ends with
+`"not-allowed"`. Linux has no recognizer, nor have terminal apps (the TUI host, on every OS); an app embedded with
+GPUI recognizes with the platform's recognizer on macOS and Windows. Check `Speech.available()` before showing a
+microphone button: where nothing recognizes speech, a session ends at once with `"unavailable"`.
+
+```sh
+nsh add nsh-extra --features speech
+```
+
+```ts
+const Speech: {
+  available(): Promise<boolean>;
+  start(options?: SpeechOptions): SpeechSession;
+};
+
+interface SpeechOptions {
+  /** The language spoken, a BCP 47 tag ("en-US", "zh-CN"); the user's when left out. */
+  lang?: string;
+  /** Results while the user speaks (true, the default), or only the final one. */
+  interim?: boolean;
+}
+
+interface SpeechSession {
+  on(event: "start", listener: () => void): () => void;
+  on(event: "result", listener: (result: SpeechResult) => void): () => void;
+  on(event: "end", listener: (end: SpeechEnd) => void): () => void;
+  /** The whole transcript so far. */
+  readonly text: string;
+  readonly ended: boolean;
+  stop(): void;
+  abort(): void;
+}
+
+interface SpeechResult { text: string; isFinal: boolean }
+interface SpeechEnd { text: string; error?: SpeechErrorCode }
+
+type SpeechErrorCode =
+  | "not-allowed" | "no-speech" | "audio-capture" | "network"
+  | "language-not-supported" | "unavailable" | "failed";
+```
+
+```tsx
+import { signal } from "nsh";
+import { Speech, type SpeechSession } from "nsh-extra";
+
+const transcript = signal("");
+let session: SpeechSession | null = null;
+
+function toggle() {
+  if (session && !session.ended) {
+    session.stop();
+    return;
+  }
+  session = Speech.start({ lang: "en-US" });
+  session.on("result", ({ text }) => transcript.set(text));
+  session.on("end", ({ text, error }) => {
+    if (error) console.warn("dictation ended:", error);
+    else transcript.set(text);
+  });
+}
+```
+
+- `start` returns the session at once. It reports, in this order: `start` when the microphone is on and the recognizer
+  listens, `result` each time the transcript changes (`text` is always the whole transcript so far, so the app shows
+  it as it is), and one `end`, after which nothing comes. `stop()` stops listening and lets the recognizer finish
+  what it heard: a last result with `isFinal: true`, then `end`. `abort()` ends the session at once, without an
+  error. One session runs at a time, as there is one microphone: starting another ends the one running. A new
+  session of the same app in the same view ends it as `abort()` does, without an error; one that another app or
+  view of the process starts (an embedding app's other `AppView`) ends it with `"audio-capture"`, as the microphone
+  was taken from it.
+- `end` carries the last transcript and, when the session failed, `error`, named as in the Web Speech API:
+  `"not-allowed"` (the user or the system does not allow the microphone or speech recognition, or the app is in the
+  background), `"no-speech"` (nothing was said), `"audio-capture"` (the microphone could not be used), `"network"`
+  (the recognizer needs the network), `"language-not-supported"` (the recognizer does not know `lang`),
+  `"unavailable"` (nothing recognizes speech here, or not now) and `"failed"`.
+- `start` throws a `TypeError` for options of the wrong types and a `RangeError` for a `lang` that is no language tag.
+- `available()` is `true` on macOS and iOS, on Android devices with a recognition service, on Windows with a
+  dictation language and a microphone, in browsers with the Web Speech API (Chromium-based browsers such as Chrome
+  and Edge, and Safari), and wherever the app gave the module a recognizer of its own. It is `false` on Linux and in
+  terminal apps.
+- On the web the page needs a secure context (HTTPS, or `localhost` while developing) for the microphone, and a page
+  that embeds the app in an iframe allows it (`allow="microphone"`). Chrome recognizes with its online service, so
+  `"network"` reports a lost connection.
+- An app that declares `"capabilities"` grants `Speech` with
+  [`"speech": true`](./sandbox-and-capabilities.md#speech). Without it `start` throws an `Error` whose `code` is
+  `"ERR_ACCESS_DENIED"`, `permission` `"speech"`.
+
+The feature adds what the packaged app needs: the microphone's and speech recognition's usage descriptions on iOS
+and macOS (an app sets its own wording with `ios.infoPlist` / `macos.infoPlist`), the audio input entitlement on
+macOS, and on Android the `RECORD_AUDIO` permission and the query of recognition services. On the web the module
+calls the browser through wasm-bindgen, so `nsh` builds the app's web runtime with the `wasm-bindgen` CLI
+([browser APIs from Rust](./web.md#browser-apis-from-rust)); the site itself needs no declaration.
+
+Rust code uses `nsh_extra::speech`: `available().await`, and `recognize(SpeechRequest)`, a session whose
+`next().await` gives each `SpeechEvent` (`stop()`, `abort()`; dropping it aborts). An app that recognizes speech its
+own way (its own engine or service, an embedding app's) gives the module a `SpeechBackend` with `set_backend`: every
+session then reaches it instead of the system's recognizer.
+
+```rust
+use nsh_extra::speech::{self, SpeechEvent, SpeechRequest};
+
+async fn dictate() -> String {
+    let mut recognition = speech::recognize(SpeechRequest::default());
+    let mut text = String::new();
+    while let Some(event) = recognition.next().await {
+        match event {
+            SpeechEvent::Result { text: heard, .. } => text = heard,
+            SpeechEvent::End { .. } => break,
+            _ => {}
+        }
+    }
+    text
+}
+```
+
+In `nsh test` (and `nsh_testing::Headless`), sessions run on the module's fake recognizer, named
+`"nsh-extra/speech"`: a session starts listening at once, as if the user allowed the microphone, and the test speaks
+for the user through the fake with [`app.fake`](./testing-and-trace.md) (`Headless::call_fake` in Rust):
+
+| Method | `args` | What it does, and its answer |
+|---|---|---|
+| `hear` | `[text]` | The user says `text`, the whole transcript so far: the running session reports it as a `result` that is not final (with `interim: false`, it keeps it for the end). Resolves with `null`; rejects with `no speech session listens` when none runs. |
+| `end` | `[]` or `[error]` | Ends the running session: with `error` (one of the codes above), or as when the user stops: the transcript as the final `result`, then `end` (`"no-speech"` when nothing was heard). Resolves with `null`; rejects when no session runs or `error` is no code. |
+| `requests` | `[]` | Resolves with the sessions the app started, in order: `[{ lang, interim }]`, `lang` `null` for the user's language. |
+
+```tsx
+await app.press("label:Dictate");
+await app.fake("nsh-extra/speech", "hear", ["hello"]);
+await app.waitFor("text:hello");
+await app.fake("nsh-extra/speech", "end");
+```
 
 ## An app's own Rust: `ext/`
 
@@ -541,6 +732,7 @@ fn main() {
 - Use `rustc-link-lib`, not `rustc-link-arg`: link arguments only apply to the crate's own targets.
 - Put a static library's privacy manifest entries in the app's `ios.privacyManifest`.
 - NSH does not embed dynamic frameworks; prefer the SDK's static build.
+- A library whose licence asks that users can replace it (LGPL, such as libmpv) stays dynamic, and the app carries it itself; NSH's packages have no setting for it. Link it from the nshm's `build.rs` as above (`rustc-link-lib=framework=…`, `rustc-link-search=framework=…`). Give the executables their run path in the app's `.cargo/config.toml` (`rustflags = ["-C", "link-arg=-Wl,-rpath,@executable_path/../Frameworks", "-C", "link-arg=-Wl,-rpath,<the framework's directory>"]` under `[target.aarch64-apple-darwin]`), since a crate's `rustc-link-arg` does not reach `nsh run`, `nsh check` or `nsh test`. After `nsh package --target macos`, copy the framework into the app's `Contents/Frameworks/`, remove the development run path with `install_name_tool -delete_rpath`, then sign again, the framework first and the app last, with the identity the package used (`codesign --force --sign <identity> --options runtime --entitlements <the app's entitlements>`, or `--sign -` for an ad hoc package), and check it with `codesign --verify --deep --strict`.
 - On Linux and Windows the same `build.rs` links the SDK (`.a` and `.so` on Linux, `.lib` on Windows). NSH does not carry shared libraries (`.so`, `.dll`) into the package either; prefer the SDK's static build.
 
 ### A TSX nshm
@@ -591,4 +783,4 @@ After `nsh add nsh-harmony`, the app's `nsh run`, `nsh dev`, `nsh test` and `nsh
 
 ## Security
 
-An nshm's build scripts and procedural macros run when the app builds, and its code, Rust or TSX, runs with the app's permissions. Any crate in the app's dependency graph can also add system permissions, manifest components, Java and Android libraries (with their native code) and entitlements to the packaged app through `[package.metadata.nsh]`. Review its source and the changes to `nsh.lock` as you review the app's own code.
+An nshm's build scripts and procedural macros run when the app builds, and its code, TSX or Rust, runs with the app's permissions. Any crate in the app's dependency graph can also add system permissions, manifest components, Java and Android libraries (with their native code) and entitlements to the packaged app through `[package.metadata.nsh]`. Review its source and the changes to `nsh.lock` as you review the app's own code.

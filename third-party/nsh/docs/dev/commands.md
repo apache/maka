@@ -65,15 +65,16 @@ cargo test --release -p nsh-engine --test engine bench_gallery_scroll -- --ignor
 cargo test --release -p nsh-core bench_ -- --ignored --nocapture                # row / cell relayout benchmarks
 cargo +nightly fmt --all                                                        # .rustfmt.toml uses nightly options
 cargo clippy --workspace --all-targets
-cargo clippy -p nsh-platform-ios -p nsh-ios-host -p nsh-ios-app -p nsh-extra --target aarch64-apple-ios-macabi --features nsh-platform-ios/embed,nsh-platform-ios/dev,nsh-extra/camera,nsh-extra/photos,nsh-extra/push
+cargo clippy -p nsh-platform-ios -p nsh-ios-host -p nsh-ios-app -p nsh-extra --target aarch64-apple-ios-macabi --features nsh-platform-ios/embed,nsh-platform-ios/dev,nsh-extra/camera,nsh-extra/photos,nsh-extra/push,nsh-extra/speech
 cargo xtask ios-embed [--dynamic] [--x86-64-simulator] [--no-catalyst] [--no-dev]   # NativeShell(Dev).xcframework into dist/nsh/embed/ios
 cargo xtask web                                                                 # nsh.wasm + player + website demos into website/public/play
 cargo xtask compat                                                              # tests/compat's apps, and the API every recorded release froze (nsh-compat)
 cargo xtask compat record <version>                                             # record this checkout as a release in nsh-compat (at release time)
 cargo clippy -p nsh-platform-web --target wasm32-unknown-unknown --features compiler   # the web backend (empty off WebAssembly)
+cargo clippy -p nsh-extra --target wasm32-unknown-unknown --features nsh-extra/speech   # nsh-extra's web code (empty off WebAssembly)
 cargo clippy -p nsh-platform-linux -p nsh-linux-host -p nsh-linux-app --all-targets      # the Linux backend (on Linux; empty elsewhere)
-cargo clippy -p nsh-platform-macos -p nsh-macos-host -p nsh-macos-app --all-targets --features nsh-platform-macos/dev   # the macOS backend (on macOS)
-cargo clippy -p nsh-platform-windows -p nsh-windows-host -p nsh-windows-app --all-targets   # the Windows backend (on Windows; empty elsewhere)
+cargo clippy -p nsh-platform-macos -p nsh-macos-host -p nsh-macos-app -p nsh-extra --all-targets --features nsh-platform-macos/dev,nsh-extra/speech   # the macOS backend (on macOS)
+cargo clippy -p nsh-platform-windows -p nsh-windows-host -p nsh-windows-app -p nsh-extra --all-targets --features nsh-extra/speech   # the Windows backend (on Windows; empty elsewhere)
 cargo test -p nsh-platform-windows -p nsh-windows-host -p nsh-windows-app               # its tests (on Windows; they open no window)
 (cd crates/gpui && cargo clippy --all-targets --features nsh-platform-gpui/dev)        # the GPUI backend, its own workspace (empty off the desktops)
 (cd crates/gpui && cargo test && cargo +nightly fmt --all)                              # its tests (they open no window) and formatting

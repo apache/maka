@@ -9,44 +9,6 @@ demo: el-tree
 
 树展示包含子项目的项目：项目的文件和文件夹、设置侧边栏的各个分区、文档的大纲。`Tree` 负责它的行为：哪些项目展开、哪一个被选中、键盘，以及屏幕阅读器听到的内容。它的行是虚拟化的：只创建可见的行，收起的项目的子项目根本不会创建，所以成千上万个项目的树也能立即打开和滚动。外观由应用决定：树本身什么也不画，应用为每一行设置样式（`itemClass`），并绘制行的内容（`renderItem`：图标、按项目深度缩进的标签、箭头、徽标）。
 
-```rust tabs
-use nsh_base::{TreeEntry, TreeItem, theme, tree};
-use nsh_core::prelude::*;
-
-fn files() -> impl IntoElement {
-    let items = vec![
-        TreeItem::new("src", "src")
-            .child(TreeItem::new("src/main.rs", "main.rs"))
-            .child(TreeItem::new("src/ui", "ui").child(TreeItem::new("src/ui/tree.rs", "tree.rs"))),
-        TreeItem::new("Cargo.toml", "Cargo.toml"),
-    ];
-    let selected = signal(None::<SharedString>);
-    tree()
-        .items(items)
-        .default_expanded(vec!["src".into()])
-        .selected(move || selected.get())
-        .on_selected_change(move |id: &SharedString| selected.set(Some(id.clone())))
-        .accessibility_label("Files")
-        .h(px(320.0))
-        .list_class("p-1")
-        .item_class(
-            "group rounded-md hover:bg-accent selected:bg-primary/10 \
-             focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring disabled:opacity-50",
-        )
-        .render_item(|entry: &TreeEntry| {
-            view()
-                .flex_row()
-                .gap_2()
-                .h_8()
-                .items_center()
-                .rounded_md()
-                .pl(px(8.0 + 16.0 * entry.depth as f32))
-                .child(text(if entry.folder { "▸" } else { " " }).text_color(move || theme().muted_foreground))
-                .child(text(entry.label.clone()))
-        })
-}
-```
-
 ```tsx tabs
 import { mount, signal, Text, View } from "nsh";
 import { Tree, type TreeItem } from "nsh/base";
@@ -95,6 +57,44 @@ mount(() => (
     <App />
   </Window>
 ));
+```
+
+```rust tabs
+use nsh_base::{TreeEntry, TreeItem, theme, tree};
+use nsh_core::prelude::*;
+
+fn files() -> impl IntoElement {
+    let items = vec![
+        TreeItem::new("src", "src")
+            .child(TreeItem::new("src/main.rs", "main.rs"))
+            .child(TreeItem::new("src/ui", "ui").child(TreeItem::new("src/ui/tree.rs", "tree.rs"))),
+        TreeItem::new("Cargo.toml", "Cargo.toml"),
+    ];
+    let selected = signal(None::<SharedString>);
+    tree()
+        .items(items)
+        .default_expanded(vec!["src".into()])
+        .selected(move || selected.get())
+        .on_selected_change(move |id: &SharedString| selected.set(Some(id.clone())))
+        .accessibility_label("Files")
+        .h(px(320.0))
+        .list_class("p-1")
+        .item_class(
+            "group rounded-md hover:bg-accent selected:bg-primary/10 \
+             focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring disabled:opacity-50",
+        )
+        .render_item(|entry: &TreeEntry| {
+            view()
+                .flex_row()
+                .gap_2()
+                .h_8()
+                .items_center()
+                .rounded_md()
+                .pl(px(8.0 + 16.0 * entry.depth as f32))
+                .child(text(if entry.folder { "▸" } else { " " }).text_color(move || theme().muted_foreground))
+                .child(text(entry.label.clone()))
+        })
+}
 ```
 
 `Tree` 来自 [`nsh/base`](../modules/nsh-base.md)，在 Rust 中是 `nsh-base` crate。应用设置 `expanded` 和 `selected` 时，展开的项目和选中的项目由应用持有，并在 `onExpandedChange` 和 `onSelectedChange` 中更新；不设置时树自己保存状态，从 `defaultExpanded` 和 `defaultSelected` 开始。项目由 `id` 标识，这是应用自己的标识（路径、记录的键），永远不是标签。在 Rust 中由 `tree()` 创建，每个属性有一个 setter（`.items(..)`、`.expanded(..)`、`.render_item(..)`），每个事件有一个监听方法，以及有类型的样式方法。

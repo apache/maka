@@ -15,6 +15,68 @@ back keys and the browser's back button pop the page. `NavStack` is the stack, `
 The stack owns the navigation behavior (transitions, the back gestures and buttons, the pages' state while they are
 covered); the pages' content and the desktop header are the app's own.
 
+```tsx tabs
+import { mount, Text, View } from "nsh";
+import { Button, createNavStack, NavPage, NavStack } from "nsh/base";
+import { Window } from "nsh/desktop";
+
+type Route = { name: "home" } | { name: "detail"; id: number };
+
+const nav = createNavStack<Route>([{ name: "home" }]);
+
+function Action(props: { title: string; onPress: () => void }) {
+  return (
+    <Button onPress={props.onPress} class="rounded-lg bg-blue-600 px-4 py-3 active:bg-blue-700">
+      <Text class="text-center text-base font-semibold text-white">{props.title}</Text>
+    </Button>
+  );
+}
+
+function Bar(props: { title: string }) {
+  return (
+    <View class="flex-row items-center gap-3 border-b border-neutral-200 px-4 py-3">
+      {nav.routes().length > 1 && <Action title="Back" onPress={() => nav.pop()} />}
+      <Text class="text-lg font-semibold">{props.title}</Text>
+    </View>
+  );
+}
+
+function Home() {
+  return (
+    <NavPage title="Inbox" header={<Bar title="Inbox" />}>
+      <View style={{ flex: 1, padding: 16 }}>
+        <Action title="Open message 1" onPress={() => nav.push({ name: "detail", id: 1 })} />
+      </View>
+    </NavPage>
+  );
+}
+
+function Detail(props: { id: number }) {
+  const title = `Message ${props.id}`;
+  return (
+    <NavPage title={title} header={<Bar title={title} />}>
+      <View style={{ flex: 1, padding: 16 }}>
+        <Text>The message.</Text>
+      </View>
+    </NavPage>
+  );
+}
+
+function App() {
+  return (
+    <NavStack state={nav} style={{ flex: 1 }}>
+      {(route) => (route.name === "home" ? <Home /> : <Detail id={route.id} />)}
+    </NavStack>
+  );
+}
+
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
+```
+
 ```rust tabs
 use nsh_base::{button, nav_page, nav_stack};
 use nsh_core::prelude::*;
@@ -82,68 +144,6 @@ fn app() -> impl IntoElement {
 }
 ```
 
-```tsx tabs
-import { mount, Text, View } from "nsh";
-import { Button, createNavStack, NavPage, NavStack } from "nsh/base";
-import { Window } from "nsh/desktop";
-
-type Route = { name: "home" } | { name: "detail"; id: number };
-
-const nav = createNavStack<Route>([{ name: "home" }]);
-
-function Action(props: { title: string; onPress: () => void }) {
-  return (
-    <Button onPress={props.onPress} class="rounded-lg bg-blue-600 px-4 py-3 active:bg-blue-700">
-      <Text class="text-center text-base font-semibold text-white">{props.title}</Text>
-    </Button>
-  );
-}
-
-function Bar(props: { title: string }) {
-  return (
-    <View class="flex-row items-center gap-3 border-b border-neutral-200 px-4 py-3">
-      {nav.routes().length > 1 && <Action title="Back" onPress={() => nav.pop()} />}
-      <Text class="text-lg font-semibold">{props.title}</Text>
-    </View>
-  );
-}
-
-function Home() {
-  return (
-    <NavPage title="Inbox" header={<Bar title="Inbox" />}>
-      <View style={{ flex: 1, padding: 16 }}>
-        <Action title="Open message 1" onPress={() => nav.push({ name: "detail", id: 1 })} />
-      </View>
-    </NavPage>
-  );
-}
-
-function Detail(props: { id: number }) {
-  const title = `Message ${props.id}`;
-  return (
-    <NavPage title={title} header={<Bar title={title} />}>
-      <View style={{ flex: 1, padding: 16 }}>
-        <Text>The message.</Text>
-      </View>
-    </NavPage>
-  );
-}
-
-function App() {
-  return (
-    <NavStack state={nav} style={{ flex: 1 }}>
-      {(route) => (route.name === "home" ? <Home /> : <Detail id={route.id} />)}
-    </NavStack>
-  );
-}
-
-mount(() => (
-  <Window id="main">
-    <App />
-  </Window>
-));
-```
-
 On iOS and Android the page shows the system header with `title` and a back button; on the desktops and the web it
 shows `header`. An app that targets only phones leaves `header` out; one that targets only desktops leaves out the
 system header's options. The [Navigation guide](../docs/navigation.md) walks through a whole app's navigation: the
@@ -191,18 +191,18 @@ and pass it to `<NavStack state>`. Any code can import it to navigate.
 In Rust the same operations are changes of your routes signal: `routes.update(|r| r.push(route))` pushes,
 `r.pop()` pops, `r.truncate(1)` pops back to the first page you keep in it, and `routes.set(..)` replaces the pages.
 
-```rust tabs
-routes.update(|r| r.push(7));
-routes.update(|r| r.truncate(r.len().saturating_sub(2)));
-routes.set(vec![1, 2]);
-let depth = move || routes.with(Vec::len);
-```
-
 ```tsx tabs
 nav.push({ name: "detail", id: 7 });
 nav.pop(2);
 nav.setRoutes([{ name: "home" }, { name: "detail", id: 1 }]);
 const depth = () => nav.routes().length;
+```
+
+```rust tabs
+routes.update(|r| r.push(7));
+routes.update(|r| r.truncate(r.len().saturating_sub(2)));
+routes.set(vec![1, 2]);
+let depth = move || routes.with(Vec::len);
 ```
 
 ## NavStack props
@@ -232,7 +232,7 @@ the props' snake-case names.
 | `headerShadowVisible` | `.header_shadow_visible(..)` | `boolean` | `true` | iOS: the hairline under the system header. `false` draws a bar without it, as iOS 26's own bars. Android's header has none. |
 | `headerTitleAlign` | `.header_title_align(..)` | `"left" \| "center"` | `"left"` | Android: the title at the start of the system header, or centered between the items on either side. iOS: the system bar always centers the title and ignores this value. |
 | `headerBackgroundOnScroll` | `.header_background_on_scroll(..)` | `boolean` | `false` | iOS: with `headerTransparent`, the system header stays clear while the content rests at its top and shows its background once the content scrolls under it, as UIKit's own bars. It follows the largest visible scroll view that starts at the top of the page. Ignored elsewhere. |
-| `hidesBottomBarWhenPushed` | `.hides_bottom_bar_when_pushed(..)` | `boolean` | `false` | iOS: the system tab bar leaves while this page is on top, moving in the transition — the same animation as the page, and the bar is never rebuilt; it comes back when the page pops. |
+| `hidesBottomBarWhenPushed` | `.hides_bottom_bar_when_pushed(..)` | `boolean` | `false` | iOS and Android: the system tab bar leaves while this page is on top, moving in the transition, and comes back when the page pops. On iOS, the animation follows interactive swipes and the bar is never rebuilt. |
 | `headerLargeTitle` | `.header_large_title(..)` | `boolean` | `false` | iOS: a large title that shrinks into the bar as the content scrolls; the content scrolls under the header. |
 | `headerBackTitle` | `.header_back_title(..)` | `string` | none | iOS and Android: the label of the back button that leads back to this page (on Android, its description for screen readers). |
 | `headerBackVisible` | `.header_back_visible(..)` | `boolean` | `true` | iOS and Android: the back button shows. |
@@ -264,6 +264,17 @@ the props' snake-case names.
 and update while the page is shown. `header` is the app's whole header on the desktops and the web; the other three
 go into the system header on iOS and Android.
 
+```tsx tabs
+<NavPage
+  title="Profile"
+  header={<ProfileBar />}
+  headerStyle={{ backgroundColor: "#1a7f37", color: "#ffffff", tintColor: "#ffffff" }}
+  headerRight={<Text onPress={edit} style={{ color: "#ffffff", fontSize: 17 }}>Edit</Text>}
+>
+  <Scroll style={{ flex: 1 }}>…</Scroll>
+</NavPage>
+```
+
 ```rust tabs
 use nsh_base::nav_page;
 use nsh_core::prelude::*;
@@ -278,17 +289,6 @@ fn profile(edit: impl Fn() + 'static) -> Screen {
 }
 ```
 
-```tsx tabs
-<NavPage
-  title="Profile"
-  header={<ProfileBar />}
-  headerStyle={{ backgroundColor: "#1a7f37", color: "#ffffff", tintColor: "#ffffff" }}
-  headerRight={<Text onPress={edit} style={{ color: "#ffffff", fontSize: 17 }}>Edit</Text>}
->
-  <Scroll style={{ flex: 1 }}>…</Scroll>
-</NavPage>
-```
-
 The page's content starts below the header: below an opaque system header on iOS and Android, below `header` on the
 desktops and the web. With `headerTransparent`, `headerLargeTitle` or `headerVisible={false}`, it starts at the top of
 the page on iOS and Android; use [`env(safe-area-inset-top)`](./safe-area.md) or `safeAreaInsets()` to keep it clear of the
@@ -298,6 +298,12 @@ On iOS, `headerVisible={false}` keeps swipe back enabled while `popOnSwipe` and 
 An accepted interactive back gesture ends editing as the transition starts, so the keyboard dismisses during the
 drag. Cancelling the transition restores the same editor's focus when another control has not taken it.
 
+```tsx tabs
+<NavPage title="Large title" headerLargeTitle>
+  <Scroll style={{ flex: 1 }}>…</Scroll>
+</NavPage>
+```
+
 ```rust tabs
 nav_page()
     .title("Large title")
@@ -305,16 +311,34 @@ nav_page()
     .child(scroll().flex_1())
 ```
 
-```tsx tabs
-<NavPage title="Large title" headerLargeTitle>
-  <Scroll style={{ flex: 1 }}>…</Scroll>
-</NavPage>
-```
-
 ## Leaving a page
 
 `popOnBack={false}` keeps the user on a page, for example while a form has unsaved changes. While it is false, swipe
 back is off and the back buttons and keys call `onBackPress` without popping. Ask the user, then pop yourself:
+
+```tsx tabs
+import { signal } from "nsh";
+import { AlertDialog, NavPage, Input } from "nsh/base";
+
+function EditNote() {
+  const text = signal("");
+  const confirm = async () => {
+    const { action } = await AlertDialog.show({
+      title: "Discard your changes?",
+      actions: [
+        { label: "Keep editing", role: "cancel", id: "keep" },
+        { label: "Discard", role: "destructive", id: "discard" },
+      ],
+    });
+    if (action === "discard") nav.pop();
+  };
+  return (
+    <NavPage title="Edit" popOnBack={text().length === 0} onBackPress={() => text().length > 0 && confirm()}>
+      <Input value={text()} onChange={({ value }) => text.set(value)} placeholder="A note" />
+    </NavPage>
+  );
+}
+```
 
 ```rust tabs
 use nsh_base::{alert_dialog, nav_page};
@@ -351,30 +375,6 @@ fn edit_note(routes: Signal<Vec<u32>>) -> Screen {
                 .on_change(move |v: &str| note.set(v.to_owned()))
                 .placeholder("A note"),
         )
-}
-```
-
-```tsx tabs
-import { signal } from "nsh";
-import { AlertDialog, NavPage, Input } from "nsh/base";
-
-function EditNote() {
-  const text = signal("");
-  const confirm = async () => {
-    const { action } = await AlertDialog.show({
-      title: "Discard your changes?",
-      actions: [
-        { label: "Keep editing", role: "cancel", id: "keep" },
-        { label: "Discard", role: "destructive", id: "discard" },
-      ],
-    });
-    if (action === "discard") nav.pop();
-  };
-  return (
-    <NavPage title="Edit" popOnBack={text().length === 0} onBackPress={() => text().length > 0 && confirm()}>
-      <Input value={text()} onChange={({ value }) => text.set(value)} placeholder="A note" />
-    </NavPage>
-  );
 }
 ```
 

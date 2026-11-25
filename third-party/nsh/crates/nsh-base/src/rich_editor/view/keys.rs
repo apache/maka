@@ -23,6 +23,10 @@ pub(crate) struct KeySpec {
     pub(crate) event: KeyEvent,
     /// Held, it repeats (moves and deletions).
     pub(crate) repeat: bool,
+    /// The platform's Copy (Command+C on Apple keyboards, Control+C
+    /// elsewhere): with nothing selected in the editor it goes on to the
+    /// platform, which copies what is selected around the editor.
+    pub(crate) copy: bool,
 }
 
 /// Named keys: `nsh/keymap`'s name, the web's, whether held ones repeat.
@@ -69,25 +73,27 @@ pub(crate) fn key_table(editable: bool) -> Vec<KeySpec> {
         })
         .filter(|m| !(ctrl_for_command && m.ctrl && !m.cmd))
         .collect();
-    let mut push = |keystroke: String, event: KeyEvent, repeat: bool| {
+    let mut push = |keystroke: String, event: KeyEvent, repeat: bool, copy: bool| {
         // Keys the platform keeps (Command+Q, ...) cannot be bound.
         match Keystroke::parse_with(&keystroke, apple) {
             Ok(parsed) if parsed.reserved(os).is_none() => out.push(KeySpec {
                 keystroke,
                 event,
                 repeat,
+                copy,
             }),
             _ => {}
         }
     };
     for (name, key, repeat) in NAMED {
         for m in &combos {
-            push(keystroke(*m, name), event(key, *m, apple), *repeat);
+            push(keystroke(*m, name), event(key, *m, apple), *repeat, false);
         }
     }
     for c in CHARS.chars() {
         for m in combos.iter().filter(|m| m.ctrl || m.cmd) {
             let s = c.to_string();
+            let plain_mod = !m.shift && !m.alt && (if apple { m.cmd && !m.ctrl } else { m.ctrl });
             // Pastes are the native input's (an event with the text).
             if c == 'v' && !m.alt && (if apple { m.cmd && !m.ctrl } else { m.ctrl }) {
                 continue;
@@ -97,7 +103,12 @@ pub(crate) fn key_table(editable: bool) -> Vec<KeySpec> {
             } else {
                 s.clone()
             };
-            push(keystroke(*m, &s), event(&key, *m, apple), false);
+            push(
+                keystroke(*m, &s),
+                event(&key, *m, apple),
+                false,
+                c == 'c' && plain_mod,
+            );
         }
     }
     if !editable {

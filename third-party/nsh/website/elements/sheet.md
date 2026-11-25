@@ -11,6 +11,29 @@ A sheet is a panel at an edge of the screen over a backdrop that covers the rest
 drawer. A press on the backdrop, Escape, the Android back button and VoiceOver's escape gesture close it. It shows on top of everything in its
 window, the same on every device, and draws nothing of its own: the panel and the backdrop are the app's.
 
+```tsx tabs
+import { signal, Text, View } from "nsh";
+import { Sheet } from "nsh/base";
+
+function Filters() {
+  const open = signal(false);
+  return (
+    <>
+      <View onPress={() => open.set(true)}><Text>Filters</Text></View>
+      <Sheet
+        open={open()}
+        onOpenChange={(e) => open.set(e.open)}
+        popupClass="gap-3 rounded-t-2xl bg-white p-6"
+        backdropClass="bg-black/40"
+      >
+        <Text class="font-semibold">Filters</Text>
+        <View onPress={() => open.set(false)}><Text>Done</Text></View>
+      </Sheet>
+    </>
+  );
+}
+```
+
 ```rust tabs
 use nsh_base::{SheetEvent, sheet};
 use nsh_core::prelude::*;
@@ -32,29 +55,6 @@ fn filters(open: Signal<bool>) -> impl IntoElement {
                 .child(text("Filters").font_weight(FontWeight::SEMIBOLD))
                 .child(view().on_press(move || open.set(false)).child(text("Done"))),
         )
-}
-```
-
-```tsx tabs
-import { signal, Text, View } from "nsh";
-import { Sheet } from "nsh/base";
-
-function Filters() {
-  const open = signal(false);
-  return (
-    <>
-      <View onPress={() => open.set(true)}><Text>Filters</Text></View>
-      <Sheet
-        open={open()}
-        onOpenChange={(e) => open.set(e.open)}
-        popupClass="gap-3 rounded-t-2xl bg-white p-6"
-        backdropClass="bg-black/40"
-      >
-        <Text class="font-semibold">Filters</Text>
-        <View onPress={() => open.set(false)}><Text>Done</Text></View>
-      </Sheet>
-    </>
-  );
 }
 ```
 

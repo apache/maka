@@ -291,6 +291,7 @@ impl<M: TextEngine> Core<M> {
         self.roots.push(key);
         self.overlay_made(key, layout);
         self.sync_layout_style(key);
+        self.uncull_subtree(key);
     }
 
     /// Overlay `key`, a view `position: fixed` made one, is a view again:

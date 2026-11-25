@@ -13,25 +13,6 @@ with the range 0 to 100 and the value, and the indicator's width: `value` percen
 app's: a `Progress` has no colors, sizes, radii, motion or label of its own. It is made of a track with an indicator
 inside it, then its children (a label, the value as text), and the app styles each part.
 
-```rust tabs
-use nsh_base::{progress, theme};
-use nsh_core::prelude::*;
-
-fn upload(sent: Signal<f32>) -> impl IntoElement {
-    progress()
-        .value(sent)
-        .accessibility_label("Uploading photos")
-        .gap_2()
-        .track_style(|s| s.h(px(8.0)).rounded_full().overflow_hidden().bg(move || theme().muted))
-        .indicator_style(|s| s.h_full().rounded_full().bg(move || theme().primary))
-        .child(
-            text(move || format!("{:.0}%", sent.get()))
-                .text_sm()
-                .text_color(move || theme().muted_foreground),
-        )
-}
-```
-
 ```tsx tabs
 import { mount, signal, Text } from "nsh";
 import { Progress } from "nsh/base";
@@ -57,6 +38,25 @@ mount(() => (
     <App />
   </Window>
 ));
+```
+
+```rust tabs
+use nsh_base::{progress, theme};
+use nsh_core::prelude::*;
+
+fn upload(sent: Signal<f32>) -> impl IntoElement {
+    progress()
+        .value(sent)
+        .accessibility_label("Uploading photos")
+        .gap_2()
+        .track_style(|s| s.h(px(8.0)).rounded_full().overflow_hidden().bg(move || theme().muted))
+        .indicator_style(|s| s.h_full().rounded_full().bg(move || theme().primary))
+        .child(
+            text(move || format!("{:.0}%", sent.get()))
+                .text_sm()
+                .text_color(move || theme().muted_foreground),
+        )
+}
 ```
 
 `Progress` comes from [`nsh/base`](../modules/nsh-base.md), the `nsh-base` crate in Rust. The value is the app's: the

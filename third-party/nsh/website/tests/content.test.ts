@@ -13,7 +13,7 @@ const SECTIONS = ['docs', 'elements', 'modules'];
 interface Front { title?: unknown; description?: unknown; order?: unknown; demo?: unknown; group?: unknown }
 
 // The keys of `GROUPS` in src/lib/sections.ts (which imports astro:content, so it is not imported here).
-const GROUPS = ['start', 'platforms', 'delivery', 'ui', 'tools', 'primitives', 'base'];
+const GROUPS = ['start', 'platforms', 'publishing', 'delivery', 'ui', 'tools', 'primitives', 'base'];
 
 function pagesOf(dir: string): Map<string, Front | Error> {
   const out = new Map<string, Front | Error>();

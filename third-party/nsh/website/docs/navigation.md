@@ -11,77 +11,6 @@ group: ui
 
 In Rust, import the builders by name next to the prelude (`use nsh_base::{dialog, nav_page, nav_stack};`; system alerts are `nsh_base::alert_dialog()`). The routes are a signal and the stack's children are its pages, one per route, kept by key (`each`): a page goes in to push it and out to pop it. In TSX, `createNavStack` holds the routes and `NavStack` renders them.
 
-```rust tabs
-use nsh_base::{nav_page, nav_stack};
-use nsh_core::prelude::*;
-
-#[derive(Debug, Clone, PartialEq)]
-enum Route {
-    Inbox,
-    Message(u32),
-}
-
-/// The page's header on the desktops and the web; iOS and Android show the system's, from `title`.
-fn header(routes: Signal<Vec<Route>>, title: &'static str) -> impl IntoElement {
-    view()
-        .h(px(48.0))
-        .flex_row()
-        .items_center()
-        .gap_3()
-        .border_b_1()
-        .border_color(rgb(0xe5e7eb))
-        .px_4()
-        .child(when(
-            move || routes.with(|r| r.len() > 1),
-            move || {
-                text("Back")
-                    .role(AccessibilityRole::Button)
-                    .on_press(move || routes.update(|r| { r.pop(); }))
-                    .text_color(rgb(0x2563eb))
-                    .active(|s| s.opacity(0.6))
-            },
-        ))
-        .child(text(title).text_size(px(17.0)).font_weight(FontWeight::SEMIBOLD))
-}
-
-fn inbox(routes: Signal<Vec<Route>>) -> Screen {
-    nav_page()
-        .title("Inbox")
-        .header(header(routes, "Inbox"))
-        .child(scroll().flex_1().children((1..=5).map(move |id| {
-            view()
-                .on_press(move || routes.update(|r| r.push(Route::Message(id))))
-                .p_4()
-                .active(|s| s.bg(rgb(0xf3f4f6)))
-                .child(text(format!("Message {id}")))
-        })))
-}
-
-fn message(routes: Signal<Vec<Route>>, id: u32) -> Screen {
-    nav_page()
-        .title(format!("Message {id}"))
-        .header(header(routes, "Message"))
-        .child(view().flex_1().p(px(16.0)).child(text(format!("The body of message {id}."))))
-}
-
-#[component]
-pub fn App() -> impl IntoElement {
-    let routes = signal(vec![Route::Inbox]);
-    nav_stack().flex_1().child(each(
-        move || routes.get(),
-        |route: &Route| format!("{route:?}"),
-        move |route, index| {
-            let page = match route.get_untracked() {
-                Route::Inbox => inbox(routes),
-                Route::Message(id) => message(routes, id),
-            };
-            // The user went back natively: drop the route (and those above it).
-            page.on_dismiss(move || routes.update(|r| r.truncate(index.get_untracked())))
-        },
-    ))
-}
-```
-
 ```tsx tabs
 import { mount, Scroll, Text, View } from "nsh";
 import { createNavStack, NavPage, NavStack } from "nsh/base";
@@ -153,6 +82,77 @@ mount(() => (
 ));
 ```
 
+```rust tabs
+use nsh_base::{nav_page, nav_stack};
+use nsh_core::prelude::*;
+
+#[derive(Debug, Clone, PartialEq)]
+enum Route {
+    Inbox,
+    Message(u32),
+}
+
+/// The page's header on the desktops and the web; iOS and Android show the system's, from `title`.
+fn header(routes: Signal<Vec<Route>>, title: &'static str) -> impl IntoElement {
+    view()
+        .h(px(48.0))
+        .flex_row()
+        .items_center()
+        .gap_3()
+        .border_b_1()
+        .border_color(rgb(0xe5e7eb))
+        .px_4()
+        .child(when(
+            move || routes.with(|r| r.len() > 1),
+            move || {
+                text("Back")
+                    .role(AccessibilityRole::Button)
+                    .on_press(move || routes.update(|r| { r.pop(); }))
+                    .text_color(rgb(0x2563eb))
+                    .active(|s| s.opacity(0.6))
+            },
+        ))
+        .child(text(title).text_size(px(17.0)).font_weight(FontWeight::SEMIBOLD))
+}
+
+fn inbox(routes: Signal<Vec<Route>>) -> Screen {
+    nav_page()
+        .title("Inbox")
+        .header(header(routes, "Inbox"))
+        .child(scroll().flex_1().children((1..=5).map(move |id| {
+            view()
+                .on_press(move || routes.update(|r| r.push(Route::Message(id))))
+                .p_4()
+                .active(|s| s.bg(rgb(0xf3f4f6)))
+                .child(text(format!("Message {id}")))
+        })))
+}
+
+fn message(routes: Signal<Vec<Route>>, id: u32) -> Screen {
+    nav_page()
+        .title(format!("Message {id}"))
+        .header(header(routes, "Message"))
+        .child(view().flex_1().p(px(16.0)).child(text(format!("The body of message {id}."))))
+}
+
+#[component]
+pub fn App() -> impl IntoElement {
+    let routes = signal(vec![Route::Inbox]);
+    nav_stack().flex_1().child(each(
+        move || routes.get(),
+        |route: &Route| format!("{route:?}"),
+        move |route, index| {
+            let page = match route.get_untracked() {
+                Route::Inbox => inbox(routes),
+                Route::Message(id) => message(routes, id),
+            };
+            // The user went back natively: drop the route (and those above it).
+            page.on_dismiss(move || routes.update(|r| r.truncate(index.get_untracked())))
+        },
+    ))
+}
+```
+
 ## The stack's state
 
 In Rust, the routes are your own signal (`signal(vec![..])`, or `global::<Routes>()` for one the whole app reaches), and you push, pop and replace by updating it: `routes.update(|r| r.push(route))`, `r.pop()`, `r.truncate(1)`, `routes.set(..)`. Each page's key (here the route's `Debug` text) tells the stack which page is which, so pages whose route stays keep their state; give routes that may repeat a unique key. Handle each page's `on_dismiss`: the user went back natively, and the route (with those above it) leaves your signal.
@@ -174,6 +174,16 @@ To start several pages deep, pass more routes: `createNavStack<Route>([{ name: "
 When the user leaves a page natively (the back button in the header, a swipe back on iOS, Android's back button or gesture, the desktops' back keys and mouse button, the browser's back button), the TSX stack removes that route from its state for you, so `routes()` always matches what is on screen; a Rust page reports it with `on_dismiss`, as above.
 
 A route carries what the page needs. The gallery apps push routes that hold what makes the page, which keeps the route type small when there are many pages:
+
+```ts tabs
+import { type JSX } from "nsh";
+import { createNavStack } from "nsh/base";
+
+export type Route = { name: "home" } | { name: "page"; page: () => JSX.Element };
+export const nav = createNavStack<Route>([{ name: "home" }]);
+
+// Elsewhere: nav.push({ name: "page", page: Settings });
+```
 
 ```rust tabs
 use std::rc::Rc;
@@ -202,16 +212,6 @@ pub fn routes() -> Signal<Routes> {
 }
 
 // Elsewhere: routes().update(|r| r.0.push(Route { key: "settings".into(), page: Rc::new(settings) }));
-```
-
-```ts tabs
-import { type JSX } from "nsh";
-import { createNavStack } from "nsh/base";
-
-export type Route = { name: "home" } | { name: "page"; page: () => JSX.Element };
-export const nav = createNavStack<Route>([{ name: "home" }]);
-
-// Elsewhere: nav.push({ name: "page", page: Settings });
 ```
 
 ## NavStack
@@ -327,6 +327,41 @@ nav_page()
 
 Header items are ordinary views, so they can be pressable and reactive:
 
+```tsx tabs
+function Compose() {
+  const text = signal("");
+  const cancel = () => (
+    <Text onPress={() => nav.pop()} style={{ fontSize: 17, color: "#0969da" }}>
+      Cancel
+    </Text>
+  );
+  const sendButton = () => (
+    <Text
+      onPress={() => send(text())}
+      style={{ fontSize: 17, fontWeight: "600", color: text() ? "#0969da" : "#8c959f" }}
+    >
+      Send
+    </Text>
+  );
+  return (
+    <NavPage
+      title="New message"
+      headerLeft={cancel()}
+      headerRight={sendButton()}
+      header={
+        <View class="h-12 flex-row items-center justify-between px-4">
+          {cancel()}
+          <Text style={{ fontSize: 17, fontWeight: "600" }}>New message</Text>
+          {sendButton()}
+        </View>
+      }
+    >
+      <Input multiline value={text()} onChange={({ value }) => text.set(value)} style={{ flex: 1, padding: 16, fontSize: 17 }} />
+    </NavPage>
+  );
+}
+```
+
 ```rust tabs
 fn compose(routes: Signal<Vec<Route>>) -> Screen {
     let draft = signal(String::new());
@@ -370,48 +405,7 @@ fn compose(routes: Signal<Vec<Route>>) -> Screen {
 }
 ```
 
-```tsx tabs
-function Compose() {
-  const text = signal("");
-  const cancel = () => (
-    <Text onPress={() => nav.pop()} style={{ fontSize: 17, color: "#0969da" }}>
-      Cancel
-    </Text>
-  );
-  const sendButton = () => (
-    <Text
-      onPress={() => send(text())}
-      style={{ fontSize: 17, fontWeight: "600", color: text() ? "#0969da" : "#8c959f" }}
-    >
-      Send
-    </Text>
-  );
-  return (
-    <NavPage
-      title="New message"
-      headerLeft={cancel()}
-      headerRight={sendButton()}
-      header={
-        <View class="h-12 flex-row items-center justify-between px-4">
-          {cancel()}
-          <Text style={{ fontSize: 17, fontWeight: "600" }}>New message</Text>
-          {sendButton()}
-        </View>
-      }
-    >
-      <Input multiline value={text()} onChange={({ value }) => text.set(value)} style={{ flex: 1, padding: 16, fontSize: 17 }} />
-    </NavPage>
-  );
-}
-```
-
 A colored system header (in Rust, `header_style_with` takes typed styles: `bg`, `text_color` and `tint_color`, the color of the header's buttons; theme colors follow the appearance):
-
-```rust tabs
-nav_page()
-    .title("Profile")
-    .header_style_with(|s| s.bg(rgb(0x1a7f37)).text_color(rgb(0xffffff)).tint_color(rgb(0xffffff)))
-```
 
 ```tsx tabs
 <NavPage title="Profile" headerStyle={{ backgroundColor: "#1a7f37", color: "#ffffff", tintColor: "#ffffff" }}>
@@ -419,7 +413,19 @@ nav_page()
 </NavPage>
 ```
 
+```rust tabs
+nav_page()
+    .title("Profile")
+    .header_style_with(|s| s.bg(rgb(0x1a7f37)).text_color(rgb(0xffffff)).tint_color(rgb(0xffffff)))
+```
+
 A page that shows no header still has the system bars around it; pad its content by the [safe area](../elements/safe-area.md) insets:
+
+```tsx tabs
+<NavPage headerVisible={false}>
+  <View class="flex-1 pt-[calc(env(safe-area-inset-top)+16px)] pb-[calc(env(safe-area-inset-bottom)+16px)] px-4">…</View>
+</NavPage>
+```
 
 ```rust tabs
 use nsh_base::nav_page;
@@ -429,12 +435,6 @@ nav_page()
     .child(view().flex_1().p_safe_area() /* … */)
 ```
 
-```tsx tabs
-<NavPage headerVisible={false}>
-  <View class="flex-1 pt-[calc(env(safe-area-inset-top)+16px)] pb-[calc(env(safe-area-inset-bottom)+16px)] px-4">…</View>
-</NavPage>
-```
-
 ### Safe areas under the header
 
 Inside a page, the `env(safe-area-inset-*)` variables and the page's insets (`Scope::insets` in Rust, `safeAreaInsets()` in TSX) are those below the system header, within the page. With a transparent header, the content starts at the top of the page and the top inset is the header's height, so padding by `env(safe-area-inset-top)` keeps text clear of it while a background image fills the whole page. With a large title, put a scroll view directly in the page so the title can collapse as it scrolls. On the desktops and the web, the content starts below the page's header slot.
@@ -442,6 +442,31 @@ Inside a page, the `env(safe-area-inset-*)` variables and the page's insets (`Sc
 ## Keeping the user on a page: popOnBack
 
 To ask before discarding unsaved changes, set `pop_on_back` (TSX `popOnBack`) to false while there is something to lose, handle the back press (`.on_back_press(..)`, TSX `onBackPress`), and pop once the user agrees:
+
+```tsx tabs
+import { signal } from "nsh";
+import { AlertDialog, NavPage, Input } from "nsh/base";
+
+function EditNote() {
+  const text = signal("");
+  const dirty = () => text().length > 0;
+  const confirm = async () => {
+    const { action } = await AlertDialog.show({
+      title: "Discard your changes?",
+      actions: [
+        { label: "Keep editing", role: "cancel", id: "keep" },
+        { label: "Discard", role: "destructive", id: "discard" },
+      ],
+    });
+    if (action === "discard") nav.pop();
+  };
+  return (
+    <NavPage title="Edit" popOnBack={!dirty()} onBackPress={() => dirty() && confirm()}>
+      <Input value={text()} onChange={({ value }) => text.set(value)} placeholder="A note" style={{ margin: 16, fontSize: 17 }} />
+    </NavPage>
+  );
+}
+```
 
 ```rust tabs
 use nsh_base::{alert_dialog, nav_page};
@@ -481,31 +506,6 @@ fn edit_note(routes: Signal<Vec<Route>>) -> Screen {
 }
 ```
 
-```tsx tabs
-import { signal } from "nsh";
-import { AlertDialog, NavPage, Input } from "nsh/base";
-
-function EditNote() {
-  const text = signal("");
-  const dirty = () => text().length > 0;
-  const confirm = async () => {
-    const { action } = await AlertDialog.show({
-      title: "Discard your changes?",
-      actions: [
-        { label: "Keep editing", role: "cancel", id: "keep" },
-        { label: "Discard", role: "destructive", id: "discard" },
-      ],
-    });
-    if (action === "discard") nav.pop();
-  };
-  return (
-    <NavPage title="Edit" popOnBack={!dirty()} onBackPress={() => dirty() && confirm()}>
-      <Input value={text()} onChange={({ value }) => text.set(value)} placeholder="A note" style={{ margin: 16, fontSize: 17 }} />
-    </NavPage>
-  );
-}
-```
-
 With `pop_on_back(false)` (`popOnBack={false}`), the page stays on every way back (the back buttons, Android's back button and gesture, the desktops' back keys, the browser's back button, the swipe), and the back press event tells you the user tried. Popping from code (removing the route, `nav.pop()`) pops as always.
 
 > [!IMPORTANT]
@@ -518,6 +518,34 @@ In Rust, an alert can also be taken back without the user, when what it asks abo
 ## Dialogs
 
 A dialog (`dialog()` of `nsh_base` in Rust, `Dialog` in TSX) presents content over everything else, in its own native window layer: a presented view controller on iOS, a dialog window on Android, a layer over the whole window on the desktops and the web. Its look is yours. In Rust, the dialog is presented while it is in the view (inside a `when`) and its children fill it: draw the backdrop and the popup as views. In TSX, `class` and `style` style the popup that holds its children, `backdropClass` or `backdropStyle` add a backdrop behind it, and `open` controls it:
+
+```tsx tabs
+import { signal, Text, View } from "nsh";
+import { Dialog } from "nsh/base";
+
+function Files() {
+  const open = signal(false);
+  return (
+    <View style={{ flex: 1 }}>
+      <View onPress={() => open.set(true)} style={{ padding: 16 }}>
+        <Text>Delete the file</Text>
+      </View>
+      <Dialog
+        open={open()}
+        animation="fade"
+        onOpenChange={(e) => open.set(e.open)}
+        backdropClass="bg-black/40"
+        class="m-auto w-80 gap-3 rounded-2xl bg-white p-5"
+      >
+        <Text style={{ fontSize: 20, fontWeight: "700" }}>Delete the file?</Text>
+        <View onPress={() => open.set(false)}>
+          <Text style={{ color: "#cf222e" }}>Delete</Text>
+        </View>
+      </Dialog>
+    </View>
+  );
+}
+```
 
 ```rust tabs
 use nsh_base::dialog;
@@ -564,37 +592,9 @@ pub fn files() -> impl IntoElement {
 }
 ```
 
-```tsx tabs
-import { signal, Text, View } from "nsh";
-import { Dialog } from "nsh/base";
-
-function Files() {
-  const open = signal(false);
-  return (
-    <View style={{ flex: 1 }}>
-      <View onPress={() => open.set(true)} style={{ padding: 16 }}>
-        <Text>Delete the file</Text>
-      </View>
-      <Dialog
-        open={open()}
-        animation="fade"
-        onOpenChange={(e) => open.set(e.open)}
-        backdropClass="bg-black/40"
-        class="m-auto w-80 gap-3 rounded-2xl bg-white p-5"
-      >
-        <Text style={{ fontSize: 20, fontWeight: "700" }}>Delete the file?</Text>
-        <View onPress={() => open.set(false)}>
-          <Text style={{ color: "#cf222e" }}>Delete</Text>
-        </View>
-      </Dialog>
-    </View>
-  );
-}
-```
-
 Escape, Android's back button, a press on the backdrop (TSX's backdrop, a native sheet's in Rust) and a swipe down on a sheet close it natively (`close_on_escape`, `close_on_backdrop_press` and `close_on_swipe`, TSX `closeOnEscape`, `closeOnBackdropPress` and `closeOnSwipe`, each true by default). In Rust, `on_cancel` reports every attempt and `on_close` the close, so leave the dialog out of the view there; a backdrop your app draws closes it with its own press handler, as above. In TSX, `onOpenChange({ open: false, reason })` tells you, so set `open` to `false` there. On iOS, what the dialog shows can close it too, as the close button of a video's system controls does: that is reported as Escape is (`"cancel"`), so the dialog and its video go. To confirm first, set a flag to false and handle the cancel event (`on_cancel`, `onCancel`), which reports every attempt, then close the dialog yourself. On iOS, `.presentation(ModalPresentation::PageSheet)` or `FormSheet` (`presentation="pageSheet"` or `"formSheet"`) presents a sheet that keeps what is behind visible.
 
-See [Dialog](../elements/dialog.md) for every prop. Inside a dialog, the `env(safe-area-inset-*)` variables and the insets are the dialog's own. For system dialogs (an alert with actions, an action sheet) use [`AlertDialog`](../modules/nsh-base.md#alertdialog) from `nsh_base` (TSX: `nsh/base`).
+See [Dialog](../elements/dialog.md) for every prop. Inside a dialog, the `env(safe-area-inset-*)` variables and the insets are the dialog's own. For system dialogs (an alert with actions, an action sheet) use [`AlertDialog`](../modules/nsh-base.md#alertdialog) from `nsh_base` (TSX: `nsh/base`). A press can close a dialog or a sheet and show system UI (an alert, a picker, the share sheet) together, in either order: that UI stays, and on iOS the dialog goes once it closes, its close reported then.
 
 To ask for a short text, such as a new name, give the alert an `input`: iOS, Android, macOS and the web show the system's own text field in it, focused, and the result's `value` is its text. Return chooses the last `"default"` action, and `required` keeps every action but the cancel ones disabled while the field is empty. On Windows, Linux and in the terminal the alert shows without a field and `value` is `null`, so draw your own `Dialog` there.
 
@@ -623,25 +623,6 @@ A listener returns `true` when it handled the press, which keeps the stack from 
 Android's back gesture does not preview the pop (the app answers only once the gesture ends), so add listeners only
 while they may take the press:
 
-```rust tabs
-use nsh_core::prelude::*;
-
-pub fn editor() -> impl IntoElement {
-    let selecting = signal(false);
-    // Listening only while selecting: otherwise the stack pops, with the gesture's preview.
-    effect(move || {
-        if selecting.get() {
-            on_back_press(move || {
-                selecting.set(false);
-                true
-            });
-        }
-    });
-    // …
-    view()
-}
-```
-
 ```tsx tabs
 import { effect, signal } from "nsh";
 import { BackHandler } from "nsh/mobile";
@@ -661,6 +642,25 @@ function Editor() {
 }
 ```
 
+```rust tabs
+use nsh_core::prelude::*;
+
+pub fn editor() -> impl IntoElement {
+    let selecting = signal(false);
+    // Listening only while selecting: otherwise the stack pops, with the gesture's preview.
+    effect(move || {
+        if selecting.get() {
+            on_back_press(move || {
+                selecting.set(false);
+                true
+            });
+        }
+    });
+    // …
+    view()
+}
+```
+
 A listener made in an effect lasts until the effect runs again or its component goes; in TSX, the function
 `BackHandler.on` returns also stops it. In TSX, `BackHandler.exitApp()` leaves the app; `nsh/mobile` can be imported on iOS too, where `BackHandler`'s calls return at once, so the same code runs on both platforms. See [Platform-specific code](./platform-specific.md).
 
@@ -673,6 +673,31 @@ app moves itself, such as a drawer or a sheet, can follow it: `on_back_progress`
 your back listeners hear it as above; after `cancel` put the view back. While a progress listener is registered, the
 stacks leave the gesture to your app and do not preview their pop; a gesture a dialog takes is not reported. As with
 back listeners, listen only while the view is open:
+
+```tsx tabs
+import { createAnimatedValue, effect, type Signal } from "nsh";
+import { BackHandler } from "nsh/mobile";
+
+const WIDTH = 280;
+
+function Drawer({ open }: { open: Signal<boolean> }) {
+  const x = createAnimatedValue(0);
+  // Listening only while open: the press closes it, the steps move it.
+  effect(() => {
+    if (open()) {
+      BackHandler.on("press", () => {
+        open.set(false);
+        return true;
+      });
+      BackHandler.on("progress", (e) => {
+        if (e.phase === "start" || e.phase === "move") x.set(-WIDTH * e.progress);
+        else if (e.phase === "cancel") x.spring(0);
+      });
+    }
+  });
+  // …
+}
+```
 
 ```rust tabs
 use nsh_core::prelude::*;
@@ -697,31 +722,6 @@ pub fn drawer(open: Signal<bool>) -> impl IntoElement {
     });
     // …
     view().w(px(WIDTH)).bind_translate_x(&x)
-}
-```
-
-```tsx tabs
-import { createAnimatedValue, effect, type Signal } from "nsh";
-import { BackHandler } from "nsh/mobile";
-
-const WIDTH = 280;
-
-function Drawer({ open }: { open: Signal<boolean> }) {
-  const x = createAnimatedValue(0);
-  // Listening only while open: the press closes it, the steps move it.
-  effect(() => {
-    if (open()) {
-      BackHandler.on("press", () => {
-        open.set(false);
-        return true;
-      });
-      BackHandler.on("progress", (e) => {
-        if (e.phase === "start" || e.phase === "move") x.set(-WIDTH * e.progress);
-        else if (e.phase === "cancel") x.spring(0);
-      });
-    }
-  });
-  // …
 }
 ```
 

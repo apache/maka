@@ -700,7 +700,10 @@ The URI is `asset:/@<package>/<path>`, apart from the app's own files. The regis
 ships the directory: `registry.assets(assets!())` lists every file (`AssetFile`: URI, the file where the crate was
 built, kind), which `nsh` (`rust_app.rs`, from the description of the set: each file's path and source) serves in development and
 copies into packages next to the imported assets, and whose fonts the engine registers before the first view
-(`EngineConfig::ui_sets`, read through `EngineConfig::assets`).
+(`EngineConfig::ui_sets`, read through `EngineConfig::assets`). `registry.assets_for(&[Os::Web], assets!())`
+(`nsh_core::platform::Os`, the `platform.os` values) scopes files to the listed targets: the description carries each file's `targets` (none: every target), `Built::assets_for`
+gives each packager (and the web's) its files, and the engine registers only the fonts of its `Environment::os`;
+`nsh run`, `nsh sign` and the in-place runners keep every file.
 
 ## Styles
 
@@ -809,7 +812,8 @@ platform when they change (`Command::Tokens` on the root), which colors its own 
 `docs/dev/linux.md`; Android's alerts and action sheets: `popover` behind, `popover-foreground` for the title and
 the options, `muted-foreground` for the message, `primary` for the buttons and `destructive` for a destructive action,
 over the system dialog's shape; iOS's alerts take `primary` as their tint, which iOS 17 draws the regular and cancel
-actions in and iOS 26 does not use; an app without a theme of its own keeps the system's colors on both). `nsh_base::theme()` reads the tokens from a signal of
+actions in and iOS 26 fills an alert's preferred action (its text field's default button) with, under a white title,
+so there a `primary` white does not read on keeps the system's tint; an app without a theme of its own keeps the system's colors on both). `nsh_base::theme()` reads the tokens from a signal of
 the surface (`element::tokens`): new tokens run again the bindings that read them. An embedding app can give a
 surface its own (`Core::set_host_tokens`, `EngineControl::set_tokens`; sent from `Engine::start_with`'s `setup` they
 are in the first frame and JS's first render): they win over the app's until cleared, and the app's names they lack
@@ -1227,7 +1231,8 @@ is for, never by replacing one popup with another everywhere:
 **The system's menu.** `MenuButton` (`menu_button.rs`) is no popup of the core's: its items are data and the system
 draws the menu. On iOS the app's content is covered by the native component `nsh/menu-button`
 (`nsh-platform-ios`'s `system_menu_button.rs`): a transparent `UIButton` whose `UIMenu`, made from the mounted items,
-is its primary action, so the tap is answered natively; the button sets itself as the element's only accessibility
+is its primary action, so the tap is answered natively; the menu grows out of the app's trigger (the element, as the
+menu's preview), which UIKit hides while the menu is up; the button sets itself as the element's only accessibility
 element, and an action emits `select` with the app's id. On Android the same component is
 `MenuButtonComponent.java`: a transparent button whose tap shows a system popup window (`SystemMenus.java`) with rows
 laid out as Material 3's menus, alike under every vendor's theme. On a
@@ -1313,10 +1318,15 @@ years to pick) share it equally (`flex: 1`; a short last row of years is padded)
 spans it while one in a popup that fits its content keeps its items' widths; the header's items keep their own. The
 app's `renderItem` gets a `CalendarEntry`, what an item is (its kind, value, date, month, `today`, `outside`), and the
 states are the item's (`selected` for screen readers and `selected:`, every day of a complete range as React Aria's;
-`disabled`; the real focus; `project_data` for `data-range-start` / `-end` / `-middle`, `data-today`,
-`data-outside`): a day's content is rendered under its month and date, so the keys, a pick and the focus render
-nothing, a turn renders the days it brings once each, and with several months those still shown keep theirs (their
-holders move to the cells that now show them). `TimeField`'s `renderSegment` likewise gets a
+`disabled`; the real focus; `project_data` for `data-range-start` / `-end` / `-middle`, `data-range-preview-start`
+/ `-end` / `-middle`, `data-today`, `data-outside`): a day's content is rendered under its month and date, so the
+keys, the mouse, a pick and the focus render nothing, a turn renders the days it brings once each, and with several
+months those still shown keep theirs (their holders move to the cells that now show them). The preview reaches to
+`Grid::reach`, the enabled day the mouse moved over last (a day's `onMouseMove`, so a cell whose date changed under
+a still mouse is read again on the next move) or the keyboard's `cursor` once it moves, whichever came last. It stays
+when the mouse leaves the days, as React Aria's highlighted range does: a desktop date picker opens with the keyboard
+on today, which the user did not aim at. A day's marks read it only while the range is half picked, so the mouse
+changes no state otherwise. `TimeField`'s `renderSegment` likewise gets a
 `TimeFieldSegmentEntry` (`segment`, `value`, `label`), its selection `focus:` (`project_focused`).
 `TimeField` (`time_field.rs`) is `gpui-base`'s `SegmentEditor` over one
 transparent native text field, as `OtpInput`'s (its `diff` / `echoed`): what the field gains or loses goes to the

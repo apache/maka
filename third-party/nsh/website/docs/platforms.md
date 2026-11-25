@@ -1,6 +1,6 @@
 ---
 title: Platform overview
-description: "Where NSH runs: iOS, Android, macOS, Windows, Linux, GPUI, the terminal and the web, each with its own backend; how to run, package and embed a Rust or TSX app on each, and what each needs."
+description: "Where NSH runs: iOS, Android, macOS, Windows, Linux, GPUI, the terminal and the web, each with its own backend; how to run, package and embed a TSX or Rust app on each, and what each needs."
 order: 10
 group: platforms
 ---
@@ -113,6 +113,24 @@ Most of an app needs no platform checks: elements, styles, layout and modules be
 
 An app's components are drawn with NSH's primitives, so they run on desktops as well as on phones, looking the same on both. A desktop layout is built from the primitives (`view`, `text`, `scroll`, `virtual_list`, …; `View`, `Text`, `Scroll`, `List`, … in TSX) and a check for the desktop, as the gallery's desktop layout is:
 
+```tsx tabs
+import { View } from "nsh";
+import { platform } from "nsh";
+
+export function Shell() {
+  // macOS, Windows, Linux and desktop browsers get a sidebar; phones get tabs.
+  return <View class="flex-1">{platform.desktop ? <SidebarLayout /> : <TabLayout />}</View>;
+}
+
+function SidebarLayout() {
+  return <View class="flex-1 flex-row" />;
+}
+
+function TabLayout() {
+  return <View class="flex-1 flex-col" />;
+}
+```
+
 ```rust tabs
 use nsh_core::prelude::*;
 
@@ -130,24 +148,6 @@ fn sidebar_layout() -> AnyElement {
 
 fn tab_layout() -> AnyElement {
     view().flex_1().flex_col().into_element()
-}
-```
-
-```tsx tabs
-import { View } from "nsh";
-import { platform } from "nsh";
-
-export function Shell() {
-  // macOS, Windows, Linux and desktop browsers get a sidebar; phones get tabs.
-  return <View class="flex-1">{platform.desktop ? <SidebarLayout /> : <TabLayout />}</View>;
-}
-
-function SidebarLayout() {
-  return <View class="flex-1 flex-row" />;
-}
-
-function TabLayout() {
-  return <View class="flex-1 flex-col" />;
 }
 ```
 

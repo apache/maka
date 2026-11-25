@@ -20,7 +20,7 @@ use nsh_engine::{
 };
 use objc2::{
     AnyThread, DefinedClass, define_class, msg_send,
-    rc::Retained,
+    rc::{Retained, autoreleasepool},
     runtime::{NSObject, ProtocolObject},
 };
 use objc2_foundation::{
@@ -165,7 +165,17 @@ impl FetchTask for Task {
 }
 
 impl Network for UrlSessionNetwork {
-    fn fetch(&self, request: HttpRequest, mut events: FetchEvents) -> Box<dyn FetchTask> {
+    fn fetch(&self, request: HttpRequest, events: FetchEvents) -> Box<dyn FetchTask> {
+        // Called on the engine's thread, which has no autorelease pool of
+        // its own: what Foundation autoreleases here (the request with its
+        // body, the task) would stay until the thread ends, a whole upload
+        // body per request.
+        autoreleasepool(|_| self.start(request, events))
+    }
+}
+
+impl UrlSessionNetwork {
+    fn start(&self, request: HttpRequest, mut events: FetchEvents) -> Box<dyn FetchTask> {
         let Some(url) = NSURL::URLWithString(&NSString::from_str(&request.url)) else {
             events(FetchEvent::Failed(format!("invalid URL `{}`", request.url)));
             return Box::new(Failed);

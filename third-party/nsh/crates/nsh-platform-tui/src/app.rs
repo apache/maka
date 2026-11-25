@@ -2648,6 +2648,8 @@ impl AppView {
         self.diagnostics.draw(area, buffer);
         if self.options.capabilities.colors == ColorDepth::Monochrome {
             crate::palette::strip_colors(buffer, area);
+        } else if self.options.capabilities.colors == ColorDepth::TrueColor {
+            crate::palette::brand_accent(buffer, area, self.environment.color_scheme);
         }
         if let (Some(drawing), Some(perf)) = (drawing, &mut self.perf) {
             perf.pending.draw = drawing.elapsed();

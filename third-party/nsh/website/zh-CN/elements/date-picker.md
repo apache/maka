@@ -14,6 +14,52 @@ demo: el-date-picker
 
 选择器负责行为：值（应用的，或它自己的）、展开状态、日历、时间、预设、键盘，以及屏幕阅读器听到的内容。外观由应用决定：应用绘制触发元素（显示值、占位文字、图标），并为弹出层、日历的部件、预设和时间输入框设置样式。
 
+```tsx tabs
+import { mount, signal, Text, View } from "nsh";
+import { DatePicker, type DatePickerValue } from "nsh/base";
+import { Window } from "nsh/desktop";
+
+function App() {
+  const due = signal<DatePickerValue>(null);
+  return (
+    <DatePicker
+      value={due()}
+      onChange={({ value }) => due.set(value)}
+      timePrecision="minute"
+      cleanable
+      clearButton={<Text>×</Text>}
+      clearButtonAccessibilityLabel="Clear the due date"
+      presets={[{ label: "Tomorrow 9:00", value: "2026-10-29T09:00" }]}
+      accessibilityLabel="Due"
+      offset={4}
+      popupClass="rounded-lg border border-border bg-popover p-3 text-popover-foreground shadow-md"
+      backdropClass="bg-black/40"
+      contentClass="flex-row gap-3"
+      presetClass="rounded-md px-2 py-1.5 text-sm hover:bg-accent"
+      headerClass="flex-row items-center justify-between"
+      rowClass="flex-row justify-between"
+      itemClass="h-8 min-w-8 items-center justify-center rounded-md text-sm focus-visible:ring-2 focus-visible:ring-ring selected:bg-primary selected:text-primary-foreground disabled:opacity-50"
+      timeClass="mt-2 gap-3"
+      timeLabel={<Text class="text-sm">Time</Text>}
+      timeAccessibilityLabel="Due time"
+      timeFieldClass="flex-row rounded-md border border-input px-2 py-1"
+      segmentClass="text-sm tabular-nums focus:bg-accent"
+      trigger={
+        <View class="h-9 w-56 justify-center rounded-md border border-input px-3 hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring">
+          <Text>{typeof due() === "string" ? (due() as string).replace("T", " ") : "Pick a date"}</Text>
+        </View>
+      }
+    />
+  );
+}
+
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
+```
+
 ```rust tabs
 use chrono::NaiveDate;
 use nsh_base::{DateRangePreset, DateTime, PickedDate, date_picker, theme};
@@ -59,52 +105,6 @@ fn trip_dates() -> impl IntoElement {
                 .child(text(title)),
         )
 }
-```
-
-```tsx tabs
-import { mount, signal, Text, View } from "nsh";
-import { DatePicker, type DatePickerValue } from "nsh/base";
-import { Window } from "nsh/desktop";
-
-function App() {
-  const due = signal<DatePickerValue>(null);
-  return (
-    <DatePicker
-      value={due()}
-      onChange={({ value }) => due.set(value)}
-      timePrecision="minute"
-      cleanable
-      clearButton={<Text>×</Text>}
-      clearButtonAccessibilityLabel="Clear the due date"
-      presets={[{ label: "Tomorrow 9:00", value: "2026-10-29T09:00" }]}
-      accessibilityLabel="Due"
-      offset={4}
-      popupClass="rounded-lg border border-border bg-popover p-3 text-popover-foreground shadow-md"
-      backdropClass="bg-black/40"
-      contentClass="flex-row gap-3"
-      presetClass="rounded-md px-2 py-1.5 text-sm hover:bg-accent"
-      headerClass="flex-row items-center justify-between"
-      rowClass="flex-row justify-between"
-      itemClass="h-8 min-w-8 items-center justify-center rounded-md text-sm focus-visible:ring-2 focus-visible:ring-ring selected:bg-primary selected:text-primary-foreground disabled:opacity-50"
-      timeClass="mt-2 gap-3"
-      timeLabel={<Text class="text-sm">Time</Text>}
-      timeAccessibilityLabel="Due time"
-      timeFieldClass="flex-row rounded-md border border-input px-2 py-1"
-      segmentClass="text-sm tabular-nums focus:bg-accent"
-      trigger={
-        <View class="h-9 w-56 justify-center rounded-md border border-input px-3 hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring">
-          <Text>{typeof due() === "string" ? (due() as string).replace("T", " ") : "Pick a date"}</Text>
-        </View>
-      }
-    />
-  );
-}
-
-mount(() => (
-  <Window id="main">
-    <App />
-  </Window>
-));
 ```
 
 `DatePicker` 来自 [`nsh/base`](../modules/nsh-base.md)，在 Rust 中是 `nsh-base` crate。在 Rust 中，`date_picker()` 创建一个日期选择器，每个属性有一个设置方法（`.value(..)`、`.range(..)`、`.time_precision(..)`），每个事件有一个监听方法（`.on_change(..)`）。它的值是 `DateTime`（`DateTime::Single`、`DateTime::Range`，由 `chrono` 的日期或日期时间构成）；`onChange` 给出一个 `PickedDate`，即值及选择器的时间精度。

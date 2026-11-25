@@ -531,7 +531,7 @@ pub(crate) fn name_of<C: Component>() -> &'static str {
 
 /// A type's own name, its JS export: the last segment of its path, without
 /// a generic type's arguments (the test `components_are_named_after_their_types`).
-fn export_name(type_name: &str) -> &str {
+pub(crate) fn export_name(type_name: &str) -> &str {
     let path = type_name.split('<').next().unwrap_or(type_name);
     path.rsplit("::").next().unwrap_or(path)
 }
@@ -895,6 +895,17 @@ impl fmt::Debug for Root {
     }
 }
 
+/// What a component element made by name ([`super::ComponentElement::by_name`])
+/// has for its `make`: never called, the registry makes it.
+pub(crate) fn missing_instance() -> Box<dyn AnyInstance> {
+    unreachable!("a component made by name is made by its registry")
+}
+
+/// What a component element made by name has for its `spec`: never called.
+pub(crate) fn missing_spec() -> ComponentSpec {
+    unreachable!("a component made by name is made by its registry")
+}
+
 /// A new instance of `C`, its props not set yet.
 pub(crate) fn make_instance<C: Component>() -> Box<dyn AnyInstance> {
     Box::new(super::once::OnceInstance::<C>::new())
@@ -1030,8 +1041,9 @@ pub struct Registry {
     namespace: Option<&'static str>,
     /// The JS module a UI set is imported as (`app/native`).
     ui_set: Option<&'static str>,
-    /// The files its crates ship ([`Registry::assets`]).
-    assets: Arc<Vec<&'static [super::AssetFile]>>,
+    /// The files its crates ship, with the targets they are for
+    /// ([`Registry::assets_for`]; none: every target).
+    assets: Arc<Vec<(&'static [crate::platform::Os], &'static [super::AssetFile])>>,
     /// Makes the design tokens of a theme ([`Registry::tokens_from`]).
     tokens: Option<super::TokenSource>,
     /// Makes the views' built-in scroll bars ([`Registry::scrollbars_from`]).
@@ -1041,6 +1053,9 @@ pub struct Registry {
     submodules: Arc<Vec<Registry>>,
     /// What each engine serving the set runs once ([`Registry::setup`]).
     setups: Arc<Vec<Setup>>,
+    /// The stand-ins its modules give headless runs, by name
+    /// ([`Registry::fake`]).
+    fakes: Arc<Vec<(&'static str, Arc<dyn crate::fake::Fake>)>>,
 }
 
 /// A function each engine serving a set runs once ([`Registry::setup`]).
@@ -1325,8 +1340,8 @@ impl Registry {
     ///
     /// # Panics
     ///
-    /// When two sets register the same component or two types of the same
-    /// name.
+    /// When two sets register the same component, two types of the same
+    /// name or two fakes of the same name ([`Registry::fake`]).
     #[track_caller]
     pub fn merged(sets: &[Registry]) -> Self {
         let mut out = Self::default();
@@ -1334,6 +1349,14 @@ impl Registry {
             out.tokens = out.tokens.or(set.tokens);
             out.scrollbars = out.scrollbars.or(set.scrollbars);
             Arc::make_mut(&mut out.setups).extend(set.setups.iter().cloned());
+            let fakes = Arc::make_mut(&mut out.fakes);
+            for (name, fake) in set.fakes.iter() {
+                assert!(
+                    fakes.iter().all(|(n, _)| n != name),
+                    "two fakes are named `{name}`, by two UI sets"
+                );
+                fakes.push((name, fake.clone()));
+            }
             let types = Arc::make_mut(&mut out.types);
             for (name, ty) in set.types.iter() {
                 if let Some(old) = types.insert(name, ty.clone()) {
@@ -1418,9 +1441,23 @@ impl Registry {
     /// Ships `files` with the apps that use the set (`assets!()`: a crate's
     /// `assets/` directory): `nsh run` serves them, `nsh package` copies
     /// them into the app, and the engine registers the fonts among them
-    /// before the first render. `asset!` refers to one.
+    /// before the first render. `asset!` refers to one. Every target gets
+    /// them; [`Registry::assets_for`] limits them to some.
     pub fn assets(&mut self, files: &'static [super::AssetFile]) -> &mut Self {
-        Arc::make_mut(&mut self.assets).push(files);
+        self.assets_for(&[], files)
+    }
+
+    /// Like [`Registry::assets`], for the packages of `targets` only: the
+    /// others neither copy the files nor register their fonts, so a file
+    /// only the web downloads stays out of the desktop and mobile
+    /// packages. No `targets`: every target. A file the app reads on a
+    /// target outside the list is not there to read.
+    pub fn assets_for(
+        &mut self,
+        targets: &'static [crate::platform::Os],
+        files: &'static [super::AssetFile],
+    ) -> &mut Self {
+        Arc::make_mut(&mut self.assets).push((targets, files));
         self
     }
 
@@ -1456,6 +1493,38 @@ impl Registry {
     pub fn setup(&mut self, f: impl Fn() + Send + Sync + 'static) -> &mut Self {
         Arc::make_mut(&mut self.setups).push(Arc::new(f));
         self
+    }
+
+    /// Gives headless runs `fake` in place of what a module of the set asks
+    /// of the platform, under `name` (`"nsh-extra/speech"`: the set's
+    /// specifier and the module), which tests call it by
+    /// ([`crate::fake`]). Apps never use it; the headless driver installs
+    /// it before the app starts. An app's crate calls it from its
+    /// `#[native_module]` function.
+    ///
+    /// # Panics
+    ///
+    /// When the set has a fake of that name already. Names are unique
+    /// across the sets an app is served, too ([`Registry::merged`]).
+    #[track_caller]
+    pub fn fake(&mut self, name: &'static str, fake: Arc<dyn crate::fake::Fake>) -> &mut Self {
+        assert!(
+            self.fakes.iter().all(|(n, _)| *n != name),
+            "two fakes are named `{name}`{}",
+            of_set(self.ui_set.or(self.namespace))
+        );
+        Arc::make_mut(&mut self.fakes).push((name, fake));
+        self
+    }
+
+    /// The fakes [`Registry::fake`] gave the set and the sets served under
+    /// it, by name, in order: what the headless driver installs.
+    #[doc(hidden)]
+    pub fn fakes(&self) -> Vec<(&'static str, Arc<dyn crate::fake::Fake>)> {
+        self.sets()
+            .into_iter()
+            .flat_map(|set| set.fakes.iter().cloned())
+            .collect()
     }
 
     /// Runs the functions [`Registry::setup`] gave the set (a merged set's:
@@ -1495,9 +1564,21 @@ impl Registry {
         self.tokens
     }
 
-    /// The files [`Registry::assets`] ships.
+    /// The files [`Registry::assets`] and [`Registry::assets_for`] ship, for
+    /// every target.
     pub fn asset_files(&self) -> impl Iterator<Item = &'static super::AssetFile> + '_ {
-        self.assets.iter().flat_map(|files| files.iter())
+        self.assets.iter().flat_map(|(_, files)| files.iter())
+    }
+
+    /// The files of [`Registry::asset_files`] with the targets each is
+    /// for (none: every target).
+    pub fn scoped_asset_files(
+        &self,
+    ) -> impl Iterator<Item = (&'static [crate::platform::Os], &'static super::AssetFile)> + '_
+    {
+        self.assets
+            .iter()
+            .flat_map(|&(targets, files)| files.iter().map(move |file| (targets, file)))
     }
 
     /// The values of [`Registry::native_values`].
@@ -1619,6 +1700,18 @@ impl Registry {
             }
         }
         out
+    }
+
+    /// A new instance of the component of type `id`, and its registered
+    /// name (a component element made by name).
+    pub(crate) fn make_type(
+        &self,
+        id: TypeId,
+    ) -> Option<(Arc<ComponentSpec>, Box<dyn AnyInstance>)> {
+        self.types
+            .values()
+            .find(|t| t.id == id)
+            .map(|t| (t.spec.clone(), (t.make)()))
     }
 
     /// A new instance of component `name`.
@@ -2485,6 +2578,37 @@ mod tests {
             message,
             "component `nsh_core::element::component::tests::Stepper` is registered twice, by two UI sets"
         );
+    }
+
+    struct NoFake;
+
+    impl crate::fake::Fake for NoFake {
+        fn install(&self) {}
+
+        fn call(&self, _: &str, _: &[crate::JsonValue]) -> Result<crate::JsonValue, String> {
+            Ok(crate::JsonValue::Null)
+        }
+    }
+
+    /// A test calls a fake by its name alone: two sets cannot give one name.
+    #[test]
+    fn fake_names_are_unique_across_sets() {
+        let mut a = Registry::ui_set("test/a");
+        a.fake("test/mic", Arc::new(NoFake));
+        let mut b = Registry::ui_set("test/b");
+        b.fake("test/camera", Arc::new(NoFake));
+        let names: Vec<_> = Registry::merged(&[a.clone(), b])
+            .fakes()
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+        assert_eq!(names, ["test/mic", "test/camera"]);
+        let mut c = Registry::ui_set("test/c");
+        c.fake("test/mic", Arc::new(NoFake));
+        let twice =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| Registry::merged(&[a, c])));
+        let message = *twice.unwrap_err().downcast::<String>().unwrap();
+        assert_eq!(message, "two fakes are named `test/mic`, by two UI sets");
     }
 }
 

@@ -26,6 +26,13 @@ group: ui
 
 Rust crate 发布其 `assets/` 目录中的文件：在 `#[native_module]` 函数中调用 `registry.assets(assets!())` 会发布全部文件，`asset!("fonts/Pacifico-Regular.ttf")` 是一个 `FontAsset`，它的 `family` 是字体的字体族名，在 crate 编译时从文件中读取。在 TSX 中，导入一个 `.ttf`、`.otf`、`.woff` 或 `.woff2` 文件，导入的值就是字体的字体族名。两种方式下字体都会在第一帧之前注册，文字首次渲染时即可使用。WOFF 和 WOFF2 文件是压缩过的 TrueType 或 OpenType 字体（WOFF2 文件通常只有其 TrueType 的一半大小，应用的安装包和 Web 的下载都因此更小）：NSH 在所有平台上都把它们当作其中的字体读取：
 
+```tsx tabs
+import { Text } from "nsh";
+import Pacifico from "./fonts/Pacifico-Regular.ttf";
+
+<Text style={{ fontFamily: Pacifico, fontSize: 30 }}>Custom fonts</Text>
+```
+
 ```rust tabs
 use nsh_core::{element::FontAsset, prelude::*};
 
@@ -39,13 +46,6 @@ fn native(registry: &mut Registry) {
 text("Custom fonts").font_family(PACIFICO.family).text_size(px(30.0))
 ```
 
-```tsx tabs
-import { Text } from "nsh";
-import Pacifico from "./fonts/Pacifico-Regular.ttf";
-
-<Text style={{ fontFamily: Pacifico, fontSize: 30 }}>Custom fonts</Text>
-```
-
 `PACIFICO.family` 和 TSX 导入的 `Pacifico` 都是字符串 `"Pacifico"`：它是字体文件中存储的字体族名（优先取排版字体族名，否则取字体族名），而不是文件名。使用资源的值而不是手写名称，可以让两者始终一致；缺失或损坏的文件会让 Rust 构建失败，导入的文件则一定会被打包。
 
 这些文件会像其他[资源](./images-and-assets.md)一样随应用发布。字体只为应用进程注册，不会安装到设备上。
@@ -57,12 +57,12 @@ import Pacifico from "./fonts/Pacifico-Regular.ttf";
 
 `fontFamily` 和 CSS 一样接受列表：用逗号分隔的字体族，按偏好从高到低排列，含空格的名称可加引号也可不加（`"Brand, 'Noto Sans SC', sans-serif"`），加引号的名称保留其中的逗号（`'ACME, Inc'`）。文字用平台拥有的第一个字体族排版，该字体族缺少的字符（其他文字、符号）取自列表中下一个拥有它的字体族，再取自系统的回退字体。借助列表，只覆盖拉丁字母的品牌字体可以用相配的字体显示中文，应用下载的字体在到达之前也可以先用系统字体显示：
 
-```rust tabs
-text("Brand 品牌").font_family("Brand, 'Noto Sans SC', sans-serif")
-```
-
 ```tsx tabs
 <Text style={{ fontFamily: "Brand, 'Noto Sans SC', sans-serif" }}>Brand 品牌</Text>
+```
+
+```rust tabs
+text("Brand 品牌").font_family("Brand, 'Noto Sans SC', sans-serif")
 ```
 
 各平台都用自己的字体机制保持列表的顺序：iOS 和 macOS 上的级联列表、Windows 上的字体回退（每段一个：取段落第一个样式的列表）、Linux 上的 Pango 字体族列表、Web 上浏览器的列表、GPUI 的回退字体。在 Android 上，文字用它拥有的第一个字体族排版；该字体族是应用注册的字体时，列表中排在它之后的已注册字体是它的回退字体（Android 10 及更高版本）。
@@ -70,6 +70,15 @@ text("Brand 品牌").font_family("Brand, 'Noto Sans SC', sans-serif")
 ## 在应用运行时注册字体
 
 应用发布时还不知道的字体（用户从字体目录中挑选的、服务器随文档发送的、应用自己生成的）在应用运行时注册：Rust 中为 `register_font(data)`，TSX 中为 `registerFont(source)`。它接受 TrueType、OpenType、WOFF 或 WOFF2 数据（在 TSX 中为 `Uint8Array`，或字体文件的 URL：应用自己的文件 `asset:/...`，或网络上的文件，按 `fetch` 的方式读取，因此适用 `network` 权限），并解析为字体的字体族名（在 TSX 中为 `{ family }`）。此后，使用该字体族的文字都会用它排版，字体到达之前已显示的文字也会重新排版：
+
+```tsx tabs
+import { registerFont, signal, Text } from "nsh";
+
+const family = signal("");
+registerFont("https://fonts.example.com/Brand.woff2").then((font) => family.set(font.family));
+
+<Text style={{ fontFamily: family() }}>Branded</Text>
+```
 
 ```rust tabs
 use nsh_core::prelude::*;
@@ -84,35 +93,11 @@ spawn(async move {
 text("Branded").font_family(move || family.get())
 ```
 
-```tsx tabs
-import { registerFont, signal, Text } from "nsh";
-
-const family = signal("");
-registerFont("https://fonts.example.com/Brand.woff2").then((font) => family.set(font.family));
-
-<Text style={{ fontFamily: family() }}>Branded</Text>
-```
-
 URL 无法加载或数据不是字体时，`registerFont` 以 `Error` 拒绝；`network` 权限不允许该 URL 或它的重定向时，该 `Error` 的 `code` 为 `"ERR_ACCESS_DENIED"`；Rust 的 `register_font` 解析为原因。再次注册同一字体没有影响。与导入的字体一样，注册的字体只属于该应用，不会安装到设备上。
 
 ## 字重与斜体
 
 一个字体族通常由多个文件组成，每个字重和样式一个。逐个发布它们（Rust 中放进 `assets/`，TSX 中逐个导入）；它们会注册在同一个字体族名下，由字重和样式选择具体字形：
-
-```rust tabs
-// assets/fonts：Inter-Regular.ttf、Inter-Medium.ttf、Inter-Bold.ttf、Inter-Italic.ttf
-const INTER: FontAsset = asset!("fonts/Inter-Regular.ttf");
-
-text("Regular, ")
-    .font_family(INTER.family)
-    .text_size(px(16.0))
-    .child(text("medium").font_weight(FontWeight::MEDIUM))
-    .child(", ")
-    .child(text("bold").font_weight(FontWeight::BOLD))
-    .child(" and ")
-    .child(text("italic").italic())
-    .child(".")
-```
 
 ```tsx tabs
 import { Text } from "nsh";
@@ -129,12 +114,26 @@ const body = { fontFamily: Inter, fontSize: 16 } as const;
 </Text>
 ```
 
-当没有已注册字形恰好匹配所需字重时，会使用最接近的一个。缺少字形时两个平台的表现不同：
+```rust tabs
+// assets/fonts：Inter-Regular.ttf、Inter-Medium.ttf、Inter-Bold.ttf、Inter-Italic.ttf
+const INTER: FontAsset = asset!("fonts/Inter-Regular.ttf");
+
+text("Regular, ")
+    .font_family(INTER.family)
+    .text_size(px(16.0))
+    .child(text("medium").font_weight(FontWeight::MEDIUM))
+    .child(", ")
+    .child(text("bold").font_weight(FontWeight::BOLD))
+    .child(" and ")
+    .child(text("italic").italic())
+    .child(".")
+```
+
+当没有已注册字形恰好匹配所需字重时，会使用最接近的一个。字体族没有斜体字形时（例如系统的中文字体，或发布时没带斜体文件的字体族），斜体文字在 iOS 和 Android 上都会把正体字形倾斜后显示，和浏览器一样。缺少某个字重的字形时，两个平台的表现不同：
 
 | | iOS | Android |
 |---|---|---|
 | 没有对应字重的字形 | 最接近的已注册字形 | 最接近的字形，在适用时由 Android 合成粗体 |
-| 没有斜体字形 | 使用正体字形（不倾斜） | 将正体字形倾斜后显示 |
 
 发布你用到的所有字形，才能在两个平台上得到一致的结果。
 
@@ -150,13 +149,6 @@ const body = { fontFamily: Inter, fontSize: 16 } as const;
 }
 ```
 
-```rust tabs
-use nsh_core::element::palette::VIOLET;
-
-text("Custom fonts").font_family(PACIFICO.family).text_3xl().text_color(VIOLET.shade(600))
-text("Bold Inter").font_family(INTER.family).font_weight(FontWeight::BOLD)
-```
-
 ```tsx tabs
 import { Text } from "nsh";
 import "./fonts/Pacifico-Regular.ttf";
@@ -165,6 +157,13 @@ import "./fonts/Inter-Bold.ttf";
 
 <Text class="font-display text-3xl text-violet-600">Custom fonts</Text>
 <Text class="font-body font-bold">Bold Inter</Text>
+```
+
+```rust tabs
+use nsh_core::element::palette::VIOLET;
+
+text("Custom fonts").font_family(PACIFICO.family).text_3xl().text_color(VIOLET.shade(600))
+text("Bold Inter").font_family(INTER.family).font_weight(FontWeight::BOLD)
 ```
 
 不在主题中登记也可以使用任意字体族：`font-[Pacifico]`。字重类（`font-light`、`font-semibold`、`font-bold` 等）与 `fontWeight` 一样选择字形。视图上的文字样式会传给其内部的文字，因此视图上的 `.font_family(INTER.family)` 或 `<View class="font-body">` 可以为整个页面设置字体族。
@@ -190,17 +189,6 @@ import "./fonts/Inter-Bold.ttf";
 
 列表中第一个非通用的字体族就是所用的字体；第一个是通用字体族（`system-ui`、`sans-serif`）时使用系统字体。字体也可以设置在容器上，内部的文字会继承它。
 
-```rust tabs
-use nsh_core::{element::desktop::window, prelude::*};
-
-#[component]
-pub fn Root() -> impl IntoElement {
-    window()
-        .id("main")
-        .content(view().flex_1().font_family(INTER.family).child(app()))
-}
-```
-
 ```tsx tabs
 import { mount, View } from "nsh";
 import { Window } from "nsh/desktop";
@@ -212,6 +200,17 @@ mount(() => (
     </View>
   </Window>
 ));
+```
+
+```rust tabs
+use nsh_core::{element::desktop::window, prelude::*};
+
+#[component]
+pub fn Root() -> impl IntoElement {
+    window()
+        .id("main")
+        .content(view().flex_1().font_family(INTER.family).child(app()))
+}
 ```
 
 ## 字体特性

@@ -14,33 +14,6 @@ sizes or label of its own. It is made of an indicator (the box) with the app's m
 label), and the app styles each part, with `checked:`, `indeterminate:` and `disabled:` classes that follow the
 checkbox.
 
-```rust tabs
-use nsh_base::{checkbox, theme};
-use nsh_core::prelude::*;
-
-fn notify() -> impl IntoElement {
-    let on = signal(false);
-    checkbox()
-        .checked(on)
-        .on_change(move |next: &bool| on.set(*next))
-        .flex_row()
-        .items_center()
-        .gap_2()
-        .indicator_style(|s| {
-            s.size(px(20.0))
-                .items_center()
-                .justify_center()
-                .rounded_md()
-                .border_2()
-                .border_color(move || theme().border)
-                .transition_colors()
-                .checked(|s| s.bg(move || theme().primary).border_color(move || theme().primary))
-        })
-        .indicator(text(move || if on.get() { "✓" } else { "" }).text_color(move || theme().primary_foreground))
-        .child(text("Notify me"))
-}
-```
-
 ```tsx tabs
 import { mount, signal, Text } from "nsh";
 import { Checkbox } from "nsh/base";
@@ -66,6 +39,33 @@ mount(() => (
     <App />
   </Window>
 ));
+```
+
+```rust tabs
+use nsh_base::{checkbox, theme};
+use nsh_core::prelude::*;
+
+fn notify() -> impl IntoElement {
+    let on = signal(false);
+    checkbox()
+        .checked(on)
+        .on_change(move |next: &bool| on.set(*next))
+        .flex_row()
+        .items_center()
+        .gap_2()
+        .indicator_style(|s| {
+            s.size(px(20.0))
+                .items_center()
+                .justify_center()
+                .rounded_md()
+                .border_2()
+                .border_color(move || theme().border)
+                .transition_colors()
+                .checked(|s| s.bg(move || theme().primary).border_color(move || theme().primary))
+        })
+        .indicator(text(move || if on.get() { "✓" } else { "" }).text_color(move || theme().primary_foreground))
+        .child(text("Notify me"))
+}
 ```
 
 `Checkbox` comes from [`nsh/base`](../modules/nsh-base.md), the `nsh-base` crate in Rust. The value is the app's: a

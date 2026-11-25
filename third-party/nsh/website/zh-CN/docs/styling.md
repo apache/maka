@@ -12,6 +12,21 @@ demo: guide-styling
 
 三种写法写的是同一组属性，含义相同。属性名取自 CSS（少数采用应用里更常见、更直白的名字，如 `paddingHorizontal`、`marginStart` 和 `numberOfLines`），CSS 值（颜色、渐变、滤镜、阴影、变换、对齐关键字）和 Tailwind 工具类的含义与 Web 上相同，每个 Rust 方法和工具类设置的值与 Tailwind CSS 4 生成的一致，因此你在 Web 上的经验可以沿用：`paddingLeft` 就是 `padding-left` 和 `pl-4`，`boxShadow` 就是 `box-shadow`，`display: "flex"` 与 `flex` 类一样是横向。其余部分为原生应用而设计：长度单位是点（`16`、`"50%"`、`"auto"`；类可以用 `rem` 等 CSS 单位），默认值是原生布局的默认值（见下文），会变化的值用数字而不是字符串来写（`translate: [x, 0]`、阴影的各层），平台超出 CSS 的能力有专门的[扩展](#扩展)。
 
+```tsx tabs
+<View
+  style={{
+    padding: 16,
+    borderRadius: 12,
+    backgroundColor: "#ffffff",
+    borderWidth: 1,
+    borderColor: "#d0d7de",
+    boxShadow: "0 4px 12px rgba(0, 0, 0, 0.12)",
+  }}
+>
+  <Text style={{ fontSize: 17, fontWeight: "600", color: "#1f2328" }}>Card</Text>
+</View>
+```
+
 ```rust tabs
 view()
     .p_4()
@@ -33,26 +48,21 @@ view()
     )
 ```
 
-```tsx tabs
-<View
-  style={{
-    padding: 16,
-    borderRadius: 12,
-    backgroundColor: "#ffffff",
-    borderWidth: 1,
-    borderColor: "#d0d7de",
-    boxShadow: "0 4px 12px rgba(0, 0, 0, 0.12)",
-  }}
->
-  <Text style={{ fontSize: 17, fontWeight: "600", color: "#1f2328" }}>Card</Text>
-</View>
-```
-
 本页介绍样式如何组合以及各种视觉属性。布局属性（flexbox、grid、尺寸、位置）见[布局](./layout.md)，文本属性见[文本](./text.md)，所有属性及其类型列在[样式参考](../modules/style-reference.md)中。
 
 ## 组合样式
 
 在 Rust 中，共享样式就是接收元素并返回加好样式的元素的函数，条件就是普通的 Rust：创建元素时已知的条件用 `.when(condition, |v| ..)`，运行时切换的样式用 `.style_when(signal, |s| ..)`。在 TSX 中，`style` 接受一个对象，或者一个从左到右合并的对象数组；假值项（`false`、`null`、`undefined`）会被跳过，这让条件样式写起来很简短：
+
+```tsx tabs
+const styles = {
+  button: { paddingHorizontal: 16, paddingVertical: 10, borderRadius: 10, backgroundColor: "#0969da" },
+  disabled: { opacity: 0.4 },
+  danger: { backgroundColor: "#cf222e" },
+} as const;
+
+<View style={[styles.button, props.danger && styles.danger, busy() && styles.disabled]} />
+```
 
 ```rust tabs
 fn button(danger: bool, busy: Signal<bool>) -> View {
@@ -66,28 +76,18 @@ fn button(danger: bool, busy: Signal<bool>) -> View {
 }
 ```
 
-```tsx tabs
-const styles = {
-  button: { paddingHorizontal: 16, paddingVertical: 10, borderRadius: 10, backgroundColor: "#0969da" },
-  disabled: { opacity: 0.4 },
-  danger: { backgroundColor: "#cf222e" },
-} as const;
-
-<View style={[styles.button, props.danger && styles.danger, busy() && styles.disabled]} />
-```
-
 在 TSX 中，把共享的样式定义为组件外部的常量（加上 `as const`，让 TypeScript 保留 `"row"` 这样的字面量类型）。一个普通对象就够了：样式在每次设置时由 Rust 解析，对象无需事先注册。
 
 读取 signal 的样式会跟随 signal 变化：在 Rust 中给方法传一个闭包（`.bg(move || ..)`），signal 变化时只重新设置这一个属性；在 TSX 中，读取 signal 的样式表达式会重建，NSH 只发送值不同的属性：
+
+```tsx tabs
+<View style={{ backgroundColor: selected() ? "#ddf4ff" : "#ffffff", padding: 12 }} />
+```
 
 ```rust tabs
 view()
     .p_3()
     .bg(move || if selected.get() { rgb(0xddf4ff) } else { rgb(0xffffff) })
-```
-
-```tsx tabs
-<View style={{ backgroundColor: selected() ? "#ddf4ff" : "#ffffff", padding: 12 }} />
 ```
 
 TSX 元素同时有 `style` 和 `class` 时，`style` 优先：先应用类名，再在其上叠加内联样式。值为 `undefined` 的键不设置任何东西（`backgroundColor: active ? accent : undefined` 在未激活时保留类名的颜色）；`null` 则设为默认值。在 Rust 中，同一属性后调用的方法优先于先调用的。
@@ -135,13 +135,6 @@ TSX 元素同时有 `style` 和 `class` 时，`style` 优先：先应用类名�
 
 在 TSX 中要支持深色模式，可以读取 `nsh` 中的 [`colorScheme()`](../modules/nsh.md#device)（一个跟随系统外观的访问器），或使用 Tailwind 的 `dark:` 变体：
 
-```rust tabs
-view()
-    .flex_1()
-    .bg(AdaptiveColor::rgb(0xffffff, 0x0d1117))
-    .child(text("Follows the system appearance").text_color(AdaptiveColor::rgb(0x1f2328, 0xe6edf3)))
-```
-
 ```tsx tabs
 import { Text, View } from "nsh";
 import { colorScheme } from "nsh";
@@ -156,20 +149,16 @@ const palette = () =>
 </View>
 ```
 
+```rust tabs
+view()
+    .flex_1()
+    .bg(AdaptiveColor::rgb(0xffffff, 0x0d1117))
+    .child(text("Follows the system appearance").text_color(AdaptiveColor::rgb(0x1f2328, 0xe6edf3)))
+```
+
 对于颜色以外的样式，Rust 中的 `.dark(|s| ..)` 在深色外观下应用样式，`dark()` 读取当前外观。两种外观下默认文本颜色都是黑色：支持深色模式的应用需要显式设置颜色。
 
 ## 边框与圆角
-
-```rust tabs
-view()
-    .border_1()
-    .border_color(rgb(0xd0d7de))
-    .border_dashed()               // .border_solid() | .border_dashed() | .border_dotted()
-    .rounded(px(12.0))
-    .rounded_tl(px(24.0))          // 按角设置，覆盖 .rounded(..)
-    .border_b(px(3.0))             // 按边设置
-    .border_b_color(rgb(0x0969da))
-```
 
 ```tsx tabs
 <View
@@ -185,6 +174,17 @@ view()
 />
 ```
 
+```rust tabs
+view()
+    .border_1()
+    .border_color(rgb(0xd0d7de))
+    .border_dashed()               // .border_solid() | .border_dashed() | .border_dotted()
+    .rounded(px(12.0))
+    .rounded_tl(px(24.0))          // 按角设置，覆盖 .rounded(..)
+    .border_b(px(3.0))             // 按边设置
+    .border_b_color(rgb(0x0969da))
+```
+
 - **宽度和颜色**可按边设置：`borderTopWidth`、`borderRightWidth`……`borderTopColor`……，它们在两个方向上都保持各自的一侧；以及跟随[布局方向](./layout.md)的 `borderStartWidth`、`borderEndWidth`、`borderStartColor`、`borderEndColor`（Rust 中的 `.border_t(..)`、`.border_t_color(..)`、`.border_s(..)`、`.border_e_color(..)` 等）。
 - **颜色**：设置了宽度而没有设置颜色的边，用文字颜色绘制，与 CSS 的 `currentColor` 相同：`{ borderWidth: 1, color: "#0969da" }` 画出蓝色边框。
 - **圆角半径**可按角设置：`borderTopLeftRadius`、`borderTopRightRadius`、`borderBottomRightRadius`、`borderBottomLeftRadius`，以及跟随[布局方向](./layout.md)的 `borderTopStartRadius` / `borderTopEndRadius` / `borderBottomStartRadius` / `borderBottomEndRadius`（顶部起始、顶部结束、底部起始、底部结束；Rust 中的 `.rounded_tl(..)` 等、`.rounded_ss(..)`、`.rounded_se(..)`、`.rounded_es(..)`、`.rounded_ee(..)`，以及预设 `.rounded_lg()`、`.rounded_full()` 等）。
@@ -196,6 +196,15 @@ view()
 ## 阴影
 
 视图投射 CSS 的 `boxShadow` 阴影，Android 还有 Material elevation：
+
+```tsx tabs
+// CSS box-shadow: several, comma separated, with spread and inset
+<View style={{ boxShadow: "0 1px 2px rgba(0,0,0,0.08), 0 8px 24px rgba(0,0,0,0.12)" }} />
+<View style={{ boxShadow: "inset 0 2px 4px rgba(0,0,0,0.15)" }} />
+
+// Android's material elevation (a prop, not a style)
+<View android={{ elevation: 6 }} style={{ backgroundColor: "#ffffff", borderRadius: 12 }} />
+```
 
 ```rust tabs
 // CSS box-shadow：多层，支持扩展和内阴影。
@@ -212,15 +221,6 @@ view().shadow_lg().shadow_color(rgba(0x0969da66))
 view().elevation(px(6.0)).bg(white()).rounded(px(12.0))
 ```
 
-```tsx tabs
-// CSS box-shadow: several, comma separated, with spread and inset
-<View style={{ boxShadow: "0 1px 2px rgba(0,0,0,0.08), 0 8px 24px rgba(0,0,0,0.12)" }} />
-<View style={{ boxShadow: "inset 0 2px 4px rgba(0,0,0,0.15)" }} />
-
-// Android's material elevation (a prop, not a style)
-<View android={{ elevation: 6 }} style={{ backgroundColor: "#ffffff", borderRadius: 12 }} />
-```
-
 `boxShadow` 遵循 CSS 语法：`offsetX offsetY blur spread color`，`inset` 表示内阴影。它也接受以数字写出的各层，适合会变化的值，不需要拼字符串：`boxShadow: [{ x: 0, y: 6, blur: 18, spread: 0, color: "#0000004d", inset: false }]`（只有 `x` 和 `y` 必填；不写颜色的层用文字颜色）。Rust 用各层写，`.shadow([BoxShadow { .. }])`。阴影会贴合视图的圆角形状，过渡可以为它播放动画（`transitionProperty: "boxShadow"`、`.transition_shadow()`）。Tailwind 的阴影预设在 Rust 中是 `.shadow_sm()`、`.shadow_md()`、`.shadow_lg()` 等，`.shadow_color(..)` 给它们的各层换色。贴合透明视图内容（例如图标的字形）的阴影用 `filter: "drop-shadow(...)"`（[滤镜](#滤镜与混合)）；文字用 `textShadow`（[文本](./text.md)）。
 
 > [!NOTE]
@@ -229,6 +229,13 @@ view().elevation(px(6.0)).bg(white()).rounded(px(12.0))
 ## 渐变
 
 `backgroundImage` 接受 CSS 渐变，绘制在背景色之上；在 Rust 中是 `.bg_linear(angle)`、`.bg_radial()` 和 `.bg_conic(angle)`，配合色标 `.gradient_from(..)`、`.gradient_via(..)` 和 `.gradient_to(..)`，与 Tailwind 的 `bg-linear-*` 加 `from-*`、`via-*`、`to-*` 相同。在 TSX 中，多个渐变用逗号分隔。
+
+```tsx tabs
+<View style={{ height: 120, borderRadius: 16, backgroundImage: "linear-gradient(135deg, #54aeff, #8250df)" }} />
+<View style={{ backgroundImage: "radial-gradient(circle at top left, #fff8c5, #fd8c73)" }} />
+<View style={{ backgroundImage: "conic-gradient(red, yellow, lime, aqua, blue, magenta, red)" }} />
+<View style={{ backgroundImage: "linear-gradient(90deg, #8250df 0 12px, #54aeff 12px)" }} />
+```
 
 ```rust tabs
 view().h(px(120.0)).rounded(px(16.0)).bg_linear(deg(135.0)).gradient_from(rgb(0x54aeff)).gradient_to(rgb(0x8250df))
@@ -240,13 +247,6 @@ view()
     .gradient_from_position(percentage(0.3))
     .gradient_to(rgb(0x54aeff))
     .gradient_to_position(percentage(0.3))
-```
-
-```tsx tabs
-<View style={{ height: 120, borderRadius: 16, backgroundImage: "linear-gradient(135deg, #54aeff, #8250df)" }} />
-<View style={{ backgroundImage: "radial-gradient(circle at top left, #fff8c5, #fd8c73)" }} />
-<View style={{ backgroundImage: "conic-gradient(red, yellow, lime, aqua, blue, magenta, red)" }} />
-<View style={{ backgroundImage: "linear-gradient(90deg, #8250df 0 12px, #54aeff 12px)" }} />
 ```
 
 线性和径向渐变的色标位置可以是百分比或长度（`px`、`pt`、`rem`；纯数字表示点），锥形渐变的色标位置可以是百分比或角度（`deg`、`turn`、`rad`、`grad`）。带两个位置的色标（`#8250df 0 12px`）是一段纯色，位置相同的两个色标也是。长度沿视图当前尺寸下的渐变线计算，因此视图尺寸变化时，12px 的色带始终是 12px 宽。
@@ -274,6 +274,11 @@ view()
 | `glassTintColor` | 在 iOS 26 和 macOS 26 上，玻璃材质染上的颜色；`null`（默认值）恢复系统默认 | `.glass_tint_color(color)` / `.glass_tint_color(None)` |
 | `mixBlendMode` | 视图与其背后内容的混合方式：`"multiply"`、`"screen"`、`"overlay"` 等 | `.mix_blend_mode(BlendMode::Multiply)` |
 
+```tsx tabs
+<Image src={photo} style={{ width: 120, height: 120, filter: "grayscale(1) contrast(1.2)" }} />
+<View style={{ position: "absolute", bottom: 0, left: 0, right: 0, padding: 12, backgroundColor: "rgba(255,255,255,0.4)", backdropFilter: "blur(12px)" }} />
+```
+
 ```rust tabs
 image(photo).size(px(120.0)).grayscale(1.0).contrast(1.2)
 view()
@@ -284,11 +289,6 @@ view()
     .p_3()
     .bg(rgba(0xffffff66))
     .backdrop_blur(px(12.0))
-```
-
-```tsx tabs
-<Image src={photo} style={{ width: 120, height: 120, filter: "grayscale(1) contrast(1.2)" }} />
-<View style={{ position: "absolute", bottom: 0, left: 0, right: 0, padding: 12, backgroundColor: "rgba(255,255,255,0.4)", backdropFilter: "blur(12px)" }} />
 ```
 
 各平台的支持情况不同：
@@ -309,12 +309,12 @@ Web、Windows 和 Linux 对视图应用所有滤镜，macOS 与 iOS 相同；GPU
 在 30 点达到完整强度。浅色或深色变体由视图的背景色决定。
 这些选项对应 Apple 的[系统模糊材质](https://developer.apple.com/documentation/uikit/uiblureffect/style/systemmaterial)。
 
-```rust tabs
-view().backdrop_blur(px(30.0)).backdrop_material(BackdropMaterial::Regular)
-```
-
 ```tsx tabs
 <View ios={{ backdropMaterial: "regular" }} style={{ height: 64, backdropFilter: "blur(30px)" }} />
+```
+
+```rust tabs
+view().backdrop_blur(px(30.0)).backdrop_material(BackdropMaterial::Regular)
 ```
 
 `glassEffect` 在 iOS 26、macOS 26 及更高版本中，于视图内容背后绘制 Liquid Glass。`"regular"` 使用标准材质，
@@ -401,16 +401,16 @@ GPUI 目前不绘制 `maskImage`：带遮罩的视图会完整绘制，用遮罩
 
 变换就是 CSS 的变换。在 TSX 中，`translate`、`rotate` 和 `scale` 各是独立的属性，`transform` 接受 CSS 的函数字符串或一个步骤列表；无论键的顺序如何，它们都按 CSS 的顺序组合：先 `translate`，再 `rotate`，再 `scale`，最后 `transform`。在 Rust 中，变换是方法（`.translate_x(..)`、`.rotate(..)`、`.scale(..)` 等），按同样的顺序组合：
 
-```rust tabs
-view().translate_x(px(20.0)).rotate(deg(-8.0)).scale(0.9)
-view().perspective(px(600.0)).child(view().rotate_y(deg(35.0)).backface_hidden())
-view().origin_top_left().rotate(deg(30.0))
-```
-
 ```tsx tabs
 <View style={{ translate: "20px 0", rotate: "-8deg", scale: 0.9 }} />
 <View style={{ transform: "perspective(600px) rotateY(35deg)", backfaceVisibility: "hidden" }} />
 <View style={{ transformOrigin: "top left", rotate: "30deg" }} />
+```
+
+```rust tabs
+view().translate_x(px(20.0)).rotate(deg(-8.0)).scale(0.9)
+view().perspective(px(600.0)).child(view().rotate_y(deg(35.0)).backface_hidden())
+view().origin_top_left().rotate(deg(30.0))
 ```
 
 | 属性 | 取值 |
@@ -430,21 +430,6 @@ Android 不支持斜切（skew）变换。GPUI 无法旋转图片的像素：旋
 
 只要指明要动画的属性，视图就会为自身样式的变化播放动画。动画在原生侧运行，每一帧都不会执行你的代码。
 
-```rust tabs
-let open = signal(false);
-
-view()
-    .on_press(move || open.update(|o| *o = !*o))
-    .w(px(150.0))
-    .h(px(72.0))
-    .rounded(move || px(if open.get() { 36.0 } else { 12.0 }))
-    .bg(move || if open.get() { rgb(0x8250df) } else { rgb(0x54aeff) })
-    .translate_x(move || px(if open.get() { 120.0 } else { 0.0 }))
-    .transition_all()
-    .duration(300.0)
-    .ease_in_out()
-```
-
 ```tsx tabs
 <View
   onPress={() => open.set(!open())}
@@ -461,6 +446,21 @@ view()
 />
 ```
 
+```rust tabs
+let open = signal(false);
+
+view()
+    .on_press(move || open.update(|o| *o = !*o))
+    .w(px(150.0))
+    .h(px(72.0))
+    .rounded(move || px(if open.get() { 36.0 } else { 12.0 }))
+    .bg(move || if open.get() { rgb(0x8250df) } else { rgb(0x54aeff) })
+    .translate_x(move || px(if open.get() { 120.0 } else { 0.0 }))
+    .transition_all()
+    .duration(300.0)
+    .ease_in_out()
+```
+
 | 属性 | 取值 | Rust |
 |---|---|---|
 | `transitionProperty` | 要动画的属性：`"all"`，或用逗号分隔的名称：颜色（`"colors"`、`"backgroundColor"`、`"borderColor"` 等）、`"opacity"`、`"transform"`（所有变换属性）、`"boxShadow"`、`"borderRadius"` / `"borderWidth"`、`"clip-path"` | `.transition()`、`.transition_all()`、`.transition_colors()`、`.transition_opacity()`、`.transition_transform()`、`.transition_shadow()`、`.transition_clip_path()` |
@@ -470,15 +470,15 @@ view()
 
 `y` 超出 0..1 的 `cubic-bezier()` 会越过目标再回来，与 CSS 一致（`"cubic-bezier(0.3, 1.25, 0.6, 1)"`）。`spring()` 则让过渡按弹簧的物理运动：刚度、阻尼（系数，不是阻尼比）和质量（省略时为 1），从静止开始。弹簧自己决定时长，持续到它稳定为止，因此不使用 `transitionDuration`；`"spring(620, 36)"` 越过目标约 4%，约 380 ms 稳定。对应的类是 `ease-spring-[620,36]`（带质量时为 `ease-spring-[620,36,1]`），弹出层的离开同样会等它的弹簧播放完毕。
 
+```tsx tabs
+<View class="transition-transform ease-spring-[620,36]" style={{ scale: open() ? 1 : 0.95 }} />
+```
+
 ```rust tabs
 view()
     .transition_transform()
     .ease_spring(Spring { stiffness: 620.0, damping: 36.0, ..Spring::default() })
     .scale(move || if open.get() { 1.0 } else { 0.95 })
-```
-
-```tsx tabs
-<View class="transition-transform ease-spring-[620,36]" style={{ scale: open() ? 1 : 0.95 }} />
 ```
 
 尺寸和位置属于布局而不是样式，不会产生过渡；要为布局变化做动画，使用 `LayoutAnimation`，或用原生动画驱动数值（[动画](./animation.md)）。
@@ -487,16 +487,16 @@ view()
 
 `animationName` 以原生方式运行 Tailwind 内置的关键帧动画之一：`"spin"`、`"ping"`、`"pulse"` 或 `"bounce"`，配合 `animationDuration`、`animationDelay`、`animationTimingFunction` 和 `animationIterationCount`（数字或 `"infinite"`），顺序不限。在 Rust 中，`.animate_spin()`、`.animate_ping()`、`.animate_pulse()` 和 `.animate_bounce()` 以 Tailwind 的时间参数运行它们，`.animation(KeyframeAnimation::new(..))` 则使用你自己的参数：
 
+```tsx tabs
+<View style={{ width: 24, height: 24, borderRadius: 4, backgroundColor: "#0969da", animationName: "spin", animationDuration: 1000, animationIterationCount: "infinite", animationTimingFunction: "linear" }} />
+```
+
 ```rust tabs
 view()
     .size(px(24.0))
     .rounded(px(4.0))
     .bg(rgb(0x0969da))
     .animation(KeyframeAnimation::new(Keyframes::Spin).duration(1000.0).easing([0.0, 0.0, 1.0, 1.0]))
-```
-
-```tsx tabs
-<View style={{ width: 24, height: 24, borderRadius: 4, backgroundColor: "#0969da", animationName: "spin", animationDuration: 1000, animationIterationCount: "infinite", animationTimingFunction: "linear" }} />
 ```
 
 ## 按压反馈

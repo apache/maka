@@ -189,7 +189,7 @@ pub trait HostValue: Sized {
     fn ts_type(types: &mut TsTypes) -> String;
 }
 
-/// Decodes a view's `captureKeys` (`"none"`, `"all"`, or an array of
+/// Decodes a view's `captureKeys` (`"none"`, `"all"`, `"text"`, or an array of
 /// keystroke strings) with the platform's `mod` convention: `apple` says
 /// `mod` is Command ([`crate::keymap::apple_keys`]).
 ///
@@ -209,9 +209,10 @@ pub fn decode_capture_keys<I: HostInput>(
         return match text.as_str() {
             "none" => Some(KeyCapture::None),
             "all" => Some(KeyCapture::All),
+            "text" => Some(KeyCapture::Text),
             other => {
                 cx.warn(format!(
-                    "captureKeys: expected \"none\", \"all\" or keystrokes, got {other:?}"
+                    "captureKeys: expected \"none\", \"all\", \"text\" or keystrokes, got {other:?}"
                 ));
                 None
             }
@@ -399,6 +400,17 @@ impl HostValue for u32 {
     }
 }
 
+impl HostValue for u64 {
+    /// Negative numbers are 0, fractions are cut (a size in bytes).
+    fn decode<I: HostInput>(input: &I, _: &mut HostCx) -> Option<Self> {
+        input.as_number().map(|n| n.max(0.0) as u64)
+    }
+
+    fn ts_type(_: &mut TsTypes) -> String {
+        "number".into()
+    }
+}
+
 impl HostValue for String {
     /// Anything but a string is the empty string's default.
     fn decode<I: HostInput>(input: &I, _: &mut HostCx) -> Option<Self> {
@@ -538,6 +550,8 @@ export interface Modifiers {
   shift: boolean;
   /** Command on Apple platforms, the Windows / Super key elsewhere. */
   platform: boolean;
+  /** AltGr (the DOM's `getModifierState("AltGraph")`): the key's character came from the layout's AltGr level, so `control` and `alt` are held to type text, not for a shortcut. Set by key events on Windows; `false` elsewhere. */
+  altGraph: boolean;
 }
 
 /** A hardware key transition on the focused view: the payload of `onKeyDown` and `onKeyUp` (`nsh_core::KeyEvent`). */
@@ -679,8 +693,20 @@ export interface PasteEvent {
   html: string;
   /** Files with their bytes: images (a screenshot, an image copied from a page or an app), as `File`s an app can upload. */
   files: File[];
+  /** Files larger than the input's `pasteMaxSize`, whose bytes were not read: their names, types and sizes, so the app can tell the user. */
+  tooLarge: UnreadFile[];
   /** `file:` URLs of local files copied in a file manager (as `onFileDrop`'s). */
   uris: string[];
+}
+
+/** A pasted file whose bytes were not read (`PasteEvent.tooLarge`). */
+export interface UnreadFile {
+  /** Its name. */
+  name: string;
+  /** Its media type (`application/pdf`; `application/octet-stream` when unknown). */
+  type: string;
+  /** Its size in bytes. */
+  size: number;
 }
 
 /** A line of a laid-out text (in the text's content box). */
@@ -1016,7 +1042,7 @@ pub const EVENTS: &[(EventKind, u32, &str, &str)] = &[
         EventKind::Paste,
         on::INPUT,
         "(e: PasteEvent) => void",
-        "The user pasted (the keyboard's shortcut, a menu's Paste, a keyboard's image): the text, images as `File`s, local files' `file:` URLs. It comes before the `onChange` of the text it inserts; `pasteBehavior` decides whether the input inserts the text (images and files never are).",
+        "The user pasted (the keyboard's shortcut, a menu's Paste, a keyboard's image): the text, images as `File`s (files larger than `pasteMaxSize` in `tooLarge`, unread), local files' `file:` URLs. It comes before the `onChange` of the text it inserts; `pasteBehavior` decides whether the input inserts the text (images and files never are).",
     ),
     (
         EventKind::CaretMove,
@@ -1134,7 +1160,6 @@ pub const INTERNAL_EVENTS: &[EventKind] = &[
     EventKind::AuthSession,
     EventKind::CanvasImage,
     EventKind::FileRequest,
-    EventKind::Speech,
     EventKind::Notification,
     EventKind::UrlScheme,
     EventKind::SecondInstance,

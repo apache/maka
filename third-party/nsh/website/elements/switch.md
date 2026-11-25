@@ -12,6 +12,33 @@ activation, the disabled state, and the switch role and its value for screen rea
 `Switch` has no colors, sizes, motion or label of its own. It is made of a track with a thumb inside it, then its
 children (a label), and the app styles each part, with `checked:` and `disabled:` classes that follow the switch.
 
+```tsx tabs
+import { mount, signal, Text } from "nsh";
+import { Switch } from "nsh/base";
+import { Window } from "nsh/desktop";
+
+function App() {
+  const on = signal(false);
+  return (
+    <Switch
+      checked={on()}
+      onChange={({ checked }) => on.set(checked)}
+      class="flex-row items-center gap-3"
+      trackClass="w-11 rounded-full bg-muted p-0.5 transition-colors checked:bg-primary"
+      thumbClass="size-5 rounded-full bg-background shadow-sm transition-transform checked:translate-x-5"
+    >
+      <Text>Wi-Fi</Text>
+    </Switch>
+  );
+}
+
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
+```
+
 ```rust tabs
 use nsh_base::{switch, theme};
 use nsh_core::prelude::*;
@@ -42,33 +69,6 @@ fn wifi() -> impl IntoElement {
         })
         .child(text("Wi-Fi"))
 }
-```
-
-```tsx tabs
-import { mount, signal, Text } from "nsh";
-import { Switch } from "nsh/base";
-import { Window } from "nsh/desktop";
-
-function App() {
-  const on = signal(false);
-  return (
-    <Switch
-      checked={on()}
-      onChange={({ checked }) => on.set(checked)}
-      class="flex-row items-center gap-3"
-      trackClass="w-11 rounded-full bg-muted p-0.5 transition-colors checked:bg-primary"
-      thumbClass="size-5 rounded-full bg-background shadow-sm transition-transform checked:translate-x-5"
-    >
-      <Text>Wi-Fi</Text>
-    </Switch>
-  );
-}
-
-mount(() => (
-  <Window id="main">
-    <App />
-  </Window>
-));
 ```
 
 `Switch` comes from [`nsh/base`](../modules/nsh-base.md), the `nsh-base` crate in Rust. The value is the app's: a

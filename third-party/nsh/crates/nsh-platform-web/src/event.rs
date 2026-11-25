@@ -179,6 +179,9 @@ pub(crate) fn payload(kind: EventKind, value: serde_json::Value) -> Option<Event
                             }
                             serde_json::Value::Bool(b) => PayloadValue::Bool(*b),
                             serde_json::Value::String(s) => PayloadValue::Str(s.clone()),
+                            // A box (`{ origin, size }`): a selection's
+                            // `bounds`.
+                            serde_json::Value::Object(_) => PayloadValue::Bounds(box_of(v)?),
                             _ => return None,
                         };
                         Some((key(k), v))
@@ -189,6 +192,16 @@ pub(crate) fn payload(kind: EventKind, value: serde_json::Value) -> Option<Event
         },
     };
     Some(payload)
+}
+
+/// `value` as a box, when it is one: `{ origin: { x, y }, size: { width,
+/// height } }`, as handlers get a `Bounds`.
+fn box_of(value: &serde_json::Value) -> Option<nsh_core::Bounds<Points>> {
+    let n = |part: &str, c: &str| Some(Points(value.get(part)?.get(c)?.as_f64()? as f32));
+    Some(nsh_core::Bounds {
+        origin: point(n("origin", "x")?, n("origin", "y")?),
+        size: size(n("size", "width")?, n("size", "height")?),
+    })
 }
 
 /// `name` as the static payload key the core takes: each distinct key is
@@ -238,6 +251,7 @@ fn pointer_at(
         alt: flag("alt"),
         shift: flag("shift"),
         cmd: flag("platform"),
+        alt_graph: false,
     };
     (at("position"), at("pagePosition"), modifiers)
 }

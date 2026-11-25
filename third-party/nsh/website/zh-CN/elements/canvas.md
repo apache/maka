@@ -10,31 +10,6 @@ demo: el-canvas
 
 canvas 是一个由你自己用 2D 绘图 API（即 HTML Canvas 2D API）绘制的视图：图表、仪表盘、圆环、签名、自定义形状都可以用它来画。绘制代码记录操作，平台在原生侧以屏幕分辨率回放这些操作（iOS 和 Mac Catalyst 上是 Core Graphics，Android 上是 `android.graphics.Canvas`）。Rust 用 `canvas(painter)` 创建，`Painter` 记录绘制内容；TSX 用从 `nsh` 导入的 `<Canvas>` 及其 `draw` 函数。
 
-```rust tabs
-use std::f32::consts::{FRAC_PI_2, TAU};
-
-use nsh_core::{canvas::LineCap, prelude::*};
-
-/// 一个进度圆环，120 点见方。
-fn ring(progress: f32) -> impl IntoElement {
-    let (center, radius) = (60.0, 50.0);
-    canvas(
-        Painter::new()
-            .line_width(12.0)
-            .line_cap(LineCap::Round)
-            .stroke_color(rgb(0xe5e7eb))
-            .begin_path()
-            .arc(center, center, radius, 0.0, TAU)
-            .stroke()
-            .stroke_color(rgb(0x6366f1))
-            .begin_path()
-            .arc(center, center, radius, -FRAC_PI_2, -FRAC_PI_2 + progress * TAU)
-            .stroke(),
-    )
-    .size(px(120.0))
-}
-```
-
 ```tsx tabs
 import { Canvas, mount } from "nsh";
 import { Window } from "nsh/desktop";
@@ -67,6 +42,31 @@ mount(() => (
 ));
 ```
 
+```rust tabs
+use std::f32::consts::{FRAC_PI_2, TAU};
+
+use nsh_core::{canvas::LineCap, prelude::*};
+
+/// 一个进度圆环，120 点见方。
+fn ring(progress: f32) -> impl IntoElement {
+    let (center, radius) = (60.0, 50.0);
+    canvas(
+        Painter::new()
+            .line_width(12.0)
+            .line_cap(LineCap::Round)
+            .stroke_color(rgb(0xe5e7eb))
+            .begin_path()
+            .arc(center, center, radius, 0.0, TAU)
+            .stroke()
+            .stroke_color(rgb(0x6366f1))
+            .begin_path()
+            .arc(center, center, radius, -FRAC_PI_2, -FRAC_PI_2 + progress * TAU)
+            .stroke(),
+    )
+    .size(px(120.0))
+}
+```
+
 在 TSX 中，`Canvas` 会创建原生画布视图、测量它的尺寸，再把上下文和尺寸传给你的 `draw` 函数（参见 [Canvas API](../modules/nsh-canvas.md)）。在 Rust 中，`canvas(..)` 接收一个 `Painter`，或返回 `Painter` 的闭包：闭包读取的内容变化时会重新绘制；绘制依赖尺寸时，尺寸来自 `on_layout`。
 
 ## 属性
@@ -82,6 +82,20 @@ mount(() => (
 ## 何时重绘
 
 绘制会像 effect 一样被追踪：在里面读取某个 signal，绘制就会订阅它。
+
+```tsx tabs
+const values = signal([12, 40, 28, 64]);
+
+<Canvas
+  style={{ height: 160 }}
+  draw={(cx, { width, height }) => {
+    const data = values(); // values() 变化时重绘
+    const step = width / data.length;
+    cx.fillStyle = "#0969da";
+    data.forEach((v, i) => cx.fillRect(i * step + 4, height - v, step - 8, v));
+  }}
+/>;
+```
 
 ```rust tabs
 let values = signal(vec![12.0_f32, 40.0, 28.0, 64.0]);
@@ -99,37 +113,7 @@ canvas(move || {
 .on_layout(move |frame: &Bounds<Points>| width.set(frame.size.width.0))
 ```
 
-```tsx tabs
-const values = signal([12, 40, 28, 64]);
-
-<Canvas
-  style={{ height: 160 }}
-  draw={(cx, { width, height }) => {
-    const data = values(); // values() 变化时重绘
-    const step = width / data.length;
-    cx.fillStyle = "#0969da";
-    data.forEach((v, i) => cx.fillRect(i * step + 4, height - v, step - 8, v));
-  }}
-/>;
-```
-
 数字和颜色也可以是[原生动画值](../modules/nsh.md#animation)（`CanvasNumber`、`CanvasPaint`；在 Rust 中，凡是数字的位置都可以传 `&AnimatedValue`）：这些值动画时，平台会自行重绘，每帧都不经过应用代码。
-
-```rust tabs
-use std::f32::consts::TAU;
-
-let angle = animated_value(0.0);
-angle.timing(TAU, 1000.0, Easing::Linear);
-
-canvas(
-    Painter::new()
-        .translate(40.0, 40.0)
-        .rotate(&angle) // 在原生侧动画
-        .fill_color(rgb(0xcf222e))
-        .fill_rect(-20.0, -4.0, 40.0, 8.0),
-)
-.size(px(80.0))
-```
 
 ```tsx tabs
 import { Canvas } from "nsh";
@@ -147,6 +131,22 @@ Animated.timing(angle, { toValue: Math.PI * 2, duration: 1000 }).start();
     cx.fillRect(-20, -4, 40, 8);
   }}
 />;
+```
+
+```rust tabs
+use std::f32::consts::TAU;
+
+let angle = animated_value(0.0);
+angle.timing(TAU, 1000.0, Easing::Linear);
+
+canvas(
+    Painter::new()
+        .translate(40.0, 40.0)
+        .rotate(&angle) // 在原生侧动画
+        .fill_color(rgb(0xcf222e))
+        .fill_rect(-20.0, -4.0, 40.0, 8.0),
+)
+.size(px(80.0))
 ```
 
 ## 上下文

@@ -61,3 +61,5 @@ zstd.workspace = true
 # The typed API check reads the crate's public API.
 syn = { workspace = true, features = ["visit"] }
 nsh-base = { workspace = true, features = ["editor", "highlight", "plot", "rich-editor", "term"] }
+# The named time zones' data, as the toolchain packs it (`nsh_i18n::zones`).
+nsh-i18n = { workspace = true, features = ["build"] }

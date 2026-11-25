@@ -26,6 +26,26 @@ group: platforms
 
 在 Rust 中，只有一个平台才有的属性和其他属性一样是构建方法（Android 的 `.ripple(..)`、`.elevation(..)`，iOS 的 `.input_accessory(..)`，macOS 的 `.macos_backdrop(..)`，Windows 的 `.windows_backdrop(..)`，桌面的 `.window_drag(..)`）；其他平台会忽略它。在 TSX 中，只存在于某一个平台的属性，归入以该平台命名的对象中。每个元素都接受 `ios`、`android`、`macos`、`windows`、`desktop`（macOS、Windows、Linux，以及界面风格为桌面的浏览器）和 `web`（浏览器）；在其他平台上这个对象会被忽略，在它自己的平台上只应用其中的键。macOS 同时应用 `macos` 和 `desktop`，Windows 同时应用 `windows` 和 `desktop`；桌面浏览器同时应用 `desktop` 和 `web`。
 
+```tsx tabs
+<View
+  onPress={open}
+  activeStyle={{ opacity: 0.6 }}
+  android={{ ripple: { color: "rgba(0,0,0,0.12)" }, elevation: 4 }}
+  style={{ padding: 16, borderRadius: 12, backgroundColor: "#ffffff" }}
+>
+  <Text>Open</Text>
+</View>
+
+<Input
+  placeholder="Code"
+  ios={{ textContentType: "oneTimeCode" }}
+/>
+
+<Dialog open={open()} ios={{ supportedOrientations: ["portrait"] }} android={{ statusBarTranslucent: true }}>
+  …
+</Dialog>
+```
+
 ```rust tabs
 use nsh_base::dialog;
 use nsh_core::{
@@ -54,26 +74,6 @@ when(shown, || {
         .status_bar_translucent(true)
         .child(…)
 })
-```
-
-```tsx tabs
-<View
-  onPress={open}
-  activeStyle={{ opacity: 0.6 }}
-  android={{ ripple: { color: "rgba(0,0,0,0.12)" }, elevation: 4 }}
-  style={{ padding: 16, borderRadius: 12, backgroundColor: "#ffffff" }}
->
-  <Text>Open</Text>
-</View>
-
-<Input
-  placeholder="Code"
-  ios={{ textContentType: "oneTimeCode" }}
-/>
-
-<Dialog open={open()} ios={{ supportedOrientations: ["portrait"] }} android={{ statusBarTranslucent: true }}>
-  …
-</Dialog>
 ```
 
 TSX 的这些对象和其他属性一样是响应式的；从对象中移除的键会被清除。
@@ -124,6 +124,20 @@ TSX 的这些对象和其他属性一样是响应式的；从对象中移除的�
 | `on_back_progress(listener)` | `BackHandler.on("progress", listener)` | 跟随返回手势（Android 14 及更高版本）：`start`、`move`，然后是 `end`（紧接着是返回操作）或 `cancel`，带有从 0 到 1 的 `progress` 和手势开始的边缘 `edge`。有监听器时，导航栈不再预览弹出。 |
 | | `BackHandler.exitApp()` | 退出应用。 |
 
+```tsx tabs
+import { BackHandler } from "nsh/mobile";
+
+function Player() {
+  // 返回键先退出全屏，再离开页面。监听器随组件一起结束。
+  BackHandler.on("press", () => {
+    if (!fullScreen()) return false;
+    fullScreen.set(false);
+    return true;
+  });
+  // …
+}
+```
+
 ```rust tabs
 use nsh_core::prelude::*;
 
@@ -138,20 +152,6 @@ fn player() -> impl IntoElement {
         true
     });
     // …
-}
-```
-
-```tsx tabs
-import { BackHandler } from "nsh/mobile";
-
-function Player() {
-  // 返回键先退出全屏，再离开页面。监听器随组件一起结束。
-  BackHandler.on("press", () => {
-    if (!fullScreen()) return false;
-    fullScreen.set(false);
-    return true;
-  });
-  // …
 }
 ```
 
@@ -198,18 +198,6 @@ Rust 应用用 `nsh_core::element::desktop` 绘制自己的标题栏（[用 Rust
 
 在两个平台上，状态栏都属于最上层的页面或对话框，和 UIKit 中由最上层视图控制器决定一样：[`NavPage` 和 `Dialog` 接受 `statusBar`](../modules/nsh-base.md#status-bar)（Rust 中为 `.status_bar(StatusBarStyle::Light)`，其他字段用 `StatusBarSetting`），其中有 `foreground`（`"auto"`、深色背景用 `"light"`、浅色背景用 `"dark"`）、`hidden` 和 `animated`。最近显示的页面或对话框按字段逐项生效，它离开后下面那个重新生效。`nsh.json` 的 `"statusBar"` 是它们之下的应用默认值。
 
-```rust tabs
-use nsh_base::nav_page;
-use nsh_core::prelude::*;
-
-fn photo_viewer() -> impl IntoElement {
-    nav_page()
-        .header_visible(false)
-        .status_bar(StatusBarStyle::Light)
-        .child(view().flex_1().bg(black()))
-}
-```
-
 ```tsx tabs
 import { View } from "nsh";
 import { NavPage } from "nsh/base";
@@ -223,19 +211,23 @@ function PhotoViewer() {
 }
 ```
 
+```rust tabs
+use nsh_base::nav_page;
+use nsh_core::prelude::*;
+
+fn photo_viewer() -> impl IntoElement {
+    nav_page()
+        .header_visible(false)
+        .status_bar(StatusBarStyle::Light)
+        .child(view().flex_1().bg(black()))
+}
+```
+
 在嵌入原生应用的场景下，iOS 上由宿主应用的视图控制器决定状态栏。在 `nsh.json` 中声明了 `"capabilities"` 的应用，需要 `"statusBar": true` 才能修改它。
 
 ## platform.os 与 platform.select
 
 Rust 中的 `os()` 和 TSX 中 `nsh` 的常量 `platform` 告诉你应用运行在哪里：`Os::Ios`、`Os::Android`、`Os::MacOs`、`Os::Windows`、`Os::Linux` 或 `Os::Web`，`platform.os` 为 `"ios"`、`"android"`、`"macos"`、`"windows"`、`"linux"` 或 `"web"`（Mac Catalyst 为 `"ios"`，无论哪种形态 `platform.catalyst` 都为真；[macOS 后端](./macos.md)为 `"macos"`，[Linux 后端](./linux.md)为 `"linux"`，[Windows 后端](./windows.md)为 `"windows"`，它们的元素会应用 `desktop` 属性；[浏览器](./web.md)为 `"web"`，`platform.desktop` 为 `true` 时也会应用 `desktop` 属性）。Rust 中的 `platform_name()` 和 TSX 中的 `platform.name` 是平台本身的名字：在 NSH 自带的平台上就是系统名，[在 NSH 之外构建的平台](./platform-extensions.md)则是它自己的名字（`"miniprogram"`），此时 `platform.os` 是它所运行设备的系统。版本、界面风格等见[设备与环境](./device-and-environment.md#平台)。
-
-```rust tabs
-use nsh_core::{element::Os, prelude::*};
-
-if os() == Os::Android {
-    // …
-}
-```
 
 ```tsx tabs
 import { platform } from "nsh";
@@ -245,9 +237,32 @@ if (platform.os === "android") {
 }
 ```
 
+```rust tabs
+use nsh_core::{element::Os, prelude::*};
+
+if os() == Os::Android {
+    // …
+}
+```
+
 ### platform.select
 
 在 Rust 中用 `match os()` 选择值，桌面用 `is_desktop()`（在 NSH 之外构建的平台可用 `platform_name()`）。在 TSX 中，`platform.select(spec)` 返回当前平台对应的值。它先查找 `platform.name`（在 NSH 之外构建的平台，如 `"miniprogram"`），再查找该操作系统自己的键（`platform.os`），然后按[上面的规则](#桌面与移动端)（`platform.desktop`）查找 `desktop` 或 `mobile`，再是 `native`（除 Web 外的所有平台），最后是 `default`：
+
+```tsx tabs
+const styles = {
+  card: {
+    borderRadius: 12,
+    backgroundColor: "#ffffff",
+    ...platform.select({
+      ios: { boxShadow: "0px 2px 8px rgb(0 0 0 / 0.12)" },
+      android: { borderWidth: 1, borderColor: "#e5e7eb" },
+    }),
+  },
+};
+
+const hint = platform.select({ ios: "Swipe down to close", android: "Press back to close", default: "Close" });
+```
 
 ```rust tabs
 use nsh_core::{element::Os, prelude::*};
@@ -268,26 +283,15 @@ let hint = match os() {
 };
 ```
 
-```tsx tabs
-const styles = {
-  card: {
-    borderRadius: 12,
-    backgroundColor: "#ffffff",
-    ...platform.select({
-      ios: { boxShadow: "0px 2px 8px rgb(0 0 0 / 0.12)" },
-      android: { borderWidth: 1, borderColor: "#e5e7eb" },
-    }),
-  },
-};
-
-const hint = platform.select({ ios: "Swipe down to close", android: "Press back to close", default: "Close" });
-```
-
 没有匹配项且没有 `default` 时返回 `undefined`。
 
 ### 渲染不同的组件
 
 组件也可以这样选择；选择永远不变时（TSX）放在模块顶层：
+
+```tsx tabs
+const Spinner = platform.select({ ios: IosSpinner, default: MaterialSpinner })!;
+```
 
 ```rust tabs
 fn spinner() -> AnyElement {
@@ -299,16 +303,7 @@ fn spinner() -> AnyElement {
 }
 ```
 
-```tsx tabs
-const Spinner = platform.select({ ios: IosSpinner, default: MaterialSpinner })!;
-```
-
 或者用 [`when` / `<If>`](../elements/control-flow.md) 内联：
-
-```rust tabs
-when(os() == Os::Ios, || input_accessory_view("bar").child(…))
-    .otherwise(|| text("Android has no input accessories."))
-```
 
 ```tsx tabs
 <If when={platform.os === "ios"} else={<Text>Android has no input accessories.</Text>}>
@@ -316,9 +311,19 @@ when(os() == Os::Ios, || input_accessory_view("bar").child(…))
 </If>
 ```
 
+```rust tabs
+when(os() == Os::Ios, || input_accessory_view("bar").child(…))
+    .otherwise(|| text("Android has no input accessories."))
+```
+
 ## Tailwind 中的平台变体
 
 Rust 用 `.when(os() == Os::Ios, |v| ..)` 按平台设置样式；在 TSX 中，`ios:`、`android:` 和 `web:` 变体只在一个平台上应用对应的类：
+
+```tsx tabs
+<View class="rounded-xl bg-white p-4 ios:shadow-md android:border android:border-zinc-200">…</View>
+<Text class="text-base android:font-medium">Title</Text>
+```
 
 ```rust tabs
 view()
@@ -327,11 +332,6 @@ view()
     .p_4()
     .when(os() == Os::Ios, |v| v.shadow_md())
     .when(os() == Os::Android, |v| v.border_1().border_color(rgb(0xe4e4e7)))
-```
-
-```tsx tabs
-<View class="rounded-xl bg-white p-4 ios:shadow-md android:border android:border-zinc-200">…</View>
-<Text class="text-base android:font-medium">Title</Text>
 ```
 
 ## 优先使用共享的行为

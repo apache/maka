@@ -19,6 +19,33 @@ of the traffic lights at the left, the content pane's bar starts past them and g
 the content pane's bar meets them and steps aside. Entering full screen (no controls) takes the padding away. The
 controls are those of the window the bar renders in: a `TitleBar` in a second `<Window>` follows that window's.
 
+```tsx tabs
+import { mount, Text, View } from "nsh";
+import { TitleBar } from "nsh/base";
+import { Window } from "nsh/desktop";
+
+function App() {
+  return (
+    <View class="flex-1 flex-row">
+      {/* The sidebar's part of the title bar: past the traffic lights. */}
+      <TitleBar class="h-11 w-60 bg-muted">
+        <Text class="px-3">Library</Text>
+      </TitleBar>
+      {/* The content's part: no padding while the sidebar is shown. */}
+      <TitleBar class="h-11 flex-1 border-b border-border">
+        <Text class="px-3">Inbox</Text>
+      </TitleBar>
+    </View>
+  );
+}
+
+mount(() => (
+  <Window id="main" titleBar={{ style: "hidden" }}>
+    <App />
+  </Window>
+));
+```
+
 ```rust tabs
 use nsh_base::{theme, title_bar};
 use nsh_core::prelude::*;
@@ -45,33 +72,6 @@ fn chrome() -> impl IntoElement {
                 .child(view().px_3().child(text("Inbox"))),
         )
 }
-```
-
-```tsx tabs
-import { mount, Text, View } from "nsh";
-import { TitleBar } from "nsh/base";
-import { Window } from "nsh/desktop";
-
-function App() {
-  return (
-    <View class="flex-1 flex-row">
-      {/* The sidebar's part of the title bar: past the traffic lights. */}
-      <TitleBar class="h-11 w-60 bg-muted">
-        <Text class="px-3">Library</Text>
-      </TitleBar>
-      {/* The content's part: no padding while the sidebar is shown. */}
-      <TitleBar class="h-11 flex-1 border-b border-border">
-        <Text class="px-3">Inbox</Text>
-      </TitleBar>
-    </View>
-  );
-}
-
-mount(() => (
-  <Window id="main" titleBar={{ style: "hidden" }}>
-    <App />
-  </Window>
-));
 ```
 
 `TitleBar` comes from [`nsh/base`](../modules/nsh-base.md), the `nsh-base` crate in Rust (`title_bar()`). The padding

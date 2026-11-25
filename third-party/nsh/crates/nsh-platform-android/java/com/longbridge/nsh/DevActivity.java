@@ -24,10 +24,30 @@ public final class DevActivity extends Activity {
     /** Created by the system from the manifest. */
     public DevActivity() {}
 
+    /** What the activity made again for a configuration change takes over: the running app. */
+    private static final class Kept {
+        final NshView view;
+        final NshTrust trust;
+
+        Kept(NshView view, NshTrust trust) {
+            this.view = view;
+            this.trust = trust;
+        }
+    }
+
     @Override
     protected void onCreate(Bundle state) {
         super.onCreate(state);
         edgeToEdge(this);
+        // Made again for a configuration change (as AppActivity): the app keeps running.
+        Object last = getLastNonConfigurationInstance();
+        if (last instanceof Kept) {
+            Kept kept = (Kept) last;
+            view = kept.view;
+            trust = kept.trust;
+            view.enterActivity(this);
+            return;
+        }
         // Before the view starts the engine, whose `process.env` reads this
         // process's environment.
         applyEnv(getIntent().getExtras());
@@ -39,9 +59,9 @@ public final class DevActivity extends Activity {
             java.io.File dir = new java.io.File(new java.io.File(getCacheDir(), "nsh-test"), data);
             deleteTree(dir);
             // Its caches too (downloaded images): the app starts with none.
-            view = new NshView(this, trace, dir, new java.io.File(dir, "cache"));
+            view = new NshView(new android.content.MutableContextWrapper(this), trace, dir, new java.io.File(dir, "cache"));
         } else {
-            view = new NshView(this, trace);
+            view = new NshView(new android.content.MutableContextWrapper(this), trace);
         }
         // An app on its own, not a module embedded in another app: no limits.
         view.useStandaloneLimits();
@@ -110,10 +130,20 @@ public final class DevActivity extends Activity {
         if (view == null || !view.handleBack()) super.onBackPressed();
     }
 
+    /** The running app, for the activity made again ({@link #onCreate}). */
+    @Override
+    public Object onRetainNonConfigurationInstance() {
+        return view != null && view.canMove() ? new Kept(view, trust) : null;
+    }
+
     @Override
     protected void onDestroy() {
-        view.destroy();
-        if (trust != null) trust.close();
+        if (isChangingConfigurations() && view.canMove()) {
+            view.leaveActivity();
+        } else {
+            view.destroy();
+            if (trust != null) trust.close();
+        }
         super.onDestroy();
     }
 

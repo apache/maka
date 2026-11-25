@@ -601,6 +601,7 @@ ixdtf@0.6.7																X
 jiff-core@0.1.1												X						X	
 jiff-tzdb-platform@0.1.3												X						X	
 jiff-tzdb@0.1.9												X						X	
+jiff-tzdb@1.0.0												X						X	
 jiff@0.2.38												X						X	
 jiter@0.17.0												X							
 jobserver@0.1.35		X										X							
@@ -771,21 +772,21 @@ nonmax@0.5.5		X										X
 normpath@1.5.2		X										X							
 notify-types@2.1.0		X										X							
 notify@8.2.1								X											
-nsh-base@0.6.0		X																	
-nsh-bundler@0.6.0		X																	
-nsh-core@0.6.0		X																	
-nsh-engine@0.6.0		X																	
-nsh-i18n@0.6.0		X																	
-nsh-js@0.6.0		X																	
-nsh-macros@0.6.0		X																	
-nsh-package@0.6.0		X																	
-nsh-platform-apple@0.6.0		X																	
-nsh-platform-linux@0.6.0		X																	
-nsh-platform-macos@0.6.0		X																	
-nsh-platform-tui@0.6.0		X																	
-nsh-platform-windows@0.6.0		X																	
-nsh-terminal@0.6.0		X																	
-nsh-updater@0.6.0		X																	
+nsh-base@0.7.0		X																	
+nsh-bundler@0.7.0		X																	
+nsh-core@0.7.0		X																	
+nsh-engine@0.7.0		X																	
+nsh-i18n@0.7.0		X																	
+nsh-js@0.7.0		X																	
+nsh-macros@0.7.0		X																	
+nsh-package@0.7.0		X																	
+nsh-platform-apple@0.7.0		X																	
+nsh-platform-linux@0.7.0		X																	
+nsh-platform-macos@0.7.0		X																	
+nsh-platform-tui@0.7.0		X																	
+nsh-platform-windows@0.7.0		X																	
+nsh-terminal@0.7.0		X																	
+nsh-updater@0.7.0		X																	
 ntapi@0.4.3		X										X							
 nu-ansi-term@0.50.3												X							
 num_cpus@1.17.0		X										X							
@@ -1235,7 +1236,7 @@ sys_traits@0.1.29												X
 sys-locale@0.3.2		X										X							
 sysinfo@0.31.4												X							
 system-deps@9.0.1		X										X							
-taffy@0.15.0												X							
+taffy@0.16.0												X							
 tagptr@0.2.0		X										X							
 tap@1.0.1												X							
 tar@0.4.46		X										X							

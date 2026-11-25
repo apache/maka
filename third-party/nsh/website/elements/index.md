@@ -1,6 +1,6 @@
 ---
 title: Elements
-description: The primitives and base components every NSH app is built from, in Rust and TSX, and the props, events and ref methods they all share.
+description: The primitives and base components every NSH app is built from, in TSX and Rust, and the props, events and ref methods they all share.
 order: 1
 ---
 
@@ -12,7 +12,30 @@ Catalyst, an Android `View`, an AppKit, GTK or Win32 view on the desktops), crea
 Everything an app shows is made of them: an app's buttons, cards, rows and screens are its own components, drawn with
 these elements and styled by the app, so the app's look is entirely its own.
 
-Every example on these pages comes in Rust and TSX: pick a tab, and every example on the page follows.
+Every example on these pages comes in TSX and Rust: pick a tab, and every example on the page follows.
+
+```tsx tabs
+import { mount, signal, Text, View } from "nsh";
+import { Window } from "nsh/desktop";
+
+function App() {
+  const count = signal(0);
+  return (
+    <View style={{ flex: 1, alignItems: "center", justifyContent: "center", gap: 12 }}>
+      <Text style={{ fontSize: 24 }}>Tapped {count()} times</Text>
+      <View onPress={() => count.update((n) => n + 1)} class="rounded-lg bg-blue-600 px-4 py-2 active:opacity-60">
+        <Text class="text-white">Tap</Text>
+      </View>
+    </View>
+  );
+}
+
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
+```
 
 ```rust tabs
 use nsh_core::prelude::*;
@@ -36,29 +59,6 @@ fn app() -> impl IntoElement {
                 .child(text("Tap").text_color(white())),
         )
 }
-```
-
-```tsx tabs
-import { mount, signal, Text, View } from "nsh";
-import { Window } from "nsh/desktop";
-
-function App() {
-  const count = signal(0);
-  return (
-    <View style={{ flex: 1, alignItems: "center", justifyContent: "center", gap: 12 }}>
-      <Text style={{ fontSize: 24 }}>Tapped {count()} times</Text>
-      <View onPress={() => count.update((n) => n + 1)} class="rounded-lg bg-blue-600 px-4 py-2 active:opacity-60">
-        <Text class="text-white">Tap</Text>
-      </View>
-    </View>
-  );
-}
-
-mount(() => (
-  <Window id="main">
-    <App />
-  </Window>
-));
 ```
 
 In Rust, the primitives are functions of `nsh_core::prelude` (`view()`, `text(..)`, `image(..)`) and the base
@@ -217,6 +217,12 @@ an `<Input>`, an `ImageStyle` on an `<Image>`, a `ViewStyle` elsewhere.
 | `expandedStyle` | `.expanded(\|s\| ..)`, `.expanded_style(style)` | `aria-expanded:` | While `accessibilityState.expanded` is `true` (a `Popover`'s or `Menu`'s trigger while its popup is open). |
 | `pressedStyle` | `.aria_pressed(\|s\| ..)`, `.pressed_style(style)` | `aria-pressed:` | While `accessibilityState.pressed` is `true` (a toggle button that is on; `"mixed"` is not pressed). Not `activeStyle`, a press in progress. |
 
+```tsx tabs
+<View onPress={save} activeStyle={{ opacity: 0.6 }} hoverStyle={{ backgroundColor: "#1d4ed8" }} class="rounded-lg bg-blue-600 px-4 py-2">
+  <Text class="text-white">Save</Text>
+</View>
+```
+
 ```rust tabs
 view()
     .rounded_lg()
@@ -227,12 +233,6 @@ view()
     .hover(|s| s.bg(rgb(0x1d4ed8)))
     .on_press(save)
     .child(text("Save").text_color(white()))
-```
-
-```tsx tabs
-<View onPress={save} activeStyle={{ opacity: 0.6 }} hoverStyle={{ backgroundColor: "#1d4ed8" }} class="rounded-lg bg-blue-600 px-4 py-2">
-  <Text class="text-white">Save</Text>
-</View>
 ```
 
 ### Hover
@@ -269,6 +269,17 @@ the responder), and its moves reach `onMouseMove` with `pressedButton` set: feed
 those; on iOS and Android the hover reports the pointer with no button down. Moves come at most once a frame, the
 latest one, and always before the `onMouseLeave` that follows them, so a handler can redraw on each move:
 
+```tsx tabs
+// A crosshair over a chart.
+const at = signal<number | null>(null);
+
+<View onMouseMove={(e) => at.set(e.position.x)} onMouseLeave={() => at.set(null)} style={{ height: 200 }}>
+  <If when={at() !== null}>
+    <View style={{ position: "absolute", left: at()!, top: 0, bottom: 0, width: 1, backgroundColor: "#888" }} />
+  </If>
+</View>
+```
+
 ```rust tabs
 // A crosshair over a chart.
 let at = signal(None::<Points>);
@@ -286,17 +297,6 @@ view()
             .w(px(1.0))
             .bg(rgb(0x888888))
     }))
-```
-
-```tsx tabs
-// A crosshair over a chart.
-const at = signal<number | null>(null);
-
-<View onMouseMove={(e) => at.set(e.position.x)} onMouseLeave={() => at.set(null)} style={{ height: 200 }}>
-  <If when={at() !== null}>
-    <View style={{ position: "absolute", left: at()!, top: 0, bottom: 0, width: 1, backgroundColor: "#888" }} />
-  </If>
-</View>
 ```
 
 ### Wheel
@@ -325,6 +325,21 @@ mouse wheel notches, `"points"` for a precise device (a touchpad, a Magic Mouse;
 the DOM's `DOM_DELTA_PIXEL`). In Rust `delta` is a `WheelDelta`, `Lines(Point<f32>)` or `Points(Point<Points>)`, as
 GPUI's `ScrollDelta`; `delta.points(line_height)` gives points either way.
 
+```tsx tabs
+// A canvas: Control + wheel zooms, the wheel pans.
+const zoom = signal(1);
+const offset = signal({ x: 0, y: 0 });
+
+<View
+  style={{ flex: 1 }}
+  onWheel={(e) => {
+    const unit = e.deltaMode === "lines" ? 16 : 1;
+    if (e.modifiers.control) zoom.update((z) => z * Math.min(2, Math.max(0.5, 1 - (e.delta.y * unit) / 200)));
+    else offset.update((o) => ({ x: o.x - e.delta.x * unit, y: o.y - e.delta.y * unit }));
+  }}
+/>
+```
+
 ```rust tabs
 // A canvas: Control + wheel zooms, the wheel pans.
 let zoom = signal(1.0_f32);
@@ -340,21 +355,6 @@ view()
             offset.update(|o| *o = point(o.x - d.x, o.y - d.y));
         }
     })
-```
-
-```tsx tabs
-// A canvas: Control + wheel zooms, the wheel pans.
-const zoom = signal(1);
-const offset = signal({ x: 0, y: 0 });
-
-<View
-  style={{ flex: 1 }}
-  onWheel={(e) => {
-    const unit = e.deltaMode === "lines" ? 16 : 1;
-    if (e.modifiers.control) zoom.update((z) => z * Math.min(2, Math.max(0.5, 1 - (e.delta.y * unit) / 200)));
-    else offset.update((o) => ({ x: o.x - e.delta.x * unit, y: o.y - e.delta.y * unit }));
-  }}
-/>
 ```
 
 `onPinch` hears a touchpad pinch over a view, as GPUI's `on_pinch`, on macOS, Linux, the GPUI backend and Safari.
@@ -393,6 +393,19 @@ exactly as it does without it.
 |---|---|---|---|
 | `tooltip` | `.tooltip(..)` | `JSX.Element` | The hint, an element the app styles: a [`Tooltip`](tooltip.md) of `nsh/base` is the tooltip itself, with its placement, delay and events; any other element is shown as it is. |
 
+```tsx tabs
+<View
+  onPress={save}
+  tooltip={
+    <Tooltip class="rounded-md bg-gray-900 px-2 py-1">
+      <Text class="text-white">Save the document</Text>
+    </Tooltip>
+  }
+>
+  <Text>💾</Text>
+</View>
+```
+
 ```rust tabs
 view()
     .on_press(save)
@@ -407,19 +420,6 @@ view()
     .child(text("💾"))
 ```
 
-```tsx tabs
-<View
-  onPress={save}
-  tooltip={
-    <Tooltip class="rounded-md bg-gray-900 px-2 py-1">
-      <Text class="text-white">Save the document</Text>
-    </Tooltip>
-  }
->
-  <Text>💾</Text>
-</View>
-```
-
 The `Tooltip` sets its own look, placement, delay and events, as GPUI's `.tooltip(..)` takes one. An app with many
 tooltips keeps one small component of its own that wraps a text in its `Tooltip`.
 
@@ -431,6 +431,12 @@ keyboard's Menu key on the focused view; on macOS and Windows also a screen read
 VO-Shift-M, UI Automation's).
 Open the app's own menu there; in TSX, [`Menu.popup`](../modules/nsh-desktop.md) shows the system's:
 
+```tsx tabs
+import { Menu } from "nsh/desktop";
+
+<View onContextMenu={(e) => Menu.popup(rowMenu(row), e.pagePosition)}>…</View>
+```
+
 ```rust tabs
 // The app's own menu, placed where the click was.
 let menu_at = signal(None::<Point<Points>>);
@@ -438,12 +444,6 @@ let menu_at = signal(None::<Point<Points>>);
 view()
     .on_context_menu(move |e: &ContextMenuEvent| menu_at.set(Some(e.page_position)))
     .child(text(row.name.clone()))
-```
-
-```tsx tabs
-import { Menu } from "nsh/desktop";
-
-<View onContextMenu={(e) => Menu.popup(rowMenu(row), e.pagePosition)}>…</View>
 ```
 
 | Prop | Rust | Type | Description |
@@ -468,7 +468,8 @@ position in the text.
 ### Keyboard focus
 
 On macOS, Windows, the web and Android, Tab moves the keyboard focus between its stops in tree order: the inputs, the views
-that take presses, and every `focusable` view. Focus styles (`focus:`, `.focus(..)`) style the focused view, and
+that take presses, and every `focusable` view; on macOS and in `nsh test`, Tab passes over a disabled input and one
+with `focusable={false}`, as it does over such views. Focus styles (`focus:`, `.focus(..)`) style the focused view, and
 Return or Space presses it when it takes presses. A click presses a view without focusing it, so focus styles show
 for keyboard focus only. On Android a pressable view is a hardware-keyboard stop, while a touch-mode tap focuses
 only an explicit `focusable` view (or one a ref focused), so tapping a button leaves a field editing; at the first
@@ -501,7 +502,26 @@ its ref's `on_focus_in(..)` and `on_focus_out(..)`: moving between views inside 
 | `onFocus` | `.on_focus(..)` | `() => void` | | Tab (or `focus()`) gave the view the keyboard focus. |
 | `onBlur` | `.on_blur(..)` | `() => void` | | The keyboard focus left the view. |
 | `onKeyDown` / `onKeyUp` | `.on_key_down(..)` / `.on_key_up(..)` | `(e: KeyEvent) => void` | | A hardware key went down on the focused view or inside it / came up on it. `KeyEvent` is `{ key, code, modifiers, repeat, defaultPrevented }`; one event bubbles to the enabled listening ancestors within the native window ([hardware keys](./keyboard.md#hardware-keys-on-custom-views)). |
-| `captureKeys` | `.capture_keys(..)` | `"none" \| "all" \| readonly string[]` | `"none"` | Keys the view, or a focused descendant, consumes before native defaults: canonical keystrokes such as `["mod+k", "escape"]`. `defaultPrevented` reports the decision; app shortcuts take precedence and native inputs keep their editing keys ([hardware keys](./keyboard.md#hardware-keys-on-custom-views)). |
+| `captureKeys` | `.capture_keys(..)` | `"none" \| "all" \| "text" \| readonly string[]` | `"none"` | Keys the view, or a focused descendant, consumes before native defaults: canonical keystrokes such as `["mod+k", "escape"]`. `defaultPrevented` reports the decision; app shortcuts take precedence and native inputs keep their editing keys ([hardware keys](./keyboard.md#hardware-keys-on-custom-views)). |
+
+```tsx tabs
+<View class="rounded-lg p-3 focus:bg-sky-100" onPress={open}>
+  <Text>Open</Text>
+</View>
+
+{/* An overlay's backdrop: a click closes it, Tab goes past it to the content. */}
+<View class="absolute inset-0" focusable={false} onPress={close} />
+
+{/* A chart in a card: Tab stops at the chart, a click opens the card's page. */}
+<View onPress={openPage}>
+  <View
+    class="h-40 focus:bg-sky-100"
+    focusable
+    onFocus={() => focused.set(true)}
+    onBlur={() => focused.set(false)}
+  />
+</View>
+```
 
 ```rust tabs
 view()
@@ -523,25 +543,6 @@ view().on_press(open_page).child(
         .on_focus(move || focused.set(true))
         .on_blur(move || focused.set(false)),
 )
-```
-
-```tsx tabs
-<View class="rounded-lg p-3 focus:bg-sky-100" onPress={open}>
-  <Text>Open</Text>
-</View>
-
-{/* An overlay's backdrop: a click closes it, Tab goes past it to the content. */}
-<View class="absolute inset-0" focusable={false} onPress={close} />
-
-{/* A chart in a card: Tab stops at the chart, a click opens the card's page. */}
-<View onPress={openPage}>
-  <View
-    class="h-40 focus:bg-sky-100"
-    focusable
-    onFocus={() => focused.set(true)}
-    onBlur={() => focused.set(false)}
-  />
-</View>
 ```
 
 ### Layout and identity
@@ -572,6 +573,13 @@ A link is the `Link`'s to press: a plain click is its `onOpen` (with `openWith="
 does); crawlers follow the `href`, and a click with a modifier key or the middle button opens it as a browser link
 does.
 
+```tsx tabs
+<Link href="/notes/q3-earnings" openWith="app" onOpen={() => nav.push({ name: "note", slug: "q3-earnings" })}>
+  <Text role="header" accessibilityLevel={2}>Q3 earnings</Text>
+  <Text web={{ element: "p" }}>Revenue grew 12%.</Text>
+</Link>
+```
+
 ```rust tabs
 use nsh_base::{LinkOpenWith, link};
 use nsh_core::{WebElement, prelude::*};
@@ -582,13 +590,6 @@ link()
     .on_open(move |_: &SharedString| routes.update(|r| r.push(Route::Note("q3-earnings".into()))))
     .child(text("Q3 earnings").role(AccessibilityRole::Header).accessibility_level(2))
     .child(text("Revenue grew 12%.").web_element(WebElement::P))
-```
-
-```tsx tabs
-<Link href="/notes/q3-earnings" openWith="app" onOpen={() => nav.push({ name: "note", slug: "q3-earnings" })}>
-  <Text role="header" accessibilityLevel={2}>Q3 earnings</Text>
-  <Text web={{ element: "p" }}>Revenue grew 12%.</Text>
-</Link>
 ```
 
 [The web](../docs/web.md#search-engines) shows a whole site built this way.
@@ -680,6 +681,12 @@ their platform.
 | `windowControl` | `.window_control(..)` | `"minimize" \| "maximize" \| "close"` | The view is that window button of a title bar the app draws: the platform carries out its press, and assistive technologies see the button. |
 | `windowResize` | `.window_resize(..)` | `"top" \| "bottom" \| "left" \| "right" \| "topLeft" \| "topRight" \| "bottomLeft" \| "bottomRight"` | Pressing the view resizes a frameless window by that edge or corner. |
 
+```tsx tabs
+<View onPress={save} android={{ ripple: { color: "#00000022" }, elevation: 2 }} class="rounded-lg bg-white p-4">
+  <Text>Save</Text>
+</View>
+```
+
 ```rust tabs
 use nsh_core::Ripple;
 
@@ -691,12 +698,6 @@ view()
     .ripple(Ripple { color: Some(rgba(0x00000022).into()), ..Ripple::default() })
     .on_press(save)
     .child(text("Save"))
-```
-
-```tsx tabs
-<View onPress={save} android={{ ripple: { color: "#00000022" }, elevation: 2 }} class="rounded-lg bg-white p-4">
-  <Text>Save</Text>
-</View>
 ```
 
 See [platform-specific code](../docs/platform-specific.md).
@@ -729,14 +730,6 @@ of its own.
 | `seek(seconds)` | `seek(seconds)` | `VideoRef` | Jumps to a time. |
 | `command(name, args?)` | `command(name, args)` | `NativeComponentRef` | Calls a command of a registered native component ([`nativeComponent`](../modules/nsh.md#nativecomponent-and-nativemodule)). |
 
-```rust tabs
-let field = element_ref();
-
-view()
-    .on_press(move || field.focus())
-    .child(input().element_ref(&field).placeholder("Tap the row to type"))
-```
-
 ```tsx tabs
 import { type InputRef, View } from "nsh";
 import { Input } from "nsh/base";
@@ -745,6 +738,14 @@ let input!: InputRef;
 <View onPress={() => input.focus()}>
   <Input ref={input} placeholder="Tap the row to type" />
 </View>;
+```
+
+```rust tabs
+let field = element_ref();
+
+view()
+    .on_press(move || field.focus())
+    .child(input().element_ref(&field).placeholder("Tap the row to type"))
 ```
 
 ## Why handlers never block the UI

@@ -1,6 +1,6 @@
 ---
 title: JSX and components
-description: How NSH describes UI in Rust and in TSX - elements, components, props, children, control flow, refs and spreads - and how the JSX compiler and Rust's builders make the same native elements.
+description: How NSH describes UI in TSX and in Rust - elements, components, props, children, control flow, refs and spreads - and how the JSX compiler and Rust's builders make the same native elements.
 order: 30
 group: ui
 demo: guide-components
@@ -8,7 +8,7 @@ demo: guide-components
 
 # JSX and components
 
-NSH apps describe their UI with elements and components, in Rust or in TSX. Rust builds elements with functions and typed builder methods (`view().gap_4().child(..)`); TSX writes them as JSX, which NSH's compiler turns into direct calls of the same native renderer, with no React and no virtual DOM. Either way, a component is a function that runs once to build its part of the tree. What keeps the UI up to date afterwards is [reactivity](./reactivity.md): the bindings that read signals are followed natively, and only they run again.
+NSH apps describe their UI with elements and components, in TSX or in Rust. TSX writes them as JSX, which NSH's compiler turns into direct calls of the native renderer, with no React and no virtual DOM; Rust builds the same elements with functions and typed builder methods (`view().gap_4().child(..)`). Either way, a component is a function that runs once to build its part of the tree. What keeps the UI up to date afterwards is [reactivity](./reactivity.md): the bindings that read signals are followed natively, and only they run again.
 
 ## Elements
 
@@ -26,12 +26,12 @@ The **host elements** are each backed by a native view. Rust makes them with the
 | `nsh_base::dialog()` | `<Dialog>` from `nsh/base` | A presented layer | [Elements](../elements/index.md) |
 | `when(..)`, `each(..)` | `<If>`, `<Each>` | Control flow, no view of its own | [Control flow](../elements/control-flow.md) |
 
-```rust tabs
-use nsh_core::prelude::*;   // view, text, image, scroll, input, virtual_list, ..., when, each
-```
-
 ```tsx tabs
 import { Image, mount, Text, View } from "nsh";
+```
+
+```rust tabs
+use nsh_core::prelude::*;   // view, text, image, scroll, input, virtual_list, ..., when, each
 ```
 
 In Rust, styles are typed methods named as Tailwind's utilities are (`.px_4()`, `.rounded_lg()`, `.bg(..)`), and
@@ -40,18 +40,18 @@ their camelCase names (`onPress`, `allowFontScaling`, `backgroundColor`); every 
 `classList` ([Tailwind](./tailwind.md)), `ref`, touch handlers, accessibility props and `testID`, and platform-only
 props go in `ios={{…}}`, `android={{…}}`, `macos={{…}}`, `windows={{…}}`, `desktop={{…}}` or `web={{…}}`, where only the current platform's object is sent:
 
+```tsx tabs
+<View android={{ elevation: 4, ripple: { color: "#0001" } }} style={{ borderRadius: 12 }} onPress={() => open.set(true)}>
+  <Text style={{ fontWeight: "600" }}>Open</Text>
+</View>
+```
+
 ```rust tabs
 view()
     .rounded(px(12.0))
     .bg(move || theme().background)
     .on_press(move || open.set(true))
     .child(text("Open").font_weight(FontWeight::SEMIBOLD))
-```
-
-```tsx tabs
-<View android={{ elevation: 4, ripple: { color: "#0001" } }} style={{ borderRadius: 12 }} onPress={() => open.set(true)}>
-  <Text style={{ fontWeight: "600" }}>Open</Text>
-</View>
 ```
 
 TSX tags are PascalCase so that TypeScript checks each one against the binding it names: a lowercase tag is checked against one global type per name, so a generic component such as `List` or `Each` could not infer its rows' type from `each` / `of`, and an app's own components would not be typed at all. The imports cost nothing at run time: the compiler recognizes the primitives through their imports (aliases too) and makes the native element in place, so `<View>` is a direct call of the renderer and the import is dropped from the bundle. A lowercase tag is a build error that says what to write:
@@ -69,6 +69,18 @@ x lowercase tag <view>: tags are PascalCase components: write <View> and
 The look of an app is the app's own. NSH provides two layers: the primitives (the elements above, styles, Tailwind classes) and the unstyled base components of [`nsh/base`](../modules/nsh-base.md) (`nsh_base` in Rust), which own behavior such as navigation, dialogs, the keyboard, the status bar and safe areas. The third layer, the component library, is yours: buttons, cards and every other piece of your UI are components you write on those two layers, in your app's crate ([Building with Rust](./rust.md)) or in TSX, or a library from the community ([Three layers](./architecture.md#three-layers)).
 
 A Rust component is a `#[component] fn` that takes its props struct (and, when it has events, a `Scope` to emit them) and returns its elements. `#[component]` also makes its constructor, the function's name in snake case: `Badge` is placed with `badge()`, as `view()` places a view, with a setter per prop (`.label(..)`, `.color(..)`: a value, a signal or a closure). A TSX component is a function that takes a props object and returns JSX:
+
+```tsx tabs
+function Badge(props: { label: string; color?: string }) {
+  return (
+    <View style={{ borderRadius: 999, paddingHorizontal: 10, paddingVertical: 4, backgroundColor: props.color ?? "#ddf4ff" }}>
+      <Text style={{ fontSize: 13, fontWeight: "600" }}>{props.label}</Text>
+    </View>
+  );
+}
+
+<Badge label={`${unread()} new`} color="#fff8c5" />
+```
 
 ```rust tabs
 #[derive(Debug, Clone, PartialEq, Props)]
@@ -97,31 +109,9 @@ badge()
     .color(rgb(0xfff8c5))
 ```
 
-```tsx tabs
-function Badge(props: { label: string; color?: string }) {
-  return (
-    <View style={{ borderRadius: 999, paddingHorizontal: 10, paddingVertical: 4, backgroundColor: props.color ?? "#ddf4ff" }}>
-      <Text style={{ fontSize: 13, fontWeight: "600" }}>{props.label}</Text>
-    </View>
-  );
-}
-
-<Badge label={`${unread()} new`} color="#fff8c5" />
-```
-
 The function runs **once**, when the component is created, and does not track what it reads: there is no re-rendering. Code in its body (creating signals, starting effects, computing constants) runs one time. The elements it returns stay connected to the props and signals they read, so `Badge` above updates its text whenever `unread` changes, without running `Badge` again.
 
 Write a `#[component]` when the UI has props or events of its own, or when a TSX entry imports it: a Rust component is registered under its type (`registry.register::<Badge>()`), with props typed from the struct ([Building with Rust](./rust.md#extending-a-rust-app-with-tsx)). For a piece of UI only Rust uses, a plain function returning `impl IntoElement` is enough, its arguments the props. In TSX, a component may return an element, a string or number, an array, `null`, or a function returning any of these (which the renderer follows); the `Component<P>` type from `nsh` describes one:
-
-```rust tabs
-fn row(title: impl Into<SharedString>, content: impl IntoElement) -> impl IntoElement {
-    view()
-        .flex_row()
-        .gap_2()
-        .child(text(title.into()))
-        .child(content)
-}
-```
 
 ```tsx tabs
 import type { Component, JSX } from "nsh";
@@ -135,16 +125,19 @@ const Row: Component<{ title: string; children?: JSX.Element }> = (props) => (
 );
 ```
 
+```rust tabs
+fn row(title: impl Into<SharedString>, content: impl IntoElement) -> impl IntoElement {
+    view()
+        .flex_row()
+        .gap_2()
+        .child(text(title.into()))
+        .child(content)
+}
+```
+
 ### What runs again
 
 A value given to an element is set once; a binding follows what it reads. In Rust a binding is a closure (or a signal, a memo, a prop) given where a value goes. In TSX, the compiler decides for each expression in JSX: an expression changes when it **calls a function or reads a property** (outside nested functions), and everything else is set once:
-
-```rust tabs
-text(move || format!("{}", count.get()))     // follows count
-text(props.title)                            // follows the prop
-text(label.clone())                          // a plain value: set once
-view().opacity(move || if busy.get() { 0.5_f32 } else { 1.0 })   // follows busy
-```
 
 ```tsx tabs
 <Text>{count()}</Text>              // follows count
@@ -152,6 +145,13 @@ view().opacity(move || if busy.get() { 0.5_f32 } else { 1.0 })   // follows busy
 <Text>{user.name}</Text>            // re-read when something it depends on changes
 <Text>{label}</Text>                // a plain variable: set once
 <View style={{ opacity: busy() ? 0.5 : 1 }} />   // the style object is rebuilt when busy changes
+```
+
+```rust tabs
+text(move || format!("{}", count.get()))     // follows count
+text(props.title)                            // follows the prop
+text(label.clone())                          // a plain value: set once
+view().opacity(move || if busy.get() { 0.5_f32 } else { 1.0 })   // follows busy
 ```
 
 A changing prop or child is a small native effect that sets that one prop or replaces that one child. Styles are diffed in Rust, so a style that changes only sends the properties that changed.
@@ -163,6 +163,19 @@ Event handlers are set once: a closure in Rust, a function or a name in TSX (`on
 A Rust component's props are the fields of its `#[derive(Props)]` struct, each a `Prop<T>`: a value, or a binding the parent passed. Read one in a binding (`text(props.title)`, `move || props.title.get()`) to follow it; `props.title.get()` in the body reads it once. Fields with `#[prop(default)]` or `#[prop(default = …)]`, and `Option`s, are optional. The constructor starts every prop at its default, and a parent calls the setters of the ones it needs: `badge().label("New")`.
 
 A TSX prop given a changing expression is passed as a getter: reading `props.title` calls it, which is what lets the JSX that reads it follow it. Static props are plain values. In both, props are read where they are used:
+
+```tsx tabs
+// Wrong: reads the prop once, when the component runs.
+function Title(props: { text: string }) {
+  const { text } = props;
+  return <Text>{text}</Text>;
+}
+
+// Right: reads it in JSX, which follows it.
+function Title(props: { text: string }) {
+  return <Text>{props.text}</Text>;
+}
+```
 
 ```rust tabs
 // Wrong: reads the prop once, when the component runs.
@@ -179,19 +192,6 @@ fn Title(props: TitleProps) -> impl IntoElement {
 }
 ```
 
-```tsx tabs
-// Wrong: reads the prop once, when the component runs.
-function Title(props: { text: string }) {
-  const { text } = props;
-  return <Text>{text}</Text>;
-}
-
-// Right: reads it in JSX, which follows it.
-function Title(props: { text: string }) {
-  return <Text>{props.text}</Text>;
-}
-```
-
 A TSX component that takes its props apart in its parameter, `function Title({ text }: …)`, reads them the same once, and the build warns of it with the props to read instead:
 
 ```text
@@ -202,6 +202,13 @@ A prop the component wants only once, such as an id it starts with, is read in t
 
 In TSX the same applies to default values: write `props.color ?? "#ddf4ff"` in the JSX rather than destructuring with a default. To compute something from props, use a closure or [`computed`](./reactivity.md#computed):
 
+```tsx tabs
+function Price(props: { cents: number }) {
+  const formatted = () => `$${(props.cents / 100).toFixed(2)}`;
+  return <Text>{formatted()}</Text>;
+}
+```
+
 ```rust tabs
 #[component]
 fn Price(props: PriceProps) -> impl IntoElement {
@@ -210,16 +217,24 @@ fn Price(props: PriceProps) -> impl IntoElement {
 }
 ```
 
-```tsx tabs
-function Price(props: { cents: number }) {
-  const formatted = () => `$${(props.cents / 100).toFixed(2)}`;
-  return <Text>{formatted()}</Text>;
-}
-```
-
 ### Children
 
 What a parent places in a component arrives as its children: a `children: Prop<Children>` field in Rust, which the parent fills with `.child(..)`; `props.children` in TSX, a getter that builds those elements when read:
+
+```tsx tabs
+function Card(props: { title: string; children?: JSX.Element }) {
+  return (
+    <View style={{ padding: 14, borderRadius: 12, backgroundColor: "#ffffff", gap: 8 }}>
+      <Text style={{ fontWeight: "600" }}>{props.title}</Text>
+      {props.children}
+    </View>
+  );
+}
+
+<Card title="Account">
+  <Text>Signed in as {user().name}</Text>
+</Card>
+```
 
 ```rust tabs
 #[derive(Debug, Clone, PartialEq, Props)]
@@ -246,32 +261,9 @@ card()
     .child(text(move || format!("Signed in as {}", user.get().name)))
 ```
 
-```tsx tabs
-function Card(props: { title: string; children?: JSX.Element }) {
-  return (
-    <View style={{ padding: 14, borderRadius: 12, backgroundColor: "#ffffff", gap: 8 }}>
-      <Text style={{ fontWeight: "600" }}>{props.title}</Text>
-      {props.children}
-    </View>
-  );
-}
-
-<Card title="Account">
-  <Text>Signed in as {user().name}</Text>
-</Card>
-```
-
 In TSX, each read of `props.children` builds the children again (new native views): read it once, in the place where the children go. Among several children, one that changes (an `<If>`, an `<Each>`, `{cond() ? a : b}`) arrives as a function, and `{props.children}` updates that one alone: its siblings keep their views, an input its text and focus. Fragments (`<>…</>`) group elements without a view.
 
 Children can also be made by a function the component calls with arguments, a render callback:
-
-```rust tabs
-fn repeat<E: IntoElement>(times: usize, row: impl Fn(usize) -> E) -> impl IntoElement {
-    view().child((0..times).map(row))
-}
-
-repeat(3, |i| text(format!("Row {i}")))
-```
 
 ```tsx tabs
 function Repeat(props: { times: number; children: (i: number) => JSX.Element }) {
@@ -281,20 +273,17 @@ function Repeat(props: { times: number; children: (i: number) => JSX.Element }) 
 <Repeat times={3}>{(i) => <Text>Row {i}</Text>}</Repeat>
 ```
 
+```rust tabs
+fn repeat<E: IntoElement>(times: usize, row: impl Fn(usize) -> E) -> impl IntoElement {
+    view().child((0..times).map(row))
+}
+
+repeat(3, |i| text(format!("Row {i}")))
+```
+
 ## Control flow
 
 `when` and `each` in Rust, `<If>` and `<Each>` in TSX, are built-in control flow. They render no view of their own.
-
-```rust tabs
-when(move || user.get().is_some(), move || {
-    text(move || format!("Hello, {}", user.get().map(|u| u.name).unwrap_or_default()))
-})
-.otherwise(|| text("Signed out"))
-
-each(todos, |todo| todo.id, |todo, index| {
-    text(move || format!("{}. {}", index.get() + 1, todo.get().title))
-})
-```
 
 ```tsx tabs
 <If when={user()} else={<Text>Signed out</Text>}>
@@ -310,6 +299,17 @@ each(todos, |todo| todo.id, |todo, index| {
 </Each>
 ```
 
+```rust tabs
+when(move || user.get().is_some(), move || {
+    text(move || format!("Hello, {}", user.get().map(|u| u.name).unwrap_or_default()))
+})
+.otherwise(|| text("Signed out"))
+
+each(todos, |todo| todo.id, |todo, index| {
+    text(move || format!("{}. {}", index.get() + 1, todo.get().title))
+})
+```
+
 - **`when`** / **`<If>`** shows its branch while the condition holds, else the `otherwise` / `else` branch. It renders a branch again only when whether the condition holds changes, not every time the condition is re-evaluated. In TSX, a function child gets an accessor of `when`'s value, typed without `null` and `undefined`: `u()` is the user while the branch shows, and follows it when it changes.
 - **`each`** / **`<Each>`** renders a row per item, made by its row function. Rows are kept by key (Rust: the key function; TSX: `key`, by default the item itself, objects by identity and primitives by value): when the list changes, kept rows are moved rather than rebuilt, and new rows are made only for new keys. The row function receives **signals** of the item and its index (`todo.get()` and `index.get()` in Rust, `todo()` and `index()` in TSX), because a kept row's item and position can change. In TSX, `key="index"` (or `key={(item, i) => i}`) keeps rows by position instead: a list of strings that changes in place, such as text streamed in, keeps its rows and only their `item()` changes.
 
@@ -320,15 +320,6 @@ For long or infinite lists, use [`List`](./lists.md) (`virtual_list` in Rust): i
 ## Refs
 
 A ref names a host element for imperative calls: `focus()`, `blur()`, `scroll_to()` / `scrollTo()`, `scroll_to_index()` / `scrollToIndex()`, `measure()` ([where a view is](./touch-and-gestures.md#where-a-view-is-measure)), ... In Rust, `element_ref()` makes one and `.element_ref(&handle)` puts it on an element; in TSX, `ref` gives you the element's ref, whose type is the element's own (`InputRef` here, `ViewRef` for a `View`; see [ref methods](../elements/index.md#ref-methods)):
-
-```rust tabs
-fn search() -> impl IntoElement {
-    let field = element_ref();
-    view()
-        .child(input().element_ref(&field).placeholder("Search"))
-        .child(text("Focus").on_press(move || field.focus()))
-}
-```
 
 ```tsx tabs
 import type { InputRef } from "nsh";
@@ -345,6 +336,15 @@ function Search() {
       </View>
     </View>
   );
+}
+```
+
+```rust tabs
+fn search() -> impl IntoElement {
+    let field = element_ref();
+    view()
+        .child(input().element_ref(&field).placeholder("Search"))
+        .child(text("Focus").on_press(move || field.focus()))
 }
 ```
 
@@ -390,6 +390,20 @@ function Field(props: InputProps & { label: string }) {
 
 A Rust element is whatever the code calls: a primitive's function, a component's constructor (`badge()`, `nsh_base::button()`), or a function of your own. A TSX tag names a binding in scope, as usual: `<Badge />`, `<Theme.Provider>`, a `<Button>` of your own. A tag that names nothing in scope is a build error, except `<If>` and `<Each>`, which are globals.
 
+```tsx tabs
+import { Text, View } from "nsh";
+
+function Button(props: { title: string; onPress: () => void }) {
+  return (
+    <View onPress={props.onPress} activeStyle={{ opacity: 0.6 }} role="button" class="rounded-lg bg-blue-600 px-5 py-3">
+      <Text class="text-base font-semibold text-white">{props.title}</Text>
+    </View>
+  );
+}
+
+<Button title="Save" onPress={save} />
+```
+
 ```rust tabs
 /// The app's button: a press target styled by the app.
 fn primary_button(title: &'static str, on_press: impl Fn() + 'static) -> impl IntoElement {
@@ -407,20 +421,6 @@ fn primary_button(title: &'static str, on_press: impl Fn() + 'static) -> impl In
 primary_button("Save", save)
 ```
 
-```tsx tabs
-import { Text, View } from "nsh";
-
-function Button(props: { title: string; onPress: () => void }) {
-  return (
-    <View onPress={props.onPress} activeStyle={{ opacity: 0.6 }} role="button" class="rounded-lg bg-blue-600 px-5 py-3">
-      <Text class="text-base font-semibold text-white">{props.title}</Text>
-    </View>
-  );
-}
-
-<Button title="Save" onPress={save} />
-```
-
 `nsh_base`'s `Button` (`button()` in Rust, `<Button>` from `nsh/base`) is the unstyled press target with the disabled and selected states and their accessibility; the app gives it its look: `button().disabled(move || saving.get()).on_press(move || save()).px_4().active(|s| s.opacity(0.6)).child(text("Save"))`.
 
 In TSX, your bindings win over the globals: a component named `Each` in scope makes `<Each>` that component. A primitive is recognized by its import, so `import { View as Box } from "nsh"` makes `<Box>` a view, and a component of your own named `Text` is just your component. The primitives are real components too: `const Tag = inline ? Text : View;` and then `<Tag>…</Tag>` works.
@@ -435,6 +435,20 @@ Components are typed by their own declarations: Rust's props structs are checked
 > is how an app that opens more than one window declares them.
 
 A Rust app's root is the component `nsh.json`'s `"root"` names; `nsh run` and `nsh package` mount it. A TSX entry calls `mount(App)` to render the root component (`mount(App, props)` passes it props). On the desktops the app root is a host, not a surface: it declares the app's windows as top-level [`<Window>`](./windows.md) scenes, and a window's content fills that window; a root that returns views instead renders them in the implicit first window, as a released app's main window was. Off the desktops (phones, the web) the root's view is the app's screen. Give the content `flex: 1` so it fills the window, and a background color: the platform's own background shows through otherwise.
+
+```tsx tabs
+import { Window } from "nsh/desktop";
+
+mount(() => (
+  <Window id="main">
+    {() => (
+      <View style={{ flex: 1, backgroundColor: "#ffffff" }}>
+        <App />
+      </View>
+    )}
+  </Window>
+));
+```
 
 ```rust tabs
 // nsh.json: { "rust": ".", "root": "App" }
@@ -451,20 +465,6 @@ pub fn App() -> impl IntoElement {
     };
     window().id("main").content(content)
 }
-```
-
-```tsx tabs
-import { Window } from "nsh/desktop";
-
-mount(() => (
-  <Window id="main">
-    {() => (
-      <View style={{ flex: 1, backgroundColor: "#ffffff" }}>
-        <App />
-      </View>
-    )}
-  </Window>
-));
 ```
 
 ## Related

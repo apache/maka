@@ -573,6 +573,10 @@ impl Native for LinuxNative {
         self.on_main(|s| s.animating()).unwrap_or(false)
     }
 
+    fn opening(&self) -> bool {
+        self.on_main(|s| crate::window::opening(s)).unwrap_or(false)
+    }
+
     fn screenshot(&self) -> Result<Vec<u8>, String> {
         let (tx, rx) = mpsc::channel();
         let key = self.key;

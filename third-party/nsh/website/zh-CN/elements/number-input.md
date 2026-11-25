@@ -12,30 +12,6 @@ demo: el-number-input
 `NumberInput` 没有自己的颜色、尺寸、边框、图标或文字。它由减少按钮、夹在应用的 `prefix` 和 `suffix` 之间的输入框、增加按钮组成（或用 `controlsRight` 变成夹在两者之间的输入框和一列放着两个按钮的控件列），
 应用为每个部件设置样式并填充按钮内容。
 
-```rust tabs
-use nsh_base::{number_input, theme};
-use nsh_core::prelude::*;
-
-fn tickets(count: Signal<Option<f64>>) -> impl IntoElement {
-    number_input()
-        .value(move || count.get())
-        .min(1.0)
-        .max(10.0)
-        .accessibility_label("Tickets")
-        .on_change(move |next: &Option<f64>| count.set(*next))
-        .h(px(32.0))
-        .flex_row()
-        .rounded(px(8.0))
-        .border_1()
-        .border_color(move || theme().input)
-        .input_style(|s| s.flex_1().text_center().text_color(move || theme().foreground))
-        .decrement_button_style(|s| s.w(px(32.0)).items_center().justify_center())
-        .increment_button_style(|s| s.w(px(32.0)).items_center().justify_center())
-        .decrement_button(text("−"))
-        .increment_button(text("+"))
-}
-```
-
 ```tsx tabs
 import { mount, signal, Text } from "nsh";
 import { NumberInput } from "nsh/base";
@@ -65,6 +41,30 @@ mount(() => (
     <App />
   </Window>
 ));
+```
+
+```rust tabs
+use nsh_base::{number_input, theme};
+use nsh_core::prelude::*;
+
+fn tickets(count: Signal<Option<f64>>) -> impl IntoElement {
+    number_input()
+        .value(move || count.get())
+        .min(1.0)
+        .max(10.0)
+        .accessibility_label("Tickets")
+        .on_change(move |next: &Option<f64>| count.set(*next))
+        .h(px(32.0))
+        .flex_row()
+        .rounded(px(8.0))
+        .border_1()
+        .border_color(move || theme().input)
+        .input_style(|s| s.flex_1().text_center().text_color(move || theme().foreground))
+        .decrement_button_style(|s| s.w(px(32.0)).items_center().justify_center())
+        .increment_button_style(|s| s.w(px(32.0)).items_center().justify_center())
+        .decrement_button(text("−"))
+        .increment_button(text("+"))
+}
 ```
 
 `NumberInput` 来自 [`nsh/base`](../modules/nsh-base.md)，在 Rust 中是 `nsh-base` crate。在 Rust 中，`number_input()` 创建一个数字输入框，每个属性一个

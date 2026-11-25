@@ -1,7 +1,8 @@
 # Writing an NSH app in Rust
 
-Start here for an app, or part of an app, written in Rust. Rust is the preferred mode: the whole app is native code,
-no JavaScript VM ships with it, and `cargo check` and `cargo test` cover the real UI.
+Start here for Rust code in an app: an nshm crate that TSX screens import ([mixed.md](mixed.md) covers the join), or
+a whole app in Rust. A whole Rust app is native code, no JavaScript VM ships with it, and `cargo check` and
+`cargo test` cover the real UI; choose it when the app's core is heavy computation or system work.
 
 - [rust-ui.md](rust-ui.md): the components of `nsh_base`, family by family.
 - [rust-testing.md](rust-testing.md): `cargo test` with `Headless`, `nsh test`, platform runs.

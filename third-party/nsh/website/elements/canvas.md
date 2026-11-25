@@ -13,31 +13,6 @@ signatures, custom shapes. The drawing code records operations; the platform rep
 iOS and Mac Catalyst, `android.graphics.Canvas` on Android) at the screen's resolution. Rust makes one with
 `canvas(painter)`, a `Painter` recording the drawing; TSX with `<Canvas>` from `nsh` and its `draw` function.
 
-```rust tabs
-use std::f32::consts::{FRAC_PI_2, TAU};
-
-use nsh_core::{canvas::LineCap, prelude::*};
-
-/// A progress ring, 120 points square.
-fn ring(progress: f32) -> impl IntoElement {
-    let (center, radius) = (60.0, 50.0);
-    canvas(
-        Painter::new()
-            .line_width(12.0)
-            .line_cap(LineCap::Round)
-            .stroke_color(rgb(0xe5e7eb))
-            .begin_path()
-            .arc(center, center, radius, 0.0, TAU)
-            .stroke()
-            .stroke_color(rgb(0x6366f1))
-            .begin_path()
-            .arc(center, center, radius, -FRAC_PI_2, -FRAC_PI_2 + progress * TAU)
-            .stroke(),
-    )
-    .size(px(120.0))
-}
-```
-
 ```tsx tabs
 import { Canvas, mount } from "nsh";
 import { Window } from "nsh/desktop";
@@ -70,6 +45,31 @@ mount(() => (
 ));
 ```
 
+```rust tabs
+use std::f32::consts::{FRAC_PI_2, TAU};
+
+use nsh_core::{canvas::LineCap, prelude::*};
+
+/// A progress ring, 120 points square.
+fn ring(progress: f32) -> impl IntoElement {
+    let (center, radius) = (60.0, 50.0);
+    canvas(
+        Painter::new()
+            .line_width(12.0)
+            .line_cap(LineCap::Round)
+            .stroke_color(rgb(0xe5e7eb))
+            .begin_path()
+            .arc(center, center, radius, 0.0, TAU)
+            .stroke()
+            .stroke_color(rgb(0x6366f1))
+            .begin_path()
+            .arc(center, center, radius, -FRAC_PI_2, -FRAC_PI_2 + progress * TAU)
+            .stroke(),
+    )
+    .size(px(120.0))
+}
+```
+
 In TSX, `Canvas` creates the native canvas view, measures it, and runs your `draw` function with a context and the
 canvas's size (see the [Canvas API](../modules/nsh-canvas.md)). In Rust, `canvas(..)` takes a `Painter`, or a closure
 returning one: the closure draws again when what it reads changes, and the size comes from `on_layout` when the
@@ -91,6 +91,20 @@ give it.
 
 The drawing is tracked like an effect: reading a signal inside it subscribes the drawing to that signal.
 
+```tsx tabs
+const values = signal([12, 40, 28, 64]);
+
+<Canvas
+  style={{ height: 160 }}
+  draw={(cx, { width, height }) => {
+    const data = values(); // a change of values() redraws
+    const step = width / data.length;
+    cx.fillStyle = "#0969da";
+    data.forEach((v, i) => cx.fillRect(i * step + 4, height - v, step - 8, v));
+  }}
+/>;
+```
+
 ```rust tabs
 let values = signal(vec![12.0_f32, 40.0, 28.0, 64.0]);
 let width = signal(0.0_f32);
@@ -107,39 +121,9 @@ canvas(move || {
 .on_layout(move |frame: &Bounds<Points>| width.set(frame.size.width.0))
 ```
 
-```tsx tabs
-const values = signal([12, 40, 28, 64]);
-
-<Canvas
-  style={{ height: 160 }}
-  draw={(cx, { width, height }) => {
-    const data = values(); // a change of values() redraws
-    const step = width / data.length;
-    cx.fillStyle = "#0969da";
-    data.forEach((v, i) => cx.fillRect(i * step + 4, height - v, step - 8, v));
-  }}
-/>;
-```
-
 Numbers and colors may also be [native animated values](../modules/nsh.md#animation) (`CanvasNumber`, `CanvasPaint`;
 in Rust a `&AnimatedValue` wherever a number goes): the platform then redraws on its own while they animate, with no
 work in the app's code per frame.
-
-```rust tabs
-use std::f32::consts::TAU;
-
-let angle = animated_value(0.0);
-angle.timing(TAU, 1000.0, Easing::Linear);
-
-canvas(
-    Painter::new()
-        .translate(40.0, 40.0)
-        .rotate(&angle) // animates natively
-        .fill_color(rgb(0xcf222e))
-        .fill_rect(-20.0, -4.0, 40.0, 8.0),
-)
-.size(px(80.0))
-```
 
 ```tsx tabs
 import { Canvas } from "nsh";
@@ -157,6 +141,22 @@ Animated.timing(angle, { toValue: Math.PI * 2, duration: 1000 }).start();
     cx.fillRect(-20, -4, 40, 8);
   }}
 />;
+```
+
+```rust tabs
+use std::f32::consts::TAU;
+
+let angle = animated_value(0.0);
+angle.timing(TAU, 1000.0, Easing::Linear);
+
+canvas(
+    Painter::new()
+        .translate(40.0, 40.0)
+        .rotate(&angle) // animates natively
+        .fill_color(rgb(0xcf222e))
+        .fill_rect(-20.0, -4.0, 40.0, 8.0),
+)
+.size(px(80.0))
 ```
 
 ## The context

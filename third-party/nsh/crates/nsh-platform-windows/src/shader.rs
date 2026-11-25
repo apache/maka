@@ -906,7 +906,7 @@ pub(crate) fn draw(cx: &mut DrawCx<'_>, state: &ViewState) {
     let Some(bitmap) = shader.bitmap(cx.dc, state.id) else {
         return;
     };
-    cx.push_clip_rounded(crate::geom::rect(0.0, 0.0, w, h), state.radii());
+    cx.push_clip_rounded_shapes(crate::geom::rect(0.0, 0.0, w, h), state.radii());
     draw_bitmap(cx, &bitmap, state.frame.size, shader.view.overflow().0);
     cx.pop();
 }

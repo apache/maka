@@ -10,6 +10,14 @@ demo: el-scroll
 
 `Scroll` 是原生滚动视图（iOS 和 Mac Catalyst 上是 UIScrollView，Android 上是 ScrollView）。它把所有子元素作为内容进行布局，并在原生侧滚动：滚动、惯性滑动、回弹和吸附都由平台以屏幕刷新率完成。Rust 用 `scroll()` 创建，TSX 用从 `nsh` 导入的 `<Scroll>`。
 
+```tsx tabs
+<Scroll style={{ flex: 1 }}>
+  <View style={{ padding: 16, gap: 8 }}>
+    <Each of={rows}>{(row) => <Text>{row().title}</Text>}</Each>
+  </View>
+</Scroll>
+```
+
 ```rust tabs
 use nsh_core::prelude::*;
 
@@ -20,14 +28,6 @@ scroll().flex_1().child(
         |row, _index| text(move || row.get().title),
     )),
 )
-```
-
-```tsx tabs
-<Scroll style={{ flex: 1 }}>
-  <View style={{ padding: 16, gap: 8 }}>
-    <Each of={rows}>{(row) => <Text>{row().title}</Text>}</Each>
-  </View>
-</Scroll>
 ```
 
 滚动视图会创建所有子元素，适合中等规模的页面。对于很长或数量不定的数据，请使用[列表](./list.md)：它创建视口附近的行，并复用它们。
@@ -73,6 +73,19 @@ scroll().flex_1().child(
 | `refreshIndicator` | `.refresh_indicator(Some(height))` | `{ height: number }` | 应用自己绘制指示器，高 `height` 点：平台的转圈隐藏，下拉到 `height` 即刷新，刷新中在内容上方留出 `height`。`height` 不大于 0 时视为未设。 |
 | `pullValue` | `.pull_value(&value)` | `AnimatedValue` | 一个动画值，写入视图被拉过顶部的距离（静止为 0，随下拉增大；刷新中为内容上方留出的空间，设了 `refreshIndicator` 时等于 `height`），用来绘制应用的指示器。 |
 
+```tsx tabs
+const refreshing = signal(false);
+async function reload() {
+  refreshing.set(true);
+  await load();
+  refreshing.set(false);
+}
+
+<Scroll style={{ flex: 1 }} refreshing={refreshing()} onRefresh={reload}>
+  …
+</Scroll>;
+```
+
 ```rust tabs
 let refreshing = signal(false);
 
@@ -89,19 +102,6 @@ scroll()
     .child(content())
 ```
 
-```tsx tabs
-const refreshing = signal(false);
-async function reload() {
-  refreshing.set(true);
-  await load();
-  refreshing.set(false);
-}
-
-<Scroll style={{ flex: 1 }} refreshing={refreshing()} onRefresh={reload}>
-  …
-</Scroll>;
-```
-
 ### 缩放
 
 把 `maximumZoomScale` 设得大于 `minimumZoomScale`（Rust 中为 `.zoom_range(min, max)`），内容就可以双指捏合缩放；放大后可以双向滚动。列表保持原有比例。
@@ -114,6 +114,13 @@ async function reload() {
 | `bouncesZoom` | `.bounces_zoom(..)` | `boolean` | `true` | 捏合可以超出限制并弹回。 |
 | `zoomable` | `.zoomable(..)` | `boolean` | `true` | 用户可以捏合缩放。 |
 | `centerContent` | `.center_content(..)` | `boolean` | `false` | 内容（缩小后）小于视口时居中显示。 |
+
+```tsx tabs
+let photo!: ScrollRef;
+<Scroll ref={photo} maximumZoomScale={4} centerContent style={{ flex: 1, backgroundColor: "#000" }}>
+  <Image src={picture} style={{ width: 390, height: 520 }} onPress={() => photo.zoomTo({ scale: 1, animated: true })} />
+</Scroll>;
+```
 
 ```rust tabs
 let photo = element_ref();
@@ -130,13 +137,6 @@ scroll()
             .h(px(520.0))
             .on_press(move || photo.zoom_to(1.0, None, true)),
     )
-```
-
-```tsx tabs
-let photo!: ScrollRef;
-<Scroll ref={photo} maximumZoomScale={4} centerContent style={{ flex: 1, backgroundColor: "#000" }}>
-  <Image src={picture} style={{ width: 390, height: 520 }} onPress={() => photo.zoomTo({ scale: 1, animated: true })} />
-</Scroll>;
 ```
 
 ## 事件
@@ -161,17 +161,17 @@ let photo!: ScrollRef;
 | `scrollTo({ x?, y?, animated? })` | `scroll_to(point(x, y), animated)` | 滚动到某个偏移量。 |
 | `zoomTo({ scale, x?, y?, animated? })` | `zoom_to(scale, Some(point(x, y)), animated)` | 缩放到 `scale`（限制在上下限内），使内容中的点（`x`、`y`，未缩放时的点坐标）位于视口中央，未给出时围绕中央缩放。例如双击放大被点击的位置。 |
 
+```tsx tabs
+let scroller!: ScrollRef;
+<Scroll ref={scroller}>…</Scroll>;
+scroller.scrollTo({ y: 0, animated: true });
+```
+
 ```rust tabs
 let scroller = element_ref();
 scroll().element_ref(&scroller).child(content());
 
 scroller.scroll_to(point(px(0.0), px(0.0)), true);
-```
-
-```tsx tabs
-let scroller!: ScrollRef;
-<Scroll ref={scroller}>…</Scroll>;
-scroller.scrollTo({ y: 0, animated: true });
 ```
 
 ## 键盘

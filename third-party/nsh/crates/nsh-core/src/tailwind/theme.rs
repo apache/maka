@@ -139,7 +139,9 @@ impl ClassTokens {
         }
         if utility.contains('(') {
             // `(--name)` and `(hint:--name)`, Tailwind 4's shorthand of
-            // `[var(--name)]`.
+            // `[var(--name)]`. A number is a length in pixels, except to
+            // the utilities that take a factor (`scale-(--press)`).
+            let factor = takes_factor(utility);
             let mut out = String::with_capacity(utility.len() + 8);
             let mut rest = utility;
             while let Some(open) = rest.find('(') {
@@ -164,7 +166,7 @@ impl ClassTokens {
                 match (color, self.numbers.get(name)) {
                     (Some(c), _) => hex(&mut out, c),
                     (None, _) if let Some(f) = font => out.push_str(&f.replace(' ', "_")),
-                    (None, Some(n)) if hint == Some("number") => {
+                    (None, Some(n)) if hint == Some("number") || (hint.is_none() && factor) => {
                         let _ = write!(out, "{n}");
                     }
                     (None, Some(n)) => {
@@ -193,6 +195,18 @@ impl ClassTokens {
         out.push_str(&utility[start + 1 + name.len()..]);
         Some(out)
     }
+}
+
+/// Whether `utility`'s value is a unitless factor, as CSS's `scale`
+/// takes one: `scale-(--press)` with a token of 0.97 is `scale-[0.97]`.
+fn takes_factor(utility: &str) -> bool {
+    let prefix = utility
+        .strip_prefix('-')
+        .unwrap_or(utility)
+        .split('(')
+        .next()
+        .unwrap_or("");
+    matches!(prefix, "scale-" | "scale-x-" | "scale-y-")
 }
 
 fn map<V>(entries: &[(&str, V)]) -> FxHashMap<Box<str>, V>

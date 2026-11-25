@@ -63,7 +63,7 @@ workspace = true
 [dependencies]
 env_logger.workspace = true
 nsh-core.workspace = true
-nsh-base.workspace = true
+nsh-base = { workspace = true, features = ["rich-editor"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 nsh-platform-linux.workspace = true
@@ -495,6 +495,13 @@ pub(crate) fn task_detail(id: u32) -> Screen {
                 text(move || task().map(|task| task.title).unwrap_or_default())
                     .text_lg()
                     .text_color(move || theme().foreground),
+            )
+            // Made by name: the web build loads its code when the page opens.
+            .child(
+                ComponentElement::<nsh_base::rich_editor::view::RichEditor>::by_name(
+                    Default::default(),
+                )
+                .flex_1(),
             )
             .child(
                 switch()

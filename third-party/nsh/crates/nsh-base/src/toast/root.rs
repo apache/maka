@@ -73,6 +73,85 @@ pub enum ToastEvent {
     DismissRequest,
 }
 
+/// The surface's toasts the update being made mounted and took down, by
+/// label: what tells a toast the app moved from a new one once the update's
+/// views are made ([`settle`]).
+#[derive(Clone, Default)]
+struct Moves {
+    /// The toasts mounted in the update, by id, not read yet.
+    mounted: Vec<(u64, SharedString)>,
+    /// The labels of the toasts the update took down, which were read.
+    gone: Vec<SharedString>,
+    /// The id of the next toast mounted.
+    next: u64,
+    /// Whether [`settle`] waits for the update's views.
+    settling: bool,
+}
+
+/// Reads `label` as a toast shows, once per toast however often the app
+/// rebuilds it (moves it to another parent, as a stack drawn in the
+/// topmost modal is when a modal opens or closes): a toast mounted in the
+/// update that takes down a toast with its label is that toast, in either
+/// order. The decision waits for the update's views, and its announcement
+/// goes out with them.
+fn announce_once(label: Option<SharedString>) {
+    let Some(label) = label else {
+        return;
+    };
+    let moves = global::<Moves>();
+    let id = moves.with_untracked(|m| m.next);
+    moves.update(|m| {
+        m.next += 1;
+        m.mounted.push((id, label.clone()));
+    });
+    settle_later(moves);
+    cleanup(move || {
+        // The engine going away takes down every toast: nothing to read.
+        if try_global::<Moves>().is_none() {
+            return;
+        }
+        moves.update(|m| match m.mounted.iter().position(|(t, _)| *t == id) {
+            // Taken down in the update that mounted it: never shown, so a
+            // toast mounted with its label in its place is a new one.
+            Some(at) => {
+                m.mounted.remove(at);
+            }
+            None => m.gone.push(label),
+        });
+        settle_later(moves);
+    });
+}
+
+/// Has [`settle`] run once the update's views are made.
+fn settle_later(moves: Signal<Moves>) {
+    if moves.with_untracked(|m| m.settling) {
+        return;
+    }
+    moves.update(|m| m.settling = true);
+    nsh_core::element::after_render(move || settle(moves));
+}
+
+/// The update's views are made: each toast it mounted is read, unless it
+/// took down a toast with its label (one each), which the app moved.
+fn settle(moves: Signal<Moves>) {
+    let mut read = Vec::new();
+    moves.update(|m| {
+        for (_, label) in m.mounted.drain(..) {
+            match m.gone.iter().position(|g| *g == label) {
+                Some(at) => {
+                    m.gone.swap_remove(at);
+                }
+                None => read.push(label),
+            }
+        }
+        m.gone.clear();
+        m.settling = false;
+    });
+    for label in read {
+        announce_for_accessibility(label.to_string());
+    }
+}
+
 /// An unstyled semantic toast root (`role` alert), as `gpui-base`'s
 /// `Toast`: the app owns its presentation and motion, by its
 /// `transitionStatus` and the state classes (`startingClass`,
@@ -80,15 +159,14 @@ pub enum ToastEvent {
 /// dragged toward `swipeDirection` moves it, and a release past
 /// `swipeThreshold` or a flick asks to dismiss it (`onDismissRequest`);
 /// short of it, it goes back. The screen reader reads its
-/// `accessibilityLabel` as it shows. Placed in a `ToastStack`, which lays
+/// `accessibilityLabel` as it shows, once: rebuilt under another parent
+/// (moved), it is not read again. Placed in a `ToastStack`, which lays
 /// toasts out. In a terminal it shows and goes in one frame: its state
 /// classes do not apply.
 #[component]
 pub fn Toast(props: ToastProps, cx: Scope<ToastEvent>) -> impl IntoElement {
     let status = props.transition_status;
-    if let Some(label) = props.accessibility_label.get_untracked() {
-        announce_for_accessibility(label.to_string());
-    }
+    announce_once(props.accessibility_label.get_untracked());
 
     // Past its first frame: the next display frame, or a frame's time where
     // none comes, whichever is first.

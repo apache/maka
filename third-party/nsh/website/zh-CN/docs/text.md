@@ -1,6 +1,6 @@
 ---
 title: 文字
-description: 用 Rust 和 TSX 的 text 元素显示文字：嵌套 span 与链接、行内视图、字体与装饰线、截断、系统字号、选择以及 onTextLayout。
+description: 用 TSX 和 Rust 的 text 元素显示文字：嵌套 span 与链接、行内视图、字体与装饰线、截断、系统字号、选择以及 onTextLayout。
 order: 35
 group: ui
 ---
@@ -8,6 +8,16 @@ group: ui
 # 文字
 
 所有文字都通过文本元素显示：Rust 中是 `text(..)`，TSX 中是 `<Text>`。一个文本元素就是一个段落，在布局时由平台的文本引擎（Apple 平台上是 CoreText，Android 上是 `StaticLayout`）在引擎线程上排版，主线程只负责绘制。嵌套的文本元素是同一段落中的 span，而不是独立的视图。
+
+```tsx tabs
+<Text style={{ fontSize: 16, lineHeight: 24, color: "#1f2328" }}>
+  By continuing you agree to the{" "}
+  <Text style={{ color: "#0969da", textDecorationLine: "underline" }} onPress={openTerms}>
+    Terms of service
+  </Text>
+  .
+</Text>
+```
 
 ```rust tabs
 text("By continuing you agree to the ")
@@ -23,16 +33,6 @@ text("By continuing you agree to the ")
     .child(".")
 ```
 
-```tsx tabs
-<Text style={{ fontSize: 16, lineHeight: 24, color: "#1f2328" }}>
-  By continuing you agree to the{" "}
-  <Text style={{ color: "#0969da", textDecorationLine: "underline" }} onPress={openTerms}>
-    Terms of service
-  </Text>
-  .
-</Text>
-```
-
 > [!IMPORTANT]
 > 字符串由文本元素显示。在 TSX 中，直接放在 `<View>` 中的字符串不会显示：请把它包在 `<Text>` 里。
 
@@ -42,10 +42,6 @@ text("By continuing you agree to the ")
 
 在 Rust 中，文本的内容就是一个字符串，按原样显示：`\n` 表示换行。读取 signal 的内容写成闭包，signal 变化时文本随之更新。在 TSX 中，JSX 中的文字遵循与 React 相同的规则：每一行首尾的空白被去掉，只含空白的行被丢弃，剩下的行用一个空格连接。同一行内的空白会保留，所以 `{first} {last}` 中间的空格不会丢。在行首或行尾需要空格时用 `{" "}`，需要换行时用 `{"\n"}`：
 
-```rust tabs
-text(move || format!("Hello, {}!\nWelcome back.", name.get()))
-```
-
 ```tsx tabs
 <Text>
   Hello,
@@ -54,11 +50,24 @@ text(move || format!("Hello, {}!\nWelcome back.", name.get()))
 </Text>
 ```
 
+```rust tabs
+text(move || format!("Hello, {}!\nWelcome back.", name.get()))
+```
+
 文字中的表达式会跟随它读取的值：`text(move || format!("{} items", count.get()))` 和 `<Text>{count()} items</Text>` 都会在 `count` 变化时更新。
 
 ## Span 与继承
 
 文本中的文本是一个 span。它继承父元素的文字样式，并覆盖自己设置的部分：
+
+```tsx tabs
+<Text style={{ fontSize: 17, color: "#1f2328" }}>
+  <Text style={{ fontWeight: "300" }}>Light </Text>
+  <Text style={{ fontWeight: "700" }}>Bold </Text>
+  <Text style={{ fontStyle: "italic" }}>Italic </Text>
+  <Text style={{ letterSpacing: 4 }}>Spaced</Text>
+</Text>
+```
 
 ```rust tabs
 text("")
@@ -70,20 +79,17 @@ text("")
     .child(text("Spaced").letter_spacing(px(4.0)))
 ```
 
-```tsx tabs
-<Text style={{ fontSize: 17, color: "#1f2328" }}>
-  <Text style={{ fontWeight: "300" }}>Light </Text>
-  <Text style={{ fontWeight: "700" }}>Bold </Text>
-  <Text style={{ fontStyle: "italic" }}>Italic </Text>
-  <Text style={{ letterSpacing: 4 }}>Spaced</Text>
-</Text>
-```
-
 文字样式也会像 CSS 一样从视图向下传递：Rust 中的 `view().text_color(white()).text_sm()` 和 TSX 中的 `<View class="text-white text-sm">` 会为其中的文本和输入元素设置样式。
 
 ### 链接
 
 带有按下处理（`.on_press(..)` 或 `.on_long_press(..)`；`onPress` 或 `onLongPress`）的 span 就是链接：按在它的字符上会交给这个 span，按在其他位置则交给整个段落。嵌套 span 中的链接同样有效。
+
+```tsx tabs
+<Text onPress={() => log("the sentence")}>
+  Read the <Text style={{ color: "#0969da" }} onPress={() => open(termsUrl)}>terms</Text> first.
+</Text>
+```
 
 ```rust tabs
 text("Read the ")
@@ -92,26 +98,20 @@ text("Read the ")
     .child(" first.")
 ```
 
-```tsx tabs
-<Text onPress={() => log("the sentence")}>
-  Read the <Text style={{ color: "#0969da" }} onPress={() => open(termsUrl)}>terms</Text> first.
-</Text>
-```
-
 ### Span 的背景
 
 Span 的背景色和圆角会在它所在的每一行、字符后面画一个与字体等高的方框；文字排版不变，复制时内容完整，所以行内代码就是一个 span（[Text 元素](../elements/text.md#片段背景)）：
-
-```rust tabs
-text("先运行 ")
-    .child(text("npm test").font_family("ui-monospace").bg(rgb(0xeff1f3)).rounded(px(4.0)).px(px(4.0)))
-    .child("。")
-```
 
 ```tsx tabs
 <Text>
   先运行 <Text style={{ fontFamily: "ui-monospace", backgroundColor: "#eff1f3", borderRadius: 4, paddingHorizontal: 4 }}>npm test</Text>。
 </Text>
+```
+
+```rust tabs
+text("先运行 ")
+    .child(text("npm test").font_family("ui-monospace").bg(rgb(0xeff1f3)).rounded(px(4.0)).px(px(4.0)))
+    .child("。")
 ```
 
 span 上的水平 padding 会在它两端的行内占位，背景也覆盖这段空间，与 CSS 行内盒一致；垂直 padding 会让背景向文字上下延伸，但不改变行高；边框对 span 不起作用。`fontSize` 用相对值时，span 无论放在哪里都和所在段落保持比例：
@@ -126,19 +126,28 @@ span 上的水平 padding 会在它两端的行内占位，背景也覆盖这段
 
 Span 上的 `visibility: "hidden"` 让它的字符原地隐藏：文字的排版与显示时相同，字符（以及其中的视图和图片）不绘制，复制和屏幕阅读器也会略过它们。重新显示时只重绘、不移动任何内容，所以仍在生成的段落可以逐个显示末尾的词（[Text 元素](../elements/text.md#隐藏片段)）：
 
-```rust tabs
-text("Loading ").child(text("the next words").invisible())
-```
-
 ```tsx tabs
 <Text>
   Loading <Text style={{ visibility: "hidden" }}>the next words</Text>
 </Text>
 ```
 
+```rust tabs
+text("Loading ").child(text("the next words").invisible())
+```
+
 ### 文字中的视图和图片
 
 文本中除文本以外的任何元素都会以行内方式布局在基线上，并随文字一起换行。它也可以有自己的按下处理：
+
+```tsx tabs
+<Text style={{ fontSize: 16, lineHeight: 26 }}>
+  Made with <Image src={logo} style={{ width: 18, height: 18 }} /> nsh. Status{" "}
+  <View style={{ backgroundColor: "#1a7f37", borderRadius: 9, paddingHorizontal: 7, height: 18, justifyContent: "center" }}>
+    <Text style={{ color: "#ffffff", fontSize: 11, fontWeight: "700" }}>LIVE</Text>
+  </View>
+</Text>
+```
 
 ```rust tabs
 text("Made with ")
@@ -155,15 +164,6 @@ text("Made with ")
             .justify_center()
             .child(text("LIVE").text_color(white()).text_size(px(11.0)).font_weight(FontWeight::BOLD)),
     )
-```
-
-```tsx tabs
-<Text style={{ fontSize: 16, lineHeight: 26 }}>
-  Made with <Image src={logo} style={{ width: 18, height: 18 }} /> nsh. Status{" "}
-  <View style={{ backgroundColor: "#1a7f37", borderRadius: 9, paddingHorizontal: 7, height: 18, justifyContent: "center" }}>
-    <Text style={{ color: "#ffffff", fontSize: 11, fontWeight: "700" }}>LIVE</Text>
-  </View>
-</Text>
 ```
 
 被 `numberOfLines` 或省略号截掉的行内元素会被隐藏；复制文字时也不会包含它们，设置了 `copyText`（`.copy_text(..)`）的元素除外：
@@ -196,7 +196,7 @@ text("Made with ")
 | `color` | 一个[颜色](./styling.md#颜色)。默认黑色 | `.text_color(..)` |
 | `fontSize` | 点。默认 14。也可以相对继承的字号，同 CSS 的 `em` 和百分比：`"0.875em"`、`"87.5%"` | `.text_size(px(..))`、`.text_size(relative(0.875))`、`.text_sm()`、`.text_lg()` 等 |
 | `fontWeight` | `"normal"`（400）、`"bold"`（700），或 `100`–`900`（数字或字符串） | `.font_weight(FontWeight::BOLD)` |
-| `fontStyle` | `"normal"`、`"italic"`：彩色表情保持正体 | `.italic()` |
+| `fontStyle` | `"normal"`、`"italic"`：没有斜体字形的字体族倾斜显示，彩色表情保持正体 | `.italic()` |
 | `fontFamily` | 系统字体族、通用字体族或[导入的字体](./fonts.md) | `.font_family(..)` |
 | `lineHeight` | 点 | `.line_height(px(..))` |
 | `letterSpacing` | 点 | `.letter_spacing(px(..))` |
@@ -211,6 +211,14 @@ text("Made with ")
 | `writingDirection` | `"auto"`、`"ltr"`、`"rtl"`：段落的基础方向 | `.writing_direction(WritingDirection::Rtl)` |
 
 文本元素同时也是视图：它支持背景、边框、圆角、内边距以及其他[视图样式](./styling.md)。
+
+```tsx tabs
+<Text style={{ fontSize: 18, fontVariant: ["tabular-nums"] }}>{price().toFixed(2)}</Text>
+<Text style={{ textDecorationLine: "underline", textDecorationStyle: "wavy", textDecorationColor: "#cf222e" }}>Typo</Text>
+<Text style={{ fontSize: 26, fontWeight: "800", color: "#ffffff", textShadow: "2px 2px 4px rgba(0,0,0,0.6)" }}>
+  Shadow
+</Text>
+```
 
 ```rust tabs
 text(move || format!("{:.2}", price.get())).text_size(px(18.0)).tabular_nums()
@@ -227,26 +235,18 @@ text("Shadow")
     }])
 ```
 
-```tsx tabs
-<Text style={{ fontSize: 18, fontVariant: ["tabular-nums"] }}>{price().toFixed(2)}</Text>
-<Text style={{ textDecorationLine: "underline", textDecorationStyle: "wavy", textDecorationColor: "#cf222e" }}>Typo</Text>
-<Text style={{ fontSize: 26, fontWeight: "800", color: "#ffffff", textShadow: "2px 2px 4px rgba(0,0,0,0.6)" }}>
-  Shadow
-</Text>
-```
-
 `tabular-nums` 让所有数字等宽，计数器和价格变化时就不会左右跳动。
 
 ## 截断
 
-```rust tabs
-text(long_description).number_of_lines(2)
-text(file_path).number_of_lines(1).text_overflow(EllipsizeMode::Middle)
-```
-
 ```tsx tabs
 <Text style={{ numberOfLines: 2 }}>{longDescription}</Text>
 <Text style={{ numberOfLines: 1, textOverflow: "ellipsis-middle" }}>{filePath}</Text>
+```
+
+```rust tabs
+text(long_description).number_of_lines(2)
+text(file_path).number_of_lines(1).text_overflow(EllipsizeMode::Middle)
 ```
 
 | 样式键 / 属性 | Rust | 说明 |
@@ -256,6 +256,12 @@ text(file_path).number_of_lines(1).text_overflow(EllipsizeMode::Middle)
 | `adjustsFontSizeToFit` | `.shrink_to_fit(min_scale)` | 缩小字号，直到文字能放进其行数和框内 |
 | `minimumFontScale` | | `adjustsFontSizeToFit` 最多能缩小到的比例（0–1） |
 
+```tsx tabs
+<Text adjustsFontSizeToFit minimumFontScale={0.5} style={{ numberOfLines: 1, fontSize: 48, width: 200 }}>
+  {total()}
+</Text>
+```
+
 ```rust tabs
 text(move || total.get())
     .number_of_lines(1)
@@ -264,22 +270,16 @@ text(move || total.get())
     .w(px(200.0))
 ```
 
-```tsx tabs
-<Text adjustsFontSizeToFit minimumFontScale={0.5} style={{ numberOfLines: 1, fontSize: 48, width: 200 }}>
-  {total()}
-</Text>
-```
-
 Tailwind 类 `line-clamp-*`、`text-ellipsis` 和 `text-clip` 设置同样的键，`truncate`（`.truncate()`）是单行并以省略号截断；作为样式键，它们也能用在状态样式和变体中。
 
 `whitespace-nowrap`（`.whitespace_nowrap()`）让文本保持一行。`text-pretty`（`.text_pretty()`）换行时不让末行只剩一两个字：末行短于宽度四分之一时，在不增加行数的前提下从上面几行挪字过来。`whitespace-normal`（`.whitespace_normal()`）按常规换行。设在视图上时，它们会像 CSS 的 `white-space` 一样作用到其中的文本：
 
-```rust tabs
-text(description).text_pretty()
-```
-
 ```tsx tabs
 <Text class="text-pretty">{description}</Text>
+```
+
+```rust tabs
+text(description).text_pretty()
 ```
 
 ## 系统字号
@@ -293,12 +293,12 @@ text(description).text_pretty()
 
 Rust 中的 `font_scale()` 和 TSX 中 [`nsh` 的设备 API](../modules/nsh.md#device) 的 `fontScale()` 是当前的缩放比例，会在用户修改设置时变化。输入框同样支持 `allowFontScaling` 和 `maxFontSizeMultiplier`。
 
-```rust tabs
-text("Tab label").max_font_size_multiplier(1.3).text_size(px(13.0))
-```
-
 ```tsx tabs
 <Text maxFontSizeMultiplier={1.3} style={{ fontSize: 13 }}>Tab label</Text>
+```
+
+```rust tabs
+text("Tab label").max_font_size_multiplier(1.3).text_size(px(13.0))
 ```
 
 与其关闭缩放，不如限制缩放比例：大字号是很多人依赖的辅助功能设置。
@@ -309,12 +309,12 @@ text("Tab label").max_font_size_multiplier(1.3).text_size(px(13.0))
 
 在桌面浏览器中，文字默认可以选择，和网页一样，但交互元素（带按压或触摸处理的视图，如按钮和可按压的列表行）里的文字除外；`userSelect: "none"`（`.select_none()`，类 `select-none`）让文字在那里也不可选择。手机和平板浏览器遵循原生规则。
 
-```rust tabs
-text(order_number).select_text().selection_color(rgb(0x7c3aed))
-```
-
 ```tsx tabs
 <Text style={{ userSelect: "text", selectionColor: "#7c3aed" }}>{orderNumber}</Text>
+```
+
+```rust tabs
+text(order_number).select_text().selection_color(rgb(0x7c3aed))
 ```
 
 要在代码中复制（比如“复制”按钮），在 Rust 中使用 `set_clipboard(..)`，在 TSX 中使用 [`Clipboard`](../modules/nsh.md#clipboard)。
@@ -327,14 +327,6 @@ Shift+单击扩展选区，Ctrl+A / Cmd+A 选择区域内全部文本，Esc 或�
 
 `onTextLayout`（Rust 中的 `TextLayout` 事件）在每次布局后报告排好的各行，坐标位于文字的内容框中：
 
-```rust tabs
-text(move || body.get()).on(EventKind::TextLayout, move |e: &EventPayload| {
-    if let EventPayload::TextLayout(laid_out) = e {
-        lines.set(laid_out.len());
-    }
-})
-```
-
 ```tsx tabs
 <Text
   onTextLayout={(e) => {
@@ -344,6 +336,14 @@ text(move || body.get()).on(EventKind::TextLayout, move |e: &EventPayload| {
 >
   {body()}
 </Text>
+```
+
+```rust tabs
+text(move || body.get()).on(EventKind::TextLayout, move |e: &EventPayload| {
+    if let EventPayload::TextLayout(laid_out) = e {
+        lines.set(laid_out.len());
+    }
+})
 ```
 
 每一行包含 `text`、`x`、`y`、`width`、`height`、`ascender`、`descender`、`capHeight` 和 `xHeight`（Rust 中为 `cap_height` 和 `x_height`）。可以用它在文字被截断时才显示“阅读更多”按钮，或让其他内容与基线对齐。

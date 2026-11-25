@@ -125,15 +125,15 @@ const snippets: Record<string, string> = {
     `${cm('// NshView on Android, AppView elsewhere')}`,
   ].join('\n'),
   app: [
-    `${cm('$')} nsh init my-app ${k('--template')} ${st('rust')}`,
+    `${cm('$')} nsh init my-app`,
     `${cm('$')} nsh run my-app ${k('--target')} macos`,
     `${cm('$')} nsh package my-app ${k('--target')} windows`,
-    `${cm('# --template ts for TSX')}`,
+    `${cm('# --template mixed adds Rust in ext/; rust for a Rust app')}`,
     `${cm('# ios · android · macos · windows · linux · gpui · web')}`,
   ].join('\n'),
 };
 
-// The same counter in both languages, Rust first.
+// The same counter in both languages: langs[0] is Rust, langs[1] TSX.
 const langs = [
   {
     id: 'rust',

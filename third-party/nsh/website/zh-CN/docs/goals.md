@@ -1,6 +1,6 @@
 ---
 title: 目标与设计原则
-description: Native Shell 的目标：原生视图与交互、应用自主设计、共享组件，以及共用同一引擎的 Rust 与 TSX。
+description: Native Shell 的目标：原生视图与交互、应用自主设计、共享组件，以及共用同一引擎的 TSX 与 Rust。
 order: 1.5
 group: start
 ---
@@ -54,7 +54,7 @@ NSH 从一开始就采用这个分工。`nsh/base` 承担复杂行为、交互�
 
 ## Rust 与 TSX 共用一个引擎
 
-Rust 应用、TSX 界面和混合项目共享基础元素、基础组件、signal 和布局。Rust 提供编译执行的应用逻辑和可复用的原生组件；TSX 支持快速迭代与运行时下发模块（[用 Rust 开发](./rust.md)）。
+TSX 应用、用 Rust 扩展的 TSX 应用和用 Rust 编写的应用共享基础元素、基础组件、signal 和布局。TSX 承载应用的界面、状态和逻辑，支持快速迭代，同样的模块也能在运行时下发。Rust 通过 [nshm](./nshm.md) 提供编译执行的逻辑和可复用的原生组件，或者承载整个应用（[用 Rust 开发](./rust.md)）。
 
 引擎更新依赖已变化 signal 的绑定，并批量提交视图操作。文本布局、原生动画与输入由引擎及其平台后端提供（[架构](./architecture.md)）。性能通过可复现的应用工作负载测量来评估（[性能](./performance.md)）。
 

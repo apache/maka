@@ -175,10 +175,7 @@ fn multiline_moves_between_lines_and_enter_obeys_submit_behavior() {
 fn placeholder_and_masked_text_draw_in_the_content_box_and_click_places_the_caret() {
     let (mut view, mut terminal, rx) = field("placeholder=\"Password\" masked");
     draw_until(&mut view, &mut terminal, &rx, "Password");
-    assert_eq!(
-        terminal.backend().buffer()[(0, 0)].fg,
-        ratatui_core::style::Color::Blue
-    );
+    assert_eq!(terminal.backend().buffer()[(0, 0)].fg, crate::ACCENT);
     view.handle(Input::Paste("界🙂abc".into()));
     draw_until(&mut view, &mut terminal, &rx, "•••••");
     terminal.backend_mut().assert_cursor_position((5, 0));
@@ -530,17 +527,18 @@ fn single_line_text_and_caret_stay_inside_the_form_focus_border() {
     draw_until(&mut view, &mut terminal, &rx, "blurred");
     // A row holding only a field is a box of text: one row, no border Cells,
     // whether its focus ring (a bare overlay) shows or not. The field's text
-    // starts after the page's column and its own padding column.
-    let (x, y) = (2, 0);
+    // starts after the page's column and its own padding column, under the
+    // page's padding row.
+    let (x, y) = (2, 1);
     let symbol = |terminal: &Terminal<TestBackend>, dx: u16| {
         terminal.backend().buffer()[(x + dx, y)].symbol().to_owned()
     };
     assert_eq!(symbol(&terminal, 0), "N");
-    assert_eq!(terminal.backend().buffer()[(1, 1)].symbol(), "b");
+    assert_eq!(terminal.backend().buffer()[(1, 2)].symbol(), "b");
     view.handle(key("Tab"));
     draw_until(&mut view, &mut terminal, &rx, "focused");
     terminal.backend_mut().assert_cursor_position((x, y));
-    assert_eq!(terminal.backend().buffer()[(1, 1)].symbol(), "f");
+    assert_eq!(terminal.backend().buffer()[(1, 2)].symbol(), "f");
     view.handle(Input::Paste("Audit".into()));
     draw_until(&mut view, &mut terminal, &rx, "Audit");
     terminal.backend_mut().assert_cursor_position((x + 5, y));

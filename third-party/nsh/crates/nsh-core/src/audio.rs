@@ -294,7 +294,7 @@ pub enum AudioEvent {
 }
 
 /// Why a sound or a player failed (TS: the `error`'s `code`, named as the
-/// Web's `MediaError` and `Speech`'s).
+/// Web's `MediaError`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum AudioError {

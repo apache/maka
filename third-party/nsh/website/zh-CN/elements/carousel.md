@@ -11,6 +11,63 @@ demo: el-carousel
 
 内容是一个原生滚动视图。手指、滚轮和触控板在平台的主线程上移动幻灯片，与指针在同一帧；松手时内容吸附到最近的幻灯片，每次快速滑动只移动一张。内容停下时，轮播用 `onChange` 报告这张幻灯片。控件、分页、按键和应用的 `index` 以原生动画把内容滚动到对应幻灯片。
 
+```tsx tabs
+import { mount, signal, Text, View } from "nsh";
+import {
+  Carousel,
+  CarouselContent,
+  CarouselItem,
+  CarouselNext,
+  CarouselPagination,
+  CarouselPaginationItem,
+  CarouselPrevious,
+} from "nsh/base";
+import { Window } from "nsh/desktop";
+
+const NAMES = ["Harbor", "Dunes", "Glacier"];
+
+function App() {
+  const index = signal(0);
+  return (
+    <Carousel index={index()} onChange={({ index: next }) => index.set(next)} accessibilityLabel="Photos" class="gap-3">
+      <CarouselContent class="h-[180px] w-full gap-3">
+        {NAMES.map((name, i) => (
+          <CarouselItem
+            accessibilityLabel={`${i + 1} of ${NAMES.length}: ${name}`}
+            class="w-full items-center justify-center rounded-(--radius) bg-muted"
+          >
+            <Text>{name}</Text>
+          </CarouselItem>
+        ))}
+      </CarouselContent>
+      <View class="flex-row items-center gap-2">
+        <CarouselPrevious accessibilityLabel="Previous photo" class="disabled:opacity-40">
+          <Text>‹</Text>
+        </CarouselPrevious>
+        <CarouselPagination class="flex-row gap-1">
+          {NAMES.map((_, i) => (
+            <CarouselPaginationItem
+              index={i}
+              accessibilityLabel={`Photo ${i + 1}`}
+              class="size-2 rounded-full bg-border selected:bg-primary"
+            />
+          ))}
+        </CarouselPagination>
+        <CarouselNext accessibilityLabel="Next photo" class="disabled:opacity-40">
+          <Text>›</Text>
+        </CarouselNext>
+      </View>
+    </Carousel>
+  );
+}
+
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
+```
+
 ```rust tabs
 use nsh_base::{
     carousel, carousel_content, carousel_item, carousel_next, carousel_pagination,
@@ -71,63 +128,6 @@ fn photos() -> impl IntoElement {
                 .child(carousel_next().accessibility_label("Next photo").child(text("›"))),
         )
 }
-```
-
-```tsx tabs
-import { mount, signal, Text, View } from "nsh";
-import {
-  Carousel,
-  CarouselContent,
-  CarouselItem,
-  CarouselNext,
-  CarouselPagination,
-  CarouselPaginationItem,
-  CarouselPrevious,
-} from "nsh/base";
-import { Window } from "nsh/desktop";
-
-const NAMES = ["Harbor", "Dunes", "Glacier"];
-
-function App() {
-  const index = signal(0);
-  return (
-    <Carousel index={index()} onChange={({ index: next }) => index.set(next)} accessibilityLabel="Photos" class="gap-3">
-      <CarouselContent class="h-[180px] w-full gap-3">
-        {NAMES.map((name, i) => (
-          <CarouselItem
-            accessibilityLabel={`${i + 1} of ${NAMES.length}: ${name}`}
-            class="w-full items-center justify-center rounded-(--radius) bg-muted"
-          >
-            <Text>{name}</Text>
-          </CarouselItem>
-        ))}
-      </CarouselContent>
-      <View class="flex-row items-center gap-2">
-        <CarouselPrevious accessibilityLabel="Previous photo" class="disabled:opacity-40">
-          <Text>‹</Text>
-        </CarouselPrevious>
-        <CarouselPagination class="flex-row gap-1">
-          {NAMES.map((_, i) => (
-            <CarouselPaginationItem
-              index={i}
-              accessibilityLabel={`Photo ${i + 1}`}
-              class="size-2 rounded-full bg-border selected:bg-primary"
-            />
-          ))}
-        </CarouselPagination>
-        <CarouselNext accessibilityLabel="Next photo" class="disabled:opacity-40">
-          <Text>›</Text>
-        </CarouselNext>
-      </View>
-    </Carousel>
-  );
-}
-
-mount(() => (
-  <Window id="main">
-    <App />
-  </Window>
-));
 ```
 
 

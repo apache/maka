@@ -1169,7 +1169,7 @@ fn a_select_s_highlighted_row_is_an_accent_band() {
     loop {
         // The row's title, not the trigger's above it.
         let (x, y) = find(&terminal, "✓").unwrap();
-        if terminal.backend().buffer()[(x, y)].bg == ratatui_core::style::Color::Blue {
+        if terminal.backend().buffer()[(x, y)].bg == crate::ACCENT {
             break;
         }
         assert!(
@@ -1184,7 +1184,7 @@ fn a_select_s_highlighted_row_is_an_accent_band() {
     let (x, y) = find(&terminal, "Swift").unwrap();
     assert_ne!(
         terminal.backend().buffer()[(x, y)].bg,
-        ratatui_core::style::Color::Blue,
+        crate::ACCENT,
         "the other rows off it\n{}",
         dump(&terminal)
     );

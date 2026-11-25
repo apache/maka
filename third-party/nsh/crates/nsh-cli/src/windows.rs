@@ -74,7 +74,7 @@ pub(crate) fn package(
     if let Some(json) = built.capabilities_json() {
         fs::write(resources.join("capabilities.json"), json)?;
     }
-    for asset in &built.assets {
+    for asset in built.assets_for(options.target.asset_target()) {
         let dest = resources.join("assets").join(&asset.path);
         if let Some(parent) = dest.parent() {
             fs::create_dir_all(parent)?;
@@ -99,6 +99,26 @@ pub(crate) fn package(
         ui::path(&archive)
     ));
     installer(options.out, name, id, version, &dir, &exe)?;
+    if options.format == crate::android::Format::Msix {
+        let msix = options.out.join(format!("{name}.msix"));
+        let step = ui::Step::start(format!("packaging {}", ui::path(&msix)));
+        let executable = exe.file_name().unwrap().to_string_lossy().into_owned();
+        let identity =
+            crate::msix::Identity::new(config, name, id, executable, crate::msix::arch(&exe)?)?;
+        crate::msix::write(
+            &dir,
+            &identity,
+            config.icon(crate::package::PackageTarget::Windows),
+            &msix,
+            options.sign.map(Path::new),
+        )?;
+        step.done(format!(
+            "packaged {} ({} {})",
+            ui::path(&msix),
+            identity.name,
+            identity.version
+        ));
+    }
     if options.run {
         Command::new(&exe)
             .current_dir(&dir)

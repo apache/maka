@@ -274,7 +274,9 @@ shows. Where the room is compact one column shows, the first the visibility show
 ## Accessibility
 
 A group's tab bar has the `"tablist"` role and its tabs the `"tab"` role with their selected state, as `Tab` /
-`Tabs`. A resizable group's handles (the dock's splits too) are `adjustable` elements labeled by the app, valued with
+`Tabs`. Its content frame (the compact center's too) has the `"tabpanel"` role, and every tab of the bar names it
+with `accessibility_controls`: the frame shows the selected tab's panel and hides the others, so one panel element
+per group stands for them all (`tab_group.rs`). A resizable group's handles (the dock's splits too) are `adjustable` elements labeled by the app, valued with
 the size of the panel before them in its range, with the `increment` / `decrement` actions (VoiceOver's swipes,
 TalkBack's volume keys) moving them 10 points as a drag would. Keyboards do not move them: the core reports keys
 only to inputs and the surface's bindings, and no event says a view other than an input took the focus

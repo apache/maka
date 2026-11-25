@@ -33,6 +33,11 @@ pub struct Modifiers {
     pub shift: bool,
     /// Command on Apple platforms; the Super (Windows) key elsewhere.
     pub cmd: bool,
+    /// AltGr (the DOM's `getModifierState("AltGraph")`): the key's
+    /// character came from the layout's AltGr level, so Control and Alt are
+    /// held to type text rather than for a shortcut. Only key events set
+    /// it; shortcuts never name or match it.
+    pub alt_graph: bool,
 }
 
 /// A key, by what it is on the US layout.
@@ -1211,6 +1216,7 @@ mod tests {
                 alt,
                 shift,
                 cmd,
+                alt_graph: false,
             },
             key,
         }

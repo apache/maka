@@ -7,7 +7,10 @@
 use std::{os::unix::fs::symlink, path::PathBuf, sync::atomic::AtomicUsize};
 
 use crossbeam_channel::Receiver;
-use nsh_core::{ApproxTextEngine, MountBatch, Size, platform::Os};
+use nsh_core::{
+    ApproxTextEngine, EventKind, EventPayload, MountBatch, MountItem, PasteEvent, Size,
+    platform::Os,
+};
 use nsh_engine::{Bundle, Engine, EngineConfig, Environment};
 
 use crate::{ChannelSink, rust_classes::shown};
@@ -46,8 +49,14 @@ fn start(
 const shown = signal("waiting");
 const report = (text) => shown.set(`done ${{text}}`);
 {body}
-mount(() => <Text>{{shown()}}</Text>);
-"#
+{mount}
+"#,
+            // A body may mount its own views (showing `shown()`).
+            mount = if body.contains("\nmount(") {
+                ""
+            } else {
+                "mount(() => <Text>{shown()}</Text>);"
+            }
         ),
     )
     .unwrap();
@@ -98,7 +107,6 @@ mount(() => <Text>{{shown()}}</Text>);
         clipboard: None,
         host: Default::default(),
         picker: None,
-        speech: None,
         audio: None,
         windows: None,
         login_item: None,
@@ -679,7 +687,6 @@ mount(() => <Text>{shown()}</Text>);
         clipboard: None,
         host: Default::default(),
         picker: None,
-        speech: None,
         audio: None,
         windows: None,
         login_item: None,
@@ -870,4 +877,115 @@ import fs from "fs/promises";
         "done RangeError:ERR_OUT_OF_RANGE 3000 true"
     );
     let _ = std::fs::remove_dir_all(root);
+}
+
+/// The files the user pastes or drops are readable at their exact paths
+/// once the app's handler gets them, whatever `capabilities.fs.read`
+/// declares: not before, not on a drag that only entered, nothing beside
+/// them, never written.
+#[test]
+fn pasted_and_dropped_files_are_readable_at_their_exact_paths() {
+    let (root, _) = support_dir("user-files");
+    let desk = scratch("desk").canonicalize().unwrap();
+    std::fs::write(desk.join("pasted file.txt"), "pasted").unwrap();
+    std::fs::write(desk.join("dropped.txt"), "dropped").unwrap();
+    std::fs::write(desk.join("beside.txt"), "beside").unwrap();
+    let pasted = desk.join("pasted file.txt");
+    let dropped = desk.join("dropped.txt");
+    let beside = desk.join("beside.txt");
+    let (engine, rx) = start(
+        &format!(
+            r#"
+import fs from "fs/promises";
+import {{ View }} from "nsh";
+import {{ Input }} from "nsh/base";
+const read = (path) => fs.readFile(path, "utf8").then((t) => t, (e) => e.code);
+const paths = {{ pasted: {pasted:?}, dropped: {dropped:?}, beside: {beside:?} }};
+let step = 0;
+const check = async () => {{
+  step += 1;
+  const write = await fs.writeFile(paths.pasted, "x").then(() => "wrote", (e) => e.code);
+  report(`${{step}} ${{await read(paths.pasted)}} ${{await read(paths.dropped)}} ${{await read(paths.beside)}} ${{write}}`);
+}};
+mount(() => (
+  <View>
+    <Input onPaste={{check}} />
+    <View onFileDragEnter={{check}} onFileDrop={{check}} />
+    <Text>{{shown()}}</Text>
+  </View>
+));
+check();
+"#
+        ),
+        DATA_GRANT,
+        Some(root.clone()),
+        Default::default(),
+    );
+    // The input and the drop view, by the events they listen to.
+    let input = std::cell::Cell::new(None);
+    let drop_view = std::cell::Cell::new(None);
+    let seen = |rx: &Receiver<MountBatch>, prefix: &str| {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut last = String::new();
+        while let Ok(batch) = rx.recv_deadline(deadline) {
+            for item in &batch.items {
+                match item {
+                    MountItem::Events { id, events } if events.contains(EventKind::Paste) => {
+                        input.set(Some(*id))
+                    }
+                    MountItem::Events { id, events } if events.contains(EventKind::FileDrop) => {
+                        drop_view.set(Some(*id))
+                    }
+                    MountItem::Text { text, .. } => last = text.text.clone(),
+                    _ => {}
+                }
+            }
+            if last.starts_with(prefix) {
+                break;
+            }
+        }
+        last
+    };
+    let denied = "ERR_ACCESS_DENIED";
+    let url =
+        |path: &std::path::Path| nsh_core::platform::clipboard::file_url(path.to_str().unwrap());
+    assert_eq!(
+        seen(&rx, "done 1"),
+        format!("done 1 {denied} {denied} {denied} {denied}")
+    );
+    let (input, drop_view) = (input.get().unwrap(), drop_view.get().unwrap());
+    let control = engine.control();
+    // A drag that only entered grants nothing.
+    control.dispatch_event(
+        drop_view,
+        EventKind::FileDragEnter,
+        EventPayload::FileDrop(vec![url(&dropped)]),
+    );
+    assert_eq!(
+        seen(&rx, "done 2"),
+        format!("done 2 {denied} {denied} {denied} {denied}")
+    );
+    let mut paste = PasteEvent::new("pasted file.txt");
+    paste.uris = vec![url(&pasted)];
+    control.dispatch_event(
+        input,
+        EventKind::Paste,
+        EventPayload::Paste(Box::new(paste)),
+    );
+    assert_eq!(
+        seen(&rx, "done 3"),
+        format!("done 3 pasted {denied} {denied} {denied}")
+    );
+    control.dispatch_event(
+        drop_view,
+        EventKind::FileDrop,
+        EventPayload::FileDrop(vec![url(&dropped)]),
+    );
+    assert_eq!(
+        seen(&rx, "done 4"),
+        format!("done 4 pasted dropped {denied} {denied}")
+    );
+    assert_eq!(std::fs::read_to_string(&pasted).unwrap(), "pasted");
+    let _ = std::fs::remove_dir_all(root);
+    let _ = std::fs::remove_dir_all(desk);
 }

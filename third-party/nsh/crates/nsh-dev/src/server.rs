@@ -21,8 +21,8 @@ use axum::{
 use tokio::sync::broadcast;
 
 use crate::protocol::{
-    BundleFormat, ClientMessage, FetchReply, HostPlatform, LogLevel, PROTOCOL_VERSION,
-    RunningBuild, ServerMessage, StepOutcome, TestNetwork, TestStep, WS_PATH,
+    BundleFormat, ClientMessage, FetchReply, HostPlatform, LogLevel, MAX_MESSAGE_SIZE,
+    PROTOCOL_VERSION, RunningBuild, ServerMessage, StepOutcome, TestNetwork, TestStep, WS_PATH,
 };
 
 /// What a dev host did, for the server's owner to show ([`DevServer::start`]).
@@ -380,13 +380,23 @@ impl DevServer {
             .cloned()
             .ok_or("no host that takes test steps is connected")?;
         let id = shared.next_step.fetch_add(1, Ordering::Relaxed);
+        let message = ServerMessage::Step { id, step };
+        // A host closes the connection on a message larger than it takes.
+        let size = encoded_size(&message);
+        if size > MAX_MESSAGE_SIZE {
+            return Err(format!(
+                "the step is {} MiB encoded, more than the {} MiB a message to the host carries",
+                size.div_ceil(1 << 20),
+                MAX_MESSAGE_SIZE >> 20
+            ));
+        }
         let (tx, rx) = std::sync::mpsc::channel();
         shared
             .steps
             .lock()
             .expect("steps lock")
             .insert(id, (connection, tx));
-        if host.send(ServerMessage::Step { id, step }).is_err() {
+        if host.send(message).is_err() {
             shared.steps.lock().expect("steps lock").remove(&id);
             return Err("the host left".into());
         }
@@ -399,6 +409,14 @@ impl DevServer {
                 "the host did not take the step in {} s",
                 timeout.as_secs_f64()
             )),
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) if size > OLD_HOST_FRAME_SIZE => {
+                Err(format!(
+                    "the host left while taking a {} MiB step (hosts built with an older nsh take \
+                     at most {} MiB)",
+                    size.div_ceil(1 << 20),
+                    OLD_HOST_FRAME_SIZE >> 20
+                ))
+            }
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err("the host left".into()),
         }
     }
@@ -423,6 +441,18 @@ impl DevServer {
         ui_sets: Vec<String>,
     ) {
         let ui_sets: Arc<[String]> = ui_sets.into();
+        // Hosts close the connection on a frame larger than they take, and
+        // would only reconnect to the same bundle.
+        let largest = bytecode
+            .len()
+            .max(source_map.as_ref().map_or(0, String::len));
+        if largest > MAX_MESSAGE_SIZE {
+            log::warn!(
+                "the bundle is {} MiB, more than the {} MiB a message to the host carries; hosts cannot load it",
+                largest.div_ceil(1 << 20),
+                MAX_MESSAGE_SIZE >> 20
+            );
+        }
         let version = {
             let mut next = self.next_version.lock().expect("version lock");
             *next += 1;
@@ -692,8 +722,10 @@ async fn upgrade(
         );
         return StatusCode::FORBIDDEN.into_response();
     }
-    // Bundles are ~100 KB of bytecode; allow generous frames.
-    ws.max_message_size(64 << 20)
+    // Bundles are ~100 KB of bytecode, but screenshots and a test's pasted
+    // files are larger. Hosts send each message in one frame.
+    ws.max_message_size(MAX_MESSAGE_SIZE)
+        .max_frame_size(MAX_MESSAGE_SIZE)
         .on_upgrade(move |socket| async move {
             if let Err(err) = serve_client(socket, shared).await {
                 log::debug!("dev client disconnected: {err}");
@@ -1081,6 +1113,31 @@ async fn send(socket: &mut WebSocket, msg: &ServerMessage) -> Result<(), BoxErro
         .send(Message::Text(serde_json::to_string(msg)?.into()))
         .await?;
     Ok(())
+}
+
+/// The largest frame hosts took before they took [`MAX_MESSAGE_SIZE`]
+/// (tungstenite's default): such a host closes the connection on a larger
+/// message.
+const OLD_HOST_FRAME_SIZE: usize = 16 << 20;
+
+/// The length of `msg`'s JSON, without keeping it.
+fn encoded_size(msg: &ServerMessage) -> usize {
+    struct Count(usize);
+
+    impl std::io::Write for Count {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0 += bytes.len();
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let mut count = Count(0);
+    serde_json::to_writer(&mut count, msg).expect("serializable");
+    count.0
 }
 
 async fn send_event(

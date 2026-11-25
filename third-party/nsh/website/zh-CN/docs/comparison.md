@@ -83,14 +83,14 @@ GPUI 与 GPUI Fast 合为一列：两者运行的平台相同，GPUI Fast 在 GP
 - **嵌入。** NSH 应用可以作为一个视图嵌入现有的 iOS、Android 或桌面应用（[嵌入](./embedding.md)），也能通过 GPUI 后端作为视图嵌入 GPUI 和 GPUI Kit 应用（[GPUI](./gpui.md)）。React Native（brownfield）和 Flutter（add-to-app）也能嵌入，但各自带上自己的 runtime。
 - **终端。** 同一套组件模型通过 ratatui 渲染终端应用（[TUI](./tui.md)）。
 - **工具链、热重载。** 一个 `nsh` 可执行文件负责创建、热重载运行、在真实平台上测试、为每个目标打包和签名，TSX 不需要 Node 或 npm（[CLI](./cli.md)）。
-- **无 JS runtime。** Rust 应用的运行器在任何平台上都不链接 JavaScript 引擎；TSX 是第二条路径，运行在同一个引擎上。Qt Quick 的 QML 运行在 Qt 的 JavaScript 引擎上，用 C++ 编写的 Qt Widgets 则不需要。
+- **Native 引擎，轻量脚本。** 在 TSX 应用中，只有应用自己的代码是 JavaScript；响应式图、布局、渲染和模块都是 Rust，Rust 应用的运行器在任何平台上都不链接 JavaScript 引擎。Qt Quick 的 QML 运行在 Qt 的 JavaScript 引擎上，用 C++ 编写的 Qt Widgets 则不需要。
 - **签名下发界面。** NSH 用自己信任的密钥和吊销列表校验签名的 `.nshpkg` 包，并让每个包运行在宿主设定限制和能力的虚拟机里（[签名包](./signed-packages.md)、[沙箱与能力](./sandbox-and-capabilities.md)）。打包的 NSH 应用也以同样的方式 OTA 更新自己的 TSX（包括 iOS 和 Android），启动失败的版本会自动回滚（[OTA 更新](./ota-updates.md)）。React Native 的 OTA 更新下发的是可信的应用代码；Qt 可以加载 QML 文件；GPUI 应用通过 [GPUI Shell](https://gpui-kit.com/shell) 加载 JavaScript 模块。
 
 ### NSH 的不同之处
 
 - **两层意义上的 Native，在每个平台上。** 每个后端都建立在平台自己的视图、文本和输入法之上——UIKit、Android 视图、AppKit、用 Direct2D 绘制的 Win32、GTK 4、HTML——平台的交互方式也随之而来。文本选择、输入法和无障碍都是系统的，系统新版本对它们的改进，应用直接获得（[简介](./index.md#native-的含义)）。
 - **一套应用覆盖手机、桌面和 Web。** 六个平台都是同一个框架的后端，共享同一套响应式图、渲染器、Taffy 布局和模块；布局随窗口重组，输入方式随设备变化；在 Web 上，应用是 HTML，发布为静态网站。
-- **Rust First，不带 JavaScript runtime。** 整个应用可以从头到尾都是 Rust，编译成 Native 代码，带着 Rust 的类型、线程和 crates。TSX 是第二条路径，运行在同一个引擎上，适合快速编写的界面（[用 Rust 开发](./rust.md)）。
+- **Rust First，应用用 TSX 编写。** 引擎是 Rust，编译成 Native 代码。应用用 TSX 编写，支持热更新，只有应用自己的代码是 JavaScript。Rust [nshm](./nshm.md)——应用自己的或已发布的——在需要速度、平台能力或 crates.io 的地方为 TSX 提供 Native 组件和模块；整个应用也可以从头到尾都是 Rust，不带 JavaScript runtime（[用 Rust 开发](./rust.md)）。
 - **面向日常应用的 Retained Mode。** 组件只运行一次，细粒度的 signal 只把变化的属性发给视图，因此聊天、表单、列表和文档在静止时几乎不占 CPU（[简介](./index.md#retained-mode)、[响应式](./reactivity.md)）。
 - **发布之后下发界面，经过签名、运行在沙箱里。** 用 NSH 构建的应用——以及用各平台自己的工具编写的原生应用——都能在运行时接收 TSX 模块，由团队编写或 AI 生成（[动态界面](./index.md#动态界面与-ai-生成的界面)）。
 - **一个工具链，人和 AI agent 都能用。** 一个 `nsh` 可执行文件负责创建、运行、热更新、在真实平台上测试、打包和签名，覆盖每个目标平台；TSX 不需要 Node 或 npm（[CLI](./cli.md)、[安装](./installation.md)）。
@@ -182,7 +182,7 @@ Tauri 用系统 Web View 和 Rust 后端，显著改变了 Electron 的运行时
 - **Rust 后端管不到页面里的引用。** 例如，切走图表后，WebView 里仍在运行的定时器可以通过闭包持有旧图表和历史数据。每次切换都留下一个定时器，内存和后台刷新工作就会一起累积；即便 Rust 端已经释放对应资源，页面仍要取消定时器并释放引用。[Tauri 进程模型](https://v2.tauri.app/concept/process-model/)
 - **两种语言隔着桥。** 界面用 JavaScript，逻辑用 Rust，靠 IPC 调用和序列化连接。
 
-NSH 怎么解决：界面是平台自己的视图，在平台支持的每个系统版本上都一样，中间没有 Web 引擎；Rust 和 TSX 在同一个进程、同一张响应式图上运行，TSX 界面直接调用 Rust 模块——从 TSX 排序 100,000 行约 3 ms，与纯 Rust 持平（[性能报告](./performance-report.md)）。Tauri 最好的想法——核心用 Rust——是 NSH 的默认做法，而且 Rust 不只是后端，而是整个界面的核心：复杂计算、文件索引、音视频处理和系统 API 通过 [nshm](./nshm.md) 扩展接入。需要显示真实网页时，NSH 仍可嵌入 [Web View](./web-view-and-video.md)，而不必让整个应用成为 Web View。
+NSH 怎么解决：界面是平台自己的视图，在平台支持的每个系统版本上都一样，中间没有 Web 引擎；TSX 和 Rust 在同一个进程、同一张响应式图上运行，TSX 界面直接调用 Rust 模块——从 TSX 排序 100,000 行约 3 ms，与纯 Rust 持平（[性能报告](./performance-report.md)）。Tauri 最好的想法——核心用 Rust——是 NSH 的默认做法，而且 Rust 不只是后端，而是整个界面的核心：复杂计算、文件索引、音视频处理和系统 API 通过 [nshm](./nshm.md) 扩展接入。需要显示真实网页时，NSH 仍可嵌入 [Web View](./web-view-and-video.md)，而不必让整个应用成为 Web View。
 
 **要付出的。** 已有 Web 项目的界面要用 NSH 元素重写；如果目标是尽快把现成网站包成客户端，Tauri 的复用优势依然成立。NSH 更适合从一开始就要原生界面的产品。
 
@@ -266,7 +266,7 @@ GPUI 证明了 Rust 和 GPU 能构建 Zed 这样复杂的专业桌面应用，�
 - **高帧率不等于低开销。** 每帧重建元素树，意味着内容没变时也可能重复构建和绘制。这不只消耗 CPU，GPU 的绘制、合成和唤醒同样耗电。对日常应用来说，性能还包括静止时的开销、功耗和电池续航。
 - **没有终端。** 自绘架构理论上可以扩展到更多平台，但目前没有 NSH 这样的 iOS、Android、HTML Web 和 TUI 后端。
 
-NSH 怎么解决：同样以 Rust 为先的模型覆盖 iOS、Android、Web 和终端；Retained Mode 加细粒度 signal，界面变化少时不重新计算和绘制无关部分，减少 CPU 和不必要的 GPU 工作；Tab 焦点、键盘导航和无障碍尽可能交给平台；文本输入、选择和输入法是平台的；内置 TSX 路径和签名、沙箱化的下发。NSH 的 GPUI 后端可以把 NSH 应用嵌进现有的 GPUI 和 GPUI Kit 应用，界面可以一个个迁移，不必整体重写（[GPUI](./gpui.md)）。
+NSH 怎么解决：同一套 Rust First 的引擎——应用用 TSX 编写，在值得的地方用 Rust——覆盖 iOS、Android、Web 和终端；Retained Mode 加细粒度 signal，界面变化少时不重新计算和绘制无关部分，减少 CPU 和不必要的 GPU 工作；Tab 焦点、键盘导航和无障碍尽可能交给平台；文本输入、选择和输入法是平台的；内置支持热更新的 TSX 和签名、沙箱化的下发。NSH 的 GPUI 后端可以把 NSH 应用嵌进现有的 GPUI 和 GPUI Kit 应用，界面可以一个个迁移，不必整体重写（[GPUI](./gpui.md)）。
 
 **数字如实写。** 在 [NSH 性能基准](https://github.com/longbridge/nsh-perf-bench)中（Linux，500 行行情表，NSH 用 GTK 4 后端），日常负载开销相同：每秒 1,000 条行情时 NSH Rust 占单核 18%，GPUI Fast 20%。持续高强度更新时 GPUI Fast 领先：每秒 20,000 条行情时它占 25%，NSH 为 73–78%；每帧计算 1,000 个方块的动画，它的 CPU 约为 NSH 的三分之一。开发中我们还观察到下面这些特定场景的 CPU 占用。它们来自不同场景和既有经验，没有统一设备、负载和统计口径，**不能当作同一负载下的逐项对照**：
 
@@ -289,7 +289,7 @@ GPUI Kit 用户在桌面上已经拥有成熟组件。迁移的收益在于把�
 ## 挑战 Qt：成熟的专业桌面能力，能不能真正延伸到手机和 Web？
 
 
-**Qt 提供 Widgets 和 Qt Quick 两套 UI 技术。** Qt Widgets 和 Qt Quick 自己绘制控件，并按各平台风格做样式，工具链积累多年。NSH 的根基和模型不同：用平台控件而不是仿制样式；核心是 Rust 并提供 TSX 路径，而不是 C++ 和 QML；Web 上输出 HTML；一套组件模型在手机、桌面和 Web 上自动适配交互；工具链为自动化和 AI 驱动的开发设计；任何用途都是 Apache-2.0 许可。
+**Qt 提供 Widgets 和 Qt Quick 两套 UI 技术。** Qt Widgets 和 Qt Quick 自己绘制控件，并按各平台风格做样式，工具链积累多年。NSH 的根基和模型不同：用平台控件而不是仿制样式；TSX 运行在 Rust 核心上，需要的部分用 Rust，而不是 C++ 和 QML；Web 上输出 HTML；一套组件模型在手机、桌面和 Web 上自动适配交互；工具链为自动化和 AI 驱动的开发设计；任何用途都是 Apache-2.0 许可。
 
 Qt 是最成熟、最完整的 UI 框架之一，在专业桌面软件、工业应用和嵌入式领域有丰富的组件、系统集成和数十年的工程积累。代价在这里：
 
@@ -309,7 +309,7 @@ NSH 的做法：桌面上提供多窗口、Dock、DataTable、Editor、RichEdito
 ## 挑战 Slint：轻量之外，谁来支撑一款完整的跨平台产品？
 
 
-**Slint 提供自己的声明式语言和渲染器**，面向桌面和嵌入式设备，可从 Rust、C++、JavaScript 或 Python 使用。两者都重视原生性能；NSH 的路线是每个平台自己的 UI 和交互、Web 上的 HTML、用 Rust 和 TSX 写应用而不是另一门标记语言，并且手机是一等目标。
+**Slint 提供自己的声明式语言和渲染器**，面向桌面和嵌入式设备，可从 Rust、C++、JavaScript 或 Python 使用。两者都重视原生性能；NSH 的路线是每个平台自己的 UI 和交互、Web 上的 HTML、用 TSX 和 Rust 写应用而不是另一门标记语言，并且手机是一等目标。
 
 Slint 的专用 DSL 不是缺陷，而是为了得到可分析、可优化的界面；对于仪表盘、设备控制界面和资源受限的终端，它有自己的竞争力。差别在于从“做一个界面”到“交付一款完整应用”：
 
@@ -329,7 +329,7 @@ Slint 的专用 DSL 不是缺陷，而是为了得到可分析、可优化的界
 | 框架 | 结构性短板 | NSH 的做法 |
 |---|---|---|
 | Electron | 每个应用带浏览器和 Node.js；只有桌面 | 平台视图，没有浏览器；Rust 应用约 19 MB；同一份代码覆盖手机和 Web |
-| Tauri | 每个系统、每个版本是不同的 Web 引擎 | 平台视图，在支持的系统上表现一致；Rust 和 TSX 同进程 |
+| Tauri | 每个系统、每个版本是不同的 Web 引擎 | 平台视图，在支持的系统上表现一致；TSX 和 Rust 同进程 |
 | React Native | 每次更新都过 JS 线程和协调；桌面和 Web 是独立项目 | Rust 核心加细粒度 signal；六个平台同一框架、同一发布 |
 | Flutter | 自绘文本和输入；原生视图代价高；Web 接近画布 | 系统的文本、输入和无障碍；原生视图就在视图树里；Web 是 HTML |
 | GPUI | 只有桌面、1.0 之前、随编辑器演进；文本、焦点和无障碍要自行实现 | 同样的 Rust 模型覆盖手机、Web 和终端；可嵌入 GPUI 应用 |

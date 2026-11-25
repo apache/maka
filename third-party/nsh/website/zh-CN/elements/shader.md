@@ -10,30 +10,6 @@ demo: el-shader
 
 shader 是一个由 GPU 程序绘制其区域的视图：流动的渐变、噪点与颗粒、等离子、极光、全息箔、跟随点按扩散的波纹。你只需编写一个 WGSL 函数 `shade`，给出区域内每个点的颜色；平台以屏幕分辨率在 GPU 上运行它，绘制在视图背景之上、子元素之下。动画值逐帧在原生侧驱动它，应用代码无需参与。TSX 用从 `nsh` 导入的 `<Shader>` 创建，Rust 用 `shader().source(program)`。
 
-```rust tabs
-use nsh_core::{prelude::*, shader::Shader};
-
-const GLOW: &str = r#"
-struct Uniforms { tint: vec4f }
-
-fn shade(uv: vec2f) -> vec4f {
-  let d = distance(uv, vec2f(0.5));
-  let pulse = 0.5 + 0.5 * sin(nsh.time * 2.0);
-  let glow = smoothstep(0.5, 0.0, d) * (0.6 + 0.4 * pulse);
-  return vec4f(uniforms.tint.rgb * glow, 1.0);
-}
-"#;
-
-fn glow() -> impl IntoElement {
-    let program = Shader::compile(GLOW).expect("a valid shader");
-    shader()
-        .source(program)
-        .uniform("tint", Hsla::from(rgb(0x38bdf8)))
-        .h(px(200.0))
-        .rounded(px(14.0))
-}
-```
-
 ```tsx tabs
 import { mount, Shader } from "nsh";
 import { Window } from "nsh/desktop";
@@ -57,6 +33,30 @@ mount(() => (
     <Glow />
   </Window>
 ));
+```
+
+```rust tabs
+use nsh_core::{prelude::*, shader::Shader};
+
+const GLOW: &str = r#"
+struct Uniforms { tint: vec4f }
+
+fn shade(uv: vec2f) -> vec4f {
+  let d = distance(uv, vec2f(0.5));
+  let pulse = 0.5 + 0.5 * sin(nsh.time * 2.0);
+  let glow = smoothstep(0.5, 0.0, d) * (0.6 + 0.4 * pulse);
+  return vec4f(uniforms.tint.rgb * glow, 1.0);
+}
+"#;
+
+fn glow() -> impl IntoElement {
+    let program = Shader::compile(GLOW).expect("a valid shader");
+    shader()
+        .source(program)
+        .uniform("tint", Hsla::from(rgb(0x38bdf8)))
+        .h(px(200.0))
+        .rounded(px(14.0))
+}
 ```
 
 ## 着色器
@@ -122,20 +122,6 @@ const palette = signal<keyof typeof palettes>("Sunset");
 
 uniform 可以是一个[原生动画值](../modules/nsh.md#animation)，或由它派生的节点（`interpolate`、算术运算）。平台在它变化的每一帧把值写入 shader 并重新绘制，全部在 UI 线程上完成：无论应用代码多忙，动画都以满帧率运行。数值驱动 `f32`、`i32`、`u32` 成员以及 `vec2f` 的分量；插值到颜色的节点驱动 `vec3f` 或 `vec4f`。
 
-```rust tabs
-use nsh_core::{prelude::*, shader::Shader};
-
-fn ripple(program: Shader) -> impl IntoElement {
-    let wave = animated_value(0.0);
-    wave.timing(1.0, 2200.0, Easing::Linear);
-    shader()
-        .source(program)
-        .uniform("wave", &wave)
-        .uniform("center", [0.5_f32, 0.5])
-        .h(px(200.0))
-}
-```
-
 ```tsx tabs
 import { Animated, cleanup, createAnimatedValue, Easing, Shader } from "nsh";
 
@@ -154,6 +140,20 @@ function Ripple() {
   loop.start();
   cleanup(() => loop.stop());
   return <Shader source={RIPPLE} uniforms={{ center: [0.5, 0.5], wave, tint }} style={{ height: 200, borderRadius: 14 }} />;
+}
+```
+
+```rust tabs
+use nsh_core::{prelude::*, shader::Shader};
+
+fn ripple(program: Shader) -> impl IntoElement {
+    let wave = animated_value(0.0);
+    wave.timing(1.0, 2200.0, Easing::Linear);
+    shader()
+        .source(program)
+        .uniform("wave", &wave)
+        .uniform("center", [0.5_f32, 0.5])
+        .h(px(200.0))
 }
 ```
 
@@ -226,6 +226,10 @@ const gone = createAnimatedValue(0);
 
 页面和对话框可以通过 **`transitionShader`** 经过 shader 出现和离开：在 `NavPage` 或 `Dialog` 上设置 `{ source, uniforms, duration }`（Rust：在 `nav_page()` 或 `dialog()` 上调用 `.transition_shader(TransitionShader::new(program))`）。页面入栈或出栈、对话框显示或关闭时，下层一侧（下面的页面、没有对话框的应用）是 `sample_from`，上层是 `sample_to`；页面或对话框出现时 `nsh.progress` 从 0 走到 1，离开时从 1 走到 0，因此一个 shader 就能画出两个方向。
 
+```tsx tabs
+<NavPage title="详情" transitionShader={{ source: RIPPLE, duration: 500 }}>…</NavPage>
+```
+
 ```rust tabs
 use std::time::Duration;
 
@@ -239,10 +243,6 @@ fn details() -> impl IntoElement {
         .transition_shader(TransitionShader::new(ripple).duration(Duration::from_millis(500)))
         .child(text("…"))
 }
-```
-
-```tsx tabs
-<NavPage title="详情" transitionShader={{ source: RIPPLE, duration: 500 }}>…</NavPage>
 ```
 
 shader 取代页面或对话框的 `animation`，无论它是什么（包括 `"none"`）。在没有 GPU 的设备上、用户要求减少动态效果时（减弱动态效果、移除动画），以及源码无法编译时，运行的是 `animation`；若为 `"none"`，变化会立即显示。一次切换进行中又开始新的入栈、出栈、显示或关闭时，先完成正在进行的那一次：它的页面或对话框到达或离开，`onShow` 或 `onDismiss` 触发，新的切换从那里开始。
@@ -311,13 +311,6 @@ shader 每个显示帧最多绘制一次，并且只在显示的内容变化时�
 
 `nsh` 的 `shadersAvailable()`（Rust 为 `shaders_available()`）表示平台能否绘制 shader，是响应式的。在上述平台和无头测试中它为 `true`；在终端中、以及关闭 `shader` 特性构建的应用中它为 `false`。它从 `true` 开始，当第一个 shader 挂载、而 NSH 打不开这台机器的 GPU 时（例如浏览器没有 WebGL 2）变为 `false`，之后不再变回。无论哪种情况都要显示画面的应用，在它为真时显示 shader，否则显示自己的绘制（画布或图片）：
 
-```rust tabs
-fn backdrop(program: Shader) -> impl IntoElement {
-    when(shaders_available, move || shader().source(program.clone()).size_full())
-        .otherwise(|| canvas(paint_backdrop).size_full())
-}
-```
-
 ```tsx tabs
 function Backdrop() {
   return (
@@ -325,6 +318,13 @@ function Backdrop() {
       <Shader source={BACKDROP} style={{ flex: 1 }} />
     </If>
   );
+}
+```
+
+```rust tabs
+fn backdrop(program: Shader) -> impl IntoElement {
+    when(shaders_available, move || shader().source(program.clone()).size_full())
+        .otherwise(|| canvas(paint_backdrop).size_full())
 }
 ```
 

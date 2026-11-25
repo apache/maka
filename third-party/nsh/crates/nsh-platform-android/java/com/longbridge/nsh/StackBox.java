@@ -140,15 +140,21 @@ final class StackBox extends FrameLayout implements Node {
         if (transition != null) transition.cancel();
         if (oldTop == newTop || oldTop == null || newTop == null) {
             settle(leaving);
+            syncBottomBar(false);
             return;
         }
-        if (shaderAnimate(pushing ? oldTop : newTop, pushing ? newTop : oldTop, pushing, leaving)) return;
+        if (shaderAnimate(pushing ? oldTop : newTop, pushing ? newTop : oldTop, pushing, leaving)) {
+            syncBottomBar(true);
+            return;
+        }
         int animation = pushing ? newTop.animation : oldTop.animation;
         if (animation == 2) {
             settle(leaving);
+            syncBottomBar(false);
             return;
         }
         animate(pushing ? oldTop : newTop, pushing ? newTop : oldTop, pushing, animation == 1, 0, leaving);
+        syncBottomBar(true);
     }
 
     /**
@@ -298,30 +304,67 @@ final class StackBox extends FrameLayout implements Node {
         }
     }
 
+    /** Whether any shown screen in this stack hides the bottom tab bar. */
+    boolean hidesBottomBar() {
+        for (ScreenBox s : shown) {
+            if (s.hidesBottomBar) return true;
+        }
+        return false;
+    }
+
+    /** Updates nearby {@link TabBarComponent}s when this stack is currently visible. */
+    void syncBottomBar(boolean animated) {
+        if (!isVisibleStack() || !isAttachedToWindow()) return;
+        List<TabBarComponent> bars = new ArrayList<>();
+        ViewParent ancestor = getParent();
+        for (int step = 0; step < 6 && ancestor instanceof View; step++) {
+            View view = (View) ancestor;
+            collectTabBars(view, 4, bars);
+            if (!bars.isEmpty() || view instanceof NshView) break;
+            ancestor = view.getParent();
+        }
+        if (bars.isEmpty()) return;
+        boolean hidden = hidesBottomBar();
+        for (TabBarComponent bar : bars) bar.setNavigationHidden(hidden, animated);
+    }
+
+    private static void collectTabBars(View view, int depth, List<TabBarComponent> out) {
+        if (depth == 0 || view.getVisibility() != VISIBLE || !(view instanceof ViewGroup)) return;
+        ViewGroup group = (ViewGroup) view;
+        for (int i = 0; i < group.getChildCount(); i++) {
+            View child = group.getChildAt(i);
+            if (child.getVisibility() != VISIBLE) continue;
+            if (child instanceof ComponentBox && ((ComponentBox) child).component instanceof TabBarComponent) {
+                out.add((TabBarComponent) ((ComponentBox) child).component);
+            } else {
+                collectTabBars(child, depth - 1, out);
+            }
+        }
+    }
+
     // --- Back -----------------------------------------------------------------
 
     /** Whether the back button pops a screen of this stack. */
     boolean canPop() {
         ScreenBox top = top();
-        return shown.size() > 1 && top != null && !top.preventBack && showsForBack();
+        return shown.size() > 1 && top != null && !top.preventBack && isVisibleStack();
     }
 
     /** Whether the top screen keeps the user (`popOnBack` false): back only tells JS. */
     boolean preventsBack() {
         ScreenBox top = top();
-        return top != null && top.preventBack && showsForBack();
+        return top != null && top.preventBack && isVisibleStack();
     }
 
     /**
-     * Whether going back may act on this stack: shown, and it and every
-     * view of the app around it laid out with a size
-     * (`nsh_core::navigation::shown_in_layout`: `display: none`, a tab not
-     * selected, is laid out at no size, which `isShown` does not see). The
-     * frames are the core's (`Box.Frame`), set when a batch lands: a screen
-     * just added has not been measured yet, and the views the platform
-     * places between (screens, a scroll view's content) have none.
+     * Whether this stack is currently shown with non-empty frames across its
+     * ancestor chain (`display: none`, a tab not selected, lays out at no
+     * size, which `isShown` does not see). The frames are the core's
+     * (`Box.Frame`), set when a batch lands: a screen just added has not been
+     * measured yet, and the views the platform places between (screens, a
+     * scroll view's content) have none.
      */
-    private boolean showsForBack() {
+    boolean isVisibleStack() {
         if (!isShown()) return false;
         for (ViewParent p = this; p instanceof View && !(p instanceof NshView); p = p.getParent()) {
             if (((View) p).getLayoutParams() instanceof Box.Frame) {
@@ -345,7 +388,7 @@ final class StackBox extends FrameLayout implements Node {
      */
     void back() {
         ScreenBox top = top();
-        if (top == null || !showsForBack()) return;
+        if (top == null || !isVisibleStack()) return;
         if (mounter.wants(top.id, Native.BACK_REQUEST)) mounter.event(top.id, Native.BACK_REQUEST);
         if (!top.preventBack) pop();
     }
@@ -406,11 +449,13 @@ final class StackBox extends FrameLayout implements Node {
         List<ScreenBox> leaving = new ArrayList<>();
         leaving.add(upper);
         if (progress == 0 && shaderAnimate(lower, upper, false, leaving)) {
-            // Through its shader.
+            syncBottomBar(true);
         } else if (upper.animation == 2) {
             settle(leaving);
+            syncBottomBar(false);
         } else {
             animate(lower, upper, false, upper.animation == 1, progress, leaving);
+            syncBottomBar(true);
         }
         mounter.event(upper.id, Native.DISMISS);
     }
@@ -424,6 +469,7 @@ final class StackBox extends FrameLayout implements Node {
         final Box root;
         final Toolbar toolbar;
         int animation;
+        boolean hidesBottomBar;
         boolean gestureEnabled = true;
         /** `popOnBack` false: the back buttons only send `onBackPress`. */
         boolean preventBack;
@@ -470,25 +516,62 @@ final class StackBox extends FrameLayout implements Node {
             });
             addView(toolbar, new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0));
             leadTitle = new android.widget.TextView(context);
-            // The toolbar's own title style, from the same theme (a host's toolbarStyle, the device's font).
-            android.content.res.TypedArray style = context.obtainStyledAttributes(null,
-                    new int[] {android.R.attr.titleTextAppearance}, android.R.attr.toolbarStyle, 0);
-            int appearance = style.getResourceId(0, android.R.style.TextAppearance_Material_Widget_Toolbar_Title);
-            style.recycle();
-            leadTitle.setTextAppearance(appearance);
             leadTitle.setSingleLine(true);
             leadTitle.setEllipsize(android.text.TextUtils.TruncateAt.END);
-            // The gap to the leading item is the title's own padding: a margin on a
-            // toolbar's view left no gap on an API 35 emulator.
-            leadTitle.setPaddingRelative(Math.round(16 * mounter.density), 0, 0, 0);
             leadRow = new HeaderRow(context);
             leadRow.setGravity(android.view.Gravity.CENTER_VERTICAL);
             themeInsetStart = toolbar.getContentInsetStart();
             centerTitle = new android.widget.TextView(context);
-            centerTitle.setTextAppearance(appearance);
             centerTitle.setSingleLine(true);
             centerTitle.setEllipsize(android.text.TextUtils.TruncateAt.END);
+            titleStyle();
             colors();
+        }
+
+        /** The configuration {@link #titleStyle} read its style in. */
+        private android.content.res.Configuration styledIn;
+
+        /**
+         * Styles the titles as the toolbar's own title, from the same theme (a
+         * host's toolbarStyle, the device's font). A text appearance is
+         * resolved when it is set, and its size depends on the configuration:
+         * smaller in landscape, larger with a larger font scale. The activity
+         * keeps its views through those changes, so the titles are styled
+         * again when the configuration they were styled in no longer holds.
+         */
+        private void titleStyle() {
+            styledIn = new android.content.res.Configuration(getResources().getConfiguration());
+            android.content.res.TypedArray style = getContext().obtainStyledAttributes(null,
+                    new int[] {android.R.attr.titleTextAppearance}, android.R.attr.toolbarStyle, 0);
+            int appearance = style.getResourceId(0, android.R.style.TextAppearance_Material_Widget_Toolbar_Title);
+            style.recycle();
+            // The toolbar's own title (a page with a plain title and no leading item).
+            toolbar.setTitleTextAppearance(getContext(), appearance);
+            leadTitle.setTextAppearance(appearance);
+            centerTitle.setTextAppearance(appearance);
+            // The gap to the leading item is the title's own padding: a margin on a
+            // toolbar's view left no gap on an API 35 emulator.
+            leadTitle.setPaddingRelative(Math.round(16 * mounter.density), 0, 0, 0);
+        }
+
+        /** Styles the titles again if the configuration changed since (a text appearance resets their colors). */
+        private void restyle() {
+            if (styledIn.diff(getResources().getConfiguration()) == 0) return;
+            titleStyle();
+            colors();
+        }
+
+        @Override
+        protected void onConfigurationChanged(android.content.res.Configuration config) {
+            super.onConfigurationChanged(config);
+            restyle();
+        }
+
+        /** A screen out of the window misses configuration changes: one coming back catches up. */
+        @Override
+        protected void onAttachedToWindow() {
+            super.onAttachedToWindow();
+            restyle();
         }
 
         /**
@@ -563,8 +646,9 @@ final class StackBox extends FrameLayout implements Node {
         void configure(Mounter m, String title, boolean shown, boolean transparent, int tint, int background,
                        int titleColor, boolean backVisible, boolean gesture, boolean preventBack, int animation,
                        int left, int right, int titleView, float headerHeight, boolean centered,
-                       boolean canGoBack, String backTitle) {
+                       boolean hidesBottomBar, boolean canGoBack, String backTitle) {
             this.animation = animation;
+            this.hidesBottomBar = hidesBottomBar;
             this.gestureEnabled = gesture;
             this.preventBack = preventBack;
             float d = m.density;

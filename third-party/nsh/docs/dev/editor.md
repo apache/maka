@@ -127,8 +127,11 @@ mobile platforms honor on inputs too): over the caret it would take the touches 
 editor's box (`Ed::in_editor`) and held inside it: the platforms scroll the scroll views around a focused field to
 show it, which the editor does itself for its caret, and doing it again moved the text under the caret by a margin,
 animated, when the editor took the focus. It holds only what was just typed: each `onChange` is
-compared with what it held, and the difference becomes Backspaces and typed text at every selection (`sink_changed`),
-which is how autocorrection and input methods that replace their text work. While an input method composes, its text
+compared with what it held around the place in it the caret stands for, and the difference becomes Backspaces,
+forward deletions and typed text at every selection (`sink_changed`, `sink_text.rs`), which is how autocorrection and
+input methods that replace their text work. The caret stands for the sink's end until the platform moves the sink's
+own caret without a key (an input method that types a pair of brackets and puts its caret between them): a single
+caret then follows it (`sink_selection`), over text the editor holds the same way. While an input method composes, its text
 is drawn at the caret over the text (the `composition` part, underlined) and the carets hide; the commit arrives as
 typed text. The sink is emptied when the caret moves (unless a composition is under way) and once it holds 256 bytes.
 A paste reaches the sink as a paste event (`PasteBehavior::Report`) and goes through `Editing::paste`; text copied

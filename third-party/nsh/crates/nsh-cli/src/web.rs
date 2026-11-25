@@ -156,16 +156,20 @@ pub(crate) fn package(
         let has_emoji =
             plan.main.iter().any(|g| g == EMOJI_GATE) || plan.lazy().contains(&EMOJI_GATE);
         let exports = prune::exports(&linkable)?;
+        let rust_part = |name: &str| built.rust_root && rust_on_demand(name);
         let keep: Vec<&str> = exports
             .iter()
             .map(String::as_str)
-            .filter(|name| !is_gate(name) || plan.main.iter().any(|g| g == name))
+            .filter(|name| {
+                !is_gate(name) || (!rust_part(name) && plan.main.iter().any(|g| g == name))
+            })
             .collect();
-        let lazy: Vec<&str> = plan
+        let mut lazy: Vec<&str> = plan
             .lazy()
             .into_iter()
             .filter(|gate| exports.iter().any(|e| e == gate))
             .collect();
+        lazy.extend(exports.iter().map(String::as_str).filter(|n| rust_part(n)));
         let split = link(&linkable, runtime.glue.is_some(), &keep, &lazy)?;
         for side in &split.sides {
             let file = side_file_name(&side.gates);
@@ -228,7 +232,7 @@ pub(crate) fn package(
     } = modules;
     let mut assets = serde_json::Map::new();
     let mut fonts = Vec::new();
-    for asset in &built.assets {
+    for asset in built.assets_for(Some(nsh_core::platform::Os::Web)) {
         let bytes = fs::read(&asset.source).with_context(|| format!("read {}", asset.path))?;
         let url = site.add(&format!("assets/{}", asset.path), &bytes)?;
         if is_font(&asset.path) {
@@ -370,6 +374,20 @@ const MATH_GATE: &str = "nsh_feature_math";
 const MATH_FONTS_FILE: &str = "nsh-math.bin";
 /// The gate of `EmojiPicker`.
 const EMOJI_GATE: &str = "nsh_part_emoji_picker";
+/// Whether a Rust app's runtime (`built.rust_root`) publishes gate `name`
+/// as a side module the page loads on demand, whatever the plan: the parts
+/// of `nsh/base` (`nsh_part_*`), whose components the app makes by name
+/// (`ComponentElement::by_name`), so each loads when one first mounts
+/// (what the app makes by type is linked where it is used, in the main
+/// module); and shaders ([`SHADER_GATE`]), whose translation to GLSL ES
+/// (naga) loads when the app first shows one.
+fn rust_on_demand(name: &str) -> bool {
+    name.starts_with("nsh_part_") || name == SHADER_GATE
+}
+
+/// Shaders: the core's compiler of their sources and their translation to
+/// GLSL ES (`nsh-platform-web`'s `shader.rs`).
+const SHADER_GATE: &str = "nsh_feature_shader";
 /// `EmojiPicker`'s emoji, which the page fetches for the first picker.
 const EMOJI_FILE: &str = "nsh-emoji.bin";
 
@@ -1829,6 +1847,18 @@ fn side_file_name(gates: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_rust_app_loads_its_parts_and_shaders_on_demand() {
+        assert!(rust_on_demand("nsh_part_rich_editor"));
+        // naga's GLSL ES back end, which an app without shaders never loads
+        // (#3048).
+        assert!(rust_on_demand(SHADER_GATE));
+        assert!(is_gate(SHADER_GATE));
+        // What the engine runs from the start stays in the main module.
+        assert!(!rust_on_demand("nsh_std_zlib"));
+        assert!(!rust_on_demand(&ui_set_gate("app/charts")));
+    }
 
     #[test]
     fn names_carry_the_digest_of_the_content() {

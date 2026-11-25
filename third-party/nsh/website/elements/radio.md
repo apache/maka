@@ -13,6 +13,40 @@ screen readers. A `RadioGroup` around them is the set, which screen readers anno
 app's: a radio has no circle, dot, colors, sizes or label of its own. Its children are the app's indicator and label,
 and `checked:` classes on the radio, or `group-checked:` classes on what is inside it, follow its state.
 
+```tsx tabs
+import { mount, signal, Text, View } from "nsh";
+import { Radio, RadioGroup } from "nsh/base";
+import { Window } from "nsh/desktop";
+
+function App() {
+  const plan = signal("basic");
+  const option = (value: string, label: string) => (
+    <Radio
+      checked={plan() === value}
+      onChange={() => plan.set(value)}
+      class="group flex-row items-center gap-2"
+    >
+      <View class="size-5 items-center justify-center rounded-full border-2 border-border group-checked:border-primary">
+        <View class="size-2.5 rounded-full group-checked:bg-primary" />
+      </View>
+      <Text>{label}</Text>
+    </Radio>
+  );
+  return (
+    <RadioGroup accessibilityLabel="Plan" class="gap-3">
+      {option("basic", "Basic")}
+      {option("pro", "Pro")}
+    </RadioGroup>
+  );
+}
+
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
+```
+
 ```rust tabs
 use nsh_base::{radio, radio_group, theme};
 use nsh_core::prelude::*;
@@ -50,40 +84,6 @@ fn plans() -> impl IntoElement {
         .child(option("basic", "Basic"))
         .child(option("pro", "Pro"))
 }
-```
-
-```tsx tabs
-import { mount, signal, Text, View } from "nsh";
-import { Radio, RadioGroup } from "nsh/base";
-import { Window } from "nsh/desktop";
-
-function App() {
-  const plan = signal("basic");
-  const option = (value: string, label: string) => (
-    <Radio
-      checked={plan() === value}
-      onChange={() => plan.set(value)}
-      class="group flex-row items-center gap-2"
-    >
-      <View class="size-5 items-center justify-center rounded-full border-2 border-border group-checked:border-primary">
-        <View class="size-2.5 rounded-full group-checked:bg-primary" />
-      </View>
-      <Text>{label}</Text>
-    </Radio>
-  );
-  return (
-    <RadioGroup accessibilityLabel="Plan" class="gap-3">
-      {option("basic", "Basic")}
-      {option("pro", "Pro")}
-    </RadioGroup>
-  );
-}
-
-mount(() => (
-  <Window id="main">
-    <App />
-  </Window>
-));
 ```
 
 `Radio` and `RadioGroup` come from [`nsh/base`](../modules/nsh-base.md), the `nsh-base` crate in Rust. The value is

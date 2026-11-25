@@ -374,6 +374,14 @@ pub struct AttributedText {
     pub shadow: Option<TextShadow>,
     /// Nested `<text>` spans that take presses (they may nest).
     pub links: Vec<TextLink>,
+    /// Where links of [`links`](Self::links) go: the `href` of their span
+    /// (`nsh-base`'s `TextView` gives its links their URL), by the link's
+    /// index there. It changes nothing drawn or laid out; a platform that
+    /// makes links hyperlinks takes it (the web draws a link's characters
+    /// as an `<a href>`). Hidden: only the web reads it so far, so it is
+    /// not yet a stable part of the core's API.
+    #[doc(hidden)]
+    pub link_hrefs: Vec<LinkHref>,
     /// Nested `<Text>` spans with a `testID` (they may nest). Platforms
     /// draw nothing from them. Tests name a span by its id.
     pub test_ids: Vec<SpanTestId>,
@@ -668,6 +676,28 @@ pub struct SpanTestId {
     pub test_id: Arc<str>,
 }
 
+/// Where a link of a text goes (`AttributedText::link_hrefs`). Hidden, as
+/// that field is.
+#[doc(hidden)]
+#[derive(Debug, Clone, PartialEq, Default)]
+#[non_exhaustive]
+pub struct LinkHref {
+    /// The link's index in [`AttributedText::links`].
+    pub link: u32,
+    /// Its span's `href`: a URL or a path of the app's, as a `Link`'s.
+    pub href: Arc<str>,
+}
+
+impl LinkHref {
+    /// Link `link` of the text goes to `href`.
+    pub fn new(link: u32, href: impl Into<Arc<str>>) -> Self {
+        Self {
+            link,
+            href: href.into(),
+        }
+    }
+}
+
 /// What an attachment of a text gives when the text is copied
 /// ([`AttributedText::copy_texts`]): a formula's source, an emoji image's
 /// character.
@@ -904,6 +934,16 @@ impl AttributedText {
             .min_by_key(|l| l.end - l.start)
     }
 
+    /// Where link `link` (its index in [`Self::links`]) goes, when its
+    /// span has an `href` (`link_hrefs`). Hidden, as that field is.
+    #[doc(hidden)]
+    pub fn link_href(&self, link: usize) -> Option<&str> {
+        self.link_hrefs
+            .iter()
+            .find(|h| h.link as usize == link)
+            .map(|h| &*h.href)
+    }
+
     /// Appends an attachment of `size` on the baseline.
     pub fn push_attachment(&mut self, size: Size<Points>, style: ResolvedTextStyle) {
         let index = self.len_utf16();
@@ -967,10 +1007,10 @@ impl AttributedText {
 
     /// Whether the two texts differ at most in their spans' colors (text,
     /// decoration and background), which of them are hidden
-    /// ([`ResolvedTextStyle::hidden`]) and metadata (test ids, copy texts): the same
-    /// characters in the same styles but for those, wherever the spans
-    /// begin and end (neighbors that take the same color merge into one
-    /// span).
+    /// ([`ResolvedTextStyle::hidden`]) and metadata (test ids, copy texts,
+    /// links' hrefs): the same characters in the same styles but for those,
+    /// wherever the spans begin and end (neighbors that take the same color
+    /// merge into one span).
     pub(crate) fn same_but_colors(&self, other: &Self) -> bool {
         // Enumerating the fields makes additions revisit this comparison.
         let Self {
@@ -990,6 +1030,7 @@ impl AttributedText {
             attachments,
             test_ids: _,
             copy_texts: _,
+            link_hrefs: _,
         } = self;
         text == &other.text
             && align == &other.align
@@ -1045,9 +1086,12 @@ impl AttributedText {
     }
 
     /// Whether the two texts have the same metadata: what
-    /// [`Self::rendering_eq`] leaves out (test ids, copy texts).
+    /// [`Self::rendering_eq`] leaves out (test ids, copy texts, links'
+    /// hrefs).
     pub(crate) fn metadata_eq(&self, other: &Self) -> bool {
-        self.test_ids == other.test_ids && self.copy_texts == other.copy_texts
+        self.test_ids == other.test_ids
+            && self.copy_texts == other.copy_texts
+            && self.link_hrefs == other.link_hrefs
     }
 
     /// Takes `other`'s metadata ([`Self::metadata_eq`]), keeping what is
@@ -1055,9 +1099,11 @@ impl AttributedText {
     pub(crate) fn set_metadata(&mut self, other: &Self) {
         self.test_ids = other.test_ids.clone();
         self.copy_texts = other.copy_texts.clone();
+        self.link_hrefs = other.link_hrefs.clone();
     }
 
-    /// Equality of the content the platform draws, excluding metadata (test ids, copy texts).
+    /// Equality of the content the platform draws, excluding metadata (test
+    /// ids, copy texts, links' hrefs).
     pub(crate) fn rendering_eq(&self, other: &Self) -> bool {
         // Enumerating the fields makes additions revisit this comparison.
         let Self {
@@ -1078,6 +1124,7 @@ impl AttributedText {
             // Metadata: `metadata_eq` and `set_metadata` take these.
             test_ids: _,
             copy_texts: _,
+            link_hrefs: _,
         } = self;
         text == &other.text
             && spans == &other.spans

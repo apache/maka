@@ -12,6 +12,13 @@ Each utility sets exactly what Tailwind CSS 4 generates for it, with the same me
 
 Rust components take no class strings: they style elements with the typed methods of `Styled` (`nsh_core::prelude`), named after these utilities and resolving to the same values, Tailwind's default scales included (`px-4` is `.px_4()`, `rounded-2xl` `.rounded_2xl()`, `shadow-md` `.shadow_md()`, `bg-linear-to-br` `.bg_linear_to_br()`). Colors are values: theme colors, or Tailwind's palette as `nsh_core::element::palette` (`ZINC.shade(800)` is `zinc-800`). Variants are methods taking a closure of styles: `.active(|s| …)`, `.hover(…)`, `.focus(…)`, `.disabled_style(…)`, `.dark(…)`, `.group_active(…)`, and `.style_when(condition, …)` for the rest. The [Style reference](./style-reference.md) names the method of each style key.
 
+```tsx tabs
+<View class="flex-row items-center gap-3 rounded-2xl bg-white p-4 shadow-md active:scale-[0.98] transition dark:bg-zinc-800">
+  <Text class="text-base font-semibold text-zinc-900 dark:text-white">Inbox</Text>
+  <Text classList={{ "text-red-500": unread() > 0, "text-zinc-400": unread() === 0 }}>{unread()}</Text>
+</View>
+```
+
 ```rust tabs
 use nsh_core::{element::palette::{RED, ZINC}, prelude::*};
 
@@ -37,13 +44,6 @@ view()
         text(move || unread.get().to_string())
             .text_color(move || if unread.get() > 0 { RED.shade(500) } else { ZINC.shade(400) }),
     )
-```
-
-```tsx tabs
-<View class="flex-row items-center gap-3 rounded-2xl bg-white p-4 shadow-md active:scale-[0.98] transition dark:bg-zinc-800">
-  <Text class="text-base font-semibold text-zinc-900 dark:text-white">Inbox</Text>
-  <Text classList={{ "text-red-500": unread() > 0, "text-zinc-400": unread() === 0 }}>{unread()}</Text>
-</View>
 ```
 
 ## How classes combine
@@ -294,6 +294,10 @@ Tailwind's text shadows have several layers; natively one shadow is drawn, the w
 
 Gradient utilities mix their colors in Oklab, as Tailwind CSS writes them (`in oklab`); at an arbitrary position (`bg-linear-[25deg]`, `bg-conic-[0.25turn]`) they follow CSS's default, Oklab with the palette's colors and sRGB when every stop is a hex, `rgb()`, `hsl()` or named color.
 
+```tsx tabs
+<View class="h-32 rounded-2xl bg-linear-to-br from-indigo-500 via-purple-500 via-40% to-pink-500" />
+```
+
 ```rust tabs
 view()
     .h_32()
@@ -303,10 +307,6 @@ view()
     .gradient_via(PURPLE.shade(500))
     .gradient_via_position(percentage(0.4))
     .gradient_to(PINK.shade(500))
-```
-
-```tsx tabs
-<View class="h-32 rounded-2xl bg-linear-to-br from-indigo-500 via-purple-500 via-40% to-pink-500" />
 ```
 
 ## Borders
@@ -502,6 +502,16 @@ The same states as style objects are the `activeStyle`, `hoverStyle`, `focusStyl
 
 `disabled` works on any element: it applies `disabled:` and removes the element's press handlers, so it shows no press feedback either.
 
+```tsx tabs
+<View
+  onPress={save}
+  disabled={saving()}
+  class="rounded-lg bg-blue-600 px-4 py-2 transition active:scale-95 active:bg-blue-700 disabled:opacity-40"
+>
+  <Text class="font-medium text-white">Save</Text>
+</View>
+```
+
 ```rust tabs
 view()
     .on_press(save)
@@ -514,16 +524,6 @@ view()
     .active(|s| s.scale(0.95).bg(BLUE.shade(700)))
     .disabled_style(|s| s.opacity(0.4))
     .child(text("Save").font_weight(FontWeight::MEDIUM).text_color(white()))
-```
-
-```tsx tabs
-<View
-  onPress={save}
-  disabled={saving()}
-  class="rounded-lg bg-blue-600 px-4 py-2 transition active:scale-95 active:bg-blue-700 disabled:opacity-40"
->
-  <Text class="font-medium text-white">Save</Text>
-</View>
 ```
 
 ### Groups
@@ -545,6 +545,13 @@ Mark an ancestor with `group` and style descendants by its state with `group-<st
 | `group-aria-pressed:` | a toggle button that is on |  |
 | `group-aria-busy:`, `group-aria-checked:`, `group-aria-selected:` | busy, checked, selected |  |
 | `group-data-<name>:` | showing the `data-*` attribute `name` |  |
+
+```tsx tabs
+<View onPress={open} class="group/row flex-row items-center gap-3 p-3 active:bg-zinc-100">
+  <Text class="flex-1 text-zinc-900 group-active/row:text-blue-600">Settings</Text>
+  <Text class="text-zinc-400 group-active/row:translate-x-1 transition-transform">›</Text>
+</View>
+```
 
 ```rust tabs
 view()
@@ -569,13 +576,6 @@ view()
     )
 ```
 
-```tsx tabs
-<View onPress={open} class="group/row flex-row items-center gap-3 p-3 active:bg-zinc-100">
-  <Text class="flex-1 text-zinc-900 group-active/row:text-blue-600">Settings</Text>
-  <Text class="text-zinc-400 group-active/row:translate-x-1 transition-transform">›</Text>
-</View>
-```
-
 ### Position among siblings
 
 | Variant | Applies to |
@@ -586,6 +586,10 @@ view()
 | `odd:` | the 1st, 3rd, ... child |
 | `even:` | the 2nd, 4th, ... child |
 
+```tsx tabs
+<Each of={items()}>{(item) => <Text class="border-b border-zinc-200 py-3 last:border-b-0">{item().name}</Text>}</Each>
+```
+
 ```rust tabs
 each(items, |item: &Item| item.id, move |item, index| {
     text(move || item.with(|i| i.name.clone()))
@@ -594,10 +598,6 @@ each(items, |item: &Item| item.id, move |item, index| {
         .py_3()
         .style_when(move || index.get() + 1 == items.with(Vec::len), |s| s.border_b(px(0.0)))
 })
-```
-
-```tsx tabs
-<Each of={items()}>{(item) => <Text class="border-b border-zinc-200 py-3 last:border-b-0">{item().name}</Text>}</Each>
 ```
 
 ### Placeholder and selection

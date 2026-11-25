@@ -7,9 +7,9 @@ group: start
 
 # Installation
 
-Everything NSH does goes through one command, `nsh`. It builds apps written in Rust or TSX, runs them on every platform, serves TSX to development hosts with hot updates, and packages installable apps. You can use it from a prebuilt distribution or build it from a checkout of the repository.
+Everything NSH does goes through one command, `nsh`. It builds apps written in TSX or Rust, runs them on every platform, serves TSX to development hosts with hot updates, and packages installable apps. You can use it from a prebuilt distribution or build it from a checkout of the repository.
 
-Apps written in Rust also need a Rust toolchain ([below](#for-apps-written-in-rust)); TSX apps need `nsh` alone. On top of that, each platform needs its own tools:
+TSX apps need `nsh` alone. Apps with Rust in them (their own crates in `ext/`, a Rust nshm, or an app written in Rust) also need a Rust toolchain ([below](#for-apps-written-in-rust)). On top of that, each platform needs its own tools:
 
 | Platform | Develop and package on | Needs |
 |---|---|---|
@@ -90,7 +90,7 @@ A component always comes from the same build as the CLI. `nsh update` adds the i
 
 ## For apps written in Rust
 
-Install Rust through [rustup](https://rustup.rs). `nsh` builds a Rust app's runner for each target with Cargo, from your crate and NSH's crates on crates.io at the CLI's version, so add the Rust targets of the platforms you run on. For the iOS simulator, iOS devices and Mac Catalyst:
+Install Rust through [rustup](https://rustup.rs) when the app has Rust in it: a crate of its own in `ext/`, a Rust nshm, or a whole app in Rust. `nsh` builds the app's runner for each target with Cargo, from those crates and NSH's crates on crates.io at the CLI's version, so add the Rust targets of the platforms you run on. For the iOS simulator, iOS devices and Mac Catalyst:
 
 ```sh
 rustup target add aarch64-apple-ios-sim aarch64-apple-ios aarch64-apple-ios-macabi

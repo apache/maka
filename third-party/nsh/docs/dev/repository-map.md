@@ -66,9 +66,11 @@ crates/
   nsh-package/         Signed packages (`.nshpkg`): Ed25519 keys, release-key certificates, revocation lists, the trust store
   nsh-updater/          App self-update: manifests and their signatures, verified downloads, replacing the installed app on the desktop (docs/dev/updater.md); `nsh-core`'s `runtime/updater.rs` is its JS face, `nsh/updater`
   nsh-extra/           NSH's official modules, an nshm apps install with `nsh add nsh-extra --features <name>`: one Cargo feature
-                       per module (`camera`: `Camera`, photos from the system's camera on iOS and Android; `photos`:
+                       per module (`camera`: `Camera`, photos from the system's camera on iOS and Android; `location`: `Location`, the
+                       device's position on macOS, iOS and the web; `photos`:
                        `Photos`, the recent photos of the user's library on iOS; `push`: `Push`,
-                       remote notifications on iOS and, through a push service's binding, Android), its code in
+                       remote notifications on iOS and, through a push service's binding, Android; `speech`:
+                       `Speech`, speech recognized as the user talks on macOS, iOS, Android, Windows and the web), its code in
                        `src/<name>/` on the platform crates' extension points, what the packaged app needs under
                        `[package.metadata.nsh.features.<name>]` (merged into packages by `nsh-cli`'s `module_meta.rs`)
   nsh-bundler/         Bundler: rolldown + Oxc (TS stripping) + NSH's JSX compiler (`jsx.rs`, docs/dev/native-pipeline.md) + source maps;
@@ -108,7 +110,7 @@ crates/
                        the test agent's platform part (`agent.rs`: `nsh test --target linux`) (docs/dev/linux.md)
   nsh-linux-host/      Development host on Linux (`nsh run --target linux`): connects to a dev server or runs a bundle
   nsh-linux-app/       Release runner on Linux: the executable of apps built by `nsh package --target linux`
-  nsh-platform-apple/  Shared by the macOS and iOS backends: the Speech recognizer, the notification center, how
+  nsh-platform-apple/  Shared by the macOS and iOS backends: the notification center, how
                        drawn text splits into screen reader elements around its links and inline views, and
                        `unified_log`, the logger of the release runners and the iOS SDK (the unified log; stderr too
                        wherever it goes but /dev/null)

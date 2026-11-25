@@ -7,7 +7,7 @@ starting after an NSH update is a bug in NSH, never in the app.
 
 This page is the contract and how it is enforced. It holds from the first release recorded in
 `nsh-compat` ("Releasing") on, and for good, whatever the version number says; earlier versions made no promises.
-No release is recorded yet, 0.3.0 through 0.6.0 included: the first one recorded starts the contract.
+No release is recorded yet, 0.3.0 through 0.7.0 included: the first one recorded starts the contract.
 
 ## What apps depend on
 

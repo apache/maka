@@ -1,6 +1,6 @@
 ---
 title: Web
-description: Build web apps in Rust or TSX with Native Shell components rendered as HTML and CSS, develop in the browser, and publish to any static host or CDN.
+description: Build web apps in TSX or Rust with Native Shell components rendered as HTML and CSS, develop in the browser, and publish to any static host or CDN.
 order: 16
 group: platforms
 demo: counter
@@ -593,6 +593,7 @@ The player and the dev server run apps with development settings; published apps
 
 ## See also
 
+- [Host the site](./packaging.md#host-the-site)
 - [Packaging](./packaging.md): the other targets of `nsh package`.
 - [Architecture](./architecture.md): the engine, the core and the mount batches the web build reuses.
 - [Testing](./testing-and-trace.md): `nsh test` runs the same engine headless, with an approximate text engine.

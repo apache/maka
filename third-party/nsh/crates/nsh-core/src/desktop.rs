@@ -477,6 +477,7 @@ impl Shortcut {
             alt: self.alt,
             shift: self.shift,
             cmd: self.meta,
+            alt_graph: false,
         };
         Keystroke { modifiers, key }
     }

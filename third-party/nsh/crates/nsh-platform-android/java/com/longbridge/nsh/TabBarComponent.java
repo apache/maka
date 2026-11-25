@@ -1,5 +1,7 @@
 package com.longbridge.nsh;
 
+import android.animation.Animator;
+import android.animation.AnimatorListenerAdapter;
 import android.content.Context;
 import android.content.res.ColorStateList;
 import android.content.res.Configuration;
@@ -15,6 +17,7 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowInsets;
 import android.view.accessibility.AccessibilityNodeInfo;
+import android.view.animation.DecelerateInterpolator;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
@@ -53,6 +56,8 @@ final class TabBarComponent implements NshComponent {
     private Integer tint;
     /** The bottom inset the bar reaches under, in px. */
     private int inset;
+    private final BottomBarVisibility visibility = new BottomBarVisibility();
+    private boolean appliedHidden;
 
     TabBarComponent(Context context, NshComponentContext events, BooleanSupplier night) {
         this.context = context;
@@ -70,7 +75,7 @@ final class TabBarComponent implements NshComponent {
 
     @Override
     public void setProp(String name, Object value) {
-        // `TabBar`'s own props arrive as `$items` and `$selectedIndex`.
+        // `TabBar`'s own props arrive as `$items`, `$selectedIndex` and `$hidden`.
         if (name.startsWith("$")) name = name.substring(1);
         switch (name) {
             case "items":
@@ -82,11 +87,73 @@ final class TabBarComponent implements NshComponent {
                 selected = whole ? ((Number) value).intValue() : 0;
                 select();
                 break;
+            case "hidden":
+                setHidden(Boolean.TRUE.equals(value));
+                break;
             case "tint":
                 setTint(value instanceof String ? argb((String) value) : null);
                 break;
             default:
                 break;
+        }
+    }
+
+    /** Hides or shows the bar for {@code hidesBottomBarWhenPushed} on the visible stack. */
+    void setNavigationHidden(boolean hidden, boolean animated) {
+        visibility.setNavigation(hidden);
+        apply(animated);
+    }
+
+    /** Hides or shows the bar for the app's {@code TabBar.hidden}. */
+    private void setHidden(boolean value) {
+        visibility.setApp(value);
+        apply(false);
+    }
+
+    private void apply(boolean animated) {
+        boolean next = visibility.hidden();
+        if (next == appliedHidden) return;
+        appliedHidden = next;
+        bar.animate().setListener(null);
+        bar.animate().cancel();
+        if (!animated || bar.getHeight() == 0) {
+            bar.setTranslationY(0);
+            bar.setVisibility(next ? View.GONE : View.VISIBLE);
+            return;
+        }
+        if (next) {
+            bar.animate()
+                    .translationY(bar.getHeight())
+                    .setDuration(250)
+                    .setInterpolator(new DecelerateInterpolator(1.5f))
+                    .setListener(new AnimatorListenerAdapter() {
+                        private boolean cancelled;
+
+                        @Override
+                        public void onAnimationCancel(Animator animation) {
+                            cancelled = true;
+                        }
+
+                        @Override
+                        public void onAnimationEnd(Animator animation) {
+                            if (!cancelled && appliedHidden) {
+                                bar.setVisibility(View.GONE);
+                                bar.setTranslationY(0);
+                            }
+                        }
+                    })
+                    .start();
+        } else {
+            if (bar.getVisibility() != View.VISIBLE) {
+                bar.setTranslationY(bar.getHeight());
+                bar.setVisibility(View.VISIBLE);
+            }
+            bar.animate()
+                    .translationY(0)
+                    .setDuration(250)
+                    .setInterpolator(new DecelerateInterpolator(1.5f))
+                    .setListener(null)
+                    .start();
         }
     }
 
@@ -179,6 +246,7 @@ final class TabBarComponent implements NshComponent {
         @Override
         protected void onLayout(boolean changed, int l, int t, int r, int b) {
             super.onLayout(changed, l, t, r, b);
+            if (visibility.hidden() || getVisibility() != View.VISIBLE) return;
             // Reaching the window's bottom, the bar goes under the
             // navigation bar, taller by its inset, as Material's does.
             int bottom = 0, left = 0, right = 0;
@@ -186,7 +254,8 @@ final class TabBarComponent implements NshComponent {
             if (insets != null && getRootView() != null) {
                 int[] at = new int[2];
                 getLocationInWindow(at);
-                int reach = at[1] + getHeight();
+                // Measure against the un-translated bounds so a slide-in keeps its bottom inset.
+                int reach = at[1] - Math.round(getTranslationY()) + getHeight();
                 int window = getRootView().getHeight();
                 int nav = navigationInset(insets);
                 if (nav > 0 && reach >= window - nav) bottom = nav;
@@ -212,6 +281,7 @@ final class TabBarComponent implements NshComponent {
         protected void onConfigurationChanged(Configuration config) {
             super.onConfigurationChanged(config);
             appearanceChanged();
+            for (Item item : items) item.textSize();
         }
 
         @Override
@@ -355,6 +425,15 @@ final class TabBarComponent implements NshComponent {
             LayoutParams lp = new LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
             lp.topMargin = px(4);
             addView(label, lp);
+        }
+
+        /**
+         * Sizes its text again: a size in sp is resolved when it is set, and
+         * the activity keeps its views through a change of the font scale.
+         */
+        void textSize() {
+            label.setTextSize(TypedValue.COMPLEX_UNIT_SP, LABEL_SP);
+            if (badge != null && badge.length() > 0) badge.setTextSize(TypedValue.COMPLEX_UNIT_SP, BADGE_SP);
         }
 
         @Override

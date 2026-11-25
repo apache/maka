@@ -13,6 +13,39 @@ demo: el-scrollbar
 会滚动内容，按压轨道会让滑块中点移到那里；它在内容滚动时、指针悬停时或始终显示，并以原生动画淡入淡出。外观和时长属于应用：
 `Scrollbar` 没有自己的颜色、尺寸或圆角，应用不给时长时，它的淡入淡出不占时间。
 
+```tsx tabs
+import { mount, Scroll, Text, View, type YNode } from "nsh";
+import { Scrollbar } from "nsh/base";
+import { Window } from "nsh/desktop";
+
+function App() {
+  let list: YNode | undefined;
+  return (
+    <View class="relative flex-1">
+      <Scroll ref={list} scrollbar={false} class="flex-1">
+        {Array.from({ length: 60 }, (_, i) => (
+          <Text class="px-4 py-3">{`消息 ${i + 1}`}</Text>
+        ))}
+      </Scroll>
+      <Scrollbar
+        scroll={list}
+        mode="hover"
+        motion={{ enter: 300, exit: 500, thumbHoverEntrance: "slideAndFade" }}
+        accessibilityLabel="消息"
+        class="absolute inset-y-0 right-0 w-4 items-end p-1"
+        thumbClass="w-1.5 rounded-full bg-muted-foreground opacity-60 transition-all duration-300 hover:w-2 hover:opacity-90 active:w-2 active:opacity-100"
+      />
+    </View>
+  );
+}
+
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
+```
+
 ```rust tabs
 use nsh_base::{ScrollbarEntrance, ScrollbarMode, ScrollbarMotion, scrollbar, theme};
 use nsh_core::prelude::*;
@@ -54,39 +87,6 @@ fn inbox(rows: impl IntoElement) -> impl IntoElement {
 }
 ```
 
-```tsx tabs
-import { mount, Scroll, Text, View, type YNode } from "nsh";
-import { Scrollbar } from "nsh/base";
-import { Window } from "nsh/desktop";
-
-function App() {
-  let list: YNode | undefined;
-  return (
-    <View class="relative flex-1">
-      <Scroll ref={list} scrollbar={false} class="flex-1">
-        {Array.from({ length: 60 }, (_, i) => (
-          <Text class="px-4 py-3">{`消息 ${i + 1}`}</Text>
-        ))}
-      </Scroll>
-      <Scrollbar
-        scroll={list}
-        mode="hover"
-        motion={{ enter: 300, exit: 500, thumbHoverEntrance: "slideAndFade" }}
-        accessibilityLabel="消息"
-        class="absolute inset-y-0 right-0 w-4 items-end p-1"
-        thumbClass="w-1.5 rounded-full bg-muted-foreground opacity-60 transition-all duration-300 hover:w-2 hover:opacity-90 active:w-2 active:opacity-100"
-      />
-    </View>
-  );
-}
-
-mount(() => (
-  <Window id="main">
-    <App />
-  </Window>
-));
-```
-
 `Scrollbar` 来自 [`nsh/base`](../modules/nsh-base.md)，在 Rust 中是 `nsh-base` crate。在 Rust 中，`scrollbar()` 创建一个滚动条，每个
 prop 一个 setter（`.scroll(..)`、`.thumb_style(..)`），滚动条本身用类型化的样式方法；它的 `scroll` 接受 `ElementRef`（或
 `ScrollbarTarget`）。
@@ -98,6 +98,23 @@ prop 一个 setter（`.scroll(..)`、`.thumb_style(..)`），滚动条本身用�
 每个滚动视图和列表都可以用 `Scrollbar` 代替平台的滚动指示器，无需自己放置滚动条：在应用启动的地方调用一次 `Scrollbar.setTheme`，
 所有 `scrollbar` 为 `true` 的视图的滚动条就都采用应用的外观。每个视图在自己的视口上得到一个滚动条，内容滚动时它停在原处（与 sticky
 视图一样在主线程上完成），绘制在内容之上；它跟随、滚动和淡入淡出的方式与应用自己放置的 `Scrollbar` 相同。
+
+```tsx tabs
+import { Scrollbar } from "nsh/base";
+
+Scrollbar.setTheme({
+  mode: "hover",
+  motion: { enter: 300, exit: 500 },
+  vertical: {
+    class: "absolute inset-y-0 right-0 w-4 items-end p-1",
+    thumbClass: "w-1.5 rounded-full bg-muted-foreground opacity-60 transition-all duration-300 hover:w-2",
+  },
+  horizontal: {
+    class: "absolute inset-x-0 bottom-0 h-4 items-end p-1",
+    thumbClass: "h-1.5 rounded-full bg-muted-foreground opacity-60 transition-all duration-300 hover:h-2",
+  },
+});
+```
 
 ```rust tabs
 use nsh_base::{ScrollbarLook, ScrollbarMode, ScrollbarTheme, set_scrollbar_theme};
@@ -117,23 +134,6 @@ fn use_app_scrollbars() {
     theme.horizontal = Some(horizontal);
     set_scrollbar_theme(Some(theme));
 }
-```
-
-```tsx tabs
-import { Scrollbar } from "nsh/base";
-
-Scrollbar.setTheme({
-  mode: "hover",
-  motion: { enter: 300, exit: 500 },
-  vertical: {
-    class: "absolute inset-y-0 right-0 w-4 items-end p-1",
-    thumbClass: "w-1.5 rounded-full bg-muted-foreground opacity-60 transition-all duration-300 hover:w-2",
-  },
-  horizontal: {
-    class: "absolute inset-x-0 bottom-0 h-4 items-end p-1",
-    thumbClass: "h-1.5 rounded-full bg-muted-foreground opacity-60 transition-all duration-300 hover:h-2",
-  },
-});
 ```
 
 `ScrollbarTheme` 包含所有视图共用的滚动条属性，以及每个方向的外观：

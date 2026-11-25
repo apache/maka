@@ -1,10 +1,31 @@
 //! AppKit file-list drops, routed by the same hit testing as pointer input.
-use std::cell::RefCell;
+//!
+//! A drag offers local files (`public.file-url`: Finder, a screenshot's
+//! thumbnail), which drop as their URLs, or only promises files
+//! (`NSFilePromiseReceiver`: an image dragged out of a page in Safari or
+//! Chrome, Mail's attachments), which are written to a folder of their
+//! own once dropped and handed over as their contents (`files`), as on the
+//! Web.
+use std::{
+    cell::RefCell,
+    path::PathBuf,
+    ptr::NonNull,
+    sync::{Arc, Mutex},
+};
 
-use nsh_core::{EventKind, EventPayload};
-use objc2::runtime::ProtocolObject;
-use objc2_app_kit::{NSDragOperation, NSDraggingInfo, NSView};
-use objc2_foundation::{NSArray, NSString, NSURL};
+use block2::RcBlock;
+use nsh_core::{
+    EventKind, EventPayload, FileContents,
+    geometry::{Point, Points, point},
+    picker::{FilePickRequest, PickedFile, finish_files, read_picked_files},
+};
+use objc2::{
+    ClassType, msg_send,
+    rc::Retained,
+    runtime::{AnyClass, AnyObject, ProtocolObject},
+};
+use objc2_app_kit::{NSDragOperation, NSDraggingInfo, NSFilePromiseReceiver, NSView};
+use objc2_foundation::{NSArray, NSDictionary, NSError, NSOperationQueue, NSString, NSURL};
 
 use crate::{input, surface::Surface, view::NshView};
 
@@ -12,6 +33,11 @@ use crate::{input, surface::Surface, view::NshView};
 pub(crate) struct State {
     target: RefCell<Option<NshView>>,
     uris: RefCell<Vec<String>>,
+    /// The MIME types of the files a drag without file URLs promises
+    /// (`""` for a type with none).
+    promised: RefCell<Vec<String>>,
+    /// The queue promised files are read on, kept while they are written.
+    promise_queue: std::cell::OnceCell<Retained<NSOperationQueue>>,
     destinations: RefCell<Destinations>,
 }
 
@@ -89,7 +115,28 @@ pub(crate) fn accepting(surface: &Surface) -> bool {
 
 pub(crate) fn register(view: &NSView) {
     let kind = NSString::from_str("public.file-url");
-    view.registerForDraggedTypes(&NSArray::from_slice(&[&*kind]));
+    let mut kinds = vec![kind];
+    kinds.extend(NSFilePromiseReceiver::readableDraggedTypes().to_vec());
+    let kinds = kinds.iter().map(|k| &**k).collect::<Vec<_>>();
+    view.registerForDraggedTypes(&NSArray::from_slice(&kinds));
+}
+
+/// Whether the drag being tracked offers files: local ones or promised
+/// ones.
+fn offered(surface: &Surface) -> bool {
+    !surface.file_drop.uris.borrow().is_empty() || !surface.file_drop.promised.borrow().is_empty()
+}
+
+/// What `onFileDragEnter` gets: the files' URLs, or for promised files,
+/// their types (none are written before the drop).
+fn entered_payload(surface: &Surface) -> EventPayload {
+    let uris = surface.file_drop.uris.borrow();
+    if uris.is_empty() {
+        let promised = surface.file_drop.promised.borrow().clone();
+        EventPayload::FileContents(Box::new(FileContents::new(Vec::new(), promised, None)))
+    } else {
+        EventPayload::FileDrop(uris.clone())
+    }
 }
 
 fn target(surface: &Surface, sender: &ProtocolObject<dyn NSDraggingInfo>) -> Option<NshView> {
@@ -121,7 +168,7 @@ fn set_target(surface: &Surface, target: Option<NshView>) {
         surface.event(
             next.id(),
             EventKind::FileDragEnter,
-            EventPayload::FileDrop(surface.file_drop.uris.borrow().clone()),
+            entered_payload(surface),
         );
     }
     *current = target;
@@ -129,6 +176,7 @@ fn set_target(surface: &Surface, target: Option<NshView>) {
 
 pub(crate) fn clear(surface: &Surface) {
     surface.file_drop.uris.borrow_mut().clear();
+    surface.file_drop.promised.borrow_mut().clear();
     set_target(surface, None);
 }
 
@@ -148,7 +196,15 @@ pub(crate) fn begin(
     surface: &Surface,
     sender: &ProtocolObject<dyn NSDraggingInfo>,
 ) -> NSDragOperation {
-    *surface.file_drop.uris.borrow_mut() = read_uris(sender);
+    let uris = read_uris(sender);
+    // Local files win: a screenshot's thumbnail offers both.
+    let promised = if uris.is_empty() {
+        promised_types(&promises(sender))
+    } else {
+        Vec::new()
+    };
+    *surface.file_drop.uris.borrow_mut() = uris;
+    *surface.file_drop.promised.borrow_mut() = promised;
     update(surface, sender)
 }
 
@@ -156,7 +212,7 @@ pub(crate) fn update(
     surface: &Surface,
     sender: &ProtocolObject<dyn NSDraggingInfo>,
 ) -> NSDragOperation {
-    let next = if !surface.file_drop.uris.borrow().is_empty() {
+    let next = if offered(surface) {
         target(surface, sender)
     } else {
         None
@@ -181,7 +237,204 @@ pub(crate) fn perform(surface: &Surface, sender: &ProtocolObject<dyn NSDraggingI
     let point = input::event_root(surface)
         .ns()
         .convertPoint_fromView(sender.draggingLocation(), None);
-    drop_uris(surface, point.x as f32, point.y as f32, read_uris(sender))
+    let (x, y) = (point.x as f32, point.y as f32);
+    let uris = read_uris(sender);
+    if uris.is_empty() {
+        return drop_promises(surface, x, y, promises(sender));
+    }
+    drop_uris(surface, x, y, uris)
+}
+
+/// Drops the files `receivers` promise at `x`, `y` on the view there that
+/// listens: whether one took them. The files are written to a folder of
+/// their own, then read on AppKit's queue, and `onFileDrop` gets their
+/// contents (`files`), in the drag's order, once all are written; the
+/// folder is removed after.
+fn drop_promises(
+    surface: &Surface,
+    x: f32,
+    y: f32,
+    receivers: Vec<Retained<NSFilePromiseReceiver>>,
+) -> bool {
+    let destination = input::file_drop_target(surface, x, y);
+    let mut control = None;
+    surface.control(|c| control = Some(c.clone()));
+    clear(surface);
+    let (Some(destination), Some(control)) = (destination, control) else {
+        return false;
+    };
+    let count = receivers
+        .iter()
+        .map(|r| r.fileTypes().count())
+        .sum::<usize>();
+    if count == 0 {
+        return false;
+    }
+    let Some(folder) = promise_folder() else {
+        return false;
+    };
+    let Some(folder_url) = folder
+        .to_str()
+        .map(|path| NSURL::fileURLWithPath_isDirectory(&NSString::from_str(path), true))
+    else {
+        return false;
+    };
+    let id = destination.id();
+    let delivery = Arc::new(PromisedDrop {
+        at: point(Points(x), Points(y)),
+        folder,
+        count,
+        written: Mutex::new(Vec::new()),
+        deliver: Box::new(move |contents| {
+            control.dispatch_event(
+                id,
+                EventKind::FileDrop,
+                EventPayload::FileContents(contents),
+            );
+        }),
+    });
+    let queue = surface
+        .file_drop
+        .promise_queue
+        .get_or_init(NSOperationQueue::new);
+    for (order, receiver) in receivers.iter().enumerate() {
+        let delivery = delivery.clone();
+        let reader = RcBlock::new(move |url: NonNull<NSURL>, error: *mut NSError| {
+            // SAFETY: AppKit hands the reader a valid URL.
+            let url = unsafe { url.as_ref() };
+            let path = if error.is_null() {
+                url.path().map(|path| PathBuf::from(path.to_string()))
+            } else {
+                // SAFETY: a non-null error is a valid `NSError`.
+                let error = unsafe { &*error };
+                log::warn!(
+                    "a dropped file was not written: {}",
+                    error.localizedDescription()
+                );
+                None
+            };
+            delivery.written(order, path);
+        });
+        // SAFETY: an empty options dictionary; the reader only moves
+        // `Send` data between AppKit's queue and the engine.
+        unsafe {
+            receiver.receivePromisedFilesAtDestination_options_operationQueue_reader(
+                &folder_url,
+                &NSDictionary::new(),
+                queue,
+                &reader,
+            );
+        }
+    }
+    true
+}
+
+/// Files promised by a drop, gathered as AppKit writes them.
+struct PromisedDrop {
+    /// Where they were let go, in the event root's coordinates.
+    at: Point<Points>,
+    /// The folder they are written to.
+    folder: PathBuf,
+    /// How many are promised.
+    count: usize,
+    /// Those written so far (`None`: failed), with their promise's order.
+    written: Mutex<Vec<(usize, Option<PathBuf>)>>,
+    /// Hands the files read to the view they were dropped on.
+    deliver: Box<dyn Fn(Box<FileContents>) + Send + Sync>,
+}
+
+impl PromisedDrop {
+    /// One promised file was written (`Some`) or failed (`None`): when it
+    /// is the last, the files are read and dropped, and their folder
+    /// removed.
+    fn written(&self, order: usize, path: Option<PathBuf>) {
+        let mut written = self.written.lock().unwrap_or_else(|e| e.into_inner());
+        written.push((order, path));
+        if written.len() != self.count {
+            return;
+        }
+        written.sort_by_key(|(order, _)| *order);
+        let paths = written
+            .drain(..)
+            .filter_map(|(_, path)| path)
+            .collect::<Vec<_>>();
+        drop(written);
+        let files = read_promised(&paths);
+        if let Err(e) = std::fs::remove_dir_all(&self.folder) {
+            log::warn!("cannot remove {}: {e}", self.folder.display());
+        }
+        if files.is_empty() {
+            return;
+        }
+        let mime_types = files.iter().map(|file| file.mime.clone()).collect();
+        let contents = FileContents::new(files, mime_types, Some(self.at));
+        (self.deliver)(Box::new(contents));
+    }
+}
+
+/// The files at `paths`, as a pick of up to as many files as one takes
+/// reads them (too large ones keep only their names and sizes).
+fn read_promised(paths: &[PathBuf]) -> Vec<PickedFile> {
+    let request = FilePickRequest::new(true, 0);
+    finish_files(&request, read_picked_files(paths, &request))
+}
+
+/// A new folder for the files of one drop.
+fn promise_folder() -> Option<PathBuf> {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static NEXT: AtomicU32 = AtomicU32::new(0);
+    let folder = std::env::temp_dir().join(format!(
+        "nsh-drop-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&folder)
+        .inspect_err(|e| log::warn!("cannot make {}: {e}", folder.display()))
+        .ok()?;
+    Some(folder)
+}
+
+/// The file promises on the drag's pasteboard.
+fn promises(sender: &ProtocolObject<dyn NSDraggingInfo>) -> Vec<Retained<NSFilePromiseReceiver>> {
+    let board = sender.draggingPasteboard();
+    let classes = NSArray::from_slice(&[NSFilePromiseReceiver::class()]);
+    // SAFETY: an array of a class that reads from pasteboards, no options.
+    let Some(objects) = (unsafe { board.readObjectsForClasses_options(&classes, None) }) else {
+        return Vec::new();
+    };
+    objects
+        .iter()
+        .filter_map(|object| object.downcast::<NSFilePromiseReceiver>().ok())
+        .collect()
+}
+
+/// The MIME types of the files `receivers` promise, in order (`""` for a
+/// type without one).
+fn promised_types(receivers: &[Retained<NSFilePromiseReceiver>]) -> Vec<String> {
+    receivers
+        .iter()
+        .flat_map(|receiver| receiver.fileTypes().to_vec())
+        .map(|kind| mime_type(&kind.to_string()))
+        .collect()
+}
+
+/// The MIME type of uniform type `identifier` (`public.png`:
+/// `image/png`), `""` when it has none.
+fn mime_type(identifier: &str) -> String {
+    let Some(class) = AnyClass::get(c"UTType") else {
+        return String::new();
+    };
+    let identifier = NSString::from_str(identifier);
+    // SAFETY: `+[UTType typeWithIdentifier:]` takes a string and returns
+    // a type or nil; `preferredMIMEType` a string or nil.
+    let kind: Option<Retained<AnyObject>> =
+        unsafe { msg_send![class, typeWithIdentifier: &*identifier] };
+    kind.and_then(|kind| {
+        let mime: Option<Retained<NSString>> = unsafe { msg_send![&*kind, preferredMIMEType] };
+        mime
+    })
+    .map(|mime| mime.to_string())
+    .unwrap_or_default()
 }
 
 /// Drops `uris` at `x`, `y` (the event root's coordinates) on the view
@@ -225,7 +478,7 @@ pub(crate) fn text_updated(
     surface: &Surface,
     sender: &ProtocolObject<dyn NSDraggingInfo>,
 ) -> Option<NSDragOperation> {
-    if surface.file_drop.uris.borrow().is_empty() {
+    if !offered(surface) {
         return None;
     }
     Some(update(surface, sender)).filter(|operation| *operation == NSDragOperation::Copy)
@@ -237,8 +490,7 @@ pub(crate) fn text_performed(
     surface: &Surface,
     sender: &ProtocolObject<dyn NSDraggingInfo>,
 ) -> Option<bool> {
-    let offered = !surface.file_drop.uris.borrow().is_empty();
-    (offered && target(surface, sender).is_some()).then(|| perform(surface, sender))
+    (offered(surface) && target(surface, sender).is_some()).then(|| perform(surface, sender))
 }
 
 fn read_uris(sender: &ProtocolObject<dyn NSDraggingInfo>) -> Vec<String> {
@@ -287,6 +539,53 @@ pub(crate) fn local_file_uri(uri: &NSString) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn promised_files_drop_in_order_once_all_are_written() {
+        let folder = promise_folder().unwrap();
+        std::fs::write(folder.join("a.png"), b"\x89PNG\r\n\x1a\n").unwrap();
+        std::fs::write(folder.join("b.txt"), b"hello").unwrap();
+        let dropped = Arc::new(Mutex::new(Vec::new()));
+        let seen = dropped.clone();
+        let drop = PromisedDrop {
+            at: point(Points(40.), Points(50.)),
+            folder: folder.clone(),
+            count: 3,
+            written: Mutex::new(Vec::new()),
+            deliver: Box::new(move |contents| seen.lock().unwrap().push(contents)),
+        };
+        // AppKit may finish the promises in any order; one failed.
+        drop.written(2, Some(folder.join("b.txt")));
+        drop.written(1, None);
+        assert!(
+            dropped.lock().unwrap().is_empty(),
+            "nothing before the last file"
+        );
+        drop.written(0, Some(folder.join("a.png")));
+        let dropped = dropped.lock().unwrap();
+        assert_eq!(dropped.len(), 1);
+        let contents = &dropped[0];
+        let names = contents
+            .files
+            .iter()
+            .map(|f| f.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(names, ["a.png", "b.txt"]);
+        assert_eq!(contents.mime_types, ["image/png", "text/plain"]);
+        assert_eq!(&*contents.files[1].data, b"hello");
+        assert_eq!(
+            contents.page_position,
+            Some(point(Points(40.), Points(50.)))
+        );
+        assert!(!folder.exists(), "the drop's folder is removed");
+    }
+
+    #[test]
+    fn promised_types_are_mime_types() {
+        assert_eq!(mime_type("public.png"), "image/png");
+        assert_eq!(mime_type("public.tiff"), "image/tiff");
+        assert_eq!(mime_type("com.example.nothing"), "");
+    }
 
     #[test]
     fn finder_references_expose_the_filename_before_drop() {

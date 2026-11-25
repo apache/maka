@@ -1,14 +1,17 @@
-// Dictation: the button starts a speech session (and stops the one
-// listening); the transcript shows as it grows, then how the session ended.
-import { mount, signal, Speech, type SpeechSession, Text, View } from "nsh";
+// The modules of `nsh-extra`, the official modules an app installs with
+// `nsh add` (`nsh.json` `"dependencies"`), one feature each. Dictation with
+// `Speech`: the button starts a session (and stops the one listening); the
+// transcript shows as it grows, then how the session ended.
+import { mount, signal, Text, View } from "nsh";
 import { Window } from "nsh/desktop";
+import { Speech, type SpeechSession } from "nsh-extra";
 
-function App() {
+function Dictation() {
   const state = signal("idle");
   const transcript = signal("");
   let session: SpeechSession | undefined;
   return (
-    <View style={{ flex: 1, paddingTop: 80 }}>
+    <View style={{ flex: 1, gap: 12, padding: 24, paddingTop: 80 }}>
       <Text>{`state: ${state()}`}</Text>
       <Text>{`transcript: ${transcript()}`}</Text>
       <View
@@ -38,4 +41,4 @@ function App() {
   );
 }
 
-mount(() => <Window id="main">{App}</Window>);
+mount(() => <Window id="main">{Dictation}</Window>);

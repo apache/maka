@@ -10,13 +10,16 @@
 use serde_json::Value;
 
 use super::{TableRole, map::width_json};
-use crate::rich_editor::model::{AttrSpec, Attrs, DomElement, DomOutputSpec, NodeSpec, ParseRule};
+use crate::rich_editor::model::{
+    AttrParse, AttrSpec, Attrs, DomElement, DomNode, DomOutputSpec, NodeSpec, ParseRule, Whitespace,
+};
 
-// An attribute the type's `to_dom` writes itself.
+// An attribute the type's `to_dom` and `parse_dom` handle themselves.
 fn attr(default: Value) -> AttrSpec {
     AttrSpec {
         default: Some(default),
         rendered: false,
+        parse_html: Some(AttrParse::Skip),
         ..Default::default()
     }
 }
@@ -156,6 +159,29 @@ pub fn table_row() -> (String, NodeSpec) {
     )
 }
 
+// Supported cell alignment values (Tiptap's `normalizeTableCellAlign`).
+fn normalize_align(value: &str) -> Option<&'static str> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "left" => Some("left"),
+        "right" => Some("right"),
+        "center" => Some("center"),
+        _ => None,
+    }
+}
+
+// Whether a cell/header element has no child elements and only ASCII
+// collapsible whitespace (Tiptap's `isEmptyCellElement`), so `&nbsp;` is
+// preserved while blank whitespace backfills to an empty paragraph.
+fn is_empty_cell_element(el: &DomElement) -> bool {
+    el.children().iter().all(|child| match child {
+        DomNode::Text(text) => text
+            .chars()
+            .all(|c| matches!(c, ' ' | '\t' | '\r' | '\n' | '\u{000C}')),
+        DomNode::Comment => true,
+        DomNode::Element(_) => false,
+    })
+}
+
 // A cell type: `tableCell` (`<td>`) or `tableHeader` (`<th>`).
 fn cell(name: &str, tag: &'static str, role: TableRole) -> (String, NodeSpec) {
     (
@@ -169,13 +195,29 @@ fn cell(name: &str, tag: &'static str, role: TableRole) -> (String, NodeSpec) {
                         .collect::<Vec<_>>()
                         .join(",")
                 });
+                let align_style = src
+                    .attr("align")
+                    .and_then(Value::as_str)
+                    .and_then(normalize_align)
+                    .map(|a| format!("text-align: {a};"));
                 DomOutputSpec::tag(tag)
                     .attr("colspan", span("colspan"))
                     .attr("rowspan", span("rowspan"))
                     .attr("data-colwidth", colwidth)
+                    .attr("style", align_style)
                     .hole()
             })),
             parse_dom: vec![
+                // Backfill empty / ASCII-whitespace-only cells even under
+                // `Whitespace::Full` (Tiptap's `isEmptyCellElement`).
+                ParseRule {
+                    preserve_whitespace: Some(Whitespace::Collapse),
+                    ..ParseRule::tag(tag)
+                }
+                .with_get_attrs(|input| {
+                    let el = input.element()?;
+                    is_empty_cell_element(el).then(|| cell_attrs(el))
+                }),
                 ParseRule::tag(tag).with_get_attrs(|input| Some(cell_attrs(input.element()?))),
             ],
             content: Some("block+".into()),
@@ -184,6 +226,7 @@ fn cell(name: &str, tag: &'static str, role: TableRole) -> (String, NodeSpec) {
                 ("colspan".into(), attr(Value::from(1))),
                 ("rowspan".into(), attr(Value::from(1))),
                 ("colwidth".into(), attr(Value::Null)),
+                ("align".into(), attr(Value::Null)),
             ],
             extra: extra(role),
             ..Default::default()
@@ -192,8 +235,9 @@ fn cell(name: &str, tag: &'static str, role: TableRole) -> (String, NodeSpec) {
 }
 
 /// A cell's attributes read from its `<td>` / `<th>`: `colspan`,
-/// `rowspan`, and `colwidth` from `data-colwidth` (or Tiptap's
-/// `colwidth`), comma-separated widths, one per spanned column.
+/// `rowspan`, `colwidth` from `data-colwidth` (or Tiptap's `colwidth`,
+/// comma-separated widths), and `align` from `text-align` style or legacy
+/// `align` attribute.
 fn cell_attrs(el: &DomElement) -> Attrs {
     let span = |name: &str| {
         el.attr(name)
@@ -210,13 +254,20 @@ fn cell_attrs(el: &DomElement) -> Attrs {
                 .split(',')
                 .map(|w| w.trim().parse::<f64>().unwrap_or(0.0))
                 .collect();
-            (widths.len() == colspan as usize && widths.iter().any(|w| *w > 0.0))
+            (!widths.is_empty() && widths.iter().any(|w| *w > 0.0))
                 .then(|| Value::Array(widths.into_iter().map(width_json).collect()))
         });
+    let align = el
+        .style("text-align")
+        .as_deref()
+        .and_then(normalize_align)
+        .or_else(|| el.attr("align").and_then(normalize_align))
+        .map_or(Value::Null, Value::from);
     let mut attrs = Attrs::new();
     attrs.insert("colspan".into(), Value::from(colspan));
     attrs.insert("rowspan".into(), Value::from(span("rowspan")));
     attrs.insert("colwidth".into(), colwidth.unwrap_or(Value::Null));
+    attrs.insert("align".into(), align);
     attrs
 }
 
@@ -259,8 +310,8 @@ mod tests {
         let html = DomSerializer::from_schema(&s).serialize_node(&t);
         assert_eq!(
             html,
-            "<table style=\"min-width: 125px\"><colgroup><col style=\"width: 100px\"><col \
-             style=\"min-width: 25px\"></colgroup><tbody><tr><th \
+            "<table style=\"min-width: 125px;\"><colgroup><col style=\"width: 100px;\"><col \
+             style=\"min-width: 25px;\"></colgroup><tbody><tr><th \
              data-colwidth=\"100\"><p>a</p></th><th><p>b</p></th></tr><tr><td \
              colspan=\"2\"><p>c</p></td></tr></tbody></table>"
         );
@@ -298,5 +349,82 @@ mod tests {
         assert_eq!(t.child(0).child(0).attrs()["colwidth"], json!([100, 50]));
         assert_eq!(t.child(0).attrs()["height"], json!(40));
         assert_eq!(t.child(1).attrs()["height"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn colwidth_colgroup_align_and_empty_cells_follow_tiptap() {
+        let s = schema();
+        let parser = DomParser::from_schema(&s);
+        let ser = DomSerializer::from_schema(&s);
+
+        // Single and multiple colwidth (even when fewer widths than colspan).
+        let d = parser.parse(
+            r#"<table><tbody><tr><td colwidth="200">A</td><td colspan="3" colwidth="150,100">B</td></tr></tbody></table>"#,
+            &ParseOptions::default(),
+        );
+        let row = first_table(&d).child(0).clone();
+        assert_eq!(row.child(0).attrs()["colwidth"], json!([200]));
+        assert_eq!(row.child(1).attrs()["colwidth"], json!([150, 100]));
+
+        // <colgroup><col width> fallback and cell colwidth priority.
+        let d = parser.parse(
+            r#"<table><colgroup><col width="64" /><col width="128" /></colgroup><tbody><tr><th colwidth="200">H1</th><th>H2</th></tr><tr><td>C1</td><td>C2</td></tr></tbody></table>"#,
+            &ParseOptions::default(),
+        );
+        let t = first_table(&d);
+        assert_eq!(t.child(0).child(0).attrs()["colwidth"], json!([200]));
+        assert_eq!(t.child(0).child(1).attrs()["colwidth"], json!([128]));
+        assert_eq!(t.child(1).child(0).attrs()["colwidth"], json!([64]));
+        assert_eq!(t.child(1).child(1).attrs()["colwidth"], json!([128]));
+
+        // Cell align: allowed values serialize to text-align; invalid values are omitted.
+        let valid_doc = s
+            .node_from_json(&json!({
+                "type": "doc",
+                "content": [{
+                    "type": "table",
+                    "content": [{
+                        "type": "tableRow",
+                        "content": [{
+                            "type": "tableCell",
+                            "attrs": { "align": "center" },
+                            "content": [{ "type": "paragraph", "content": [{ "type": "text", "text": "x" }] }]
+                        }]
+                    }]
+                }]
+            }))
+            .unwrap();
+        assert!(
+            ser.serialize_node(&valid_doc)
+                .contains(r#"style="text-align: center;""#)
+        );
+
+        let invalid_doc = s
+            .node_from_json(&json!({
+                "type": "doc",
+                "content": [{
+                    "type": "table",
+                    "content": [{
+                        "type": "tableRow",
+                        "content": [{
+                            "type": "tableCell",
+                            "attrs": { "align": "left; position: fixed" },
+                            "content": [{ "type": "paragraph", "content": [{ "type": "text", "text": "x" }] }]
+                        }]
+                    }]
+                }]
+            }))
+            .unwrap();
+        let out = ser.serialize_node(&invalid_doc);
+        assert!(!out.contains("text-align"));
+        assert!(!out.contains("position"));
+
+        // Whitespace-only cells backfill to empty paragraphs even under insert parsing,
+        // while &nbsp; is preserved.
+        let ws =
+            parser.parse_insert_fragment("<table><tr><td>   </td><td>&nbsp;</td></tr></table>");
+        let row = ws.child(0).child(0);
+        assert_eq!(row.child(0).child(0).text_content(), "");
+        assert_eq!(row.child(1).child(0).text_content(), "\u{00A0}");
     }
 }

@@ -14,30 +14,6 @@ which runs natively frame by frame, how the room is shared, the resize cursor an
 The look is the app's: a handle is a band with no line, color or grip of its own, and what it draws is the app's
 indicator; the panels are the app's views.
 
-```rust tabs
-use nsh_base::{h_resizable, resizable_panel, theme};
-use nsh_core::prelude::*;
-
-fn workspace() -> impl IntoElement {
-    h_resizable()
-        .handle_style(|s| s.bg(move || theme().border()))
-        .handle_accessibility_label("Resize the sidebar")
-        .on_resize(|sizes: &Vec<Points>| log::info!("sizes: {sizes:?}"))
-        .child(
-            resizable_panel()
-                .size(px(240.0))
-                .size_range(px(160.0)..px(480.0))
-                .p_4()
-                .child(text("Files").text_color(move || theme().muted_foreground())),
-        )
-        .child(
-            resizable_panel()
-                .p_4()
-                .child(text("Editor").text_color(move || theme().foreground())),
-        )
-}
-```
-
 ```tsx tabs
 import { mount, signal, Text } from "nsh";
 import { ResizablePanel, ResizablePanelGroup } from "nsh/base";
@@ -66,6 +42,30 @@ mount(() => (
     <App />
   </Window>
 ));
+```
+
+```rust tabs
+use nsh_base::{h_resizable, resizable_panel, theme};
+use nsh_core::prelude::*;
+
+fn workspace() -> impl IntoElement {
+    h_resizable()
+        .handle_style(|s| s.bg(move || theme().border()))
+        .handle_accessibility_label("Resize the sidebar")
+        .on_resize(|sizes: &Vec<Points>| log::info!("sizes: {sizes:?}"))
+        .child(
+            resizable_panel()
+                .size(px(240.0))
+                .size_range(px(160.0)..px(480.0))
+                .p_4()
+                .child(text("Files").text_color(move || theme().muted_foreground())),
+        )
+        .child(
+            resizable_panel()
+                .p_4()
+                .child(text("Editor").text_color(move || theme().foreground())),
+        )
+}
 ```
 
 `ResizablePanelGroup` and `ResizablePanel` come from [`nsh/base`](../modules/nsh-base.md), the `nsh-base` crate in

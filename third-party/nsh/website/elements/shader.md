@@ -14,30 +14,6 @@ the platform runs it on the GPU at the screen's resolution, over the view's back
 Animated values move it natively, frame by frame, with no work in the app's code. TSX makes one with `<Shader>` from
 `nsh`, Rust with `shader().source(program)`.
 
-```rust tabs
-use nsh_core::{prelude::*, shader::Shader};
-
-const GLOW: &str = r#"
-struct Uniforms { tint: vec4f }
-
-fn shade(uv: vec2f) -> vec4f {
-  let d = distance(uv, vec2f(0.5));
-  let pulse = 0.5 + 0.5 * sin(nsh.time * 2.0);
-  let glow = smoothstep(0.5, 0.0, d) * (0.6 + 0.4 * pulse);
-  return vec4f(uniforms.tint.rgb * glow, 1.0);
-}
-"#;
-
-fn glow() -> impl IntoElement {
-    let program = Shader::compile(GLOW).expect("a valid shader");
-    shader()
-        .source(program)
-        .uniform("tint", Hsla::from(rgb(0x38bdf8)))
-        .h(px(200.0))
-        .rounded(px(14.0))
-}
-```
-
 ```tsx tabs
 import { mount, Shader } from "nsh";
 import { Window } from "nsh/desktop";
@@ -61,6 +37,30 @@ mount(() => (
     <Glow />
   </Window>
 ));
+```
+
+```rust tabs
+use nsh_core::{prelude::*, shader::Shader};
+
+const GLOW: &str = r#"
+struct Uniforms { tint: vec4f }
+
+fn shade(uv: vec2f) -> vec4f {
+  let d = distance(uv, vec2f(0.5));
+  let pulse = 0.5 + 0.5 * sin(nsh.time * 2.0);
+  let glow = smoothstep(0.5, 0.0, d) * (0.6 + 0.4 * pulse);
+  return vec4f(uniforms.tint.rgb * glow, 1.0);
+}
+"#;
+
+fn glow() -> impl IntoElement {
+    let program = Shader::compile(GLOW).expect("a valid shader");
+    shader()
+        .source(program)
+        .uniform("tint", Hsla::from(rgb(0x38bdf8)))
+        .h(px(200.0))
+        .rounded(px(14.0))
+}
 ```
 
 ## The shader
@@ -135,20 +135,6 @@ A uniform may be a [native animated value](../modules/nsh.md#animation), or a no
 on the UI thread: the animation runs at full frame rate however busy the app's code is. Numbers animate `f32`, `i32`
 and `u32` members and the components of a `vec2f`; an interpolation to colors animates a `vec3f` or `vec4f`.
 
-```rust tabs
-use nsh_core::{prelude::*, shader::Shader};
-
-fn ripple(program: Shader) -> impl IntoElement {
-    let wave = animated_value(0.0);
-    wave.timing(1.0, 2200.0, Easing::Linear);
-    shader()
-        .source(program)
-        .uniform("wave", &wave)
-        .uniform("center", [0.5_f32, 0.5])
-        .h(px(200.0))
-}
-```
-
 ```tsx tabs
 import { Animated, cleanup, createAnimatedValue, Easing, Shader } from "nsh";
 
@@ -167,6 +153,20 @@ function Ripple() {
   loop.start();
   cleanup(() => loop.stop());
   return <Shader source={RIPPLE} uniforms={{ center: [0.5, 0.5], wave, tint }} style={{ height: 200, borderRadius: 14 }} />;
+}
+```
+
+```rust tabs
+use nsh_core::{prelude::*, shader::Shader};
+
+fn ripple(program: Shader) -> impl IntoElement {
+    let wave = animated_value(0.0);
+    wave.timing(1.0, 2200.0, Easing::Linear);
+    shader()
+        .source(program)
+        .uniform("wave", &wave)
+        .uniform("center", [0.5_f32, 0.5])
+        .h(px(200.0))
 }
 ```
 
@@ -256,6 +256,10 @@ When the page is pushed or popped, or the dialog shown or closed, the lower side
 the dialog) is `sample_from` and the upper `sample_to`; `nsh.progress` goes from 0 to 1 as the page or the dialog
 comes and from 1 to 0 as it goes, so one shader draws both ways.
 
+```tsx tabs
+<NavPage title="Details" transitionShader={{ source: RIPPLE, duration: 500 }}>…</NavPage>
+```
+
 ```rust tabs
 use std::time::Duration;
 
@@ -269,10 +273,6 @@ fn details() -> impl IntoElement {
         .transition_shader(TransitionShader::new(ripple).duration(Duration::from_millis(500)))
         .child(text("…"))
 }
-```
-
-```tsx tabs
-<NavPage title="Details" transitionShader={{ source: RIPPLE, duration: 500 }}>…</NavPage>
 ```
 
 The shader takes the place of the page's or the dialog's `animation`, whatever it is (`"none"` too). The `animation`
@@ -360,13 +360,6 @@ the `shader` feature turned off. It starts `true` and turns `false` for good whe
 whose GPU NSH cannot open (a browser without WebGL 2). An app that wants a picture either way shows its shader while it
 holds and its own drawing, a canvas or an image, otherwise:
 
-```rust tabs
-fn backdrop(program: Shader) -> impl IntoElement {
-    when(shaders_available, move || shader().source(program.clone()).size_full())
-        .otherwise(|| canvas(paint_backdrop).size_full())
-}
-```
-
 ```tsx tabs
 function Backdrop() {
   return (
@@ -374,6 +367,13 @@ function Backdrop() {
       <Shader source={BACKDROP} style={{ flex: 1 }} />
     </If>
   );
+}
+```
+
+```rust tabs
+fn backdrop(program: Shader) -> impl IntoElement {
+    when(shaders_available, move || shader().source(program.clone()).size_full())
+        .otherwise(|| canvas(paint_backdrop).size_full())
 }
 ```
 

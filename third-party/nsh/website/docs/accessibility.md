@@ -19,18 +19,6 @@ NSH renders with native views, so the platforms' assistive technologies (VoiceOv
 
 ## Labels, hints and roles
 
-```rust tabs
-view()
-    .on_press(play)
-    .role(AccessibilityRole::Button)
-    .label("Play")
-    .hint("Starts the song")
-    .size(px(44.0))
-    .items_center()
-    .justify_center()
-    .child(text("▶"))
-```
-
 ```tsx tabs
 <View
   onPress={play}
@@ -41,6 +29,18 @@ view()
 >
   <Text>▶</Text>
 </View>
+```
+
+```rust tabs
+view()
+    .on_press(play)
+    .role(AccessibilityRole::Button)
+    .label("Play")
+    .hint("Starts the song")
+    .size(px(44.0))
+    .items_center()
+    .justify_center()
+    .child(text("▶"))
 ```
 
 | Rust | TSX | Type | Description |
@@ -67,7 +67,7 @@ Give every icon-only control a label: a screen reader cannot read a glyph or an 
 
 ### Roles
 
-The role (`.role(AccessibilityRole::Header)`, `role="header"`) tells the user what kind of element this is and how to operate it. In Rust it is an `AccessibilityRole` variant (`Button`, `Header`, `Switch`, ...); the TSX values are `"none"`, `"button"`, `"link"`, `"search"`, `"image"`, `"imagebutton"`, `"keyboardkey"`, `"text"`, `"adjustable"`, `"header"`, `"summary"`, `"alert"`, `"checkbox"`, `"combobox"`, `"menu"`, `"menubar"`, `"menuitem"`, `"progressbar"`, `"radio"`, `"radiogroup"`, `"scrollbar"`, `"spinbutton"`, `"switch"`, `"tab"`, `"tablist"`, `"timer"`, `"toolbar"`, `"list"`, `"grid"`, `"table"`, `"rowgroup"`, `"row"`, `"columnheader"` and `"cell"` (the roles of [`Table`](../elements/table.md)'s parts), `"listbox"` and `"option"` (a list of options to choose from, such as [`Select`](../elements/select.md)'s list, and its options, the chosen one marked by `accessibilityState.selected`), `"group"` (related elements that belong together), `"region"` (a section worth reaching on its own, such as an accordion's panel), `"navigation"` (links that move around the app, such as a pagination), `"tree"` and `"treeitem"` (items that expand and collapse, each at its `accessibilityLevel`), `"menuitemcheckbox"` and `"menuitemradio"` (menu items that are checked, alone or as one choice of a group), `"dialog"` and `"alertdialog"` (a dialog over the rest of the app, named by its `accessibilityLabel`, and one that asks the user to confirm something; [`Dialog`](../elements/dialog.md) is a `"dialog"` unless its `role` says otherwise).
+The role (`.role(AccessibilityRole::Header)`, `role="header"`) tells the user what kind of element this is and how to operate it. In Rust it is an `AccessibilityRole` variant (`Button`, `Header`, `Switch`, ...); the TSX values are `"none"`, `"button"`, `"link"`, `"search"`, `"textbox"`, `"image"`, `"imagebutton"`, `"keyboardkey"`, `"text"`, `"adjustable"`, `"header"`, `"summary"`, `"alert"`, `"checkbox"`, `"combobox"`, `"menu"`, `"menubar"`, `"menuitem"`, `"progressbar"`, `"radio"`, `"radiogroup"`, `"scrollbar"`, `"spinbutton"`, `"switch"`, `"tab"`, `"tablist"`, `"timer"`, `"toolbar"`, `"list"`, `"grid"`, `"table"`, `"rowgroup"`, `"row"`, `"columnheader"` and `"cell"` (the roles of [`Table`](../elements/table.md)'s parts), `"listbox"` and `"option"` (a list of options to choose from, such as [`Select`](../elements/select.md)'s list, and its options, the chosen one marked by `accessibilityState.selected`), `"group"` (related elements that belong together), `"region"` (a section worth reaching on its own, such as an accordion's panel), `"navigation"` (links that move around the app, such as a pagination), `"tree"` and `"treeitem"` (items that expand and collapse, each at its `accessibilityLevel`), `"menuitemcheckbox"` and `"menuitemradio"` (menu items that are checked, alone or as one choice of a group), `"dialog"` and `"alertdialog"` (a dialog over the rest of the app, named by its `accessibilityLabel`, and one that asks the user to confirm something; [`Dialog`](../elements/dialog.md) is a `"dialog"` unless its `role` says otherwise), `"tabpanel"` (the content a tab list's selected tab shows, which its tabs name with `accessibilityControls`; each group of a [`DockArea`](../elements/dock.md) is one).
 
 The most useful ones:
 
@@ -75,12 +75,18 @@ The most useful ones:
 - `"header"` for section titles: screen reader users jump between headers to skim a screen. `accessibilityLevel` gives its level (1 the top) where the platform reads one.
 - `"button"` with `accessibilityState.pressed` for a toggle button, one that stays on or off (bold in a toolbar).
 - `"navigation"` around links that move between pages, the link of the shown page with `accessibilityState.current: "page"`.
+- `"textbox"` for a field the user types text into, when it is the app's own view rather than an
+  [`Input`](../elements/input.md) (whose native field already has the role).
 - `"switch"`, `"checkbox"`, `"radio"` with `accessibilityState.checked`.
 - `"adjustable"` for sliders and steppers, with `accessibilityValue` and the `increment` / `decrement` actions
   (each thumb of a [`Slider`](../elements/slider.md) is one).
 - `"spinbutton"` for a field that holds a number the user can also step, with the same value and actions (the
   field of a [`NumberInput`](../elements/number-input.md)).
 - `"image"` for meaningful images, with a label; decorative images should be hidden instead.
+
+```tsx tabs
+<Text role="header" style={{ fontSize: 22, fontWeight: "700" }}>Settings</Text>
+```
 
 ```rust tabs
 text("Settings")
@@ -89,13 +95,24 @@ text("Settings")
     .font_weight(FontWeight::BOLD)
 ```
 
-```tsx tabs
-<Text role="header" style={{ fontSize: 22, fontWeight: "700" }}>Settings</Text>
-```
-
 ### States and values
 
 For an on / off control in an app, use [`Switch`](../elements/switch.md) from `nsh/base`, which sets the role and state itself. The example shows what a role and state on a view do.
+
+```tsx tabs
+// A toggle drawn with views.
+<View
+  onPress={() => on.set(!on())}
+  role="switch"
+  accessibilityLabel="Wi-Fi"
+  accessibilityState={{ checked: on() }}
+  hitSlop={8}
+  class="h-[31px] w-[51px] rounded-full p-0.5 transition-colors"
+  classList={{ "bg-green-500": on(), "bg-zinc-300": !on() }}
+>
+  <View class="size-[27px] rounded-full bg-white transition-transform" classList={{ "translate-x-5": on() }} />
+</View>
+```
 
 ```rust tabs
 use nsh_core::{Checked, prelude::*};
@@ -124,21 +141,6 @@ view()
     )
 ```
 
-```tsx tabs
-// A toggle drawn with views.
-<View
-  onPress={() => on.set(!on())}
-  role="switch"
-  accessibilityLabel="Wi-Fi"
-  accessibilityState={{ checked: on() }}
-  hitSlop={8}
-  class="h-[31px] w-[51px] rounded-full p-0.5 transition-colors"
-  classList={{ "bg-green-500": on(), "bg-zinc-300": !on() }}
->
-  <View class="size-[27px] rounded-full bg-white transition-transform" classList={{ "translate-x-5": on() }} />
-</View>
-```
-
 The state is `AccessibilityState { disabled, selected, checked: Option<Checked>, busy, expanded, pressed: Option<Checked>, current: Option<AccessibilityCurrent>, has_popup, invalid }` in Rust and `{ disabled?, selected?, checked?: boolean | "mixed", busy?, expanded?, pressed?: boolean | "mixed", current?: boolean | "page" | "step" | "location" | "date" | "time", hasPopup?, invalid? }` in TSX. `pressed` makes a button a toggle button (ARIA's `aria-pressed`); `current` marks the current item of a set (ARIA's `aria-current`): a pagination's page, a wizard's step; `hasPopup` marks the trigger of a popup, a menu or a list (ARIA's `aria-haspopup`), whose `expanded` says whether it is open, where an `expanded` element without it is a disclosure that shows its content in place (`Popover`, `Menu`, `HoverCard`, `Select`, `Combobox` and `DatePicker` set it on their triggers); `invalid` marks content that does not pass the app's checks (ARIA's `aria-invalid`): a field whose text was rejected, a required select left empty. Screen readers read it with the element, and `aria-invalid:` classes style it. `disabled` is also implied by disabling the view (`.disabled(..)`, `disabled`). `accessibilityValue` with `min`, `max` and `now` is read as a percentage; with `text` it is read as given ("3 of 10", "Medium").
 
 On iOS and Android, NSH supplies the words read for the states the system has no words of its own for (checked, mixed, expanded, collapsed, current, invalid). They are in the language the app's text shows in ([I18n](./i18n.md)), including one `setLocale` picks, and change with it: English, Chinese (simplified and traditional), Japanese or Korean. Other platforms read the states in the screen reader's own words.
@@ -146,27 +148,6 @@ On iOS and Android, NSH supplies the words read for the states the system has no
 ### The active item of a focused element
 
 A control can keep the keyboard focus while the user moves through items inside it: a combo box's field stays focused as the arrow keys walk its list, a list moves a cursor row. `accessibilityActiveDescendant` names the item that is active now, and `accessibilityControls` names the element the control drives, so a screen reader reads each item as it becomes active while the focus stays where the user types. Both take a ref of the element named (a `ViewRef` in TSX, an `ElementRef` in Rust), which may be rendered later than the control, as a virtualized list's rows are; while the element named is not on screen, the relation names nothing.
-
-```rust tabs
-// A list that keeps the focus and moves a cursor row.
-let rows: Rc<Vec<ElementRef>> = Rc::new(results.iter().map(|_| element_ref()).collect());
-let named = rows.clone();
-view()
-    .role(AccessibilityRole::Listbox)
-    .label("Results")
-    .focusable(true)
-    .accessibility_active_descendant(move || named.get(cursor.get()).copied())
-    .children(results.iter().enumerate().map(|(i, result)| {
-        view()
-            .role(AccessibilityRole::Option)
-            .element_ref(&rows[i])
-            .accessibility_state(move || AccessibilityState {
-                selected: cursor.get() == i,
-                ..AccessibilityState::default()
-            })
-            .child(text(result.title.clone()))
-    }))
-```
 
 ```tsx tabs
 // A list that keeps the focus and moves a cursor row.
@@ -198,11 +179,47 @@ const rows = signal<ViewRef[]>([]);
 </View>
 ```
 
+```rust tabs
+// A list that keeps the focus and moves a cursor row.
+let rows: Rc<Vec<ElementRef>> = Rc::new(results.iter().map(|_| element_ref()).collect());
+let named = rows.clone();
+view()
+    .role(AccessibilityRole::Listbox)
+    .label("Results")
+    .focusable(true)
+    .accessibility_active_descendant(move || named.get(cursor.get()).copied())
+    .children(results.iter().enumerate().map(|(i, result)| {
+        view()
+            .role(AccessibilityRole::Option)
+            .element_ref(&rows[i])
+            .accessibility_state(move || AccessibilityState {
+                selected: cursor.get() == i,
+                ..AccessibilityState::default()
+            })
+            .child(text(result.title.clone()))
+    }))
+```
+
 On the web these are `aria-activedescendant` and `aria-controls`; on macOS VoiceOver reads the active item as the control's selected child. `Select`, `Combobox` and `Command` name their highlighted item and their list this way, and on the other platforms they read the highlighted item to the screen reader themselves.
 
 ### An element that describes another
 
 A form shows a field's error or help in a line of its own, apart from the field. `accessibilityDescribedBy` names that line on the field, so a screen reader reads its text after the field's name each time the focus comes to it, and reads the new text when the line changes. It takes a ref of the element named, as `accessibilityControls` does; its labels and texts are the field's description, in the place of the field's own `accessibilityDescription`, which comes back while the element named is not on screen. The line may be `accessibilityHidden`, so that it is read once, with its field: an element named reads its text all the same. Every platform reads it where it reads a description; on the web it is `aria-describedby`.
+
+```tsx tabs
+// A field and the error line under it.
+const error = signal<ViewRef>();
+<View>
+  <Input
+    accessibilityLabel="Name"
+    accessibilityState={{ invalid: message() != null }}
+    accessibilityDescribedBy={message() != null ? error() ?? null : null}
+  />
+  <If when={message()}>
+    <Text ref={error}>{message()}</Text>
+  </If>
+</View>
+```
 
 ```rust tabs
 // A field and the error line under it.
@@ -221,21 +238,6 @@ view()
         move || message.get().is_some(),
         move || text(move || message.get().unwrap_or_default()).element_ref(&error),
     ))
-```
-
-```tsx tabs
-// A field and the error line under it.
-const error = signal<ViewRef>();
-<View>
-  <Input
-    accessibilityLabel="Name"
-    accessibilityState={{ invalid: message() != null }}
-    accessibilityDescribedBy={message() != null ? error() ?? null : null}
-  />
-  <If when={message()}>
-    <Text ref={error}>{message()}</Text>
-  </If>
-</View>
 ```
 
 ## Actions
@@ -292,6 +294,15 @@ Any other name becomes a custom action, listed in VoiceOver's actions rotor and 
 
 Labels that read signals or [translations](i18n.md) follow them on the mounted element: when the app switches its language, the actions get their new labels while the element, its name in `onAccessibilityAction` and the screen reader's focus stay. In Rust, give `.accessibility_actions(..)` a closure:
 
+```tsx tabs
+<View
+  accessibilityActions={[{ name: "delete", label: t("mail.delete") }]}
+  onAccessibilityAction={() => remove(mail.id)}
+>
+  …
+</View>
+```
+
 ```rust tabs
 view()
     .accessibility_actions(|| {
@@ -307,18 +318,17 @@ view()
     })
 ```
 
-```tsx tabs
-<View
-  accessibilityActions={[{ name: "delete", label: t("mail.delete") }]}
-  onAccessibilityAction={() => remove(mail.id)}
->
-  …
-</View>
-```
-
 ## Grouping and hiding
 
 Making a view accessible (`.accessible(true)`, `accessible`) makes a view one element: a card with a title, a subtitle and a price is read in one go, instead of the user swiping through three texts.
+
+```tsx tabs
+<View accessible onPress={open} role="button" style={{ padding: 16 }}>
+  <Text>Blue jacket</Text>
+  <Text>Size M</Text>
+  <Text>$120</Text>
+</View>
+```
 
 ```rust tabs
 view()
@@ -329,14 +339,6 @@ view()
     .child(text("Blue jacket"))
     .child(text("Size M"))
     .child(text("$120"))
-```
-
-```tsx tabs
-<View accessible onPress={open} role="button" style={{ padding: 16 }}>
-  <Text>Blue jacket</Text>
-  <Text>Size M</Text>
-  <Text>$120</Text>
-</View>
 ```
 
 A labelled container stays a container: the label of a `"list"`, `"listbox"`, `"group"`, `"toolbar"`, `"radiogroup"`, `"tablist"`, `"navigation"`, `"region"` or `"dialog"` names what the screen reader moves into, and the elements inside are still reached one by one. VoiceOver also says where a list starts and ends. Make the container accessible only when it should be read as a whole.
@@ -362,28 +364,6 @@ In Rust, the prelude reports the user's settings and talks to the screen reader:
 
 The settings are accessors: read them in a binding or an effect, and what reads them updates when the user changes the setting, with no cleanup.
 
-```rust tabs
-use nsh_core::prelude::*;
-
-fn upload() -> impl IntoElement {
-    let done = signal(false);
-    let result = element_ref();
-    let finish = move || {
-        done.set(true);
-        announce_for_accessibility("Upload complete");
-        result.set_accessibility_focus();
-    };
-    view()
-        .gap(px(12.0))
-        // Autoplaying carousels are hard to use with a screen reader: show a list instead.
-        .child(when(move || !screen_reader(), photo_carousel).otherwise(photo_list))
-        .child(
-            text(move || if done.get() { "Uploaded 3 photos" } else { "Uploading…" })
-                .element_ref(&result),
-        )
-}
-```
-
 ```tsx tabs
 import { signal, Text, View, type ViewRef } from "nsh";
 import { announce, screenReaderEnabled, setAccessibilityFocus } from "nsh";
@@ -408,9 +388,31 @@ function Upload() {
 }
 ```
 
+```rust tabs
+use nsh_core::prelude::*;
+
+fn upload() -> impl IntoElement {
+    let done = signal(false);
+    let result = element_ref();
+    let finish = move || {
+        done.set(true);
+        announce_for_accessibility("Upload complete");
+        result.set_accessibility_focus();
+    };
+    view()
+        .gap(px(12.0))
+        // Autoplaying carousels are hard to use with a screen reader: show a list instead.
+        .child(when(move || !screen_reader(), photo_carousel).otherwise(photo_list))
+        .child(
+            text(move || if done.get() { "Uploaded 3 photos" } else { "Uploading…" })
+                .element_ref(&result),
+        )
+}
+```
+
 Announce changes the user would otherwise miss: a background save finishing, an error appearing away from the focus, a timer ending. `accessibilityLiveRegion: "polite"` on a view has the screen reader announce its changes by itself — TalkBack on Android, VoiceOver on macOS, `aria-live` on the web, a live region on Windows (`"assertive"` reads right away instead of when the user is idle).
 
-An alert (`.role(AccessibilityRole::Alert)`, `role="alert"`) is read by itself on macOS and the web: its label, or else the texts inside it, as it appears and again when its content changes, ahead of what the screen reader was saying. An error shown with the role needs no announcement of its own there; on macOS the same text announced in the same update is read once. On the other platforms, announce it as well.
+An alert (`.role(AccessibilityRole::Alert)`, `role="alert"`) is read by itself on macOS and the web: its label, or else the texts inside it, as it appears and again when its content changes, ahead of what the screen reader was saying. An error shown with the role needs no announcement of its own there; on macOS the same text announced in the same update is read once, and an alert the update takes down and makes again with the same text (moved to another parent) is not read again. On the other platforms, announce it as well.
 
 ## Text size
 
@@ -426,6 +428,20 @@ See [Device and environment](./device-and-environment.md#text-size).
 
 `reduce_motion()` (Rust) and `reduceMotion()` (TSX) are `true` when the user turned on iOS's Reduce Motion or Android's remove animations setting. Your animations run as you write them, so use it, or the `motion-reduce:` and `motion-safe:` Tailwind variants, to replace large movement with a fade or an instant change:
 
+```tsx tabs
+import { View } from "nsh";
+import { reduceMotion } from "nsh";
+import { LayoutAnimation } from "nsh";
+
+const toggle = () => {
+  if (!reduceMotion()) LayoutAnimation.configureNext(LayoutAnimation.Presets.spring);
+  expanded.set(!expanded());
+};
+
+<View onPress={open} class="transition active:scale-95 motion-reduce:transition-none" />
+<View class="motion-safe:animate-bounce" />
+```
+
 ```rust tabs
 use nsh_core::{element::LayoutAnimation, prelude::*};
 
@@ -439,20 +455,6 @@ let toggle = move || {
 view()
     .on_press(toggle)
     .when(!reduce_motion(), |v| v.active(|s| s.scale(0.95)))
-```
-
-```tsx tabs
-import { View } from "nsh";
-import { reduceMotion } from "nsh";
-import { LayoutAnimation } from "nsh";
-
-const toggle = () => {
-  if (!reduceMotion()) LayoutAnimation.configureNext(LayoutAnimation.Presets.spring);
-  expanded.set(!expanded());
-};
-
-<View onPress={open} class="transition active:scale-95 motion-reduce:transition-none" />
-<View class="motion-safe:animate-bounce" />
 ```
 
 ## Touch targets

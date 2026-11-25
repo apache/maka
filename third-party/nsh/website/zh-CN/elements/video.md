@@ -10,6 +10,33 @@ demo: el-video
 
 视频视图用平台自带的播放器播放视频文件或视频流：iOS 和 Mac Catalyst 上是 AVPlayer，Android 上是 MediaPlayer。播放通过属性控制（`paused`、`muted`、`rate` 等），因此播放器会像其他视图一样跟随你的状态。Rust 用 `video(url)` 创建，TSX 用从 `nsh` 导入的 `<Video>`。
 
+```tsx tabs
+import { signal, Text, Video, type VideoRef, View } from "nsh";
+
+function Player() {
+  const paused = signal(true);
+  const time = signal("");
+  let video!: VideoRef;
+  return (
+    <View style={{ gap: 12 }}>
+      <Video
+        ref={video}
+        src="https://example.com/clip.mp4"
+        paused={paused()}
+        repeat
+        style={{ height: 220, backgroundColor: "#000000" }}
+        onProgress={(e) => time.set(`${e.currentTime.toFixed(1)} / ${e.duration.toFixed(1)} s`)}
+      />
+      <View style={{ flexDirection: "row", gap: 16 }}>
+        <Text onPress={() => paused.set(!paused())}>{paused() ? "播放" : "暂停"}</Text>
+        <Text onPress={() => video.seek(0)}>重新播放</Text>
+        <Text>{time()}</Text>
+      </View>
+    </View>
+  );
+}
+```
+
 ```rust tabs
 use nsh_core::prelude::*;
 
@@ -45,33 +72,6 @@ fn player() -> impl IntoElement {
 }
 ```
 
-```tsx tabs
-import { signal, Text, Video, type VideoRef, View } from "nsh";
-
-function Player() {
-  const paused = signal(true);
-  const time = signal("");
-  let video!: VideoRef;
-  return (
-    <View style={{ gap: 12 }}>
-      <Video
-        ref={video}
-        src="https://example.com/clip.mp4"
-        paused={paused()}
-        repeat
-        style={{ height: 220, backgroundColor: "#000000" }}
-        onProgress={(e) => time.set(`${e.currentTime.toFixed(1)} / ${e.duration.toFixed(1)} s`)}
-      />
-      <View style={{ flexDirection: "row", gap: 16 }}>
-        <Text onPress={() => paused.set(!paused())}>{paused() ? "播放" : "暂停"}</Text>
-        <Text onPress={() => video.seek(0)}>重新播放</Text>
-        <Text>{time()}</Text>
-      </View>
-    </View>
-  );
-}
-```
-
 在 TSX 中 `src` 必填（参见 [Video API](../modules/nsh-video.md)）。另见 [Web view 与视频指南](../docs/web-view-and-video.md)。
 
 ## 属性
@@ -103,6 +103,11 @@ function Player() {
 | `onEnd` | `.on_end` | 无 | 播放到结尾（设置了 `repeat` 时，每轮结束都会触发）。 |
 | `onError` | `.on_error` | `{ message, code? }`（`&str`，即消息） | 加载或播放失败；视频源不在应用的能力范围内时 `code` 为 `"ERR_ACCESS_DENIED"`。 |
 
+```tsx tabs
+const ratio = signal(16 / 9);
+<Video src={url} style={{ width: "100%", aspectRatio: ratio() }} onLoad={(e) => ratio.set(e.size.width / e.size.height)} />;
+```
+
 ```rust tabs
 let ratio = signal(16.0_f32 / 9.0);
 
@@ -112,11 +117,6 @@ video(url)
     .on_load(move |info: &VideoInfo| {
         ratio.set(info.size.width.0 as f32 / info.size.height.0 as f32)
     })
-```
-
-```tsx tabs
-const ratio = signal(16 / 9);
-<Video src={url} style={{ width: "100%", aspectRatio: ratio() }} onLoad={(e) => ratio.set(e.size.width / e.size.height)} />;
 ```
 
 ## ref 方法

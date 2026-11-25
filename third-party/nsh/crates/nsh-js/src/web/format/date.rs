@@ -54,6 +54,9 @@ pub(crate) enum Zone {
     Utc,
     /// Minutes east of UTC.
     Offset(i32),
+    /// A zone the app ships (nsh.json `timeZones`), by its index in the
+    /// VM's `Zones`.
+    Named(u16),
 }
 
 /// Resolved options: the fields to write.
@@ -135,10 +138,14 @@ fn num(n: impl Into<i64>, style: Num) -> String {
     }
 }
 
-/// The name of a zone's offset (`UTC`, `GMT+8`, `GMT-5:30`).
-fn zone_name(zone: Zone, offset: i32) -> String {
+/// The name of a zone's offset (`UTC`, `GMT+8`, `GMT-5:30`), or the
+/// abbreviation the locale writes for it (`EST`).
+fn zone_name(zone: Zone, offset: i32, abbr: Option<&str>) -> String {
     if zone == Zone::Utc {
         return "UTC".to_owned();
+    }
+    if let Some(abbr) = abbr.filter(|a| !a.is_empty()) {
+        return abbr.to_owned();
     }
     if offset == 0 {
         return "GMT".to_owned();
@@ -153,12 +160,20 @@ fn zone_name(zone: Zone, offset: i32) -> String {
 }
 
 /// The parts of the time `ms` (milliseconds since the epoch), written
-/// `offset` minutes east of UTC (the zone's offset at that time).
-pub(crate) fn format(ms: f64, offset: i32, zone: Zone, f: &Format, dates: &Dates) -> Vec<Part> {
+/// `offset` minutes east of UTC (the zone's offset at that time), the zone
+/// named by `abbr` where it has one (a named zone's: `EST`).
+pub(crate) fn format(
+    ms: f64,
+    offset: i32,
+    zone: Zone,
+    abbr: Option<&str>,
+    f: &Format,
+    dates: &Dates,
+) -> Vec<Part> {
     let c = civil(ms + f64::from(offset) * 60_000.0);
     let mut parts = Vec::new();
     let date = date_parts(&c, f, dates);
-    let time = time_parts(&c, f, dates, zone, offset);
+    let time = time_parts(&c, f, dates, zone, offset, abbr);
     let has_date = !date.is_empty();
     parts.extend(date);
     if has_date && !time.is_empty() {
@@ -296,7 +311,14 @@ fn date_parts(c: &Civil, f: &Format, dates: &Dates) -> Vec<Part> {
     parts
 }
 
-fn time_parts(c: &Civil, f: &Format, dates: &Dates, zone: Zone, offset: i32) -> Vec<Part> {
+fn time_parts(
+    c: &Civil,
+    f: &Format,
+    dates: &Dates,
+    zone: Zone,
+    offset: i32,
+    abbr: Option<&str>,
+) -> Vec<Part> {
     let mut parts = Vec::new();
     let cycle = f.cycle(dates);
     let twelve = matches!(cycle, HourCycle::H11 | HourCycle::H12);
@@ -353,7 +375,7 @@ fn time_parts(c: &Civil, f: &Format, dates: &Dates, zone: Zone, offset: i32) -> 
     }
     if clock.is_empty() {
         if f.zone_name {
-            field(&mut parts, "timeZoneName", zone_name(zone, offset));
+            field(&mut parts, "timeZoneName", zone_name(zone, offset, abbr));
         }
         return parts;
     }
@@ -383,7 +405,7 @@ fn time_parts(c: &Civil, f: &Format, dates: &Dates, zone: Zone, offset: i32) -> 
     }
     if f.zone_name {
         literal(&mut parts, " ");
-        field(&mut parts, "timeZoneName", zone_name(zone, offset));
+        field(&mut parts, "timeZoneName", zone_name(zone, offset, abbr));
     }
     parts
 }
@@ -398,7 +420,7 @@ mod tests {
 
     fn fmt(tag: &str, f: Format) -> String {
         let locale = resolve(&[tag.to_owned()], "en-US");
-        format(T, 0, Zone::Utc, &f, &locale.dates)
+        format(T, 0, Zone::Utc, None, &f, &locale.dates)
             .into_iter()
             .map(|p| p.value)
             .collect()
@@ -612,6 +634,7 @@ mod tests {
             T,
             8 * 60,
             Zone::Offset(480),
+            None,
             &Format {
                 zone_name: true,
                 ..TIME

@@ -1286,7 +1286,9 @@ fn control_type(c: Control) -> UIA_CONTROLTYPE_ID {
         Control::ToolBar => UIA_ToolBarControlTypeId,
         Control::List => UIA_ListControlTypeId,
         Control::ListItem => UIA_ListItemControlTypeId,
-        Control::Pane | Control::Dialog | Control::AlertDialog => UIA_PaneControlTypeId,
+        Control::Pane | Control::Dialog | Control::AlertDialog | Control::TabPanel => {
+            UIA_PaneControlTypeId
+        }
     }
 }
 
@@ -1327,6 +1329,7 @@ mod tests {
         assert_eq!(control_type(Control::ListItem), UIA_ListItemControlTypeId);
         assert_eq!(control_type(Control::Dialog), UIA_PaneControlTypeId);
         assert_eq!(control_type(Control::AlertDialog), UIA_PaneControlTypeId);
+        assert_eq!(control_type(Control::TabPanel), UIA_PaneControlTypeId);
     }
 
     #[test]

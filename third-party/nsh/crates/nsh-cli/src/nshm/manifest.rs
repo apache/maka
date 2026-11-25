@@ -46,13 +46,14 @@ impl Manifest {
     pub(crate) fn read(dir: &Path, what: &str) -> anyhow::Result<Self> {
         let cargo = dir.join("Cargo.toml");
         let cargo = cargo.is_file().then_some(cargo);
-        let config: Option<serde_json::Value> = match fs::read_to_string(dir.join("nsh.json")) {
-            Ok(text) => Some(
-                serde_json::from_str(&text)
-                    .with_context(|| format!("{what}: nsh.json is not JSON"))?,
-            ),
-            Err(_) => None,
-        };
+        let config: Option<serde_json::Value> =
+            match nsh_bundler::app_dir::read(&dir.join("nsh.json")) {
+                Ok(text) => Some(
+                    serde_json::from_str(&text)
+                        .with_context(|| format!("{what}: nsh.json is not JSON"))?,
+                ),
+                Err(_) => None,
+            };
         let config = config.filter(|c| {
             cargo.is_none() || c.get("exports").is_some() || c.get("platform").is_some()
         });
@@ -62,6 +63,7 @@ impl Manifest {
             name = Some(rust_app::package_name(cargo)?);
             version = Some(
                 package_version(&text)
+                    .or_else(|| inherited_version(dir, &text))
                     .with_context(|| format!("{what}: Cargo.toml has no [package] version"))?,
             );
             // A platform nshm's crate builds the platform's binary and may
@@ -209,6 +211,33 @@ pub(crate) fn package_version(text: &str) -> Option<String> {
     None
 }
 
+/// The version a crate in `dir` (manifest `text`) takes from its workspace
+/// (`version.workspace = true`): `[workspace.package]`'s version in the
+/// nearest manifest above with a `[workspace]`, as Cargo reads it. An nshm
+/// developed in a workspace (the app's `"path"` dependency) has one.
+fn inherited_version(dir: &Path, text: &str) -> Option<String> {
+    let inherits = rust_app::toml_tables(text).any(|(table, line)| {
+        let line = line.replace(' ', "");
+        table == "package"
+            && (line.starts_with("version.workspace=true")
+                || line.starts_with("version={workspace=true"))
+    });
+    if !inherits {
+        return None;
+    }
+    let dir = dir.canonicalize().ok()?;
+    let root = dir.ancestors().skip(1).find_map(|d| {
+        let text = fs::read_to_string(d.join("Cargo.toml")).ok()?;
+        text.lines()
+            .map(str::trim)
+            .any(|l| l == "[workspace]" || l.starts_with("[workspace."))
+            .then_some(text)
+    })?;
+    rust_app::toml_tables(&root)
+        .find(|(table, line)| *table == "workspace.package" && line.starts_with("version"))
+        .and_then(|(_, line)| rust_app::toml_string(line, "version"))
+}
+
 /// The version requirement of `nsh-core` in the `[dependencies]` of the
 /// manifest `text` (`nsh-core = "0.6"` or `nsh-core = { version = "0.6", .. }`).
 pub(crate) fn nsh_core_requirement(text: &str) -> Option<String> {
@@ -248,6 +277,36 @@ mod tests {
         let _ = fs::remove_dir_all(&d);
         fs::create_dir_all(d.join("src")).unwrap();
         d
+    }
+
+    #[test]
+    fn a_workspace_member_takes_the_workspace_version() {
+        let root = dir("workspace");
+        fs::write(
+            root.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"crates/*\"]\n\n[workspace.package]\nversion = \"0.7.1\"\n",
+        )
+        .unwrap();
+        let d = root.join("crates/acme-gauge");
+        fs::create_dir_all(d.join("src")).unwrap();
+        fs::write(
+            d.join("src/lib.rs"),
+            "#[native_module(\"acme-gauge\")]\nfn native(r: &mut Registry) {}\n",
+        )
+        .unwrap();
+        for version in ["version.workspace = true", "version = { workspace = true }"] {
+            fs::write(
+                d.join("Cargo.toml"),
+                format!("[package]\nname = \"acme-gauge\"\n{version}\n\n[dependencies]\nnsh-core.workspace = true\n"),
+            )
+            .unwrap();
+            let m = Manifest::read(&d, "acme-gauge").unwrap();
+            assert_eq!(m.version, semver::Version::new(0, 7, 1), "{version}");
+        }
+        // Outside a workspace nothing is inherited.
+        fs::write(root.join("Cargo.toml"), "[package]\nname = \"other\"\n").unwrap();
+        assert!(Manifest::read(&d, "acme-gauge").is_err());
+        fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

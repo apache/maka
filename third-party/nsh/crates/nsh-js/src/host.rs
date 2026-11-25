@@ -584,6 +584,7 @@ impl Host {
 
     /// Delivers a native event (and its data) to the node's JS handler.
     pub fn dispatch_event(&self, id: NodeId, event: EventKind, payload: &EventPayload) {
+        let payload_in = payload;
         self.guarded(Phase::Call, || {
             self.cx.with(|cx| {
                 // Touches: the responder system is native.
@@ -644,6 +645,7 @@ impl Host {
                     let Some(handler) = crate::dom::handler(raw, id, event) else {
                         return Ok(());
                     };
+                    grant_user_files(raw, event, payload_in);
                     // SAFETY: an owned function value of this context.
                     let handler = unsafe { Value::from_raw(cx.clone(), handler) };
                     match handler.into_function() {
@@ -1316,6 +1318,21 @@ fn video_load<'js>(
     Ok(obj.into_value())
 }
 
+/// Lets the app read the files the user pasted or dropped, as its handler
+/// gets them (`fs/promises` at their exact paths): not a drag that only
+/// entered.
+fn grant_user_files(raw: *mut qjs::JSContext, event: EventKind, payload: &EventPayload) {
+    let uris = match (event, payload) {
+        (EventKind::Paste, EventPayload::Paste(paste)) => &paste.uris,
+        (
+            EventKind::FileDrop,
+            EventPayload::FileDrop(uris) | EventPayload::FileDropAt { uris, .. },
+        ) => uris,
+        _ => return,
+    };
+    nsh_core::runtime::grant_user_files(&crate::dom::shared(raw).system_locals, uris);
+}
+
 /// The JS object handed to event handlers.
 fn payload_object<'js>(cx: &Ctx<'js>, payload: &EventPayload) -> rquickjs::Result<Value<'js>> {
     let obj = rquickjs::Object::new(cx.clone())?;
@@ -1403,7 +1420,7 @@ fn payload_object<'js>(cx: &Ctx<'js>, payload: &EventPayload) -> rquickjs::Resul
             }
             obj.set("uris", list)?;
             obj.set("mimeTypes", types)?;
-            // Contents come only where there are no paths (the Web).
+            // Contents come only where there are no paths (the Web, macOS file promises).
             obj.set("files", rquickjs::Array::new(cx.clone())?)?;
             if let EventPayload::FileDropAt { page_position, .. } = payload {
                 obj.set("pagePosition", point_object(cx, *page_position)?)?;
@@ -1475,6 +1492,15 @@ fn payload_object<'js>(cx: &Ctx<'js>, payload: &EventPayload) -> rquickjs::Resul
                 files.set(index, value)?;
             }
             obj.set("files", files)?;
+            let too_large = rquickjs::Array::new(cx.clone())?;
+            for (index, file) in paste.too_large.iter().enumerate() {
+                let unread = rquickjs::Object::new(cx.clone())?;
+                unread.set("name", file.name.as_str())?;
+                unread.set("type", file.mime.as_str())?;
+                unread.set("size", file.len as f64)?;
+                too_large.set(index, unread)?;
+            }
+            obj.set("tooLarge", too_large)?;
             let uris = rquickjs::Array::new(cx.clone())?;
             for (index, uri) in paste.uris.iter().enumerate() {
                 uris.set(index, uri.as_str())?;
@@ -1487,8 +1513,6 @@ fn payload_object<'js>(cx: &Ctx<'js>, payload: &EventPayload) -> rquickjs::Resul
         EventPayload::FileRequest { id, .. } => obj.set("id", *id)?,
         // And offscreen canvas renders.
         EventPayload::CanvasImage { id, .. } => obj.set("id", *id)?,
-        // And speech sessions' events (`Speech`'s listeners get them).
-        EventPayload::Speech { id, .. } => obj.set("id", *id)?,
         // And sounds' and players' events (their objects' listeners).
         EventPayload::Audio { id, .. } => obj.set("id", *id)?,
         // Handled natively (`crate::window`).
@@ -1673,7 +1697,7 @@ fn bounds_object<'js>(
     Ok(obj)
 }
 
-/// `Modifiers` (`{ control, alt, shift, platform }`, GPUI's names).
+/// `Modifiers` (`{ control, alt, shift, platform, altGraph }`, GPUI's names).
 fn modifiers_object<'js>(
     cx: &Ctx<'js>,
     m: &nsh_core::keymap::Modifiers,
@@ -1683,6 +1707,7 @@ fn modifiers_object<'js>(
     obj.set("alt", m.alt)?;
     obj.set("shift", m.shift)?;
     obj.set("platform", m.cmd)?;
+    obj.set("altGraph", m.alt_graph)?;
     Ok(obj)
 }
 
@@ -2568,6 +2593,7 @@ const report = (v) => text(String(v));
             let modifiers: rquickjs::Object = obj.get("modifiers").unwrap();
             assert!(modifiers.get::<_, bool>("control").unwrap());
             assert!(!modifiers.get::<_, bool>("shift").unwrap());
+            assert!(!modifiers.get::<_, bool>("altGraph").unwrap());
             assert_eq!(obj.get::<_, u32>("clickCount").unwrap(), 2);
         });
     }
@@ -3016,6 +3042,73 @@ const report = (v) => text(String(v));
         );
     }
 
+    /// A named zone the app ships (nsh.json `timeZones`, packed into the
+    /// bundle's `i18n` by `nsh-i18n`) formats at its offset at each
+    /// instant: across daylight saving time in New York, at half an hour
+    /// in Kolkata, with Lord Howe's half-hour daylight saving time, and
+    /// by its rule after its last transition. A zone the app does not
+    /// ship still throws.
+    #[test]
+    fn formats_in_the_named_zones_the_app_ships() {
+        let host = Host::new().unwrap();
+        let zones = ["America/New_York", "Asia/Kolkata", "Australia/Lord_Howe"].map(String::from);
+        let bundle =
+            nsh_i18n::bundle_json(&Default::default(), Some(&["de".to_owned()]), &zones, |w| {
+                panic!("{w}")
+            })
+            .unwrap();
+        host.eval_source(&format!(
+            r#"{REPORT}
+            import {{ i18n }} from "nsh:rt";
+            i18n({bundle:?});
+            const time = (timeZone) => new Intl.DateTimeFormat("en-US", {{
+              timeZone, year: "numeric", month: "2-digit", day: "2-digit",
+              hour: "2-digit", minute: "2-digit", hourCycle: "h23", timeZoneName: "short",
+            }});
+            const ny = time("america/new_york");
+            report(ny.resolvedOptions().timeZone);
+            // Daylight saving time starts at 2:00 EST on March 8, 2026 and
+            // ends at 2:00 EDT on November 1.
+            for (const at of [Date.UTC(2026, 2, 8, 6, 59), Date.UTC(2026, 2, 8, 7, 0),
+                              Date.UTC(2026, 10, 1, 5, 59), Date.UTC(2026, 10, 1, 6, 0)]) {{
+              report(ny.format(at));
+            }}
+            report(time("Asia/Kolkata").format(Date.UTC(2026, 0, 1, 0, 0)));
+            // Lord Howe: +10:30, and +11 from 2:00 on October 4, 2026.
+            const howe = time("Australia/Lord_Howe");
+            report(howe.format(Date.UTC(2026, 9, 3, 15, 29)));
+            report(howe.format(Date.UTC(2026, 9, 3, 15, 30)));
+            // Past the last transition: the zone's rule.
+            report(ny.format(Date.UTC(2200, 6, 1, 12, 0)));
+            report(ny.format(Date.UTC(2200, 11, 1, 12, 0)));
+            report(new Date(Date.UTC(2026, 6, 4, 16, 0)).toLocaleTimeString("en-US", {{ timeZone: "America/New_York" }}));
+            report(new Intl.DateTimeFormat("en-US", {{ timeZone: "America/New_York", timeStyle: "long" }}).format(Date.UTC(2026, 6, 4, 16, 0)));
+            report(new Intl.DateTimeFormat("de", {{ timeZone: "America/New_York", timeStyle: "long" }}).format(Date.UTC(2026, 0, 1)));
+            try {{ new Intl.DateTimeFormat("en", {{ timeZone: "Europe/Berlin" }}); }} catch (e) {{ report(e.name); }}
+            "#
+        ))
+        .unwrap();
+        assert_eq!(
+            reported(&host),
+            [
+                "America/New_York",
+                "03/08/2026, 01:59 EST",
+                "03/08/2026, 03:00 EDT",
+                "11/01/2026, 01:59 EDT",
+                "11/01/2026, 01:00 EST",
+                "01/01/2026, 05:30 GMT+5:30",
+                "10/04/2026, 01:59 GMT+10:30",
+                "10/04/2026, 02:30 GMT+11",
+                "07/01/2200, 08:00 EDT",
+                "12/01/2200, 07:00 EST",
+                "12:00:00 PM",
+                "12:00:00 PM EDT",
+                "19:00:00 GMT-5",
+                "RangeError",
+            ]
+        );
+    }
+
     #[test]
     fn intl_plural_rules_and_traditional_chinese_dates() {
         let host = Host::new().unwrap();
@@ -3203,6 +3296,32 @@ const report = (v) => text(String(v));
             .count();
         assert_eq!(created, 1);
         assert!(host.fatal().is_none());
+    }
+
+    #[test]
+    fn an_event_for_a_components_node_never_reaches_the_js_node_below_its_id() {
+        // A Rust component's nodes have odd ids; once the component let go
+        // of one (a sheet closed), its late `Dismiss` comes to JS. Node 3 is
+        // not JS's node 2: a closed sheet's dismissal ran the handler of the
+        // page under it and popped that page.
+        let host = Host::new().unwrap();
+        host.eval_source(
+            r#"import { element, prop } from "nsh:rt";
+            globalThis.view = element("view");
+            prop(globalThis.view, "onPress", () => element("view"));"#,
+        )
+        .unwrap();
+        ops(&host);
+        host.dispatch_event(3, EventKind::Press, &EventPayload::None);
+        host.dispatch_event(3, EventKind::Dismiss, &EventPayload::None);
+        assert!(ops(&host).is_empty());
+        // Its own id still reaches it.
+        host.dispatch_event(2, EventKind::Press, &EventPayload::None);
+        let created = ops(&host)
+            .into_iter()
+            .filter(|op| matches!(op, Op::Create { .. }))
+            .count();
+        assert_eq!(created, 1);
     }
 
     #[test]

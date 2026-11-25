@@ -280,7 +280,7 @@ fn a_focused_slider_s_thumb_is_the_accent_with_no_band() {
     view.handle(key("Tab"));
     wait_for_thumb_focus(&mut view, &mut terminal, &rx, idle);
     let thumb = thumb(&terminal);
-    assert_eq!(thumb.fg, Color::Blue, "in the accent");
+    assert_eq!(thumb.fg, crate::ACCENT, "in the accent");
     assert_eq!(thumb.bg, ground, "no band under it");
     assert!(thumb.modifier.contains(Modifier::BOLD));
     assert!(!thumb.modifier.contains(Modifier::REVERSED));
@@ -343,7 +343,7 @@ fn a_focused_mark_s_slot_recolors_its_mark_and_lays_no_band() {
         terminal
             .draw(|frame| view.render(frame, frame.area()))
             .unwrap();
-        if mark(&terminal).1.fg == Color::Blue {
+        if mark(&terminal).1.fg == crate::ACCENT {
             break;
         }
         assert!(rx.recv_deadline(deadline).is_ok(), "the mark's focus");

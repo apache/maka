@@ -469,6 +469,7 @@ mod tests {
             ctrl,
             alt,
             shift: false,
+            alt_graph: false,
         };
         assert!(mod_of(modifier(true, false, false), true));
         assert!(!mod_of(modifier(false, true, false), true));

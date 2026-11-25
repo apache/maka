@@ -15,6 +15,36 @@ menus, tooltips and sheets are built on it; [`nsh/base`](../modules/nsh-base.md)
 ([Popover](./popover.md), [Menu](./menu.md), [Tooltip](./tooltip.md), [Sheet](./sheet.md)), and an overlay is what you
 use to build your own.
 
+```tsx tabs
+import { Overlay, signal, Text, View, type ViewRef } from "nsh";
+
+function MoreButton() {
+  const open = signal(false);
+  let anchor: ViewRef | undefined;
+  return (
+    <View>
+      <View ref={anchor} onPress={() => open.set(!open())} class="px-3 py-2">
+        <Text>More</Text>
+      </View>
+      <If when={open()}>
+        <Overlay
+          anchor={anchor}
+          placement="bottom"
+          align="start"
+          offset={6}
+          margin={8}
+          onPressOutside={() => open.set(false)}
+          onCancel={() => open.set(false)}
+          class="rounded-lg bg-white p-3 shadow-lg"
+        >
+          <Text>Shown above everything</Text>
+        </Overlay>
+      </If>
+    </View>
+  );
+}
+```
+
 ```rust tabs
 use nsh_core::prelude::*;
 
@@ -45,36 +75,6 @@ fn more_button() -> impl IntoElement {
                 .shadow_lg()
                 .child(text("Shown above everything"))
         }))
-}
-```
-
-```tsx tabs
-import { Overlay, signal, Text, View, type ViewRef } from "nsh";
-
-function MoreButton() {
-  const open = signal(false);
-  let anchor: ViewRef | undefined;
-  return (
-    <View>
-      <View ref={anchor} onPress={() => open.set(!open())} class="px-3 py-2">
-        <Text>More</Text>
-      </View>
-      <If when={open()}>
-        <Overlay
-          anchor={anchor}
-          placement="bottom"
-          align="start"
-          offset={6}
-          margin={8}
-          onPressOutside={() => open.set(false)}
-          onCancel={() => open.set(false)}
-          class="rounded-lg bg-white p-3 shadow-lg"
-        >
-          <Text>Shown above everything</Text>
-        </Overlay>
-      </If>
-    </View>
-  );
 }
 ```
 

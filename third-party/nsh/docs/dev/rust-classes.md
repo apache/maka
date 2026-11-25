@@ -123,6 +123,17 @@ so a class's methods can run directly inside the JS call, as the web classes nsh
   `this: Instance<Self>` in a method that is not `async` and return `Result<Later<T>, E>`: what runs before the
   `Later` runs in the call (and a refusal rejects the promise), the work in it as the task. One method, one
   promise, no `begin_*` step (`nsh-engine` test `first_poll`, #2750).
+  Things to know about this shape:
+  - An `Err` returned before the `Later` refuses the call: the promise **rejects**. To answer a refusal like any
+    other value (a bridge whose promises never reject), return it from inside the `Later` and use
+    `Result<Later<T>, std::convert::Infallible>` (or plain `Later<T>`).
+  - Write `Later<T>` / `Result<Later<T>, E>` out in the signature. `#[class]` reads the tokens, so a type alias
+    (`type Reply = Result<Later<String>, Infallible>`) is not seen as one and the member fails to compile with
+    "cannot cross to JS".
+  - `async fn` keeps its deferred first poll: moving it into the JS call would run code that needs the core
+    (`timer`, `dialog`, signals) outside it.
+  - If `nsh test` behaviour contradicts the source after editing an app crate, delete the headless runner
+    (`target/debug/<app>-test`) to force a rebuild before trusting either.
 - **One object per instance.** While both live, an instance has one JS object (`nsh-js` remembers it by the `Rc`'s
   address): a member returning an instance Rust keeps gives the object it has, so `a.badge === a.badge`.
 - **Errors.** `Result<T, E: Display>` throws (`Error` with the message) or rejects; a wrong argument throws (or,

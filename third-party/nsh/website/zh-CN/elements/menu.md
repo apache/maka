@@ -16,38 +16,8 @@ iPad 跟随 UIKit 的水平尺寸类别，与系统自己的菜单一致：窗�
 
 选择一个条目、外部按压、Escape、Android 返回键和 VoiceOver 的退出手势都会关闭它。`ContextMenu` 是同样的菜单，由辅助按键（右键单击）在指针处打开，在触摸屏上由手指按住触发元素打开，或在触发元素下方由浏览器和 Linux 上的键盘、macOS 和 Windows 上的读屏软件打开。
 
-在获得焦点的触发元素上按 Return、Space 或 Down 键打开菜单时，键盘焦点落在第一个可用的条目上；按 Up 键打开时落在最后一个上，之后用方向键在条目间移动。按压打开时不聚焦任何条目；在弹出层中，之后按 Down 或 Home 键聚焦第一个可用的条目，按 Up 或 End 键聚焦最后一个。Page Down 移到视图里最后一个可用的条目，Page Up 移到第一个，每次翻一屏，到头停住（`MenuList` 也一样，见[长列表](#长列表)）。在弹出层中，指针移到某个条目上时它获得键盘焦点，按键从指针下的条目接着走；给条目的 `focus:` 状态设和 `hover:` 一样的样式。在弹出层中按一个字母或数字，焦点跳到下一个文字（或 `accessibilityLabel`）以它开头的可用条目，与 `Select` 的列表一样：连按同一个字母在这些条目之间轮转，短时间内连续打几个字母按前缀匹配。它们只作用于焦点所在的那一级菜单或子菜单；菜单里的输入框照常接收字母；跳到视图外的条目会把它滚进来。
+在获得焦点的触发元素上按 Return、Space 或 Down 键打开菜单时，键盘焦点落在第一个可用的条目上；按 Up 键打开时落在最后一个上，之后用方向键在条目间移动。按压打开时不聚焦任何条目；在弹出层中，之后按 Down 或 Home 键聚焦第一个可用的条目，按 Up 或 End 键聚焦最后一个，菜单外的输入框仍在编辑时也一样（比如触发元素旁的搜索框）；菜单里的输入框保留自己的方向键。Page Down 移到视图里最后一个可用的条目，Page Up 移到第一个，每次翻一屏，到头停住（`MenuList` 也一样，见[长列表](#长列表)）。在弹出层中，指针移到某个条目上时它获得键盘焦点，按键从指针下的条目接着走；给条目的 `focus:` 状态设和 `hover:` 一样的样式。在弹出层中按一个字母或数字，焦点跳到下一个文字（或 `accessibilityLabel`）以它开头的可用条目，与 `Select` 的列表一样：连按同一个字母在这些条目之间轮转，短时间内连续打几个字母按前缀匹配。它们只作用于焦点所在的那一级菜单或子菜单；菜单里的输入框照常接收字母；跳到视图外的条目会把它滚进来。
 在弹出层和终端中，在 `Submenu` 的条目上按 Right、Return 或 Space 键打开它，键盘焦点落在它第一个可用的条目上；在它的条目上按 Left 键或按 Escape 键关闭它，焦点回到它的条目上。指针打开的子菜单，在方向键把焦点移到所在菜单的另一个条目时关闭。
-
-```rust tabs
-use nsh_base::{menu, menu_item, menu_separator, submenu};
-use nsh_core::prelude::*;
-
-fn item(label: &'static str, on_select: impl Fn() + 'static) -> impl IntoElement {
-    menu_item()
-        .on_select(on_select)
-        .px_3()
-        .py_2()
-        .rounded_md()
-        .child(text(label))
-}
-
-fn file_menu() -> impl IntoElement {
-    menu()
-        .offset(px(4.0))
-        .trigger(view().px_3().py_2().child(text("File")))
-        .child(item("New", || log::info!("new")))
-        .child(item("Open…", || log::info!("open")))
-        .child(menu_separator().h(px(1.0)).my_1().bg(rgb(0xe5e7eb)))
-        .child(
-            submenu()
-                .trigger(view().px_3().py_2().child(text("Share ›")))
-                .back(view().px_3().py_2().child(text("‹ Back")))
-                .child(item("Mail", || log::info!("mail")))
-                .child(item("Copy link", || log::info!("link"))),
-        )
-}
-```
 
 ```tsx tabs
 import { Text, View } from "nsh";
@@ -83,6 +53,38 @@ function FileMenu() {
   );
 }
 ```
+
+```rust tabs
+use nsh_base::{menu, menu_item, menu_separator, submenu};
+use nsh_core::prelude::*;
+
+fn item(label: &'static str, on_select: impl Fn() + 'static) -> impl IntoElement {
+    menu_item()
+        .on_select(on_select)
+        .px_3()
+        .py_2()
+        .rounded_md()
+        .child(text(label))
+}
+
+fn file_menu() -> impl IntoElement {
+    menu()
+        .offset(px(4.0))
+        .trigger(view().px_3().py_2().child(text("File")))
+        .child(item("New", || log::info!("new")))
+        .child(item("Open…", || log::info!("open")))
+        .child(menu_separator().h(px(1.0)).my_1().bg(rgb(0xe5e7eb)))
+        .child(
+            submenu()
+                .trigger(view().px_3().py_2().child(text("Share ›")))
+                .back(view().px_3().py_2().child(text("‹ Back")))
+                .child(item("Mail", || log::info!("mail")))
+                .child(item("Copy link", || log::info!("link"))),
+        )
+}
+```
+
+菜单中某一行下面的一组项（分享、语言、外观）用 `Submenu`，不要做成点一下箭头向下转、把下级项在原位展开的行：没有哪个平台的菜单这样做，这些行也会失去子菜单的按键和角色。需要一直可见的少量选项改用分组：一个不可选的标题，下面是可勾选的项，不缩进，前后用分隔线隔开（见[可勾选的条目](#checkable-items)）。
 
 这五个组件都来自 [`nsh/base`](../modules/nsh-base.md)。条目会自己找到所属的菜单，所以你可以自由地编排它们：放在视图里分组、加标签、用 `If` 让条目出现和消失。`popupClass` 设置菜单所呈现的弹出层或 sheet 的样式。两者需要不同样式时，沿用同一条规则，并在样式 getter 或绑定中读取，这样 iPad 的窗口大小变化时它也随之改变：
 
@@ -137,46 +139,6 @@ import { ContextMenu, MenuItem } from "nsh/base";
 
 `checked` 让条目可以勾选：菜单显示的一项设置（「显示侧边栏」），或者在 `role="menuitemradio"` 时，一组选项中的一个（「排序方式」）。值由你持有：选择条目会调用 `onSelect`，你设置下一个值，条目就显示它。勾选时，它的 `checked:` 类和 `checkedStyle` 生效，它的指示部件（位于内容之前，`indicatorClass`、`indicatorStyle`）也一样，部件里是你给它的标记（`indicator`）。标记只创建一次并保留下来，由指示部件的 `checked:` 类显示和隐藏它；也可以在 `indicatorClass` 中加 `group`，用标记自己的 `group-checked:` 类。`closeOnSelect={false}` 让菜单保持打开，这样设置会立刻显示新的值。
 
-```rust tabs
-use nsh_base::{menu, menu_item};
-use nsh_core::{element::StyleRefinement, prelude::*};
-
-fn view_menu(sidebar: Signal<bool>, sort: Signal<&'static str>) -> impl IntoElement {
-    // The indicator part shows the mark while the item is checked.
-    let part = |s: StyleRefinement| s.w(px(16.0)).opacity(0.0).checked(|s| s.opacity(1.0));
-    let by = move |label: &'static str| {
-        menu_item()
-            .role(AccessibilityRole::MenuItemRadio)
-            .checked(move || Some(sort.get() == label))
-            .indicator_style(part)
-            .indicator(text("✓"))
-            .on_select(move || sort.set(label))
-            .flex_row()
-            .gap_2()
-            .px_3()
-            .py_2()
-            .child(text(label))
-    };
-    menu()
-        .trigger(view().px_3().py_2().child(text("View")))
-        .child(
-            menu_item()
-                .checked(move || Some(sidebar.get()))
-                .close_on_select(false)
-                .indicator_style(part)
-                .indicator(text("✓"))
-                .on_select(move || sidebar.set(!sidebar.get_untracked()))
-                .flex_row()
-                .gap_2()
-                .px_3()
-                .py_2()
-                .child(text("Show sidebar")),
-        )
-        .child(by("Name"))
-        .child(by("Date modified"))
-}
-```
-
 ```tsx tabs
 import { Text, View, signal } from "nsh";
 import { Menu, MenuItem } from "nsh/base";
@@ -215,6 +177,46 @@ function ViewMenu() {
       </Each>
     </Menu>
   );
+}
+```
+
+```rust tabs
+use nsh_base::{menu, menu_item};
+use nsh_core::{element::StyleRefinement, prelude::*};
+
+fn view_menu(sidebar: Signal<bool>, sort: Signal<&'static str>) -> impl IntoElement {
+    // The indicator part shows the mark while the item is checked.
+    let part = |s: StyleRefinement| s.w(px(16.0)).opacity(0.0).checked(|s| s.opacity(1.0));
+    let by = move |label: &'static str| {
+        menu_item()
+            .role(AccessibilityRole::MenuItemRadio)
+            .checked(move || Some(sort.get() == label))
+            .indicator_style(part)
+            .indicator(text("✓"))
+            .on_select(move || sort.set(label))
+            .flex_row()
+            .gap_2()
+            .px_3()
+            .py_2()
+            .child(text(label))
+    };
+    menu()
+        .trigger(view().px_3().py_2().child(text("View")))
+        .child(
+            menu_item()
+                .checked(move || Some(sidebar.get()))
+                .close_on_select(false)
+                .indicator_style(part)
+                .indicator(text("✓"))
+                .on_select(move || sidebar.set(!sidebar.get_untracked()))
+                .flex_row()
+                .gap_2()
+                .px_3()
+                .py_2()
+                .child(text("Show sidebar")),
+        )
+        .child(by("Name"))
+        .child(by("Date modified"))
 }
 ```
 
@@ -330,9 +332,9 @@ import { MenuButton } from "nsh/base";
 
 条目是数据，每个都有应用自己的 `id`，由 `onSelect({ id })` 报告；勾选、`disabled` 和 `destructive`（在 iOS 上为红色，在 Android 上为主题的错误色）是条目的状态，由应用改变；带 `items` 的条目是子菜单，再加 `inline` 则是以 `label` 为标题、就地显示的分组。子菜单或分组加上 `singleSelection` 后，它自己的操作是一组单选（排序方式、外观），由应用勾选其中一项：iOS 显示为单选菜单，Android 显示为单选按钮，桌面显示为勾选标记；不加时各个勾选互相独立。这组单选只含该菜单自己的操作，其中的分组或子菜单各自设定。整个菜单的条目都是一组单选时，把它们放进一个不带标题、带 `singleSelection` 的 `inline` 分组（`{ id: "", label: "", inline: true, singleSelection: true, items }`）。子元素、`class` 和 `style` 构成触发器，在所有平台上都由应用绘制。
 
-- **iOS 和 Mac Catalyst**：触发器上覆盖一个透明的 `UIButton`，它的 `UIMenu` 是主操作：点按、VoiceOver 激活或硬件键盘都会立即打开菜单，不等待 JS。`icon` 是 SF Symbol；`title` 显示在菜单顶部。VoiceOver 访问的是这个按钮（名称来自 `accessibilityLabel`），而不是它下面的触发器内容。新的 `items` 在下次打开时生效。
+- **iOS 和 Mac Catalyst**：触发器上覆盖一个透明的 `UIButton`，它的 `UIMenu` 是主操作：点按、VoiceOver 激活或硬件键盘都会立即打开菜单，不等待 JS。`icon` 是 SF Symbol；`title` 显示在菜单顶部。菜单从触发器处长出，展开期间触发器隐藏、收起时恢复，与系统按钮一致。VoiceOver 访问的是这个按钮（名称来自 `accessibilityLabel`），而不是它下面的触发器内容。新的 `items` 在下次打开时生效。
 - **桌面（macOS、Windows、Linux）**：按下时在指针处以平台的上下文菜单显示这些条目（同 `nsh/desktop` 的 `Menu.popup`），分组之间用分隔线；不显示 `icon`、`title` 和 `destructive`。
-- **Android**：触发器上覆盖一个透明按钮，点按立即在触发器下方打开系统的弹出菜单；触发器在窗口靠末端的一半时，菜单与触发器末端对齐。`title` 是菜单的第一行，不能选择（TalkBack 读作已停用的条目）；`svg` 是一份 SVG 文档，作为条目的图标，在 Android 10 及以上按条目文字的颜色绘制（`icon` 是 iOS 用的）。勾选、单选按钮、子菜单和分组由系统绘制。
+- **Android**：触发器上覆盖一个透明按钮，点按立即在触发器下方打开系统的弹出菜单；触发器在窗口靠末端的一半时，菜单与触发器末端对齐。`title` 是菜单的第一行，不能选择（TalkBack 读作已停用的条目）；`svg` 是一份 SVG 文档，作为条目的图标，在 Android 10 及以上按条目文字的颜色绘制（`icon` 是 iOS 用的）。勾选、单选按钮、子菜单和分组由系统绘制。点按菜单外面时，手指抬起才关闭菜单；返回键和返回手势都只关闭菜单，下面的对话框仍然打开。
 - **Web**：视图没有系统菜单；触发器照常显示，按下不打开任何内容。在 Web 上按 `platform.os` 改用 `Menu`。
 
 | 属性 | Rust | 类型 | 默认值 | 说明 |

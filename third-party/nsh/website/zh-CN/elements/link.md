@@ -9,21 +9,6 @@ demo: el-link
 
 链接把用户带到某处：一个网页、另一个应用（`mailto:`、`tel:`），或应用自己的某个页面。它负责行为：按压、获得键盘焦点时的 Return 和 Space、禁用状态，以及屏幕阅读器读到的链接角色。外观由应用决定：`Link` 没有自己的颜色、下划线或文字，显示的是它的子元素。`href` 说明它去往哪里，是打开时用的数据，也是指针停在链接上时桌面平台显示的 URL（见[去往哪里](#去往哪里)）。
 
-```rust tabs
-use nsh_base::{link, theme};
-use nsh_core::prelude::*;
-
-fn docs() -> impl IntoElement {
-    link()
-        .href("https://example.com/docs")
-        .text_color(move || theme().primary)
-        .underline()
-        .hover(|s| s.opacity(0.8))
-        .focus_visible(|s| s.rounded_sm().outline(px(2.0)).outline_color(move || theme().ring))
-        .child(text("Read the docs"))
-}
-```
-
 ```tsx tabs
 import { mount, Text } from "nsh";
 import { Link } from "nsh/base";
@@ -45,6 +30,21 @@ mount(() => (
     <App />
   </Window>
 ));
+```
+
+```rust tabs
+use nsh_base::{link, theme};
+use nsh_core::prelude::*;
+
+fn docs() -> impl IntoElement {
+    link()
+        .href("https://example.com/docs")
+        .text_color(move || theme().primary)
+        .underline()
+        .hover(|s| s.opacity(0.8))
+        .focus_visible(|s| s.rounded_sm().outline(px(2.0)).outline_color(move || theme().ring))
+        .child(text("Read the docs"))
+}
 ```
 
 `Link` 来自 [`nsh/base`](../modules/nsh-base.md)，在 Rust 中是 `nsh-base` crate。在 Rust 中，`link()` 创建一个链接，每个 prop 有一个 setter（`.href(..)`、`.open_with(..)`），每个事件有一个监听方法（`.on_open(..)`、`.on_press(..)`），链接本身用类型化的样式方法，内容用 `.child(..)`。

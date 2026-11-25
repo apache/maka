@@ -12,6 +12,14 @@ demo: el-scroll
 children as its content and scrolls them natively: scrolling, flinging, bouncing and snapping run on the platform, at
 the display's rate. Rust makes one with `scroll()`, TSX with `<Scroll>` from `nsh`.
 
+```tsx tabs
+<Scroll style={{ flex: 1 }}>
+  <View style={{ padding: 16, gap: 8 }}>
+    <Each of={rows}>{(row) => <Text>{row().title}</Text>}</Each>
+  </View>
+</Scroll>
+```
+
 ```rust tabs
 use nsh_core::prelude::*;
 
@@ -22,14 +30,6 @@ scroll().flex_1().child(
         |row, _index| text(move || row.get().title),
     )),
 )
-```
-
-```tsx tabs
-<Scroll style={{ flex: 1 }}>
-  <View style={{ padding: 16, gap: 8 }}>
-    <Each of={rows}>{(row) => <Text>{row().title}</Text>}</Each>
-  </View>
-</Scroll>
 ```
 
 A scroll view creates every child, which suits pages of moderate size. For long or unbounded data use a
@@ -78,6 +78,19 @@ are methods of the `Scrollable` trait, which lists share.
 | `refreshIndicator` | `.refresh_indicator(Some(height))` | `{ height: number }` | The app draws its own indicator, `height` points tall: the platform's spinner is hidden, a pull refreshes once it reaches `height`, and refreshing keeps `height` above the content. A height of 0 or less is none. |
 | `pullValue` | `.pull_value(&value)` | `AnimatedValue` | An animated value fed with how far the view is pulled past its top (0 at rest, growing with the pull; the room kept above the content while it refreshes: `height` with `refreshIndicator`), for the app's indicator. |
 
+```tsx tabs
+const refreshing = signal(false);
+async function reload() {
+  refreshing.set(true);
+  await load();
+  refreshing.set(false);
+}
+
+<Scroll style={{ flex: 1 }} refreshing={refreshing()} onRefresh={reload}>
+  …
+</Scroll>;
+```
+
 ```rust tabs
 let refreshing = signal(false);
 
@@ -94,19 +107,6 @@ scroll()
     .child(content())
 ```
 
-```tsx tabs
-const refreshing = signal(false);
-async function reload() {
-  refreshing.set(true);
-  await load();
-  refreshing.set(false);
-}
-
-<Scroll style={{ flex: 1 }} refreshing={refreshing()} onRefresh={reload}>
-  …
-</Scroll>;
-```
-
 ### Zooming
 
 Setting `maximumZoomScale` above `minimumZoomScale` (`.zoom_range(min, max)` in Rust) makes the content zoomable with a
@@ -120,6 +120,13 @@ pinch; zoomed in, it scrolls both ways. Lists keep their scale.
 | `bouncesZoom` | `.bounces_zoom(..)` | `boolean` | `true` | Pinching may go past the limits and springs back. |
 | `zoomable` | `.zoomable(..)` | `boolean` | `true` | The user can pinch to zoom. |
 | `centerContent` | `.center_content(..)` | `boolean` | `false` | Content smaller than the viewport (zoomed out) is centered. |
+
+```tsx tabs
+let photo!: ScrollRef;
+<Scroll ref={photo} maximumZoomScale={4} centerContent style={{ flex: 1, backgroundColor: "#000" }}>
+  <Image src={picture} style={{ width: 390, height: 520 }} onPress={() => photo.zoomTo({ scale: 1, animated: true })} />
+</Scroll>;
+```
 
 ```rust tabs
 let photo = element_ref();
@@ -136,13 +143,6 @@ scroll()
             .h(px(520.0))
             .on_press(move || photo.zoom_to(1.0, None, true)),
     )
-```
-
-```tsx tabs
-let photo!: ScrollRef;
-<Scroll ref={photo} maximumZoomScale={4} centerContent style={{ flex: 1, backgroundColor: "#000" }}>
-  <Image src={picture} style={{ width: 390, height: 520 }} onPress={() => photo.zoomTo({ scale: 1, animated: true })} />
-</Scroll>;
 ```
 
 ## Events
@@ -171,17 +171,17 @@ zooms).
 | `scrollTo({ x?, y?, animated? })` | `scroll_to(point(x, y), animated)` | Scrolls to an offset. |
 | `zoomTo({ scale, x?, y?, animated? })` | `zoom_to(scale, Some(point(x, y)), animated)` | Zooms to `scale` (clamped to the limits) with the content point (`x`, `y`, unzoomed points) in the middle of the viewport, or around the middle. E.g. a double tap zooming in on the tapped point. |
 
+```tsx tabs
+let scroller!: ScrollRef;
+<Scroll ref={scroller}>…</Scroll>;
+scroller.scrollTo({ y: 0, animated: true });
+```
+
 ```rust tabs
 let scroller = element_ref();
 scroll().element_ref(&scroller).child(content());
 
 scroller.scroll_to(point(px(0.0), px(0.0)), true);
-```
-
-```tsx tabs
-let scroller!: ScrollRef;
-<Scroll ref={scroller}>…</Scroll>;
-scroller.scrollTo({ y: 0, animated: true });
 ```
 
 ## Keyboard

@@ -21,7 +21,11 @@ public final class NshComponentContext {
      * The context of the {@link NshView} the component is in (its activity's):
      * for the component's views, resources and system services. Its
      * {@code getApplicationContext()} is the one to keep in what outlives the
-     * component.
+     * component. In NSH's own activities it is a {@code ContextWrapper} of the
+     * activity, which moves to the activity Android makes again for a
+     * configuration change, the app still running: the component finds the
+     * {@code Activity} through {@code getBaseContext()} when it needs one, and
+     * keeps none.
      *
      * @return the context
      */

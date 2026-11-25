@@ -15,39 +15,6 @@ look is the app's: a toggle has no colors, sizes, icon or label of its own. Its 
 label, and `aria-pressed:` classes on the toggle, or `group-aria-pressed:` classes on what is inside it, follow its
 state.
 
-```rust tabs
-use nsh_base::{theme, toggle, toggle_group};
-use nsh_core::prelude::*;
-
-fn formatting() -> impl IntoElement {
-    let bold = signal(true);
-    let italic = signal(false);
-    let item = move |label: &'static str, on: Signal<bool>| {
-        toggle()
-            .pressed(on)
-            .accessibility_label(label)
-            .on_change(move |pressed: &bool| on.set(*pressed))
-            .size_8()
-            .items_center()
-            .justify_center()
-            .rounded(move || theme().radius)
-            .border_1()
-            .border_color(transparent_black())
-            .hover(|s| s.bg(move || theme().foreground.opacity(0.05)))
-            .pressed_style(|s| s.bg(move || theme().foreground.opacity(0.1)).border_color(move || theme().border))
-            .child(text(&label[..1]).text_sm().text_color(move || {
-                if on.get() { theme().foreground } else { theme().muted_foreground }
-            }))
-    };
-    toggle_group()
-        .flex_row()
-        .self_start()
-        .gap_1()
-        .child(item("Bold", bold))
-        .child(item("Italic", italic))
-}
-```
-
 ```tsx tabs
 import { mount, signal, Text } from "nsh";
 import { Toggle, ToggleGroup } from "nsh/base";
@@ -80,6 +47,39 @@ mount(() => (
     <App />
   </Window>
 ));
+```
+
+```rust tabs
+use nsh_base::{theme, toggle, toggle_group};
+use nsh_core::prelude::*;
+
+fn formatting() -> impl IntoElement {
+    let bold = signal(true);
+    let italic = signal(false);
+    let item = move |label: &'static str, on: Signal<bool>| {
+        toggle()
+            .pressed(on)
+            .accessibility_label(label)
+            .on_change(move |pressed: &bool| on.set(*pressed))
+            .size_8()
+            .items_center()
+            .justify_center()
+            .rounded(move || theme().radius)
+            .border_1()
+            .border_color(transparent_black())
+            .hover(|s| s.bg(move || theme().foreground.opacity(0.05)))
+            .pressed_style(|s| s.bg(move || theme().foreground.opacity(0.1)).border_color(move || theme().border))
+            .child(text(&label[..1]).text_sm().text_color(move || {
+                if on.get() { theme().foreground } else { theme().muted_foreground }
+            }))
+    };
+    toggle_group()
+        .flex_row()
+        .self_start()
+        .gap_1()
+        .child(item("Bold", bold))
+        .child(item("Italic", italic))
+}
 ```
 
 `Toggle` and `ToggleGroup` come from [`nsh/base`](../modules/nsh-base.md), the `nsh-base` crate in Rust. The value is
